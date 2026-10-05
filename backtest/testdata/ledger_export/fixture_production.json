@@ -1,0 +1,18 @@
+{
+  "schema": "go-trader.ledger-export-fixture-production",
+  "schema_version": 1,
+  "captures": [
+    {
+      "capture_manifest_sha256": "a35623c14d5675b735b9a7ba01f0cd574c0b06bf280ea67ed8acf2a437cf0703",
+      "seed_sql_sha256": "ccb78635277a2738e3de6aa3262535a9af724bae2b1bbf1f700bbd2172c22e45",
+      "source_data_changed": true,
+      "captured_with": "source/capture_fixture.sh in a Docker Desktop 29.8.1 image FROM golang:1.26.2 plus apt strace, util-linux, procps, sqlite3 and python3 (Debian 13, linux/arm64, kernel 7.0.14-linuxkit) run as root with --cap-add SYS_ADMIN; go-trader built from the issue 1686 branch with -buildvcs=false; modernc.org/sqlite v1.57.0",
+      "note": "Initial capture for issue 1686: hl-strict-btc (strict-supported), hl-scalein-btc (scale-in, partial and legacy rows) and hl-manual-eth (manual owner) with live wallet orphan rows."
+    }
+  ],
+  "exports": [
+    {"file": "export.json", "partition": "live", "strategy": "hl-strict-btc"},
+    {"file": "export_scale_in.json", "partition": "live", "strategy": "hl-scalein-btc"},
+    {"file": "export_manual.json", "partition": "live", "strategy": "hl-manual-eth"}
+  ]
+}

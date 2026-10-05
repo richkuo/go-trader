@@ -1,0 +1,143 @@
+{
+  "schema": "go-trader.ledger-comparison-input",
+  "schema_version": 1,
+  "description": "Strict-supported fixture: hl-strict-btc over the frozen synthetic BTC 1h window.",
+  "export": {
+    "schema": "go-trader.booked-ledger",
+    "schema_version": 1,
+    "capture_manifest_sha256": "a35623c14d5675b735b9a7ba01f0cd574c0b06bf280ea67ed8acf2a437cf0703",
+    "booked_sections_sha256": "65d0d83f79a988a2104ea59e45d1abd3054b2f4569807eaeba1776dcdfa75fac",
+    "selection": {
+      "partition": "live",
+      "process_strategy_id": "hl-strict-btc"
+    }
+  },
+  "market": {
+    "manifest": {
+      "path": "market/manifest.json",
+      "sha256": "7030d69f8de1b614bbb343fda6c9ddb527ad4ae923c1d1344a31406a27a88732"
+    },
+    "dataset": "BTC 1h",
+    "window": "comparison"
+  },
+  "interval": {
+    "start": "2026-01-05T00:00:00Z",
+    "end": "2026-01-06T20:00:00Z",
+    "start_inclusive": true,
+    "end_inclusive": false,
+    "evidence": "the frozen market window 'comparison'; booked events are compared when their ledger record time falls inside it"
+  },
+  "tolerances": {
+    "time_seconds": {
+      "value": 300,
+      "unit": "s"
+    },
+    "price_relative": {
+      "value": 0.0001,
+      "unit": "fraction"
+    },
+    "quantity_absolute": {
+      "value": 1e-09,
+      "unit": "base_asset"
+    },
+    "money_absolute": {
+      "value": 0.05,
+      "unit": "USD"
+    }
+  },
+  "starting_state": {
+    "cash_usd": {
+      "value": 1009.168047,
+      "status": "verified",
+      "rule": "booked_ledger_replay",
+      "rule_inputs": {
+        "base_value": 1000.0,
+        "base_evidence": "synthetic fixture: strategies.initial_capital for hl-strict-btc is 1000 and no cash flow other than booked trades and funding touched the strategy"
+      },
+      "evidence": "initial capital plus the ledger delta of every booked event before the interval start"
+    },
+    "inventory": {
+      "quantity": 0.0,
+      "status": "verified",
+      "rule": "booked_ledger_replay",
+      "evidence": "every booked position before the interval start is fully closed in the export"
+    },
+    "pending_decision": {
+      "value": "none",
+      "status": "verified",
+      "rule": "signal_replay",
+      "evidence": "the strategy signal on the last warm-up bar, recomputed from the frozen candles"
+    }
+  },
+  "historical_configuration": {
+    "timeline": [
+      {
+        "effective_from": "2026-01-01T00:00:00Z",
+        "effective_to": null,
+        "config_version": 20,
+        "strategy": {
+          "id": "hl-strict-btc",
+          "type": "perps",
+          "platform": "hyperliquid",
+          "script": "shared_scripts/check_hyperliquid.py",
+          "args": [
+            "sma_crossover",
+            "BTC",
+            "1h",
+            "--mode=live"
+          ],
+          "open_strategy": {
+            "name": "sma_crossover",
+            "params": {
+              "fast_period": 5,
+              "slow_period": 20
+            }
+          },
+          "close_strategy": {
+            "name": "tiered_tp_pct",
+            "params": {
+              "tp_tiers": [
+                {
+                  "close_fraction": 0.5,
+                  "profit_pct": 0.01
+                },
+                {
+                  "close_fraction": 1,
+                  "profit_pct": 0.02
+                }
+              ]
+            }
+          },
+          "capital": 1000,
+          "max_drawdown_pct": 50,
+          "allow_no_edge": true,
+          "direction": "long",
+          "leverage": 1,
+          "sizing_leverage": 1,
+          "stop_loss_atr_mult": 0,
+          "margin_mode": "isolated"
+        },
+        "regime": {
+          "enabled": false,
+          "period": 0,
+          "adx_threshold": 0
+        },
+        "portfolio_risk": {
+          "max_drawdown_pct": 25,
+          "max_notional_usd": 0,
+          "warn_threshold_pct": 60
+        },
+        "status": "verified",
+        "rule": "attested",
+        "evidence": "synthetic fixture: source/config.json is the only configuration this strategy ever ran with; it is the effective (post-load) configuration, unchanged since 2026-01-01"
+      }
+    ]
+  },
+  "capability_evidence": {
+    "portfolio_controls": {
+      "status": "verified",
+      "rule": "attested",
+      "evidence": "synthetic fixture: no drawdown halt, circuit breaker or portfolio kill switch fired during the interval; every booked fill is a signal or take-profit fill"
+    }
+  }
+}

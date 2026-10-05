@@ -474,6 +474,17 @@ Latch ownership, the untrusted-reading deferral, the Hyperliquid liquidation gua
 
 Built-in mappings cover known OKX/BinanceUS pairs; add `tradingview_export.symbol_overrides` for the rest. Export procedure: [SKILL.md](SKILL.md).
 
+### Booked-ledger export (read-only)
+
+For reconciliation, capture a consistent copy of every state file first, then export one Hyperliquid strategy from that copy:
+
+```bash
+./go-trader export capture --config /var/lib/go-trader/config.json --output-dir /var/tmp/ledger-snap
+./go-trader export ledger --manifest /var/tmp/ledger-snap/capture.json --partition live --strategy hl-btc-momentum --output hl-btc.ledger.json
+```
+
+Capture runs on Linux only: SQLite reads each file through `VACUUM INTO` from a private mount namespace in which the state directories are read-only, so the running scheduler's files, WAL and shared memory are never written. It needs root with `CAP_SYS_ADMIN` or unprivileged user namespaces, and refuses a WAL-mode file that no running scheduler holds open. Each file is captured in its own transaction. The export needs no trading secrets, verifies every hash and the exact file inventory before reading, and writes a new JSON file (schema `go-trader.booked-ledger`, version 1) that keeps raw fees, gross flags, position and order ids, both `tradeNetPnL` and `tradeLedgerDelta`, and marks missing history as unavailable instead of guessing. Funding with no position stays unallocated; orphan wallet funding is listed separately. Supported owners: Hyperliquid perps and Hyperliquid manual strategies. Details and refusals: [SKILL.md](SKILL.md) § Booked-Ledger Export.
+
 ---
 
 ## Trading Fees

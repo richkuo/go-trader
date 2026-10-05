@@ -1,0 +1,49 @@
+{
+  "manifest": "go-trader.ledger-capture",
+  "manifest_version": 1,
+  "started_at": "2026-10-05T04:26:24.306986545Z",
+  "completed_at": "2026-10-05T04:26:24.329850003Z",
+  "source_revision": null,
+  "capture_method": "vacuum_into",
+  "consistency": "transactional_per_file",
+  "driver": "modernc.org/sqlite v1.57.0",
+  "sqlite_version": "3.53.3",
+  "confinement": {
+    "mechanism": "linux_private_mount_namespace_readonly_bind",
+    "user_namespace": false,
+    "protected_directories": [
+      "/srv/go-trader-ledger-fixture/state"
+    ],
+    "source_dsn_parameters": "mode=ro&cache=private&readonly_shm=1"
+  },
+  "source_config": {
+    "path": "/srv/go-trader-ledger-fixture/cfg/config.json",
+    "sha256": "21210e1101a5aad50f54a9b6e85083187ec718ba93167de9103ec94d0091dc60"
+  },
+  "config_copy": {
+    "relative_path": "config.json",
+    "sha256": "b31b7c55a206cc7e0919b36d08e8891d828254fb4d4d5f7b3bdb4b32441131b7"
+  },
+  "files": [
+    {
+      "source_role": "primary",
+      "partitions": [
+        "live",
+        "paper"
+      ],
+      "config_key": "db_file",
+      "source_path": "/srv/go-trader-ledger-fixture/state/primary.db",
+      "source_canonical_path": "/srv/go-trader-ledger-fixture/state/primary.db",
+      "source_journal_mode": "delete",
+      "relative_path": "state/primary.db",
+      "sha256": "7f98bf61a0b8057917eb62304cfd6b09c6435ba5a2f10eafef6e26176190daa5",
+      "size": 274432,
+      "capture_started_at": "2026-10-05T04:26:24.311029628Z",
+      "capture_completed_at": "2026-10-05T04:26:24.327108795Z",
+      "integrity_check": "ok",
+      "journal_mode": "delete",
+      "trades_rows": 38,
+      "attempts": 1
+    }
+  ]
+}

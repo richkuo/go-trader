@@ -1820,6 +1820,111 @@ class _HoldTracker:
         return (e - self.low) / e, (e - self.high) / e, self.low_bar, self.high_bar
 
 
+LEDGER_EVENTS_SCHEMA = "go-trader.backtester-ledger-events"
+LEDGER_EVENTS_SCHEMA_VERSION = 1
+LEDGER_EVENT_TIMING = {
+    "bar_open_fill": "fill at the open of bar_timestamp after a decision on the close of decision_timestamp",
+    "intrabar_trigger_fill": "fill inside the bar that opens at bar_timestamp, when a resting trigger or limit price is crossed; no separate decision bar",
+    "bar_mark_accrual": "funding events after the previous bar's open and at or before bar_timestamp, valued at the close of the bar that opens at bar_timestamp",
+    "seeded_before_first_bar": "inventory assumed open before the first scored bar; not a modeled fill",
+    "terminal_mark": "synthetic liquidation at the close of the last scored bar; not a trading decision",
+}
+
+
+def _ledger_ts(value) -> Optional[str]:
+    if value is None:
+        return None
+    ts = pd.Timestamp(value)
+    ts = ts.tz_localize("UTC") if ts.tz is None else ts.tz_convert("UTC")
+    return ts.isoformat().replace("+00:00", "Z")
+
+
+class _LedgerEventRecorder:
+
+    def __init__(self, initial_cash: float):
+        self.initial_cash = initial_cash
+        self.events: list = []
+        self.position_seq = 0
+        self.position_id: Optional[str] = None
+        self.interval_end: Optional[dict] = None
+
+    def record(self, kind: str, *, bar, decision_bar, timing: str, side: str,
+               action: str, quantity: float, raw_price: float,
+               effective_price: float, fee_rate: float, fee_charged: float,
+               reason: str, qty_before: float, qty_after: float,
+               avg_cost_before: float, avg_cost_after: float,
+               cash_before: float, cash_after: float,
+               hold: "_HoldTracker",
+               gross_realized: Optional[float] = None,
+               entry_fee_allocated: Optional[float] = None,
+               funding_cash: Optional[float] = None,
+               funding_rate: Optional[float] = None,
+               synthetic: bool = False) -> None:
+        if kind in ("open", "seed_inventory"):
+            self.position_seq += 1
+            self.position_id = f"sim-pos-{self.position_seq:04d}"
+        seq = len(self.events) + 1
+        outstanding = None
+        if self.position_id is not None and kind != "funding":
+            outstanding = hold.entry_fee - hold.entry_fee_netted
+        self.events.append({
+            "seq": seq,
+            "event_id": f"sim-evt-{seq:06d}",
+            "position_local_id": self.position_id,
+            "kind": kind,
+            "synthetic": synthetic,
+            "bar_timestamp": _ledger_ts(bar),
+            "decision_timestamp": _ledger_ts(decision_bar),
+            "timing": timing,
+            "side": side,
+            "action": action,
+            "quantity": quantity,
+            "raw_price": raw_price,
+            "effective_price": effective_price,
+            "fee_rate": fee_rate,
+            "fee_charged": fee_charged,
+            "entry_fee_allocated": entry_fee_allocated,
+            "entry_fee_outstanding_after": outstanding,
+            "gross_realized": gross_realized,
+            "funding_cash": funding_cash,
+            "funding_rate": funding_rate,
+            "reason": reason,
+            "qty_before": qty_before,
+            "qty_after": qty_after,
+            "avg_cost_before": avg_cost_before,
+            "avg_cost_after": avg_cost_after,
+            "cash_before": cash_before,
+            "cash_after": cash_after,
+        })
+        if kind in ("close", "terminal_liquidation") and qty_after == 0:
+            self.position_id = None
+
+    def mark_interval_end(self, *, bar, cash: float, position: float,
+                          avg_cost: float, hold: "_HoldTracker") -> None:
+        open_position = position != 0
+        self.interval_end = {
+            "bar_timestamp": _ledger_ts(bar),
+            "timing": "after every booking on the last scored bar, before the synthetic terminal liquidation",
+            "cash": cash,
+            "position_qty": position,
+            "side": ("long" if position > 0 else "short") if open_position else None,
+            "avg_cost": avg_cost if open_position else None,
+            "position_local_id": self.position_id if open_position else None,
+            "entry_fee_outstanding": (hold.entry_fee - hold.entry_fee_netted) if open_position else 0.0,
+        }
+
+    def envelope(self) -> dict:
+        return {
+            "schema": LEDGER_EVENTS_SCHEMA,
+            "schema_version": LEDGER_EVENTS_SCHEMA_VERSION,
+            "time_basis": "UTC; a naive frame index is read as UTC",
+            "timing_meanings": dict(LEDGER_EVENT_TIMING),
+            "initial_cash": self.initial_cash,
+            "events": self.events,
+            "interval_end": self.interval_end,
+        }
+
+
 def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
                 exit_fee: float, reason: str, qty_frac: float = 1.0,
                 true_up_entry_fee: bool = False) -> None:
@@ -2302,6 +2407,7 @@ class Backtester:
             params: Optional[dict] = None, save: bool = True,
             starting_long: Optional[dict] = None,
             indicator_frame: Optional[pd.DataFrame] = None,
+            record_events: bool = False,
             stop_observer: Optional[Callable[[dict], None]] = None) -> dict:
         self._stop_observer = stop_observer
         uses_open_close = (
@@ -2470,6 +2576,7 @@ class Backtester:
         trades = []
         current_trade = None
         equity_curve = []
+        rec = _LedgerEventRecorder(self.initial_capital) if record_events else None
 
         avg_cost = 0.0
         initial_quantity = 0.0
@@ -2639,6 +2746,17 @@ class Backtester:
             scale.reset()
             scale.base_open_notional = position * effective_entry
             hold.open(effective_entry, "long", entry_commission)
+            if rec is not None:
+                rec.record(
+                    "seed_inventory", bar=df.index[0], decision_bar=None,
+                    timing="seeded_before_first_bar", side="long", action="buy",
+                    quantity=position, raw_price=effective_entry,
+                    effective_price=effective_entry, fee_rate=self.commission_pct,
+                    fee_charged=entry_commission, reason="starting_long",
+                    qty_before=0.0, qty_after=position, avg_cost_before=0.0,
+                    avg_cost_after=avg_cost, cash_before=self.initial_capital,
+                    cash_after=cash, hold=hold, synthetic=True,
+                )
             seed_atr = starting_long.get("entry_atr", 0.0)
             try:
                 seed_atr = float(seed_atr or 0.0)
@@ -2728,6 +2846,7 @@ class Backtester:
         def _try_scale_in_add(i: int, side: str, fill_price: float) -> bool:
             nonlocal position, cash, avg_cost, initial_quantity
             nonlocal scale_in_adds_total, scale_in_added_notional_total
+            cash_before, qty_before, avg_before = cash, position, avg_cost
             if hurst_blocked:
                 return False
             decision_price = float(prev_close_arr[i])
@@ -2773,6 +2892,18 @@ class Backtester:
                 current_trade.shares += add_qty
                 current_trade.scale_in_adds = scale.scale_in_count
             hold.entry_fee += commission
+            if rec is not None:
+                rec.record(
+                    "scale_in", bar=df.index[i],
+                    decision_bar=df.index[i - 1] if i > 0 else None,
+                    timing="bar_open_fill", side=side,
+                    action="buy" if side == "long" else "sell",
+                    quantity=add_qty, raw_price=fill_price, effective_price=eff,
+                    fee_rate=self.commission_pct, fee_charged=commission,
+                    reason="scale_in", qty_before=qty_before, qty_after=position,
+                    avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                    cash_before=cash_before, cash_after=cash, hold=hold,
+                )
             return True
 
         def _spec_entry_fill(side: str, raw_fill: float, budget: float, idx):
@@ -2808,11 +2939,15 @@ class Backtester:
 
         def _book_close(idx, close_fraction: float, raw_fill: float, slippage: float,
                         reason: str, bar_mark: float, seed_price: float,
-                        fee_pct: Optional[float] = None) -> bool:
+                        fee_pct: Optional[float] = None, decision_bar=None,
+                        timing: str = "bar_open_fill") -> bool:
             nonlocal position, cash, avg_cost, initial_quantity, entry_atr_value
             nonlocal current_trade, sl_trigger_px, sl_tiers_processed
             nonlocal post_tp_trail_mult, sl_high_water_px
             sl_after_moved = False
+            cash_before, qty_before, avg_before = cash, position, avg_cost
+            gross_realized = None
+            entry_fee_allocated = None
             fee_rate = self.commission_pct if fee_pct is None else fee_pct
             qty_to_close = abs(position) * min(close_fraction, 1.0)
             if self._execution is not None and close_fraction < 1.0:
@@ -2852,6 +2987,7 @@ class Backtester:
                 closed = Trade(current_trade.entry_date, current_trade.entry_price, current_trade.side)
                 closed.shares = qty_to_close
                 closed.close(idx, effective_price)
+                gross_realized = closed.pnl
                 qty_frac = (qty_to_close / initial_quantity) if initial_quantity > 0 else 1.0
                 _stamp_hold(closed, hold, entry_atr=entry_atr_value,
                             exit_fee=commission,
@@ -2861,6 +2997,7 @@ class Backtester:
                                 scale.scale_in_count > 0
                                 and abs(position) <= 1e-12
                             ))
+                entry_fee_allocated = closed.entry_fee
                 closed.scale_in_adds = scale.scale_in_count
                 trades.append(closed)
                 current_trade.shares -= qty_to_close
@@ -2910,9 +3047,24 @@ class Backtester:
                 ):
                     sl_after_moved = True
 
+            if rec is not None:
+                rec.record(
+                    "close", bar=idx, decision_bar=decision_bar, timing=timing,
+                    side="long" if qty_before > 0 else "short",
+                    action="sell" if qty_before > 0 else "buy",
+                    quantity=qty_to_close, raw_price=raw_fill,
+                    effective_price=effective_price, fee_rate=fee_rate,
+                    fee_charged=commission, reason=reason or "close_strategy",
+                    qty_before=qty_before, qty_after=position,
+                    avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                    cash_before=cash_before, cash_after=cash, hold=hold,
+                    gross_realized=gross_realized,
+                    entry_fee_allocated=entry_fee_allocated,
+                )
             return sl_after_moved
 
         for i, (idx, row) in enumerate(df.iterrows()):
+            decision_idx = df.index[i - 1] if i > 0 else None
             fill_price = row["open"] if has_open else row["close"]
             mark_price = row["close"]
             signal = row["signal"]
@@ -2994,8 +3146,22 @@ class Backtester:
                 accrual = float(accrual) if accrual == accrual else 0.0
                 if accrual != 0.0:
                     funding_cash = -position * mark_price * accrual
+                    cash_before = cash
                     cash += funding_cash
                     total_funding_pnl += funding_cash
+                    if rec is not None:
+                        rec.record(
+                            "funding", bar=idx, decision_bar=None,
+                            timing="bar_mark_accrual",
+                            side="long" if position > 0 else "short",
+                            action="funding", quantity=abs(position),
+                            raw_price=mark_price, effective_price=mark_price,
+                            fee_rate=0.0, fee_charged=0.0, reason="funding",
+                            qty_before=position, qty_after=position,
+                            avg_cost_before=avg_cost, avg_cost_after=avg_cost,
+                            cash_before=cash_before, cash_after=cash, hold=hold,
+                            funding_cash=funding_cash, funding_rate=accrual,
+                        )
 
             equity = cash + position * mark_price
             equity_curve.append({"date": idx, "equity": equity})
@@ -3042,7 +3208,8 @@ class Backtester:
 
                 if close_fraction > 0 and position != 0:
                     if _book_close(idx, close_fraction, fill_price, self.slippage_pct,
-                                   close_reason, mark_price, fill_price):
+                                   close_reason, mark_price, fill_price,
+                                   decision_bar=decision_idx):
                         sl_after_just_applied = True
                 if self.regime_directional_policy is not None:
                     entry_direction, entry_invert = self._effective_directional_entry(
@@ -3076,6 +3243,7 @@ class Backtester:
                     if spec_fill is None:
                         long_entry_ok = False
                         short_entry_ok = False
+                cash_before, qty_before, avg_before = cash, position, avg_cost
                 if long_entry_ok:
                     if spec_fill is not None:
                         effective_price, shares, commission = spec_fill
@@ -3096,6 +3264,17 @@ class Backtester:
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                     hold.open(effective_price, "long", commission)
+                    if rec is not None:
+                        rec.record(
+                            'open', bar=idx, decision_bar=decision_idx,
+                            timing='bar_open_fill', side="long", action="buy",
+                            quantity=shares, raw_price=fill_price, effective_price=effective_price,
+                            fee_rate=self.commission_pct, fee_charged=commission, reason="open_long",
+                            qty_before=qty_before, qty_after=position,
+                            avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                            cash_before=cash_before, cash_after=cash, hold=hold,
+                            gross_realized=None, entry_fee_allocated=None,
+                        )
                     scale.reset()
                     scale.base_open_notional = _ungated_leg_notional(
                         shares * effective_price, hurst_size_mult,
@@ -3159,6 +3338,17 @@ class Backtester:
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                     hold.open(effective_price, "short", commission)
+                    if rec is not None:
+                        rec.record(
+                            'open', bar=idx, decision_bar=decision_idx,
+                            timing='bar_open_fill', side="short", action="sell",
+                            quantity=shares, raw_price=fill_price, effective_price=effective_price,
+                            fee_rate=self.commission_pct, fee_charged=commission, reason="open_short",
+                            qty_before=qty_before, qty_after=position,
+                            avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                            cash_before=cash_before, cash_after=cash, hold=hold,
+                            gross_realized=None, entry_fee_allocated=None,
+                        )
                     scale.reset()
                     scale.base_open_notional = _ungated_leg_notional(
                         shares * effective_price, hurst_size_mult,
@@ -3238,6 +3428,9 @@ class Backtester:
                         sl_trigger_px,
                     )
                     if raw_fill is not None:
+                        cash_before, qty_before, avg_before = cash, position, avg_cost
+                        gross_realized = None
+                        entry_fee_allocated = None
                         qty_to_close = abs(position)
                         if position > 0:
                             effective_price = raw_fill * (1 - self.slippage_pct)
@@ -3258,6 +3451,7 @@ class Backtester:
                             )
                             closed.shares = qty_to_close
                             closed.close(idx, effective_price)
+                            gross_realized = closed.pnl
                             qty_frac = (
                                 qty_to_close / initial_quantity
                                 if initial_quantity > 0 else 1.0
@@ -3269,6 +3463,7 @@ class Backtester:
                                         true_up_entry_fee=(
                                             scale.scale_in_count > 0
                                         ))
+                            entry_fee_allocated = closed.entry_fee
                             closed.scale_in_adds = scale.scale_in_count
                             trades.append(closed)
                             current_trade = None
@@ -3288,6 +3483,17 @@ class Backtester:
                         self._run_stop_loss_atr_mult = None
                         self._run_trailing_stop_atr_mult = None
                         self._run_position_regime = ""
+                        if rec is not None:
+                            rec.record(
+                                'close', bar=idx, decision_bar=None,
+                                timing='intrabar_trigger_fill', side="long" if qty_before > 0 else "short", action="sell" if qty_before > 0 else "buy",
+                                quantity=qty_to_close, raw_price=raw_fill, effective_price=effective_price,
+                                fee_rate=self.commission_pct, fee_charged=commission, reason="sl",
+                                qty_before=qty_before, qty_after=position,
+                                avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                                cash_before=cash_before, cash_after=cash, hold=hold,
+                                gross_realized=gross_realized, entry_fee_allocated=entry_fee_allocated,
+                            )
 
                 if self.close_strategies and position != 0 and avg_cost > 0:
                     pending_close_fraction, pending_close_reason, tier_fill_price = self._evaluate_close_strategies(
@@ -3307,7 +3513,8 @@ class Backtester:
                     ):
                         if _book_close(idx, pending_close_fraction, tier_fill_price, 0.0,
                                        pending_close_reason, mark_price, mark_price,
-                                       fee_pct=self._maker_fee_pct):
+                                       fee_pct=self._maker_fee_pct,
+                                       timing="intrabar_trigger_fill"):
                             sl_after_just_applied = True
                         pending_close_fraction = 0.0
                         pending_close_reason = ""
@@ -3392,6 +3599,9 @@ class Backtester:
                 continue
 
             if pending_signal_sl_close and position > 0:
+                cash_before, qty_before, avg_before = cash, position, avg_cost
+                gross_realized = None
+                entry_fee_allocated = None
                 effective_price = fill_price * (1 - self.slippage_pct)
                 proceeds = position * effective_price
                 commission = proceeds * self.commission_pct
@@ -3399,8 +3609,10 @@ class Backtester:
                 position = 0.0
                 if current_trade:
                     current_trade.close(idx, effective_price)
+                    gross_realized = current_trade.pnl
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal_sl")
+                    entry_fee_allocated = current_trade.entry_fee
                     current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
@@ -3411,9 +3623,23 @@ class Backtester:
                 sl_high_water_px = 0.0
                 scale.reset()
                 self._run_position_regime = ""
+                if rec is not None:
+                    rec.record(
+                        'close', bar=idx, decision_bar=decision_idx,
+                        timing='bar_open_fill', side="long" if qty_before > 0 else "short", action="sell" if qty_before > 0 else "buy",
+                        quantity=abs(qty_before), raw_price=fill_price, effective_price=effective_price,
+                        fee_rate=self.commission_pct, fee_charged=commission, reason="signal_sl",
+                        qty_before=qty_before, qty_after=position,
+                        avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                        cash_before=cash_before, cash_after=cash, hold=hold,
+                        gross_realized=gross_realized, entry_fee_allocated=entry_fee_allocated,
+                    )
                 continue
 
             if pending_signal_sl_close and position < 0:
+                cash_before, qty_before, avg_before = cash, position, avg_cost
+                gross_realized = None
+                entry_fee_allocated = None
                 effective_price = fill_price * (1 + self.slippage_pct)
                 cost = abs(position) * effective_price
                 commission = cost * self.commission_pct
@@ -3421,8 +3647,10 @@ class Backtester:
                 position = 0.0
                 if current_trade:
                     current_trade.close(idx, effective_price)
+                    gross_realized = current_trade.pnl
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal_sl")
+                    entry_fee_allocated = current_trade.entry_fee
                     current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
@@ -3433,8 +3661,22 @@ class Backtester:
                 sl_high_water_px = 0.0
                 scale.reset()
                 self._run_position_regime = ""
+                if rec is not None:
+                    rec.record(
+                        'close', bar=idx, decision_bar=decision_idx,
+                        timing='bar_open_fill', side="long" if qty_before > 0 else "short", action="sell" if qty_before > 0 else "buy",
+                        quantity=abs(qty_before), raw_price=fill_price, effective_price=effective_price,
+                        fee_rate=self.commission_pct, fee_charged=commission, reason="signal_sl",
+                        qty_before=qty_before, qty_after=position,
+                        avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                        cash_before=cash_before, cash_after=cash, hold=hold,
+                        gross_realized=gross_realized, entry_fee_allocated=entry_fee_allocated,
+                    )
                 continue
 
+            cash_before, qty_before, avg_before = cash, position, avg_cost
+            gross_realized = None
+            entry_fee_allocated = None
             if plain_short_for_bar and signal == -1 and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
                 effective_price = fill_price * (1 - self.slippage_pct)
                 margin = cash * entry_fraction
@@ -3454,6 +3696,17 @@ class Backtester:
                 avg_cost = effective_price
                 entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                 hold.open(effective_price, "short", commission)
+                if rec is not None:
+                    rec.record(
+                        'open', bar=idx, decision_bar=decision_idx,
+                        timing='bar_open_fill', side="short", action="sell",
+                        quantity=shares, raw_price=fill_price, effective_price=effective_price,
+                        fee_rate=self.commission_pct, fee_charged=commission, reason="open_short",
+                        qty_before=qty_before, qty_after=position,
+                        avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                        cash_before=cash_before, cash_after=cash, hold=hold,
+                        gross_realized=None, entry_fee_allocated=None,
+                    )
                 stamp_open_from_label(_entry_stamp(row))
                 sl_trigger_px = 0.0
                 sl_high_water_px = mark_price
@@ -3489,8 +3742,10 @@ class Backtester:
 
                 if current_trade:
                     current_trade.close(idx, effective_price)
+                    gross_realized = current_trade.pnl
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal")
+                    entry_fee_allocated = current_trade.entry_fee
                     current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
@@ -3500,6 +3755,17 @@ class Backtester:
                 sl_high_water_px = 0.0
                 scale.reset()
                 self._run_position_regime = ""
+                if rec is not None:
+                    rec.record(
+                        'close', bar=idx, decision_bar=decision_idx,
+                        timing='bar_open_fill', side="long" if qty_before > 0 else "short", action="sell" if qty_before > 0 else "buy",
+                        quantity=abs(qty_before), raw_price=fill_price, effective_price=effective_price,
+                        fee_rate=self.commission_pct, fee_charged=commission, reason="signal",
+                        qty_before=qty_before, qty_after=position,
+                        avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                        cash_before=cash_before, cash_after=cash, hold=hold,
+                        gross_realized=gross_realized, entry_fee_allocated=entry_fee_allocated,
+                    )
 
             elif not plain_short_for_bar and signal == 1 and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
                 effective_price = fill_price * (1 + self.slippage_pct)
@@ -3520,6 +3786,17 @@ class Backtester:
                 avg_cost = effective_price
                 entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                 hold.open(effective_price, "long", commission)
+                if rec is not None:
+                    rec.record(
+                        'open', bar=idx, decision_bar=decision_idx,
+                        timing='bar_open_fill', side="long", action="buy",
+                        quantity=shares, raw_price=fill_price, effective_price=effective_price,
+                        fee_rate=self.commission_pct, fee_charged=commission, reason="open_long",
+                        qty_before=qty_before, qty_after=position,
+                        avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                        cash_before=cash_before, cash_after=cash, hold=hold,
+                        gross_realized=None, entry_fee_allocated=None,
+                    )
                 stamp_open_from_label(_entry_stamp(row))
                 sl_trigger_px = 0.0
                 sl_high_water_px = mark_price
@@ -3555,8 +3832,10 @@ class Backtester:
 
                 if current_trade:
                     current_trade.close(idx, effective_price)
+                    gross_realized = current_trade.pnl
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal")
+                    entry_fee_allocated = current_trade.entry_fee
                     current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
@@ -3566,6 +3845,17 @@ class Backtester:
                 sl_high_water_px = 0.0
                 scale.reset()
                 self._run_position_regime = ""
+                if rec is not None:
+                    rec.record(
+                        'close', bar=idx, decision_bar=decision_idx,
+                        timing='bar_open_fill', side="long" if qty_before > 0 else "short", action="sell" if qty_before > 0 else "buy",
+                        quantity=abs(qty_before), raw_price=fill_price, effective_price=effective_price,
+                        fee_rate=self.commission_pct, fee_charged=commission, reason="signal",
+                        qty_before=qty_before, qty_after=position,
+                        avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                        cash_before=cash_before, cash_after=cash, hold=hold,
+                        gross_realized=gross_realized, entry_fee_allocated=entry_fee_allocated,
+                    )
 
             elif (
                 self.allow_scale_in
@@ -3603,6 +3893,9 @@ class Backtester:
                     sl_trigger_px,
                 )
                 if raw_fill is not None:
+                    cash_before, qty_before, avg_before = cash, position, avg_cost
+                    gross_realized = None
+                    entry_fee_allocated = None
                     if position > 0:
                         effective_price = raw_fill * (1 - self.slippage_pct)
                         proceeds = position * effective_price
@@ -3616,9 +3909,11 @@ class Backtester:
                     position = 0.0
                     if current_trade:
                         current_trade.close(idx, effective_price)
+                        gross_realized = current_trade.pnl
                         _stamp_hold(current_trade, hold,
                                     entry_atr=entry_atr_value,
                                     exit_fee=commission, reason="signal_sl")
+                        entry_fee_allocated = current_trade.entry_fee
                         current_trade.scale_in_adds = scale.scale_in_count
                         trades.append(current_trade)
                         current_trade = None
@@ -3629,6 +3924,17 @@ class Backtester:
                     sl_pierce_armed = False
                     scale.reset()
                     self._run_position_regime = ""
+                    if rec is not None:
+                        rec.record(
+                            'close', bar=idx, decision_bar=None,
+                            timing='intrabar_trigger_fill', side="long" if qty_before > 0 else "short", action="sell" if qty_before > 0 else "buy",
+                            quantity=abs(qty_before), raw_price=raw_fill, effective_price=effective_price,
+                            fee_rate=self.commission_pct, fee_charged=commission, reason="signal_sl",
+                            qty_before=qty_before, qty_after=position,
+                            avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                            cash_before=cash_before, cash_after=cash, hold=hold,
+                            gross_realized=gross_realized, entry_fee_allocated=entry_fee_allocated,
+                        )
 
             if self._hl_stop_geometry and position != 0 and avg_cost > 0:
                 side_now = "long" if position > 0 else "short"
@@ -3669,7 +3975,13 @@ class Backtester:
             if position != 0:
                 sl_pierce_armed = True
 
+        if rec is not None:
+            rec.mark_interval_end(bar=df.index[-1], cash=cash, position=position,
+                                  avg_cost=avg_cost, hold=hold)
         if position != 0:
+            cash_before, qty_before, avg_before = cash, position, avg_cost
+            gross_realized = None
+            entry_fee_allocated = None
             if position > 0:
                 final_price = df["close"].iloc[-1] * (1 - self.slippage_pct)
                 proceeds = position * final_price
@@ -3684,6 +3996,7 @@ class Backtester:
 
             if current_trade:
                 current_trade.close(df.index[-1], final_price)
+                gross_realized = current_trade.pnl
                 eod_qty_frac = (
                     current_trade.shares / initial_quantity
                     if initial_quantity > 0 else 1.0
@@ -3692,8 +4005,21 @@ class Backtester:
                             exit_fee=commission, reason="end_of_data",
                             qty_frac=eod_qty_frac,
                             true_up_entry_fee=scale.scale_in_count > 0)
+                entry_fee_allocated = current_trade.entry_fee
                 current_trade.scale_in_adds = scale.scale_in_count
                 trades.append(current_trade)
+            if rec is not None:
+                rec.record(
+                    'terminal_liquidation', bar=df.index[-1], decision_bar=None,
+                    timing='terminal_mark', side="long" if qty_before > 0 else "short", action="sell" if qty_before > 0 else "buy",
+                    quantity=abs(qty_before), raw_price=df["close"].iloc[-1], effective_price=final_price,
+                    fee_rate=self.commission_pct, fee_charged=commission, reason="end_of_data",
+                    qty_before=qty_before, qty_after=position,
+                    avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                    cash_before=cash_before, cash_after=cash, hold=hold,
+                    gross_realized=gross_realized, entry_fee_allocated=entry_fee_allocated,
+                    synthetic=True,
+                )
 
         final_equity = cash
         equity_df = pd.DataFrame(equity_curve).set_index("date")
@@ -3748,6 +4074,8 @@ class Backtester:
 
         if save:
             store_backtest_result(metrics)
+        if rec is not None:
+            metrics["ledger_events"] = rec.envelope()
 
         return metrics
 
