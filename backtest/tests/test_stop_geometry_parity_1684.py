@@ -9,6 +9,7 @@ import pytest
 
 import eval_windows
 import exit_policy_ab
+import ledger_compare
 import parity_diff
 import run_backtest
 import tune_live
@@ -220,7 +221,10 @@ def test_every_live_config_consumer_converts_once(tmp_path):
     assert candidate["stop_context"]["stop_loss_pct"] == pytest.approx(0.02)
     round_trip = eval_windows.candidate_stop_kwargs(json.loads(json.dumps(candidate)))
     assert round_trip["stop_loss_pct"] == pytest.approx(0.02)
-    for kwargs in (parity.stop_kwargs, baseline["stops"], round_trip):
+    ledger = ledger_compare._live_stop_kwargs(
+        {"stop_loss_pct": case["strategy"]["stop_loss_pct"]}, None)
+    assert ledger["stop_loss_pct"] == pytest.approx(0.02)
+    for kwargs in (parity.stop_kwargs, baseline["stops"], round_trip, ledger):
         _, _, events = _run(dict(kwargs, platform="hyperliquid"), case)
         arm = next(e for e in events if e["event"] == "arm")
         assert _near(arm["trigger"], EXPECTED["geometry"]["pct_long"]["arm_trigger"])
@@ -306,8 +310,10 @@ def test_preview_composite_primary_window_uses_the_translator_label_vocabulary(t
     assert out["markers"]["live"], out
 
 
-def test_label_owner_without_label_source_refuses_before_the_loop(tmp_path):
-    case = GEOMETRY["regime_fixed_atr"]
+@pytest.mark.parametrize("case_id", ["regime_fixed_atr", "regime_trailing_system_defaults",
+                                     "unified_regime_close"])
+def test_label_owner_without_label_source_refuses_before_the_loop(tmp_path, case_id):
+    case = GEOMETRY[case_id]
     kwargs = dict(_load(tmp_path, case), regime_enabled=False)
     frame = _frame(case).drop(columns=["regime"])
     events: list = []
@@ -316,6 +322,48 @@ def test_label_owner_without_label_source_refuses_before_the_loop(tmp_path):
     assert exc.value.reason_code == "MISSING_STOP_INPUT"
     assert exc.value.validation.phase == "runtime"
     assert events == []
+
+
+def _long_labelled_frame(entry_bars: list) -> pd.DataFrame:
+    from atr import ensure_atr_indicator
+    n = 220
+    idx = pd.date_range("2026-01-01", periods=n, freq="1h")
+    closes = [100.0 + 0.35 * i + 2.5 * math.sin(i / 4.0) for i in range(n)]
+    opens = [closes[0]] + closes[:-1]
+    signals = [0] * n
+    for bar in entry_bars:
+        signals[bar] = 1
+    df = pd.DataFrame({
+        "open": opens,
+        "high": [max(o, c) + 0.6 for o, c in zip(opens, closes)],
+        "low": [min(o, c) - 0.6 for o, c in zip(opens, closes)],
+        "close": closes,
+        "volume": [1000.0] * n,
+        "signal": signals,
+    }, index=idx)
+    return ensure_atr_indicator(df)
+
+
+@pytest.mark.parametrize("case_id", ["unified_regime_close", "regime_trailing_system_defaults"])
+def test_m6_label_owner_trades_once_labels_exist(tmp_path, case_id):
+    case = GEOMETRY[case_id]
+    gate = {"allowed_regimes": None, "period": 14, "adx_threshold": 20.0,
+            "windows_spec": None}
+    baseline = exit_policy_ab.resolve_from_baseline(
+        _write(tmp_path, _config(case)), STRATEGY_ID)
+    kw = exit_policy_ab._backtester_kwargs(
+        "sma_crossover", None, baseline["incumbent_close"], "long", 1000.0, gate,
+        baseline["stops"])
+    assert kw["regime_enabled"] is True and kw["allowed_regimes"] is None
+    frame = _long_labelled_frame([3, 8, 150])
+    events: list = []
+    result = Backtester(**kw).run(frame, save=False, stop_observer=events.append)
+    assert result["stop_warmup_skipped_entries"] == 2, result.get("stop_warmup_skipped_entries")
+    assert len(result["trades"]) >= 1, result["trades"]
+    entry = pd.Timestamp(result["trades"][0]["entry_date"])
+    assert entry > frame.index[8], entry
+    arms = [e for e in events if e["event"] == "arm"]
+    assert arms and all(e["trigger"] > 0 for e in arms), arms
 
 
 def test_m6_arm_stamps_labels_for_a_label_owner(tmp_path):
