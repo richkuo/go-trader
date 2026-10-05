@@ -468,6 +468,16 @@ def manifest_datasets(manifest: dict) -> List[tuple]:
     return [(d["coin"], manifest["interval"]) for d in manifest["datasets"]]
 
 
+def candidate_close_preflight(candidate: dict) -> dict:
+    from backtester import validate_close_capabilities
+    return validate_close_capabilities(
+        close_refs=candidate.get("close_strategies"),
+        comparison_mode=candidate.get("comparison_mode"),
+        platform=FEE_PLATFORM,
+        strategy_type=str(candidate.get("type") or "perps").strip().lower(),
+        phase="preflight").to_dict()
+
+
 def validate_candidate(candidate: dict) -> dict:
     if not isinstance(candidate, dict) or not candidate.get("name"):
         raise ValueError("candidate needs a 'name'")
@@ -486,11 +496,7 @@ def validate_candidate(candidate: dict) -> dict:
             "close_strategies (the open/close engine models both sides) or "
             "evaluate each leg separately.")
     ctype = str(candidate.get("type") or "perps").strip().lower()
-    from backtester import validate_close_capabilities
-    validate_close_capabilities(close_refs=close_refs,
-                                comparison_mode=candidate.get("comparison_mode"),
-                                platform=FEE_PLATFORM, strategy_type=ctype,
-                                phase="preflight")
+    candidate_close_preflight(candidate)
     if candidate.get("invert_signal") and ctype not in ("perps", "manual"):
         raise ValueError(
             f"candidate sets invert_signal on type={ctype!r}, but "
@@ -661,13 +667,10 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
     score["window_range"] = list(window)
     score["bars"] = bars
     from backtester import aggregate_close_validations
+    ran = [leg.get("close_validation") for leg in candidate_legs.values() if leg is not None]
     score["close_validation"] = aggregate_close_validations(
-        leg.get("close_validation") for leg in candidate_legs.values() if leg is not None)
+        ran or [candidate_close_preflight(candidate)])
     return score
-
-
-def window_ran(score: dict) -> bool:
-    return any(row.get("leg") is not None for row in score.get("rows") or [])
 
 
 def _fmt(v, width=8, prec=2):
@@ -961,7 +964,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(format_summary(window_scores))
     from backtester import aggregate_close_validations, format_close_validation
     print(format_close_validation(aggregate_close_validations(
-        s.get("close_validation") for s in window_scores if window_ran(s))))
+        s.get("close_validation") for s in window_scores)))
 
     sweep_rows = []
     if args.sweep:
@@ -998,9 +1001,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "window_scores": window_scores,
             "sweep": sweep_rows,
             "close_validation": aggregate_close_validations(
-                [s.get("close_validation") for s in window_scores if window_ran(s)]
-                + [r["score"].get("close_validation") for r in sweep_rows
-                   if window_ran(r["score"])]),
+                [s.get("close_validation") for s in window_scores]
+                + [r["score"].get("close_validation") for r in sweep_rows]),
         }
         with open(args.json_out, "w") as fh:
             json.dump(payload, fh, indent=2, default=str)

@@ -402,6 +402,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             if results is not None:
                 validations.append(diag["close_validation"])
             per_window[wname][ds] = diag
+    if not validations:
+        from backtester import validate_close_capabilities
+        validations.append(validate_close_capabilities(
+            close_refs=close_strategies, comparison_mode=args.comparison_mode,
+            platform=FEE_PLATFORM, phase="preflight").to_dict())
     close_validation = aggregate_close_validations(validations)
 
     print(f"strategy: {args.strategy}  registry: {args.registry}  "

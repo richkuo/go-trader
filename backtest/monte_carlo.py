@@ -590,6 +590,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                   f"({args.registry} registry)")
         print(format_multileg_report(source, args.returns, threshold_source,
                                      kill_switch, legs))
+        if not validations:
+            from eval_windows import FEE_PLATFORM, candidate_close_preflight
+            from backtester import validate_close_capabilities
+            validations.append(
+                candidate_close_preflight(candidate) if candidate is not None
+                else validate_close_capabilities(platform=FEE_PLATFORM,
+                                                 phase="preflight").to_dict())
         close_validation = aggregate_close_validations(validations)
         print(format_close_validation(close_validation))
 

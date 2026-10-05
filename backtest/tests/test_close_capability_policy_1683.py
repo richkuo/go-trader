@@ -230,9 +230,19 @@ def test_window_report_counts_only_legs_that_ran(monkeypatch, tmp_path):
     ran, empty = payload["window_scores"]
     assert ran["scored_datasets"] == 1 and empty["verdict"] == "no data"
     assert ran["close_validation"]["children"] == 1
-    for cv in (ran["close_validation"], payload["close_validation"]):
+    for cv in (ran["close_validation"], empty["close_validation"], payload["close_validation"]):
         assert cv["close_eligibility"] == "eligible" and cv["parity_status"] == "unverified"
         assert cv["requested_set_complete"] is True and cv["unknown_children"] == 0
+
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: frame.iloc[0:0].copy())
+    eval_windows.main(["--candidate-json", str(cand), "--registry", "futures",
+                       "--windows", "oos,2023", "--datasets", "BTC/USDT:4h",
+                       "--json", str(out)])
+    none_ran = json.loads(out.read_text())
+    assert all(s["verdict"] == "no data" for s in none_ran["window_scores"])
+    cv = none_ran["close_validation"]
+    assert cv["close_eligibility"] == "eligible" and cv["requested_set_complete"] is True
 
 
 def test_report_aggregates_never_upgrade_refused_or_legacy_children(tmp_path, capsys):
