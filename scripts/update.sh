@@ -36,6 +36,7 @@ owner_scope=""
 probe_owner=""
 uv_bin=""
 uv_env=()
+uv_sync_flags=(--no-dev)
 build_export_tree=""
 build_export_commit=""
 
@@ -484,7 +485,7 @@ do_rollback() {
     if [[ "$tree_mutated" == "1" && -n "$pre_pull_sha" ]]; then
         echo "[update] rollback: reverting git tree to $pre_pull_sha" >&2
         if update_git "$repo_root" reset --hard "$pre_pull_sha" >&2; then
-            if ! env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync >&2; then
+            if ! env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync "${uv_sync_flags[@]}" >&2; then
                 echo "[update] rollback: uv sync FAILED — Python tree may be inconsistent with .prev binary" >&2
             fi
         else
@@ -904,7 +905,7 @@ else
 fi
 
 begin_phase sync
-env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync
+env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync "${uv_sync_flags[@]}"
 give_back_tree_owner "after uv sync"
 if [[ "$owner_scope" == "$repo_root" && -n "$tree_owner" ]] && ! update_owner_runs_venv "$repo_root"; then
     fail "after uv sync, $(update_path_owner_name "$repo_root") cannot run $repo_root/.venv/bin/python3 ($(readlink -f .venv/bin/python3 2>/dev/null || echo unresolved)); the service runs as that account. Install a Python every account can read, then rebuild the venv"

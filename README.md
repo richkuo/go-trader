@@ -37,7 +37,7 @@ Walks asset/strategy/platform/capital/risk/Discord choices and writes `scheduler
 ```bash
 git clone https://github.com/richkuo/go-trader.git && cd go-trader
 curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh    # uv for every account (SKILL.md Prerequisites)
-uv sync                                             # Python deps from lockfile
+uv sync --no-dev                                    # Python deps from lockfile (service host; dev checkout: uv sync)
 
 VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
 cd scheduler && go build -ldflags "-X main.Version=$VER" -o ../go-trader . && cd ..
@@ -396,7 +396,7 @@ the state DB; never blocks or alters a close.
 
 ## Build & Deploy
 
-Canonical path: `scripts/update.sh` — `git pull --ff-only` → `uv sync` → version-stamped `go build` → atomic binary swap → optional restart with `/health` verify and rollback on failure. Startup probe refuses Go/Python version mismatch — prefer the script over hand-rolled rebuilds.
+Canonical path: `scripts/update.sh` — `git pull --ff-only` → `uv sync --no-dev` → version-stamped `go build` → atomic binary swap → optional restart with `/health` verify and rollback on failure. Startup probe refuses Go/Python version mismatch — prefer the script over hand-rolled rebuilds.
 
 ```bash
 sudo bash scripts/update.sh --restart                              # systemd (default)

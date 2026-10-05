@@ -1423,7 +1423,7 @@ def inspect(unit, instance, exec_timeout=None):
         if ok is None:
             ok = other_can(interp)
         if not ok:
-            plan.refuse(EXIT_RUNTIME, "the venv interpreter %s is not usable by %s; install a Python the service account can read and rebuild the venv (uv sync) in the source first" % (interp, t_user))
+            plan.refuse(EXIT_RUNTIME, "the venv interpreter %s is not usable by %s; install a Python the service account can read and rebuild the venv (uv sync --no-dev) in the source first" % (interp, t_user))
 
     tool_problems, tool_lines = build_tools_problems(t_user, tuser is not None)
     if tool_problems:
