@@ -55,7 +55,7 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   Operator action: a host where an earlier `shared-feed-convert.sh feeds` ran `uv sync` as root and then gave the feed tree to the service account may have given files of root's uv cache to that account through hard links; check with `sudo find /root/.cache/uv ! -user root | head`.
   When it lists files, the same files may also sit in the `.venv` of every tree that root synced from that cache, so check each root-owned tree with `sudo find <tree>/.venv ! -user root | head` and note the trees that list files.
   Then run `sudo uv cache clean`, so no rebuild reads a cache file that the other account could have changed.
-  For each noted tree, stop its service, rebuild its venv as root without the cache (`cd <tree> && sudo rm -rf .venv && sudo env UV_NO_CACHE=1 UV_LINK_MODE=copy uv sync`), then start the service again.
+  For each noted tree, stop its service, rebuild its venv as root without the cache (`cd <tree> && sudo rm -rf .venv && sudo env UV_NO_CACHE=1 UV_LINK_MODE=copy uv sync --no-dev`), then start the service again.
   When `uv` exists only in `/root/.local/bin` or another home directory, install it system-wide with `curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh` before the next update.
   No config, state or Go runtime change.
   `SKILL.md` § Prerequisites and § Auto-Update, "Root on a tree another account owns".
@@ -390,6 +390,13 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   Opt in by adding the block; omit to keep single-profile behavior.
 
 **Internal / no ops impact**
+- **Test tools move to the uv `dev` dependency group (#1694)**: `pytest`, `pytest-mock` and `pytest-xdist` moved from the removed `test` extra to `[dependency-groups] dev`, so a plain `uv sync` in a development checkout or worktree installs them.
+  Production venvs keep the same packages, because `scripts/update.sh` has synced with `--no-dev` on both the forward and the rollback sync since v0.107.0 (#1705).
+  A host that ran v0.107.0 or later before this update keeps the same venv.
+  A host that updates from a release before v0.107.0 straight to this one runs its old `update.sh` once, which installs `pytest`, `pytest-mock` and `pytest-xdist` into the live venv, and its next `bash scripts/update.sh` run removes them because that sync is exact.
+  Optional operator action for such a host: run `bash scripts/update.sh --restart` again, then confirm that `.venv/bin/python3 -c "import pytest"` fails.
+  On a service host, sync with `uv sync --no-dev`, because a plain `uv sync` or a `uv run` without `--no-sync` installs the test tools.
+  No config, state or Go runtime change.
 - **LLM entry analysis logs token usage per job (#1633)**: each `llm_entry_analysis` job logs one `[llm-analysis]` line with its verdict or failure and `usage calls=N input_tokens=N output_tokens=N` (`usage unavailable` when the script reported none). A failed analysis keeps the usage of the replies it got, including a run killed at `timeout_s`. No config change; the verdict, digest and trade path are unchanged.
 - **HL lazy Exchange init + transient 429 script-failure exemption (#1128/#1129)** — was: every HL subprocess eagerly constructed the SDK `Exchange` client at import, duplicating `spotMeta`+`meta` `/info` fetches even on regime/OHLCV-only paths and amplifying IP-level 429 storms that tripped the #829 three-strike script-failure alert.
   Now: `HyperliquidExchangeAdapter` defers `Exchange` construction until a live-trading call (`_ensure_exchange`/`_require_exchange`), passing the adapter's cached meta into init; init failures back off 30s before retry.

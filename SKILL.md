@@ -54,7 +54,7 @@ cd go-trader
 uv sync --no-dev
 ```
 
-This installs a service host. In a development checkout or worktree, run `uv sync`.
+This installs a service host. In a development checkout or worktree, run `uv sync`, which also installs the test tools (`pytest`, `pytest-mock`, `pytest-xdist`) from the `dev` dependency group.
 
 If the repo already exists, ask whether to reconfigure, update, or do a fresh install before changing it.
 

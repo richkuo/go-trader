@@ -123,7 +123,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv sync --extra test
+          uv sync
           sudo apt-get update
           sudo apt-get install -y strace
 
@@ -172,7 +172,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Install dependencies
-        run: uv sync --extra test
+        run: uv sync
 
       - name: Syntax check
         run: |

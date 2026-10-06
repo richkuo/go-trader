@@ -14,13 +14,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = [
+research = [
+    "matplotlib>=3.8.0",
+]
+
+[dependency-groups]
+dev = [
     "pytest>=8.0.0",
     "pytest-mock>=3.14.0",
     "pytest-xdist>=3.6.0",
-]
-research = [
-    "matplotlib>=3.8.0",
 ]
 
 [tool.pytest.ini_options]

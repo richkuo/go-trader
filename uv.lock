@@ -1030,7 +1030,9 @@ dependencies = [
 research = [
     { name = "matplotlib" },
 ]
-test = [
+
+[package.dev-dependencies]
+dev = [
     { name = "pytest" },
     { name = "pytest-mock" },
     { name = "pytest-xdist" },
@@ -1044,13 +1046,17 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.4.2" },
     { name = "pandas", specifier = ">=3.0.0" },
     { name = "pyotp", specifier = ">=2.9.0" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
-    { name = "pytest-mock", marker = "extra == 'test'", specifier = ">=3.14.0" },
-    { name = "pytest-xdist", marker = "extra == 'test'", specifier = ">=3.6.0" },
     { name = "robin-stocks", specifier = ">=3.0.0" },
     { name = "yfinance", specifier = ">=0.2.0" },
 ]
-provides-extras = ["test", "research"]
+provides-extras = ["research"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-mock", specifier = ">=3.14.0" },
+    { name = "pytest-xdist", specifier = ">=3.6.0" },
+]
 
 [[package]]
 name = "hexbytes"
