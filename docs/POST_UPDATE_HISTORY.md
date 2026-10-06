@@ -49,6 +49,7 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   The scheduler reads the lot size from the public `meta` request (refreshed hourly outside `mu`, expired after 6 hours, budgeted under the request reason `lot_metadata`), at the endpoint `HYPERLIQUID_TESTNET` selects.
   While the lot size is unknown, paper entries, adds and partial closes hold and one `[hl-lot]` line is logged per coin until it returns.
   Full signal closes, stops and paper kill-switch and circuit-breaker flattening still close the whole book, including unrounded positions opened before the update; a flip books its full close and holds only the new open when that open fails the test.
+  A floored tier close still counts as its tier cleared for `sl_after` and take-profit consumption, and a cycle whose partial close holds runs the same paper stop upkeep as a no-signal cycle.
   Live fills and replay-mirror rows are unchanged.
   Paper results before and after this update are not comparable: earlier trades keep their unrounded quantities and are not rewritten, and existing positions are not rounded in place.
   There is no opt-out. A clean comparison needs a new paper strategy ID.

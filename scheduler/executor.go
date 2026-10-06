@@ -63,6 +63,7 @@ type HyperliquidResult struct {
 	SizedCloseCanceledOIDs          []int64                `json:"-"`
 	SizedCloseBookedQty             float64                `json:"-"`
 	SizedClosePreSend               hlCloseView            `json:"-"`
+	PaperPartialCloseHold           string                 `json:"-"`
 }
 
 type HyperliquidFill struct {

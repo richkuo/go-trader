@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -180,4 +181,61 @@ func pyDecimalContextRound(coef *big.Int, exp, prec int) (*big.Int, int) {
 		}
 	}
 	return q, exp + drop
+}
+
+func (p *hlPaperLotPolicy) bookedLot() hlLotLookup {
+	if p == nil || !p.looked {
+		return hlLotLookup{}
+	}
+	return p.lot
+}
+
+func hlPaperTierLotApplies(sc StrategyConfig) bool {
+	return hlPaperSyntheticFill(sc, false) && replayMirrorSourceID(sc) == ""
+}
+
+func hlPaperTierLot(sc StrategyConfig, symbol string) hlLotLookup {
+	if !hlPaperTierLotApplies(sc) {
+		return hlLotLookup{}
+	}
+	return hlLotMetadata.Peek(symbol)
+}
+
+func paperTierClearedByLot(threshold, qty, initQty float64, lot hlLotLookup) bool {
+	if !lot.Known || initQty <= 0 {
+		return false
+	}
+	closed := initQty - qty
+	if closed <= 0 {
+		return false
+	}
+	return hlFloorLotSize(threshold*initQty-closed, lot.SzDecimals) == 0
+}
+
+func findHighestClearedPaperTier(thresholds []float64, qty, initQty float64, lot hlLotLookup, fromIdx int) (int, bool) {
+	idx, ok := findHighestClearedTierByClosedRatio(thresholds, 1-qty/initQty, fromIdx)
+	if fromIdx < 0 {
+		fromIdx = 0
+	}
+	for i := len(thresholds) - 1; i >= fromIdx && (!ok || i > idx); i-- {
+		if paperTierClearedByLot(thresholds[i], qty, initQty, lot) {
+			return i, true
+		}
+	}
+	return idx, ok
+}
+
+func paperHLHeldPartialCloseNeedsQuietMaintenance(sc StrategyConfig, result *HyperliquidResult, execTrades int, posQty float64) bool {
+	return result != nil && !hyperliquidIsLive(sc.Args) && result.Signal != 0 && execTrades == 0 && result.PaperPartialCloseHold != "" && posQty > 0
+}
+
+func runPaperHLQuietCycleMaintenance(sc StrategyConfig, stratState *StrategyState, db *StateDB, symbol string, price float64, cfg *Config, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger, step *hlStepTradeAlerts) {
+	flipAt := step.historyLen(mu)
+	if flipTrades, flipDetail := advancePaperDynamicCloseRegime(sc, stratState, db, symbol, price, mu, logger); flipTrades > 0 {
+		step.bindWindow(mu, flipAt, flipDetail)
+	}
+	if hlPaperTierLotApplies(sc) && strategyHasPostTPStopRules(sc) {
+		hlLotMetadata.Ensure(symbol)
+	}
+	runPaperPostTPStopLossAdjustment(sc, stratState, symbol, price, cfg, mu, notifier, logger)
 }

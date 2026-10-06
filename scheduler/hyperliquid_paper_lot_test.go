@@ -813,3 +813,197 @@ func TestConfirmedAndReplayFillsKeepTheirQuantities(t *testing.T) {
 		t.Fatalf("replay open booked %+v, want the recorded %v", ps.Positions["ETH"], unaligned)
 	}
 }
+
+func lotTierStrategy() StrategyConfig {
+	slMult := 1.0
+	return StrategyConfig{
+		ID: "hl-lot-tier", Platform: "hyperliquid", Type: "perps",
+		Args: []string{"sma", "ETH", "1h", "--mode=paper"}, StopLossATRMult: &slMult,
+		Direction: DirectionBoth, Leverage: 1, SizingLeverage: 1,
+		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr", Params: map[string]interface{}{
+			"sl_after": "breakeven",
+			"tp_tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5},
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+			},
+		}},
+	}
+}
+
+func lotUnifiedTierStrategy() StrategyConfig {
+	sc := unifiedSLStrategy("tiered_tp_atr_regime", "perps", false, "breakeven")
+	sc.Args = []string{"sma", "ETH", "1h", "--mode=paper"}
+	return sc
+}
+
+func lotTierPosition(qty float64) *Position {
+	return &Position{Symbol: "ETH", Quantity: qty, InitialQuantity: 0.4997, AvgCost: 3000, EntryATR: 30, Side: "long", StopLossTriggerPx: 2970, Regime: "ranging", RegimeAppliedLabel: "ranging"}
+}
+
+func TestPaperHLFlooredTierClearsItsThreshold(t *testing.T) {
+	useHLLotMetadataForTest(t, map[string]int{"ETH": 4})
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+	const mark = 3051.0
+	dispatch := func(t *testing.T, sc StrategyConfig, s *StrategyState, fraction, wantClosed float64) {
+		t.Helper()
+		result := hlLotTestResult("ETH", -1, mark, fraction, 0)
+		result.CloseStrategy = sc.CloseStrategy.Name
+		if n := paperDispatch(t, sc, s, result, mark); n != 1 {
+			t.Fatalf("partial close trades = %d, want 1", n)
+		}
+		if got := lastTrade(t, s).Quantity; got != wantClosed {
+			t.Fatalf("booked close = %v, want %v", got, wantClosed)
+		}
+	}
+
+	t.Run("tiered_tp_atr floored tier moves the stop to breakeven", func(t *testing.T) {
+		sc := lotTierStrategy()
+		s := paperStopTestState(sc, lotTierPosition(0.4997))
+		dispatch(t, sc, s, 0.5, 0.2498)
+		pos := s.Positions["ETH"]
+		ratio := 1 - pos.Quantity/pos.InitialQuantity
+		if _, exact := findHighestClearedTierByClosedRatio(paperSLAfterTierThresholds(sc, ""), ratio, 0); exact {
+			t.Fatalf("closed ratio %.6f already meets 0.5 exactly; the fixture does not reproduce the floored tier", ratio)
+		}
+		var mu sync.RWMutex
+		if !runPaperPostTPStopLossAdjustment(sc, s, "ETH", mark, &Config{}, &mu, nil, silentStrategyLogger(sc.ID)) {
+			t.Fatal("floored tier 1 did not move the stop")
+		}
+		if pos.StopLossTriggerPx != 3000 || pos.SLAdjustedTiersProcessed != 1 {
+			t.Fatalf("stop %v processed %d, want breakeven 3000 after tier 1", pos.StopLossTriggerPx, pos.SLAdjustedTiersProcessed)
+		}
+	})
+
+	t.Run("tiered_tp_atr_regime floored tier records tier 0", func(t *testing.T) {
+		sc := lotUnifiedTierStrategy()
+		s := paperStopTestState(sc, lotTierPosition(0.4997))
+		dispatch(t, sc, s, 0.5, 0.2498)
+		pos := s.Positions["ETH"]
+		if len(pos.TPConsumptions) != 1 || pos.TPConsumptions[0].Label != "ranging" || pos.TPConsumptions[0].Tier != 0 || pos.TPConsumptions[0].Stage != tpConsumptionBooked {
+			t.Fatalf("consumption = %+v, want ranging tier 0 booked", pos.TPConsumptions)
+		}
+	})
+
+	t.Run("a close more than one lot short does not clear the tier", func(t *testing.T) {
+		fraction := 0.24965 / 0.4997
+		sc := lotTierStrategy()
+		s := paperStopTestState(sc, lotTierPosition(0.4997))
+		dispatch(t, sc, s, fraction, 0.2496)
+		var mu sync.RWMutex
+		if runPaperPostTPStopLossAdjustment(sc, s, "ETH", mark, &Config{}, &mu, nil, silentStrategyLogger(sc.ID)) {
+			t.Fatal("0.2496 closed of 0.4997 moved the stop")
+		}
+		if pos := s.Positions["ETH"]; pos.StopLossTriggerPx != 2970 || pos.SLAdjustedTiersProcessed != 0 {
+			t.Fatalf("stop %v processed %d, want the entry stop", pos.StopLossTriggerPx, pos.SLAdjustedTiersProcessed)
+		}
+
+		usc := lotUnifiedTierStrategy()
+		us := paperStopTestState(usc, lotTierPosition(0.4997))
+		dispatch(t, usc, us, fraction, 0.2496)
+		if got := us.Positions["ETH"].TPConsumptions; len(got) != 0 {
+			t.Fatalf("0.2496 closed of 0.4997 recorded %+v", got)
+		}
+	})
+
+	t.Run("unknown lot keeps the exact ratio test", func(t *testing.T) {
+		if paperTierClearedByLot(0.5, 0.2499, 0.4997, hlLotLookup{}) {
+			t.Fatal("unknown lot cleared the tier")
+		}
+		if !paperTierClearedByLot(0.5, 0.2499, 0.4997, hlLotLookup{Known: true, SzDecimals: 4}) {
+			t.Fatal("known lot did not clear the floored tier")
+		}
+		if paperTierClearedByLot(0.5, 0.4997, 0.4997, hlLotLookup{Known: true, SzDecimals: 0}) {
+			t.Fatal("nothing closed cleared the tier")
+		}
+	})
+}
+
+func TestPaperHLHeldPartialCloseRunsQuietCycleMaintenance(t *testing.T) {
+	useHLLotMetadataForTest(t, map[string]int{"ETH": 4})
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+	leftover := 0.00005 / 0.2499
+
+	t.Run("sub-lot leftover after a floored tier still moves the stop", func(t *testing.T) {
+		sc := lotTierStrategy()
+		s := paperStopTestState(sc, lotTierPosition(0.2499))
+		result := hlLotTestResult("ETH", -1, 3051, leftover, 0)
+		requireHeld(t, "leftover close", sc, s, func() int { return paperDispatch(t, sc, s, result, 3051) })
+		if result.PaperPartialCloseHold != hlPaperHoldBelowLot {
+			t.Fatalf("hold = %q, want %q", result.PaperPartialCloseHold, hlPaperHoldBelowLot)
+		}
+		if !paperHLHeldPartialCloseNeedsQuietMaintenance(sc, result, 0, 0.2499) {
+			t.Fatal("held partial close did not ask for the quiet-cycle upkeep")
+		}
+		var mu sync.RWMutex
+		step := beginHyperliquidStepTradeAlerts(sc, s, &mu)
+		runPaperHLQuietCycleMaintenance(sc, s, nil, "ETH", 3051, &Config{}, &mu, nil, silentStrategyLogger(sc.ID), step)
+		if pos := s.Positions["ETH"]; pos == nil || pos.StopLossTriggerPx != 3000 || pos.Quantity != 0.2499 {
+			t.Fatalf("after upkeep = %+v, want 0.2499 left with the stop at breakeven", pos)
+		}
+		for _, c := range []struct {
+			name   string
+			sc     StrategyConfig
+			trades int
+			qty    float64
+			hold   string
+		}{
+			{"live", StrategyConfig{Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h", "--mode=live"}}, 0, 1, hlPaperHoldBelowLot},
+			{"booked", sc, 1, 1, hlPaperHoldBelowLot},
+			{"flat", sc, 0, 0, hlPaperHoldBelowLot},
+			{"not held", sc, 0, 1, ""},
+		} {
+			r := &HyperliquidResult{Symbol: "ETH", Signal: -1, PaperPartialCloseHold: c.hold}
+			if paperHLHeldPartialCloseNeedsQuietMaintenance(c.sc, r, c.trades, c.qty) {
+				t.Fatalf("%s cycle asked for the quiet-cycle upkeep", c.name)
+			}
+		}
+	})
+
+	t.Run("dynamic regime confirms on a held cycle and the new stop closes", func(t *testing.T) {
+		dynamic := &StrategyRef{Name: dynamicCloseStrategyName, Params: unifiedBlock()}
+		dynamic.Params["regime_confirm_cycles"] = 2
+		sc := StrategyConfig{ID: "hl-lot-dyn", Type: "perps", Platform: "hyperliquid", Args: []string{"sma", "ETH", "1h", "--mode=paper"}, Direction: DirectionLong, CloseStrategy: dynamic}
+		pos := &Position{Symbol: "ETH", Side: "long", Quantity: 1, InitialQuantity: 1, AvgCost: 2000, EntryATR: 40, Regime: "trending_down", RegimeAppliedLabel: "trending_up", RegimePendingLabel: "ranging", RegimePendingCount: 1, StopLossTriggerPx: 1940}
+		s := &StrategyState{ID: sc.ID, Platform: "hyperliquid", Type: "perps", Cash: 1000, Regime: "ranging", Positions: map[string]*Position{"ETH": pos}}
+		result := hlLotTestResult("ETH", -1, 1950, 0.005, 0)
+		requireHeld(t, "below-minimum partial close", sc, s, func() int { return paperDispatch(t, sc, s, result, 1950) })
+		if result.PaperPartialCloseHold != hlPaperHoldBelowMin || !paperHLHeldPartialCloseNeedsQuietMaintenance(sc, result, 0, 1) {
+			t.Fatalf("hold = %q, want %q with the quiet-cycle upkeep", result.PaperPartialCloseHold, hlPaperHoldBelowMin)
+		}
+		var mu sync.RWMutex
+		step := beginHyperliquidStepTradeAlerts(sc, s, &mu)
+		runPaperHLQuietCycleMaintenance(sc, s, nil, "ETH", 1950, &Config{}, &mu, nil, silentStrategyLogger(sc.ID), step)
+		if pos.RegimeAppliedLabel != "ranging" || pos.StopLossTriggerPx != 1968 {
+			t.Fatalf("regime %q stop %v, want ranging with the stop re-armed at 1968", pos.RegimeAppliedLabel, pos.StopLossTriggerPx)
+		}
+		if s.Positions["ETH"] != nil {
+			t.Fatal("the breach at the re-armed stop left the position open")
+		}
+		if last := lastTrade(t, s); !last.IsClose || last.Price != 1950 || last.Quantity != 1 {
+			t.Fatalf("stop close = %+v, want the whole position closed at the 1950 mark", last)
+		}
+	})
+
+	t.Run("bidirectional held partial with an opposite open stays on its side", func(t *testing.T) {
+		sc := lotTierStrategy()
+		s := paperStopTestState(sc, lotTierPosition(0.2499))
+		result := hlLotTestResult("ETH", -1, 3051, leftover, 0)
+		requireHeld(t, "bidirectional leftover close", sc, s, func() int { return paperDispatch(t, sc, s, result, 3051) })
+		var mu sync.RWMutex
+		step := beginHyperliquidStepTradeAlerts(sc, s, &mu)
+		if paperHLHeldPartialCloseNeedsQuietMaintenance(sc, result, 0, 0.2499) {
+			runPaperHLQuietCycleMaintenance(sc, s, nil, "ETH", 3051, &Config{}, &mu, nil, silentStrategyLogger(sc.ID), step)
+		}
+		pos := s.Positions["ETH"]
+		if pos == nil || pos.Side != "long" || pos.Quantity != 0.2499 || len(s.Positions) != 1 || len(s.TradeHistory) != 0 {
+			t.Fatalf("book = %+v trades %d, want the long kept with no open", s.Positions, len(s.TradeHistory))
+		}
+		if pos.OpenProfile != "" || pos.ATRMethodAtOpen != "" || pos.DirectionCertifiedAtOpen {
+			t.Fatalf("held cycle stamped the position: %+v", pos)
+		}
+	})
+}

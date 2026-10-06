@@ -195,6 +195,16 @@ func (c *hlLotMetadataCache) Lookup(coin string) hlLotLookup {
 	return res
 }
 
+func (c *hlLotMetadataCache) Peek(coin string) hlLotLookup {
+	if c == nil {
+		return hlLotLookup{Coin: coin, Reason: "no venue metadata source"}
+	}
+	endpoint := c.endpoint()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lookupLocked(endpoint, coin)
+}
+
 func (c *hlLotMetadataCache) lookupLocked(endpoint, coin string) hlLotLookup {
 	res := hlLotLookup{Endpoint: endpoint, Coin: coin}
 	snap := c.snaps[endpoint]

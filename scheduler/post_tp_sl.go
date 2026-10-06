@@ -1507,7 +1507,7 @@ func runPaperPostTPStopLossAdjustment(
 		return false
 	}
 	posRegime := protectionATRRegimeLabel(pos, sc)
-	clearedIdx, clearedOK := findHighestClearedTierByClosedRatio(paperSLAfterTierThresholds(sc, posRegime), closedRatio, pos.SLAdjustedTiersProcessed)
+	clearedIdx, clearedOK := findHighestClearedPaperTier(paperSLAfterTierThresholds(sc, posRegime), pos.Quantity, pos.InitialQuantity, hlPaperTierLot(sc, symbol), pos.SLAdjustedTiersProcessed)
 	if !clearedOK {
 		mu.Unlock()
 		return false
