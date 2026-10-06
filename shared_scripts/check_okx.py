@@ -4,6 +4,7 @@ import sys
 import os
 import json
 import math
+import time
 import traceback
 from datetime import datetime, timezone
 
@@ -11,6 +12,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'o
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
+from closed_bar import (
+    ClosedBarHold,
+    hold_metadata,
+    htf_closed_fetcher,
+    select_opening_time,
+    unsupported_open_strategy_reason,
+)
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
 _inst_type = "swap"
@@ -79,7 +87,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
                      regime_payload_json=None,
                      close_params_by_name=None,
-                     atr_method="simple", gate_mode=None, acknowledgement=None):
+                     atr_method="simple", gate_mode=None, acknowledgement=None,
+                     closed_bar=False, decision_regime_timeframe=""):
     try:
         from adapter import OKXExchangeAdapter
         from strategies import apply_strategy, get_strategy, list_strategies
@@ -114,6 +123,16 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
         adapter = OKXExchangeAdapter()
 
+        if closed_bar:
+            for name in (strategy_name, open_strategy or strategy_name):
+                why = unsupported_open_strategy_reason(name)
+                if why:
+                    raise ValueError(f"closed_bar_decisions does not support {name}: {why}")
+            if (open_strategy or strategy_name) == "funding_skew":
+                raise ValueError("closed_bar_decisions does not support funding_skew on OKX: this check has no timestamped funding history")
+            if getattr(adapter, "OHLCV_TIMESTAMP_KIND", "") != "open":
+                raise ValueError("closed_bar_decisions needs opening-time candle timestamps from the OKX adapter")
+
         strategy_params = {}
         if strategy_name == "delta_neutral_funding" and inst_type == "swap":
             try:
@@ -129,7 +148,13 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 print(f"Warning: failed to fetch funding rate: {e}", file=sys.stderr)
 
         print(f"Fetching {symbol} {timeframe} from OKX ({mode}, {inst_type})...", file=sys.stderr)
-        if inst_type == "swap":
+        cutoff_ms = 0
+        raw_rows = None
+        if closed_bar:
+            cutoff_ms = int(time.time() * 1000)
+            raw_rows = adapter.fetch_candles(symbol, timeframe, ohlcv_limit + 1, inst_type=inst_type)
+            candles = raw_rows[-ohlcv_limit:]
+        elif inst_type == "swap":
             candles = adapter.get_perp_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
         else:
             candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
@@ -157,10 +182,60 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             atr_window=regime_atr_window,
             injected_payload_json=regime_payload_json,
         )
-        strategy_params["regime"] = strategy_regime
+        current_params = dict(strategy_params)
+        current_params["regime"] = strategy_regime
         if strategy_params_override:
-            merged = {**strategy_params_override, **strategy_params}
-            strategy_params = merged
+            current_params = {**strategy_params_override, **current_params}
+        strategy_params = current_params
+
+        closed_meta = None
+        decision_regime_payload = None
+        decision_df = df
+        protection_kwargs = {}
+        htf_frame = None
+        htf_strategy_name = open_strategy or strategy_name
+        if closed_bar:
+            hold = ""
+            try:
+                selection = select_opening_time(
+                    raw_rows, timeframe=timeframe, cutoff_ms=cutoff_ms, keep=ohlcv_limit)
+                decision_params = dict(strategy_params_override or {})
+                if regime_enabled:
+                    regime_tf = decision_regime_timeframe or timeframe
+                    if regime_tf == timeframe:
+                        regime_rows = selection.rows
+                    else:
+                        regime_rows = select_opening_time(
+                            adapter.fetch_candles(symbol, regime_tf, ohlcv_limit + 1, inst_type=inst_type),
+                            timeframe=regime_tf, cutoff_ms=selection.boundary_ms, keep=ohlcv_limit).rows
+                    decision_regime_payload, _decision_live, decision_strategy_regime = prepare_check_regime(
+                        _make_dataframe(regime_rows),
+                        regime_enabled=True,
+                        windows_spec=regime_windows_spec,
+                        injected_payload_json=None,
+                    )
+                    decision_params["regime"] = decision_strategy_regime
+                else:
+                    decision_params["regime"] = strategy_regime
+                if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
+                    from htf_filter import get_default_htf
+                    htf_tf = get_default_htf(timeframe)
+                    htf_frame = _make_dataframe(select_opening_time(
+                        adapter.fetch_candles(symbol, htf_tf, 61, inst_type=inst_type),
+                        timeframe=htf_tf, cutoff_ms=selection.boundary_ms, keep=60, min_rows=50).rows)
+                decision_df = _make_dataframe(selection.rows)
+                closed_meta = selection.metadata()
+            except ClosedBarHold as e:
+                hold = e.reason
+            protection_kwargs = {"protection_df": df, "protection_params": strategy_params}
+            if hold:
+                closed_meta = hold_metadata(hold, cutoff_ms)
+                decision_regime_payload = None
+                decision_df = None
+                print(f"Closed-bar decision held for {symbol} {timeframe}: {hold}", file=sys.stderr)
+            else:
+                strategy_params = decision_params
+
         decision = None
         if open_close_enabled:
             market_ctx = {"mark_price": float(df["close"].iloc[-1])}
@@ -172,7 +247,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             evaluation = evaluate_open_close(
                 apply_strategy,
                 get_strategy,
-                df,
+                decision_df,
                 strategy_name,
                 open_strategy,
                 parse_close_strategies(close_strategies),
@@ -182,28 +257,40 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 close_evaluate=close_evaluate,
                 market_ctx=market_ctx,
                 close_params_by_name=close_params_by_name,
+                **protection_kwargs,
             )
             result_df = evaluation.open_result_df
             signal = evaluation.open_signal
-        else:
-            result_df = apply_strategy(strategy_name, df, strategy_params or None)
+        elif decision_df is not None:
+            result_df = apply_strategy(strategy_name, decision_df, strategy_params or None)
             signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
+        else:
+            get_strategy(strategy_name)
+            result_df = None
+            signal = 0
 
-        ensure_atr_indicator(result_df, method=atr_method)
-        last = result_df.iloc[-1]
-        price = float(last["close"])
+        last = None
+        if result_df is not None and not result_df.empty:
+            ensure_atr_indicator(result_df, method=atr_method)
+            last = result_df.iloc[-1]
+        if closed_bar:
+            price = float(df["close"].iloc[-1])
+        else:
+            price = float(last["close"])
 
         htf_info = {}
-        htf_strategy_name = open_strategy or strategy_name
-        if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
+        if decision_df is not None and htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
             from htf_filter import htf_trend_filter, apply_htf_filter
 
-            def _fetch_htf(sym, tf, limit):
-                if inst_type == "swap":
-                    candles = adapter.get_perp_ohlcv(sym, interval=tf, limit=limit)
-                else:
-                    candles = adapter.get_ohlcv(sym, interval=tf, limit=limit)
-                return _make_dataframe(candles) if candles else None
+            if closed_bar:
+                _fetch_htf = htf_closed_fetcher(htf_frame)
+            else:
+                def _fetch_htf(sym, tf, limit):
+                    if inst_type == "swap":
+                        candles = adapter.get_perp_ohlcv(sym, interval=tf, limit=limit)
+                    else:
+                        candles = adapter.get_ohlcv(sym, interval=tf, limit=limit)
+                    return _make_dataframe(candles) if candles else None
 
             htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
             original_signal = signal
@@ -230,7 +317,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "open", "high", "low", "close", "volume",
             "timestamp", "signal", "position", "datetime",
         }
-        for col in result_df.columns:
+        for col in (result_df.columns if last is not None else []):
             if col in skip_cols:
                 continue
             val = last.get(col)
@@ -261,6 +348,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         }
         if decision:
             output.update(decision)
+        if closed_meta is not None:
+            output["closed_bar_decision"] = closed_meta
+            if decision_regime_payload is not None:
+                output["decision_regime"] = decision_regime_payload
         print(json.dumps(output))
 
     except Exception as e:
@@ -371,6 +462,10 @@ def main():
         parser.add_argument("--position-risk-anchor-price", type=float, default=None)
         parser.add_argument("--mark-price", type=float, default=0.0, help="Accepted for argv-shape compatibility with check_hyperliquid.py (#768); ignored on this platform.")
         parser.add_argument("--allow-no-edge", nargs="?", const=True, default=None)
+        parser.add_argument("--closed-bar-decisions", action="store_true", default=False,
+            help="#1712: decide signals and entry ATR on the last closed bar; protection keeps current inputs.")
+        parser.add_argument("--decision-regime-timeframe", default="",
+            help="#1712: regime timeframe for the closed-bar decision view; defaults to the strategy timeframe.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
@@ -398,6 +493,8 @@ def main():
             atr_method=args.atr_method,
             gate_mode=parse_raw_gate_mode(sys.argv[1:]),
             acknowledgement=parse_allow_no_edge_tokens(sys.argv[1:]),
+            closed_bar=args.closed_bar_decisions,
+            decision_regime_timeframe=args.decision_regime_timeframe,
         )
 
 

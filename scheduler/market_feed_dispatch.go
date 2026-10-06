@@ -79,12 +79,12 @@ func (c *marketFeedContext) frameSpecs(sc StrategyConfig) ([]marketPayloadFrameS
 	if !ok {
 		return nil, "", false
 	}
-	specs := []marketPayloadFrameSpec{{Key: entry.Signal, Required: entry.SignalLookback}}
+	specs := []marketPayloadFrameSpec{{Key: entry.Signal, Required: entry.SignalLookback, Timing: entry.ClosedBar}}
 	if entry.HasHTF {
-		specs = append(specs, marketPayloadFrameSpec{Key: entry.HTF, Required: hlFeedHTFLookback})
+		specs = append(specs, marketPayloadFrameSpec{Key: entry.HTF, Required: entry.HTFLookback, Timing: entry.ClosedBar})
 	}
 	if entry.HasRegime {
-		specs = append(specs, marketPayloadFrameSpec{Key: entry.Regime, Required: entry.RegimeLookback})
+		specs = append(specs, marketPayloadFrameSpec{Key: entry.Regime, Required: entry.RegimeLookback, Timing: entry.ClosedBar})
 	}
 	return specs, entry.Coin, true
 }
@@ -120,7 +120,17 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 		specs = append(specs, marketPayloadFrameSpec{Key: fk})
 	}
 	signalKey := feedKeyFor(key.Symbol, key.Timeframe)
-	raise(signalKey, key.OhlcvLimit)
+	anyClosedBar := false
+	for _, sc := range members {
+		if sc.ClosedBarDecisions {
+			anyClosedBar = true
+		}
+	}
+	signalLimit := key.OhlcvLimit
+	if anyClosedBar {
+		signalLimit++
+	}
+	raise(signalKey, signalLimit)
 	for _, sc := range members {
 		entry, ok := c.entryFor(sc.ID)
 		if !ok {
@@ -130,7 +140,7 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 			return nil, fmt.Errorf("strategy %s signal key %s does not match the batch key %s", sc.ID, entry.Signal, signalKey)
 		}
 		if entry.HasHTF {
-			raise(entry.HTF, hlFeedHTFLookback)
+			raise(entry.HTF, entry.HTFLookback)
 		}
 		if entry.HasRegime {
 			raise(entry.Regime, entry.RegimeLookback)
@@ -146,6 +156,7 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 	}
 	for i := range specs {
 		specs[i].Required = seen[specs[i].Key]
+		specs[i].Timing = anyClosedBar
 	}
 	payload, err := marketPayloadFor(c.Snapshot, specs, []string{key.Symbol})
 	if err != nil {

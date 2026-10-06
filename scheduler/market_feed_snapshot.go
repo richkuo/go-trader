@@ -14,20 +14,29 @@ const (
 )
 
 type marketFrame struct {
-	Rows               []hlCandleRow `json:"rows"`
-	Required           int           `json:"required"`
-	Bars               int           `json:"bars"`
-	CoverageShort      bool          `json:"coverage_short"`
-	FirstOpenMs        int64         `json:"first_open_ms"`
-	LastOpenMs         int64         `json:"last_open_ms"`
-	LastCloseMs        int64         `json:"last_close_ms"`
-	LastRecvAtMs       int64         `json:"last_recv_at_ms"`
-	Source             string        `json:"source"`
-	Ready              bool          `json:"ready"`
-	Stale              bool          `json:"stale,omitempty"`
-	StaleReason        string        `json:"stale_reason,omitempty"`
-	FormingBarIncluded bool          `json:"forming_bar_included"`
+	Rows               []hlCandleRow      `json:"rows"`
+	Required           int                `json:"required"`
+	Bars               int                `json:"bars"`
+	CoverageShort      bool               `json:"coverage_short"`
+	FirstOpenMs        int64              `json:"first_open_ms"`
+	LastOpenMs         int64              `json:"last_open_ms"`
+	LastCloseMs        int64              `json:"last_close_ms"`
+	LastRecvAtMs       int64              `json:"last_recv_at_ms"`
+	Source             string             `json:"source"`
+	Ready              bool               `json:"ready"`
+	Stale              bool               `json:"stale,omitempty"`
+	StaleReason        string             `json:"stale_reason,omitempty"`
+	FormingBarIncluded bool               `json:"forming_bar_included"`
+	Timing             *marketFrameTiming `json:"timing,omitempty"`
 }
+
+type marketFrameTiming struct {
+	Rule       string   `json:"rule"`
+	IntervalMs int64    `json:"interval_ms"`
+	Bars       [][3]any `json:"bars"`
+}
+
+const marketFrameTimingRuleHyperliquid = "hyperliquid_native_close"
 
 type marketMidPayload struct {
 	Px        float64 `json:"px"`
@@ -50,15 +59,16 @@ type marketFundingPayload struct {
 }
 
 type marketPayload struct {
-	Version      int                                 `json:"version"`
-	SnapshotID   string                              `json:"snapshot_id"`
-	Generation   uint64                              `json:"generation"`
-	SealedAtMs   int64                               `json:"sealed_at_ms"`
-	Frames       map[string]marketFrame              `json:"frames"`
-	Mids         map[string]marketMidPayload         `json:"mids,omitempty"`
-	Funding      map[string]marketFundingPayload     `json:"funding,omitempty"`
-	Observations map[string]marketObservationPayload `json:"observations,omitempty"`
-	FeedComplete bool                                `json:"feed_complete"`
+	Version          int                                 `json:"version"`
+	SnapshotID       string                              `json:"snapshot_id"`
+	Generation       uint64                              `json:"generation"`
+	SealedAtMs       int64                               `json:"sealed_at_ms"`
+	Frames           map[string]marketFrame              `json:"frames"`
+	Mids             map[string]marketMidPayload         `json:"mids,omitempty"`
+	Funding          map[string]marketFundingPayload     `json:"funding,omitempty"`
+	Observations     map[string]marketObservationPayload `json:"observations,omitempty"`
+	FeedComplete     bool                                `json:"feed_complete"`
+	DecisionCutoffMs int64                               `json:"decision_cutoff_ms,omitempty"`
 }
 
 type marketSnapshotKey struct {
@@ -115,7 +125,7 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 		raise(entry.Signal, entry.SignalLookback)
 		coins[entry.Coin] = true
 		if entry.HasHTF {
-			raise(entry.HTF, hlFeedHTFLookback)
+			raise(entry.HTF, entry.HTFLookback)
 		}
 		if entry.HasRegime {
 			raise(entry.Regime, entry.RegimeLookback)
@@ -290,7 +300,21 @@ func feedDecisionAgeLimit(intervalSeconds int) time.Duration {
 	return half
 }
 
+func (s *marketSnapshot) decisionCutoff() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	if !s.Deadline.IsZero() && s.Deadline.Before(s.SealedAt) {
+		return s.Deadline.UTC()
+	}
+	return s.SealedAt.UTC()
+}
+
 func (s *marketSnapshot) frameFor(key marketFeedKey, required int) (marketFrame, bool) {
+	return s.frameWithTiming(key, required, false)
+}
+
+func (s *marketSnapshot) frameWithTiming(key marketFeedKey, required int, timing bool) (marketFrame, bool) {
 	if s == nil {
 		return marketFrame{}, false
 	}
@@ -328,6 +352,17 @@ func (s *marketSnapshot) frameFor(key marketFeedKey, required int) (marketFrame,
 	}
 	if !entry.Readiness.LastRecvAt.IsZero() {
 		frame.LastRecvAtMs = entry.Readiness.LastRecvAt.UTC().UnixMilli()
+	}
+	if timing {
+		t := &marketFrameTiming{
+			Rule:       marketFrameTimingRuleHyperliquid,
+			IntervalMs: entry.IntervalMs,
+			Bars:       make([][3]any, 0, len(bars)),
+		}
+		for _, b := range bars {
+			t.Bars = append(t.Bars, [3]any{b.OpenMs, b.CloseMs, b.HasClose})
+		}
+		frame.Timing = t
 	}
 	return frame, true
 }
@@ -376,6 +411,7 @@ func (s *marketSnapshot) freshMids() map[string]float64 {
 type marketPayloadFrameSpec struct {
 	Key      marketFeedKey
 	Required int
+	Timing   bool
 }
 
 func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins []string) (*marketPayload, error) {
@@ -391,11 +427,14 @@ func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins 
 		FeedComplete: true,
 	}
 	for _, spec := range frames {
-		frame, ok := s.frameFor(spec.Key, spec.Required)
+		frame, ok := s.frameWithTiming(spec.Key, spec.Required, spec.Timing)
 		if !ok {
 			return nil, fmt.Errorf("sealed snapshot has no ready frame for %s", spec.Key)
 		}
 		payload.Frames[spec.Key.PayloadID()] = frame
+		if spec.Timing {
+			payload.DecisionCutoffMs = s.decisionCutoff().UnixMilli()
+		}
 	}
 	for _, coin := range coins {
 		mid, ok := s.mids[coin]

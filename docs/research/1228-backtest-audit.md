@@ -18,11 +18,14 @@ remaining pytest suite 1234 passed.
   `analog_retrieval` eligibility windows: all verified SAFE with existing regression tests.
 - **FIXED — EntryATR stamped from the fill bar's still-forming ATR** (`_stamp_entry_atr`
   read `atr_series.loc[fill_bar]`, whose value incorporates that bar's own high/low/close,
-  unknown at the open where the entry fills). Live stamps the last closed bar's ATR at
-  order time. One-bar, geometry-only leak (never creates/blocks a signal) that
-  systematically flattered ATR-stop/TP stacks on volatile entry bars. Now reads the bar
-  before the fill; a first-bar fill has no closed prior bar and stamps 0 (evaluators
-  no-op, matching the existing no-usable-ATR convention). Regression:
+  unknown at the open where the entry fills). Correction (#1712): live stamps the ATR
+  that the check exports at order time, which is the last closed bar's ATR only when
+  the strategy sets `closed_bar_decisions: true`; otherwise it comes from the check's
+  final row, which can be a forming bar. One-bar, geometry-only leak (never
+  creates/blocks a signal) that systematically flattered ATR-stop/TP stacks on
+  volatile entry bars. Now reads the bar before the fill; a first-bar fill has no
+  closed prior bar and stamps 0 (evaluators no-op, matching the existing no-usable-ATR
+  convention). Regression:
   `test_backtester_lookahead.py::test_entry_atr_stamped_from_bar_before_fill`.
   Constant-ATR scenarios (most tests, and any run where ATR moves slowly) are unaffected;
   results with fast-moving ATR at entry may shift slightly, in the conservative direction.

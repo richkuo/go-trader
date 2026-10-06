@@ -151,8 +151,33 @@ INFORMATIONAL_FIELDS = {
 }
 
 
+DECISION_TIMING_CLOSED_BAR = "closed_bar"
+DECISION_TIMING_LEGACY = "legacy_runtime"
+
+
 class LedgerInputError(ValueError):
     pass
+
+
+def resolve_decision_timing(strategy: dict) -> dict:
+    present = "closed_bar_decisions" in strategy
+    value = strategy.get("closed_bar_decisions") if present else None
+    if present and not isinstance(value, bool):
+        return {"status": "invalid", "mode": None, "field_present": True, "value": value,
+                "basis": "closed_bar_decisions must be a JSON boolean",
+                "limitation": "decision timing is unknown, so decision-input parity is not established"}
+    if value is True:
+        return {"status": "verified", "mode": DECISION_TIMING_CLOSED_BAR, "field_present": True, "value": True,
+                "basis": "live signal, entry ATR and entry sizing use the last bar closed at or before the check's "
+                         "evaluation cutoff; the simulator decides on bar N, fills at the open of bar N+1 and stamps "
+                         "the entry ATR of bar N",
+                "limitation": "decision inputs agree with the simulator's closed bars, but a booked record time can "
+                              "trail the bar boundary: checks run on a per-strategy timer, entry gates can hold an "
+                              "available signal, and a failed check retries the same bar later"}
+    return {"status": "verified", "mode": DECISION_TIMING_LEGACY, "field_present": present, "value": value,
+            "basis": "closed_bar_decisions is off or omitted, so live checks may have decided on a forming bar",
+            "limitation": "a closed-bar simulation cannot establish historical forming-bar decision parity without "
+                          "recorded decision evidence; this diagnostic never implies verified input parity"}
 
 
 def _sha256(data: bytes) -> str:
@@ -1323,6 +1348,15 @@ def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_v
     handled.add("paused")
     row("paused", "portfolio_controls", strategy.get("paused"), "refused" if strategy.get("paused") else "inactive",
         "a paused strategy holds position-increasing signals")
+    handled.add("closed_bar_decisions")
+    timing = resolve_decision_timing(strategy)
+    if timing["status"] == "invalid":
+        row("closed_bar_decisions", "decision_timing", timing["value"], "refused", timing["basis"])
+    elif timing["mode"] == DECISION_TIMING_CLOSED_BAR:
+        row("closed_bar_decisions", "decision_timing", True, "modeled", timing["basis"])
+    else:
+        row("closed_bar_decisions", "decision_timing", timing["value"], "informational",
+            f"{timing['basis']}; {timing['limitation']}")
     for field in REGIME_FIELDS:
         handled.add(field)
         v = strategy.get(field)
@@ -2439,6 +2473,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             "simulated_meanings": sim["envelope"]["timing_meanings"] if sim else None,
             "matching_rule": "a booked record time matches a bar-open fill within +/- time tolerance of the bar open, "
                              "and an intrabar fill within the bar plus the tolerance",
+            "decision_timing": resolve_decision_timing(strategy),
         },
         "tolerances": {k: {"value": v, "unit": TOLERANCE_UNITS[k]} for k, v in tol.items()},
         "configuration": {

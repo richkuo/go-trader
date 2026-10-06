@@ -543,6 +543,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		if msg := liveNoEdgeAcknowledgementReloadError(sc, ns.AllowNoEdgeAcknowledged()); msg != "" {
 			errs = append(errs, msg)
 		}
+		if sc.ClosedBarDecisions != ns.ClosedBarDecisions {
+			errs = append(errs, fmt.Sprintf("strategy[%s] closed_bar_decisions changed (%t -> %t; restart required)", sc.ID, sc.ClosedBarDecisions, ns.ClosedBarDecisions))
+		}
 	}
 
 	for _, msg := range hyperliquidPeerStrategyErrors(next.Strategies) {

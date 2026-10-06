@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,7 @@ const (
 	replayDriftKindOpenWhileHolding       = "open-while-holding"
 	replayDriftKindScaleInWhileMismatched = "scale-in-while-mismatched"
 	replayDriftKindPartialCloseWhileFlat  = "partial-close-while-flat"
+	replayDriftKindOpenWithoutEntryATR    = "open-without-entry-atr"
 )
 
 type replayDriftKey struct {
@@ -147,6 +149,7 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 		}
 	}
 	now := time.Now()
+rows:
 	for _, row := range pending {
 		if row.DecisionID <= lastApplied {
 			markApplied(row.DecisionID)
@@ -161,6 +164,13 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 					fmt.Sprintf("live opened %s %s %.6f @ $%.4f but paper already holds qty=%.6f", row.Side, row.Symbol, row.Quantity, row.ReferencePrice, pos.Quantity), now)
 				markApplied(row.DecisionID)
 				continue
+			}
+			if sc.ClosedBarDecisions && !replayRowEntryATRValid(row) {
+				logger.Warn("Replay mirror: live opened %s %s %.6f @ $%.4f but the row carries no valid entry ATR (%g) — holding this open and every later row until the source records one (closed_bar_decisions, #1712)",
+					row.Side, row.Symbol, row.Quantity, row.ReferencePrice, row.EntryATR)
+				appendReplayDriftDM(&driftDMs, sc.ID, replayDriftKindOpenWithoutEntryATR,
+					fmt.Sprintf("live opened %s %s %.6f @ $%.4f with no valid entry ATR (%g); the mirror holds this row and every later row", row.Side, row.Symbol, row.Quantity, row.ReferencePrice, row.EntryATR), now)
+				break rows
 			}
 			if t, detail := replayBookOpen(sc, s, row, result, cfg, logger); t > 0 {
 				trades += t
@@ -256,6 +266,9 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 	if result != nil {
 		indicators = result.Indicators
 	}
+	if sc.ClosedBarDecisions {
+		indicators = map[string]interface{}{"atr": row.EntryATR}
+	}
 	if cfg != nil {
 		regime = cfg.Regime
 	}
@@ -272,7 +285,13 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 	if pos, ok := s.Positions[row.Symbol]; ok && pos != nil {
 		pos.OpenedAt = row.DecidedAt
 	}
-	stampEntryATRIfOpened(s, row.Symbol, indicators)
+	if sc.ClosedBarDecisions {
+		if pos := s.Positions[row.Symbol]; pos != nil {
+			pos.EntryATR = row.EntryATR
+		}
+	} else {
+		stampEntryATRIfOpened(s, row.Symbol, indicators)
+	}
 	if result != nil {
 		stampPositionRegimeIfOpened(s, row.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	}
@@ -303,4 +322,9 @@ func mergeTradeDetails(existing string, parts ...string) string {
 		}
 	}
 	return strings.Join(out, "; ")
+}
+
+func replayRowEntryATRValid(row ReplayDecision) bool {
+	atr := row.EntryATR
+	return atr > 0 && !math.IsInf(atr, 0) && !math.IsNaN(atr)
 }

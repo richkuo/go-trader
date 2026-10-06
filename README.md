@@ -300,6 +300,7 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `llm_entry_analysis` | `{enabled, model, max_debate_rounds, timeout_s, notify_dm, notify_channel}` — post-open LLM multi-agent entry commentary (advisory only; never touches the trade). Digest defaults to DM (`notify_dm` on); the shared channel is opt-in (`notify_channel` off) | disabled |
 | `interval_seconds` | Check interval (0 → global) | 0 |
 | `htf_filter` | Higher-timeframe trend filter | false |
+| `closed_bar_decisions` | Binance.US spot, OKX spot/perps, HL perps — signal, entry ATR and entry sizing use the last closed bar (as the backtester does); protection keeps current prices; restart-required | false |
 | `open_strategy` | Co-located ref `{name, params}` overriding entry; falls back to `args[0]` | null |
 | `close_strategy` | Single `{name, params}` close evaluator ref | null |
 | `leverage` | Perps — exchange leverage (also sizing if `sizing_leverage` omitted) | 1 |

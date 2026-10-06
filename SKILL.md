@@ -416,6 +416,7 @@ Never apply a runtime-default change silently when the operator has not been sho
 
 When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
 
+- **`closed_bar_decisions` (#1712, new opt-in field).** Dormant until set; with it off nothing changes. After an update, mention it and, only if the operator wants backtest-aligned decisions, offer it on a new paper strategy ID (entries can start up to one bar later). Warn before the restart if a config names a custom check script, because the probe now sends `--closed-bar-decisions` and `--decision-regime-timeframe`, and update a `market_feed: shared` feed service in the same release.
 - **Args parameter flags warn at load when `--strategy-refs` supersedes them (#1711, runtime default with no behavior shift).** After an update, run `./go-trader inspect --all` (or read the start log), list each strategy that shows the new `[WARN]` with the unused args entry, and prompt per strategy: delete the entry (trading unchanged), or move the value into `open_strategy.params` or the matching field (trading changes, so recommend a new paper strategy ID). Apply an approved edit only with a restart, because an args change blocks SIGHUP hot reload. Default if the operator declines: nothing changes, and the warning repeats on each start.
 
 | Category | How to recognize it | What to do |
@@ -588,6 +589,11 @@ With no strategy value and no verified root evidence (always the case for a vers
 A strategy value or a declared root value (verified or not) other than `simple` or `wilder` is `atr_configuration_invalid` in both modes, also when the simulation reads no ATR, because live config validation rejects it at either level; it is never approximated.
 The report `atr_method` section holds the method, its source (`strategy`, `root`, `live_default`, `unverified_substitute` or `not_used`) and the evidence.
 Wilder ATR is recursive, so the indicator-history check needs a long warm-up when an ATR stop owner is active (1500 hourly bars passed in issue 1682's production run; 400 did not).
+
+**Decision timing (#1712).** The historical strategy's `closed_bar_decisions` is a capability row (`decision_timing`) and the report `timestamps.decision_timing` section.
+`true` is modeled: live decision inputs use the bar the simulator decides on, but a booked record time can still trail the bar boundary (per-strategy timer, entry gates, retries).
+`false` or omitted is legacy runtime timing, reported as informational with the limitation that a closed-bar simulation cannot establish forming-bar decision parity without recorded decision evidence.
+A non-boolean value is refused; recognizing the flag never removes another refusal.
 
 **Stops.** `resolve_historical_stops` builds one stop context per segment.
 `raw_config` runs `run_backtest.resolve_raw_config_stops`, the in-memory resolver the file loader also uses: normalization, the verified user close and regime-ATR defaults, then the scalar ATR default, the drawdown fallback and one percent conversion.
@@ -1070,6 +1076,7 @@ Per-strategy:
 | `paused` | all | `false`. Holds opens, adds and flips while closes, trailing stop, ratchet and protection sync keep running. Hot-reloadable always, including while open. Shows `⏸️ paused:` in Discord `/status`. |
 | `allow_no_edge` | all but options | JSON boolean only. Required to admit an effective `no_edge` open or close-fallback reference outside explicit `--mode=paper`; an explicit `false` stays refused. Live use still warns. Adding or removing it on a live strategy is restart-required (SIGHUP refuses it before admission); paper changes hot-reload. Replaces `allow_deprecated`, which v20 migration removes. |
 | `htf_filter` | all | Skips counter-trend signals. Restart-required. |
+| `closed_bar_decisions` | Binance.US spot, OKX spot/perps, HL perps; opt-in | JSON boolean, default `false`. The signal, the exported entry ATR and entry sizing come from the last bar closed at or before the check's evaluation cutoff, as in the backtester; stops, trailing stops, ratchets and take-profits keep the current mark, ATR and regime. Missing or unverifiable closed history holds candle-derived opens and closes while protection continues. **Restart-required.** § Closed-Bar Decisions. |
 | `open_strategy` | all | `{name, params}`; otherwise the name comes from `args[0]` |
 | `close_strategy` | all | The single exit ref `{name, params}`; nil = open-as-close. A legacy `close_strategies` array of length ≤1 still parses, length >1 is rejected. |
 | `direction` | perps | `"long"` (default), `"short"` (opens shorts only), `"both"`. Hot-reloadable when flat. |
@@ -1442,6 +1449,37 @@ When a circuit-breaker close books a row from the model rather than a real fill,
 If the coin goes flat on-chain while the row still covers only part of the close, the residual was finished by another mechanism such as a resting stop. That raises an owner alert, at most once a day per strategy and symbol, saying that the trade row, `closed_positions`, and cash are inconsistent. Fix it with `backfill trade-ledger` or reconcile by hand.
 
 ---
+
+## Closed-Bar Decisions
+
+`closed_bar_decisions: true` (#1712) makes a strategy decide on the last closed bar, the bar the backtester trades from (signal at bar N, fill at the open of bar N+1, entry ATR of bar N).
+It is off by default; the default stays off until a paper comparison measures the effect.
+
+**Supported scope.** Binance.US spot (`shared_scripts/check_strategy.py`), OKX spot and perps (`shared_scripts/check_okx.py`) and Hyperliquid perps (`shared_scripts/check_hyperliquid.py`), legacy and composed strategies, on the fixed-duration timeframes `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h` and `1d` (Hyperliquid: only its own intervals).
+`loadConfig` refuses the flag on `manual`, options, TopStep, Robinhood, a custom check script, another timeframe, a higher-timeframe filter or regime timeframe outside that list, `delta_neutral_funding`, `open_interest_breakout`, `funding_skew` on OKX, and `regime_directional_policy`, `regime_window_divergence` or `regime_profile_allocation` (those resolve before the check runs, so they would read the current regime).
+A replay mirror with the flag needs an explicit `replay_source_id`, and a named mirror and its source must agree on the flag.
+Changing the flag is restart-required; SIGHUP refuses it.
+
+**Closure.** The check captures one evaluation cutoff: the sealed snapshot's deadline (or its seal time when earlier or absent) in `market_feed: websocket|shared`, or the clock before the fetch in REST mode.
+A bar is closed when its close boundary is at or before the cutoff; a final row that is already closed is kept.
+Hyperliquid rows keep their native `t` and `T` (`T = t + interval - 1`), and the sealed payload carries a per-row `timing` sidecar plus `decision_cutoff_ms` only for frames an enabled strategy requests; Binance.US and OKX use the ccxt opening time plus the fixed interval.
+The row timestamps a strategy sees are unchanged.
+Unknown or contradictory timing, duplicate or overlapping bars, invalid prices, fewer than 30 closed bars, a payload without timing (an older producer) or a missing dependency hold the candle decision: the check returns `closed_bar_decision.held: true`, no open and no candle-derived close, and composed close evaluators still run on current inputs.
+A sealed-feed check never falls back to a private fetch.
+Enabled strategies request one more raw row (signal, higher-timeframe and regime frames) so the closed view keeps the same history length.
+
+**Decision and protection views.** On the closed view: the open strategy, candle-derived closes (legacy signals and unknown-close fallbacks), `indicators.atr` (the strategy's own ATR column, else the `atr_method` ATR), the higher-timeframe filter (bars closed by the decision boundary), `funding_skew` records (time at or before the boundary), and the decision regime, computed in the check from the regime timeframe's closed bars and returned as `decision_regime`.
+The regime gate and the Hurst gate read `decision_regime`; a missing one holds position-increasing signals even when `regime_gate_on_failure` is `open`.
+On the current view: the price and mark override, the market ATR, the injected regime and AVWAP passed to close evaluators, the regime store, position regime stamps, divergence, dynamic exits and every Go protection path.
+Entry sizing and `Position.EntryATR` both read the closed `indicators.atr`; the stamp runs only on a confirmed new open, so an existing position keeps its entry ATR and a zero entry ATR stays zero.
+An enabled replay mirror sizes and stamps from the source row's `entry_atr`; a row without a valid one holds that open and every later row.
+
+**Repeat rule.** There is no consumed-bar watermark.
+Every due check re-evaluates the selected closed bar against the current position and gates, so a gate hold, a failed check or a failed execution retries the same bar on the next check, and existing same-side guards, scale-in rules and fill confirmation stay authoritative.
+
+**Contract.** Go sends `--closed-bar-decisions` (and `--decision-regime-timeframe=<tf>` when regime is on) and requires the `closed_bar_decision` block back; a missing or unexpected block is a script error that holds the signal.
+In a Hyperliquid batch the slot carries `closed_bar_decisions: true`, mixed slots share the raw frame and each selects its own view, and shared-state failure falls back to per-strategy checks in the same cycle.
+With the flag off the argv, the batch slot and the check output (apart from its generated timestamp) are unchanged.
 
 ## Hyperliquid Batched Signal Checks
 

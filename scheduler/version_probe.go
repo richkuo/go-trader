@@ -29,6 +29,8 @@ var probeArgv = []string{
 	"--position-regime", "trending_up",
 	"--position-risk-anchor-price=1",
 	allowNoEdgeFlag,
+	closedBarDecisionsFlag,
+	decisionRegimeTimeframeFlag + "=1h",
 	"--probe-only",
 }
 
@@ -49,6 +51,8 @@ var probeCompositeArgv = []string{
 	"--position-regime", "trending_up",
 	"--position-risk-anchor-price=1",
 	allowNoEdgeFlag,
+	closedBarDecisionsFlag,
+	decisionRegimeTimeframeFlag + "=1h",
 	"--probe-only",
 }
 
@@ -123,6 +127,7 @@ var hyperliquidBatchProbeArgv = []string{
 	"--ohlcv-limit", "200", "--atr-method=simple", "--mark-price=0",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
 	"--regime-payload-json", `{"default":{"regime":"trending_up","score":0.5,"classifier":"adx","metrics":{"adx":25.0}}}`,
+	decisionRegimeTimeframeFlag + "=1h",
 	"--market-stdin",
 	"--probe-only",
 }

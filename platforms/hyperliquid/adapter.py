@@ -455,15 +455,15 @@ class HyperliquidExchangeAdapter:
         raw = mids.get(symbol, mids.get(symbol + "-PERP", "0"))
         return float(raw or 0)
 
+    _OHLCV_INTERVAL_MS = {
+        "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000,
+        "30m": 1_800_000, "1h": 3_600_000, "2h": 7_200_000,
+        "4h": 14_400_000, "8h": 28_800_000, "12h": 43_200_000,
+        "1d": 86_400_000, "3d": 259_200_000, "1w": 604_800_000,
+    }
+
     def get_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
-        interval_ms_map = {
-            "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000,
-            "30m": 1_800_000, "1h": 3_600_000, "2h": 7_200_000,
-            "4h": 14_400_000, "8h": 28_800_000, "12h": 43_200_000,
-            "1d": 86_400_000, "3d": 259_200_000, "1w": 604_800_000,
-        }
-        interval_ms = interval_ms_map.get(interval, 3_600_000)
-        end_ms = int(time.time() * 1000)
+        interval_ms = self._OHLCV_INTERVAL_MS.get(interval, 3_600_000)
 
         cache_enabled = _ohlcv_cache_enabled()
         cache_path = None
@@ -473,6 +473,28 @@ class HyperliquidExchangeAdapter:
             if cached is not None:
                 return cached
 
+        result = []
+        for c in self._candle_window(symbol, interval, limit):
+            result.append([
+                int(c.get("T", c.get("t", 0))),
+                float(c["o"]),
+                float(c["h"]),
+                float(c["l"]),
+                float(c["c"]),
+                float(c["v"]),
+            ])
+        if cache_enabled and result:
+            _save_ohlcv_cache(result, cache_path)
+        return result
+
+    def get_ohlcv_candles(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
+        if interval not in self._OHLCV_INTERVAL_MS:
+            raise ValueError(f"unsupported Hyperliquid candle interval {interval!r}")
+        return [dict(c) for c in self._candle_window(symbol, interval, limit)]
+
+    def _candle_window(self, symbol: str, interval: str, limit: int) -> list:
+        interval_ms = self._OHLCV_INTERVAL_MS.get(interval, 3_600_000)
+        end_ms = int(time.time() * 1000)
         requested = limit + OHLCV_GAP_MARGIN
         result = []
         prev_count = -1
@@ -480,16 +502,7 @@ class HyperliquidExchangeAdapter:
         for _ in range(OHLCV_MAX_EXTEND_PASSES):
             start_ms = end_ms - interval_ms * requested
             candles = self._info.candles_snapshot(symbol, interval, start_ms, end_ms)
-            result = []
-            for c in candles:
-                result.append([
-                    int(c.get("T", c.get("t", 0))),
-                    float(c["o"]),
-                    float(c["h"]),
-                    float(c["l"]),
-                    float(c["c"]),
-                    float(c["v"]),
-                ])
+            result = list(candles)
             if (not result
                     or len(result) >= limit
                     or len(result) >= OHLCV_MAX_CANDLES):
@@ -512,8 +525,6 @@ class HyperliquidExchangeAdapter:
                 f"to the symbol's available history",
                 file=sys.stderr,
             )
-        if cache_enabled and result:
-            _save_ohlcv_cache(result, cache_path)
         return result
 
     def get_funding_rate(self, symbol: str) -> float:

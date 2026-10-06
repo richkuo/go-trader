@@ -33,10 +33,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
+from closed_bar import (
+    RULE_HYPERLIQUID_NATIVE,
+    ClosedBarHold,
+    filter_records_to_boundary,
+    hold_metadata,
+    htf_closed_fetcher,
+    hyperliquid_rows_and_timings,
+    sealed_frame_timings,
+    select_closed,
+    unsupported_open_strategy_reason,
+)
 from hl_user_fills import apply_user_fills_lookup
 from market_payload import (
     MarketPayloadError as MarketPayloadBaseError,
+    market_decision_cutoff_ms,
     market_frame_rows,
+    market_frame_rows_with_timing,
     market_funding_records,
     market_funding_scalar,
     market_mid,
@@ -277,20 +290,50 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
                               regime_enabled=False, regime_windows_spec=None,
                               regime_payload_json=None, mode="paper",
                               regime_period=14, regime_adx_threshold=20.0,
-                              market=None):
+                              market=None, closed_bar=False, decision_regime_timeframe=""):
+    closed = {
+        "requested": bool(closed_bar),
+        "cutoff_ms": 0,
+        "rows": None,
+        "timings": None,
+        "hold": "",
+    }
     if market is not None:
         validate_market_payload(market, MarketPayloadError)
-        rows = market_frame_rows(market, symbol, timeframe, MarketPayloadError, limit=ohlcv_limit)
+        if closed_bar:
+            all_rows, timing = market_frame_rows_with_timing(
+                market, symbol, timeframe, MarketPayloadError, limit=ohlcv_limit + 1)
+            rows = all_rows[-ohlcv_limit:]
+            closed["cutoff_ms"] = market_decision_cutoff_ms(market, MarketPayloadError)
+            try:
+                closed["timings"] = sealed_frame_timings(all_rows, timing, timeframe)
+                closed["rows"] = all_rows
+            except ClosedBarHold as e:
+                closed["hold"] = e.reason
+        else:
+            rows = market_frame_rows(market, symbol, timeframe, MarketPayloadError, limit=ohlcv_limit)
         if len(rows) < 30:
             raise InsufficientCandlesError(len(rows))
         df = _make_dataframe(rows)
         adapter = None
+    elif closed_bar and df is not None:
+        closed["hold"] = "a prebuilt candle frame carries no bar timing"
 
     if df is None:
         if adapter is None:
             raise SharedSignalStateError("no adapter and no prebuilt DataFrame")
         print(f"Fetching {symbol} {timeframe} from Hyperliquid ({mode})...", file=sys.stderr)
-        candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
+        if closed_bar:
+            closed["cutoff_ms"] = int(time.time() * 1000)
+            raw_candles = adapter.get_ohlcv_candles(symbol, interval=timeframe, limit=ohlcv_limit + 1)
+            try:
+                all_rows, timings = hyperliquid_rows_and_timings(raw_candles or [])
+            except ClosedBarHold as e:
+                raise SharedSignalStateError(f"Hyperliquid candles are malformed: {e.reason}")
+            closed["rows"], closed["timings"] = all_rows, timings
+            candles = all_rows[-ohlcv_limit:]
+        else:
+            candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
         if not candles or len(candles) < 30:
             raise InsufficientCandlesError(len(candles) if candles else 0)
         df = _make_dataframe(candles)
@@ -328,6 +371,10 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
         "htf_cache": {},
         "funding_scalar": None,
         "funding_records": None,
+        "ohlcv_limit": int(ohlcv_limit),
+        "closed": closed,
+        "decision_regime_timeframe": (decision_regime_timeframe or "").strip() or timeframe,
+        "decision_cache": {},
     }
 
 
@@ -408,6 +455,123 @@ def _shared_htf_frame(shared, sym, tf, limit):
     return frame.copy() if frame is not None else None
 
 
+def _closed_frame_selection(shared, sym, tf, limit, cutoff_ms, min_rows):
+    market = shared.get("market")
+    if market is not None:
+        try:
+            rows, timing = market_frame_rows_with_timing(market, sym, tf, MarketPayloadError, limit=limit + 1)
+        except MarketPayloadError as e:
+            raise ClosedBarHold(str(e))
+        timings = sealed_frame_timings(rows, timing, tf)
+    else:
+        adapter = shared.get("adapter")
+        if adapter is None:
+            raise ClosedBarHold(f"no candle source for {sym} {tf}")
+        try:
+            raw_candles = adapter.get_ohlcv_candles(sym, interval=tf, limit=limit + 1)
+        except Exception as e:
+            raise ClosedBarHold(f"fetching {sym} {tf} candles failed: {e}")
+        rows, timings = hyperliquid_rows_and_timings(raw_candles or [])
+    return select_closed(rows, timings, timeframe=tf, cutoff_ms=cutoff_ms,
+                         rule=RULE_HYPERLIQUID_NATIVE, keep=limit, min_rows=min_rows)
+
+
+def _shared_closed_decision(shared):
+    cache = shared["decision_cache"]
+    if "primary" in cache:
+        return cache["primary"]
+    closed = shared["closed"]
+    out = {"selection": None, "hold": ""}
+    if closed["hold"]:
+        out["hold"] = closed["hold"]
+    elif closed["rows"] is None or closed["timings"] is None:
+        out["hold"] = "no timed candle frame was acquired for this evaluation"
+    else:
+        try:
+            out["selection"] = select_closed(
+                closed["rows"], closed["timings"],
+                timeframe=shared["timeframe"],
+                cutoff_ms=closed["cutoff_ms"],
+                rule=RULE_HYPERLIQUID_NATIVE,
+                keep=shared["ohlcv_limit"],
+            )
+        except ClosedBarHold as e:
+            out["hold"] = e.reason
+    cache["primary"] = out
+    return out
+
+
+def _shared_decision_regime(shared, selection):
+    cache = shared["decision_cache"]
+    if "regime" in cache:
+        return cache["regime"]
+    out = {"payload": None, "strategy": None, "hold": ""}
+    if not shared["regime_enabled"]:
+        cache["regime"] = out
+        return out
+    tf = shared["decision_regime_timeframe"]
+    try:
+        if tf == shared["timeframe"]:
+            regime_df = _make_dataframe(selection.rows)
+        else:
+            regime_sel = _closed_frame_selection(
+                shared, shared["symbol"], tf, shared["ohlcv_limit"], selection.boundary_ms, 30)
+            regime_df = _make_dataframe(regime_sel.rows)
+        payload, _live, strategy_payload = prepare_check_regime(
+            regime_df,
+            regime_enabled=True,
+            period=shared.get("regime_period", 14),
+            adx_threshold=shared.get("regime_adx_threshold", 20.0),
+            windows_spec=shared["regime_windows_spec"],
+            injected_payload_json=None,
+        )
+        out["payload"], out["strategy"] = payload, strategy_payload
+    except ClosedBarHold as e:
+        out["hold"] = f"decision regime {tf}: {e.reason}"
+    cache["regime"] = out
+    return out
+
+
+def _shared_decision_htf(shared, sym, tf, limit, boundary_ms):
+    cache = shared["decision_cache"]
+    key = ("htf", sym, tf, limit, boundary_ms)
+    if key not in cache:
+        try:
+            sel = _closed_frame_selection(shared, sym, tf, limit, boundary_ms, 50)
+            cache[key] = {"frame": _make_dataframe(sel.rows), "hold": ""}
+        except ClosedBarHold as e:
+            cache[key] = {"frame": None, "hold": f"higher timeframe {tf}: {e.reason}"}
+    return cache[key]
+
+
+def _shared_decision_funding_records(shared, symbol, start_ms, boundary_ms):
+    cache = shared["decision_cache"]
+    key = ("funding", symbol, int(start_ms), int(boundary_ms))
+    if key in cache:
+        return cache[key]
+    out = {"records": None, "hold": ""}
+    market = shared.get("market")
+    try:
+        if market is not None:
+            try:
+                records = market_funding_records(market, symbol, start_ms, MarketPayloadError)
+            except MarketPayloadError as e:
+                raise ClosedBarHold(str(e))
+        else:
+            adapter = shared.get("adapter")
+            if adapter is None:
+                raise ClosedBarHold("no funding source")
+            try:
+                records = adapter.get_funding_history_range(symbol, start_ms)
+            except Exception as e:
+                raise ClosedBarHold(f"funding history fetch failed: {e}")
+        out["records"] = filter_records_to_boundary(records, boundary_ms)
+    except ClosedBarHold as e:
+        out["hold"] = f"funding history: {e.reason}"
+    cache[key] = out
+    return out
+
+
 def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     if deps is None:
         deps = _signal_check_deps()
@@ -439,16 +603,14 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
 
     open_close_enabled = bool(open_strategy or close_strategies or close_owner or invert_present)
     funding_aware_name = open_strategy or strategy_name
-
-    strategy_params = {}
-    if strategy_name == "delta_neutral_funding":
-        strategy_params.update(_shared_funding_scalar(shared, symbol))
-    if funding_aware_name == "funding_skew":
-        records = _shared_funding_records(shared, symbol)
-        if records:
-            strategy_params["funding_records"] = records
-    if funding_aware_name == OPEN_INTEREST_STRATEGY:
-        strategy_params["open_interest_observations"] = _shared_open_interest(shared, symbol)
+    closed_bar = slot.get("closed_bar_decisions") is True
+    if closed_bar:
+        for name in (strategy_name, funding_aware_name):
+            why = unsupported_open_strategy_reason(name)
+            if why:
+                raise ValueError(f"closed_bar_decisions does not support {name}: {why}")
+        if not shared["closed"]["requested"]:
+            raise ValueError("closed_bar_decisions slot reached a shared state built without bar timing")
 
     stdout_regime, live_regime, strategy_regime = prepare_check_regime(
         df,
@@ -459,7 +621,58 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         atr_window=regime_atr_window,
         injected_payload_json=shared["regime_payload_json"],
     )
-    strategy_params["regime"] = strategy_regime
+
+    closed_meta = None
+    decision_regime_payload = None
+    decision_df = df
+    protection_params = None
+    htf_closed = None
+    if closed_bar:
+        primary = _shared_closed_decision(shared)
+        hold = primary["hold"]
+        selection = primary["selection"]
+        decision_params = {}
+        if not hold:
+            boundary = selection.boundary_ms
+            if funding_aware_name == "funding_skew":
+                funding = _shared_decision_funding_records(
+                    shared, symbol, int(selection.rows[0][0]), boundary)
+                hold = funding["hold"]
+                if not hold and funding["records"]:
+                    decision_params["funding_records"] = funding["records"]
+        if not hold:
+            regime_view = _shared_decision_regime(shared, selection)
+            hold = regime_view["hold"]
+            decision_regime_payload = regime_view["payload"]
+            decision_params["regime"] = regime_view["strategy"] if shared["regime_enabled"] else strategy_regime
+        if not hold and htf_filter_enabled and funding_aware_name not in ("delta_neutral_funding", "funding_skew"):
+            from htf_filter import get_default_htf
+            htf_closed = _shared_decision_htf(shared, symbol, get_default_htf(timeframe), 60, selection.boundary_ms)
+            hold = htf_closed["hold"]
+        protection_params = {"regime": strategy_regime}
+        if strategy_params_override:
+            protection_params = {**strategy_params_override, **protection_params}
+        if hold:
+            closed_meta = hold_metadata(hold, shared["closed"]["cutoff_ms"])
+            decision_regime_payload = None
+            decision_df = None
+            strategy_params = {}
+            print(f"Closed-bar decision held for {symbol} {timeframe}: {hold}", file=sys.stderr)
+        else:
+            closed_meta = selection.metadata()
+            decision_df = _make_dataframe(selection.rows)
+            strategy_params = decision_params
+    else:
+        strategy_params = {}
+        if strategy_name == "delta_neutral_funding":
+            strategy_params.update(_shared_funding_scalar(shared, symbol))
+        if funding_aware_name == "funding_skew":
+            records = _shared_funding_records(shared, symbol)
+            if records:
+                strategy_params["funding_records"] = records
+        if funding_aware_name == OPEN_INTEREST_STRATEGY:
+            strategy_params["open_interest_observations"] = _shared_open_interest(shared, symbol)
+        strategy_params["regime"] = strategy_regime
     if strategy_params_override:
         merged = {**strategy_params_override, **strategy_params}
         strategy_params = merged
@@ -474,7 +687,7 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         evaluation = deps.evaluate_open_close(
             deps.apply_strategy,
             deps.get_strategy,
-            df,
+            decision_df,
             strategy_name,
             open_strategy,
             deps.parse_close_strategies(close_strategies),
@@ -486,24 +699,37 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             close_params_by_name=close_params_by_name,
             close_owner=close_owner,
             invert_open_signal=invert_open_signal,
+            **({"protection_df": df, "protection_params": protection_params} if closed_bar else {}),
         )
         result_df = evaluation.open_result_df
         signal = evaluation.open_signal
-    else:
-        result_df = deps.apply_strategy(strategy_name, df, strategy_params or None)
+    elif decision_df is not None:
+        result_df = deps.apply_strategy(strategy_name, decision_df, strategy_params or None)
         signal = deps.normalize_signal(result_df.iloc[-1].get("signal", 0))
+    else:
+        deps.get_strategy(strategy_name)
+        result_df = None
+        signal = 0
 
-    ensure_atr_indicator(result_df, method=atr_method)
-    last = result_df.iloc[-1]
-    price = float(last["close"])
+    last = None
+    if result_df is not None and not result_df.empty:
+        ensure_atr_indicator(result_df, method=atr_method)
+        last = result_df.iloc[-1]
+    if closed_bar:
+        price = float(df["close"].iloc[-1])
+    else:
+        price = float(last["close"])
 
     htf_info = {}
     htf_strategy_name = open_strategy or strategy_name
-    if htf_filter_enabled and htf_strategy_name not in ("delta_neutral_funding", "funding_skew"):
+    if decision_df is not None and htf_filter_enabled and htf_strategy_name not in ("delta_neutral_funding", "funding_skew"):
         from htf_filter import htf_trend_filter, apply_htf_filter
 
-        def _fetch_htf(sym, tf, limit):
-            return _shared_htf_frame(shared, sym, tf, limit)
+        if closed_bar:
+            _fetch_htf = htf_closed_fetcher(htf_closed["frame"])
+        else:
+            def _fetch_htf(sym, tf, limit):
+                return _shared_htf_frame(shared, sym, tf, limit)
 
         htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
         original_signal = signal
@@ -541,17 +767,18 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         "open", "high", "low", "close", "volume",
         "timestamp", "signal", "position", "datetime",
     }
-    for col in result_df.columns:
-        if col in skip_cols:
-            continue
-        val = last.get(col)
-        if val is not None:
-            try:
-                fval = float(val)
-                if math.isfinite(fval):
-                    indicators[col] = round(fval, 6)
-            except (ValueError, TypeError):
-                pass
+    if last is not None:
+        for col in result_df.columns:
+            if col in skip_cols:
+                continue
+            val = last.get(col)
+            if val is not None:
+                try:
+                    fval = float(val)
+                    if math.isfinite(fval):
+                        indicators[col] = round(fval, 6)
+                except (ValueError, TypeError):
+                    pass
 
     if htf_info:
         for k, v in htf_info.items():
@@ -572,6 +799,10 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     }
     if decision:
         output.update(decision)
+    if closed_meta is not None:
+        output["closed_bar_decision"] = closed_meta
+        if decision_regime_payload is not None:
+            output["decision_regime"] = decision_regime_payload
     return output
 
 
@@ -587,7 +818,9 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      market=None,
                      close_owner=None,
                      invert_open_signal=None,
-                     mode_args=None):
+                     mode_args=None,
+                     closed_bar=False,
+                     decision_regime_timeframe=""):
     try:
         deps = _signal_check_deps()
         from strategy_composition import parse_allow_no_edge_tokens
@@ -611,6 +844,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             regime_payload_json=regime_payload_json,
             mode=mode,
             market=market,
+            closed_bar=closed_bar,
+            decision_regime_timeframe=decision_regime_timeframe,
         )
         slot = {
             "id": strategy_name,
@@ -628,6 +863,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         }
         if invert_open_signal is not None:
             slot["invert_open_signal"] = invert_open_signal
+        if closed_bar:
+            slot["closed_bar_decisions"] = True
         output = evaluate_signal_slot(shared, slot, deps=deps, admission=admission)
         print(json.dumps(output, cls=SafeEncoder))
 
@@ -715,6 +952,8 @@ def parse_batch_request(raw_stdin):
                 raise ValueError(f"slot {slot_id!r} mode_args must be a list of strings, got {mode_args!r}")
         if "allow_no_edge" in slot and not isinstance(slot["allow_no_edge"], bool):
             raise ValueError(f"slot {slot_id!r} allow_no_edge must be a JSON boolean, got {slot['allow_no_edge']!r}")
+        if "closed_bar_decisions" in slot and not isinstance(slot["closed_bar_decisions"], bool):
+            raise ValueError(f"slot {slot_id!r} closed_bar_decisions must be a JSON boolean, got {slot['closed_bar_decisions']!r}")
         refs = slot.get("strategy_refs")
         if refs:
             from strategy_composition import parse_strategy_refs_arg
@@ -753,7 +992,8 @@ def _batch_slot_error(slot, symbol, timeframe, message):
 
 def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_method="simple",
                            mark_price=0.0, regime_enabled=False, regime_windows_spec=None,
-                           regime_payload_json=None, adapter=None, df=None, market=None):
+                           regime_payload_json=None, adapter=None, df=None, market=None,
+                           decision_regime_timeframe=""):
     envelope = {
         "platform": "hyperliquid",
         "symbol": symbol,
@@ -782,6 +1022,8 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
             regime_windows_spec=regime_windows_spec,
             regime_payload_json=regime_payload_json,
             market=market,
+            closed_bar=any(slot.get("closed_bar_decisions") is True for slot in slots),
+            decision_regime_timeframe=decision_regime_timeframe,
         )
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
@@ -2264,6 +2506,8 @@ def main():
         parser.add_argument("--regime-payload-json", default=None)
         parser.add_argument("--market-stdin", action="store_true", default=False,
             help="#1524: the stdin envelope carries a sealed market payload; never fetch candles here.")
+        parser.add_argument("--decision-regime-timeframe", default="",
+            help="#1712: regime timeframe for closed-bar decision slots; defaults to --timeframe.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#1442): validate argv shape and exit 0 before reading stdin.")
         args = parser.parse_args()
@@ -2298,6 +2542,7 @@ def main():
             regime_windows_spec=regime_windows_spec,
             regime_payload_json=args.regime_payload_json,
             market=market,
+            decision_regime_timeframe=args.decision_regime_timeframe,
         )
         print(json.dumps(envelope, cls=SafeEncoder))
         if exit_code:
@@ -2571,6 +2816,10 @@ def main():
             help="#1524: read the sealed market payload from stdin; never fetch candles, higher-timeframe frames or funding here.")
         parser.add_argument("--allow-no-edge", nargs="?", const=True, default=None,
             help="#1681: operator acknowledgement for a no_edge open/close-fallback reference outside explicit paper mode.")
+        parser.add_argument("--closed-bar-decisions", action="store_true", default=False,
+            help="#1712: decide signals and entry ATR on the last closed bar; protection keeps current inputs.")
+        parser.add_argument("--decision-regime-timeframe", default="",
+            help="#1712: regime timeframe for the closed-bar decision view; defaults to the strategy timeframe.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
@@ -2621,6 +2870,8 @@ def main():
             close_owner=refs["close_owner"] if refs else None,
             invert_open_signal=refs.get("invert_open_signal") if refs and "invert_open_signal" in refs else None,
             mode_args=sys.argv[1:],
+            closed_bar=args.closed_bar_decisions,
+            decision_regime_timeframe=args.decision_regime_timeframe,
         )
 
 

@@ -165,6 +165,7 @@ type hlBatchSlot struct {
 	RegimeATRWindow string          `json:"regime_atr_window,omitempty"`
 	PositionSide    string          `json:"position_side,omitempty"`
 	PositionCtx     map[string]any  `json:"position_ctx,omitempty"`
+	ClosedBar       bool            `json:"closed_bar_decisions,omitempty"`
 }
 
 type hlBatchRequest struct {
@@ -199,6 +200,7 @@ func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *Re
 		AllowNoEdge:     sc.AllowNoEdgeAcknowledged(),
 		HTFFilter:       sc.HTFFilter,
 		RegimeATRWindow: hlBatchRegimeATRWindow(sc, regime),
+		ClosedBar:       sc.ClosedBarDecisions,
 	}
 	refsArgs, err := buildStrategyRefsArg(sc, hlCloseOwnerForCheck(sc, posCtx), hlInvertOpenSignalForCheck(sc, posCtx, regime))
 	if err != nil {
@@ -249,7 +251,7 @@ func hlBatchRegimeATRWindow(sc StrategyConfig, regime *RegimeConfig) string {
 	return ""
 }
 
-func hlBatchSharedArgs(key hlBatchKey, regime *RegimeConfig, regimePayloadJSON string, hasRegimePayload bool, markPrice float64, marketStdin bool) []string {
+func hlBatchSharedArgs(key hlBatchKey, regime *RegimeConfig, regimePayloadJSON string, hasRegimePayload bool, markPrice float64, marketStdin bool, decisionRegimeTimeframe string) []string {
 	args := []string{
 		"--batch-check",
 		"--symbol=" + key.Symbol,
@@ -269,10 +271,31 @@ func hlBatchSharedArgs(key hlBatchKey, regime *RegimeConfig, regimePayloadJSON s
 	if markPrice > 0 {
 		args = append(args, fmt.Sprintf("--mark-price=%g", markPrice))
 	}
+	if decisionRegimeTimeframe != "" {
+		args = append(args, decisionRegimeTimeframeFlag+"="+decisionRegimeTimeframe)
+	}
 	if marketStdin {
 		args = append(args, marketStdinFlag)
 	}
 	return args
+}
+
+func hlBatchDecisionRegimeTimeframe(members []StrategyConfig, rc *RegimeConfig) (string, bool) {
+	tf := ""
+	for _, sc := range members {
+		if !sc.ClosedBarDecisions {
+			continue
+		}
+		got := closedBarDecisionRegimeTimeframe(sc, rc)
+		if tf == "" {
+			tf = got
+			continue
+		}
+		if got != tf {
+			return "", false
+		}
+	}
+	return tf, true
 }
 
 func hlBatchAlertConfig(key hlBatchKey) StrategyConfig {
@@ -456,7 +479,12 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 			}
 			market = built
 		}
-		args := hlBatchSharedArgs(in.Key, rc, payloadJSON, hasPayload, in.MarkPrice, market != nil)
+		decisionRegimeTF, uniformDecisionTF := hlBatchDecisionRegimeTimeframe(in.Members, rc)
+		if !uniformDecisionTF {
+			logf("[WARN] hl-batch %s: closed-bar members disagree on the decision regime timeframe; falling back to per-strategy checks", in.Key)
+			continue
+		}
+		args := hlBatchSharedArgs(in.Key, rc, payloadJSON, hasPayload, in.MarkPrice, market != nil, decisionRegimeTF)
 		req := hlBatchRequest{Version: hlBatchProtocolVersion, Market: market}
 		if market != nil {
 			req.Version = hlBatchProtocolVersionMarket

@@ -518,6 +518,9 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	if sc.HTFFilter {
 		fmt.Fprintf(&b, "  htf_filter:          true\n")
 	}
+	if sc.ClosedBarDecisions {
+		fmt.Fprintf(&b, "  closed_bar_decisions: true (signals, entry ATR and entry sizing use the last closed bar)\n")
+	}
 	if sc.Type != "options" {
 		if m := resolveATRMethod(sc, cfg); m != ATRMethodSimple {
 			src := "inherited from global"
@@ -729,6 +732,9 @@ func strategyScopeInspectJSON(sc StrategyConfig, cfg *Config) map[string]interfa
 		"allowed_regimes":        append([]string{}, sc.AllowedRegimes...),
 		"hurst_gate_enabled":     hurstGateConfigured(sc),
 		"regime_gate_on_failure": resolveRegimeGateOnFailure(sc, regimeConfigOf(cfg)),
+	}
+	if sc.ClosedBarDecisions {
+		out["closed_bar_decisions"] = true
 	}
 	if sc.RiskPerTradePct != nil {
 		out["risk_per_trade_pct"] = *sc.RiskPerTradePct

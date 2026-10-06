@@ -4,6 +4,7 @@ import sys
 import os
 import json
 import math
+import time
 import traceback
 from datetime import datetime, timezone
 
@@ -11,6 +12,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
+from closed_bar import (
+    ClosedBarHold,
+    hold_metadata,
+    htf_closed_fetcher,
+    select_opening_time,
+    unsupported_open_strategy_reason,
+)
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
 
@@ -67,6 +75,8 @@ def main():
     regime_atr_window = (_arg_value("--regime-atr-window") or "").strip()
     regime_payload_json = _arg_value("--regime-payload-json")
     atr_method = (_arg_value("--atr-method") or "simple").strip().lower()
+    closed_bar = "--closed-bar-decisions" in sys.argv
+    decision_regime_timeframe = (_arg_value("--decision-regime-timeframe") or "").strip()
     if atr_method not in ("simple", "wilder"):
         print(json.dumps({
             "error": f"--atr-method must be 'simple' or 'wilder', got {atr_method!r}",
@@ -107,6 +117,7 @@ def main():
             "--regime-windows-spec-json", "--ohlcv-limit",
             "--regime-atr-window", "--regime-directional-window",
             "--regime-payload-json", "--atr-method", "--mode",
+            "--decision-regime-timeframe",
         ):
             skip_next = True
             continue
@@ -166,12 +177,33 @@ def main():
                 file=sys.stderr,
             )
 
+        if closed_bar:
+            for name in (strategy_name, open_strategy or strategy_name):
+                why = unsupported_open_strategy_reason(name)
+                if why:
+                    raise ValueError(f"closed_bar_decisions does not support {name}: {why}")
+            from data_fetcher import OHLCV_TIMESTAMP_KIND, fetch_ohlcv_rows, ohlcv_rows_frame
+            if OHLCV_TIMESTAMP_KIND != "open":
+                raise ValueError("closed_bar_decisions needs opening-time candle timestamps from data_fetcher")
+
+        cutoff_ms = 0
+        raw_rows = None
+        raw_rows_b = None
         print(f"Fetching {symbol} {timeframe}...", file=sys.stderr)
-        df = fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=ohlcv_limit, store=False)
+        if closed_bar:
+            cutoff_ms = int(time.time() * 1000)
+            raw_rows = fetch_ohlcv_rows(symbol, timeframe, ohlcv_limit + 1)
+            df = ohlcv_rows_frame(raw_rows[-ohlcv_limit:])
+        else:
+            df = fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=ohlcv_limit, store=False)
 
         if needs_pair and symbol_b:
             print(f"Fetching secondary {symbol_b} {timeframe}...", file=sys.stderr)
-            df_b = fetch_ohlcv(symbol=symbol_b, timeframe=timeframe, limit=ohlcv_limit, store=False)
+            if closed_bar:
+                raw_rows_b = fetch_ohlcv_rows(symbol_b, timeframe, ohlcv_limit + 1)
+                df_b = ohlcv_rows_frame(raw_rows_b[-ohlcv_limit:])
+            else:
+                df_b = fetch_ohlcv(symbol=symbol_b, timeframe=timeframe, limit=ohlcv_limit, store=False)
             if df_b.empty:
                 print(json.dumps({
                     "strategy": strategy_name,
@@ -208,8 +240,69 @@ def main():
             atr_window=regime_atr_window,
             injected_payload_json=regime_payload_json,
         )
-        strategy_params = (strategy_params or {})
+        override_params = dict(strategy_params or {})
+        strategy_params = dict(override_params)
         strategy_params["regime"] = strategy_regime
+
+        closed_meta = None
+        decision_regime_payload = None
+        decision_df = df
+        protection_kwargs = {}
+        htf_frame = None
+        htf_strategy_name = open_strategy or strategy_name
+        if closed_bar:
+            hold = ""
+            try:
+                selection = select_opening_time(
+                    raw_rows, timeframe=timeframe, cutoff_ms=cutoff_ms, keep=ohlcv_limit)
+                decision_df = ohlcv_rows_frame(selection.rows)
+                if raw_rows_b is not None:
+                    selection_b = select_opening_time(
+                        raw_rows_b, timeframe=timeframe, cutoff_ms=cutoff_ms, keep=ohlcv_limit)
+                    if selection_b.boundary_ms != selection.boundary_ms:
+                        raise ClosedBarHold(
+                            f"paired frame {symbol_b} closes at {selection_b.boundary_ms}, "
+                            f"primary closes at {selection.boundary_ms}")
+                    df_b_closed = ohlcv_rows_frame(selection_b.rows)
+                    decision_df = decision_df.join(
+                        df_b_closed[["close"]].rename(columns={"close": "close_b"}), how="inner")
+                    if len(decision_df) < 30 or int(decision_df["timestamp"].iloc[-1]) != selection.bar_open_ms:
+                        raise ClosedBarHold("paired frames do not align on the selected closed bar")
+                decision_params = dict(override_params)
+                if regime_enabled:
+                    regime_tf = decision_regime_timeframe or timeframe
+                    if regime_tf == timeframe:
+                        regime_rows = selection.rows
+                    else:
+                        regime_rows = select_opening_time(
+                            fetch_ohlcv_rows(symbol, regime_tf, ohlcv_limit + 1),
+                            timeframe=regime_tf, cutoff_ms=selection.boundary_ms, keep=ohlcv_limit).rows
+                    decision_regime_payload, _decision_live, decision_strategy_regime = prepare_check_regime(
+                        ohlcv_rows_frame(regime_rows),
+                        regime_enabled=True,
+                        windows_spec=regime_windows_spec,
+                        injected_payload_json=None,
+                    )
+                    decision_params["regime"] = decision_strategy_regime
+                else:
+                    decision_params["regime"] = strategy_regime
+                if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
+                    from htf_filter import get_default_htf
+                    htf_tf = get_default_htf(timeframe)
+                    htf_frame = ohlcv_rows_frame(select_opening_time(
+                        fetch_ohlcv_rows(symbol, htf_tf, 61),
+                        timeframe=htf_tf, cutoff_ms=selection.boundary_ms, keep=60, min_rows=50).rows)
+                closed_meta = selection.metadata()
+            except ClosedBarHold as e:
+                hold = e.reason
+            protection_kwargs = {"protection_df": df, "protection_params": strategy_params}
+            if hold:
+                closed_meta = hold_metadata(hold, cutoff_ms)
+                decision_regime_payload = None
+                decision_df = None
+                print(f"Closed-bar decision held for {symbol} {timeframe}: {hold}", file=sys.stderr)
+            else:
+                strategy_params = decision_params
 
         decision = None
         if open_close_enabled:
@@ -222,7 +315,7 @@ def main():
             evaluation = evaluate_open_close(
                 apply_strategy,
                 get_strategy,
-                df,
+                decision_df,
                 strategy_name,
                 open_strategy,
                 parse_close_strategies(close_strategies_raw),
@@ -232,24 +325,36 @@ def main():
                 close_evaluate=close_evaluate,
                 market_ctx=market_ctx,
                 close_params_by_name=close_params_by_name,
+                **protection_kwargs,
             )
             result_df = evaluation.open_result_df
             signal = evaluation.open_signal
-        else:
-            result_df = apply_strategy(strategy_name, df, strategy_params)
+        elif decision_df is not None:
+            result_df = apply_strategy(strategy_name, decision_df, strategy_params)
             signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
+        else:
+            get_strategy(strategy_name)
+            result_df = None
+            signal = 0
 
-        ensure_atr_indicator(result_df, method=atr_method)
-        last = result_df.iloc[-1]
-        price = float(last["close"])
+        last = None
+        if result_df is not None and not result_df.empty:
+            ensure_atr_indicator(result_df, method=atr_method)
+            last = result_df.iloc[-1]
+        if closed_bar:
+            price = float(df["close"].iloc[-1])
+        else:
+            price = float(last["close"])
 
         htf_info = {}
-        htf_strategy_name = open_strategy or strategy_name
-        if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
+        if decision_df is not None and htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
             from htf_filter import htf_trend_filter, apply_htf_filter
 
-            def _fetch_htf(sym, tf, limit):
-                return fetch_ohlcv(symbol=sym, timeframe=tf, limit=limit, store=False)
+            if closed_bar:
+                _fetch_htf = htf_closed_fetcher(htf_frame)
+            else:
+                def _fetch_htf(sym, tf, limit):
+                    return fetch_ohlcv(symbol=sym, timeframe=tf, limit=limit, store=False)
 
             htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
             original_signal = signal
@@ -262,9 +367,11 @@ def main():
             signal = decision["signal"]
 
         indicators = {}
-        indicator_cols = [c for c in result_df.columns
-                         if c not in ("open", "high", "low", "close", "close_b", "volume",
-                                      "timestamp", "signal", "position", "datetime")]
+        indicator_cols = []
+        if last is not None:
+            indicator_cols = [c for c in result_df.columns
+                              if c not in ("open", "high", "low", "close", "close_b", "volume",
+                                           "timestamp", "signal", "position", "datetime")]
         for col in indicator_cols:
             val = last.get(col)
             if val is not None:
@@ -292,6 +399,10 @@ def main():
         }
         if decision:
             output.update(decision)
+        if closed_meta is not None:
+            output["closed_bar_decision"] = closed_meta
+            if decision_regime_payload is not None:
+                output["decision_regime"] = decision_regime_payload
         print(json.dumps(output))
 
     except Exception as e:

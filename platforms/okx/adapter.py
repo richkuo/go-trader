@@ -120,6 +120,13 @@ class OKXExchangeAdapter:
         except Exception:
             return []
 
+    OHLCV_TIMESTAMP_KIND = "open"
+
+    def fetch_candles(self, symbol: str, interval: str, limit: int, inst_type: str = "spot") -> list:
+        pair = f"{symbol}/USDT:USDT" if inst_type == "swap" else f"{symbol}/USDT"
+        candles = self._exchange.fetch_ohlcv(pair, interval, limit=limit)
+        return [list(c) for c in (candles or [])]
+
     def get_ohlcv_closes(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
         candles = self.get_ohlcv(symbol, interval, limit)
         return [c[4] for c in candles] if candles else []

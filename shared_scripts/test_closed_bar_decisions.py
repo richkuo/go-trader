@@ -1,0 +1,526 @@
+import json
+import os
+import subprocess
+import sys
+import textwrap
+
+import pandas as pd
+import pytest
+
+
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+CHECK_HL = os.path.join(_REPO_ROOT, "shared_scripts", "check_hyperliquid.py")
+CHECK_SPOT = os.path.join(_REPO_ROOT, "shared_scripts", "check_strategy.py")
+CHECK_OKX = os.path.join(_REPO_ROOT, "shared_scripts", "check_okx.py")
+CHECK_RH = os.path.join(_REPO_ROOT, "shared_scripts", "check_robinhood.py")
+CHECK_TS = os.path.join(_REPO_ROOT, "shared_scripts", "check_topstep.py")
+
+H = 3_600_000
+T0 = 1_699_999_200_000
+SPEC = '{"default":{"classifier":"adx","period":14,"adx_threshold":20}}'
+
+
+def _bars(n, *, spike_at=None, spike_size=12.0, forming_spike=0.0):
+    out = []
+    price = 100.0
+    for i in range(n):
+        price = price + (0.4 if i % 2 == 0 else -0.35)
+        o, h, low, c = price - 0.1, price + 0.5, price - 0.5, price
+        if spike_at is not None and i == spike_at:
+            h, c = price + spike_size + 0.5, price + spike_size
+        if forming_spike and i == n - 1:
+            h, c = price + forming_spike + 0.5, price + forming_spike
+        out.append({"t": T0 + i * H, "T": T0 + (i + 1) * H - 1,
+                    "o": o, "h": h, "l": low, "c": c, "v": 1000.0 + i})
+    return out
+
+
+def _hl_rows(bars):
+    return [[b["T"], b["o"], b["h"], b["l"], b["c"], b["v"]] for b in bars]
+
+
+def _hl_frame(bars, *, timing=True, interval_ms=H):
+    rows = _hl_rows(bars)
+    frame = {
+        "rows": rows, "required": len(rows), "bars": len(rows), "coverage_short": False,
+        "first_open_ms": bars[0]["t"], "last_open_ms": bars[-1]["t"], "last_close_ms": bars[-1]["T"],
+        "last_recv_at_ms": bars[-1]["t"], "source": "ws", "ready": True, "forming_bar_included": True,
+    }
+    if timing:
+        frame["timing"] = {"rule": "hyperliquid_native_close", "interval_ms": interval_ms,
+                           "bars": [[b["t"], b["T"], True] for b in bars]}
+    return frame
+
+
+def _market(frames, *, cutoff_ms=None, mid=0.0):
+    market = {"version": 1, "snapshot_id": "test/1", "generation": 1,
+              "sealed_at_ms": cutoff_ms or T0, "frames": frames, "feed_complete": True}
+    if cutoff_ms is not None:
+        market["decision_cutoff_ms"] = cutoff_ms
+    if mid:
+        market["mids"] = {"BTC": {"px": mid, "recv_at_ms": cutoff_ms or T0, "source": "ws",
+                                  "age_ms": 0, "stale": False, "confirmed": True}}
+    return market
+
+
+def _run(script, argv, stdin_payload=None, env_extra=None):
+    env = dict(os.environ)
+    env["HYPERLIQUID_SECRET_KEY"] = ""
+    env["HYPERLIQUID_ACCOUNT_ADDRESS"] = ""
+    env["OKX_API_KEY"] = ""
+    env["GO_TRADER_HL_OHLCV_CACHE"] = "0"
+    if env_extra:
+        env.update(env_extra)
+    proc = subprocess.run(
+        [sys.executable, script] + argv,
+        input=json.dumps(stdin_payload) if stdin_payload is not None else "",
+        capture_output=True, text=True, cwd=_REPO_ROOT, env=env, timeout=240,
+    )
+    return proc
+
+
+def _hl_check(name, bars, cutoff_ms, *, closed, extra=(), timing=True, frames=None, mid=0.0):
+    argv = [name, "BTC", "1h", "--mode=paper", "--market-stdin", *extra]
+    if closed:
+        argv.append("--closed-bar-decisions")
+    frames = frames or {"BTC|1h": _hl_frame(bars, timing=timing)}
+    proc = _run(CHECK_HL, argv, {"v": 2, "market": _market(frames, cutoff_ms=cutoff_ms, mid=mid)})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    return json.loads(proc.stdout)
+
+
+def _strip(out):
+    return {k: v for k, v in out.items() if k not in ("timestamp", "id")}
+
+
+def _strategies(kind="futures"):
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
+    import importlib.util
+    path = os.path.join(_REPO_ROOT, "shared_strategies", "open", kind, "strategies.py")
+    spec = importlib.util.spec_from_file_location(f"_closed_bar_test_{kind}_strategies", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _frame_from_rows(rows):
+    df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    return df.set_index("datetime").sort_index()
+
+
+def _backtest_first_trade(name, rows, atr_method="simple"):
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "backtest"))
+    from backtester import Backtester
+    df = _strategies().apply_strategy(name, _frame_from_rows(rows), None)
+    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0,
+                    platform="hyperliquid", strategy_type="perps", atr_method=atr_method)
+    result = bt.run(df, strategy_name=name, symbol="BTC", timeframe="1h", save=False)
+    return result["trades"][0] if result["trades"] else None
+
+
+def test_forming_tail_decision_uses_the_last_closed_bar_and_matches_the_backtester():
+    bars = _bars(120, spike_at=118, spike_size=12.0)
+    cutoff = bars[-1]["t"] + H // 2
+    disabled = _hl_check("breakout", bars, cutoff, closed=False)
+    enabled = _hl_check("breakout", bars, cutoff, closed=True)
+
+    meta = enabled["closed_bar_decision"]
+    assert meta["held"] is False
+    assert meta["decision_boundary_ms"] == bars[-2]["t"] + H
+    assert meta["bar_open_ms"] == bars[-2]["t"]
+    assert meta["forming_rows_dropped"] == 1
+    assert meta["cutoff_ms"] == cutoff
+    assert "closed_bar_decision" not in disabled
+
+    closed_rows = _hl_rows(bars[:-1])
+    closed_df = _strategies().apply_strategy("breakout", _frame_from_rows(closed_rows), None)
+    assert enabled["signal"] == int(closed_df["signal"].iloc[-1]) == 1
+    assert disabled["signal"] == 0
+    assert enabled["indicators"]["atr"] == round(float(closed_df["atr"].iloc[-1]), 6)
+    assert enabled["indicators"]["atr"] != disabled["indicators"]["atr"]
+    assert enabled["price"] == disabled["price"] == bars[-1]["c"]
+
+    trade = _backtest_first_trade("breakout", _hl_rows(bars))
+    assert trade is not None
+    assert pd.Timestamp(trade["entry_date"]) == pd.Timestamp(bars[-1]["T"], unit="ms", tz="UTC")
+    assert trade["entry_atr"] == pytest.approx(enabled["indicators"]["atr"], abs=1e-6)
+
+
+def test_forming_spike_changes_the_disabled_signal_but_not_the_closed_decision():
+    bars = _bars(120, forming_spike=15.0)
+    cutoff = bars[-1]["t"] + H // 3
+    disabled = _hl_check("breakout", bars, cutoff, closed=False)
+    enabled = _hl_check("breakout", bars, cutoff, closed=True)
+    calm = _hl_check("breakout", bars[:-1], cutoff, closed=True)
+    assert disabled["signal"] == 1
+    assert enabled["signal"] == 0
+    assert enabled["indicators"] == calm["indicators"]
+    assert enabled["closed_bar_decision"]["input_sha256"] == calm["closed_bar_decision"]["input_sha256"]
+
+
+def test_final_row_already_closed_is_kept():
+    bars = _bars(120, spike_at=119)
+    cutoff = bars[-1]["t"] + H + 5_000
+    disabled = _hl_check("breakout", bars, cutoff, closed=False)
+    enabled = _hl_check("breakout", bars, cutoff, closed=True)
+    meta = enabled["closed_bar_decision"]
+    assert meta["forming_rows_dropped"] == 0
+    assert meta["decision_boundary_ms"] == bars[-1]["t"] + H
+    assert enabled["signal"] == disabled["signal"] == 1
+    assert enabled["indicators"] == disabled["indicators"]
+
+
+@pytest.mark.parametrize("offset,dropped", [(-1, 1), (0, 0), (1, 0)])
+def test_cutoff_at_the_bar_boundary(offset, dropped):
+    bars = _bars(120)
+    boundary = bars[-1]["t"] + H
+    enabled = _hl_check("breakout", bars, boundary + offset, closed=True)
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == dropped
+    expected = boundary if dropped == 0 else bars[-1]["t"]
+    assert enabled["closed_bar_decision"]["decision_boundary_ms"] == expected
+
+
+@pytest.mark.parametrize("method", ["simple", "wilder"])
+def test_exported_atr_follows_the_atr_method_on_the_closed_frame(method):
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "backtest"))
+    import backtester
+    bars = _bars(120, forming_spike=20.0)
+    cutoff = bars[-1]["t"] + H // 2
+    enabled = _hl_check("momentum_pro", bars, cutoff, closed=True, extra=[f"--atr-method={method}"])
+    disabled = _hl_check("momentum_pro", bars, cutoff, closed=False, extra=[f"--atr-method={method}"])
+    closed = _frame_from_rows(_hl_rows(bars[:-1]))
+    expected = round(float(backtester.standard_atr(closed, method=method).iloc[-1]), 6)
+    assert enabled["indicators"]["atr"] == expected
+    assert disabled["indicators"]["atr"] != expected
+
+
+def test_composed_strategy_decides_on_the_closed_bar_and_protection_reads_the_current_mark():
+    bars = _bars(120, spike_at=118)
+    cutoff = bars[-1]["t"] + H // 2
+    refs = json.dumps({"open": {"name": "breakout", "params": {}}, "closes": [{"name": "tiered_tp_pct", "params": {}}]})
+    flat = ["--strategy-refs", refs]
+    enabled = _hl_check("breakout", bars, cutoff, closed=True, extra=flat)
+    assert enabled["open_action"] == "long"
+    assert enabled["signal"] == 1
+
+    held_long = ["--strategy-refs", refs, "--position-side", "long", "--position-avg-cost=50",
+                 "--position-qty=1", "--position-initial-qty=1"]
+    on = _hl_check("breakout", bars, cutoff, closed=True, extra=held_long, mid=bars[-1]["c"])
+    off = _hl_check("breakout", bars, cutoff, closed=False, extra=held_long, mid=bars[-1]["c"])
+    assert on["close_fraction"] == off["close_fraction"] == 1.0
+    assert on["close_strategy"] == off["close_strategy"] == "tiered_tp_pct"
+    assert on["price"] == off["price"] == bars[-1]["c"]
+
+
+def test_missing_timing_holds_the_decision_and_keeps_protection():
+    bars = _bars(120, spike_at=118)
+    cutoff = bars[-1]["t"] + H // 2
+    refs = json.dumps({"open": {"name": "breakout", "params": {}}, "closes": [{"name": "tiered_tp_pct", "params": {}}]})
+    held_long = ["--strategy-refs", refs, "--position-side", "long", "--position-avg-cost=50",
+                 "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check("breakout", bars, cutoff, closed=True, extra=held_long, timing=False)
+    meta = out["closed_bar_decision"]
+    assert meta["held"] is True
+    assert "timing" in meta["hold_reason"]
+    assert out["indicators"] == {}
+    assert out["open_action"] == "none"
+    assert out["close_fraction"] == 1.0
+    assert out["signal"] == -1
+
+    flat = _hl_check("breakout", bars, cutoff, closed=True, timing=False)
+    assert flat["signal"] == 0
+    assert flat["closed_bar_decision"]["held"] is True
+
+
+@pytest.mark.parametrize("case", ["no_cutoff", "contradictory", "duplicate", "short_history"])
+def test_unverifiable_or_short_history_holds(case):
+    bars = _bars(120, spike_at=118)
+    cutoff = bars[-1]["t"] + H // 2
+    frames = None
+    if case == "no_cutoff":
+        cutoff = None
+    elif case == "contradictory":
+        bars[-3] = dict(bars[-3], T=bars[-3]["T"] + 60_000)
+    elif case == "duplicate":
+        bars[-3] = dict(bars[-4])
+    elif case == "short_history":
+        bars = bars[-30:]
+    out = _hl_check("breakout", bars, cutoff, closed=True, frames=frames)
+    assert out["signal"] == 0
+    assert out["closed_bar_decision"]["held"] is True
+    assert out["indicators"] == {}
+
+
+def test_mixed_batch_matches_individual_checks():
+    bars = _bars(240, spike_at=238)
+    cutoff = bars[-1]["t"] + H // 2
+    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
+    slots = [
+        {"id": "on", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"], "closed_bar_decisions": True},
+        {"id": "off", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"]},
+    ]
+    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200",
+                           "--atr-method=simple", "--market-stdin"], {"v": 2, "slots": slots, "market": market})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
+
+    for slot_id, closed in (("on", True), ("off", False)):
+        argv = ["breakout", "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200"]
+        if closed:
+            argv.append("--closed-bar-decisions")
+        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
+        assert single.returncode == 0, single.stderr
+        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
+    assert results["on"]["signal"] == 1
+    assert results["off"]["signal"] == 0
+    assert "closed_bar_decision" not in results["off"]
+
+
+def test_batch_rejects_a_non_boolean_flag():
+    bars = _bars(120)
+    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=bars[-1]["t"] + 1)
+    slots = [{"id": "a", "strategy": "breakout", "mode": "paper", "closed_bar_decisions": "yes"},
+             {"id": "b", "strategy": "breakout", "mode": "paper"}]
+    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--market-stdin"],
+                {"v": 2, "slots": slots, "market": market})
+    assert proc.returncode == 1
+    out = json.loads(proc.stdout)
+    assert out["error_scope"] == "shared_state"
+    assert "closed_bar_decisions must be a JSON boolean" in out["error"]
+
+
+def test_decision_regime_reads_the_closed_frame_and_protection_keeps_the_injected_regime():
+    bars = _bars(240, forming_spike=30.0)
+    cutoff = bars[-1]["t"] + H // 2
+    injected = '{"default":{"regime":"ranging","score":0.1,"classifier":"adx","metrics":{"adx":5.0}}}'
+    extra = ["--regime-enabled", "--regime-windows-spec-json", SPEC, "--ohlcv-limit", "200",
+             "--regime-payload-json", injected, "--decision-regime-timeframe=1h"]
+    out = _hl_check("breakout", bars, cutoff, closed=True, extra=extra)
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_scripts"))
+    from check_regime import compute_regime_bundle
+    closed = _frame_from_rows(_hl_rows(bars[:-1])[-200:])
+    expected = compute_regime_bundle(closed, json.loads(SPEC))["regime"]
+    assert out["decision_regime"]["default"]["regime"] == expected["default"]["regime"]
+    assert out["decision_regime"]["default"]["metrics"]["adx"] == pytest.approx(expected["default"]["metrics"]["adx"])
+    assert out["regime"]["default"]["regime"] == "ranging"
+
+
+def _fake_ccxt_dir(tmp_path, rows_by_key):
+    pkg = tmp_path / "fakes" / "ccxt"
+    pkg.mkdir(parents=True)
+    fixture = tmp_path / "ccxt_rows.json"
+    fixture.write_text(json.dumps(rows_by_key))
+    (pkg / "__init__.py").write_text(textwrap.dedent(f"""
+        import json
+
+        _ROWS = json.load(open({str(fixture)!r}))
+
+
+        class Exchange:
+            def __init__(self, config=None):
+                self.config = config or {{}}
+
+            def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None):
+                rows = _ROWS[symbol + "|" + timeframe]
+                return [list(r) for r in rows[-limit:]] if limit else [list(r) for r in rows]
+
+            def fetch_ticker(self, symbol):
+                raise RuntimeError("no ticker in the frozen fixture")
+
+            def load_markets(self):
+                return {{}}
+
+
+        class binanceus(Exchange):
+            pass
+
+
+        class okx(Exchange):
+            pass
+
+
+        class RateLimitExceeded(Exception):
+            pass
+
+
+        class NetworkError(Exception):
+            pass
+    """))
+    return str(tmp_path / "fakes")
+
+
+def _open_time_rows(bars):
+    return [[b["t"], b["o"], b["h"], b["l"], b["c"], b["v"]] for b in bars]
+
+
+def _now_bars(n, **kw):
+    import time
+    now_ms = int(time.time() * 1000)
+    start = now_ms - (now_ms % H) - (n - 1) * H
+    bars = _bars(n, **kw)
+    for i, b in enumerate(bars):
+        b["t"] = start + i * H
+        b["T"] = b["t"] + H - 1
+    return bars
+
+
+def test_binance_spot_direct_acquisition_uses_opening_time_closure(tmp_path):
+    bars = _now_bars(120, spike_at=118)
+    fakes = _fake_ccxt_dir(tmp_path, {"BTC/USDT|1h": _open_time_rows(bars)})
+    env = {"PYTHONPATH": fakes}
+    on = _run(CHECK_SPOT, ["atr_breakout", "BTC/USDT", "1h", "--mode=paper", "--closed-bar-decisions"], env_extra=env)
+    off = _run(CHECK_SPOT, ["atr_breakout", "BTC/USDT", "1h", "--mode=paper"], env_extra=env)
+    assert on.returncode == 0, on.stderr + on.stdout
+    assert off.returncode == 0, off.stderr + off.stdout
+    on, off = json.loads(on.stdout), json.loads(off.stdout)
+    meta = on["closed_bar_decision"]
+    assert meta["closure_rule"] == "opening_time_fixed_duration"
+    assert meta["decision_boundary_ms"] == bars[-2]["t"] + H
+    closed_df = _strategies("spot").apply_strategy("atr_breakout", _frame_from_rows(_open_time_rows(bars[:-1])), None)
+    assert on["signal"] == int(closed_df["signal"].iloc[-1]) == 1
+    assert off["signal"] != on["signal"]
+    assert on["indicators"]["atr"] == round(float(closed_df["atr"].iloc[-1]), 6)
+    assert on["price"] == off["price"]
+    assert "closed_bar_decision" not in off
+
+
+def test_okx_direct_acquisition_uses_opening_time_closure(tmp_path):
+    bars = _now_bars(120, spike_at=118)
+    fakes = _fake_ccxt_dir(tmp_path, {"BTC/USDT:USDT|1h": _open_time_rows(bars)})
+    env = {"PYTHONPATH": fakes}
+    on = _run(CHECK_OKX, ["breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions"], env_extra=env)
+    assert on.returncode == 0, on.stderr + on.stdout
+    out = json.loads(on.stdout)
+    assert out["closed_bar_decision"]["decision_boundary_ms"] == bars[-2]["t"] + H
+    assert out["signal"] == 1
+    refused = _run(CHECK_OKX, ["funding_skew", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions"], env_extra=env)
+    assert refused.returncode == 1
+    assert "funding_skew" in json.loads(refused.stdout)["error"]
+
+
+def _fake_hl_sdk_dir(tmp_path, bars):
+    root = tmp_path / "hlfakes" / "hyperliquid"
+    root.mkdir(parents=True)
+    fixture = tmp_path / "hl_bars.json"
+    fixture.write_text(json.dumps(bars))
+    (root / "__init__.py").write_text("")
+    (root / "info.py").write_text(textwrap.dedent(f"""
+        import json
+
+        _BARS = json.load(open({str(fixture)!r}))
+
+
+        class Info:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def candles_snapshot(self, symbol, interval, start, end):
+                return [dict(b) for b in _BARS if start <= b["t"] <= end]
+
+            def all_mids(self):
+                return {{"BTC": str(_BARS[-1]["c"])}}
+    """))
+    (root / "exchange.py").write_text("class Exchange:\n    pass\n")
+    return str(tmp_path / "hlfakes")
+
+
+def test_hyperliquid_direct_acquisition_uses_native_close_times(tmp_path):
+    bars = _now_bars(120, spike_at=118)
+    fakes = _fake_hl_sdk_dir(tmp_path, bars)
+    env = {"PYTHONPATH": fakes}
+    on = _run(CHECK_HL, ["breakout", "BTC", "1h", "--mode=paper", "--closed-bar-decisions"], env_extra=env)
+    assert on.returncode == 0, on.stderr + on.stdout
+    out = json.loads(on.stdout)
+    meta = out["closed_bar_decision"]
+    assert meta["closure_rule"] == "hyperliquid_native_close"
+    assert meta["decision_boundary_ms"] == bars[-2]["t"] + H
+    assert out["signal"] == 1
+
+
+@pytest.mark.parametrize("script", [CHECK_RH, CHECK_TS])
+def test_session_venues_refuse_closed_bar_decisions(script):
+    proc = _run(script, ["breakout", "BTC", "1h", "--closed-bar-decisions"])
+    assert proc.returncode == 1
+    assert "closed_bar_decisions is not supported" in json.loads(proc.stdout)["error"]
+
+
+def test_flag_off_single_check_carries_no_closed_bar_fields():
+    bars = _bars(120)
+    out = _hl_check("breakout", bars, None, closed=False)
+    assert "closed_bar_decision" not in out
+    assert "decision_regime" not in out
+
+
+def _htf_bars(n, end_ms, step_ms, base=100.0):
+    start = end_ms - n * step_ms
+    out = []
+    price = base
+    for i in range(n):
+        price = price + (1.0 if i % 3 else -0.4)
+        t = start + i * step_ms
+        out.append({"t": t, "T": t + step_ms - 1, "o": price - 0.2, "h": price + 0.8,
+                    "l": price - 0.9, "c": price, "v": 50.0 + i})
+    return out
+
+
+def test_higher_timeframe_filter_reads_only_bars_closed_by_the_decision_boundary():
+    bars = _bars(240, spike_at=238)
+    cutoff = bars[-1]["t"] + H // 2
+    boundary = bars[-2]["t"] + H
+    four_h = 4 * H
+    htf = _htf_bars(70, boundary - (boundary % four_h) + four_h, four_h)
+    frames = {"BTC|1h": _hl_frame(bars), "BTC|4h": _hl_frame(htf, interval_ms=four_h)}
+    out = _hl_check("breakout", bars, cutoff, closed=True, extra=["--htf-filter"], frames=frames)
+    closed_htf = [b for b in htf if b["t"] + four_h <= boundary]
+    assert closed_htf[-1]["t"] + four_h <= boundary < htf[-1]["t"] + four_h
+    assert out["indicators"]["htf_close"] == round(closed_htf[-1]["c"], 6)
+    assert out["closed_bar_decision"]["held"] is False
+
+    short = {"BTC|1h": _hl_frame(bars), "BTC|4h": _hl_frame(htf[-40:], interval_ms=four_h)}
+    held = _hl_check("breakout", bars, cutoff, closed=True, extra=["--htf-filter"], frames=short)
+    assert held["closed_bar_decision"]["held"] is True
+    assert "higher timeframe" in held["closed_bar_decision"]["hold_reason"]
+    assert held["signal"] == 0
+
+
+def test_funding_records_after_the_decision_boundary_cannot_change_the_decision():
+    bars = _bars(240)
+    cutoff = bars[-1]["t"] + H // 2
+    boundary = bars[-2]["t"] + H
+    base = [{"time": b["t"], "rate": 0.00001 * ((i % 5) - 2)} for i, b in enumerate(bars[:-1])]
+    late = base + [{"time": boundary, "rate": 0.05}, {"time": boundary + 60_000, "rate": -0.05}]
+
+    def run(records):
+        market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff)
+        market["funding"] = {"BTC": {"current": 0.0, "avg_7d": 0.0, "has_scalar": False,
+                                     "records": records, "has_records": True,
+                                     "fetched_at_ms": cutoff, "source": "rest"}}
+        proc = _run(CHECK_HL, ["funding_skew", "BTC", "1h", "--mode=paper", "--market-stdin",
+                               "--closed-bar-decisions"], {"v": 2, "market": market})
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        return json.loads(proc.stdout)
+
+    before = run(base)
+    after = run(late)
+    assert before["closed_bar_decision"]["held"] is False
+    assert _strip(before) == _strip(after)
+
+
+def test_repeated_checks_of_one_closed_bar_repeat_the_decision_until_the_next_bar_closes():
+    bars = _bars(120, spike_at=118)
+    first = _hl_check("breakout", bars, bars[-1]["t"] + 60_000, closed=True)
+    later = _hl_check("breakout", bars, bars[-1]["t"] + H - 1, closed=True)
+    assert first["signal"] == later["signal"] == 1
+    assert first["indicators"] == later["indicators"]
+    assert first["closed_bar_decision"]["input_sha256"] == later["closed_bar_decision"]["input_sha256"]
+    assert first["closed_bar_decision"]["decision_boundary_ms"] == later["closed_bar_decision"]["decision_boundary_ms"]
+    refs = json.dumps({"open": {"name": "breakout", "params": {}}})
+    holding = _hl_check("breakout", bars, bars[-1]["t"] + H - 1, closed=True,
+                        extra=["--strategy-refs", refs, "--position-side", "long", "--position-avg-cost=100",
+                               "--position-qty=1", "--position-initial-qty=1"])
+    assert holding["open_action"] == "long"
+    assert holding["closed_bar_decision"]["decision_boundary_ms"] == first["closed_bar_decision"]["decision_boundary_ms"]
+    next_bar = _hl_check("breakout", bars, bars[-1]["t"] + H, closed=True)
+    assert next_bar["closed_bar_decision"]["decision_boundary_ms"] == bars[-1]["t"] + H
+    assert next_bar["signal"] == 0

@@ -9,6 +9,9 @@ import pandas as pd
 from storage import store_ohlcv, load_ohlcv
 
 
+OHLCV_TIMESTAMP_KIND = "open"
+
+
 def get_exchange(exchange_id: str = "binanceus") -> ccxt.Exchange:
     exchange_class = getattr(ccxt, exchange_id)
     exchange = exchange_class({
@@ -44,6 +47,26 @@ def fetch_ohlcv(
     df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
     df.set_index("datetime", inplace=True)
 
+    return df
+
+
+def fetch_ohlcv_rows(
+    symbol: str,
+    timeframe: str,
+    limit: int,
+    exchange_id: str = "binanceus",
+) -> list:
+    exchange = get_exchange(exchange_id)
+    raw = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    return [list(r) for r in (raw or [])]
+
+
+def ohlcv_rows_frame(rows: list) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df.set_index("datetime", inplace=True)
     return df
 
 

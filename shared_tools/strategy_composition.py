@@ -474,7 +474,7 @@ def strip_unsupported_position_context(fn, params: dict) -> dict:
 def evaluate_open_close(
     apply_strategy: Callable[[str, pd.DataFrame, Optional[dict]], pd.DataFrame],
     get_strategy: Callable[[str], object],
-    df: pd.DataFrame,
+    df: Optional[pd.DataFrame],
     positional_strategy: str,
     open_strategy: Optional[str],
     close_strategies: Optional[Iterable[str]],
@@ -486,11 +486,16 @@ def evaluate_open_close(
     close_params_by_name: Optional[dict[str, dict]] = None,
     close_owner: Optional[str] = None,
     invert_open_signal: bool = False,
+    protection_df: Optional[pd.DataFrame] = None,
+    protection_params: Optional[dict] = None,
 ) -> OpenCloseEvaluation:
     open_name = (open_strategy or positional_strategy).strip()
     close_names = effective_close_strategies(
         positional_strategy, open_name, close_strategies, close_owner
     )
+    decision_available = df is not None
+    if not decision_available and protection_df is None:
+        raise ValueError("evaluate_open_close needs a decision frame or a protection frame")
     cache: dict[tuple[str, str], pd.DataFrame] = {}
 
     def run(name: str, run_params: Optional[dict]) -> pd.DataFrame:
@@ -502,14 +507,27 @@ def evaluate_open_close(
             cache[key] = apply_strategy(name, df, run_params)
         return cache[key]
 
-    open_result = run(open_name, params)
-    open_signal = _last_signal(open_result)
+    if decision_available:
+        open_result = run(open_name, params)
+        open_signal = _last_signal(open_result)
+    else:
+        get_strategy(open_name)
+        open_result = pd.DataFrame()
+        open_signal = 0
     close_evals: list[CloseEvaluation] = []
-    market = market_ctx if market_ctx is not None else _default_market_ctx(df)
+    if market_ctx is not None:
+        market = market_ctx
+    else:
+        market = _default_market_ctx(protection_df if protection_df is not None else df)
+    avwap_source = open_result
+    if protection_df is not None and close_names:
+        get_strategy(open_name)
+        avwap_source = apply_strategy(
+            open_name, protection_df, protection_params if protection_params is not None else params)
     avwap_injected = False
-    if not open_result.empty and "avwap" in open_result.columns:
+    if not avwap_source.empty and "avwap" in avwap_source.columns:
         try:
-            avwap_value = float(open_result["avwap"].iloc[-1])
+            avwap_value = float(avwap_source["avwap"].iloc[-1])
         except (TypeError, ValueError):
             avwap_value = float("nan")
         if avwap_value == avwap_value and avwap_value > 0:
@@ -540,6 +558,9 @@ def evaluate_open_close(
             except ValueError as exc:
                 if not _is_unknown_close_strategy_error(exc):
                     raise
+        if not decision_available:
+            close_evals.append(CloseEvaluation(strategy=resolved, close_fraction=0.0))
+            continue
         close_params = _merge_close_params(base_close_params, position_ctx)
         result = run(resolved, close_params)
         signal = _last_signal(result)

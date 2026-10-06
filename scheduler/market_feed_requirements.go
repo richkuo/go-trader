@@ -75,6 +75,7 @@ type feedStrategyRequirement struct {
 	SignalLookback int
 	HTF            marketFeedKey
 	HasHTF         bool
+	HTFLookback    int
 	Regime         marketFeedKey
 	HasRegime      bool
 	RegimeLookback int
@@ -83,6 +84,7 @@ type feedStrategyRequirement struct {
 	FundingRecords bool
 	OpenInterest   bool
 	ObsWindowMs    int64
+	ClosedBar      bool
 }
 
 func (e feedStrategyRequirement) observationNeeds() map[feedObservationKey]int64 {
@@ -179,11 +181,16 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				sc.ID, timeframe, strings.Join(hlSupportedCandleIntervals(), ", ")))
 			continue
 		}
+		closedBarExtra := 0
+		if sc.ClosedBarDecisions {
+			closedBarExtra = 1
+		}
 		entry := feedStrategyRequirement{
 			ID:             sc.ID,
 			Signal:         feedKeyFor(symbol, timeframe),
-			SignalLookback: feedSignalLookback(rc),
+			SignalLookback: feedSignalLookback(rc) + closedBarExtra,
 			Coin:           symbol,
+			ClosedBar:      sc.ClosedBarDecisions,
 		}
 		req.addKey(entry.Signal, entry.SignalLookback)
 
@@ -195,7 +202,8 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 			} else {
 				entry.HTF = feedKeyFor(symbol, htfTimeframe)
 				entry.HasHTF = true
-				req.addKey(entry.HTF, hlFeedHTFLookback)
+				entry.HTFLookback = hlFeedHTFLookback + closedBarExtra
+				req.addKey(entry.HTF, entry.HTFLookback)
 			}
 		}
 
@@ -207,8 +215,8 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 			} else {
 				entry.Regime = feedKeyFor(bundleReq.Key.Symbol, regimeTimeframe)
 				entry.HasRegime = true
-				entry.RegimeLookback = bundleReq.OhlcvLimit
-				req.addKey(entry.Regime, bundleReq.OhlcvLimit)
+				entry.RegimeLookback = bundleReq.OhlcvLimit + closedBarExtra
+				req.addKey(entry.Regime, entry.RegimeLookback)
 			}
 		}
 

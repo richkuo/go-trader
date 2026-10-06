@@ -50,6 +50,27 @@ def market_frame_rows(market, symbol: str, timeframe: str, error_cls=None, limit
     return [[int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])] for r in rows]
 
 
+def market_frame_rows_with_timing(market, symbol: str, timeframe: str, error_cls=None, limit: int = 0):
+    frame = market_frame(market, symbol, timeframe, error_cls)
+    rows = market_frame_rows(market, symbol, timeframe, error_cls)
+    timing = frame.get("timing")
+    if isinstance(timing, dict) and isinstance(timing.get("bars"), list):
+        bars = timing["bars"]
+        if len(bars) == len(rows) and limit and len(rows) > limit:
+            timing = {**timing, "bars": bars[-limit:]}
+    if limit and len(rows) > limit:
+        rows = rows[-limit:]
+    return rows, timing
+
+
+def market_decision_cutoff_ms(market, error_cls=None) -> int:
+    payload = validate_market_payload(market, error_cls)
+    try:
+        return int(payload.get("decision_cutoff_ms") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def market_mid(market, coin: str, error_cls=None):
     payload = validate_market_payload(market, error_cls)
     entry = (payload.get("mids") or {}).get(coin)

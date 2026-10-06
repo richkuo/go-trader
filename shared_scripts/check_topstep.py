@@ -387,11 +387,30 @@ def main():
         parser.add_argument("--position-risk-anchor-price", type=float, default=None)
         parser.add_argument("--mark-price", type=float, default=0.0, help="Accepted for argv-shape compatibility with check_hyperliquid.py (#768); ignored on this platform.")
         parser.add_argument("--allow-no-edge", nargs="?", const=True, default=None)
+        parser.add_argument("--closed-bar-decisions", action="store_true", default=False,
+            help="#1712: accepted for argv-shape compatibility; this platform refuses closed-bar decisions.")
+        parser.add_argument("--decision-regime-timeframe", default="",
+            help="#1712: accepted for argv-shape compatibility; this platform refuses closed-bar decisions.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
+        if args.closed_bar_decisions:
+            print(json.dumps({
+                "strategy": args.strategy,
+                "symbol": args.symbol,
+                "timeframe": args.timeframe,
+                "signal": 0,
+                "price": 0,
+                "indicators": {},
+                "regime": None,
+                "mode": args.mode,
+                "platform": "topstep",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": "closed_bar_decisions is not supported on topstep: TopStep candles carry no verified closure contract that accounts for trading sessions",
+            }))
+            sys.exit(1)
         from strategy_composition import parse_allow_no_edge_tokens, parse_raw_gate_mode, parse_strategy_refs_arg
         refs = parse_strategy_refs_arg(args.strategy_refs)
         open_strategy_name = refs["open_name"] if refs else args.open_strategy
