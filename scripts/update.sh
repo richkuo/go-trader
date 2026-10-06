@@ -387,7 +387,7 @@ run_rsync_from() {
     done < <(update_db_rsync_excludes)
     rsync_excludes+=(
         --exclude='.venv/'
-        --exclude='logs/'
+        --exclude='/logs/'
         --exclude='node_modules/'
         --exclude='__pycache__/'
         --exclude='go-trader'
