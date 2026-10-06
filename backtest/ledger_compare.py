@@ -97,6 +97,9 @@ LEVERAGE_ORIGINS = ("config", "default")
 STOP_CENTRAL_CODES = ("UNSUPPORTED_STOP_OWNER", "MISSING_STOP_INPUT", "UNVERIFIED_MARGIN_LEVERAGE")
 STOP_UNAPPROXIMABLE_REASONS = ("stop_capability_refused", "stop_evidence_contradictory",
                                "stop_configuration_invalid")
+ATR_METHODS = ("simple", "wilder")
+ATR_DEFAULT_KEYS = ("root_atr_method",)
+ATR_UNAPPROXIMABLE_REASONS = ("atr_configuration_invalid",)
 OWNER_INPUT_FIELDS = {
     "trailing_pct": ("trailing_stop_pct", "trailing_stop_min_move_pct"),
     "trailing_atr": ("trailing_stop_atr_mult", "trailing_stop_min_move_pct"),
@@ -355,8 +358,10 @@ def validate_comparison_input(doc, base_dir: str) -> dict:
             raise LedgerInputError(f"{label}.status must be verified or unverified")
         if version >= 2:
             _validate_stop_segment(seg, label)
+            if "atr_defaults" in seg:
+                _validate_atr_defaults(seg["atr_defaults"], f"{label}.atr_defaults")
         else:
-            extra = sorted(k for k in ("basis", "stop_defaults", "stop_evidence") if k in seg)
+            extra = sorted(k for k in ("basis", "stop_defaults", "stop_evidence", "atr_defaults") if k in seg)
             if extra:
                 raise LedgerInputError(f"{label} carries version 2 stop evidence {extra} in a version 1 input")
     capev = doc.get("capability_evidence", {})
@@ -430,6 +435,58 @@ def _validate_stop_segment(seg: dict, label: str) -> None:
     _validate_provenance(window, f"{label}.stop_evidence.regime_atr_window", True)
     if window["value"] is not None and not isinstance(window["value"], str):
         raise LedgerInputError(f"{label}.stop_evidence.regime_atr_window.value must be a string or null")
+
+
+def _validate_atr_defaults(defaults, label: str) -> None:
+    if not isinstance(defaults, dict) or set(defaults) != set(ATR_DEFAULT_KEYS):
+        raise LedgerInputError(f"{label} must have exactly the keys {list(ATR_DEFAULT_KEYS)}")
+    entry = defaults["root_atr_method"]
+    _validate_provenance(entry, f"{label}.root_atr_method", True)
+    if entry["value"] is not None and not isinstance(entry["value"], str):
+        raise LedgerInputError(f"{label}.root_atr_method.value must be a string or null")
+
+
+def _normalize_atr_method(value) -> str:
+    return str(value).strip().lower() if isinstance(value, str) else ""
+
+
+def resolve_atr_method(seg: dict, needs_atr: bool) -> dict:
+    strategy = seg.get("strategy") or {}
+    declared = _normalize_atr_method(strategy.get("atr_method"))
+    root = (seg.get("atr_defaults") or {}).get("root_atr_method")
+    root_value = _normalize_atr_method(root["value"]) if root is not None and root["present"] else ""
+    root_verified = _provenance_verified(root)
+    out = {"needs_atr": needs_atr, "strategy_value": strategy.get("atr_method"),
+           "root_evidence": copy.deepcopy(root), "method": None, "source": None, "status": None,
+           "rule": "strategy atr_method, else root atr_method, else simple (live resolveATRMethod)",
+           "refusals": []}
+    if declared and declared not in ATR_METHODS:
+        out["refusals"].append({"reason": "atr_configuration_invalid", "field": "strategy.atr_method",
+                                "detail": f"atr_method {strategy.get('atr_method')!r} is not one of {list(ATR_METHODS)}; "
+                                          "live config validation rejects it", "approximable": False})
+    if root_verified and root_value and root_value not in ATR_METHODS:
+        out["refusals"].append({"reason": "atr_configuration_invalid", "field": "atr_defaults.root_atr_method",
+                                "detail": f"root atr_method {root['value']!r} is not one of {list(ATR_METHODS)}; "
+                                          "live config validation rejects it", "approximable": False})
+    if out["refusals"]:
+        out["status"] = "refused"
+        return out
+    if declared:
+        out.update(method=declared, source="strategy", status="verified")
+    elif root_verified:
+        out.update(method=root_value or "simple", source="root" if root_value else "live_default",
+                   status="verified")
+    elif not needs_atr:
+        out.update(method="simple", source="not_used", status="not_applicable")
+    else:
+        substitute = root_value if root_value in ATR_METHODS else "simple"
+        out.update(method=substitute, source="unverified_substitute", status="unverified")
+        out["refusals"].append({
+            "reason": "atr_method_unverified", "field": "atr_defaults.root_atr_method",
+            "detail": "the strategy sets no atr_method and no verified root atr_method evidence exists, so the "
+                      f"ATR method live used is unknown; approximate mode substitutes {substitute!r}",
+            "approximable": True})
+    return out
 
 
 def _validate_geometry_evidence(geometry) -> None:
@@ -1144,7 +1201,8 @@ def _stop_rows(verdict: dict, strategy: dict) -> list:
     return rows
 
 
-def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_verdict: dict) -> list:
+def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_verdict: dict,
+                      atr_verdict: Optional[dict] = None) -> list:
     strategy = seg.get("strategy") or {}
     regime = seg.get("regime") or {}
     risk = seg.get("portfolio_risk") or {}
@@ -1212,10 +1270,19 @@ def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_v
         "validated by the central close-capability contract" if strategy.get("close_strategy") else
         "the execution-spec path needs the open/close engine; the plain signal path has no lot- or minimum-aware fill sites",
         approximable=not strategy.get("close_strategy"))
-    for field in ("direction", "invert_signal", "allow_shorts", "atr_method"):
+    for field in ("direction", "invert_signal", "allow_shorts"):
         handled.add(field)
         row(field, "signal_model", strategy.get(field), "modeled" if strategy.get(field) is not None else "inactive",
             "simulator input")
+    handled.add("atr_method")
+    if atr_verdict is None or atr_verdict["status"] == "not_applicable":
+        row("atr_method", "signal_model", strategy.get("atr_method"), "inactive", "no simulated ATR consumer")
+    elif atr_verdict["status"] == "verified":
+        row("atr_method", "signal_model", atr_verdict["method"], "modeled",
+            f"simulator input resolved from {atr_verdict['source']}")
+    else:
+        row("atr_method", "signal_model", atr_verdict["method"], "unverified",
+            "; ".join(r["detail"] for r in atr_verdict["refusals"]))
     for field in ("leverage", "sizing_leverage"):
         handled.add(field)
         v = strategy.get(field)
@@ -2033,7 +2100,10 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                      "needs_labels": False, "kwargs": None, "labels": None, "required_inputs": [],
                      "input_version": input_version, "basis": None, "resolved_live_units": None,
                      "capability_context": None, "close_refs": None})
-    matrix = capability_matrix(seg, cin.get("capability_evidence", {}), market_ctx, stop_verdict) if seg else []
+    has_close = bool(strategy.get("close_strategy"))
+    atr_verdict = resolve_atr_method(seg, has_close or stop_verdict.get("owner") in STOP_OWNERS_NEEDING_ATR)
+    matrix = (capability_matrix(seg, cin.get("capability_evidence", {}), market_ctx, stop_verdict, atr_verdict)
+              if seg else [])
     cap_refusals, cap_evidence = _decision_class(matrix)
     manual = strategy.get("type") == "manual"
     approx_ok = mode == COMPARISON_MODE_APPROXIMATE
@@ -2052,6 +2122,14 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                                    "effect": "simulated with the declared, unverified stop input"})
         else:
             refusals.append({k: v for k, v in r.items() if k != "approximable"})
+    for r in atr_verdict["refusals"]:
+        if approx_ok and r["approximable"]:
+            approximations.append({"feature": "atr_method", "category": "signal_model",
+                                   "assumption": f"{r['reason']}: {r['detail']}",
+                                   "effect": f"ATR computed with the {atr_verdict['method']!r} substitute"})
+        else:
+            refusals.append({k: v for k, v in r.items() if k != "approximable"})
+    atr_method = atr_verdict["method"] or "simple"
 
     booked = normalize_booked(doc, start, end, coin or "",
                               "manual owner: no simulator signal model; events are not comparable" if manual else None)
@@ -2059,7 +2137,6 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
 
     strategy_checks = None
     pending = None
-    has_close = bool(strategy.get("close_strategy"))
     direction = strategy.get("direction") or ("both" if strategy.get("allow_shorts") else "long")
     invert = bool(strategy.get("invert_signal"))
     open_ref = strategy.get("open_strategy") or {}
@@ -2070,7 +2147,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             strategy_checks = market_strategy_checks(
                 market, open_name, open_ref.get("params") or {}, direction, invert,
                 open_name in market_ctx["observation_input_strategies"], has_close,
-                atr_method=strategy.get("atr_method") or "simple",
+                atr_method=atr_method,
                 stop_needs_atr=stop_verdict.get("owner") in STOP_OWNERS_NEEDING_ATR,
                 labels=stop_verdict.get("labels") if stop_verdict.get("needs_labels") else None)
         except ValueError as exc:
@@ -2107,6 +2184,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
     elif approx_ok and any(r["reason"] in ("input_binding", "seeded_inventory_unsupported",
                                            "configuration_transition_unsupported", "market_input_integrity",
                                            "market_manifest_hash_mismatch") + STOP_UNAPPROXIMABLE_REASONS
+                           + ATR_UNAPPROXIMABLE_REASONS
                            or r["reason"].startswith("capability_")
                            for r in refusals):
         can_sim = False
@@ -2125,7 +2203,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             "close_refs": ((copy.deepcopy(stop_verdict["close_refs"]) if stop_verdict.get("close_refs") is not None
                             else [strategy["close_strategy"]]) if has_close else None),
             "direction": direction, "invert_signal": invert,
-            "atr_method": strategy.get("atr_method") or "simple",
+            "atr_method": atr_method,
             "comparison_mode": mode, "initial_cash": float(cin["starting_state"]["cash_usd"]["value"]),
             "execution_spec": use_spec,
             "stop": stop_verdict,
@@ -2368,7 +2446,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                         "source": "export.current_effective_configuration",
                         "note": "current-at-capture evidence only; never used as historical configuration",
                         "strategy": present.get("strategy"), "regime": present.get("regime"),
-                        "portfolio_risk": present.get("portfolio_risk")},
+                        "portfolio_risk": present.get("portfolio_risk"), "atr_method": present.get("atr_method")},
             "historical": {"source": "comparison_input.historical_configuration", "selection": {
                 k: v for k, v in hist.items() if k != "segment"}, "segment": seg or None},
             "present_vs_historical_differences": differences,
@@ -2409,6 +2487,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             "dispositions": sim_disp,
         },
         "simulation": sim_status,
+        "atr_method": {k: v for k, v in atr_verdict.items()},
         "stops": {
             "input_version": input_version,
             "basis": stop_verdict.get("basis"),

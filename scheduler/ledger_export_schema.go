@@ -41,6 +41,7 @@ const (
 	ledgerEventTimestampMeaning  = "ledger_record_time"
 	ledgerCaptureConsistency     = "transactional_per_file"
 	ledgerConfigBasis            = "current_at_capture"
+	ledgerATRMethodRule          = "strategy atr_method, else root atr_method, else simple"
 	ledgerWalletOwnership        = "live_wallet"
 	ledgerWalletAllocation       = "unallocated"
 	ledgerExportPlatform         = "hyperliquid"
@@ -131,11 +132,19 @@ type ledgerSnapshotFile struct {
 }
 
 type ledgerEffectiveConfig struct {
-	Basis         string          `json:"basis"`
-	ConfigVersion int             `json:"config_version"`
-	Strategy      json.RawMessage `json:"strategy"`
-	Regime        json.RawMessage `json:"regime"`
-	PortfolioRisk json.RawMessage `json:"portfolio_risk"`
+	Basis         string           `json:"basis"`
+	ConfigVersion int              `json:"config_version"`
+	Strategy      json.RawMessage  `json:"strategy"`
+	Regime        json.RawMessage  `json:"regime"`
+	PortfolioRisk json.RawMessage  `json:"portfolio_risk"`
+	ATRMethod     *ledgerATRMethod `json:"atr_method,omitempty"`
+}
+
+type ledgerATRMethod struct {
+	Strategy *string `json:"strategy"`
+	Root     *string `json:"root"`
+	Resolved string  `json:"resolved"`
+	Rule     string  `json:"rule"`
 }
 
 type ledgerWalletOrphanRecord struct {

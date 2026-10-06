@@ -874,6 +874,12 @@ func exportLedger(opts ledgerExportOptions) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("encode effective portfolio risk: %w", err)
 	}
+	atrMethod := &ledgerATRMethod{
+		Strategy: ledgerOptionalATRMethod(sc.ATRMethod),
+		Root:     ledgerOptionalATRMethod(cfg.ATRMethod),
+		Resolved: resolveATRMethod(sc, cfg),
+		Rule:     ledgerATRMethodRule,
+	}
 	snapFiles := make([]ledgerSnapshotFile, 0, len(snap.Files))
 	for _, f := range snap.Files {
 		snapFiles = append(snapFiles, ledgerSnapshotFile{SourceRole: string(f.Role), RelativePath: f.RelativePath, SHA256: f.SHA256})
@@ -908,6 +914,7 @@ func exportLedger(opts ledgerExportOptions) (int, error) {
 			Strategy:      strategyJSON,
 			Regime:        regimeJSON,
 			PortfolioRisk: riskJSON,
+			ATRMethod:     atrMethod,
 		},
 		Events:              events,
 		WalletOrphanContext: walletCtx,
@@ -926,4 +933,12 @@ func exportLedger(opts ledgerExportOptions) (int, error) {
 		return 0, err
 	}
 	return len(events), nil
+}
+
+func ledgerOptionalATRMethod(raw string) *string {
+	m := normalizeATRMethod(raw)
+	if m == "" {
+		return nil
+	}
+	return &m
 }

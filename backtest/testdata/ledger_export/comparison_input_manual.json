@@ -149,6 +149,14 @@
             "value": null
           }
         },
+        "atr_defaults": {
+          "root_atr_method": {
+            "status": "verified",
+            "source": "synthetic fixture: source/config.json has no root atr_method",
+            "present": false,
+            "value": null
+          }
+        },
         "stop_evidence": {
           "raw_fields": {},
           "resolved_fields": {},

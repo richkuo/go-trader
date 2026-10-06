@@ -923,7 +923,7 @@ def test_version_one_input_is_read_and_refused_for_unverified_stops(tmp_path):
     fx = _copy(tmp_path)
     cin = _load(fx / "comparison_input.json")
     cin["schema_version"] = 1
-    for key in ("basis", "stop_defaults", "stop_evidence"):
+    for key in ("basis", "stop_defaults", "stop_evidence", "atr_defaults"):
         cin["historical_configuration"]["timeline"][0].pop(key)
     _dump(fx / "comparison_input.json", cin)
     rc, rep = _run(fx, tmp_path)
@@ -936,6 +936,94 @@ def test_version_one_input_is_read_and_refused_for_unverified_stops(tmp_path):
     assert rc == 1 and rep["outcome"] == "incomplete" and rep["simulation"]["status"] == "run"
     assert {"basis", "max_drawdown_pct"} <= {a["feature"] for a in rep["eligibility"]["approximations"]}
     assert rep["stops"]["owner"] == "drawdown_fallback" and rep["stops"]["arm_events"]
+
+
+def _frame_atr(fx, method):
+    import pandas as pd
+    from atr import ensure_atr_indicator
+    m = om.load_manifest(str(fx / "market" / "manifest.json"))
+    frame, _, _ = om.window_frame(m, m["datasets"][0], "comparison")
+    frame = ensure_atr_indicator(frame.copy(), method=method)
+    return {str(pd.to_datetime(int(t), unit="ms")): float(v) for t, v in zip(frame["timestamp"], frame["atr"])}
+
+
+def _arm_atrs(rep):
+    import pandas as pd
+    return [(str(pd.Timestamp(a["date"]) - pd.Timedelta(hours=1)), a["entry_atr"]) for a in rep["stops"]["arm_events"]]
+
+
+def _set_root_atr(fx, entry):
+    cin = _load(fx / "comparison_input.json")
+    seg = cin["historical_configuration"]["timeline"][0]
+    if entry is None:
+        seg.pop("atr_defaults")
+    else:
+        seg["atr_defaults"] = {"root_atr_method": entry}
+    _dump(fx / "comparison_input.json", cin)
+    return cin
+
+
+def test_verified_root_atr_method_sets_the_simulated_entry_atr(tmp_path):
+    fx = _copy(tmp_path)
+    rc, rep = _run(fx, tmp_path, name="absent.json")
+    assert rc == 0 and rep["outcome"] == "strict_success"
+    assert (rep["atr_method"]["method"], rep["atr_method"]["source"]) == ("simple", "live_default")
+    simple = _frame_atr(fx, "simple")
+    assert rep["stops"]["arm_events"] and all(atr == simple[bar] for bar, atr in _arm_atrs(rep))
+
+    _set_root_atr(fx, {"status": "verified", "source": "test edit: root atr_method wilder", "present": True,
+                       "value": "wilder"})
+    rc, rep = _run(fx, tmp_path, name="wilder.json")
+    assert rc == 0 and rep["outcome"] == "strict_success"
+    assert (rep["atr_method"]["method"], rep["atr_method"]["source"]) == ("wilder", "root")
+    rows = {(r["field"], r["category"]): r for r in rep["eligibility"]["capability_matrix"]}
+    assert rows[("atr_method", "signal_model")]["decision"] == "modeled"
+    assert rows[("atr_method", "signal_model")]["value"] == "wilder"
+    wilder = _frame_atr(fx, "wilder")
+    arms = _arm_atrs(rep)
+    assert arms and all(atr == wilder[bar] and atr != simple[bar] for bar, atr in arms)
+
+
+def test_atr_method_without_verified_root_evidence_is_refused_in_strict_mode(tmp_path):
+    fx = _copy(tmp_path)
+    _set_root_atr(fx, None)
+    rc, rep = _run(fx, tmp_path, name="missing.json")
+    assert rc == 1 and rep["outcome"] == "refused" and rep["simulation"]["status"] == "not_run"
+    assert ("atr_method_unverified", "atr_defaults.root_atr_method") in {
+        (r["reason"], r.get("field")) for r in rep["eligibility"]["refusals"]}
+    rc, rep = _run(fx, tmp_path, mode="approximate", name="missing_approx.json")
+    assert rc == 1 and rep["outcome"] == "incomplete" and rep["simulation"]["status"] == "run"
+    assert "atr_method" in {a["feature"] for a in rep["eligibility"]["approximations"]}
+    assert rep["atr_method"]["source"] == "unverified_substitute"
+
+    _set_root_atr(fx, {"status": "unverified", "source": None, "present": True, "value": "wilder"})
+    rc, rep = _run(fx, tmp_path, name="unverified.json")
+    assert rc == 1 and "atr_method_unverified" in {r["reason"] for r in rep["eligibility"]["refusals"]}
+    rc, rep = _run(fx, tmp_path, mode="approximate", name="unverified_approx.json")
+    wilder = _frame_atr(fx, "wilder")
+    assert rep["atr_method"]["method"] == "wilder"
+    assert rep["stops"]["arm_events"] and all(atr == wilder[bar] for bar, atr in _arm_atrs(rep))
+
+
+def test_strategy_atr_method_overrides_root_and_an_invalid_value_is_never_simulated(tmp_path):
+    fx = _copy(tmp_path)
+    cin = _set_root_atr(fx, {"status": "verified", "source": "test edit: root atr_method wilder", "present": True,
+                             "value": "wilder"})
+    cin["historical_configuration"]["timeline"][0]["strategy"]["atr_method"] = "Simple"
+    _dump(fx / "comparison_input.json", cin)
+    rc, rep = _run(fx, tmp_path, name="override.json")
+    assert rc == 0 and (rep["atr_method"]["method"], rep["atr_method"]["source"]) == ("simple", "strategy")
+    simple = _frame_atr(fx, "simple")
+    assert all(atr == simple[bar] for bar, atr in _arm_atrs(rep))
+
+    cin["historical_configuration"]["timeline"][0]["strategy"].pop("atr_method")
+    cin["historical_configuration"]["timeline"][0]["atr_defaults"]["root_atr_method"]["value"] = "ema"
+    _dump(fx / "comparison_input.json", cin)
+    for mode in ("strict", "approximate"):
+        rc, rep = _run(fx, tmp_path, mode=mode, name=f"invalid_{mode}.json")
+        assert rc == 1 and rep["simulation"]["status"] == "not_run"
+        assert ("atr_configuration_invalid", "atr_defaults.root_atr_method") in {
+            (r["reason"], r.get("field")) for r in rep["eligibility"]["refusals"]}
 
 
 @pytest.mark.parametrize("variant", ["unified_close", "trailing_regime"])

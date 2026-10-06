@@ -540,7 +540,7 @@ Mandatory `trades` accounting columns missing = refused (no migration runs); inv
 The output must not exist (symlinks and hard links included), must not use a sidecar name, and must sit outside the snapshot, state and configuration directories; it is written to a private staging file beside it and linked into place without replacement only after every input is re-verified.
 A killed export leaves no output, at most a `.<name>.<hex>.staging` file.
 
-**Contract (schema `go-trader.booked-ledger`, `schema_version` 1).** Required top-level fields: `inspected_revision` (the binary's source commit from `-X main.SourceCommit`, which `update.sh` stamps from the exported commit; else `null`, never the version label), `capture_manifest_sha256`, `time_basis` `UTC`, `timestamp_meanings`, `selection`, `capture`, `snapshot_files`, `current_effective_configuration` (basis `current_at_capture`: selected strategy, `regime`, partition `portfolio_risk`; no tokens or credentials), `events` and `wallet_orphan_context`.
+**Contract (schema `go-trader.booked-ledger`, `schema_version` 1).** Required top-level fields: `inspected_revision` (the binary's source commit from `-X main.SourceCommit`, which `update.sh` stamps from the exported commit; else `null`, never the version label), `capture_manifest_sha256`, `time_basis` `UTC`, `timestamp_meanings`, `selection`, `capture`, `snapshot_files`, `current_effective_configuration` (basis `current_at_capture`: selected strategy, `regime`, partition `portfolio_risk`, and the optional `atr_method` object with the strategy value, the root value and the method `resolveATRMethod` resolves; no tokens or credentials), `events` and `wallet_orphan_context`.
 Events are the selected strategy's every `trades` row in `rowid` order (keyset pages of 500 in one transaction); `event_key` = `<source_role>/trades/<rowid>`, unique only within its manifest.
 Every data field is `{value, raw_value, status, reason, provenance[]}`: status `available`/`unavailable`/`not_applicable`, reason `column_absent`/`stored_null`/`unstamped`/`not_recorded`/`ambiguous_evidence`/`not_applicable`.
 Stored amounts, gross flags, fees (zero and negative kept) and identifiers are copied, never recomputed; order ids are decimal strings.
@@ -577,7 +577,15 @@ Each version 2 segment declares `basis` (`raw_config`: the strategy as written; 
 Every entry has `status` (`verified` needs a nonempty `source`) and `value`; presence entries add `present`, with verified absence as `present: false, value: null` and an explicit zero kept distinct.
 A loader-resolved value never proves a field was explicit.
 The optional top-level `initial_stop_geometry_evidence` maps a booked event key to `{status, source, stamp: "initial_entry"}`.
+The optional version 2 segment field `atr_defaults.root_atr_method` (a presence entry) is the root `atr_method`; the loader never stamps it into the strategy.
 The report records the input version it read.
+
+**ATR method.** The comparison resolves the method as live does: the strategy `atr_method`, else a verified root value, else `simple` only when the root value is verified absent.
+It applies only when the simulation reads ATR (a close strategy or an ATR stop owner).
+With no strategy value and no verified root evidence (always the case for a version 1 input without a strategy value), the run is refused with `atr_method_unverified`; approximate mode substitutes the declared root value or `simple` and lists it.
+A value other than `simple` or `wilder` is `atr_configuration_invalid`, which is never approximated.
+The report `atr_method` section holds the method, its source (`strategy`, `root`, `live_default`, `unverified_substitute` or `not_used`) and the evidence.
+Wilder ATR is recursive, so the indicator-history check needs a long warm-up when an ATR stop owner is active (1500 hourly bars passed in issue 1682's production run; 400 did not).
 
 **Stops.** `resolve_historical_stops` builds one stop context per segment.
 `raw_config` runs `run_backtest.resolve_raw_config_stops`, the in-memory resolver the file loader also uses: normalization, the verified user close and regime-ATR defaults, then the scalar ATR default, the drawdown fallback and one percent conversion.

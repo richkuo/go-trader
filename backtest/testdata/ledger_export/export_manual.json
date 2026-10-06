@@ -78,6 +78,12 @@
       "max_drawdown_pct": 25,
       "max_notional_usd": 0,
       "warn_threshold_pct": 60
+    },
+    "atr_method": {
+      "strategy": null,
+      "root": null,
+      "resolved": "simple",
+      "rule": "strategy atr_method, else root atr_method, else simple"
     }
   },
   "events": [
