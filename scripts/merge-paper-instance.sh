@@ -59,7 +59,10 @@ under one service user and one release. --root-from (default: the first
 folded deployment, --paper first, then --source by id) gives the root
 settings: every refuse-on-difference key must agree across the folded
 deployments, and the other dropped keys come from it. status_port comes from
---status-port, which a running process must not have bound, and db_file is
+--status-port, which a running process must not have bound and which must lie
+in the range the scheduler accepts (statusPortMinimum through 65535 -
+statusPortMaxAttempts + 1, read from scheduler/server.go; any other value exits
+2 before any work, --diff included), and db_file is
 <base>/<name>/state.db, which starts empty. Root portfolio_risk is the root
 deployment's block, and every source keeps its own effective limits in
 paper_sources[].portfolio_risk. The dry run stages every file in a temporary
@@ -188,14 +191,38 @@ print("ok" if paper_alias_suffix(sys.argv[1]) else "bad")
 ' "$1"
 }
 
+read_status_port_bounds() {
+    local src="${SCRIPT_DIR}/../scheduler/server.go" min attempts max
+    if [[ ! -f "$src" || ! -r "$src" ]]; then
+        printf 'cannot read %s for the scheduler status_port range' "$src"
+        return 1
+    fi
+    min=$(sed -n 's/^const statusPortMinimum = \([0-9][0-9]*\)$/\1/p' "$src")
+    attempts=$(sed -n 's/^const statusPortMaxAttempts = \([0-9][0-9]*\)$/\1/p' "$src")
+    if [[ ! "$min" =~ ^[0-9]{1,5}$ || ! "$attempts" =~ ^[0-9]{1,5}$ ]]; then
+        printf 'cannot parse exactly one statusPortMinimum and one statusPortMaxAttempts constant from %s' "$src"
+        return 1
+    fi
+    min=$((10#$min))
+    max=$((65535 - 10#$attempts + 1))
+    if (( min < 1 || 10#$attempts < 1 || max < min )); then
+        printf 'the scheduler status_port range %s..%s read from %s is empty or invalid' "$min" "$max" "$src"
+        return 1
+    fi
+    printf '%s %s' "$min" "$max"
+}
+
 NT=0
 TARGET_WORD="live"
 if [[ -n "$NEW_TARGET" ]]; then
     [[ -z "$LIVE" ]] || fail "$EXIT_USAGE" "--new-target and --live are exclusive"
     [[ -z "$LIVE_UNIT" ]] || fail "$EXIT_USAGE" "--live-unit applies only with --live; the new target's unit is go-trader@<name>.service"
     [[ "$(update_validate_instance_name "$NEW_TARGET")" == "ok" ]] || fail "$EXIT_USAGE" "invalid new target name '$NEW_TARGET'"
-    [[ "$STATUS_PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$STATUS_PORT >= 1 && 10#$STATUS_PORT <= 65535 )) || \
-        fail "$EXIT_USAGE" "--new-target needs --status-port <n> with 1 <= n <= 65535"
+    status_port_bounds=$(read_status_port_bounds) || fail "$EXIT_USAGE" "$status_port_bounds"
+    STATUS_PORT_MIN=${status_port_bounds% *}
+    STATUS_PORT_MAX=${status_port_bounds#* }
+    [[ "$STATUS_PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$STATUS_PORT >= STATUS_PORT_MIN && 10#$STATUS_PORT <= STATUS_PORT_MAX )) || \
+        fail "$EXIT_USAGE" "--new-target needs --status-port <n> with $STATUS_PORT_MIN <= n <= $STATUS_PORT_MAX, the range the scheduler accepts for status_port"
     STATUS_PORT=$((10#$STATUS_PORT))
     NT=1
     TARGET_WORD="target"
