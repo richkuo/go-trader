@@ -1026,6 +1026,28 @@ def test_strategy_atr_method_overrides_root_and_an_invalid_value_is_never_simula
             (r["reason"], r.get("field")) for r in rep["eligibility"]["refusals"]}
 
 
+def test_an_invalid_atr_method_is_refused_unverified_or_unread(tmp_path):
+    fx = _copy(tmp_path)
+    _set_root_atr(fx, {"status": "unverified", "source": None, "present": True, "value": "ema"})
+    rc, rep = _run(fx, tmp_path, mode="approximate", name="unverified_invalid.json")
+    assert rep["atr_method"]["needs_atr"] is True
+    assert rc == 1 and rep["simulation"]["status"] == "not_run"
+    assert ("atr_configuration_invalid", "atr_defaults.root_atr_method") in {
+        (r["reason"], r.get("field")) for r in rep["eligibility"]["refusals"]}
+
+    cin = _set_root_atr(fx, {"status": "verified", "source": "test edit: no root atr_method", "present": False,
+                             "value": None})
+    seg = cin["historical_configuration"]["timeline"][0]
+    seg["strategy"]["atr_method"] = "ema"
+    seg["strategy"].pop("close_strategy")
+    _dump(fx / "comparison_input.json", cin)
+    rc, rep = _run(fx, tmp_path, name="unread_invalid.json")
+    assert rep["atr_method"]["needs_atr"] is False and rep["stops"]["owner"] == "drawdown_fallback"
+    assert rc == 1 and rep["outcome"] == "refused"
+    assert ("atr_configuration_invalid", "strategy.atr_method") in {
+        (r["reason"], r.get("field")) for r in rep["eligibility"]["refusals"]}
+
+
 @pytest.mark.parametrize("variant", ["unified_close", "trailing_regime"])
 def test_regime_owned_stops_simulate_with_labels_and_no_gating(tmp_path, variant):
     from regime import valid_labels_for_classifier

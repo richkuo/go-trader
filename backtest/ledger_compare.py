@@ -464,7 +464,7 @@ def resolve_atr_method(seg: dict, needs_atr: bool) -> dict:
         out["refusals"].append({"reason": "atr_configuration_invalid", "field": "strategy.atr_method",
                                 "detail": f"atr_method {strategy.get('atr_method')!r} is not one of {list(ATR_METHODS)}; "
                                           "live config validation rejects it", "approximable": False})
-    if root_verified and root_value and root_value not in ATR_METHODS:
+    if root_value and root_value not in ATR_METHODS:
         out["refusals"].append({"reason": "atr_configuration_invalid", "field": "atr_defaults.root_atr_method",
                                 "detail": f"root atr_method {root['value']!r} is not one of {list(ATR_METHODS)}; "
                                           "live config validation rejects it", "approximable": False})

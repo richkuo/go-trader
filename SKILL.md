@@ -581,9 +581,9 @@ The optional version 2 segment field `atr_defaults.root_atr_method` (a presence 
 The report records the input version it read.
 
 **ATR method.** The comparison resolves the method as live does: the strategy `atr_method`, else a verified root value, else `simple` only when the root value is verified absent.
-It applies only when the simulation reads ATR (a close strategy or an ATR stop owner).
+The resolution and its evidence requirement apply only when the simulation reads ATR (a close strategy or an ATR stop owner).
 With no strategy value and no verified root evidence (always the case for a version 1 input without a strategy value), the run is refused with `atr_method_unverified`; approximate mode substitutes the declared root value or `simple` and lists it.
-A value other than `simple` or `wilder` is `atr_configuration_invalid`, which is never approximated.
+A strategy value or a declared root value (verified or not) other than `simple` or `wilder` is `atr_configuration_invalid` in both modes, also when the simulation reads no ATR, because live config validation rejects it at either level; it is never approximated.
 The report `atr_method` section holds the method, its source (`strategy`, `root`, `live_default`, `unverified_substitute` or `not_used`) and the evidence.
 Wilder ATR is recursive, so the indicator-history check needs a long warm-up when an ATR stop owner is active (1500 hourly bars passed in issue 1682's production run; 400 did not).
 
