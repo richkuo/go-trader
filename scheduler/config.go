@@ -1597,7 +1597,7 @@ func strategyRefsArgsWarnings(cfg *Config) []string {
 	}
 	var out []string
 	for _, sc := range cfg.Strategies {
-		if effectiveOpenStrategy(sc) == "" && sc.CloseStrategy == nil {
+		if sc.Type == "options" || !sendsStrategyRefs(sc) {
 			continue
 		}
 		seen := make(map[string]bool)

@@ -90,9 +90,13 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []st
 	return out
 }
 
+func sendsStrategyRefs(sc StrategyConfig) bool {
+	return effectiveOpenStrategy(sc) != "" || sc.CloseStrategy != nil
+}
+
 func buildStrategyRefsArg(sc StrategyConfig, closeOwner string, invertOpen bool) ([]string, error) {
 	openName := effectiveOpenStrategy(sc)
-	if openName == "" && sc.CloseStrategy == nil {
+	if !sendsStrategyRefs(sc) {
 		return nil, nil
 	}
 	payload := map[string]interface{}{}
