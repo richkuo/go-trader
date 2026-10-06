@@ -600,3 +600,19 @@ def test_repeated_checks_of_one_closed_bar_repeat_the_decision_until_the_next_ba
     next_bar = _hl_check("breakout", bars, bars[-1]["t"] + H, closed=True)
     assert next_bar["closed_bar_decision"]["decision_boundary_ms"] == bars[-1]["t"] + H
     assert next_bar["signal"] == 0
+
+
+def test_a_later_seal_with_a_corrected_closed_bar_decides_on_the_corrected_values():
+    bars = _bars(120)
+    cutoff = bars[-1]["t"] + H // 2
+    corrected = [dict(b) for b in bars]
+    corrected[-2]["c"] = bars[-2]["c"] + 0.5
+    corrected[-2]["h"] = max(bars[-2]["h"], corrected[-2]["c"] + 0.5)
+    first = _hl_check("breakout", bars, cutoff, closed=True)
+    later = _hl_check("breakout", corrected, cutoff + 60_000, closed=True)
+    assert first["closed_bar_decision"]["bar_open_ms"] == later["closed_bar_decision"]["bar_open_ms"] == bars[-2]["t"]
+    socket_df = _strategies().apply_strategy("breakout", _frame_from_rows(_hl_rows(bars[:-1])), None)
+    corrected_df = _strategies().apply_strategy("breakout", _frame_from_rows(_hl_rows(corrected[:-1])), None)
+    assert first["indicators"]["atr"] == round(float(socket_df["atr"].iloc[-1]), 6)
+    assert later["indicators"]["atr"] == round(float(corrected_df["atr"].iloc[-1]), 6)
+    assert later["indicators"]["atr"] != first["indicators"]["atr"]

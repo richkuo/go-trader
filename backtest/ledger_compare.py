@@ -173,7 +173,9 @@ def resolve_decision_timing(strategy: dict) -> dict:
                          "the entry ATR of bar N",
                 "limitation": "decision inputs agree with the simulator's closed bars, but a booked record time can "
                               "trail the bar boundary: checks run on a per-strategy timer, entry gates can hold an "
-                              "available signal, and a failed check retries the same bar later"}
+                              "available signal, and a failed check retries the same bar later; under market_feed "
+                              "websocket or shared, a decision can read a closed bar that a later venue correction "
+                              "revises, so its open, sizing and entry ATR can differ from the simulator's corrected bar"}
     return {"status": "verified", "mode": DECISION_TIMING_LEGACY, "field_present": present, "value": value,
             "basis": "closed_bar_decisions is off or omitted, so live checks may have decided on a forming bar",
             "limitation": "a closed-bar simulation cannot establish historical forming-bar decision parity without "

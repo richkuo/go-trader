@@ -609,7 +609,7 @@ The report `atr_method` section holds the method, its source (`strategy`, `root`
 Wilder ATR is recursive, so the indicator-history check needs a long warm-up when an ATR stop owner is active (1500 hourly bars passed in issue 1682's production run; 400 did not).
 
 **Decision timing (#1712).** The historical strategy's `closed_bar_decisions` is a capability row (`decision_timing`) and the report `timestamps.decision_timing` section.
-`true` is modeled: live decision inputs use the bar the simulator decides on, but a booked record time can still trail the bar boundary (per-strategy timer, entry gates, retries).
+`true` is modeled: live decision inputs use the bar the simulator decides on, but a booked record time can still trail the bar boundary (per-strategy timer, entry gates, retries), and under `market_feed: websocket` or `shared` a decision can read a closed bar before a later venue correction.
 `false` or omitted is legacy runtime timing, reported as informational with the limitation that a closed-bar simulation cannot establish forming-bar decision parity without recorded decision evidence.
 A non-boolean value is refused; recognizing the flag never removes another refusal.
 
@@ -1485,6 +1485,8 @@ Hyperliquid rows keep their native `t` and `T` (`T = t + interval - 1`), and the
 The row timestamps a strategy sees are unchanged.
 Unknown or contradictory timing, duplicate or overlapping bars, invalid prices, fewer than 30 closed bars, a payload without timing (an older producer), a missing dependency or a failed regime or higher-timeframe candle fetch hold the candle decision: the check returns `closed_bar_decision.held: true`, no open and no candle-derived close, and composed close evaluators still run on current inputs.
 A sealed-feed check never falls back to a private fetch.
+Limitation under `market_feed: websocket` and `shared`: the seal settles 5s after the deadline, while the first closed-bar correction read starts at close+5s, so the first check after a boundary usually decides on the socket-stored bar before any correction (§ Closed-bar correction); a venue revision that lands later reaches only later seals, so a booked open, its sizing and its entry ATR can differ from the backtester's corrected bar.
+A later check on the same bar re-evaluates the corrected values (Repeat rule). `market_feed: rest` fetches after the boundary and has no such gap.
 Enabled strategies request one more raw row (signal, higher-timeframe and regime frames) so the closed view keeps the same history length.
 
 **Decision and protection views.** On the closed view: the open strategy, candle-derived closes (legacy signals and unknown-close fallbacks), `indicators.atr` (the strategy's own ATR column, else the `atr_method` ATR), the higher-timeframe filter (bars closed by the decision boundary), `funding_skew` records (time at or before the boundary), and the decision regime, computed in the check from the regime timeframe's closed bars and returned as `decision_regime`.
