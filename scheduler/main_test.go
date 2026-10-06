@@ -51,6 +51,7 @@ func TestExecuteHyperliquidResult_StampsExchangeData(t *testing.T) {
 }
 
 func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
+	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	s := &StrategyState{
 		ID:              "hl-paper-btc",
 		Type:            "perps",
@@ -85,6 +86,7 @@ func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
 }
 
 func TestExecuteHyperliquidResult_PaperTierFillBooksAtTierPrice(t *testing.T) {
+	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	cases := []struct {
 		name      string
 		args      []string

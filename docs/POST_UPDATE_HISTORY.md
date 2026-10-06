@@ -43,6 +43,16 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   Adding or removing `allow_no_edge` on a live strategy needs a restart.
 
 **Runtime default**
+- **Paper Hyperliquid perps book venue lot sizes (#1716)**: paper HL perps synthetic entries, flips, scale-in adds and partial closes (signal partials and paper take-profit tier fills) now floor their quantity to the coin's venue lot size (`szDecimals`) with the adapter's `floor_lot_size` rule.
+  An entry or add holds when the floored quantity is 0 or the floored value at the booked price is below $10.30; a partial close holds on the same test at the cycle mid, and equality passes, as in the live close gate.
+  A held order writes no cash, fee, trade, risk result, tier consumption or stamp.
+  The scheduler reads the lot size from the public `meta` request (refreshed hourly outside `mu`, expired after 6 hours, budgeted under the request reason `lot_metadata`), at the endpoint `HYPERLIQUID_TESTNET` selects.
+  While the lot size is unknown, paper entries, adds and partial closes hold and one `[hl-lot]` line is logged per coin until it returns.
+  Full signal closes, stops and paper kill-switch and circuit-breaker flattening still close the whole book, including unrounded positions opened before the update; a flip books its full close and holds only the new open when that open fails the test.
+  Live fills and replay-mirror rows are unchanged.
+  Paper results before and after this update are not comparable: earlier trades keep their unrounded quantities and are not rewritten, and existing positions are not rounded in place.
+  There is no opt-out. A clean comparison needs a new paper strategy ID.
+  No config version, `state.db` or Python change; deploy Go and Python together with `bash scripts/update.sh --restart`.
 - **Args parameter flags warn at load when `--strategy-refs` supersedes them (#1711)**: a strategy whose `args` carry `--params`, `--open-strategy` or `--close-strategies` (in `=` or separate-value form) while the scheduler sends `--strategy-refs` for it (an open strategy name or a close strategy) now prints one `[WARN]` line at config load.
   The line names the strategy and the flag, says the check script ignores the value, says to move it into `open_strategy.params` (or the matching field) or delete it, and notes when the `--params` value already equals `open_strategy.params`.
   The value was already ignored, so trading does not change and the config still loads.

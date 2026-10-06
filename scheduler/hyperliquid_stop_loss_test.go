@@ -316,6 +316,7 @@ func TestPaperStopArmsTheLiveTriggerForEveryOwner(t *testing.T) {
 }
 
 func TestPaperStopBreachesOnEveryCycle(t *testing.T) {
+	useHLLotMetadataForTest(t, map[string]int{"ETH": 4})
 	pf := func(v float64) *float64 { return &v }
 	sc := StrategyConfig{ID: "hl-paper", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h"}, StopLossPct: pf(3), Direction: DirectionBoth, Leverage: 1, SizingLeverage: 1}
 	logger := silentStrategyLogger(sc.ID)
@@ -378,6 +379,7 @@ func TestPaperStopBreachesOnEveryCycle(t *testing.T) {
 }
 
 func TestDeferredOpenArmsTheStopOnlyForPaper(t *testing.T) {
+	useHLLotMetadataForTest(t, map[string]int{"ETH": 4})
 	prev := tradeRecorder
 	tradeRecorder = nil
 	t.Cleanup(func() { tradeRecorder = prev })

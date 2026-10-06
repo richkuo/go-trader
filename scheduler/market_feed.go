@@ -456,6 +456,7 @@ const (
 	feedRestRetry     feedRestReason = "retry"
 	feedRestFunding   feedRestReason = "funding"
 	feedRestMids      feedRestReason = "mids"
+	feedRestLotMeta   feedRestReason = "lot_metadata"
 
 	feedRestCorrection      feedRestReason = "correction"
 	feedRestCorrectionRetry feedRestReason = "correction_retry"

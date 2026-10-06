@@ -49,7 +49,7 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. CI `d
 - New platform: SKILL.md Custom Platform Integration touchpoints; check scripts use public methods.
 - Subprocess: stdout JSON, exit 1 on error; Go parses anyway.
 - Locking: `mu RWMutex`, 6 phases (RLock>Lock(CheckRisk)>no-lock subprocess>Lock(execute)>marks>RLock(status)); symbol locks>`mu`. OUTSIDE `mu`: HL fill resolver, reconciliation-close alerts, `cashflow_journal.go`. Skip-reason checks BEFORE spawn; Phase 1 captures `posSide`+`posQty`; `liveExecFailed` guards live exec.
-- Dispatch by `s.Platform`, never ID prefix. Perps paper=`ExecuteSpotSignalWithFillFee`, live=`RunHyperliquidExecute`; futures=`ExecuteFuturesSignalWithFillFee`.
+- Dispatch by `s.Platform`, never ID prefix. HL perps paper=`executePerpsSignalWithLeverage` (lot-floored; <$10.30/no lot=HOLD, no write; full/protective closes ungated), live=`RunHyperliquidExecute`; futures=`ExecuteFuturesSignalWithFillFee`.
 - Single `CloseStrategy` owns exit; close before open; partial close keeps `InitialQuantity`, suppresses SL replace.
 - `dueStrategies` value-copied: update `cfg.Strategies` first. Owner=`OwnerStrategyID`; shared-coin reconcile non-destructive; SL attribution by OID+qty, else `hl_sync_external`.
 - Trades: `is_close`/`realized_pnl`; `#T` counts opens by `(strategy_id,position_id)`. HL kill-switch shared-coin fill split fails closed; close side short=buy else sell. Invert: composer (`invert_open_signal`+echo); Go never negates; same-side close zeroed.

@@ -119,6 +119,21 @@ Tier triggers use entry ATR.
 Scope: Hyperliquid perps and `type=manual`.
 Backtestable.
 In live mode only (paper places no venue order and must match the backtester), the Hyperliquid check script rewrites a partial close whose lot-floored quantity is zero or whose value at the check-time price is below the venue minimum order value plus a 3% safety margin (the execute-side market close submits at 1% limit slippage and the price can drift before submission) to a noop (`close_gate: below_venue_minimum`); a full close is never rewritten (`current_close_fraction` snaps a final tier within `1e-9` of the whole remainder to exactly `1.0`), and the gate is skipped when the lot size cannot be resolved (adapter meta, else the `/tmp/hl_meta.json` cache under `market_feed=websocket`, never a fetch).
+Paper Hyperliquid perps (#1716) book synthetic entries, flips, scale-in adds and partial closes (signal partials and paper take-profit tier fills) at venue lot sizes (`scheduler/hyperliquid_paper_lot.go`).
+The scheduler reads `universe[].szDecimals` for the exact coin from the public `meta` request through `hlPostInfoTo` (`scheduler/hyperliquid_lot_metadata.go`), at the endpoint the adapter uses (`HYPERLIQUID_TESTNET=1` selects testnet).
+The refresh runs outside `mu`, before the execute lock, and only one refresh per endpoint runs at a time.
+It is charged to the websocket feed ledger when one exists, else to a local enforced ledger of 4 requests a minute, with reason `lot_metadata`.
+A snapshot is refreshed after 1 hour and expires after 6 hours; a failed refresh retries after 30 seconds, doubling up to 10 minutes; a response above 8 MiB is refused.
+A valid `szDecimals` of 0 is a lot size; an absent, null, non-integer, negative, above-12 or duplicated entry is refused for that coin.
+Each quantity is floored the way `adapter.floor_lot_size` floors it (`hlFloorLotSize`: the shortest decimal string plus 1e-9 lot of slack, Python's 28-digit decimal context).
+An entry or add holds when its floored quantity is 0 or its floored value at the booked price is below $10.30 ($10 plus the 3% margin).
+A partial close holds on the same test at the decision price (the cycle mid), and a value equal to $10.30 passes, as in the live gate; a tier fill still books at the tier price.
+A held order writes nothing: no cash, fee, trade, risk result, tier consumption, position stamp or alert, and a held partial close never opens the other side.
+When the lot size is unknown (no snapshot, expired, coin absent or entry refused) these orders hold, and one `[hl-lot]` line is logged per endpoint and coin until the lot size returns, which logs one `restored` line.
+Full signal closes, full stops and paper kill-switch and circuit-breaker flattening still close the whole book, also for unrounded legacy positions and during an outage.
+A flip books its full close and holds only the new open when that open fails the test, the same as an open refused for cash.
+Confirmed live fills and replay-mirror rows keep their booked quantities.
+Remaining differences, pinned by `TestHLPaperLotParityWithLiveGateAndBacktester` (`-tags pyintegration`): live opens round to the nearest lot, the execution-spec backtester reserves the taker fee before it floors an entry and rejects scale-in, no path gates a full close, and the paper tier price can differ from the decision price.
 A **full close on a shared coin** (two or more live HL perps strategies on the coin) is sent as a sized close to protect peer exposure.
 Every sized execute-lane close (a partial close, a shared-coin full close, a legacy reverse-signal close with close fraction 0, a `type=manual` cycle close and an operator `manual-close`) takes its size and order type from `planHLCloseOrder` (`scheduler/hyperliquid_close_plan.go`).
 The key is the strategy's side and book, the peers' books on the coin split by side (hedge legs and `type=manual` peers included, `hlPeerBooksOnCoin`) and the signed on-chain net `S`.
@@ -416,6 +431,7 @@ Never apply a runtime-default change silently when the operator has not been sho
 
 When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
 
+- **Paper Hyperliquid perps book venue lot sizes (#1716, runtime default, no opt-out).** Paper HL perps entries, flips, scale-in adds and partial closes (tier fills included) now floor to the coin's `szDecimals`, and hold with no book write when the floored order is 0 or below $10.30 or when the lot size is unknown. Full closes, stops and kill-switch flattening are unchanged. After an update, list every paper HL perps strategy and its open positions, tell the operator that paper results before and after this update are not comparable (recommend a new paper strategy ID when a clean comparison matters), and check the start log for `[hl-lot] ... unavailable` lines. No config, `state.db` or Python change; deploy with `bash scripts/update.sh --restart`.
 - **Args parameter flags warn at load when `--strategy-refs` supersedes them (#1711, runtime default with no behavior shift).** After an update, run `./go-trader inspect --all` (or read the start log), list each strategy that shows the new `[WARN]` with the unused args entry, and prompt per strategy: delete the entry (trading unchanged), or move the value into `open_strategy.params` or the matching field (trading changes, so recommend a new paper strategy ID). Apply an approved edit only with a restart, because an args change blocks SIGHUP hot reload. Default if the operator declines: nothing changes, and the warning repeats on each start.
 
 | Category | How to recognize it | What to do |

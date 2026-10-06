@@ -403,6 +403,7 @@ func TestRunPaperPostTPStopLossAdjustment(t *testing.T) {
 }
 
 func TestPaperPartialCloseMovesStopBeforeNextBreach(t *testing.T) {
+	useHLLotMetadataForTest(t, map[string]int{"ETH": 4})
 	prev := tradeRecorder
 	tradeRecorder = nil
 	t.Cleanup(func() { tradeRecorder = prev })

@@ -686,6 +686,8 @@ func main() {
 		}
 	}
 
+	hlLotMetadata.configure(feedOwnerCtx)
+
 	lastRun := make(map[string]time.Time)
 	var lastLiquidationAudit time.Time
 	offCycleAuditSaveDirty := false
@@ -2649,6 +2651,9 @@ func main() {
 								}
 							}
 						}
+						if result.Signal != 0 && hlPaperSyntheticFill(sc, execResult != nil) {
+							hlLotMetadata.Ensure(result.Symbol)
+						}
 						if !liveExecFailed {
 							mu.Lock()
 							var openTrade *Trade
@@ -4133,12 +4138,16 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		}
 	}
 
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, bookPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), bookCloseFraction, logger)
+	lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil)
+	exec, err := executePerpsSignalWithLotPolicyDeferredOpen(s, result.Signal, result.Symbol, bookPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), bookCloseFraction, logger, lotPolicy)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, "", nil, nil
 	}
 	trades := exec.TradesExecuted
+	if trades == 0 && exec.HoldReason != "" {
+		return 0, "", nil, nil
+	}
 	if trades > 0 && paperSignalCloseOwnsUnifiedTier(sc, result) {
 		if pos := s.Positions[result.Symbol]; pos != nil && pos.Quantity > 0 && preCloseQty > pos.Quantity+1e-9 {
 			recordPaperUnifiedTPConsumption(sc, pos, preCloseQty, preCloseInit)
