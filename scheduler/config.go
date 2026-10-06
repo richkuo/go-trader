@@ -1110,8 +1110,8 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 	}
 
 	if cfg.StatusPort != 0 {
-		if cfg.StatusPort < 1024 {
-			return nil, fmt.Errorf("status_port %d is below 1024 (privileged ports require root and are not supported)", cfg.StatusPort)
+		if cfg.StatusPort < statusPortMinimum {
+			return nil, fmt.Errorf("status_port %d is below %d (privileged ports require root and are not supported)", cfg.StatusPort, statusPortMinimum)
 		}
 		if cfg.StatusPort > 65535-statusPortMaxAttempts+1 {
 			return nil, fmt.Errorf("status_port %d is too high (max %d to leave room for %d fallback attempts)", cfg.StatusPort, 65535-statusPortMaxAttempts+1, statusPortMaxAttempts)

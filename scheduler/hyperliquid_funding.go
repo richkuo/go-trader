@@ -19,6 +19,10 @@ const (
 )
 
 func hlPostInfo(ctx context.Context, payload any) ([]byte, error) {
+	return hlPostInfoTo(ctx, hlMainnetURL, payload, 0)
+}
+
+func hlPostInfoTo(ctx context.Context, baseURL string, payload any, maxBytes int64) ([]byte, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal info request: %w", err)
@@ -39,7 +43,7 @@ func hlPostInfo(ctx context.Context, payload any) ([]byte, error) {
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, hlFundingFetchTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, hlMainnetURL+"/info", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, baseURL+"/info", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build info request: %w", err)
 	}
@@ -51,9 +55,19 @@ func hlPostInfo(ctx context.Context, payload any) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("http %d from %s/info", resp.StatusCode, hlMainnetURL)
+		return nil, fmt.Errorf("http %d from %s/info", resp.StatusCode, baseURL)
 	}
-	return io.ReadAll(resp.Body)
+	if maxBytes <= 0 {
+		return io.ReadAll(resp.Body)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("%s/info response exceeds %d bytes", baseURL, maxBytes)
+	}
+	return data, nil
 }
 
 func hlParseNumeric(raw json.RawMessage) (float64, error) {

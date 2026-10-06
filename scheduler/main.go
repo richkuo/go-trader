@@ -686,6 +686,8 @@ func main() {
 		}
 	}
 
+	hlLotMetadata.configure(feedOwnerCtx)
+
 	lastRun := make(map[string]time.Time)
 	var lastLiquidationAudit time.Time
 	offCycleAuditSaveDirty := false
@@ -2603,11 +2605,7 @@ func main() {
 							}
 						}
 						if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
-							flipAt := hlStep.historyLen(&mu)
-							if flipTrades, flipDetail := advancePaperDynamicCloseRegime(sc, stratState, stratDB, result.Symbol, price, &mu, logger); flipTrades > 0 {
-								hlStep.bindWindow(&mu, flipAt, flipDetail)
-							}
-							runPaperPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger)
+							runPaperHLQuietCycleMaintenance(sc, stratState, stratDB, result.Symbol, price, cfg, &mu, notifier, logger, hlStep)
 						}
 						scaleInAddQty := 0.0
 						if result.Signal != 0 && sc.Type == "perps" && sc.AllowScaleIn {
@@ -2689,6 +2687,9 @@ func main() {
 								}
 							}
 						}
+						if result.Signal != 0 && hlPaperSyntheticFill(sc, execResult != nil) {
+							hlLotMetadata.Ensure(result.Symbol)
+						}
 						if !liveExecFailed {
 							mu.Lock()
 							var openTrade *Trade
@@ -2768,6 +2769,9 @@ func main() {
 							}
 							if execResult == nil && !hyperliquidIsLive(sc.Args) && result.Signal != 0 && execTrades > 0 {
 								runPaperPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger)
+							}
+							if paperHLHeldPartialCloseNeedsQuietMaintenance(sc, result, execTrades, hlPosQty) {
+								runPaperHLQuietCycleMaintenance(sc, stratState, stratDB, result.Symbol, price, cfg, &mu, notifier, logger, hlStep)
 							}
 						}
 						if hlProfileResolved {
@@ -4193,15 +4197,22 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		}
 	}
 
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, bookPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), bookCloseFraction, logger)
+	lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil)
+	exec, err := executePerpsSignalWithLotPolicyDeferredOpen(s, result.Signal, result.Symbol, bookPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), bookCloseFraction, logger, lotPolicy)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, "", nil, nil
 	}
 	trades := exec.TradesExecuted
+	if trades == 0 && exec.HoldReason != "" {
+		if preCloseQty > 0 {
+			result.PaperPartialCloseHold = exec.HoldReason
+		}
+		return 0, "", nil, nil
+	}
 	if trades > 0 && paperSignalCloseOwnsUnifiedTier(sc, result) {
 		if pos := s.Positions[result.Symbol]; pos != nil && pos.Quantity > 0 && preCloseQty > pos.Quantity+1e-9 {
-			recordPaperUnifiedTPConsumption(sc, pos, preCloseQty, preCloseInit)
+			recordPaperUnifiedTPConsumptionAtLot(sc, pos, preCloseQty, preCloseInit, lotPolicy.bookedLot())
 		}
 	}
 	if trades > 0 && len(result.SizedCloseCanceledOIDs) > 0 {

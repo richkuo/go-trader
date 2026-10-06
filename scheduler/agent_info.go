@@ -65,6 +65,7 @@ var agentInfoEnvVars = []agentEnvVar{
 	{Name: "GO_TRADER_SERVICE", Purpose: "systemd unit name used by the updater's restart path.", Secret: false},
 	{Name: "HYPERLIQUID_ACCOUNT_ADDRESS", Purpose: "Hyperliquid account address for live perps.", Secret: false},
 	{Name: "HYPERLIQUID_SECRET_KEY", Purpose: "Hyperliquid signing key for live perps execution.", Secret: true},
+	{Name: "HYPERLIQUID_TESTNET", Purpose: "Set to 1 to use the Hyperliquid testnet API; the scheduler reads paper lot sizes from the same endpoint the adapter uses.", Secret: false},
 	{Name: "OKX_API_KEY", Purpose: "OKX API key for live OKX spot.", Secret: true},
 	{Name: "OKX_API_SECRET", Purpose: "OKX API secret for live OKX spot.", Secret: true},
 	{Name: "OKX_PASSPHRASE", Purpose: "OKX API passphrase for live OKX spot.", Secret: true},

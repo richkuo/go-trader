@@ -265,6 +265,13 @@ func orForceReplace(a, b []bool) []bool {
 	return out
 }
 
+func scaleInSideLabel(s *StrategyState, symbol string) string {
+	if pos := s.Positions[symbol]; pos != nil {
+		return pos.Side
+	}
+	return "add"
+}
+
 func runHyperliquidScaleInOrder(sc StrategyConfig, result *HyperliquidResult, addSize float64, walletSnapshot hlExecuteSnapshot, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	side := "buy"
 	if result.Signal == -1 {
@@ -306,6 +313,14 @@ func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, 
 		fillFee = fill.Fee
 		useFillFee = true
 		logger.Info("Live scale-in fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillAddQty, price)
+	}
+	if lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil); lotPolicy != nil {
+		d := lotPolicy.entry(fillAddQty, fillPrice)
+		if d.Hold != "" {
+			logHLPaperLotHold(logger, "scale-in "+scaleInSideLabel(s, result.Symbol), result.Symbol, d)
+			return 0, "", nil, nil
+		}
+		fillAddQty = d.Qty
 	}
 	trades, openTrade := applyPerpsScaleIn(s, sc, result.Symbol, fillPrice, fillAddQty, fillFee, fillOID, useFillFee, logger)
 	var ratchetAlert *RatchetTriggerAlert

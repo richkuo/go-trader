@@ -1646,10 +1646,12 @@ import socket
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as fh:
-    found = re.search(r"^const statusPortMaxAttempts = (\d+)$", fh.read(), re.MULTILINE)
-if found is None:
-    sys.exit("free_port: cannot parse statusPortMaxAttempts from " + sys.argv[1])
-low = 1024
+    text = fh.read()
+floor = re.search(r"^const statusPortMinimum = (\d+)$", text, re.MULTILINE)
+found = re.search(r"^const statusPortMaxAttempts = (\d+)$", text, re.MULTILINE)
+if floor is None or found is None:
+    sys.exit("free_port: cannot parse statusPortMinimum and statusPortMaxAttempts from " + sys.argv[1])
+low = int(floor.group(1))
 high = 65535 - int(found.group(1)) + 1
 if high < low:
     sys.exit("free_port: computed status port maximum %d is below %d" % (high, low))
@@ -1768,6 +1770,90 @@ out=$(run_nt --new-target paper --source btc=coin-btc 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "2" "--new-target without --status-port exits 2"
 out=$(run_nt --new-target paper --source btc=coin-btc --status-port 70000 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "2" "an out-of-range --status-port exits 2"
+port_range=$(printf '%s\n' "$out" | sed -n 's/.*--status-port <n> with \([0-9][0-9]*\) <= n <= \([0-9][0-9]*\), the range the scheduler accepts.*/\1 \2/p' | tail -n 1)
+[[ "$port_range" =~ ^[0-9]+\ [0-9]+$ ]] || { echo "$out" >&2; fail "the --status-port refusal names the accepted range"; }
+port_min=${port_range% *}
+port_max=${port_range#* }
+port_want=$(python3 - "${SCRIPT_DIR}/../scheduler/server.go" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+floor = re.search(r"^const statusPortMinimum = (\d+)$", text, re.MULTILINE)
+attempts = re.search(r"^const statusPortMaxAttempts = (\d+)$", text, re.MULTILINE)
+if floor is None or attempts is None:
+    sys.exit("cannot parse the status port constants from " + sys.argv[1])
+print(floor.group(1), 65535 - int(attempts.group(1)) + 1)
+PY
+)
+assert_eq "$port_range" "$port_want" "the script's --status-port range is statusPortMinimum through 65535 - statusPortMaxAttempts + 1"
+port_tmp="$F/port-tmp"
+mkdir -p "$port_tmp"
+btc_cfg=$(cat "$BASE/coin-btc/config.json")
+for bad in "$((port_min - 1))" "$((port_max + 1))" "0$((port_min - 1))"; do
+    for extra in "" "--diff" "--diff --align-to-live"; do
+        out=$(TMPDIR="$port_tmp" run_nt --new-target paper --source btc=coin-btc --status-port "$bad" $extra 2>&1) && rc=0 || rc=$?
+        assert_rc "$rc" "2" "--status-port $bad ${extra:-(dry run)} exits 2"
+        assert_contains "$out" "--status-port <n> with $port_min <= n <= $port_max, the range the scheduler accepts" "--status-port $bad ${extra:-(dry run)} names the accepted range"
+        [[ -z "$(ls -A "$port_tmp")" ]] || fail "--status-port $bad ${extra:-(dry run)} made a temporary directory: $(ls -A "$port_tmp")"
+        [[ ! -e "$BASE/coin-btc/config.json.aligned" ]] || fail "--status-port $bad ${extra:-(dry run)} wrote an .aligned file"
+    done
+done
+assert_eq "$(cat "$BASE/coin-btc/config.json")" "$btc_cfg" "the --status-port refusals leave the source config untouched"
+for good in "$port_min" "$port_max"; do
+    out=$(run_nt --new-target paper --source btc=coin-btc --status-port "$good" --diff 2>&1) && rc=0 || rc=$?
+    assert_rc "$rc" "0" "--status-port $good passes the usage check (a --diff run never checks that the port is free)"
+done
+port_cfg="$F/port-parity.json"
+for port in "$((port_min - 1))" "$port_min" "$port_max" "$((port_max + 1))"; do
+    python3 - "$BASE/coin-btc/config.json" "$port_cfg" "$port" <<'PY'
+import json
+import sys
+
+cfg = json.load(open(sys.argv[1]))
+cfg["status_port"] = int(sys.argv[3])
+json.dump(cfg, open(sys.argv[2], "w"), indent=2)
+PY
+    HYPERLIQUID_SECRET_KEY=fixture "$GO_TRADER_BIN" storage-inspect --json --config "$port_cfg" >"$F/port-parity.out" 2>"$F/port-parity.err" && rc=0 || rc=$?
+    if (( port >= port_min && port <= port_max )); then
+        if grep -q "failed to load config" "$F/port-parity.err"; then
+            cat "$F/port-parity.err" >&2
+            fail "the scheduler refuses status_port $port, which the script accepts"
+        fi
+        assert_contains "$(cat "$F/port-parity.out")" '"layout"' "the scheduler loads status_port $port, which the script accepts"
+    else
+        assert_contains "$(cat "$F/port-parity.err")" "failed to load config $port_cfg: status_port $port" "the scheduler refuses status_port $port, which the script refuses"
+    fi
+done
+port_src="$F/port-src"
+mkdir -p "$port_src/scripts" "$port_src/scheduler"
+cp "$MERGE" "$SCRIPT_DIR/update_helpers.sh" "$SCRIPT_DIR/paper_alias.py" "$port_src/scripts/"
+sed -e 's/^const statusPortMinimum = [0-9]*$/const statusPortMinimum = 2000/' \
+    -e 's/^const statusPortMaxAttempts = [0-9]*$/const statusPortMaxAttempts = 10/' \
+    "$SCRIPT_DIR/../scheduler/server.go" > "$port_src/scheduler/server.go"
+run_port_src() {
+    MERGE_PAPER_SYSTEMCTL="$F/bin/systemctl" MERGE_PAPER_SYSTEMD_ANALYZE="/nonexistent/systemd-analyze" \
+        MERGE_PAPER_BUILD_CMD="$F/bin/build" MERGE_PAPER_JOURNALD_DIR="$F/journald" \
+        bash "$port_src/scripts/merge-paper-instance.sh" --base "$BASE" --deploy-root "$OPT" --unit-dir "$UNITS" \
+        --new-target paper --source btc=coin-btc --diff "$@"
+}
+for bad in 1999 65527; do
+    out=$(run_port_src --status-port "$bad" 2>&1) && rc=0 || rc=$?
+    assert_rc "$rc" "2" "a moved scheduler range refuses --status-port $bad"
+    assert_contains "$out" "with 2000 <= n <= 65526, the range the scheduler accepts" "a moved scheduler range moves the script's bounds"
+done
+for good in 2000 65526; do
+    out=$(run_port_src --status-port "$good" 2>&1) && rc=0 || rc=$?
+    assert_rc "$rc" "0" "a moved scheduler range accepts --status-port $good"
+done
+sed -e '/^const statusPortMaxAttempts = /d' "$SCRIPT_DIR/../scheduler/server.go" > "$port_src/scheduler/server.go"
+out=$(run_port_src --status-port "$port_min" 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "an unparseable scheduler port bound refuses"
+assert_contains "$out" "cannot parse exactly one statusPortMinimum and one statusPortMaxAttempts constant" "the unparseable bound refusal names the constants"
+rm "$port_src/scheduler/server.go"
+out=$(run_port_src --status-port "$port_min" 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "a missing scheduler port bound source refuses"
+assert_contains "$out" "cannot read $(cd "$port_src/scripts" && pwd)/../scheduler/server.go for the scheduler status_port range" "the missing bound source refusal names the file"
 out=$(run_nt --new-target paper --source btc=coin-btc --status-port "$NT_PORT" --root-from coin-zzz 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "2" "--root-from naming no folded deployment exits 2"
 out=$(run_nt --new-target coin-btc --source btc=coin-btc --status-port "$NT_PORT" 2>&1) && rc=0 || rc=$?

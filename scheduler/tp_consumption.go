@@ -636,6 +636,10 @@ func addUnattributedDeferred(pos *Position, reason string, qty float64, now time
 }
 
 func recordPaperUnifiedTPConsumption(sc StrategyConfig, pos *Position, preQty, preInit float64) {
+	recordPaperUnifiedTPConsumptionAtLot(sc, pos, preQty, preInit, hlLotLookup{})
+}
+
+func recordPaperUnifiedTPConsumptionAtLot(sc StrategyConfig, pos *Position, preQty, preInit float64, lot hlLotLookup) {
 	if pos == nil || pos.Quantity <= 0 || !strategyUsesUnifiedRegimeClose(sc) {
 		return
 	}
@@ -668,7 +672,9 @@ func recordPaperUnifiedTPConsumption(sc StrategyConfig, pos *Position, preQty, p
 	}
 	thresholds := paperSLAfterTierThresholds(sc, label)
 	for i, th := range thresholds {
-		if th > preRatio+1e-9 && postRatio+1e-9 >= th {
+		clearedBefore := preRatio+1e-9 >= th || paperTierClearedByLot(th, preQty, initQty, lot)
+		clearedAfter := postRatio+1e-9 >= th || paperTierClearedByLot(th, pos.Quantity, postInit, lot)
+		if !clearedBefore && clearedAfter {
 			upsertBookedConsumption(pos, label, i, 0, delta, now)
 		}
 	}

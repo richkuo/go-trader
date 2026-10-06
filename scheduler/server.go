@@ -57,6 +57,8 @@ const perpsErrLogInterval = 5 * time.Minute
 
 const DefaultStatusPort = 8099
 
+const statusPortMinimum = 1024
+
 const statusPortMaxAttempts = 5
 
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateStore) *StatusServer {

@@ -10,6 +10,7 @@ func closedBarTestResult(signal int, atr float64, held bool) *HyperliquidResult 
 
 func TestClosedBarEntryATRStampsLateWhenOpenHadNoClosedATR(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-closed-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"breakout", "BTC", "1h", "--mode=paper"}, Capital: 10000, ClosedBarDecisions: true}
+	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	s := NewStrategyState(sc)
 	logger := silentStrategyLogger(sc.ID)
 	defer logger.Close()
