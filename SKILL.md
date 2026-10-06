@@ -366,7 +366,7 @@ The build version comes from the tree, or from the `--rsync-from` source when th
 A git failure names the tree, its owner, the account that ran git, and the git error.
 `scripts/test_migrate_service_layout_fixture.sh` (scenario `update`; Linux systemd host, run by the `shell-suites` CI job) proves the update, the rollback, the feed build and `--all` on such trees.
 
-**`--rsync-from <src>`** replaces `git pull --ff-only` with an rsync from a source clone. It preserves `.git/`, `scheduler/config.json` (or its transition symlink), `state.db` and its WAL sidecars, `.venv/`, and the live binary. Use it when the deployment directory has local changes or was not cloned from origin. Before the restart it warns on stderr about any required `EnvironmentFile=` the unit declares but the disk does not have; optional entries prefixed with `-` are skipped silently.
+**`--rsync-from <src>`** replaces `git pull --ff-only` with an rsync from a source clone. It preserves `.git/`, `scheduler/config.json` (or its transition symlink), `state.db` and its WAL sidecars, `.venv/`, the top-level `logs/` directory (the systemd unit's `ReadWritePaths` needs it), and the live binary. Use it when the deployment directory has local changes or was not cloned from origin. Before the restart it warns on stderr about any required `EnvironmentFile=` the unit declares but the disk does not have; optional entries prefixed with `-` are skipped silently.
 
 **Signal mode** (`--restart-mode signal` or `RESTART_MODE=signal`) SIGTERMs the PID in `GO_TRADER_PIDFILE` (default `./go-trader.pid`), respawns through `GO_TRADER_RUN_SH` (default `./run.sh`), then polls `/health` and PID freshness with the same verify-and-rollback flow as systemd mode. Generate a starter `run.sh` with `bash scripts/create-run-sh.sh`. Other signal-mode variables: `GO_TRADER_SIGNAL_LOG`. When systemd mode meets a missing unit (systemctl exit 5), update.sh retries in signal mode automatically if `go-trader.pid` and an executable `run.sh` are present.
 
@@ -496,6 +496,7 @@ Global slash commands register at startup, covering every guild the bot is in pl
 **Read-only** — any guild or DM, anyone. They read live in-process state with no HTTP round trip. Replies are public in-channel unless `discord.ephemeral_replies: true`.
 
 `/go-trader-status`, `/go-trader-health`, `/go-trader-positions`, `/go-trader-pnl`, `/go-trader-leaderboard [top]`, `/go-trader-circuit-breakers`, `/go-trader-dead-strategies`, `/go-trader-correlation`, `/go-trader-closing-strategies`. The four that fetch live marks (`status`, `positions`, `pnl`, `leaderboard`) defer the ACK so they do not blow Discord's 3-second deadline.
+`scripts/post-paper-leaderboards.py --port <paper status_port> --channel <Discord channel id> [--top N] [--dry-run]` posts the cross-coin paper leaderboard to Discord from the paper service's status API, reading `DISCORD_BOT_TOKEN` (and `GO_TRADER_STATUS_TOKEN` when the status server has a token); a 10-minute sentinel file dedupes repeat posts.
 
 **Ops and mutating ops** — owner-only AND DM-only:
 

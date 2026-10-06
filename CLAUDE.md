@@ -8,7 +8,7 @@ Guardrails only; mechanism in SKILL.md, docs/POST_UPDATE_HISTORY.md. CI `docs` f
 
 ## Priorities
 - **Always the best solution.** Cost/compute/time/effort/code never narrow options; branch+PR, issue-claim vs code, destructive-action safety win.
-- **Never give time/effort estimates.** Complexity=scope+risk
+- **No time/effort estimates.** Complexity=scope+risk
 
 ## Repo (`scheduler/`=one `package main`)
 - `executor.go`/`shutdown.go`: side effects via `runPythonSideEffect`, NEVER `runPython`. Live HL book needs `confirmHyperliquidExecuteFill` (finite `Fill.AvgPx>0`+`TotalSz>0`); `check_hyperliquid.py execute` exits 1 if no fill.
@@ -24,7 +24,7 @@ Guardrails only; mechanism in SKILL.md, docs/POST_UPDATE_HISTORY.md. CI `docs` f
 - `daily_loss.go`: hold-only, UNLATCHED pure read, PRE-FEE realized PnL, never force-closes, per partition; new `portfolio_risk` gates copy it.
 - `exposure_cap.go`: blocking-only, direction-aware; one exposure model `computeAssetDeltas` (`ComputeCorrelation` too). `notional_cap.go`: hold-only via `pausedBlocksSignal`, never skips cycle, restart-required.
 - `replay_{log,mirror}.go`: DEFAULT-OFF, HL perps, flat-only hot-reload, 1 mirror/source.
-- `hl_batch.go`: shared-state failure=same-cycle per-strategy fallback, never blank close/SL/ratchet/protection/hedge; `GO_TRADER_HL_BATCH=0` disables. `market_feed=websocket|shared`: checks read one sealed stdin `marketSnapshot`; missing frame=error, NEVER private fetch.
+- `hl_batch.go`: shared-state failure=same-cycle per-strategy fallback, never blank close/SL/ratchet/protection/hedge; `GO_TRADER_HL_BATCH=0` disables. `closed_bar_decisions`: missing `closed_bar_decision` block=script error, holds signal. `market_feed=websocket|shared`: checks read one sealed stdin `marketSnapshot`; missing frame=error, NEVER private fetch.
 - `market_feed_*.go`: `role: feed` runs BEFORE `LoadConfig` (no state/lock/probe). Seal bytes immutable; missed/evicted/pre-start key=`unavailable`, NEVER current data; sealer never takes `mu`. Consumer: 1 deadline/cycle, non-nil degraded snapshot, primary>backup. REST feed: `/info` via `feedBudgetAcquire`; key ready ONLY if refreshed that deadline. Closed-bar correction (`market_feed_correction.go`): reads outside `feedMu`, closed bars only, never `LastRecvAt`, never touches seals or readiness; ledger reasons `correction`/`correction_retry`. `shared-feed-convert.sh`: opt-in, NEVER run by update; failed switch restores byte copy.
 - `migrate-service-layout.py`: opt-in, NEVER run by update; target authoritative from enable-intent; recovery NEVER restarts source from stale snapshot.
 - `hyperliquid_fills.go`: `HLFillLookup.Px`=VWAP; `ClosedPnLGross` never into `Trade.RealizedPnL`; unconfirmed SL fills=gaps, never books.
@@ -63,7 +63,7 @@ Guardrails only; mechanism in SKILL.md, docs/POST_UPDATE_HISTORY.md. CI `docs` f
 
 ## PRs and issues
 - Never bare `#N` in lists; PR verification follows `## Summary`. Commits, PR and issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`. PR/commit format: `scripts/check_pr_metadata.py`.
-- Long-lived PR: diff `origin/main..HEAD` for reverts pre-merge.
+- Long-lived PR: diff `origin/main..HEAD` for reverts.
 - Reviews also follow `.github/prompts/pr-review-format-local.md`, never gate on CI; findings restate as invariant, list breaking states (inverse, compound).
 - `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork=review); no-execution in agent; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`.
 - rk-skills workflow skills=CI-only, no settings pin.
