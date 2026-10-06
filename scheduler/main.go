@@ -3480,7 +3480,7 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 		return 0, ""
 	}
 	trades := exec.TradesExecuted
-	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.Indicators)
+	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
@@ -4210,7 +4210,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		}
 	}
 	openTrade := exec.OpenTrade
-	closedBarStampEntryATR(sc, s, result.Symbol, openTrade != nil, result.Indicators)
+	closedBarStampEntryATR(sc, s, result.Symbol, openTrade != nil, result.StrategyDecisionFields, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, cfg)
@@ -4474,7 +4474,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 		return 0, ""
 	}
 	trades := exec.TradesExecuted
-	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.Indicators)
+	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
@@ -4649,7 +4649,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 		return 0, "", ""
 	}
 	trades := exec.TradesExecuted
-	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.Indicators)
+	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
@@ -4867,7 +4867,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 		return 0, "", ""
 	}
 	trades := exec.TradesExecuted
-	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.Indicators)
+	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)

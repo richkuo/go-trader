@@ -1464,15 +1464,15 @@ Changing the flag is restart-required; SIGHUP refuses it.
 A bar is closed when its close boundary is at or before the cutoff; a final row that is already closed is kept.
 Hyperliquid rows keep their native `t` and `T` (`T = t + interval - 1`), and the sealed payload carries a per-row `timing` sidecar plus `decision_cutoff_ms` only for frames an enabled strategy requests; Binance.US and OKX use the ccxt opening time plus the fixed interval.
 The row timestamps a strategy sees are unchanged.
-Unknown or contradictory timing, duplicate or overlapping bars, invalid prices, fewer than 30 closed bars, a payload without timing (an older producer) or a missing dependency hold the candle decision: the check returns `closed_bar_decision.held: true`, no open and no candle-derived close, and composed close evaluators still run on current inputs.
+Unknown or contradictory timing, duplicate or overlapping bars, invalid prices, fewer than 30 closed bars, a payload without timing (an older producer), a missing dependency or a failed regime or higher-timeframe candle fetch hold the candle decision: the check returns `closed_bar_decision.held: true`, no open and no candle-derived close, and composed close evaluators still run on current inputs.
 A sealed-feed check never falls back to a private fetch.
 Enabled strategies request one more raw row (signal, higher-timeframe and regime frames) so the closed view keeps the same history length.
 
 **Decision and protection views.** On the closed view: the open strategy, candle-derived closes (legacy signals and unknown-close fallbacks), `indicators.atr` (the strategy's own ATR column, else the `atr_method` ATR), the higher-timeframe filter (bars closed by the decision boundary), `funding_skew` records (time at or before the boundary), and the decision regime, computed in the check from the regime timeframe's closed bars and returned as `decision_regime`.
 The regime gate and the Hurst gate read `decision_regime`; a missing one holds position-increasing signals even when `regime_gate_on_failure` is `open`.
 On the current view: the price and mark override, the market ATR, the injected regime and AVWAP passed to close evaluators, the regime store, position regime stamps, divergence, dynamic exits and every Go protection path.
-Entry sizing and `Position.EntryATR` both read the closed `indicators.atr`; the stamp runs only on a confirmed new open, so an existing position keeps its entry ATR and a zero entry ATR stays zero.
-An enabled replay mirror sizes and stamps from the source row's `entry_atr`; a row without a valid one holds that open and every later row.
+Entry sizing and `Position.EntryATR` both read the closed `indicators.atr`; an existing position keeps a nonzero entry ATR, and a zero entry ATR is stamped from the next check whose decision is not held, so ATR stops still arm.
+An enabled replay mirror sizes and stamps from the source row's `entry_atr`; an open row without a valid one is not booked: the mirror sends an `open-without-entry-atr` drift alert, marks the row applied and applies the later rows.
 
 **Repeat rule.** There is no consumed-bar watermark.
 Every due check re-evaluates the selected closed bar against the current position and gates, so a gate hold, a failed check or a failed execution retries the same bar on the next check, and existing same-side guards, scale-in rules and fill confirmation stay authoritative.

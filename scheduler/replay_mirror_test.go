@@ -416,3 +416,81 @@ func TestSaveStrategyBookReplacesOpenPositionAcrossCycles(t *testing.T) {
 		t.Fatalf("after reopen position = %+v, want ETH qty 0.2", pos)
 	}
 }
+
+func TestMirrorReplayClosedBarZeroEntryATROpenDoesNotWedgeMirror(t *testing.T) {
+	logDB, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))
+	if err != nil {
+		t.Fatalf("OpenDecisionLogDB: %v", err)
+	}
+	defer logDB.Close()
+	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+	sc.ClosedBarDecisions = true
+	sc.ReplaySourceID = "hl-live-eth"
+	decidedAt := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	for _, dec := range []ReplayDecision{
+		{StrategyID: "hl-live-eth", DecisionType: ReplayDecisionOpen, DecidedAt: decidedAt, Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, EntryATR: 0},
+		{StrategyID: "hl-live-eth", DecisionType: ReplayDecisionFullClose, DecidedAt: decidedAt.Add(time.Hour), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910, CloseReason: "signal"},
+	} {
+		if err := logDB.InsertDecision(dec); err != nil {
+			t.Fatalf("InsertDecision: %v", err)
+		}
+	}
+	pending, err := logDB.PendingDecisions("hl-live-eth")
+	if err != nil || len(pending) != 2 {
+		t.Fatalf("pending = %v err=%v, want 2 rows", pending, err)
+	}
+	applied, trades, _, driftDMs := applyReplayedLiveDecisions(sc, s, pending, 1910, replayTestResult(), &Config{}, logger)
+	if len(applied) != 2 || applied[0] != pending[0].DecisionID || applied[1] != pending[1].DecisionID {
+		t.Fatalf("applied = %v, want both decision IDs %d and %d", applied, pending[0].DecisionID, pending[1].DecisionID)
+	}
+	if trades != 0 {
+		t.Fatalf("trades = %d, want 0 (open skipped, close finds paper flat)", trades)
+	}
+	if pos := s.Positions["ETH"]; pos != nil && pos.Quantity != 0 {
+		t.Fatalf("paper book holds %+v, want flat", pos)
+	}
+	if len(driftDMs) != 1 || !strings.Contains(driftDMs[0], replayDriftKindOpenWithoutEntryATR) {
+		t.Fatalf("drift DMs = %v, want one %s alert", driftDMs, replayDriftKindOpenWithoutEntryATR)
+	}
+	if err := logDB.MarkDecisionsApplied(applied); err != nil {
+		t.Fatalf("MarkDecisionsApplied: %v", err)
+	}
+
+	replayMirrorResetProgress(sc.ID)
+	replayDriftAlerts.reset()
+	restarted, err := logDB.PendingDecisions("hl-live-eth")
+	if err != nil {
+		t.Fatalf("PendingDecisions after restart: %v", err)
+	}
+	if len(restarted) != 0 {
+		t.Fatalf("pending after restart = %+v, want none", restarted)
+	}
+	reapplied, trades, _, driftDMs := applyReplayedLiveDecisions(sc, s, pending, 1910, replayTestResult(), &Config{}, logger)
+	if trades != 0 || len(driftDMs) != 0 || len(reapplied) != 2 {
+		t.Fatalf("re-apply after restart: trades=%d drift=%v applied=%v, want 0 trades, no drift alert, both rows re-marked", trades, driftDMs, reapplied)
+	}
+}
+
+func TestMirrorReplayClosedBarOpenAfterZeroEntryATRRowBooksFromRowATR(t *testing.T) {
+	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+	sc.ClosedBarDecisions = true
+	risk := 1.0
+	sc.RiskPerTradePct = &risk
+	result := replayTestResult()
+	result.Indicators["atr"] = 99.0
+	pending := []ReplayDecision{
+		{DecisionID: 1, StrategyID: "hl-live-eth", DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, EntryATR: 0},
+		{DecisionID: 2, StrategyID: "hl-live-eth", DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.25, ReferencePrice: 1905, EntryATR: 1584},
+	}
+	applied, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1905, result, &Config{}, logger)
+	if len(applied) != 2 || trades != 1 {
+		t.Fatalf("applied=%v trades=%d, want both rows applied and one open booked", applied, trades)
+	}
+	pos := s.Positions["ETH"]
+	if pos == nil || pos.Quantity != 0.25 || pos.AvgCost != 1905 {
+		t.Fatalf("position = %+v, want the second open 0.25 @ 1905", pos)
+	}
+	if pos.EntryATR != 1584 {
+		t.Fatalf("EntryATR = %v, want the row's 1584 (not paper's 99)", pos.EntryATR)
+	}
+}

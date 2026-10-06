@@ -285,6 +285,15 @@ def filter_records_to_boundary(records: Optional[list], boundary_ms: int) -> lis
     return out
 
 
+def fetch_rows_or_hold(fetch: Callable, symbol: str, timeframe: str) -> list:
+    try:
+        return fetch()
+    except ClosedBarHold:
+        raise
+    except Exception as e:
+        raise ClosedBarHold(f"fetching {symbol} {timeframe} candles failed: {e}")
+
+
 def htf_closed_fetcher(frame) -> Callable:
     def _fetch(_symbol, _timeframe, _limit):
         return frame.copy() if frame is not None else None

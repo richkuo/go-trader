@@ -149,7 +149,6 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 		}
 	}
 	now := time.Now()
-rows:
 	for _, row := range pending {
 		if row.DecisionID <= lastApplied {
 			markApplied(row.DecisionID)
@@ -166,11 +165,12 @@ rows:
 				continue
 			}
 			if sc.ClosedBarDecisions && !replayRowEntryATRValid(row) {
-				logger.Warn("Replay mirror: live opened %s %s %.6f @ $%.4f but the row carries no valid entry ATR (%g) — holding this open and every later row until the source records one (closed_bar_decisions, #1712)",
+				logger.Warn("Replay mirror: live opened %s %s %.6f @ $%.4f but the row carries no valid entry ATR (%g) — skipping open, paper stays flat (drift; audit the live/paper pair) (closed_bar_decisions, #1712)",
 					row.Side, row.Symbol, row.Quantity, row.ReferencePrice, row.EntryATR)
 				appendReplayDriftDM(&driftDMs, sc.ID, replayDriftKindOpenWithoutEntryATR,
-					fmt.Sprintf("live opened %s %s %.6f @ $%.4f with no valid entry ATR (%g); the mirror holds this row and every later row", row.Side, row.Symbol, row.Quantity, row.ReferencePrice, row.EntryATR), now)
-				break rows
+					fmt.Sprintf("live opened %s %s %.6f @ $%.4f with no valid entry ATR (%g); paper did not book it", row.Side, row.Symbol, row.Quantity, row.ReferencePrice, row.EntryATR), now)
+				markApplied(row.DecisionID)
+				continue
 			}
 			if t, detail := replayBookOpen(sc, s, row, result, cfg, logger); t > 0 {
 				trades += t

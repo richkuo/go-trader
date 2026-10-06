@@ -323,6 +323,8 @@ def _fake_ccxt_dir(tmp_path, rows_by_key):
 
             def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None):
                 rows = _ROWS[symbol + "|" + timeframe]
+                if rows == "network_error":
+                    raise NetworkError("frozen fixture: " + symbol + " " + timeframe + " unreachable")
                 return [list(r) for r in rows[-limit:]] if limit else [list(r) for r in rows]
 
             def fetch_ticker(self, symbol):
@@ -354,10 +356,28 @@ def _open_time_rows(bars):
     return [[b["t"], b["o"], b["h"], b["l"], b["c"], b["v"]] for b in bars]
 
 
+CLOCK_MS = T0 + 200 * H + H // 2
+
+
+def _clock_dir(tmp_path):
+    root = tmp_path / "clock"
+    root.mkdir()
+    (root / "sitecustomize.py").write_text(textwrap.dedent(f"""
+        import time
+
+        _wall = time.time
+        _start = _wall()
+        time.time = lambda: {CLOCK_MS / 1000!r} + (_wall() - _start)
+    """))
+    return str(root)
+
+
+def _clock_env(tmp_path, fakes):
+    return {"PYTHONPATH": fakes + os.pathsep + _clock_dir(tmp_path)}
+
+
 def _now_bars(n, **kw):
-    import time
-    now_ms = int(time.time() * 1000)
-    start = now_ms - (now_ms % H) - (n - 1) * H
+    start = CLOCK_MS - (CLOCK_MS % H) - (n - 1) * H
     bars = _bars(n, **kw)
     for i, b in enumerate(bars):
         b["t"] = start + i * H
@@ -365,16 +385,21 @@ def _now_bars(n, **kw):
     return bars
 
 
+def _assert_injected_clock(meta):
+    assert CLOCK_MS <= meta["cutoff_ms"] < CLOCK_MS + H // 2
+
+
 def test_binance_spot_direct_acquisition_uses_opening_time_closure(tmp_path):
     bars = _now_bars(120, spike_at=118)
     fakes = _fake_ccxt_dir(tmp_path, {"BTC/USDT|1h": _open_time_rows(bars)})
-    env = {"PYTHONPATH": fakes}
+    env = _clock_env(tmp_path, fakes)
     on = _run(CHECK_SPOT, ["atr_breakout", "BTC/USDT", "1h", "--mode=paper", "--closed-bar-decisions"], env_extra=env)
     off = _run(CHECK_SPOT, ["atr_breakout", "BTC/USDT", "1h", "--mode=paper"], env_extra=env)
     assert on.returncode == 0, on.stderr + on.stdout
     assert off.returncode == 0, off.stderr + off.stdout
     on, off = json.loads(on.stdout), json.loads(off.stdout)
     meta = on["closed_bar_decision"]
+    _assert_injected_clock(meta)
     assert meta["closure_rule"] == "opening_time_fixed_duration"
     assert meta["decision_boundary_ms"] == bars[-2]["t"] + H
     closed_df = _strategies("spot").apply_strategy("atr_breakout", _frame_from_rows(_open_time_rows(bars[:-1])), None)
@@ -388,15 +413,66 @@ def test_binance_spot_direct_acquisition_uses_opening_time_closure(tmp_path):
 def test_okx_direct_acquisition_uses_opening_time_closure(tmp_path):
     bars = _now_bars(120, spike_at=118)
     fakes = _fake_ccxt_dir(tmp_path, {"BTC/USDT:USDT|1h": _open_time_rows(bars)})
-    env = {"PYTHONPATH": fakes}
+    env = _clock_env(tmp_path, fakes)
     on = _run(CHECK_OKX, ["breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions"], env_extra=env)
     assert on.returncode == 0, on.stderr + on.stdout
     out = json.loads(on.stdout)
+    _assert_injected_clock(out["closed_bar_decision"])
     assert out["closed_bar_decision"]["decision_boundary_ms"] == bars[-2]["t"] + H
     assert out["signal"] == 1
     refused = _run(CHECK_OKX, ["funding_skew", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions"], env_extra=env)
     assert refused.returncode == 1
     assert "funding_skew" in json.loads(refused.stdout)["error"]
+
+
+def _held_long_tp(open_name):
+    refs = json.dumps({"open": {"name": open_name, "params": {}}, "closes": [{"name": "tiered_tp_pct", "params": {}}]})
+    return ["--strategy-refs", refs, "--position-side", "long", "--position-avg-cost=50",
+            "--position-qty=1", "--position-initial-qty=1"]
+
+
+def test_binance_spot_htf_fetch_failure_holds_and_keeps_protection(tmp_path):
+    bars = _now_bars(120, spike_at=118)
+    fakes = _fake_ccxt_dir(tmp_path, {"BTC/USDT|1h": _open_time_rows(bars), "BTC/USDT|4h": "network_error"})
+    proc = _run(CHECK_SPOT, ["atr_breakout", "BTC/USDT", "1h", "--mode=paper", "--closed-bar-decisions", "--htf-filter",
+                             *_held_long_tp("atr_breakout")], env_extra=_clock_env(tmp_path, fakes))
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    out = json.loads(proc.stdout)
+    meta = out["closed_bar_decision"]
+    assert meta["held"] is True
+    assert "BTC/USDT 4h candles failed" in meta["hold_reason"]
+    assert out["open_action"] == "none"
+    assert out["close_fraction"] == 1.0
+    assert out["close_strategy"] == "tiered_tp_pct"
+
+
+def test_okx_decision_regime_fetch_failure_holds_and_keeps_protection(tmp_path):
+    bars = _now_bars(120, spike_at=118)
+    fakes = _fake_ccxt_dir(tmp_path, {"BTC/USDT:USDT|1h": _open_time_rows(bars), "BTC/USDT:USDT|4h": "network_error"})
+    proc = _run(CHECK_OKX, ["breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions",
+                            "--regime-enabled", "--regime-windows-spec-json", SPEC, "--decision-regime-timeframe=4h",
+                            *_held_long_tp("breakout")], env_extra=_clock_env(tmp_path, fakes))
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    out = json.loads(proc.stdout)
+    meta = out["closed_bar_decision"]
+    assert meta["held"] is True
+    assert "BTC 4h candles failed" in meta["hold_reason"]
+    assert out["open_action"] == "none"
+    assert out["close_fraction"] == 1.0
+    assert out["close_strategy"] == "tiered_tp_pct"
+
+
+@pytest.mark.parametrize("script,argv,key", [
+    (CHECK_SPOT, ["atr_breakout", "BTC/USDT", "1h", "--mode=paper", "--closed-bar-decisions", "--htf-filter"], "BTC/USDT|1h"),
+    (CHECK_OKX, ["breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions"], "BTC/USDT:USDT|1h"),
+])
+def test_primary_fetch_failure_stays_a_check_error(tmp_path, script, argv, key):
+    fakes = _fake_ccxt_dir(tmp_path, {key: "network_error"})
+    proc = _run(script, argv, env_extra=_clock_env(tmp_path, fakes))
+    assert proc.returncode == 1, proc.stderr + proc.stdout
+    out = json.loads(proc.stdout)
+    assert "unreachable" in out["error"]
+    assert "closed_bar_decision" not in out
 
 
 def _fake_hl_sdk_dir(tmp_path, bars):
@@ -428,11 +504,12 @@ def _fake_hl_sdk_dir(tmp_path, bars):
 def test_hyperliquid_direct_acquisition_uses_native_close_times(tmp_path):
     bars = _now_bars(120, spike_at=118)
     fakes = _fake_hl_sdk_dir(tmp_path, bars)
-    env = {"PYTHONPATH": fakes}
+    env = _clock_env(tmp_path, fakes)
     on = _run(CHECK_HL, ["breakout", "BTC", "1h", "--mode=paper", "--closed-bar-decisions"], env_extra=env)
     assert on.returncode == 0, on.stderr + on.stdout
     out = json.loads(on.stdout)
     meta = out["closed_bar_decision"]
+    _assert_injected_clock(meta)
     assert meta["closure_rule"] == "hyperliquid_native_close"
     assert meta["decision_boundary_ms"] == bars[-2]["t"] + H
     assert out["signal"] == 1

@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 from atr import ensure_atr_indicator, latest_atr
 from closed_bar import (
     ClosedBarHold,
+    fetch_rows_or_hold,
     hold_metadata,
     htf_closed_fetcher,
     select_opening_time,
@@ -206,7 +207,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                         regime_rows = selection.rows
                     else:
                         regime_rows = select_opening_time(
-                            adapter.fetch_candles(symbol, regime_tf, ohlcv_limit + 1, inst_type=inst_type),
+                            fetch_rows_or_hold(lambda: adapter.fetch_candles(symbol, regime_tf, ohlcv_limit + 1, inst_type=inst_type), symbol, regime_tf),
                             timeframe=regime_tf, cutoff_ms=selection.boundary_ms, keep=ohlcv_limit).rows
                     decision_regime_payload, _decision_live, decision_strategy_regime = prepare_check_regime(
                         _make_dataframe(regime_rows),
@@ -221,7 +222,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                     from htf_filter import get_default_htf
                     htf_tf = get_default_htf(timeframe)
                     htf_frame = _make_dataframe(select_opening_time(
-                        adapter.fetch_candles(symbol, htf_tf, 61, inst_type=inst_type),
+                        fetch_rows_or_hold(lambda: adapter.fetch_candles(symbol, htf_tf, 61, inst_type=inst_type), symbol, htf_tf),
                         timeframe=htf_tf, cutoff_ms=selection.boundary_ms, keep=60, min_rows=50).rows)
                 decision_df = _make_dataframe(selection.rows)
                 closed_meta = selection.metadata()

@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 from atr import ensure_atr_indicator, latest_atr
 from closed_bar import (
     ClosedBarHold,
+    fetch_rows_or_hold,
     hold_metadata,
     htf_closed_fetcher,
     select_opening_time,
@@ -275,7 +276,7 @@ def main():
                         regime_rows = selection.rows
                     else:
                         regime_rows = select_opening_time(
-                            fetch_ohlcv_rows(symbol, regime_tf, ohlcv_limit + 1),
+                            fetch_rows_or_hold(lambda: fetch_ohlcv_rows(symbol, regime_tf, ohlcv_limit + 1), symbol, regime_tf),
                             timeframe=regime_tf, cutoff_ms=selection.boundary_ms, keep=ohlcv_limit).rows
                     decision_regime_payload, _decision_live, decision_strategy_regime = prepare_check_regime(
                         ohlcv_rows_frame(regime_rows),
@@ -290,7 +291,7 @@ def main():
                     from htf_filter import get_default_htf
                     htf_tf = get_default_htf(timeframe)
                     htf_frame = ohlcv_rows_frame(select_opening_time(
-                        fetch_ohlcv_rows(symbol, htf_tf, 61),
+                        fetch_rows_or_hold(lambda: fetch_ohlcv_rows(symbol, htf_tf, 61), symbol, htf_tf),
                         timeframe=htf_tf, cutoff_ms=selection.boundary_ms, keep=60, min_rows=50).rows)
                 closed_meta = selection.metadata()
             except ClosedBarHold as e:

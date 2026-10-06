@@ -291,8 +291,8 @@ func logClosedBarDecision(sc StrategyConfig, fields StrategyDecisionFields, logg
 		formatClosedBarMs(cb.BarOpenMs), formatClosedBarMs(cb.DecisionBoundaryMs), formatClosedBarMs(cb.CutoffMs), cb.FormingRowsDropped, cb.ClosureRule)
 }
 
-func closedBarStampEntryATR(sc StrategyConfig, s *StrategyState, symbol string, opened bool, indicators map[string]interface{}) {
-	if sc.ClosedBarDecisions && !opened {
+func closedBarStampEntryATR(sc StrategyConfig, s *StrategyState, symbol string, opened bool, fields StrategyDecisionFields, indicators map[string]interface{}) {
+	if sc.ClosedBarDecisions && !opened && (fields.ClosedBar == nil || !fields.ClosedBar.Enabled || fields.ClosedBar.Held) {
 		return
 	}
 	stampEntryATRIfOpened(s, symbol, indicators)
