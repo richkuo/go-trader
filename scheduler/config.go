@@ -1589,11 +1589,8 @@ func regimeDirectionalPolicyWarnings(cfg *Config) []string {
 	return out
 }
 
-// argsParamsFlags are the args flags that --strategy-refs supersedes in the check scripts.
 var argsParamsFlags = []string{"--params", "--open-strategy", "--close-strategies"}
 
-// strategyRefsArgsWarnings flags strategies whose args carry a parameter flag that
-// the --strategy-refs payload supersedes, so the check script ignores it (#1711).
 func strategyRefsArgsWarnings(cfg *Config) []string {
 	if cfg == nil {
 		return nil
