@@ -448,8 +448,7 @@ def test_session_venues_refuse_closed_bar_decisions(script):
 def test_flag_off_single_check_carries_no_closed_bar_fields():
     bars = _bars(120)
     out = _hl_check("breakout", bars, None, closed=False)
-    assert "closed_bar_decision" not in out
-    assert "decision_regime" not in out
+    assert {"closed_bar_decision", "decision_regime"}.isdisjoint(out.keys())
 
 
 def _htf_bars(n, end_ms, step_ms, base=100.0):
