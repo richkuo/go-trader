@@ -41,7 +41,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_LiveReplacesWiderTrigger(t *te
 
 	wantTrigger := 102.0 * (1.0 - 0.75*5.0/100.0)
 
-	n, _ := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102.0, hlAbsShare(map[string]float64{"ETH": 0.2}, "long"), nil, nil, &mu, nil, newTestLogger(t))
+	n, _, _ := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102.0, hlAbsShare(map[string]float64{"ETH": 0.2}, "long"), nil, nil, &mu, nil, newTestLogger(t))
 	if n != 0 {
 		t.Fatalf("trades = %d, want 0 (resting replacement, not immediate fill)", n)
 	}
@@ -95,7 +95,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_PaperUpdatesVirtualTrigger(t *
 	var mu sync.RWMutex
 	wantTrigger := 102.0 * (1.0 - 0.75*5.0/100.0)
 
-	n, _ := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102.0, nil, nil, nil, &mu, nil, newTestLogger(t))
+	n, _, _ := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102.0, nil, nil, nil, &mu, nil, newTestLogger(t))
 	if n != 0 {
 		t.Fatalf("trades = %d, want 0", n)
 	}

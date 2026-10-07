@@ -446,13 +446,24 @@ func platformSetupGuide(name string) (string, error) {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("**Platform setup — %s** (%s)\n", n, label))
 	sb.WriteString("Credentials are loaded from the environment, never the config file, so this command writes no secrets to disk. To finish setup:\n")
-	sb.WriteString(fmt.Sprintf("1. Add the platform's API credentials to `/opt/go-trader/.env` (the exact env var names are in `platforms/%s/adapter.py` and `shared_scripts/check_%s.py`).\n", n, n))
+	container := inContainerRuntime()
+	envFile := "/opt/go-trader/.env"
+	if container {
+		envFile = "docker/go-trader.env"
+	}
+	sb.WriteString(fmt.Sprintf("1. Add the platform's API credentials to `%s` (the exact env var names are in `platforms/%s/adapter.py` and `shared_scripts/check_%s.py`).\n", envFile, n, n))
 	if addable {
 		sb.WriteString(fmt.Sprintf("2. Add a strategy: `/go-trader-add-strategy <name> %s <asset>` (created in paper mode; promote later with `/go-trader-paper-to-live`).\n", n))
+	} else if container {
+		sb.WriteString("2. Add a strategy by editing the config (docs/DOCKER.md § Change the config and hot reload) — `/go-trader-add-strategy` only generates hyperliquid + binanceus entries.\n")
 	} else {
 		sb.WriteString("2. Add a strategy via the init wizard (`go-trader init`) — `/go-trader-add-strategy` only generates hyperliquid + binanceus entries.\n")
 	}
-	sb.WriteString("3. Restart go-trader (`/go-trader-restart`) so the new credentials and strategy load.\n")
+	if container {
+		sb.WriteString("3. Create the container again so it reads the new credentials: run `docker compose up -d --force-recreate go-trader` in the `docker` folder. `/go-trader-restart` keeps the old credentials.\n")
+	} else {
+		sb.WriteString("3. Restart go-trader (`/go-trader-restart`) so the new credentials and strategy load.\n")
+	}
 	return sb.String(), nil
 }
 

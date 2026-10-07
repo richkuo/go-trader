@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -1031,6 +1033,10 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 	}
 
 	cfg := generateConfig(opts)
+	if err := applyContainerInitPolicy(cfg, opts.OutputPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -1049,10 +1055,21 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 func runInit(args []string) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	jsonFlag := fs.String("json", "", "JSON blob of InitOptions for non-interactive config generation")
-	outputFlag := fs.String("output", "scheduler/config.json", "output config file path")
+	defaultOutput := "scheduler/config.json"
+	if inContainerRuntime() {
+		defaultOutput = containerConfigPath
+	}
+	outputFlag := fs.String("output", defaultOutput, "output config file path")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
 		return 1
+	}
+
+	if inContainerRuntime() {
+		if issue := containerMountIssue(containerDataDir, "config and state databases"); issue != "" {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", issue)
+			return 1
+		}
 	}
 
 	if *jsonFlag != "" {
@@ -1068,7 +1085,17 @@ func runInit(args []string) int {
 	fmt.Println("Interactive config setup. Press Enter to accept defaults.")
 	fmt.Println()
 
-	outputPath := p.String("Output config path", "scheduler/config.json")
+	outputPath := *outputFlag
+	if inContainerRuntime() {
+		if issue := containerDataPathIssue(outputPath); issue != "" {
+			fmt.Fprintf(os.Stderr, "Error: --output %q %s\n", outputPath, issue)
+			return 1
+		}
+		fmt.Printf("Config file: %s (in the data volume)\n", outputPath)
+		fmt.Println("Container setup creates paper strategies only. Live trading is a later config change (docs/DOCKER.md).")
+	} else {
+		outputPath = p.String("Output config path", *outputFlag)
+	}
 	if _, err := os.Stat(outputPath); err == nil {
 		if !p.YesNo(fmt.Sprintf("  %s already exists. Overwrite?", outputPath), false) {
 			fmt.Println("Aborted.")
@@ -1149,7 +1176,7 @@ func runInit(args []string) int {
 	}
 
 	perpsMode := "paper"
-	if enablePerps {
+	if enablePerps && !inContainerRuntime() {
 		modeOptions := []string{"paper (safe default)", "live (requires HYPERLIQUID_SECRET_KEY)"}
 		if p.Choice("\nPerps trading mode:", modeOptions, 0) == 1 {
 			perpsMode = "live"
@@ -1160,7 +1187,7 @@ func runInit(args []string) int {
 	var futuresSymbols []string
 	if enableFutures {
 		modeOptions := []string{"paper (safe default)", "live (requires TOPSTEP_API_KEY)"}
-		if p.Choice("\nFutures trading mode:", modeOptions, 0) == 1 {
+		if !inContainerRuntime() && p.Choice("\nFutures trading mode:", modeOptions, 0) == 1 {
 			futuresMode = "live"
 		}
 		symbolIdxs := p.MultiSelect("\nSelect futures symbols:", supportedFuturesSymbols, false)
@@ -1173,7 +1200,7 @@ func runInit(args []string) int {
 	}
 
 	robinhoodMode := "paper"
-	if enableRobinhood {
+	if enableRobinhood && !inContainerRuntime() {
 		modeOptions := []string{"paper (safe default — signal only, no orders)", "live (requires ROBINHOOD_USERNAME/PASSWORD/TOTP_SECRET)"}
 		if p.Choice("\nRobinhood trading mode:", modeOptions, 0) == 1 {
 			robinhoodMode = "live"
@@ -1181,7 +1208,7 @@ func runInit(args []string) int {
 	}
 
 	okxMode := "paper"
-	if enableOKX {
+	if enableOKX && !inContainerRuntime() {
 		modeOptions := []string{"paper (safe default)", "live (requires OKX_API_KEY/API_SECRET/PASSPHRASE)"}
 		if p.Choice("\nOKX trading mode:", modeOptions, 0) == 1 {
 			okxMode = "live"
@@ -1343,7 +1370,7 @@ func runInit(args []string) int {
 	manualCapital := 1000.0
 	manualDrawdown := 20.0
 	manualLeverage := 20.0
-	if p.YesNo("Do you plan to do any manual trading on Hyperliquid?", false) {
+	if !inContainerRuntime() && p.YesNo("Do you plan to do any manual trading on Hyperliquid?", false) {
 		enableManual = true
 		manualSymbol = strings.TrimSpace(p.String("Symbol for manual trades (e.g. ETH)", "ETH"))
 		manualTimeframe = strings.TrimSpace(p.String("Timeframe for TP evaluation", "1h"))
@@ -1471,6 +1498,10 @@ func runInit(args []string) int {
 	}
 
 	cfg := generateConfig(opts)
+	if err := applyContainerInitPolicy(cfg, outputPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
 
 	fmt.Println("\n--- Summary ---")
 	fmt.Printf("Output:     %s\n", outputPath)
@@ -1498,6 +1529,38 @@ func runInit(args []string) int {
 	fmt.Printf("\nConfig written to %s\n", outputPath)
 	fmt.Println("Next steps:")
 	fmt.Println("  To enable Discord/Telegram notifications, edit the config or ask OpenClaw.")
+	if inContainerRuntime() {
+		fmt.Printf("  docker compose run --rm cli probe --config %s\n", outputPath)
+		fmt.Println("  docker compose up -d")
+		return 0
+	}
 	fmt.Printf("  ./go-trader --config %s --once\n", outputPath)
 	return 0
+}
+
+func applyContainerInitPolicy(cfg *Config, outputPath string) error {
+	if !inContainerRuntime() {
+		return nil
+	}
+	if issue := containerDataPathIssue(outputPath); issue != "" {
+		return fmt.Errorf("output %q %s; write the config under %s (default %s)", outputPath, issue, containerDataDir, containerConfigPath)
+	}
+	switch cfg.AutoUpdate {
+	case "", "off":
+		cfg.AutoUpdate = "off"
+	default:
+		return fmt.Errorf("autoUpdate %q is not allowed in the container deployment, which updates only by image; omit it or set \"off\"", cfg.AutoUpdate)
+	}
+	var live []string
+	for _, sc := range cfg.Strategies {
+		if isLiveArgs(sc.Args) || sc.Type == "manual" {
+			live = append(live, sc.ID)
+		}
+	}
+	if len(live) > 0 {
+		sort.Strings(live)
+		return fmt.Errorf("container setup creates paper strategies only, but these are live or manual: %s; set every mode to paper and leave manual trading off, then enable live trading later (docs/DOCKER.md)", strings.Join(live, ", "))
+	}
+	cfg.DBFile = filepath.Join(filepath.Dir(filepath.Clean(outputPath)), "state.db")
+	return nil
 }

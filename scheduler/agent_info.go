@@ -24,7 +24,7 @@ type agentCommand struct {
 }
 
 var agentInfoCommands = []agentCommand{
-	{Name: "(daemon)", Summary: "Run the scheduler loop (default when no subcommand is given), or the market feed service when the config sets role=feed.", Usage: "go-trader [--config <path>] [--once] [--summary <channel>] [--leaderboard] [--status-port <n>]", Flags: []string{"--config", "--once", "--summary", "--leaderboard", "--status-port"}},
+	{Name: "(daemon)", Summary: "Run the scheduler loop (default when no subcommand is given), or the market feed service when the config sets role=feed.", Usage: "go-trader [--config <path>] [--once] [--summary <channel>] [--leaderboard] [--status-port <n>] [--status-bind <host>]", Flags: []string{"--config", "--once", "--summary", "--leaderboard", "--status-port", "--status-bind"}},
 	{Name: "agent-info", Summary: "Emit this self-describing capability + runtime-state report.", Usage: "go-trader agent-info [--config <path>] [--bootstrap-md] [--append-changelog] [--output <path>]", Flags: []string{"--config", "--bootstrap-md", "--append-changelog", "--output"}},
 	{Name: "init", Summary: "Generate a config.json interactively or from JSON.", Usage: "go-trader init [--json <json>] [--output <path>]"},
 	{Name: "export", Summary: "Export trade history: a TradingView CSV, or the read-only booked-ledger export. `export capture` copies every configured state file through SQLite VACUUM INTO from a Linux private mount namespace that makes the state directories read-only (refused elsewhere), then writes a hashed snapshot set and capture.json manifest; `export ledger` verifies that set and writes one Hyperliquid partition and strategy as schema go-trader.booked-ledger version 1 JSON. Needs no trading secrets; never writes a state file.", Usage: "go-trader export tradingview [...] | go-trader export capture --config <source-config> --output-dir <new-dir> | go-trader export ledger --manifest <dir>/capture.json --partition <live|paper|paper:<source-id>> --strategy <process-strategy-id> --output <new-json-file>", Flags: []string{"--config", "--output-dir", "--manifest", "--partition", "--strategy", "--output", "--all"}},
@@ -43,7 +43,9 @@ var agentInfoCommands = []agentCommand{
 	{Name: "diagnostics", Summary: "Read-only per-strategy trade-quality report (MFE/MAE/capture ratio) with backtestable tuning hypotheses (#1147).", Usage: "go-trader diagnostics [--config <path>] [--db <path>] [--strategy <id>] [--min-trades N] [--min-bucket N]", Flags: []string{"--config", "--db", "--strategy", "--min-trades", "--min-bucket"}},
 	{Name: "feed-fetch", Summary: "Read-only client of a market feed service socket: print its describe reply, or write one verified seal's bytes to a file for source comparison.", Usage: "go-trader feed-fetch --socket <path> [--key <unix>] [--out <file>] [--describe]", Flags: []string{"--socket", "--key", "--out", "--describe"}},
 	{Name: "record-observations", Summary: "Research-only recorder (#1637): subscribes to public Hyperliquid open-interest updates and writes hashed JSONL segments to an empty directory. Opens no state database, holds no trading lock, sends no order.", Usage: "go-trader record-observations --coins <BTC,ETH> --out-dir <dir> [--duration <d>] [--segment <d>]", Flags: []string{"--coins", "--out-dir", "--duration", "--segment"}},
-	{Name: "version", Summary: "Print the binary version.", Usage: "go-trader version"},
+	{Name: "version", Summary: "Print the binary version; --json adds the source commit embedded at build time.", Usage: "go-trader version [--json]", Flags: []string{"--json"}},
+	{Name: "supervise", Summary: "Container image only: start one scheduler daemon, forward SIGTERM/SIGINT/SIGHUP to it, and pass its exit status through; on exit 78, 79 or 80 log one CRITICAL line and hold (unhealthy, no restart) until terminated.", Usage: "go-trader supervise [daemon flags]"},
+	{Name: "healthcheck", Summary: "Query the daemon health endpoint; exit 0 only on an HTTP 2xx reply (container healthcheck).", Usage: "go-trader healthcheck [--url <url>] [--timeout <d>]", Flags: []string{"--url", "--timeout"}},
 }
 
 type agentEnvVar struct {
@@ -62,7 +64,9 @@ var agentInfoEnvVars = []agentEnvVar{
 	{Name: "GO_TRADER_CASHFLOW_JOURNAL_ALARM", Purpose: "Set to 0/off/false/no to force the legacy trade-ledger drift basis for HL shared wallets instead of the #1100 exchange-sourced cash-flow journal (default on).", Secret: false},
 	{Name: "GO_TRADER_DIRECTIONAL_CERT_PATH", Purpose: "Override path to the regime directional-certification artifact (#1085); default backtest/research/regime_directional_certifications.json.", Secret: false},
 	{Name: "GO_TRADER_GITHUB_TOKEN", Purpose: "GitHub token for the self-updater (preferred over GITHUB_TOKEN).", Secret: true},
+	{Name: "GO_TRADER_RUNTIME", Purpose: "Process runtime policy: unset on a host, \"container\" in the Docker image (image-only updates, restart by exit, wildcard status bind with a token, databases under /data).", Secret: false},
 	{Name: "GO_TRADER_SERVICE", Purpose: "systemd unit name used by the updater's restart path.", Secret: false},
+	{Name: "GO_TRADER_STATUS_BIND", Purpose: "Status server bind address when --status-bind is not given (default localhost); a non-loopback value needs GO_TRADER_RUNTIME=container and STATUS_AUTH_TOKEN.", Secret: false},
 	{Name: "HYPERLIQUID_ACCOUNT_ADDRESS", Purpose: "Hyperliquid account address for live perps.", Secret: false},
 	{Name: "HYPERLIQUID_SECRET_KEY", Purpose: "Hyperliquid signing key for live perps execution.", Secret: true},
 	{Name: "HYPERLIQUID_TESTNET", Purpose: "Set to 1 to use the Hyperliquid testnet API; the scheduler reads paper lot sizes from the same endpoint the adapter uses.", Secret: false},

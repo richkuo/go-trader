@@ -968,7 +968,14 @@ func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Con
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	return loadConfigData(path, data, skipLiveCredentialChecks, readOnly)
+	cfg, err := loadConfigData(path, data, skipLiveCredentialChecks, readOnly)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateContainerRuntimeConfig(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, readOnly bool) (*Config, error) {
