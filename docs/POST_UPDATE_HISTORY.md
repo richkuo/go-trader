@@ -6,6 +6,9 @@
 
 When in doubt, treat as runtime default and prompt. Regenerate from `git log --oneline -50` when stale.
 
+**Backtest result change (no live trading change)**
+- **#1728 Hyperliquid perps `--config` sizing.** `run_backtest.py --config` for a Hyperliquid perps strategy now sizes from sizing cash with the live notional rule (fee on top; `margin_per_trade_usd` is `min(margin, sizing cash) × exchange leverage`, and `sizing_leverage` below 1 still sizes). Saved results gain `margin_model_json`. A direct `Backtester` call that omits `perps_sizing` is unchanged. Live and paper execution are unchanged. Strict ledger comparison still refuses live isolated leverage above 1 until a recorded liquidation price verifies the formula (`liquidation_formula_unverified`) and refuses a pooled margin budget that has no per-entry available-margin evidence (`sizing_evidence_unavailable`).
+
 **Auto-migration**
 - `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`)
 - v11 no-op bump (#546)

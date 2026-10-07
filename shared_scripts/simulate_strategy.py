@@ -265,8 +265,7 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
     regime_enabled = bool(regime_cfg.get("enabled"))
     allowed = list(cfg.get("allowed_regimes") or [])
     gate_on_failure = _resolve_gate_on_failure(cfg, regime_cfg)
-
-    bt = Backtester(
+    bt_kwargs = dict(
         initial_capital=float(cfg.get("initial_capital") or 1000),
         platform=_fee_platform(platform, strategy_type),
         open_strategy={"name": open_name, "params": merged_params},
@@ -278,8 +277,26 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
         allowed_regimes=allowed,
         regime_gate_on_failure=gate_on_failure,
         strategy_type=strategy_type,
-        **_preview_stop_kwargs(cfg),
     )
+    bt_kwargs.update(_preview_stop_kwargs(cfg))
+    sizing = cfg.get("perps_sizing")
+    if sizing is not None:
+        if not isinstance(sizing, dict):
+            raise ValueError("perps_sizing must be an object")
+        evidence = str(sizing.get("pool_evidence") or "")
+        if evidence == "invalid":
+            raise ValueError("pool configuration refused: "
+                             + str(sizing.get("pool_evidence_reason") or "invalid shared-wallet pool"))
+        if sizing.get("budget_source") == "shared_wallet_pool" and evidence != "verified":
+            raise ValueError(
+                "pool_cap_unverified: strategy simulation has no per-entry available "
+                "wallet margin, so it will not size from strategy cash")
+        from backtester import normalize_perps_sizing
+        lev = bt_kwargs.get("leverage")
+        if isinstance(lev, bool) or not isinstance(lev, (int, float)) or lev <= 0:
+            lev = None
+        bt_kwargs["perps_sizing"] = normalize_perps_sizing(sizing, lev)
+    bt = Backtester(**bt_kwargs)
     results = bt.run(
         df_signals,
         strategy_name=open_name,
