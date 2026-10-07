@@ -2657,6 +2657,8 @@ class Backtester:
 
         def _entry_stamp(row) -> str:
             if self._regime_label_columns:
+                if self._regime_label_columns.get("gate_unshifted"):
+                    return _row_close_protection_label(row)
                 return _decision_protection_label(row)
             if self.regime_enabled:
                 return str(row.get("regime", "") or "").strip()
@@ -2753,12 +2755,13 @@ class Backtester:
                     else:
                         atr = gate
                     # A seed with no recorded label keeps the row's own label.
-                    # A modeled directional policy arms from this same closed-candle
-                    # row: live writes one result.Regime into pos.Regime, and both
-                    # the stop and the open-position policy read that stamp.
-                    # With no directional consumer, a bar-open fill arms from the
-                    # decision bar. The fill bar's close is still in the future.
-                    if seed_row or self.regime_directional_policy is not None:
+                    # A modeled directional policy, or a gate that reads this
+                    # closed-candle row, arms from that row: live writes one
+                    # result.Regime into pos.Regime, and the stop, the regime
+                    # tiers, and the position stamps read that stamp.
+                    # Otherwise a bar-open fill arms from the decision bar.
+                    if (seed_row or self.regime_directional_policy is not None
+                            or self._regime_label_columns.get("gate_unshifted")):
                         stamp = atr
                     else:
                         stamp = _decision_protection_label(row)

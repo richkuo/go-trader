@@ -621,7 +621,7 @@ Missing, hash, invalid and incomplete evidence keep those words in the reason co
 No evidence is `directional_certification_unverified` or `regime_label_availability_unverified` (approximable).
 Selectors are checked before a row can be inactive: `regime_window_multi_disabled`, `regime_window_unknown`, and `regime_gate_disabled_fail_closed` (disabled regime, `allowed_regimes`, fail-closed).
 A named selector with no consumer is inactive `regime_selector_no_consumer`.
-A regime-owned stop consumes a named gate window, so that selector is not inactive. With no modeled directional policy the arm reads that window on the decision bar; a modeled policy arms from the same unshifted closed-candle row as the position stamp.
+A regime-owned stop consumes a named gate window, so that selector is not inactive. With no modeled directional policy and no unshifted gate, the arm reads that window on the decision bar. A modeled policy, or a modeled gate on the unshifted closed-candle row, arms the stop, the regime-tier label, and the position stamps from that same row.
 An uncertified policy is inactive `directional_policy_uncertified`.
 A bare `ranging_directional` entry is honored when a certified sub-label resolves to it, matching live `gatedDirectionalEntry`.
 A gate with `closed_bar_decisions` reads one shifted closed-bar column.
@@ -659,7 +659,7 @@ The central `UNSUPPORTED_STOP_OWNER`, `MISSING_STOP_INPUT` (including an unsuppo
 These refusals are never approximated.
 Version 1 has no basis or provenance, so it cannot rule out an explicit stop, an implicit ATR default, a close-owned stop or the drawdown fallback: a Hyperliquid perps segment is refused with `stop_inputs_unverified` (`basis` plus the owner's inputs).
 A regime-owned stop gets labels from the historical regime configuration (`regime.enabled` is its label input; a disabled regime is `MISSING_STOP_INPUT`).
-When the ATR selector is default and no directional policy is modeled, protection uses the gate-window stamp from the decision bar: the named gate window, or the primary column when the gate selector is also default. A modeled policy uses that window on the unshifted closed-candle row.
+When the ATR selector is default, protection uses the gate-window stamp: the named gate window, or the primary column when the gate selector is also default. A modeled directional policy, or a modeled gate on the unshifted closed-candle row, uses that window on the unshifted row. Otherwise the arm uses the decision bar.
 A named ATR window stays refused for issue 1732.
 The `max_drawdown_pct` portfolio-control row stays separate from its stop-fallback row.
 The report `stops` section holds the basis, owner, required inputs, live and engine values, the capability context and every simulated arm.

@@ -102,11 +102,11 @@ def _protection_source(stop_needs_labels, atr_named, protection_reads_gate,
                        follows_closed_candle=False):
     """Name the bar a regime-owned stop reads.
 
-    With no modeled directional policy the arm uses the decision bar: the last
-    closed bar before the bar-open fill. A modeled policy arms from the same
-    unshifted closed-candle row as the position stamp. A named ATR window is
-    not supplied here. A default ATR selector uses the gate window, or the
-    primary column when that selector is default.
+    A modeled directional policy, or a modeled gate on the unshifted
+    closed-candle row, arms from that row. Otherwise the arm uses the
+    decision bar, the last closed bar before the bar-open fill. A named ATR
+    window is not supplied here. A default ATR selector uses the gate window,
+    or the primary column when that selector is default.
     """
     if not stop_needs_labels or atr_named:
         return None
@@ -689,7 +689,9 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
             engine["regime_directional_policy"] = policy
             engine["regime_directional_certified_states"] = {}
 
-    protection_follows_stamp = bool(use_dir and stop_needs_labels and not atr_named)
+    protection_follows_stamp = bool(
+        stop_needs_labels and not atr_named
+        and (use_dir or (use_gate and gate_unshifted)))
     protection_row = (
         "unshifted_closed_candle" if protection_follows_stamp else "shifted_decision_bar")
     window_report = []
@@ -718,8 +720,9 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         },
         "stamps": "An open position keeps the gate-window label when the directional selector is "
                   "default, and the named window when it is set. A flat directional decision reads "
-                  "the resolved directional window. A modeled directional policy arms the stop from "
-                  "that same closed-candle row; otherwise the arm uses the decision bar.",
+                  "the resolved directional window. A modeled directional policy, or a modeled gate "
+                  "that reads the unshifted closed-candle row, arms the stop, the regime-tier label, "
+                  "and the position stamps from that same row. Otherwise the arm uses the decision bar.",
         "certification": {
             "status": cert.get("status"),
             "identity": identity,

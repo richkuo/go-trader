@@ -2023,3 +2023,107 @@ def test_unshifted_gate_attestation_reads_the_fill_row(tmp_path):
     _, bare = _compare(False, False, "bare")
     assert ("regime_feature_timing_unsupported", "allowed_regimes") in _codes(bare)
     assert bare["eligibility"]["regime"]["timing"]["gate"] == "unsupported_without_evidence"
+
+
+def test_unshifted_gate_arms_protection_from_the_same_row(tmp_path):
+    """An attested unshifted gate and the regime-owned stop share one closed-candle row."""
+    import pandas as pd
+    from backtester import Backtester
+
+    def _arm(labels, columns, *, short=None):
+        frame = _ohlc(labels, ["long", "none", "none", "none"])
+        if short is not None:
+            frame["regime_w_short"] = short
+        events = []
+        bt = Backtester(
+            initial_capital=10_000, commission_pct=0.0, slippage_pct=0.0,
+            platform="hyperliquid", strategy_type="perps", regime_enabled=True,
+            allowed_regimes=["trending_up"], stop_loss_atr_mult_regime=_REGIME_STOP,
+            regime_label_columns=columns,
+        )
+        result = bt.run(frame, save=False, stop_observer=events.append)
+        arms = [e for e in events if e.get("event") == "arm"]
+        return frame, bt, arms, result["trades"]
+
+    down_then_up = ["trending_down", "trending_up", "trending_up", "trending_up"]
+    unshifted = {"gate": "regime", "directional_named": False, "gate_unshifted": True}
+    frame, bt, arms, trades = _arm(down_then_up, unshifted)
+    assert trades and trades[0]["side"] == "long"
+    assert pd.Timestamp(trades[0]["entry_date"]) == frame.index[1]
+    assert arms and arms[0]["regime"] == "trending_up"
+    assert arms[0]["fraction"] == pytest.approx(0.04)
+    assert bt._run_position_regime == "trending_up"
+    assert bt._stamp_gate == bt._stamp_atr == bt._stamp_directional == "trending_up"
+
+    _, shifted_bt, shifted_arms, shifted_trades = _arm(
+        down_then_up, {"gate": "regime", "directional_named": False})
+    assert shifted_trades == [] and shifted_arms == []
+    assert shifted_bt._run_position_regime == ""
+
+    up_then_down = ["trending_up", "trending_down", "trending_down", "trending_down"]
+    _, decision_bt, decision_arms, decision_trades = _arm(
+        up_then_down, {"gate": "regime", "directional_named": False})
+    assert decision_trades and decision_arms
+    assert decision_arms[0]["regime"] == "trending_up"
+    assert decision_arms[0]["fraction"] == pytest.approx(0.04)
+    assert decision_arms[0]["regime"] != "trending_down"
+    assert decision_bt._run_position_regime == "trending_up"
+
+    _, named_bt, named_arms, named_trades = _arm(
+        ["ranging", "trending_down", "trending_down", "trending_down"],
+        {"gate": "regime_w_short", "directional_named": False, "gate_unshifted": True},
+        short=down_then_up,
+    )
+    assert named_trades and named_arms
+    assert named_arms[0]["regime"] == "trending_up"
+    assert named_arms[0]["fraction"] == pytest.approx(0.04)
+    assert named_bt._stamp_gate == "trending_up"
+    assert named_bt._run_position_regime == "trending_up"
+    assert named_arms[0]["regime"] != "ranging"
+    assert named_arms[0]["regime"] != "trending_down"
+
+    def _stop_compare(closed_bar, name, *, gate_window=None, allowed=None):
+        slot = tmp_path / name
+        slot.mkdir()
+        fx = _copy(slot)
+        cin, seg = _segment(fx)
+        _use_regime_market(cin, fx)
+        seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20,
+                         "windows": dict(REGIME_WINDOWS)}
+        _stop_free_loader_segment(seg)
+        seg["strategy"]["close_strategy"] = copy.deepcopy(UNIFIED_CLOSE)
+        if allowed is not None:
+            seg["strategy"]["allowed_regimes"] = list(allowed)
+        if gate_window:
+            seg["strategy"]["regime_gate_window"] = gate_window
+        if closed_bar:
+            seg["strategy"]["closed_bar_decisions"] = True
+        rel, digest = _write_json(fx, "regime_labels.json", {"values_and_timing": True})
+        evidence = cin.setdefault("capability_evidence", {})
+        evidence["regime_labels"] = _verified_evidence(
+            _binding(seg), artifact={"path": rel, "sha256": digest})
+        evidence["regime_feature_timing"] = _verified_evidence(
+            _binding(seg), features={"gate": "unshifted_closed_candle"})
+        _dump(fx / "comparison_input.json", cin)
+        return fx, _run(fx, tmp_path, name=name + ".json")
+
+    _, (_, attested) = _stop_compare(False, "fill_row_stop", allowed=["trending_up"])
+    assert attested["simulation"]["status"] == "run", attested["eligibility"]["refusals"]
+    assert attested["eligibility"]["regime"]["timing"]["protection"] == "unshifted_closed_candle"
+    assert attested["eligibility"]["regime"]["protection_source"] == (
+        "unshifted_closed_candle:primary_column")
+    assert "unshifted closed-candle row" in attested["eligibility"]["regime"]["stamps"]
+
+    _, (_, closed) = _stop_compare(True, "decision_bar_stop", gate_window="short")
+    assert closed["simulation"]["status"] == "run", closed["eligibility"]["refusals"]
+    assert closed["eligibility"]["regime"]["timing"]["protection"] == "shifted_decision_bar"
+    assert closed["eligibility"]["regime"]["protection_source"] == (
+        "shifted_decision_bar:gate_window:short")
+    assert closed["eligibility"]["regime"]["timing"]["gate"] == "shifted_closed_bar"
+
+    _, (_, named) = _stop_compare(
+        False, "short_fill_row", gate_window="short", allowed=["trending_up"])
+    assert named["simulation"]["status"] == "run", named["eligibility"]["refusals"]
+    assert named["eligibility"]["regime"]["timing"]["protection"] == "unshifted_closed_candle"
+    assert named["eligibility"]["regime"]["protection_source"] == (
+        "unshifted_closed_candle:gate_window:short")
