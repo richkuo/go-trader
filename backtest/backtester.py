@@ -2598,7 +2598,10 @@ class Backtester:
             if label_columns.get("atr_named"):
                 atr_name = str(label_columns.get("atr") or "").strip()
                 if atr_name:
-                    df["_regime_atr_close"] = _aligned_label(atr_name)
+                    atr_close = _aligned_label(atr_name)
+                    df["_regime_atr_close"] = atr_close
+                    # Decision bar: the named column shifted once, known at the bar-open fill.
+                    df["_regime_atr_decision"] = atr_close.shift(1).fillna("")
             self._regime_trace = True
             self._regime_stamp_trace = []
         elif self.regime_enabled and "regime" not in df.columns:
@@ -2629,11 +2632,32 @@ class Backtester:
 
         has_open = "open" in df.columns
 
-        def _entry_stamp(row) -> str:
+        def _decision_protection_label(row) -> str:
+            """Regime label known at a bar-open fill: the previous bar's close.
+
+            `_regime_gate` is the gate column shifted once. The fill bar's own
+            close (`_regime_gate_close`) is not known until that bar ends.
+            """
+            if not self._regime_label_columns:
+                return ""
+            if self._regime_label_columns.get("atr_named"):
+                return str(row.get("_regime_atr_decision", "") or "").strip()
+            return str(row.get("_regime_gate", "") or "").strip()
+
+        def _row_close_protection_label(row) -> str:
+            """Label written on this row. A seeded position uses it only when
+            the recorded entry label is missing."""
             if self._regime_label_columns:
                 if self._regime_label_columns.get("atr_named"):
                     return str(row.get("_regime_atr_close", "") or "").strip()
                 return str(row.get("_regime_gate_close", "") or "").strip()
+            if self.regime_enabled:
+                return str(row.get("regime", "") or "").strip()
+            return str(row.get("_regime_bar_close", "") or "").strip()
+
+        def _entry_stamp(row) -> str:
+            if self._regime_label_columns:
+                return _decision_protection_label(row)
             if self.regime_enabled:
                 return str(row.get("regime", "") or "").strip()
             return str(row.get("_regime_bar_close", "") or "").strip()
@@ -2711,21 +2735,30 @@ class Backtester:
                 return mark + trail_mult * entry_atr
             return 0.0
 
-        def stamp_open_from_label(stamp: str, row=None) -> None:
+        def stamp_open_from_label(stamp: str, row=None, *, keep_recorded: bool = False,
+                                  seed_row: bool = False) -> None:
             if self._regime_label_columns and row is not None:
-                gate = str(row.get("_regime_gate_close", "") or "").strip()
-                if self._regime_label_columns.get("directional_named"):
-                    directional = str(row.get("_regime_directional_close", "") or "").strip()
+                recorded = (stamp or "").strip() if keep_recorded else ""
+                if recorded:
+                    gate = directional = atr = recorded
+                    stamp = recorded
                 else:
-                    directional = gate
-                if self._regime_label_columns.get("atr_named"):
-                    atr = str(row.get("_regime_atr_close", "") or "").strip()
-                else:
-                    atr = gate
+                    gate = str(row.get("_regime_gate_close", "") or "").strip()
+                    if self._regime_label_columns.get("directional_named"):
+                        directional = str(row.get("_regime_directional_close", "") or "").strip()
+                    else:
+                        directional = gate
+                    if self._regime_label_columns.get("atr_named"):
+                        atr = str(row.get("_regime_atr_close", "") or "").strip()
+                    else:
+                        atr = gate
+                    # A seed with no recorded label keeps the row's own label.
+                    # A bar-open fill arms from the decision bar, which has
+                    # already closed. The fill bar's close is still in the future.
+                    stamp = atr if seed_row else _decision_protection_label(row)
                 self._stamp_gate = gate
                 self._stamp_directional = directional
                 self._stamp_atr = atr
-                stamp = atr
                 self._note_regime_stamp("stamp")
             lab = (stamp or "").strip()
             self._run_position_regime = lab
@@ -2805,8 +2838,11 @@ class Backtester:
             except (TypeError, ValueError):
                 _seed_atr = 0.0
             _seed_entry = float(starting_long["entry_price"])
-            _seed_label = (str(starting_long.get("entry_regime", "") or "").strip()
-                           or _entry_stamp(df.iloc[0]))
+            _recorded_seed = str(starting_long.get("entry_regime", "") or "").strip()
+            if self._regime_label_columns:
+                _seed_label = _recorded_seed or _row_close_protection_label(df.iloc[0])
+            else:
+                _seed_label = _recorded_seed or _entry_stamp(df.iloc[0])
             if (stop_needs_atr and not (0 < _seed_atr <= 0.5 * _seed_entry)) or (
                     stop_needs_label and not _seed_label):
                 stop_seed_dropped = True
@@ -2849,10 +2885,14 @@ class Backtester:
                 seed_atr = 0.0
             if seed_atr > 0 and seed_atr <= 0.5 * effective_entry:
                 entry_atr_value = seed_atr
-            stamp = str(starting_long.get("entry_regime", "") or "").strip()
-            if not stamp:
-                stamp = _entry_stamp(df.iloc[0])
-            stamp_open_from_label(stamp, df.iloc[0])
+            recorded_seed = str(starting_long.get("entry_regime", "") or "").strip()
+            if self._regime_label_columns and recorded_seed:
+                stamp_open_from_label(recorded_seed, df.iloc[0], keep_recorded=True)
+            elif self._regime_label_columns:
+                stamp_open_from_label("", df.iloc[0], seed_row=True)
+            else:
+                stamp = recorded_seed or _entry_stamp(df.iloc[0])
+                stamp_open_from_label(stamp, df.iloc[0])
             seed_hwm = starting_long.get("high_water", 0.0)
             try:
                 seed_hwm = float(seed_hwm or 0.0)

@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Optional
+
+# Go time.Time rejects a timestamp with no seconds and accepts fractional
+# seconds plus a numeric offset. Python fromisoformat accepts the short form.
+_RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
+)
 
 DEFAULT_CERT_PATH = "backtest/research/regime_directional_certifications.json"
 CERT_PATH_ENV = "GO_TRADER_DIRECTIONAL_CERT_PATH"
@@ -142,7 +149,7 @@ def _optional_time(data: dict, key: str) -> None:
 
 
 def _require_cert_time(value, label: str):
-    if not isinstance(value, str) or "T" not in value:
+    if not isinstance(value, str) or _RFC3339_RE.fullmatch(value) is None:
         raise CertificationInvalid(f"{label} must be an RFC3339 timestamp")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))

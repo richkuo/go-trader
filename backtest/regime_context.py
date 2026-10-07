@@ -99,19 +99,20 @@ def _fail_policy(strategy) -> str:
 
 def _protection_source(stop_needs_labels, atr_named, protection_reads_gate,
                        lookback_blocks, timeframe_blocks, strategy, regime):
-    """Name the window live protectionATRRegimeLabel would read.
+    """Name the bar a regime-owned stop reads.
 
-    A named ATR window is not supplied here. A default ATR selector uses the
-    gate-window stamp, which is the named gate window or the primary column.
+    The arm uses the decision bar: the last closed bar before the bar-open
+    fill. A named ATR window is not supplied here. A default ATR selector
+    uses the gate window, or the primary column when that selector is default.
     """
     if not stop_needs_labels or atr_named:
         return None
     if protection_reads_gate and not lookback_blocks and not timeframe_blocks:
         gate_key = resolve_strategy_regime_window(strategy, "gate", regime)
-        return "unshifted_gate_window:" + gate_key
+        return "shifted_decision_bar:gate_window:" + gate_key
     if protection_reads_gate:
         return None
-    return "unshifted_primary_column"
+    return "shifted_decision_bar:primary_column"
 
 
 def _direction_matches(entry: dict, cert_dir: str) -> bool:
@@ -214,7 +215,13 @@ def _read_artifact(base_dir: str, entry: dict, prefix: str) -> tuple:
         return None, f"{prefix}_hash_mismatch"
     try:
         with open(path, "rb") as fh:
-            payload = json.loads(fh.read().decode("utf-8"))
+            text = fh.read().decode("utf-8")
+        if prefix == "directional_certification":
+            def _reject_constant(name):
+                raise json.JSONDecodeError(f"unsupported JSON constant {name}", text, 0)
+            payload = json.loads(text, parse_constant=_reject_constant)
+        else:
+            payload = json.loads(text)
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None, f"{prefix}_invalid"
     if not isinstance(payload, dict):
@@ -519,7 +526,7 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
     elif protection_reads_gate and gate_state[0] != "modeled":
         gate_window_decision = (
             "modeled", "regime_gate_window_protection", False,
-            "a regime-owned stop reads the unshifted gate-window stamp")
+            "a regime-owned stop reads the decision-bar label of the gate window")
     elif gate_state[0] == "inactive":
         gate_window_decision = ("inactive", "regime_selector_no_consumer", False,
                                 "selector with no active consumer")
@@ -684,12 +691,12 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         "consumers": {
             "gate": next(r["decision"] for r in rows if r["field"] == "allowed_regimes"),
             "directional": next(r["decision"] for r in rows if r["field"] == "regime_directional_policy"),
-            "atr": "unshifted_protection" if stop_needs_labels else "inactive",
+            "atr": "shifted_decision_bar" if stop_needs_labels else "inactive",
         },
         "timing": {
             "gate": "shifted_closed_bar" if closed_bar else "unsupported_without_evidence",
             "directional": "result.Regime",
-            "protection": "unshifted_current_inputs",
+            "protection": "shifted_decision_bar",
         },
         "stamps": "An open position keeps the gate-window label when the directional selector is "
                   "default, and the named window when it is set. A flat directional decision reads "

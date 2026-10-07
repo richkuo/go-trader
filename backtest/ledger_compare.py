@@ -1445,6 +1445,44 @@ def _signal_columns(frame: pd.DataFrame) -> list:
     return cols + _close_fraction_columns(frame)
 
 
+def _blank_label(value) -> bool:
+    if value is None:
+        return True
+    try:
+        if value != value:
+            return True
+    except TypeError:
+        pass
+    return str(value).strip() in ("", "nan", "None")
+
+
+def _fill_bounded_trim_blanks(scored_full: pd.DataFrame, scored_trim: pd.DataFrame,
+                              columns: list, limit: int, warmup: int, trim: int) -> pd.DataFrame:
+    """Ignore bounded-label blanks caused by the trim cutting into the lookback.
+
+    bounded_window_labels leaves a bar blank when fewer than `limit` rows end
+    at it. Removing the first third of a warm-up that already covers the live
+    lookback can blank early scored bars even though those labels depend only
+    on the trailing lookback, not on the trimmed prefix.
+    """
+    if limit < 1 or not columns or len(scored_full) != len(scored_trim):
+        return scored_trim
+    out = scored_trim.copy()
+    first = warmup - trim
+    for col in columns:
+        if col not in out.columns or col not in scored_full.columns:
+            continue
+        loc = out.columns.get_loc(col)
+        full_loc = scored_full.columns.get_loc(col)
+        for k in range(len(out)):
+            if first + k >= limit - 1:
+                continue
+            if not _blank_label(out.iloc[k, loc]):
+                continue
+            out.iloc[k, loc] = scored_full.iloc[k, full_loc]
+    return out
+
+
 def _frames_equal(a: pd.DataFrame, b: pd.DataFrame, cols: list) -> bool:
     for c in cols:
         x, y = a[c], b[c]
@@ -1606,11 +1644,17 @@ def market_strategy_checks(market: dict, name: str, params: dict, direction: str
                 columns=regime_prepare["columns"])
         scored_full = om.slice_window(signals, win)
         scored_trim = om.slice_window(trimmed, win)
-        stable = len(scored_full) == len(scored_trim) and _frames_equal(scored_full, scored_trim, cols)
+        stable = len(scored_full) == len(scored_trim)
+        if stable and regime_prepare:
+            scored_trim = _fill_bounded_trim_blanks(
+                scored_full, scored_trim, sorted(regime_prepare["columns"]),
+                int(regime_prepare["limit"]), warm, trim)
+        stable = stable and _frames_equal(scored_full, scored_trim, cols)
     out["checks"]["indicator_history"] = {
         "ok": bool(stable), "trimmed_warmup_bars": trim, "compared_columns": cols,
         "rule": "scored-window decisions, and the ATR and regime labels a stop owner reads, are identical "
-                "when the first third of warm-up is removed",
+                "when the first third of warm-up is removed; a bounded regime label left blank because "
+                "that trim cuts into the live lookback is not a difference",
     }
     if not stable:
         out["refusals"].append({"reason": "market_indicator_history_insufficient",
