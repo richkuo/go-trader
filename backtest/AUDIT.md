@@ -74,14 +74,14 @@ label parity).
 | Default tier ladders (#870/#887) | Matches — values synced across Go and all three Python mirrors, now pinned: `backtest/tests/test_default_tier_ladders.py` reads `defaultHLProtectionTiers()` from `scheduler/hyperliquid_protection.go`, and `backtest/testdata/tp_tier_parity.json` exists. Issue #944 is closed. |
 | Single close ref (#842) | Matches — `--config` rejects legacy `len>1` arrays with the same semantics live rejects them; the engine's max-wins multi-ref path remains for direct-constructor/test use only. |
 | `tiered_tp_atr_live_regime_dynamic` (#843) | Refused (live-only) — Audit-time (2026-06): "loudly rejected at config load; no evaluator registered under the name." Correction (2026-10, issue #1724): the evaluator is registered in `shared_strategies/close/registry.py`; the backtester refuses it through the central close-capability policy from issue #1683 (PR 1688) — `CLOSE_LIVE_ONLY` in `CLOSE_CAPABILITIES`, enforced by `validate_close_capabilities` in both comparison modes. |
-| `regime_directional_policy` (#822/#1025) | Matches — backtested through the per-cycle direction/invert resolver; `--config` requires `regime.enabled=true`, matches live flat/open regime source, and parity diff transforms the same decision layer. Open/close-path entry gate re-resolves after the close leg, so a same-bar full close→reopen uses the current-bar regime (#1025 review). |
+| `regime_directional_policy` (#822/#1025) | Matches (single-window parity only) — backtested through the per-cycle direction/invert resolver; `--config` requires `regime.enabled=true`, matches live flat/open regime source, and parity diff transforms the same decision layer. Open/close-path entry gate re-resolves after the close leg, so a same-bar full close→reopen uses the current-bar regime (#1025 review). When `regime_directional_window` differs from the primary window the policy reads the primary `regime` column while certification keys come from the directional window — a wrong-window gap, latent while the certified list is empty (#1732). |
 | `allowed_regimes` entry-gate (#482/#1025) | Matches — `--config` threads the strategy's `allowed_regimes` into `self.allowed_regimes` (was dropped — only the `--allowed-regimes` CLI flag fed it; CLI flag now rejected alongside `--config`). Backtester models only the legacy single-lookback ADX regime, so an active gate keyed off a named `regime_gate_window` (#792) is rejected at load. |
 | Regime-aware `sl_after` (#736) | Refused (live-only) — loudly rejected at `Backtester` init; scalar forms backtestable. |
 | `user_defaults.close` / `.regime_atr` (#866/#1135) | Matches — `--defaults system\|user` mirrors the live three-layer resolution; deprecated `user_close_defaults` aliases are accepted only when non-conflicting. |
 | Scale-in (#873) | Matches — **#1276** — simulated: the engine ports `perpsScaleInDecision` (caps/spacing gate, decision at bar N's close, fill at N+1's open) and `applyScaleIn` (blend for PnL, frozen `RiskAnchorPrice` for every SL/TP geometry site, `InitialQuantity` growth, per-add taker fee); `--config` threads `allow_scale_in`/`scale_in` and mirrors the live validateConfig rejects. Adds create no Trade rows (live `#T` parity); `results["scale_in_adds"]` counts them. |
 | Manual limit orders (#883) | Live-only **by design** (HL perps/manual execution mechanics, no signal-path component). Config keys are ignored by the backtest loader; acceptable while the feature stays execution-side. |
-| Lot and minimum sizing (#1716) | Matches — the backtest `execution_spec` lot gate floors quantities to the venue lot size; paper Hyperliquid perps now book venue lot sizes on entries and partial closes (issue #1716, PR 1721, closed). |
-| **v13/v14 legacy close keys** | Matches — **#942 (closed)** — Audit-time (2026-06): the `--config` gate admitted pre-v15 configs whose `tiers`/alias keys silently no-op'd in the Python evaluators while live canonicalized them. Correction (2026-10, issue #1724): `--config` now refuses `config_version` below 15 at load. |
+| Lot and minimum sizing (#1716) | Matches under `--manifest` only — the backtest `execution_spec` lot gate floors quantities to the venue lot size, but `execution_spec` exists only on the manifest/open-close engine path (the plain-signal path refuses an execution spec), so normal backtests do not floor quantities; paper Hyperliquid perps now book venue lot sizes on entries and partial closes (issue #1716, PR 1721, closed). |
+| **v13/v14 legacy close keys** | Refused (migrate first) — **#942 (closed)** — Audit-time (2026-06): the `--config` gate admitted pre-v15 configs whose `tiers`/alias keys silently no-op'd in the Python evaluators while live canonicalized them. Correction (2026-10, issue #1724): `--config` refuses `config_version` below 15 at load; live canonicalizes these configs on read. |
 | **`regime_window_divergence`** | Refused (live-only) — **#943 (closed)** — still loudly rejected by `--config`; the live short/medium window override is a deliberate live-only surface, not an open gap. |
 
 ## D3/D8 — Coverage
@@ -112,7 +112,8 @@ label parity).
 
 - `periods_per_year()` drives Sharpe/volatility in the main engine; options
   uses check-interval-aware sampling; pairs uses `bars_per_year`. Theta
-  hardcodes daily — valid only because theta data is always `1d` (#945).
+  hardcodes daily — valid only because theta data is always `1d` (#945, closed;
+  consolidated into #944).
 - Options annualized return uses elapsed calendar days (the #304 M5 fix is in
   and commented).
 - Walk-forward separates train/test per fold and aggregates OOS-only stats
@@ -134,8 +135,11 @@ label parity).
 - `backtest_options.py` exchange is configurable (`--exchange`, #304 L2 fixed).
 - HTF filter plumbs through the same `shared_tools/htf_filter.py` as live,
   fed by cached candles; missing HTF cache fails open to neutral trend.
-- Residual items in **#945**: unused imports, dead close-name optimizer range
-  entries, theta daily-only comment.
+- **#945** was closed (2026-06-10, not planned) and consolidated into **#944**
+  (closed, completed). Residual check (2026-10, issue #1724 review): the
+  unused `backtester.py` imports and the dead close-name
+  `DEFAULT_PARAM_RANGES` entries are gone; theta still hardcodes daily
+  annualization (D4/D5 above), valid only while theta fetches `1d` candles.
 - Metrics/reporting logic is re-implemented per variant (~150–200 LOC
   duplication across options/theta/pairs); extraction is optional until one
   of them next drifts.
@@ -156,15 +160,16 @@ label parity).
   #641 loader; `--fills` lines the decision diff up against the engine's
   simulated entry/exit fills; `--csv`/`--jsonl` dump the full frame, which
   also carries the post-`shift(1)` `backtest_effective_*` engine inputs per
-  bar. See the module docstring for usage.
+  bar. Run `parity_diff.py --help` for usage.
 - `backtest/ledger_compare.py` (issues #1686, #1700, #1710) is the tool for
   booked-versus-simulated mismatches: it replays the issue #1685 ledger
   export against a simulated run of the same strategy and diffs the engine's
   `ledger_events` row by row.
 - Still absent (scope when needed): per-bar verbose trace inside
-  `Backtester.run`, equity-curve/trade-log CSV export. Audit-time (2026-06):
-  "`exit_reason` and entry/exit regime fields on `Trade`" were absent.
-  Correction (2026-10, issue #1724): `Trade` now has `exit_reason`.
+  `Backtester.run`, equity-curve/trade-log CSV export, and entry/exit regime
+  fields on `Trade`. Audit-time (2026-06): "`exit_reason` and entry/exit
+  regime fields on `Trade`" were absent. Correction (2026-10, issue #1724):
+  `Trade` now has `exit_reason`; the entry/exit regime fields remain absent.
 
 ## Known live-only surfaces (decision record)
 
@@ -202,8 +207,14 @@ open as of this refresh):
 - Live-strategy comparability: the ledger comparison refuses regime gating
   fields, the directional policy and `margin_per_trade_usd` sizing, and the
   2026-10-06 run found no strict-comparable live Hyperliquid strategy — #1730.
-- Funding in backtests outside the comparison tool: Hyperliquid perps
-  backtests charge no funding, so their PnL omits a cost live pays — #1731.
+- Funding in backtests outside the comparison tool: on the normal
+  (non-manifest) path — including the non-manifest research harnesses that
+  attach funding (`eval_windows.py`, `exit_diagnostics.py`,
+  `exit_policy_ab.py`, `tune_live.py`) — Hyperliquid perps backtests charge
+  funding only for `delta_neutral_funding`, so other strategies' PnL omits a
+  cost live pays — #1731. Manifest runs (`run_backtest.py --manifest`,
+  `eval_windows.py --manifest`) attach the funding accrual column for every
+  strategy and do charge it.
 - Named regime windows in `run_backtest.py --config`: a named regime gate or
   ATR window is refused, and the directional policy applies to the wrong
   window — #1732.
