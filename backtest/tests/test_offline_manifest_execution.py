@@ -887,11 +887,14 @@ def test_resting_tp_fixture_order_classes_are_pinned():
         "full_fill",
         "acquisition_incomplete",
     ]
+    assert report["rules"]["touch"]["long"]["agreements"] == 3
+    assert report["rules"]["touch"]["long"]["missed_fills"] == 0
     assert report["candle_price_basis"] == "unconfirmed"
 
 
 def test_resting_tp_fill_page_overlap_keeps_each_fill_once():
     import resting_tp_capture as cap
+    import resting_tp_fill_study as study
 
     pages = {
         1000: [
@@ -917,16 +920,8 @@ def test_resting_tp_fill_page_overlap_keeps_each_fill_once():
         "0x" + "ab" * 20, 1000, 10000, 1, 1, record, opener=opener, page_max_rows=10)
     assert starts[1] == 2000
     assert result["complete"] is True
-    rows = []
-    seen = set()
-    for start in (1000, 2000):
-        for row in pages[start]:
-            key = cap._fill_identity(row)
-            if key in seen:
-                continue
-            seen.add(key)
-            rows.append(row["tid"])
-    assert rows == [1, 2, 3]
+    rows = study.dedupe_fills(pages[1000] + pages[2000])
+    assert [row["tid"] for row in rows] == [1, 2, 3]
 
 
 def test_resting_tp_full_page_of_one_timestamp_is_incomplete():
