@@ -659,6 +659,13 @@ When `MinSupportedConfigVersion` passes the snapshot's configuration version, re
 
 **Limitations.** Strict support covers flat-start, single-configuration Hyperliquid perps owners on the open/close engine with verified stops and no scale-in, leverage, regime gating or HTF inputs. The committed exports carry no stop stamps, so their initial geometry is `unavailable`; agreement is proven only on synthetic test copies. Booked timestamps are ledger record times, not exchange fill times. Live sizing is not modeled beyond the simulator's all-cash sizing from the verified starting cash; quantity deltas expose differences. Separate state files are separate snapshots; the comparison makes no cross-file simultaneity claim.
 
+### Fee evidence (issue 1726)
+
+`backtest/fee_evidence.py` measures the Hyperliquid fee rates and slippage of booked live fills from one or more exports. It is offline and suggest-only, makes no network call and writes no config. See the `docs/backtesting-registry.md` row for inputs and output.
+Rows count only when the partition is `live`, `fee_source` is `userfills` and `value` is nonzero; funding, modeled and `reconcile_adjustment` rows are counted as excluded. Close rows are grouped by `close_reason`, else by the booking code's details prefix; anything else is `unclassified` and listed.
+Live stop slippage needs venue fills: the reconcile path books a confirmed live stop at the stored trigger (`hyperliquid_balance.go`), so its exported `price` equals `stop_loss_trigger_px`. Pass raw `userFillsByTime` captures with `--user-fills` (account address only, no trading key); fills join rows by order id, and the role comes from the fill's `crossed` flag. A trigger-priced row with no venue fill is `booked_at_trigger_no_venue_evidence`, never a zero-slippage sample. Market-fill slippage needs a `--fill-log` extract and is labelled "reference price as logged"; samples whose 2-decimal log rounding exceeds 0.5 bps are excluded.
+Production evidence is captured read-only (export capture and `export ledger`, no `--once`, no restart, no state write). Post only the derived numbers; never post or commit the account address, raw fills or exports.
+
 ---
 
 ## `/go-trader` Command
