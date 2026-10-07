@@ -21,6 +21,7 @@ ALLOWED_TYPES = frozenset({
 })
 PAGE_CAP = 200
 FILL_PAGE_MAX = 2000
+HISTORICAL_ORDERS_MAX = 2000
 DEFAULT_TIMEOUT_S = 20.0
 DEFAULT_RETRIES = 3
 CANDLE_HISTORY_BARS = 5000
@@ -264,6 +265,19 @@ def _one_shot(payload, timeout, retries, record, opener=None):
     return {"complete": ok, "http_status": status, "raw": raw}
 
 
+def _mark_historical_orders(row, row_cap=HISTORICAL_ORDERS_MAX):
+    if not row.get("complete"):
+        return row
+    try:
+        parsed = _parse_json(row.get("raw"))
+    except CaptureError:
+        return row
+    if isinstance(parsed, list) and len(parsed) >= int(row_cap):
+        row["complete"] = False
+        row["reason"] = f"historicalOrders returns at most {int(row_cap)} orders"
+    return row
+
+
 def _expected_opens(since_ms, end_ms, step):
     if end_ms <= since_ms or step <= 0:
         return []
@@ -368,6 +382,7 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, inter
         failed = True
     historical = _one_shot(
         {"type": "historicalOrders", "user": address}, timeout, retries, record, opener=opener)
+    _mark_historical_orders(historical)
     if not historical["complete"]:
         failed = True
     order_rows = []

@@ -268,7 +268,7 @@ def load_exports(paths):
             is_close = evidence(event.get("is_close"))
             stamp = parse_time_ms(event.get("timestamp"))
             if is_close is True:
-                slot["close_ms"] = stamp if slot["close_ms"] is None else min(slot["close_ms"], stamp)
+                slot["close_ms"] = stamp if slot["close_ms"] is None else max(slot["close_ms"], stamp)
             elif is_close is False:
                 slot["open_ms"] = stamp if slot["open_ms"] is None else min(slot["open_ms"], stamp)
                 side = book_side(evidence(event.get("side")))
@@ -707,7 +707,13 @@ def close_crossed(bar, limit, side):
     return bar["close"] <= limit
 
 
-def classify_order(rec, position, frame, step, uncovered, sz_decimals, other_times, windows):
+def historical_stream_incomplete(bundle) -> bool:
+    comp = (bundle.get("completeness") or {}).get("historicalOrders")
+    return isinstance(comp, dict) and comp.get("complete") is False
+
+
+def classify_order(rec, position, frame, step, uncovered, sz_decimals, other_times, windows,
+                   sibling_stream_incomplete=False):
     if position is None:
         return "shared_coin_ambiguous" if rec.get("attr_reason") == "shared_coin_ambiguous" else rec.get("attr_reason")
     if rec["missing"]:
@@ -734,10 +740,17 @@ def classify_order(rec, position, frame, step, uncovered, sz_decimals, other_tim
     interior, boundary, missing = bars_for(
         frame, step, start, score_end_ms(rec), other_times,
         include_end_bar=scored_fill_ms(rec) is not None or fill_terminated(rec))
+    cleared_interior = False
+    if sibling_stream_incomplete and interior:
+        boundary = list(boundary) + list(interior)
+        interior = []
+        cleared_interior = True
     rec["interior"] = interior
     rec["boundary"] = boundary
     if missing:
         return "candle_coverage_missing"
+    if cleared_interior:
+        return "historical_orders_incomplete"
     if not interior:
         return "boundary_unknown"
     side = position["side"]
@@ -1017,6 +1030,7 @@ def study(exports, capture_dir, manifest_path, manifest_sha, window_name, produc
     manifest, by_coin = load_market(manifest_path, manifest_sha, window_name)
     statuses, historical, fills, trades, candles = index_responses(loaded)
     records, statuses = build_orders(positions, statuses, historical, fills)
+    hist_incomplete = historical_stream_incomplete(bundle)
     fills_meta = bundle.get("completeness", {}).get("userFillsByTime") or {}
     uncovered = None
     if not fills_meta.get("complete"):
@@ -1045,12 +1059,15 @@ def study(exports, capture_dir, manifest_path, manifest_sha, window_name, produc
         market = by_coin.get(rec.get("coin") or "")
         frame = market["frame"] if market else None
         sz_decimals = market["size_decimals"] if market else None
-        if reason:
+        if hist_incomplete and not rec["from_export"]:
+            class_name = "historical_orders_incomplete"
+        elif reason:
             class_name = reason
         else:
             class_name = classify_order(
                 rec, owner, frame, step, uncovered, sz_decimals,
-                sibling_boundary_times(rec, records), windows)
+                sibling_boundary_times(rec, records), windows,
+                sibling_stream_incomplete=hist_incomplete)
         rec["class_name"] = class_name
         rec["position"] = owner
         prepared.append(rec)

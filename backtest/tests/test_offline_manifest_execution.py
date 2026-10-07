@@ -568,7 +568,7 @@ def _write_export(path, oids):
     path.write_text(json.dumps(doc))
 
 
-def _study_orders(tmp_path, orders, candles):
+def _study_orders(tmp_path, orders, candles, historical=None):
     import resting_tp_capture as cap
     import resting_tp_fill_study as study
 
@@ -591,7 +591,7 @@ def _study_orders(tmp_path, orders, candles):
         if kind == "userFillsByTime":
             return _InfoResp(fills if body["startTime"] == since else [])
         if kind == "historicalOrders":
-            return _InfoResp([])
+            return _InfoResp([] if historical is None else historical)
         if kind == "orderStatus":
             return _InfoResp(by_oid[body["oid"]])
         if kind == "recentTrades":
@@ -1254,3 +1254,166 @@ def test_resting_tp_complete_order_status_html_exits_not_json(tmp_path):
     assert "Traceback" not in proc.stderr
     assert "\n" not in proc.stderr.strip()
     assert "not json" in proc.stderr
+
+
+def _ledger_event(position_id, is_close, timestamp, side="buy"):
+    return {
+        "process_strategy_id": "strat",
+        "position_id": _avail(position_id),
+        "is_close": _avail(is_close),
+        "side": _avail(side),
+        "symbol": _avail("ETH"),
+        "timestamp": timestamp,
+    }
+
+
+def _write_position_export(path, events):
+    path.write_text(json.dumps({"schema": "go-trader.booked-ledger", "events": events}))
+
+
+def _capture_historical(tmp_path, rows):
+    import resting_tp_capture as cap
+
+    export = tmp_path / "export.json"
+    export.write_text(json.dumps({"schema": "go-trader.booked-ledger", "events": []}))
+
+    def opener(req, timeout=None):
+        body = json.loads(req.data)
+        if body["type"] == "historicalOrders":
+            return _InfoResp(rows)
+        return _InfoResp([])
+
+    out = tmp_path / "capture"
+    cap._prepare_out(str(out), os.path.abspath(os.path.join(os.path.dirname(cap.__file__), "..")))
+    raised = False
+    try:
+        cap.capture(
+            [str(export)], "0x" + "66" * 20, DAY_MS, _ms(30), str(out),
+            5, 1, "5m", opener=opener, clock_ms=_ms(30) + ONE_DAY)
+    except cap.CaptureError:
+        raised = True
+    bundle = json.loads((out / "bundle.json").read_text())
+    return bundle, raised
+
+
+def test_resting_tp_full_historical_orders_response_is_incomplete(tmp_path):
+    import resting_tp_capture as cap
+
+    rows = [{"oid": i} for i in range(cap.HISTORICAL_ORDERS_MAX)]
+    bundle, raised = _capture_historical(tmp_path, rows)
+    row = bundle["completeness"]["historicalOrders"]
+    assert raised
+    assert row["complete"] is False
+    assert row["reason"] == f"historicalOrders returns at most {cap.HISTORICAL_ORDERS_MAX} orders"
+
+
+def test_resting_tp_historical_orders_below_the_cap_stay_complete(tmp_path):
+    import resting_tp_capture as cap
+
+    rows = [{"oid": i} for i in range(cap.HISTORICAL_ORDERS_MAX - 1)]
+    bundle, raised = _capture_historical(tmp_path, rows)
+    row = bundle["completeness"]["historicalOrders"]
+    assert raised is False
+    assert row["complete"] is True
+    assert "reason" not in row
+
+
+def _historical_status(oid, limit, placement, status, status_time, sz="1"):
+    return {
+        "status": "order",
+        "order": {
+            "order": {
+                "coin": "ETH",
+                "limitPx": limit,
+                "oid": oid,
+                "origSz": "1",
+                "reduceOnly": True,
+                "side": "A",
+                "sz": sz,
+                "tif": "Gtc",
+                "timestamp": placement,
+            },
+            "status": status,
+            "statusTimestamp": status_time,
+        },
+    }
+
+
+def test_resting_tp_incomplete_historical_orders_flag_discovered_orders_and_sibling_bars(tmp_path):
+    import resting_tp_fill_study as study
+
+    orders = [{
+        "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "filled",
+        "status_time": _ms(22, 30), "orig": "1", "sz": "0",
+        "fills": [{"time": _ms(22, 30), "sz": "1", "px": "100.00", "tid": 1}],
+    }]
+    historical = [_historical_status(2, "150.00", _ms(0), "canceled", _ms(15))]
+    scored = _study_orders(tmp_path, orders, _example_candles(), historical=historical)
+    scored_by_limit = {row["limit_px"]: row["outcome"] for row in scored["orders"]}
+    assert scored_by_limit == {"100.00": "full_fill", "150.00": "not_reached"}
+    bundle_path = tmp_path / "capture" / "bundle.json"
+    bundle = json.loads(bundle_path.read_text())
+    bundle["completeness"]["historicalOrders"]["complete"] = False
+    bundle["completeness"]["historicalOrders"]["reason"] = (
+        "historicalOrders returns at most 2000 orders")
+    bundle_path.write_text(json.dumps(bundle))
+    manifest = tmp_path / "manifest.json"
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    flagged = study.study(
+        [str(tmp_path / "export.json")], str(tmp_path / "capture"), str(manifest),
+        digest, "study", "pending")
+    by_limit = {row["limit_px"]: row["outcome"] for row in flagged["orders"]}
+    assert by_limit["150.00"] == "historical_orders_incomplete"
+    assert by_limit["100.00"] == "historical_orders_incomplete"
+    assert all(row["outcome"] not in study.RATE_CLASSES for row in flagged["orders"])
+
+
+def test_resting_tp_order_between_close_events_is_attributed(tmp_path):
+    import resting_tp_fill_study as study
+
+    path = tmp_path / "export.json"
+    _write_position_export(path, [
+        _ledger_event("p1", False, "2024-01-01T00:00:00Z"),
+        _ledger_event("p1", True, "2024-01-01T00:10:00Z", side="sell"),
+        _ledger_event("p1", True, "2024-01-01T00:20:00Z", side="sell"),
+    ])
+    positions, _hashes = study.load_exports([str(path)])
+    t1 = study.parse_time_ms("2024-01-01T00:10:00Z")
+    t2 = study.parse_time_ms("2024-01-01T00:20:00Z")
+    assert positions[0]["close_ms"] == t2
+    owner, reason = study.attribute(9, "ETH", "sell", t1 + 60_000, positions, False)
+    assert reason is None
+    assert owner["position_id"] == "p1"
+
+
+def test_resting_tp_one_close_event_keeps_that_window(tmp_path):
+    import resting_tp_fill_study as study
+
+    path = tmp_path / "export.json"
+    close = "2024-01-01T00:30:00Z"
+    _write_position_export(path, [
+        _ledger_event("p1", False, "2024-01-01T00:00:00Z"),
+        _ledger_event("p1", True, close, side="sell"),
+    ])
+    positions, _hashes = study.load_exports([str(path)])
+    stamp = study.parse_time_ms(close)
+    assert positions[0]["close_ms"] == stamp
+    owner, reason = study.attribute(9, "ETH", "sell", stamp - 60_000, positions, False)
+    assert reason is None
+    assert owner["close_ms"] == stamp
+
+
+def test_resting_tp_order_after_the_last_close_stays_unattributed(tmp_path):
+    import resting_tp_fill_study as study
+
+    path = tmp_path / "export.json"
+    _write_position_export(path, [
+        _ledger_event("p1", False, "2024-01-01T00:00:00Z"),
+        _ledger_event("p1", True, "2024-01-01T00:10:00Z", side="sell"),
+        _ledger_event("p1", True, "2024-01-01T00:20:00Z", side="sell"),
+    ])
+    positions, _hashes = study.load_exports([str(path)])
+    t2 = study.parse_time_ms("2024-01-01T00:20:00Z")
+    assert positions[0]["close_ms"] == t2
+    _owner, reason = study.attribute(9, "ETH", "sell", t2 + 1000, positions, False)
+    assert reason == "unattributed"
