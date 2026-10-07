@@ -262,7 +262,8 @@ ok "inspect, storage-inspect and probe run beside the service; --once returns 79
 say "hot reload through SIGHUP"
 (cd "$work" && compose cp go-trader:/data/config.json ./config.json >/dev/null)
 python3 -c 'import json,sys; p=sys.argv[1]; c=json.load(open(p)); c["interval_seconds"]=1800; open(p,"w").write(json.dumps(c, indent=2)+"\n")' "$work/config.json"
-(cd "$work" && compose run --rm -T -v ./config.json:/import/config.json:ro --entrypoint cp cli /import/config.json /data/config.json)
+(cd "$work" && compose cp ./config.json go-trader:/data/config.json >/dev/null)
+compose run --rm -T --user 0:0 --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown cli 10001:10001 /data/config.json
 [[ "$(cli_sh 'stat -c %u:%g:%a /data/config.json' | tr -d '\r')" == "10001:10001:600" ]] || fail "the documented config import changed the owner or mode"
 cli probe --config /data/config.json >/dev/null || fail "probe failed after the documented config import"
 hup

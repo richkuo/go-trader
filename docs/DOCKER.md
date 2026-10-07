@@ -227,13 +227,12 @@ To edit the file yourself:
 
 2. Edit `./config.json` in a text editor.
 
-3. Copy it back and keep the owner the bot needs:
+3. Copy it back, then give it back to the bot's user (the copy arrives owned by your host user, which the bot cannot read):
 
    ```bash
-   docker compose run --rm -v ./config.json:/import/config.json:ro --entrypoint cp cli /import/config.json /data/config.json
+   docker compose cp ./config.json go-trader:/data/config.json
+   docker compose run --rm --user 0:0 --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown cli 10001:10001 /data/config.json
    ```
-
-   Do not use `docker compose cp` to copy a file **into** the volume. That copy belongs to your user on the host, and the bot then cannot write it.
 
 4. Check it:
 
