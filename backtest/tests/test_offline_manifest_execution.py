@@ -682,7 +682,7 @@ def _example_candles():
     return candles
 
 
-def test_resting_tp_two_tiers_in_one_bar_agree_on_touch(tmp_path):
+def test_resting_tp_two_tiers_filled_in_one_bar_stay_unresolved(tmp_path):
     orders = [
         {
             "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "filled",
@@ -697,9 +697,12 @@ def test_resting_tp_two_tiers_in_one_bar_agree_on_touch(tmp_path):
     ]
     report = _study_orders(tmp_path, orders, _example_candles())
     assert [row["outcome"] for row in report["orders"]] == ["full_fill", "full_fill"]
+    assert [row["prediction_status"] for row in report["orders"]] == ["scored", "scored"]
     touch = report["rules"]["touch"]["long"]
     assert touch["missed_fills"] == 0
-    assert touch["agreements"] == 2
+    assert touch["agreements"] == 0
+    assert touch["early_fills"] == 0
+    assert touch["fill_bar_unresolved"] == 2
     assert touch["false_fills"] == 0
 
 
@@ -743,8 +746,7 @@ def test_resting_tp_sibling_placement_inside_the_fill_bar_stays_boundary():
     frame = _frame_from_candles(candles)
     times = study.sibling_boundary_times(filled, [filled, placed])
     interior, boundary, missing = study.bars_for(
-        frame, FIVE_MIN, filled["placement_ms"], study.score_end_ms(filled), times,
-        include_end_bar=True)
+        frame, FIVE_MIN, filled["placement_ms"], study.score_end_ms(filled), times)
     assert not missing
     assert _ms(20) in [bar["open_ms"] for bar in boundary]
     assert _ms(20) not in [bar["open_ms"] for bar in interior]
@@ -799,14 +801,28 @@ def test_resting_tp_canceled_unfilled_order_stays_unreached():
 
 
 def _basis(candles, frame, since, end, candle_rows, snapshot_name="5m"):
+    return _basis_result(candles, frame, since, end, candle_rows, snapshot_name)[0]
+
+
+def _basis_result(candles, frame, since, end, candle_rows, snapshot_name="5m", probe_meta=None, probe_data=None):
     import resting_tp_fill_study as study
 
-    return study.candle_basis(
+    status, _digest, evidence = study.candle_basis(
         {"ETH": {"frame": frame}}, {"ETH": candles}, [], since, end, FIVE_MIN,
-        "5m", snapshot_name, candle_rows)[0]
+        "5m", snapshot_name, candle_rows, probe_meta, probe_data)
+    return status, evidence
 
 
-def test_resting_tp_five_minute_snapshot_confirms_a_ten_day_window(tmp_path):
+def _probe(probe_candle, polls):
+    meta = {"ETH": {"complete": True, "interval": "5m"}}
+    data = {"ETH": {
+        "polls": [{"n": i + 1, "payload": rows} for i, rows in enumerate(polls)],
+        "candles": [probe_candle],
+    }}
+    return meta, data
+
+
+def test_resting_tp_five_minute_snapshot_covers_a_ten_day_window(tmp_path):
     import resting_tp_capture as cap
 
     assert set(cap.INTERVAL_MS) == set(om.INTERVAL_MS)
@@ -837,7 +853,9 @@ def test_resting_tp_five_minute_snapshot_confirms_a_ten_day_window(tmp_path):
     assert row["complete"] is True
     assert "reason" not in row
     frame = _frame_from_candles(candles, high=100, low=99, close=100)
-    assert _basis(candles, frame, since, end, bundle["completeness"]["candleSnapshot"]) == "confirmed"
+    status, evidence = _basis_result(candles, frame, since, end, bundle["completeness"]["candleSnapshot"])
+    assert status == "unconfirmed"
+    assert evidence["reasons"] == ["no_independent_trade_evidence"]
 
 
 def test_resting_tp_snapshot_older_than_five_thousand_bars_is_unconfirmed(tmp_path):
@@ -885,7 +903,38 @@ def test_resting_tp_snapshot_close_mismatch_is_unconfirmed():
 def test_resting_tp_matching_high_low_and_close_confirms():
     candles = [{"t": DAY_MS, "h": "101", "l": "99", "c": "100.02", "o": "100"}]
     frame = pd.DataFrame({"timestamp": [DAY_MS], "high": [101.0], "low": [99.0], "close": [100.02]})
-    assert _basis(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, [{"complete": True, "interval": "5m"}]) == "confirmed"
+    rows = [{"complete": True, "interval": "5m"}]
+    status, evidence = _basis_result(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, rows)
+    assert status == "unconfirmed"
+    assert evidence["reasons"] == ["no_independent_trade_evidence"]
+    probe_open = DAY_MS + 2 * FIVE_MIN
+    probe_candle = {"t": probe_open, "h": "101.5", "l": "100.5", "c": "101", "o": "101"}
+    first = [
+        {"tid": 1, "time": probe_open - 1000, "px": "100.9"},
+        {"tid": 2, "time": probe_open + 1000, "px": "101.5"},
+    ]
+    second = [
+        {"tid": 2, "time": probe_open + 1000, "px": "101.5"},
+        {"tid": 3, "time": probe_open + 2000, "px": "100.5"},
+        {"tid": 4, "time": probe_open + FIVE_MIN + 1000, "px": "101"},
+    ]
+    meta, data = _probe(probe_candle, [first, second])
+    status, evidence = _basis_result(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, rows, probe_meta=meta, probe_data=data)
+    assert status == "confirmed"
+    assert evidence["covered_bars"] == 1
+    assert evidence["reasons"] == []
+    outside = [dict(row) for row in second]
+    outside[1]["px"] = "100.4"
+    meta, data = _probe(probe_candle, [first, outside])
+    status, evidence = _basis_result(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, rows, probe_meta=meta, probe_data=data)
+    assert status == "unconfirmed"
+    assert "trade_outside_candle" in evidence["reasons"]
+    gap = [row for row in second if row["tid"] != 2]
+    meta, data = _probe(probe_candle, [first, gap])
+    status, evidence = _basis_result(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, rows, probe_meta=meta, probe_data=data)
+    assert status == "unconfirmed"
+    assert evidence["covered_bars"] == 0
+    assert evidence["reasons"] == ["no_independent_trade_evidence"]
 
 
 def test_resting_tp_fixture_order_classes_are_pinned():
@@ -911,9 +960,20 @@ def test_resting_tp_fixture_order_classes_are_pinned():
         "full_fill",
         "acquisition_incomplete",
     ]
-    assert report["rules"]["touch"]["long"]["agreements"] == 3
-    assert report["rules"]["touch"]["long"]["missed_fills"] == 0
+    assert [row["prediction_status"] for row in report["orders"]] == [
+        None, "scored", "scored", "scored", "scored", "scored", None, None, None, "scored", None,
+    ]
+    touch = report["rules"]["touch"]["long"]
+    assert touch["agreements"] == 1
+    assert touch["early_fills"] == 1
+    assert touch["fill_bar_unresolved"] == 2
+    assert touch["missed_fills"] == 0
+    close = report["rules"]["close"]["long"]
+    assert close["early_fills"] == 1
+    assert close["missed_fills"] == 1
+    assert report["rule_count_basis"]["missed_fills"] == "terminal_bar_upper_bound"
     assert report["candle_price_basis"] == "unconfirmed"
+    assert "no_independent_trade_evidence" in report["candle_price_basis_evidence"]["reasons"]
 
 
 def test_resting_tp_fill_page_overlap_keeps_each_fill_once():
@@ -999,9 +1059,10 @@ def test_resting_tp_sibling_placed_after_the_fill_keeps_the_fill_bar(tmp_path):
     ]
     report = _study_orders(tmp_path, orders, _example_candles())
     assert [row["outcome"] for row in report["orders"]] == ["full_fill", "lifetime_unknown"]
+    assert report["orders"][0]["prediction_status"] == "scored"
     touch = report["rules"]["touch"]["long"]
     assert touch["missed_fills"] == 0
-    assert touch["agreements"] == 1
+    assert touch["fill_bar_unresolved"] == 1
     assert touch["false_fills"] == 0
 
 
@@ -1037,7 +1098,7 @@ def test_resting_tp_sibling_placement_keeps_a_no_fill_bar_unknown():
     assert _ms(20) not in [bar["open_ms"] for bar in order["interior"]]
 
 
-def test_resting_tp_partial_canceled_in_the_fill_bar_is_a_quantity_error(tmp_path):
+def test_resting_tp_partial_canceled_in_the_fill_bar_is_not_scored_from_that_bar(tmp_path):
     orders = [{
         "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "reduceOnlyCanceled",
         "status_time": _ms(23), "orig": "1", "sz": "0.6",
@@ -1046,7 +1107,8 @@ def test_resting_tp_partial_canceled_in_the_fill_bar_is_a_quantity_error(tmp_pat
     report = _study_orders(tmp_path, orders, _example_candles())
     assert [row["outcome"] for row in report["orders"]] == ["partial_fill"]
     touch = report["rules"]["touch"]["long"]
-    assert touch["quantity_errors"] == 1
+    assert touch["quantity_errors"] == 0
+    assert touch["fill_bar_unresolved"] == 1
     assert touch["missed_fills"] == 0
 
 
