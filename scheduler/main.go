@@ -34,6 +34,8 @@ var knownSubcommands = []string{
 	"feed-fetch",
 	"record-observations",
 	"version",
+	"supervise",
+	"healthcheck",
 }
 
 func validateDaemonInvocation(extra []string) error {
@@ -51,6 +53,13 @@ func validateDaemonInvocation(extra []string) error {
 }
 
 func main() {
+	policy, policyErr := resolveRuntimePolicy(os.Getenv(runtimeEnvVar))
+	if policyErr != nil {
+		fmt.Fprintln(os.Stderr, policyErr)
+		os.Exit(2)
+	}
+	processRuntime = policy
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "init":
@@ -90,8 +99,11 @@ func main() {
 		case "record-observations":
 			os.Exit(runRecordObservations(os.Args[2:]))
 		case "version", "--version", "-version":
-			fmt.Println(Version)
-			os.Exit(0)
+			os.Exit(runVersion(os.Args[2:]))
+		case "supervise":
+			os.Exit(runSupervise(os.Args[2:]))
+		case "healthcheck":
+			os.Exit(runHealthcheck(os.Args[2:]))
 		}
 	}
 
@@ -100,6 +112,7 @@ func main() {
 	summary := flag.String("summary", "", "Post snapshot summary for the specified channel (e.g., hyperliquid, spot, options) and exit")
 	leaderboard := flag.Bool("leaderboard", false, "Post pre-computed daily leaderboard and exit")
 	statusPortFlag := flag.Int("status-port", 0, fmt.Sprintf("HTTP status server port (overrides config, default: %d)", DefaultStatusPort))
+	statusBindFlag := flag.String("status-bind", "", fmt.Sprintf("HTTP status server bind address (overrides %s, default: %s); non-loopback needs the container runtime", statusBindEnvVar, defaultStatusBindHost))
 	flag.Parse()
 
 	if err := validateDaemonInvocation(flag.Args()); err != nil {
@@ -108,12 +121,38 @@ func main() {
 	}
 
 	if role, roleErr := peekConfigRole(*configPath); roleErr == nil && role == configRoleFeed {
+		if inContainerRuntime() {
+			fmt.Fprintln(os.Stderr, "role \"feed\" (a shared market feed service) is not supported in the container deployment")
+			os.Exit(1)
+		}
+		if host := resolveStatusBindHost(*statusBindFlag); !isLoopbackBindHost(host) {
+			fmt.Fprintf(os.Stderr, "[server] CRITICAL: refusing to start: status bind %q is not a loopback address; a feed service binds loopback only\n", host)
+			os.Exit(1)
+		}
 		os.Exit(runFeedRole(*configPath, *statusPortFlag, *once, *summary, *leaderboard))
+	}
+
+	if inContainerRuntime() {
+		if issues := containerVolumeIssues(); len(issues) > 0 {
+			for _, issue := range issues {
+				fmt.Fprintf(os.Stderr, "[container] %s\n", issue)
+			}
+			os.Exit(1)
+		}
 	}
 
 	cfg, err := LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+	statusBindHost := resolveStatusBindHost(*statusBindFlag)
+	if err := validateStatusBind(statusBindHost, cfg.StatusToken); err != nil {
+		fmt.Fprintf(os.Stderr, "[server] CRITICAL: refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+	if err := validateContainerStatusPortFlag(*statusPortFlag); err != nil {
+		fmt.Fprintf(os.Stderr, "[server] CRITICAL: refusing to start: %v\n", err)
 		os.Exit(1)
 	}
 	if err := applyAlertThrottleFromConfig(cfg); err != nil {
@@ -428,7 +467,8 @@ func main() {
 	if tuningManager != nil {
 		go tuningManager.run(shutdownReadOnlyCtx)
 	}
-	server.Start(statusPort)
+	armMainLoopDeadline(mainLoopWorkBudget)
+	server.Start(statusBindHost, statusPort)
 
 	diagWorker := newTradeDiagnosticsWorker(FetchUICandles, store.UpdateTradeDiagnosticsMetrics)
 	diagWorker.splitStorage = store.Split()
@@ -442,8 +482,12 @@ func main() {
 
 	stopCh := make(chan struct{})
 	go func() {
-		sig := <-sigCh
-		fmt.Printf("\nReceived %s, draining...\n", sig)
+		select {
+		case sig := <-sigCh:
+			fmt.Printf("\nReceived %s, draining...\n", sig)
+		case <-containerRestartCh:
+			fmt.Println("\n[restart] container restart: draining...")
+		}
 		beginDrain()
 		close(stopCh)
 	}()
@@ -798,6 +842,7 @@ func main() {
 			fmt.Println("[shutdown] draining, exiting trading loop.")
 			return
 		}
+		armMainLoopDeadline(mainLoopWorkBudget)
 
 		processConfigReloads()
 
@@ -882,6 +927,7 @@ func main() {
 				if minTick := time.Duration(tickSeconds) * time.Second; delay < minTick {
 					delay = minTick
 				}
+				armMainLoopDeadline(delay + mainLoopWakeGrace)
 				timer := time.NewTimer(delay)
 				select {
 				case <-timer.C:
@@ -898,6 +944,7 @@ func main() {
 				}
 			}
 			delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
+			armMainLoopDeadline(delay + mainLoopWakeGrace)
 			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
@@ -3324,6 +3371,7 @@ func main() {
 		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
 		delay := cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
+		armMainLoopDeadline(delay + mainLoopWakeGrace)
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
