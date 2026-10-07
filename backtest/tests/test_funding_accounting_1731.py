@@ -472,3 +472,62 @@ def test_metrics_without_funding_match_price_pnl(monkeypatch):
 
     assert off["avg_win_pct"] == pytest.approx(_pct(wins))
     assert off["avg_loss_pct"] == pytest.approx(_pct(losses))
+
+
+def test_funding_off_delta_neutral_trade_stats_stay_on_price_pnl():
+    import run_backtest
+    from pathlib import Path
+
+    funding_help = next(
+        action.help for action in run_backtest._build_parser()._actions
+        if action.dest == "funding")
+    assert "per-trade statistics stay on price PnL" in funding_help
+    skill = Path(__file__).resolve().parents[2].joinpath("SKILL.md").read_text()
+    assert "per-trade statistics stay on price PnL" in skill
+
+    n = 6
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    close = np.array([100.0, 100.0, 100.0, 100.0, 100.0, 101.0])
+    accrual = np.array([0.0, 0.02, 0.02, 0.02, 0.02, 0.0])
+
+    def _frame(mode):
+        df = pd.DataFrame({
+            "open": close, "high": close + 1.0, "low": close - 1.0,
+            "close": close, "volume": np.full(n, 1000.0),
+            "signal": np.zeros(n),
+            "funding_accrual": accrual,
+        }, index=idx)
+        df.iloc[0, df.columns.get_loc("signal")] = 1
+        if mode is not None:
+            df["funding_mode"] = mode
+        return df
+
+    def _run(df):
+        return Backtester(
+            initial_capital=10000.0, platform="hyperliquid",
+            commission_pct=0.0, slippage_pct=0.0,
+        ).run(df, strategy_name="delta_neutral_funding", symbol="BTC/USDT",
+              timeframe="1d", save=False)
+
+    off = _run(_frame("off"))
+    charged = _run(_frame("charge"))
+    price_only = _run(_frame(None).drop(columns=["funding_accrual"]))
+    assert len(off["trades"]) == 1 and len(charged["trades"]) == 1
+    trade = off["trades"][0]
+    charged_trade = charged["trades"][0]
+    assert trade["pnl"] > 0
+    assert "funding_pnl" not in trade
+    assert off["total_funding_pnl"] < 0
+    assert trade["pnl"] + off["total_funding_pnl"] < 0
+    assert off["final_capital"] < price_only["final_capital"]
+    for key in ("win_rate", "profit_factor", "avg_win_pct", "avg_loss_pct"):
+        assert off[key] == price_only[key]
+    assert off["win_rate"] == 100.0
+    assert off["profit_factor"] is None
+    assert charged_trade["funding_pnl"] < 0
+    assert charged_trade["pnl"] + charged_trade["funding_pnl"] < 0
+    assert charged["win_rate"] == 0.0
+    sample = ew.trade_samples_from_results(off)[0]
+    price_pct = trade["pnl"] / (trade["shares"] * trade["entry_price"]) * 100.0
+    assert sample["pnl_pct_net"] == pytest.approx(round(price_pct, 6))
+    assert mc.trade_returns([trade]) == [pytest.approx(sample["pnl_pct_net"])]

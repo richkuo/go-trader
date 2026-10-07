@@ -1976,7 +1976,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         default="charge",
                         help="Hyperliquid perps funding: charge refuses an "
                              "incomplete result, partial keeps a flagged "
-                             "result, off reproduces the pre-change numbers")
+                             "result, off reproduces the pre-change numbers "
+                             "(cash still includes delta-neutral accrual; "
+                             "per-trade statistics stay on price PnL)")
     parser.add_argument("--platform",
                         choices=["binanceus", "hyperliquid", "robinhood",
                                  "luno", "okx", "okx-perps"],

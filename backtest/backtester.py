@@ -3106,6 +3106,12 @@ class Backtester:
         active_profile = ""
 
         book_funding = "funding_accrual" in df.columns
+        funding_mode = ""
+        if book_funding and "funding_mode" in df.columns and len(df):
+            raw_mode = df["funding_mode"].iloc[0]
+            if raw_mode == raw_mode and raw_mode is not None:
+                funding_mode = str(raw_mode).strip()
+        attribute_trade_funding = book_funding and funding_mode != "off"
         total_funding_pnl = 0.0
         funding_unpriced_held_hours = 0
         has_funding_missing = "funding_missing_hours" in df.columns
@@ -3469,7 +3475,7 @@ class Backtester:
                     cash_before = cash
                     cash += funding_cash
                     total_funding_pnl += funding_cash
-                    if current_trade is not None:
+                    if current_trade is not None and attribute_trade_funding:
                         current_trade.funding_pnl += funding_cash
                     self._note_funding(funding_cash)
                     if rec is not None:
