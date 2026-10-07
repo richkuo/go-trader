@@ -651,3 +651,127 @@ func TestPaperFundingRowsExportAsFundingEventsWithPositionIDs(t *testing.T) {
 		t.Fatalf("the funding event ledger delta must equal the payment: %+v", ev.LedgerDelta)
 	}
 }
+
+type pfStampRow struct {
+	tradeType, tpTiers string
+	triggerPx          float64
+	entryATR           float64
+}
+
+func pfStampRows(t *testing.T, sdb *StateDB, storageID string) []pfStampRow {
+	t.Helper()
+	rows, err := sdb.db.Query("SELECT trade_type, stop_loss_trigger_px, entry_atr, tp_tiers_json FROM trades WHERE strategy_id = ? ORDER BY rowid", storageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []pfStampRow
+	for rows.Next() {
+		var r pfStampRow
+		if err := rows.Scan(&r.tradeType, &r.triggerPx, &r.entryATR, &r.tpTiers); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func TestPaperFundingRowsNeverTakeProtectionStamps(t *testing.T) {
+	sc := pfPaperPerps("hl-a", "ETH")
+	f := newPFFixture(t, true, sc)
+	f.sync()
+	a := f.state.Strategies["hl-a"]
+	pfOpen(t, a, "ETH", 1, 1, 2000)
+	f.save()
+	marks := map[string]float64{"ETH": 2000}
+	r1 := pfT0 + pfHour
+	f.run(r1+60_000, marks, pfCoverage("ETH", pfT0, feedFundingRecord{TimeMs: r1, Rate: 0.0001}))
+	f.save()
+	paperDB := f.store.file(storageRolePaper)
+	pos := a.Positions["ETH"]
+	pos.EntryATR = 25
+	pos.StopLossTriggerPx = 1950
+	stampOpenTradeWithProtectionSnapshot(a, paperDB, sc, "ETH", pos)
+	f.save()
+	rows := pfStampRows(t, paperDB, "hl-a")
+	if len(rows) != 2 || rows[0].tradeType == TradeTypeFunding || rows[0].triggerPx != 1950 || rows[1].tradeType != TradeTypeFunding || rows[1].triggerPx != 0 || rows[1].entryATR != 0 || rows[1].tpTiers != "" {
+		t.Fatalf("the arm stamp must land on the opening row only: %+v", rows)
+	}
+
+	for h := int64(2); h <= 4; h++ {
+		f.run(pfT0+h*pfHour+60_000, marks, pfCoverage("ETH", pfT0, feedFundingRecord{TimeMs: r1, Rate: 0.0001}, feedFundingRecord{TimeMs: pfT0 + 2*pfHour, Rate: 0.0001}, feedFundingRecord{TimeMs: pfT0 + 3*pfHour, Rate: 0.0001}, feedFundingRecord{TimeMs: pfT0 + 4*pfHour, Rate: 0.0001}))
+	}
+	f.save()
+	pos.StopLossTriggerPx = 1970
+	pos.TPTiersJSON = `[{"atr_multiple":1,"close_fraction":0.5}]`
+	stampOpenTradeWithProtectionSnapshot(a, paperDB, sc, "ETH", pos)
+	f.save()
+	rows = pfStampRows(t, paperDB, "hl-a")
+	funding := 0
+	for _, r := range rows[1:] {
+		if r.tradeType != TradeTypeFunding || r.triggerPx != 0 || r.entryATR != 0 || r.tpTiers != "" {
+			t.Fatalf("a re-arm after several funding rows must stamp no funding row: %+v", rows)
+		}
+		funding++
+	}
+	if funding != 4 || rows[0].tpTiers == "" {
+		t.Fatalf("the re-arm stamps the opening row and leaves %d funding rows clean: %+v", funding, rows)
+	}
+}
+
+func TestLiveTPOIDsSkipWalletFundingRows(t *testing.T) {
+	db := newLedgerTestDB(t)
+	s := &StrategyState{ID: "hl-live", Positions: map[string]*Position{
+		"BTC": {Symbol: "BTC", Side: "long", Quantity: 0.3, AvgCost: 60000, TradePositionID: "pos-1"},
+	}}
+	RecordTrade(s, Trade{StrategyID: "hl-live", Symbol: "BTC", Side: "buy", Quantity: 0.3, Price: 60000, TradeType: "perps", PositionID: "pos-1", TPOIDs: []int64{11, 12}, Timestamp: time.UnixMilli(pfT0).UTC()})
+	state := &AppState{Strategies: map[string]*StrategyState{"hl-live": s}}
+	ev := hlLedgerEvent{Time: pfT0 + pfHour, Hash: "0xf", Delta: hlLedgerEventDelta{Type: "funding", Coin: "BTC", USDC: "-1.0"}}
+	if !ingestFundingEvent(db, state, SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}, ev, map[string]map[string]float64{"BTC": {"hl-live": 0.3}}) {
+		t.Fatal("wallet funding ingest")
+	}
+	if last := s.TradeHistory[len(s.TradeHistory)-1]; last.TradeType != TradeTypeFunding {
+		t.Fatalf("the newest row must be the wallet funding row: %+v", last)
+	}
+	if got := tpOIDsFromOpenTrade(s, "BTC", 2); len(got) != 2 || got[0] != 11 || got[1] != 12 {
+		t.Fatalf("tpOIDsFromOpenTrade must return the opening trade's OIDs past a funding row, got %v", got)
+	}
+}
+
+func TestPaperFundingRowsNeverCrowdTradesOutOfTheLoadedHistory(t *testing.T) {
+	live := hlLivePerps("hl-live", "ETH", 1000)
+	f := newPFFixture(t, true, pfPaperPerps("hl-p", "ETH"), live)
+	f.sync()
+	f.save()
+	insert := func(sdb *StateDB, id string, n int, funding bool, startMs int64) {
+		for i := 0; i < n; i++ {
+			tr := Trade{StrategyID: id, Symbol: "ETH", Side: "buy", Quantity: 1, Price: 2000, TradeType: "perps", Timestamp: time.UnixMilli(startMs + int64(i)*60_000).UTC()}
+			if funding {
+				tr = Trade{StrategyID: id, Symbol: "ETH", Side: "funding", TradeType: TradeTypeFunding, RealizedPnL: -0.01, PnLGross: true, ExchangeOrderID: paperFundingOrderID("ETH", startMs+int64(i)*pfHour), Timestamp: time.UnixMilli(startMs + int64(i)*pfHour).UTC()}
+			}
+			if err := sdb.InsertTrade(id, tr); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	insert(f.store.file(storageRolePaper), "hl-p", 50, false, pfT0)
+	insert(f.store.file(storageRolePaper), "hl-p", 1200, true, pfT0+pfHour)
+	insert(f.store.file(storageRolePrimary), "hl-live", 30, false, pfT0)
+	insert(f.store.file(storageRolePrimary), "hl-live", 1100, true, pfT0+pfHour)
+	f.reload()
+	paper := f.state.Strategies["hl-p"]
+	entry := newLeaderboardEntry(f.cfg.Strategies[0], paper, 1000, 1000, 0, 0, nil, nil, 3600)
+	if entry.Trades != 50 {
+		t.Fatalf("after a restart the leaderboard must count the 50 real trades, got %d", entry.Trades)
+	}
+	resp := statusRespForScopes(t, f.cfg.Strategies, f.state)
+	strategies, _ := resp["strategies"].(map[string]any)
+	liveStatus, _ := strategies["hl-live"].(map[string]any)
+	if got, _ := liveStatus["trade_count"].(float64); got != 30 {
+		t.Fatalf("after a restart /status must count the live strategy's 30 real trades, got %v", liveStatus["trade_count"])
+	}
+	last := paper.TradeHistory[len(paper.TradeHistory)-1]
+	if last.TradeType != TradeTypeFunding || len(paper.TradeHistory) != 50+maxTradeHistory {
+		t.Fatalf("each row kind keeps its own load window in time order: %d rows, newest %+v", len(paper.TradeHistory), last)
+	}
+}

@@ -1974,7 +1974,7 @@ func stampOpenTradeFromPosition(s *StrategyState, db *StateDB, symbol string, po
 	}
 	for i := len(s.TradeHistory) - 1; i >= 0; i-- {
 		t := &s.TradeHistory[i]
-		if t.Symbol != symbol {
+		if t.Symbol != symbol || t.TradeType == TradeTypeFunding {
 			continue
 		}
 		if t.IsClose {

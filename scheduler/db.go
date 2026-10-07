@@ -2491,46 +2491,15 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 
 	for storedID, procID := range loaded {
 		s := out.Strategies[procID]
-		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
-			FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, storedID, maxTradeHistory)
+		trades, err := sdb.loadStrategyTradeWindow(storedID, procID, "trade_type != ?")
 		if err != nil {
-			return nil, fmt.Errorf("load trades for %s: %w", procID, err)
+			return nil, err
 		}
-		var allTrades []Trade
-		for tradeRows.Next() {
-			var t Trade
-			var tsStr string
-			var isCloseInt, isManualInt, pnlGrossInt int
-			var tpOIDsJSON string
-			var slATRMult sql.NullFloat64
-			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &t.TPTiersJSON, &pnlGrossInt, &t.FeeSource); err != nil {
-				tradeRows.Close()
-				return nil, fmt.Errorf("scan trade: %w", err)
-			}
-			t.StrategyID = procID
-			t.Timestamp = parseTime(tsStr)
-			t.IsClose = isCloseInt != 0
-			t.Manual = isManualInt != 0
-			t.PnLGross = pnlGrossInt != 0
-			t.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
-			if slATRMult.Valid {
-				v := slATRMult.Float64
-				t.StopLossATRMult = &v
-			}
-			t.persisted = true
-			allTrades = append(allTrades, t)
+		funding, err := sdb.loadStrategyTradeWindow(storedID, procID, "trade_type = ?")
+		if err != nil {
+			return nil, err
 		}
-		tradeRows.Close()
-		if err := tradeRows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate trades for %s: %w", procID, err)
-		}
-		for i, j := 0, len(allTrades)-1; i < j; i, j = i+1, j-1 {
-			allTrades[i], allTrades[j] = allTrades[j], allTrades[i]
-		}
-		if allTrades == nil {
-			allTrades = []Trade{}
-		}
-		s.TradeHistory = allTrades
+		s.TradeHistory = mergeLoadedTradeWindows(trades, funding)
 	}
 
 	scopeFilter, scopeArgs := scopePlaceholders(scopes)
@@ -3380,4 +3349,65 @@ func parseTime(s string) time.Time {
 	}
 	t, _ := time.Parse(time.RFC3339Nano, s)
 	return t
+}
+
+type loadedTradeRow struct {
+	trade Trade
+	rawTS string
+	rowID int64
+}
+
+func (sdb *StateDB) loadStrategyTradeWindow(storedID, procID, typeFilter string) ([]loadedTradeRow, error) {
+	tradeRows, err := sdb.db.Query(`SELECT rowid, timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
+		FROM trades WHERE strategy_id = ? AND `+typeFilter+` ORDER BY timestamp DESC, rowid DESC LIMIT ?`, storedID, TradeTypeFunding, maxTradeHistory)
+	if err != nil {
+		return nil, fmt.Errorf("load trades for %s: %w", procID, err)
+	}
+	defer tradeRows.Close()
+	var out []loadedTradeRow
+	for tradeRows.Next() {
+		var t Trade
+		var rowID int64
+		var tsStr string
+		var isCloseInt, isManualInt, pnlGrossInt int
+		var tpOIDsJSON string
+		var slATRMult sql.NullFloat64
+		if err := tradeRows.Scan(&rowID, &tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &t.TPTiersJSON, &pnlGrossInt, &t.FeeSource); err != nil {
+			return nil, fmt.Errorf("scan trade: %w", err)
+		}
+		t.StrategyID = procID
+		t.Timestamp = parseTime(tsStr)
+		t.IsClose = isCloseInt != 0
+		t.Manual = isManualInt != 0
+		t.PnLGross = pnlGrossInt != 0
+		t.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
+		if slATRMult.Valid {
+			v := slATRMult.Float64
+			t.StopLossATRMult = &v
+		}
+		t.persisted = true
+		out = append(out, loadedTradeRow{trade: t, rawTS: tsStr, rowID: rowID})
+	}
+	if err := tradeRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate trades for %s: %w", procID, err)
+	}
+	return out, nil
+}
+
+func mergeLoadedTradeWindows(windows ...[]loadedTradeRow) []Trade {
+	var rows []loadedTradeRow
+	for _, w := range windows {
+		rows = append(rows, w...)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].rawTS != rows[j].rawTS {
+			return rows[i].rawTS < rows[j].rawTS
+		}
+		return rows[i].rowID < rows[j].rowID
+	})
+	out := make([]Trade, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.trade)
+	}
+	return out
 }
