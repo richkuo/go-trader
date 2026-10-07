@@ -153,3 +153,18 @@ def test_refuses_an_export_that_fails_ledger_validation(tmp_path):
                           cwd=BACKTEST)
     assert proc.returncode == 1
     assert "version" in json.loads(proc.stdout)["error"]
+
+
+def test_refuses_an_export_from_another_platform(tmp_path):
+    with open(os.path.join(FIXTURE, "export_live_doge.json")) as fh:
+        doc = json.load(fh)
+    doc["selection"]["platform"] = "okx"
+    bad = tmp_path / "export_okx.json"
+    bad.write_text(json.dumps(doc))
+    proc = subprocess.run(
+        [sys.executable, TOOL, "--export", os.path.join(FIXTURE, "export_live.json"), "--export", str(bad)],
+        capture_output=True, text=True, cwd=BACKTEST)
+    assert proc.returncode == 1
+    out = json.loads(proc.stdout)
+    assert list(out) == ["error"]
+    assert "platform 'okx'" in out["error"]

@@ -183,6 +183,9 @@ def _decimal_oid(text):
     return None
 
 
+EVIDENCE_PLATFORM = "hyperliquid"
+
+
 def load_exports(paths: list) -> list:
     out = []
     for path in paths:
@@ -192,6 +195,10 @@ def load_exports(paths: list) -> list:
             raise EvidenceInputError(f"export {path}: {exc}")
         except OSError as exc:
             raise EvidenceInputError(f"export {path}: {exc}")
+        platform = doc["selection"]["platform"]
+        if platform != EVIDENCE_PLATFORM:
+            raise EvidenceInputError(
+                f"export {path} is platform {platform!r}; this tool measures {EVIDENCE_PLATFORM!r} fees only")
         out.append({"path": path, "sha256": _sha256_bytes(data), "doc": doc})
     return out
 
