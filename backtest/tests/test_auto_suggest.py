@@ -264,7 +264,7 @@ def test_m6_argv_tail_incumbent_close_path_omits_baseline():
 def test_m5_argv_tail():
     tail = asug.m5_argv_tail("sq", "spot", None, ["oos"], None, "/t/m5.json")
     assert tail == ["--strategies", "sq", "--registry", "spot",
-                    "--windows", "oos", "--json", "/t/m5.json"]
+                    "--windows", "oos", "--funding", "charge", "--json", "/t/m5.json"]
 
 
 def _m6_payload(is_rows, oos_rows):

@@ -1759,6 +1759,10 @@ def run_walk_forward(
         comparison_mode=comparison_mode,
     )
 
+    print(f"  Funding-skipped folds: {int(result.get('funding_skipped_folds') or 0)}")
+    print(f"  Funding-skipped candidates: {int(result.get('funding_skipped_candidates') or 0)}")
+    if result.get("error"):
+        print(f"  {result['error']}")
     print(format_walk_forward_report(result))
     return result
 

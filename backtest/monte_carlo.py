@@ -236,7 +236,9 @@ def _load_reg_and_window(registry: str, window_name: str):
 def run_leg_trades(strategy: str, registry: str, params: Optional[dict],
                    dataset: str, window_name: str,
                    capital: float, direction: Optional[str],
-                   returns: str, validations: Optional[list] = None) -> List[float]:
+                   returns: str, validations: Optional[list] = None,
+                   funding_mode: str = "charge",
+                   funding_flags: Optional[dict] = None) -> List[float]:
     from eval_windows import parse_dataset_arg, run_leg
 
     reg, window = _load_reg_and_window(registry, window_name)
@@ -248,7 +250,12 @@ def run_leg_trades(strategy: str, registry: str, params: Optional[dict],
         raise SystemExit(f"Unknown strategy {strategy!r}; available: "
                          f"{reg.list_strategies()}")
     leg = run_leg(reg, strategy, params, symbol, timeframe, window,
-                  capital=capital, direction=direction, keep_trades=True)
+                  capital=capital, direction=direction, keep_trades=True,
+                  funding_mode=funding_mode)
+    if funding_flags is not None and leg is not None:
+        funding_flags["last_leg"] = leg
+        if leg.get("funding_incomplete"):
+            funding_flags["incomplete"] = True
     if validations is not None and leg is not None:
         validations.append(leg.get("close_validation"))
     values = _leg_returns(leg, returns)
@@ -261,7 +268,9 @@ def run_leg_trades(strategy: str, registry: str, params: Optional[dict],
 def run_candidate_leg_trades(candidate: dict, registry: str, dataset: str,
                              window_name: str, capital: float,
                              returns: str,
-                             validations: Optional[list] = None) -> Optional[List[float]]:
+                             validations: Optional[list] = None,
+                             funding_mode: str = "charge",
+                             funding_flags: Optional[dict] = None) -> Optional[List[float]]:
     from eval_windows import parse_dataset_arg, run_candidate_leg
 
     reg, window = _load_reg_and_window(registry, window_name)
@@ -273,7 +282,12 @@ def run_candidate_leg_trades(candidate: dict, registry: str, dataset: str,
         raise SystemExit(f"Unknown strategy {candidate['name']!r}; available: "
                          f"{reg.list_strategies()}")
     leg = run_candidate_leg(reg, candidate, symbol, timeframe, window,
-                            capital=capital, keep_trades=True)
+                            capital=capital, keep_trades=True,
+                            funding_mode=funding_mode)
+    if funding_flags is not None and leg is not None:
+        funding_flags["last_leg"] = leg
+        if leg.get("funding_incomplete"):
+            funding_flags["incomplete"] = True
     if validations is not None and leg is not None:
         validations.append(leg.get("close_validation"))
     return _leg_returns(leg, returns)
@@ -403,6 +417,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "(#1295). Default in multi-leg: the six audit datasets")
     p.add_argument("--direction", default=None, choices=["long", "short"])
     p.add_argument("--capital", type=float, default=1000.0)
+    p.add_argument("--funding", choices=["charge", "partial", "off"],
+                   default="charge",
+                   help="Hyperliquid perps funding mode for strategy and "
+                        "candidate legs")
     p.add_argument("--returns", choices=["net", "gross"], default="net",
                    help="Per-trade return basis (default net — fees "
                         "deducted; see module docstring)")
@@ -546,6 +564,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise SystemExit(f"--params must be valid JSON: {exc}")
 
         legs = []
+        funding_flags = {"incomplete": False}
         for wname in window_names:
             for ds in dataset_args:
                 try:
@@ -555,9 +574,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                                      f"got: {ds!r}")
                 ran_before = len(validations)
                 if candidate is not None:
+                    funding_flags.pop("last_leg", None)
                     values = run_candidate_leg_trades(
                         candidate, args.registry, ds, wname, args.capital,
-                        args.returns, validations)
+                        args.returns, validations,
+                        funding_mode=args.funding, funding_flags=funding_flags)
+                    raw_leg = funding_flags.get("last_leg")
                 else:
                     reg, window = _load_reg_and_window(args.registry, wname)
                     if args.strategy not in reg.STRATEGY_REGISTRY:
@@ -566,11 +588,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                             f"{reg.list_strategies()}")
                     raw_leg = run_leg(reg, args.strategy, params, symbol, timeframe,
                                       window, capital=args.capital,
-                                      direction=args.direction, keep_trades=True)
+                                      direction=args.direction, keep_trades=True,
+                                      funding_mode=args.funding)
                     if raw_leg is not None:
                         validations.append(raw_leg.get("close_validation"))
+                        if raw_leg.get("funding_incomplete"):
+                            funding_flags["incomplete"] = True
                     values = _leg_returns(raw_leg, args.returns)
+                leg_mode = args.funding
+                leg_incomplete = False
+                if raw_leg is not None:
+                    leg_mode = (raw_leg.get("funding") or {}).get("mode") or args.funding
+                    leg_incomplete = bool(raw_leg.get("funding_incomplete"))
                 leg = {"window": wname, "dataset": dataset_key(symbol, timeframe),
+                       "funding_mode": leg_mode,
+                       "funding_incomplete": leg_incomplete,
                        "close_validation": (validations[-1]
                                             if len(validations) > ran_before else None)}
                 if values is None:
@@ -612,6 +644,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "kill_switch_source": threshold_source,
                 "candidate": candidate,
                 "close_validation": close_validation,
+                "funding_mode": args.funding,
+                "funding_incomplete": bool(funding_flags["incomplete"]),
                 "legs": legs,
             }
             with open(args.json_out, "w") as fh:
@@ -621,6 +655,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     window = args.window or "is"
     dataset = args.dataset or "BTC/USDT:1h"
+    funding_flags = {"incomplete": False}
 
     if args.trades_json:
         try:
@@ -643,7 +678,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif candidate is not None:
         values = run_candidate_leg_trades(candidate, args.registry, dataset,
                                           window, args.capital, args.returns,
-                                          validations)
+                                          validations, funding_mode=args.funding,
+                                          funding_flags=funding_flags)
         if values is None:
             raise SystemExit(f"no cached data for {dataset} in window "
                              f"{window!r}")
@@ -656,7 +692,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise SystemExit(f"--params must be valid JSON: {exc}")
         values = run_leg_trades(args.strategy, args.registry, params,
                                 dataset, window, args.capital,
-                                args.direction, args.returns, validations)
+                                args.direction, args.returns, validations,
+                                funding_mode=args.funding,
+                                funding_flags=funding_flags)
         source = (f"{args.strategy} {dataset} window={window} "
                   f"({args.registry} registry)")
 
@@ -681,6 +719,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "observed": {"max_dd_pct": round(observed[0], 4),
                          "final_return_pct": round(observed[1], 4)},
             "close_validation": close_validation,
+            "funding_mode": None if args.trades_json else args.funding,
+            "funding_incomplete": bool(funding_flags["incomplete"]) if not args.trades_json else False,
             "schemes": blocks,
         }
         with open(args.json_out, "w") as fh:
