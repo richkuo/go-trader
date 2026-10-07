@@ -1511,8 +1511,9 @@ def test_selector_timeframe_and_other_regime_refusals(tmp_path):
     _, rep = _run(fx, tmp_path, name="other.json")
     assert ("regime_divergence_unmodeled", "regime_window_divergence") in _codes(rep)
     assert ("regime_profile_allocation_unsupported", "regime_profile_allocation") in _codes(rep)
-    assert ("sizing_margin_per_trade_usd", "margin_per_trade_usd") in _codes(rep)
-    assert ("sizing_risk_per_trade_pct", "risk_per_trade_pct") in _codes(rep)
+    sizing_rows = {r["field"]: r for r in rep["eligibility"]["capability_matrix"] if r["category"] == "sizing"}
+    assert sizing_rows["margin_per_trade_usd"]["decision"] == "modeled"
+    assert "stop distance" in sizing_rows["risk_per_trade_pct"]["reason"]
     assert ("sizing_capital_pct", "capital_pct") in _codes(rep)
 
 
@@ -1545,6 +1546,7 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
         "gate": "regime_w_gate",
         "directional": "regime_w_medium",
         "directional_named": False,
+        "payload_row": "closed_candle",
     }
     bt = Backtester(
         initial_capital=1000, platform="hyperliquid", regime_enabled=True,
@@ -1583,6 +1585,7 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
             "gate": "regime_w_medium",
             "directional": "regime_w_gate",
             "directional_named": True,
+            "payload_row": "closed_candle",
         },
     )
     named_result = named_bt.run(named, save=False)
@@ -1747,7 +1750,8 @@ def test_modeled_policy_arms_the_stop_from_the_stamp_row(tmp_path):
     labels = ["trending_down", "trending_up", "trending_up", "trending_up"]
     actions = ["long", "none", "none", "none"]
     primary = _ohlc(labels, actions)
-    columns = {"gate": "regime", "directional": "regime", "directional_named": False}
+    columns = {"gate": "regime", "directional": "regime", "directional_named": False,
+               "payload_row": "closed_candle"}
     bt, arms, trades = _armed_with_policy(primary, columns, policy=_STAMP_POLICY)
     assert trades and trades[0]["side"] == "long"
     assert arms and arms[0]["regime"] == "trending_up"
@@ -1764,6 +1768,7 @@ def test_modeled_policy_arms_the_stop_from_the_stamp_row(tmp_path):
         "gate": "regime_w_short",
         "directional": "regime_w_medium",
         "directional_named": False,
+        "payload_row": "closed_candle",
     }, policy=_STAMP_POLICY)
     assert trades and trades[0]["side"] == "long"
     assert arms and arms[0]["regime"] == "trending_down"
@@ -1864,7 +1869,7 @@ def test_seeded_open_keeps_its_recorded_entry_label():
         "regime": ["trending_down"] * 3,
         "regime_w_short": ["trending_down", "trending_up", "trending_up"],
     }, index=idx)
-    columns = {"gate": "regime_w_short", "directional_named": False}
+    columns = {"gate": "regime_w_short", "directional_named": False, "payload_row": "closed_candle"}
     seed = {"entry_price": 100.0, "entry_atr": 2.0, "entry_date": idx[0],
             "entry_regime": "trending_up"}
     bt, arms = _arms(df, columns=columns, seed=seed)
@@ -1959,7 +1964,7 @@ def test_unshifted_gate_attestation_reads_the_fill_row(tmp_path):
         frame = _ohlc(labels, actions)
         columns = {"gate": "regime", "directional_named": False}
         if unshifted:
-            columns["gate_unshifted"] = True
+            columns.update(payload_row="closed_candle", gate_row="payload")
         bt = Backtester(
             initial_capital=10_000, commission_pct=0.0, slippage_pct=0.0,
             platform="hyperliquid", strategy_type="perps", regime_enabled=True,
@@ -2047,7 +2052,8 @@ def test_unshifted_gate_arms_protection_from_the_same_row(tmp_path):
         return frame, bt, arms, result["trades"]
 
     down_then_up = ["trending_down", "trending_up", "trending_up", "trending_up"]
-    unshifted = {"gate": "regime", "directional_named": False, "gate_unshifted": True}
+    unshifted = {"gate": "regime", "directional_named": False, "payload_row": "closed_candle",
+                 "gate_row": "payload"}
     frame, bt, arms, trades = _arm(down_then_up, unshifted)
     assert trades and trades[0]["side"] == "long"
     assert pd.Timestamp(trades[0]["entry_date"]) == frame.index[1]
@@ -2072,7 +2078,8 @@ def test_unshifted_gate_arms_protection_from_the_same_row(tmp_path):
 
     _, named_bt, named_arms, named_trades = _arm(
         ["ranging", "trending_down", "trending_down", "trending_down"],
-        {"gate": "regime_w_short", "directional_named": False, "gate_unshifted": True},
+        {"gate": "regime_w_short", "directional_named": False, "payload_row": "closed_candle",
+         "gate_row": "payload"},
         short=down_then_up,
     )
     assert named_trades and named_arms
@@ -2128,6 +2135,242 @@ def test_unshifted_gate_arms_protection_from_the_same_row(tmp_path):
     assert named["eligibility"]["regime"]["timing"]["protection"] == "unshifted_closed_candle"
     assert named["eligibility"]["regime"]["protection_source"] == (
         "unshifted_closed_candle:gate_window:short")
+
+
+def _payload_stop_run(tmp_path, name, *, features=None, closed_bar=False, gate_window=None,
+                      allowed=None, atr_window=None, mode="strict"):
+    slot = tmp_path / name
+    slot.mkdir()
+    fx = _copy(slot)
+    cin, seg = _segment(fx)
+    _use_regime_market(cin, fx)
+    seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": dict(REGIME_WINDOWS)}
+    _stop_free_loader_segment(seg)
+    seg["strategy"]["close_strategy"] = copy.deepcopy(UNIFIED_CLOSE)
+    seg["strategy"]["direction"] = "both"
+    if gate_window:
+        seg["strategy"]["regime_gate_window"] = gate_window
+    if atr_window:
+        seg["strategy"]["regime_atr_window"] = atr_window
+        seg["stop_evidence"]["regime_atr_window"] = {"status": "verified", "source": "test edit",
+                                                     "present": True, "value": atr_window}
+    if allowed is not None:
+        seg["strategy"]["allowed_regimes"] = list(allowed)
+    if closed_bar:
+        seg["strategy"]["closed_bar_decisions"] = True
+    evidence = cin.setdefault("capability_evidence", {})
+    if allowed is not None:
+        rel, digest = _write_json(fx, "regime_labels.json", {"values_and_timing": True})
+        evidence["regime_labels"] = _verified_evidence(_binding(seg), artifact={"path": rel, "sha256": digest})
+    if features is not None:
+        evidence["regime_feature_timing"] = _verified_evidence(_binding(seg), features=dict(features))
+    _dump(fx / "comparison_input.json", cin)
+    return fx, _run(fx, tmp_path, mode=mode, name=name + ".json")
+
+
+def _bounded_labels(fx, window):
+    import pandas as pd
+    from regime import bounded_window_labels, required_ohlcv_limit
+    with gzip.open(fx / "regime_market" / "BTC_1h_candles.csv.gz", "rt") as fh:
+        candles = pd.read_csv(fh)
+    column = "regime_w_" + window
+    bounded_window_labels(
+        candles, period=14, adx_threshold=20.0, windows_spec=REGIME_WINDOWS,
+        limit=required_ohlcv_limit(14, REGIME_WINDOWS), columns={column: window})
+    return {int(ts): str(lab or "") for ts, lab in zip(candles["timestamp"], candles[column])}
+
+
+def _arm_fill_ms(arm) -> int:
+    import pandas as pd
+    ts = pd.Timestamp(arm["date"])
+    ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+    return int(ts.timestamp() * 1000)
+
+
+def test_result_regime_timing_evidence_sets_the_stop_row_for_every_consumer(tmp_path):
+    unshifted = "unshifted_closed_candle"
+    fx, (_, gate_token) = _payload_stop_run(
+        tmp_path, "gate_token_named", features={"gate": unshifted}, gate_window="short")
+    assert gate_token["simulation"]["status"] == "run", gate_token["eligibility"]["refusals"]
+    regime = gate_token["eligibility"]["regime"]
+    assert regime["protection_source"] == "unshifted_closed_candle:gate_window:short"
+    assert regime["timing"]["protection"] == unshifted
+    assert regime["timing"]["gate"] == unshifted
+    assert regime["timing"]["result_regime"]["status"] == "attested"
+    short = _bounded_labels(fx, "short")
+    arms = gate_token["stops"]["arm_events"]
+    assert arms and all(a["regime"] == short[_arm_fill_ms(a)] for a in arms)
+
+    fx, (_, dir_token) = _payload_stop_run(tmp_path, "dir_token_primary", features={"directional": unshifted})
+    assert dir_token["simulation"]["status"] == "run", dir_token["eligibility"]["refusals"]
+    assert dir_token["eligibility"]["regime"]["protection_source"] == "unshifted_closed_candle:primary_column"
+    medium = _bounded_labels(fx, "medium")
+    arms = dir_token["stops"]["arm_events"]
+    assert arms and all(a["regime"] == medium[_arm_fill_ms(a)] for a in arms)
+
+    fx, (_, bare) = _payload_stop_run(tmp_path, "no_token_named", gate_window="short")
+    assert bare["simulation"]["status"] == "run", bare["eligibility"]["refusals"]
+    assert bare["eligibility"]["regime"]["protection_source"] == "shifted_decision_bar:gate_window:short"
+    assert bare["eligibility"]["regime"]["timing"]["result_regime"]["status"] == "unattested"
+    arms = bare["stops"]["arm_events"]
+    assert arms and all(a["regime"] == short[_arm_fill_ms(a) - HOUR_MS] for a in arms)
+
+    every = ["trending_up", "trending_down", "ranging"]
+    fx, (_, closed_dir) = _payload_stop_run(
+        tmp_path, "closed_bar_dir_token", features={"directional": unshifted}, closed_bar=True, allowed=every)
+    assert closed_dir["simulation"]["status"] == "run", closed_dir["eligibility"]["refusals"]
+    assert closed_dir["eligibility"]["regime"]["timing"]["gate"] == "shifted_closed_bar"
+    assert closed_dir["eligibility"]["regime"]["protection_source"] == "unshifted_closed_candle:primary_column"
+    arms = closed_dir["stops"]["arm_events"]
+    assert arms and all(a["regime"] == medium[_arm_fill_ms(a)] for a in arms)
+
+    fx, (_, closed_gate) = _payload_stop_run(
+        tmp_path, "closed_bar_gate_token", features={"gate": unshifted}, closed_bar=True, allowed=every)
+    assert closed_gate["simulation"]["status"] == "run", closed_gate["eligibility"]["refusals"]
+    assert closed_gate["eligibility"]["regime"]["timing"]["result_regime"]["status"] == "unattested"
+    assert closed_gate["eligibility"]["regime"]["protection_source"] == "shifted_decision_bar:primary_column"
+    arms = closed_gate["stops"]["arm_events"]
+    assert arms and all(a["regime"] == medium[_arm_fill_ms(a) - HOUR_MS] for a in arms)
+
+    _, (_, both) = _payload_stop_run(
+        tmp_path, "gate_and_dir_tokens", features={"gate": unshifted, "directional": unshifted},
+        gate_window="short", allowed=every)
+    assert both["simulation"]["status"] == "run", both["eligibility"]["refusals"]
+    assert both["eligibility"]["regime"]["protection_source"] == "unshifted_closed_candle:gate_window:short"
+    arms = both["stops"]["arm_events"]
+    assert arms and all(a["regime"] == short[_arm_fill_ms(a)] for a in arms)
+
+    _, (rc, conflict) = _payload_stop_run(
+        tmp_path, "conflicting_tokens", features={"gate": unshifted, "directional": "forming_bar"},
+        gate_window="short")
+    assert rc == 1 and conflict["simulation"]["status"] != "run"
+    assert ("regime_feature_timing_conflict", "regime_gate_window") in _codes(conflict)
+    assert ("regime_feature_timing_conflict", "regime.enabled") in _codes(conflict)
+    _, (_, conflict_approx) = _payload_stop_run(
+        tmp_path, "conflicting_tokens_approx", features={"gate": unshifted, "directional": "forming_bar"},
+        mode="approximate")
+    assert ("regime_feature_timing_conflict", "regime.enabled") in _codes(conflict_approx)
+    assert conflict_approx["simulation"]["status"] != "run"
+
+    _, (rc, unknown) = _payload_stop_run(tmp_path, "unknown_token", features={"directional": "forming_bar"})
+    assert rc == 1 and ("regime_feature_timing_unsupported", "regime.enabled") in _codes(unknown)
+    fx, (_, unknown_approx) = _payload_stop_run(
+        tmp_path, "unknown_token_approx", features={"directional": "forming_bar"}, mode="approximate")
+    assert unknown_approx["outcome"] == "incomplete"
+    assert unknown_approx["simulation"]["status"] == "run", unknown_approx["eligibility"]["refusals"]
+    assert any(a.get("reason_code") == "regime_feature_timing_unsupported"
+               for a in unknown_approx["eligibility"]["approximations"])
+    assert unknown_approx["eligibility"]["regime"]["timing"]["protection"] == "shifted_decision_bar"
+
+    _, (_, atr_named) = _payload_stop_run(
+        tmp_path, "named_atr_window", features={"directional": unshifted}, atr_window="short")
+    assert ("regime_atr_window_unsupported", "regime_atr_window") in _codes(atr_named)
+    assert atr_named["eligibility"]["regime"]["protection_source"] is None
+
+
+def _context_label_columns(features, *, gate_window=None, closed_bar=False):
+    from regime_context import resolve_regime_context
+    strategy = {"args": ["sma_crossover", "BTC", "1h"]}
+    if gate_window:
+        strategy["regime_gate_window"] = gate_window
+    if closed_bar:
+        strategy["closed_bar_decisions"] = True
+    binding = {"partition": "live", "strategy_id": "hl-strict-btc", "configuration_sha256": "c",
+               "interval_start": INTERVAL_START, "interval_end": INTERVAL_END}
+    evidence = {}
+    if features is not None:
+        evidence["regime_feature_timing"] = _verified_evidence(
+            {"partition": "live", "strategy_id": "hl-strict-btc", "configuration_sha256": "c",
+             "interval": {"start": INTERVAL_START, "end": INTERVAL_END}}, features=dict(features))
+    ctx = resolve_regime_context(
+        {"strategy": strategy,
+         "regime": {"enabled": True, "period": 14, "adx_threshold": 20, "windows": dict(REGIME_WINDOWS)}},
+        evidence, binding, {"interval": "1h", "warmup_bars": 300}, True, "strict", ".")
+    return (ctx["engine"] or {}).get("regime_label_columns"), ctx["report"]
+
+
+def test_regime_context_columns_arm_the_stop_on_the_attested_row():
+    actions = ["long", "none", "none", "none"]
+    moving = ["trending_down", "trending_up", "trending_up", "trending_up"]
+    still = ["ranging"] * 4
+
+    def _arm_label(columns, *, short, medium):
+        frame = _ohlc(medium, actions)
+        frame["regime_w_short"] = short
+        frame["regime_w_medium"] = medium
+        _, arms = _arms(frame, columns=columns)
+        assert arms
+        return arms[0]["regime"]
+
+    columns, report = _context_label_columns({"gate": "unshifted_closed_candle"}, gate_window="short")
+    assert columns["gate"] == "regime_w_short" and columns["payload_row"] == "closed_candle"
+    assert report["protection_source"] == "unshifted_closed_candle:gate_window:short"
+    assert _arm_label(columns, short=moving, medium=still) == "trending_up"
+
+    columns, report = _context_label_columns(None, gate_window="short")
+    assert columns["payload_row"] == "decision_bar"
+    assert report["protection_source"] == "shifted_decision_bar:gate_window:short"
+    assert _arm_label(columns, short=moving, medium=still) == "trending_down"
+
+    columns, report = _context_label_columns({"directional": "unshifted_closed_candle"})
+    assert columns["gate"] == "regime_w_medium" and columns["payload_row"] == "closed_candle"
+    assert report["protection_source"] == "unshifted_closed_candle:primary_column"
+    assert _arm_label(columns, short=still, medium=moving) == "trending_up"
+
+    columns, report = _context_label_columns({"directional": "unshifted_closed_candle"}, closed_bar=True)
+    assert columns["payload_row"] == "closed_candle" and columns["gate_row"] == "decision_bar"
+    assert _arm_label(columns, short=still, medium=moving) == "trending_up"
+
+    columns, report = _context_label_columns({"gate": "unshifted_closed_candle"}, closed_bar=True)
+    assert columns is None
+    assert report["protection_source"] == "shifted_decision_bar:primary_column"
+    _, arms = _arms(_ohlc(moving, actions))
+    assert arms and arms[0]["regime"] == "trending_down"
+
+
+def test_engine_reads_result_regime_from_one_payload_row():
+    labels = ["trending_down", "trending_up", "trending_up", "trending_up"]
+    actions = ["long", "none", "none", "none"]
+
+    def _go(columns, *, allowed=None, policy=None):
+        from backtester import Backtester
+        events = []
+        kwargs = dict(
+            initial_capital=10_000, commission_pct=0.0, slippage_pct=0.0,
+            platform="hyperliquid", strategy_type="perps", regime_enabled=True,
+            stop_loss_atr_mult_regime=_REGIME_STOP, regime_label_columns=columns,
+        )
+        if allowed is not None:
+            kwargs["allowed_regimes"] = allowed
+        if policy is not None:
+            kwargs["regime_directional_policy"] = policy
+            kwargs["regime_directional_certified_states"] = dict(_STAMP_STATES)
+        bt = Backtester(**kwargs)
+        result = bt.run(_ohlc(labels, actions), save=False, stop_observer=events.append)
+        return bt, [e for e in events if e.get("event") == "arm"], result["trades"]
+
+    base = {"gate": "regime", "directional": "regime", "directional_named": False}
+    bt, arms, trades = _go(dict(base, payload_row="closed_candle"))
+    assert trades and arms[0]["regime"] == "trending_up" == bt._stamp_directional == bt._stamp_gate
+
+    bt, arms, trades = _go(dict(base))
+    assert trades and arms[0]["regime"] == "trending_down" == bt._stamp_gate
+
+    bt, arms, trades = _go(dict(base, payload_row="closed_candle", gate_row="decision_bar"),
+                           allowed=["trending_down"], policy=_STAMP_POLICY)
+    assert trades and trades[0]["side"] == "long"
+    assert arms[0]["regime"] == "trending_up" == bt._stamp_directional
+
+    _, _, blocked = _go(dict(base, payload_row="closed_candle", gate_row="payload"), allowed=["trending_down"])
+    assert blocked == []
+
+    from backtester import Backtester
+    with pytest.raises(ValueError, match="unknown regime_label_columns keys: gate_unshifted"):
+        Backtester(regime_label_columns={"gate": "regime", "gate_unshifted": True})
+    with pytest.raises(ValueError, match="payload_row"):
+        Backtester(regime_label_columns={"gate": "regime", "payload_row": "forming_bar"})
+    with pytest.raises(ValueError, match="without a directional regime label column"):
+        _go({"gate": "regime"}, policy=_STAMP_POLICY)
 
 
 def test_paper_funding_rows_with_position_ids_report_as_strategy_funding(tmp_path):

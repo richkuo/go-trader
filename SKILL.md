@@ -652,23 +652,27 @@ Missing, hash, invalid and incomplete evidence keep those words in the reason co
 No evidence is `directional_certification_unverified` or `regime_label_availability_unverified` (approximable).
 Selectors are checked before a row can be inactive: `regime_window_multi_disabled`, `regime_window_unknown`, and `regime_gate_disabled_fail_closed` (disabled regime, `allowed_regimes`, fail-closed).
 A named selector with no consumer is inactive `regime_selector_no_consumer`.
-A regime-owned stop consumes a named gate window, so that selector is not inactive. With no modeled directional policy and no unshifted gate, the arm reads that window on the decision bar. A modeled policy, or a modeled gate on the unshifted closed-candle row, arms the stop, the regime-tier label, and the position stamps from that same row.
+A regime-owned stop consumes a named gate window, so that selector is not inactive.
+Live writes one `result.Regime` payload per cycle. The position stamps, the regime-owned stop, the regime-tier label and the directional policy read one row of it, and so does the gate with `closed_bar_decisions` off.
+`features.directional`, and `features.gate` with `closed_bar_decisions` off, describe that row. `unshifted_closed_candle` attests the fill bar's own close; with no token the row is the decision bar.
+Tokens that disagree are `regime_feature_timing_conflict`. A token the frozen candles do not reproduce is `regime_feature_timing_unsupported` (approximable; the substitute is the decision bar).
 An uncertified policy is inactive `directional_policy_uncertified`.
 A bare `ranging_directional` entry is honored when a certified sub-label resolves to it, matching live `gatedDirectionalEntry`.
 A gate with `closed_bar_decisions` reads one shifted closed-bar column.
-With `closed_bar_decisions` off, a verified `features.gate: unshifted_closed_candle` attestation models that unshifted closed-candle row.
-Without that attestation the gate is `regime_feature_timing_unsupported`, and approximate mode keeps the shifted closed-bar label.
+With `closed_bar_decisions` off, the gate reads the attested `result.Regime` row.
+Without an attested row the gate is `regime_feature_timing_unsupported`, and approximate mode uses the decision bar.
 Directional checks read `result.Regime`.
 A flat directional decision reads the resolved directional window, which is the primary window when the selector is default.
 An open position keeps the entry stamp, the gate-window label when the directional selector is default.
-Directional checks need `features.directional: unshifted_closed_candle`; otherwise `regime_feature_timing_unsupported`.
+Directional checks need an attested `result.Regime` row; otherwise `regime_feature_timing_unsupported`, and approximate mode uses the decision bar.
 Approximate mode records that substitute and stays incomplete.
 Warm-up shorter than the live lookback (at least 200) is `regime_lookback_insufficient`.
 Another timeframe is `regime_timeframe_unprepared`.
 `regime_window_divergence` is `regime_divergence_unmodeled`.
 `regime_profile_allocation` is `regime_profile_allocation_unsupported`.
 A named ATR window is `regime_atr_window_unsupported`.
-The engine takes `regime_label_columns`; a named column that is absent is refused and is not recomputed from the primary column.
+The engine takes `regime_label_columns`: `gate`, `directional` and `atr` columns, `payload_row` (`decision_bar`, the default, or `closed_candle`) and `gate_row` (`decision_bar` or `payload`).
+An unknown key, or a named column that is absent, is refused; an absent column is not recomputed from the primary column.
 Stamps survive a partial close, clear on a full close, and the same-bar reopen reads the current label.
 The default constructor, with no label columns, is unchanged.
 
@@ -690,7 +694,8 @@ The central `UNSUPPORTED_STOP_OWNER`, `MISSING_STOP_INPUT` (including an unsuppo
 These refusals are never approximated.
 Version 1 has no basis or provenance, so it cannot rule out an explicit stop, an implicit ATR default, a close-owned stop or the drawdown fallback: a Hyperliquid perps segment is refused with `stop_inputs_unverified` (`basis` plus the owner's inputs).
 A regime-owned stop gets labels from the historical regime configuration (`regime.enabled` is its label input; a disabled regime is `MISSING_STOP_INPUT`).
-When the ATR selector is default, protection uses the gate-window stamp: the named gate window, or the primary column when the gate selector is also default. A modeled directional policy, or a modeled gate on the unshifted closed-candle row, uses that window on the unshifted row. Otherwise the arm uses the decision bar.
+When the ATR selector is default, protection uses the gate-window stamp: the named gate window, or the primary column when the gate selector is also default.
+The stamp is on the `result.Regime` row (Regime context above): the unshifted closed candle when verified timing evidence attests it, with or without a gate or policy, otherwise the decision bar.
 A named ATR window stays refused for issue 1732.
 The `max_drawdown_pct` portfolio-control row stays separate from its stop-fallback row.
 The report `stops` section holds the basis, owner, required inputs, live and engine values, the capability context and every simulated arm.
@@ -699,7 +704,7 @@ The report `stops` section holds the basis, owner, required inputs, live and eng
 
 **Strict eligibility.** A missing or unverified input makes the result `unverified` (diagnostic only); a recomputed rule that disagrees with the declared value is unverified.
 Starting inventory under either rule is unverified when the booked replay disagrees with it or cannot be computed (a booked event before the interval with unresolved identity).
-Refusals (`refused`): input binding mismatch, a configuration change inside the interval, a non-flat start (seeded inventory, declared or shown by the booked replay), a manual owner (every event `not_comparable`), a non-perps or non-Hyperliquid owner, a missing close strategy (the execution-spec path needs the open/close engine), scale-in, stop refusals (above), leverage or sizing leverage above 1, margin/capital/risk sizing fields (`sizing_margin_per_trade_usd`, `sizing_risk_per_trade_pct`, `sizing_capital_pct`), regime rows that are not modeled (the regime context above), Hurst gate, HTF filter or HTF strategies, hedge, replay, funding-input strategies, unknown active fields, portfolio controls without verified non-intervention evidence, a pending entry on the last warm-up bar, and frozen-input gaps.
+Refusals (`refused`): input binding mismatch, a configuration change inside the interval, a non-flat start (seeded inventory, declared or shown by the booked replay), a manual owner (every event `not_comparable`), a non-perps or non-Hyperliquid owner, a missing close strategy (the execution-spec path needs the open/close engine), scale-in, stop refusals (above), leverage or sizing leverage above 1, `capital_pct` (`sizing_capital_pct`) and the #1728 sizing refusals, regime rows that are not modeled (the regime context above), Hurst gate, HTF filter or HTF strategies, hedge, replay, funding-input strategies, unknown active fields, portfolio controls without verified non-intervention evidence, a pending entry on the last warm-up bar, and frozen-input gaps.
 Frozen checks: manifest and file hashes; one exact candle grid across warm-up and scoring (no gap at either edge or the join); finite, consistent OHLCV; hourly funding for every hour the simulator attaches to a scored bar (after the previous bar open through the last scored bar open); scored decisions, and the ATR and regime labels a stop owner reads, unchanged when a third of warm-up is removed; for observation-input strategies, the strategy's own per-bar observation validity on every scored bar.
 The central close contract is decoded with `decode_close_validation`; strict success needs `mode: strict`, `close_eligibility: eligible` and no approximation, and a passing close validation alone never makes strict success.
 

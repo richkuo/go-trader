@@ -39,6 +39,41 @@ def _load_regime():
     return _ensure_regime_fn
 
 
+REGIME_LABEL_COLUMN_KEYS = frozenset((
+    "gate", "directional", "directional_named", "atr", "atr_named", "payload_row", "gate_row",
+))
+REGIME_PAYLOAD_ROWS = ("decision_bar", "closed_candle")
+REGIME_GATE_ROWS = ("decision_bar", "payload")
+
+
+def _validated_regime_label_columns(columns: Optional[dict]) -> Optional[dict]:
+    if not columns:
+        return None
+    out = dict(columns)
+    unknown = sorted(set(out) - REGIME_LABEL_COLUMN_KEYS)
+    if unknown:
+        raise ValueError("unknown regime_label_columns keys: " + ", ".join(unknown))
+    for key in ("gate", "directional", "atr"):
+        name = out.get(key)
+        if name is not None and not (isinstance(name, str) and name.strip()):
+            raise ValueError(f"regime_label_columns.{key} must name a column")
+    if not out.get("gate"):
+        raise ValueError("regime_label_columns needs a gate column")
+    if out.get("directional_named") and not out.get("directional"):
+        raise ValueError("regime_label_columns.directional_named needs a directional column")
+    if out.get("atr_named") and not out.get("atr"):
+        raise ValueError("regime_label_columns.atr_named needs an atr column")
+    out["payload_row"] = out.get("payload_row") or "decision_bar"
+    if out["payload_row"] not in REGIME_PAYLOAD_ROWS:
+        raise ValueError("regime_label_columns.payload_row must be one of " + ", ".join(REGIME_PAYLOAD_ROWS))
+    out["gate_row"] = out.get("gate_row") or "decision_bar"
+    if out["gate_row"] not in REGIME_GATE_ROWS:
+        raise ValueError("regime_label_columns.gate_row must be one of " + ", ".join(REGIME_GATE_ROWS))
+    out["directional_named"] = bool(out.get("directional_named"))
+    out["atr_named"] = bool(out.get("atr_named"))
+    return out
+
+
 def _regime_allows_entry(allowed, bar_regime: str, on_failure: str = "open") -> bool:
     if _regime_allows_entry_fn is None:
         _load_regime()
@@ -2280,7 +2315,7 @@ class Backtester:
         self.close_params = {r["name"]: r["params"] for r in self._close_refs}
         self._resting_tp_model = str(platform or "").strip().lower() == "hyperliquid"
         self.regime_enabled = regime_enabled
-        self._regime_label_columns = dict(regime_label_columns) if regime_label_columns else None
+        self._regime_label_columns = _validated_regime_label_columns(regime_label_columns)
         self._run_position_regime = ""
         self._stamp_gate = ""
         self._stamp_directional = ""
@@ -2798,25 +2833,27 @@ class Backtester:
                     + "; an absent named column is not recomputed from the primary column"
                 )
 
-            def _aligned_label(name: str) -> pd.Series:
-                source = history[name] if name in history.columns else df[name]
-                return source.reindex(df.index).fillna("").map(lambda v: str(v or "").strip())
+            if (self.regime_directional_policy is not None
+                    and not str(label_columns.get("directional") or "").strip()):
+                raise ValueError(
+                    "refusing a directional policy without a directional regime label column; "
+                    "the flat decision is not read from the gate column"
+                )
 
-            gate_name = str(label_columns.get("gate") or "").strip()
-            if gate_name:
-                gate_close = _aligned_label(gate_name)
-                df["_regime_gate_close"] = gate_close
-                df["_regime_gate"] = gate_close.shift(1).fillna("")
-            dir_name = str(label_columns.get("directional") or "").strip()
-            if dir_name:
-                df["_regime_directional_close"] = _aligned_label(dir_name)
-            if label_columns.get("atr_named"):
-                atr_name = str(label_columns.get("atr") or "").strip()
-                if atr_name:
-                    atr_close = _aligned_label(atr_name)
-                    df["_regime_atr_close"] = atr_close
-                    # Decision bar: the named column shifted once, known at the bar-open fill.
-                    df["_regime_atr_decision"] = atr_close.shift(1).fillna("")
+            def _label_series(name: str) -> tuple:
+                source = history[name] if name in history.columns else df[name]
+                clean = source.fillna("").map(lambda v: str(v or "").strip())
+                return (clean.reindex(df.index).fillna(""),
+                        clean.shift(1).reindex(df.index).fillna(""))
+
+            for key in ("gate", "directional", "atr"):
+                if key == "atr" and not label_columns.get("atr_named"):
+                    continue
+                name = str(label_columns.get(key) or "").strip()
+                if name:
+                    close_labels, decision_labels = _label_series(name)
+                    df[f"_regime_{key}_close"] = close_labels
+                    df[f"_regime_{key}_decision"] = decision_labels
             self._regime_trace = True
             self._regime_stamp_trace = []
         elif self.regime_enabled and "regime" not in df.columns:
@@ -2847,34 +2884,23 @@ class Backtester:
 
         has_open = "open" in df.columns
 
-        def _decision_protection_label(row) -> str:
-            """Regime label known at a bar-open fill: the previous bar's close.
+        payload_row = (self._regime_label_columns or {}).get("payload_row", "decision_bar")
+        gate_row = (self._regime_label_columns or {}).get("gate_row", "decision_bar")
 
-            `_regime_gate` is the gate column shifted once. The fill bar's own
-            close (`_regime_gate_close`) is not known until that bar ends.
-            """
-            if not self._regime_label_columns:
-                return ""
-            if self._regime_label_columns.get("atr_named"):
-                return str(row.get("_regime_atr_decision", "") or "").strip()
-            return str(row.get("_regime_gate", "") or "").strip()
+        def _label_at(row, key: str, row_kind: str) -> str:
+            suffix = "_close" if row_kind == "closed_candle" else "_decision"
+            return str(row.get(f"_regime_{key}{suffix}", "") or "").strip()
 
-        def _row_close_protection_label(row) -> str:
-            """Label written on this row. A seeded position uses it only when
-            the recorded entry label is missing."""
-            if self._regime_label_columns:
-                if self._regime_label_columns.get("atr_named"):
-                    return str(row.get("_regime_atr_close", "") or "").strip()
-                return str(row.get("_regime_gate_close", "") or "").strip()
-            if self.regime_enabled:
-                return str(row.get("regime", "") or "").strip()
-            return str(row.get("_regime_bar_close", "") or "").strip()
+        def _payload_stamps(row) -> tuple:
+            cols = self._regime_label_columns
+            gate = _label_at(row, "gate", payload_row)
+            directional = _label_at(row, "directional", payload_row) if cols.get("directional_named") else gate
+            atr = _label_at(row, "atr", payload_row) if cols.get("atr_named") else gate
+            return gate, directional, atr
 
         def _entry_stamp(row) -> str:
             if self._regime_label_columns:
-                if self._regime_label_columns.get("gate_unshifted"):
-                    return _row_close_protection_label(row)
-                return _decision_protection_label(row)
+                return _payload_stamps(row)[2]
             if self.regime_enabled:
                 return str(row.get("regime", "") or "").strip()
             return str(row.get("_regime_bar_close", "") or "").strip()
@@ -2953,34 +2979,14 @@ class Backtester:
                 return mark + trail_mult * entry_atr
             return 0.0
 
-        def stamp_open_from_label(stamp: str, row=None, *, keep_recorded: bool = False,
-                                  seed_row: bool = False) -> None:
+        def stamp_open_from_label(stamp: str, row=None, *, keep_recorded: bool = False) -> None:
             if self._regime_label_columns and row is not None:
                 recorded = (stamp or "").strip() if keep_recorded else ""
                 if recorded:
                     gate = directional = atr = recorded
-                    stamp = recorded
                 else:
-                    gate = str(row.get("_regime_gate_close", "") or "").strip()
-                    if self._regime_label_columns.get("directional_named"):
-                        directional = str(row.get("_regime_directional_close", "") or "").strip()
-                    else:
-                        directional = gate
-                    if self._regime_label_columns.get("atr_named"):
-                        atr = str(row.get("_regime_atr_close", "") or "").strip()
-                    else:
-                        atr = gate
-                    # A seed with no recorded label keeps the row's own label.
-                    # A modeled directional policy, or a gate that reads this
-                    # closed-candle row, arms from that row: live writes one
-                    # result.Regime into pos.Regime, and the stop, the regime
-                    # tiers, and the position stamps read that stamp.
-                    # Otherwise a bar-open fill arms from the decision bar.
-                    if (seed_row or self.regime_directional_policy is not None
-                            or self._regime_label_columns.get("gate_unshifted")):
-                        stamp = atr
-                    else:
-                        stamp = _decision_protection_label(row)
+                    gate, directional, atr = _payload_stamps(row)
+                stamp = atr
                 self._stamp_gate = gate
                 self._stamp_directional = directional
                 self._stamp_atr = atr
@@ -3064,10 +3070,7 @@ class Backtester:
                 _seed_atr = 0.0
             _seed_entry = float(starting_long["entry_price"])
             _recorded_seed = str(starting_long.get("entry_regime", "") or "").strip()
-            if self._regime_label_columns:
-                _seed_label = _recorded_seed or _row_close_protection_label(df.iloc[0])
-            else:
-                _seed_label = _recorded_seed or _entry_stamp(df.iloc[0])
+            _seed_label = _recorded_seed or _entry_stamp(df.iloc[0])
             if (stop_needs_atr and not (0 < _seed_atr <= 0.5 * _seed_entry)) or (
                     stop_needs_label and not _seed_label):
                 stop_seed_dropped = True
@@ -3111,13 +3114,8 @@ class Backtester:
             if seed_atr > 0 and seed_atr <= 0.5 * effective_entry:
                 entry_atr_value = seed_atr
             recorded_seed = str(starting_long.get("entry_regime", "") or "").strip()
-            if self._regime_label_columns and recorded_seed:
-                stamp_open_from_label(recorded_seed, df.iloc[0], keep_recorded=True)
-            elif self._regime_label_columns:
-                stamp_open_from_label("", df.iloc[0], seed_row=True)
-            else:
-                stamp = recorded_seed or _entry_stamp(df.iloc[0])
-                stamp_open_from_label(stamp, df.iloc[0])
+            stamp_open_from_label(recorded_seed or _entry_stamp(df.iloc[0]), df.iloc[0],
+                                  keep_recorded=bool(recorded_seed))
             seed_hwm = starting_long.get("high_water", 0.0)
             try:
                 seed_hwm = float(seed_hwm or 0.0)
@@ -3493,14 +3491,8 @@ class Backtester:
 
             bar_regime = str(row.get("regime", "")) if self.regime_enabled else ""
             if self._regime_label_columns:
-                if self._regime_label_columns.get("gate_unshifted"):
-                    gate_label = str(row.get("_regime_gate_close", "") or "")
-                else:
-                    gate_label = str(row.get("_regime_gate", "") or "")
-                if str(self._regime_label_columns.get("directional") or "").strip():
-                    current_directional = str(row.get("_regime_directional_close", "") or "")
-                else:
-                    current_directional = str(row.get("_regime_gate_close", "") or "")
+                gate_label = _label_at(row, "gate", payload_row if gate_row == "payload" else "decision_bar")
+                current_directional = _label_at(row, "directional", payload_row)
                 position_directional = self._stamp_directional
             else:
                 gate_label = bar_regime

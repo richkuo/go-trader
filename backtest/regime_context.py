@@ -34,15 +34,6 @@ REGIME_FIELDS = (
 )
 
 SIZING_REASON_CODES = {
-    "margin_per_trade_usd": (
-        "sizing_margin_per_trade_usd",
-        "the engine sizes each open as simulated cash times the entry fraction; "
-        "live sizes min(margin_per_trade_usd, cash) times the exchange leverage",
-    ),
-    "risk_per_trade_pct": (
-        "sizing_risk_per_trade_pct",
-        "the engine can size from risk_per_trade_pct, but this comparison does not pass it",
-    ),
     "capital_pct": (
         "sizing_capital_pct",
         "live derives capital again from the wallet balance in every cycle; "
@@ -97,26 +88,54 @@ def _fail_policy(strategy) -> str:
     return str(raw).strip().lower()
 
 
-def _protection_source(stop_needs_labels, atr_named, protection_reads_gate,
-                       lookback_blocks, timeframe_blocks, strategy, regime,
-                       follows_closed_candle=False):
-    """Name the bar a regime-owned stop reads.
+PAYLOAD_ROW_TOKENS = {"unshifted_closed_candle": "closed_candle"}
+PAYLOAD_ROW_NAMES = {"closed_candle": "unshifted_closed_candle", "decision_bar": "shifted_decision_bar"}
 
-    A modeled directional policy, or a modeled gate on the unshifted
-    closed-candle row, arms from that row. Otherwise the arm uses the
-    decision bar, the last closed bar before the bar-open fill. A named ATR
-    window is not supplied here. A default ATR selector uses the gate window,
-    or the primary column when that selector is default.
-    """
-    if not stop_needs_labels or atr_named:
+
+def _payload_timing(timing: dict, closed_bar: bool) -> dict:
+    features = timing.get("features", {}) if timing.get("status") == "verified" else {}
+    tokens = {}
+    if "directional" in features:
+        tokens["directional"] = features["directional"]
+    if not closed_bar and "gate" in features:
+        tokens["gate"] = features["gate"]
+    values = sorted(set(tokens.values()))
+    if not values:
+        return {"status": "unattested", "row": "decision_bar", "tokens": tokens}
+    if len(values) > 1:
+        return {"status": "conflict", "row": None, "tokens": tokens}
+    row = PAYLOAD_ROW_TOKENS.get(values[0])
+    if row is None:
+        return {"status": "unsupported", "row": None, "tokens": tokens}
+    return {"status": "attested", "row": row, "tokens": tokens}
+
+
+def _payload_block(payload: dict, *, needs_attestation: bool, consumer: str):
+    status = payload["status"]
+    if status == "attested":
         return None
-    prefix = "unshifted_closed_candle" if follows_closed_candle else "shifted_decision_bar"
-    if protection_reads_gate and not lookback_blocks and not timeframe_blocks:
-        gate_key = resolve_strategy_regime_window(strategy, "gate", regime)
-        return prefix + ":gate_window:" + gate_key
+    if status == "conflict":
+        return ("refused", "regime_feature_timing_conflict", False,
+                "verified timing evidence gives result.Regime more than one row "
+                f"({', '.join(f'{k}={v}' for k, v in sorted(payload['tokens'].items()))}); "
+                f"the {consumer} reads that one payload")
+    if status == "unsupported":
+        return ("refused", "regime_feature_timing_unsupported", True,
+                "verified timing evidence names a result.Regime row the frozen candles do not reproduce; "
+                "approximate mode uses the decision-bar label and records that substitute")
+    if not needs_attestation:
+        return None
+    return ("refused", "regime_feature_timing_unsupported", True,
+            f"the {consumer} reads result.Regime, and no verified timing evidence names its row; "
+            "approximate mode uses the decision-bar label and records that substitute")
+
+
+def _protection_source(stop_needs_labels, atr_named, protection_reads_gate, row_name, strategy, regime):
+    if not stop_needs_labels or atr_named or not row_name:
+        return None
     if protection_reads_gate:
-        return None
-    return prefix + ":primary_column"
+        return row_name + ":gate_window:" + resolve_strategy_regime_window(strategy, "gate", regime)
+    return row_name + ":primary_column"
 
 
 def _direction_matches(entry: dict, cert_dir: str) -> bool:
@@ -384,10 +403,8 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
                           identity, start, end)
     labels = _label_evidence(evidence.get("regime_labels"), binding, base_dir)
     timing = _timing_evidence(evidence.get("regime_feature_timing"), binding)
-    gate_unshifted = (
-        not closed_bar
-        and timing.get("status") == "verified"
-        and timing.get("features", {}).get("gate") == "unshifted_closed_candle")
+    payload = _payload_timing(timing, closed_bar)
+    payload_attested = payload["status"] == "attested"
 
     rows = []
     blocking = []
@@ -416,6 +433,10 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
     protection_reads_gate = bool(
         stop_needs_labels and _named(strategy.get("regime_gate_window"))
         and not atr_named and gate_selector is None)
+    stop_reads_payload = bool(stop_needs_labels and not atr_named)
+    stop_block = (_payload_block(payload, needs_attestation=False, consumer="regime-owned stop")
+                  if stop_reads_payload else None)
+    stop_reads_columns = bool(stop_reads_payload and (protection_reads_gate or payload_attested))
     policy = strategy.get("regime_directional_policy")
     policy_set = isinstance(policy, dict) and len(policy) > 0
     honored = {}
@@ -473,7 +494,7 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         consumers.append("directional")
     if stop_needs_labels:
         consumers.append("atr")
-    if protection_reads_gate:
+    if stop_reads_columns:
         consumers.append("protection")
 
     timeframe_blocks = bool(timeframe) and timeframe != interval.strip().lower() and bool(consumers)
@@ -487,41 +508,33 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         if lookback_blocks and feature in ("gate", "directional"):
             return ("refused", "regime_lookback_insufficient", False,
                     f"warm-up before the first scored decision is shorter than the live lookback ({limit})")
-        if feature == "gate":
-            if not closed_bar:
-                attested = timing.get("features", {}).get("gate") == "unshifted_closed_candle"
-                if not (timing.get("status") == "verified" and attested):
-                    return ("refused", "regime_feature_timing_unsupported", True,
-                            "without closed_bar_decisions the gate reads the latest candle, which frozen "
-                            "closed candles do not reproduce; approximate mode uses the shifted closed-bar label")
-            if labels.get("status") != "verified":
-                return ("refused", labels["reason_code"], labels.get("approximable", False),
-                        labels.get("detail") or labels.get("assumption") or labels["reason_code"])
-            return None
+        if feature == "gate" and not closed_bar:
+            block = _payload_block(payload, needs_attestation=True, consumer="gate")
+            if block:
+                return block
         if feature == "directional":
-            attested = timing.get("status") == "verified" and (
-                timing.get("features", {}).get("directional") == "unshifted_closed_candle")
-            if not attested:
-                return ("refused", "regime_feature_timing_unsupported", True,
-                        "directional checks read result.Regime, not the shifted gate series; "
-                        "approximate mode uses the unshifted closed-candle label and records that substitute")
-            if labels.get("status") != "verified":
-                return ("refused", labels["reason_code"], labels.get("approximable", False),
-                        labels.get("detail") or labels.get("assumption") or labels["reason_code"])
-            return None
+            block = _payload_block(payload, needs_attestation=True, consumer="directional policy")
+            if block:
+                return block
+        if feature in ("gate", "directional") and labels.get("status") != "verified":
+            return ("refused", labels["reason_code"], labels.get("approximable", False),
+                    labels.get("detail") or labels.get("assumption") or labels["reason_code"])
         return None
 
     if gate_state is None:
         gate_detail = (
-            "the gate reads the unshifted closed-candle label of its window"
-            if gate_unshifted else
-            "the gate reads the shifted closed-bar label of its window")
+            "the gate reads the shifted closed-bar label of its window" if closed_bar else
+            "the gate reads the result.Regime label of its window on the unshifted closed-candle row")
         gate_state = _feature_block("gate") or (
             "modeled", "regime_gate_modeled", False, gate_detail)
     if dir_state is None:
         dir_state = _feature_block("directional") or (
             "modeled", "regime_directional_modeled", False,
-            "the directional policy reads its window label; an open position keeps the stamp from entry")
+            "the directional policy reads the result.Regime label of its window on the unshifted "
+            "closed-candle row; an open position keeps the stamp from entry")
+
+    payload_row = payload["row"] if payload_attested else "decision_bar"
+    row_name = PAYLOAD_ROW_NAMES[payload_row] if payload["status"] != "conflict" else None
 
     gate_window_decision = gate_state
     if gate_selector and _named(strategy.get("regime_gate_window")):
@@ -534,10 +547,12 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         gate_window_decision = (
             "refused", "regime_timeframe_unprepared", False,
             "regime labels from another timeframe are not prepared by the frozen comparison")
+    elif protection_reads_gate and stop_block:
+        gate_window_decision = stop_block
     elif protection_reads_gate and gate_state[0] != "modeled":
         gate_window_decision = (
             "modeled", "regime_gate_window_protection", False,
-            "a regime-owned stop reads the decision-bar label of the gate window")
+            f"a regime-owned stop reads the gate-window label of result.Regime on the {row_name} row")
     elif gate_state[0] == "inactive":
         gate_window_decision = ("inactive", "regime_selector_no_consumer", False,
                                 "selector with no active consumer")
@@ -609,6 +624,12 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         sample = refused_consumers[0]
         add("regime.enabled", True, "refused", sample["reason_code"], sample["approximable"],
             f"an unmodeled regime consumer is active ({sample['field']})")
+    elif stop_block:
+        add("regime.enabled", True, *stop_block)
+    elif stop_reads_columns and lookback_blocks:
+        add("regime.enabled", True, "refused", "regime_lookback_insufficient", False,
+            f"the regime-owned stop reads the bounded result.Regime label, and the warm-up before the "
+            f"first scored decision is shorter than the live lookback ({limit})")
     elif modeled or stop_needs_labels:
         add("regime.enabled", True, "modeled", "regime_enabled_modeled", False,
             "a modeled consumer reads regime labels")
@@ -624,25 +645,23 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
             add("regime.timeframe", regime.get("timeframe"), "informational", "regime_timeframe_matches", False,
                 "labels come from the frozen dataset interval")
 
-    modeled_gate = any(r["field"] == "allowed_regimes" and r["decision"] == "modeled" for r in rows)
-    modeled_dir = any(r["field"] == "regime_directional_policy" and r["decision"] == "modeled" for r in rows)
-    approximate_gate = (mode == "approximate" and any(
-        r["field"] == "allowed_regimes" and r["approximable"] and r["decision"] == "refused" for r in rows)
-        and not any(r["field"] == "allowed_regimes" and r["decision"] == "refused" and not r["approximable"]
-                    for r in rows))
-    approximate_dir = (mode == "approximate" and any(
-        r["field"] == "regime_directional_policy" and r["approximable"] and r["decision"] == "refused" for r in rows)
-        and not any(r["field"] == "regime_directional_policy" and r["decision"] == "refused"
-                    and not r["approximable"] for r in rows))
-    use_gate = modeled_gate or approximate_gate
-    use_dir = modeled_dir or approximate_dir
-    use_protection = bool(
-        protection_reads_gate and not lookback_blocks and not timeframe_blocks
-        and gate_window_decision[0] == "modeled")
+    def _usable(field: str) -> bool:
+        field_rows = [r for r in rows if r["field"] == field]
+        if any(r["decision"] == "modeled" for r in field_rows):
+            return True
+        return (mode == "approximate"
+                and any(r["decision"] == "refused" and r["approximable"] for r in field_rows)
+                and not any(r["decision"] == "refused" and not r["approximable"] for r in field_rows))
+
+    use_gate = _usable("allowed_regimes")
+    use_dir = _usable("regime_directional_policy")
+    use_stop_columns = bool(
+        stop_reads_columns and not lookback_blocks and not timeframe_blocks
+        and (stop_block is None or (mode == "approximate" and stop_block[2])))
 
     prepare = None
     engine = None
-    if (use_gate or use_dir or use_protection) and not lookback_blocks and not timeframe_blocks:
+    if (use_gate or use_dir or use_stop_columns) and not lookback_blocks and not timeframe_blocks:
         gate_key = resolve_strategy_regime_window(strategy, "gate", regime)
         dir_key = resolve_strategy_regime_window(strategy, "directional", regime)
         columns = {}
@@ -662,15 +681,13 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
             "limit": limit,
             "columns": columns,
         }
-        directional_named = _named(strategy.get("regime_directional_window"))
         label_columns = {
             "gate": col(gate_key),
-            "directional_named": directional_named,
+            "directional": col(dir_key),
+            "directional_named": _named(strategy.get("regime_directional_window")),
+            "payload_row": payload_row,
+            "gate_row": "decision_bar" if closed_bar else "payload",
         }
-        if use_dir:
-            label_columns["directional"] = col(dir_key)
-        if use_gate and gate_unshifted:
-            label_columns["gate_unshifted"] = True
         engine = {
             "regime_enabled": True,
             "regime_period": period,
@@ -689,11 +706,7 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
             engine["regime_directional_policy"] = policy
             engine["regime_directional_certified_states"] = {}
 
-    protection_follows_stamp = bool(
-        stop_needs_labels and not atr_named
-        and (use_dir or (use_gate and gate_unshifted)))
-    protection_row = (
-        "unshifted_closed_candle" if protection_follows_stamp else "shifted_decision_bar")
+    protection_row = row_name if stop_reads_payload else None
     window_report = []
     for name in sorted(windows):
         spec = windows[name] if isinstance(windows[name], dict) else {"period": windows[name]}
@@ -709,20 +722,30 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         "consumers": {
             "gate": next(r["decision"] for r in rows if r["field"] == "allowed_regimes"),
             "directional": next(r["decision"] for r in rows if r["field"] == "regime_directional_policy"),
-            "atr": protection_row if stop_needs_labels else "inactive",
+            "atr": (protection_row or "refused") if stop_needs_labels else "inactive",
         },
         "timing": {
             "gate": ("shifted_closed_bar" if closed_bar else
-                     "unshifted_closed_candle" if gate_unshifted else
+                     "unshifted_closed_candle" if payload_attested else
                      "unsupported_without_evidence"),
             "directional": "result.Regime",
             "protection": protection_row,
+            "result_regime": {
+                "status": payload["status"],
+                "row": row_name,
+                "tokens": dict(sorted(payload["tokens"].items())),
+                "basis": "verified regime_feature_timing tokens that describe result.Regime "
+                         "(features.directional, and features.gate with closed_bar_decisions off); "
+                         "without one the row is the decision bar",
+            },
         },
-        "stamps": "An open position keeps the gate-window label when the directional selector is "
-                  "default, and the named window when it is set. A flat directional decision reads "
-                  "the resolved directional window. A modeled directional policy, or a modeled gate "
-                  "that reads the unshifted closed-candle row, arms the stop, the regime-tier label, "
-                  "and the position stamps from that same row. Otherwise the arm uses the decision bar.",
+        "stamps": "Live writes one result.Regime payload per cycle. The position stamps, the regime-owned "
+                  "stop, the regime-tier label and the flat directional decision read its row: the "
+                  "unshifted closed-candle row when verified timing evidence attests it, otherwise the "
+                  "decision bar. The gate reads that row with closed_bar_decisions off and the shifted "
+                  "closed-bar label with it on. An open position keeps the gate-window label when the "
+                  "directional selector is default, and the named window when it is set. A flat "
+                  "directional decision reads the resolved directional window.",
         "certification": {
             "status": cert.get("status"),
             "identity": identity,
@@ -731,9 +754,7 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
             "states": cert.get("states") or {},
         },
         "protection_source": _protection_source(
-            stop_needs_labels, atr_named, protection_reads_gate,
-            lookback_blocks, timeframe_blocks, strategy, regime,
-            follows_closed_candle=protection_follows_stamp),
+            stop_needs_labels, atr_named, protection_reads_gate, protection_row, strategy, regime),
         "label_columns": sorted((prepare or {}).get("columns") or {}),
     }
     return {
