@@ -586,7 +586,58 @@ def _write_export(path, oids, events=None):
     path.write_text(json.dumps(doc))
 
 
-def _study_orders(tmp_path, orders, candles, historical=None, export_events=None, allow_incomplete=False):
+class _ProbeTape:
+    def __init__(self, start_ms, outside=False, fail=None):
+        self.now = start_ms
+        self.open = (start_ms // FIVE_MIN + 1) * FIVE_MIN
+        self.outside = outside
+        self.fail = fail or {}
+        self.polls = 0
+        self.active = False
+        self.trades = []
+        self._grow(start_ms - 5000)
+
+    def _grow(self, since):
+        stamp = since + 500
+        while stamp < self.now:
+            px = "100.0"
+            if stamp == self.open + 500:
+                px = "101.0"
+            elif stamp == self.open + 1500:
+                px = "99.0"
+            elif self.outside and stamp == self.open + 2500:
+                px = "98.0"
+            self.trades.append({"coin": "ETH", "tid": stamp // 1000, "time": stamp, "px": px, "sz": "1"})
+            stamp += 1000
+
+    def sleep(self, seconds):
+        start = self.now
+        self.now += int(seconds * 1000)
+        self._grow(start)
+
+    def clock(self):
+        return self.now
+
+    def answer(self, body):
+        if body["type"] == "recentTrades":
+            self.polls += 1
+            action = self.fail.get(("poll", self.polls))
+        else:
+            action = self.fail.get("snapshot")
+            if action is None:
+                return _InfoResp([{"t": self.open, "o": "100", "h": "101.0", "l": "99.0", "c": "100", "v": "1"}])
+        if action == "timeout":
+            raise TimeoutError("probe timed out")
+        if action is not None:
+            import io
+            import urllib.error
+            code, raw = action
+            raise urllib.error.HTTPError("https://api.hyperliquid.xyz/info", code, "error", {}, io.BytesIO(raw))
+        return _InfoResp(self.trades[-10:])
+
+
+def _study_orders(tmp_path, orders, candles, historical=None, export_events=None, allow_incomplete=False,
+                  probe=None):
     import resting_tp_capture as cap
     import resting_tp_fill_study as study
 
@@ -613,18 +664,29 @@ def _study_orders(tmp_path, orders, candles, historical=None, export_events=None
             return _InfoResp([] if historical is None else historical)
         if kind == "orderStatus":
             return _InfoResp(by_oid[body["oid"]])
+        if probe is not None and probe.active and kind in ("recentTrades", "candleSnapshot"):
+            return probe.answer(body)
         if kind == "recentTrades":
             return _InfoResp([])
         if kind == "candleSnapshot":
+            if probe is not None:
+                probe.active = True
             return _InfoResp(candles)
         raise AssertionError(kind)
 
     out = tmp_path / "capture"
     cap._prepare_out(str(out), os.path.abspath(os.path.join(os.path.dirname(cap.__file__), "..")))
+    probe_kwargs = {}
+    if probe is not None:
+        probe.active = False
+        probe_kwargs = {
+            "basis_probe_bars": 1, "basis_poll_seconds": 2,
+            "now_fn": probe.clock, "sleep_fn": probe.sleep,
+        }
     try:
         cap.capture(
             [str(export)], "0x" + "11" * 20, since, end, str(out),
-            5, 1, "5m", opener=opener, clock_ms=end)
+            5, 1, "5m", opener=opener, clock_ms=end, **probe_kwargs)
     except cap.CaptureError:
         if not allow_incomplete:
             raise
@@ -694,10 +756,16 @@ def test_resting_tp_two_tiers_filled_in_one_bar_stay_unresolved(tmp_path):
             "status_time": _ms(23, 10), "orig": "1", "sz": "0",
             "fills": [{"time": _ms(23, 10), "sz": "1", "px": "100.50", "tid": 2, "fee": "0.015"}],
         },
+        {
+            "oid": 3, "limit": "100.10", "placement": _ms(20, 30), "status": "filled",
+            "status_time": _ms(24), "orig": "1", "sz": "0",
+            "fills": [{"time": _ms(24), "sz": "1", "px": "100.10", "tid": 3, "fee": "0.015"}],
+        },
     ]
     report = _study_orders(tmp_path, orders, _example_candles())
-    assert [row["outcome"] for row in report["orders"]] == ["full_fill", "full_fill"]
-    assert [row["prediction_status"] for row in report["orders"]] == ["scored", "scored"]
+    assert [row["outcome"] for row in report["orders"]] == ["full_fill", "full_fill", "full_fill"]
+    assert [row["prediction_status"] for row in report["orders"]] == ["scored", "scored", "terminal_bar_only"]
+    assert report["sample"]["orders_per_prediction_status"] == {"scored": 2, "terminal_bar_only": 1}
     touch = report["rules"]["touch"]["long"]
     assert touch["missed_fills"] == 0
     assert touch["agreements"] == 0
@@ -935,6 +1003,23 @@ def test_resting_tp_matching_high_low_and_close_confirms():
     assert status == "unconfirmed"
     assert evidence["covered_bars"] == 0
     assert evidence["reasons"] == ["no_independent_trade_evidence"]
+    short = [dict(row) for row in second]
+    short[0]["px"] = "101.4"
+    meta, data = _probe(probe_candle, [[first[0]], short])
+    status, evidence = _basis_result(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, rows, probe_meta=meta, probe_data=data)
+    assert evidence["reasons"] == ["no_independent_trade_evidence"]
+    meta, data = _probe(probe_candle, [[first[0], short[0]], short])
+    status, evidence = _basis_result(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, rows, probe_meta=meta, probe_data=data)
+    assert status == "unconfirmed"
+    assert evidence["reasons"] == ["extreme_not_traded"]
+    meta, data = _probe(probe_candle, [first, second])
+    meta["ETH"]["complete"] = False
+    status, evidence = _basis_result(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, rows, probe_meta=meta, probe_data=data)
+    assert evidence["reasons"] == ["probe_incomplete"]
+    meta, data = _probe(probe_candle, [first, second])
+    meta["ETH"]["interval"] = "15m"
+    status, evidence = _basis_result(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, rows, probe_meta=meta, probe_data=data)
+    assert evidence["reasons"] == ["probe_interval_mismatch"]
 
 
 def test_resting_tp_fixture_order_classes_are_pinned():
@@ -1168,6 +1253,32 @@ def test_resting_tp_html_page_on_a_complete_stream_is_an_error(tmp_path):
     _replace_responses(capture, "userFillsByTime", b"<html><body>502 Bad Gateway</body></html>")
     with pytest.raises(study.StudyError, match="not json"):
         study.load_capture(str(capture))
+    plain = _study_orders(tmp_path / "plain", orders, _example_candles())
+    _replace_responses(tmp_path / "plain" / "capture", "recentTrades", b"<html><body>502 Bad Gateway</body></html>")
+    with pytest.raises(study.StudyError, match="not json"):
+        study.load_capture(str(tmp_path / "plain" / "capture"))
+    clean = _study_orders(tmp_path / "clean", orders, _example_candles(), probe=_ProbeTape(_ms(30) + 100_000))
+    assert clean["candle_price_basis"] == "confirmed"
+    assert clean["candle_price_basis_evidence"]["covered_bars"] == 1
+    outside = _study_orders(
+        tmp_path / "outside", orders, _example_candles(), probe=_ProbeTape(_ms(30) + 100_000, outside=True))
+    assert outside["candle_price_basis_evidence"]["reasons"] == ["trade_outside_candle"]
+    failures = {
+        "rate_limited": {("poll", 3): (429, b"rate limited")},
+        "snapshot_html": {"snapshot": (502, b"<html><body>502 Bad Gateway</body></html>")},
+        "poll_timeout": {("poll", 3): "timeout"},
+        "snapshot_timeout": {"snapshot": "timeout"},
+    }
+    for name, fail in failures.items():
+        report = _study_orders(
+            tmp_path / name, orders, _example_candles(),
+            probe=_ProbeTape(_ms(30) + 100_000, fail=fail), allow_incomplete=True)
+        bundle = json.loads((tmp_path / name / "capture" / "bundle.json").read_text())
+        assert bundle["basis_probe"]["ETH"]["complete"] is False
+        assert bundle["basis_probe"]["ETH"]["reason"]
+        assert report["candle_price_basis"] == "unconfirmed"
+        assert report["candle_price_basis_evidence"]["reasons"] == ["probe_incomplete"]
+        assert [row["outcome"] for row in report["orders"]] == [row["outcome"] for row in plain["orders"]]
 
 
 def test_resting_tp_empty_response_file_has_no_payload(tmp_path):

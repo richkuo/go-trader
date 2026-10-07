@@ -392,8 +392,13 @@ def _basis_probe(coins, interval, bars, poll_seconds, timeout, retries, record, 
             slot = state[coin]
             if not slot["complete"]:
                 continue
-            attempt, status, raw = post_info(
-                {"type": "recentTrades", "coin": coin}, timeout, retries, opener=opener)
+            try:
+                attempt, status, raw = post_info(
+                    {"type": "recentTrades", "coin": coin}, timeout, retries, opener=opener)
+            except CaptureError as exc:
+                slot["complete"] = False
+                slot["reason"] = f"request failed: {exc}"
+                continue
             record({"type": "recentTrades", "coin": coin}, attempt, status, raw, purpose="basis_probe")
             slot["requests"] += 1
             if status != 200:
@@ -437,11 +442,16 @@ def _basis_probe(coins, interval, bars, poll_seconds, timeout, retries, record, 
                     "endTime": int(target_end),
                 },
             }
-            attempt, status, raw = post_info(payload, timeout, retries, opener=opener)
-            snapshot_ref = record(payload, attempt, status, raw, purpose="basis_probe")
-            if status != 200 or not _candle_coverage(raw, first_open, target_end, step):
+            try:
+                attempt, status, raw = post_info(payload, timeout, retries, opener=opener)
+            except CaptureError as exc:
                 slot["complete"] = False
-                slot["reason"] = "probe snapshot_incomplete"
+                slot["reason"] = f"request failed: {exc}"
+            else:
+                snapshot_ref = record(payload, attempt, status, raw, purpose="basis_probe")
+                if status != 200 or not _candle_coverage(raw, first_open, target_end, step):
+                    slot["complete"] = False
+                    slot["reason"] = "probe snapshot_incomplete"
         entry = {
             "complete": slot["complete"],
             "interval": interval,

@@ -314,6 +314,10 @@ def load_exports(paths):
 
 
 def stream_marked_incomplete(bundle, meta) -> bool:
+    if meta.get("purpose") == BASIS_PROBE:
+        probe = bundle.get("basis_probe")
+        entry = probe.get(meta.get("coin")) if isinstance(probe, dict) else None
+        return not isinstance(entry, dict) or entry.get("complete") is not True
     kind = meta.get("type")
     comp = (bundle.get("completeness") or {}).get(kind)
     if isinstance(comp, dict):
