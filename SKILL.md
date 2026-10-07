@@ -625,6 +625,8 @@ A regime-owned stop consumes a named gate window, so that selector is not inacti
 An uncertified policy is inactive `directional_policy_uncertified`.
 A bare `ranging_directional` entry is honored when a certified sub-label resolves to it, matching live `gatedDirectionalEntry`.
 A gate with `closed_bar_decisions` reads one shifted closed-bar column.
+With `closed_bar_decisions` off, a verified `features.gate: unshifted_closed_candle` attestation models that unshifted closed-candle row.
+Without that attestation the gate is `regime_feature_timing_unsupported`, and approximate mode keeps the shifted closed-bar label.
 Directional checks read `result.Regime`.
 A flat directional decision reads the resolved directional window, which is the primary window when the selector is default.
 An open position keeps the entry stamp, the gate-window label when the directional selector is default.

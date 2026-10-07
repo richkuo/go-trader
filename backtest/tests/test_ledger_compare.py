@@ -1945,3 +1945,81 @@ def test_warmup_between_lookback_and_trim_is_not_an_indicator_refusal(tmp_path):
     _, short = _run_warmup(199, "warmup_199.json")
     assert ("regime_lookback_insufficient", "allowed_regimes") in _codes(short)
     assert "market_indicator_history_insufficient" not in {r["reason"] for r in short["eligibility"]["refusals"]}
+
+
+def test_unshifted_gate_attestation_reads_the_fill_row(tmp_path):
+    import pandas as pd
+    from backtester import Backtester
+
+    labels = ["trending_down", "trending_up", "trending_up", "trending_up"]
+    actions = ["long", "none", "none", "none"]
+
+    def _gate_run(unshifted):
+        frame = _ohlc(labels, actions)
+        columns = {"gate": "regime", "directional_named": False}
+        if unshifted:
+            columns["gate_unshifted"] = True
+        bt = Backtester(
+            initial_capital=10_000, commission_pct=0.0, slippage_pct=0.0,
+            platform="hyperliquid", strategy_type="perps", regime_enabled=True,
+            allowed_regimes=["trending_up"], regime_label_columns=columns,
+        )
+        result = bt.run(frame, save=False)
+        return frame, result["trades"]
+
+    admitted, admitted_trades = _gate_run(True)
+    assert admitted_trades and admitted_trades[0]["side"] == "long"
+    assert pd.Timestamp(admitted_trades[0]["entry_date"]) == admitted.index[1]
+
+    _, blocked_trades = _gate_run(False)
+    assert blocked_trades == []
+
+    prior_up = _ohlc(
+        ["trending_up", "trending_down", "trending_down", "trending_down"], actions)
+    prior_bt = Backtester(
+        initial_capital=10_000, commission_pct=0.0, slippage_pct=0.0,
+        platform="hyperliquid", strategy_type="perps", regime_enabled=True,
+        allowed_regimes=["trending_up"],
+        regime_label_columns={"gate": "regime", "directional_named": False},
+    )
+    prior = prior_bt.run(prior_up, save=False)
+    assert prior["trades"] and prior["trades"][0]["side"] == "long"
+    assert pd.Timestamp(prior["trades"][0]["entry_date"]) == prior_up.index[1]
+
+    def _compare(closed_bar, attest, name):
+        slot = tmp_path / name
+        slot.mkdir()
+        fx = _copy(slot)
+        cin, seg = _segment(fx)
+        _use_regime_market(cin, fx)
+        seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20,
+                         "windows": dict(REGIME_WINDOWS)}
+        seg["strategy"]["allowed_regimes"] = ["trending_up"]
+        if closed_bar:
+            seg["strategy"]["closed_bar_decisions"] = True
+        rel, digest = _write_json(fx, "regime_labels.json", {"values_and_timing": True})
+        evidence = cin.setdefault("capability_evidence", {})
+        evidence["regime_labels"] = _verified_evidence(
+            _binding(seg), artifact={"path": rel, "sha256": digest})
+        if attest:
+            evidence["regime_feature_timing"] = _verified_evidence(
+                _binding(seg), features={"gate": "unshifted_closed_candle"})
+        _dump(fx / "comparison_input.json", cin)
+        return _run(fx, tmp_path, name=name + ".json")
+
+    _, attested = _compare(False, True, "unshifted")
+    assert attested["simulation"]["status"] == "run", attested["eligibility"]["refusals"]
+    assert attested["eligibility"]["regime"]["timing"]["gate"] == "unshifted_closed_candle"
+    rows = {(r["field"], r["category"]): r for r in attested["eligibility"]["capability_matrix"]}
+    assert rows[("allowed_regimes", "regime")]["decision"] == "modeled"
+    assert "unshifted closed-candle" in rows[("allowed_regimes", "regime")]["reason"]
+
+    _, closed = _compare(True, True, "shifted")
+    assert closed["simulation"]["status"] == "run", closed["eligibility"]["refusals"]
+    assert closed["eligibility"]["regime"]["timing"]["gate"] == "shifted_closed_bar"
+    closed_rows = {(r["field"], r["category"]): r for r in closed["eligibility"]["capability_matrix"]}
+    assert "shifted closed-bar" in closed_rows[("allowed_regimes", "regime")]["reason"]
+
+    _, bare = _compare(False, False, "bare")
+    assert ("regime_feature_timing_unsupported", "allowed_regimes") in _codes(bare)
+    assert bare["eligibility"]["regime"]["timing"]["gate"] == "unsupported_without_evidence"

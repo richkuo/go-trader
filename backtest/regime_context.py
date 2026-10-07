@@ -384,6 +384,10 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
                           identity, start, end)
     labels = _label_evidence(evidence.get("regime_labels"), binding, base_dir)
     timing = _timing_evidence(evidence.get("regime_feature_timing"), binding)
+    gate_unshifted = (
+        not closed_bar
+        and timing.get("status") == "verified"
+        and timing.get("features", {}).get("gate") == "unshifted_closed_candle")
 
     rows = []
     blocking = []
@@ -508,9 +512,12 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         return None
 
     if gate_state is None:
-        gate_state = _feature_block("gate") or (
-            "modeled", "regime_gate_modeled", False,
+        gate_detail = (
+            "the gate reads the unshifted closed-candle label of its window"
+            if gate_unshifted else
             "the gate reads the shifted closed-bar label of its window")
+        gate_state = _feature_block("gate") or (
+            "modeled", "regime_gate_modeled", False, gate_detail)
     if dir_state is None:
         dir_state = _feature_block("directional") or (
             "modeled", "regime_directional_modeled", False,
@@ -662,6 +669,8 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         }
         if use_dir:
             label_columns["directional"] = col(dir_key)
+        if use_gate and gate_unshifted:
+            label_columns["gate_unshifted"] = True
         engine = {
             "regime_enabled": True,
             "regime_period": period,
@@ -701,7 +710,9 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
             "atr": protection_row if stop_needs_labels else "inactive",
         },
         "timing": {
-            "gate": "shifted_closed_bar" if closed_bar else "unsupported_without_evidence",
+            "gate": ("shifted_closed_bar" if closed_bar else
+                     "unshifted_closed_candle" if gate_unshifted else
+                     "unsupported_without_evidence"),
             "directional": "result.Regime",
             "protection": protection_row,
         },

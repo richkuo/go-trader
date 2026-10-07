@@ -3252,7 +3252,10 @@ class Backtester:
 
             bar_regime = str(row.get("regime", "")) if self.regime_enabled else ""
             if self._regime_label_columns:
-                gate_label = str(row.get("_regime_gate", "") or "")
+                if self._regime_label_columns.get("gate_unshifted"):
+                    gate_label = str(row.get("_regime_gate_close", "") or "")
+                else:
+                    gate_label = str(row.get("_regime_gate", "") or "")
                 if str(self._regime_label_columns.get("directional") or "").strip():
                     current_directional = str(row.get("_regime_directional_close", "") or "")
                 else:
