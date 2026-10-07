@@ -3,3 +3,4 @@
 [2026-01-05 01:00:40] [hl-fee-fixture] [INFO] Live scale-in fill at $2010.00 qty=0.250000 (mid was $2009.00)
 [2026-01-05 01:00:40] [hl-fee-fixture] [INFO] Placing stop-loss trigger (unrelated line)
 [2026-01-05 11:00:40] [hl-fee-fixture] [INFO] Live fill at $2100.00 qty=0.123456 (mid was $2099.00)
+[2026-01-05 11:30:40] [hl-fee-fixture] [INFO] Live fill at $2000.01 qty=0.150000 (mid was $2000.00)

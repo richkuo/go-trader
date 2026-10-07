@@ -144,6 +144,22 @@
     "feeToken": "USDC"
   },
   {
+    "coin": "ETH",
+    "px": "1995.0",
+    "sz": "0.2",
+    "side": "B",
+    "time": 1767573640000,
+    "startPosition": "0",
+    "dir": "synthetic",
+    "closedPnl": "0",
+    "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "oid": 1013,
+    "crossed": false,
+    "fee": "-0.00798",
+    "tid": 9013,
+    "feeToken": "USDC"
+  },
+  {
     "coin": "DOGE",
     "px": "0.15",
     "sz": "1000.0",

@@ -23,6 +23,7 @@ OUTLIER_RELATIVE = 0.05
 LOG_PRECISION_MAX_BOUND = 0.00005
 LOG_PRICE_TOLERANCE = 0.005
 LOG_PAIR_WINDOW_SECONDS = 300
+FLOAT_BOUND_MARGIN = 1e-9
 
 GROUPS = ("open", "add", "stop_loss", "take_profit_tier", "signal_close", "risk_close",
           "manual", "external", "hedge", "unclassified")
@@ -155,6 +156,8 @@ def classify(ev: dict) -> tuple:
     kind = _value(ev, "event_kind")
     if _value(ev, "trade_type") == "hedge":
         return "hedge", "trade_type"
+    if _value(ev, "manual") is True:
+        return "manual", "manual"
     if kind == "scale_in":
         return "add", "event_kind"
     if kind == "non_close":
@@ -193,10 +196,19 @@ def load_exports(paths: list) -> list:
     return out
 
 
+ROW_IDENTITY_FIELDS = ("timestamp", "symbol", "side", "quantity", "price", "value", "exchange_fee", "fee_source",
+                       "exchange_order_id", "event_kind", "is_close", "manual", "trade_type", "details")
+
+
+def _row_fingerprint(ev: dict) -> tuple:
+    return tuple(ev.get(f) if f == "timestamp" else json.dumps(ev.get(f), sort_keys=True)
+                 for f in ROW_IDENTITY_FIELDS)
+
+
 def select_rows(exports: list) -> tuple:
     candidates = []
     excluded = {}
-    seen = set()
+    seen = {}
 
     def drop(reason):
         excluded[reason] = excluded.get(reason, 0) + 1
@@ -206,11 +218,17 @@ def select_rows(exports: list) -> tuple:
         partition = doc["selection"]["partition"]
         strategy = doc["selection"]["process_strategy_id"]
         for ev in doc["events"]:
-            identity = (doc["capture_manifest_sha256"], ev["source_role"], ev["source_table"], ev["source_row_id"])
+            identity = (ev["storage_strategy_id"], ev["source_role"], ev["source_table"], ev["source_row_id"])
+            fingerprint = _row_fingerprint(ev)
             if identity in seen:
+                prior_key, prior_print = seen[identity]
+                if prior_print != fingerprint:
+                    raise EvidenceInputError(
+                        f"{ev['event_key']} of {ev['storage_strategy_id']} in {exp['path']} repeats {prior_key} "
+                        f"from another export with different evidence; pass exports that agree, or one capture")
                 drop("duplicate_row")
                 continue
-            seen.add(identity)
+            seen[identity] = (ev["event_key"], fingerprint)
             if _value(ev, "event_kind") == "funding":
                 drop("funding")
                 continue
@@ -532,7 +550,9 @@ def market_fill_slippage(rows: list, log_args: list) -> dict:
         if ln["mid"] <= 0:
             unpaired += 1
             continue
-        bound = LOG_PRICE_TOLERANCE / ln["mid"]
+        if ln["mid"] <= LOG_PRICE_TOLERANCE:
+            imprecise += 1
+            continue
         matches = [r for r in rows
                    if r["strategy"] == ln["strategy"]
                    and (r["group"] == "add") == ln["scale_in"]
@@ -547,10 +567,12 @@ def market_fill_slippage(rows: list, log_args: list) -> dict:
             continue
         row = matches[0]
         used.add(row["event_key"])
+        bound = (LOG_PRICE_TOLERANCE * row["price"] / (ln["mid"] * (ln["mid"] - LOG_PRICE_TOLERANCE))
+                 * (1 + FLOAT_BOUND_MARGIN))
         if bound > LOG_PRECISION_MAX_BOUND:
             imprecise += 1
             continue
-        slip = _adverse(row["side"], ln["mid"], ln["fill"])
+        slip = _adverse(row["side"], ln["mid"], row["price"])
         if slip is None:
             unpaired += 1
             continue
@@ -562,15 +584,17 @@ def market_fill_slippage(rows: list, log_args: list) -> dict:
         "status": "available" if samples else "unavailable",
         "reason": None if samples else "no_paired_line_within_precision",
         "label": "reference price as logged",
-        "definition": "side-signed (logged fill - logged reference) / logged reference; positive is adverse",
+        "definition": "side-signed (booked fill price - logged reference) / logged reference; positive is adverse",
         "inputs": inputs,
         "lines_parsed": len(lines),
         "paired": stats,
         "samples": [{"event_key": s["event_key"], "group": s["group"], "slippage": s["rate"],
                      "rounding_bound": s["rounding_bound"]} for s in sorted(samples, key=lambda x: x["event_key"])],
         "excluded": {"unpaired": unpaired, "ambiguous": ambiguous, "log_precision_insufficient": imprecise},
-        "precision_rule": f"logged prices use 2 decimals; a sample is kept only when 0.005 / reference <= "
-                          f"{LOG_PRECISION_MAX_BOUND:g}",
+        "precision_rule": f"the logged reference uses 2 decimals and the fill price is the exact booked price; "
+                          f"rounding_bound = 0.005 * price / (reference * (reference - 0.005)), widened by "
+                          f"{FLOAT_BOUND_MARGIN:g} relative for float error, and a sample is "
+                          f"kept only when it is <= {LOG_PRECISION_MAX_BOUND:g}",
     }
 
 

@@ -4355,6 +4355,1422 @@
         "reason": "not_recorded",
         "provenance": []
       }
+    },
+    {
+      "event_key": "primary/trades/13",
+      "source_role": "primary",
+      "source_table": "trades",
+      "source_row_id": "13",
+      "partition": "live",
+      "process_strategy_id": "hl-fee-fixture",
+      "storage_strategy_id": "hl-fee-fixture",
+      "timestamp_raw": "2026-01-05T00:40:41Z",
+      "timestamp": "2026-01-05T00:40:41Z",
+      "timestamp_meaning": "ledger_record_time",
+      "symbol": {
+        "value": "ETH",
+        "raw_value": "ETH",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "symbol"
+          }
+        ]
+      },
+      "side": {
+        "value": "buy",
+        "raw_value": "buy",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "side"
+          }
+        ]
+      },
+      "trade_type": {
+        "value": "perps",
+        "raw_value": "perps",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "trade_type"
+          }
+        ]
+      },
+      "details": {
+        "value": "manual limit open long ETH @ $1995.0000",
+        "raw_value": "manual limit open long ETH @ $1995.0000",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "details"
+          }
+        ]
+      },
+      "position_id": {
+        "value": "pos-13",
+        "raw_value": "pos-13",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "position_id"
+          }
+        ]
+      },
+      "exchange_order_id": {
+        "value": "1013",
+        "raw_value": "1013",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "exchange_order_id"
+          }
+        ]
+      },
+      "fee_source": {
+        "value": "userfills",
+        "raw_value": "userfills",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "fee_source"
+          }
+        ]
+      },
+      "regime": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "quantity": {
+        "value": 0.2,
+        "raw_value": 0.2,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "quantity"
+          }
+        ]
+      },
+      "price": {
+        "value": 1995.0,
+        "raw_value": 1995.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "price"
+          }
+        ]
+      },
+      "value": {
+        "value": 399.0,
+        "raw_value": 399.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "value"
+          }
+        ]
+      },
+      "exchange_fee": {
+        "value": -0.00798,
+        "raw_value": -0.00798,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "exchange_fee"
+          }
+        ]
+      },
+      "realized_pnl": {
+        "value": 0.0,
+        "raw_value": 0.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "realized_pnl"
+          }
+        ]
+      },
+      "is_close": {
+        "value": false,
+        "raw_value": false,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "is_close"
+          }
+        ]
+      },
+      "pnl_gross": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "pnl_gross"
+          }
+        ]
+      },
+      "manual": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "manual"
+          }
+        ]
+      },
+      "row_net_pnl": {
+        "value": 0.00798,
+        "raw_value": 0.00798,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "row_net_pnl"
+          }
+        ]
+      },
+      "ledger_delta": {
+        "value": 0.00798,
+        "raw_value": 0.00798,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "ledger_delta"
+          }
+        ]
+      },
+      "event_kind": {
+        "value": "non_close",
+        "raw_value": "non_close",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "event_kind"
+          }
+        ]
+      },
+      "close_reason": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "close_extent": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "position_allocation": {
+        "value": "recorded",
+        "raw_value": "recorded",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "13",
+            "source_field": "position_allocation"
+          }
+        ]
+      },
+      "entry_atr": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_atr_mult": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_trigger_px": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_oid": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "tp_oids_json": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "tp_tiers_json": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      }
+    },
+    {
+      "event_key": "primary/trades/14",
+      "source_role": "primary",
+      "source_table": "trades",
+      "source_row_id": "14",
+      "partition": "live",
+      "process_strategy_id": "hl-fee-fixture",
+      "storage_strategy_id": "hl-fee-fixture",
+      "timestamp_raw": "2026-01-05T01:00:50Z",
+      "timestamp": "2026-01-05T01:00:50Z",
+      "timestamp_meaning": "ledger_record_time",
+      "symbol": {
+        "value": "ETH",
+        "raw_value": "ETH",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "symbol"
+          }
+        ]
+      },
+      "side": {
+        "value": "buy",
+        "raw_value": "buy",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "side"
+          }
+        ]
+      },
+      "trade_type": {
+        "value": "scale_in",
+        "raw_value": "scale_in",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "trade_type"
+          }
+        ]
+      },
+      "details": {
+        "value": "manual scale-in long ETH @ $2010.0000 (add #1, new qty 0.950000, avg $2003.6842)",
+        "raw_value": "manual scale-in long ETH @ $2010.0000 (add #1, new qty 0.950000, avg $2003.6842)",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "details"
+          }
+        ]
+      },
+      "position_id": {
+        "value": "pos-14",
+        "raw_value": "pos-14",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "position_id"
+          }
+        ]
+      },
+      "exchange_order_id": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "fee_source": {
+        "value": "userfills",
+        "raw_value": "userfills",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "fee_source"
+          }
+        ]
+      },
+      "regime": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "quantity": {
+        "value": 0.25,
+        "raw_value": 0.25,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "quantity"
+          }
+        ]
+      },
+      "price": {
+        "value": 2010.0,
+        "raw_value": 2010.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "price"
+          }
+        ]
+      },
+      "value": {
+        "value": 502.5,
+        "raw_value": 502.5,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "value"
+          }
+        ]
+      },
+      "exchange_fee": {
+        "value": 0.075375,
+        "raw_value": 0.075375,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "exchange_fee"
+          }
+        ]
+      },
+      "realized_pnl": {
+        "value": 0.0,
+        "raw_value": 0.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "realized_pnl"
+          }
+        ]
+      },
+      "is_close": {
+        "value": false,
+        "raw_value": false,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "is_close"
+          }
+        ]
+      },
+      "pnl_gross": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "pnl_gross"
+          }
+        ]
+      },
+      "manual": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "manual"
+          }
+        ]
+      },
+      "row_net_pnl": {
+        "value": -0.075375,
+        "raw_value": -0.075375,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "row_net_pnl"
+          }
+        ]
+      },
+      "ledger_delta": {
+        "value": -0.075375,
+        "raw_value": -0.075375,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "ledger_delta"
+          }
+        ]
+      },
+      "event_kind": {
+        "value": "scale_in",
+        "raw_value": "scale_in",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "event_kind"
+          }
+        ]
+      },
+      "close_reason": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "close_extent": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "position_allocation": {
+        "value": "recorded",
+        "raw_value": "recorded",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "14",
+            "source_field": "position_allocation"
+          }
+        ]
+      },
+      "entry_atr": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_atr_mult": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_trigger_px": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_oid": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "tp_oids_json": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "tp_tiers_json": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      }
+    },
+    {
+      "event_key": "primary/trades/15",
+      "source_role": "primary",
+      "source_table": "trades",
+      "source_row_id": "15",
+      "partition": "live",
+      "process_strategy_id": "hl-fee-fixture",
+      "storage_strategy_id": "hl-fee-fixture",
+      "timestamp_raw": "2026-01-05T05:30:41Z",
+      "timestamp": "2026-01-05T05:30:41Z",
+      "timestamp_meaning": "ledger_record_time",
+      "symbol": {
+        "value": "ETH",
+        "raw_value": "ETH",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "symbol"
+          }
+        ]
+      },
+      "side": {
+        "value": "sell",
+        "raw_value": "sell",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "side"
+          }
+        ]
+      },
+      "trade_type": {
+        "value": "hedge",
+        "raw_value": "hedge",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "trade_type"
+          }
+        ]
+      },
+      "details": {
+        "value": "hedge(ETH) open short",
+        "raw_value": "hedge(ETH) open short",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "details"
+          }
+        ]
+      },
+      "position_id": {
+        "value": "pos-15",
+        "raw_value": "pos-15",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "position_id"
+          }
+        ]
+      },
+      "exchange_order_id": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "fee_source": {
+        "value": "userfills",
+        "raw_value": "userfills",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "fee_source"
+          }
+        ]
+      },
+      "regime": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "quantity": {
+        "value": 0.1,
+        "raw_value": 0.1,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "quantity"
+          }
+        ]
+      },
+      "price": {
+        "value": 2000.0,
+        "raw_value": 2000.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "price"
+          }
+        ]
+      },
+      "value": {
+        "value": 200.0,
+        "raw_value": 200.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "value"
+          }
+        ]
+      },
+      "exchange_fee": {
+        "value": 0.09,
+        "raw_value": 0.09,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "exchange_fee"
+          }
+        ]
+      },
+      "realized_pnl": {
+        "value": 0.0,
+        "raw_value": 0.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "realized_pnl"
+          }
+        ]
+      },
+      "is_close": {
+        "value": false,
+        "raw_value": false,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "is_close"
+          }
+        ]
+      },
+      "pnl_gross": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "pnl_gross"
+          }
+        ]
+      },
+      "manual": {
+        "value": false,
+        "raw_value": false,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "manual"
+          }
+        ]
+      },
+      "row_net_pnl": {
+        "value": -0.09,
+        "raw_value": -0.09,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "row_net_pnl"
+          }
+        ]
+      },
+      "ledger_delta": {
+        "value": -0.09,
+        "raw_value": -0.09,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "ledger_delta"
+          }
+        ]
+      },
+      "event_kind": {
+        "value": "non_close",
+        "raw_value": "non_close",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "event_kind"
+          }
+        ]
+      },
+      "close_reason": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "close_extent": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "position_allocation": {
+        "value": "recorded",
+        "raw_value": "recorded",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "15",
+            "source_field": "position_allocation"
+          }
+        ]
+      },
+      "entry_atr": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_atr_mult": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_trigger_px": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_oid": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "tp_oids_json": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "tp_tiers_json": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      }
+    },
+    {
+      "event_key": "primary/trades/16",
+      "source_role": "primary",
+      "source_table": "trades",
+      "source_row_id": "16",
+      "partition": "live",
+      "process_strategy_id": "hl-fee-fixture",
+      "storage_strategy_id": "hl-fee-fixture",
+      "timestamp_raw": "2026-01-05T11:30:41Z",
+      "timestamp": "2026-01-05T11:30:41Z",
+      "timestamp_meaning": "ledger_record_time",
+      "symbol": {
+        "value": "ETH",
+        "raw_value": "ETH",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "symbol"
+          }
+        ]
+      },
+      "side": {
+        "value": "buy",
+        "raw_value": "buy",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "side"
+          }
+        ]
+      },
+      "trade_type": {
+        "value": "perps",
+        "raw_value": "perps",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "trade_type"
+          }
+        ]
+      },
+      "details": {
+        "value": "Open long 0.150000 @ $2000.01 (5x, fee $0.14)",
+        "raw_value": "Open long 0.150000 @ $2000.01 (5x, fee $0.14)",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "details"
+          }
+        ]
+      },
+      "position_id": {
+        "value": "pos-16",
+        "raw_value": "pos-16",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "position_id"
+          }
+        ]
+      },
+      "exchange_order_id": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "fee_source": {
+        "value": "userfills",
+        "raw_value": "userfills",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "fee_source"
+          }
+        ]
+      },
+      "regime": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "quantity": {
+        "value": 0.15,
+        "raw_value": 0.15,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "quantity"
+          }
+        ]
+      },
+      "price": {
+        "value": 2000.005,
+        "raw_value": 2000.005,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "price"
+          }
+        ]
+      },
+      "value": {
+        "value": 300.00075,
+        "raw_value": 300.00075,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "value"
+          }
+        ]
+      },
+      "exchange_fee": {
+        "value": 0.135000338,
+        "raw_value": 0.135000338,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "exchange_fee"
+          }
+        ]
+      },
+      "realized_pnl": {
+        "value": 0.0,
+        "raw_value": 0.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "realized_pnl"
+          }
+        ]
+      },
+      "is_close": {
+        "value": false,
+        "raw_value": false,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "is_close"
+          }
+        ]
+      },
+      "pnl_gross": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "pnl_gross"
+          }
+        ]
+      },
+      "manual": {
+        "value": false,
+        "raw_value": false,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "manual"
+          }
+        ]
+      },
+      "row_net_pnl": {
+        "value": -0.135000338,
+        "raw_value": -0.135000338,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "row_net_pnl"
+          }
+        ]
+      },
+      "ledger_delta": {
+        "value": -0.135000338,
+        "raw_value": -0.135000338,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "ledger_delta"
+          }
+        ]
+      },
+      "event_kind": {
+        "value": "non_close",
+        "raw_value": "non_close",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "event_kind"
+          }
+        ]
+      },
+      "close_reason": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "close_extent": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "position_allocation": {
+        "value": "recorded",
+        "raw_value": "recorded",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "16",
+            "source_field": "position_allocation"
+          }
+        ]
+      },
+      "entry_atr": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_atr_mult": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_trigger_px": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_oid": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "tp_oids_json": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "tp_tiers_json": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      }
     }
   ],
   "wallet_orphan_context": {
