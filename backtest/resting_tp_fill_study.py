@@ -303,6 +303,31 @@ def load_exports(paths):
     return positions, hashes
 
 
+def stream_marked_incomplete(bundle, meta) -> bool:
+    kind = meta.get("type")
+    comp = (bundle.get("completeness") or {}).get(kind)
+    if isinstance(comp, dict):
+        return comp.get("complete") is False
+    if isinstance(comp, list):
+        rows = [row for row in comp if isinstance(row, dict)]
+        coin = meta.get("coin")
+        if coin is not None:
+            rows = [row for row in rows if row.get("coin") == coin]
+        return bool(rows) and all(row.get("complete") is False for row in rows)
+    return False
+
+
+def _response_payload(raw, bundle, meta, rel):
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        if stream_marked_incomplete(bundle, meta):
+            return None
+        raise StudyError(f"capture response was not json: {rel}")
+
+
 def load_capture(path):
     bundle_path = os.path.join(path, "bundle.json")
     digest = sha256_file(bundle_path)
@@ -326,7 +351,7 @@ def load_capture(path):
         raw = open(full, "rb").read()
         if sha256_file(full) != row["response_sha256"]:
             raise StudyError(f"capture response hash mismatch: {rel}")
-        payload = json.loads(raw.decode("utf-8")) if raw else None
+        payload = _response_payload(raw, bundle, row, rel)
         loaded.append({"meta": row, "payload": payload, "raw": raw})
     return bundle, digest, loaded
 
@@ -579,7 +604,9 @@ def sibling_boundary_times(rec, records):
             continue
         placement = other.get("placement_ms")
         if isinstance(placement, int):
-            times.append(placement)
+            after_fill = isinstance(first_fill, int) and placement >= first_fill
+            if not after_fill:
+                times.append(placement)
         if fill_terminated(other):
             continue
         terminal = other.get("terminal_ms")
@@ -591,11 +618,19 @@ def sibling_boundary_times(rec, records):
     return times
 
 
+def scored_fill_ms(rec):
+    fills = rec.get("fills") or {}
+    first = fills.get("first_ms")
+    qty = fills.get("qty") or Decimal(0)
+    if isinstance(first, int) and (fill_terminated(rec) or qty > 0):
+        return first
+    return None
+
+
 def score_end_ms(rec):
-    if fill_terminated(rec):
-        first = (rec.get("fills") or {}).get("first_ms")
-        if isinstance(first, int):
-            return first
+    scored = scored_fill_ms(rec)
+    if scored is not None:
+        return scored
     return rec.get("terminal_ms")
 
 
@@ -694,7 +729,7 @@ def classify_order(rec, position, frame, step, uncovered, sz_decimals, other_tim
         return "limit_off_grid"
     interior, boundary, missing = bars_for(
         frame, step, start, score_end_ms(rec), other_times,
-        include_end_bar=fill_terminated(rec))
+        include_end_bar=scored_fill_ms(rec) is not None or fill_terminated(rec))
     rec["interior"] = interior
     rec["boundary"] = boundary
     if missing:
@@ -944,9 +979,9 @@ def render_markdown(report):
         "",
         "Placement time, terminal time, requested size and limit price come only from venue order records. Export timestamps only attribute an order to a position. A missing venue field is `lifetime_unknown`. Tier prices, manual additions and replacement orders are not rebuilt from current configuration.",
         "",
-        "A bar that overlaps placement, cancellation or replacement is unknown. Another order's fill does not make that bar unknown, and neither does another order's cancel at or after this order's first fill. The bar that holds a venue fill is scored with that fill. A rule that predicts a full quantity against a venue partial fill is a quantity error. An unconfirmed candle basis or cancel-time source is a blocker. Raising k does not repair unknown placement timing.",
+        "A bar that overlaps placement, cancellation or replacement is unknown. Another order's fill does not make that bar unknown, and neither does another order's cancel or placement at or after this order's first fill. The bar that holds a venue fill is scored with that fill, including a partial fill whose remainder is canceled in that same bar. A rule that predicts a full quantity against a venue partial fill is a quantity error. An unconfirmed candle basis or cancel-time source is a blocker. Raising k does not repair unknown placement timing.",
         "",
-        "The frozen manifest interval is 5m because the manifest verifier has no 1m interval. Live capture asks for candles at the interval passed to the capture tool. The venue keeps only the most recent 5000 candles of that interval. The basis check compares each manifest bar with the snapshot bar at the same open, including high, low and close. A snapshot on another interval, or a window that starts beyond that limit, stays unconfirmed.",
+        "The frozen manifest interval is 5m because the manifest verifier has no 1m interval. Live capture asks for candles at the interval passed to the capture tool. A capture start that is not on that interval's boundary is refused before any info request. The venue keeps only the most recent 5000 candles of that interval. The basis check compares each manifest bar with the snapshot bar at the same open, including high, low and close. A snapshot on another interval, or a window that starts beyond that limit, stays unconfirmed.",
         "",
         "## Sample",
         "",
