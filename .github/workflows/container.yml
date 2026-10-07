@@ -1,0 +1,154 @@
+name: Container
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_REPO: ghcr.io/richkuo/go-trader
+  SUITE_MARKER: "PASS: container image (identity, clean layers, volume setup, bind and token policy, auth, SIGHUP reload, dashboard and crash restarts, persistence, graceful stop with a Python child, fatal holds 78/79/80, early-failure restarts, one-shot exits, backup and restore)"
+
+jobs:
+  image:
+    name: image (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version and source commit
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          if [ "$EVENT_NAME" = "release" ]; then
+            if ! [[ "$RELEASE_TAG" =~ ^v[0-9][0-9A-Za-z._-]{0,100}$ ]]; then
+              echo "::error::release tag '$RELEASE_TAG' is not a vX.Y.Z style tag usable as an image tag"
+              exit 1
+            fi
+            tag_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+            if [ "$tag_commit" != "$commit" ]; then
+              echo "::error::release tag $RELEASE_TAG points at $tag_commit, but the checkout is $commit"
+              exit 1
+            fi
+            version="$RELEASE_TAG"
+          else
+            version="$(git describe --tags --always)"
+          fi
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+          echo "COMMIT=$commit" >>"$GITHUB_ENV"
+          echo "version=$version commit=$commit"
+
+      - name: Plant build-context canaries
+        run: |
+          set -euo pipefail
+          canary="go-trader-context-canary-$(openssl rand -hex 16)"
+          echo "CANARY=$canary" >>"$GITHUB_ENV"
+          mkdir -p logs docker scheduler/tuning_runs
+          for f in .env docker/go-trader.env docker/.env scheduler/config.json scheduler/config.json.bak \
+                   scheduler/state.db scheduler/state.db-wal scheduler/state.db-shm scheduler/state.db.lock \
+                   scheduler/tuning_runs/run.json shared_tools/trading_bot.db backtest/local.sqlite3 \
+                   logs/go-trader.log go-trader.pid .git/canary; do
+            printf '%s\n' "$canary" >"$f"
+          done
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          docker build --build-arg VERSION="$VERSION" --build-arg SOURCE_COMMIT="$COMMIT" -t go-trader:ci .
+          docker image inspect -f '{{.Os}}/{{.Architecture}}' go-trader:ci
+
+      - name: Container integration suite
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker "$SUITE_MARKER" \
+            --forbid 'NOTE: GO_TRADER_TEST_REQUIRE_ONCE=0' \
+            -- env GO_TRADER_TEST_IMAGE=go-trader:ci GO_TRADER_EXPECT_VERSION="$VERSION" GO_TRADER_EXPECT_COMMIT="$COMMIT" \
+                   GO_TRADER_CONTEXT_CANARY="$CANARY" bash scripts/test_container_image.sh
+
+      - name: Push the tested image by digest
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          ref="$IMAGE_REPO:build-$COMMIT-$ARCH"
+          docker tag go-trader:ci "$ref"
+          docker push "$ref"
+          digest="$(docker image inspect -f '{{index .RepoDigests 0}}' "$ref")"
+          mkdir -p digests
+          printf '%s\n' "$digest" >"digests/$ARCH"
+          echo "pushed $digest"
+
+      - name: Upload the digest
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    if: github.event_name == 'release'
+    needs: image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Publish the release, commit and latest tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -s digests/amd64 && test -s digests/arm64
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          tags=(-t "$IMAGE_REPO:$RELEASE_TAG" -t "$IMAGE_REPO:$COMMIT")
+          if [ "$PRERELEASE" != "true" ]; then
+            tags+=(-t "$IMAGE_REPO:latest")
+          fi
+          docker buildx imagetools create "${tags[@]}" "$(cat digests/amd64)" "$(cat digests/arm64)"
+          docker buildx imagetools inspect "$IMAGE_REPO:$RELEASE_TAG"
+          platforms="$(docker buildx imagetools inspect --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' "$IMAGE_REPO:$RELEASE_TAG")"
+          case "$platforms" in
+            *linux/amd64*linux/arm64*|*linux/arm64*linux/amd64*) echo "published platforms: $platforms" ;;
+            *) echo "::error::published index lists '$platforms'"; exit 1 ;;
+          esac

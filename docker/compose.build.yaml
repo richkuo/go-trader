@@ -1,0 +1,12 @@
+services:
+  go-trader:
+    image: go-trader:local
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${GO_TRADER_BUILD_VERSION:-dev}
+        SOURCE_COMMIT: ${GO_TRADER_BUILD_COMMIT:-}
+
+  cli:
+    image: go-trader:local

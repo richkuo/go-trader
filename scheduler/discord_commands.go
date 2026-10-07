@@ -824,6 +824,9 @@ func journalctlUnitArgs(unit, namespace string, n int) []string {
 }
 
 func runLogs(n int) string {
+	if inContainerRuntime() {
+		return fmt.Sprintf("This go-trader runs in a container, so its log is the container output. On the host, in the docker directory, run:\n```\ndocker compose logs --tail %d go-trader\n```", n)
+	}
 	unit := updateSystemdUnitName()
 	out, err := exec.Command("journalctl", journalctlUnitArgs(unit, systemdUnitLogNamespace(unit), n)...).CombinedOutput()
 	if err != nil {

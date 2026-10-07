@@ -9,6 +9,7 @@ trading_bot.db
 *.db-shm
 *.db.lock
 .env
+go-trader.env
 trading-scheduler
 # Compiled binaries
 go-trader
