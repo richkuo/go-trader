@@ -1254,14 +1254,16 @@ def _use_regime_market(cin, fx):
     cin["market"]["manifest"]["sha256"] = _sha(fx / "regime_market" / "manifest.json")
 
 
-def _cert_artifact(states, expires_at="", extra_entry=None, unknown_key=False):
+def _cert_artifact(states, expires_at=None, extra_entry=None, unknown_key=False):
     entry = {"asset": "BTC", "timeframe": "1h", "classifier": "adx",
-             "generated_at": "2026-01-01T00:00:00Z", "expires_at": expires_at, "states": states}
+             "generated_at": "2026-01-01T00:00:00Z", "states": states}
+    if expires_at:
+        entry["expires_at"] = expires_at
     certified = [entry]
     if extra_entry is not None:
         certified.append(extra_entry)
     payload = {"schema_version": 1, "generated_at": "2026-01-01T00:00:00Z",
-               "generator": "test", "source_evidence": "fixture", "criteria": "test",
+               "generator": "test", "source_evidence": "fixture", "criteria": {},
                "default_ttl_days": 30, "certified": certified}
     if unknown_key:
         payload["notes"] = "not a Go field"
@@ -1518,32 +1520,41 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
 
     idx = pd.date_range("2026-01-01", periods=6, freq="1h")
     px = [100, 101, 102, 103, 104, 105]
+    # Gate is trending_down. The default directional window is the primary
+    # column, trending_up. A flat entry follows trending_up (long). The open
+    # stamp stays on the gate label.
     df = pd.DataFrame({
         "open": px, "high": [p + 1 for p in px], "low": [p - 1 for p in px], "close": px,
         "volume": [1000] * 6,
         "open_action": ["long", "none", "short", "none", "none", "none"],
         "close_fraction": [0.0, 0.4, 1.0, 0.0, 0.0, 0.0],
-        "regime": ["primary"] * 6,
-        "regime_w_gate": ["", "alpha", "alpha", "beta", "beta", "beta"],
+        "regime": ["trending_up"] * 6,
+        "regime_w_gate": ["", "trending_down", "trending_down", "trending_down",
+                          "trending_down", "trending_down"],
+        "regime_w_medium": ["", "trending_up", "trending_up", "trending_up",
+                            "trending_up", "trending_up"],
     }, index=idx)
     policy = {"trend_regime": {
-        "alpha": {"direction": "long", "invert_signal": False},
-        "beta": {"direction": "short", "invert_signal": False},
-        "primary": {"direction": "long", "invert_signal": False},
+        "trending_up": {"direction": "long", "invert_signal": False},
+        "trending_down": {"direction": "short", "invert_signal": False},
     }}
-    states = {"alpha": "long", "beta": "short", "primary": "long"}
+    states = {"trending_up": "long", "trending_down": "short"}
+    columns = {
+        "gate": "regime_w_gate",
+        "directional": "regime_w_medium",
+        "directional_named": False,
+    }
     bt = Backtester(
         initial_capital=1000, platform="hyperliquid", regime_enabled=True,
         regime_directional_policy=policy, regime_directional_certified_states=states,
-        regime_label_columns={"gate": "regime_w_gate", "directional_named": False},
+        regime_label_columns=columns,
     )
     result = bt.run(df, save=False)
-    assert [t["side"] for t in result["trades"]] == ["long", "long", "short"]
+    assert [t["side"] for t in result["trades"]] == ["long", "long"]
     stamps = [e for e in bt._regime_stamp_trace if e["event"] == "stamp"]
     clears = [e for e in bt._regime_stamp_trace if e["event"] == "clear"]
-    assert [e["directional"] for e in stamps] == ["alpha", "beta"]
+    assert [e["directional"] for e in stamps] == ["trending_down"]
     assert clears and clears[0]["directional"] == ""
-    assert bt._stamp_directional == "beta"
 
     partial = df.copy()
     partial["open_action"] = ["long", "none", "none", "none", "none", "none"]
@@ -1551,16 +1562,35 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
     held = Backtester(
         initial_capital=1000, platform="hyperliquid", regime_enabled=True,
         regime_directional_policy=policy, regime_directional_certified_states=states,
-        regime_label_columns={"gate": "regime_w_gate", "directional_named": False},
+        regime_label_columns=columns,
     )
     held.run(partial, save=False)
-    assert held._stamp_directional == "alpha"
+    assert held._stamp_directional == "trending_down"
     assert not any(e["event"] == "clear" for e in held._regime_stamp_trace)
+    open_direction, _ = held._effective_directional_entry(
+        "trending_up", held._stamp_directional, 1.0)
+    assert open_direction == "short"
+
+    named = df.copy()
+    named["open_action"] = ["short", "none", "none", "none", "none", "none"]
+    named["close_fraction"] = [0.0] * 6
+    named_bt = Backtester(
+        initial_capital=1000, platform="hyperliquid", regime_enabled=True,
+        regime_directional_policy=policy, regime_directional_certified_states=states,
+        regime_label_columns={
+            "gate": "regime_w_medium",
+            "directional": "regime_w_gate",
+            "directional_named": True,
+        },
+    )
+    named_result = named_bt.run(named, save=False)
+    assert [t["side"] for t in named_result["trades"]] == ["short"]
+    assert named_bt._stamp_directional == "trending_down"
 
     missing = df.drop(columns=["regime_w_gate"])
     refused = Backtester(
         initial_capital=1000, platform="hyperliquid", regime_enabled=True,
-        regime_label_columns={"gate": "regime_w_gate", "directional_named": False},
+        regime_label_columns=columns,
     )
     with pytest.raises(ValueError, match="refusing missing regime label column regime_w_gate"):
         refused.run(missing, save=False)

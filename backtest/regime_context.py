@@ -19,6 +19,8 @@ from directional_certification import (
     parse_certifications_strict,
 )
 from regime import (
+    RANGING_DIRECTIONAL_BARE,
+    RANGING_DIRECTIONAL_SUBS,
     classifier_for_window,
     primary_regime_window_key,
     required_ohlcv_limit,
@@ -95,21 +97,58 @@ def _fail_policy(strategy) -> str:
     return str(raw).strip().lower()
 
 
+def _protection_source(stop_needs_labels, atr_named, protection_reads_gate,
+                       lookback_blocks, timeframe_blocks, strategy, regime):
+    """Name the window live protectionATRRegimeLabel would read.
+
+    A named ATR window is not supplied here. A default ATR selector uses the
+    gate-window stamp, which is the named gate window or the primary column.
+    """
+    if not stop_needs_labels or atr_named:
+        return None
+    if protection_reads_gate and not lookback_blocks and not timeframe_blocks:
+        gate_key = resolve_strategy_regime_window(strategy, "gate", regime)
+        return "unshifted_gate_window:" + gate_key
+    if protection_reads_gate:
+        return None
+    return "unshifted_primary_column"
+
+
+def _direction_matches(entry: dict, cert_dir: str) -> bool:
+    direction = str(entry.get("direction") or "").strip().lower()
+    cert_dir = str(cert_dir or "").strip().lower()
+    if not cert_dir:
+        return False
+    return direction == "both" or direction == cert_dir
+
+
 def _honored(policy: dict, states: dict) -> dict:
+    """Honor a policy entry the way live gatedDirectionalEntry does.
+
+    An observed label is certified on its own key. Resolve then maps a
+    ranging_directional_up or ranging_directional_down label onto a bare
+    ranging_directional entry when the policy has no exact sub-label key.
+    """
     trend = (policy or {}).get("trend_regime") or {}
     if not isinstance(trend, dict):
         return {}
+    states = states or {}
     out = {}
     for label, entry in trend.items():
         if not isinstance(entry, dict):
             continue
-        direction = str(entry.get("direction") or "").strip().lower()
-        cert_dir = str((states or {}).get(str(label)) or "").strip().lower()
-        if not cert_dir:
+        key = str(label)
+        if _direction_matches(entry, states.get(key)):
+            out[key] = dict(entry)
             continue
-        if direction != "both" and direction != cert_dir:
+        if key != RANGING_DIRECTIONAL_BARE:
             continue
-        out[str(label)] = dict(entry)
+        for sub in sorted(RANGING_DIRECTIONAL_SUBS):
+            if sub in trend:
+                continue
+            if _direction_matches(entry, states.get(sub)):
+                out[key] = dict(entry)
+                break
     return out
 
 
@@ -356,6 +395,12 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
 
     gate_selector = _selector_refusal(strategy, regime, "gate")
     dir_selector = _selector_refusal(strategy, regime, "directional")
+    atr_named = _named(strategy.get("regime_atr_window"))
+    # Live protectionATRRegimeLabel uses a named ATR window when one is set.
+    # A default ATR selector reads the gate-window stamp on the position.
+    protection_reads_gate = bool(
+        stop_needs_labels and _named(strategy.get("regime_gate_window"))
+        and not atr_named and gate_selector is None)
     policy = strategy.get("regime_directional_policy")
     policy_set = isinstance(policy, dict) and len(policy) > 0
     honored = {}
@@ -413,10 +458,12 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         consumers.append("directional")
     if stop_needs_labels:
         consumers.append("atr")
+    if protection_reads_gate:
+        consumers.append("protection")
 
     timeframe_blocks = bool(timeframe) and timeframe != interval.strip().lower() and bool(consumers)
     lookback_blocks = (warmup is None or int(warmup) < limit) and bool(
-        [c for c in consumers if c in ("gate", "directional")])
+        [c for c in consumers if c in ("gate", "directional", "protection")])
 
     def _feature_block(feature: str):
         if timeframe_blocks and feature in consumers:
@@ -461,6 +508,18 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
     gate_window_decision = gate_state
     if gate_selector and _named(strategy.get("regime_gate_window")):
         gate_window_decision = ("refused", gate_selector["reason_code"], False, gate_selector["detail"])
+    elif protection_reads_gate and lookback_blocks:
+        gate_window_decision = (
+            "refused", "regime_lookback_insufficient", False,
+            f"warm-up before the first scored decision is shorter than the live lookback ({limit})")
+    elif protection_reads_gate and timeframe_blocks:
+        gate_window_decision = (
+            "refused", "regime_timeframe_unprepared", False,
+            "regime labels from another timeframe are not prepared by the frozen comparison")
+    elif protection_reads_gate and gate_state[0] != "modeled":
+        gate_window_decision = (
+            "modeled", "regime_gate_window_protection", False,
+            "a regime-owned stop reads the unshifted gate-window stamp")
     elif gate_state[0] == "inactive":
         gate_window_decision = ("inactive", "regime_selector_no_consumer", False,
                                 "selector with no active consumer")
@@ -559,10 +618,13 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
                     and not r["approximable"] for r in rows))
     use_gate = modeled_gate or approximate_gate
     use_dir = modeled_dir or approximate_dir
+    use_protection = bool(
+        protection_reads_gate and not lookback_blocks and not timeframe_blocks
+        and gate_window_decision[0] == "modeled")
 
     prepare = None
     engine = None
-    if (use_gate or use_dir) and not lookback_blocks and not timeframe_blocks:
+    if (use_gate or use_dir or use_protection) and not lookback_blocks and not timeframe_blocks:
         gate_key = resolve_strategy_regime_window(strategy, "gate", regime)
         dir_key = resolve_strategy_regime_window(strategy, "directional", regime)
         columns = {}
@@ -587,7 +649,7 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
             "gate": col(gate_key),
             "directional_named": directional_named,
         }
-        if directional_named:
+        if use_dir:
             label_columns["directional"] = col(dir_key)
         engine = {
             "regime_enabled": True,
@@ -629,8 +691,9 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
             "directional": "result.Regime",
             "protection": "unshifted_current_inputs",
         },
-        "stamps": "Position.Regime is the gate-window label; an empty or default ATR or directional "
-                  "selector falls back to that stamp; an explicit named selector reads its window",
+        "stamps": "An open position keeps the gate-window label when the directional selector is "
+                  "default, and the named window when it is set. A flat directional decision reads "
+                  "the resolved directional window.",
         "certification": {
             "status": cert.get("status"),
             "identity": identity,
@@ -638,7 +701,9 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
                 "flat decisions check the current expiry; an open position uses the states frozen at entry"),
             "states": cert.get("states") or {},
         },
-        "protection_source": "unshifted_primary_column" if stop_needs_labels else None,
+        "protection_source": _protection_source(
+            stop_needs_labels, atr_named, protection_reads_gate,
+            lookback_blocks, timeframe_blocks, strategy, regime),
         "label_columns": sorted((prepare or {}).get("columns") or {}),
     }
     return {

@@ -2592,10 +2592,9 @@ class Backtester:
                 gate_close = _aligned_label(gate_name)
                 df["_regime_gate_close"] = gate_close
                 df["_regime_gate"] = gate_close.shift(1).fillna("")
-            if label_columns.get("directional_named"):
-                dir_name = str(label_columns.get("directional") or "").strip()
-                if dir_name:
-                    df["_regime_directional_close"] = _aligned_label(dir_name)
+            dir_name = str(label_columns.get("directional") or "").strip()
+            if dir_name:
+                df["_regime_directional_close"] = _aligned_label(dir_name)
             if label_columns.get("atr_named"):
                 atr_name = str(label_columns.get("atr") or "").strip()
                 if atr_name:
@@ -3208,7 +3207,7 @@ class Backtester:
             bar_regime = str(row.get("regime", "")) if self.regime_enabled else ""
             if self._regime_label_columns:
                 gate_label = str(row.get("_regime_gate", "") or "")
-                if self._regime_label_columns.get("directional_named"):
+                if str(self._regime_label_columns.get("directional") or "").strip():
                     current_directional = str(row.get("_regime_directional_close", "") or "")
                 else:
                     current_directional = str(row.get("_regime_gate_close", "") or "")
