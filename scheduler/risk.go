@@ -1127,6 +1127,12 @@ func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[str
 }
 
 func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {
+	mutatePaperPerpsBook(s, symbol, func() {
+		closeVirtualPositionAtMarkInner(s, sc, symbol, pos, prices, logger)
+	})
+}
+
+func closeVirtualPositionAtMarkInner(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {
 	now := time.Now().UTC()
 	price, ok := prices[symbol]
 	if !ok {

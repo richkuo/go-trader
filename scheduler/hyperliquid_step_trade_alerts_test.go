@@ -815,7 +815,7 @@ func TestManualTrailingStopFillIsCountedAndMerged(t *testing.T) {
 	strategies := map[string]*StrategyState{sc.ID: st}
 	var mu sync.RWMutex
 	before := len(st.TradeHistory)
-	fills, d := runManualTrailingStopUpdate(sc, st, strategies, []StrategyConfig{sc}, nil, nil, nil, 105, false, &mu, nil, silentStrategyLogger(sc.ID))
+	fills, d, _ := runManualTrailingStopUpdate(sc, st, strategies, []StrategyConfig{sc}, nil, nil, nil, 105, false, &mu, nil, silentStrategyLogger(sc.ID))
 	if fills != 1 || !strings.Contains(d, "LIVE TRAILING SL") {
 		t.Fatalf("manual trailing fill = (%d, %q), want one counted fill", fills, d)
 	}

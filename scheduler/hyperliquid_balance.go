@@ -1662,7 +1662,7 @@ func tpOIDsFromOpenTrade(s *StrategyState, sym string, tierCount int) []int64 {
 	}
 	for i := len(s.TradeHistory) - 1; i >= 0; i-- {
 		t := &s.TradeHistory[i]
-		if t.Symbol != sym {
+		if t.Symbol != sym || t.TradeType == TradeTypeFunding {
 			continue
 		}
 		if t.IsClose {

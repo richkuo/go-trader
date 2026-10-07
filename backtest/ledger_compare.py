@@ -51,7 +51,7 @@ from backtester import (
 REPORT_SCHEMA = "go-trader.ledger-reconciliation-report"
 REPORT_SCHEMA_VERSION = 1
 INPUT_SCHEMA = "go-trader.ledger-comparison-input"
-SUPPORTED_INPUT_VERSIONS = (1, 2)
+SUPPORTED_INPUT_VERSIONS = (1, 2, 3)
 EXPORT_SCHEMA = "go-trader.booked-ledger"
 SUPPORTED_EXPORT_VERSIONS = (1,)
 EXIT_STRICT_SUCCESS = 0
@@ -131,9 +131,7 @@ UNSUPPORTED_FEATURE_FIELDS = {
     "replay_source_id": "replay_mirror",
     "theta_harvest": "options",
     "futures": "futures_contract",
-    "margin_per_trade_usd": "sizing",
     "capital_pct": "sizing",
-    "risk_per_trade_pct": "sizing",
 }
 INFORMATIONAL_FIELDS = {
     "id": "identity",
@@ -1228,8 +1226,125 @@ def _stop_rows(verdict: dict, strategy: dict) -> list:
     return rows
 
 
+def _comparison_mode_name(args) -> str:
+    if not isinstance(args, list):
+        return ""
+    for i, arg in enumerate(args):
+        text = str(arg)
+        if text.startswith("--mode="):
+            return text.split("=", 1)[1]
+        if text == "--mode" and i + 1 < len(args):
+            return str(args[i + 1])
+    return ""
+
+
+def _pool_needs_evidence(strategy: dict) -> bool:
+    margin = strategy.get("margin_per_trade_usd")
+    if not _is_number(margin) or margin <= 0:
+        return False
+    capital = strategy.get("capital")
+    pct = strategy.get("capital_pct")
+    has_capital = _is_number(capital) and capital != 0
+    has_pct = _is_number(pct) and pct != 0
+    return not has_capital and not has_pct
+
+
+def _sizing_budget_reason(strategy: dict, evidence: dict, version: int):
+    if not _pool_needs_evidence(strategy):
+        return None
+    if version < 3:
+        return "sizing_evidence_unavailable"
+    budget = evidence.get("sizing_budget") if isinstance(evidence, dict) else None
+    if not isinstance(budget, dict) or budget.get("status") != "available":
+        return "sizing_evidence_unavailable"
+    margin = float(strategy["margin_per_trade_usd"])
+    entries = budget.get("entries")
+    if isinstance(entries, list) and entries:
+        for entry in entries:
+            avail = entry.get("available_margin_usd") if isinstance(entry, dict) else None
+            if not _is_number(avail) or avail < margin:
+                return "pool_margin_cap_bound"
+        return None
+    avail = budget.get("available_margin_usd")
+    if _is_number(avail):
+        return None if avail >= margin else "pool_margin_cap_bound"
+    if budget.get("covers_budget") is True:
+        return None
+    return "sizing_evidence_unavailable"
+
+
+def _liquidation_refusal(strategy: dict, evidence: dict, market: dict, version: int):
+    lev = strategy.get("leverage")
+    if not _is_number(lev) or lev <= 1:
+        return None
+    if str(strategy.get("margin_mode") or "isolated").strip().lower() == "cross":
+        return "cross_margin_unmodeled"
+    if _comparison_mode_name(strategy.get("args")) == "paper":
+        return None
+    if not market.get("venue_margin"):
+        return "venue_margin_missing"
+    if version < 3:
+        return "liquidation_formula_unverified"
+    peers = evidence.get("shared_coin_peers") if isinstance(evidence, dict) else None
+    if (not isinstance(peers, dict) or peers.get("status") != "available"
+            or peers.get("peers_held_coin") is not False):
+        return "shared_coin_liquidation_unmodeled"
+    venue = market.get("venue_margin") or {}
+    liq = evidence.get("liquidation") if isinstance(evidence, dict) else None
+    if not venue.get("formula_verified") or not isinstance(liq, dict) or liq.get("formula_checked") is not True:
+        return "liquidation_formula_unverified"
+    if liq.get("trigger_source") != "mark":
+        return "liquidation_settlement_unverified"
+    for key in ("isolated_collateral", "fees", "funding", "margin_changes", "gap_settlement"):
+        if liq.get(key) != "verified":
+            return "liquidation_settlement_unverified"
+    if liq.get("partial_liquidation") not in ("verified", "not_applicable"):
+        return "liquidation_partial_unmodeled"
+    if liq.get("margin_tier") != "verified":
+        return "margin_tier_unmodeled"
+    return None
+
+
+def _comparison_perps_sizing(strategy: dict, evidence: dict, version: int):
+    if strategy.get("type") != "perps":
+        return None
+    platform = strategy.get("platform")
+    if platform not in (None, "", "hyperliquid"):
+        return None
+    exchange = float(strategy["leverage"]) if _is_number(strategy.get("leverage")) and strategy["leverage"] > 0 else 1.0
+    sizing_set = _is_number(strategy.get("sizing_leverage")) and strategy["sizing_leverage"] > 0
+    sizing = float(strategy["sizing_leverage"]) if sizing_set else exchange
+    margin = (float(strategy["margin_per_trade_usd"])
+              if _is_number(strategy.get("margin_per_trade_usd")) and strategy["margin_per_trade_usd"] > 0 else None)
+    risk = _is_number(strategy.get("risk_per_trade_pct")) and strategy["risk_per_trade_pct"] > 0
+    if margin is None and not risk and not (sizing_set and sizing != 1) and exchange <= 1:
+        return None
+    budget = "shared_wallet_pool" if _pool_needs_evidence(strategy) else "strategy_cash"
+    raw = {
+        "exchange_leverage": exchange,
+        "sizing_leverage": sizing,
+        "margin_per_trade_usd": margin,
+        "margin_mode": str(strategy.get("margin_mode") or "isolated").strip().lower() or "isolated",
+        "budget_source": budget,
+        "pool_evidence": "verified",
+        "provenance": "ledger_compare",
+    }
+    if budget == "shared_wallet_pool" and version >= 3 and isinstance(evidence, dict):
+        block = evidence.get("sizing_budget") or {}
+        avail = block.get("available_margin_usd")
+        entries = block.get("entries")
+        if not _is_number(avail) and isinstance(entries, list) and entries:
+            values = [e.get("available_margin_usd") for e in entries if isinstance(e, dict)]
+            if values and all(_is_number(v) for v in values):
+                avail = min(values)
+        if _is_number(avail):
+            raw["pool_available_margin"] = float(avail)
+    from backtester import normalize_perps_sizing
+    return normalize_perps_sizing(raw, exchange)
+
+
 def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_verdict: dict,
-                      atr_verdict: Optional[dict] = None) -> list:
+                      atr_verdict: Optional[dict] = None, input_version: int = 2) -> list:
     strategy = seg.get("strategy") or {}
     regime = seg.get("regime") or {}
     risk = seg.get("portfolio_risk") or {}
@@ -1310,20 +1425,77 @@ def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_v
     else:
         row("atr_method", "signal_model", atr_verdict["method"], "unverified",
             "; ".join(r["detail"] for r in atr_verdict["refusals"]))
-    for field in ("leverage", "sizing_leverage"):
+    for field, category, inactive_reason in (
+        ("leverage", "margin_liquidation", "exchange leverage at or below 1 has no liquidation effect"),
+        ("sizing_leverage", "sizing", "sizing leverage is not configured"),
+    ):
         handled.add(field)
         v = strategy.get(field)
+        if field == "sizing_leverage":
+            if v is None:
+                row(field, category, v, "inactive", inactive_reason)
+            elif not _is_number(v) or isinstance(v, bool) or v <= 0 or v > 100:
+                row(field, category, v, "refused", "sizing_leverage must be a number in (0, 100]")
+            else:
+                row(field, category, v, "modeled",
+                    "sizing leverage changes open notional, including values below 1")
+            continue
         if v is None or (_is_number(v) and v <= 1):
-            row(field, "margin_liquidation" if field == "leverage" else "sizing", v, "inactive",
-                "leverage at or below 1 has no margin, liquidation or sizing effect")
+            row(field, category, v, "inactive", inactive_reason)
+            continue
+        refusal = _liquidation_refusal(strategy, capability_evidence, market, input_version)
+        if refusal:
+            row(field, category, v, "refused", refusal)
+        elif _comparison_mode_name(strategy.get("args")) == "paper":
+            row(field, category, v, "modeled",
+                "exchange leverage sizes the margin budget; paper does not book a venue liquidation")
         else:
-            row(field, "margin_liquidation" if field == "leverage" else "sizing", v, "refused",
-                "the simulator does not model leverage, margin or liquidation")
+            row(field, category, v, "modeled",
+                "isolated liquidation inputs are present, including a formula checked against a recorded liquidation")
+    if (_is_number(strategy.get("leverage")) and strategy.get("leverage") > 1
+            and _comparison_mode_name(strategy.get("args")) == "paper"
+            and market.get("venue_margin")):
+        handled.add("paper_liquidation_crossing")
+        row("paper_liquidation_crossing", "margin_liquidation", None, "informational",
+            "venue margin can price a crossing; paper does not book a venue liquidation")
+    handled.add("margin_per_trade_usd")
+    margin_budget = strategy.get("margin_per_trade_usd")
+    if not _active(margin_budget):
+        row("margin_per_trade_usd", "sizing", margin_budget, "inactive", "no margin budget")
+    else:
+        pool_reason = _sizing_budget_reason(strategy, capability_evidence, input_version)
+        if pool_reason:
+            row("margin_per_trade_usd", "sizing", margin_budget, "refused", pool_reason)
+        elif _pool_needs_evidence(strategy):
+            row("margin_per_trade_usd", "sizing", margin_budget, "modeled",
+                "per-entry available wallet margin covers the configured budget")
+        else:
+            row("margin_per_trade_usd", "sizing", margin_budget, "modeled",
+                "strategy cash caps the margin budget; notional is min(margin, sizing cash) times exchange leverage")
+    handled.add("risk_per_trade_pct")
+    risk_pct = strategy.get("risk_per_trade_pct")
+    if not _active(risk_pct):
+        row("risk_per_trade_pct", "sizing", risk_pct, "inactive", "risk sizing is not configured")
+    elif stop_verdict.get("status") != "modeled":
+        row("risk_per_trade_pct", "sizing", risk_pct, "refused",
+            "risk sizing needs a verified stop distance and is capped at cash times exchange leverage")
+    else:
+        row("risk_per_trade_pct", "sizing", risk_pct, "modeled",
+            "risk notional uses the verified stop distance and is capped at cash times exchange leverage")
     handled.add("margin_mode")
     lev = strategy.get("leverage")
-    row("margin_mode", "margin_liquidation", strategy.get("margin_mode"),
-        "inactive" if lev is None or (_is_number(lev) and lev <= 1) else "refused",
-        "margin mode matters only with leverage above 1")
+    mode_name = strategy.get("margin_mode")
+    if lev is None or (_is_number(lev) and lev <= 1):
+        row("margin_mode", "margin_liquidation", mode_name, "inactive",
+            "margin mode matters only with leverage above 1")
+    elif str(mode_name or "isolated").strip().lower() == "cross":
+        row("margin_mode", "margin_liquidation", mode_name, "refused", "cross_margin_unmodeled")
+    else:
+        liq_reason = _liquidation_refusal(strategy, capability_evidence, market, input_version)
+        if liq_reason and _comparison_mode_name(strategy.get("args")) != "paper":
+            row("margin_mode", "margin_liquidation", mode_name, "refused", liq_reason)
+        else:
+            row("margin_mode", "margin_liquidation", mode_name, "modeled", "isolated margin")
     handled.update(STOP_ROLE_FIELDS)
     rows.extend(_stop_rows(stop_verdict, strategy))
     handled.update(("allow_scale_in", "scale_in"))
@@ -1616,6 +1788,12 @@ def run_simulation(market: dict, signals: pd.DataFrame, plan: dict) -> dict:
             kwargs.update(regime_enabled=True, regime_period=labels["period"],
                           regime_adx_threshold=labels["adx_threshold"],
                           regime_windows_spec=labels["windows_spec"])
+    if plan.get("perps_sizing"):
+        kwargs["perps_sizing"] = plan["perps_sizing"]
+    if plan.get("liquidation_model"):
+        kwargs["liquidation_model"] = plan["liquidation_model"]
+    if plan.get("venue_margin"):
+        kwargs["venue_margin"] = plan["venue_margin"]
     if plan.get("allow_scale_in"):
         kwargs["allow_scale_in"] = True
         kwargs["scale_in"] = plan.get("scale_in")
@@ -2123,6 +2301,11 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                       "registry": set(load_registry("futures").STRATEGY_REGISTRY),
                       "funding_input_strategies": set(FUNDING_COLUMN_STRATEGIES),
                       "observation_input_strategies": set(OBSERVATION_INPUT_STRATEGIES)}
+        try:
+            import offline_manifest as om
+            market_ctx["venue_margin"] = om.venue_margin(market["manifest"], market["dataset"])
+        except Exception:
+            market_ctx["venue_margin"] = None
     args = strategy.get("args") or []
     if strategy.get("type") == "manual":
         coin = strategy.get("symbol")
@@ -2138,7 +2321,8 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                      "capability_context": None, "close_refs": None})
     has_close = bool(strategy.get("close_strategy"))
     atr_verdict = resolve_atr_method(seg, has_close or stop_verdict.get("owner") in STOP_OWNERS_NEEDING_ATR)
-    matrix = (capability_matrix(seg, cin.get("capability_evidence", {}), market_ctx, stop_verdict, atr_verdict)
+    matrix = (capability_matrix(seg, cin.get("capability_evidence", {}), market_ctx, stop_verdict, atr_verdict,
+                                input_version)
               if seg else [])
     cap_refusals, cap_evidence = _decision_class(matrix)
     manual = strategy.get("type") == "manual"
@@ -2243,7 +2427,16 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             "comparison_mode": mode, "initial_cash": float(cin["starting_state"]["cash_usd"]["value"]),
             "execution_spec": use_spec,
             "stop": stop_verdict,
+            "perps_sizing": _comparison_perps_sizing(strategy, cin.get("capability_evidence") or {}, input_version),
+            "liquidation_model": "none",
+            "venue_margin": None,
         }
+        if (plan["perps_sizing"] and _is_number(strategy.get("leverage")) and strategy.get("leverage") > 1
+                and _comparison_mode_name(strategy.get("args")) != "paper"
+                and _liquidation_refusal(strategy, cin.get("capability_evidence") or {}, market_ctx, input_version) is None
+                and market_ctx.get("venue_margin")):
+            plan["liquidation_model"] = "venue_isolated"
+            plan["venue_margin"] = market_ctx["venue_margin"]
         if approx_ok:
             if strategy.get("allow_scale_in"):
                 plan["allow_scale_in"] = True

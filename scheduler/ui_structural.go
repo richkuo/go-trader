@@ -66,6 +66,9 @@ func structuralApplyMessage(restarting bool) string {
 	if restarting {
 		return "Applying via service restart — the daemon briefly goes offline; the new instance resumes the cycle."
 	}
+	if inContainerRuntime() {
+		return "This is a restart-required change: the config is written and validated, but the running daemon keeps its current strategy set until you restart go-trader (" + containerRestartAdvice + ")."
+	}
 	return "This is a restart-required change: the config is written and validated, but the running daemon keeps its current strategy set until you restart go-trader (systemctl restart go-trader)."
 }
 

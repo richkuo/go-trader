@@ -98,9 +98,64 @@ def _file_ref(base_dir: str, ref, label: str, verify: bool) -> dict:
     return out
 
 
-def _meta_size_decimals(meta_path: str) -> dict:
+def _load_meta(meta_path: str) -> dict:
     with open(meta_path) as fh:
         meta = json.load(fh)
+    if not isinstance(meta, dict):
+        raise ManifestError("venue meta snapshot must be an object")
+    return meta
+
+
+def venue_margin(manifest: dict, dataset: dict) -> dict:
+    """Leverage limit and margin tiers from the manifest's hashed venue meta.
+
+    ``formula_verified`` stays false until a frozen recorded liquidation price
+    is checked against ``isolated_liquidation_price``. This reader does not
+    invent that fixture.
+    """
+    meta_ref = (manifest.get("venue_reference") or {}).get("meta") or {}
+    meta_path = meta_ref.get("abs_path")
+    if not meta_path:
+        raise ManifestError("venue_reference.meta is required to read margin tiers")
+    meta = _load_meta(meta_path)
+    coin = str((dataset or {}).get("coin") or "")
+    universe = meta.get("universe")
+    if not isinstance(universe, list):
+        raise ManifestError("venue meta snapshot has no universe list")
+    entry = next((e for e in universe if isinstance(e, dict) and e.get("name") == coin), None)
+    if entry is None:
+        raise ManifestError(f"venue meta has no universe entry for {coin!r}")
+    max_lev = entry.get("maxLeverage")
+    table_id = entry.get("marginTableId")
+    if isinstance(max_lev, bool) or not isinstance(max_lev, (int, float)) or max_lev < 1:
+        raise ManifestError(f"{coin}: maxLeverage must be a number >= 1")
+    tiers = None
+    for item in meta.get("marginTables") or []:
+        if isinstance(item, list) and len(item) == 2 and item[0] == table_id and isinstance(item[1], dict):
+            raw = item[1].get("marginTiers") or []
+            tiers = []
+            for tier in raw:
+                if not isinstance(tier, dict):
+                    continue
+                tiers.append({
+                    "lower_bound": float(tier.get("lowerBound") or 0),
+                    "max_leverage": float(tier["maxLeverage"]),
+                })
+            break
+    if not tiers:
+        raise ManifestError(f"{coin}: margin table {table_id!r} has no tiers")
+    tiers.sort(key=lambda t: t["lower_bound"])
+    return {
+        "max_leverage": float(max_lev),
+        "margin_table_id": table_id,
+        "tiers": tiers,
+        "formula_verified": False,
+        "source": "venue_meta",
+    }
+
+
+def _meta_size_decimals(meta_path: str) -> dict:
+    meta = _load_meta(meta_path)
     universe = meta.get("universe") if isinstance(meta, dict) else None
     if not isinstance(universe, list):
         raise ManifestError("venue meta snapshot has no universe list")

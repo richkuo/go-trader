@@ -1821,7 +1821,9 @@ class _HoldTracker:
 
 
 LEDGER_EVENTS_SCHEMA = "go-trader.backtester-ledger-events"
-LEDGER_EVENTS_SCHEMA_VERSION = 1
+LEDGER_EVENTS_SCHEMA_VERSION = 2
+HL_LIQUIDATION_STOP_BUFFER_PCT = 0.5
+PARTIAL_LIQUIDATION_NOTIONAL_USD = 100_000.0
 LEDGER_EVENT_TIMING = {
     "bar_open_fill": "fill at the open of bar_timestamp after a decision on the close of decision_timestamp",
     "intrabar_trigger_fill": "fill inside the bar that opens at bar_timestamp, when a resting trigger or limit price is crossed; no separate decision bar",
@@ -1859,6 +1861,7 @@ class _LedgerEventRecorder:
                entry_fee_allocated: Optional[float] = None,
                funding_cash: Optional[float] = None,
                funding_rate: Optional[float] = None,
+               margin_loss: Optional[float] = None,
                synthetic: bool = False) -> None:
         if kind in ("open", "seed_inventory"):
             self.position_seq += 1
@@ -1888,6 +1891,7 @@ class _LedgerEventRecorder:
             "gross_realized": gross_realized,
             "funding_cash": funding_cash,
             "funding_rate": funding_rate,
+            "margin_loss": margin_loss,
             "reason": reason,
             "qty_before": qty_before,
             "qty_after": qty_after,
@@ -1945,6 +1949,178 @@ def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
     trade.pnl -= trade.entry_fee + trade.exit_fee
 
 
+def perps_open_notional(cash: float, sizing_leverage: float,
+                        exchange_leverage: float, margin_per_trade_usd: float) -> float:
+    """Mirror scheduler PerpsOpenNotional. cash is sizing cash, never settlement cash."""
+    if cash <= 0:
+        return 0.0
+    if margin_per_trade_usd > 0:
+        margin = margin_per_trade_usd
+        if margin > cash:
+            margin = cash
+        if exchange_leverage <= 0:
+            exchange_leverage = 1.0
+        return margin * exchange_leverage
+    if sizing_leverage <= 0:
+        sizing_leverage = 1.0
+    return cash * sizing_leverage
+
+
+def perps_risk_based_notional(cash: float, price: float, risk_pct: float,
+                              stop_distance: float, exchange_leverage: float) -> float:
+    """Mirror scheduler PerpsRiskBasedNotional."""
+    if cash <= 0 or price <= 0 or risk_pct <= 0 or stop_distance <= 0:
+        return 0.0
+    notional = (cash * risk_pct / 100.0) / stop_distance * price
+    if exchange_leverage <= 0:
+        exchange_leverage = 1.0
+    max_notional = cash * exchange_leverage
+    if notional > max_notional:
+        notional = max_notional
+    return notional
+
+
+def clamp_stop_inside_liquidation(side: str, trigger_px: float, liq_px: float):
+    """Mirror clampStopInsideLiquidation. Tighter triggers are preserved."""
+    if trigger_px <= 0 or liq_px <= 0:
+        return trigger_px, False
+    past = (side == "long" and trigger_px <= liq_px) or (side == "short" and trigger_px >= liq_px)
+    if not past:
+        return trigger_px, False
+    if side == "long":
+        clamped = liq_px * (1.0 + HL_LIQUIDATION_STOP_BUFFER_PCT / 100.0)
+    elif side == "short":
+        clamped = liq_px * (1.0 - HL_LIQUIDATION_STOP_BUFFER_PCT / 100.0)
+    else:
+        return trigger_px, False
+    if not (clamped > 0) or clamped != clamped or clamped == float("inf"):
+        return trigger_px, False
+    return clamped, True
+
+
+def maintenance_rate_for_tier(tier_max_leverage: float) -> float:
+    """Hyperliquid maintenance margin is half of initial margin at max leverage."""
+    if tier_max_leverage <= 0:
+        return 0.0
+    return 1.0 / (2.0 * tier_max_leverage)
+
+
+def isolated_liquidation_price(side: str, price: float, position_size: float,
+                               isolated_margin: float, tier_max_leverage: float) -> float:
+    """Isolated liquidation price from the published Hyperliquid formula.
+
+    liq_price = price - side * margin_available / position_size / (1 - l * side)
+    l = 1 / (2 * tier maxLeverage).
+    margin_available = isolated_margin - position_size * price * l.
+
+    ``price`` is the average entry and ``isolated_margin`` excludes unrealized
+    PnL. That equals the mark form once unrealized PnL is included in margin,
+    so a fixed size and margin do not move the level with the mark. Still
+    unverified against a recorded liquidationPx.
+    """
+    size = abs(position_size)
+    if price <= 0 or size <= 0 or tier_max_leverage <= 0 or isolated_margin <= 0:
+        return 0.0
+    side_sign = 1.0 if side == "long" else -1.0 if side == "short" else 0.0
+    if side_sign == 0.0:
+        return 0.0
+    ell = maintenance_rate_for_tier(tier_max_leverage)
+    maintenance = size * price * ell
+    margin_available = isolated_margin - maintenance
+    denom = 1.0 - ell * side_sign
+    if denom == 0.0:
+        return 0.0
+    liq = price - side_sign * margin_available / size / denom
+    if not (liq > 0) or liq != liq or liq == float("inf"):
+        return 0.0
+    return liq
+
+
+def margin_tier_for_notional(tiers: list, notional: float):
+    """Return (tier, unmodeled). Only the first tier is modeled."""
+    ordered = sorted(tiers, key=lambda t: float(t["lower_bound"]))
+    if not ordered:
+        return None, True
+    if len(ordered) > 1 and notional >= float(ordered[1]["lower_bound"]):
+        return None, True
+    return ordered[0], False
+
+
+def normalize_perps_sizing(raw, leverage_stop: Optional[float]) -> Optional[dict]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"perps_sizing must be an object, got {type(raw).__name__}")
+    required = ("exchange_leverage", "sizing_leverage", "margin_mode", "budget_source")
+    missing = [k for k in required if k not in raw]
+    if missing:
+        raise ValueError(f"perps_sizing missing {missing}")
+    ex = float(raw["exchange_leverage"])
+    sz = float(raw["sizing_leverage"])
+    if not (ex >= 1.0) or not (0.01 <= sz <= 100.0):
+        raise ValueError(
+            f"perps_sizing leverage out of range (exchange {ex}, sizing {sz})")
+    if leverage_stop is not None and abs(float(leverage_stop) - ex) > 1e-9:
+        raise ValueError(
+            f"perps_sizing.exchange_leverage {ex} disagrees with leverage {leverage_stop}")
+    mode = str(raw["margin_mode"])
+    if mode not in ("isolated", "cross"):
+        raise ValueError(f"perps_sizing.margin_mode must be isolated or cross, got {mode!r}")
+    source = str(raw["budget_source"])
+    if source not in ("strategy_cash", "shared_wallet_pool"):
+        raise ValueError(f"perps_sizing.budget_source {source!r} is not strategy_cash or shared_wallet_pool")
+    margin = raw.get("margin_per_trade_usd")
+    margin_f = None if margin is None else float(margin)
+    if margin_f is not None and margin_f <= 0:
+        raise ValueError("perps_sizing.margin_per_trade_usd must be positive when set")
+    pool = raw.get("pool_available_margin")
+    pool_f = None if pool is None else float(pool)
+    if source == "shared_wallet_pool" and margin_f is None:
+        raise ValueError("shared_wallet_pool sizing requires margin_per_trade_usd")
+    return {
+        "exchange_leverage": ex,
+        "sizing_leverage": sz,
+        "margin_per_trade_usd": margin_f,
+        "margin_mode": mode,
+        "budget_source": source,
+        "pool_available_margin": pool_f,
+        "pool_evidence": str(raw.get("pool_evidence") or (
+            "verified" if pool_f is not None or source == "strategy_cash" else "unverified")),
+        "provenance": (
+            {"source": raw["provenance"]} if isinstance(raw.get("provenance"), str)
+            else dict(raw.get("provenance") or {})),
+    }
+
+
+def normalize_venue_margin(raw) -> Optional[dict]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"venue_margin must be an object, got {type(raw).__name__}")
+    max_lev = raw.get("max_leverage")
+    tiers = raw.get("tiers")
+    if isinstance(max_lev, bool) or not isinstance(max_lev, (int, float)) or max_lev <= 0:
+        raise ValueError("venue_margin.max_leverage must be a positive number")
+    if not isinstance(tiers, list) or not tiers:
+        raise ValueError("venue_margin.tiers must be a non-empty list")
+    out_tiers = []
+    for tier in tiers:
+        if not isinstance(tier, dict):
+            raise ValueError("venue_margin tier must be an object")
+        lower = float(tier["lower_bound"])
+        tlev = float(tier["max_leverage"])
+        if lower < 0 or tlev <= 0:
+            raise ValueError("venue_margin tier bounds must be non-negative and max_leverage > 0")
+        out_tiers.append({"lower_bound": lower, "max_leverage": tlev})
+    out_tiers.sort(key=lambda t: t["lower_bound"])
+    return {
+        "max_leverage": float(max_lev),
+        "margin_table_id": raw.get("margin_table_id"),
+        "tiers": out_tiers,
+        "formula_verified": bool(raw.get("formula_verified")),
+    }
+
+
 class Backtester:
 
     def __init__(self, initial_capital: float = 1000.0,
@@ -1986,7 +2162,10 @@ class Backtester:
                  max_drawdown_pct: Optional[float] = None,
                  trailing_stop_min_move_pct: Optional[float] = None,
                  capability_context: Optional[CapabilityContext] = None,
-                 stop_platform: Optional[str] = None):
+                 stop_platform: Optional[str] = None,
+                 perps_sizing: Optional[dict] = None,
+                 liquidation_model: str = "none",
+                 venue_margin: Optional[dict] = None):
         self.initial_capital = initial_capital
         self._execution = normalize_execution_spec(execution_spec)
         if self._execution is not None and (
@@ -2052,6 +2231,42 @@ class Backtester:
         self._hl_stop_geometry = self._stop_owner != "legacy"
         self._stop_admission_live = self._stop_parameters["admission"] == "live"
         self.leverage = _finite_number(leverage)
+        self._perps_sizing = normalize_perps_sizing(perps_sizing, self.leverage)
+        model = str(liquidation_model or "none").strip().lower()
+        if model not in ("none", "venue_isolated"):
+            raise ValueError(
+                f"liquidation_model must be 'none' or 'venue_isolated', got {liquidation_model!r}")
+        self._liquidation_model = model
+        self._venue_margin = normalize_venue_margin(venue_margin)
+        if model == "venue_isolated":
+            if self._venue_margin is None:
+                raise ValueError("venue_isolated requires venue_margin")
+            if self._perps_sizing is None:
+                raise ValueError("venue_isolated requires perps_sizing")
+            if self._perps_sizing["margin_mode"] != "isolated":
+                raise ValueError("venue_isolated refuses cross margin")
+            if self._perps_sizing["exchange_leverage"] > self._venue_margin["max_leverage"]:
+                raise ValueError(
+                    "exchange leverage "
+                    f"{self._perps_sizing['exchange_leverage']} is above maxLeverage "
+                    f"{self._venue_margin['max_leverage']}")
+            if self.intrabar_resolution != "ohlc_walk":
+                raise ValueError(
+                    "venue_isolated requires intrabar_resolution ohlc_walk; "
+                    "bar_close checks a stop only at the close, so an armed stop "
+                    "cannot be treated as filling before an intrabar liquidation"
+                )
+        self._sizing_cash = 0.0
+        self._used_margin = 0.0
+        self._sized_qty = 0.0
+        self._run_liq_px = 0.0
+        self._tier_refused = False
+        self._margin_stats = {
+            "entries_capped": 0, "entries_skipped_below_min": 0,
+            "adds_beyond_strategy_margin": 0, "max_used_margin": 0.0,
+            "clamp_count": 0, "liquidation_count": 0, "tier_refusals": 0,
+            "pool_cap_unverified": False,
+        }
         self.max_drawdown_pct = _finite_number(max_drawdown_pct)
         _min_move = _finite_number(trailing_stop_min_move_pct)
         self.trailing_stop_min_move_pct = (
@@ -2572,6 +2787,7 @@ class Backtester:
             return str(row.get("_regime_bar_close", "") or "").strip()
 
         cash = self.initial_capital
+        self._reset_sizing_state(cash)
         position = 0.0
         trades = []
         current_trade = None
@@ -2829,6 +3045,11 @@ class Backtester:
                 "sizer has no entry_fraction input, so composing them would "
                 "diverge from the live sizing formula"
             )
+        if self._perps_sizing is not None and has_entry_fraction:
+            raise ValueError(
+                "perps_sizing is mutually exclusive with a strategy-emitted "
+                "entry_fraction column — the live sizer has no entry_fraction input"
+            )
         risk_skipped_entries = 0
 
         if self.allow_scale_in and has_entry_fraction:
@@ -2870,12 +3091,15 @@ class Backtester:
                 eff = fill_price * (1 - self.slippage_pct)
             notional = add_qty * eff
             commission = notional * self.commission_pct
+            if self._tier_blocks(abs(position) * eff + notional):
+                return False
             if side == "long":
                 cash -= notional + commission
                 position += add_qty
             else:
                 cash += notional - commission
                 position -= add_qty
+            self._note_add_sizing(notional, commission, add_qty)
             if scale.risk_anchor_price <= 0:
                 scale.risk_anchor_price = avg_cost
             old_qty = abs(position) - add_qty
@@ -2906,7 +3130,8 @@ class Backtester:
                 )
             return True
 
-        def _spec_entry_fill(side: str, raw_fill: float, budget: float, idx):
+        def _spec_entry_fill(side: str, raw_fill: float, budget: float, idx,
+                             fee_on_top: bool = False):
             spec = self._execution
             if side == "long":
                 effective_price = raw_fill * (1 + self.slippage_pct)
@@ -2918,7 +3143,10 @@ class Backtester:
                     "requested_qty": 0.0, "floored_qty": 0.0, "notional_usd": 0.0,
                 })
                 return None
-            requested_qty = budget / (1.0 + spec["taker_fee_pct"]) / effective_price
+            if fee_on_top:
+                requested_qty = budget / effective_price
+            else:
+                requested_qty = budget / (1.0 + spec["taker_fee_pct"]) / effective_price
             qty = _hl_floor_lot_size(requested_qty, spec["size_decimals"])
             notional = qty * effective_price
             threshold = spec["min_notional_usd"] * (1.0 + spec["min_notional_margin"])
@@ -2940,7 +3168,8 @@ class Backtester:
         def _book_close(idx, close_fraction: float, raw_fill: float, slippage: float,
                         reason: str, bar_mark: float, seed_price: float,
                         fee_pct: Optional[float] = None, decision_bar=None,
-                        timing: str = "bar_open_fill") -> bool:
+                        timing: str = "bar_open_fill",
+                        margin_loss: Optional[float] = None) -> bool:
             nonlocal position, cash, avg_cost, initial_quantity, entry_atr_value
             nonlocal current_trade, sl_trigger_px, sl_tiers_processed
             nonlocal post_tp_trail_mult, sl_high_water_px
@@ -2982,6 +3211,13 @@ class Backtester:
                 commission = cost * fee_rate
                 cash -= cost + commission
                 position += qty_to_close
+            side_closed = "long" if qty_before > 0 else "short"
+            closed_margin = self._used_margin if reason == "venue_liquidation" else None
+            self._note_close_sizing(side_closed, qty_to_close, avg_before, effective_price, commission, abs(qty_before))
+            if reason == "venue_liquidation":
+                self._margin_stats["liquidation_count"] += 1
+                if margin_loss is None:
+                    margin_loss = closed_margin
 
             if current_trade:
                 closed = Trade(current_trade.entry_date, current_trade.entry_price, current_trade.side)
@@ -3060,6 +3296,7 @@ class Backtester:
                     cash_before=cash_before, cash_after=cash, hold=hold,
                     gross_realized=gross_realized,
                     entry_fee_allocated=entry_fee_allocated,
+                    margin_loss=margin_loss,
                 )
             return sl_after_moved
 
@@ -3091,7 +3328,7 @@ class Backtester:
                     stop_warmup_skipped_entries += 1
             if risk_mode:
                 risk_fraction = self._risk_entry_fraction(
-                    atr_series, idx, fill_price,
+                    atr_series, idx, fill_price, cap=self._perps_sizing is None,
                 )
                 if risk_fraction is None:
                     risk_entry_blocked = True
@@ -3112,7 +3349,8 @@ class Backtester:
                                 file=sys.stderr,
                             )
                 else:
-                    entry_fraction = risk_fraction
+                    if self._perps_sizing is None:
+                        entry_fraction = risk_fraction
             if profile_switcher is not None:
                 active_profile = profile_switcher.step(
                     str(row.get("_profile_label", "") or ""), position == 0
@@ -3149,6 +3387,7 @@ class Backtester:
                     cash_before = cash
                     cash += funding_cash
                     total_funding_pnl += funding_cash
+                    self._note_funding(funding_cash)
                     if rec is not None:
                         rec.record(
                             "funding", bar=idx, decision_bar=None,
@@ -3227,20 +3466,35 @@ class Backtester:
                     )
 
                 long_entry_ok = (
-                    open_action == "long" and position == 0 and cash > 0
+                    open_action == "long" and position == 0
+                    and (self._sizing_cash > 0 if self._perps_sizing is not None else cash > 0)
                     and not regime_blocked and not risk_entry_blocked
                 )
                 short_entry_ok = (
-                    open_action == "short" and position == 0 and cash > 0
+                    open_action == "short" and position == 0
+                    and (self._sizing_cash > 0 if self._perps_sizing is not None else cash > 0)
                     and not regime_blocked and not risk_entry_blocked
                 )
                 spec_fill = None
                 if self._execution is not None and (long_entry_ok or short_entry_ok):
+                    spec_budget = cash * entry_fraction
+                    fee_on_top = False
+                    if self._perps_sizing is not None:
+                        dist = self._risk_stop_distance(atr_series, idx, fill_price) if risk_mode else None
+                        spec_budget = self._live_notional(fill_price, dist, hurst_size_mult) or 0.0
+                        fee_on_top = True
                     spec_fill = _spec_entry_fill(
                         "long" if long_entry_ok else "short",
-                        fill_price, cash * entry_fraction, idx,
+                        fill_price, spec_budget, idx, fee_on_top=fee_on_top,
                     )
                     if spec_fill is None:
+                        long_entry_ok = False
+                        short_entry_ok = False
+                live_open_notional = None
+                if self._perps_sizing is not None and self._execution is None and (long_entry_ok or short_entry_ok):
+                    dist = self._risk_stop_distance(atr_series, idx, fill_price) if risk_mode else None
+                    live_open_notional = self._live_notional(fill_price, dist, hurst_size_mult)
+                    if live_open_notional is None:
                         long_entry_ok = False
                         short_entry_ok = False
                 cash_before, qty_before, avg_before = cash, position, avg_cost
@@ -3249,6 +3503,14 @@ class Backtester:
                         effective_price, shares, commission = spec_fill
                         position = shares
                         cash -= shares * effective_price + commission
+                        self._note_open_sizing(shares * effective_price, commission, shares)
+                    elif live_open_notional is not None:
+                        effective_price = fill_price * (1 + self.slippage_pct)
+                        shares = live_open_notional / effective_price
+                        commission = live_open_notional * self.commission_pct
+                        position = shares
+                        cash -= shares * effective_price + commission
+                        self._note_open_sizing(live_open_notional, commission, shares)
                     else:
                         effective_price = fill_price * (1 + self.slippage_pct)
                         invest = cash * entry_fraction
@@ -3323,6 +3585,14 @@ class Backtester:
                         effective_price, shares, commission = spec_fill
                         cash += shares * effective_price - commission
                         position = -shares
+                        self._note_open_sizing(shares * effective_price, commission, shares)
+                    elif live_open_notional is not None:
+                        effective_price = fill_price * (1 - self.slippage_pct)
+                        shares = live_open_notional / effective_price
+                        commission = live_open_notional * self.commission_pct
+                        cash += shares * effective_price - commission
+                        position = -shares
+                        self._note_open_sizing(live_open_notional, commission, shares)
                     else:
                         effective_price = fill_price * (1 - self.slippage_pct)
                         margin = cash * entry_fraction
@@ -3412,6 +3682,44 @@ class Backtester:
                     )
 
                 if (
+                    self._liquidation_model == "venue_isolated"
+                    and position != 0
+                    and avg_cost > 0
+                ):
+                    side_now = "long" if position > 0 else "short"
+                    bar_open = float(row["open"]) if has_open else mark_price
+                    self._refresh_liq(side_now, avg_cost, abs(position))
+                    sl_trigger_px = self._clamp_trigger(
+                        side_now, sl_trigger_px, event_date=idx,
+                    )
+                    hi = float(row.get("high", mark_price) or mark_price)
+                    lo = float(row.get("low", mark_price) or mark_price)
+                    gap = self._open_past_liquidation(side_now, bar_open)
+                    # The walk fill below is the only stop check on this bar.
+                    # A post-TP bump sets sl_after_just_applied and skips it, so
+                    # that stop must not also suppress the range liquidation.
+                    stop_armed = (
+                        walk_mode
+                        and sl_pierce_armed
+                        and sl_trigger_px > 0
+                        and not sl_after_just_applied
+                    )
+                    range_reaches = (
+                        self._run_liq_px > 0
+                        and (
+                            (lo <= self._run_liq_px)
+                            if side_now == "long"
+                            else (hi >= self._run_liq_px)
+                        )
+                    )
+                    if gap or (range_reaches and not stop_armed):
+                        _book_close(
+                            idx, 1.0, self._run_liq_px, 0.0, "venue_liquidation",
+                            mark_price, avg_cost, fee_pct=0.0, decision_bar=None,
+                            timing="intrabar_trigger_fill",
+                        )
+
+                if (
                     walk_mode
                     and position != 0
                     and sl_pierce_armed
@@ -3443,6 +3751,10 @@ class Backtester:
                             commission = cost * self.commission_pct
                             cash -= cost + commission
                         position = 0.0
+                        self._note_close_sizing(
+                            side_now, qty_to_close, avg_before, effective_price,
+                            commission, qty_to_close,
+                        )
                         if current_trade:
                             closed = Trade(
                                 current_trade.entry_date,
@@ -3558,7 +3870,7 @@ class Backtester:
                         side_now, scale.geom_cost(avg_cost), entry_atr_value,
                         self._run_position_regime, mark_price, post_tp_trail_mult,
                         sl_trigger_px, sl_high_water_px, ratchet_tightened,
-                        event_date=idx,
+                        event_date=idx, liq_anchor=avg_cost,
                     )
                     if not walk_mode and sl_trigger_px > 0 and self._sl_hit(
                         side_now, mark_price, sl_trigger_px,
@@ -3607,6 +3919,10 @@ class Backtester:
                 commission = proceeds * self.commission_pct
                 cash += proceeds - commission
                 position = 0.0
+                self._note_close_sizing(
+                    "long", abs(qty_before), avg_before, effective_price,
+                    commission, abs(qty_before),
+                )
                 if current_trade:
                     current_trade.close(idx, effective_price)
                     gross_realized = current_trade.pnl
@@ -3645,6 +3961,10 @@ class Backtester:
                 commission = cost * self.commission_pct
                 cash -= cost + commission
                 position = 0.0
+                self._note_close_sizing(
+                    "short", abs(qty_before), avg_before, effective_price,
+                    commission, abs(qty_before),
+                )
                 if current_trade:
                     current_trade.close(idx, effective_price)
                     gross_realized = current_trade.pnl
@@ -3677,61 +3997,73 @@ class Backtester:
             cash_before, qty_before, avg_before = cash, position, avg_cost
             gross_realized = None
             entry_fee_allocated = None
-            if plain_short_for_bar and signal == -1 and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
+            if plain_short_for_bar and signal == -1 and position == 0 and (self._sizing_cash > 0 if self._perps_sizing is not None else cash > 0) and not regime_blocked and not risk_entry_blocked:
                 effective_price = fill_price * (1 - self.slippage_pct)
-                margin = cash * entry_fraction
-                commission = margin * self.commission_pct
-                notional = margin - commission
-                shares = notional / effective_price
-                cash += 2 * notional - margin
-                position = -shares
-
-                current_trade = Trade(idx, effective_price, "short")
-                current_trade.shares = shares
-                scale.reset()
-                scale.base_open_notional = _ungated_leg_notional(
-                    shares * effective_price, hurst_size_mult,
-                )
-
-                avg_cost = effective_price
-                entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
-                hold.open(effective_price, "short", commission)
-                if rec is not None:
-                    rec.record(
-                        'open', bar=idx, decision_bar=decision_idx,
-                        timing='bar_open_fill', side="short", action="sell",
-                        quantity=shares, raw_price=fill_price, effective_price=effective_price,
-                        fee_rate=self.commission_pct, fee_charged=commission, reason="open_short",
-                        qty_before=qty_before, qty_after=position,
-                        avg_cost_before=avg_before, avg_cost_after=avg_cost,
-                        cash_before=cash_before, cash_after=cash, hold=hold,
-                        gross_realized=None, entry_fee_allocated=None,
+                if self._perps_sizing is not None:
+                    dist = self._risk_stop_distance(atr_series, idx, fill_price) if risk_mode else None
+                    live_notional = self._live_notional(fill_price, dist, hurst_size_mult)
+                    if live_notional is None:
+                        effective_price = None
+                    else:
+                        shares = live_notional / effective_price
+                        commission = live_notional * self.commission_pct
+                        cash += shares * effective_price - commission
+                        position = -shares
+                        self._note_open_sizing(live_notional, commission, shares)
+                else:
+                    margin = cash * entry_fraction
+                    commission = margin * self.commission_pct
+                    notional = margin - commission
+                    shares = notional / effective_price
+                    cash += 2 * notional - margin
+                    position = -shares
+                if effective_price is not None:
+                    current_trade = Trade(idx, effective_price, "short")
+                    current_trade.shares = shares
+                    scale.reset()
+                    scale.base_open_notional = _ungated_leg_notional(
+                        shares * effective_price, hurst_size_mult,
                     )
-                stamp_open_from_label(_entry_stamp(row))
-                sl_trigger_px = 0.0
-                sl_high_water_px = mark_price
-                sl_pierce_armed = False
-                if self._hl_stop_geometry:
-                    sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
-                        "short", avg_cost, entry_atr_value, self._run_position_regime,
-                        mark_price, event_date=idx,
-                    )
-                elif (
-                    self.stop_loss_atr_mult is not None
-                    and self.stop_loss_atr_mult > 0
-                    and entry_atr_value > 0
-                ):
-                    sl_trigger_px = avg_cost + self.stop_loss_atr_mult * entry_atr_value
-                    sl_pierce_armed = True
-                elif (
-                    self.trailing_stop_atr_mult is not None
-                    and self.trailing_stop_atr_mult > 0
-                    and entry_atr_value > 0
-                ):
-                    sl_trigger_px = mark_price + self.trailing_stop_atr_mult * entry_atr_value
-                elif self.stop_loss_pct is not None and self.stop_loss_pct > 0:
-                    sl_trigger_px = avg_cost * (1 + self.stop_loss_pct)
-                    sl_pierce_armed = True
+
+                    avg_cost = effective_price
+                    entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+                    hold.open(effective_price, "short", commission)
+                    if rec is not None:
+                        rec.record(
+                            'open', bar=idx, decision_bar=decision_idx,
+                            timing='bar_open_fill', side="short", action="sell",
+                            quantity=shares, raw_price=fill_price, effective_price=effective_price,
+                            fee_rate=self.commission_pct, fee_charged=commission, reason="open_short",
+                            qty_before=qty_before, qty_after=position,
+                            avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                            cash_before=cash_before, cash_after=cash, hold=hold,
+                            gross_realized=None, entry_fee_allocated=None,
+                        )
+                    stamp_open_from_label(_entry_stamp(row))
+                    sl_trigger_px = 0.0
+                    sl_high_water_px = mark_price
+                    sl_pierce_armed = False
+                    if self._hl_stop_geometry:
+                        sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
+                            "short", avg_cost, entry_atr_value, self._run_position_regime,
+                            mark_price, event_date=idx,
+                        )
+                    elif (
+                        self.stop_loss_atr_mult is not None
+                        and self.stop_loss_atr_mult > 0
+                        and entry_atr_value > 0
+                    ):
+                        sl_trigger_px = avg_cost + self.stop_loss_atr_mult * entry_atr_value
+                        sl_pierce_armed = True
+                    elif (
+                        self.trailing_stop_atr_mult is not None
+                        and self.trailing_stop_atr_mult > 0
+                        and entry_atr_value > 0
+                    ):
+                        sl_trigger_px = mark_price + self.trailing_stop_atr_mult * entry_atr_value
+                    elif self.stop_loss_pct is not None and self.stop_loss_pct > 0:
+                        sl_trigger_px = avg_cost * (1 + self.stop_loss_pct)
+                        sl_pierce_armed = True
 
             elif plain_short_for_bar and signal == 1 and position < 0:
                 effective_price = fill_price * (1 + self.slippage_pct)
@@ -3739,6 +4071,10 @@ class Backtester:
                 commission = cost * self.commission_pct
                 cash -= cost + commission
                 position = 0.0
+                self._note_close_sizing(
+                    "short", abs(qty_before), avg_before, effective_price,
+                    commission, abs(qty_before),
+                )
 
                 if current_trade:
                     current_trade.close(idx, effective_price)
@@ -3767,61 +4103,73 @@ class Backtester:
                         gross_realized=gross_realized, entry_fee_allocated=entry_fee_allocated,
                     )
 
-            elif not plain_short_for_bar and signal == 1 and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
+            elif not plain_short_for_bar and signal == 1 and position == 0 and (self._sizing_cash > 0 if self._perps_sizing is not None else cash > 0) and not regime_blocked and not risk_entry_blocked:
                 effective_price = fill_price * (1 + self.slippage_pct)
-                invest = cash * entry_fraction
-                commission = invest * self.commission_pct
-                available = invest - commission
-                shares = available / effective_price
-                position = shares
-                cash -= invest
-
-                current_trade = Trade(idx, effective_price, "long")
-                current_trade.shares = shares
-                scale.reset()
-                scale.base_open_notional = _ungated_leg_notional(
-                    shares * effective_price, hurst_size_mult,
-                )
-
-                avg_cost = effective_price
-                entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
-                hold.open(effective_price, "long", commission)
-                if rec is not None:
-                    rec.record(
-                        'open', bar=idx, decision_bar=decision_idx,
-                        timing='bar_open_fill', side="long", action="buy",
-                        quantity=shares, raw_price=fill_price, effective_price=effective_price,
-                        fee_rate=self.commission_pct, fee_charged=commission, reason="open_long",
-                        qty_before=qty_before, qty_after=position,
-                        avg_cost_before=avg_before, avg_cost_after=avg_cost,
-                        cash_before=cash_before, cash_after=cash, hold=hold,
-                        gross_realized=None, entry_fee_allocated=None,
+                if self._perps_sizing is not None:
+                    dist = self._risk_stop_distance(atr_series, idx, fill_price) if risk_mode else None
+                    live_notional = self._live_notional(fill_price, dist, hurst_size_mult)
+                    if live_notional is None:
+                        effective_price = None
+                    else:
+                        shares = live_notional / effective_price
+                        commission = live_notional * self.commission_pct
+                        position = shares
+                        cash -= shares * effective_price + commission
+                        self._note_open_sizing(live_notional, commission, shares)
+                else:
+                    invest = cash * entry_fraction
+                    commission = invest * self.commission_pct
+                    available = invest - commission
+                    shares = available / effective_price
+                    position = shares
+                    cash -= invest
+                if effective_price is not None:
+                    current_trade = Trade(idx, effective_price, "long")
+                    current_trade.shares = shares
+                    scale.reset()
+                    scale.base_open_notional = _ungated_leg_notional(
+                        shares * effective_price, hurst_size_mult,
                     )
-                stamp_open_from_label(_entry_stamp(row))
-                sl_trigger_px = 0.0
-                sl_high_water_px = mark_price
-                sl_pierce_armed = False
-                if self._hl_stop_geometry:
-                    sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
-                        "long", avg_cost, entry_atr_value, self._run_position_regime,
-                        mark_price, event_date=idx,
-                    )
-                elif (
-                    self.stop_loss_atr_mult is not None
-                    and self.stop_loss_atr_mult > 0
-                    and entry_atr_value > 0
-                ):
-                    sl_trigger_px = avg_cost - self.stop_loss_atr_mult * entry_atr_value
-                    sl_pierce_armed = True
-                elif (
-                    self.trailing_stop_atr_mult is not None
-                    and self.trailing_stop_atr_mult > 0
-                    and entry_atr_value > 0
-                ):
-                    sl_trigger_px = mark_price - self.trailing_stop_atr_mult * entry_atr_value
-                elif self.stop_loss_pct is not None and self.stop_loss_pct > 0:
-                    sl_trigger_px = avg_cost * (1 - self.stop_loss_pct)
-                    sl_pierce_armed = True
+
+                    avg_cost = effective_price
+                    entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
+                    hold.open(effective_price, "long", commission)
+                    if rec is not None:
+                        rec.record(
+                            'open', bar=idx, decision_bar=decision_idx,
+                            timing='bar_open_fill', side="long", action="buy",
+                            quantity=shares, raw_price=fill_price, effective_price=effective_price,
+                            fee_rate=self.commission_pct, fee_charged=commission, reason="open_long",
+                            qty_before=qty_before, qty_after=position,
+                            avg_cost_before=avg_before, avg_cost_after=avg_cost,
+                            cash_before=cash_before, cash_after=cash, hold=hold,
+                            gross_realized=None, entry_fee_allocated=None,
+                        )
+                    stamp_open_from_label(_entry_stamp(row))
+                    sl_trigger_px = 0.0
+                    sl_high_water_px = mark_price
+                    sl_pierce_armed = False
+                    if self._hl_stop_geometry:
+                        sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
+                            "long", avg_cost, entry_atr_value, self._run_position_regime,
+                            mark_price, event_date=idx,
+                        )
+                    elif (
+                        self.stop_loss_atr_mult is not None
+                        and self.stop_loss_atr_mult > 0
+                        and entry_atr_value > 0
+                    ):
+                        sl_trigger_px = avg_cost - self.stop_loss_atr_mult * entry_atr_value
+                        sl_pierce_armed = True
+                    elif (
+                        self.trailing_stop_atr_mult is not None
+                        and self.trailing_stop_atr_mult > 0
+                        and entry_atr_value > 0
+                    ):
+                        sl_trigger_px = mark_price - self.trailing_stop_atr_mult * entry_atr_value
+                    elif self.stop_loss_pct is not None and self.stop_loss_pct > 0:
+                        sl_trigger_px = avg_cost * (1 - self.stop_loss_pct)
+                        sl_pierce_armed = True
 
             elif signal == -1 and position > 0:
                 effective_price = fill_price * (1 - self.slippage_pct)
@@ -3829,6 +4177,10 @@ class Backtester:
                 commission = proceeds * self.commission_pct
                 cash += proceeds - commission
                 position = 0.0
+                self._note_close_sizing(
+                    "long", abs(qty_before), avg_before, effective_price,
+                    commission, abs(qty_before),
+                )
 
                 if current_trade:
                     current_trade.close(idx, effective_price)
@@ -3879,6 +4231,36 @@ class Backtester:
                 )
 
             if (
+                self._liquidation_model == "venue_isolated"
+                and position != 0
+                and avg_cost > 0
+            ):
+                side_now = "long" if position > 0 else "short"
+                bar_open = float(row["open"]) if has_open else mark_price
+                self._refresh_liq(side_now, avg_cost, abs(position))
+                sl_trigger_px = self._clamp_trigger(
+                    side_now, sl_trigger_px, event_date=idx,
+                )
+                hi = float(row.get("high", mark_price) or mark_price)
+                lo = float(row.get("low", mark_price) or mark_price)
+                gap = self._open_past_liquidation(side_now, bar_open)
+                stop_armed = sl_pierce_armed and sl_trigger_px > 0
+                range_reaches = (
+                    self._run_liq_px > 0
+                    and (
+                        (lo <= self._run_liq_px)
+                        if side_now == "long"
+                        else (hi >= self._run_liq_px)
+                    )
+                )
+                if gap or (range_reaches and not stop_armed):
+                    _book_close(
+                        idx, 1.0, self._run_liq_px, 0.0, "venue_liquidation",
+                        mark_price, avg_cost, fee_pct=0.0, decision_bar=None,
+                        timing="intrabar_trigger_fill",
+                    )
+
+            if (
                 walk_mode
                 and position != 0
                 and sl_pierce_armed
@@ -3907,6 +4289,11 @@ class Backtester:
                         commission = cost * self.commission_pct
                         cash -= cost + commission
                     position = 0.0
+                    self._note_close_sizing(
+                        "long" if qty_before > 0 else "short",
+                        abs(qty_before), avg_before, effective_price,
+                        commission, abs(qty_before),
+                    )
                     if current_trade:
                         current_trade.close(idx, effective_price)
                         gross_realized = current_trade.pnl
@@ -3942,6 +4329,7 @@ class Backtester:
                     side_now, scale.geom_cost(avg_cost), entry_atr_value,
                     self._run_position_regime, mark_price, None,
                     sl_trigger_px, sl_high_water_px, False, event_date=idx,
+                    liq_anchor=avg_cost,
                 )
                 if not walk_mode and self._sl_hit(side_now, mark_price, sl_trigger_px):
                     pending_signal_sl_close = True
@@ -3993,6 +4381,10 @@ class Backtester:
                 commission = cost * self.commission_pct
                 cash -= cost + commission
             position = 0.0
+            self._note_close_sizing(
+                "long" if qty_before > 0 else "short",
+                abs(qty_before), avg_before, final_price, commission, abs(qty_before),
+            )
 
             if current_trade:
                 current_trade.close(df.index[-1], final_price)
@@ -4045,6 +4437,9 @@ class Backtester:
             "close_validation": self._close_validation.to_dict(),
             "trades": [t.to_dict() for t in trades],
         })
+        margin_block = self._margin_metrics()
+        if margin_block is not None:
+            metrics["margin"] = margin_block
         if self._execution is not None:
             metrics["execution"] = {
                 "spec": dict(self._execution),
@@ -4079,24 +4474,28 @@ class Backtester:
 
         return metrics
 
-    def _risk_entry_fraction(self, atr_series: Optional[pd.Series], idx,
-                             price: float) -> Optional[float]:
-        pct = float(self.risk_per_trade_pct or 0)
-        if pct <= 0 or price <= 0:
-            return None
-        dist = None
+    def _risk_stop_distance(self, atr_series: Optional[pd.Series], idx,
+                            price: float) -> Optional[float]:
         kind, field_name = self._risk_owner
         if kind == "atr":
             atr = self._stamp_entry_atr(atr_series, idx, price)
             if atr <= 0:
                 return None
-            dist = float(getattr(self, field_name)) * atr
-        elif kind == "pct":
-            dist = price * float(getattr(self, field_name))
+            return float(getattr(self, field_name)) * atr
+        if kind == "pct":
+            return price * float(getattr(self, field_name))
+        return None
+
+    def _risk_entry_fraction(self, atr_series: Optional[pd.Series], idx,
+                             price: float, cap: bool = True) -> Optional[float]:
+        pct = float(self.risk_per_trade_pct or 0)
+        if pct <= 0 or price <= 0:
+            return None
+        dist = self._risk_stop_distance(atr_series, idx, price)
         if dist is None or dist <= 0:
             return None
         fraction = (pct / 100.0) * price / dist
-        if fraction > 1.0:
+        if cap and fraction > 1.0:
             if not self._risk_cap_warned:
                 self._risk_cap_warned = True
                 print(
@@ -4109,6 +4508,196 @@ class Backtester:
                 )
             fraction = 1.0
         return fraction
+
+    def _reset_sizing_state(self, initial_cash: float) -> None:
+        self._sizing_cash = float(initial_cash)
+        self._used_margin = 0.0
+        self._sized_qty = 0.0
+        self._run_liq_px = 0.0
+        self._tier_refused = False
+        self._margin_stats = {
+            "entries_capped": 0, "entries_skipped_below_min": 0,
+            "adds_beyond_strategy_margin": 0, "max_used_margin": 0.0,
+            "clamp_count": 0, "liquidation_count": 0, "tier_refusals": 0,
+            "pool_cap_unverified": False,
+        }
+
+    def _sizing_cash_argument(self) -> float:
+        sizing = self._perps_sizing
+        if sizing["budget_source"] != "shared_wallet_pool":
+            return self._sizing_cash
+        pool = sizing.get("pool_available_margin")
+        if pool is None:
+            self._margin_stats["pool_cap_unverified"] = True
+            margin = float(sizing["margin_per_trade_usd"] or 0.0)
+            return margin if margin > 0 else self._sizing_cash
+        return float(pool)
+
+    def _tier_blocks(self, notional: float) -> bool:
+        if self._liquidation_model != "venue_isolated" or self._venue_margin is None:
+            return False
+        _tier, unmodeled = margin_tier_for_notional(self._venue_margin["tiers"], notional)
+        if unmodeled:
+            self._margin_stats["tier_refusals"] += 1
+            return True
+        return False
+
+    def _live_notional(self, price: float, stop_distance: Optional[float],
+                       entry_mult: float) -> Optional[float]:
+        sizing = self._perps_sizing
+        if sizing is None or price <= 0:
+            return None
+        cash_arg = self._sizing_cash_argument()
+        risk = float(self.risk_per_trade_pct or 0)
+        capped = False
+        if risk > 0:
+            if stop_distance is None or stop_distance <= 0:
+                return None
+            raw = (cash_arg * risk / 100.0) / stop_distance * price
+            max_notional = cash_arg * sizing["exchange_leverage"]
+            notional = raw if raw <= max_notional else max_notional
+            capped = raw > max_notional
+        else:
+            notional = perps_open_notional(
+                cash_arg, sizing["sizing_leverage"], sizing["exchange_leverage"],
+                float(sizing["margin_per_trade_usd"] or 0.0),
+            )
+        notional *= entry_mult if entry_mult > 0 else 1.0
+        if notional < 1.0:
+            self._margin_stats["entries_skipped_below_min"] += 1
+            return None
+        if self._tier_blocks(notional):
+            return None
+        if capped:
+            self._margin_stats["entries_capped"] += 1
+        return notional
+
+    def _note_open_sizing(self, notional: float, fee: float, qty: float = 0.0) -> None:
+        if self._perps_sizing is None:
+            return
+        self._sizing_cash -= fee
+        lev = self._perps_sizing["exchange_leverage"]
+        self._used_margin += notional / lev if lev > 0 else notional
+        if qty > 0:
+            self._sized_qty = qty
+        if self._used_margin > self._margin_stats["max_used_margin"]:
+            self._margin_stats["max_used_margin"] = self._used_margin
+
+    def _note_add_sizing(self, notional: float, fee: float, qty: float = 0.0) -> None:
+        if self._perps_sizing is None:
+            return
+        lev = self._perps_sizing["exchange_leverage"]
+        add_margin = notional / lev if lev > 0 else notional
+        free_margin = self._sizing_cash - self._used_margin
+        if add_margin > free_margin + 1e-9:
+            self._margin_stats["adds_beyond_strategy_margin"] += 1
+        self._sizing_cash -= fee
+        self._used_margin += add_margin
+        if qty > 0:
+            self._sized_qty += qty
+        if self._used_margin > self._margin_stats["max_used_margin"]:
+            self._margin_stats["max_used_margin"] = self._used_margin
+
+    def _note_close_sizing(self, side: str, qty: float, entry_px: float,
+                           exit_px: float, fee: float, qty_before: float) -> None:
+        if self._perps_sizing is None or qty <= 0 or qty_before <= 0:
+            return
+        if side == "long":
+            gross = qty * (exit_px - entry_px)
+        else:
+            gross = qty * (entry_px - exit_px)
+        self._sizing_cash += gross - fee
+        if abs(qty_before - qty) <= 1e-9:
+            self._used_margin = 0.0
+            self._sized_qty = 0.0
+        else:
+            self._used_margin = max(0.0, self._used_margin * (1.0 - qty / qty_before))
+            self._sized_qty = max(0.0, qty_before - qty)
+
+    def _note_funding(self, funding_cash: float) -> None:
+        if self._perps_sizing is None:
+            return
+        self._sizing_cash += funding_cash
+
+    def _refresh_liq(self, side: str, anchor: float, qty: float) -> float:
+        """Liquidation price from the entry anchor and this quantity's margin.
+
+        The level does not read the bar close. Only the first margin tier is
+        modeled; position value at the computed price selects that tier.
+        """
+        self._run_liq_px = 0.0
+        if self._liquidation_model != "venue_isolated" or qty <= 0 or anchor <= 0:
+            return 0.0
+        if self._venue_margin is None or self._used_margin <= 0:
+            return 0.0
+        tiers = self._venue_margin["tiers"]
+        ordered = sorted(tiers, key=lambda t: float(t["lower_bound"]))
+        if not ordered:
+            return 0.0
+        liq = isolated_liquidation_price(
+            side, anchor, abs(qty), self._used_margin, ordered[0]["max_leverage"])
+        if liq <= 0:
+            return 0.0
+        _tier, unmodeled = margin_tier_for_notional(tiers, abs(qty) * liq)
+        if unmodeled:
+            if not self._tier_refused:
+                self._margin_stats["tier_refusals"] += 1
+                self._tier_refused = True
+            return 0.0
+        self._run_liq_px = liq
+        return liq
+
+    def _clamp_trigger(self, side: str, trigger: float, event_date=None) -> float:
+        if self._liquidation_model != "venue_isolated" or trigger <= 0:
+            return trigger
+        clamped, did = clamp_stop_inside_liquidation(side, trigger, self._run_liq_px)
+        if did:
+            self._margin_stats["clamp_count"] += 1
+            self._emit_stop_event(
+                "liquidation_clamp", date=str(event_date), side=side,
+                trigger=clamped, previous=trigger, liquidation_px=self._run_liq_px,
+            )
+        return clamped
+
+    def _open_past_liquidation(self, side: str, open_px: float) -> bool:
+        liq = self._run_liq_px
+        if liq <= 0 or open_px <= 0:
+            return False
+        if side == "long":
+            return open_px <= liq
+        if side == "short":
+            return open_px >= liq
+        return False
+
+    def _margin_metrics(self) -> Optional[dict]:
+        if self._perps_sizing is None and self._liquidation_model == "none":
+            return None
+        sizing = self._perps_sizing or {}
+        formula = "unverified"
+        if self._venue_margin and self._venue_margin.get("formula_verified"):
+            formula = "verified"
+        return {
+            "sizing_model": "legacy_cash_fraction" if self._perps_sizing is None else "live_perps",
+            "exchange_leverage": sizing.get("exchange_leverage"),
+            "sizing_leverage": sizing.get("sizing_leverage"),
+            "margin_per_trade_usd": sizing.get("margin_per_trade_usd"),
+            "margin_mode": sizing.get("margin_mode"),
+            "budget_source": sizing.get("budget_source"),
+            "pool_evidence": sizing.get("pool_evidence"),
+            "pool_cap_unverified": bool(self._margin_stats["pool_cap_unverified"]),
+            "entries_capped_by_exchange_leverage": self._margin_stats["entries_capped"],
+            "entries_skipped_below_1_usd": self._margin_stats["entries_skipped_below_min"],
+            "adds_beyond_strategy_margin": self._margin_stats["adds_beyond_strategy_margin"],
+            "max_used_margin": round(self._margin_stats["max_used_margin"], 6),
+            "liquidation_model": self._liquidation_model,
+            "liquidation_formula": formula,
+            "trigger_source": "candle_proxy" if self._liquidation_model == "venue_isolated" else "none",
+            "liquidation_settlement": (
+                "research_assumption" if self._liquidation_model == "venue_isolated" else "none"),
+            "clamp_count": self._margin_stats["clamp_count"],
+            "liquidation_count": self._margin_stats["liquidation_count"],
+            "tier_refusals": self._margin_stats["tier_refusals"],
+        }
 
     def _stamp_entry_atr(self, atr_series: Optional[pd.Series], idx,
                          entry_price: float) -> float:
@@ -4400,6 +4989,9 @@ class Backtester:
                     trigger = 0.0
                 fraction = ff
                 pierce = trigger > 0
+        if self._liquidation_model == "venue_isolated" and self._sized_qty > 0:
+            self._refresh_liq(side, anchor, self._sized_qty)
+            trigger = self._clamp_trigger(side, trigger, event_date)
         self._emit_stop_event(
             "arm", date=str(event_date), side=side, geometry=kind, anchor=anchor,
             entry_atr=entry_atr, regime=label, fraction=fraction, mark=mark,
@@ -4409,7 +5001,7 @@ class Backtester:
     def _hl_trail_step(self, side: str, anchor: float, entry_atr: float, label: str,
                        mark: float, post_tp_trail_mult: Optional[float],
                        trigger: float, high_water: float, bypass_min_move: bool,
-                       event_date=None) -> Tuple[float, float]:
+                       event_date=None, liq_anchor: float = 0.0) -> Tuple[float, float]:
         tf = self._hl_trailing_fraction(anchor, entry_atr, label, post_tp_trail_mult)
         if tf <= 0:
             return trigger, high_water
@@ -4417,6 +5009,10 @@ class Backtester:
             side, mark, high_water if high_water > 0 else anchor, tf,
             self.trailing_stop_min_move_pct, trigger, bypass_min_move=bypass_min_move)
         new_trigger = candidate if replaced else trigger
+        if self._liquidation_model == "venue_isolated" and self._sized_qty > 0:
+            basis = liq_anchor if liq_anchor > 0 else anchor
+            self._refresh_liq(side, basis, self._sized_qty)
+            new_trigger = self._clamp_trigger(side, new_trigger, event_date)
         self._emit_stop_event(
             "trail", date=str(event_date), side=side, anchor=anchor, entry_atr=entry_atr,
             regime=label, fraction=tf, mark=mark, post_tp_trail_mult=post_tp_trail_mult,

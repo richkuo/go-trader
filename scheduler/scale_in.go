@@ -18,15 +18,15 @@ func scaleInResizeTrailingSLNow(
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
 	logger *StrategyLogger,
-) (int, string) {
+) (int, string, ratchetStopEvidence) {
 	if !hyperliquidIsLive(sc.Args) || stratState == nil || symbol == "" || mark <= 0 {
-		return 0, ""
+		return 0, "", ratchetStopEvidence{}
 	}
 	mu.RLock()
 	pos := stratState.Positions[symbol]
 	if pos == nil || pos.Quantity <= 0 || !pos.ScaleInResizePending || effectiveTrailingStopPct(sc, pos) <= 0 {
 		mu.RUnlock()
-		return 0, ""
+		return 0, "", ratchetStopEvidence{}
 	}
 	side := pos.Side
 	book := pos.Quantity
@@ -52,12 +52,13 @@ func scaleInResizeTrailingSLNow(
 		if logger != nil {
 			logger.Warn("scale-in eager SL resize: %s account read failed after the add; deferring to next walker cycle", symbol)
 		}
-		return 0, ""
+		return 0, "", ratchetStopEvidence{}
 	}
 	if !place {
-		return 0, ""
+		return 0, "", ratchetStopEvidence{}
 	}
 	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, trailingReplacePolicy{forceResize: true, ratchetTightened: ratchetTightened, liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, side)}, notifier, logger)
+	ev := ratchetStopEvidence{Ran: true, Live: true, Confirmed: updateConfirmed, Result: slUpdate}
 	mu.Lock()
 	defer mu.Unlock()
 	trades := 0
@@ -72,7 +73,7 @@ func scaleInResizeTrailingSLNow(
 			logger.Info("Scale-in trailing SL re-sized same-cycle (qty=%.6f)", slEffectiveQty)
 		}
 	}
-	return trades, detail
+	return trades, detail, ev
 }
 
 const scaleInTradeType = "scale_in"
@@ -184,6 +185,17 @@ func perpsScaleInDecision(sc StrategyConfig, snap scaleInSnapshot, signal int, p
 }
 
 func applyPerpsScaleIn(s *StrategyState, sc StrategyConfig, symbol string, addPrice, addQty, fillFee float64, fillOID string, useFillFee bool, logger *StrategyLogger) (int, *Trade) {
+	var (
+		n     int
+		trade *Trade
+	)
+	mutatePaperPerpsBook(s, symbol, func() {
+		n, trade = applyPerpsScaleInInner(s, sc, symbol, addPrice, addQty, fillFee, fillOID, useFillFee, logger)
+	})
+	return n, trade
+}
+
+func applyPerpsScaleInInner(s *StrategyState, sc StrategyConfig, symbol string, addPrice, addQty, fillFee float64, fillOID string, useFillFee bool, logger *StrategyLogger) (int, *Trade) {
 	if addQty <= 0 || addPrice <= 0 {
 		return 0, nil
 	}

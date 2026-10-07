@@ -15,12 +15,13 @@ import (
 )
 
 const (
-	feedWireVersion         = 1
-	feedSealVersionBase     = 1
-	feedSealVersion         = 2
-	feedWireMaxRequestBytes = 4 << 10
-	feedWireMaxHeaderBytes  = 1 << 20
-	feedSealMaxBytes        = 64 << 20
+	feedWireVersion           = 1
+	feedSealVersionBase       = 1
+	feedSealVersion           = 2
+	feedSealVersionAccounting = 3
+	feedWireMaxRequestBytes   = 4 << 10
+	feedWireMaxHeaderBytes    = 1 << 20
+	feedSealMaxBytes          = 64 << 20
 
 	feedWireOpDescribe = "describe"
 	feedWireOpSnapshot = "snapshot"
@@ -88,23 +89,25 @@ type feedDescribeCadence struct {
 }
 
 type feedDescribe struct {
-	StartedAtMs       int64                     `json:"started_at_ms"`
-	Serving           bool                      `json:"serving"`
-	FirstDeadline     int64                     `json:"first_deadline,omitempty"`
-	SettleMs          int64                     `json:"settle_ms"`
-	PrepareMs         int64                     `json:"prepare_ms"`
-	PublishGraceMs    int64                     `json:"publish_grace_ms"`
-	RetainPerCadence  int                       `json:"retain_per_cadence"`
-	RetainedKeys      []int64                   `json:"retained_keys"`
-	Cadences          []feedDescribeCadence     `json:"cadences"`
-	Keys              []feedDescribeKey         `json:"keys"`
-	MidCoins          []string                  `json:"mid_coins"`
-	Funding           []feedDescribeFunding     `json:"funding"`
-	Observations      []feedDescribeObservation `json:"observations,omitempty"`
-	LastSealKey       int64                     `json:"last_seal_key,omitempty"`
-	LastSealHash      string                    `json:"last_seal_hash,omitempty"`
-	LastSealReady     int                       `json:"last_seal_ready"`
-	LastSealKeysTotal int                       `json:"last_seal_keys_total"`
+	StartedAtMs        int64                     `json:"started_at_ms"`
+	Serving            bool                      `json:"serving"`
+	FirstDeadline      int64                     `json:"first_deadline,omitempty"`
+	SettleMs           int64                     `json:"settle_ms"`
+	PrepareMs          int64                     `json:"prepare_ms"`
+	PublishGraceMs     int64                     `json:"publish_grace_ms"`
+	RetainPerCadence   int                       `json:"retain_per_cadence"`
+	RetainedKeys       []int64                   `json:"retained_keys"`
+	Cadences           []feedDescribeCadence     `json:"cadences"`
+	Keys               []feedDescribeKey         `json:"keys"`
+	MidCoins           []string                  `json:"mid_coins"`
+	Funding            []feedDescribeFunding     `json:"funding"`
+	Observations       []feedDescribeObservation `json:"observations,omitempty"`
+	AccountingFunding  []string                  `json:"accounting_funding,omitempty"`
+	AccountingWindowMs int64                     `json:"accounting_window_ms,omitempty"`
+	LastSealKey        int64                     `json:"last_seal_key,omitempty"`
+	LastSealHash       string                    `json:"last_seal_hash,omitempty"`
+	LastSealReady      int                       `json:"last_seal_ready"`
+	LastSealKeysTotal  int                       `json:"last_seal_keys_total"`
 }
 
 type feedSealBar struct {
@@ -230,9 +233,14 @@ type feedSealDoc struct {
 	Mids         []feedSealMid         `json:"mids"`
 	Funding      []feedSealFunding     `json:"funding"`
 	Observations []feedSealObservation `json:"observations,omitempty"`
+
+	AccountingFunding []feedSealAccountingFunding `json:"accounting_funding,omitempty"`
 }
 
-func feedSealVersionFor(hasObservations bool) int {
+func feedSealVersionFor(hasObservations, hasAccounting bool) int {
+	if hasAccounting {
+		return feedSealVersionAccounting
+	}
 	if hasObservations {
 		return feedSealVersion
 	}
@@ -240,7 +248,7 @@ func feedSealVersionFor(hasObservations bool) int {
 }
 
 func feedSealVersionSupported(v int) bool {
-	return v == feedSealVersionBase || v == feedSealVersion
+	return v == feedSealVersionBase || v == feedSealVersion || v == feedSealVersionAccounting
 }
 
 func feedSealEvaluationID(key int64) string {
@@ -391,7 +399,8 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 		}
 		doc.Observations = append(doc.Observations, so)
 	}
-	doc.V = feedSealVersionFor(len(doc.Observations) > 0)
+	doc.AccountingFunding = sealAccountingFunding(snap.accountingFunding)
+	doc.V = feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0)
 	return doc, nil
 }
 
@@ -432,10 +441,10 @@ func decodeFeedSeal(blob []byte, wantKey int64) (*feedSealDoc, error) {
 		return nil, errors.New("seal bytes are not in canonical form")
 	}
 	if !feedSealVersionSupported(doc.V) {
-		return nil, fmt.Errorf("seal version %d, want %d or %d", doc.V, feedSealVersionBase, feedSealVersion)
+		return nil, fmt.Errorf("seal version %d, want %d, %d or %d", doc.V, feedSealVersionBase, feedSealVersion, feedSealVersionAccounting)
 	}
-	if want := feedSealVersionFor(len(doc.Observations) > 0); doc.V != want {
-		return nil, fmt.Errorf("seal version %d carries %d observations; that content seals as version %d", doc.V, len(doc.Observations), want)
+	if want := feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0); doc.V != want {
+		return nil, fmt.Errorf("seal version %d carries %d observations and %d accounting funding entries; that content seals as version %d", doc.V, len(doc.Observations), len(doc.AccountingFunding), want)
 	}
 	if doc.Key != wantKey {
 		return nil, fmt.Errorf("seal key %d, requested %d", doc.Key, wantKey)
@@ -493,7 +502,10 @@ func validateFeedSealDoc(doc *feedSealDoc) error {
 			return fmt.Errorf("seal funding %s carries a non-finite rate", f.Coin)
 		}
 	}
-	return validateFeedSealObservations(doc.Observations)
+	if err := validateFeedSealObservations(doc.Observations); err != nil {
+		return err
+	}
+	return validateFeedSealAccountingFunding(doc.AccountingFunding)
 }
 
 func validateFeedSealObservations(obs []feedSealObservation) error {
@@ -615,6 +627,7 @@ func (doc *feedSealDoc) snapshot() *marketSnapshot {
 	for _, m := range doc.Mids {
 		snap.mids[m.Coin] = feedMid{Px: m.Px, RecvAt: feedMsTime(m.RecvAtMs), Source: m.Source}
 	}
+	snap.accountingFunding = snapshotAccountingFunding(doc.AccountingFunding)
 	for _, f := range doc.Funding {
 		snap.funding[f.Coin] = feedFunding{
 			Current:    f.Current,

@@ -512,14 +512,14 @@ def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):
 
     def fake_run_free_arm(reg, open_name, params, sig, close_refs, direction,
                           capital, gate, symbol, timeframe, stops=None,
-                          comparison_mode=None):
+                          comparison_mode=None, perps_sizing=None):
         return {"total_trades": 1, "total_return_pct": 0.0, "max_drawdown_pct": 0.0,
                 "sharpe_ratio": 0.0, "liquidated": False,
                 "trades": [_leg(entry_date=entry_ts, side="long")]}
 
     def fake_replay(reg, open_name, params, sig, sig_pos, side_sign, candidate_close,
                     direction, capital, gate, symbol, timeframe, stops=None,
-                    comparison_mode=None):
+                    comparison_mode=None, perps_sizing=None):
         captured["sig_pos"] = sig_pos
         return {"net_pct": 1.0, "mfe_pct": 1.0, "mae_pct": -1.0, "bars_held": 2}
 

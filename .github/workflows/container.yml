@@ -1,0 +1,191 @@
+name: Container
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_REPO: ghcr.io/richkuo/go-trader
+  SUITE_MARKER: "PASS: container image (identity, clean layers, volume setup, bind and token policy, auth, SIGHUP reload, dashboard and crash restarts, persistence, graceful stop with a Python child, fatal holds 78/79/80, early-failure restarts, one-shot exits, backup and restore)"
+
+jobs:
+  image:
+    name: image (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check that no credential persisted
+        run: |
+          set -euo pipefail
+          if git config --get-regexp '^http\..*\.extraheader$'; then
+            echo "::error::the checkout left a credential in .git/config"
+            exit 1
+          fi
+          echo "no persisted credential in .git/config"
+
+      - name: Resolve version and source commit
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          if [ "$EVENT_NAME" = "release" ]; then
+            if ! [[ "$RELEASE_TAG" =~ ^v[0-9][0-9A-Za-z._-]{0,100}$ ]]; then
+              echo "::error::release tag '$RELEASE_TAG' is not a vX.Y.Z style tag usable as an image tag"
+              exit 1
+            fi
+            tag_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+            if [ "$tag_commit" != "$commit" ]; then
+              echo "::error::release tag $RELEASE_TAG points at $tag_commit, but the checkout is $commit"
+              exit 1
+            fi
+            version="$RELEASE_TAG"
+          else
+            version="$(git describe --tags --always)"
+          fi
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+          echo "COMMIT=$commit" >>"$GITHUB_ENV"
+          echo "version=$version commit=$commit"
+
+      - name: Plant build-context canaries
+        run: |
+          set -euo pipefail
+          canary="go-trader-context-canary-$(openssl rand -hex 16)"
+          echo "CANARY=$canary" >>"$GITHUB_ENV"
+          mkdir -p logs docker scheduler/tuning_runs
+          for f in .env docker/go-trader.env docker/.env scheduler/config.json scheduler/config.json.bak \
+                   scheduler/state.db scheduler/state.db-wal scheduler/state.db-shm scheduler/state.db.lock \
+                   scheduler/tuning_runs/run.json shared_tools/trading_bot.db backtest/local.sqlite3 \
+                   logs/go-trader.log go-trader.pid .git/canary; do
+            printf '%s\n' "$canary" >"$f"
+          done
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          docker build --build-arg VERSION="$VERSION" --build-arg SOURCE_COMMIT="$COMMIT" -t go-trader:ci .
+          docker image inspect -f '{{.Os}}/{{.Architecture}}' go-trader:ci
+
+      - name: Container integration suite
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker "$SUITE_MARKER" \
+            --forbid 'NOTE: GO_TRADER_TEST_REQUIRE_ONCE=0' \
+            -- env GO_TRADER_TEST_IMAGE=go-trader:ci GO_TRADER_EXPECT_VERSION="$VERSION" GO_TRADER_EXPECT_COMMIT="$COMMIT" \
+                   GO_TRADER_CONTEXT_CANARY="$CANARY" bash scripts/test_container_image.sh
+
+      - name: Save the tested image
+        if: github.event_name == 'release'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p tested
+          docker image inspect -f '{{.Id}}' go-trader:ci >"tested/$ARCH.id"
+          printf '%s\n' "$COMMIT" >"tested/$ARCH.commit"
+          docker save go-trader:ci -o "tested/$ARCH.tar"
+          echo "saved $(cat "tested/$ARCH.id") for $COMMIT"
+
+      - name: Upload the tested image
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-${{ matrix.arch }}
+          path: tested/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    if: github.event_name == 'release'
+    needs: image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tested-*
+          path: tested
+          merge-multiple: true
+
+      - name: Push the tested images by digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          mkdir -p digests
+          for arch in amd64 arm64; do
+            test -s "tested/$arch.tar" && test -s "tested/$arch.id" && test -s "tested/$arch.commit"
+            if [ "$(cat "tested/$arch.commit")" != "$COMMIT" ]; then
+              echo "::error::the $arch image was tested at $(cat "tested/$arch.commit"), not $COMMIT"
+              exit 1
+            fi
+            docker load -i "tested/$arch.tar" >/dev/null
+            loaded="$(docker image inspect -f '{{.Id}}' go-trader:ci)"
+            if [ "$loaded" != "$(cat "tested/$arch.id")" ]; then
+              echo "::error::the loaded $arch image $loaded is not the tested image $(cat "tested/$arch.id")"
+              exit 1
+            fi
+            ref="$IMAGE_REPO:build-$COMMIT-$arch"
+            docker tag go-trader:ci "$ref"
+            docker rmi go-trader:ci >/dev/null
+            docker push "$ref"
+            digest="$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" | grep -m1 "^$IMAGE_REPO@sha256:" || true)"
+            if [ -z "$digest" ]; then
+              echo "::error::no $IMAGE_REPO digest after pushing $ref"
+              exit 1
+            fi
+            printf '%s\n' "$digest" >"digests/$arch"
+            echo "pushed $arch $loaded as $digest"
+          done
+
+      - name: Publish the release, commit and latest tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -s digests/amd64 && test -s digests/arm64
+          tags=(-t "$IMAGE_REPO:$RELEASE_TAG" -t "$IMAGE_REPO:$COMMIT")
+          if [ "$PRERELEASE" != "true" ]; then
+            tags+=(-t "$IMAGE_REPO:latest")
+          fi
+          docker buildx imagetools create "${tags[@]}" "$(cat digests/amd64)" "$(cat digests/arm64)"
+          docker buildx imagetools inspect "$IMAGE_REPO:$RELEASE_TAG"
+          platforms="$(docker buildx imagetools inspect --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' "$IMAGE_REPO:$RELEASE_TAG")"
+          case "$platforms" in
+            *linux/amd64*linux/arm64*|*linux/arm64*linux/amd64*) echo "published platforms: $platforms" ;;
+            *) echo "::error::published index lists '$platforms'"; exit 1 ;;
+          esac
