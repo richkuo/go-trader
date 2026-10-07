@@ -70,6 +70,7 @@ class ParityConfig:
     comparison_mode: Optional[str] = None
     strategy_type: str = "perps"
     stop_kwargs: dict = field(default_factory=dict)
+    funding_mode: str = "charge"
 
     def __post_init__(self):
         self.regime_directional_policy = _normalize_regime_directional_policy(
@@ -710,8 +711,21 @@ def extract_fills(df: pd.DataFrame, cfg: ParityConfig) -> list:
 
 def extract_fills_report(df: pd.DataFrame, cfg: ParityConfig) -> dict:
     reg = load_registry(cfg.registry)
+    funded = df
+    hl_perps = (str(cfg.platform or "").strip().lower() == "hyperliquid"
+                and str(cfg.strategy_type or "").strip().lower() == "perps")
+    indicator = cfg.strategy_name in ("funding_skew", "delta_neutral_funding")
+    if hl_perps or indicator:
+        from run_backtest import _attach_funding_if_needed
+        funded = _attach_funding_if_needed(
+            df.copy(), cfg.strategy_name, cfg.symbol, None,
+            platform=cfg.platform, strategy_type=cfg.strategy_type,
+            mode=cfg.funding_mode, timeframe=cfg.timeframe,
+        )
     work = reg.apply_strategy(
-        cfg.strategy_name, df.copy(), dict(cfg.params or {}))
+        cfg.strategy_name, funded.copy(), dict(cfg.params or {}))
+    from funding_fetcher import rejoin_funding_columns
+    work = rejoin_funding_columns(work, funded)
     if cfg.close_refs:
         work = ensure_atr_indicator(work)
     bt = Backtester(
@@ -763,7 +777,10 @@ def extract_fills_report(df: pd.DataFrame, cfg: ParityConfig) -> dict:
                 "fee": round(exit_px * shares * fee_pct, 6),
                 "pnl": float(trade.get("pnl", 0) or 0),
             })
-    return {"fills": fills, "close_validation": metrics.get("close_validation")}
+    report = {"fills": fills, "close_validation": metrics.get("close_validation")}
+    if metrics.get("funding") is not None:
+        report["funding"] = metrics["funding"]
+    return report
 
 
 def summarize(frame: pd.DataFrame) -> dict:
@@ -866,6 +883,8 @@ def main(argv: Optional[list] = None) -> int:
                              "as JSON lines to this path")
     parser.add_argument("--max-print", type=int, default=20,
                         help="Max mismatching rows printed to stdout")
+    parser.add_argument("--funding", choices=["charge", "partial", "off"],
+                        default="charge")
     parser.add_argument("--comparison-mode", dest="comparison_mode", default=None,
                         metavar="MODE",
                         help="#1683 close comparison mode. Omitted = strict: refuses "
@@ -889,6 +908,7 @@ def main(argv: Optional[list] = None) -> int:
             return 2
         cfg.regime_enabled = cfg.regime_enabled or args.regime
         cfg.batched = args.batched
+        cfg.funding_mode = args.funding
         symbol, timeframe = cfg.symbol, cfg.timeframe
     else:
         if not args.strategy:
@@ -923,6 +943,7 @@ def main(argv: Optional[list] = None) -> int:
             regime_adx_threshold=args.regime_adx_threshold,
             batched=args.batched,
             comparison_mode=args.comparison_mode,
+            funding_mode=args.funding,
         )
         symbol, timeframe = args.symbol, args.timeframe
         try:

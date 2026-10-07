@@ -1785,6 +1785,7 @@ class Trade:
         self.exit_fee = 0.0
         self.exit_reason = ""
         self.scale_in_adds = 0
+        self.funding_pnl = 0.0
 
     def close(self, exit_date, exit_price):
         self.exit_date = exit_date
@@ -1796,7 +1797,7 @@ class Trade:
         self.pnl = self.shares * self.entry_price * self.pnl_pct
 
     def to_dict(self):
-        return {
+        out = {
             "entry_date": str(self.entry_date),
             "exit_date": str(self.exit_date),
             "entry_price": self.entry_price,
@@ -1816,6 +1817,9 @@ class Trade:
             "exit_reason": self.exit_reason,
             "scale_in_adds": self.scale_in_adds,
         }
+        if self.funding_pnl:
+            out["funding_pnl"] = round(self.funding_pnl, 6)
+        return out
 
 
 class _HoldTracker:
@@ -1983,6 +1987,81 @@ def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
     trade.exit_reason = reason
     trade.pnl -= trade.entry_fee + trade.exit_fee
 
+
+class FundingIncompleteError(Exception):
+    """Charge-mode funding is incomplete. Raised before any result row is saved."""
+
+    def __init__(self, metrics: dict):
+        self.metrics = metrics
+        block = metrics.get("funding") or {}
+        super().__init__(
+            "funding coverage is incomplete: "
+            + json.dumps(block, sort_keys=True, default=str)
+        )
+
+
+def charge_funding_rejected(result: dict) -> bool:
+    block = result.get("funding") or {}
+    if str(block.get("mode") or "") != "charge":
+        return False
+    try:
+        unpriced = int(result.get("funding_unpriced_held_hours") or 0)
+    except (TypeError, ValueError):
+        unpriced = 0
+    return unpriced > 0
+
+
+def _move_trade_funding(src: "Trade", dst: "Trade", qty: float) -> None:
+    base = src.shares if src.shares else qty
+    frac = (qty / base) if base else 1.0
+    if frac >= 1.0 - 1e-12:
+        dst.funding_pnl = src.funding_pnl
+        src.funding_pnl = 0.0
+        return
+    taken = src.funding_pnl * frac
+    dst.funding_pnl = taken
+    src.funding_pnl -= taken
+
+
+def _funding_block_from_frame(df: pd.DataFrame, platform: str, strategy_type: str,
+                              unpriced: int) -> Optional[dict]:
+    hl_perps = (str(platform or "").strip().lower() == "hyperliquid"
+                and str(strategy_type or "").strip().lower() == "perps")
+    block = None
+    if "funding_block_json" in df.columns and len(df):
+        raw = df["funding_block_json"].iloc[0]
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                block = parsed
+    if block is None and hl_perps and "funding_accrual" not in df.columns and "funding_mode" not in df.columns:
+        block = {
+            "mode": "not_attached",
+            "available": False,
+            "complete": False,
+            "coverage": None,
+            "source": None,
+            "sha256": None,
+            "row_count": 0,
+            "first": None,
+            "last": None,
+        }
+    if not isinstance(block, dict):
+        return None
+    block = dict(block)
+    block["unpriced_held_hours"] = int(unpriced)
+    mode = str(block.get("mode") or "")
+    if mode in ("charge", "partial"):
+        if block.get("available") is False and int(unpriced) > 0:
+            block["complete"] = False
+        else:
+            block["complete"] = int(unpriced) == 0
+    elif mode == "off":
+        block["complete"] = True
+    return block
 
 def perps_open_notional(cash: float, sizing_leverage: float,
                         exchange_leverage: float, margin_per_trade_usd: float) -> float:
@@ -3159,7 +3238,15 @@ class Backtester:
         active_profile = ""
 
         book_funding = "funding_accrual" in df.columns
+        funding_mode = ""
+        if book_funding and "funding_mode" in df.columns and len(df):
+            raw_mode = df["funding_mode"].iloc[0]
+            if raw_mode == raw_mode and raw_mode is not None:
+                funding_mode = str(raw_mode).strip()
+        attribute_trade_funding = book_funding and funding_mode != "off"
         total_funding_pnl = 0.0
+        funding_unpriced_held_hours = 0
+        has_funding_missing = "funding_missing_hours" in df.columns
         execution_log: dict = {
             "rejected_entries": [],
             "skipped_partial_closes": [],
@@ -3354,6 +3441,7 @@ class Backtester:
             if current_trade:
                 closed = Trade(current_trade.entry_date, current_trade.entry_price, current_trade.side)
                 closed.shares = qty_to_close
+                _move_trade_funding(current_trade, closed, qty_to_close)
                 closed.close(idx, effective_price)
                 gross_realized = closed.pnl
                 qty_frac = (qty_to_close / initial_quantity) if initial_quantity > 0 else 1.0
@@ -3527,6 +3615,8 @@ class Backtester:
                     cash_before = cash
                     cash += funding_cash
                     total_funding_pnl += funding_cash
+                    if current_trade is not None and attribute_trade_funding:
+                        current_trade.funding_pnl += funding_cash
                     self._note_funding(funding_cash)
                     if rec is not None:
                         rec.record(
@@ -3541,6 +3631,15 @@ class Backtester:
                             cash_before=cash_before, cash_after=cash, hold=hold,
                             funding_cash=funding_cash, funding_rate=accrual,
                         )
+
+            if position != 0 and has_funding_missing:
+                raw_miss = row.get("funding_missing_hours", 0)
+                try:
+                    miss = int(raw_miss) if raw_miss == raw_miss else 0
+                except (TypeError, ValueError):
+                    miss = 0
+                if miss > 0:
+                    funding_unpriced_held_hours += miss
 
             equity = cash + position * mark_price
             equity_curve.append({"date": idx, "equity": equity})
@@ -3902,6 +4001,7 @@ class Backtester:
                                 current_trade.side,
                             )
                             closed.shares = qty_to_close
+                            _move_trade_funding(current_trade, closed, qty_to_close)
                             closed.close(idx, effective_price)
                             gross_realized = closed.pnl
                             qty_frac = (
@@ -4607,6 +4707,13 @@ class Backtester:
                 scale_in_added_notional_total, 6,
             )
 
+        funding_block = _funding_block_from_frame(
+            df, self.platform, self.strategy_type, funding_unpriced_held_hours)
+        if funding_block is not None:
+            metrics["funding"] = funding_block
+            metrics["funding_unpriced_held_hours"] = int(funding_unpriced_held_hours)
+        if save and charge_funding_rejected(metrics):
+            raise FundingIncompleteError(metrics)
         if save:
             store_backtest_result(metrics)
         if rec is not None:
@@ -5298,17 +5405,20 @@ class Backtester:
 
         total_trades = len(trades)
         if total_trades > 0:
-            winning = [t for t in trades if t.pnl > 0]
-            losing = [t for t in trades if t.pnl <= 0]
+            def _trade_net_pnl(t):
+                return t.pnl + (getattr(t, "funding_pnl", 0.0) or 0.0)
+
+            winning = [t for t in trades if _trade_net_pnl(t) > 0]
+            losing = [t for t in trades if _trade_net_pnl(t) <= 0]
             win_rate = len(winning) / total_trades
 
-            gross_profit = sum(t.pnl for t in winning) if winning else 0
-            gross_loss = abs(sum(t.pnl for t in losing)) if losing else 0
+            gross_profit = sum(_trade_net_pnl(t) for t in winning) if winning else 0
+            gross_loss = abs(sum(_trade_net_pnl(t) for t in losing)) if losing else 0
             profit_factor = gross_profit / gross_loss if gross_loss > 0 else None
 
             def _net_pnl_pct(t):
                 notional = t.shares * t.entry_price
-                return (t.pnl / notional) if notional > 0 else 0.0
+                return (_trade_net_pnl(t) / notional) if notional > 0 else 0.0
             avg_win = np.mean([_net_pnl_pct(t) for t in winning]) if winning else 0
             avg_loss = np.mean([_net_pnl_pct(t) for t in losing]) if losing else 0
         else:
