@@ -130,104 +130,126 @@ def _bar_open_ms(index) -> np.ndarray:
     return (ts.as_unit("ns").asi8 // 1_000_000).astype(np.int64)
 
 
-def _expected_hours(prev_ms: int, cur_ms: int) -> int:
-    if cur_ms <= prev_ms:
-        return 0
-    first = (prev_ms // _HOUR_MS + 1) * _HOUR_MS
-    last = (cur_ms // _HOUR_MS) * _HOUR_MS
-    if last < first or first > cur_ms:
-        return 0
-    return int((last - first) // _HOUR_MS) + 1
-
-
-def _attachment_hour(timestamp_ms: int) -> int:
-    """Hour boundary this record fills.
+def _hour_bucket(timestamp_ms: int) -> int:
+    """Floor a print to the hour it settles.
 
     A print exactly on the hour fills that hour. A print a few milliseconds
-    later fills the next hour, which is the bar searchsorted(side="right")
-    books it on when bars sit on the hour.
+    later fills the same hour. The bar that receives it is the bar whose
+    span contains the print, which attach_funding_accrual_column selects
+    with searchsorted(..., side="right").
     """
-    timestamp_ms = int(timestamp_ms)
-    if timestamp_ms % _HOUR_MS == 0:
-        return timestamp_ms
-    return (timestamp_ms // _HOUR_MS + 1) * _HOUR_MS
+    return (int(timestamp_ms) // _HOUR_MS) * _HOUR_MS
 
 
-def _events_in_span(event_ms: np.ndarray, prev_ms: int, cur_ms: int) -> np.ndarray:
-    if event_ms.size == 0 or cur_ms <= prev_ms:
-        return event_ms[:0]
-    lo = int(np.searchsorted(event_ms, prev_ms, side="right"))
-    hi = int(np.searchsorted(event_ms, cur_ms, side="right"))
-    return event_ms[lo:hi]
+def _print_offset_ms(event_ms: np.ndarray) -> int:
+    """Millisecond offset shared by the prints in this window.
+
+    An empty window uses the hour boundary. A mixed window uses the most
+    common offset, and the smaller offset when two offsets tie, so a missing
+    hour is placed where this series' prints sit.
+    """
+    if event_ms.size == 0:
+        return 0
+    offsets = event_ms.astype(np.int64) % np.int64(_HOUR_MS)
+    values, counts = np.unique(offsets, return_counts=True)
+    best = int(counts.max())
+    return int(values[counts == best].min())
+
+
+def _expected_print_times(first_ms: int, last_ms: int, offset_ms: int) -> np.ndarray:
+    """Print times of each hour whose settlement falls in (first, last]."""
+    if last_ms <= first_ms:
+        return np.array([], dtype=np.int64)
+    start = int(first_ms) - int(offset_ms) + 1
+    hour = ((start + _HOUR_MS - 1) // _HOUR_MS) * _HOUR_MS
+    times = []
+    while hour + offset_ms <= last_ms:
+        times.append(hour + offset_ms)
+        hour += _HOUR_MS
+    if not times:
+        return np.array([], dtype=np.int64)
+    return np.asarray(times, dtype=np.int64)
+
+
+def _hour_coverage(bar_ms: np.ndarray, event_ms: np.ndarray):
+    """Per-bar missing hours and the window coverage.
+
+    Each hour is present when any in-window print floors to it. The hour is
+    counted on the bar that would be charged for a print at that hour plus
+    this series' offset, the same bar searchsorted(side="right") charges.
+    """
+    bars = np.asarray(bar_ms, dtype=np.int64)
+    missing = np.zeros(len(bars), dtype=np.int64)
+    empty = {
+        "expected_hours": 0,
+        "present_hours": 0,
+        "missing_hours": 0,
+        "max_gap_hours": 0,
+        "complete": True,
+    }
+    if len(bars) < 2:
+        return missing, empty
+    first = int(bars[0])
+    last = int(bars[-1])
+    events = np.asarray(event_ms, dtype=np.int64) if np.size(event_ms) else np.array([], dtype=np.int64)
+    if events.size:
+        events = events[(events > first) & (events <= last)]
+    offset = _print_offset_ms(events)
+    expected_times = _expected_print_times(first, last, offset)
+    expected_hours = expected_times - np.int64(offset) if expected_times.size else expected_times
+    present = {_hour_bucket(int(t)) for t in events}
+    if expected_times.size:
+        idx = np.searchsorted(bars, expected_times, side="left")
+        ok = (idx > 0) & (idx < len(bars))
+        idx = idx[ok]
+        times = expected_times[ok]
+        hours = expected_hours[ok]
+        if idx.size:
+            prev = bars[idx - 1]
+            cur = bars[idx]
+            inside = (prev < times) & (times <= cur)
+            idx = idx[inside]
+            hours = hours[inside]
+        for bar_i, hour in zip(idx.tolist(), hours.tolist()):
+            if int(hour) not in present:
+                missing[int(bar_i)] += 1
+    gap = 0
+    max_gap = 0
+    present_expected = 0
+    for hour in expected_hours.tolist():
+        if int(hour) in present:
+            present_expected += 1
+            max_gap = max(max_gap, gap)
+            gap = 0
+        else:
+            gap += 1
+    max_gap = max(max_gap, gap)
+    expected_n = int(expected_hours.size)
+    missing_hours = int(missing.sum())
+    return missing, {
+        "expected_hours": expected_n,
+        "present_hours": int(present_expected),
+        "missing_hours": missing_hours,
+        "max_gap_hours": int(max_gap),
+        "complete": bool(expected_n == present_expected and missing_hours == 0),
+    }
 
 
 def right_closed_missing_hours(bar_ms: np.ndarray, event_ms: np.ndarray) -> np.ndarray:
-    """Hours in (previous bar open, this bar open] with no funding record.
+    """Missing funding hours on the bar the accrual would charge.
 
-    Matches attach_funding_accrual_column: searchsorted(..., side="right")
-    puts a funding time on the bar that contains it and not the next bar.
-    The first bar attaches nothing.
+    The first bar attaches nothing. A bar's count is the number of hours
+    whose print searchsorted(side="right") would charge on that bar and
+    that have no record.
     """
-    missing = np.zeros(len(bar_ms), dtype=np.int64)
-    events = np.unique(np.sort(event_ms.astype(np.int64))) if event_ms.size else event_ms
-    for i in range(1, len(bar_ms)):
-        prev = int(bar_ms[i - 1])
-        cur = int(bar_ms[i])
-        expected = _expected_hours(prev, cur)
-        if expected == 0:
-            continue
-        present_hours = set()
-        for t in _events_in_span(events, prev, cur):
-            hour = _attachment_hour(int(t))
-            if prev < hour <= cur:
-                present_hours.add(hour)
-        missing[i] = max(0, expected - len(present_hours))
+    missing, _coverage = _hour_coverage(bar_ms, event_ms)
     return missing
 
 
 def _coverage_dict(bar_ms: np.ndarray, event_ms: np.ndarray, missing: np.ndarray) -> dict:
-    if len(bar_ms) < 2:
-        return {
-            "expected_hours": 0,
-            "present_hours": 0,
-            "missing_hours": 0,
-            "max_gap_hours": 0,
-            "complete": True,
-        }
-    expected = 0
-    present = 0
-    gap = 0
-    max_gap = 0
-    events = np.unique(np.sort(event_ms.astype(np.int64))) if event_ms.size else event_ms
-    for i in range(1, len(bar_ms)):
-        prev = int(bar_ms[i - 1])
-        cur = int(bar_ms[i])
-        exp = _expected_hours(prev, cur)
-        expected += exp
-        got = set()
-        for t in _events_in_span(events, prev, cur):
-            hour = _attachment_hour(int(t))
-            if prev < hour <= cur:
-                got.add(hour)
-        present += len(got)
-        if exp:
-            first = (prev // _HOUR_MS + 1) * _HOUR_MS
-            for k in range(exp):
-                hour = first + k * _HOUR_MS
-                if hour in got:
-                    max_gap = max(max_gap, gap)
-                    gap = 0
-                else:
-                    gap += 1
-    max_gap = max(max_gap, gap)
-    missing_hours = int(missing[1:].sum()) if len(missing) else 0
-    return {
-        "expected_hours": int(expected),
-        "present_hours": int(present),
-        "missing_hours": missing_hours,
-        "max_gap_hours": int(max_gap),
-        "complete": bool(expected == present and missing_hours == 0),
-    }
+    del missing  # the coverage is recomputed with the missing hours
+    _missing, coverage = _hour_coverage(bar_ms, event_ms)
+    return coverage
 
 
 def funding_row_sha256(timestamps, rates) -> str:
@@ -291,6 +313,26 @@ def continuous_history_start(df: pd.DataFrame, event_ms: np.ndarray):
     return df.index[k]
 
 
+def _stored_funding_mode(mode: str, price: bool) -> str:
+    """A saved mode says charge only when this frame charged funding.
+
+    ``off`` stays ``off``. A charge or partial request that does not price
+    the frame is ``not_priced``.
+    """
+    if price or mode == "off":
+        return mode
+    return "not_priced"
+
+
+_UNPRICED_COVERAGE = {
+    "expected_hours": 0,
+    "present_hours": 0,
+    "missing_hours": 0,
+    "max_gap_hours": 0,
+    "complete": True,
+}
+
+
 def attach_backtest_funding(df: pd.DataFrame,
                             coin: str,
                             timeframe: Optional[str],
@@ -321,13 +363,13 @@ def attach_backtest_funding(df: pd.DataFrame,
     keep_rate = strategy_name in FUNDING_RATE_STRATEGIES
     price = _should_price(platform, strategy_type, strategy_name, mode)
     out = df.copy()
+    stored_mode = _stored_funding_mode(mode, price)
     if not price and not keep_rate:
         block = {
-            "mode": mode,
+            "mode": stored_mode,
             "available": True,
             "complete": True,
-            "coverage": _coverage_dict(_bar_open_ms(out.index), np.array([]),
-                                       np.zeros(len(out), dtype=np.int64)),
+            "coverage": dict(_UNPRICED_COVERAGE),
             "source": None,
             "sha256": None,
             "row_count": 0,
@@ -335,9 +377,10 @@ def attach_backtest_funding(df: pd.DataFrame,
             "last": None,
             "priced": False,
         }
-        if mode == "off":
-            return _stamp_columns(out, mode, block), block
-        return _stamp_columns(out, mode, block, np.zeros(len(out), dtype=np.int64)), block
+        if stored_mode == "off":
+            return _stamp_columns(out, stored_mode, block), block
+        return _stamp_columns(out, stored_mode, block,
+                              np.zeros(len(out), dtype=np.int64)), block
 
     bar_ms = _bar_open_ms(out.index)
     first_ms = int(bar_ms[0])
@@ -369,14 +412,35 @@ def attach_backtest_funding(df: pd.DataFrame,
         mask = (ts > first_ms) & (ts <= last_ms)
         event_ms = ts[mask].astype(np.int64)
         event_rate = rate[mask]
+    if not price:
+        # The rate column is an entry input. This frame charges no funding,
+        # so missing hours stay zero and the saved mode is not charge.
+        missing = np.zeros(len(out), dtype=np.int64)
+        block = {
+            "mode": stored_mode,
+            "available": error is None,
+            "complete": True,
+            "coverage": dict(_UNPRICED_COVERAGE),
+            "source": "unavailable" if error is not None else (source_box.get("source") or "unavailable"),
+            "sha256": funding_row_sha256([], []),
+            "row_count": 0,
+            "first": None,
+            "last": None,
+            "priced": False,
+        }
+        if error is not None:
+            block["error"] = error
+        if stored_mode == "off":
+            return _stamp_columns(out, stored_mode, block), block
+        return _stamp_columns(out, stored_mode, block, missing), block
     missing = right_closed_missing_hours(bar_ms, event_ms)
     coverage = _coverage_dict(bar_ms, event_ms, missing)
-    available = error is None and (not price or event_ms.size > 0 or coverage["expected_hours"] == 0)
-    if price and error is None and event_ms.size:
+    available = error is None and (event_ms.size > 0 or coverage["expected_hours"] == 0)
+    if error is None and event_ms.size:
         shaped = pd.DataFrame({"timestamp": event_ms, "rate": event_rate})
         out = attach_funding_accrual_column(out, shaped)
     block = {
-        "mode": mode,
+        "mode": stored_mode,
         "available": bool(available),
         "complete": bool(coverage["complete"] and available),
         "coverage": coverage,
@@ -385,8 +449,8 @@ def attach_backtest_funding(df: pd.DataFrame,
         "row_count": int(event_ms.size),
         "first": _iso_ms(int(event_ms.min())) if event_ms.size else None,
         "last": _iso_ms(int(event_ms.max())) if event_ms.size else None,
-        "priced": bool(price),
+        "priced": True,
     }
     if error is not None:
         block["error"] = error
-    return _stamp_columns(out, mode, block, missing), block
+    return _stamp_columns(out, stored_mode, block, missing), block
