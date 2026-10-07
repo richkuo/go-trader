@@ -179,6 +179,12 @@ def format_walk_forward_report(wf_result: dict) -> str:
         f"  WALK-FORWARD OPTIMIZATION: {wf_result.get('strategy', 'Unknown')}",
         f"{'='*70}",
         f"  Folds:             {wf_result.get('n_valid_folds', 0)}/{wf_result.get('n_splits', 0)}",
+        f"  Funding-skipped folds: {int(wf_result.get('funding_skipped_folds') or 0)}",
+        f"  Funding-skipped candidates: {int(wf_result.get('funding_skipped_candidates') or 0)}",
+    ]
+    if wf_result.get("error"):
+        lines.append(f"  Error:             {wf_result['error']}")
+    lines += [
         f"  Param Combos:      {wf_result.get('param_grid_size', 0)}",
         f"  Close Stacks:      {wf_result.get('close_stack_grid_size', 1)}",
         f"  Optimize Metric:   {wf_result.get('optimize_metric', 'sharpe_ratio')}",
