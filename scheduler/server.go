@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -61,6 +62,23 @@ const DefaultStatusPort = 8099
 const statusPortMinimum = 1024
 
 const statusPortMaxAttempts = 5
+
+const (
+	mainLoopWorkBudget = 30 * time.Minute
+	mainLoopWakeGrace  = 5 * time.Minute
+)
+
+var mainLoopDeadline atomic.Pointer[time.Time]
+
+func armMainLoopDeadline(budget time.Duration) {
+	deadline := time.Now().Add(budget)
+	mainLoopDeadline.Store(&deadline)
+}
+
+func mainLoopOverdue(now time.Time) bool {
+	deadline := mainLoopDeadline.Load()
+	return deadline != nil && now.After(*deadline)
+}
 
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateStore) *StatusServer {
 	symbols := collectPriceSymbols(strategies)
@@ -233,7 +251,11 @@ func (ss *StatusServer) Start(host string, port int) {
 	mux.HandleFunc("/api/config/add-strategy", ss.handleAPIAddStrategy)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
-	listener, boundPort, err := bindHostWithFallback(host, port, statusPortMaxAttempts)
+	attempts := statusPortMaxAttempts
+	if inContainerRuntime() {
+		attempts = 1
+	}
+	listener, boundPort, err := bindHostWithFallback(host, port, attempts)
 	if err != nil {
 		fmt.Printf("[server] WARNING: %v. Status endpoint unavailable.\n", err)
 		return
@@ -270,10 +292,6 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ss.mu.RLock()
-	lastCycle := ss.state.LastCycle
-	ss.mu.RUnlock()
-
 	resp := map[string]any{
 		"status":  "ok",
 		"version": Version,
@@ -282,7 +300,7 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if statusBearerAuthorized(r, ss.statusToken) {
 		resp["run_evidence"] = globalRunEvidence.healthView()
 	}
-	if !lastCycle.IsZero() && time.Since(lastCycle) > 30*time.Minute {
+	if mainLoopOverdue(time.Now()) {
 		resp["status"] = "unhealthy"
 		resp["reason"] = "main loop stale"
 		w.WriteHeader(http.StatusServiceUnavailable)

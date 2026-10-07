@@ -151,6 +151,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[server] CRITICAL: refusing to start: %v\n", err)
 		os.Exit(1)
 	}
+	if err := validateContainerStatusPortFlag(*statusPortFlag); err != nil {
+		fmt.Fprintf(os.Stderr, "[server] CRITICAL: refusing to start: %v\n", err)
+		os.Exit(1)
+	}
 	if err := applyAlertThrottleFromConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to apply alert throttle interval: %v\n", err)
 		os.Exit(1)
@@ -463,6 +467,7 @@ func main() {
 	if tuningManager != nil {
 		go tuningManager.run(shutdownReadOnlyCtx)
 	}
+	armMainLoopDeadline(mainLoopWorkBudget)
 	server.Start(statusBindHost, statusPort)
 
 	diagWorker := newTradeDiagnosticsWorker(FetchUICandles, store.UpdateTradeDiagnosticsMetrics)
@@ -837,6 +842,7 @@ func main() {
 			fmt.Println("[shutdown] draining, exiting trading loop.")
 			return
 		}
+		armMainLoopDeadline(mainLoopWorkBudget)
 
 		processConfigReloads()
 
@@ -921,6 +927,7 @@ func main() {
 				if minTick := time.Duration(tickSeconds) * time.Second; delay < minTick {
 					delay = minTick
 				}
+				armMainLoopDeadline(delay + mainLoopWakeGrace)
 				timer := time.NewTimer(delay)
 				select {
 				case <-timer.C:
@@ -937,6 +944,7 @@ func main() {
 				}
 			}
 			delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
+			armMainLoopDeadline(delay + mainLoopWakeGrace)
 			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
@@ -3349,6 +3357,7 @@ func main() {
 		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
 		delay := cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
+		armMainLoopDeadline(delay + mainLoopWakeGrace)
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:

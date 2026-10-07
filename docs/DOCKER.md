@@ -314,6 +314,10 @@ To recover from a hold:
 
 `docker compose stop` also ends a held container.
 
+`(healthy)` means the bot answers and its main loop keeps its own schedule.
+The status turns `unhealthy` during a fatal-exit hold, when one pass of the loop runs longer than 30 minutes, or when the loop does not wake up within 5 minutes of its planned time.
+A long `interval_seconds` (for example one hour between cycles) does not make it unhealthy.
+
 ## Start after login or reboot
 
 The container starts again whenever Docker starts, unless you stopped it with `docker compose stop` (or `docker stop`).
@@ -503,3 +507,4 @@ To test an image, run `scripts/test_container_image.sh` (see the script for its 
 | `--once` exits 79 | The bot is running. Stop it first. |
 | The dashboard shows "Authorization required" | Paste the `STATUS_AUTH_TOKEN` value in the token field. |
 | `port is already allocated` | Set `GO_TRADER_HOST_PORT` in `.env` to a free port. |
+| `status_port is 8100, but the container serves the dashboard and the health check on port 8099` | Remove `status_port` from the config or set it to 8099. To use another port on your computer, set `GO_TRADER_HOST_PORT` in `.env`. See [Change the config and hot reload](#change-the-config-and-hot-reload). |

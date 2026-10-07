@@ -59,6 +59,9 @@ func validateContainerRuntimeConfig(cfg *Config) error {
 	if cfg.marketFeedSharedEnabled() {
 		errs = append(errs, "market_feed \"shared\" needs a separate feed service and is not supported in the container deployment")
 	}
+	if cfg.StatusPort != 0 && cfg.StatusPort != DefaultStatusPort {
+		errs = append(errs, containerStatusPortIssue("status_port", cfg.StatusPort))
+	}
 	if cfg.Role != configRoleFeed {
 		check := func(label, path string) {
 			if issue := containerPersistentPathIssue(path); issue != "" {
@@ -82,6 +85,17 @@ func validateContainerRuntimeConfig(cfg *Config) error {
 		return nil
 	}
 	return fmt.Errorf("container runtime policy (%s=%s):\n  %s", runtimeEnvVar, runtimeContainer, strings.Join(errs, "\n  "))
+}
+
+func containerStatusPortIssue(label string, port int) string {
+	return fmt.Sprintf("%s is %d, but the container serves the dashboard and the health check on port %d (docker/compose.yaml); remove %s or set it to %d, and set GO_TRADER_HOST_PORT in docker/.env to change the port on your computer", label, port, DefaultStatusPort, label, DefaultStatusPort)
+}
+
+func validateContainerStatusPortFlag(port int) error {
+	if !inContainerRuntime() || port == 0 || port == DefaultStatusPort {
+		return nil
+	}
+	return fmt.Errorf("container runtime policy (%s=%s): %s", runtimeEnvVar, runtimeContainer, containerStatusPortIssue("--status-port", port))
 }
 
 func containerPersistentPathIssue(path string) string {
