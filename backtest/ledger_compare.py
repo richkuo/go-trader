@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 import offline_manifest as om
+from regime_context import SIZING_REASON_CODES, configuration_sha256, resolve_regime_context
 from backtester import (
     COMPARISON_MODE_APPROXIMATE,
     COMPARISON_MODE_STRICT,
@@ -120,7 +121,7 @@ PORTFOLIO_CONTROL_FIELDS = (
 )
 REGIME_FIELDS = (
     "allowed_regimes", "regime_gate_on_failure", "regime_gate_window",
-    "regime_directional_window", "regime_directional_policy", "regime_window_divergence",
+    "regime_directional_window", "regime_atr_window", "regime_directional_policy", "regime_window_divergence",
     "regime_profile_allocation",
 )
 UNSUPPORTED_FEATURE_FIELDS = {
@@ -1229,23 +1230,26 @@ def _stop_rows(verdict: dict, strategy: dict) -> list:
 
 
 def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_verdict: dict,
-                      atr_verdict: Optional[dict] = None) -> list:
+                      atr_verdict: Optional[dict] = None, regime_context: Optional[dict] = None) -> list:
     strategy = seg.get("strategy") or {}
     regime = seg.get("regime") or {}
     risk = seg.get("portfolio_risk") or {}
     controls_verified = _evidence_verified(capability_evidence.get("portfolio_controls"))
     rows = []
 
-    def row(field, category, value, decision, reason, approximable=False):
+    def row(field, category, value, decision, reason, approximable=False, reason_code=None):
         if field.startswith("regime."):
             present = field[len("regime."):] in regime
         elif field.startswith("portfolio_risk."):
             present = field[len("portfolio_risk."):] in risk
         else:
             present = field in strategy
-        rows.append({"field": field, "category": category, "present": present,
-                     "value": value, "active": decision not in ("inactive", "informational"),
-                     "decision": decision, "reason": reason, "approximable": approximable})
+        item = {"field": field, "category": category, "present": present,
+                "value": value, "active": decision not in ("inactive", "informational"),
+                "decision": decision, "reason": reason, "approximable": approximable}
+        if reason_code:
+            item["reason_code"] = reason_code
+        rows.append(item)
 
     handled = set()
     stype = strategy.get("type")
@@ -1359,17 +1363,27 @@ def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_v
     else:
         row("closed_bar_decisions", "decision_timing", timing["value"], "informational",
             f"{timing['basis']}; {timing['limitation']}")
-    for field in REGIME_FIELDS:
-        handled.add(field)
-        v = strategy.get(field)
-        row(field, "regime", v, "refused" if _active(v) else "inactive",
-            "regime gating is not modeled by this comparison" if _active(v) else "not configured")
+    regime_rows = (regime_context or {}).get("rows") or []
+    for item in regime_rows:
+        handled.add(item["field"])
+        rows.append(item)
+    if not regime_rows:
+        for field in REGIME_FIELDS:
+            handled.add(field)
+            v = strategy.get(field)
+            row(field, "regime", v, "refused" if _active(v) else "inactive",
+                "regime gating is not modeled by this comparison" if _active(v) else "not configured",
+                reason_code="regime_unresolved")
     for field, category in UNSUPPORTED_FEATURE_FIELDS.items():
         handled.add(field)
         v = strategy.get(field)
         enabled = v.get("enabled", True) if isinstance(v, dict) and field == "hurst_gate" else _active(v)
-        row(field, category, v, "refused" if enabled and _active(v) else "inactive",
-            f"{category} is not modeled" if enabled and _active(v) else "not configured")
+        sizing = SIZING_REASON_CODES.get(field)
+        if sizing and enabled and _active(v):
+            row(field, category, v, "refused", sizing[1], reason_code=sizing[0])
+        else:
+            row(field, category, v, "refused" if enabled and _active(v) else "inactive",
+                f"{category} is not modeled" if enabled and _active(v) else "not configured")
     for field, category in INFORMATIONAL_FIELDS.items():
         handled.add(field)
         if field in strategy:
@@ -1378,23 +1392,29 @@ def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_v
         v = strategy[field]
         row(field, "unknown", v, "refused" if _active(v) else "inactive",
             "unknown active field: unknown behavior prevents strict eligibility" if _active(v) else "unknown field, inactive")
-    needs_labels = bool(stop_verdict.get("needs_labels"))
-    if not regime.get("enabled"):
-        row("regime.enabled", "regime", regime.get("enabled"), "inactive", "regime disabled")
-    elif needs_labels:
-        row("regime.enabled", "regime", True, "modeled",
-            "label input only: the primary-window classification supplies the regime-owned stop label; "
-            "no entry gating is added")
-    else:
-        row("regime.enabled", "regime", True, "refused",
-            "regime classification is modeled only as the label input of a regime-owned stop")
-    timeframe = str(regime.get("timeframe") or "").strip().lower()
-    if timeframe:
-        differs = timeframe != str(market.get("interval") or "").strip().lower()
-        row("regime.timeframe", "regime", regime.get("timeframe"),
-            "refused" if differs and needs_labels else "informational",
-            "regime labels from another timeframe are not prepared by the frozen comparison"
-            if differs and needs_labels else "labels come from the frozen dataset interval")
+    if not any(item["field"] == "regime.enabled" for item in rows):
+        needs_labels = bool(stop_verdict.get("needs_labels"))
+        if not regime.get("enabled"):
+            row("regime.enabled", "regime", regime.get("enabled"), "inactive", "regime disabled",
+                reason_code="regime_enabled_inactive")
+        elif needs_labels:
+            row("regime.enabled", "regime", True, "modeled",
+                "label input only: the primary-window classification supplies the regime-owned stop label; "
+                "no entry gating is added", reason_code="regime_enabled_modeled")
+        else:
+            row("regime.enabled", "regime", True, "refused",
+                "regime classification is modeled only as the label input of a regime-owned stop",
+                reason_code="regime_enabled_unmodeled")
+    if not any(item["field"] == "regime.timeframe" for item in rows):
+        timeframe = str(regime.get("timeframe") or "").strip().lower()
+        needs_labels = bool(stop_verdict.get("needs_labels"))
+        if timeframe:
+            differs = timeframe != str(market.get("interval") or "").strip().lower()
+            row("regime.timeframe", "regime", regime.get("timeframe"),
+                "refused" if differs and needs_labels else "informational",
+                "regime labels from another timeframe are not prepared by the frozen comparison"
+                if differs and needs_labels else "labels come from the frozen dataset interval",
+                reason_code="regime_timeframe_unprepared" if differs and needs_labels else "regime_timeframe_matches")
     for field in sorted(risk):
         v = risk[field]
         if field == "warn_threshold_pct":
@@ -1522,7 +1542,8 @@ def _with_stop_inputs(frame: pd.DataFrame, atr: bool, atr_method: str, labels: O
 
 def market_strategy_checks(market: dict, name: str, params: dict, direction: str, invert: bool,
                            needs_oi: bool, has_close: bool, atr_method: str = "simple",
-                           stop_needs_atr: bool = False, labels: Optional[dict] = None) -> dict:
+                           stop_needs_atr: bool = False, labels: Optional[dict] = None,
+                           regime_prepare: Optional[dict] = None) -> dict:
     from registry_loader import load_registry
     reg = load_registry("futures")
     manifest, dataset, win = market["manifest"], market["dataset"], market["window"]
@@ -1558,6 +1579,12 @@ def market_strategy_checks(market: dict, name: str, params: dict, direction: str
                                     if invalid else "the strategy reports no per-bar observation validity"})
     with_atr = has_close or stop_needs_atr
     signals = _with_stop_inputs(signals, with_atr, atr_method, labels)
+    if regime_prepare:
+        from regime import bounded_window_labels
+        bounded_window_labels(
+            signals, period=regime_prepare["period"], adx_threshold=regime_prepare["adx_threshold"],
+            windows_spec=regime_prepare.get("windows_spec"), limit=regime_prepare["limit"],
+            columns=regime_prepare["columns"])
     warm = manifest["warmup_bars"]
     trim = warm // 3
     cols = _signal_columns(signals)
@@ -1565,10 +1592,18 @@ def market_strategy_checks(market: dict, name: str, params: dict, direction: str
         cols.append("atr")
     if labels is not None:
         cols.append("regime")
+    if regime_prepare:
+        cols.extend(sorted(regime_prepare["columns"]))
     stable = True
     if trim > 0:
         trimmed = _with_stop_inputs(reg.apply_strategy(name, frame.iloc[trim:].copy(), p), with_atr,
                                     atr_method, labels)
+        if regime_prepare:
+            from regime import bounded_window_labels
+            bounded_window_labels(
+                trimmed, period=regime_prepare["period"], adx_threshold=regime_prepare["adx_threshold"],
+                windows_spec=regime_prepare.get("windows_spec"), limit=regime_prepare["limit"],
+                columns=regime_prepare["columns"])
         scored_full = om.slice_window(signals, win)
         scored_trim = om.slice_window(trimmed, win)
         stable = len(scored_full) == len(scored_trim) and _frames_equal(scored_full, scored_trim, cols)
@@ -1619,6 +1654,9 @@ def run_simulation(market: dict, signals: pd.DataFrame, plan: dict) -> dict:
     if plan.get("allow_scale_in"):
         kwargs["allow_scale_in"] = True
         kwargs["scale_in"] = plan.get("scale_in")
+    regime_engine = plan.get("regime_engine") or {}
+    if regime_engine:
+        kwargs.update(regime_engine)
     stop_events: list = []
     bt = Backtester(**kwargs)
     res = bt.run(scored, strategy_name=plan["open_name"], symbol=dataset["symbol"],
@@ -2138,7 +2176,24 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                      "capability_context": None, "close_refs": None})
     has_close = bool(strategy.get("close_strategy"))
     atr_verdict = resolve_atr_method(seg, has_close or stop_verdict.get("owner") in STOP_OWNERS_NEEDING_ATR)
-    matrix = (capability_matrix(seg, cin.get("capability_evidence", {}), market_ctx, stop_verdict, atr_verdict)
+    regime_context = None
+    if seg:
+        regime_binding = {
+            "partition": doc["selection"]["partition"],
+            "strategy_id": doc["selection"]["process_strategy_id"],
+            "configuration_sha256": configuration_sha256(strategy, seg.get("regime") or {}),
+            "interval_start": _iso(start),
+            "interval_end": _iso(end),
+        }
+        market_for_regime = {
+            "interval": market_ctx.get("interval"),
+            "warmup_bars": (market.get("manifest") or {}).get("warmup_bars") if isinstance(market, dict) else None,
+        }
+        regime_context = resolve_regime_context(
+            seg, cin.get("capability_evidence") or {}, regime_binding, market_for_regime,
+            bool(stop_verdict.get("needs_labels")), mode, os.path.dirname(input_path))
+    matrix = (capability_matrix(seg, cin.get("capability_evidence", {}), market_ctx, stop_verdict, atr_verdict,
+                                regime_context)
               if seg else [])
     cap_refusals, cap_evidence = _decision_class(matrix)
     manual = strategy.get("type") == "manual"
@@ -2148,9 +2203,15 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             continue
         if approx_ok and r["approximable"]:
             approximations.append({"feature": r["field"], "category": r["category"],
+                                   "reason_code": r.get("reason_code"),
                                    "assumption": r["reason"], "effect": "simulated with an unverified substitute"})
         else:
-            refusals.append({"reason": f"capability_{r['category']}", "field": r["field"], "detail": r["reason"]})
+            code = r.get("reason_code")
+            refusal = {"reason": code or f"capability_{r['category']}", "field": r["field"], "detail": r["reason"]}
+            if code:
+                refusal["reason_code"] = code
+                refusal["category"] = r["category"]
+            refusals.append(refusal)
     for r in stop_verdict["refusals"]:
         if approx_ok and r["approximable"]:
             approximations.append({"feature": r["field"], "category": "protection",
@@ -2185,7 +2246,8 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                 open_name in market_ctx["observation_input_strategies"], has_close,
                 atr_method=atr_method,
                 stop_needs_atr=stop_verdict.get("owner") in STOP_OWNERS_NEEDING_ATR,
-                labels=stop_verdict.get("labels") if stop_verdict.get("needs_labels") else None)
+                labels=stop_verdict.get("labels") if stop_verdict.get("needs_labels") else None,
+                regime_prepare=(regime_context or {}).get("prepare"))
         except ValueError as exc:
             refusals.append({"reason": "strategy_rejected_inputs", "detail": f"{open_name}: {exc}"})
         else:
@@ -2222,6 +2284,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                                            "market_manifest_hash_mismatch") + STOP_UNAPPROXIMABLE_REASONS
                            + ATR_UNAPPROXIMABLE_REASONS
                            or r["reason"].startswith("capability_")
+                           or r.get("reason_code")
                            for r in refusals):
         can_sim = False
         sim_status["reasons"].append("an unapproximable refusal blocks simulation")
@@ -2243,6 +2306,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             "comparison_mode": mode, "initial_cash": float(cin["starting_state"]["cash_usd"]["value"]),
             "execution_spec": use_spec,
             "stop": stop_verdict,
+            "regime_engine": (regime_context or {}).get("engine"),
         }
         if approx_ok:
             if strategy.get("allow_scale_in"):
@@ -2436,6 +2500,17 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
     else:
         outcome = "mismatch"
 
+    regime_report = dict((regime_context or {}).get("report") or {})
+    if regime_report and strategy_checks is not None and "dataset" in market:
+        prepared = (regime_context or {}).get("prepare") or {}
+        columns = list(prepared.get("columns") or {})
+        if columns:
+            scored_labels = om.slice_window(strategy_checks["signals"], market["window"])
+            regime_report["scored_labels"] = [
+                {"timestamp": int(row["timestamp"]),
+                 **{col: str(row.get(col, "") or "") for col in columns}}
+                for _, row in scored_labels.iterrows()
+            ]
     present = doc["current_effective_configuration"]
     differences = []
     if seg:
@@ -2495,6 +2570,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             "unverified": unverified,
             "approximations": approximations,
             "capability_matrix": matrix,
+            "regime": regime_report or None,
             "capability_evidence_used": [r["field"] for r in cap_evidence],
             "close_validation": close_validation,
             "market": {"status": market["status"], "checks": market.get("checks"),

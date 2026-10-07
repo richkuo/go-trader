@@ -37,6 +37,91 @@ def cert_path(path: Optional[str] = None) -> str:
     return env or DEFAULT_CERT_PATH
 
 
+_CERT_TOP_KEYS = {
+    "schema_version", "generated_at", "generator", "source_evidence",
+    "criteria", "default_ttl_days", "certified",
+}
+_CERT_ENTRY_KEYS = {
+    "asset", "timeframe", "classifier", "generated_at", "expires_at", "states",
+}
+_CERT_DIRECTIONS = {"long", "short"}
+
+
+class CertificationInvalid(ValueError):
+    """The artifact is not a set Go would load. The whole file is rejected."""
+
+
+def parse_certifications_strict(data: dict) -> dict:
+    """Load a certification artifact the way LoadDirectionalCertSet does.
+
+    A malformed entry rejects the whole artifact. This does not skip entries
+    the way load_certifications does, and a hash match is not this check.
+    """
+    if not isinstance(data, dict):
+        raise CertificationInvalid("certification artifact must be a JSON object")
+    unknown = sorted(set(data) - _CERT_TOP_KEYS)
+    if unknown:
+        raise CertificationInvalid(f"unknown certification keys: {unknown}")
+    version = data.get("schema_version")
+    if isinstance(version, bool) or version != 1:
+        raise CertificationInvalid(
+            f"unsupported schema_version {version!r} (want 1)")
+    entries = data.get("certified", [])
+    if entries is None:
+        entries = []
+    if not isinstance(entries, list):
+        raise CertificationInvalid("certified must be a list")
+    out = {}
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise CertificationInvalid(f"certified[{i}] must be an object")
+        extra = sorted(set(entry) - _CERT_ENTRY_KEYS)
+        if extra:
+            raise CertificationInvalid(f"certified[{i}] has unknown keys: {extra}")
+        asset = normalize_cert_asset(str(entry.get("asset") or ""))
+        timeframe = str(entry.get("timeframe") or "").strip()
+        classifier = str(entry.get("classifier") or "").strip().lower()
+        if not asset or not timeframe or not classifier:
+            raise CertificationInvalid(
+                f"certified[{i}] missing asset/timeframe/classifier")
+        if "generated_at" in entry and entry["generated_at"] not in (None, ""):
+            _require_cert_time(entry["generated_at"], f"certified[{i}].generated_at")
+        expires = None
+        if "expires_at" in entry and entry["expires_at"] not in (None, ""):
+            expires = _require_cert_time(entry["expires_at"], f"certified[{i}].expires_at")
+        states = entry.get("states") or {}
+        if not isinstance(states, dict):
+            raise CertificationInvalid(f"certified[{i}].states must be an object")
+        clean = {}
+        for label, direction in states.items():
+            side = str(direction or "").strip().lower()
+            if side not in _CERT_DIRECTIONS:
+                raise CertificationInvalid(
+                    f"certified[{i}].states[{label!r}] must be 'long' or 'short' "
+                    f"(got {direction!r})")
+            clean[str(label)] = side
+        out[_cert_key(asset, timeframe, classifier)] = {
+            "asset": asset,
+            "timeframe": timeframe,
+            "classifier": classifier,
+            "expires_at": expires.isoformat().replace("+00:00", "Z") if expires else "",
+            "states": clean,
+        }
+    return out
+
+
+def _require_cert_time(value, label: str):
+    if not isinstance(value, str) or not value.strip():
+        raise CertificationInvalid(f"{label} must be an RFC3339 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise CertificationInvalid(f"{label} is not a timestamp: {exc}") from exc
+    if parsed.tzinfo is None:
+        raise CertificationInvalid(f"{label} has no timezone")
+    return parsed.astimezone(timezone.utc)
+
+
 def load_certifications(path: Optional[str] = None) -> dict:
     p = cert_path(path)
     try:
@@ -132,3 +217,31 @@ def config_directional_classifier(regime_cfg: Optional[dict],
             c = str((spec or {}).get("classifier") or "").strip().lower()
             return c or "adx"
     return "adx"
+
+
+def directional_cert_identity(strategy: Optional[dict], regime: Optional[dict]) -> Optional[dict]:
+    """Mirror scheduler directionalCertIdentity.
+
+    Returns None when the asset or timeframe cannot be resolved. The classifier
+    is the directional window's classifier, matching regimeClassifierForWindow.
+    """
+    from regime import classifier_for_window, resolve_strategy_regime_window
+
+    args = (strategy or {}).get("args") or []
+    if len(args) < 3:
+        return None
+    symbol = str(args[1] or "").strip()
+    timeframe = str(args[2] or "").strip()
+    if (not symbol or not timeframe or symbol.startswith("-")
+            or timeframe.startswith("-")):
+        return None
+    override = str((regime or {}).get("timeframe") or "").strip().lower()
+    if override:
+        timeframe = override
+    window = resolve_strategy_regime_window(strategy or {}, "directional", regime or {})
+    classifier = classifier_for_window(regime or {}, window)
+    asset = normalize_cert_asset(symbol)
+    if not asset or not timeframe:
+        return None
+    return {"asset": asset, "timeframe": timeframe, "classifier": classifier,
+            "key": _cert_key(asset, timeframe, classifier)}
