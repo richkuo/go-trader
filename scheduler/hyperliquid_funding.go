@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -149,6 +150,9 @@ func fetchHyperliquidFundingHistory(ctx context.Context, coin string, startMs in
 		if rerr != nil {
 			return nil, fmt.Errorf("fundingHistory row %d rate: %w", i, rerr)
 		}
+		if math.IsNaN(rate) || math.IsInf(rate, 0) {
+			return nil, fmt.Errorf("fundingHistory row %d rate is not finite", i)
+		}
 		timeRaw, ok := row["time"]
 		if !ok {
 			return nil, fmt.Errorf("fundingHistory row %d has no time", i)
@@ -156,6 +160,9 @@ func fetchHyperliquidFundingHistory(ctx context.Context, coin string, startMs in
 		ts, terr := hlParseNumeric(timeRaw)
 		if terr != nil {
 			return nil, fmt.Errorf("fundingHistory row %d time: %w", i, terr)
+		}
+		if math.IsNaN(ts) || math.IsInf(ts, 0) || ts <= 0 || ts != math.Trunc(ts) || ts > float64(math.MaxInt64/2) {
+			return nil, fmt.Errorf("fundingHistory row %d time %v is not a positive whole millisecond", i, ts)
 		}
 		out = append(out, feedFundingRecord{Rate: rate, TimeMs: int64(ts)})
 	}
@@ -178,12 +185,18 @@ func hlFundingAverage7d(ctx context.Context, coin string, now time.Time) (float6
 	return sum / float64(len(records)), nil
 }
 
-func hlFundingRecordsSince(ctx context.Context, coin string, startMs int64, now time.Time) ([]feedFundingRecord, error) {
-	endMs := now.UTC().UnixMilli()
+type feedFundingCoverage struct {
+	Coin    string
+	FromMs  int64
+	ToMs    int64
+	Records []feedFundingRecord
+}
+
+func hlFundingPagedRecords(ctx context.Context, coin string, startMs, endMs int64, maxPasses int) ([]feedFundingRecord, error) {
 	var out []feedFundingRecord
-	seen := make(map[int64]bool)
+	seen := make(map[int64]float64)
 	cursor := startMs
-	for pass := 0; pass < hlFundingMaxRangePasses && cursor < endMs; pass++ {
+	for pass := 0; pass < maxPasses && cursor <= endMs; pass++ {
 		records, err := fetchHyperliquidFundingHistoryFn(ctx, coin, cursor)
 		if err != nil {
 			return nil, err
@@ -192,20 +205,54 @@ func hlFundingRecordsSince(ctx context.Context, coin string, startMs int64, now 
 			break
 		}
 		progressed := false
+		var lastT int64
 		for _, r := range records {
-			if r.TimeMs > endMs || seen[r.TimeMs] {
+			if math.IsNaN(r.Rate) || math.IsInf(r.Rate, 0) {
+				return nil, fmt.Errorf("fundingHistory %s record at %d carries a non-finite rate", coin, r.TimeMs)
+			}
+			if r.TimeMs <= 0 {
+				return nil, fmt.Errorf("fundingHistory %s record carries time %d", coin, r.TimeMs)
+			}
+			if r.TimeMs > lastT {
+				lastT = r.TimeMs
+			}
+			if prior, ok := seen[r.TimeMs]; ok {
+				if prior != r.Rate {
+					return nil, fmt.Errorf("fundingHistory %s has conflicting records at %d (rate %v and %v)", coin, r.TimeMs, prior, r.Rate)
+				}
 				continue
 			}
-			seen[r.TimeMs] = true
+			if r.TimeMs < startMs || r.TimeMs > endMs {
+				continue
+			}
+			seen[r.TimeMs] = r.Rate
 			out = append(out, r)
 			progressed = true
 		}
-		lastT := records[len(records)-1].TimeMs
-		if lastT <= cursor || !progressed {
+		if lastT < cursor || !progressed {
 			break
 		}
 		cursor = lastT + 1
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].TimeMs < out[j].TimeMs })
 	return out, nil
+}
+
+func hlFundingRecordsSince(ctx context.Context, coin string, startMs int64, now time.Time) ([]feedFundingRecord, error) {
+	return hlFundingPagedRecords(ctx, coin, startMs, now.UTC().UnixMilli(), hlFundingMaxRangePasses)
+}
+
+func hlFundingRecordsCoverage(ctx context.Context, coin string, startMs int64, now time.Time, maxPasses int) (feedFundingCoverage, error) {
+	if maxPasses <= 0 {
+		maxPasses = 1
+	}
+	records, err := hlFundingPagedRecords(ctx, coin, startMs, now.UTC().UnixMilli(), maxPasses)
+	if err != nil {
+		return feedFundingCoverage{}, err
+	}
+	cov := feedFundingCoverage{Coin: coin, FromMs: startMs, Records: records}
+	if n := len(records); n > 0 {
+		cov.ToMs = records[n-1].TimeMs
+	}
+	return cov, nil
 }

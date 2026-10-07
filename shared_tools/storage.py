@@ -106,6 +106,7 @@ def init_db(db_path: str = DB_PATH):
     """)
     _migrate_funding_coverage_to_intervals(conn)
     _migrate_backtest_results_close_validation(conn)
+    _migrate_backtest_results_margin_model(conn)
     conn.commit()
     conn.close()
     _SCHEMA_READY.add(db_path)
@@ -138,6 +139,17 @@ def _migrate_backtest_results_close_validation(conn: sqlite3.Connection):
         return
     try:
         conn.execute("ALTER TABLE backtest_results ADD COLUMN close_validation_json TEXT")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" not in str(exc).lower():
+            raise
+
+
+def _migrate_backtest_results_margin_model(conn: sqlite3.Connection):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(backtest_results)")}
+    if "margin_model_json" in columns:
+        return
+    try:
+        conn.execute("ALTER TABLE backtest_results ADD COLUMN margin_model_json TEXT")
     except sqlite3.OperationalError as exc:
         if "duplicate column name" not in str(exc).lower():
             raise
@@ -268,8 +280,8 @@ def store_backtest_result(result: dict, db_path: str = DB_PATH):
         (strategy_name, symbol, timeframe, start_date, end_date,
          initial_capital, final_capital, total_return_pct, annual_return_pct,
          sharpe_ratio, sortino_ratio, max_drawdown_pct, win_rate, profit_factor,
-         total_trades, params, trades_json, close_validation_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         total_trades, params, trades_json, close_validation_json, margin_model_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         result.get("strategy_name", ""),
         result.get("symbol", ""),
@@ -290,6 +302,8 @@ def store_backtest_result(result: dict, db_path: str = DB_PATH):
         json.dumps(result.get("trades", [])),
         (json.dumps(result["close_validation"], sort_keys=True)
          if result.get("close_validation") is not None else None),
+        (json.dumps(result["margin"], sort_keys=True)
+         if result.get("margin") is not None else None),
     ))
     conn.commit()
     conn.close()

@@ -518,7 +518,7 @@ func runBackfillTradeLedger(args []string) int {
 		if sc.Type != "perps" && sc.Type != "manual" {
 			continue
 		}
-		if sc.Type == "perps" && !hyperliquidIsLive(sc.Args) {
+		if (sc.Type == "perps" || sc.Type == "manual") && !hyperliquidIsLive(sc.Args) {
 			if *strategyID == sc.ID {
 				fmt.Fprintf(os.Stderr, "error: strategy %q is paper-mode (no real OIDs to match against userFills)\n", sc.ID)
 				return 1

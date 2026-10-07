@@ -191,9 +191,7 @@ Open parity gaps left by issue #1682, each owned by a follow-up issue (all
 open as of this refresh). The ratchet-alert price gap (finding D) is closed:
 the owner DM reports the stop recorded after the same-cycle trailing update.
 
-- Leverage, margin and liquidation (finding C): the backtester floors equity
-  at 0 after the first bust and does not model venue liquidation, and the
-  ledger comparison refuses `leverage` above 1 — #1728.
+- Leverage, margin and liquidation (finding C, #1728): `--config` Hyperliquid perps backtests size from sizing cash with the live notional rule. Strict ledger comparison still refuses a live isolated leverage above 1 until a recorded liquidation price verifies the formula, and it refuses a pooled budget with no per-entry available-margin evidence. Direct backtests that omit `perps_sizing` are unchanged. The equity-floor `liquidated` flag remains an account-ruin metric.
 - Paper funding (finding E): the issue #1682 production run recorded no
   funding events in paper exports while the simulation charges funding —
   #1729.

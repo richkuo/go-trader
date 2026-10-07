@@ -500,6 +500,21 @@ func effectiveManualSLATRMult(sc StrategyConfig) float64 {
 }
 
 func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOrder, cumFilled, avgPx, cumFee, entryATR float64, atrMethod string, now time.Time) (int, error) {
+	var (
+		n   int
+		err error
+	)
+	var ss *StrategyState
+	if state != nil {
+		ss = state.Strategies[o.StrategyID]
+	}
+	mutatePaperPerpsBook(ss, o.Symbol, func() {
+		n, err = applyLimitFillProgressInner(state, sc, o, cumFilled, avgPx, cumFee, entryATR, atrMethod, now)
+	})
+	return n, err
+}
+
+func applyLimitFillProgressInner(state *AppState, sc StrategyConfig, o PendingLimitOrder, cumFilled, avgPx, cumFee, entryATR float64, atrMethod string, now time.Time) (int, error) {
 	ss := state.Strategies[o.StrategyID]
 	if ss == nil {
 		return 0, fmt.Errorf("strategy state for %q not found", o.StrategyID)

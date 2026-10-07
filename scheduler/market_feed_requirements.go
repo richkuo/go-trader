@@ -103,6 +103,8 @@ type feedRequirements struct {
 	Strategies   map[string]feedStrategyRequirement
 	KeyCadences  map[marketFeedKey][]int
 	SignalKeys   map[marketFeedKey]bool
+
+	AccountingCoins []string
 }
 
 func (r *feedRequirements) addObservation(key feedObservationKey, windowMs int64) {
@@ -251,6 +253,7 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 	}
 	hlCoins, _ := collectPerpsMarkSymbols(cfg.Strategies)
 	req.MidCoins = hlCoins
+	req.AccountingCoins = paperFundingAccountingCoins(cfg.Strategies)
 	req.finalize()
 	return req, nil
 }
@@ -311,6 +314,7 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 		o.fundingNeeds[coin] = need
 	}
 	o.applyObservationNeedsLocked(req.Observations)
+	o.applyAccountingCoinsLocked(req.AccountingCoins)
 	o.subVersion++
 	o.applySeq++
 	token := o.applySeq

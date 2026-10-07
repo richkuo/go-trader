@@ -458,6 +458,8 @@ const (
 	feedRestMids      feedRestReason = "mids"
 	feedRestLotMeta   feedRestReason = "lot_metadata"
 
+	feedRestAccountingFunding feedRestReason = "accounting_funding"
+
 	feedRestCorrection      feedRestReason = "correction"
 	feedRestCorrectionRetry feedRestReason = "correction_retry"
 )
@@ -488,7 +490,10 @@ type marketFeedOwner struct {
 	fundingNeeds map[string]feedFundingNeed
 	observations map[feedObservationKey]*feedObservationState
 	obsSession   uint64
-	recorder     *observationRecorder
+
+	accountingCoins   map[string]bool
+	accountingFunding map[string]*feedAccountingFunding
+	recorder          *observationRecorder
 
 	gen        uint64
 	subVersion uint64
@@ -533,10 +538,13 @@ func newMarketFeedOwner(clock func() time.Time, logf func(string, ...any)) *mark
 		funding:      make(map[string]*feedFunding),
 		fundingNeeds: make(map[string]feedFundingNeed),
 		observations: make(map[feedObservationKey]*feedObservationState),
-		corrOffsets:  append([]time.Duration(nil), feedCorrectionOffsets...),
-		alerts:       make(chan feedAlert, feedAlertChannelDepth),
-		clock:        clock,
-		logf:         logf,
+
+		accountingCoins:   make(map[string]bool),
+		accountingFunding: make(map[string]*feedAccountingFunding),
+		corrOffsets:       append([]time.Duration(nil), feedCorrectionOffsets...),
+		alerts:            make(chan feedAlert, feedAlertChannelDepth),
+		clock:             clock,
+		logf:              logf,
 	}
 }
 

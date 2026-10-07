@@ -97,3 +97,13 @@ func (sdb *StateDB) HasTradeWithExchangeOrderID(strategyID, exchangeOrderID stri
 	}
 	return n != 0, nil
 }
+
+func nonFundingTradeCount(trades []Trade) int {
+	n := 0
+	for _, t := range trades {
+		if t.TradeType != TradeTypeFunding {
+			n++
+		}
+	}
+	return n
+}

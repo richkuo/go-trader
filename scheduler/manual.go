@@ -507,6 +507,21 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 }
 
 func applyManualActionWithCriticals(state *AppState, cfg *Config, scByID map[string]StrategyConfig, a PendingManualAction) ([]string, error) {
+	var (
+		criticals []string
+		err       error
+	)
+	var ss *StrategyState
+	if state != nil {
+		ss = state.Strategies[a.StrategyID]
+	}
+	mutatePaperPerpsBook(ss, a.Symbol, func() {
+		criticals, err = applyManualActionWithCriticalsInner(state, cfg, scByID, a)
+	})
+	return criticals, err
+}
+
+func applyManualActionWithCriticalsInner(state *AppState, cfg *Config, scByID map[string]StrategyConfig, a PendingManualAction) ([]string, error) {
 	sc, hasSC := scByID[a.StrategyID]
 	if !hasSC {
 		return nil, fmt.Errorf("strategy %q not found in config", a.StrategyID)
