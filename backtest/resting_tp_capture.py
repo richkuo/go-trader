@@ -271,8 +271,13 @@ def _mark_historical_orders(row, row_cap=HISTORICAL_ORDERS_MAX):
     try:
         parsed = _parse_json(row.get("raw"))
     except CaptureError:
+        row["complete"] = False
+        row["reason"] = "response was not json"
         return row
-    if isinstance(parsed, list) and len(parsed) >= int(row_cap):
+    if not isinstance(parsed, list):
+        row["complete"] = False
+        row["reason"] = "historicalOrders response is not a list"
+    elif len(parsed) >= int(row_cap):
         row["complete"] = False
         row["reason"] = f"historicalOrders returns at most {int(row_cap)} orders"
     return row
@@ -446,7 +451,7 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, inter
         json.dump(bundle, fh, sort_keys=True, indent=2)
         fh.write("\n")
     if failed:
-        raise CaptureError("one or more info requests failed or the fill stream is incomplete")
+        raise CaptureError("one or more info requests failed or a capture stream is incomplete")
 
 
 def _address_from(args):

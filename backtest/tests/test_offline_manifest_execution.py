@@ -542,7 +542,25 @@ def _order_status(order):
     }
 
 
-def _write_export(path, oids):
+def _write_export(path, oids, events=None):
+    if events is not None:
+        doc = {
+            "schema": "go-trader.booked-ledger",
+            "events": [
+                {
+                    "process_strategy_id": "strat",
+                    "position_id": _avail("p1"),
+                    "is_close": _avail(event["is_close"]),
+                    "side": _avail(event["side"]),
+                    "symbol": _avail("ETH"),
+                    "timestamp": event["timestamp"],
+                    "tp_oids_json": _avail(json.dumps(oids)),
+                }
+                for event in events
+            ],
+        }
+        path.write_text(json.dumps(doc))
+        return
     doc = {
         "schema": "go-trader.booked-ledger",
         "events": [
@@ -568,12 +586,13 @@ def _write_export(path, oids):
     path.write_text(json.dumps(doc))
 
 
-def _study_orders(tmp_path, orders, candles, historical=None):
+def _study_orders(tmp_path, orders, candles, historical=None, export_events=None, allow_incomplete=False):
     import resting_tp_capture as cap
     import resting_tp_fill_study as study
 
+    tmp_path.mkdir(parents=True, exist_ok=True)
     export = tmp_path / "export.json"
-    _write_export(export, [order["oid"] for order in orders])
+    _write_export(export, [order["oid"] for order in orders], events=export_events)
     by_oid = {order["oid"]: _order_status(order) for order in orders}
     fills = []
     for order in orders:
@@ -602,9 +621,13 @@ def _study_orders(tmp_path, orders, candles, historical=None):
 
     out = tmp_path / "capture"
     cap._prepare_out(str(out), os.path.abspath(os.path.join(os.path.dirname(cap.__file__), "..")))
-    cap.capture(
-        [str(export)], "0x" + "11" * 20, since, end, str(out),
-        5, 1, "5m", opener=opener, clock_ms=end)
+    try:
+        cap.capture(
+            [str(export)], "0x" + "11" * 20, since, end, str(out),
+            5, 1, "5m", opener=opener, clock_ms=end)
+    except cap.CaptureError:
+        if not allow_incomplete:
+            raise
     manifest = tmp_path / "manifest.json"
     candle_path = tmp_path / "ETH.csv.gz"
     frame = pd.DataFrame({
@@ -1256,21 +1279,6 @@ def test_resting_tp_complete_order_status_html_exits_not_json(tmp_path):
     assert "not json" in proc.stderr
 
 
-def _ledger_event(position_id, is_close, timestamp, side="buy"):
-    return {
-        "process_strategy_id": "strat",
-        "position_id": _avail(position_id),
-        "is_close": _avail(is_close),
-        "side": _avail(side),
-        "symbol": _avail("ETH"),
-        "timestamp": timestamp,
-    }
-
-
-def _write_position_export(path, events):
-    path.write_text(json.dumps({"schema": "go-trader.booked-ledger", "events": events}))
-
-
 def _capture_historical(tmp_path, rows):
     import resting_tp_capture as cap
 
@@ -1318,7 +1326,15 @@ def test_resting_tp_historical_orders_below_the_cap_stay_complete(tmp_path):
     assert "reason" not in row
 
 
-def _historical_status(oid, limit, placement, status, status_time, sz="1"):
+def test_resting_tp_historical_orders_that_are_not_a_list_are_incomplete(tmp_path):
+    bundle, raised = _capture_historical(tmp_path, {"error": "busy"})
+    row = bundle["completeness"]["historicalOrders"]
+    assert raised
+    assert row["complete"] is False
+    assert row["reason"] == "historicalOrders response is not a list"
+
+
+def _historical_status(oid, limit, placement, status, status_time, reduce_only=True):
     return {
         "status": "order",
         "order": {
@@ -1327,9 +1343,9 @@ def _historical_status(oid, limit, placement, status, status_time, sz="1"):
                 "limitPx": limit,
                 "oid": oid,
                 "origSz": "1",
-                "reduceOnly": True,
+                "reduceOnly": reduce_only,
                 "side": "A",
-                "sz": sz,
+                "sz": "1",
                 "tif": "Gtc",
                 "timestamp": placement,
             },
@@ -1339,7 +1355,17 @@ def _historical_status(oid, limit, placement, status, status_time, sz="1"):
     }
 
 
-def test_resting_tp_incomplete_historical_orders_flag_discovered_orders_and_sibling_bars(tmp_path):
+def _capped_history(rows):
+    import resting_tp_capture as cap
+
+    filler = [
+        _historical_status(100_000 + i, "50.00", _ms(0), "canceled", _ms(1), reduce_only=False)
+        for i in range(cap.HISTORICAL_ORDERS_MAX - len(rows))
+    ]
+    return list(rows) + filler
+
+
+def test_resting_tp_capped_historical_orders_flag_discovered_orders_and_sibling_bars(tmp_path):
     import resting_tp_fill_study as study
 
     orders = [{
@@ -1347,73 +1373,55 @@ def test_resting_tp_incomplete_historical_orders_flag_discovered_orders_and_sibl
         "status_time": _ms(22, 30), "orig": "1", "sz": "0",
         "fills": [{"time": _ms(22, 30), "sz": "1", "px": "100.00", "tid": 1}],
     }]
-    historical = [_historical_status(2, "150.00", _ms(0), "canceled", _ms(15))]
-    scored = _study_orders(tmp_path, orders, _example_candles(), historical=historical)
-    scored_by_limit = {row["limit_px"]: row["outcome"] for row in scored["orders"]}
-    assert scored_by_limit == {"100.00": "full_fill", "150.00": "not_reached"}
-    bundle_path = tmp_path / "capture" / "bundle.json"
-    bundle = json.loads(bundle_path.read_text())
-    bundle["completeness"]["historicalOrders"]["complete"] = False
-    bundle["completeness"]["historicalOrders"]["reason"] = (
-        "historicalOrders returns at most 2000 orders")
-    bundle_path.write_text(json.dumps(bundle))
-    manifest = tmp_path / "manifest.json"
-    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
-    flagged = study.study(
-        [str(tmp_path / "export.json")], str(tmp_path / "capture"), str(manifest),
-        digest, "study", "pending")
-    by_limit = {row["limit_px"]: row["outcome"] for row in flagged["orders"]}
-    assert by_limit["150.00"] == "historical_orders_incomplete"
-    assert by_limit["100.00"] == "historical_orders_incomplete"
-    assert all(row["outcome"] not in study.RATE_CLASSES for row in flagged["orders"])
+    discovered = [_historical_status(2, "150.00", _ms(0), "canceled", _ms(15))]
+    complete = _study_orders(tmp_path / "complete", orders, _example_candles(), historical=discovered)
+    assert {row["limit_px"]: row["outcome"] for row in complete["orders"]} == {
+        "100.00": "full_fill", "150.00": "not_reached"}
+    capped = _study_orders(
+        tmp_path / "capped", orders, _example_candles(),
+        historical=_capped_history(discovered), allow_incomplete=True)
+    bundle = json.loads((tmp_path / "capped" / "capture" / "bundle.json").read_text())
+    assert bundle["completeness"]["historicalOrders"]["complete"] is False
+    by_limit = {row["limit_px"]: row["outcome"] for row in capped["orders"]}
+    assert by_limit == {"100.00": "historical_orders_incomplete", "150.00": "historical_orders_incomplete"}
+    assert all(row["outcome"] not in study.RATE_CLASSES for row in capped["orders"])
+    assert capped["sample"]["orders_per_class"] == {}
 
 
-def test_resting_tp_order_between_close_events_is_attributed(tmp_path):
-    import resting_tp_fill_study as study
+def _two_close_events():
+    return [
+        {"is_close": False, "side": "buy", "timestamp": "2024-01-01T00:00:00Z"},
+        {"is_close": True, "side": "sell", "timestamp": "2024-01-01T00:10:00Z"},
+        {"is_close": True, "side": "sell", "timestamp": "2024-01-01T00:20:00Z"},
+    ]
 
-    path = tmp_path / "export.json"
-    _write_position_export(path, [
-        _ledger_event("p1", False, "2024-01-01T00:00:00Z"),
-        _ledger_event("p1", True, "2024-01-01T00:10:00Z", side="sell"),
-        _ledger_event("p1", True, "2024-01-01T00:20:00Z", side="sell"),
-    ])
-    positions, _hashes = study.load_exports([str(path)])
-    t1 = study.parse_time_ms("2024-01-01T00:10:00Z")
-    t2 = study.parse_time_ms("2024-01-01T00:20:00Z")
-    assert positions[0]["close_ms"] == t2
-    owner, reason = study.attribute(9, "ETH", "sell", t1 + 60_000, positions, False)
-    assert reason is None
-    assert owner["position_id"] == "p1"
+
+def _discovered_outcome(report):
+    rows = [row for row in report["orders"] if row["limit_px"] == "150.00"]
+    assert len(rows) == 1
+    return rows[0]["outcome"]
+
+
+def test_resting_tp_discovered_order_between_two_close_events_is_attributed(tmp_path):
+    discovered = [_historical_status(2, "150.00", _ms(12), "canceled", _ms(21))]
+    report = _study_orders(
+        tmp_path, [], _example_candles(), historical=discovered,
+        export_events=_two_close_events())
+    assert report["sample"]["windows"][0]["close_ms"] == _ms(20)
+    assert _discovered_outcome(report) == "not_reached"
 
 
 def test_resting_tp_one_close_event_keeps_that_window(tmp_path):
-    import resting_tp_fill_study as study
-
-    path = tmp_path / "export.json"
-    close = "2024-01-01T00:30:00Z"
-    _write_position_export(path, [
-        _ledger_event("p1", False, "2024-01-01T00:00:00Z"),
-        _ledger_event("p1", True, close, side="sell"),
-    ])
-    positions, _hashes = study.load_exports([str(path)])
-    stamp = study.parse_time_ms(close)
-    assert positions[0]["close_ms"] == stamp
-    owner, reason = study.attribute(9, "ETH", "sell", stamp - 60_000, positions, False)
-    assert reason is None
-    assert owner["close_ms"] == stamp
+    discovered = [_historical_status(2, "150.00", _ms(12), "canceled", _ms(21))]
+    report = _study_orders(tmp_path, [], _example_candles(), historical=discovered)
+    assert report["sample"]["windows"][0]["close_ms"] == _ms(30)
+    assert _discovered_outcome(report) == "not_reached"
 
 
-def test_resting_tp_order_after_the_last_close_stays_unattributed(tmp_path):
-    import resting_tp_fill_study as study
-
-    path = tmp_path / "export.json"
-    _write_position_export(path, [
-        _ledger_event("p1", False, "2024-01-01T00:00:00Z"),
-        _ledger_event("p1", True, "2024-01-01T00:10:00Z", side="sell"),
-        _ledger_event("p1", True, "2024-01-01T00:20:00Z", side="sell"),
-    ])
-    positions, _hashes = study.load_exports([str(path)])
-    t2 = study.parse_time_ms("2024-01-01T00:20:00Z")
-    assert positions[0]["close_ms"] == t2
-    _owner, reason = study.attribute(9, "ETH", "sell", t2 + 1000, positions, False)
-    assert reason == "unattributed"
+def test_resting_tp_discovered_order_after_the_last_close_stays_unattributed(tmp_path):
+    discovered = [_historical_status(2, "150.00", _ms(22), "canceled", _ms(28))]
+    report = _study_orders(
+        tmp_path, [], _example_candles(), historical=discovered,
+        export_events=_two_close_events())
+    assert report["sample"]["windows"][0]["close_ms"] == _ms(20)
+    assert _discovered_outcome(report) == "unattributed"
