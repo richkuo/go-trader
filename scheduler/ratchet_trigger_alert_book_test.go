@@ -209,6 +209,34 @@ func TestRatchetAlertBook_ErrorLeavesOldStop(t *testing.T) {
 	}
 }
 
+func TestRatchetAlertBook_ExternalFillNotRetained(t *testing.T) {
+	sc := ratchetBookLive(ratchetAlertSC(3.0, tier(1.0, 0, 2.0)))
+	pos := ratchetBookPos(sc, "long", 1, 115, 80, 410)
+	st := ratchetBookState(sc, pos)
+	var call ratchetStubCall
+	ratchetInstallStub(t, &HyperliquidStopLossUpdateResult{StopLossFilledExternally: true}, nil, &call)
+	_, alert := applyTrailingTPRatchetToPosition(sc, pos, "ETH", 115, nil)
+	var mu sync.RWMutex
+	_, _, ev := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 115, nil, nil, nil, &mu, nil, silentStrategyLogger(sc.ID))
+	sender := ratchetFinish(t, sc, st, alert, ev, true)
+	if !call.called || call.cancelOID != 410 {
+		t.Fatalf("stub call=%+v want cancel 410", call)
+	}
+	if ev.Confirmed || ev.Result == nil || !ev.Result.StopLossFilledExternally {
+		t.Fatalf("confirmed=%v result=%v, want an unconfirmed external fill", ev.Confirmed, ev.Result)
+	}
+	if !approxEq(pos.StopLossTriggerPx, 80) || pos.StopLossOID != 410 || pos.Quantity != 1 {
+		t.Fatalf("book trigger=%v oid=%d qty=%v, want 80, 410, and 1", pos.StopLossTriggerPx, pos.StopLossOID, pos.Quantity)
+	}
+	if len(sender.messages) != 1 {
+		t.Fatalf("sends=%d", len(sender.messages))
+	}
+	msg := sender.messages[0]
+	if !strings.Contains(msg, "SL trigger: $80.0000 (previous stop filled on venue; close pending reconcile)") || strings.Contains(msg, "previous stop retained") || strings.Contains(msg, "(unchanged)") {
+		t.Fatalf("message:\n%s", msg)
+	}
+}
+
 func TestRatchetAlertBook_FullAndPartialFill(t *testing.T) {
 	sc := ratchetBookLive(ratchetAlertSC(3.0, tier(1.0, 0, 2.0)))
 	pos := ratchetBookPos(sc, "long", 1, 115, 80, 410)

@@ -11,6 +11,7 @@ const (
 	ratchetOutcomeMoved            = "moved"
 	ratchetOutcomeUnchanged        = "unchanged"
 	ratchetOutcomeNotConfirmed     = "replacement not confirmed; previous stop retained"
+	ratchetOutcomeFilledExternally = "previous stop filled on venue; close pending reconcile"
 	ratchetOutcomeSamePrice        = "replaced at the same price"
 	ratchetOutcomeRequestedUnknown = "requested, outcome unknown"
 	ratchetOutcomeUnknownRetained  = "outcome unknown; previous stop retained"
@@ -124,6 +125,8 @@ func formatRatchetSLLine(a RatchetTriggerAlert) string {
 		return fmt.Sprintf("SL trigger: $%.4f (unchanged)", a.StopTriggerPx)
 	case ratchetOutcomeNotConfirmed:
 		return fmt.Sprintf("SL trigger: $%.4f (replacement not confirmed; previous stop retained)", a.StopTriggerPx)
+	case ratchetOutcomeFilledExternally:
+		return fmt.Sprintf("SL trigger: $%.4f (previous stop filled on venue; close pending reconcile)", a.StopTriggerPx)
 	case ratchetOutcomeRequestedUnknown:
 		return fmt.Sprintf("SL trigger: $%.4f (requested, outcome unknown)", a.StopTriggerPx)
 	case ratchetOutcomeUnknownRetained:
@@ -238,6 +241,10 @@ func applyRatchetBookOutcome(alert *RatchetTriggerAlert, snap ratchetBookSnap, m
 		alert.Outcome = ratchetOutcomeMoved
 		return
 	}
+	if ratchetAttemptFilledExternally(ev) {
+		alert.Outcome = ratchetOutcomeFilledExternally
+		return
+	}
 	if ratchetAttemptUnconfirmedRetained(ev, snap, alert.PrevStopTriggerPx, alert.PrevStopOID) {
 		alert.Outcome = ratchetOutcomeNotConfirmed
 		return
@@ -247,6 +254,11 @@ func applyRatchetBookOutcome(alert *RatchetTriggerAlert, snap ratchetBookSnap, m
 		return
 	}
 	alert.Outcome = ratchetOutcomeNoStop
+}
+
+func ratchetAttemptFilledExternally(ev ratchetStopEvidence) bool {
+	r := ev.Result
+	return ev.Live && r != nil && r.StopLossFilledExternally
 }
 
 func ratchetAttemptUnconfirmedRetained(ev ratchetStopEvidence, snap ratchetBookSnap, prevTrigger float64, prevOID int64) bool {
