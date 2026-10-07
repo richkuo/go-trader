@@ -1,0 +1,399 @@
+{
+  "schema": "go-trader.booked-ledger",
+  "schema_version": 1,
+  "inspected_revision": null,
+  "capture_manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "time_basis": "UTC",
+  "timestamp_meanings": {
+    "trades": "stored ledger timestamp; exchange fill time is not established",
+    "wallet_transfers": "stored exchange ledger event time in Unix milliseconds"
+  },
+  "selection": {
+    "partition": "paper",
+    "process_strategy_id": "hl-fee-fixture-paper",
+    "storage_strategy_id": "hl-fee-fixture-paper",
+    "source_role": "primary",
+    "platform": "hyperliquid"
+  },
+  "capture": {
+    "started_at": "2026-01-06T00:00:00Z",
+    "completed_at": "2026-01-06T00:00:01Z",
+    "source_revision": null,
+    "consistency": "transactional_per_file"
+  },
+  "snapshot_files": [
+    {
+      "source_role": "primary",
+      "relative_path": "state/primary.db",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "current_effective_configuration": {
+    "basis": "current_at_capture",
+    "config_version": 20,
+    "strategy": {},
+    "regime": {},
+    "portfolio_risk": {}
+  },
+  "events": [
+    {
+      "event_key": "primary/trades/31",
+      "source_role": "primary",
+      "source_table": "trades",
+      "source_row_id": "31",
+      "partition": "paper",
+      "process_strategy_id": "hl-fee-fixture-paper",
+      "storage_strategy_id": "hl-fee-fixture-paper",
+      "timestamp_raw": "2026-01-05T00:00:42Z",
+      "timestamp": "2026-01-05T00:00:42Z",
+      "timestamp_meaning": "ledger_record_time",
+      "symbol": {
+        "value": "ETH",
+        "raw_value": "ETH",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "symbol"
+          }
+        ]
+      },
+      "side": {
+        "value": "buy",
+        "raw_value": "buy",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "side"
+          }
+        ]
+      },
+      "trade_type": {
+        "value": "perps",
+        "raw_value": "perps",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "trade_type"
+          }
+        ]
+      },
+      "details": {
+        "value": "Open long 0.500000 @ $2000.00 (5x, fee $0.45)",
+        "raw_value": "Open long 0.500000 @ $2000.00 (5x, fee $0.45)",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "details"
+          }
+        ]
+      },
+      "position_id": {
+        "value": "pos-31",
+        "raw_value": "pos-31",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "position_id"
+          }
+        ]
+      },
+      "exchange_order_id": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "fee_source": {
+        "value": "modeled",
+        "raw_value": "modeled",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "fee_source"
+          }
+        ]
+      },
+      "regime": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "quantity": {
+        "value": 0.5,
+        "raw_value": 0.5,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "quantity"
+          }
+        ]
+      },
+      "price": {
+        "value": 2000.0,
+        "raw_value": 2000.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "price"
+          }
+        ]
+      },
+      "value": {
+        "value": 1000.0,
+        "raw_value": 1000.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "value"
+          }
+        ]
+      },
+      "exchange_fee": {
+        "value": 0.45,
+        "raw_value": 0.45,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "exchange_fee"
+          }
+        ]
+      },
+      "realized_pnl": {
+        "value": 0.0,
+        "raw_value": 0.0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "realized_pnl"
+          }
+        ]
+      },
+      "is_close": {
+        "value": false,
+        "raw_value": false,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "is_close"
+          }
+        ]
+      },
+      "pnl_gross": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "pnl_gross"
+          }
+        ]
+      },
+      "manual": {
+        "value": false,
+        "raw_value": false,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "manual"
+          }
+        ]
+      },
+      "row_net_pnl": {
+        "value": -0.45,
+        "raw_value": -0.45,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "row_net_pnl"
+          }
+        ]
+      },
+      "ledger_delta": {
+        "value": -0.45,
+        "raw_value": -0.45,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "ledger_delta"
+          }
+        ]
+      },
+      "event_kind": {
+        "value": "non_close",
+        "raw_value": "non_close",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "event_kind"
+          }
+        ]
+      },
+      "close_reason": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "close_extent": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "position_allocation": {
+        "value": "recorded",
+        "raw_value": "recorded",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "synthetic_test_evidence",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "31",
+            "source_field": "position_allocation"
+          }
+        ]
+      },
+      "entry_atr": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_atr_mult": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_trigger_px": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "stop_loss_oid": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "tp_oids_json": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      },
+      "tp_tiers_json": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "not_recorded",
+        "provenance": []
+      }
+    }
+  ],
+  "wallet_orphan_context": {
+    "status": "available",
+    "reason": null,
+    "ownership": "live_wallet",
+    "allocation": "unallocated",
+    "records": []
+  }
+}
