@@ -29,32 +29,41 @@ OBSERVATION_INPUT_STRATEGIES = {"open_interest_breakout"}
 FUNDING_ACCRUAL_STRATEGIES = {"delta_neutral_funding"}
 
 
-def _attach_funding_if_needed(df, strategy_name, symbol, since):
-    if strategy_name not in FUNDING_COLUMN_STRATEGIES or df.empty:
+def attach_backtest_funding(*args, **kwargs):
+    """Re-export of the shared helper for callers that import run_backtest."""
+    from funding_fetcher import attach_backtest_funding as impl
+    return impl(*args, **kwargs)
+
+
+def _attach_funding_if_needed(df, strategy_name, symbol, since,
+                              platform="hyperliquid", strategy_type="perps",
+                              mode="charge", timeframe=None):
+    if df is None or getattr(df, "empty", True):
         return df
-    from funding_fetcher import (attach_funding_accrual_column,
-                                 attach_funding_column, load_cached_funding)
-    coin = symbol.split("/")[0]
-    try:
-        funding = load_cached_funding(coin, since, end_date=df.index[-1])
-    except Exception as e:
-        print(f"[WARN] funding history fetch failed for {coin}: {e} — "
-              f"'{strategy_name}' will produce zero entries.")
-        funding = None
-    out = attach_funding_column(df, funding)
-    have = int(out["funding_rate"].notna().sum())
-    if have == 0:
-        print(f"[WARN] no funding data attached for {coin} since {since} — "
-              f"'{strategy_name}' will produce zero entries.")
-    else:
-        print(f"  Funding: {have}/{len(out)} bars covered (HL hourly, coin={coin})")
-    if strategy_name in FUNDING_ACCRUAL_STRATEGIES:
-        out = attach_funding_accrual_column(out, funding)
+    from funding_fetcher import attach_backtest_funding as impl
+    coin = str(symbol).split("/")[0]
+    out, block = impl(
+        df, coin, timeframe, platform, strategy_type, strategy_name,
+        mode=mode, since=since,
+    )
+    if strategy_name in FUNDING_COLUMN_STRATEGIES:
+        if not block.get("available"):
+            print(f"[WARN] funding history fetch failed for {coin}: "
+                  f"{block.get('error', 'no rows')} — "
+                  f"'{strategy_name}' will produce zero entries.")
+        else:
+            rate = out["funding_rate"] if "funding_rate" in out.columns else None
+            have = int(rate.notna().sum()) if rate is not None else 0
+            if have == 0:
+                print(f"[WARN] no funding data attached for {coin} since {since} — "
+                      f"'{strategy_name}' will produce zero entries.")
+            else:
+                print(f"  Funding: {have}/{len(out)} bars covered (HL hourly, coin={coin})")
     return out
 from htf_filter import get_default_htf, apply_htf_filter
 from registry_loader import load_registry
 from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
-                        _LABELS_UNSET,
+                        FundingIncompleteError, _LABELS_UNSET,
                         STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS,
                         STOP_PERCENT_FIELD_KEYS, STOP_REGIME_FIELD_KEYS,
                         STOP_SCALAR_FIELD_KEYS, STOP_UNITS_LIVE_CONFIG,
@@ -1499,6 +1508,7 @@ def run_single_backtest(
     trailing_stop_min_move_pct: Optional[float] = None,
     stop_platform: Optional[str] = None,
     capability_context: Optional[CapabilityContext] = None,
+    funding_mode: str = "charge",
     perps_sizing: Optional[dict] = None,
     liquidation_model: str = "none",
     venue_margin: Optional[dict] = None,
@@ -1595,7 +1605,11 @@ def run_single_backtest(
         if df.empty:
             print("No data available!")
             return None
-        df = _attach_funding_if_needed(df, strategy_name, symbol, since)
+        df = _attach_funding_if_needed(
+            df, strategy_name, symbol, since,
+            platform=platform, strategy_type=strategy_type,
+            mode=funding_mode, timeframe=timeframe,
+        )
 
     print(f"  Data: {len(df)} candles from {df.index[0]} to {df.index[-1]}")
 
@@ -1749,6 +1763,9 @@ def run_single_backtest(
         regime_label_columns=label_columns,
         **(feature_label_kwargs(regime_label_plan) if label_columns else {}),
     )
+    if manifest is None:
+        from funding_fetcher import rejoin_funding_columns
+        df_signals = rejoin_funding_columns(df_signals, df)
     results = bt.run(
         df_signals,
         strategy_name=strategy_name,
@@ -1780,6 +1797,14 @@ def run_single_backtest(
     return results
 
 
+def _funding_refusal(strategy: str, symbol: str, exc: FundingIncompleteError) -> dict:
+    """Record one charge-mode refusal. The caller keeps going and exits 1 later."""
+    block = (exc.metrics or {}).get("funding") or {}
+    print(f"  FUNDING REFUSED: {strategy} {symbol}")
+    print(json.dumps(block, sort_keys=True, default=str))
+    return {"strategy": strategy, "symbol": symbol, "funding": block}
+
+
 def run_all_strategies(
     symbol: str = "BTC/USDT",
     timeframe: str = "1d",
@@ -1798,7 +1823,8 @@ def run_all_strategies(
     intrabar_resolution: str = "ohlc_walk",
     atr_method: str = "simple",
     comparison_mode: Optional[str] = None,
-) -> list:
+    funding_mode: str = "charge",
+) -> tuple:
     validate_close_capabilities(close_refs=close_strategies,
                                 comparison_mode=comparison_mode,
                                 platform=platform, phase="preflight")
@@ -1810,19 +1836,25 @@ def run_all_strategies(
     print(f"{'#'*60}")
 
     all_results = []
+    refused = []
     for name in strat_list:
-        result = run_single_backtest(
-            name, symbol, timeframe, since, capital,
-            registry=registry, platform=platform, htf_filter=htf_filter,
-            close_strategies=close_strategies,
-            regime_enabled=regime_enabled, regime_period=regime_period,
-            regime_adx_threshold=regime_adx_threshold,
-            allowed_regimes=allowed_regimes,
-            direction=direction,
-            intrabar_resolution=intrabar_resolution,
-            atr_method=atr_method,
-            comparison_mode=comparison_mode,
-        )
+        try:
+            result = run_single_backtest(
+                name, symbol, timeframe, since, capital,
+                registry=registry, platform=platform, htf_filter=htf_filter,
+                close_strategies=close_strategies,
+                regime_enabled=regime_enabled, regime_period=regime_period,
+                regime_adx_threshold=regime_adx_threshold,
+                allowed_regimes=allowed_regimes,
+                direction=direction,
+                intrabar_resolution=intrabar_resolution,
+                atr_method=atr_method,
+                comparison_mode=comparison_mode,
+                funding_mode=funding_mode,
+            )
+        except FundingIncompleteError as exc:
+            refused.append(_funding_refusal(name, symbol, exc))
+            continue
         if result:
             all_results.append(result)
 
@@ -1830,8 +1862,11 @@ def run_all_strategies(
         print(format_comparison_report(all_results))
         print("  " + format_close_validation(aggregate_close_validations(
             r.get("close_validation") for r in all_results)))
+    if refused:
+        listed = ", ".join(sorted(item["strategy"] for item in refused))
+        print(f"  FUNDING REFUSED strategies: {listed}")
 
-    return all_results
+    return all_results, refused
 
 
 def run_multi_asset(
@@ -1852,7 +1887,8 @@ def run_multi_asset(
     intrabar_resolution: str = "ohlc_walk",
     atr_method: str = "simple",
     comparison_mode: Optional[str] = None,
-) -> dict:
+    funding_mode: str = "charge",
+) -> tuple:
     validate_close_capabilities(close_refs=close_strategies,
                                 comparison_mode=comparison_mode,
                                 platform=platform, phase="preflight")
@@ -1867,24 +1903,30 @@ def run_multi_asset(
     print(f"{'#'*60}")
 
     results_by_asset = {}
+    refused = []
     for symbol in sym_list:
         print(f"\n{'─'*40}")
         print(f"  Asset: {symbol}")
         print(f"{'─'*40}")
         results_by_asset[symbol] = []
         for strat_name in strat_list:
-            result = run_single_backtest(
-                strat_name, symbol, timeframe, since, capital,
-                registry=registry, platform=platform, htf_filter=htf_filter,
-                close_strategies=close_strategies,
-                regime_enabled=regime_enabled, regime_period=regime_period,
-                regime_adx_threshold=regime_adx_threshold,
-                allowed_regimes=allowed_regimes,
-                direction=direction,
-                intrabar_resolution=intrabar_resolution,
-                atr_method=atr_method,
-                comparison_mode=comparison_mode,
-            )
+            try:
+                result = run_single_backtest(
+                    strat_name, symbol, timeframe, since, capital,
+                    registry=registry, platform=platform, htf_filter=htf_filter,
+                    close_strategies=close_strategies,
+                    regime_enabled=regime_enabled, regime_period=regime_period,
+                    regime_adx_threshold=regime_adx_threshold,
+                    allowed_regimes=allowed_regimes,
+                    direction=direction,
+                    intrabar_resolution=intrabar_resolution,
+                    atr_method=atr_method,
+                    comparison_mode=comparison_mode,
+                    funding_mode=funding_mode,
+                )
+            except FundingIncompleteError as exc:
+                refused.append(_funding_refusal(strat_name, symbol, exc))
+                continue
             if result:
                 results_by_asset[symbol].append(result)
 
@@ -1892,7 +1934,11 @@ def run_multi_asset(
     print("  " + format_close_validation(aggregate_close_validations(
         r.get("close_validation")
         for results in results_by_asset.values() for r in results)))
-    return results_by_asset
+    if refused:
+        listed = ", ".join(sorted(
+            f"{item['strategy']} {item['symbol']}" for item in refused))
+        print(f"  FUNDING REFUSED symbols: {listed}")
+    return results_by_asset, refused
 
 
 def run_walk_forward(
@@ -1915,6 +1961,8 @@ def run_walk_forward(
     optimize_metric: str = "sharpe_ratio",
     direction: Optional[str] = None,
     comparison_mode: Optional[str] = None,
+    strategy_type: str = "perps",
+    funding_mode: str = "charge",
 ) -> Optional[dict]:
     for stack in (close_stack_grid or [{"close_strategies": close_strategies}]):
         validate_close_capabilities(close_refs=stack.get("close_strategies"),
@@ -1941,7 +1989,11 @@ def run_walk_forward(
     if df.empty:
         print("No data available!")
         return None
-    df = _attach_funding_if_needed(df, strategy_name, symbol, since)
+    df = _attach_funding_if_needed(
+        df, strategy_name, symbol, since,
+        platform=platform, strategy_type=strategy_type,
+        mode=funding_mode, timeframe=timeframe,
+    )
 
     result = walk_forward_optimize(
         df, strategy_name, param_ranges,
@@ -1965,6 +2017,10 @@ def run_walk_forward(
         comparison_mode=comparison_mode,
     )
 
+    print(f"  Funding-skipped folds: {int(result.get('funding_skipped_folds') or 0)}")
+    print(f"  Funding-skipped candidates: {int(result.get('funding_skipped_candidates') or 0)}")
+    if result.get("error"):
+        print(f"  {result['error']}")
     print(format_walk_forward_report(result))
     return result
 
@@ -1975,6 +2031,14 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Strategy name or 'all'")
     parser.add_argument("--registry", choices=["spot", "futures"], default="spot",
                         help="Strategy registry to load (spot or futures)")
+    parser.add_argument("--funding",
+                        choices=["charge", "partial", "off"],
+                        default="charge",
+                        help="Hyperliquid perps funding: charge refuses an "
+                             "incomplete result, partial keeps a flagged "
+                             "result, off reproduces the pre-change numbers "
+                             "(cash still includes delta-neutral accrual; "
+                             "per-trade statistics stay on price PnL)")
     parser.add_argument("--platform",
                         choices=["binanceus", "hyperliquid", "robinhood",
                                  "luno", "okx", "okx-perps"],
@@ -2356,56 +2420,69 @@ def _main():
         if args.strategy == "all":
             print("Specify a strategy for single mode: --strategy <name>")
             sys.exit(1)
-        run_single_backtest(args.strategy, args.symbol, args.timeframe,
-                            args.since, args.capital,
-                            params=open_params,
-                            registry=args.registry, platform=args.platform,
-                            htf_filter=args.htf_filter,
-                            close_strategies=close_refs,
-                            regime_enabled=args.regime_enabled,
-                            regime_period=args.regime_period,
-                            regime_adx_threshold=args.regime_adx_threshold,
-                            allowed_regimes=args.allowed_regimes,
-                            manifest_path=args.manifest,
-                            manifest_dataset=args.manifest_dataset,
-                            manifest_window=args.manifest_window,
-                            cost_multiplier=args.cost_multiplier,
-                            comparison_mode=args.comparison_mode,
-                            liquidation_model=args.liquidation_model,
-                            **live_stop_kwargs)
+        try:
+            run_single_backtest(args.strategy, args.symbol, args.timeframe,
+                                args.since, args.capital,
+                                params=open_params,
+                                registry=args.registry, platform=args.platform,
+                                htf_filter=args.htf_filter,
+                                close_strategies=close_refs,
+                                regime_enabled=args.regime_enabled,
+                                regime_period=args.regime_period,
+                                regime_adx_threshold=args.regime_adx_threshold,
+                                allowed_regimes=args.allowed_regimes,
+                                manifest_path=args.manifest,
+                                manifest_dataset=args.manifest_dataset,
+                                manifest_window=args.manifest_window,
+                                cost_multiplier=args.cost_multiplier,
+                                comparison_mode=args.comparison_mode,
+                                funding_mode=args.funding,
+                                liquidation_model=args.liquidation_model,
+                                **live_stop_kwargs)
+        except FundingIncompleteError as exc:
+            _funding_refusal(args.strategy, args.symbol, exc)
+            sys.exit(1)
 
     elif args.mode == "compare":
         strategies = None if args.strategy == "all" else [args.strategy]
-        run_all_strategies(args.symbol, args.timeframe, args.since, args.capital,
-                           strategies,
-                           registry=args.registry, platform=args.platform,
-                           htf_filter=args.htf_filter,
-                           close_strategies=close_refs,
-                           regime_enabled=args.regime_enabled,
-                           regime_period=args.regime_period,
-                           regime_adx_threshold=args.regime_adx_threshold,
-                           allowed_regimes=args.allowed_regimes,
-                           direction=args.direction,
-                           intrabar_resolution=args.intrabar_resolution,
-                           atr_method=args.atr_method or "simple",
-                           comparison_mode=args.comparison_mode)
+        _results, refused = run_all_strategies(
+            args.symbol, args.timeframe, args.since, args.capital,
+            strategies,
+            registry=args.registry, platform=args.platform,
+            htf_filter=args.htf_filter,
+            close_strategies=close_refs,
+            regime_enabled=args.regime_enabled,
+            regime_period=args.regime_period,
+            regime_adx_threshold=args.regime_adx_threshold,
+            allowed_regimes=args.allowed_regimes,
+            direction=args.direction,
+            intrabar_resolution=args.intrabar_resolution,
+            atr_method=args.atr_method or "simple",
+            comparison_mode=args.comparison_mode,
+            funding_mode=args.funding)
+        if refused:
+            sys.exit(1)
 
     elif args.mode == "multi":
         strategies = None if args.strategy == "all" else [args.strategy]
         symbols = args.symbols or DEFAULT_SYMBOLS
-        run_multi_asset(strategies, symbols, args.timeframe, args.since,
-                        args.capital,
-                        registry=args.registry, platform=args.platform,
-                        htf_filter=args.htf_filter,
-                        close_strategies=close_refs,
-                        regime_enabled=args.regime_enabled,
-                        regime_period=args.regime_period,
-                        regime_adx_threshold=args.regime_adx_threshold,
-                        allowed_regimes=args.allowed_regimes,
-                        direction=args.direction,
-                        intrabar_resolution=args.intrabar_resolution,
-                        atr_method=args.atr_method or "simple",
-                        comparison_mode=args.comparison_mode)
+        _results, refused = run_multi_asset(
+            strategies, symbols, args.timeframe, args.since,
+            args.capital,
+            registry=args.registry, platform=args.platform,
+            htf_filter=args.htf_filter,
+            close_strategies=close_refs,
+            regime_enabled=args.regime_enabled,
+            regime_period=args.regime_period,
+            regime_adx_threshold=args.regime_adx_threshold,
+            allowed_regimes=args.allowed_regimes,
+            direction=args.direction,
+            intrabar_resolution=args.intrabar_resolution,
+            atr_method=args.atr_method or "simple",
+            comparison_mode=args.comparison_mode,
+            funding_mode=args.funding)
+        if refused:
+            sys.exit(1)
 
     elif args.mode == "optimize":
         close_stack_grid = None
@@ -2451,7 +2528,9 @@ def _main():
                                  close_stack_grid=close_stack_grid,
                                  optimize_metric=args.optimize_metric,
                                  direction=args.direction,
-                                 comparison_mode=args.comparison_mode)
+                                 comparison_mode=args.comparison_mode,
+                                 strategy_type=live_stop_kwargs.get("strategy_type", "perps"),
+                                 funding_mode=args.funding)
         else:
             run_walk_forward(args.strategy, args.symbol, args.timeframe,
                              args.since, args.splits, args.capital,
@@ -2466,7 +2545,9 @@ def _main():
                              close_stack_grid=close_stack_grid,
                              optimize_metric=args.optimize_metric,
                              direction=args.direction,
-                             comparison_mode=args.comparison_mode)
+                             comparison_mode=args.comparison_mode,
+                             strategy_type=live_stop_kwargs.get("strategy_type", "perps"),
+                             funding_mode=args.funding)
 
 
 if __name__ == "__main__":

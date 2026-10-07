@@ -185,7 +185,8 @@ def analyze_sample(values: Sequence[float],
 def collect_gross_legs(reg, name: str, params: Optional[dict],
                        datasets: List[tuple], window_names: List[str],
                        capital: float = DEFAULT_CAPITAL,
-                       direction: Optional[str] = None) -> List[dict]:
+                       direction: Optional[str] = None,
+                       funding_mode: str = "charge") -> List[dict]:
     legs = []
     for wname in window_names:
         window = WINDOWS[wname]
@@ -193,7 +194,7 @@ def collect_gross_legs(reg, name: str, params: Optional[dict],
             leg = run_leg(reg, name, params, symbol, timeframe, window,
                           capital=capital, direction=direction,
                           commission_pct=0.0, slippage_pct=0.0,
-                          keep_trades=True)
+                          keep_trades=True, funding_mode=funding_mode)
             if leg is None:
                 continue
             leg["window"] = wname
@@ -329,6 +330,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--alpha", type=float, default=DEFAULT_ALPHA,
                    help=f"Significance level for the primary test "
                         f"(default {DEFAULT_ALPHA})")
+    p.add_argument("--funding", choices=["charge", "partial", "off"],
+                   default="charge",
+                   help="Hyperliquid perps funding mode passed to each leg")
     p.add_argument("--json", default=None, dest="json_out",
                    help="Write the full structured result to this path")
     return p
@@ -358,7 +362,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     legs = collect_gross_legs(reg, args.strategy, params, datasets,
                               window_names, capital=args.capital,
-                              direction=args.direction)
+                              direction=args.direction,
+                              funding_mode=args.funding)
     samples, n_exact, n_overlap = pool_trade_samples(legs)
     overlaps = window_overlaps(window_names)
     trade_values = [s["pnl_pct"] for s in samples]
@@ -385,6 +390,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "resamples": args.resamples,
             "seed": args.seed,
             "alpha": args.alpha,
+            "funding_mode": args.funding,
+            "funding_incomplete": any(leg.get("funding_incomplete") for leg in legs),
             "legs": legs,
             "pooled_exact_duplicates_dropped": n_exact,
             "pooled_overlap_entries_dropped": n_overlap,

@@ -214,7 +214,7 @@ def test_m1_argv_tail():
     assert asug.m1_argv_tail("/t/c.json", "spot", ["is", "oos"],
                              ["BTC/USDT:1h"], "/t/o.json") == [
         "--candidate-json", "/t/c.json", "--registry", "spot",
-        "--windows", "is,oos", "--json", "/t/o.json",
+        "--windows", "is,oos", "--funding", "charge", "--json", "/t/o.json",
         "--datasets", "BTC/USDT:1h"]
 
 
@@ -264,7 +264,7 @@ def test_m6_argv_tail_incumbent_close_path_omits_baseline():
 def test_m5_argv_tail():
     tail = asug.m5_argv_tail("sq", "spot", None, ["oos"], None, "/t/m5.json")
     assert tail == ["--strategies", "sq", "--registry", "spot",
-                    "--windows", "oos", "--json", "/t/m5.json"]
+                    "--windows", "oos", "--funding", "charge", "--json", "/t/m5.json"]
 
 
 def _m6_payload(is_rows, oos_rows):

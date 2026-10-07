@@ -11,8 +11,13 @@ import pandas as pd
 
 from registry_loader import load_registry
 from backtester import (STOP_OWNERS_NEEDING_ATR, Backtester, CloseCapabilityError,
-                        aggregate_close_validations)
+                        aggregate_close_validations, charge_funding_rejected)
 from atr import ensure_atr_indicator
+
+_SHARED_TOOLS = os.path.join(os.path.dirname(__file__), "..", "shared_tools")
+if _SHARED_TOOLS not in sys.path:
+    sys.path.insert(0, _SHARED_TOOLS)
+from funding_fetcher import rejoin_funding_columns
 
 
 _EXPECTED_FOLD_ERRORS = (KeyError, ValueError, TypeError, IndexError, ZeroDivisionError)
@@ -347,6 +352,8 @@ def walk_forward_optimize(
         print(f"  Optimizing: {optimize_metric}")
 
     window_results = []
+    funding_skipped_candidates = 0
+    funding_skipped_folds = 0
 
     for fold in range(n_splits):
         start_idx = fold * window_size
@@ -379,6 +386,7 @@ def walk_forward_optimize(
         best_params = None
         best_stack = None
         best_bt = None
+        fold_funding_rejects = 0
         for params in param_grid:
             try:
                 signals_ext = apply_strategy(strategy_name, train_ext_df, params)
@@ -397,12 +405,18 @@ def walk_forward_optimize(
                 if verbose:
                     print(f"    [skip] fold {fold+1} {strategy_name} {params}: {type(e).__name__}: {e}")
                 continue
+            signals_ext = rejoin_funding_columns(signals_ext, train_ext_df)
+            signals_df = signals_ext.iloc[train_boundary_idx:]
             for stack, stack_bt in stack_bts:
                 try:
                     result = stack_bt.run(signals_df, strategy_name=strategy_name,
                                           symbol=symbol, timeframe=timeframe,
                                           params=params, save=False,
                                           starting_long=train_seed)
+                    if charge_funding_rejected(result):
+                        funding_skipped_candidates += 1
+                        fold_funding_rejects += 1
+                        continue
                     metric_val = _result_metric(result, optimize_metric)
                     if metric_val > best_metric:
                         best_metric = metric_val
@@ -418,6 +432,8 @@ def walk_forward_optimize(
                     continue
 
         if best_params is None:
+            if fold_funding_rejects > 0:
+                funding_skipped_folds += 1
             continue
 
         test_boundary_idx = max(test_trim - 1, 0)
@@ -428,6 +444,7 @@ def walk_forward_optimize(
                 test_signals_ext = overlay_regime_columns(test_ext_df, test_signals_ext)
             if uses_exits:
                 test_signals_ext = ensure_atr_indicator(test_signals_ext)
+            test_signals_ext = rejoin_funding_columns(test_signals_ext, test_ext_df)
             test_signals = test_signals_ext.iloc[test_boundary_idx:]
             test_seed = warmup_exit_long_entry(
                 test_signals_ext.iloc[:test_boundary_idx], bt.slippage_pct,
@@ -436,6 +453,9 @@ def walk_forward_optimize(
                                       symbol=symbol, timeframe=timeframe,
                                       params=best_params, save=False,
                                       starting_long=test_seed)
+            if charge_funding_rejected(test_result):
+                funding_skipped_folds += 1
+                continue
         except CloseCapabilityError:
             raise
         except _EXPECTED_FOLD_ERRORS as e:
@@ -468,7 +488,18 @@ def walk_forward_optimize(
                   f"MaxDD: {test_result['max_drawdown_pct']:.2f}%")
 
     if not window_results:
-        return {"error": "No valid optimization windows", "strategy": strategy_name,
+        error = "No valid optimization windows"
+        if funding_skipped_folds > 0:
+            error = "No valid optimization windows: incomplete funding"
+        if verbose:
+            print(f"  {error}")
+            print(f"  Funding-skipped folds: {funding_skipped_folds}")
+            print(f"  Funding-skipped candidates: {funding_skipped_candidates}")
+        return {"error": error, "strategy": strategy_name,
+                "n_splits": n_splits,
+                "n_valid_folds": 0,
+                "funding_skipped_folds": funding_skipped_folds,
+                "funding_skipped_candidates": funding_skipped_candidates,
                 "close_validation": grid_validation,
                 "close_stack_validations": stack_validations}
 
@@ -487,6 +518,8 @@ def walk_forward_optimize(
         "strategy": strategy_name,
         "n_splits": n_splits,
         "n_valid_folds": len(window_results),
+        "funding_skipped_folds": funding_skipped_folds,
+        "funding_skipped_candidates": funding_skipped_candidates,
         "param_grid_size": len(param_grid),
         "close_stack_grid_size": len(stack_bts),
         "optimize_metric": optimize_metric,
@@ -508,6 +541,8 @@ def walk_forward_optimize(
         print(f"  WALK-FORWARD SUMMARY: {strategy_name}")
         print(f"{'='*60}")
         print(f"  Valid folds: {summary['n_valid_folds']}/{n_splits}")
+        print(f"  Funding-skipped folds: {summary['funding_skipped_folds']}")
+        print(f"  Funding-skipped candidates: {summary['funding_skipped_candidates']}")
         print(f"  OOS Mean Return: {summary['oos_mean_return']:+.2f}%")
         print(f"  OOS Median Return: {summary['oos_median_return']:+.2f}%")
         print(f"  OOS Return StdDev: {summary['oos_std_return']:.2f}%")

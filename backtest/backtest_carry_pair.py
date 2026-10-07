@@ -437,7 +437,11 @@ def run_carry_leg(reg, symbol: str, timeframe: str, window: tuple,
         if df.empty:
             return None
 
-    df = _attach_funding_if_needed(df, STRATEGY_NAME, symbol, start)
+    df = _attach_funding_if_needed(
+        df, STRATEGY_NAME, symbol, start,
+        platform="hyperliquid", strategy_type="perps",
+        mode="charge", timeframe=timeframe,
+    )
 
     strat = reg.STRATEGY_REGISTRY.get(STRATEGY_NAME)
     if strat is None:
@@ -445,6 +449,8 @@ def run_carry_leg(reg, symbol: str, timeframe: str, window: tuple,
                          f"registry is required")
     strat_params = params if params is not None else strat["default_params"]
     df_signals = reg.apply_strategy(STRATEGY_NAME, df, strat_params)
+    from funding_fetcher import rejoin_funding_columns
+    df_signals = rejoin_funding_columns(df_signals, df)
 
     if perp_symbol:
         perp_df = load_cached_data(perp_symbol, timeframe, exchange_id=PLATFORM,
@@ -478,6 +484,13 @@ def run_carry_leg(reg, symbol: str, timeframe: str, window: tuple,
         leg["span_days"] = round(span_days, 4)
     except (AttributeError, TypeError):
         leg["span_days"] = None
+    raw = df_signals["funding_block_json"].iloc[0] if (
+        "funding_block_json" in df_signals.columns and len(df_signals)) else None
+    if isinstance(raw, str) and raw.strip():
+        try:
+            leg["funding"] = json.loads(raw)
+        except json.JSONDecodeError:
+            leg["funding"] = None
     return leg
 
 
@@ -519,6 +532,17 @@ def format_window_report(window_name: str, window: tuple, legs: dict,
             f"{summary['traded_datasets']:>3}/{summary['datasets']:<2}"
             + (" [degenerate]" if summary.get("degenerate") else "")
         )
+    for ds in sorted(legs):
+        leg = legs[ds]
+        block = (leg or {}).get("funding") if isinstance(leg, dict) else None
+        if isinstance(block, dict):
+            cov = block.get("coverage") or {}
+            lines.append(
+                f"  {ds} funding {block.get('mode')} "
+                f"complete={block.get('complete')} "
+                f"missing_hours={cov.get('missing_hours')} "
+                f"source={block.get('source')}"
+            )
     return "\n".join(lines)
 
 
