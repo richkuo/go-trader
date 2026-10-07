@@ -573,6 +573,12 @@ func hedgeBasisAfterPartialReduce(oldBasis, preReduceQty, remainingQty float64) 
 }
 
 func applyHedgeFill(sc StrategyConfig, s *StrategyState, primarySymbol string, action hedgeAction, filledQty, fillPx, fillFee float64, useFillFee bool, oid string, logger *StrategyLogger) {
+	mutatePaperPerpsBook(s, hedgeCoin(sc), func() {
+		applyHedgeFillInner(sc, s, primarySymbol, action, filledQty, fillPx, fillFee, useFillFee, oid, logger)
+	})
+}
+
+func applyHedgeFillInner(sc StrategyConfig, s *StrategyState, primarySymbol string, action hedgeAction, filledQty, fillPx, fillFee float64, useFillFee bool, oid string, logger *StrategyLogger) {
 	if s == nil || fillPx <= 0 || filledQty <= hedgeQtyEpsilon {
 		return
 	}

@@ -144,6 +144,14 @@ func bookPerpsClose(s *StrategyState, symbol string, closePx float64, reason, de
 }
 
 func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
+	var booked bool
+	mutatePaperPerpsBook(s, symbol, func() {
+		booked = bookPerpsCloseWithFillFeeInner(s, symbol, closePx, fillFee, useFillFee, exchangeOrderID, reason, detailsPrefix, logPrefix, logger)
+	})
+	return booked
+}
+
+func bookPerpsCloseWithFillFeeInner(s *StrategyState, symbol string, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
 	if closePx <= 0 {
 		return false
 	}
@@ -252,6 +260,14 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 }
 
 func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
+	var booked bool
+	mutatePaperPerpsBook(s, symbol, func() {
+		booked = bookPerpsPartialCloseWithFillFeeInner(s, symbol, closeQty, closePx, fillFee, useFillFee, exchangeOrderID, reason, detailsPrefix, logPrefix, logger)
+	})
+	return booked
+}
+
+func bookPerpsPartialCloseWithFillFeeInner(s *StrategyState, symbol string, closeQty, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
 	if closeQty <= 0 || closePx <= 0 {
 		return false
 	}
@@ -914,6 +930,18 @@ func logHLPaperLotHold(logger *StrategyLogger, action, symbol string, d hlPaperL
 }
 
 func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizing PerpsSizing, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade), lot *hlPaperLotPolicy) (int, string, error) {
+	var (
+		trades int
+		hold   string
+		err    error
+	)
+	mutatePaperPerpsBook(s, symbol, func() {
+		trades, hold, err = executePerpsSignalWithLeverageInner(s, signal, symbol, price, sizing, fillQty, fillOID, fillFee, direction, closeFraction, logger, recordOpen, lot)
+	})
+	return trades, hold, err
+}
+
+func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol string, price float64, sizing PerpsSizing, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade), lot *hlPaperLotPolicy) (int, string, error) {
 	if direction == "" {
 		direction = DirectionLong
 	}
@@ -1946,7 +1974,7 @@ func stampOpenTradeFromPosition(s *StrategyState, db *StateDB, symbol string, po
 	}
 	for i := len(s.TradeHistory) - 1; i >= 0; i-- {
 		t := &s.TradeHistory[i]
-		if t.Symbol != symbol {
+		if t.Symbol != symbol || t.TradeType == TradeTypeFunding {
 			continue
 		}
 		if t.IsClose {

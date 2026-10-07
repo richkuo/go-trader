@@ -511,7 +511,7 @@ func FormatCategorySummary(
 			poolBudget:     usesSharedWalletPoolBudget(sc),
 			maxDrawdownPct: sc.MaxDrawdownPct,
 			walletPct:      walletPct,
-			trades:         len(ss.TradeHistory),
+			trades:         nonFundingTradeCount(ss.TradeHistory),
 			openPositions:  openPos,
 			closedTrades:   closedT,
 			winningTrades:  winT,

@@ -109,7 +109,7 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestHLPaperLotParityWithLiveGateAndBacktester)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
