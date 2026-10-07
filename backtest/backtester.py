@@ -2016,7 +2016,10 @@ def _funding_block_from_frame(df: pd.DataFrame, platform: str, strategy_type: st
     block["unpriced_held_hours"] = int(unpriced)
     mode = str(block.get("mode") or "")
     if mode in ("charge", "partial"):
-        block["complete"] = int(unpriced) == 0
+        if block.get("available") is False and int(unpriced) > 0:
+            block["complete"] = False
+        else:
+            block["complete"] = int(unpriced) == 0
     elif mode == "off":
         block["complete"] = True
     return block
@@ -3245,7 +3248,7 @@ class Backtester:
                             funding_cash=funding_cash, funding_rate=accrual,
                         )
 
-            if book_funding and position != 0 and has_funding_missing:
+            if position != 0 and has_funding_missing:
                 raw_miss = row.get("funding_missing_hours", 0)
                 try:
                     miss = int(raw_miss) if raw_miss == raw_miss else 0
