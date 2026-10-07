@@ -1425,3 +1425,81 @@ def test_resting_tp_discovered_order_after_the_last_close_stays_unattributed(tmp
         export_events=_two_close_events())
     assert report["sample"]["windows"][0]["close_ms"] == _ms(20)
     assert _discovered_outcome(report) == "unattributed"
+
+
+class _FailedInfoResp(_InfoResp):
+    def __init__(self, payload):
+        super().__init__(payload)
+        self.status = 500
+
+
+def _capture_main_args(export, out, since_ms=DAY_MS, address="0x" + "77" * 20):
+    return [
+        "--export", str(export), "--address", address,
+        "--since-ms", str(since_ms), "--end-ms", str(_ms(30)),
+        "--interval", "5m", "--out", str(out), "--timeout", "5", "--retries", "1",
+    ]
+
+
+def _empty_export(tmp_path):
+    export = tmp_path / "export.json"
+    export.write_text(json.dumps({"schema": "go-trader.booked-ledger", "events": []}))
+    return export
+
+
+def _serve(monkeypatch, response):
+    import resting_tp_capture as cap
+
+    calls = []
+
+    def fake(req, timeout=None):
+        calls.append(json.loads(req.data)["type"])
+        return response([])
+
+    monkeypatch.setattr(cap.urllib.request, "urlopen", fake)
+    return calls
+
+
+def test_resting_tp_bad_address_leaves_out_unmade_and_a_rerun_captures(tmp_path, monkeypatch):
+    import resting_tp_capture as cap
+
+    export = _empty_export(tmp_path)
+    out = tmp_path / "capture"
+    calls = _serve(monkeypatch, _InfoResp)
+    with pytest.raises(cap.CaptureError, match="40-digit hex"):
+        cap.main(_capture_main_args(export, out, address="0x1234"))
+    assert not out.exists()
+    assert calls == []
+    cap.main(_capture_main_args(export, out))
+    assert (out / "bundle.json").is_file()
+    assert calls == ["userFillsByTime", "historicalOrders"]
+
+
+def test_resting_tp_unaligned_since_leaves_out_unmade_and_a_rerun_captures(tmp_path, monkeypatch):
+    import resting_tp_capture as cap
+
+    export = _empty_export(tmp_path)
+    out = tmp_path / "capture"
+    calls = _serve(monkeypatch, _InfoResp)
+    with pytest.raises(cap.CaptureError, match="boundary"):
+        cap.main(_capture_main_args(export, out, since_ms=DAY_MS + 1000))
+    assert not out.exists()
+    assert calls == []
+    cap.main(_capture_main_args(export, out))
+    assert (out / "bundle.json").is_file()
+
+
+def test_resting_tp_failed_request_keeps_out_and_a_rerun_is_refused(tmp_path, monkeypatch):
+    import resting_tp_capture as cap
+
+    export = _empty_export(tmp_path)
+    out = tmp_path / "capture"
+    calls = _serve(monkeypatch, _FailedInfoResp)
+    with pytest.raises(cap.CaptureError, match="capture stream is incomplete"):
+        cap.main(_capture_main_args(export, out))
+    sent = len(calls)
+    assert sent > 0
+    assert any(out.iterdir())
+    with pytest.raises(cap.CaptureError, match="out directory exists and is not empty"):
+        cap.main(_capture_main_args(export, out))
+    assert len(calls) == sent

@@ -321,12 +321,20 @@ def _candle_limit_reason(since_ms, interval, clock_ms):
     return None
 
 
-def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, interval, opener=None, clock_ms=None):
+def _check_capture_inputs(since_ms, interval, timeout, retries):
     if interval not in INTERVAL_MS:
         raise CaptureError(f"interval must be one of {sorted(INTERVAL_MS)}, got {interval!r}")
-    step = INTERVAL_MS[interval]
-    if int(since_ms) % step != 0:
+    if int(since_ms) % INTERVAL_MS[interval] != 0:
         raise CaptureError(f"--since-ms {int(since_ms)} is not on a {interval} boundary")
+    if timeout <= 0:
+        raise CaptureError("timeout must be positive")
+    if retries < 1:
+        raise CaptureError("retries must be at least 1")
+
+
+def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, interval, opener=None, clock_ms=None):
+    _check_capture_inputs(since_ms, interval, timeout, retries)
+    step = INTERVAL_MS[interval]
     now_ms = int(time.time() * 1000) if clock_ms is None else int(clock_ms)
     oids = []
     coins = []
@@ -483,9 +491,12 @@ def main(argv):
     args = parser.parse_args(argv)
     if args.since_ms < 0 or args.end_ms <= args.since_ms:
         raise CaptureError("--since-ms must be >= 0 and less than --end-ms")
+    address = _address_from(args)
+    _check_capture_inputs(args.since_ms, args.interval, args.timeout, args.retries)
+    for path in args.export:
+        read_export_targets(path)
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     out = _prepare_out(args.out, repo_root)
-    address = _address_from(args)
     capture(args.export, address, args.since_ms, args.end_ms, out, args.timeout, args.retries, args.interval)
 
 
