@@ -43,6 +43,15 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   Adding or removing `allow_no_edge` on a live strategy needs a restart.
 
 **Runtime default**
+- **Paper Hyperliquid perps book funding payments (#1729)**: paper Hyperliquid `perps` and `manual` strategies now pay or receive venue funding as paper cash and one `funding` trade row per strategy, coin and record (`ExchangeOrderID` `paper_funding:<COIN>:<t ms>`, the captured `position_id`, quantity, price and value 0), valued at the first cycle mark at or after the record time.
+  Accounting starts at the first sync after the update with every open position anchored and no historical replay; paper results before and after the update are not comparable for funding.
+  A new `strategies.paper_funding_state` column (idempotent migration, empty for live) holds the inventory timeline and commits with cash and trade rows in the owning file.
+  Eligible paper cash may now go negative and survives restart; both backfill tools now skip paper `manual` HL strategies too.
+  Operator trade counts (leaderboard, status, `/status`, UI) exclude funding rows, which also lowers live counts that included wallet funding rows.
+  Feed modes read accounting funding only from the seal: a feed whose consumers carry eligible paper strategies seals version 3 (`accounting_funding`), which a consumer built before this update refuses as incompatible, so the feed services and every consumer must run the same SHA; `bash scripts/update.sh --restart` does that.
+  Configs with no eligible paper strategy keep byte-identical v1/v2 seals.
+  After an update, check the start log for one `[paper-funding] <id>: paper funding accounting starts` line per eligible strategy and, after the next funding hour, `[paper-funding] booked` lines; a `[paper-funding]` CRITICAL line or owner DM names a held record or a book change outside the helper and needs review.
+  No config version change; deploy Go and Python together with `bash scripts/update.sh --restart`.
 - **Paper Hyperliquid perps book venue lot sizes (#1716)**: paper HL perps synthetic entries, flips, scale-in adds and partial closes (signal partials and paper take-profit tier fills) now floor their quantity to the coin's venue lot size (`szDecimals`) with the adapter's `floor_lot_size` rule.
   An entry or add holds when the floored quantity is 0 or the floored value at the booked price is below $10.30; a partial close holds on the same test at the cycle mid, and equality passes, as in the live close gate.
   A held order writes no cash, fee, trade, risk result, tier consumption or stamp.

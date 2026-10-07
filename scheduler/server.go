@@ -458,7 +458,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			InitialCapital:                 initCap,
 			Positions:                      s.Positions,
 			OptionPositions:                s.OptionPositions,
-			TradeCount:                     len(s.TradeHistory),
+			TradeCount:                     nonFundingTradeCount(s.TradeHistory),
 			PortfolioValue:                 pv,
 			PnL:                            pnl,
 			PnLPct:                         pnlPct,

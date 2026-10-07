@@ -10,7 +10,10 @@ import (
 
 const (
 	feedAccountingWindow    = 7 * 24 * time.Hour
-	feedAccountingRefresh   = 60 * time.Second
+	feedAccountingRefresh   = 5 * time.Minute
+	feedAccountingRetry     = 60 * time.Second
+	feedAccountingCadence   = time.Hour
+	feedAccountingKeep      = 2
 	feedAccountingOverlap   = 3 * time.Hour
 	feedAccountingMaxPasses = 4
 
@@ -72,7 +75,7 @@ func (o *marketFeedOwner) EnsureAccountingFunding(ctx context.Context) {
 	if len(coins) == 0 {
 		return
 	}
-	ctx = withFeedReason(ctx, string(feedRestAccountingFunding))
+	ctx = withFeedKeep(withFeedReason(ctx, string(feedRestAccountingFunding)), feedAccountingKeep)
 	now := o.now()
 	windowStart := now.UTC().Add(-feedAccountingWindow).UnixMilli()
 	for _, coin := range coins {
@@ -83,7 +86,7 @@ func (o *marketFeedOwner) EnsureAccountingFunding(ctx context.Context) {
 			existing = &cp
 		}
 		o.feedMu.Unlock()
-		if existing != nil && now.Sub(existing.FetchedAt) < feedAccountingRefresh {
+		if !accountingRefreshDue(existing, now) {
 			continue
 		}
 		start := windowStart
@@ -116,6 +119,20 @@ func (o *marketFeedOwner) EnsureAccountingFunding(ctx context.Context) {
 		}
 		o.feedMu.Unlock()
 	}
+}
+
+func accountingRefreshDue(existing *feedAccountingFunding, now time.Time) bool {
+	if existing == nil {
+		return true
+	}
+	since := now.Sub(existing.FetchedAt)
+	if existing.Err != "" {
+		return since >= feedAccountingRetry
+	}
+	if since < feedAccountingRefresh {
+		return false
+	}
+	return existing.ToMs == 0 || now.UTC().UnixMilli() >= existing.ToMs+feedAccountingCadence.Milliseconds()
 }
 
 func mergeAccountingCoverage(existing *feedAccountingFunding, cov feedFundingCoverage, windowStart int64) (feedAccountingFunding, error) {

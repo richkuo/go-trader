@@ -53,6 +53,7 @@ type paperFundingGap struct {
 	AfterMs    int64 `json:"after_ms"`
 	BeforeMs   int64 `json:"before_ms"`
 	DetectedMs int64 `json:"detected_ms"`
+	Expired    bool  `json:"expired,omitempty"`
 }
 
 type paperFundingSample struct {
@@ -258,6 +259,12 @@ func mutatePaperPerpsBookCoins(s *StrategyState, symbols []string, mutate func()
 	}
 	nowMs := paperFundingNowMs()
 	for _, sym := range tracked {
+		if st.Coins[sym] == nil {
+			if qty, _, bad := paperFundingBookQty(s, sym); qty == 0 && bad == "" {
+				st.active[sym] = true
+				continue
+			}
+		}
 		c := st.coin(sym, nowMs)
 		atMs := c.clampMs(nowMs)
 		if atMs != nowMs {
@@ -280,16 +287,18 @@ func mutatePaperPerpsBookCoins(s *StrategyState, symbols []string, mutate func()
 	}()
 	mutate()
 	for _, sym := range tracked {
-		c := st.Coins[sym]
-		if c == nil {
-			continue
-		}
-		atMs := c.clampMs(nowMs)
 		qty, pid, bad := paperFundingBookQty(s, sym)
 		if bad != "" {
 			st.alert(sym, "bad_position", true, "%s: %s; counted as flat", s.ID, bad)
 		}
-		c.moveTo(qty, pid, atMs)
+		c := st.Coins[sym]
+		if c == nil {
+			if qty == 0 {
+				continue
+			}
+			c = st.coin(sym, nowMs)
+		}
+		c.moveTo(qty, pid, c.clampMs(nowMs))
 	}
 }
 

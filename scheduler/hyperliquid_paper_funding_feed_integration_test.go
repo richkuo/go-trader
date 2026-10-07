@@ -188,6 +188,11 @@ func TestPaperFundingFeedAccountingWindowRefreshesMergesAndKeepsCoverageOnConfli
 	conflictAt = second.ToMs - hour
 	advance(2 * time.Minute)
 	owner.EnsureAccountingFunding(context.Background())
+	if len(starts) != 2 {
+		t.Fatalf("no refresh is due before the next hourly record can exist, got starts %v", starts)
+	}
+	advance(time.Hour)
+	owner.EnsureAccountingFunding(context.Background())
 	third := *owner.accountingFunding["ETH"]
 	if third.Err == "" || third.ToMs != second.ToMs || len(third.Records) != len(second.Records) {
 		t.Fatalf("a changed rate must keep the previous coverage and flag the error: %+v", third.Err)

@@ -1020,6 +1020,12 @@ func main() {
 				}
 			}
 		}
+		paperFundingMarks := make(map[string]float64, len(hlPerpsCoins))
+		for _, coin := range hlPerpsCoins {
+			if px, ok := prices[coin]; ok {
+				paperFundingMarks[coin] = px
+			}
+		}
 		if len(okxPerpsCoins) > 0 {
 			okxMarks, err := fetchOKXPerpsMids(okxPerpsCoins)
 			if err != nil {
@@ -1052,6 +1058,8 @@ func main() {
 		if len(prices) > 0 && debugLogging() {
 			fmt.Println(formatPricesLogLine(prices))
 		}
+
+		runPaperFundingCycle(shutdownReadOnlyCtx, state, cfg, store, &mu, websocketFeed || sharedFeed, feedCtx.Snapshot, paperFundingMarks, notifier)
 
 		var totalPV float64
 		sharedWallets := detectSharedWallets(cfg.Strategies)
