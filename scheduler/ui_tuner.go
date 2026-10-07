@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type UIEditableField struct {
@@ -724,23 +725,34 @@ func (ss *StatusServer) previewPerpsSizing(sc StrategyConfig) map[string]interfa
 
 func simulateConfigPayload(sc StrategyConfig, regime *RegimeConfig) map[string]interface{} {
 	payload := map[string]interface{}{
-		"type":               sc.Type,
-		"platform":           sc.Platform,
-		"symbol":             strategyDisplaySymbol(sc),
-		"timeframe":          strategyDisplayTimeframe(sc),
-		"strategy":           effectiveOpenStrategy(sc),
-		"open_strategy":      sc.OpenStrategy,
-		"close_strategy":     sc.CloseStrategy,
-		"htf_filter":         sc.HTFFilter,
-		"allowed_regimes":    sc.AllowedRegimes,
-		"initial_capital":    sc.InitialCapital,
-		"stop_loss_pct":      sc.StopLossPct,
-		"stop_loss_atr_mult": sc.StopLossATRMult,
-		"stop_units":         "live_percent",
-		"leverage":           sc.Leverage,
-		"leverage_source":    "strategy_config",
-		"max_drawdown_pct":   sc.MaxDrawdownPct,
-		"regime_atr_window":  sc.RegimeATRWindow,
+		"type":                      sc.Type,
+		"platform":                  sc.Platform,
+		"symbol":                    strategyDisplaySymbol(sc),
+		"timeframe":                 strategyDisplayTimeframe(sc),
+		"strategy":                  effectiveOpenStrategy(sc),
+		"open_strategy":             sc.OpenStrategy,
+		"close_strategy":            sc.CloseStrategy,
+		"htf_filter":                sc.HTFFilter,
+		"allowed_regimes":           sc.AllowedRegimes,
+		"initial_capital":           sc.InitialCapital,
+		"stop_loss_pct":             sc.StopLossPct,
+		"stop_loss_atr_mult":        sc.StopLossATRMult,
+		"stop_units":                "live_percent",
+		"leverage":                  sc.Leverage,
+		"leverage_source":           "strategy_config",
+		"max_drawdown_pct":          sc.MaxDrawdownPct,
+		"regime_atr_window":         sc.RegimeATRWindow,
+		"regime_gate_window":        sc.RegimeGateWindow,
+		"regime_directional_window": sc.RegimeDirectionalWindow,
+		"regime_gate_on_failure":    sc.RegimeGateOnFailure,
+	}
+	if sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured() {
+		payload["regime_directional_policy"] = sc.RegimeDirectionalPolicy
+		states, ok := strategyDirectionalCertified(sc, regime, time.Now().UTC())
+		payload["regime_directional_certified"] = ok
+		if ok {
+			payload["regime_directional_certified_states"] = states
+		}
 	}
 	if sc.leverageDefaulted {
 		payload["leverage_source"] = "loader_default"
@@ -771,6 +783,12 @@ func simulateConfigPayload(sc StrategyConfig, regime *RegimeConfig) map[string]i
 		}
 		if len(regime.Windows) > 0 {
 			regimePayload["windows"] = regime.Windows
+		}
+		if tf := strings.TrimSpace(regime.Timeframe); tf != "" {
+			regimePayload["timeframe"] = tf
+		}
+		if gate := strings.TrimSpace(regime.GateOnFailure); gate != "" {
+			regimePayload["gate_on_failure"] = gate
 		}
 		payload["regime"] = regimePayload
 	}
@@ -844,6 +862,7 @@ func runStrategySimulate(candles []UICandle, configs map[string]map[string]inter
 		pythonErrorResponse
 		Markers         map[string][]UITradeMarker `json:"markers"`
 		Label           string                     `json:"label"`
+		LiveRefusal     string                     `json:"live_refusal"`
 		CloseCapability json.RawMessage            `json:"close_capability"`
 	}
 	if err := json.Unmarshal(stdout, &resp); err != nil {
@@ -851,6 +870,9 @@ func runStrategySimulate(candles []UICandle, configs map[string]map[string]inter
 			return nil, fmt.Errorf("simulate_strategy: %w (stderr: %s)", runErr, strings.TrimSpace(string(stderr)))
 		}
 		return nil, fmt.Errorf("parse simulate response: %w", err)
+	}
+	if resp.LiveRefusal != "" {
+		return resp.Markers, &simulateLabelRefusal{Label: resp.Label, Message: resp.LiveRefusal}
 	}
 	if resp.Error != "" {
 		if resp.Label != "" && len(resp.CloseCapability) > 0 {

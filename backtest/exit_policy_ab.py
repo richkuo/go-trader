@@ -464,6 +464,12 @@ def _prepare_signals(reg, open_name: str, params: Optional[dict], df):
 
 def _regime_label_series(df, regime_cfg: dict):
     from regime import ensure_regime_columns
+    plan = regime_cfg.get("regime_label_windows")
+    if plan:
+        from regime_label_columns import column_name
+        col = column_name((plan.get("windows") or {}).get("gate") or "default")
+        if col in df.columns:
+            return [str(x or "") for x in df[col].tolist()]
     work = df.copy()
     ensure_regime_columns(
         work,
@@ -516,7 +522,11 @@ def _backtester_kwargs(open_name: str, params: Optional[dict],
         regime_adx_threshold=float(gate.get("adx_threshold", 20.0)),
         regime_windows_spec=gate.get("windows_spec"),
         allowed_regimes=(list(gate["allowed_regimes"]) if gate.get("allowed_regimes") else None),
+        regime_gate_on_failure=gate.get("regime_gate_on_failure") or "open",
+        regime_label_columns=gate.get("regime_label_columns"),
     )
+    if gate.get("regime_feature_labels"):
+        kw["regime_feature_labels"] = gate["regime_feature_labels"]
     for k in STOP_FIELD_KEYS:
         v = (stops or {}).get(k)
         if v is not None:
@@ -585,7 +595,21 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
         df = _attach_funding_if_needed(df, spec["open_name"], symbol, start)
 
     df_signals = _prepare_signals(reg, spec["open_name"], spec.get("params"), df)
-    regime_series = _regime_label_series(df_signals, spec["regime_cfg"])
+    gate = dict(spec["gate"])
+    plan = gate.get("regime_label_windows")
+    if plan:
+        from regime_label_columns import (attach_regime_label_columns,
+                                          feature_label_kwargs)
+        plan_tf = str(plan.get("timeframe") or "").strip().lower()
+        if plan_tf and plan_tf != str(timeframe).strip().lower():
+            raise ValueError(
+                f"regime.timeframe {plan_tf!r} differs from chart timeframe "
+                f"{timeframe!r}; refusing to gate the baseline on a window "
+                "without the regime-timeframe candles")
+        df_signals, cols = attach_regime_label_columns(df_signals, plan)
+        gate["regime_label_columns"] = cols
+        gate["regime_feature_labels"] = feature_label_kwargs(plan)["regime_feature_labels"]
+    regime_series = _regime_label_series(df_signals, {**spec["regime_cfg"], **gate})
     pos_by_date = {str(ts): i for i, ts in enumerate(df_signals.index)}
 
     candidate_signals = (_stop_only_frame(df_signals) if spec.get("candidate_stop_only")
@@ -594,13 +618,13 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
     control_results = run_free_arm(
         reg, spec["open_name"], spec.get("params"), df_signals,
         spec.get("incumbent_close"), spec.get("direction"), spec["capital"],
-        spec["gate"], symbol, timeframe, spec.get("control_stops"),
+        gate, symbol, timeframe, spec.get("control_stops"),
         comparison_mode=spec.get("comparison_mode"),
         perps_sizing=spec.get("perps_sizing"))
     candidate_results = run_free_arm(
         reg, spec["open_name"], spec.get("params"), candidate_signals,
         spec.get("candidate_close"), spec.get("direction"), spec["capital"],
-        spec["gate"], symbol, timeframe, spec.get("candidate_stops"),
+        gate, symbol, timeframe, spec.get("candidate_stops"),
         comparison_mode=spec.get("comparison_mode"),
         perps_sizing=spec.get("perps_sizing"))
 
@@ -625,7 +649,7 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
             candidate_by_date[date] = replay_candidate_for_entry(
                 reg, spec["open_name"], spec.get("params"), candidate_signals, sig_pos,
                 side_sign, spec["candidate_close"], spec.get("direction"),
-                spec["capital"], spec["gate"], symbol, timeframe,
+                spec["capital"], gate, symbol, timeframe,
                 spec.get("candidate_stops"),
                 comparison_mode=spec.get("comparison_mode"),
                 perps_sizing=spec.get("perps_sizing"))
@@ -817,6 +841,9 @@ def resolve_from_baseline(config_path: str, strategy_id: str,
         "perps_sizing": kwargs.get("perps_sizing"),
         "allowed_regimes": sc.get("allowed_regimes") or None,
         "regime_section": cfg.get("regime") or {},
+        "regime_label_windows": kwargs.get("regime_label_windows"),
+        "regime_gate_on_failure": kwargs.get("regime_gate_on_failure") or "open",
+        "resolved_gate_window": ((kwargs.get("regime_label_windows") or {}).get("windows") or {}).get("gate"),
     }
 
 
@@ -1031,6 +1058,9 @@ def _resolve_spec(args) -> dict:
     incumbent_stops: dict = {}
     regime_section: dict = {}
     config_allowed_regimes = None
+    label_plan = None
+    resolved_gate = ""
+    regime_gate_on_failure = "open"
 
     if args.baseline_config:
         try:
@@ -1051,6 +1081,9 @@ def _resolve_spec(args) -> dict:
             direction = resolved["direction"]
         config_allowed_regimes = resolved["allowed_regimes"]
         regime_section = resolved["regime_section"]
+        label_plan = resolved.get("regime_label_windows")
+        resolved_gate = str(resolved.get("resolved_gate_window") or "")
+        regime_gate_on_failure = resolved.get("regime_gate_on_failure") or "open"
         if args.incumbent_close is not None:
             raise SystemExit("--incumbent-close conflicts with --baseline-config; "
                              "the baseline config IS the incumbent. Drop one.")
@@ -1094,17 +1127,21 @@ def _resolve_spec(args) -> dict:
     regime_cfg = resolve_regime_cfg(args, regime_section)
     if args.gate_window:
         ws = regime_cfg.get("windows_spec") or {}
-        if len(ws) > 1:
+        wanted = str(args.gate_window).strip().lower()
+        known = {str(k).strip().lower(): k for k in ws}
+        if wanted not in ("", "default") and resolved_gate and wanted != str(resolved_gate).strip().lower():
+            raise SystemExit(
+                f"--gate-window {args.gate_window!r} disagrees with the baseline "
+                f"regime_gate_window {resolved_gate!r}. The entry gate uses that "
+                f"resolved window.")
+        if len(ws) > 1 and not label_plan:
             raise SystemExit(
                 f"--gate-window {args.gate_window!r} selects one window of a "
-                f"multi-window spec for attribution, but the backtester's entry gate "
-                f"has no gate-window parameter and default-picks the primary window "
-                f"(regime.py) — so the gate and the regime attribution would classify "
-                f"on different windows and silently mis-bucket the A/B (same reason "
-                f"run_backtest rejects a named regime_gate_window). Use a single-window "
-                f"--regime-windows-json so gate and attribution agree, or drop "
-                f"--gate-window (both then default-pick the same window).")
-        if ws and args.gate_window not in ws:
+                f"multi-window spec, but this run has no regime_label_windows plan. "
+                f"Pass --baseline-config so the entry gate and the attribution window "
+                f"are the same resolved window, or use a single-window "
+                f"--regime-windows-json.")
+        if ws and wanted not in known and wanted not in ("", "default"):
             raise SystemExit(
                 f"--gate-window {args.gate_window!r} names no window in the resolved "
                 f"windows_spec (keys: {sorted(ws)}).")
@@ -1115,7 +1152,9 @@ def _resolve_spec(args) -> dict:
         "period": regime_cfg["period"],
         "adx_threshold": regime_cfg["adx_threshold"],
         "windows_spec": regime_cfg["windows_spec"],
-        "gate_window": regime_cfg["gate_window"],
+        "gate_window": resolved_gate or regime_cfg["gate_window"],
+        "regime_label_windows": label_plan,
+        "regime_gate_on_failure": regime_gate_on_failure,
     }
     if isinstance(stop_selection, dict):
         try:

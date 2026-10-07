@@ -112,7 +112,12 @@ func TestTunerPreviewStopPayloadContract(t *testing.T) {
 		t.Fatalf("regime owner on the primary window must preview, got refusal %q err %v", liveRefusal, err)
 	}
 	otherPayload := simulateConfigPayload(otherWindow, otherRegime)
-	if _, _, err := runTunerPreviewSimulate(candles, otherPayload, otherPayload); err == nil || !strings.Contains(err.Error(), "MISSING_STOP_INPUT") {
-		t.Fatalf("regime owner on a non-primary window must be refused, got %v", err)
+	if _, liveRefusal, err := runTunerPreviewSimulate(candles, otherPayload, otherPayload); err != nil || liveRefusal != "" {
+		t.Fatalf("prepared non-primary ATR window must preview, got refusal %q err %v", liveRefusal, err)
+	}
+	otherRegime.Timeframe = "4h"
+	shifted := simulateConfigPayload(otherWindow, otherRegime)
+	if _, liveRefusal, err := runTunerPreviewSimulate(candles, shifted, otherPayload); err != nil || !strings.Contains(liveRefusal, "regime.timeframe") {
+		t.Fatalf("a regime timeframe the preview does not fetch must refuse the live arm, got refusal %q err %v", liveRefusal, err)
 	}
 }

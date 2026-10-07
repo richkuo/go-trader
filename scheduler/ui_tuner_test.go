@@ -273,6 +273,17 @@ func TestSimulateConfigPayloadOpenFallback(t *testing.T) {
 	if openRef.Name != "sma" {
 		t.Fatalf("open_strategy.name = %q, want sma", openRef.Name)
 	}
+	sc.RegimeGateWindow = "fast"
+	sc.RegimeDirectionalWindow = "slow"
+	sc.RegimeGateOnFailure = "closed"
+	payload = simulateConfigPayload(sc, &RegimeConfig{Enabled: true, Timeframe: "4h", GateOnFailure: "open"})
+	if payload["regime_gate_window"] != "fast" || payload["regime_directional_window"] != "slow" || payload["regime_gate_on_failure"] != "closed" {
+		t.Fatalf("window selectors missing: %#v", payload)
+	}
+	regimePayload := payload["regime"].(map[string]interface{})
+	if regimePayload["timeframe"] != "4h" || regimePayload["gate_on_failure"] != "open" {
+		t.Fatalf("regime payload = %#v", regimePayload)
+	}
 }
 
 func TestFetchStrategyDefaultParamsCachesSchemaLoad(t *testing.T) {

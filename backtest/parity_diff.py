@@ -65,6 +65,10 @@ class ParityConfig:
     regime_directional_certified_states: Optional[dict] = None
     hurst_gate: Optional[dict] = None
     regime_windows_spec: Optional[dict] = None
+    regime_label_plan: Optional[dict] = None
+    allowed_regimes: Optional[list] = None
+    regime_gate_on_failure: str = "open"
+    regime_timeframe: Optional[str] = None
     batched: bool = False
     open_close_config: bool = False
     comparison_mode: Optional[str] = None
@@ -99,6 +103,7 @@ def config_from_live_config(config_path: str, strategy_id: str,
     timeframe = str(args[2]) if len(args) > 2 else "1h"
     rdp = loaded.get("regime_directional_policy")
     rdp_cert_states = None
+    cert_timeframe = str(loaded.get("regime_timeframe") or timeframe).strip().lower() or timeframe
     if rdp:
         from directional_certification import (
             load_certifications, certified_states,
@@ -106,7 +111,7 @@ def config_from_live_config(config_path: str, strategy_id: str,
         )
         certs = load_certifications()
         clf = config_directional_classifier(regime, entry)
-        rdp_cert_states = certified_states(certs, symbol, timeframe, clf)
+        rdp_cert_states = certified_states(certs, symbol, cert_timeframe, clf)
     return ParityConfig(
         strategy_name=open_ref["name"],
         params=dict(open_ref.get("params") or {}),
@@ -127,6 +132,10 @@ def config_from_live_config(config_path: str, strategy_id: str,
         regime_directional_certified_states=rdp_cert_states,
         hurst_gate=loaded.get("hurst_gate"),
         regime_windows_spec=loaded.get("regime_windows_spec"),
+        regime_label_plan=loaded.get("regime_label_windows"),
+        allowed_regimes=loaded.get("allowed_regimes"),
+        regime_gate_on_failure=loaded.get("regime_gate_on_failure") or "open",
+        regime_timeframe=loaded.get("regime_timeframe"),
         open_close_config=bool(entry.get("open_strategy") or entry.get("close_strategy")),
         comparison_mode=comparison_mode,
         strategy_type=str(loaded.get("strategy_type") or "perps"),
@@ -215,6 +224,39 @@ def _has_close_fraction_columns(result_df: pd.DataFrame) -> bool:
                for c in result_df.columns)
 
 
+def _feature_labels_from_prepare(window: pd.DataFrame, cfg: ParityConfig) -> dict:
+    plan = cfg.regime_label_plan or {}
+    spec = plan.get("windows_spec") or cfg.regime_windows_spec
+    named = plan.get("named") or {}
+    windows = plan.get("windows") or {}
+    atr_window = windows.get("atr", "") if named.get("atr") else ""
+    limit = int(plan.get("limit") or 0)
+    src = window.iloc[-limit:] if limit > 0 and len(window) > limit else window
+    payload, _live, _strategy = prepare_check_regime(
+        src,
+        regime_enabled=True,
+        period=cfg.regime_period,
+        adx_threshold=cfg.regime_adx_threshold,
+        windows_spec=spec,
+        atr_window=atr_window,
+    )
+    from regime_label_columns import spec_window_key
+
+    def label(key: str) -> str:
+        if isinstance(payload, dict):
+            entry = payload.get(spec_window_key(spec, key)) or {}
+            if isinstance(entry, dict):
+                return str(entry.get("regime") or "")
+            return str(entry or "")
+        return str(payload or "")
+
+    return {
+        "gate": label(windows.get("gate", "")),
+        "directional": label(windows.get("directional", "")),
+        "atr": label(windows.get("atr", "")),
+    }
+
+
 def _full_frame_decisions(result_df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=result_df.index)
     out["signal"] = result_df.get(
@@ -234,11 +276,23 @@ def _full_frame_decisions(result_df: pd.DataFrame) -> pd.DataFrame:
 def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
                        position_side: str = "",
                        position_ctx: Optional[dict] = None) -> dict:
+    regime_src = window
+    windows_spec = cfg.regime_windows_spec
+    atr_window = ""
+    if cfg.regime_label_plan:
+        windows_spec = cfg.regime_label_plan.get("windows_spec") or windows_spec
+        if cfg.regime_label_plan.get("named", {}).get("atr"):
+            atr_window = cfg.regime_label_plan["windows"]["atr"]
+        limit = int(cfg.regime_label_plan.get("limit") or 0)
+        if limit > 0 and len(window) > limit:
+            regime_src = window.iloc[-limit:]
     _stdout_regime, live_regime, strategy_regime = prepare_check_regime(
-        window,
+        regime_src,
         regime_enabled=cfg.regime_enabled,
         period=cfg.regime_period,
         adx_threshold=cfg.regime_adx_threshold,
+        windows_spec=windows_spec,
+        atr_window=atr_window,
     )
     params = dict(cfg.params or {})
     params["regime"] = strategy_regime
@@ -590,7 +644,15 @@ def compute_parity_frame(
     atr_full = ensure_atr_indicator(df.copy())["atr"]
 
     regime_full = None
-    if cfg.regime_enabled:
+    feature_frame = None
+    if cfg.regime_enabled and cfg.regime_label_plan:
+        from regime_label_columns import (attach_regime_label_columns,
+                                          engine_label_columns)
+        feature_frame = df.copy()
+        feature_frame, _label_cols = attach_regime_label_columns(
+            feature_frame, cfg.regime_label_plan)
+        regime_full = feature_frame[engine_label_columns(cfg.regime_label_plan)["gate"]]
+    elif cfg.regime_enabled:
         from regime import compute_regime
         regime_full = compute_regime(
             df, period=cfg.regime_period,
@@ -662,7 +724,22 @@ def compute_parity_frame(
             and row["bt_open_action"] == row["live_open_action"]
             and abs(row["bt_close_fraction"] - row["live_close_fraction"]) < 1e-9
         )
-        if cfg.regime_enabled:
+        if cfg.regime_enabled and cfg.regime_label_plan and i > 0:
+            from regime_label_columns import column_name
+            plan = cfg.regime_label_plan
+            limit = int(plan.get("limit") or 0)
+            prior = df.iloc[max(0, i - limit):i]
+            live_features = _feature_labels_from_prepare(prior, cfg)
+            row["bt_regime"] = str(regime_full.iloc[i - 1])
+            row["live_regime"] = live_features["gate"]
+            match = match and row["bt_regime"] == row["live_regime"]
+            for field in ("gate", "directional", "atr"):
+                col = column_name(plan["windows"][field])
+                bt_label = str(feature_frame[col].iloc[i - 1])
+                row[f"bt_{field}_regime"] = bt_label
+                row[f"live_{field}_regime"] = live_features[field]
+                match = match and bt_label == live_features[field]
+        elif cfg.regime_enabled:
             row["bt_regime"] = str(regime_full.iloc[i])
             row["live_regime"] = str(live["regime"])
             match = match and row["bt_regime"] == row["live_regime"]
@@ -714,6 +791,13 @@ def extract_fills_report(df: pd.DataFrame, cfg: ParityConfig) -> dict:
         cfg.strategy_name, df.copy(), dict(cfg.params or {}))
     if cfg.close_refs:
         work = ensure_atr_indicator(work)
+    label_columns = None
+    feature_labels = {}
+    if cfg.regime_enabled and cfg.regime_label_plan:
+        from regime_label_columns import (attach_regime_label_columns,
+                                          feature_label_kwargs)
+        work, label_columns = attach_regime_label_columns(work, cfg.regime_label_plan)
+        feature_labels = feature_label_kwargs(cfg.regime_label_plan)
     bt = Backtester(
         initial_capital=1000.0,
         platform=cfg.platform,
@@ -724,6 +808,9 @@ def extract_fills_report(df: pd.DataFrame, cfg: ParityConfig) -> dict:
         regime_period=cfg.regime_period,
         regime_adx_threshold=cfg.regime_adx_threshold,
         regime_windows_spec=cfg.regime_windows_spec,
+        allowed_regimes=cfg.allowed_regimes,
+        regime_gate_on_failure=cfg.regime_gate_on_failure,
+        regime_label_columns=label_columns,
         hurst_gate=cfg.hurst_gate,
         direction=cfg.direction,
         invert_signal=cfg.invert_signal,
@@ -731,6 +818,7 @@ def extract_fills_report(df: pd.DataFrame, cfg: ParityConfig) -> dict:
         regime_directional_certified_states=cfg.regime_directional_certified_states,
         comparison_mode=cfg.comparison_mode,
         strategy_type=cfg.strategy_type,
+        **feature_labels,
         **cfg.stop_kwargs,
     )
     metrics = bt.run(

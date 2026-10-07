@@ -249,7 +249,7 @@ def test_build_candidate_composite_gate_owns_lookback():
     ({"risk_per_trade_pct": 1.0}, "unsupported_risk_per_trade_pct"),
     ({"allow_scale_in": True}, "unsupported_allow_scale_in"),
     ({"atr_method": "wilder"}, "unsupported_atr_method:wilder"),
-    ({"regime_gate_on_failure": "closed"}, "unsupported_regime_gate_on_failure_closed"),
+    ({"regime_gate_on_failure": "closed"}, None),
     ({"stop_loss_atr_mult": 2.0}, None),
     ({"atr_method": "simple"}, None),
     ({"regime_gate_on_failure": "open"}, None),
@@ -263,12 +263,12 @@ def test_unsupported_reason(resolution, expected):
     ({"direction": "short"}, "short_direction_long_only_seeder"),
     ({"direction": "long", "regime_enabled": True,
       "regime_windows_spec": {"d": {"classifier": "adx", "period": 14}}},
-     "composite_regime_gate_unmodelable_in_walk_forward"),
+     None),
     ({"direction": "long"}, None),
     ({"direction": "both"}, None),
     ({"regime_enabled": True, "regime_windows_spec": {
         "primary": {"classifier": "composite", "period": 14}}},
-     "composite_regime_gate_unmodelable_in_walk_forward"),
+     None),
     ({"regime_enabled": False, "regime_windows_spec": {
         "primary": {"classifier": "composite", "period": 14}}}, None),
 ])
@@ -779,7 +779,7 @@ def test_regime_timeframe_mismatch_skipped_unsupported(tmp_path):
            "regime": {"enabled": True, "timeframe": "1d", "period": 14},
            "strategies": [{"id": "hl-sma", "type": "perps", "platform": "hyperliquid",
                            "args": ["sma_crossover", "BTC/USDT", "4h"],
-                           "allowed_regimes": ["trending"],
+                           "allowed_regimes": ["trending_up"],
                            "open_strategy": {"name": "sma_crossover", "params": {}}}]}
     path = _write_config(tmp_path, cfg)
     res = tl.tune_strategy(path, "hl-sma", "BTC/USDT", "4h", "spot",

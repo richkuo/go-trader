@@ -385,14 +385,16 @@ _DIRECTION_REGIME_CASES = {
         sid="hl-d-btc",
         checks=[(("allowed_regimes",), ["ranging"])],
     ),
-    "named_gate_window_no_op_when_regime_disabled": dict(
+    "named_gate_window_loads_when_regime_enabled": dict(
         cfg=_cfg(15, [_perps_strategy(allowed_regimes=["trending_up"],
                                       regime_gate_window="slow")],
-                 regime={"enabled": False, "windows": {"slow": 40}}),
+                 regime={"enabled": True, "period": 10, "adx_threshold": 25,
+                         "windows": {"slow": {"classifier": "adx",
+                                              "period": 40}}}),
         sid="hl-d-btc",
         checks=[
-            (("regime_enabled",), False),
             (("allowed_regimes",), ["trending_up"]),
+            (("regime_label_windows", "windows", "gate"), "slow"),
         ],
     ),
 }
@@ -647,14 +649,12 @@ _REJECT_CASES = {
         sid="inv-x",
         match="invert_signal",
     ),
-    "allowed_regimes_with_named_gate_window": dict(
+    "named_gate_window_requires_enabled_windows": dict(
         cfg=_cfg(15, [_perps_strategy(allowed_regimes=["trending_up"],
                                       regime_gate_window="slow")],
-                 regime={"enabled": True, "period": 10, "adx_threshold": 25,
-                         "windows": {"slow": {"classifier": "adx",
-                                              "period": 40}}}),
+                 regime={"enabled": False, "windows": {"slow": 40}}),
         sid="hl-d-btc",
-        match="regime_gate_window",
+        match="requires regime.windows",
     ),
     "no_open_name_and_no_args": dict(
         cfg=_cfg(15, [{"id": "spot-z", "type": "spot", "args": [],
