@@ -50,8 +50,13 @@ func TestApplyTrailingTPRatchetToPosition_AlertLongMath(t *testing.T) {
 	if a.OldTrailMult != 3.0 || a.NewTrailMult != 2.0 {
 		t.Fatalf("trail %g->%g want 3->2", a.OldTrailMult, a.NewTrailMult)
 	}
-	if a.HighWaterMark != 115 || a.IntendedSLTriggerPx != 95 {
-		t.Fatalf("hwm=%g intendedSL=%g want 115,95", a.HighWaterMark, a.IntendedSLTriggerPx)
+	// Wrong: these pins required the deleted alert-only price 95. The trailing
+	// path records anchor-percent geometry, which is 92 for this fixture.
+	if a.HighWaterMark != 0 || a.StopTriggerPx != 0 || a.Outcome != "" {
+		t.Fatalf("build stored geometry hwm=%g trigger=%g outcome=%q", a.HighWaterMark, a.StopTriggerPx, a.Outcome)
+	}
+	if a.PrevStopTriggerPx != 0 || a.Side != "long" {
+		t.Fatalf("prev=%g side=%s", a.PrevStopTriggerPx, a.Side)
 	}
 	if !a.HasNextTier || a.NextTierATRMultiple != 2.0 || a.NextTierTrailAfter != 1.0 || a.NextTierTriggerPx != 120 {
 		t.Fatalf("next tier mismatch: %+v", a)
@@ -74,8 +79,13 @@ func TestApplyTrailingTPRatchetToPosition_AlertShortMath(t *testing.T) {
 	if a.ProfitATR != 1.5 || a.ProfitUSD != 15 {
 		t.Fatalf("profitATR=%g profitUSD=%g want 1.5,15", a.ProfitATR, a.ProfitUSD)
 	}
-	if a.HighWaterMark != 85 || a.IntendedSLTriggerPx != 105 {
-		t.Fatalf("hwm=%g intendedSL=%g want 85,105", a.HighWaterMark, a.IntendedSLTriggerPx)
+	// Wrong: these pins required the deleted alert-only price 105. The trailing
+	// path records anchor-percent geometry, which is 102 for this fixture.
+	if a.HighWaterMark != 0 || a.StopTriggerPx != 0 || a.Outcome != "" {
+		t.Fatalf("build stored geometry hwm=%g trigger=%g outcome=%q", a.HighWaterMark, a.StopTriggerPx, a.Outcome)
+	}
+	if a.PrevStopTriggerPx != 0 || a.Side != "short" {
+		t.Fatalf("prev=%g side=%s", a.PrevStopTriggerPx, a.Side)
 	}
 	if a.NextTierTriggerPx != 80 {
 		t.Fatalf("nextTriggerPx=%g want 80", a.NextTierTriggerPx)

@@ -2496,11 +2496,12 @@ func main() {
 						var execResult *HyperliquidExecuteResult
 						liveExecFailed := false
 						hedgeFreshExposureQty := 0.0
+						var manageRatchetAlert *RatchetTriggerAlert
+						var manageStopEvidence ratchetStopEvidence
 						manageRatchetTightened := false
 						if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
-							ratchetAlert := applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
-							notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
-							manageRatchetTightened = ratchetAlert != nil
+							manageRatchetAlert = applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
+							manageRatchetTightened = manageRatchetAlert != nil
 							mu.RLock()
 							if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos != nil {
 								hlPosSnapshot = hyperliquidProtectionPositionSnapshot(pos)
@@ -2515,6 +2516,7 @@ func main() {
 						}
 						if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc, hlPosSnapshot) > 0 {
 							newHighWater, newTrigger, breach, breachPx := runHyperliquidTrailingStopPaper(sc, hlPosSide, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, trailingReplacePolicy{ratchetTightened: manageRatchetTightened})
+							manageStopEvidence = ratchetStopEvidence{Ran: true, Live: false}
 							mu.Lock()
 							if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
 								if breach {
@@ -2550,6 +2552,7 @@ func main() {
 								}
 								forceResize := hlScaleInResizePending && !capped
 								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manageRatchetTightened, liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, result.Symbol, hlPosSide)}, notifier, logger)
+								manageStopEvidence = ratchetStopEvidence{Ran: true, Live: true, Confirmed: updateConfirmed, Result: slUpdate}
 								mu.Lock()
 								stopAt := hlStep.historyLenLocked()
 								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, slEffectiveQty); immediateFill {
@@ -2563,6 +2566,7 @@ func main() {
 								mu.Unlock()
 							}
 						}
+						completeAndNotifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), manageRatchetAlert, sc, stratState, result.Symbol, &mu, manageStopEvidence)
 						if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc, hlPosSnapshot) <= 0 {
 							newTrigger, breach, breachPx, stopReason := runHyperliquidFixedStopLossPaper(sc, hlPosSide, hlPosSnapshot, price, hlStopLossTriggerPx)
 							mu.Lock()
@@ -2758,11 +2762,13 @@ func main() {
 							}
 							hlStep.bindExecuteLocked(execAt, execDetail)
 							mu.Unlock()
-							notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
+							var postTradeStopEvidence ratchetStopEvidence
 							ratchetWalkerOwnedByScaleIn := scaleInAddQty > 0 && execResult != nil && execTrades > 0
 							if ratchetAlert != nil && !ratchetWalkerOwnedByScaleIn {
 								walkerAt := hlStep.historyLen(&mu)
-								if extraTrades, slDetail := runTrailingStopUpdateAfterRatchetTighten(sc, stratState, result.Symbol, price, hlCycle, hlLiquidationPx, hlNetSideByCoin, &mu, notifier, logger); extraTrades > 0 {
+								extraTrades, slDetail, ev := runTrailingStopUpdateAfterRatchetTighten(sc, stratState, result.Symbol, price, hlCycle, hlLiquidationPx, hlNetSideByCoin, &mu, notifier, logger)
+								postTradeStopEvidence = ev
+								if extraTrades > 0 {
 									hlStep.bindWindow(&mu, walkerAt, slDetail)
 								}
 							}
@@ -2785,7 +2791,11 @@ func main() {
 									}
 									hedgeFreshExposureQty = filledAddQty
 									resizeAt := hlStep.historyLen(&mu)
-									if extraTrades, slDetail := scaleInResizeTrailingSLNow(sc, stratState, result.Symbol, price, hlCycle, hlLiquidationPx, hlNetSideByCoin, ratchetAlert != nil, &mu, notifier, logger); extraTrades > 0 {
+									extraTrades, slDetail, ev := scaleInResizeTrailingSLNow(sc, stratState, result.Symbol, price, hlCycle, hlLiquidationPx, hlNetSideByCoin, ratchetAlert != nil, &mu, notifier, logger)
+									if ratchetWalkerOwnedByScaleIn {
+										postTradeStopEvidence = ev
+									}
+									if extraTrades > 0 {
 										hlStep.bindWindow(&mu, resizeAt, slDetail)
 									}
 								} else {
@@ -2820,6 +2830,7 @@ func main() {
 							if paperHLHeldPartialCloseNeedsQuietMaintenance(sc, result, execTrades, hlPosQty) {
 								runPaperHLQuietCycleMaintenance(sc, stratState, stratDB, result.Symbol, price, cfg, &mu, notifier, logger, hlStep)
 							}
+							completeAndNotifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert, sc, stratState, result.Symbol, &mu, postTradeStopEvidence)
 						}
 						if hlProfileResolved {
 							mu.Lock()
@@ -2984,16 +2995,19 @@ func main() {
 							hlStep.bindWindow(&mu, postTPAt, slDetail)
 						}
 						mark := prices[sc.Symbol]
+						var manualRatchetAlert *RatchetTriggerAlert
+						var manualStopEvidence ratchetStopEvidence
 						manualRatchetTightened := false
 						if mark > 0 && strategyUsesTrailingTPRatchetClose(sc) {
-							ratchetAlert := applyTrailingTPRatchet(sc, stratState, sc.Symbol, mark, &mu, logger)
-							notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
-							manualRatchetTightened = ratchetAlert != nil
+							manualRatchetAlert = applyTrailingTPRatchet(sc, stratState, sc.Symbol, mark, &mu, logger)
+							manualRatchetTightened = manualRatchetAlert != nil
 						}
 						trailAt := hlStep.historyLen(&mu)
-						if manualFills, manualDetail := runManualTrailingStopUpdate(sc, stratState, state.Strategies, hlReconcileAll, hlCycle, hlLiquidationPx, hlNetSideByCoin, mark, manualRatchetTightened, &mu, notifier, logger); manualFills > 0 {
+						manualFills, manualDetail, manualStopEvidence := runManualTrailingStopUpdate(sc, stratState, state.Strategies, hlReconcileAll, hlCycle, hlLiquidationPx, hlNetSideByCoin, mark, manualRatchetTightened, &mu, notifier, logger)
+						if manualFills > 0 {
 							hlStep.bindWindow(&mu, trailAt, manualDetail)
 						}
+						completeAndNotifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), manualRatchetAlert, sc, stratState, sc.Symbol, &mu, manualStopEvidence)
 					}
 					if manualOK && closeFraction > 0 {
 						mu.RLock()

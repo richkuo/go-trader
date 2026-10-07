@@ -756,12 +756,12 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 	return nhw, 0, false, 0
 }
 
-func runManualTrailingStopUpdate(sc StrategyConfig, stratState *StrategyState, strategies map[string]*StrategyState, hlReconcileAll []StrategyConfig, hlCycle *hlCycleShare, liqPxByCoin map[string]float64, netSideByCoin map[string]string, mark float64, ratchetTightened bool, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
+func runManualTrailingStopUpdate(sc StrategyConfig, stratState *StrategyState, strategies map[string]*StrategyState, hlReconcileAll []StrategyConfig, hlCycle *hlCycleShare, liqPxByCoin map[string]float64, netSideByCoin map[string]string, mark float64, ratchetTightened bool, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string, ratchetStopEvidence) {
 	mu.RLock()
 	pos := stratState.Positions[sc.Symbol]
 	mu.RUnlock()
 	if pos == nil || mark <= 0 || !strategyUsesTrailingTPRatchetClose(sc) || effectiveTrailingStopPct(sc, pos) <= 0 {
-		return 0, ""
+		return 0, "", ratchetStopEvidence{}
 	}
 	mu.RLock()
 	manualPeers, manualOpp := hlPeerBookListOnCoin(strategies, hlReconcileAll, sc.Symbol, sc.ID, pos.Side)
@@ -775,7 +775,7 @@ func runManualTrailingStopUpdate(sc StrategyConfig, stratState *StrategyState, s
 	}
 	slEffectiveQty, capped, place := hlReplaceQty(q, manualBook)
 	if !place {
-		return 0, ""
+		return 0, "", ratchetStopEvidence{}
 	}
 	if capped {
 		logger.Warn("manual trailing SL: virtual qty %.6f > chain share %.6f for %s; capping", manualBook, slEffectiveQty, sc.Symbol)
@@ -783,6 +783,7 @@ func runManualTrailingStopUpdate(sc StrategyConfig, stratState *StrategyState, s
 	prevSLOID := pos.StopLossOID
 	forceResize := pos.ScaleInResizePending && !capped
 	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: ratchetTightened, liquidationPx: hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, sc.Symbol, pos.Side)}, notifier, logger)
+	ev := ratchetStopEvidence{Ran: true, Live: true, Confirmed: updateConfirmed, Result: slUpdate}
 	fills, detail := 0, ""
 	mu.Lock()
 	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, slEffectiveQty); immediateFill {
@@ -796,7 +797,7 @@ func runManualTrailingStopUpdate(sc StrategyConfig, stratState *StrategyState, s
 		}
 	}
 	mu.Unlock()
-	return fills, detail
+	return fills, detail, ev
 }
 
 func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string, prevSLOID int64, newHighWater float64, updateConfirmed bool, slUpdate *HyperliquidStopLossUpdateResult, closeReason string, logger *StrategyLogger, placedQty float64) (immediateFill bool, fillPx float64) {
