@@ -1,0 +1,806 @@
+{
+  "events": [
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p1"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "2001"
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T00:10:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[1001]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p1"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T00:25:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p2"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T00:30:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[1002]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p2"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T00:45:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p3"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T00:50:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[1003]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p3"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T01:05:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p4"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "2004"
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T01:10:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[1004]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p4"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T01:25:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p5"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T01:30:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p5"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T01:45:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p6"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T01:50:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[1006, 1007]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p6"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T02:00:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p8"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T02:10:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[1009]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p8"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T02:25:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p7"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T02:30:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[1010]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p7"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T02:45:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "psol"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "SOL"
+      },
+      "timestamp": "2024-01-01T02:50:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[1008]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "psol"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "SOL"
+      },
+      "timestamp": "2024-01-01T03:05:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p-fillbar"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T03:05:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[1011]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p-fillbar"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T03:15:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
+    }
+  ],
+  "schema": "go-trader.booked-ledger",
+  "schema_version": 1
+}
