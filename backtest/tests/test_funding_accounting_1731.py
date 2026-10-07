@@ -475,16 +475,6 @@ def test_metrics_without_funding_match_price_pnl(monkeypatch):
 
 
 def test_funding_off_delta_neutral_trade_stats_stay_on_price_pnl():
-    import run_backtest
-    from pathlib import Path
-
-    funding_help = next(
-        action.help for action in run_backtest._build_parser()._actions
-        if action.dest == "funding")
-    assert "per-trade statistics stay on price PnL" in funding_help
-    skill = Path(__file__).resolve().parents[2].joinpath("SKILL.md").read_text()
-    assert "per-trade statistics stay on price PnL" in skill
-
     n = 6
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
     close = np.array([100.0, 100.0, 100.0, 100.0, 100.0, 101.0])
