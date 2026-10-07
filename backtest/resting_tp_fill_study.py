@@ -475,6 +475,7 @@ def order_record(oid, status_doc, fill_rows):
     placement = None
     limit_px = None
     orig = None
+    remaining = None
     coin = None
     venue_side = None
     if isinstance(order, dict):
@@ -482,9 +483,10 @@ def order_record(oid, status_doc, fill_rows):
             placement = int(order["timestamp"])
         if order.get("limitPx") is not None:
             limit_px = dec(order["limitPx"], "limitPx")
-        raw_sz = order.get("origSz", order.get("sz"))
-        if raw_sz is not None:
-            orig = dec(raw_sz, "origSz")
+        if order.get("origSz") is not None:
+            orig = dec(order["origSz"], "origSz")
+        if order.get("sz") is not None:
+            remaining = dec(order["sz"], "sz")
         if order.get("coin"):
             coin = str(order["coin"])
         venue_side = venue_order_side(order.get("side"))
@@ -513,6 +515,7 @@ def order_record(oid, status_doc, fill_rows):
         "status": status.lower(),
         "limit_px": limit_px,
         "orig": orig,
+        "remaining": remaining,
         "fills": summary,
         "missing": missing,
         "trigger_px": dec(order["triggerPx"], "triggerPx") if isinstance(order, dict) and order.get("triggerPx") is not None else None,
@@ -563,6 +566,29 @@ def fill_terminated(rec) -> bool:
     fills = rec.get("fills") or {}
     qty = fills.get("qty") or Decimal(0)
     return orig is not None and qty >= orig and isinstance(fills.get("first_ms"), int)
+
+
+def sibling_boundary_times(rec, records):
+    coin = rec.get("coin") or ""
+    first_fill = (rec.get("fills") or {}).get("first_ms")
+    times = []
+    for other in records:
+        if other.get("oid") == rec.get("oid"):
+            continue
+        if (other.get("coin") or "") != coin:
+            continue
+        placement = other.get("placement_ms")
+        if isinstance(placement, int):
+            times.append(placement)
+        if fill_terminated(other):
+            continue
+        terminal = other.get("terminal_ms")
+        if not isinstance(terminal, int):
+            continue
+        if is_cancel_status(other.get("status")) and isinstance(first_fill, int) and terminal >= first_fill:
+            continue
+        times.append(terminal)
+    return times
 
 
 def score_end_ms(rec):
@@ -657,7 +683,10 @@ def classify_order(rec, position, frame, step, uncovered, sz_decimals, other_tim
         return "acquisition_incomplete"
     filled = rec["fills"]["qty"]
     orig = rec["orig"]
+    remaining = rec.get("remaining")
     if rec["status"] == "filled" and filled < orig:
+        return "acquisition_incomplete"
+    if remaining is not None and filled < (orig - remaining):
         return "acquisition_incomplete"
     if frame is None:
         return "candle_coverage_missing"
@@ -784,76 +813,86 @@ def same_bar_race(rec, trigger):
     return False
 
 
-def minute_opens(since_ms, end_ms):
-    if not isinstance(since_ms, int) or not isinstance(end_ms, int) or end_ms <= since_ms:
-        return []
-    return list(range(int(since_ms), int(end_ms), 60_000))
+def snapshot_interval(bundle):
+    named = (bundle.get("inputs") or {}).get("interval")
+    if isinstance(named, str) and named:
+        return named
+    found = []
+    rows = (bundle.get("completeness") or {}).get("candleSnapshot") or []
+    for row in rows:
+        if isinstance(row, dict) and row.get("interval"):
+            found.append(str(row["interval"]))
+    if len(set(found)) == 1:
+        return found[0]
+    return None
 
 
-def candle_basis(manifest_coins, candles, fills, since_ms, end_ms, step_ms, trades=None):
+def candle_basis(manifest_coins, candles, fills, since_ms, end_ms, step_ms,
+                 manifest_interval, snapshot_interval_name, candle_rows, trades=None):
     del trades
     failures = []
-    expected = minute_opens(since_ms, end_ms)
-    if not expected:
+    window_ok = isinstance(since_ms, int) and isinstance(end_ms, int) and end_ms > since_ms
+    if not window_ok:
         failures.append({"reason": "window_missing"})
+    for row in candle_rows or []:
+        if isinstance(row, dict) and row.get("complete") is False:
+            failures.append({
+                "coin": row.get("coin"),
+                "reason": str(row.get("reason") or "snapshot_incomplete"),
+            })
+    intervals_match = (
+        isinstance(snapshot_interval_name, str) and isinstance(manifest_interval, str)
+        and snapshot_interval_name == manifest_interval
+    )
+    if not intervals_match:
+        failures.append({
+            "reason": "interval_mismatch",
+            "manifest_interval": manifest_interval,
+            "snapshot_interval": snapshot_interval_name,
+        })
     fills_by_coin = {}
     for row in fills or []:
         if isinstance(row, dict) and row.get("coin"):
             fills_by_coin.setdefault(str(row["coin"]), []).append(row)
     for coin in sorted(manifest_coins):
         frame = manifest_coins[coin]["frame"]
+        if not intervals_match or not window_ok:
+            continue
         by_open = {}
         for candle in candles.get(coin) or []:
             if isinstance(candle, dict) and candle.get("t") is not None:
                 by_open[int(candle["t"])] = candle
-        missing = [open_ms for open_ms in expected if open_ms not in by_open]
-        if missing:
-            failures.append({
-                "coin": coin,
-                "missing_bars": len(missing),
-                "reason": "snapshot_incomplete",
-            })
-            continue
         times = [int(v) for v in frame["timestamp"].tolist()]
         frame_rows = {int(frame["timestamp"].iloc[i]): frame.iloc[i] for i in range(len(frame))}
         for open_ms in times:
             if open_ms < since_ms or open_ms + step_ms > end_ms:
                 continue
-            highs = []
-            lows = []
-            covered = True
-            cursor = open_ms
-            while cursor < open_ms + step_ms:
-                candle = by_open.get(cursor)
-                if candle is None:
-                    covered = False
-                    break
-                highs.append(dec(candle.get("h"), "candle high"))
-                lows.append(dec(candle.get("l"), "candle low"))
-                cursor += 60_000
-            if not covered or not highs:
+            candle = by_open.get(open_ms)
+            if candle is None:
                 failures.append({"coin": coin, "open_ms": open_ms, "reason": "snapshot_incomplete"})
                 continue
             bar = frame_rows.get(open_ms)
             if bar is None:
                 failures.append({"coin": coin, "open_ms": open_ms, "reason": "manifest_bar_missing"})
                 continue
-            if max(highs) != dec(bar["high"], "manifest high") or min(lows) != dec(bar["low"], "manifest low"):
-                failures.append({"coin": coin, "open_ms": open_ms, "reason": "aggregate_mismatch"})
+            if (dec(candle.get("h"), "candle high") != dec(bar["high"], "manifest high")
+                    or dec(candle.get("l"), "candle low") != dec(bar["low"], "manifest low")
+                    or dec(candle.get("c"), "candle close") != dec(bar["close"], "manifest close")):
+                failures.append({"coin": coin, "open_ms": open_ms, "reason": "bar_mismatch"})
         for row in fills_by_coin.get(coin) or []:
             if row.get("time") is None or row.get("px") is None:
                 continue
             stamp = int(row["time"])
             if stamp < since_ms or stamp >= end_ms:
                 continue
-            minute = (stamp // 60_000) * 60_000
-            candle = by_open.get(minute)
+            bar_open = (stamp // int(step_ms)) * int(step_ms)
+            candle = by_open.get(bar_open)
             if candle is None:
-                failures.append({"coin": coin, "open_ms": minute, "reason": "fill_without_candle"})
+                failures.append({"coin": coin, "open_ms": bar_open, "reason": "fill_without_candle"})
                 continue
             px = dec(row.get("px"), "fill px")
             if px < dec(candle.get("l"), "candle low") or px > dec(candle.get("h"), "candle high"):
-                failures.append({"coin": coin, "open_ms": minute, "reason": "fill_outside_candle"})
+                failures.append({"coin": coin, "open_ms": bar_open, "reason": "fill_outside_candle"})
     if not manifest_coins and not failures:
         failures.append({"reason": "no_manifest_candles"})
     status = "confirmed" if not failures else "unconfirmed"
@@ -905,9 +944,9 @@ def render_markdown(report):
         "",
         "Placement time, terminal time, requested size and limit price come only from venue order records. Export timestamps only attribute an order to a position. A missing venue field is `lifetime_unknown`. Tier prices, manual additions and replacement orders are not rebuilt from current configuration.",
         "",
-        "A bar that overlaps placement, cancellation or replacement is unknown. The bar that holds a venue fill is scored with that fill. A rule that predicts a full quantity against a venue partial fill is a quantity error. An unconfirmed candle basis or cancel-time source is a blocker. Raising k does not repair unknown placement timing.",
+        "A bar that overlaps placement, cancellation or replacement is unknown. Another order's fill does not make that bar unknown, and neither does another order's cancel at or after this order's first fill. The bar that holds a venue fill is scored with that fill. A rule that predicts a full quantity against a venue partial fill is a quantity error. An unconfirmed candle basis or cancel-time source is a blocker. Raising k does not repair unknown placement timing.",
         "",
-        "The frozen manifest interval is 5m because the manifest verifier has no 1m interval. Live capture still asks for 1m candles. Venue field shapes were not confirmed on the venue in this run.",
+        "The frozen manifest interval is 5m because the manifest verifier has no 1m interval. Live capture asks for candles at the interval passed to the capture tool. The venue keeps only the most recent 5000 candles of that interval. The basis check compares each manifest bar with the snapshot bar at the same open, including high, low and close. A snapshot on another interval, or a window that starts beyond that limit, stays unconfirmed.",
         "",
         "## Sample",
         "",
@@ -956,12 +995,6 @@ def study(exports, capture_dir, manifest_path, manifest_sha, window_name, produc
         (parse_time_ms(window_spec["start"]), parse_time_ms(window_spec["end"])),
     ]
     export_oid_set = {oid for pos in positions for oid in pos["tp_oids"]}
-    times_by_coin = {}
-    for rec in records:
-        coin = rec.get("coin") or ""
-        for stamp in (rec.get("placement_ms"), rec.get("terminal_ms")):
-            if isinstance(stamp, int):
-                times_by_coin.setdefault(coin, []).append((rec["oid"], stamp))
     prepared = []
     for rec in records:
         owner, reason = attribute(
@@ -976,12 +1009,9 @@ def study(exports, capture_dir, manifest_path, manifest_sha, window_name, produc
         if reason:
             class_name = reason
         else:
-            other_times = [
-                stamp for oid, stamp in times_by_coin.get(rec.get("coin") or "", [])
-                if oid != rec["oid"]
-            ]
             class_name = classify_order(
-                rec, owner, frame, step, uncovered, sz_decimals, other_times, windows)
+                rec, owner, frame, step, uncovered, sz_decimals,
+                sibling_boundary_times(rec, records), windows)
         rec["class_name"] = class_name
         rec["position"] = owner
         prepared.append(rec)
@@ -1013,7 +1043,8 @@ def study(exports, capture_dir, manifest_path, manifest_sha, window_name, produc
             races["same_bar_stop_and_tier"] += 1
     basis, basis_hash = candle_basis(
         by_coin, candles, fills, capture_inputs.get("since_ms"), capture_inputs.get("end_ms"),
-        step, trades)
+        step, manifest.get("interval"), snapshot_interval(bundle),
+        (bundle.get("completeness") or {}).get("candleSnapshot"), trades)
     tp_oids = [rec["oid"] for rec in prepared]
     cancel, cancel_hash = cancel_source(statuses, tp_oids)
     blockers = []

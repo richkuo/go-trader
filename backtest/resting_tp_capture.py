@@ -23,7 +23,15 @@ PAGE_CAP = 200
 FILL_PAGE_MAX = 2000
 DEFAULT_TIMEOUT_S = 20.0
 DEFAULT_RETRIES = 3
-MINUTE_MS = 60_000
+CANDLE_HISTORY_BARS = 5000
+INTERVAL_MS = {
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
+    "4h": 14_400_000,
+    "1d": 86_400_000,
+}
 
 
 class CaptureError(Exception):
@@ -256,14 +264,14 @@ def _one_shot(payload, timeout, retries, record, opener=None):
     return {"complete": ok, "http_status": status, "raw": raw}
 
 
-def _expected_minutes(since_ms, end_ms):
-    if end_ms <= since_ms:
+def _expected_opens(since_ms, end_ms, step):
+    if end_ms <= since_ms or step <= 0:
         return []
-    return list(range(int(since_ms), int(end_ms), MINUTE_MS))
+    return list(range(int(since_ms), int(end_ms), int(step)))
 
 
-def _candle_coverage(raw, since_ms, end_ms):
-    expected = _expected_minutes(since_ms, end_ms)
+def _candle_coverage(raw, since_ms, end_ms, step):
+    expected = _expected_opens(since_ms, end_ms, step)
     if not expected:
         return False
     try:
@@ -283,7 +291,22 @@ def _public_row(row):
     return {key: value for key, value in row.items() if key != "raw"}
 
 
-def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, opener=None):
+def _candle_limit_reason(since_ms, interval, clock_ms):
+    step = INTERVAL_MS[interval]
+    oldest = int(clock_ms) - CANDLE_HISTORY_BARS * step
+    if int(since_ms) < oldest:
+        return (
+            f"candleSnapshot keeps only the most recent {CANDLE_HISTORY_BARS} "
+            f"{interval} candles"
+        )
+    return None
+
+
+def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, interval, opener=None, clock_ms=None):
+    if interval not in INTERVAL_MS:
+        raise CaptureError(f"interval must be one of {sorted(INTERVAL_MS)}, got {interval!r}")
+    step = INTERVAL_MS[interval]
+    now_ms = int(time.time() * 1000) if clock_ms is None else int(clock_ms)
     oids = []
     coins = []
     seen_oid = set()
@@ -365,15 +388,20 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, opene
             "type": "candleSnapshot",
             "req": {
                 "coin": coin,
-                "interval": "1m",
+                "interval": interval,
                 "startTime": int(since_ms),
                 "endTime": int(end_ms),
             },
         }, timeout, retries, record, opener=opener)
         candles["coin"] = coin
-        candles["interval"] = "1m"
-        if candles["complete"] and not _candle_coverage(candles.get("raw"), since_ms, end_ms):
+        candles["interval"] = interval
+        limit_reason = _candle_limit_reason(since_ms, interval, now_ms)
+        if limit_reason:
             candles["complete"] = False
+            candles["reason"] = limit_reason
+        elif candles["complete"] and not _candle_coverage(candles.get("raw"), since_ms, end_ms, step):
+            candles["complete"] = False
+            candles["reason"] = "snapshot_incomplete"
         candle_rows.append(candles)
         if not trades["complete"] or not candles["complete"]:
             failed = True
@@ -384,6 +412,7 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, opene
             "address_sha256": sha256_bytes(address.encode("utf-8")),
             "end_ms": int(end_ms),
             "export_sha256": export_hashes,
+            "interval": interval,
             "since_ms": int(since_ms),
         },
         "completeness": {
@@ -424,6 +453,7 @@ def main(argv):
                         help="account address; else HYPERLIQUID_ACCOUNT_ADDRESS")
     parser.add_argument("--since-ms", type=int, required=True)
     parser.add_argument("--end-ms", type=int, required=True)
+    parser.add_argument("--interval", required=True, choices=sorted(INTERVAL_MS))
     parser.add_argument("--out", required=True,
                         help="new empty directory outside the repository")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
@@ -434,7 +464,7 @@ def main(argv):
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     out = _prepare_out(args.out, repo_root)
     address = _address_from(args)
-    capture(args.export, address, args.since_ms, args.end_ms, out, args.timeout, args.retries)
+    capture(args.export, address, args.since_ms, args.end_ms, out, args.timeout, args.retries, args.interval)
 
 
 if __name__ == "__main__":

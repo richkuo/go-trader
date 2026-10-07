@@ -4,9 +4,9 @@ Read-only measurement for issue 1727. The capture tool and this study stay outsi
 
 Placement time, terminal time, requested size and limit price come only from venue order records. Export timestamps only attribute an order to a position. A missing venue field is `lifetime_unknown`. Tier prices, manual additions and replacement orders are not rebuilt from current configuration.
 
-A bar that overlaps placement, cancellation or replacement is unknown. The bar that holds a venue fill is scored with that fill. A rule that predicts a full quantity against a venue partial fill is a quantity error. An unconfirmed candle basis or cancel-time source is a blocker. Raising k does not repair unknown placement timing.
+A bar that overlaps placement, cancellation or replacement is unknown. Another order's fill does not make that bar unknown, and neither does another order's cancel at or after this order's first fill. The bar that holds a venue fill is scored with that fill. A rule that predicts a full quantity against a venue partial fill is a quantity error. An unconfirmed candle basis or cancel-time source is a blocker. Raising k does not repair unknown placement timing.
 
-The frozen manifest interval is 5m because the manifest verifier has no 1m interval. Live capture still asks for 1m candles. Venue field shapes were not confirmed on the venue in this run.
+The frozen manifest interval is 5m because the manifest verifier has no 1m interval. Live capture asks for candles at the interval passed to the capture tool. The venue keeps only the most recent 5000 candles of that interval. The basis check compares each manifest bar with the snapshot bar at the same open, including high, low and close. A snapshot on another interval, or a window that starts beyond that limit, stays unconfirmed.
 
 ## Sample
 
@@ -139,7 +139,7 @@ The frozen manifest interval is 5m because the manifest verifier has no 1m inter
 ```json
 [
   {
-    "evidence_sha256": "00754fd81c95176de62df5184948a22ec843c286cafaa14ea255f44c71a35400",
+    "evidence_sha256": "4e074074ca70b9efb836a89f28663fecfc1b46b1afc41901b06d219a058b06e5",
     "fact": "candle_price_basis",
     "status": "unconfirmed"
   },
