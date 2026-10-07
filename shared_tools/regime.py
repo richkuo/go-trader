@@ -664,3 +664,106 @@ def ensure_regime_columns(
     for col in _REGIME_COLUMNS:
         df[col] = reg_df[col].values
     return df
+
+
+def primary_regime_window_key(windows: dict | None) -> str:
+    """Mirror scheduler primaryRegimeWindowKey: exact "medium", else the sorted name."""
+    if not windows:
+        return ""
+    if "medium" in windows:
+        return "medium"
+    names = sorted(str(name) for name in windows)
+    return names[0] if names else ""
+
+
+def resolve_strategy_regime_window(strategy: dict | None, field: str, regime: dict | None) -> str:
+    """Mirror scheduler resolveStrategyRegimeWindow."""
+    names = {
+        "gate": "regime_gate_window",
+        "atr": "regime_atr_window",
+        "directional": "regime_directional_window",
+    }
+    if field not in names:
+        return ""
+    configured = str((strategy or {}).get(names[field]) or "")
+    key = configured.strip().lower()
+    windows = (regime or {}).get("windows") or {}
+    multi = bool((regime or {}).get("enabled")) and len(windows) > 0
+    if key in ("", "default"):
+        if multi:
+            return primary_regime_window_key(windows)
+        return "default"
+    return key
+
+
+def classifier_for_window(regime: dict | None, window_key: str) -> str:
+    """Mirror scheduler regimeClassifierForWindow."""
+    windows = (regime or {}).get("windows") or {}
+    if not windows:
+        return CLASSIFIER_ADX
+    key = (window_key or "").strip().lower()
+    if key in ("", "default"):
+        key = primary_regime_window_key(windows).strip().lower()
+    for name, spec in windows.items():
+        if str(name).strip().lower() == key:
+            classifier = str((spec or {}).get("classifier") or "").strip().lower()
+            return classifier or CLASSIFIER_ADX
+    return CLASSIFIER_ADX
+
+
+def _payload_window_label(payload, window_key: str, windows: dict | None) -> str:
+    if isinstance(payload, str):
+        return payload.strip()
+    if not isinstance(payload, dict):
+        return ""
+    key = (window_key or "").strip()
+    if key in ("", "default"):
+        key = primary_regime_window_key(windows or {})
+    if not key:
+        if "regime" in payload and isinstance(payload.get("regime"), str):
+            return str(payload.get("regime") or "").strip()
+        return ""
+    entry = payload.get(key)
+    if isinstance(entry, dict):
+        return str(entry.get("regime") or "").strip()
+    if key in payload and isinstance(payload.get(key), str):
+        return str(payload.get(key) or "").strip()
+    return ""
+
+
+def bounded_window_labels(
+    df: pd.DataFrame,
+    *,
+    period: int = 14,
+    adx_threshold: float = 20.0,
+    windows_spec: dict | None = None,
+    limit: int,
+    columns: dict[str, str],
+) -> pd.DataFrame:
+    """Label each bar from the trailing `limit` rows that end at that bar.
+
+    `columns` maps an output column name to a window key. An empty window key
+    reads the primary label. Bars with fewer than `limit` rows stay blank.
+    This does not shift; callers that need a closed-bar decision shift once.
+    """
+    if limit < 1:
+        raise ValueError(f"lookback limit must be positive, got {limit}")
+    n = len(df)
+    prepared: dict[str, list[str]] = {col: [""] * n for col in columns}
+    spec = windows_spec or None
+    for i in range(n):
+        start = i - limit + 1
+        if start < 0:
+            continue
+        payload, _live, _strategy = prepare_check_regime(
+            df.iloc[start:i + 1],
+            regime_enabled=True,
+            period=period,
+            adx_threshold=adx_threshold,
+            windows_spec=spec,
+        )
+        for col, window_key in columns.items():
+            prepared[col][i] = _payload_window_label(payload, window_key, spec)
+    for col, values in prepared.items():
+        df[col] = values
+    return df

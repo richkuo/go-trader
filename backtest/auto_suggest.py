@@ -403,19 +403,22 @@ def _csv(items) -> str:
     return ",".join(items)
 
 
-def m1_argv_tail(candidate_path, registry, windows, datasets, out_json) -> list:
+def m1_argv_tail(candidate_path, registry, windows, datasets, out_json,
+                 funding="charge") -> list:
     tail = ["--candidate-json", candidate_path, "--registry", registry,
-            "--windows", _csv(windows), "--json", out_json]
+            "--windows", _csv(windows), "--funding", funding, "--json", out_json]
     if datasets:
         tail += ["--datasets", _csv(datasets)]
     return tail
 
 
 def noise_argv_tail(strategy, params_json, registry, direction, windows,
-                    datasets, resamples, seed, alpha, out_json) -> list:
+                    datasets, resamples, seed, alpha, out_json,
+                    funding="charge") -> list:
     tail = ["--strategy", strategy, "--registry", registry,
             "--windows", _csv(windows), "--resamples", str(resamples),
-            "--seed", str(seed), "--alpha", str(alpha), "--json", out_json]
+            "--seed", str(seed), "--alpha", str(alpha),
+            "--funding", funding, "--json", out_json]
     if params_json:
         tail += ["--params", params_json]
     if direction:
@@ -426,9 +429,10 @@ def noise_argv_tail(strategy, params_json, registry, direction, windows,
 
 
 def m3_argv_tail(strategy, params_json, registry, direction, close_json,
-                 windows, datasets, out_json, comparison_mode=None) -> list:
+                 windows, datasets, out_json, comparison_mode=None,
+                 funding="charge") -> list:
     tail = ["--strategy", strategy, "--registry", registry,
-            "--windows", _csv(windows), "--json", out_json]
+            "--windows", _csv(windows), "--funding", funding, "--json", out_json]
     if params_json:
         tail += ["--params", params_json]
     if direction:
@@ -442,9 +446,10 @@ def m3_argv_tail(strategy, params_json, registry, direction, close_json,
     return tail
 
 
-def m5_argv_tail(strategy, registry, direction, windows, datasets, out_json) -> list:
+def m5_argv_tail(strategy, registry, direction, windows, datasets, out_json,
+                 funding="charge") -> list:
     tail = ["--strategies", strategy, "--registry", registry,
-            "--windows", _csv(windows), "--json", out_json]
+            "--windows", _csv(windows), "--funding", funding, "--json", out_json]
     if direction:
         tail += ["--direction", direction]
     if datasets:
@@ -453,10 +458,10 @@ def m5_argv_tail(strategy, registry, direction, windows, datasets, out_json) -> 
 
 
 def mc_argv_tail(candidate_path, registry, windows, datasets, n_paths, seed,
-                 mc: dict, out_json) -> list:
+                 mc: dict, out_json, funding="charge") -> list:
     tail = ["--candidate-json", candidate_path, "--registry", registry,
             "--windows", _csv(windows), "--n-paths", str(n_paths),
-            "--seed", str(seed), "--json", out_json]
+            "--seed", str(seed), "--funding", funding, "--json", out_json]
     if datasets:
         tail += ["--datasets", _csv(datasets)]
     mc = mc or {}
@@ -473,7 +478,8 @@ def _candidate_stops_arg(selection) -> str:
     return selection
 
 
-def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out_json) -> list:
+def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out_json,
+                 funding="charge") -> list:
     tail = ["--strategy", m6_candidate["strategy_id"],
             "--registry", registry,
             "--candidate-close", json.dumps(m6_candidate["candidate_close"]),
@@ -481,7 +487,7 @@ def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out
                                                                        "inherit")),
             "--windows", _csv(windows),
             "--bootstrap-resamples", str(resamples),
-            "--seed", str(seed), "--json", out_json]
+            "--seed", str(seed), "--funding", funding, "--json", out_json]
     if m6_candidate.get("baseline_config"):
         tail += ["--baseline-config", m6_candidate["baseline_config"]]
     elif m6_candidate.get("incumbent_close"):
@@ -506,6 +512,7 @@ def extract_m1(payload: dict) -> dict:
             "mean_sharpe": score.get("mean_sharpe"),
             "mean_ddadj": score.get("mean_ddadj"),
             "close_validation": score.get("close_validation"),
+            "funding_mode": payload.get("funding_mode"),
         }
     return out
 
@@ -514,12 +521,16 @@ def extract_noise(payload: dict) -> dict:
     tl = payload.get("trade_level") or {}
     perm = tl.get("permutation") or {}
     summary = tl.get("summary") or {}
-    return {
+    out = {
         "verdict": tl.get("verdict"),
         "permutation_p": perm.get("p_value"),
         "mean": perm.get("mean"),
         "n": summary.get("n"),
     }
+    if "funding_mode" in payload or "funding_incomplete" in payload:
+        out["funding_mode"] = payload.get("funding_mode")
+        out["funding_incomplete"] = bool(payload.get("funding_incomplete"))
+    return out
 
 
 def m6_window_rollup(payload: dict) -> dict:
@@ -549,6 +560,8 @@ def m6_window_rollup(payload: dict) -> dict:
             "datasets_delta_pos": votes_pos,
             "datasets_delta_neg": votes_neg,
             "per_dataset": per_dataset,
+            "funding_incomplete": any(d.get("funding_incomplete") for d in (results or [])),
+            "funding_mode": payload.get("funding_mode"),
         }
     return out
 
@@ -583,7 +596,10 @@ def extract_m3(payload: dict) -> dict:
             out[wname][ds] = {
                 "bleed_modes": diag.get("bleed_modes"),
                 "fee_churn": diag.get("fee_churn"),
+                "funding_incomplete": bool(diag.get("funding_incomplete")),
             }
+    out["funding_mode"] = payload.get("funding_mode")
+    out["funding_incomplete"] = bool(payload.get("funding_incomplete"))
     return out
 
 
@@ -625,19 +641,26 @@ def extract_mc(payload: dict) -> dict:
                 for k in ("p_dd_ge_kill_switch", "p95_max_dd",
                           "p_final_below_start")
             }
+    if "funding_mode" in payload or "funding_incomplete" in payload:
+        out["funding_mode"] = payload.get("funding_mode")
+        out["funding_incomplete"] = bool(payload.get("funding_incomplete"))
     return out
 
 
 def extract_m5(payload: dict, strategy: str) -> dict:
     for row in (payload.get("rows") or []):
         if row.get("strategy") == strategy:
-            return {
+            out = {
                 "salvage_verdict": row.get("verdict"),
                 "fee_drag_pp": row.get("fee_drag_pp"),
                 "trades_per_year": row.get("trades_per_year"),
                 "mean_gross_ret": row.get("mean_gross_ret"),
                 "mean_net_ret": row.get("mean_net_ret"),
             }
+            if "funding_mode" in payload or "funding_incomplete" in payload:
+                out["funding_mode"] = payload.get("funding_mode")
+                out["funding_incomplete"] = bool(payload.get("funding_incomplete"))
+            return out
     return {}
 
 
@@ -715,6 +738,63 @@ def advisory_failures(entry: dict) -> list:
                   and (r or {}).get("status") == "failed")
 
 
+def _funding_modes(entry: dict) -> set:
+    modes = set()
+    r = gate_relevant_results(entry)
+    m1 = (r.get("m1") or {}).get("data") or {}
+    if isinstance(m1, dict):
+        for row in m1.values():
+            if isinstance(row, dict) and row.get("funding_mode"):
+                modes.add(row["funding_mode"])
+    m3 = (r.get("m3") or {}).get("data") or {}
+    if isinstance(m3, dict) and m3.get("funding_mode"):
+        modes.add(m3["funding_mode"])
+    m6 = (r.get("m6") or {}).get("data") or {}
+    if isinstance(m6, dict):
+        for row in m6.values():
+            if isinstance(row, dict) and row.get("funding_mode"):
+                modes.add(row["funding_mode"])
+    noise = (r.get("m1_noise") or {}).get("data") or {}
+    if isinstance(noise, dict) and noise.get("funding_mode"):
+        modes.add(noise["funding_mode"])
+    m5 = (r.get("m5") or {}).get("data") or {}
+    if isinstance(m5, dict) and m5.get("funding_mode"):
+        modes.add(m5["funding_mode"])
+    mc = ((entry.get("results") or {}).get("mc") or {}).get("data") or {}
+    if isinstance(mc, dict) and mc.get("funding_mode"):
+        modes.add(mc["funding_mode"])
+    return modes
+
+
+def funding_blocks_promotion(entry: dict) -> bool:
+    """Incomplete charge, partial, or mixed modes can never pass or be ranked up."""
+    r = gate_relevant_results(entry)
+    m1 = (r.get("m1") or {}).get("data") or {}
+    if isinstance(m1, dict) and any(
+            isinstance(row, dict) and row.get("verdict") == "funding_incomplete"
+            for row in m1.values()):
+        return True
+    m3 = (r.get("m3") or {}).get("data") or {}
+    if isinstance(m3, dict) and m3.get("funding_incomplete"):
+        return True
+    m6 = (r.get("m6") or {}).get("data") or {}
+    if isinstance(m6, dict) and any(
+            isinstance(row, dict) and row.get("funding_incomplete")
+            for row in m6.values()):
+        return True
+    noise = (r.get("m1_noise") or {}).get("data") or {}
+    if isinstance(noise, dict) and noise.get("funding_incomplete"):
+        return True
+    m5 = (r.get("m5") or {}).get("data") or {}
+    if isinstance(m5, dict) and m5.get("funding_incomplete"):
+        return True
+    mc = ((entry.get("results") or {}).get("mc") or {}).get("data") or {}
+    if isinstance(mc, dict) and mc.get("funding_incomplete"):
+        return True
+    modes = _funding_modes(entry)
+    return "partial" in modes or len(modes) > 1
+
+
 def candidate_verdict(entry: dict, tests: list) -> str:
     errors = entry.get("precondition_errors") or []
     if any(str(e).startswith(CLOSE_CAPABILITY_ERROR_PREFIX) for e in errors):
@@ -724,6 +804,8 @@ def candidate_verdict(entry: dict, tests: list) -> str:
     r = gate_relevant_results(entry)
     if any((v or {}).get("status") == "failed" for v in r.values()):
         return "run_failed"
+    if funding_blocks_promotion(entry):
+        return "inconclusive"
 
     my_tests = _tests_for(entry, tests)
     fam = entry.get("noise_family_key")
@@ -940,7 +1022,8 @@ def ensure_noise(entry: dict, spec: dict, out_dir: str, noise_cache: dict) -> No
         tail = noise_argv_tail(
             cand["name"], json.dumps(cand["params"]) if cand.get("params") else None,
             spec["registry"], _direction_for(cand), spec["windows"], spec["datasets"],
-            spec["resamples"], spec["seed"], spec["correction"]["alpha"], out)
+            spec["resamples"], spec["seed"], spec["correction"]["alpha"], out,
+            spec.get("funding", "charge"))
         run = _run_harness("m1_noise", tail, out)
         if run["status"] == "ok":
             run["data"] = extract_noise(run.pop("payload"))
@@ -956,7 +1039,8 @@ def ensure_m5(entry: dict, spec: dict, out_dir: str, m5_cache: dict) -> None:
         direction = _direction_for(cand)
         out = os.path.join(out_dir, f"m5.{cand['name']}.{direction or 'long'}.json")
         tail = m5_argv_tail(cand["name"], spec["registry"], direction,
-                            spec["windows"], spec["datasets"], out)
+                            spec["windows"], spec["datasets"], out,
+                            spec.get("funding", "charge"))
         run = _run_harness("m5", tail, out)
         if run["status"] == "ok":
             run["data"] = extract_m5(run.pop("payload"), cand["name"])
@@ -987,7 +1071,9 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
     if "m1" in entry["harnesses"]:
         cand_path = candidate_path()
         out = os.path.join(out_dir, f"{key}.m1.json")
-        run = _run_harness("m1", m1_argv_tail(cand_path, reg, windows, datasets, out), out)
+        run = _run_harness("m1", m1_argv_tail(
+            cand_path, reg, windows, datasets, out,
+            spec.get("funding", "charge")), out)
         if run["status"] == "ok":
             run["close_validation"] = run["payload"].get("close_validation")
             run["data"] = extract_m1(run.pop("payload"))
@@ -1000,7 +1086,8 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
         tail = m3_argv_tail(cand["name"],
                             json.dumps(cand["params"]) if cand.get("params") else None,
                             reg, _direction_for(cand), close_json, windows, datasets, out,
-                            cand.get("comparison_mode"))
+                            cand.get("comparison_mode"),
+                            spec.get("funding", "charge"))
         run = _run_harness("m3", tail, out)
         if run["status"] == "ok":
             run["close_validation"] = run["payload"].get("close_validation")
@@ -1015,7 +1102,7 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
         mc = spec.get("mc") or {}
         tail = mc_argv_tail(candidate_path(), reg, windows, datasets,
                             mc.get("n_paths") or MC_DEFAULT_N_PATHS,
-                            spec["seed"], mc, out)
+                            spec["seed"], mc, out, spec.get("funding", "charge"))
         run = _run_harness("mc", tail, out)
         if run["status"] == "ok":
             run["close_validation"] = run["payload"].get("close_validation")
@@ -1034,7 +1121,8 @@ def run_exit_ab_entry(entry: dict, spec: dict, out_dir: str) -> dict:
         return entry
     out = os.path.join(out_dir, f"{entry['key']}.m6.json")
     tail = m6_argv_tail(entry["candidate"], spec["registry"], spec["windows"],
-                        spec["datasets"], spec["resamples"], spec["seed"], out)
+                        spec["datasets"], spec["resamples"], spec["seed"], out,
+                        spec.get("funding", "charge"))
     run = _run_harness("m6", tail, out)
     if run["status"] == "ok":
         run["close_validation"] = run["payload"].get("close_validation")
@@ -1065,34 +1153,40 @@ def _dry_run_commands(entries: list, spec: dict, out_dir: str) -> list:
                 cmds.append(_cmd("m1_noise", noise_argv_tail(
                     cand["name"], params_json, reg, direction, windows, datasets,
                     spec["resamples"], spec["seed"], spec["correction"]["alpha"],
-                    os.path.join(out_dir, f"{key}.noise.json"))))
+                    os.path.join(out_dir, f"{key}.noise.json"),
+                    spec.get("funding", "charge"))))
             if "m1" in e["harnesses"]:
                 cmds.append(_cmd("m1", m1_argv_tail(
                     cand_path, reg, windows, datasets,
-                    os.path.join(out_dir, f"{key}.m1.json"))))
+                    os.path.join(out_dir, f"{key}.m1.json"),
+                    spec.get("funding", "charge"))))
             if "m3" in e["harnesses"]:
                 close_json = (json.dumps(cand["close_strategies"])
                               if cand.get("close_strategies") else None)
                 cmds.append(_cmd("m3", m3_argv_tail(
                     cand["name"], params_json, reg, direction, close_json,
                     windows, datasets, os.path.join(out_dir, f"{key}.m3.json"),
-                    cand.get("comparison_mode"))))
+                    cand.get("comparison_mode"),
+                    spec.get("funding", "charge"))))
             if "m5" in e["harnesses"]:
                 cmds.append(_cmd("m5", m5_argv_tail(
                     cand["name"], reg, direction, windows, datasets,
                     os.path.join(out_dir,
-                                 f"m5.{cand['name']}.{direction or 'long'}.json"))))
+                                 f"m5.{cand['name']}.{direction or 'long'}.json"),
+                    spec.get("funding", "charge"))))
             if "mc" in e["harnesses"]:
                 mc = spec.get("mc") or {}
                 cmds.append(_cmd("mc", mc_argv_tail(
                     cand_path, reg, windows, datasets,
                     mc.get("n_paths") or MC_DEFAULT_N_PATHS, spec["seed"], mc,
-                    os.path.join(out_dir, f"{key}.mc.json"))))
+                    os.path.join(out_dir, f"{key}.mc.json"),
+                    spec.get("funding", "charge"))))
         else:
             cmds.append(_cmd("m6", m6_argv_tail(
                 e["candidate"], reg, windows, datasets,
                 spec["resamples"], spec["seed"],
-                os.path.join(out_dir, f"{e['key']}.m6.json"))))
+                os.path.join(out_dir, f"{e['key']}.m6.json"),
+                spec.get("funding", "charge"))))
     return cmds
 
 
@@ -1141,6 +1235,8 @@ def build_parser() -> argparse.ArgumentParser:
                    "(comma list SYMBOL:TIMEFRAME)")
     p.add_argument("--alpha", type=float, default=None, help="Override correction alpha")
     p.add_argument("--seed", type=int, default=1066)
+    p.add_argument("--funding", choices=["charge", "partial", "off"],
+                   default="charge")
     p.add_argument("--bootstrap-resamples", type=int, default=10000)
     p.add_argument("--dry-run", action="store_true",
                    help="Print every planned harness command; run nothing")
@@ -1167,6 +1263,7 @@ def main(argv=None) -> int:
     if args.alpha is not None:
         spec["correction"]["alpha"] = args.alpha
     spec["seed"] = args.seed
+    spec["funding"] = args.funding
     spec["resamples"] = args.bootstrap_resamples
 
     entries = expand_candidates(spec)
@@ -1238,7 +1335,8 @@ def main(argv=None) -> int:
         print(f"wrote {args.markdown_out}")
 
     refused = any(e.get("close_capability_refusal") is not None for e in entries)
-    return 1 if (any_gate_failure(entries) or refused) else 0
+    mixed_funding = any(len(_funding_modes(e)) > 1 for e in entries)
+    return 1 if (any_gate_failure(entries) or refused or mixed_funding) else 0
 
 
 if __name__ == "__main__":

@@ -110,7 +110,20 @@ def aggregate_strategy(strategy: str, registry_label: str,
         "errors": errors,
         "verdict": verdict,
         "close_validation": _aggregate_validations(data_legs),
+        "funding_incomplete": any(l.get("funding_incomplete") for l in leg_results),
+        "funding_mode": _one_funding_mode(leg_results),
     }
+
+
+def _one_funding_mode(leg_results: List[dict]):
+    modes = []
+    for leg in leg_results:
+        mode = leg.get("funding_mode")
+        if mode and mode not in modes:
+            modes.append(mode)
+    if len(modes) == 1:
+        return modes[0]
+    return None
 
 
 def _aggregate_validations(data_legs: List[dict]) -> dict:
@@ -256,11 +269,13 @@ def render_markdown(ranked: List[dict], meta: dict) -> str:
 
 def screen_leg(reg, name: str, symbol: str, timeframe: str,
                window: tuple, capital: float,
-               direction: Optional[str] = None) -> Optional[dict]:
+               direction: Optional[str] = None,
+               funding_mode: str = "charge") -> Optional[dict]:
     from backtester import CloseCapabilityError
     try:
         net = run_leg(reg, name, None, symbol, timeframe, window,
-                      capital=capital, direction=direction)
+                      capital=capital, direction=direction,
+                      funding_mode=funding_mode)
     except CloseCapabilityError:
         raise
     except Exception as exc:
@@ -270,7 +285,8 @@ def screen_leg(reg, name: str, symbol: str, timeframe: str,
     try:
         gross = run_leg(reg, name, None, symbol, timeframe, window,
                         capital=capital, direction=direction,
-                        commission_pct=0.0, slippage_pct=0.0)
+                        commission_pct=0.0, slippage_pct=0.0,
+                        funding_mode=funding_mode)
     except CloseCapabilityError:
         raise
     except Exception as exc:
@@ -294,18 +310,22 @@ def screen_leg(reg, name: str, symbol: str, timeframe: str,
         "net_sharpe": net["sharpe"],
         "liquidated": bool(net.get("liquidated") or gross.get("liquidated")),
         "close_validation": net.get("close_validation"),
+        "funding_mode": ((net.get("funding") or {}).get("mode") or funding_mode),
+        "funding_incomplete": bool(net.get("funding_incomplete")
+                                   or gross.get("funding_incomplete")),
     }
 
 
 def screen_strategy(reg, name: str, registry_label: str, datasets: List[tuple],
                     window_names: List[str], capital: float,
-                    direction: Optional[str] = None) -> dict:
+                    direction: Optional[str] = None,
+                    funding_mode: str = "charge") -> dict:
     leg_results = []
     for wname in window_names:
         window = WINDOWS[wname]
         for symbol, timeframe in datasets:
             leg = screen_leg(reg, name, symbol, timeframe, window, capital,
-                             direction=direction)
+                             direction=direction, funding_mode=funding_mode)
             if leg is None:
                 continue
             leg["window"] = wname
@@ -375,6 +395,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "(signal=-1 opens, +1 closes) instead of withholding "
                         "short-capable rows as unscreened.")
     p.add_argument("--capital", type=float, default=DEFAULT_CAPITAL)
+    p.add_argument("--funding", choices=["charge", "partial", "off"],
+                   default="charge",
+                   help="Hyperliquid perps funding mode passed to each leg")
     p.add_argument("--json", default=None, dest="json_out",
                    help="Write the full structured result to this path")
     p.add_argument("--markdown", default=None, dest="markdown_out",
@@ -410,7 +433,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     for idx, (name, label, reg) in enumerate(targets, 1):
         print(f"  [{idx}/{len(targets)}] {name} ({label}) ...", flush=True)
         rows.append(screen_strategy(reg, name, label, datasets, window_names,
-                                    args.capital, direction=args.direction))
+                                    args.capital, direction=args.direction,
+                                    funding_mode=args.funding))
 
     ranked = rank_rows(rows)
     counts = verdict_counts(ranked)
@@ -448,6 +472,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "datasets": [dataset_key(s, t) for s, t in datasets],
             "direction": args.direction or "long",
             "capital": args.capital,
+            "funding_mode": args.funding,
+            "funding_incomplete": any(r.get("funding_incomplete") for r in ranked),
             "verdict_counts": counts,
             "rows": ranked,
         }
@@ -470,6 +496,9 @@ def _reproduce_command(args) -> str:
         parts.append(f"--direction {args.direction}")
     if args.capital != DEFAULT_CAPITAL:
         parts.append(f"--capital {args.capital}")
+    funding = getattr(args, "funding", None)
+    if funding:
+        parts.append(f"--funding {funding}")
     if args.markdown_out:
         parts.append(f"--markdown {args.markdown_out}")
     return " ".join(parts)

@@ -640,6 +640,42 @@ A strategy value or a declared root value (verified or not) other than `simple` 
 The report `atr_method` section holds the method, its source (`strategy`, `root`, `live_default`, `unverified_substitute` or `not_used`) and the evidence.
 Wilder ATR is recursive, so the indicator-history check needs a long warm-up when an ATR stop owner is active (1500 hourly bars passed in issue 1682's production run; 400 did not).
 
+**Regime context (#1730).** One comparison run resolves one regime context.
+`capability_evidence.directional_certification`, `regime_labels` and `regime_feature_timing` bind `partition`, `strategy_id`, `configuration_sha256` and the complete interval (`coverage: complete_interval`).
+A certification entry is `reloads: none` plus exactly one of `effective: empty` or `artifact`.
+Label evidence with `values_and_timing: true` is the only proof that label values and timing matched the frozen candles.
+The Python certification loader is not the check: a malformed entry rejects the whole artifact, the way Go does.
+A non-object `criteria`, an empty timestamp, a non-integer `schema_version`, and a state direction other than the exact strings `long` and `short` are `directional_certification_invalid`.
+Flat decisions use the current expiry; an open position keeps the states frozen at entry.
+A change inside the interval is `directional_certification_changes_in_window`.
+Missing, hash, invalid and incomplete evidence keep those words in the reason code (`directional_certification_*`, `regime_labels_*`).
+No evidence is `directional_certification_unverified` or `regime_label_availability_unverified` (approximable).
+Selectors are checked before a row can be inactive: `regime_window_multi_disabled`, `regime_window_unknown`, and `regime_gate_disabled_fail_closed` (disabled regime, `allowed_regimes`, fail-closed).
+A named selector with no consumer is inactive `regime_selector_no_consumer`.
+A regime-owned stop consumes a named gate window, so that selector is not inactive.
+Live writes one `result.Regime` payload per cycle. The position stamps, the regime-owned stop, the regime-tier label and the directional policy read one row of it, and so does the gate with `closed_bar_decisions` off.
+`features.directional`, and `features.gate` with `closed_bar_decisions` off, describe that row. `unshifted_closed_candle` attests the fill bar's own close; with no token the row is the decision bar.
+Tokens that disagree are `regime_feature_timing_conflict`. A token the frozen candles do not reproduce is `regime_feature_timing_unsupported` (approximable; the substitute is the decision bar).
+An uncertified policy is inactive `directional_policy_uncertified`.
+A bare `ranging_directional` entry is honored when a certified sub-label resolves to it, matching live `gatedDirectionalEntry`.
+A gate with `closed_bar_decisions` reads one shifted closed-bar column.
+With `closed_bar_decisions` off, the gate reads the attested `result.Regime` row.
+Without an attested row the gate is `regime_feature_timing_unsupported`, and approximate mode uses the decision bar.
+Directional checks read `result.Regime`.
+A flat directional decision reads the resolved directional window, which is the primary window when the selector is default.
+An open position keeps the entry stamp, the gate-window label when the directional selector is default.
+Directional checks need an attested `result.Regime` row; otherwise `regime_feature_timing_unsupported`, and approximate mode uses the decision bar.
+Approximate mode records that substitute and stays incomplete.
+Warm-up shorter than the live lookback (at least 200) is `regime_lookback_insufficient`.
+Another timeframe is `regime_timeframe_unprepared`.
+`regime_window_divergence` is `regime_divergence_unmodeled`.
+`regime_profile_allocation` is `regime_profile_allocation_unsupported`.
+A named ATR window is `regime_atr_window_unsupported`.
+The engine takes `regime_label_columns`: `gate`, `directional` and `atr` columns, `payload_row` (`decision_bar`, the default, or `closed_candle`) and `gate_row` (`decision_bar` or `payload`).
+An unknown key, or a named column that is absent, is refused; an absent column is not recomputed from the primary column.
+Stamps survive a partial close, clear on a full close, and the same-bar reopen reads the current label.
+The default constructor, with no label columns, is unchanged.
+
 **Decision timing (#1712).** The historical strategy's `closed_bar_decisions` is a capability row (`decision_timing`) and the report `timestamps.decision_timing` section.
 `true` is modeled: live decision inputs use the bar the simulator decides on, but a booked record time can still trail the bar boundary (per-strategy timer, entry gates, retries), and under `market_feed: websocket` or `shared` a decision can read a closed bar before a later venue correction.
 `false` or omitted is legacy runtime timing, reported as informational with the limitation that a closed-bar simulation cannot establish forming-bar decision parity without recorded decision evidence.
@@ -657,7 +693,10 @@ On a loader basis a `config` leverage is verified only with a verified `resolved
 The central `UNSUPPORTED_STOP_OWNER`, `MISSING_STOP_INPUT` (including an unsupported named window) and `UNVERIFIED_MARGIN_LEVERAGE` (a defaulted or unverified leverage) are `stop_capability_refused` with `reason_code`.
 These refusals are never approximated.
 Version 1 has no basis or provenance, so it cannot rule out an explicit stop, an implicit ATR default, a close-owned stop or the drawdown fallback: a Hyperliquid perps segment is refused with `stop_inputs_unverified` (`basis` plus the owner's inputs).
-A regime-owned stop gets primary-window labels from the historical regime configuration (`regime.enabled` is its label input; a disabled regime is `MISSING_STOP_INPUT`) with no `allowed_regimes` added; entry gating, other regime fields and a `regime.timeframe` other than the dataset interval stay refused.
+A regime-owned stop gets labels from the historical regime configuration (`regime.enabled` is its label input; a disabled regime is `MISSING_STOP_INPUT`).
+When the ATR selector is default, protection uses the gate-window stamp: the named gate window, or the primary column when the gate selector is also default.
+The stamp is on the `result.Regime` row (Regime context above): the unshifted closed candle when verified timing evidence attests it, with or without a gate or policy, otherwise the decision bar.
+A named ATR window stays refused for issue 1732.
 The `max_drawdown_pct` portfolio-control row stays separate from its stop-fallback row.
 The report `stops` section holds the basis, owner, required inputs, live and engine values, the capability context and every simulated arm.
 
@@ -665,7 +704,7 @@ The report `stops` section holds the basis, owner, required inputs, live and eng
 
 **Strict eligibility.** A missing or unverified input makes the result `unverified` (diagnostic only); a recomputed rule that disagrees with the declared value is unverified.
 Starting inventory under either rule is unverified when the booked replay disagrees with it or cannot be computed (a booked event before the interval with unresolved identity).
-Refusals (`refused`): input binding mismatch, a configuration change inside the interval, a non-flat start (seeded inventory, declared or shown by the booked replay), a manual owner (every event `not_comparable`), a non-perps or non-Hyperliquid owner, a missing close strategy (the execution-spec path needs the open/close engine), scale-in, stop refusals (above), leverage or sizing leverage above 1, margin/capital/risk sizing fields, regime gating or classification other than a regime-owned stop's labels, Hurst gate, HTF filter or HTF strategies, hedge, replay, funding-input strategies, unknown active fields, portfolio controls without verified non-intervention evidence, a pending entry on the last warm-up bar, and frozen-input gaps.
+Refusals (`refused`): input binding mismatch, a configuration change inside the interval, a non-flat start (seeded inventory, declared or shown by the booked replay), a manual owner (every event `not_comparable`), a non-perps or non-Hyperliquid owner, a missing close strategy (the execution-spec path needs the open/close engine), scale-in, stop refusals (above), leverage or sizing leverage above 1, `capital_pct` (`sizing_capital_pct`) and the #1728 sizing refusals, regime rows that are not modeled (the regime context above), Hurst gate, HTF filter or HTF strategies, hedge, replay, funding-input strategies, unknown active fields, portfolio controls without verified non-intervention evidence, a pending entry on the last warm-up bar, and frozen-input gaps.
 Frozen checks: manifest and file hashes; one exact candle grid across warm-up and scoring (no gap at either edge or the join); finite, consistent OHLCV; hourly funding for every hour the simulator attaches to a scored bar (after the previous bar open through the last scored bar open); scored decisions, and the ATR and regime labels a stop owner reads, unchanged when a third of warm-up is removed; for observation-input strategies, the strategy's own per-bar observation validity on every scored bar.
 The central close contract is decoded with `decode_close_validation`; strict success needs `mode: strict`, `close_eligibility: eligible` and no approximation, and a passing close validation alone never makes strict success.
 
@@ -691,6 +730,13 @@ It refuses unless the snapshot and `source/seed.sql` match the latest documented
 When `MinSupportedConfigVersion` passes the snapshot's configuration version, re-capture on Linux per the fixture README.
 
 **Limitations.** Strict support covers flat-start, single-configuration Hyperliquid perps owners on the open/close engine with verified stops and no scale-in, leverage, regime gating or HTF inputs. The committed exports carry no stop stamps, so their initial geometry is `unavailable`; agreement is proven only on synthetic test copies. Booked timestamps are ledger record times, not exchange fill times. Live sizing is not modeled beyond the simulator's all-cash sizing from the verified starting cash; quantity deltas expose differences. Separate state files are separate snapshots; the comparison makes no cross-file simultaneity claim.
+
+### Fee evidence (issue 1726)
+
+`backtest/fee_evidence.py` measures the Hyperliquid fee rates and slippage of booked live fills from one or more exports. It is offline and suggest-only, makes no network call and writes no config. See the `docs/backtesting-registry.md` row for inputs and output.
+Every export must have `selection.platform = hyperliquid`; any other platform exits 1. Rows count only when the partition is `live`, `fee_source` is `userfills` and `value` is nonzero; funding, modeled and `reconcile_adjustment` rows are counted as excluded. Hedge-leg rows are `hedge` and operator rows (`manual = true`, including manual and manual-limit opens and adds) are `manual`; other opens and adds are `open` and `add`, and close rows are grouped by `close_reason`, else by the booking code's details prefix; anything else is `unclassified` and listed. A row that appears in several exports (same storage strategy, source role and row id) counts once, and the run refuses when the copies disagree.
+Live stop slippage needs venue fills: the reconcile path books a confirmed live stop at the stored trigger (`hyperliquid_balance.go`), so its exported `price` equals `stop_loss_trigger_px`. Pass raw `userFillsByTime` captures with `--user-fills` (account address only, no trading key); fills join rows by order id, and the role comes from the fill's `crossed` flag. A trigger-priced row with no venue fill is `booked_at_trigger_no_venue_evidence`, never a zero-slippage sample. Market-fill slippage needs a `--fill-log` extract and is labelled "reference price as logged"; it uses the exact booked fill price, so only the 2-decimal logged reference is rounded, and samples whose rounding bound exceeds 0.5 bps are excluded.
+Production evidence is captured read-only (export capture and `export ledger`, no `--once`, no restart, no state write). Post only the derived numbers; never post or commit the account address, raw fills or exports.
 
 ---
 
@@ -981,6 +1027,8 @@ Every full close eagerly inserts a `trade_diagnostics` row at close time; a back
 ## Backtesting
 
 Run every backtest through `uv run --no-sync python`. Harness map: [`docs/backtesting-registry.md`](docs/backtesting-registry.md).
+
+Hyperliquid perps runs charge hourly funding by default (`--funding charge`). The shared helper attaches right-closed accrual (a funding time is in a bar when it is after the previous bar open and at or before that bar). Missing-hour counts use that same bar for every bar width. The engine refuses an incomplete charge result before it saves. Compare and multi-asset record a refused strategy and still run the others, then exit 1. A frame that does not charge funding is stored as `not_priced` (`off` stays `off`). `--funding partial` keeps a flagged result. `--funding off` reproduces the older directional result: cash still includes `delta_neutral_funding` accrual, and per-trade statistics stay on price PnL. M1 noise, the fee audit, and Monte Carlo take that same option and record `funding_incomplete`. M1–M6, `auto_suggest`, and `tune_live` stay suggest-only.
 
 ```bash
 uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode single|compare|multi|optimize

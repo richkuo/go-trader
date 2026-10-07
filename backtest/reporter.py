@@ -26,6 +26,22 @@ def _fmt_opt(value, spec: str = ".3f", none_text: str = "n/a") -> str:
     return format(value, spec)
 
 
+def _funding_line(results: dict) -> Optional[str]:
+    if "funding" not in results and "funding_json" not in results:
+        return None
+    raw = results["funding"] if "funding" in results else results.get("funding_json")
+    if raw is None or raw == "":
+        return "  Funding:         funding unknown"
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return "  Funding:         funding unknown"
+    if not isinstance(raw, dict) or not raw.get("mode"):
+        return "  Funding:         funding unknown"
+    return f"  Funding:         {raw.get('mode')}"
+
+
 def format_single_report(results: dict) -> str:
     lines = [
         f"\n{'='*70}",
@@ -58,6 +74,9 @@ def format_single_report(results: dict) -> str:
         f"{'─'*70}",
         f"  {_close_validation_line(results.get('close_validation'))}",
     ]
+    funding_line = _funding_line(results)
+    if funding_line:
+        lines.append(funding_line)
 
     trades = results.get("trades", [])
     if trades:
@@ -160,6 +179,12 @@ def format_walk_forward_report(wf_result: dict) -> str:
         f"  WALK-FORWARD OPTIMIZATION: {wf_result.get('strategy', 'Unknown')}",
         f"{'='*70}",
         f"  Folds:             {wf_result.get('n_valid_folds', 0)}/{wf_result.get('n_splits', 0)}",
+        f"  Funding-skipped folds: {int(wf_result.get('funding_skipped_folds') or 0)}",
+        f"  Funding-skipped candidates: {int(wf_result.get('funding_skipped_candidates') or 0)}",
+    ]
+    if wf_result.get("error"):
+        lines.append(f"  Error:             {wf_result['error']}")
+    lines += [
         f"  Param Combos:      {wf_result.get('param_grid_size', 0)}",
         f"  Close Stacks:      {wf_result.get('close_stack_grid_size', 1)}",
         f"  Optimize Metric:   {wf_result.get('optimize_metric', 'sharpe_ratio')}",
