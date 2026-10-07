@@ -719,6 +719,86 @@
         "status": "unavailable",
         "value": null
       }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p-fillbar"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T03:05:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[1011]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p-fillbar"
+      },
+      "process_strategy_id": "strat-a",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T03:15:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
     }
   ],
   "schema": "go-trader.booked-ledger",

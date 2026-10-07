@@ -40,7 +40,7 @@
     "export_sha256": [
       {
         "path": "export_a.json",
-        "sha256": "f75cb77d967985d72ccc1d3cd07e2aee2382cf3b41bb845b08302ff3310ac422"
+        "sha256": "f9f05a5eaa41fbb329755032b704a821442f2b9b08e81d345cedb96627ec2721"
       },
       {
         "path": "export_b.json",

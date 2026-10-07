@@ -20,8 +20,10 @@ ALLOWED_TYPES = frozenset({
     "candleSnapshot",
 })
 PAGE_CAP = 200
+FILL_PAGE_MAX = 2000
 DEFAULT_TIMEOUT_S = 20.0
 DEFAULT_RETRIES = 3
+MINUTE_MS = 60_000
 
 
 class CaptureError(Exception):
@@ -70,6 +72,7 @@ def post_info(payload, timeout, retries, opener=None):
             last = (attempt, int(exc.code), raw, str(exc))
             if attempt == retries:
                 return attempt, int(exc.code), raw
+            time.sleep(min(2 * attempt, 8))
         except Exception as exc:
             last = (attempt, 0, b"", str(exc))
             if attempt == retries:
@@ -105,16 +108,25 @@ def read_export_targets(path: str):
                 coins.append(coin)
         raw_tps = _evidence_value(event.get("tp_oids_json"))
         if isinstance(raw_tps, str) and raw_tps.strip():
-            parsed = json.loads(raw_tps)
+            try:
+                parsed = json.loads(raw_tps)
+            except json.JSONDecodeError as exc:
+                raise CaptureError(f"tp_oids_json is not json: {raw_tps!r}") from exc
             if isinstance(parsed, list):
                 for item in parsed:
-                    oid = int(item)
+                    try:
+                        oid = int(item)
+                    except (TypeError, ValueError) as exc:
+                        raise CaptureError(f"tp oid is not an integer: {item!r}") from exc
                     if oid > 0 and oid not in seen_oid:
                         seen_oid.add(oid)
                         oids.append(oid)
         raw_stop = _evidence_value(event.get("stop_loss_oid"))
         if isinstance(raw_stop, str) and raw_stop.strip():
-            oid = int(raw_stop)
+            try:
+                oid = int(raw_stop)
+            except (TypeError, ValueError) as exc:
+                raise CaptureError(f"stop oid is not an integer: {raw_stop!r}") from exc
             if oid > 0 and oid not in seen_oid:
                 seen_oid.add(oid)
                 oids.append(oid)
@@ -150,9 +162,41 @@ def _fill_time(row):
     return None
 
 
-def _page_user_fills(address, since_ms, end_ms, timeout, retries, record):
+def _fill_identity(row):
+    if not isinstance(row, dict):
+        return None
+    tid = row.get("tid")
+    if tid is not None:
+        return ("tid", str(tid))
+    return ("row", row.get("time"), row.get("oid"), row.get("sz"), row.get("px"))
+
+
+def _incomplete(pages, cursor, end_ms, failure, status_pages=0):
+    observed = max((len(page) for page in pages), default=0)
+    count = len(pages) + status_pages
+    return {
+        "complete": False,
+        "pages": count,
+        "observed_page_maximum": observed,
+        "uncovered_from_ms": cursor,
+        "uncovered_to_ms": int(end_ms),
+        "failure": failure,
+    }
+
+
+def _parse_json(raw):
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CaptureError("info response was not json") from exc
+
+
+def _page_user_fills(address, since_ms, end_ms, timeout, retries, record, opener=None, page_max_rows=FILL_PAGE_MAX):
     cursor = int(since_ms)
     pages = []
+    seen = set()
     while len(pages) < PAGE_CAP:
         payload = {
             "type": "userFillsByTime",
@@ -160,69 +204,86 @@ def _page_user_fills(address, since_ms, end_ms, timeout, retries, record):
             "startTime": cursor,
             "endTime": int(end_ms),
         }
-        attempt, status, raw = post_info(payload, timeout, retries)
-        parsed = json.loads(raw.decode("utf-8")) if raw else None
+        attempt, status, raw = post_info(payload, timeout, retries, opener=opener)
         record(payload, attempt, status, raw)
+        try:
+            parsed = _parse_json(raw)
+        except CaptureError:
+            return _incomplete(pages, cursor, end_ms, "response was not json", status_pages=1)
         if status != 200 or not isinstance(parsed, list):
-            return {
-                "complete": False,
-                "pages": len(pages) + 1,
-                "observed_page_maximum": max((len(p) for p in pages), default=0),
-                "uncovered_from_ms": cursor,
-                "uncovered_to_ms": int(end_ms),
-                "failure": f"status {status}",
-            }
+            return _incomplete(pages, cursor, end_ms, f"status {status}", status_pages=1)
         pages.append(parsed)
         if not parsed:
             cursor = int(end_ms) + 1
             break
-        times = [t for t in (_fill_time(row) for row in parsed) if t is not None]
+        times = [stamp for stamp in (_fill_time(row) for row in parsed) if stamp is not None]
         if not times:
-            return {
-                "complete": False,
-                "pages": len(pages),
-                "observed_page_maximum": max(len(p) for p in pages),
-                "uncovered_from_ms": cursor,
-                "uncovered_to_ms": int(end_ms),
-                "failure": "page has no fill time",
-            }
-        nxt = max(times) + 1
-        if nxt <= cursor:
-            return {
-                "complete": False,
-                "pages": len(pages),
-                "observed_page_maximum": max(len(p) for p in pages),
-                "uncovered_from_ms": cursor,
-                "uncovered_to_ms": int(end_ms),
-                "failure": "fill cursor did not advance",
-            }
-        cursor = nxt
-        if cursor > int(end_ms):
+            return _incomplete(pages, cursor, end_ms, "page has no fill time")
+        if len(parsed) >= page_max_rows and len(set(times)) == 1:
+            return _incomplete(pages, cursor, end_ms, "full page shares one timestamp")
+        page_max = max(times)
+        if page_max < cursor:
+            return _incomplete(pages, cursor, end_ms, "fill cursor moved backward")
+        fresh = 0
+        for row in parsed:
+            key = _fill_identity(row)
+            if key is None or key in seen:
+                continue
+            seen.add(key)
+            fresh += 1
+        if page_max == cursor:
+            cursor = int(end_ms) + 1
             break
-    observed = max((len(p) for p in pages), default=0)
-    prior = max((len(p) for p in pages[:-1]), default=None)
-    shorter = prior is not None and len(pages[-1]) < prior
-    single = len(pages) == 1
+        if fresh == 0:
+            return _incomplete(pages, cursor, end_ms, "fill page repeated")
+        cursor = page_max
+    observed = max((len(page) for page in pages), default=0)
     hit_cap = len(pages) >= PAGE_CAP and cursor <= int(end_ms)
-    complete = (not hit_cap) and cursor > int(end_ms) and (single or shorter)
-    out = {
+    complete = (not hit_cap) and cursor > int(end_ms)
+    return {
         "complete": complete,
         "pages": len(pages),
         "observed_page_maximum": observed,
         "uncovered_from_ms": None if complete else cursor,
         "uncovered_to_ms": None if complete else int(end_ms),
     }
-    return out
 
 
-def _one_shot(payload, timeout, retries, record):
-    attempt, status, raw = post_info(payload, timeout, retries)
+def _one_shot(payload, timeout, retries, record, opener=None):
+    attempt, status, raw = post_info(payload, timeout, retries, opener=opener)
     record(payload, attempt, status, raw)
     ok = status == 200 and bool(raw)
-    return {"complete": ok, "http_status": status}
+    return {"complete": ok, "http_status": status, "raw": raw}
 
 
-def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries):
+def _expected_minutes(since_ms, end_ms):
+    if end_ms <= since_ms:
+        return []
+    return list(range(int(since_ms), int(end_ms), MINUTE_MS))
+
+
+def _candle_coverage(raw, since_ms, end_ms):
+    expected = _expected_minutes(since_ms, end_ms)
+    if not expected:
+        return False
+    try:
+        parsed = _parse_json(raw)
+    except CaptureError:
+        return False
+    if not isinstance(parsed, list):
+        return False
+    opens = set()
+    for candle in parsed:
+        if isinstance(candle, dict) and candle.get("t") is not None:
+            opens.add(int(candle["t"]))
+    return all(open_ms in opens for open_ms in expected)
+
+
+def _public_row(row):
+    return {key: value for key, value in row.items() if key != "raw"}
+
+
+def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, opener=None):
     oids = []
     coins = []
     seen_oid = set()
@@ -276,18 +337,19 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries):
         if status != 200:
             failed = True
 
-    fills = _page_user_fills(address, since_ms, end_ms, timeout, retries, record)
+    fills = _page_user_fills(
+        address, since_ms, end_ms, timeout, retries, record, opener=opener)
     if not fills["complete"]:
         failed = True
     historical = _one_shot(
-        {"type": "historicalOrders", "user": address}, timeout, retries, record)
+        {"type": "historicalOrders", "user": address}, timeout, retries, record, opener=opener)
     if not historical["complete"]:
         failed = True
     order_rows = []
     for oid in oids:
         row = _one_shot(
             {"type": "orderStatus", "user": address, "oid": oid},
-            timeout, retries, record)
+            timeout, retries, record, opener=opener)
         row["oid"] = oid
         order_rows.append(row)
         if not row["complete"]:
@@ -296,7 +358,7 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries):
     candle_rows = []
     for coin in coins:
         trades = _one_shot(
-            {"type": "recentTrades", "coin": coin}, timeout, retries, record)
+            {"type": "recentTrades", "coin": coin}, timeout, retries, record, opener=opener)
         trades["coin"] = coin
         trade_rows.append(trades)
         candles = _one_shot({
@@ -307,9 +369,11 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries):
                 "startTime": int(since_ms),
                 "endTime": int(end_ms),
             },
-        }, timeout, retries, record)
+        }, timeout, retries, record, opener=opener)
         candles["coin"] = coin
         candles["interval"] = "1m"
+        if candles["complete"] and not _candle_coverage(candles.get("raw"), since_ms, end_ms):
+            candles["complete"] = False
         candle_rows.append(candles)
         if not trades["complete"] or not candles["complete"]:
             failed = True
@@ -323,10 +387,10 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries):
             "since_ms": int(since_ms),
         },
         "completeness": {
-            "candleSnapshot": candle_rows,
-            "historicalOrders": historical,
-            "orderStatus": order_rows,
-            "recentTrades": trade_rows,
+            "candleSnapshot": [_public_row(row) for row in candle_rows],
+            "historicalOrders": _public_row(historical),
+            "orderStatus": [_public_row(row) for row in order_rows],
+            "recentTrades": [_public_row(row) for row in trade_rows],
             "userFillsByTime": fills,
         },
         "page_cap": PAGE_CAP,
