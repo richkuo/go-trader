@@ -698,7 +698,7 @@ _LIVE_DEFAULT_STOP_LOSS_ATR_MULT = 1.0
 
 
 LIVE_STOP_KWARG_KEYS = STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS + (
-    "stop_platform", "capability_context")
+    "stop_platform", "capability_context", "perps_sizing", "liquidation_model", "venue_margin")
 
 
 def live_stop_kwargs(loaded: dict) -> dict:
@@ -708,6 +708,9 @@ def live_stop_kwargs(loaded: dict) -> dict:
 def stop_context_to_json(loaded: dict) -> dict:
     out = {k: deepcopy(loaded[k]) for k in STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS
            + ("stop_platform", "strategy_type") if loaded.get(k) is not None}
+    for key in ("perps_sizing", "liquidation_model", "venue_margin"):
+        if loaded.get(key) is not None:
+            out[key] = deepcopy(loaded[key])
     context = loaded.get("capability_context")
     if context is not None:
         out["capability_context"] = context.to_dict()
@@ -723,7 +726,8 @@ def stop_kwargs_from_json(payload) -> dict:
             "stop_context.stop_units must be 'engine_fraction' (the translator already "
             f"converted live percent units once), got {payload.get('stop_units')!r}")
     allowed = set(STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS) | {
-        "stop_platform", "strategy_type", "capability_context", "stop_units"}
+        "stop_platform", "strategy_type", "capability_context", "stop_units",
+        "perps_sizing", "liquidation_model", "venue_margin"}
     unknown = sorted(set(payload) - allowed)
     if unknown:
         raise ValueError(f"stop_context has unknown key(s) {unknown}")
@@ -930,6 +934,166 @@ def resolve_raw_config_stops(cfg: dict, strategy_id: str, label: str) -> dict:
             return resolve_live_strategy_stops(
                 cfg, sc, user_defaults, inject_user_defaults=True, label=label)
     raise ValueError(f"{label}: no strategy with id={strategy_id!r}")
+
+
+_UNIFIED_CLOSE_NAMES = (
+    "tiered_tp_atr_regime",
+    "tiered_tp_atr_live_regime",
+    "tiered_tp_atr_live_regime_dynamic",
+)
+_MAX_AUTO_STOP_LOSS_PCT = 50.0
+
+
+def _args_mode(args) -> str:
+    if not isinstance(args, list):
+        return ""
+    for i, arg in enumerate(args):
+        text = str(arg)
+        if text.startswith("--mode="):
+            return text.split("=", 1)[1]
+        if text == "--mode" and i + 1 < len(args):
+            return str(args[i + 1])
+    return ""
+
+
+def _is_live_args(args) -> bool:
+    return _args_mode(args) == "live"
+
+
+def _unified_regime_close(close_refs) -> bool:
+    for ref in close_refs or []:
+        if not isinstance(ref, dict):
+            continue
+        name = str(ref.get("name") or "").strip().lower()
+        params = ref.get("params") or {}
+        if name in _UNIFIED_CLOSE_NAMES and isinstance(params, dict) and "trend_regime" in params:
+            return True
+    return False
+
+
+def _positive(value) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if number != number:
+        return 0.0
+    return number if number > 0 else 0.0
+
+
+def refuse_live_isolated_bankruptcy(sc: dict, close_refs) -> None:
+    """Mirror validateHLStopWithinBankruptcyBound. Paper, cross, and non-live skip."""
+    if live_strategy_platform(sc) != "hyperliquid" or sc.get("type") != "perps":
+        return
+    if not _is_live_args(sc.get("args")):
+        return
+    if str(sc.get("margin_mode") or "").strip().lower() == "cross":
+        return
+    lev = _positive(sc.get("leverage")) or 1.0
+    bound = 100.0 / lev
+    unified = _unified_regime_close(close_refs)
+    errs = []
+
+    def report(field, pct):
+        if pct <= 0 or pct < bound:
+            return
+        errs.append(
+            f"{field} = {pct:g}% is at or beyond the isolated-margin bankruptcy "
+            f"distance (100 / leverage = {bound:g}% at leverage {lev:g})")
+
+    if not unified:
+        if sc.get("stop_loss_pct") is not None:
+            report("stop_loss_pct", _positive(sc.get("stop_loss_pct")))
+        margin_pct = _positive(sc.get("stop_loss_margin_pct"))
+        if margin_pct > 0:
+            report("derived stop-loss price %% (stop_loss_margin_pct / leverage)", margin_pct / lev)
+    drawdown_fallback = (
+        not unified
+        and _positive(sc.get("trailing_stop_atr_mult")) <= 0
+        and _positive(sc.get("stop_loss_atr_mult")) <= 0
+        and not sc.get("stop_loss_atr_mult_regime")
+        and not sc.get("trailing_stop_atr_mult_regime")
+        and sc.get("trailing_stop_pct") is None
+        and sc.get("stop_loss_pct") is None
+        and sc.get("stop_loss_margin_pct") is None
+        and _positive(sc.get("max_drawdown_pct")) > 0
+    )
+    if drawdown_fallback:
+        fallback = _positive(sc.get("max_drawdown_pct"))
+        if fallback > _MAX_AUTO_STOP_LOSS_PCT:
+            fallback = _MAX_AUTO_STOP_LOSS_PCT
+        report("max_drawdown_pct", fallback)
+    if errs:
+        raise ValueError("; ".join(errs))
+
+
+def shared_wallet_pool(cfg: dict) -> tuple:
+    """Mirror validateConfiguredSharedWalletPools. Returns (pooled ids, errors)."""
+    groups = {}
+    for sc in cfg.get("strategies") or []:
+        if not isinstance(sc, dict):
+            continue
+        platform = live_strategy_platform(sc)
+        if platform not in ("hyperliquid", "okx") or sc.get("type") != "perps":
+            continue
+        if not _is_live_args(sc.get("args")):
+            continue
+        groups.setdefault(platform, []).append(sc)
+    pooled = set()
+    errs = []
+    for platform, members in groups.items():
+        if len(members) < 2:
+            continue
+        if not any(_positive(sc.get("capital")) == 0 and _positive(sc.get("capital_pct")) == 0
+                   for sc in members):
+            continue
+        for sc in members:
+            sid = sc.get("id")
+            if _positive(sc.get("capital")) != 0 or _positive(sc.get("capital_pct")) != 0:
+                errs.append(
+                    f"shared-wallet pool {platform}/perps: strategy[{sid}] uses a virtual "
+                    "capital allocation; every member must omit capital and capital_pct")
+                continue
+            pooled.add(sid)
+            if _positive(sc.get("margin_per_trade_usd")) <= 0:
+                errs.append(
+                    f"strategy[{sid}]: shared-wallet pool members require positive "
+                    "margin_per_trade_usd as the per-open hard cap")
+            if _positive(sc.get("initial_capital")) != 0:
+                errs.append(
+                    f"strategy[{sid}]: initial_capital is not supported in shared-wallet pool mode")
+            if _positive(sc.get("risk_per_trade_pct")) > 0:
+                errs.append(
+                    f"strategy[{sid}]: risk_per_trade_pct requires a per-strategy capital "
+                    "denominator and is not supported in shared-wallet pool mode")
+    return pooled, errs
+
+
+def resolve_perps_sizing(cfg: dict, sc: dict) -> Optional[dict]:
+    """Live sizing contract for a Hyperliquid perps --config strategy. None otherwise."""
+    if live_strategy_platform(sc) != "hyperliquid" or sc.get("type") != "perps":
+        return None
+    pooled, errs = shared_wallet_pool(cfg)
+    sid = sc.get("id")
+    own = [e for e in errs if f"strategy[{sid}]" in e or f"[{sid}]" in e]
+    if own:
+        raise ValueError("; ".join(own))
+    exchange = _positive(sc.get("leverage")) or 1.0
+    sizing = _positive(sc.get("sizing_leverage")) or exchange
+    margin = _positive(sc.get("margin_per_trade_usd"))
+    mode = str(sc.get("margin_mode") or "isolated").strip().lower() or "isolated"
+    budget = "shared_wallet_pool" if sid in pooled else "strategy_cash"
+    raw = {
+        "exchange_leverage": exchange,
+        "sizing_leverage": sizing,
+        "margin_per_trade_usd": margin if margin > 0 else None,
+        "margin_mode": mode,
+        "budget_source": budget,
+        "pool_evidence": "unverified" if budget == "shared_wallet_pool" else "verified",
+        "provenance": "load_strategy_config",
+    }
+    from backtester import normalize_perps_sizing
+    return normalize_perps_sizing(raw, exchange)
 
 
 def load_strategy_config(config_path: str, strategy_id: str,
@@ -1214,6 +1378,8 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 _certs, cert_symbol, cert_timeframe, _clf,
             )
             regime_directional_certified = regime_directional_certified_states is not None
+        refuse_live_isolated_bankruptcy(sc, close_refs)
+        perps_sizing = resolve_perps_sizing(cfg, sc)
         out = {
             "open_strategy": {
                 "name": open_name,
@@ -1243,6 +1409,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "atr_method": atr_method,
             "platform": live_strategy_platform(sc),
             "comparison_mode": close_validation.mode,
+            "perps_sizing": perps_sizing,
         }
         if include_promotion_baseline:
             out["promotion_baseline"] = promotion_baseline
@@ -1303,6 +1470,9 @@ def run_single_backtest(
     stop_platform: Optional[str] = None,
     capability_context: Optional[CapabilityContext] = None,
     funding_mode: str = "charge",
+    perps_sizing: Optional[dict] = None,
+    liquidation_model: str = "none",
+    venue_margin: Optional[dict] = None,
 ) -> Optional[dict]:
     manifest = None
     manifest_dataset_entry = None
@@ -1484,6 +1654,17 @@ def run_single_backtest(
                   f"(matches live; #1076 negative result).")
     regime_directional_certified = bool(regime_directional_certified)
 
+    if liquidation_model not in ("none", "venue_isolated"):
+        raise SystemExit(f"liquidation_model must be none or venue_isolated, got {liquidation_model!r}")
+    if liquidation_model == "venue_isolated":
+        if manifest is None:
+            raise SystemExit("--liquidation-model venue_isolated requires --manifest")
+        if venue_margin is None:
+            import offline_manifest as om
+            try:
+                venue_margin = om.venue_margin(manifest, manifest_dataset_entry)
+            except om.ManifestError as exc:
+                raise SystemExit(f"manifest error: {exc}")
     bt = Backtester(
         initial_capital=capital, platform=platform,
         open_strategy={"name": strategy_name, "params": dict(strat_params or {})},
@@ -1521,6 +1702,9 @@ def run_single_backtest(
         atr_method=atr_method,
         execution_spec=execution_spec,
         comparison_mode=comparison_mode,
+        perps_sizing=perps_sizing,
+        liquidation_model=liquidation_model,
+        venue_margin=venue_margin,
     )
     if manifest is None:
         from funding_fetcher import rejoin_funding_columns
@@ -1536,6 +1720,20 @@ def run_single_backtest(
     )
 
     print(format_single_report(results))
+    margin = results.get("margin") if isinstance(results, dict) else None
+    if margin:
+        exchange = margin.get("exchange_leverage")
+        budget = margin.get("margin_per_trade_usd")
+        if budget:
+            print(f"  Sizing model: {margin.get('sizing_model')}; "
+                  f"open notional = min({budget}, sizing cash) × {exchange}")
+        else:
+            print(f"  Sizing model: {margin.get('sizing_model')}; "
+                  f"open notional = sizing cash × {margin.get('sizing_leverage')}")
+        print(f"  Liquidation model: {margin.get('liquidation_model')} "
+              f"({margin.get('liquidation_formula')})")
+        if margin.get("pool_cap_unverified"):
+            print("  Pool cap: pool_cap_unverified (no per-entry available wallet margin)")
     return results
 
 
@@ -1813,6 +2011,12 @@ def _build_parser() -> argparse.ArgumentParser:
                              "Repeat for multiple. Each runs per-bar against the simulated position; "
                              "max close_fraction wins. Replaces the pre-#641 --close-strategy NAME + "
                              "--close-params JSON pair.")
+    parser.add_argument("--liquidation-model", choices=["none", "venue_isolated"],
+                        default="none",
+                        help="Hyperliquid isolated liquidation model. venue_isolated "
+                             "requires --manifest and a perps_sizing contract; strict "
+                             "comparison still refuses until a recorded liquidation price "
+                             "verifies the formula.")
     parser.add_argument("--config", default=None,
                         help="Path to a live go-trader config.json. Loads a single strategy by "
                              "--strategy ID and uses its open_strategy/close_strategies refs verbatim "
@@ -2073,6 +2277,9 @@ def _main():
             "trailing_stop_min_move_pct",
             "stop_platform",
             "capability_context",
+            "perps_sizing",
+            "liquidation_model",
+            "venue_margin",
         )
         live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
         args.regime_enabled = live_kwargs.get("regime_enabled", args.regime_enabled)
@@ -2151,6 +2358,7 @@ def _main():
                                 cost_multiplier=args.cost_multiplier,
                                 comparison_mode=args.comparison_mode,
                                 funding_mode=args.funding,
+                                liquidation_model=args.liquidation_model,
                                 **live_stop_kwargs)
         except FundingIncompleteError as exc:
             _funding_refusal(args.strategy, args.symbol, exc)

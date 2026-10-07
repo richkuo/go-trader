@@ -498,7 +498,8 @@ def _backtester_kwargs(open_name: str, params: Optional[dict],
                        close_refs: Optional[Sequence[dict]], direction: Optional[str],
                        capital: float, gate: dict,
                        stops: Optional[dict] = None,
-                       comparison_mode: Optional[str] = None) -> dict:
+                       comparison_mode: Optional[str] = None,
+                       perps_sizing: Optional[dict] = None) -> dict:
     from backtester import STOP_OWNERS_NEEDING_LABEL
     use_regime = (bool(gate.get("allowed_regimes"))
                   or _arm_stop_owner(close_refs, stops, gate.get("windows_spec"))
@@ -520,6 +521,8 @@ def _backtester_kwargs(open_name: str, params: Optional[dict],
         v = (stops or {}).get(k)
         if v is not None:
             kw[k] = v
+    if perps_sizing is not None:
+        kw["perps_sizing"] = perps_sizing
     return kw
 
 
@@ -539,10 +542,12 @@ def run_free_arm(reg, open_name: str, params: Optional[dict], df_signals,
                  close_refs: Optional[Sequence[dict]], direction: Optional[str],
                  capital: float, gate: dict, symbol: str, timeframe: str,
                  stops: Optional[dict] = None,
-                 comparison_mode: Optional[str] = None) -> dict:
+                 comparison_mode: Optional[str] = None,
+                 perps_sizing: Optional[dict] = None) -> dict:
     from backtester import Backtester
     bt = Backtester(**_backtester_kwargs(open_name, params, close_refs, direction,
-                                         capital, gate, stops, comparison_mode))
+                                         capital, gate, stops, comparison_mode,
+                                         perps_sizing))
     return bt.run(df_signals.copy(), strategy_name=open_name, symbol=symbol,
                   timeframe=timeframe, params=params, save=False)
 
@@ -552,14 +557,16 @@ def replay_candidate_for_entry(reg, open_name: str, params: Optional[dict], df_s
                                candidate_close: Sequence[dict], direction: Optional[str],
                                capital: float, gate: dict, symbol: str,
                                timeframe: str, stops: Optional[dict] = None,
-                               comparison_mode: Optional[str] = None) -> Optional[dict]:
+                               comparison_mode: Optional[str] = None,
+                               perps_sizing: Optional[dict] = None) -> Optional[dict]:
     from backtester import Backtester
     one = df_signals.copy()
     sig_col = one.columns.get_loc("signal")
     one.iloc[:, sig_col] = 0
     one.iloc[sig_pos, sig_col] = int(side_sign)
     bt = Backtester(**_backtester_kwargs(open_name, params, candidate_close, direction,
-                                         capital, gate, stops, comparison_mode))
+                                         capital, gate, stops, comparison_mode,
+                                         perps_sizing))
     results = bt.run(one, strategy_name=open_name, symbol=symbol,
                      timeframe=timeframe, params=params, save=False)
     return collapse_entry(results.get("trades", []) or [])
@@ -593,12 +600,14 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
         reg, spec["open_name"], spec.get("params"), df_signals,
         spec.get("incumbent_close"), spec.get("direction"), spec["capital"],
         spec["gate"], symbol, timeframe, spec.get("control_stops"),
-        comparison_mode=spec.get("comparison_mode"))
+        comparison_mode=spec.get("comparison_mode"),
+        perps_sizing=spec.get("perps_sizing"))
     candidate_results = run_free_arm(
         reg, spec["open_name"], spec.get("params"), candidate_signals,
         spec.get("candidate_close"), spec.get("direction"), spec["capital"],
         spec["gate"], symbol, timeframe, spec.get("candidate_stops"),
-        comparison_mode=spec.get("comparison_mode"))
+        comparison_mode=spec.get("comparison_mode"),
+        perps_sizing=spec.get("perps_sizing"))
 
     control_entries = free_arm_entries(control_results.get("trades", []) or [])
 
@@ -623,7 +632,8 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
                 side_sign, spec["candidate_close"], spec.get("direction"),
                 spec["capital"], spec["gate"], symbol, timeframe,
                 spec.get("candidate_stops"),
-                comparison_mode=spec.get("comparison_mode"))
+                comparison_mode=spec.get("comparison_mode"),
+                perps_sizing=spec.get("perps_sizing"))
         paired_rows, paired_diag = build_paired_rows(
             control_entries, candidate_by_date, regime_by_date)
         paired_diag["replayable"] = True
@@ -823,6 +833,7 @@ def resolve_from_baseline(config_path: str, strategy_id: str,
         "incumbent_close": kwargs.get("close_strategies") or None,
         "stops": _stops_from_kwargs(kwargs),
         "direction": kwargs.get("direction"),
+        "perps_sizing": kwargs.get("perps_sizing"),
         "allowed_regimes": sc.get("allowed_regimes") or None,
         "regime_section": cfg.get("regime") or {},
     }
@@ -1159,6 +1170,7 @@ def _resolve_spec(args) -> dict:
         "n_resamples": args.bootstrap_resamples,
         "ci": args.ci,
         "seed": args.seed,
+        "perps_sizing": resolved["perps_sizing"] if args.baseline_config else None,
     }
 
 
