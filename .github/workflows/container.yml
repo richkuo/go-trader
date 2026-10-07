@@ -34,11 +34,20 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check that no credential persisted
+        run: |
+          set -euo pipefail
+          if git config --get-regexp '^http\..*\.extraheader$'; then
+            echo "::error::the checkout left a credential in .git/config"
+            exit 1
+          fi
+          echo "no persisted credential in .git/config"
 
       - name: Resolve version and source commit
         env:
@@ -92,28 +101,24 @@ jobs:
             -- env GO_TRADER_TEST_IMAGE=go-trader:ci GO_TRADER_EXPECT_VERSION="$VERSION" GO_TRADER_EXPECT_COMMIT="$COMMIT" \
                    GO_TRADER_CONTEXT_CANARY="$CANARY" bash scripts/test_container_image.sh
 
-      - name: Push the tested image by digest
+      - name: Save the tested image
         if: github.event_name == 'release'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          ref="$IMAGE_REPO:build-$COMMIT-$ARCH"
-          docker tag go-trader:ci "$ref"
-          docker push "$ref"
-          digest="$(docker image inspect -f '{{index .RepoDigests 0}}' "$ref")"
-          mkdir -p digests
-          printf '%s\n' "$digest" >"digests/$ARCH"
-          echo "pushed $digest"
+          mkdir -p tested
+          docker image inspect -f '{{.Id}}' go-trader:ci >"tested/$ARCH.id"
+          printf '%s\n' "$COMMIT" >"tested/$ARCH.commit"
+          docker save go-trader:ci -o "tested/$ARCH.tar"
+          echo "saved $(cat "tested/$ARCH.id") for $COMMIT"
 
-      - name: Upload the digest
+      - name: Upload the tested image
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
-          name: digest-${{ matrix.arch }}
-          path: digests/${{ matrix.arch }}
+          name: tested-${{ matrix.arch }}
+          path: tested/
           if-no-files-found: error
           retention-days: 1
 
@@ -127,9 +132,42 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: digest-*
-          path: digests
+          pattern: tested-*
+          path: tested
           merge-multiple: true
+
+      - name: Push the tested images by digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          mkdir -p digests
+          for arch in amd64 arm64; do
+            test -s "tested/$arch.tar" && test -s "tested/$arch.id" && test -s "tested/$arch.commit"
+            if [ "$(cat "tested/$arch.commit")" != "$COMMIT" ]; then
+              echo "::error::the $arch image was tested at $(cat "tested/$arch.commit"), not $COMMIT"
+              exit 1
+            fi
+            docker load -i "tested/$arch.tar" >/dev/null
+            loaded="$(docker image inspect -f '{{.Id}}' go-trader:ci)"
+            if [ "$loaded" != "$(cat "tested/$arch.id")" ]; then
+              echo "::error::the loaded $arch image $loaded is not the tested image $(cat "tested/$arch.id")"
+              exit 1
+            fi
+            ref="$IMAGE_REPO:build-$COMMIT-$arch"
+            docker tag go-trader:ci "$ref"
+            docker rmi go-trader:ci >/dev/null
+            docker push "$ref"
+            digest="$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" | grep -m1 "^$IMAGE_REPO@sha256:" || true)"
+            if [ -z "$digest" ]; then
+              echo "::error::no $IMAGE_REPO digest after pushing $ref"
+              exit 1
+            fi
+            printf '%s\n' "$digest" >"digests/$arch"
+            echo "pushed $arch $loaded as $digest"
+          done
 
       - name: Publish the release, commit and latest tags
         env:
@@ -140,7 +178,6 @@ jobs:
         run: |
           set -euo pipefail
           test -s digests/amd64 && test -s digests/arm64
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           tags=(-t "$IMAGE_REPO:$RELEASE_TAG" -t "$IMAGE_REPO:$COMMIT")
           if [ "$PRERELEASE" != "true" ]; then
             tags+=(-t "$IMAGE_REPO:latest")
