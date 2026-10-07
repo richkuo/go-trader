@@ -347,6 +347,9 @@ func main() {
 			pruned = true
 		}
 	}
+	for _, line := range syncPaperFundingEligibility(state, cfg.Strategies, paperFundingClock()) {
+		fmt.Println(line)
+	}
 	for _, orphan := range storageOrphans {
 		fmt.Printf("  Pruned stale strategy: %s [%s state file, %d position(s)]\n", orphan.StorageID, orphan.Role, orphan.PositionCount)
 		if orphan.PositionCount > 0 {
@@ -723,7 +726,11 @@ func main() {
 		}
 		tickSeconds = schedulerTickSeconds(cfg)
 		drawdownWarnThresholdPct = configuredDrawdownWarnThresholdPct(cfg)
+		paperFundingSyncLines := syncPaperFundingEligibility(state, cfg.Strategies, paperFundingClock())
 		mu.Unlock()
+		for _, line := range paperFundingSyncLines {
+			fmt.Println("[reload] " + line)
+		}
 
 		diagWorker.UpdateStrategies(cfg.Strategies)
 
