@@ -3695,7 +3695,15 @@ class Backtester:
                     hi = float(row.get("high", mark_price) or mark_price)
                     lo = float(row.get("low", mark_price) or mark_price)
                     gap = self._open_past_liquidation(side_now, bar_open)
-                    stop_armed = sl_pierce_armed and sl_trigger_px > 0
+                    # The walk fill below is the only stop check on this bar.
+                    # A post-TP bump sets sl_after_just_applied and skips it, so
+                    # that stop must not also suppress the range liquidation.
+                    stop_armed = (
+                        walk_mode
+                        and sl_pierce_armed
+                        and sl_trigger_px > 0
+                        and not sl_after_just_applied
+                    )
                     range_reaches = (
                         self._run_liq_px > 0
                         and (
