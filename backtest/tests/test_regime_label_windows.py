@@ -282,4 +282,130 @@ def test_callers_pass_the_plan_or_refuse(tmp_path, monkeypatch):
         }],
     }
     refused = sim._run_payload(payload)
-    assert "regime.timeframe" in refused["live_refusal"]
+    assert "error" not in refused
+    assert refused["markers"] == {}
+    assert sorted(refused["refusals"]) == ["live"]
+    assert "regime.timeframe" in refused["refusals"]["live"]
+
+
+_PARITY_REGIME = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": {
+    "medium": {"classifier": "adx", "period": 14},
+    "fast": {"classifier": "adx", "period": 5},
+    "slow": {"classifier": "adx", "period": 40},
+}}
+_PARITY_POLICY = {"trend_regime": {
+    "trending_down": {"direction": "short", "invert_signal": True}}}
+
+
+def _parity_frame_df(n=460):
+    import numpy as np
+    i = np.arange(n)
+    close = 1000 + 80 * np.sin(i / 14.0) + 30 * np.sin(i / 3.1)
+    return pd.DataFrame(
+        {"open": close, "high": close + 2, "low": close - 2, "close": close,
+         "volume": 1000.0},
+        index=pd.date_range("2024-01-01", periods=n, freq="1h"))
+
+
+def _parity_run(selectors, regime=None):
+    import numpy as np
+    from parity_diff import ParityConfig, compute_parity_frame, summarize
+    from registry_loader import load_registry
+
+    reg = load_registry("futures")
+    name = "_parity_label_windows_alternating"
+
+    def alternating(frame):
+        hours = frame.index.view("int64") // 3_600_000_000_000
+        return frame.assign(signal=np.where((hours // 7) % 2 == 0, 1, -1))
+
+    reg.STRATEGY_REGISTRY[name] = {"fn": alternating, "description": "test-only",
+                                   "default_params": {}}
+    try:
+        plan = resolve_feature_windows(selectors, regime or _PARITY_REGIME)
+        cfg = ParityConfig(
+            strategy_name=name, registry="futures", regime_enabled=True,
+            direction="long", regime_directional_policy=_PARITY_POLICY,
+            regime_windows_spec=plan["windows_spec"], regime_label_plan=plan)
+        frame = compute_parity_frame(_parity_frame_df(), cfg=cfg,
+                                     window=plan["limit"] + 5)
+        return plan, frame, summarize(frame)
+    finally:
+        del reg.STRATEGY_REGISTRY[name]
+
+
+def _labels(plan, *windows):
+    labeled, _ = attach_regime_label_columns(_parity_frame_df(), plan)
+    return [labeled[column_name(w)] for w in windows]
+
+
+def test_parity_named_gate_keeps_the_primary_directional_label():
+    plan, frame, summary = _parity_run({"regime_gate_window": "fast"})
+    assert plan["windows"]["directional"] == "medium"
+    medium, fast = _labels(plan, "medium", "fast")
+    scored = pd.DatetimeIndex(frame["ts"])
+    differs = ((medium != fast)
+               & ((medium == "trending_down") | (fast == "trending_down"))).loc[scored]
+    assert differs.any()
+    assert summary["clean"], frame[~frame["match"]].head()
+    assert (frame["live_open_action"] == "short").any()
+
+
+def test_parity_named_directional_window_reads_that_window_on_both_sides():
+    _, named, summary = _parity_run({"regime_directional_window": "slow"})
+    assert summary["clean"], named[~named["match"]].head()
+    swapped = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": {
+        "medium": {"classifier": "adx", "period": 40},
+        "fast": {"classifier": "adx", "period": 5},
+    }}
+    _, primary_slow, _ = _parity_run({}, regime=swapped)
+    assert list(named["bt_signal"]) == list(primary_slow["bt_signal"])
+    assert list(named["live_signal"]) == list(primary_slow["live_signal"])
+    _, default, _ = _parity_run({})
+    assert list(named["live_signal"]) != list(default["live_signal"])
+
+
+def test_parity_named_atr_window_keeps_the_primary_directional_label():
+    plan, named, summary = _parity_run({"regime_atr_window": "fast"})
+    assert plan["windows"]["directional"] == "medium"
+    assert summary["clean"], named[~named["match"]].head()
+    _, default, _ = _parity_run({})
+    assert list(named["bt_signal"]) == list(default["bt_signal"])
+    assert list(named["live_signal"]) == list(default["live_signal"])
+
+
+def _parity_atr_config(tmp_path, regime_timeframe):
+    regime = dict(_PARITY_REGIME)
+    if regime_timeframe is not None:
+        regime["timeframe"] = regime_timeframe
+    doc = {
+        "config_version": 15,
+        "regime": regime,
+        "strategies": [{
+            "id": "spot-atr",
+            "type": "spot",
+            "platform": "binanceus",
+            "args": ["sma_crossover", "BTC/USDT", "1h"],
+            "open_strategy": {"name": "sma_crossover",
+                              "params": {"fast_period": 5, "slow_period": 20}},
+            "regime_atr_window": "fast",
+            "trailing_stop_atr_mult_regime": {"use_defaults": True},
+        }],
+    }
+    path = tmp_path / f"parity-{regime_timeframe}.json"
+    path.write_text(json.dumps(doc))
+    return str(path)
+
+
+def test_parity_refuses_a_regime_timeframe_it_does_not_label(tmp_path):
+    from parity_diff import compute_parity_frame, config_from_live_config
+
+    with pytest.raises(ValueError, match=r"regime\.timeframe '4h'"):
+        config_from_live_config(_parity_atr_config(tmp_path, "4h"), "spot-atr")
+    for regime_timeframe in (None, "1h"):
+        cfg = config_from_live_config(
+            _parity_atr_config(tmp_path, regime_timeframe), "spot-atr")
+        assert cfg.regime_label_plan["windows"]["atr"] == "fast"
+        frame = compute_parity_frame(_parity_frame_df(320), cfg=cfg,
+                                     window=cfg.regime_label_plan["limit"] + 5)
+        assert len(frame) > 0

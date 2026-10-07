@@ -2719,6 +2719,17 @@ class Backtester:
     def stop_owner(self) -> str:
         return self._stop_owner
 
+    @property
+    def reads_regime_labels(self) -> bool:
+        return bool(
+            self.allowed_regimes
+            or self.regime_directional_policy is not None
+            or self._stop_owner in STOP_OWNERS_NEEDING_LABEL
+            or self.stop_loss_atr_mult_regime is not None
+            or self.trailing_stop_atr_mult_regime is not None
+            or self._uses_regime_tiered_close
+        )
+
     def _apply_direction_invert(self, sig_int: pd.Series,
                                 uses_open_close: bool) -> pd.Series:
         return sig_int.map(

@@ -181,7 +181,7 @@ _PREVIEW_LEVERAGE_SOURCES = {
 }
 
 
-class LiveRefusal(Exception):
+class ArmRefusal(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
@@ -284,14 +284,6 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
                                       prepared_window_keys,
                                       resolve_feature_windows)
     label_plan = resolve_feature_windows(cfg, regime_cfg)
-    label_consumer = bool(allowed) or any(label_plan["named"].values()) or bool(
-        cfg.get("regime_directional_policy"))
-    plan_tf = str(label_plan.get("timeframe") or "").strip().lower()
-    chart_tf = str(timeframe or "").strip().lower()
-    if regime_enabled and label_consumer and plan_tf and plan_tf != chart_tf:
-        raise LiveRefusal(
-            f"regime.timeframe {plan_tf!r} differs from chart timeframe "
-            f"{timeframe!r}; the preview does not fetch regime-timeframe candles")
     label_columns = None
     feature_labels = {}
     prepared = None
@@ -313,6 +305,11 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
         strategy_type=strategy_type,
         regime_label_columns=label_columns,
     )
+    policy = cfg.get("regime_directional_policy")
+    if regime_enabled and policy:
+        bt_kwargs["regime_directional_policy"] = policy
+        bt_kwargs["regime_directional_certified_states"] = dict(
+            cfg.get("regime_directional_certified_states") or {})
     bt_kwargs.update(feature_labels)
     bt_kwargs.update(_preview_stop_kwargs(cfg, prepared))
     sizing = cfg.get("perps_sizing")
@@ -332,15 +329,32 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
         if isinstance(lev, bool) or not isinstance(lev, (int, float)) or lev <= 0:
             lev = None
         bt_kwargs["perps_sizing"] = normalize_perps_sizing(sizing, lev)
-    bt = Backtester(**bt_kwargs)
-    results = bt.run(
-        df_signals,
-        strategy_name=open_name,
-        symbol=symbol,
-        timeframe=timeframe,
-        params=merged_params,
-        save=False,
-    )
+    try:
+        bt = Backtester(**bt_kwargs)
+    except ValueError as exc:
+        if policy and "regime_directional_policy" in str(exc):
+            raise ArmRefusal(f"regime_directional_policy cannot be previewed: {exc}") from exc
+        raise
+    plan_tf = str(label_plan.get("timeframe") or "").strip().lower()
+    chart_tf = str(timeframe or "").strip().lower()
+    if regime_enabled and plan_tf and plan_tf != chart_tf and (
+            any(label_plan["named"].values()) or bt.reads_regime_labels):
+        raise ArmRefusal(
+            f"regime.timeframe {plan_tf!r} differs from chart timeframe "
+            f"{timeframe!r}; the preview does not fetch regime-timeframe candles")
+    try:
+        results = bt.run(
+            df_signals,
+            strategy_name=open_name,
+            symbol=symbol,
+            timeframe=timeframe,
+            params=merged_params,
+            save=False,
+        )
+    except ValueError as exc:
+        if bt.regime_directional_policy is not None and "regime_directional_policy" in str(exc):
+            raise ArmRefusal(f"regime_directional_policy cannot be previewed: {exc}") from exc
+        raise
     markers: List[dict] = []
     for trade in results.get("trades") or []:
         markers.extend(_trade_to_markers(trade))
@@ -357,18 +371,21 @@ def _run_payload(payload: dict) -> dict:
         return {"error": "no configs supplied", "markers": {}}
 
     out: Dict[str, List[dict]] = {}
+    refusals: Dict[str, str] = {}
     for item in configs:
         label = str(item.get("label") or "default")
         cfg = dict(item.get("config") or item)
         try:
             out[label] = _simulate_one(cfg, candles)
-        except LiveRefusal as exc:
-            return {"live_refusal": exc.reason, "markers": {}, "label": label}
+        except ArmRefusal as exc:
+            refusals[label] = exc.reason
         except CloseCapabilityError as exc:
             return {"error": f"{label}: {exc}", "markers": {},
                     "label": label, "close_capability": exc.to_dict()}
         except Exception as exc:
             return {"error": f"{label}: {exc}", "markers": out}
+    if refusals:
+        return {"markers": out, "refusals": refusals}
     return {"markers": out}
 
 
