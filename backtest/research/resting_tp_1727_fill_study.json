@@ -1,7 +1,7 @@
 {
   "blockers": [
     {
-      "evidence_sha256": "00754fd81c95176de62df5184948a22ec843c286cafaa14ea255f44c71a35400",
+      "evidence_sha256": "4e074074ca70b9efb836a89f28663fecfc1b46b1afc41901b06d219a058b06e5",
       "fact": "candle_price_basis",
       "status": "unconfirmed"
     },

@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import json
 import os
@@ -470,3 +471,477 @@ def test_manifest_flags_are_refused_before_any_data_load(monkeypatch, argv):
     with pytest.raises(SystemExit) as exc:
         run_backtest.main()
     assert exc.value.code not in (0, None)
+
+
+DAY_MS = 1_704_067_200_000
+FIVE_MIN = 300_000
+TEN_DAYS = 10 * 86_400_000
+ONE_DAY = 86_400_000
+
+
+def _avail(value):
+    return {"provenance": [], "reason": None, "status": "available", "value": value}
+
+
+class _InfoResp:
+    def __init__(self, payload):
+        self.status = 200
+        self._raw = json.dumps(payload).encode()
+
+    def read(self):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _ms(minute, second=0, millis=0):
+    return DAY_MS + minute * 60_000 + second * 1000 + millis
+
+
+def _flat_bars(start, end, step, high=99, low=98, close=99):
+    return [
+        {"t": open_ms, "o": "99", "h": str(high), "l": str(low), "c": str(close), "v": "1"}
+        for open_ms in range(int(start), int(end), int(step))
+    ]
+
+
+def _frame_from_candles(candles, high=None, low=None, close=None):
+    return pd.DataFrame({
+        "timestamp": [int(row["t"]) for row in candles],
+        "high": [float(high if high is not None else row["h"]) for row in candles],
+        "low": [float(low if low is not None else row["l"]) for row in candles],
+        "close": [float(close if close is not None else row["c"]) for row in candles],
+    })
+
+
+def _order_status(order):
+    body = {
+        "coin": "ETH",
+        "limitPx": order["limit"],
+        "oid": order["oid"],
+        "origSz": order["orig"],
+        "reduceOnly": True,
+        "side": "A",
+        "tif": "Gtc",
+        "timestamp": order["placement"],
+    }
+    if order.get("sz") is not None:
+        body["sz"] = order["sz"]
+    return {
+        "status": "order",
+        "order": {
+            "order": body,
+            "status": order["status"],
+            "statusTimestamp": order["status_time"],
+        },
+    }
+
+
+def _write_export(path, oids):
+    doc = {
+        "schema": "go-trader.booked-ledger",
+        "events": [
+            {
+                "process_strategy_id": "strat",
+                "position_id": _avail("p1"),
+                "is_close": _avail(False),
+                "side": _avail("buy"),
+                "symbol": _avail("ETH"),
+                "timestamp": "2024-01-01T00:00:00Z",
+                "tp_oids_json": _avail(json.dumps(oids)),
+            },
+            {
+                "process_strategy_id": "strat",
+                "position_id": _avail("p1"),
+                "is_close": _avail(True),
+                "side": _avail("sell"),
+                "symbol": _avail("ETH"),
+                "timestamp": "2024-01-01T00:30:00Z",
+            },
+        ],
+    }
+    path.write_text(json.dumps(doc))
+
+
+def _study_orders(tmp_path, orders, candles):
+    import resting_tp_capture as cap
+    import resting_tp_fill_study as study
+
+    export = tmp_path / "export.json"
+    _write_export(export, [order["oid"] for order in orders])
+    by_oid = {order["oid"]: _order_status(order) for order in orders}
+    fills = []
+    for order in orders:
+        for fill in order.get("fills") or []:
+            row = dict(fill)
+            row["oid"] = order["oid"]
+            row["coin"] = "ETH"
+            fills.append(row)
+    since = DAY_MS
+    end = _ms(30)
+
+    def opener(req, timeout=None):
+        body = json.loads(req.data)
+        kind = body["type"]
+        if kind == "userFillsByTime":
+            return _InfoResp(fills if body["startTime"] == since else [])
+        if kind == "historicalOrders":
+            return _InfoResp([])
+        if kind == "orderStatus":
+            return _InfoResp(by_oid[body["oid"]])
+        if kind == "recentTrades":
+            return _InfoResp([])
+        if kind == "candleSnapshot":
+            return _InfoResp(candles)
+        raise AssertionError(kind)
+
+    out = tmp_path / "capture"
+    cap._prepare_out(str(out), os.path.abspath(os.path.join(os.path.dirname(cap.__file__), "..")))
+    cap.capture(
+        [str(export)], "0x" + "11" * 20, since, end, str(out),
+        5, 1, "5m", opener=opener, clock_ms=end)
+    manifest = tmp_path / "manifest.json"
+    candle_path = tmp_path / "ETH.csv.gz"
+    frame = pd.DataFrame({
+        "timestamp": [row["t"] for row in candles],
+        "open": [float(row["o"]) for row in candles],
+        "high": [float(row["h"]) for row in candles],
+        "low": [float(row["l"]) for row in candles],
+        "close": [float(row["c"]) for row in candles],
+        "volume": [1.0] * len(candles),
+    })
+    with gzip.open(candle_path, "wt") as fh:
+        frame.to_csv(fh, index=False)
+    meta_path = tmp_path / "meta.json"
+    meta_path.write_text(json.dumps({"universe": [{"name": "ETH", "szDecimals": 2}]}))
+    manifest_doc = {
+        "costs": {
+            "maker_fee_pct": 0.00015,
+            "min_notional_margin": 0.03,
+            "min_notional_usd": 10.0,
+            "slippage_bps": 1.0,
+            "taker_fee_pct": 0.00045,
+        },
+        "datasets": [{
+            "candles": {"path": "ETH.csv.gz", "sha256": hashlib.sha256(candle_path.read_bytes()).hexdigest()},
+            "coin": "ETH",
+            "half_spread_bps": 0.5,
+            "size_decimals": 2,
+            "symbol": "ETH/USDT",
+        }],
+        "interval": "5m",
+        "provenance": {"kind": "proxy", "label": "synthetic bars for the resting take-profit cases"},
+        "schema": "offline_candle_manifest/v1",
+        "study": "resting_tp_case",
+        "venue": "hyperliquid",
+        "venue_reference": {
+            "meta": {"path": "meta.json", "sha256": hashlib.sha256(meta_path.read_bytes()).hexdigest()},
+        },
+        "warmup_bars": 0,
+        "windows": {"study": {"start": "2024-01-01T00:00:00Z", "end": "2024-01-01T00:30:00Z", "role": "case"}},
+    }
+    manifest.write_text(json.dumps(manifest_doc))
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    return study.study([str(export)], str(out), str(manifest), digest, "study", "pending")
+
+
+def _example_candles():
+    candles = _flat_bars(DAY_MS, _ms(30), FIVE_MIN)
+    for row in candles:
+        if row["t"] == _ms(20):
+            row["h"] = "100.60"
+            row["c"] = "100.55"
+    return candles
+
+
+def test_resting_tp_two_tiers_in_one_bar_agree_on_touch(tmp_path):
+    orders = [
+        {
+            "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "filled",
+            "status_time": _ms(22, 30), "orig": "1", "sz": "0",
+            "fills": [{"time": _ms(22, 30), "sz": "1", "px": "100.00", "tid": 1, "fee": "0.015"}],
+        },
+        {
+            "oid": 2, "limit": "100.50", "placement": _ms(10), "status": "filled",
+            "status_time": _ms(23, 10), "orig": "1", "sz": "0",
+            "fills": [{"time": _ms(23, 10), "sz": "1", "px": "100.50", "tid": 2, "fee": "0.015"}],
+        },
+    ]
+    report = _study_orders(tmp_path, orders, _example_candles())
+    assert [row["outcome"] for row in report["orders"]] == ["full_fill", "full_fill"]
+    touch = report["rules"]["touch"]["long"]
+    assert touch["missed_fills"] == 0
+    assert touch["agreements"] == 2
+    assert touch["false_fills"] == 0
+
+
+def test_resting_tp_later_sibling_cancel_keeps_the_fill_bar(tmp_path):
+    orders = [
+        {
+            "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "filled",
+            "status_time": _ms(22, 30), "orig": "1", "sz": "0",
+            "fills": [{"time": _ms(22, 30), "sz": "1", "px": "100.00", "tid": 1}],
+        },
+        {
+            "oid": 2, "limit": "100.50", "placement": _ms(10), "status": "reduceOnlyCanceled",
+            "status_time": _ms(22, 30, 50), "orig": "1", "sz": "1", "fills": [],
+        },
+    ]
+    report = _study_orders(tmp_path, orders, _example_candles())
+    by_outcome = sorted(row["outcome"] for row in report["orders"])
+    assert "full_fill" in by_outcome
+    assert report["rules"]["touch"]["long"]["missed_fills"] == 0
+
+
+def test_resting_tp_sibling_placement_inside_the_fill_bar_stays_boundary():
+    import resting_tp_fill_study as study
+
+    filled = study.order_record(1, {
+        "order": {
+            "coin": "ETH", "limitPx": "100.00", "oid": 1, "origSz": "1", "sz": "0",
+            "side": "A", "timestamp": _ms(10),
+        },
+        "status": "filled",
+        "status_time": _ms(22, 30),
+    }, [{"oid": 1, "sz": "1", "px": "100.00", "time": _ms(22, 30), "tid": 1}])
+    placed = study.order_record(2, {
+        "order": {
+            "coin": "ETH", "limitPx": "100.00", "oid": 2, "origSz": "1",
+            "side": "A", "timestamp": _ms(21),
+        },
+        "status": "open",
+    }, [])
+    candles = _example_candles()
+    frame = _frame_from_candles(candles)
+    times = study.sibling_boundary_times(filled, [filled, placed])
+    interior, boundary, missing = study.bars_for(
+        frame, FIVE_MIN, filled["placement_ms"], study.score_end_ms(filled), times,
+        include_end_bar=True)
+    assert not missing
+    assert _ms(20) in [bar["open_ms"] for bar in boundary]
+    assert _ms(20) not in [bar["open_ms"] for bar in interior]
+
+
+def _classify(status, orig, sz, fills, high=99):
+    import resting_tp_fill_study as study
+
+    start = DAY_MS
+    end = DAY_MS + 2 * FIVE_MIN
+    rec = study.order_record(1, {
+        "order": {
+            "coin": "ETH", "limitPx": "100.00", "oid": 1, "origSz": orig, "sz": sz,
+            "side": "A", "timestamp": start,
+        },
+        "status": status,
+        "status_time": end,
+    }, fills)
+    frame = pd.DataFrame({
+        "timestamp": [start, start + FIVE_MIN],
+        "high": [high, high],
+        "low": [98, 98],
+        "close": [99, 99],
+    })
+    windows = [(start, end + FIVE_MIN), (start, end + FIVE_MIN)]
+    return study.classify_order(rec, {"side": "long"}, frame, FIVE_MIN, None, 2, [], windows)
+
+
+def test_resting_tp_canceled_partial_missing_from_capture_is_incomplete():
+    import resting_tp_fill_study as study
+
+    assert _classify("reduceOnlyCanceled", "1.0", "0.6", []) == "acquisition_incomplete"
+    bare = study.order_record(9, {
+        "order": {
+            "coin": "ETH", "limitPx": "100.00", "oid": 9, "sz": "0.4",
+            "side": "A", "timestamp": DAY_MS,
+        },
+        "status": "canceled",
+        "status_time": DAY_MS + FIVE_MIN,
+    }, [])
+    assert bare["orig"] is None
+    assert "requested_quantity" in bare["missing"]
+
+
+def test_resting_tp_canceled_partial_with_captured_fills_stays_partial():
+    fills = [{"oid": 1, "sz": "0.4", "px": "100.00", "time": DAY_MS + 1000, "tid": 1}]
+    assert _classify("canceled", "1.0", "0.6", fills) == "partial_fill"
+
+
+def test_resting_tp_canceled_unfilled_order_stays_unreached():
+    assert _classify("canceled", "1.0", "1.0", [], high=99) == "not_reached"
+
+
+def _basis(candles, frame, since, end, candle_rows, snapshot_name="5m"):
+    import resting_tp_fill_study as study
+
+    return study.candle_basis(
+        {"ETH": {"frame": frame}}, {"ETH": candles}, [], since, end, FIVE_MIN,
+        "5m", snapshot_name, candle_rows)[0]
+
+
+def test_resting_tp_five_minute_snapshot_confirms_a_ten_day_window(tmp_path):
+    import resting_tp_capture as cap
+
+    assert set(cap.INTERVAL_MS) == set(om.INTERVAL_MS)
+    clock = DAY_MS + 20 * ONE_DAY
+    end = clock - ONE_DAY
+    since = end - TEN_DAYS
+    candles = _flat_bars(since, end, FIVE_MIN, high=100, low=99, close=100)
+    export = tmp_path / "export.json"
+    _write_export(export, [])
+
+    def opener(req, timeout=None):
+        body = json.loads(req.data)
+        kind = body["type"]
+        if kind == "candleSnapshot":
+            return _InfoResp(candles)
+        if kind == "userFillsByTime":
+            return _InfoResp([])
+        return _InfoResp([])
+
+    out = tmp_path / "capture"
+    cap._prepare_out(str(out), os.path.abspath(os.path.join(os.path.dirname(cap.__file__), "..")))
+    cap.capture(
+        [str(export)], "0x" + "22" * 20, since, end, str(out),
+        5, 1, "5m", opener=opener, clock_ms=clock)
+    bundle = json.loads((out / "bundle.json").read_text())
+    row = bundle["completeness"]["candleSnapshot"][0]
+    assert bundle["inputs"]["interval"] == "5m"
+    assert row["complete"] is True
+    assert "reason" not in row
+    frame = _frame_from_candles(candles, high=100, low=99, close=100)
+    assert _basis(candles, frame, since, end, bundle["completeness"]["candleSnapshot"]) == "confirmed"
+
+
+def test_resting_tp_snapshot_older_than_five_thousand_bars_is_unconfirmed(tmp_path):
+    import resting_tp_capture as cap
+
+    clock = DAY_MS + 20 * ONE_DAY
+    since = clock - (cap.CANDLE_HISTORY_BARS + 1) * FIVE_MIN
+    end = since + 2 * FIVE_MIN
+    export = tmp_path / "export.json"
+    _write_export(export, [])
+    candles = _flat_bars(since, end, FIVE_MIN, high=100, low=99, close=100)
+
+    def opener(req, timeout=None):
+        body = json.loads(req.data)
+        if body["type"] == "candleSnapshot":
+            return _InfoResp(candles)
+        return _InfoResp([])
+
+    out = tmp_path / "capture"
+    cap._prepare_out(str(out), os.path.abspath(os.path.join(os.path.dirname(cap.__file__), "..")))
+    with pytest.raises(cap.CaptureError):
+        cap.capture(
+            [str(export)], "0x" + "33" * 20, since, end, str(out),
+            5, 1, "5m", opener=opener, clock_ms=clock)
+    bundle = json.loads((out / "bundle.json").read_text())
+    row = bundle["completeness"]["candleSnapshot"][0]
+    assert row["complete"] is False
+    assert "5000" in row["reason"]
+    frame = _frame_from_candles(candles, high=100, low=99, close=100)
+    assert _basis(candles, frame, since, end, bundle["completeness"]["candleSnapshot"]) == "unconfirmed"
+
+
+def test_resting_tp_snapshot_high_mismatch_is_unconfirmed():
+    candles = [{"t": DAY_MS, "h": "100.03", "l": "99", "c": "100", "o": "99"}]
+    frame = pd.DataFrame({"timestamp": [DAY_MS], "high": [100.05], "low": [99.0], "close": [100.0]})
+    assert _basis(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, [{"complete": True, "interval": "5m"}]) == "unconfirmed"
+
+
+def test_resting_tp_snapshot_close_mismatch_is_unconfirmed():
+    candles = [{"t": DAY_MS, "h": "101", "l": "99", "c": "100.01", "o": "100"}]
+    frame = pd.DataFrame({"timestamp": [DAY_MS], "high": [101.0], "low": [99.0], "close": [100.02]})
+    assert _basis(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, [{"complete": True, "interval": "5m"}]) == "unconfirmed"
+
+
+def test_resting_tp_matching_high_low_and_close_confirms():
+    candles = [{"t": DAY_MS, "h": "101", "l": "99", "c": "100.02", "o": "100"}]
+    frame = pd.DataFrame({"timestamp": [DAY_MS], "high": [101.0], "low": [99.0], "close": [100.02]})
+    assert _basis(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, [{"complete": True, "interval": "5m"}]) == "confirmed"
+
+
+def test_resting_tp_fixture_order_classes_are_pinned():
+    import resting_tp_fill_study as study
+
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    base = os.path.join(root, "backtest", "testdata", "resting_tp_study")
+    manifest = os.path.join(base, "market", "manifest.json")
+    digest = hashlib.sha256(open(manifest, "rb").read()).hexdigest()
+    report = study.study(
+        [os.path.join(base, "export_a.json"), os.path.join(base, "export_b.json")],
+        os.path.join(base, "capture"), manifest, digest, "study", "pending")
+    assert [row["outcome"] for row in report["orders"]] == [
+        "lifetime_unknown",
+        "full_fill",
+        "partial_fill",
+        "no_fill_touch",
+        "no_fill_trade_through",
+        "not_reached",
+        "boundary_unknown",
+        "shared_coin_ambiguous",
+        "limit_off_grid",
+        "full_fill",
+        "acquisition_incomplete",
+    ]
+    assert report["candle_price_basis"] == "unconfirmed"
+
+
+def test_resting_tp_fill_page_overlap_keeps_each_fill_once():
+    import resting_tp_capture as cap
+
+    pages = {
+        1000: [
+            {"tid": 1, "time": 1000, "oid": 1, "sz": "1", "px": "1"},
+            {"tid": 2, "time": 2000, "oid": 1, "sz": "1", "px": "1"},
+        ],
+        2000: [
+            {"tid": 2, "time": 2000, "oid": 1, "sz": "1", "px": "1"},
+            {"tid": 3, "time": 3000, "oid": 1, "sz": "1", "px": "1"},
+        ],
+    }
+    starts = []
+
+    def opener(req, timeout=None):
+        body = json.loads(req.data)
+        starts.append(body["startTime"])
+        return _InfoResp(pages.get(body["startTime"], []))
+
+    def record(payload, attempt, status, raw):
+        return None
+
+    result = cap._page_user_fills(
+        "0x" + "ab" * 20, 1000, 10000, 1, 1, record, opener=opener, page_max_rows=10)
+    assert starts[1] == 2000
+    assert result["complete"] is True
+    rows = []
+    seen = set()
+    for start in (1000, 2000):
+        for row in pages[start]:
+            key = cap._fill_identity(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row["tid"])
+    assert rows == [1, 2, 3]
+
+
+def test_resting_tp_full_page_of_one_timestamp_is_incomplete():
+    import resting_tp_capture as cap
+
+    page = [
+        {"tid": 1, "time": 5000, "oid": 1, "sz": "1", "px": "1"},
+        {"tid": 2, "time": 5000, "oid": 1, "sz": "1", "px": "1"},
+    ]
+
+    def opener(req, timeout=None):
+        return _InfoResp(page)
+
+    result = cap._page_user_fills(
+        "0x" + "cd" * 20, 1000, 10000, 1, 1, lambda *args: None,
+        opener=opener, page_max_rows=2)
+    assert result["complete"] is False
+    assert "timestamp" in result["failure"]
