@@ -314,8 +314,10 @@ def _trim_continuous_history(df, symbol: str, strategy_type: str, mode: str):
     import numpy as np
     from funding_fetcher import continuous_history_start, load_cached_funding
     coin = str(symbol).split("/")[0]
+    source_box = {}
     try:
-        loaded = load_cached_funding(coin, df.index[0], end_date=df.index[-1])
+        loaded = load_cached_funding(coin, df.index[0], end_date=df.index[-1],
+                                     source_box=source_box)
     except Exception as exc:
         raise ValueError(
             f"stage-1 funding fetch failed for {coin}: {exc}"
@@ -324,7 +326,8 @@ def _trim_continuous_history(df, symbol: str, strategy_type: str, mode: str):
         event_ms = np.array([], dtype=np.int64)
     else:
         event_ms = loaded["timestamp"].to_numpy(dtype=np.int64)
-    start = continuous_history_start(df, event_ms)
+    start = continuous_history_start(df, event_ms,
+                                     absent_hours=source_box.get("venue_absent_hours") or ())
     if start is None:
         return df, None
     return df[df.index >= start], str(start)

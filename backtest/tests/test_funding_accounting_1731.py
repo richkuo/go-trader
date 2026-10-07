@@ -521,3 +521,113 @@ def test_funding_off_delta_neutral_trade_stats_stay_on_price_pnl():
     price_pct = trade["pnl"] / (trade["shares"] * trade["entry_price"]) * 100.0
     assert sample["pnl_pct_net"] == pytest.approx(round(price_pct, 6))
     assert mc.trade_returns([trade]) == [pytest.approx(sample["pnl_pct_net"])]
+
+
+def _real_hl_adapter(info):
+    import importlib.util
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "platforms", "hyperliquid", "adapter.py")
+    spec = importlib.util.spec_from_file_location("_hl_adapter_charge_1747_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    adapter = object.__new__(module.HyperliquidExchangeAdapter)
+    adapter._info = info
+    return adapter
+
+
+class _VenueInfo:
+
+    def __init__(self, times):
+        self.times = sorted(int(t) for t in times)
+        self.fail = False
+
+    def funding_history(self, name, startTime, endTime=None):
+        if self.fail:
+            raise ConnectionError("venue down")
+        return [{"coin": name, "fundingRate": "0.00001", "premium": "0", "time": t}
+                for t in self.times if t >= startTime][:500]
+
+
+def _venue_prints(skip_ms):
+    start = int(pd.Timestamp("2024-05-31", tz="UTC").timestamp() * 1000)
+    return [start + h * _HOUR_MS + 76 for h in range(96) if start + h * _HOUR_MS + 76 != skip_ms]
+
+
+def _held_charge_run(df, attached):
+    signals = df.copy()
+    for col in ("funding_accrual", "funding_missing_hours", "funding_mode",
+                "funding_block_json"):
+        if col in attached.columns:
+            signals[col] = attached[col].to_numpy()
+    bt = Backtester(initial_capital=10000.0, platform="hyperliquid",
+                    commission_pct=0.0, slippage_pct=0.0)
+    return bt.run(signals, strategy_name="sma_crossover", symbol="BTC/USDT",
+                  timeframe="15m", save=True)
+
+
+def test_venue_absent_hour_charges_zero_and_saves(tmp_path, monkeypatch):
+    import funding_fetcher
+    df = _fifteen_minute_frame()
+    gap_hour = int(pd.Timestamp("2024-06-01 12:00", tz="UTC").timestamp() * 1000)
+    adapter = _real_hl_adapter(_VenueInfo(_venue_prints(gap_hour + 76)))
+    fdb = str(tmp_path / "funding.sqlite")
+    db = str(tmp_path / "bt.sqlite")
+    _patch_store(monkeypatch, db)
+    before = _row_count(db)
+    attached, block = funding_fetcher.attach_backtest_funding(
+        df.drop(columns=["signal"]), "BTC", "15m", "hyperliquid", "perps", "sma_crossover",
+        mode="charge", adapter=adapter, db_path=fdb)
+    assert block["available"] is True and block["complete"] is True
+    assert block["coverage"]["venue_absent_hours"] == 1
+    assert block["coverage"]["missing_hours"] == 0
+    assert "fetch_error" not in block
+    assert block["venue_absent_sha256"] == funding_fetcher.venue_absent_sha256([gap_hour])
+    first = int(pd.Timestamp(df.index[0]).timestamp() * 1000)
+    last = int(pd.Timestamp(df.index[-1]).timestamp() * 1000)
+    real = [t for t in _venue_prints(gap_hour + 76) if first < t <= last]
+    assert block["row_count"] == len(real)
+    assert attached["funding_accrual"].sum() == pytest.approx(1e-5 * len(real))
+    gap_bar = attached.index.get_loc(pd.Timestamp(gap_hour + 15 * 60 * 1000, unit="ms", tz="UTC"))
+    assert attached["funding_accrual"].iloc[gap_bar] == 0.0
+    assert int(attached["funding_missing_hours"].sum()) == 0
+    result = _held_charge_run(df, attached)
+    assert result["funding_unpriced_held_hours"] == 0
+    assert _row_count(db) == before + 1
+    import storage
+    conn = storage.get_connection(db)
+    try:
+        saved = json.loads(conn.execute(
+            "SELECT funding_json FROM backtest_results ORDER BY id DESC LIMIT 1").fetchone()[0])
+    finally:
+        conn.close()
+    assert saved["coverage"]["venue_absent_hours"] == 1
+
+
+def test_failed_refill_keeps_the_hour_missing_and_refuses_charge(tmp_path, monkeypatch):
+    import funding_fetcher
+    import storage
+    df = _fifteen_minute_frame()
+    gap_hour = int(pd.Timestamp("2024-06-01 12:00", tz="UTC").timestamp() * 1000)
+    fdb = str(tmp_path / "funding.sqlite")
+    seeded = _venue_prints(gap_hour + 76)
+    storage.store_funding_rates([{"time": t, "rate": 1e-5} for t in seeded],
+                                "hyperliquid", "BTC", db_path=fdb)
+    storage.store_funding_coverage("hyperliquid", "BTC", seeded[0], seeded[-1], db_path=fdb)
+    info = _VenueInfo(_venue_prints(None))
+    info.fail = True
+    db = str(tmp_path / "bt.sqlite")
+    _patch_store(monkeypatch, db)
+    before = _row_count(db)
+    attached, block = funding_fetcher.attach_backtest_funding(
+        df.drop(columns=["signal"]), "BTC", "15m", "hyperliquid", "perps", "sma_crossover",
+        mode="charge", adapter=_real_hl_adapter(info), db_path=fdb)
+    assert block["source"] == "cache"
+    assert "venue down" in block["fetch_error"]
+    assert block["coverage"]["missing_hours"] >= 1
+    assert block["coverage"]["venue_absent_hours"] == 0
+    assert block["complete"] is False
+    assert storage.load_funding_venue_gaps("hyperliquid", "BTC", db_path=fdb) == []
+    with pytest.raises(FundingIncompleteError):
+        _held_charge_run(df, attached)
+    assert _row_count(db) == before

@@ -580,6 +580,43 @@ class HyperliquidExchangeAdapter:
         out.sort(key=lambda r: r["time"])
         return out
 
+    def get_funding_history_window(self, symbol: str, start_ms: int,
+                                   end_ms: int) -> dict:
+        start_ms = int(start_ms)
+        end_ms = int(end_ms)
+        if end_ms < start_ms:
+            raise ValueError(f"funding window end {end_ms} is before start {start_ms}")
+        out = []
+        observed = None
+        cursor = start_ms
+        while True:
+            page = self._info.funding_history(symbol, cursor)
+            if not isinstance(page, list):
+                raise ValueError(
+                    f"funding_history {symbol} at {cursor} returned {type(page).__name__}, not a list")
+            if not page:
+                break
+            prev = None
+            for r in page:
+                t = int(r["time"])
+                rate = float(r["fundingRate"])
+                if not math.isfinite(rate):
+                    raise ValueError(f"funding_history {symbol} print {t} has non-finite rate")
+                if t < cursor:
+                    raise ValueError(
+                        f"funding_history {symbol} print {t} is before cursor {cursor}")
+                if prev is not None and t <= prev:
+                    raise ValueError(
+                        f"funding_history {symbol} page is not ascending at {t}")
+                prev = t
+                if t <= end_ms:
+                    out.append({"rate": rate, "time": t})
+            observed = prev if observed is None else max(observed, prev)
+            if prev > end_ms:
+                break
+            cursor = prev + 1
+        return {"records": out, "observed_through_ms": observed}
+
 
     def get_open_positions(self) -> list:
         if not self._account_address:
