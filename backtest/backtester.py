@@ -2007,11 +2007,16 @@ def maintenance_rate_for_tier(tier_max_leverage: float) -> float:
 
 def isolated_liquidation_price(side: str, price: float, position_size: float,
                                isolated_margin: float, tier_max_leverage: float) -> float:
-    """Documented isolated formula. Unverified until matched to a recorded liquidationPx.
+    """Isolated liquidation price from the published Hyperliquid formula.
 
     liq_price = price - side * margin_available / position_size / (1 - l * side)
-    l = 1 / maintenance_leverage, maintenance_leverage = 2 * tier maxLeverage.
-    margin_available (isolated) = isolated_margin - maintenance_margin_required.
+    l = 1 / (2 * tier maxLeverage).
+    margin_available = isolated_margin - position_size * price * l.
+
+    ``price`` is the average entry and ``isolated_margin`` excludes unrealized
+    PnL. That equals the mark form once unrealized PnL is included in margin,
+    so a fixed size and margin do not move the level with the mark. Still
+    unverified against a recorded liquidationPx.
     """
     size = abs(position_size)
     if price <= 0 or size <= 0 or tier_max_leverage <= 0 or isolated_margin <= 0:
@@ -2245,6 +2250,12 @@ class Backtester:
                     "exchange leverage "
                     f"{self._perps_sizing['exchange_leverage']} is above maxLeverage "
                     f"{self._venue_margin['max_leverage']}")
+            if self.intrabar_resolution != "ohlc_walk":
+                raise ValueError(
+                    "venue_isolated requires intrabar_resolution ohlc_walk; "
+                    "bar_close checks a stop only at the close, so an armed stop "
+                    "cannot be treated as filling before an intrabar liquidation"
+                )
         self._sizing_cash = 0.0
         self._used_margin = 0.0
         self._sized_qty = 0.0
@@ -3088,7 +3099,7 @@ class Backtester:
             else:
                 cash += notional - commission
                 position -= add_qty
-            self._note_add_sizing(notional, commission)
+            self._note_add_sizing(notional, commission, add_qty)
             if scale.risk_anchor_price <= 0:
                 scale.risk_anchor_price = avg_cost
             old_qty = abs(position) - add_qty
@@ -3201,11 +3212,12 @@ class Backtester:
                 cash -= cost + commission
                 position += qty_to_close
             side_closed = "long" if qty_before > 0 else "short"
+            closed_margin = self._used_margin if reason == "venue_liquidation" else None
             self._note_close_sizing(side_closed, qty_to_close, avg_before, effective_price, commission, abs(qty_before))
             if reason == "venue_liquidation":
                 self._margin_stats["liquidation_count"] += 1
                 if margin_loss is None:
-                    margin_loss = self._margin_stats.get("max_used_margin")
+                    margin_loss = closed_margin
 
             if current_trade:
                 closed = Trade(current_trade.entry_date, current_trade.entry_price, current_trade.side)
@@ -3676,7 +3688,7 @@ class Backtester:
                 ):
                     side_now = "long" if position > 0 else "short"
                     bar_open = float(row["open"]) if has_open else mark_price
-                    self._refresh_liq(side_now, mark_price, abs(position))
+                    self._refresh_liq(side_now, avg_cost, abs(position))
                     sl_trigger_px = self._clamp_trigger(
                         side_now, sl_trigger_px, event_date=idx,
                     )
@@ -3850,7 +3862,7 @@ class Backtester:
                         side_now, scale.geom_cost(avg_cost), entry_atr_value,
                         self._run_position_regime, mark_price, post_tp_trail_mult,
                         sl_trigger_px, sl_high_water_px, ratchet_tightened,
-                        event_date=idx,
+                        event_date=idx, liq_anchor=avg_cost,
                     )
                     if not walk_mode and sl_trigger_px > 0 and self._sl_hit(
                         side_now, mark_price, sl_trigger_px,
@@ -4217,7 +4229,7 @@ class Backtester:
             ):
                 side_now = "long" if position > 0 else "short"
                 bar_open = float(row["open"]) if has_open else mark_price
-                self._refresh_liq(side_now, mark_price, abs(position))
+                self._refresh_liq(side_now, avg_cost, abs(position))
                 sl_trigger_px = self._clamp_trigger(
                     side_now, sl_trigger_px, event_date=idx,
                 )
@@ -4309,6 +4321,7 @@ class Backtester:
                     side_now, scale.geom_cost(avg_cost), entry_atr_value,
                     self._run_position_regime, mark_price, None,
                     sl_trigger_px, sl_high_water_px, False, event_date=idx,
+                    liq_anchor=avg_cost,
                 )
                 if not walk_mode and self._sl_hit(side_now, mark_price, sl_trigger_px):
                     pending_signal_sl_close = True
@@ -4562,7 +4575,7 @@ class Backtester:
         if self._used_margin > self._margin_stats["max_used_margin"]:
             self._margin_stats["max_used_margin"] = self._used_margin
 
-    def _note_add_sizing(self, notional: float, fee: float) -> None:
+    def _note_add_sizing(self, notional: float, fee: float, qty: float = 0.0) -> None:
         if self._perps_sizing is None:
             return
         lev = self._perps_sizing["exchange_leverage"]
@@ -4572,6 +4585,8 @@ class Backtester:
             self._margin_stats["adds_beyond_strategy_margin"] += 1
         self._sizing_cash -= fee
         self._used_margin += add_margin
+        if qty > 0:
+            self._sized_qty += qty
         if self._used_margin > self._margin_stats["max_used_margin"]:
             self._margin_stats["max_used_margin"] = self._used_margin
 
@@ -4586,30 +4601,43 @@ class Backtester:
         self._sizing_cash += gross - fee
         if abs(qty_before - qty) <= 1e-9:
             self._used_margin = 0.0
+            self._sized_qty = 0.0
         else:
             self._used_margin = max(0.0, self._used_margin * (1.0 - qty / qty_before))
+            self._sized_qty = max(0.0, qty_before - qty)
 
     def _note_funding(self, funding_cash: float) -> None:
         if self._perps_sizing is None:
             return
         self._sizing_cash += funding_cash
 
-    def _refresh_liq(self, side: str, mark: float, qty: float) -> float:
+    def _refresh_liq(self, side: str, anchor: float, qty: float) -> float:
+        """Liquidation price from the entry anchor and this quantity's margin.
+
+        The level does not read the bar close. Only the first margin tier is
+        modeled; position value at the computed price selects that tier.
+        """
         self._run_liq_px = 0.0
-        if self._liquidation_model != "venue_isolated" or qty <= 0 or mark <= 0:
+        if self._liquidation_model != "venue_isolated" or qty <= 0 or anchor <= 0:
             return 0.0
-        if self._venue_margin is None:
+        if self._venue_margin is None or self._used_margin <= 0:
             return 0.0
-        notional = abs(qty) * mark
-        tier, unmodeled = margin_tier_for_notional(self._venue_margin["tiers"], notional)
+        tiers = self._venue_margin["tiers"]
+        ordered = sorted(tiers, key=lambda t: float(t["lower_bound"]))
+        if not ordered:
+            return 0.0
+        liq = isolated_liquidation_price(
+            side, anchor, abs(qty), self._used_margin, ordered[0]["max_leverage"])
+        if liq <= 0:
+            return 0.0
+        _tier, unmodeled = margin_tier_for_notional(tiers, abs(qty) * liq)
         if unmodeled:
             if not self._tier_refused:
                 self._margin_stats["tier_refusals"] += 1
                 self._tier_refused = True
             return 0.0
-        self._run_liq_px = isolated_liquidation_price(
-            side, mark, abs(qty), self._used_margin, tier["max_leverage"])
-        return self._run_liq_px
+        self._run_liq_px = liq
+        return liq
 
     def _clamp_trigger(self, side: str, trigger: float, event_date=None) -> float:
         if self._liquidation_model != "venue_isolated" or trigger <= 0:
@@ -4954,7 +4982,7 @@ class Backtester:
                 fraction = ff
                 pierce = trigger > 0
         if self._liquidation_model == "venue_isolated" and self._sized_qty > 0:
-            self._refresh_liq(side, mark, self._sized_qty)
+            self._refresh_liq(side, anchor, self._sized_qty)
             trigger = self._clamp_trigger(side, trigger, event_date)
         self._emit_stop_event(
             "arm", date=str(event_date), side=side, geometry=kind, anchor=anchor,
@@ -4965,7 +4993,7 @@ class Backtester:
     def _hl_trail_step(self, side: str, anchor: float, entry_atr: float, label: str,
                        mark: float, post_tp_trail_mult: Optional[float],
                        trigger: float, high_water: float, bypass_min_move: bool,
-                       event_date=None) -> Tuple[float, float]:
+                       event_date=None, liq_anchor: float = 0.0) -> Tuple[float, float]:
         tf = self._hl_trailing_fraction(anchor, entry_atr, label, post_tp_trail_mult)
         if tf <= 0:
             return trigger, high_water
@@ -4974,7 +5002,8 @@ class Backtester:
             self.trailing_stop_min_move_pct, trigger, bypass_min_move=bypass_min_move)
         new_trigger = candidate if replaced else trigger
         if self._liquidation_model == "venue_isolated" and self._sized_qty > 0:
-            self._refresh_liq(side, mark, self._sized_qty)
+            basis = liq_anchor if liq_anchor > 0 else anchor
+            self._refresh_liq(side, basis, self._sized_qty)
             new_trigger = self._clamp_trigger(side, new_trigger, event_date)
         self._emit_stop_event(
             "trail", date=str(event_date), side=side, anchor=anchor, entry_atr=entry_atr,
