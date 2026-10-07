@@ -39,6 +39,41 @@ def _load_regime():
     return _ensure_regime_fn
 
 
+REGIME_LABEL_COLUMN_KEYS = frozenset((
+    "gate", "directional", "directional_named", "atr", "atr_named", "payload_row", "gate_row",
+))
+REGIME_PAYLOAD_ROWS = ("decision_bar", "closed_candle")
+REGIME_GATE_ROWS = ("decision_bar", "payload")
+
+
+def _validated_regime_label_columns(columns: Optional[dict]) -> Optional[dict]:
+    if not columns:
+        return None
+    out = dict(columns)
+    unknown = sorted(set(out) - REGIME_LABEL_COLUMN_KEYS)
+    if unknown:
+        raise ValueError("unknown regime_label_columns keys: " + ", ".join(unknown))
+    for key in ("gate", "directional", "atr"):
+        name = out.get(key)
+        if name is not None and not (isinstance(name, str) and name.strip()):
+            raise ValueError(f"regime_label_columns.{key} must name a column")
+    if not out.get("gate"):
+        raise ValueError("regime_label_columns needs a gate column")
+    if out.get("directional_named") and not out.get("directional"):
+        raise ValueError("regime_label_columns.directional_named needs a directional column")
+    if out.get("atr_named") and not out.get("atr"):
+        raise ValueError("regime_label_columns.atr_named needs an atr column")
+    out["payload_row"] = out.get("payload_row") or "decision_bar"
+    if out["payload_row"] not in REGIME_PAYLOAD_ROWS:
+        raise ValueError("regime_label_columns.payload_row must be one of " + ", ".join(REGIME_PAYLOAD_ROWS))
+    out["gate_row"] = out.get("gate_row") or "decision_bar"
+    if out["gate_row"] not in REGIME_GATE_ROWS:
+        raise ValueError("regime_label_columns.gate_row must be one of " + ", ".join(REGIME_GATE_ROWS))
+    out["directional_named"] = bool(out.get("directional_named"))
+    out["atr_named"] = bool(out.get("atr_named"))
+    return out
+
+
 def _regime_allows_entry(allowed, bar_regime: str, on_failure: str = "open") -> bool:
     if _regime_allows_entry_fn is None:
         _load_regime()
@@ -2244,7 +2279,8 @@ class Backtester:
                  stop_platform: Optional[str] = None,
                  perps_sizing: Optional[dict] = None,
                  liquidation_model: str = "none",
-                 venue_margin: Optional[dict] = None):
+                 venue_margin: Optional[dict] = None,
+                 regime_label_columns: Optional[dict] = None):
         self.initial_capital = initial_capital
         self._execution = normalize_execution_spec(execution_spec)
         if self._execution is not None and (
@@ -2358,6 +2394,13 @@ class Backtester:
         self.close_params = {r["name"]: r["params"] for r in self._close_refs}
         self._resting_tp_model = str(platform or "").strip().lower() == "hyperliquid"
         self.regime_enabled = regime_enabled
+        self._regime_label_columns = _validated_regime_label_columns(regime_label_columns)
+        self._run_position_regime = ""
+        self._stamp_gate = ""
+        self._stamp_directional = ""
+        self._stamp_atr = ""
+        self._regime_stamp_trace = []
+        self._regime_trace = False
         self.regime_timeframe = str(regime_timeframe or "").strip() or None
         self.regime_period = regime_period
         self.regime_adx_threshold = regime_adx_threshold
@@ -2538,7 +2581,7 @@ class Backtester:
         self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
         self._run_stop_loss_atr_mult: Optional[float] = None
         self._run_trailing_stop_atr_mult: Optional[float] = None
-        self._run_position_regime = ""
+        self._clear_position_stamps()
         any_sl_after_key = False
         for ref in self._close_refs:
             params = ref.get("params") or {}
@@ -2652,6 +2695,28 @@ class Backtester:
                 int(s), uses_open_close, self.direction, self.invert_signal,
             )
         ).astype(int)
+
+    def _clear_position_stamps(self) -> None:
+        had = bool(self._run_position_regime or self._stamp_gate
+                   or self._stamp_directional or self._stamp_atr)
+        self._run_position_regime = ""
+        self._stamp_gate = ""
+        self._stamp_directional = ""
+        self._stamp_atr = ""
+        if had and self._regime_trace:
+            self._regime_stamp_trace.append({
+                "event": "clear", "gate": "", "directional": "", "atr": "",
+            })
+
+    def _note_regime_stamp(self, event: str) -> None:
+        if not self._regime_trace:
+            return
+        self._regime_stamp_trace.append({
+            "event": event,
+            "gate": self._stamp_gate,
+            "directional": self._stamp_directional,
+            "atr": self._stamp_atr,
+        })
 
     def _effective_directional_entry(
         self, current_regime: str, position_regime: str, position_qty: float,
@@ -2829,7 +2894,48 @@ class Backtester:
                 _validated_entry_fraction_series(df).shift(1).fillna(1.0)
             )
 
-        if self.regime_enabled and "regime" not in df.columns:
+        label_columns = self._regime_label_columns or {}
+        if label_columns:
+            required = []
+            for key in ("gate", "directional", "atr"):
+                name = label_columns.get(key)
+                if isinstance(name, str) and name.strip():
+                    required.append(name.strip())
+            missing = [
+                name for name in required
+                if name not in df.columns and name not in getattr(history, "columns", [])
+            ]
+            if missing:
+                raise ValueError(
+                    "refusing missing regime label column "
+                    + ", ".join(missing)
+                    + "; an absent named column is not recomputed from the primary column"
+                )
+
+            if (self.regime_directional_policy is not None
+                    and not str(label_columns.get("directional") or "").strip()):
+                raise ValueError(
+                    "refusing a directional policy without a directional regime label column; "
+                    "the flat decision is not read from the gate column"
+                )
+
+            def _label_series(name: str) -> tuple:
+                source = history[name] if name in history.columns else df[name]
+                clean = source.fillna("").map(lambda v: str(v or "").strip())
+                return (clean.reindex(df.index).fillna(""),
+                        clean.shift(1).reindex(df.index).fillna(""))
+
+            for key in ("gate", "directional", "atr"):
+                if key == "atr" and not label_columns.get("atr_named"):
+                    continue
+                name = str(label_columns.get(key) or "").strip()
+                if name:
+                    close_labels, decision_labels = _label_series(name)
+                    df[f"_regime_{key}_close"] = close_labels
+                    df[f"_regime_{key}_decision"] = decision_labels
+            self._regime_trace = True
+            self._regime_stamp_trace = []
+        elif self.regime_enabled and "regime" not in df.columns:
             ensure_regime = _load_regime()
             ensure_regime(
                 df,
@@ -2857,7 +2963,23 @@ class Backtester:
 
         has_open = "open" in df.columns
 
+        payload_row = (self._regime_label_columns or {}).get("payload_row", "decision_bar")
+        gate_row = (self._regime_label_columns or {}).get("gate_row", "decision_bar")
+
+        def _label_at(row, key: str, row_kind: str) -> str:
+            suffix = "_close" if row_kind == "closed_candle" else "_decision"
+            return str(row.get(f"_regime_{key}{suffix}", "") or "").strip()
+
+        def _payload_stamps(row) -> tuple:
+            cols = self._regime_label_columns
+            gate = _label_at(row, "gate", payload_row)
+            directional = _label_at(row, "directional", payload_row) if cols.get("directional_named") else gate
+            atr = _label_at(row, "atr", payload_row) if cols.get("atr_named") else gate
+            return gate, directional, atr
+
         def _entry_stamp(row) -> str:
+            if self._regime_label_columns:
+                return _payload_stamps(row)[2]
             if self.regime_enabled:
                 return str(row.get("regime", "") or "").strip()
             return str(row.get("_regime_bar_close", "") or "").strip()
@@ -2895,7 +3017,7 @@ class Backtester:
         self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
         self._run_stop_loss_atr_mult: Optional[float] = None
         self._run_trailing_stop_atr_mult: Optional[float] = None
-        self._run_position_regime = ""
+        self._clear_position_stamps()
         sl_after_active = self._sl_after_pipeline_enabled
         trailing_ratchet_active = self._uses_trailing_ratchet_close
 
@@ -2936,7 +3058,18 @@ class Backtester:
                 return mark + trail_mult * entry_atr
             return 0.0
 
-        def stamp_open_from_label(stamp: str) -> None:
+        def stamp_open_from_label(stamp: str, row=None, *, keep_recorded: bool = False) -> None:
+            if self._regime_label_columns and row is not None:
+                recorded = (stamp or "").strip() if keep_recorded else ""
+                if recorded:
+                    gate = directional = atr = recorded
+                else:
+                    gate, directional, atr = _payload_stamps(row)
+                stamp = atr
+                self._stamp_gate = gate
+                self._stamp_directional = directional
+                self._stamp_atr = atr
+                self._note_regime_stamp("stamp")
             lab = (stamp or "").strip()
             self._run_position_regime = lab
             if self._uses_regime_tiered_close:
@@ -3015,8 +3148,8 @@ class Backtester:
             except (TypeError, ValueError):
                 _seed_atr = 0.0
             _seed_entry = float(starting_long["entry_price"])
-            _seed_label = (str(starting_long.get("entry_regime", "") or "").strip()
-                           or _entry_stamp(df.iloc[0]))
+            _recorded_seed = str(starting_long.get("entry_regime", "") or "").strip()
+            _seed_label = _recorded_seed or _entry_stamp(df.iloc[0])
             if (stop_needs_atr and not (0 < _seed_atr <= 0.5 * _seed_entry)) or (
                     stop_needs_label and not _seed_label):
                 stop_seed_dropped = True
@@ -3059,10 +3192,9 @@ class Backtester:
                 seed_atr = 0.0
             if seed_atr > 0 and seed_atr <= 0.5 * effective_entry:
                 entry_atr_value = seed_atr
-            stamp = str(starting_long.get("entry_regime", "") or "").strip()
-            if not stamp:
-                stamp = _entry_stamp(df.iloc[0])
-            stamp_open_from_label(stamp)
+            recorded_seed = str(starting_long.get("entry_regime", "") or "").strip()
+            stamp_open_from_label(recorded_seed or _entry_stamp(df.iloc[0]), df.iloc[0],
+                                  keep_recorded=bool(recorded_seed))
             seed_hwm = starting_long.get("high_water", 0.0)
             try:
                 seed_hwm = float(seed_hwm or 0.0)
@@ -3345,7 +3477,7 @@ class Backtester:
                 )
                 self._run_stop_loss_atr_mult = None
                 self._run_trailing_stop_atr_mult = None
-                self._run_position_regime = ""
+                self._clear_position_stamps()
             elif sl_after_active and self._run_tp_tier_thresholds:
                 side_now = "long" if position > 0 else "short"
                 prev_trigger = sl_trigger_px
@@ -3446,13 +3578,21 @@ class Backtester:
                 signal = row["signal__" + active_profile]
 
             bar_regime = str(row.get("regime", "")) if self.regime_enabled else ""
+            if self._regime_label_columns:
+                gate_label = _label_at(row, "gate", payload_row if gate_row == "payload" else "decision_bar")
+                current_directional = _label_at(row, "directional", payload_row)
+                position_directional = self._stamp_directional
+            else:
+                gate_label = bar_regime
+                current_directional = bar_regime
+                position_directional = self._run_position_regime
             effective_direction = self.direction or ""
             effective_invert = self.invert_signal
             plain_short_for_bar = plain_short
             if self.regime_directional_policy is not None:
                 effective_direction, effective_invert = self._effective_directional_entry(
-                    bar_regime,
-                    self._run_position_regime,
+                    current_directional,
+                    position_directional,
                     abs(position),
                 )
                 if not uses_open_close:
@@ -3508,7 +3648,7 @@ class Backtester:
                 self.regime_enabled
                 and bool(self.allowed_regimes)
                 and not _regime_allows_entry(
-                    self.allowed_regimes, bar_regime, self.regime_gate_on_failure
+                    self.allowed_regimes, gate_label, self.regime_gate_on_failure
                 )
             )
 
@@ -3551,8 +3691,8 @@ class Backtester:
                         sl_after_just_applied = True
                 if self.regime_directional_policy is not None:
                     entry_direction, entry_invert = self._effective_directional_entry(
-                        bar_regime,
-                        self._run_position_regime,
+                        current_directional,
+                        position_directional,
                         abs(position),
                     )
                     open_action = _open_action_from_signal(
@@ -3640,7 +3780,7 @@ class Backtester:
                     scale.base_open_notional = _ungated_leg_notional(
                         shares * effective_price, hurst_size_mult,
                     )
-                    stamp_open_from_label(_entry_stamp(row))
+                    stamp_open_from_label(_entry_stamp(row), row)
                     if self._hl_stop_geometry:
                         sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
                             "long", avg_cost, entry_atr_value, self._run_position_regime,
@@ -3722,7 +3862,7 @@ class Backtester:
                     scale.base_open_notional = _ungated_leg_notional(
                         shares * effective_price, hurst_size_mult,
                     )
-                    stamp_open_from_label(_entry_stamp(row))
+                    stamp_open_from_label(_entry_stamp(row), row)
                     if self._hl_stop_geometry:
                         sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
                             "short", avg_cost, entry_atr_value, self._run_position_regime,
@@ -3894,7 +4034,7 @@ class Backtester:
                         )
                         self._run_stop_loss_atr_mult = None
                         self._run_trailing_stop_atr_mult = None
-                        self._run_position_regime = ""
+                        self._clear_position_stamps()
                         if rec is not None:
                             rec.record(
                                 'close', bar=idx, decision_bar=None,
@@ -4038,7 +4178,7 @@ class Backtester:
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
                 scale.reset()
-                self._run_position_regime = ""
+                self._clear_position_stamps()
                 if rec is not None:
                     rec.record(
                         'close', bar=idx, decision_bar=decision_idx,
@@ -4080,7 +4220,7 @@ class Backtester:
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
                 scale.reset()
-                self._run_position_regime = ""
+                self._clear_position_stamps()
                 if rec is not None:
                     rec.record(
                         'close', bar=idx, decision_bar=decision_idx,
@@ -4139,7 +4279,7 @@ class Backtester:
                             cash_before=cash_before, cash_after=cash, hold=hold,
                             gross_realized=None, entry_fee_allocated=None,
                         )
-                    stamp_open_from_label(_entry_stamp(row))
+                    stamp_open_from_label(_entry_stamp(row), row)
                     sl_trigger_px = 0.0
                     sl_high_water_px = mark_price
                     sl_pierce_armed = False
@@ -4190,7 +4330,7 @@ class Backtester:
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
                 scale.reset()
-                self._run_position_regime = ""
+                self._clear_position_stamps()
                 if rec is not None:
                     rec.record(
                         'close', bar=idx, decision_bar=decision_idx,
@@ -4245,7 +4385,7 @@ class Backtester:
                             cash_before=cash_before, cash_after=cash, hold=hold,
                             gross_realized=None, entry_fee_allocated=None,
                         )
-                    stamp_open_from_label(_entry_stamp(row))
+                    stamp_open_from_label(_entry_stamp(row), row)
                     sl_trigger_px = 0.0
                     sl_high_water_px = mark_price
                     sl_pierce_armed = False
@@ -4296,7 +4436,7 @@ class Backtester:
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
                 scale.reset()
-                self._run_position_regime = ""
+                self._clear_position_stamps()
                 if rec is not None:
                     rec.record(
                         'close', bar=idx, decision_bar=decision_idx,
@@ -4410,7 +4550,7 @@ class Backtester:
                     sl_high_water_px = 0.0
                     sl_pierce_armed = False
                     scale.reset()
-                    self._run_position_regime = ""
+                    self._clear_position_stamps()
                     if rec is not None:
                         rec.record(
                             'close', bar=idx, decision_bar=None,
