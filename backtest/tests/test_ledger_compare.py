@@ -1717,6 +1717,100 @@ def test_regime_owned_stop_arms_from_the_decision_bar(tmp_path):
         a["date"] for a in primary["stops"]["arm_events"]]
 
 
+_STAMP_POLICY = {"trend_regime": {
+    "trending_up": {"direction": "long", "invert_signal": False},
+    "trending_down": {"direction": "short", "invert_signal": False},
+}}
+_STAMP_STATES = {"trending_up": "long", "trending_down": "short"}
+
+
+def _armed_with_policy(df, columns, *, policy=None):
+    from backtester import Backtester
+    events = []
+    kwargs = dict(
+        initial_capital=10_000, commission_pct=0.0, slippage_pct=0.0,
+        platform="hyperliquid", strategy_type="perps", regime_enabled=True,
+        stop_loss_atr_mult_regime=_REGIME_STOP, regime_label_columns=columns,
+    )
+    if policy is not None:
+        kwargs["regime_directional_policy"] = policy
+        kwargs["regime_directional_certified_states"] = dict(_STAMP_STATES)
+    bt = Backtester(**kwargs)
+    result = bt.run(df, save=False, stop_observer=events.append)
+    arms = [e for e in events if e.get("event") == "arm"]
+    return bt, arms, result["trades"]
+
+
+def test_modeled_policy_arms_the_stop_from_the_stamp_row(tmp_path):
+    """One position uses one closed-candle row for the side, the stamp, and the arm."""
+    labels = ["trending_down", "trending_up", "trending_up", "trending_up"]
+    actions = ["long", "none", "none", "none"]
+    primary = _ohlc(labels, actions)
+    columns = {"gate": "regime", "directional": "regime", "directional_named": False}
+    bt, arms, trades = _armed_with_policy(primary, columns, policy=_STAMP_POLICY)
+    assert trades and trades[0]["side"] == "long"
+    assert arms and arms[0]["regime"] == "trending_up"
+    assert arms[0]["fraction"] == pytest.approx(0.04)
+    assert bt._stamp_directional == "trending_up"
+    assert arms[0]["regime"] == bt._stamp_directional
+
+    short = ["trending_up", "trending_down", "trending_down", "trending_down"]
+    medium = ["trending_down", "trending_up", "trending_up", "trending_up"]
+    named = _ohlc(medium, actions)
+    named["regime_w_short"] = short
+    named["regime_w_medium"] = medium
+    bt, arms, trades = _armed_with_policy(named, {
+        "gate": "regime_w_short",
+        "directional": "regime_w_medium",
+        "directional_named": False,
+    }, policy=_STAMP_POLICY)
+    assert trades and trades[0]["side"] == "long"
+    assert arms and arms[0]["regime"] == "trending_down"
+    assert arms[0]["fraction"] == pytest.approx(0.02)
+    assert bt._stamp_directional == "trending_down"
+    assert arms[0]["regime"] == bt._stamp_directional
+    assert arms[0]["regime"] != "trending_up"
+
+    fx = _copy(tmp_path)
+    cin, seg = _segment(fx)
+    _use_regime_market(cin, fx)
+    seg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 20,
+                     "windows": dict(REGIME_WINDOWS)}
+    _stop_free_loader_segment(seg)
+    seg["strategy"]["close_strategy"] = copy.deepcopy(UNIFIED_CLOSE)
+    seg["strategy"]["regime_directional_policy"] = copy.deepcopy(DIRECTIONAL_POLICY)
+    rel, digest = _write_json(fx, "regime_labels.json", {"values_and_timing": True})
+    cert = _cert_artifact(
+        {"trending_up": "long", "trending_down": "short", "ranging": "long"},
+        expires_at="2026-02-01T00:00:00Z")
+    cert_rel, cert_sha = _write_json(fx, "cert.json", cert)
+
+    def _bind(name):
+        binding = _binding(seg)
+        evidence = cin.setdefault("capability_evidence", {})
+        evidence["regime_labels"] = _verified_evidence(
+            binding, artifact={"path": rel, "sha256": digest})
+        evidence["regime_feature_timing"] = _verified_evidence(
+            binding, features={"directional": "unshifted_closed_candle"})
+        evidence["directional_certification"] = _verified_evidence(
+            binding, reloads="none", artifact={"path": cert_rel, "sha256": cert_sha})
+        _dump(fx / "comparison_input.json", cin)
+        _, rep = _run(fx, tmp_path, name=name)
+        assert rep["simulation"]["status"] == "run", rep["eligibility"]["refusals"]
+        return rep
+
+    primary_rep = _bind("policy_primary_stop.json")
+    assert primary_rep["eligibility"]["regime"]["protection_source"] == (
+        "unshifted_closed_candle:primary_column")
+    assert primary_rep["eligibility"]["regime"]["timing"]["protection"] == "unshifted_closed_candle"
+
+    seg["strategy"]["regime_gate_window"] = "short"
+    named_rep = _bind("policy_short_stop.json")
+    assert named_rep["eligibility"]["regime"]["protection_source"] == (
+        "unshifted_closed_candle:gate_window:short")
+    assert named_rep["eligibility"]["regime"]["timing"]["protection"] == "unshifted_closed_candle"
+
+
 def test_certification_rejects_short_timestamps_and_nonfinite_tokens(tmp_path):
     fx = _copy(tmp_path)
     cin, seg = _segment(fx)

@@ -98,21 +98,25 @@ def _fail_policy(strategy) -> str:
 
 
 def _protection_source(stop_needs_labels, atr_named, protection_reads_gate,
-                       lookback_blocks, timeframe_blocks, strategy, regime):
+                       lookback_blocks, timeframe_blocks, strategy, regime,
+                       follows_closed_candle=False):
     """Name the bar a regime-owned stop reads.
 
-    The arm uses the decision bar: the last closed bar before the bar-open
-    fill. A named ATR window is not supplied here. A default ATR selector
-    uses the gate window, or the primary column when that selector is default.
+    With no modeled directional policy the arm uses the decision bar: the last
+    closed bar before the bar-open fill. A modeled policy arms from the same
+    unshifted closed-candle row as the position stamp. A named ATR window is
+    not supplied here. A default ATR selector uses the gate window, or the
+    primary column when that selector is default.
     """
     if not stop_needs_labels or atr_named:
         return None
+    prefix = "unshifted_closed_candle" if follows_closed_candle else "shifted_decision_bar"
     if protection_reads_gate and not lookback_blocks and not timeframe_blocks:
         gate_key = resolve_strategy_regime_window(strategy, "gate", regime)
-        return "shifted_decision_bar:gate_window:" + gate_key
+        return prefix + ":gate_window:" + gate_key
     if protection_reads_gate:
         return None
-    return "shifted_decision_bar:primary_column"
+    return prefix + ":primary_column"
 
 
 def _direction_matches(entry: dict, cert_dir: str) -> bool:
@@ -676,6 +680,9 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
             engine["regime_directional_policy"] = policy
             engine["regime_directional_certified_states"] = {}
 
+    protection_follows_stamp = bool(use_dir and stop_needs_labels and not atr_named)
+    protection_row = (
+        "unshifted_closed_candle" if protection_follows_stamp else "shifted_decision_bar")
     window_report = []
     for name in sorted(windows):
         spec = windows[name] if isinstance(windows[name], dict) else {"period": windows[name]}
@@ -691,16 +698,17 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         "consumers": {
             "gate": next(r["decision"] for r in rows if r["field"] == "allowed_regimes"),
             "directional": next(r["decision"] for r in rows if r["field"] == "regime_directional_policy"),
-            "atr": "shifted_decision_bar" if stop_needs_labels else "inactive",
+            "atr": protection_row if stop_needs_labels else "inactive",
         },
         "timing": {
             "gate": "shifted_closed_bar" if closed_bar else "unsupported_without_evidence",
             "directional": "result.Regime",
-            "protection": "shifted_decision_bar",
+            "protection": protection_row,
         },
         "stamps": "An open position keeps the gate-window label when the directional selector is "
                   "default, and the named window when it is set. A flat directional decision reads "
-                  "the resolved directional window.",
+                  "the resolved directional window. A modeled directional policy arms the stop from "
+                  "that same closed-candle row; otherwise the arm uses the decision bar.",
         "certification": {
             "status": cert.get("status"),
             "identity": identity,
@@ -710,7 +718,8 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         },
         "protection_source": _protection_source(
             stop_needs_labels, atr_named, protection_reads_gate,
-            lookback_blocks, timeframe_blocks, strategy, regime),
+            lookback_blocks, timeframe_blocks, strategy, regime,
+            follows_closed_candle=protection_follows_stamp),
         "label_columns": sorted((prepare or {}).get("columns") or {}),
     }
     return {

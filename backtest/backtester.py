@@ -2753,9 +2753,15 @@ class Backtester:
                     else:
                         atr = gate
                     # A seed with no recorded label keeps the row's own label.
-                    # A bar-open fill arms from the decision bar, which has
-                    # already closed. The fill bar's close is still in the future.
-                    stamp = atr if seed_row else _decision_protection_label(row)
+                    # A modeled directional policy arms from this same closed-candle
+                    # row: live writes one result.Regime into pos.Regime, and both
+                    # the stop and the open-position policy read that stamp.
+                    # With no directional consumer, a bar-open fill arms from the
+                    # decision bar. The fill bar's close is still in the future.
+                    if seed_row or self.regime_directional_policy is not None:
+                        stamp = atr
+                    else:
+                        stamp = _decision_protection_label(row)
                 self._stamp_gate = gate
                 self._stamp_directional = directional
                 self._stamp_atr = atr
