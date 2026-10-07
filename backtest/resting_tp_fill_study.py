@@ -313,6 +313,10 @@ def stream_marked_incomplete(bundle, meta) -> bool:
         coin = meta.get("coin")
         if coin is not None:
             rows = [row for row in rows if row.get("coin") == coin]
+        if kind == "orderStatus":
+            body = meta.get("body") if isinstance(meta.get("body"), dict) else {}
+            oid = body.get("oid")
+            rows = [row for row in rows if row.get("oid") == oid]
         return bool(rows) and all(row.get("complete") is False for row in rows)
     return False
 

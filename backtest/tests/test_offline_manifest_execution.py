@@ -2,6 +2,7 @@ import gzip
 import hashlib
 import json
 import os
+import subprocess
 import sys
 
 import numpy as np
@@ -942,6 +943,25 @@ def _replace_responses(capture_dir, kind, body):
     log.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n")
 
 
+def _replace_order_status(capture_dir, oid, body):
+    log = capture_dir / "requests.jsonl"
+    rows = []
+    replaced = 0
+    for line in log.read_text().splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        recorded = row.get("body") if isinstance(row.get("body"), dict) else {}
+        if row.get("type") == "orderStatus" and recorded.get("oid") == oid:
+            target = capture_dir / row["response_file"]
+            target.write_bytes(body)
+            row["response_sha256"] = hashlib.sha256(body).hexdigest()
+            replaced += 1
+        rows.append(row)
+    assert replaced == 1
+    log.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n")
+
+
 def test_resting_tp_sibling_placed_after_the_fill_keeps_the_fill_bar(tmp_path):
     orders = [
         {
@@ -1145,3 +1165,92 @@ def test_resting_tp_full_page_of_one_timestamp_is_incomplete():
         opener=opener, page_max_rows=2)
     assert result["complete"] is False
     assert "timestamp" in result["failure"]
+
+
+def test_resting_tp_one_bad_order_status_leaves_the_other_orders(tmp_path):
+    from decimal import Decimal
+
+    import resting_tp_fill_study as study
+
+    orders = [
+        {
+            "oid": 1001, "limit": "100.00", "placement": _ms(10), "status": "filled",
+            "status_time": _ms(22, 30), "orig": "1", "sz": "0",
+            "fills": [{"time": _ms(22, 30), "sz": "1", "px": "100.00", "tid": 11, "fee": "0.015"}],
+        },
+        {
+            "oid": 1002, "limit": "150.00", "placement": _ms(10), "status": "canceled",
+            "status_time": _ms(25), "orig": "1", "sz": "1", "fills": [],
+        },
+        {
+            "oid": 1003, "limit": "200.00", "placement": _ms(10), "status": "canceled",
+            "status_time": _ms(28), "orig": "1", "sz": "1", "fills": [],
+        },
+    ]
+    before = _study_orders(tmp_path, orders, _example_candles())
+    before_by_limit = {row["limit_px"]: row["outcome"] for row in before["orders"]}
+    assert len(before_by_limit) == 3
+    assert "lifetime_unknown" not in before_by_limit.values()
+    capture = tmp_path / "capture"
+    _replace_order_status(capture, 1002, b"<html><body>502 Bad Gateway</body></html>")
+    bundle_path = capture / "bundle.json"
+    bundle = json.loads(bundle_path.read_text())
+    marked = 0
+    for row in bundle["completeness"]["orderStatus"]:
+        if row.get("oid") == 1002:
+            row["complete"] = False
+            marked += 1
+    assert marked == 1
+    assert sum(row.get("complete") is True for row in bundle["completeness"]["orderStatus"]) == 2
+    bundle_path.write_text(json.dumps(bundle))
+    manifest = tmp_path / "manifest.json"
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    after = study.study(
+        [str(tmp_path / "export.json")], str(capture), str(manifest), digest, "study", "pending")
+    unknown = [row for row in after["orders"] if row["outcome"] == "lifetime_unknown"]
+    assert len(unknown) == 1
+    assert unknown[0]["limit_px"] is None
+    kept = {row["limit_px"]: row["outcome"] for row in after["orders"] if row["limit_px"] is not None}
+    assert set(before_by_limit) - set(kept) == {format(Decimal("150.00"), "f")}
+    assert len(kept) == 2
+    for limit, outcome in kept.items():
+        assert before_by_limit[limit] == outcome
+
+
+def test_resting_tp_complete_order_status_html_exits_not_json(tmp_path):
+    import resting_tp_fill_study as study
+
+    orders = [{
+        "oid": 1002, "limit": "100.00", "placement": _ms(10), "status": "canceled",
+        "status_time": _ms(22, 30), "orig": "1", "sz": "1", "fills": [],
+    }]
+    _study_orders(tmp_path, orders, _example_candles())
+    capture = tmp_path / "capture"
+    _replace_order_status(capture, 1002, b"<html><body>502 Bad Gateway</body></html>")
+    bundle = json.loads((capture / "bundle.json").read_text())
+    assert len(bundle["completeness"]["orderStatus"]) == 1
+    assert bundle["completeness"]["orderStatus"][0]["oid"] == 1002
+    assert bundle["completeness"]["orderStatus"][0]["complete"] is True
+    manifest = tmp_path / "manifest.json"
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    env = os.environ.copy()
+    backtest_dir = os.path.dirname(study.__file__)
+    env["PYTHONPATH"] = backtest_dir + os.pathsep + env.get("PYTHONPATH", "")
+    proc = subprocess.run(
+        [
+            sys.executable, study.__file__,
+            "--export", str(tmp_path / "export.json"),
+            "--capture", str(capture),
+            "--manifest", str(manifest),
+            "--manifest-sha256", digest,
+            "--window", "study",
+            "--out", str(tmp_path / "report.json"),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert proc.returncode == 1
+    assert "Traceback" not in proc.stderr
+    assert "\n" not in proc.stderr.strip()
+    assert "not json" in proc.stderr
