@@ -1,0 +1,51 @@
+{
+  "schema": "offline_candle_manifest/v1",
+  "study": "ledger_compare_regime_fixture_1730",
+  "venue": "hyperliquid",
+  "provenance": {
+    "kind": "proxy",
+    "label": "synthetic deterministic test candles and hourly funding written by generate_market.py; not market data"
+  },
+  "interval": "1h",
+  "warmup_bars": 300,
+  "windows": {
+    "comparison": {
+      "start": "2026-01-05T00:00:00Z",
+      "end": "2026-01-06T20:00:00Z",
+      "role": "comparison interval; start inclusive, end exclusive; warm-up covers the live regime lookback"
+    }
+  },
+  "acquisition": {
+    "source": "generate_market.py (no network access)",
+    "note": "Deterministic series seeded with 1730; gzip mtime 0; rerunning the generator reproduces every byte."
+  },
+  "costs": {
+    "taker_fee_pct": 0.00045,
+    "maker_fee_pct": 0.00015,
+    "slippage_bps": 1.0,
+    "min_notional_usd": 10.0,
+    "min_notional_margin": 0.03
+  },
+  "venue_reference": {
+    "meta": {
+      "path": "venue_meta.json",
+      "sha256": "0ddfc0245694096bc211c63da1d38d94f8ec32bb51aff7c635030e8aecda0404"
+    }
+  },
+  "datasets": [
+    {
+      "coin": "BTC",
+      "symbol": "BTC/USDT",
+      "size_decimals": 5,
+      "half_spread_bps": 0.5,
+      "candles": {
+        "path": "BTC_1h_candles.csv.gz",
+        "sha256": "46c2d45ec09b9486c68d4973ac7110375239ba0dbfe737c33434c77b2bde1048"
+      },
+      "funding": {
+        "path": "BTC_funding.csv.gz",
+        "sha256": "e76b0040d81d12785a438719b402641e96174728315588b10758807c9dbb0fd5"
+      }
+    }
+  ]
+}
