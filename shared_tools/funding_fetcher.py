@@ -307,10 +307,10 @@ def continuous_history_start(df: pd.DataFrame, event_ms: np.ndarray):
         return None
     bar_ms = _bar_open_ms(df.index)
     missing = right_closed_missing_hours(bar_ms, event_ms)
-    k = 0
-    while k < len(df) and int(missing[k + 1:].sum()) > 0:
-        k += 1
-    return df.index[k]
+    nz = np.flatnonzero(missing)
+    if nz.size == 0:
+        return df.index[0]
+    return df.index[int(nz[-1])]
 
 
 def _stored_funding_mode(mode: str, price: bool) -> str:
