@@ -419,19 +419,35 @@ cli_sh 'cd /data && find . -type f | LC_ALL=C sort | xargs sha256sum' >"$work/be
 mkdir -p "$work/backups/b1"
 compose cp go-trader:/data "$work/backups/b1/data" >/dev/null
 cli version --json >"$work/backups/b1/image.json"
+grep -q '"source_commit"' "$work/backups/b1/image.json" || fail "backup identity record is missing"
+documented_restore() {
+    local label=$1
+    compose stop >/dev/null 2>&1 || fail "$label: docker compose stop failed"
+    compose ps -a >/dev/null || fail "$label: docker compose ps -a failed"
+    compose create go-trader >/dev/null 2>&1 || fail "$label: docker compose create go-trader failed"
+    compose run --rm -T --entrypoint find cli /data -mindepth 1 -delete || fail "$label: emptying the data volume failed"
+    compose cp "$work/backups/b1/data/." go-trader:/data >/dev/null || fail "$label: copying the backup in failed"
+    compose run --rm -T --user 0:0 --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown cli -R 10001:10001 /data || fail "$label: chown failed"
+    cli probe --config /data/config.json >/dev/null 2>&1 || fail "$label: probe of the restored config failed"
+    cli_sh 'cd /data && find . -type f | LC_ALL=C sort | xargs sha256sum' >"$work/after.sums"
+    diff -u "$work/before.sums" "$work/after.sums" || fail "$label: restore did not reproduce the backed-up files"
+    [[ "$(cli_sh 'stat -c %a /data' | tr -d '\r')" == "700" ]] || fail "$label: restored /data is not mode 0700"
+    [[ "$(cli_sh 'find /data ! -user 10001 | wc -l' | tr -d ' \r')" == "0" ]] || fail "$label: restored files are not owned by uid 10001"
+    compose start go-trader >/dev/null 2>&1 || fail "$label: docker compose start failed"
+    compose up -d --wait --wait-timeout 180 go-trader >/dev/null || fail "$label: service did not become healthy after the restore"
+}
 edit_config interval_seconds=900
 cli_sh 'echo later >/data/later.txt'
-compose run --rm -T --entrypoint find cli /data -mindepth 1 -delete
-compose cp "$work/backups/b1/data/." go-trader:/data >/dev/null
-compose run --rm -T --user 0:0 --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown cli -R 10001:10001 /data
-cli_sh 'cd /data && find . -type f | LC_ALL=C sort | xargs sha256sum' >"$work/after.sums"
-diff -u "$work/before.sums" "$work/after.sums" || fail "restore did not reproduce the backed-up files"
-owners="$(cli_sh 'find /data ! -user 10001 | wc -l' | tr -d ' \r')"
-[[ "$(cli_sh 'stat -c %a /data' | tr -d '\r')" == "700" ]] || fail "restored /data is not mode 0700"
-[[ "$owners" == "0" ]] || fail "restored files are not owned by uid 10001"
-grep -q '"source_commit"' "$work/backups/b1/image.json" || fail "backup identity record is missing"
-compose up -d --wait --wait-timeout 180 go-trader >/dev/null || fail "service did not become healthy after the restore"
-ok "stopped backup and restore reproduce config and every database byte for byte; the restored service is healthy"
+documented_restore "stopped container"
+edit_config interval_seconds=900
+cli_sh 'echo later >/data/later.txt'
+compose down >/dev/null 2>&1
+[[ -z "$(container_id)" ]] || fail "docker compose down left the service container"
+documented_restore "after docker compose down"
+compose --profile cli down -v >/dev/null 2>&1
+[[ -z "$(docker volume ls -q --filter "label=com.docker.compose.project=$project")" ]] || fail "docker compose down -v left a project volume"
+documented_restore "new host with no containers or volumes"
+ok "stopped backup and restore reproduce config and every database byte for byte, owned by 10001 with /data 0700, with a stopped container, after compose down, and with no containers or volumes; each restored service is healthy"
 
 compose --profile cli down -v >/dev/null
 echo

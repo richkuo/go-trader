@@ -360,10 +360,12 @@ Keep `go-trader.env` in its own protected backup; this backup does not contain i
 ## Restore
 
 Restore only while every writer is stopped.
+The same steps work with a stopped container, after `docker compose down`, and on a new computer that has only the `docker` folder files and the backup.
 
 ```bash
 docker compose stop
 docker compose ps -a
+docker compose create go-trader
 docker compose run --rm --entrypoint find cli /data -mindepth 1 -delete
 docker compose cp ./backups/2026-10-07/data/. go-trader:/data
 docker compose run --rm --user 0:0 --cap-add CHOWN --cap-add DAC_READ_SEARCH --entrypoint chown cli -R 10001:10001 /data
@@ -371,6 +373,7 @@ docker compose run --rm cli probe --config /data/config.json
 docker compose start
 ```
 
+`docker compose create` makes the bot's container (and the volumes, when they do not exist) without starting it, so that the copy has a target; it changes nothing when the stopped container already exists. It runs before `find`, so a failure stops the restore before anything is deleted.
 The `find` command deletes the current content of the data volume. The `chown` command gives the restored files back to the bot's user; it is safe because the volume holds only go-trader files.
 Use the image release recorded in the backup's `image.json`, or a newer one (see [Roll back](#roll-back)).
 
