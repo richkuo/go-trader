@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -143,25 +144,39 @@ def post_discord_message(token, channel_id, content):
     return False
 
 
-def build_message(top, total_count):
-    id_w = max([len("Strategy")] + [len(e["id"]) for e in top])
-    lines = [f"**Top {len(top)} Paper Trading Strategies**", "```"]
-    header = (
-        f"{'#':>2}  {'Strategy':<{id_w}} {'PnL%':>7}  {'$PnL':>9}  {'Trades':>6}  "
-        f"{'W/L (Win%)':>13}  {'Last 5':<7}  {'Last':<6}"
-    )
-    lines.append(header)
-    lines.append("-" * len(header))
+def display_names(entries):
+    stripped = {e["id"]: re.sub(r"-paper-[A-Za-z0-9_]+$", "", e["id"]) for e in entries}
+    counts = {}
+    for name in stripped.values():
+        counts[name] = counts.get(name, 0) + 1
+    return {sid: name if counts[name] == 1 else sid for sid, name in stripped.items()}
+
+
+def build_message(top, total_count, names):
+    rows = []
     for i, e in enumerate(top, 1):
         closed = e["wins"] + e["losses"]
-        win_pct = round(e["wins"] / closed * 100) if closed > 0 else 0
-        wl_str = f"{e['wins']}/{e['losses']} ({win_pct}%)"
-        last5 = "".join(e["outcomes"]) or "—"
-        last_dt = e["last_dt"] or "—"
-        lines.append(
-            f"{i:>2}  {e['id']:<{id_w}} {e['pnl_pct']:>+7.2f}  {e['pnl']:>+9.2f}  {e['trades']:>6}  "
-            f"{wl_str:>13}  {last5:<7}  {last_dt:<6}"
-        )
+        rows.append([
+            str(i),
+            names[e["id"]],
+            f"{e['pnl_pct']:+.1f}%",
+            f"{e['pnl']:+,.0f}",
+            str(e["trades"]),
+            f"{e['wins']}/{e['losses']}",
+            f"{round(e['wins'] / closed * 100)}%" if closed > 0 else "-",
+            "".join(e["outcomes"]) or "-",
+            e["last_dt"] or "-",
+        ])
+    header = ["#", "Strategy", "PnL%", "$PnL", "#T", "W/L", "Win%", "Last 5", "Last"]
+    left = {1, 7, 8}
+    widths = [max(len(r[c]) for r in rows + [header]) for c in range(len(header))]
+
+    def fmt(r):
+        return "  ".join(v.ljust(w) if c in left else v.rjust(w) for c, (v, w) in enumerate(zip(r, widths))).rstrip()
+
+    head = fmt(header)
+    lines = [f"**Top {len(top)} Paper Trading Strategies**", "```", head, "-" * len(head)]
+    lines += [fmt(r) for r in rows]
     lines.append("```")
     lines.append(f"_Across {total_count} strategies on the paper instance_")
     return "\n".join(lines)
@@ -210,7 +225,7 @@ def main():
         )
         sys.exit(1)
 
-    content = build_message(top, len(entries))
+    content = build_message(top, len(entries), display_names(entries))
     print(content)
     print()
     if len(content) > DISCORD_CONTENT_LIMIT:
