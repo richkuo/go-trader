@@ -29,31 +29,41 @@ OBSERVATION_INPUT_STRATEGIES = {"open_interest_breakout"}
 FUNDING_ACCRUAL_STRATEGIES = {"delta_neutral_funding"}
 
 
-def _attach_funding_if_needed(df, strategy_name, symbol, since):
-    if strategy_name not in FUNDING_COLUMN_STRATEGIES or df.empty:
+def attach_backtest_funding(*args, **kwargs):
+    """Re-export of the shared helper for callers that import run_backtest."""
+    from funding_fetcher import attach_backtest_funding as impl
+    return impl(*args, **kwargs)
+
+
+def _attach_funding_if_needed(df, strategy_name, symbol, since,
+                              platform="hyperliquid", strategy_type="perps",
+                              mode="charge", timeframe=None):
+    if df is None or getattr(df, "empty", True):
         return df
-    from funding_fetcher import (attach_funding_accrual_column,
-                                 attach_funding_column, load_cached_funding)
-    coin = symbol.split("/")[0]
-    try:
-        funding = load_cached_funding(coin, since, end_date=df.index[-1])
-    except Exception as e:
-        print(f"[WARN] funding history fetch failed for {coin}: {e} — "
-              f"'{strategy_name}' will produce zero entries.")
-        funding = None
-    out = attach_funding_column(df, funding)
-    have = int(out["funding_rate"].notna().sum())
-    if have == 0:
-        print(f"[WARN] no funding data attached for {coin} since {since} — "
-              f"'{strategy_name}' will produce zero entries.")
-    else:
-        print(f"  Funding: {have}/{len(out)} bars covered (HL hourly, coin={coin})")
-    if strategy_name in FUNDING_ACCRUAL_STRATEGIES:
-        out = attach_funding_accrual_column(out, funding)
+    from funding_fetcher import attach_backtest_funding as impl
+    coin = str(symbol).split("/")[0]
+    out, block = impl(
+        df, coin, timeframe, platform, strategy_type, strategy_name,
+        mode=mode, since=since,
+    )
+    if strategy_name in FUNDING_COLUMN_STRATEGIES:
+        if not block.get("available"):
+            print(f"[WARN] funding history fetch failed for {coin}: "
+                  f"{block.get('error', 'no rows')} — "
+                  f"'{strategy_name}' will produce zero entries.")
+        else:
+            rate = out["funding_rate"] if "funding_rate" in out.columns else None
+            have = int(rate.notna().sum()) if rate is not None else 0
+            if have == 0:
+                print(f"[WARN] no funding data attached for {coin} since {since} — "
+                      f"'{strategy_name}' will produce zero entries.")
+            else:
+                print(f"  Funding: {have}/{len(out)} bars covered (HL hourly, coin={coin})")
     return out
 from htf_filter import get_default_htf, apply_htf_filter
 from registry_loader import load_registry
 from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
+                        FundingIncompleteError,
                         STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS,
                         STOP_PERCENT_FIELD_KEYS, STOP_REGIME_FIELD_KEYS,
                         STOP_SCALAR_FIELD_KEYS, STOP_UNITS_LIVE_CONFIG,
@@ -1292,6 +1302,7 @@ def run_single_backtest(
     trailing_stop_min_move_pct: Optional[float] = None,
     stop_platform: Optional[str] = None,
     capability_context: Optional[CapabilityContext] = None,
+    funding_mode: str = "charge",
 ) -> Optional[dict]:
     manifest = None
     manifest_dataset_entry = None
@@ -1384,7 +1395,11 @@ def run_single_backtest(
         if df.empty:
             print("No data available!")
             return None
-        df = _attach_funding_if_needed(df, strategy_name, symbol, since)
+        df = _attach_funding_if_needed(
+            df, strategy_name, symbol, since,
+            platform=platform, strategy_type=strategy_type,
+            mode=funding_mode, timeframe=timeframe,
+        )
 
     print(f"  Data: {len(df)} candles from {df.index[0]} to {df.index[-1]}")
 
@@ -1507,15 +1522,22 @@ def run_single_backtest(
         execution_spec=execution_spec,
         comparison_mode=comparison_mode,
     )
-    results = bt.run(
-        df_signals,
-        strategy_name=strategy_name,
-        symbol=symbol,
-        timeframe=timeframe,
-        params=strat_params,
-        save=manifest is None,
-        indicator_frame=indicator_frame,
-    )
+    if manifest is None:
+        from funding_fetcher import rejoin_funding_columns
+        df_signals = rejoin_funding_columns(df_signals, df)
+    try:
+        results = bt.run(
+            df_signals,
+            strategy_name=strategy_name,
+            symbol=symbol,
+            timeframe=timeframe,
+            params=strat_params,
+            save=manifest is None,
+            indicator_frame=indicator_frame,
+        )
+    except FundingIncompleteError as exc:
+        print(json.dumps(exc.metrics.get("funding") or {}, sort_keys=True, default=str))
+        raise SystemExit(1)
 
     print(format_single_report(results))
     return results
@@ -1539,6 +1561,7 @@ def run_all_strategies(
     intrabar_resolution: str = "ohlc_walk",
     atr_method: str = "simple",
     comparison_mode: Optional[str] = None,
+    funding_mode: str = "charge",
 ) -> list:
     validate_close_capabilities(close_refs=close_strategies,
                                 comparison_mode=comparison_mode,
@@ -1563,6 +1586,7 @@ def run_all_strategies(
             intrabar_resolution=intrabar_resolution,
             atr_method=atr_method,
             comparison_mode=comparison_mode,
+            funding_mode=funding_mode,
         )
         if result:
             all_results.append(result)
@@ -1593,6 +1617,7 @@ def run_multi_asset(
     intrabar_resolution: str = "ohlc_walk",
     atr_method: str = "simple",
     comparison_mode: Optional[str] = None,
+    funding_mode: str = "charge",
 ) -> dict:
     validate_close_capabilities(close_refs=close_strategies,
                                 comparison_mode=comparison_mode,
@@ -1625,6 +1650,7 @@ def run_multi_asset(
                 intrabar_resolution=intrabar_resolution,
                 atr_method=atr_method,
                 comparison_mode=comparison_mode,
+                funding_mode=funding_mode,
             )
             if result:
                 results_by_asset[symbol].append(result)
@@ -1656,6 +1682,8 @@ def run_walk_forward(
     optimize_metric: str = "sharpe_ratio",
     direction: Optional[str] = None,
     comparison_mode: Optional[str] = None,
+    strategy_type: str = "perps",
+    funding_mode: str = "charge",
 ) -> Optional[dict]:
     for stack in (close_stack_grid or [{"close_strategies": close_strategies}]):
         validate_close_capabilities(close_refs=stack.get("close_strategies"),
@@ -1682,7 +1710,11 @@ def run_walk_forward(
     if df.empty:
         print("No data available!")
         return None
-    df = _attach_funding_if_needed(df, strategy_name, symbol, since)
+    df = _attach_funding_if_needed(
+        df, strategy_name, symbol, since,
+        platform=platform, strategy_type=strategy_type,
+        mode=funding_mode, timeframe=timeframe,
+    )
 
     result = walk_forward_optimize(
         df, strategy_name, param_ranges,
@@ -1716,6 +1748,12 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Strategy name or 'all'")
     parser.add_argument("--registry", choices=["spot", "futures"], default="spot",
                         help="Strategy registry to load (spot or futures)")
+    parser.add_argument("--funding",
+                        choices=["charge", "partial", "off"],
+                        default="charge",
+                        help="Hyperliquid perps funding: charge refuses an "
+                             "incomplete result, partial keeps a flagged "
+                             "result, off reproduces the pre-change numbers")
     parser.add_argument("--platform",
                         choices=["binanceus", "hyperliquid", "robinhood",
                                  "luno", "okx", "okx-perps"],
@@ -2086,6 +2124,7 @@ def _main():
                             manifest_window=args.manifest_window,
                             cost_multiplier=args.cost_multiplier,
                             comparison_mode=args.comparison_mode,
+                            funding_mode=args.funding,
                             **live_stop_kwargs)
 
     elif args.mode == "compare":
@@ -2102,7 +2141,8 @@ def _main():
                            direction=args.direction,
                            intrabar_resolution=args.intrabar_resolution,
                            atr_method=args.atr_method or "simple",
-                           comparison_mode=args.comparison_mode)
+                           comparison_mode=args.comparison_mode,
+                           funding_mode=args.funding)
 
     elif args.mode == "multi":
         strategies = None if args.strategy == "all" else [args.strategy]
@@ -2119,7 +2159,8 @@ def _main():
                         direction=args.direction,
                         intrabar_resolution=args.intrabar_resolution,
                         atr_method=args.atr_method or "simple",
-                        comparison_mode=args.comparison_mode)
+                        comparison_mode=args.comparison_mode,
+                        funding_mode=args.funding)
 
     elif args.mode == "optimize":
         close_stack_grid = None
@@ -2165,7 +2206,9 @@ def _main():
                                  close_stack_grid=close_stack_grid,
                                  optimize_metric=args.optimize_metric,
                                  direction=args.direction,
-                                 comparison_mode=args.comparison_mode)
+                                 comparison_mode=args.comparison_mode,
+                                 strategy_type=live_stop_kwargs.get("strategy_type", "perps"),
+                                 funding_mode=args.funding)
         else:
             run_walk_forward(args.strategy, args.symbol, args.timeframe,
                              args.since, args.splits, args.capital,
@@ -2180,7 +2223,9 @@ def _main():
                              close_stack_grid=close_stack_grid,
                              optimize_metric=args.optimize_metric,
                              direction=args.direction,
-                             comparison_mode=args.comparison_mode)
+                             comparison_mode=args.comparison_mode,
+                             strategy_type=live_stop_kwargs.get("strategy_type", "perps"),
+                             funding_mode=args.funding)
 
 
 if __name__ == "__main__":

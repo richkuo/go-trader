@@ -45,7 +45,9 @@ def trade_metrics(t: dict) -> dict:
         fee_pct += entry_fee / entry_notional * 100.0
     if exit_notional > 0:
         fee_pct += exit_fee / exit_notional * 100.0
-    net_pct = gross_pct - fee_pct
+    funding_pnl = float(t.get("funding_pnl", 0.0) or 0.0)
+    funding_pct = (funding_pnl / entry_notional * 100.0) if entry_notional > 0 else 0.0
+    net_pct = gross_pct - fee_pct + funding_pct
 
     mfe_pct = float(t.get("mfe_pct", 0.0) or 0.0)
     mae_pct = float(t.get("mae_pct", 0.0) or 0.0)
@@ -226,11 +228,13 @@ def run_leg_trades(reg, name: str, params: Optional[dict], symbol: str,
                    close_strategies: Optional[List[dict]] = None,
                    direction: Optional[str] = None,
                    invert_signal: bool = False,
-                   comparison_mode: Optional[str] = None) -> Optional[List[dict]]:
+                   comparison_mode: Optional[str] = None,
+                   funding_mode: str = "charge") -> Optional[List[dict]]:
     results = run_leg_results(reg, name, params, symbol, timeframe, window, capital,
                               close_strategies=close_strategies, direction=direction,
                               invert_signal=invert_signal,
-                              comparison_mode=comparison_mode)
+                              comparison_mode=comparison_mode,
+                              funding_mode=funding_mode)
     return None if results is None else results.get("trades", [])
 
 
@@ -239,11 +243,12 @@ def run_leg_results(reg, name: str, params: Optional[dict], symbol: str,
                     close_strategies: Optional[List[dict]] = None,
                     direction: Optional[str] = None,
                     invert_signal: bool = False,
-                    comparison_mode: Optional[str] = None) -> Optional[dict]:
+                    comparison_mode: Optional[str] = None,
+                    funding_mode: str = "charge") -> Optional[dict]:
     from atr import ensure_atr_indicator
     from data_fetcher import load_cached_data
     from backtester import Backtester, validate_close_capabilities
-    from run_backtest import FUNDING_COLUMN_STRATEGIES, _attach_funding_if_needed
+    from run_backtest import _attach_funding_if_needed
 
     validate_close_capabilities(close_refs=close_strategies,
                                 comparison_mode=comparison_mode,
@@ -252,8 +257,11 @@ def run_leg_results(reg, name: str, params: Optional[dict], symbol: str,
     df = load_cached_data(symbol, timeframe, start_date=start, end_date=end)
     if df.empty:
         return None
-    if name in FUNDING_COLUMN_STRATEGIES:
-        df = _attach_funding_if_needed(df, name, symbol, start)
+    df = _attach_funding_if_needed(
+        df, name, symbol, start,
+        platform=FEE_PLATFORM, strategy_type="perps",
+        mode=funding_mode, timeframe=timeframe,
+    )
 
     strat = reg.STRATEGY_REGISTRY.get(name)
     if strat is None:
@@ -262,6 +270,8 @@ def run_leg_results(reg, name: str, params: Optional[dict], symbol: str,
 
     df_signals = reg.apply_strategy(name, df, strat_params)
     df_signals = ensure_atr_indicator(df_signals)
+    from funding_fetcher import rejoin_funding_columns
+    df_signals = rejoin_funding_columns(df_signals, df)
 
     bt = Backtester(
         initial_capital=capital, platform=FEE_PLATFORM,
@@ -285,6 +295,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--datasets", default=None,
                    help="Comma list of SYMBOL:TIMEFRAME (default: the six audit datasets)")
     p.add_argument("--capital", type=float, default=DEFAULT_CAPITAL)
+    p.add_argument("--funding", choices=["charge", "partial", "off"],
+                   default="charge")
     p.add_argument("--close-strategies", default=None,
                    help="Close refs JSON to diagnose WITH exits applied")
     p.add_argument("--direction", default=None, choices=["long", "short", "both"],
@@ -386,6 +398,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     per_window: dict = {}
     validations = []
+    funding_incomplete = False
     for wname in window_names:
         window = WINDOWS[wname]
         per_window[wname] = {}
@@ -396,9 +409,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                 args.capital, close_strategies=close_strategies,
                 direction=args.direction, invert_signal=args.invert_signal,
                 comparison_mode=args.comparison_mode,
+                funding_mode=args.funding,
             )
             diag = diagnose_trades((results or {}).get("trades") or [])
             diag["close_validation"] = (results or {}).get("close_validation")
+            block = (results or {}).get("funding")
+            if isinstance(block, dict):
+                diag["funding"] = block
+                unpriced = int((results or {}).get("funding_unpriced_held_hours") or 0)
+                mode = str(block.get("mode") or "")
+                if (mode == "charge" and unpriced > 0) or (
+                        mode == "partial" and not block.get("complete")):
+                    diag["funding_incomplete"] = True
+                    funding_incomplete = True
             if results is not None:
                 validations.append(diag["close_validation"])
             per_window[wname][ds] = diag
@@ -422,6 +445,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "close_strategies": close_strategies,
             "direction": args.direction,
             "comparison_mode": args.comparison_mode,
+            "funding_mode": args.funding,
+            "funding_incomplete": funding_incomplete,
             "close_validation": close_validation,
             "windows": per_window,
         }
