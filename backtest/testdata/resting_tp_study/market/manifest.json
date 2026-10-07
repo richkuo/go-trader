@@ -10,7 +10,7 @@
     {
       "candles": {
         "path": "ETH_5m_candles.csv.gz",
-        "sha256": "03e677011c61d4aec25e4a77cc4a446ea8515d29dfd58592becc340d81858457"
+        "sha256": "23fe8e71a80d2114fb5d31c73bcad0185830d33f203506ef8c9e67114e8e274f"
       },
       "coin": "ETH",
       "half_spread_bps": 0.5,

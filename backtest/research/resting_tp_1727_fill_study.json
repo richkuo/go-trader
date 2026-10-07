@@ -1,7 +1,7 @@
 {
   "blockers": [
     {
-      "evidence_sha256": "cca5ed224e3948f8e6d0bad1be8583519f03edfca52a619ec30a92509262e282",
+      "evidence_sha256": "00754fd81c95176de62df5184948a22ec843c286cafaa14ea255f44c71a35400",
       "fact": "candle_price_basis",
       "status": "unconfirmed"
     },
@@ -24,15 +24,19 @@
     {
       "fee_rate": "0.00015",
       "order_ordinal": 3
+    },
+    {
+      "fee_rate": "0.00015",
+      "order_ordinal": 10
     }
   ],
   "inputs": {
-    "capture_bundle_sha256": "d233f5f149bad27f72b9ae8e8fec98b547049a1bf083876232a341e11602d910",
+    "capture_bundle_sha256": "78d15693fcd2f5f7fa7be4df1420ee09c3f847cab89dd0a78bc26b092bef9d0c",
     "export_sha256": [
-      "f75cb77d967985d72ccc1d3cd07e2aee2382cf3b41bb845b08302ff3310ac422",
+      "f9f05a5eaa41fbb329755032b704a821442f2b9b08e81d345cedb96627ec2721",
       "61242afa29c6c4ca326d0a0d8964e7a24c324575b87a62da55a021d86b18bb43"
     ],
-    "manifest_sha256": "5f44ee84170a3be12e3ca561721f114ee96a42a5ca68649fb39d97263d5651d1",
+    "manifest_sha256": "14115bcffa3ba6559ad5188e96483aab9af2f1b67ffb5e06a0341c7c485f5838",
     "window": "study"
   },
   "orders": [
@@ -91,8 +95,14 @@
       "side": "long"
     },
     {
-      "fee_rate": null,
+      "fee_rate": "0.00015",
       "order_ordinal": 10,
+      "outcome": "full_fill",
+      "side": "long"
+    },
+    {
+      "fee_rate": null,
+      "order_ordinal": 11,
       "outcome": "acquisition_incomplete",
       "side": "long"
     }
@@ -110,17 +120,17 @@
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         },
         "false_fills": 0,
-        "missed_fills": 0,
+        "missed_fills": 1,
         "quantity_errors": 1,
         "tick_buckets": {
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         }
       },
@@ -147,12 +157,12 @@
     },
     "touch": {
       "long": {
-        "agreements": 2,
+        "agreements": 3,
         "bps_buckets": {
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         },
         "false_fills": 2,
@@ -162,7 +172,7 @@
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         }
       },
@@ -189,12 +199,12 @@
     },
     "trade_through_1": {
       "long": {
-        "agreements": 3,
+        "agreements": 4,
         "bps_buckets": {
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         },
         "false_fills": 1,
@@ -204,7 +214,7 @@
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         }
       },
@@ -231,12 +241,12 @@
     },
     "trade_through_2": {
       "long": {
-        "agreements": 3,
+        "agreements": 4,
         "bps_buckets": {
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         },
         "false_fills": 1,
@@ -246,7 +256,7 @@
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         }
       },
@@ -273,12 +283,12 @@
     },
     "trade_through_3": {
       "long": {
-        "agreements": 3,
+        "agreements": 4,
         "bps_buckets": {
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         },
         "false_fills": 1,
@@ -288,7 +298,7 @@
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         }
       },
@@ -320,17 +330,17 @@
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         },
         "false_fills": 0,
-        "missed_fills": 0,
+        "missed_fills": 1,
         "quantity_errors": 1,
         "tick_buckets": {
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         }
       },
@@ -362,17 +372,17 @@
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         },
         "false_fills": 0,
-        "missed_fills": 1,
+        "missed_fills": 2,
         "quantity_errors": 0,
         "tick_buckets": {
           "0": 2,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 2,
+          "2-4": 3,
           "5-9": 1
         }
       },
@@ -413,12 +423,12 @@
         "reason": "limit_off_grid"
       },
       {
-        "order_ordinal": 10,
+        "order_ordinal": 11,
         "reason": "acquisition_incomplete"
       }
     ],
     "orders_per_class": {
-      "full_fill": 1,
+      "full_fill": 2,
       "lifetime_unknown": 1,
       "no_fill_touch": 1,
       "no_fill_trade_through": 1,
@@ -427,7 +437,7 @@
     },
     "orders_per_class_by_side": {
       "long": {
-        "full_fill": 1,
+        "full_fill": 2,
         "lifetime_unknown": 1,
         "no_fill_touch": 1,
         "no_fill_trade_through": 1,
@@ -493,6 +503,13 @@
         "close_ms": 1704077100000,
         "coin": "ETH",
         "open_ms": 1704076200000,
+        "side": "long",
+        "strategy": "strat-a"
+      },
+      {
+        "close_ms": 1704078900000,
+        "coin": "ETH",
+        "open_ms": 1704078300000,
         "side": "long",
         "strategy": "strat-a"
       },

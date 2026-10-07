@@ -4,7 +4,7 @@ Read-only measurement for issue 1727. The capture tool and this study stay outsi
 
 Placement time, terminal time, requested size and limit price come only from venue order records. Export timestamps only attribute an order to a position. A missing venue field is `lifetime_unknown`. Tier prices, manual additions and replacement orders are not rebuilt from current configuration.
 
-A bar that overlaps placement, cancellation or replacement is unknown. A rule that predicts a full quantity against a venue partial fill is a quantity error. An unconfirmed candle basis or cancel-time source is a blocker. Raising k does not repair unknown placement timing.
+A bar that overlaps placement, cancellation or replacement is unknown. The bar that holds a venue fill is scored with that fill. A rule that predicts a full quantity against a venue partial fill is a quantity error. An unconfirmed candle basis or cancel-time source is a blocker. Raising k does not repair unknown placement timing.
 
 The frozen manifest interval is 5m because the manifest verifier has no 1m interval. Live capture still asks for 1m candles. Venue field shapes were not confirmed on the venue in this run.
 
@@ -26,12 +26,12 @@ The frozen manifest interval is 5m because the manifest verifier has no 1m inter
       "reason": "limit_off_grid"
     },
     {
-      "order_ordinal": 10,
+      "order_ordinal": 11,
       "reason": "acquisition_incomplete"
     }
   ],
   "orders_per_class": {
-    "full_fill": 1,
+    "full_fill": 2,
     "lifetime_unknown": 1,
     "no_fill_touch": 1,
     "no_fill_trade_through": 1,
@@ -40,7 +40,7 @@ The frozen manifest interval is 5m because the manifest verifier has no 1m inter
   },
   "orders_per_class_by_side": {
     "long": {
-      "full_fill": 1,
+      "full_fill": 2,
       "lifetime_unknown": 1,
       "no_fill_touch": 1,
       "no_fill_trade_through": 1,
@@ -110,6 +110,13 @@ The frozen manifest interval is 5m because the manifest verifier has no 1m inter
       "strategy": "strat-a"
     },
     {
+      "close_ms": 1704078900000,
+      "coin": "ETH",
+      "open_ms": 1704078300000,
+      "side": "long",
+      "strategy": "strat-a"
+    },
+    {
       "close_ms": 1704078300000,
       "coin": "SOL",
       "open_ms": 1704077400000,
@@ -132,7 +139,7 @@ The frozen manifest interval is 5m because the manifest verifier has no 1m inter
 ```json
 [
   {
-    "evidence_sha256": "cca5ed224e3948f8e6d0bad1be8583519f03edfca52a619ec30a92509262e282",
+    "evidence_sha256": "00754fd81c95176de62df5184948a22ec843c286cafaa14ea255f44c71a35400",
     "fact": "candle_price_basis",
     "status": "unconfirmed"
   },
@@ -162,6 +169,10 @@ These rates are evidence for issue 1726. This study changes no fee.
   {
     "fee_rate": "0.00015",
     "order_ordinal": 3
+  },
+  {
+    "fee_rate": "0.00015",
+    "order_ordinal": 10
   }
 ]
 ```
