@@ -924,6 +924,211 @@ def test_resting_tp_fill_page_overlap_keeps_each_fill_once():
     assert [row["tid"] for row in rows] == [1, 2, 3]
 
 
+def _replace_responses(capture_dir, kind, body):
+    log = capture_dir / "requests.jsonl"
+    rows = []
+    replaced = 0
+    for line in log.read_text().splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row.get("type") == kind:
+            target = capture_dir / row["response_file"]
+            target.write_bytes(body)
+            row["response_sha256"] = hashlib.sha256(body).hexdigest()
+            replaced += 1
+        rows.append(row)
+    assert replaced
+    log.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n")
+
+
+def test_resting_tp_sibling_placed_after_the_fill_keeps_the_fill_bar(tmp_path):
+    orders = [
+        {
+            "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "filled",
+            "status_time": _ms(22, 30), "orig": "1", "sz": "0",
+            "fills": [{"time": _ms(22, 30), "sz": "1", "px": "100.00", "tid": 1}],
+        },
+        {
+            "oid": 2, "limit": "101.00", "placement": _ms(23), "status": "open",
+            "status_time": _ms(23), "orig": "1", "sz": "1", "fills": [],
+        },
+    ]
+    report = _study_orders(tmp_path, orders, _example_candles())
+    assert [row["outcome"] for row in report["orders"]] == ["full_fill", "lifetime_unknown"]
+    touch = report["rules"]["touch"]["long"]
+    assert touch["missed_fills"] == 0
+    assert touch["agreements"] == 1
+    assert touch["false_fills"] == 0
+
+
+def test_resting_tp_sibling_placement_keeps_a_no_fill_bar_unknown():
+    import resting_tp_fill_study as study
+
+    order = study.order_record(1, {
+        "order": {
+            "coin": "ETH", "limitPx": "100.00", "oid": 1, "origSz": "1", "sz": "1",
+            "side": "A", "timestamp": _ms(10),
+        },
+        "status": "expired",
+        "status_time": _ms(40),
+    }, [])
+    sibling = study.order_record(2, {
+        "order": {
+            "coin": "ETH", "limitPx": "100.00", "oid": 2, "origSz": "1",
+            "side": "A", "timestamp": _ms(23),
+        },
+        "status": "open",
+    }, [])
+    candles = _flat_bars(DAY_MS, _ms(45), FIVE_MIN)
+    for row in candles:
+        if row["t"] == _ms(20):
+            row["h"] = "100.60"
+    frame = _frame_from_candles(candles)
+    windows = [(DAY_MS, _ms(45)), (DAY_MS, _ms(45))]
+    name = study.classify_order(
+        order, {"side": "long"}, frame, FIVE_MIN, None, 2,
+        study.sibling_boundary_times(order, [order, sibling]), windows)
+    assert name == "not_reached"
+    assert _ms(20) in [bar["open_ms"] for bar in order["boundary"]]
+    assert _ms(20) not in [bar["open_ms"] for bar in order["interior"]]
+
+
+def test_resting_tp_partial_canceled_in_the_fill_bar_is_a_quantity_error(tmp_path):
+    orders = [{
+        "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "reduceOnlyCanceled",
+        "status_time": _ms(23), "orig": "1", "sz": "0.6",
+        "fills": [{"time": _ms(22, 30), "sz": "0.4", "px": "100.00", "tid": 1}],
+    }]
+    report = _study_orders(tmp_path, orders, _example_candles())
+    assert [row["outcome"] for row in report["orders"]] == ["partial_fill"]
+    touch = report["rules"]["touch"]["long"]
+    assert touch["quantity_errors"] == 1
+    assert touch["missed_fills"] == 0
+
+
+def test_resting_tp_cancel_bar_without_a_fill_stays_boundary():
+    import resting_tp_fill_study as study
+
+    order = study.order_record(1, {
+        "order": {
+            "coin": "ETH", "limitPx": "100.00", "oid": 1, "origSz": "1", "sz": "1",
+            "side": "A", "timestamp": _ms(10),
+        },
+        "status": "canceled",
+        "status_time": _ms(22, 30),
+    }, [])
+    frame = _frame_from_candles(_example_candles())
+    windows = [(DAY_MS, _ms(30)), (DAY_MS, _ms(30))]
+    name = study.classify_order(order, {"side": "long"}, frame, FIVE_MIN, None, 2, [], windows)
+    assert name == "not_reached"
+    assert _ms(20) in [bar["open_ms"] for bar in order["boundary"]]
+    assert _ms(20) not in [bar["open_ms"] for bar in order["interior"]]
+
+
+def test_resting_tp_html_fill_page_reports_incomplete_capture(tmp_path):
+    import resting_tp_fill_study as study
+
+    orders = [{
+        "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "canceled",
+        "status_time": _ms(22, 30), "orig": "1", "sz": "1", "fills": [],
+    }]
+    _study_orders(tmp_path, orders, _example_candles())
+    capture = tmp_path / "capture"
+    _replace_responses(capture, "userFillsByTime", b"<html><body>502 Bad Gateway</body></html>")
+    bundle_path = capture / "bundle.json"
+    bundle = json.loads(bundle_path.read_text())
+    fills = bundle["completeness"]["userFillsByTime"]
+    fills["complete"] = False
+    fills["uncovered_from_ms"] = DAY_MS
+    fills["uncovered_to_ms"] = _ms(30)
+    fills["failure"] = "response was not json"
+    bundle_path.write_text(json.dumps(bundle))
+    manifest = tmp_path / "manifest.json"
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    report = study.study(
+        [str(tmp_path / "export.json")], str(capture), str(manifest), digest, "study", "pending")
+    assert [row["outcome"] for row in report["orders"]] == ["acquisition_incomplete"]
+
+
+def test_resting_tp_html_page_on_a_complete_stream_is_an_error(tmp_path):
+    import resting_tp_fill_study as study
+
+    orders = [{
+        "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "canceled",
+        "status_time": _ms(22, 30), "orig": "1", "sz": "1", "fills": [],
+    }]
+    _study_orders(tmp_path, orders, _example_candles())
+    capture = tmp_path / "capture"
+    _replace_responses(capture, "userFillsByTime", b"<html><body>502 Bad Gateway</body></html>")
+    with pytest.raises(study.StudyError, match="not json"):
+        study.load_capture(str(capture))
+
+
+def test_resting_tp_empty_response_file_has_no_payload(tmp_path):
+    import resting_tp_fill_study as study
+
+    orders = [{
+        "oid": 1, "limit": "100.00", "placement": _ms(10), "status": "canceled",
+        "status_time": _ms(22, 30), "orig": "1", "sz": "1", "fills": [],
+    }]
+    _study_orders(tmp_path, orders, _example_candles())
+    capture = tmp_path / "capture"
+    _replace_responses(capture, "recentTrades", b"")
+    _bundle, _digest, loaded = study.load_capture(str(capture))
+    empty = [item for item in loaded if item["meta"].get("type") == "recentTrades"]
+    assert empty
+    assert all(item["raw"] == b"" and item["payload"] is None for item in empty)
+
+
+def test_resting_tp_unaligned_since_is_refused_before_any_request(tmp_path):
+    import resting_tp_capture as cap
+
+    export = tmp_path / "export.json"
+    _write_export(export, [])
+    calls = []
+
+    def opener(req, timeout=None):
+        calls.append(req)
+        return _InfoResp([])
+
+    out = tmp_path / "capture"
+    cap._prepare_out(str(out), os.path.abspath(os.path.join(os.path.dirname(cap.__file__), "..")))
+    with pytest.raises(cap.CaptureError, match="boundary"):
+        cap.capture(
+            [str(export)], "0x" + "44" * 20, _ms(2), _ms(30), str(out),
+            5, 1, "5m", opener=opener, clock_ms=_ms(30))
+    assert calls == []
+
+
+def test_resting_tp_aligned_window_missing_one_bar_is_incomplete(tmp_path):
+    import resting_tp_capture as cap
+
+    since = DAY_MS
+    end = since + 3 * FIVE_MIN
+    missing = since + FIVE_MIN
+    candles = [row for row in _flat_bars(since, end, FIVE_MIN, high=100, low=99, close=100) if row["t"] != missing]
+    export = tmp_path / "export.json"
+    _write_export(export, [])
+
+    def opener(req, timeout=None):
+        body = json.loads(req.data)
+        if body["type"] == "candleSnapshot":
+            return _InfoResp(candles)
+        return _InfoResp([])
+
+    out = tmp_path / "capture"
+    cap._prepare_out(str(out), os.path.abspath(os.path.join(os.path.dirname(cap.__file__), "..")))
+    with pytest.raises(cap.CaptureError):
+        cap.capture(
+            [str(export)], "0x" + "55" * 20, since, end, str(out),
+            5, 1, "5m", opener=opener, clock_ms=end + ONE_DAY)
+    bundle = json.loads((out / "bundle.json").read_text())
+    row = bundle["completeness"]["candleSnapshot"][0]
+    assert row["complete"] is False
+    assert row["reason"] == "snapshot_incomplete"
+
+
 def test_resting_tp_full_page_of_one_timestamp_is_incomplete():
     import resting_tp_capture as cap
 

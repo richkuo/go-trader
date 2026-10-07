@@ -306,6 +306,8 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, inter
     if interval not in INTERVAL_MS:
         raise CaptureError(f"interval must be one of {sorted(INTERVAL_MS)}, got {interval!r}")
     step = INTERVAL_MS[interval]
+    if int(since_ms) % step != 0:
+        raise CaptureError(f"--since-ms {int(since_ms)} is not on a {interval} boundary")
     now_ms = int(time.time() * 1000) if clock_ms is None else int(clock_ms)
     oids = []
     coins = []
