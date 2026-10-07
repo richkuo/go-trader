@@ -313,8 +313,10 @@ def _trim_continuous_history(df, symbol: str, strategy_type: str, mode: str):
     coin = str(symbol).split("/")[0]
     try:
         loaded = load_cached_funding(coin, df.index[0], end_date=df.index[-1])
-    except Exception:
-        loaded = None
+    except Exception as exc:
+        raise ValueError(
+            f"stage-1 funding fetch failed for {coin}: {exc}"
+        ) from exc
     if loaded is None or getattr(loaded, "empty", True) or "timestamp" not in loaded.columns:
         event_ms = np.array([], dtype=np.int64)
     else:

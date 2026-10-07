@@ -1,4 +1,5 @@
 import json
+import types
 
 import numpy as np
 import pandas as pd
@@ -393,3 +394,81 @@ def test_long_held_across_prints_net_falls_by_negative_funding(monkeypatch):
     assert mc.trade_returns([off_trade]) == [pytest.approx(off_sample["pnl_pct_net"])]
     assert mc._leg_returns(
         {"trade_samples": [charged_sample]}, "net") == [charged_sample["pnl_pct_net"]]
+
+
+def _metrics_frame():
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    equity = pd.DataFrame({"equity": np.linspace(1000.0, 1100.0, 5)}, index=idx)
+    df = pd.DataFrame({"close": np.full(5, 100.0)}, index=idx)
+    return equity, df
+
+
+def test_price_win_with_larger_funding_cost_counts_as_loss():
+    flipped = types.SimpleNamespace(
+        pnl=1.0, shares=1.0, entry_price=100.0, funding_pnl=-3.0)
+    equity, df = _metrics_frame()
+    bt = Backtester(initial_capital=1000.0)
+    alone = bt._calculate_metrics(equity, [flipped], df)
+    assert alone["win_rate"] == 0.0
+    assert alone["avg_win_pct"] == 0.0
+    assert alone["avg_loss_pct"] == pytest.approx(-2.0)
+
+    winner = types.SimpleNamespace(
+        pnl=4.0, shares=1.0, entry_price=100.0, funding_pnl=0.0)
+    both = bt._calculate_metrics(equity, [winner, flipped], df)
+    assert both["win_rate"] == 50.0
+    assert both["profit_factor"] == pytest.approx(2.0)
+    assert both["avg_win_pct"] == pytest.approx(4.0)
+    assert both["avg_loss_pct"] == pytest.approx(-2.0)
+
+
+def test_metrics_without_funding_match_price_pnl(monkeypatch):
+    bare = [
+        types.SimpleNamespace(pnl=80.0, shares=1.0, entry_price=100.0),
+        types.SimpleNamespace(pnl=-20.0, shares=1.0, entry_price=100.0),
+    ]
+    zeroed = [
+        types.SimpleNamespace(pnl=80.0, shares=1.0, entry_price=100.0, funding_pnl=0.0),
+        types.SimpleNamespace(pnl=-20.0, shares=1.0, entry_price=100.0, funding_pnl=0.0),
+    ]
+    equity, df = _metrics_frame()
+    bt = Backtester(initial_capital=1000.0)
+    bare_m = bt._calculate_metrics(equity, bare, df)
+    zero_m = bt._calculate_metrics(equity, zeroed, df)
+    for key in ("win_rate", "profit_factor", "avg_win_pct", "avg_loss_pct"):
+        assert bare_m[key] == zero_m[key]
+    assert bare_m["win_rate"] == 50.0
+    assert bare_m["profit_factor"] == pytest.approx(round(80.0 / 20.0, 3))
+    assert bare_m["avg_win_pct"] == pytest.approx(80.0)
+    assert bare_m["avg_loss_pct"] == pytest.approx(-20.0)
+
+    frame = _hourly_frame(48)
+    frame["signal"] = 0
+    frame.iloc[0, frame.columns.get_loc("signal")] = 1
+    funding = _prints(frame.index)
+    _patch_sources(monkeypatch, frame, funding)
+    off = Backtester(
+        initial_capital=10000.0, platform="hyperliquid",
+        commission_pct=0.0, slippage_pct=0.0,
+    ).run(_attach(frame, funding, mode="off"), strategy_name="sma_crossover",
+          symbol="BTC/USDT", timeframe="1h", save=False)
+    trades = off["trades"]
+    assert trades and all("funding_pnl" not in t for t in trades)
+    wins = [t for t in trades if t["pnl"] > 0]
+    losses = [t for t in trades if t["pnl"] <= 0]
+    assert off["win_rate"] == pytest.approx(round(len(wins) / len(trades) * 100, 2))
+    gross_loss = abs(sum(t["pnl"] for t in losses))
+    if gross_loss > 0:
+        expected_pf = sum(t["pnl"] for t in wins) / gross_loss
+        assert off["profit_factor"] == pytest.approx(round(expected_pf, 3))
+    else:
+        assert off["profit_factor"] is None
+
+    def _pct(group):
+        if not group:
+            return 0.0
+        vals = [t["pnl"] / (t["shares"] * t["entry_price"]) for t in group]
+        return round(float(np.mean(vals)) * 100, 2)
+
+    assert off["avg_win_pct"] == pytest.approx(_pct(wins))
+    assert off["avg_loss_pct"] == pytest.approx(_pct(losses))

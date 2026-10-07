@@ -671,6 +671,61 @@ def test_bidirectional_runs_stage1_with_direction_both(tmp_path, monkeypatch):
     assert seen["direction"] == "both"
 
 
+def _hl_perps_both_config(tmp_path):
+    cfg = {"config_version": 15, "strategies": [{
+        "id": "hl-sma-both", "type": "perps", "platform": "hyperliquid",
+        "args": ["sma_crossover", "BTC/USDT", "1d"], "direction": "both",
+        "open_strategy": {"name": "sma_crossover", "params": {"fast_period": 18, "slow_period": 50}},
+        "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+            {"atr_multiple": 2.0, "close_fraction": 1.0}]}},
+    }]}
+    return _write_config(tmp_path, cfg)
+
+
+def test_stage1_funding_fetch_error_is_stage1_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
+
+    def _raise(*a, **k):
+        raise ConnectionError("boom")
+
+    def _fail_search(*a, **k):
+        raise AssertionError("stage-1 search ran")
+
+    monkeypatch.setattr("funding_fetcher.load_cached_funding", _raise)
+    monkeypatch.setattr(tl, "walk_forward_optimize", _fail_search)
+    res = tl.tune_strategy(
+        _hl_perps_both_config(tmp_path), "hl-sma-both", "BTC/USDT", "1d", "spot",
+        load_registry("spot"), _make_args(), {}, str(tmp_path))
+    assert res["status"] == "stage1_error"
+    assert "boom" in res["error"]
+
+
+def test_stage1_leading_gap_records_trimmed_start(tmp_path, monkeypatch):
+    monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
+
+    def _late_only(coin, start_date, end_date=None, **kwargs):
+        hours = pd.date_range("2025-06-08", "2025-06-09", freq="1h", tz="UTC")
+        ms = (hours.as_unit("ns").asi8 // 1_000_000).astype("int64")
+        return pd.DataFrame({"timestamp": ms, "rate": 0.0})
+
+    def _fail_search(*a, **k):
+        raise AssertionError("stage-1 search ran")
+
+    monkeypatch.setattr("funding_fetcher.load_cached_funding", _late_only)
+    monkeypatch.setattr(tl, "walk_forward_optimize", _fail_search)
+    res = tl.tune_strategy(
+        _hl_perps_both_config(tmp_path), "hl-sma-both", "BTC/USDT", "1d", "spot",
+        load_registry("spot"), _make_args(), {}, str(tmp_path))
+    assert res["status"] == "stage1_error"
+    assert "continuous funding history" in res["error"]
+    assert "funding fetch failed" not in res["error"]
+    bars = int(res["error"].split("leaves only ", 1)[1].split(" ", 1)[0])
+    assert bars < tl.MIN_STAGE1_BARS
+    kept = res["error"].split("the kept start is ", 1)[1].rstrip(".")
+    assert kept != "None"
+    pd.Timestamp(kept)
+
+
 def test_disjoint_slice_no_data_refuses(monkeypatch):
     small = pd.DataFrame(
         {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000.0},

@@ -5259,18 +5259,20 @@ class Backtester:
 
         total_trades = len(trades)
         if total_trades > 0:
-            winning = [t for t in trades if t.pnl > 0]
-            losing = [t for t in trades if t.pnl <= 0]
+            def _trade_net_pnl(t):
+                return t.pnl + (getattr(t, "funding_pnl", 0.0) or 0.0)
+
+            winning = [t for t in trades if _trade_net_pnl(t) > 0]
+            losing = [t for t in trades if _trade_net_pnl(t) <= 0]
             win_rate = len(winning) / total_trades
 
-            gross_profit = sum(t.pnl for t in winning) if winning else 0
-            gross_loss = abs(sum(t.pnl for t in losing)) if losing else 0
+            gross_profit = sum(_trade_net_pnl(t) for t in winning) if winning else 0
+            gross_loss = abs(sum(_trade_net_pnl(t) for t in losing)) if losing else 0
             profit_factor = gross_profit / gross_loss if gross_loss > 0 else None
 
             def _net_pnl_pct(t):
                 notional = t.shares * t.entry_price
-                funding = getattr(t, "funding_pnl", 0.0) or 0.0
-                return ((t.pnl + funding) / notional) if notional > 0 else 0.0
+                return (_trade_net_pnl(t) / notional) if notional > 0 else 0.0
             avg_win = np.mean([_net_pnl_pct(t) for t in winning]) if winning else 0
             avg_loss = np.mean([_net_pnl_pct(t) for t in losing]) if losing else 0
         else:
