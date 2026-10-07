@@ -6,7 +6,7 @@
 
 A Go + Python hybrid trading system. A single Go binary (~8MB idle RAM) orchestrates 50+ strategies across spot, options, perpetual futures, and CME futures by spawning short-lived Python scripts. Both paper and live execution are supported per strategy.
 
-Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood (crypto + stock options), OKX (spot + perps + options), Luno. Per-platform Discord/Telegram channels post hourly summaries plus immediate trade alerts. When a new release ships, the bot DMs the configured owner — reply **yes** and it pulls, rebuilds, and restarts itself.
+Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood (crypto + stock options), OKX (spot + perps + options), Luno. Per-platform Discord/Telegram channels post hourly summaries plus immediate trade alerts. When a new release ships, a host deployment DMs the configured owner — reply **yes** and it pulls, rebuilds, and restarts itself. A Docker deployment updates by pulling a new image instead.
 
 Join the Discord: [https://discord.gg/46d7Fa2dXz](https://discord.gg/46d7Fa2dXz)
 
@@ -31,6 +31,19 @@ Give your AI agent [SKILL.md](SKILL.md) (raw: `https://raw.githubusercontent.com
 ```
 
 Walks asset/strategy/platform/capital/risk/Discord choices and writes `scheduler/config.json`. Defaults to a minimal BTC spot starter; risk prompts appear only when live trading is selected. Scripted: `./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10}' --output config.json`
+
+### Docker (macOS, Windows, Linux)
+
+Run go-trader in a container with no Go, Python or uv on your computer. The guide covers install, paper-only setup, the dashboard, backups, upgrades and recovery: **[docs/DOCKER.md](docs/DOCKER.md)**.
+
+```bash
+git clone https://github.com/richkuo/go-trader.git && cd go-trader/docker
+cp env.example .env && cp go-trader.env.example go-trader.env   # set GO_TRADER_TAG and STATUS_AUTH_TOKEN
+docker compose run --rm cli init
+docker compose up -d
+```
+
+On a Linux server, the systemd service below stays the main production setup.
 
 ### Manual Setup
 

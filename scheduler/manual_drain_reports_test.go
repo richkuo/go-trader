@@ -243,7 +243,7 @@ func TestManualCycleWindowBooksEachStopRowOnce(t *testing.T) {
 	step := beginHyperliquidStepTradeAlerts(sc, st, &mu)
 
 	trailAt := step.historyLen(&mu)
-	fills, d := runManualTrailingStopUpdate(sc, st, map[string]*StrategyState{sc.ID: st}, []StrategyConfig{sc}, nil, nil, nil, 105, false, &mu, nil, silentStrategyLogger(sc.ID))
+	fills, d, _ := runManualTrailingStopUpdate(sc, st, map[string]*StrategyState{sc.ID: st}, []StrategyConfig{sc}, nil, nil, nil, 105, false, &mu, nil, silentStrategyLogger(sc.ID))
 	if fills != 1 {
 		t.Fatalf("manual trailing fills = %d, want 1", fills)
 	}

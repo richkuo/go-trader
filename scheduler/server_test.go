@@ -13,16 +13,23 @@ import (
 
 func TestHandleHealth(t *testing.T) {
 	cases := []struct {
-		name      string
-		lastCycle time.Time
-		wantCode  int
+		name         string
+		lastCycle    time.Time
+		loopDeadline time.Duration
+		wantCode     int
 	}{
-		{"fresh cycle is ok", time.Now(), http.StatusOK},
-		{"stale cycle is unavailable", time.Now().Add(-60 * time.Minute), http.StatusServiceUnavailable},
-		{"zero time is healthy", time.Time{}, http.StatusOK},
+		{"old last cycle with the loop before its deadline is ok", time.Now().Add(-60 * time.Minute), time.Minute, http.StatusOK},
+		{"loop past its deadline is unavailable", time.Now(), -time.Second, http.StatusServiceUnavailable},
+		{"unarmed loop is healthy", time.Time{}, 0, http.StatusOK},
 	}
+	prevDeadline := mainLoopDeadline.Load()
+	t.Cleanup(func() { mainLoopDeadline.Store(prevDeadline) })
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			mainLoopDeadline.Store(nil)
+			if tc.loopDeadline != 0 {
+				armMainLoopDeadline(tc.loopDeadline)
+			}
 			state := NewAppState()
 			state.LastCycle = tc.lastCycle
 			var mu sync.RWMutex
