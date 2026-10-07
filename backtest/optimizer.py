@@ -11,8 +11,13 @@ import pandas as pd
 
 from registry_loader import load_registry
 from backtester import (STOP_OWNERS_NEEDING_ATR, Backtester, CloseCapabilityError,
-                        aggregate_close_validations)
+                        aggregate_close_validations, charge_funding_rejected)
 from atr import ensure_atr_indicator
+
+_SHARED_TOOLS = os.path.join(os.path.dirname(__file__), "..", "shared_tools")
+if _SHARED_TOOLS not in sys.path:
+    sys.path.insert(0, _SHARED_TOOLS)
+from funding_fetcher import rejoin_funding_columns
 
 
 _EXPECTED_FOLD_ERRORS = (KeyError, ValueError, TypeError, IndexError, ZeroDivisionError)
@@ -376,12 +381,16 @@ def walk_forward_optimize(
                 if verbose:
                     print(f"    [skip] fold {fold+1} {strategy_name} {params}: {type(e).__name__}: {e}")
                 continue
+            signals_ext = rejoin_funding_columns(signals_ext, train_ext_df)
+            signals_df = signals_ext.iloc[train_boundary_idx:]
             for stack, stack_bt in stack_bts:
                 try:
                     result = stack_bt.run(signals_df, strategy_name=strategy_name,
                                           symbol=symbol, timeframe=timeframe,
                                           params=params, save=False,
                                           starting_long=train_seed)
+                    if charge_funding_rejected(result):
+                        continue
                     metric_val = _result_metric(result, optimize_metric)
                     if metric_val > best_metric:
                         best_metric = metric_val
@@ -404,6 +413,7 @@ def walk_forward_optimize(
             test_signals_ext = apply_strategy(strategy_name, test_ext_df, best_params)
             if uses_exits:
                 test_signals_ext = ensure_atr_indicator(test_signals_ext)
+            test_signals_ext = rejoin_funding_columns(test_signals_ext, test_ext_df)
             test_signals = test_signals_ext.iloc[test_boundary_idx:]
             test_seed = warmup_exit_long_entry(
                 test_signals_ext.iloc[:test_boundary_idx], bt.slippage_pct,
@@ -412,6 +422,8 @@ def walk_forward_optimize(
                                       symbol=symbol, timeframe=timeframe,
                                       params=best_params, save=False,
                                       starting_long=test_seed)
+            if charge_funding_rejected(test_result):
+                continue
         except CloseCapabilityError:
             raise
         except _EXPECTED_FOLD_ERRORS as e:

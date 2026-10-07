@@ -568,16 +568,21 @@ def replay_candidate_for_entry(reg, open_name: str, params: Optional[dict], df_s
 def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
                             window: tuple) -> Optional[dict]:
     from data_fetcher import load_cached_data
-    from run_backtest import FUNDING_COLUMN_STRATEGIES, _attach_funding_if_needed
+    from run_backtest import _attach_funding_if_needed
 
     start, end = window
     df = load_cached_data(symbol, timeframe, start_date=start, end_date=end)
     if df.empty:
         return None
-    if spec["open_name"] in FUNDING_COLUMN_STRATEGIES:
-        df = _attach_funding_if_needed(df, spec["open_name"], symbol, start)
+    df = _attach_funding_if_needed(
+        df, spec["open_name"], symbol, start,
+        platform=FEE_PLATFORM, strategy_type="perps",
+        mode=spec.get("funding_mode") or "charge", timeframe=timeframe,
+    )
 
     df_signals = _prepare_signals(reg, spec["open_name"], spec.get("params"), df)
+    from funding_fetcher import rejoin_funding_columns
+    df_signals = rejoin_funding_columns(df_signals, df)
     regime_series = _regime_label_series(df_signals, spec["regime_cfg"])
     pos_by_date = {str(ts): i for i, ts in enumerate(df_signals.index)}
 
@@ -635,8 +640,22 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
                                 n_resamples=spec["n_resamples"], ci=spec["ci"],
                                 seed=spec["seed"])
 
+    def _incomplete(results: dict) -> bool:
+        block = results.get("funding") or {}
+        mode = str(block.get("mode") or "")
+        unpriced = int(results.get("funding_unpriced_held_hours") or 0)
+        if mode == "charge" and unpriced > 0:
+            return True
+        return mode == "partial" and not block.get("complete")
+
+    funding_incomplete = _incomplete(control_results) or _incomplete(candidate_results)
     return {
         "dataset": dataset_key(symbol, timeframe),
+        "funding": {
+            "control": control_results.get("funding"),
+            "candidate": candidate_results.get("funding"),
+        },
+        "funding_incomplete": funding_incomplete,
         "control_arm": arm_summary(control_results),
         "candidate_arm": arm_summary(candidate_results),
         "unpaired_delta_net_pct": unpaired,
@@ -976,6 +995,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--datasets", default=None,
                    help="Comma list of SYMBOL:TIMEFRAME (default: the six audit datasets)")
     p.add_argument("--capital", type=float, default=DEFAULT_CAPITAL)
+    p.add_argument("--funding", choices=["charge", "partial", "off"],
+                   default="charge")
     p.add_argument("--bootstrap-resamples", type=int, default=DEFAULT_BOOTSTRAP_RESAMPLES)
     p.add_argument("--ci", type=float, default=DEFAULT_CI)
     p.add_argument("--seed", type=int, default=DEFAULT_SEED)
@@ -1134,6 +1155,7 @@ def _resolve_spec(args) -> dict:
         "gate": gate,
         "regime_cfg": regime_cfg,
         "capital": args.capital,
+        "funding_mode": getattr(args, "funding", "charge"),
         "n_resamples": args.bootstrap_resamples,
         "ci": args.ci,
         "seed": args.seed,
@@ -1220,6 +1242,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             "candidate_stop_owner": spec.get("candidate_stop_owner"),
             "replayable": spec["replayable"],
             "comparison_mode": spec.get("comparison_mode"),
+            "funding_mode": spec.get("funding_mode") or "charge",
+            "funding_incomplete": any(
+                d.get("funding_incomplete")
+                for results in per_window.values() for d in results),
             "close_validation": aggregate_close_validations(
                 v for results in per_window.values() for d in results
                 for v in (d["close_validation"]["control"],

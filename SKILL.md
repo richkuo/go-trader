@@ -933,6 +933,8 @@ Every full close eagerly inserts a `trade_diagnostics` row at close time; a back
 
 Run every backtest through `uv run --no-sync python`. Harness map: [`docs/backtesting-registry.md`](docs/backtesting-registry.md).
 
+Hyperliquid perps runs charge hourly funding by default (`--funding charge`). The shared helper attaches right-closed accrual (a funding time is in a bar when it is after the previous bar open and at or before that bar). The engine refuses an incomplete charge result before it saves. `--funding partial` keeps a flagged result. `--funding off` reproduces the older directional result. M1–M6, `auto_suggest`, and `tune_live` stay suggest-only.
+
 ```bash
 uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode single|compare|multi|optimize
 uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --since 90

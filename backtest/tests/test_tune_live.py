@@ -52,7 +52,8 @@ def _make_args(**over):
     return types.SimpleNamespace(**base)
 
 
-def _canned_stage2(spec_path, out_json, out_dir, jobs, survivor_key="cand_0"):
+def _canned_stage2(spec_path, out_json, out_dir, jobs, funding_mode="charge",
+                   survivor_key="cand_0"):
     with open(spec_path) as fh:
         spec = json.load(fh)
     ranked = []
@@ -337,7 +338,7 @@ def test_full_main_writes_versioned_artifact_and_progress(tmp_path, monkeypatch)
                   "--out-dir", str(tmp_path), "--json", out, "--jobs", "1"])
     assert rc == 0
     art = json.loads((tmp_path / "art.json").read_text())
-    assert art["schema_version"] == 2
+    assert art["schema_version"] == 3
     s = art["strategies"][0]
     assert s["status"] == "ranked"
     assert s["baseline_params"] == {"fast_period": 18, "slow_period": 50}
@@ -355,7 +356,7 @@ def test_full_main_writes_versioned_artifact_and_progress(tmp_path, monkeypatch)
     assert surv and "patch" in surv[0]
     assert surv[0]["patch"]["open_strategy"]["name"] == "sma_crossover"
     prog = json.loads((tmp_path / "tune_live.progress.json").read_text())
-    assert prog["schema_version"] == 2
+    assert prog["schema_version"] == 3
     assert prog["phase"] == "done"
 
 
@@ -634,6 +635,19 @@ def test_constraint_invalid_combos_dropped_from_auto_neighborhood(tmp_path, monk
 def test_bidirectional_runs_stage1_with_direction_both(tmp_path, monkeypatch):
     monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
+
+    def _complete_funding(coin, start_date, end_date=None, **kwargs):
+        start = pd.Timestamp(start_date)
+        end = pd.Timestamp(end_date) if end_date is not None else start
+        if start.tzinfo is None:
+            start = start.tz_localize("UTC")
+        if end.tzinfo is None:
+            end = end.tz_localize("UTC")
+        hours = pd.date_range(start.ceil("h"), end.floor("h"), freq="1h", tz="UTC")
+        ms = (hours.as_unit("ns").asi8 // 1_000_000).astype("int64")
+        return pd.DataFrame({"timestamp": ms, "rate": 0.0})
+
+    monkeypatch.setattr("funding_fetcher.load_cached_funding", _complete_funding)
     seen = {}
 
     def fake_wfo(df, name, grid, **kw):
@@ -898,7 +912,7 @@ def test_override_grid_counts_toward_searched_family(tmp_path, monkeypatch):
 
 
 def test_family_size_covers_baseline_against_real_bh_guard(tmp_path, monkeypatch):
-    def stage2_with_real_guard(spec_path, out_json, out_dir, jobs):
+    def stage2_with_real_guard(spec_path, out_json, out_dir, jobs, funding_mode="charge"):
         spec = json.loads(open(spec_path).read())
         fam = spec["correction"]["family_size"]
         n_cand = len(spec["candidates"])

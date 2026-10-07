@@ -403,9 +403,10 @@ def _csv(items) -> str:
     return ",".join(items)
 
 
-def m1_argv_tail(candidate_path, registry, windows, datasets, out_json) -> list:
+def m1_argv_tail(candidate_path, registry, windows, datasets, out_json,
+                 funding="charge") -> list:
     tail = ["--candidate-json", candidate_path, "--registry", registry,
-            "--windows", _csv(windows), "--json", out_json]
+            "--windows", _csv(windows), "--funding", funding, "--json", out_json]
     if datasets:
         tail += ["--datasets", _csv(datasets)]
     return tail
@@ -426,9 +427,10 @@ def noise_argv_tail(strategy, params_json, registry, direction, windows,
 
 
 def m3_argv_tail(strategy, params_json, registry, direction, close_json,
-                 windows, datasets, out_json, comparison_mode=None) -> list:
+                 windows, datasets, out_json, comparison_mode=None,
+                 funding="charge") -> list:
     tail = ["--strategy", strategy, "--registry", registry,
-            "--windows", _csv(windows), "--json", out_json]
+            "--windows", _csv(windows), "--funding", funding, "--json", out_json]
     if params_json:
         tail += ["--params", params_json]
     if direction:
@@ -473,7 +475,8 @@ def _candidate_stops_arg(selection) -> str:
     return selection
 
 
-def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out_json) -> list:
+def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out_json,
+                 funding="charge") -> list:
     tail = ["--strategy", m6_candidate["strategy_id"],
             "--registry", registry,
             "--candidate-close", json.dumps(m6_candidate["candidate_close"]),
@@ -481,7 +484,7 @@ def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out
                                                                        "inherit")),
             "--windows", _csv(windows),
             "--bootstrap-resamples", str(resamples),
-            "--seed", str(seed), "--json", out_json]
+            "--seed", str(seed), "--funding", funding, "--json", out_json]
     if m6_candidate.get("baseline_config"):
         tail += ["--baseline-config", m6_candidate["baseline_config"]]
     elif m6_candidate.get("incumbent_close"):
@@ -506,6 +509,7 @@ def extract_m1(payload: dict) -> dict:
             "mean_sharpe": score.get("mean_sharpe"),
             "mean_ddadj": score.get("mean_ddadj"),
             "close_validation": score.get("close_validation"),
+            "funding_mode": payload.get("funding_mode"),
         }
     return out
 
@@ -549,6 +553,8 @@ def m6_window_rollup(payload: dict) -> dict:
             "datasets_delta_pos": votes_pos,
             "datasets_delta_neg": votes_neg,
             "per_dataset": per_dataset,
+            "funding_incomplete": any(d.get("funding_incomplete") for d in (results or [])),
+            "funding_mode": payload.get("funding_mode"),
         }
     return out
 
@@ -583,7 +589,10 @@ def extract_m3(payload: dict) -> dict:
             out[wname][ds] = {
                 "bleed_modes": diag.get("bleed_modes"),
                 "fee_churn": diag.get("fee_churn"),
+                "funding_incomplete": bool(diag.get("funding_incomplete")),
             }
+    out["funding_mode"] = payload.get("funding_mode")
+    out["funding_incomplete"] = bool(payload.get("funding_incomplete"))
     return out
 
 
@@ -715,6 +724,45 @@ def advisory_failures(entry: dict) -> list:
                   and (r or {}).get("status") == "failed")
 
 
+def _funding_modes(entry: dict) -> set:
+    modes = set()
+    r = gate_relevant_results(entry)
+    m1 = (r.get("m1") or {}).get("data") or {}
+    if isinstance(m1, dict):
+        for row in m1.values():
+            if isinstance(row, dict) and row.get("funding_mode"):
+                modes.add(row["funding_mode"])
+    m3 = (r.get("m3") or {}).get("data") or {}
+    if isinstance(m3, dict) and m3.get("funding_mode"):
+        modes.add(m3["funding_mode"])
+    m6 = (r.get("m6") or {}).get("data") or {}
+    if isinstance(m6, dict):
+        for row in m6.values():
+            if isinstance(row, dict) and row.get("funding_mode"):
+                modes.add(row["funding_mode"])
+    return modes
+
+
+def funding_blocks_promotion(entry: dict) -> bool:
+    """Incomplete charge, partial, or mixed modes can never pass or be ranked up."""
+    r = gate_relevant_results(entry)
+    m1 = (r.get("m1") or {}).get("data") or {}
+    if isinstance(m1, dict) and any(
+            isinstance(row, dict) and row.get("verdict") == "funding_incomplete"
+            for row in m1.values()):
+        return True
+    m3 = (r.get("m3") or {}).get("data") or {}
+    if isinstance(m3, dict) and m3.get("funding_incomplete"):
+        return True
+    m6 = (r.get("m6") or {}).get("data") or {}
+    if isinstance(m6, dict) and any(
+            isinstance(row, dict) and row.get("funding_incomplete")
+            for row in m6.values()):
+        return True
+    modes = _funding_modes(entry)
+    return "partial" in modes or len(modes) > 1
+
+
 def candidate_verdict(entry: dict, tests: list) -> str:
     errors = entry.get("precondition_errors") or []
     if any(str(e).startswith(CLOSE_CAPABILITY_ERROR_PREFIX) for e in errors):
@@ -724,6 +772,8 @@ def candidate_verdict(entry: dict, tests: list) -> str:
     r = gate_relevant_results(entry)
     if any((v or {}).get("status") == "failed" for v in r.values()):
         return "run_failed"
+    if funding_blocks_promotion(entry):
+        return "inconclusive"
 
     my_tests = _tests_for(entry, tests)
     fam = entry.get("noise_family_key")
@@ -987,7 +1037,9 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
     if "m1" in entry["harnesses"]:
         cand_path = candidate_path()
         out = os.path.join(out_dir, f"{key}.m1.json")
-        run = _run_harness("m1", m1_argv_tail(cand_path, reg, windows, datasets, out), out)
+        run = _run_harness("m1", m1_argv_tail(
+            cand_path, reg, windows, datasets, out,
+            spec.get("funding", "charge")), out)
         if run["status"] == "ok":
             run["close_validation"] = run["payload"].get("close_validation")
             run["data"] = extract_m1(run.pop("payload"))
@@ -1000,7 +1052,8 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
         tail = m3_argv_tail(cand["name"],
                             json.dumps(cand["params"]) if cand.get("params") else None,
                             reg, _direction_for(cand), close_json, windows, datasets, out,
-                            cand.get("comparison_mode"))
+                            cand.get("comparison_mode"),
+                            spec.get("funding", "charge"))
         run = _run_harness("m3", tail, out)
         if run["status"] == "ok":
             run["close_validation"] = run["payload"].get("close_validation")
@@ -1034,7 +1087,8 @@ def run_exit_ab_entry(entry: dict, spec: dict, out_dir: str) -> dict:
         return entry
     out = os.path.join(out_dir, f"{entry['key']}.m6.json")
     tail = m6_argv_tail(entry["candidate"], spec["registry"], spec["windows"],
-                        spec["datasets"], spec["resamples"], spec["seed"], out)
+                        spec["datasets"], spec["resamples"], spec["seed"], out,
+                        spec.get("funding", "charge"))
     run = _run_harness("m6", tail, out)
     if run["status"] == "ok":
         run["close_validation"] = run["payload"].get("close_validation")
@@ -1069,14 +1123,16 @@ def _dry_run_commands(entries: list, spec: dict, out_dir: str) -> list:
             if "m1" in e["harnesses"]:
                 cmds.append(_cmd("m1", m1_argv_tail(
                     cand_path, reg, windows, datasets,
-                    os.path.join(out_dir, f"{key}.m1.json"))))
+                    os.path.join(out_dir, f"{key}.m1.json"),
+                    spec.get("funding", "charge"))))
             if "m3" in e["harnesses"]:
                 close_json = (json.dumps(cand["close_strategies"])
                               if cand.get("close_strategies") else None)
                 cmds.append(_cmd("m3", m3_argv_tail(
                     cand["name"], params_json, reg, direction, close_json,
                     windows, datasets, os.path.join(out_dir, f"{key}.m3.json"),
-                    cand.get("comparison_mode"))))
+                    cand.get("comparison_mode"),
+                    spec.get("funding", "charge"))))
             if "m5" in e["harnesses"]:
                 cmds.append(_cmd("m5", m5_argv_tail(
                     cand["name"], reg, direction, windows, datasets,
@@ -1092,7 +1148,8 @@ def _dry_run_commands(entries: list, spec: dict, out_dir: str) -> list:
             cmds.append(_cmd("m6", m6_argv_tail(
                 e["candidate"], reg, windows, datasets,
                 spec["resamples"], spec["seed"],
-                os.path.join(out_dir, f"{e['key']}.m6.json"))))
+                os.path.join(out_dir, f"{e['key']}.m6.json"),
+                spec.get("funding", "charge"))))
     return cmds
 
 
@@ -1141,6 +1198,8 @@ def build_parser() -> argparse.ArgumentParser:
                    "(comma list SYMBOL:TIMEFRAME)")
     p.add_argument("--alpha", type=float, default=None, help="Override correction alpha")
     p.add_argument("--seed", type=int, default=1066)
+    p.add_argument("--funding", choices=["charge", "partial", "off"],
+                   default="charge")
     p.add_argument("--bootstrap-resamples", type=int, default=10000)
     p.add_argument("--dry-run", action="store_true",
                    help="Print every planned harness command; run nothing")
@@ -1167,6 +1226,7 @@ def main(argv=None) -> int:
     if args.alpha is not None:
         spec["correction"]["alpha"] = args.alpha
     spec["seed"] = args.seed
+    spec["funding"] = args.funding
     spec["resamples"] = args.bootstrap_resamples
 
     entries = expand_candidates(spec)
@@ -1238,7 +1298,8 @@ def main(argv=None) -> int:
         print(f"wrote {args.markdown_out}")
 
     refused = any(e.get("close_capability_refusal") is not None for e in entries)
-    return 1 if (any_gate_failure(entries) or refused) else 0
+    mixed_funding = any(len(_funding_modes(e)) > 1 for e in entries)
+    return 1 if (any_gate_failure(entries) or refused or mixed_funding) else 0
 
 
 if __name__ == "__main__":

@@ -214,7 +214,7 @@ def test_m1_argv_tail():
     assert asug.m1_argv_tail("/t/c.json", "spot", ["is", "oos"],
                              ["BTC/USDT:1h"], "/t/o.json") == [
         "--candidate-json", "/t/c.json", "--registry", "spot",
-        "--windows", "is,oos", "--json", "/t/o.json",
+        "--windows", "is,oos", "--funding", "charge", "--json", "/t/o.json",
         "--datasets", "BTC/USDT:1h"]
 
 
