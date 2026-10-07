@@ -13,7 +13,15 @@ import (
 
 const defaultGoTraderSystemdUnit = "go-trader"
 
+func containerUpdateInstruction() string {
+	return fmt.Sprintf("This go-trader runs in a container, which updates only by image. On the host, in the docker directory, set GO_TRADER_TAG in .env to the new release, then run: %s (docs/DOCKER.md § Upgrade)", containerUpgradeAdvice)
+}
+
 func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *string, mu *sync.RWMutex, state *AppState, store *StateStore) bool {
+	if inContainerRuntime() {
+		logOnChangef("update-check", "container", "[update] skipped: %s\n", containerUpdateInstruction())
+		return false
+	}
 	if err := gitCheck(); err != nil {
 		fmt.Printf("[update] Not a git repo or git unavailable: %v\n", err)
 		return false
@@ -78,6 +86,10 @@ func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *str
 }
 
 func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cfg *Config, store *StateStore) {
+	if inContainerRuntime() {
+		notifier.SendOwnerDM(containerUpdateInstruction())
+		return
+	}
 	notifier.SendOwnerDM("Starting upgrade...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -112,6 +124,9 @@ func tailForDM(s string, max int) string {
 }
 
 func restartSelf() error {
+	if inContainerRuntime() {
+		return requestContainerRestart()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := exec.CommandContext(ctx, "systemctl", "restart", updateSystemdUnitName()).Run(); err == nil {

@@ -1,0 +1,56 @@
+name: go-trader
+
+x-go-trader: &go-trader
+  image: ghcr.io/richkuo/go-trader:${GO_TRADER_TAG:?Set GO_TRADER_TAG in docker/.env to a release tag, for example v0.109.0 (docs/DOCKER.md)}
+  init: true
+  user: "10001:10001"
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+  env_file:
+    - path: go-trader.env
+      required: true
+  volumes:
+    - data:/data
+    - logs:/app/logs
+
+services:
+  go-trader:
+    <<: *go-trader
+    command: ["supervise", "--config", "/data/config.json"]
+    environment:
+      GO_TRADER_STATUS_BIND: 0.0.0.0
+    networks:
+      - go-trader
+    ports:
+      - "127.0.0.1:${GO_TRADER_HOST_PORT:-8099}:8099"
+    restart: unless-stopped
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "/app/go-trader", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+      start_interval: 5s
+
+  cli:
+    <<: *go-trader
+    profiles: ["cli"]
+    restart: "no"
+    networks:
+      - cli
+    healthcheck:
+      disable: true
+
+networks:
+  go-trader: {}
+  cli: {}
+
+volumes:
+  data: {}
+  logs: {}

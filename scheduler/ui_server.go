@@ -126,10 +126,7 @@ func (ss *StatusServer) rejectIfDraining(w http.ResponseWriter) bool {
 }
 
 func (ss *StatusServer) requireAPIAuth(w http.ResponseWriter, r *http.Request) bool {
-	if ss.statusToken == "" {
-		return true
-	}
-	if r.Header.Get("Authorization") == "Bearer "+ss.statusToken {
+	if statusBearerAuthorized(r, ss.statusToken) {
 		return true
 	}
 	w.Header().Set("Content-Type", "application/json")

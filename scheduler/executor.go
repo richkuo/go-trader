@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -26,6 +27,8 @@ func (e *pythonScriptTimeoutError) Error() string {
 var pythonSemaphore = make(chan struct{}, 4)
 
 const scriptTimeout = 30 * time.Second
+
+const pythonPipeWaitDelay = 5 * time.Second
 
 type SpotResult struct {
 	StrategyDecisionFields
@@ -186,6 +189,16 @@ func spawnPythonProcessWithEnv(parentCtx context.Context, script string, args []
 	cmdArgs := append([]string{script}, args...)
 	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone
+			}
+			return err
+		}
+		return nil
+	}
+	cmd.WaitDelay = pythonPipeWaitDelay
 	if len(envOverrides) > 0 {
 		cmd.Env = processEnvironment(envOverrides)
 	}
