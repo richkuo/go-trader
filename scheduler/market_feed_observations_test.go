@@ -77,6 +77,7 @@ func TestOpenInterestObservationPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive requirements: %v", err)
 	}
+	req.AccountingCoins = nil
 	btcKey, ethKey := openInterestKeyFor("BTC"), openInterestKeyFor("ETH")
 	wantWindow := 4*oiTestIntervalMs + openInterestDefaultMaxAgeMs + feedObservationCadenceMs
 	if req.Observations[btcKey] != wantWindow || req.Observations[ethKey] != wantWindow {
@@ -102,6 +103,7 @@ func TestOpenInterestObservationPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	plain.AccountingCoins = nil
 	served := dropUncollectableObservations(feedSourceREST, []feedConsumer{{Path: "oi", Loaded: true, Req: req}, {Path: "plain", Loaded: true, Req: plain}})
 	if !served[0].Loaded || served[0].Err != "" || !strings.Contains(served[0].Notice, "cannot collect observations") || !served[1].Loaded || served[1].Notice != "" {
 		t.Fatalf("a REST feed source must keep every consumer loaded and note only the dropped observations: %+v", served)
@@ -434,7 +436,7 @@ func TestOpenInterestObservationPipeline(t *testing.T) {
 	for _, tc := range []struct {
 		sealVersion int
 		compatible  bool
-	}{{feedSealVersionBase, true}, {feedSealVersion, true}, {feedSealVersion + 1, false}} {
+	}{{feedSealVersionBase, true}, {feedSealVersion, true}, {feedSealVersionAccounting, true}, {feedSealVersionAccounting + 1, false}} {
 		peer := oiTestOldPeer(t, sockDir, tc.sealVersion)
 		_, _, err := client.roundTrip(ctx, peer, feedWireRequest{V: feedWireVersion, Op: feedWireOpDescribe})
 		if tc.compatible && err != nil {

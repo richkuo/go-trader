@@ -126,7 +126,7 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 		s := state.Strategies[id]
 		cash += s.Cash
 		posCount += len(s.Positions) + len(s.OptionPositions)
-		trades += len(s.TradeHistory)
+		trades += nonFundingTradeCount(s.TradeHistory)
 		if regime == "" && s.Regime != "" {
 			regime = s.Regime
 		}

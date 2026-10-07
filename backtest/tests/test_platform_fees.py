@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from backtester import (
+    DEFAULT_SLIPPAGE_PCT,
     Backtester,
     HYPERLIQUID_MAKER_FEE_PCT,
     PLATFORM_FEE_PCT,
@@ -28,7 +29,7 @@ def _scrape_fees_go_constants() -> dict:
     text = FEES_GO.read_text()
     const_pattern = re.compile(
         r"^\s*(BinanceSpotFeePct|HyperliquidTakerFeePct|HyperliquidMakerFeePct|"
-        r"LunoTakerFeePct|OKXSpotTakerFeePct|OKXPerpsTakerFeePct)\s*=\s*([0-9.]+)",
+        r"LunoTakerFeePct|OKXSpotTakerFeePct|OKXPerpsTakerFeePct|SlippagePct)\s*=\s*([0-9.]+)",
         re.MULTILINE,
     )
     return {m.group(1): float(m.group(2)) for m in const_pattern.finditer(text)}
@@ -48,6 +49,8 @@ def test_platform_fee_table_matches_fees_go():
     assert go_rates["LunoTakerFeePct"] == PLATFORM_FEE_PCT["luno"]
     assert go_rates["OKXSpotTakerFeePct"] == PLATFORM_FEE_PCT["okx"]
     assert go_rates["OKXPerpsTakerFeePct"] == PLATFORM_FEE_PCT["okx-perps"]
+    assert go_rates["SlippagePct"] == DEFAULT_SLIPPAGE_PCT
+    assert Backtester(platform="hyperliquid").slippage_pct == DEFAULT_SLIPPAGE_PCT
 
 
 def test_hyperliquid_maker_rate_matches_fees_go():

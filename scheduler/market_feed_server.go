@@ -528,7 +528,7 @@ func (s *feedSealer) sealBytes(key int64) []byte {
 }
 
 func (s *feedSealer) coverageSealVersionLocked() int {
-	return feedSealVersionFor(len(s.coverage.Observations) > 0)
+	return feedSealVersionFor(len(s.coverage.Observations) > 0, len(s.coverage.AccountingCoins) > 0)
 }
 
 func (s *feedSealer) coverageSealVersion() int {
@@ -589,6 +589,10 @@ func (s *feedSealer) describe() *feedDescribe {
 			Source: feedObservationSourceHLWS, WindowMs: s.coverage.Observations[key],
 		})
 	}
+	if len(s.coverage.AccountingCoins) > 0 {
+		d.AccountingFunding = append([]string(nil), s.coverage.AccountingCoins...)
+		d.AccountingWindowMs = feedAccountingWindow.Milliseconds()
+	}
 	if s.lastSeal != nil {
 		d.LastSealKey = s.lastSeal.Key
 		d.LastSealHash = s.lastSeal.Hash
@@ -645,6 +649,7 @@ func fullCycleRequirements(req feedRequirements) cycleMarketRequirements {
 	for coin, need := range req.Funding {
 		out.Funding[coin] = need
 	}
+	out.AccountingCoins = append(out.AccountingCoins, req.AccountingCoins...)
 	return out
 }
 
@@ -745,7 +750,7 @@ func (srv *feedUnixServer) handle(conn net.Conn) {
 			Instance:       srv.sealer.instance,
 			Source:         srv.sealer.source,
 			Generation:     srv.sealer.owner.Generation(),
-			SealVersion:    feedSealVersionFor(len(d.Observations) > 0),
+			SealVersion:    feedSealVersionFor(len(d.Observations) > 0, len(d.AccountingFunding) > 0),
 			PayloadVersion: marketSnapshotVersion,
 			Describe:       d,
 		}

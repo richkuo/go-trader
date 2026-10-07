@@ -2204,7 +2204,7 @@ class Backtester:
 
     def __init__(self, initial_capital: float = 1000.0,
                  commission_pct: Optional[float] = None,
-                 slippage_pct: float = 0.0005,
+                 slippage_pct: float = DEFAULT_SLIPPAGE_PCT,
                  platform: str = "binanceus",
                  open_strategy: Optional[dict] = None,
                  close_strategies: Optional[list[dict]] = None,

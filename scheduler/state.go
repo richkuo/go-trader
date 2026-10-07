@@ -97,6 +97,10 @@ type StrategyState struct {
 
 	ReplayMirrorWatermark       int64  `json:"replay_mirror_watermark,omitempty"`
 	ReplayMirrorWatermarkSource string `json:"replay_mirror_watermark_source,omitempty"`
+
+	PaperFunding        *paperFundingState `json:"-"`
+	paperFundingRaw     string
+	paperFundingCorrupt bool
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {
@@ -331,9 +335,13 @@ func sharedWalletPoolTransitionBlockers(strategies []StrategyConfig, state *AppS
 
 func ValidateState(state *AppState, strategies []StrategyConfig) {
 	configuredPoolIDs := make(map[string]bool)
+	paperFundingIDs := make(map[string]bool)
 	for _, sc := range strategies {
 		if usesSharedWalletPoolBudget(sc) {
 			configuredPoolIDs[sc.ID] = true
+		}
+		if paperFundingEligible(sc) {
+			paperFundingIDs[sc.ID] = true
 		}
 	}
 	for id, s := range state.Strategies {
@@ -342,8 +350,12 @@ func ValidateState(state *AppState, strategies []StrategyConfig) {
 			s.InitialCapital = 0
 		}
 		if s.Cash < 0 && !s.SharedWalletPoolBudget && !configuredPoolIDs[id] {
-			fmt.Printf("[WARN] state: strategy %s has negative cash=%g, clamping to 0\n", id, s.Cash)
-			s.Cash = 0
+			if paperFundingIDs[id] {
+				fmt.Printf("[INFO] state: paper strategy %s keeps negative cash=%g (paper funding debits are booked cash)\n", id, s.Cash)
+			} else {
+				fmt.Printf("[WARN] state: strategy %s has negative cash=%g, clamping to 0\n", id, s.Cash)
+				s.Cash = 0
+			}
 		}
 		maybeClearCashReconcileRequired(s)
 		for sym, pos := range s.Positions {

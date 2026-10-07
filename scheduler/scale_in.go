@@ -185,6 +185,17 @@ func perpsScaleInDecision(sc StrategyConfig, snap scaleInSnapshot, signal int, p
 }
 
 func applyPerpsScaleIn(s *StrategyState, sc StrategyConfig, symbol string, addPrice, addQty, fillFee float64, fillOID string, useFillFee bool, logger *StrategyLogger) (int, *Trade) {
+	var (
+		n     int
+		trade *Trade
+	)
+	mutatePaperPerpsBook(s, symbol, func() {
+		n, trade = applyPerpsScaleInInner(s, sc, symbol, addPrice, addQty, fillFee, fillOID, useFillFee, logger)
+	})
+	return n, trade
+}
+
+func applyPerpsScaleInInner(s *StrategyState, sc StrategyConfig, symbol string, addPrice, addQty, fillFee float64, fillOID string, useFillFee bool, logger *StrategyLogger) (int, *Trade) {
 	if addQty <= 0 || addPrice <= 0 {
 		return 0, nil
 	}

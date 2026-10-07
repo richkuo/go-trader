@@ -404,7 +404,7 @@ func runBackfillHLFees(args []string) int {
 					fmt.Fprintf(os.Stderr, "error: strategy %q platform=%q (expected hyperliquid)\n", *strategyID, sc.Platform)
 					return 1
 				}
-				if sc.Type == "perps" && !hyperliquidIsLive(sc.Args) {
+				if (sc.Type == "perps" || sc.Type == "manual") && !hyperliquidIsLive(sc.Args) {
 					fmt.Fprintf(os.Stderr, "error: strategy %q is paper-mode (no real OIDs to match against userFills)\n", *strategyID)
 					return 1
 				}
@@ -425,7 +425,7 @@ func runBackfillHLFees(args []string) int {
 			if sc.Type != "perps" && sc.Type != "manual" {
 				continue
 			}
-			if sc.Type == "perps" && !hyperliquidIsLive(sc.Args) {
+			if (sc.Type == "perps" || sc.Type == "manual") && !hyperliquidIsLive(sc.Args) {
 				fmt.Printf("[%s] skipped: paper-mode (no real OIDs)\n", sc.ID)
 				continue
 			}

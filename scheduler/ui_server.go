@@ -586,7 +586,7 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		PnL:                   overview.PnL,
 		PnLPct:                overview.PnLPct,
 		PoolBudget:            overview.PoolBudget,
-		TradeCount:            len(snapshot.TradeHistory),
+		TradeCount:            nonFundingTradeCount(snapshot.TradeHistory),
 		WinRate:               overview.WinRate,
 		LifetimeStats:         lifetime,
 		Sharpe:                overview.Sharpe,
