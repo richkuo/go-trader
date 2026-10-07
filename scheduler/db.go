@@ -623,6 +623,7 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE strategies ADD COLUMN hurst_gate_state TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE strategies ADD COLUMN replay_mirror_watermark INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE strategies ADD COLUMN replay_mirror_watermark_source TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE strategies ADD COLUMN paper_funding_state TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN hurst_at_open REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN hurst_size_mult REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE trade_diagnostics ADD COLUMN hurst_at_open REAL",
@@ -1471,8 +1472,9 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
-		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source,
+		paper_funding_state)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare strategy insert: %w", err)
 	}
@@ -1512,6 +1514,10 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		if s.SharedWalletPoolBudget {
 			poolBudgetInt = 1
 		}
+		paperFundingJSON, pfErr := marshalPaperFundingState(s)
+		if pfErr != nil {
+			return pfErr
+		}
 		if _, err := stmtStrat.Exec(
 			sid, s.Type, s.Platform, s.Cash, s.InitialCapital,
 			s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
@@ -1524,6 +1530,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 			marshalHurstGateStateJSON(s.HurstGate),
 			s.ReplayMirrorWatermark,
 			s.ReplayMirrorWatermarkSource,
+			paperFundingJSON,
 		); err != nil {
 			return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 		}
@@ -1900,12 +1907,17 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 	if s.SharedWalletPoolBudget {
 		poolBudgetInt = 1
 	}
+	paperFundingJSON, pfErr := marshalPaperFundingState(s)
+	if pfErr != nil {
+		return pfErr
+	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO strategies (id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
-		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source,
+		paper_funding_state)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sid, s.Type, s.Platform, s.Cash, s.InitialCapital,
 		s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
 		s.RiskState.DailyPnL, s.RiskState.DailyPnLDate, s.RiskState.ConsecutiveLosses,
@@ -1917,6 +1929,7 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 		marshalHurstGateStateJSON(s.HurstGate),
 		s.ReplayMirrorWatermark,
 		s.ReplayMirrorWatermarkSource,
+		paperFundingJSON,
 	); err != nil {
 		return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 	}
@@ -2327,7 +2340,8 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		COALESCE(shared_wallet_pool_budget, 0) AS shared_wallet_pool_budget,
 		COALESCE(hurst_gate_state, '') AS hurst_gate_state,
 		COALESCE(replay_mirror_watermark, 0) AS replay_mirror_watermark,
-		COALESCE(replay_mirror_watermark_source, '') AS replay_mirror_watermark_source
+		COALESCE(replay_mirror_watermark_source, '') AS replay_mirror_watermark_source,
+		COALESCE(paper_funding_state, '') AS paper_funding_state
 		FROM strategies`)
 	if err != nil {
 		return nil, fmt.Errorf("load strategies: %w", err)
@@ -2342,6 +2356,7 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		var poolBudgetInt int
 		var cbUntilStr, pendingCircuitClosesJSON, activeProfile string
 		var hurstGateJSON string
+		var paperFundingJSON string
 		if err := rows.Scan(
 			&storedID, &s.Type, &s.Platform, &s.Cash, &s.InitialCapital,
 			&s.RiskState.PeakValue, &s.RiskState.MaxDrawdownPct, &s.RiskState.CurrentDrawdownPct,
@@ -2350,6 +2365,7 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 			&cashReconcileInt, &poolBudgetInt, &hurstGateJSON,
 			&s.ReplayMirrorWatermark,
 			&s.ReplayMirrorWatermarkSource,
+			&paperFundingJSON,
 		); err != nil {
 			return nil, fmt.Errorf("scan strategy: %w", err)
 		}
@@ -2359,6 +2375,7 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 			continue
 		}
 		s.ID = procID
+		unmarshalPaperFundingState(&s, paperFundingJSON)
 		s.RiskState.CircuitBreaker = cbInt != 0
 		s.RiskState.CircuitBreakerUntil = parseTime(cbUntilStr)
 		s.RiskState.UnmarshalPendingCircuitClosesJSON(pendingCircuitClosesJSON)
@@ -2474,46 +2491,15 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 
 	for storedID, procID := range loaded {
 		s := out.Strategies[procID]
-		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
-			FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, storedID, maxTradeHistory)
+		trades, err := sdb.loadStrategyTradeWindow(storedID, procID, "trade_type != ?")
 		if err != nil {
-			return nil, fmt.Errorf("load trades for %s: %w", procID, err)
+			return nil, err
 		}
-		var allTrades []Trade
-		for tradeRows.Next() {
-			var t Trade
-			var tsStr string
-			var isCloseInt, isManualInt, pnlGrossInt int
-			var tpOIDsJSON string
-			var slATRMult sql.NullFloat64
-			if err := tradeRows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &t.TPTiersJSON, &pnlGrossInt, &t.FeeSource); err != nil {
-				tradeRows.Close()
-				return nil, fmt.Errorf("scan trade: %w", err)
-			}
-			t.StrategyID = procID
-			t.Timestamp = parseTime(tsStr)
-			t.IsClose = isCloseInt != 0
-			t.Manual = isManualInt != 0
-			t.PnLGross = pnlGrossInt != 0
-			t.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
-			if slATRMult.Valid {
-				v := slATRMult.Float64
-				t.StopLossATRMult = &v
-			}
-			t.persisted = true
-			allTrades = append(allTrades, t)
+		funding, err := sdb.loadStrategyTradeWindow(storedID, procID, "trade_type = ?")
+		if err != nil {
+			return nil, err
 		}
-		tradeRows.Close()
-		if err := tradeRows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate trades for %s: %w", procID, err)
-		}
-		for i, j := 0, len(allTrades)-1; i < j; i, j = i+1, j-1 {
-			allTrades[i], allTrades[j] = allTrades[j], allTrades[i]
-		}
-		if allTrades == nil {
-			allTrades = []Trade{}
-		}
-		s.TradeHistory = allTrades
+		s.TradeHistory = mergeLoadedTradeWindows(trades, funding)
 	}
 
 	scopeFilter, scopeArgs := scopePlaceholders(scopes)
@@ -3363,4 +3349,65 @@ func parseTime(s string) time.Time {
 	}
 	t, _ := time.Parse(time.RFC3339Nano, s)
 	return t
+}
+
+type loadedTradeRow struct {
+	trade Trade
+	rawTS string
+	rowID int64
+}
+
+func (sdb *StateDB) loadStrategyTradeWindow(storedID, procID, typeFilter string) ([]loadedTradeRow, error) {
+	tradeRows, err := sdb.db.Query(`SELECT rowid, timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
+		FROM trades WHERE strategy_id = ? AND `+typeFilter+` ORDER BY timestamp DESC, rowid DESC LIMIT ?`, storedID, TradeTypeFunding, maxTradeHistory)
+	if err != nil {
+		return nil, fmt.Errorf("load trades for %s: %w", procID, err)
+	}
+	defer tradeRows.Close()
+	var out []loadedTradeRow
+	for tradeRows.Next() {
+		var t Trade
+		var rowID int64
+		var tsStr string
+		var isCloseInt, isManualInt, pnlGrossInt int
+		var tpOIDsJSON string
+		var slATRMult sql.NullFloat64
+		if err := tradeRows.Scan(&rowID, &tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &t.TPTiersJSON, &pnlGrossInt, &t.FeeSource); err != nil {
+			return nil, fmt.Errorf("scan trade: %w", err)
+		}
+		t.StrategyID = procID
+		t.Timestamp = parseTime(tsStr)
+		t.IsClose = isCloseInt != 0
+		t.Manual = isManualInt != 0
+		t.PnLGross = pnlGrossInt != 0
+		t.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
+		if slATRMult.Valid {
+			v := slATRMult.Float64
+			t.StopLossATRMult = &v
+		}
+		t.persisted = true
+		out = append(out, loadedTradeRow{trade: t, rawTS: tsStr, rowID: rowID})
+	}
+	if err := tradeRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate trades for %s: %w", procID, err)
+	}
+	return out, nil
+}
+
+func mergeLoadedTradeWindows(windows ...[]loadedTradeRow) []Trade {
+	var rows []loadedTradeRow
+	for _, w := range windows {
+		rows = append(rows, w...)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].rawTS != rows[j].rawTS {
+			return rows[i].rawTS < rows[j].rawTS
+		}
+		return rows[i].rowID < rows[j].rowID
+	})
+	out := make([]Trade, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.trade)
+	}
+	return out
 }

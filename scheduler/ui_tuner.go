@@ -152,6 +152,12 @@ func (ss *StatusServer) handleAPIStrategySimulate(w http.ResponseWriter, r *http
 
 	livePayload := simulateConfigPayload(liveCfg, ss.regime)
 	simPayload := simulateConfigPayload(simCfg, ss.regime)
+	if sizing := ss.previewPerpsSizing(liveCfg); sizing != nil {
+		livePayload["perps_sizing"] = sizing
+	}
+	if sizing := ss.previewPerpsSizing(simCfg); sizing != nil {
+		simPayload["perps_sizing"] = sizing
+	}
 	uiCfg := ss.uiTradeConfig()
 	livePayload["atr_method"] = resolveATRMethod(liveCfg, uiCfg)
 	simPayload["atr_method"] = resolveATRMethod(simCfg, uiCfg)
@@ -670,6 +676,50 @@ func decodeOptionalFloat(raw json.RawMessage) (*float64, error) {
 		return nil, err
 	}
 	return &v, nil
+}
+
+func (ss *StatusServer) previewPerpsSizing(sc StrategyConfig) map[string]interface{} {
+	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+		return nil
+	}
+	ss.strategiesMu.RLock()
+	strategies := append([]StrategyConfig(nil), ss.strategies...)
+	ss.strategiesMu.RUnlock()
+	pooled, errs := validateConfiguredSharedWalletPools(strategies)
+	for _, errText := range errs {
+		if strings.Contains(errText, "strategy["+sc.ID+"]") {
+			return map[string]interface{}{
+				"exchange_leverage":    EffectiveExchangeLeverage(sc),
+				"sizing_leverage":      EffectiveSizingLeverage(sc),
+				"margin_mode":          strings.ToLower(strings.TrimSpace(sc.MarginMode)),
+				"budget_source":        "shared_wallet_pool",
+				"pool_evidence":        "invalid",
+				"pool_evidence_reason": errText,
+			}
+		}
+	}
+	mode := strings.ToLower(strings.TrimSpace(sc.MarginMode))
+	if mode == "" {
+		mode = "isolated"
+	}
+	budget := "strategy_cash"
+	evidence := "verified"
+	if pooled[sc.ID] {
+		budget = "shared_wallet_pool"
+		evidence = "unavailable"
+	}
+	out := map[string]interface{}{
+		"exchange_leverage": EffectiveExchangeLeverage(sc),
+		"sizing_leverage":   EffectiveSizingLeverage(sc),
+		"margin_mode":       mode,
+		"budget_source":     budget,
+		"pool_evidence":     evidence,
+		"provenance":        "strategy_simulation_preview",
+	}
+	if margin := EffectiveMarginPerTradeUSD(sc); margin > 0 {
+		out["margin_per_trade_usd"] = margin
+	}
+	return out
 }
 
 func simulateConfigPayload(sc StrategyConfig, regime *RegimeConfig) map[string]interface{} {

@@ -93,6 +93,8 @@ type marketSnapshot struct {
 	mids         map[string]feedMid
 	funding      map[string]feedFunding
 	observations map[feedObservationKey]*marketSnapshotObservation
+
+	accountingFunding map[string]feedAccountingFunding
 }
 
 type cycleMarketRequirement struct {
@@ -101,10 +103,11 @@ type cycleMarketRequirement struct {
 }
 
 type cycleMarketRequirements struct {
-	Keys         []cycleMarketRequirement
-	Coins        []string
-	Funding      map[string]feedFundingNeed
-	Observations map[feedObservationKey]int64
+	Keys            []cycleMarketRequirement
+	Coins           []string
+	Funding         map[string]feedFundingNeed
+	Observations    map[feedObservationKey]int64
+	AccountingCoins []string
 }
 
 func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMarketRequirements {
@@ -146,6 +149,7 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 		coins[coin] = true
 	}
 	out := cycleMarketRequirements{Funding: funding, Observations: observations}
+	out.AccountingCoins = append(out.AccountingCoins, req.AccountingCoins...)
 	for key, required := range need {
 		out.Keys = append(out.Keys, cycleMarketRequirement{Key: key, Required: required})
 	}
@@ -212,6 +216,7 @@ func prepareMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycleMa
 		}
 	}
 	o.EnsureFunding(ctx, o.earliestFrameBarMs(reqs))
+	o.EnsureAccountingFunding(ctx)
 }
 
 func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, evaluationID string, now, cutoff time.Time) *marketSnapshot {
@@ -265,6 +270,7 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 		}
 		snap.observations[key] = freezeObservation(st, window, cutoff.UTC().UnixMilli(), now.UTC().UnixMilli())
 	}
+	o.freezeAccountingFundingLocked(snap, reqs.AccountingCoins)
 	return snap
 }
 

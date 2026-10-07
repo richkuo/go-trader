@@ -1,4 +1,5 @@
 import copy
+import datetime
 import gzip
 import hashlib
 import io
@@ -2127,3 +2128,33 @@ def test_unshifted_gate_arms_protection_from_the_same_row(tmp_path):
     assert named["eligibility"]["regime"]["timing"]["protection"] == "unshifted_closed_candle"
     assert named["eligibility"]["regime"]["protection_source"] == (
         "unshifted_closed_candle:gate_window:short")
+
+
+def test_paper_funding_rows_with_position_ids_report_as_strategy_funding(tmp_path):
+    fx = _copy(tmp_path)
+    doc = _load(fx / "export.json")
+    stamped = 0
+    for ev in doc["events"]:
+        if ev["event_kind"]["value"] != "funding":
+            continue
+        ms = int(datetime.datetime.fromisoformat(ev["timestamp"].replace("Z", "+00:00")).timestamp() * 1000)
+        key = f"paper_funding:BTC:{ms}"
+        ev["exchange_order_id"]["value"] = ev["exchange_order_id"]["raw_value"] = key
+        ev["position_id"].update({"value": "pos-s-1", "raw_value": "pos-s-1", "status": "available", "reason": None})
+        if _in_interval(ev):
+            stamped += 1
+    assert stamped > 0
+    _dump(fx / "export.json", doc)
+    _rebind(fx)
+    rc, rep = _run(fx, tmp_path)
+    assert rep is not None
+    funding_in = [e for e in doc["events"] if e["event_kind"]["value"] == "funding" and _in_interval(e)]
+    booked = sum(e["realized_pnl"]["value"] for e in funding_in)
+    assert rep["strategy_totals"]["booked"]["funding"] == pytest.approx(booked, abs=1e-12)
+    assert rep["strategy_totals"]["deltas"]["funding"] == pytest.approx(
+        booked - rep["strategy_totals"]["simulated"]["funding"], abs=1e-12)
+    info = {i["total"]: i for i in rep["conservation"]["informational_totals"]}
+    assert info["booked_strategy_funding_unallocated"]["rows_with_position_id"] == len(funding_in)
+    assert info["booked_strategy_funding_unallocated"]["allocated_to_positions"] == 0.0
+    assert set(rep["booked"]["dispositions"]) >= {e["event_key"] for e in funding_in}
+    assert rc == 0 and rep["outcome"] == "strict_success"

@@ -126,10 +126,7 @@ func (ss *StatusServer) rejectIfDraining(w http.ResponseWriter) bool {
 }
 
 func (ss *StatusServer) requireAPIAuth(w http.ResponseWriter, r *http.Request) bool {
-	if ss.statusToken == "" {
-		return true
-	}
-	if r.Header.Get("Authorization") == "Bearer "+ss.statusToken {
+	if statusBearerAuthorized(r, ss.statusToken) {
 		return true
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -589,7 +586,7 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		PnL:                   overview.PnL,
 		PnLPct:                overview.PnLPct,
 		PoolBudget:            overview.PoolBudget,
-		TradeCount:            len(snapshot.TradeHistory),
+		TradeCount:            nonFundingTradeCount(snapshot.TradeHistory),
 		WinRate:               overview.WinRate,
 		LifetimeStats:         lifetime,
 		Sharpe:                overview.Sharpe,

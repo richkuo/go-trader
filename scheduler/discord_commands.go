@@ -94,21 +94,24 @@ func positionMultiplier(p *Position) float64 {
 	return 1
 }
 
-func formatHealthResponse(lastCycle time.Time, cycleCount int, version string, now time.Time) string {
+func formatHealthResponse(lastCycle time.Time, cycleCount int, version string, now time.Time, loopOverdue bool) string {
 	var sb strings.Builder
 	sb.WriteString("**go-trader health**\n")
 	sb.WriteString(fmt.Sprintf("version: %s\n", version))
 	sb.WriteString(fmt.Sprintf("cycles completed: %d\n", cycleCount))
+	status := "ok"
+	if loopOverdue {
+		status = "unhealthy (main loop stale)"
+	}
 	if lastCycle.IsZero() {
+		if !loopOverdue {
+			status = "starting"
+		}
 		sb.WriteString("last cycle: never (no cycle completed yet)\n")
-		sb.WriteString("status: starting")
+		sb.WriteString(fmt.Sprintf("status: %s", status))
 		return sb.String()
 	}
 	age := now.Sub(lastCycle).Round(time.Second)
-	status := "ok"
-	if age > 30*time.Minute {
-		status = "unhealthy (main loop stale)"
-	}
 	sb.WriteString(fmt.Sprintf("last cycle: %s ago\n", age))
 	sb.WriteString(fmt.Sprintf("status: %s", status))
 	return sb.String()
@@ -123,7 +126,7 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 		s := state.Strategies[id]
 		cash += s.Cash
 		posCount += len(s.Positions) + len(s.OptionPositions)
-		trades += len(s.TradeHistory)
+		trades += nonFundingTradeCount(s.TradeHistory)
 		if regime == "" && s.Regime != "" {
 			regime = s.Regime
 		}
@@ -712,7 +715,8 @@ func (d *DiscordNotifier) buildHealth() string {
 	lastCycle := d.ss.state.LastCycle
 	cycles := d.ss.state.CycleCount
 	d.ss.mu.RUnlock()
-	return formatHealthResponse(lastCycle, cycles, Version, time.Now())
+	now := time.Now()
+	return formatHealthResponse(lastCycle, cycles, Version, now, mainLoopOverdue(now))
 }
 
 func (d *DiscordNotifier) buildPnL() string {
@@ -824,6 +828,9 @@ func journalctlUnitArgs(unit, namespace string, n int) []string {
 }
 
 func runLogs(n int) string {
+	if inContainerRuntime() {
+		return fmt.Sprintf("This go-trader runs in a container, so its log is the container output. On the host, in the docker directory, run:\n```\ndocker compose logs --tail %d go-trader\n```", n)
+	}
 	unit := updateSystemdUnitName()
 	out, err := exec.Command("journalctl", journalctlUnitArgs(unit, systemdUnitLogNamespace(unit), n)...).CombinedOutput()
 	if err != nil {
