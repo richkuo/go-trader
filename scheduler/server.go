@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -60,6 +62,23 @@ const DefaultStatusPort = 8099
 const statusPortMinimum = 1024
 
 const statusPortMaxAttempts = 5
+
+const (
+	mainLoopWorkBudget = 30 * time.Minute
+	mainLoopWakeGrace  = 5 * time.Minute
+)
+
+var mainLoopDeadline atomic.Pointer[time.Time]
+
+func armMainLoopDeadline(budget time.Duration) {
+	deadline := time.Now().Add(budget)
+	mainLoopDeadline.Store(&deadline)
+}
+
+func mainLoopOverdue(now time.Time) bool {
+	deadline := mainLoopDeadline.Load()
+	return deadline != nil && now.After(*deadline)
+}
 
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateStore) *StatusServer {
 	symbols := collectPriceSymbols(strategies)
@@ -175,11 +194,24 @@ func resolveStatusPort(cliFlag, cfgPort int) int {
 	return DefaultStatusPort
 }
 
+func statusBearerAuthorized(r *http.Request, token string) bool {
+	if token == "" {
+		return true
+	}
+	got := r.Header.Get("Authorization")
+	want := "Bearer " + token
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
 func bindWithFallback(port, maxAttempts int) (net.Listener, int, error) {
+	return bindHostWithFallback(defaultStatusBindHost, port, maxAttempts)
+}
+
+func bindHostWithFallback(host string, port, maxAttempts int) (net.Listener, int, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		tryPort := port + attempt
-		addr := fmt.Sprintf("localhost:%d", tryPort)
+		addr := statusListenAddr(host, tryPort)
 		listener, err := net.Listen("tcp", addr)
 		if err == nil {
 			return listener, tryPort, nil
@@ -190,7 +222,7 @@ func bindWithFallback(port, maxAttempts int) (net.Listener, int, error) {
 	return nil, 0, fmt.Errorf("could not bind after %d attempts starting from %d: %w", maxAttempts, port, lastErr)
 }
 
-func (ss *StatusServer) Start(port int) {
+func (ss *StatusServer) Start(host string, port int) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", ss.handleStatus)
 	mux.HandleFunc("/health", ss.handleHealth)
@@ -219,13 +251,20 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/api/config/add-strategy", ss.handleAPIAddStrategy)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
-	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)
+	attempts := statusPortMaxAttempts
+	if inContainerRuntime() {
+		attempts = 1
+	}
+	listener, boundPort, err := bindHostWithFallback(host, port, attempts)
 	if err != nil {
 		fmt.Printf("[server] WARNING: %v. Status endpoint unavailable.\n", err)
 		return
 	}
 	if boundPort != port {
 		fmt.Printf("[server] WARNING: requested port %d was in use, bound to %d instead — another go-trader may already be running on %d; compare /health pid across ports\n", port, boundPort, port)
+	}
+	if !isLoopbackBindHost(host) {
+		fmt.Printf("[server] Listening on %s (container network; every API request needs the status token)\n", statusListenAddr(host, boundPort))
 	}
 	fmt.Printf("[server] Status endpoint at http://localhost:%d/status\n", boundPort)
 	fmt.Printf("[server] Dashboard at http://localhost:%d/dashboard\n", boundPort)
@@ -253,19 +292,15 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ss.mu.RLock()
-	lastCycle := ss.state.LastCycle
-	ss.mu.RUnlock()
-
 	resp := map[string]any{
 		"status":  "ok",
 		"version": Version,
 		"pid":     pid,
 	}
-	if ss.statusToken == "" || r.Header.Get("Authorization") == "Bearer "+ss.statusToken {
+	if statusBearerAuthorized(r, ss.statusToken) {
 		resp["run_evidence"] = globalRunEvidence.healthView()
 	}
-	if !lastCycle.IsZero() && time.Since(lastCycle) > 30*time.Minute {
+	if mainLoopOverdue(time.Now()) {
 		resp["status"] = "unhealthy"
 		resp["reason"] = "main loop stale"
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -274,13 +309,11 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
-	if ss.statusToken != "" {
-		if r.Header.Get("Authorization") != "Bearer "+ss.statusToken {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error":"unauthorized"}`))
-			return
-		}
+	if !statusBearerAuthorized(r, ss.statusToken) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"unauthorized"}`))
+		return
 	}
 
 	prices := ss.fetchLiveMarkPrices()
@@ -586,13 +619,11 @@ func directionalStatusForStrategy(sc StrategyConfig, s *StrategyState, rc *Regim
 }
 
 func (ss *StatusServer) handleHistory(w http.ResponseWriter, r *http.Request) {
-	if ss.statusToken != "" {
-		if r.Header.Get("Authorization") != "Bearer "+ss.statusToken {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error":"unauthorized"}`))
-			return
-		}
+	if !statusBearerAuthorized(r, ss.statusToken) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"unauthorized"}`))
+		return
 	}
 
 	if ss.stateDB == nil {

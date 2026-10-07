@@ -16,10 +16,10 @@ Quick flow for a new server: tell OpenClaw `install https://github.com/richkuo/g
 - Install Python dependencies with `uv sync --no-dev` on a service host and `uv sync` in a development checkout or worktree.
 - Scheduler config: `scheduler/config.json` (start from `scheduler/config.example.json`). On deployments the real file lives outside the deploy tree at `/var/lib/go-trader[/<instance>]/config.json`.
 - State is SQLite only: default `scheduler/state.db`. Optional root `paper_db_file` moves the paper scope into a second file (§ Storage Ownership).
-- Never store secrets in config files. Put Discord and exchange credentials in systemd environment variables.
+- Never store secrets in config files. Put Discord and exchange credentials in systemd environment variables (a Docker deployment uses `docker/go-trader.env`, § Docker Container).
 - Prefer `./go-trader init` for humans, `./go-trader init --json … --output scheduler/config.json` for agents and scripts.
 - TradingView export: ask which strategy IDs (or all) before running.
-- **CRITICAL: always update with `scripts/update.sh`. Never run `git pull` + `go build` by hand.** The Go binary and the Python check scripts share an argv contract, so a build at a different commit than the scripts is an asymmetric deploy.
+- **CRITICAL: always update a host deployment with `scripts/update.sh`. Never run `git pull` + `go build` by hand.** The Go binary and the Python check scripts share an argv contract, so a build at a different commit than the scripts is an asymmetric deploy. A Docker deployment updates only by pulling a release image, which holds both from one commit (§ Docker Container).
 
 ---
 
@@ -310,9 +310,33 @@ After the move, `scripts/merge-paper-instance.sh` folds migrated paper deploymen
 
 ---
 
+## Docker Container
+
+`docs/DOCKER.md` is the operator guide (install, setup, backup, restore, upgrade, rollback limits). systemd stays the canonical Linux production deployment, and the Linux process deployment is unchanged. The mechanism:
+
+- **Image.** The root `Dockerfile` builds the binary (`-buildvcs=false`, `-X main.Version`, `-X main.SourceCommit`) and the venv (`uv sync --frozen --no-dev`) from one commit, and copies only the runtime allowlist (`shared_scripts/`, `shared_strategies/`, `shared_tools/`, `platforms/`, `backtest/`) into `/app`. `.dockerignore` starts from `*`, re-includes that allowlist and strips tests, state, configs, locks, logs and secrets. The image runs as uid/gid 10001 with `GO_TRADER_RUNTIME=container`, owns empty `/data` (0700) and `/app/logs` (0750), and sets `GO_TRADER_OHLCV_CACHE_DB=/data/ohlcv_cache.sqlite3`.
+- **Provenance.** `go-trader version --json` prints `version` and the embedded `source_commit`; `--version` prints the release alone. The image labels `org.opencontainers.image.version` and `org.opencontainers.image.revision` carry the same values.
+- **Runtime policy** (`runtime_policy.go`). `GO_TRADER_RUNTIME` is read once in `main` before any dispatch: unset means host, `container` means container, any other value exits 2. Container mode is never inferred from the filesystem.
+- **Container config rules.** Every path-based config load (`LoadConfig`, `LoadConfigForProbe`, `LoadConfigReadOnly`; so startup, `probe`, SIGHUP reload and the dashboard and Discord config writes) refuses `auto_update` other than `off`, `role: "feed"`, `market_feed: "shared"`, a `status_port` other than 8099, and any `db_file`, `paper_db_file`, `paper_sources[].db_file` or `replay_log_path` that is in memory or resolves outside `/data`. The ledger-export config load is exempt because it binds snapshot paths.
+- **Volumes.** The daemon and `supervise` refuse to start unless `/data` and `/app/logs` are mount points (read from `/proc/self/mountinfo`) and writable by the running uid; the message names the uid and docs/DOCKER.md § Volume permissions. A new empty named volume takes the image directory's owner and mode on first mount, so first setup needs no chown, and nothing changes the owner of existing content.
+- **Setup.** In container mode `init` defaults `--output` to `/data/config.json`, never prompts for a path, refuses an output outside `/data`, skips the live-mode and manual-trading prompts, refuses a live or `manual` strategy and an `autoUpdate` other than `off` (interactive and `--json`), and writes `db_file` next to the config (`/data/state.db`). On a host, interactive `init` offers the `--output` value as the path default (still `scheduler/config.json`).
+- **Status bind.** `validateStatusBind` runs right after the config load, before ownership and before any listener: loopback always passes, a host refuses everything else, and a container accepts only `0.0.0.0` or `::` and only with `STATUS_AUTH_TOKEN`. Every bearer check (`/status`, `/history`, `/health` run evidence, `requireAPIAuth`) compares in constant time.
+- **Updates, restarts and logs.** In container mode `checkForUpdates` returns before Git, `applyUpgrade` DMs the image-pull steps, `restartSelf` signals the daemon's own stop path (drain, state save, exit 0) instead of `systemctl` or `syscall.Exec`, `/logs` returns the `docker compose logs` command, and the dashboard restart message names `docker compose restart go-trader`.
+- **Supervisor** (`go-trader supervise`, container only). Compose runs it behind `init: true`. It starts one daemon in its own process group, forwards SIGTERM, SIGINT and SIGHUP, and exits with the daemon's status (128 plus the signal number for a signal death). On 78, 79 or 80 without a pending termination it prints one `[supervisor] CRITICAL` line and holds with no daemon until SIGTERM or SIGINT, then exits with that code; the health check fails while it holds. It refuses a subcommand argument, so utilities never run under it.
+- **Health.** `go-trader healthcheck [--url] [--timeout]` exits 0 only on an HTTP 2xx from `http://127.0.0.1:8099/health` (§ Status gives the `/health` rule). The daemon refuses `--status-port` other than 8099 and binds 8099 with no fallback port, so the bound port is always the one Compose publishes and the health check reads. Discord platform setup names `docker/go-trader.env` and `docker compose up -d --force-recreate go-trader`, because a restart keeps the old environment.
+- **Compose** (`docker/compose.yaml`). Service `go-trader` runs `supervise --config /data/config.json` with `GO_TRADER_STATUS_BIND=0.0.0.0`, publishes `127.0.0.1:${GO_TRADER_HOST_PORT:-8099}`, and has its own network, `restart: unless-stopped`, `stop_grace_period: 20s`, a read-only root, a `/tmp` tmpfs, `no-new-privileges` and every capability dropped.
+  Service `cli` (profile `cli`) has the same image, volumes and hardening with `restart: "no"`, no health check and no published port; it runs `init`, `probe`, `inspect`, `storage-inspect`, manual commands and `--once` (which needs the service stopped).
+  `GO_TRADER_TAG` in `docker/.env` is required and pins the image tag; secrets come from `docker/go-trader.env`. `docker/compose.build.yaml` builds `go-trader:local` from the checkout.
+- **Docker restart behavior** (verified by `scripts/test_container_image.sh`): a daemon crash after a healthy start (exit 137) and an intentional restart (exit 0) both restart the container; an early exit 1 (for example a refused `auto_update`) restarts with Docker's doubling delay; a held 78, 79 or 80 stays running and unhealthy with no restart.
+- **Reload.** Send SIGHUP through the container's init: `docker compose exec go-trader sh -c 'kill -HUP 1'`. `docker compose kill -s HUP` reaches the daemon too, but Docker Engine (checked on 29.8.2) then marks the container as stopped by hand, so the next exit is not restarted until `docker compose restart go-trader`; `docs/DOCKER.md` states this.
+- **CI** (`.github/workflows/container.yml`). Every pull request and `main` push builds the image natively on `linux/amd64` and `linux/arm64` with canary files planted in the build context, then runs `scripts/test_container_image.sh` under `scripts/run_ci_shell_suite.sh`. The `image` jobs get a read-only token, and their checkout keeps no credential (a step fails if one is left in `.git/config`). On a published release each `image` job saves its tested image as an artifact; the `publish` job, the only job with `packages: write`, checks out no code, loads both images, refuses one whose image ID or commit differs from the tested one, pushes each by digest and joins them under the release tag, the source commit and `latest` (not for a prerelease).
+
+---
+
 ## Auto-Update
 
 `auto_update`: `off` | `daily` | `heartbeat`. When an update is found the bot notifies active Discord channels. With `DISCORD_OWNER_ID` set it DMs the owner; replying yes within 30 minutes runs `scripts/update.sh`, saves state, and restarts.
+A container deployment (§ Docker Container) refuses any value other than `off`, never runs an update check, Git, `scripts/update.sh` or `systemctl`, and answers an upgrade request with the image-pull steps.
 
 ```bash
 # Systemd deploy (default)
@@ -328,7 +352,8 @@ bash scripts/update.sh --rsync-from /path/to/source-clone --restart
 bash scripts/update.sh --all --restart [--update-all-root <parent-dir>]
 ```
 
-`scripts/update.sh` is the single source of truth for `git pull --ff-only` + `uv sync --no-dev` + `go build`, all gated under `set -euo pipefail`. External deploy automation (Ansible, image bake) must call this script rather than reproduce the steps inline.
+`scripts/update.sh` is the single source of truth for host updates: `git pull --ff-only` + `uv sync --no-dev` + `go build`, all gated under `set -euo pipefail`. External host deploy automation (for example Ansible) must call this script rather than reproduce the steps inline.
+The Docker image is the one exception: the root `Dockerfile` builds Go and Python from one committed revision, and a container updates only by pulling a new image (`docs/DOCKER.md` § Upgrade). Never run `scripts/update.sh` inside or against a container.
 
 **Unit sync.** With `--restart` in systemd mode, the `unit` phase (between the binary swap and the restart) compares the loaded unit file against the one this repo ships for the resolved unit name — `go-trader.service` for a plain unit, `systemd/go-trader@.service` for `go-trader@<instance>.service`.
 On a difference it keeps the loaded file as `<unit>.prev`, installs the shipped one with mode 0644, and runs `daemon-reload`; on a match that systemd has not reloaded it runs `daemon-reload` only; otherwise it does nothing.
@@ -433,6 +458,7 @@ Never apply a runtime-default change silently when the operator has not been sho
 
 When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
 
+- **Docker image and Compose setup (#1734, internal for host deployments).** systemd and Linux process deployments keep their update, restart, bind and storage behavior. The new daemon flag `--status-bind` (and `GO_TRADER_STATUS_BIND`) accepts only loopback on a host, so a host config needs no change. Mention `docs/DOCKER.md` to an operator who wants a container; apply nothing.
 - **`closed_bar_decisions` (#1712, new opt-in field).** Dormant until set; with it off nothing changes. After an update, mention it and, only if the operator wants backtest-aligned decisions, offer it on a new paper strategy ID (entries can start up to one bar later). Warn before the restart if a config names a custom check script, because the probe now sends `--closed-bar-decisions` and `--decision-regime-timeframe`, and update a `market_feed: shared` feed service in the same release.
 - **Paper Hyperliquid perps book venue lot sizes (#1716, runtime default, no opt-out).** Paper HL perps entries, flips, scale-in adds and partial closes (tier fills included) now floor to the coin's `szDecimals`, and hold with no book write when the floored order is 0 or below $10.30 or when the lot size is unknown. Full closes, stops and kill-switch flattening are unchanged. After an update, list every paper HL perps strategy and its open positions, tell the operator that paper results before and after this update are not comparable (recommend a new paper strategy ID when a clean comparison matters), and check the start log for `[hl-lot] ... unavailable` lines. No config, `state.db` or Python change; deploy with `bash scripts/update.sh --restart`.
 - **Args parameter flags warn at load when `--strategy-refs` supersedes them (#1711, runtime default with no behavior shift).** After an update, run `./go-trader inspect --all` (or read the start log), list each strategy that shows the new `[WARN]` with the unused args entry, and prompt per strategy: delete the entry (trading unchanged), or move the value into `open_strategy.params` or the matching field (trading changes, so recommend a new paper strategy ID). Apply an approved edit only with a restart, because an args change blocks SIGHUP hot reload. Default if the operator declines: nothing changes, and the warning repeats on each start.
@@ -466,7 +492,7 @@ When in doubt, treat a commit as a runtime default and prompt. Per-release narra
 
 ## Status
 
-Default port `8099`. Override with `--status-port <port>` or `status_port` in config. If the port is busy the server tries the next five; the log names the one it took.
+Default port `8099`. Override with `--status-port <port>` or `status_port` in config. If the port is busy the server tries the next five; the log names the one it took. The container binds `8099` exactly and refuses any other port (§ Docker Container).
 
 ```bash
 curl -s localhost:8099/status | python3 -m json.tool
@@ -475,11 +501,14 @@ curl -s localhost:8099/history
 open http://localhost:8099/dashboard
 ```
 
+`/health` returns 503 while the daemon drains, and when the main loop misses its own schedule: a pass of the loop (a cycle, reload or off-cycle audit) still running 30 minutes after it started, startup not reaching the loop within 30 minutes, or no wake 5 minutes after the time the scheduler planned. The age of the last cycle alone never makes it unhealthy, so a long `interval_seconds` stays healthy between cycles. Discord `/health` uses the same rule.
+
 `/health` also carries `run_evidence`: the process start time, the time each strategy was last evaluated (`evaluated`), the strategies skipped at zero capital (`zero_capital_skipped`), the strategies a cycle held back with the reason and time (`held`: `portfolio_kill_switch` for a latched or fired scope kill switch, `save_blocked` after three failed saves), and `last_state_save`, the end of the last cycle whose save succeeded for every partition. Every map is empty after a restart. When `STATUS_AUTH_TOKEN` is set, `/health` includes `run_evidence` only for a request with `Authorization: Bearer <token>`; `status`, `version` and `pid` stay open for monitors. `scripts/migrate-service-layout.py` uses it as its execution proof and sends the token read from the running process's environment (never written to its manifest or journal).
 
 Dashboard JSON endpoints: `/api/strategies`, `/api/strategies/overview`, `/api/strategies/<id>/(candles|trades|status|equity|config|simulate)`, `/api/regime/transitions`, `/api/tuning/runs[/<id>]`. Candles and equity are cached 30 seconds. `config` (GET) and `simulate`/`config` (POST) need `status_token` plus a same-origin header; when `status_token` is set the dashboard page prompts for it and keeps it in browser local storage.
 
-**Never expose the status port publicly.** The server listens on loopback only. Do not rebind to `0.0.0.0`. Front each instance with [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) or another authenticated proxy on the same machine — for example `tailscale serve --bg --https=8443 http://127.0.0.1:8099`, then browse `https://<node>.tailnet.ts.net:8443/dashboard`. A common multi-instance port map (match each `status_port`): live `8099`, paper-testing `8100`, then `8101`+ per paper instance. After a paper instance is folded into the combined paper service (§ Storage Ownership), its port and its proxy or tunnel mapping are retired; the combined paper service's port serves every folded partition. Paper and live never share a service. An agent stack such as OpenClaw may serve its own dashboard on other ports; that UI is not go-trader's.
+**Never expose the status port publicly.** On a host the server listens on loopback only: `--status-bind <host>` (or `GO_TRADER_STATUS_BIND`, default `localhost`; the flag wins) accepts only `localhost`, `127.0.0.0/8` or `::1`, and any other value stops the start. Do not rebind a host to `0.0.0.0`.
+Only the Docker image (`GO_TRADER_RUNTIME=container`) may bind the wildcard address, and only with `STATUS_AUTH_TOKEN` set; Compose then publishes the port on host `127.0.0.1` only (§ Docker Container). Front each instance with [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) or another authenticated proxy on the same machine — for example `tailscale serve --bg --https=8443 http://127.0.0.1:8099`, then browse `https://<node>.tailnet.ts.net:8443/dashboard`. A common multi-instance port map (match each `status_port`): live `8099`, paper-testing `8100`, then `8101`+ per paper instance. After a paper instance is folded into the combined paper service (§ Storage Ownership), its port and its proxy or tunnel mapping are retired; the combined paper service's port serves every folded partition. Paper and live never share a service. An agent stack such as OpenClaw may serve its own dashboard on other ports; that UI is not go-trader's.
 
 The dashboard also carries mutating controls behind a typed-confirmation nonce: pause/unpause and ratchet-notification toggles, trade actions (close, manual edits), and structural mutations (add/remove strategy, paper-to-live, apply-regime-gate).
 
@@ -502,8 +531,8 @@ Global slash commands register at startup, covering every guild the bot is in pl
 
 | Command | What it does |
 | --- | --- |
-| `logs [n]` | The last N journal lines of the unit (`GO_TRADER_SERVICE`, default `go-trader`). It reads the unit's `LogNamespace` from `systemctl show` and runs `journalctl --namespace=+<ns>`; an empty value or a failed lookup reads the default journal. DM-only because logs can carry wallet addresses and error payloads |
-| `restart` | `systemctl restart go-trader`; it ACKs, then this instance is replaced |
+| `logs [n]` | The last N journal lines of the unit (`GO_TRADER_SERVICE`, default `go-trader`). It reads the unit's `LogNamespace` from `systemctl show` and runs `journalctl --namespace=+<ns>`; an empty value or a failed lookup reads the default journal. In the container image it runs neither and replies with the `docker compose logs` command. DM-only because logs can carry wallet addresses and error payloads |
+| `restart` | `systemctl restart go-trader`; it ACKs, then this instance is replaced. In the container image the daemon drains, saves state and exits 0, and Docker starts the container again |
 | `backtest <strategy> <symbol> [timeframe]` | A single-mode backtest, 5-minute timeout, holding one of the four Python semaphore slots; replies with a summary and attaches the report |
 | `report-an-issue <title> <body> [label]` | Files a GitHub issue against `discord.report_repo` (default `richkuo/go-trader`). Token from `GO_TRADER_GITHUB_TOKEN`, then `GITHUB_TOKEN`, then `discord.report_github_token`; it says so when none is set |
 | `config show` | The running config with secrets redacted |
@@ -515,7 +544,7 @@ Global slash commands register at startup, covering every guild the bot is in pl
 | `apply-regime-gate` | Interactive picker over type-eligible flat strategies, applies a named regime entry-gate preset, then confirms before writing. It refuses a non-flat target both before and after the confirm. The confirm lists any OTHER strategy whose dormant `allowed_regimes` gate the accompanying `regime.enabled` flip would reactivate — read that list first. Applies through a full restart |
 | `clear-cash-reconcile <strategy>` | Clears the cash-reconcile latch after you confirm virtual cash matches the venue. It never invents or adjusts cash; it only drops the block on live spot buys |
 
-Every config write serializes on one mutex, and mutating commands restart deployment-agnostically (systemctl with `GO_TRADER_SERVICE`, falling back to an in-process exec for signal-mode deploys).
+Every config write serializes on one mutex, and mutating commands restart deployment-agnostically (systemctl with `GO_TRADER_SERVICE`, falling back to an in-process exec for signal-mode deploys; the container image uses neither and restarts by drain, state save and exit).
 
 ---
 
@@ -1971,6 +2000,7 @@ Every send goes through `MultiNotifier`, which fans out to its backends. Channel
 
 - `scripts/update.sh --restart` is atomic: preflight → `pull --ff-only` (or `--rsync-from <src>`) → `uv sync --no-dev` → build → probe → journald namespace sync (systemd mode) → binary swap (previous kept as `.prev`) → unit install + `daemon-reload` (systemd mode; previous unit kept as `<unit>.prev`) → restart and verify → rollback on timeout, which restores both `.prev` files. `--all --restart` discovers deployments via `discover_deployment_dirs_from_systemd`. To rebuild the current commit, run the same `bash scripts/update.sh --restart`: with nothing to pull, `pull --ff-only` is a no-op and the script still runs `uv sync --no-dev`, builds Go from the committed `HEAD` (uncommitted build-input changes stop it; untracked files are never built), probes, swaps and restarts. Never rebuild Go alone. Config-only reload is `kill -HUP $(pgrep go-trader)` and Python picks the change up next cycle.
 - Post-update classification diffs `<running>..HEAD` per § Post-Update Agent Protocol.
+- Container images build only from the root `Dockerfile` (§ Docker Container); `scripts/test_container_image.sh` (needs Docker, `GO_TRADER_TEST_IMAGE`, `GO_TRADER_EXPECT_VERSION` and `GO_TRADER_EXPECT_COMMIT`) is their integration suite.
 - Test placement: Go `_test.go` beside the file; Python `test_*.py`. Pure helpers to extract from subprocess wrappers include `perpsLiveOrderSize`, `*OrderSkipReason`, `parseXxxCloseOutput`, and the Sharpe computation. `shared_scripts/test_*.py` sits outside pytest `testpaths`; registry and sys.path tests import through `importlib.util.spec_from_file_location`.
 
 ### The `@claude` GitHub workflow (`.github/workflows/claude.yml`)
