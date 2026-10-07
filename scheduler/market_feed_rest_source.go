@@ -109,6 +109,7 @@ func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycle
 	}
 
 	r.owner.EnsureFunding(keyed, r.owner.earliestFrameBarMs(reqs))
+	r.owner.EnsureAccountingFunding(keyed)
 
 	if len(reqs.Coins) > 0 {
 		midCtx := withFeedReason(ctx, string(feedRestMids))

@@ -24,6 +24,8 @@ const (
 	feedEstimateCoinBytes = 256
 
 	feedEstimateObservationBytes = 96
+
+	feedEstimateAccountingRecordBytes = 64
 )
 
 type FeedRoleConfig struct {
@@ -305,6 +307,7 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 		SignalKeys:   make(map[marketFeedKey]bool),
 	}
 	coins := make(map[string]bool)
+	accounting := make(map[string]bool)
 	cadenceSets := make(map[marketFeedKey]map[int]bool)
 	for _, c := range consumers {
 		if !c.Loaded {
@@ -336,10 +339,17 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 		for key, window := range c.Req.Observations {
 			union.addObservation(key, window)
 		}
+		for _, coin := range c.Req.AccountingCoins {
+			accounting[coin] = true
+		}
 	}
 	for coin := range coins {
 		union.MidCoins = append(union.MidCoins, coin)
 	}
+	for coin := range accounting {
+		union.AccountingCoins = append(union.AccountingCoins, coin)
+	}
+	sort.Strings(union.AccountingCoins)
 	for key, set := range cadenceSets {
 		cads := make([]int, 0, len(set))
 		for cad := range set {
@@ -381,6 +391,9 @@ func estimateFeedSealBytes(union feedRequirements) int {
 	}
 	for _, window := range union.Observations {
 		total += feedEstimateKeyBytes + int(window/feedObservationCadenceMs+2)*feedEstimateObservationBytes
+	}
+	for range union.AccountingCoins {
+		total += feedEstimateCoinBytes + int(feedAccountingWindow/time.Hour+1)*feedEstimateAccountingRecordBytes
 	}
 	return total
 }
