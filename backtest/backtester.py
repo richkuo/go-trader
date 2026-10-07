@@ -5269,7 +5269,8 @@ class Backtester:
 
             def _net_pnl_pct(t):
                 notional = t.shares * t.entry_price
-                return (t.pnl / notional) if notional > 0 else 0.0
+                funding = getattr(t, "funding_pnl", 0.0) or 0.0
+                return ((t.pnl + funding) / notional) if notional > 0 else 0.0
             avg_win = np.mean([_net_pnl_pct(t) for t in winning]) if winning else 0
             avg_loss = np.mean([_net_pnl_pct(t) for t in losing]) if losing else 0
         else:

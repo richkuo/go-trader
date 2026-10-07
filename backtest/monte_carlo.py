@@ -159,7 +159,8 @@ def trade_returns(trades: Sequence, returns: str = "net") -> List[float]:
         entry = float(t.get("entry_price") or 0.0)
         notional = shares * entry
         if notional > 0 and t.get("pnl") is not None:
-            out.append(float(t["pnl"]) / notional * 100.0)
+            funding = float(t.get("funding_pnl") or 0.0)
+            out.append((float(t["pnl"]) + funding) / notional * 100.0)
         else:
             if "pnl_pct" not in t:
                 raise ValueError(

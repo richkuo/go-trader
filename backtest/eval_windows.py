@@ -52,8 +52,11 @@ def trade_samples_from_results(results: dict) -> List[dict]:
     for t in results.get("trades") or []:
         gross = float(t["pnl_pct"])
         notional = float(t.get("shares") or 0.0) * float(t.get("entry_price") or 0.0)
-        net = (float(t["pnl"]) / notional * 100.0
-               if notional > 0 and t.get("pnl") is not None else gross)
+        if notional > 0 and t.get("pnl") is not None:
+            funding = float(t.get("funding_pnl") or 0.0)
+            net = (float(t["pnl"]) + funding) / notional * 100.0
+        else:
+            net = gross
         out.append({"entry_date": str(t["entry_date"]), "pnl_pct": gross,
                     "pnl_pct_net": round(net, 6)})
     return out
@@ -74,7 +77,8 @@ def positions_from_results(results: dict) -> List[dict]:
         g = grouped[key]
         shares = float(t.get("shares") or 0.0)
         g["exit_date"] = str(t["exit_date"])
-        g["net_pnl"] += float(t.get("pnl") or 0.0)
+        g["net_pnl"] += (float(t.get("pnl") or 0.0)
+                         + float(t.get("funding_pnl") or 0.0))
         g["fees"] += float(t.get("entry_fee") or 0.0) + float(t.get("exit_fee") or 0.0)
         g["entry_notional"] += shares * float(t.get("entry_price") or 0.0)
         g["exit_notional"] += shares * float(t.get("exit_price") or 0.0)

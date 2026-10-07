@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 import auto_suggest as asug
+import eval_windows as ew
 import fee_audit as fa
 import monte_carlo as mc
 from backtester import Backtester, FundingIncompleteError
@@ -341,3 +342,54 @@ def test_partial_close_of_half_moves_half_the_funding():
     assert len(closed) == 1 and len(rest) == 1
     assert closed[0]["funding_pnl"] == pytest.approx(rest[0]["funding_pnl"])
     assert closed[0]["funding_pnl"] * 2 == pytest.approx(result["total_funding_pnl"])
+    samples = ew.trade_samples_from_results(result)
+    assert len(samples) == len(result["trades"])
+    for trade, sample in zip(result["trades"], samples):
+        notional = trade["shares"] * trade["entry_price"]
+        price_net = trade["pnl"] / notional * 100.0
+        delta = trade["funding_pnl"] / notional * 100.0
+        assert sample["pnl_pct_net"] == pytest.approx(round(price_net + delta, 6))
+    positions = ew.positions_from_results(result)
+    assert len(positions) == 1
+    assert positions[0]["net_pnl"] == pytest.approx(
+        sum(t["pnl"] + t["funding_pnl"] for t in result["trades"]), abs=1e-4)
+    assert sum(t["funding_pnl"] for t in result["trades"]) == pytest.approx(
+        result["total_funding_pnl"])
+    assert mc._leg_returns({"trade_samples": samples}, "net") == [
+        s["pnl_pct_net"] for s in samples]
+
+
+def test_long_held_across_prints_net_falls_by_negative_funding(monkeypatch):
+    frame = _hourly_frame(48)
+    frame["signal"] = 0
+    frame.iloc[0, frame.columns.get_loc("signal")] = 1
+    funding = _prints(frame.index)
+    _patch_sources(monkeypatch, frame, funding)
+    charged_df = _attach(frame, funding, mode="charge")
+    off_df = _attach(frame, funding, mode="off")
+
+    def _run(df):
+        bt = Backtester(initial_capital=10000.0, platform="hyperliquid",
+                        commission_pct=0.0, slippage_pct=0.0)
+        return bt.run(df, strategy_name="sma_crossover", symbol="BTC/USDT",
+                      timeframe="1h", save=False)
+
+    charged = _run(charged_df)
+    off = _run(off_df)
+    assert len(charged["trades"]) == 1 and len(off["trades"]) == 1
+    trade = charged["trades"][0]
+    off_trade = off["trades"][0]
+    assert trade["funding_pnl"] < 0
+    assert "funding_pnl" not in off_trade
+    charged_sample = ew.trade_samples_from_results(charged)[0]
+    off_sample = ew.trade_samples_from_results(off)[0]
+    notional = trade["shares"] * trade["entry_price"]
+    delta = trade["funding_pnl"] / notional * 100.0
+    assert charged_sample["pnl_pct_net"] == pytest.approx(
+        off_sample["pnl_pct_net"] + delta, abs=1e-6)
+    assert ew.positions_from_results(charged)[0]["net_pnl"] == pytest.approx(
+        trade["pnl"] + trade["funding_pnl"], abs=1e-4)
+    assert mc.trade_returns([trade]) == [pytest.approx(charged_sample["pnl_pct_net"])]
+    assert mc.trade_returns([off_trade]) == [pytest.approx(off_sample["pnl_pct_net"])]
+    assert mc._leg_returns(
+        {"trade_samples": [charged_sample]}, "net") == [charged_sample["pnl_pct_net"]]
