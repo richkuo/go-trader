@@ -45,13 +45,13 @@ func TestSitesPlaceTheOwnShare(t *testing.T) {
 	post := 0.75
 	states["A"].Positions["ETH"].PostTPTrailingATRMult = &post
 	states["A"].Positions["ETH"].StopLossHighWaterPx = 110
-	if _, _ = runTrailingStopUpdateAfterRatchetTighten(a, states["A"], "ETH", 110, share, nil, nil, &mu, nil, newTestLogger(t)); math.Abs(got-8) > 1e-6 {
+	if _, _, _ = runTrailingStopUpdateAfterRatchetTighten(a, states["A"], "ETH", 110, share, nil, nil, &mu, nil, newTestLogger(t)); math.Abs(got-8) > 1e-6 {
 		t.Fatalf("ratchet size %g, want 8", got)
 	}
 
 	got = 0
 	states["A"].Positions["ETH"].ScaleInResizePending = true
-	if _, _ = scaleInResizeTrailingSLNow(a, states["A"], "ETH", 110, share, nil, nil, false, &mu, nil, newTestLogger(t)); math.Abs(got-8) > 1e-6 {
+	if _, _, _ = scaleInResizeTrailingSLNow(a, states["A"], "ETH", 110, share, nil, nil, false, &mu, nil, newTestLogger(t)); math.Abs(got-8) > 1e-6 {
 		t.Fatalf("scale-in size %g, want 8", got)
 	}
 
