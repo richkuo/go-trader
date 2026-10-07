@@ -195,7 +195,16 @@ func TestRatchetAlertBook_ErrorLeavesOldStop(t *testing.T) {
 	var mu sync.RWMutex
 	_, _, ev := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 115, nil, nil, nil, &mu, nil, silentStrategyLogger(sc.ID))
 	sender := ratchetFinish(t, sc, st, alert, ev, true)
-	if len(sender.messages) != 1 || !strings.Contains(sender.messages[0], "SL trigger: $80.0000 (unchanged)") {
+	if !call.called || call.cancelOID != 410 {
+		t.Fatalf("stub call=%+v want cancel 410", call)
+	}
+	if ev.Confirmed || ev.Result != nil {
+		t.Fatalf("confirmed=%v result=%v, want an unconfirmed nil result", ev.Confirmed, ev.Result)
+	}
+	if !approxEq(pos.StopLossTriggerPx, 80) || pos.StopLossOID != 410 {
+		t.Fatalf("book trigger=%v oid=%d, want 80 and 410", pos.StopLossTriggerPx, pos.StopLossOID)
+	}
+	if len(sender.messages) != 1 || !strings.Contains(sender.messages[0], "SL trigger: $80.0000 (replacement not confirmed; previous stop retained)") || strings.Contains(sender.messages[0], "(unchanged)") {
 		t.Fatalf("message: %v", sender.messages)
 	}
 }

@@ -10,6 +10,7 @@ import (
 const (
 	ratchetOutcomeMoved            = "moved"
 	ratchetOutcomeUnchanged        = "unchanged"
+	ratchetOutcomeNotConfirmed     = "replacement not confirmed; previous stop retained"
 	ratchetOutcomeSamePrice        = "replaced at the same price"
 	ratchetOutcomeRequestedUnknown = "requested, outcome unknown"
 	ratchetOutcomeUnknownRetained  = "outcome unknown; previous stop retained"
@@ -65,9 +66,10 @@ type RatchetTriggerAlert struct {
 // ratchetStopEvidence is the trailing update's attempt for this alert only.
 // It is not stored. The price still comes from the original position's book.
 type ratchetStopEvidence struct {
-	Ran    bool
-	Live   bool
-	Result *HyperliquidStopLossUpdateResult
+	Ran       bool
+	Live      bool
+	Confirmed bool
+	Result    *HyperliquidStopLossUpdateResult
 }
 
 func formatRatchetTriggerAlert(a RatchetTriggerAlert) string {
@@ -120,6 +122,8 @@ func formatRatchetSLLine(a RatchetTriggerAlert) string {
 		return fmt.Sprintf("SL trigger: $%.4f (replaced at the same price)", a.StopTriggerPx)
 	case ratchetOutcomeUnchanged:
 		return fmt.Sprintf("SL trigger: $%.4f (unchanged)", a.StopTriggerPx)
+	case ratchetOutcomeNotConfirmed:
+		return fmt.Sprintf("SL trigger: $%.4f (replacement not confirmed; previous stop retained)", a.StopTriggerPx)
 	case ratchetOutcomeRequestedUnknown:
 		return fmt.Sprintf("SL trigger: $%.4f (requested, outcome unknown)", a.StopTriggerPx)
 	case ratchetOutcomeUnknownRetained:
@@ -234,11 +238,22 @@ func applyRatchetBookOutcome(alert *RatchetTriggerAlert, snap ratchetBookSnap, m
 		alert.Outcome = ratchetOutcomeMoved
 		return
 	}
+	if ratchetAttemptUnconfirmedRetained(ev, snap, alert.PrevStopTriggerPx, alert.PrevStopOID) {
+		alert.Outcome = ratchetOutcomeNotConfirmed
+		return
+	}
 	if snap.StopLossTriggerPx > 0 && ratchetPxEqual(snap.StopLossTriggerPx, alert.PrevStopTriggerPx) {
 		alert.Outcome = ratchetOutcomeUnchanged
 		return
 	}
 	alert.Outcome = ratchetOutcomeNoStop
+}
+
+func ratchetAttemptUnconfirmedRetained(ev ratchetStopEvidence, snap ratchetBookSnap, prevTrigger float64, prevOID int64) bool {
+	return ev.Live && ev.Ran && !ev.Confirmed &&
+		snap.StopLossTriggerPx > 0 &&
+		ratchetPxEqual(snap.StopLossTriggerPx, prevTrigger) &&
+		snap.StopLossOID == prevOID
 }
 
 func ratchetAttemptUnknownRetained(ev ratchetStopEvidence) bool {

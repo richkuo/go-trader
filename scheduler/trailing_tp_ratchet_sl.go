@@ -63,7 +63,7 @@ func runTrailingStopUpdateAfterRatchetTighten(
 		livePolicy.liquidationPx = hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, side)
 		newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(
 			sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, livePolicy, notifier, logger)
-		ev := ratchetStopEvidence{Ran: true, Live: true, Result: slUpdate}
+		ev := ratchetStopEvidence{Ran: true, Live: true, Confirmed: updateConfirmed, Result: slUpdate}
 		mu.Lock()
 		defer mu.Unlock()
 		if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, slOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, slEffectiveQty); immediateFill {

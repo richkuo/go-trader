@@ -783,7 +783,7 @@ func runManualTrailingStopUpdate(sc StrategyConfig, stratState *StrategyState, s
 	prevSLOID := pos.StopLossOID
 	forceResize := pos.ScaleInResizePending && !capped
 	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: ratchetTightened, liquidationPx: hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, sc.Symbol, pos.Side)}, notifier, logger)
-	ev := ratchetStopEvidence{Ran: true, Live: true, Result: slUpdate}
+	ev := ratchetStopEvidence{Ran: true, Live: true, Confirmed: updateConfirmed, Result: slUpdate}
 	fills, detail := 0, ""
 	mu.Lock()
 	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, slEffectiveQty); immediateFill {

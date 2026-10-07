@@ -58,7 +58,7 @@ func scaleInResizeTrailingSLNow(
 		return 0, "", ratchetStopEvidence{}
 	}
 	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, trailingReplacePolicy{forceResize: true, ratchetTightened: ratchetTightened, liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, side)}, notifier, logger)
-	ev := ratchetStopEvidence{Ran: true, Live: true, Result: slUpdate}
+	ev := ratchetStopEvidence{Ran: true, Live: true, Confirmed: updateConfirmed, Result: slUpdate}
 	mu.Lock()
 	defer mu.Unlock()
 	trades := 0

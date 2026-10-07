@@ -2505,7 +2505,7 @@ func main() {
 								}
 								forceResize := hlScaleInResizePending && !capped
 								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manageRatchetTightened, liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, result.Symbol, hlPosSide)}, notifier, logger)
-								manageStopEvidence = ratchetStopEvidence{Ran: true, Live: true, Result: slUpdate}
+								manageStopEvidence = ratchetStopEvidence{Ran: true, Live: true, Confirmed: updateConfirmed, Result: slUpdate}
 								mu.Lock()
 								stopAt := hlStep.historyLenLocked()
 								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, slEffectiveQty); immediateFill {
