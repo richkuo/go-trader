@@ -1,0 +1,55 @@
+{
+  "captured_at": "2026-01-01T00:00:00Z",
+  "completeness": {
+    "candleSnapshot": [
+      {
+        "coin": "ETH",
+        "complete": true,
+        "http_status": 200,
+        "interval": "1m"
+      }
+    ],
+    "historicalOrders": {
+      "complete": true,
+      "http_status": 200
+    },
+    "orderStatus": [
+      {
+        "complete": true,
+        "http_status": 200
+      }
+    ],
+    "recentTrades": [
+      {
+        "coin": "ETH",
+        "complete": true,
+        "http_status": 200
+      }
+    ],
+    "userFillsByTime": {
+      "complete": false,
+      "observed_page_maximum": 2,
+      "pages": 1,
+      "uncovered_from_ms": 1704077400000,
+      "uncovered_to_ms": 1704078300000
+    }
+  },
+  "inputs": {
+    "address_sha256": "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d",
+    "end_ms": 1704079200000,
+    "export_sha256": [
+      {
+        "path": "export_a.json",
+        "sha256": "f75cb77d967985d72ccc1d3cd07e2aee2382cf3b41bb845b08302ff3310ac422"
+      },
+      {
+        "path": "export_b.json",
+        "sha256": "61242afa29c6c4ca326d0a0d8964e7a24c324575b87a62da55a021d86b18bb43"
+      }
+    ],
+    "since_ms": 1704067200000
+  },
+  "page_cap": 200,
+  "schema": "go-trader.resting-tp-capture",
+  "schema_version": 1
+}

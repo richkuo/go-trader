@@ -1,0 +1,86 @@
+{
+  "events": [
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": false
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p9"
+      },
+      "process_strategy_id": "strat-b",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "buy"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T02:10:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "[1009]"
+      }
+    },
+    {
+      "is_close": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": true
+      },
+      "position_id": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "p9"
+      },
+      "process_strategy_id": "strat-b",
+      "side": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "sell"
+      },
+      "stop_loss_oid": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      },
+      "symbol": {
+        "provenance": [],
+        "reason": null,
+        "status": "available",
+        "value": "ETH"
+      },
+      "timestamp": "2024-01-01T02:25:00Z",
+      "tp_oids_json": {
+        "provenance": [],
+        "reason": "not_recorded",
+        "status": "unavailable",
+        "value": null
+      }
+    }
+  ],
+  "schema": "go-trader.booked-ledger",
+  "schema_version": 1
+}

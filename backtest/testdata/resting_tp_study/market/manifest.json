@@ -1,0 +1,53 @@
+{
+  "costs": {
+    "maker_fee_pct": 0.00015,
+    "min_notional_margin": 0.03,
+    "min_notional_usd": 10.0,
+    "slippage_bps": 1.0,
+    "taker_fee_pct": 0.00045
+  },
+  "datasets": [
+    {
+      "candles": {
+        "path": "ETH_5m_candles.csv.gz",
+        "sha256": "03e677011c61d4aec25e4a77cc4a446ea8515d29dfd58592becc340d81858457"
+      },
+      "coin": "ETH",
+      "half_spread_bps": 0.5,
+      "size_decimals": 2,
+      "symbol": "ETH/USDT"
+    },
+    {
+      "candles": {
+        "path": "SOL_5m_candles.csv.gz",
+        "sha256": "8f411f71ad887e20d8cc606dc2d9c338034c95711565fbde3170aa40e903fc29"
+      },
+      "coin": "SOL",
+      "half_spread_bps": 0.5,
+      "size_decimals": 2,
+      "symbol": "SOL/USDT"
+    }
+  ],
+  "interval": "5m",
+  "provenance": {
+    "kind": "proxy",
+    "label": "synthetic 5m candles for the resting take-profit fixture; not market data"
+  },
+  "schema": "offline_candle_manifest/v1",
+  "study": "resting_tp_1727_fixture",
+  "venue": "hyperliquid",
+  "venue_reference": {
+    "meta": {
+      "path": "venue_meta.json",
+      "sha256": "5559d4cd225fbb483bcdc7d28098b1693d5ebd7877d22a4bdb297abc25ae69c9"
+    }
+  },
+  "warmup_bars": 0,
+  "windows": {
+    "study": {
+      "end": "2024-01-01T03:20:00Z",
+      "role": "fixture window",
+      "start": "2024-01-01T00:00:00Z"
+    }
+  }
+}
