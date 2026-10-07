@@ -529,31 +529,15 @@ func buildRatchetTriggerAlert(sc StrategyConfig, pos *Position, symbol, side, re
 	if side == "short" {
 		profitDistance = anchor - mark
 	}
-	hwm := pos.StopLossHighWaterPx
-	if side == "long" {
-		if hwm <= 0 || mark > hwm {
-			hwm = mark
-		}
-	} else {
-		if hwm <= 0 || mark < hwm {
-			hwm = mark
-		}
-	}
-	intendedSL := 0.0
-	if entryATR > 0 && hwm > 0 && newMult > 0 {
-		if side == "long" {
-			intendedSL = hwm - newMult*entryATR
-		} else {
-			intendedSL = hwm + newMult*entryATR
-		}
-		if intendedSL <= 0 {
-			intendedSL = 0
-		}
-	}
 	a := &RatchetTriggerAlert{
 		StrategyID:           sc.ID,
 		Symbol:               symbol,
 		Side:                 side,
+		TradePositionID:      pos.TradePositionID,
+		OwnerStrategyID:      pos.OwnerStrategyID,
+		PrevQuantity:         pos.Quantity,
+		PrevStopTriggerPx:    pos.StopLossTriggerPx,
+		PrevStopOID:          pos.StopLossOID,
 		TierIdx:              clearedIdx,
 		TotalTiers:           len(tiers),
 		TierATRMultiple:      tiers[clearedIdx].ATRMultiple,
@@ -565,8 +549,6 @@ func buildRatchetTriggerAlert(sc StrategyConfig, pos *Position, symbol, side, re
 		ProfitUSD:            profitDistance * pos.Quantity * contractMult,
 		OldTrailMult:         oldMult,
 		NewTrailMult:         newMult,
-		HighWaterMark:        hwm,
-		IntendedSLTriggerPx:  intendedSL,
 		RegimeLabel:          regime,
 		PositionRegimeAtOpen: pos.Regime,
 	}
