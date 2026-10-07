@@ -236,6 +236,14 @@ def build_candidate(open_name: str, params: dict, resolution: dict) -> dict:
         if resolution.get("regime_windows_spec"):
             cand["regime_windows_spec"] = copy.deepcopy(
                 resolution["regime_windows_spec"])
+        if resolution.get("regime_gate_on_failure"):
+            cand["regime_gate_on_failure"] = resolution["regime_gate_on_failure"]
+        plan = resolution.get("regime_label_windows")
+        if plan:
+            cand["regime_label_windows"] = copy.deepcopy(plan)
+            cand["regime_vocabularies"] = {
+                k: list(v) for k, v in sorted((plan.get("vocabularies") or {}).items())
+            }
     return cand
 
 
@@ -255,17 +263,12 @@ def unsupported_reason(resolution: dict) -> str | None:
         return "unsupported_allow_scale_in"
     if str(resolution.get("atr_method") or "simple").strip().lower() not in ("", "simple"):
         return f"unsupported_atr_method:{resolution.get('atr_method')}"
-    if str(resolution.get("regime_gate_on_failure") or "open").strip().lower() == "closed":
-        return "unsupported_regime_gate_on_failure_closed"
     return None
 
 
 def stage1_skip_reason(resolution: dict) -> str | None:
     if (resolution.get("direction") or "long") == "short":
         return "short_direction_long_only_seeder"
-    if (resolution.get("regime_enabled")
-            and resolution.get("regime_windows_spec")):
-        return "composite_regime_gate_unmodelable_in_walk_forward"
     return None
 
 
@@ -359,6 +362,10 @@ def run_stage1(open_name: str, grid: dict, resolution: dict, symbol: str,
         strategy_type=resolution.get("strategy_type") or "perps",
         mode=funding_mode, timeframe=timeframe,
     )
+    plan = resolution.get("regime_label_windows") if resolution.get("regime_enabled") else None
+    if plan:
+        from regime_label_columns import attach_regime_label_columns
+        df, _ = attach_regime_label_columns(df, plan)
 
     summary = walk_forward_optimize(
         df, open_name, grid,
@@ -369,6 +376,9 @@ def run_stage1(open_name: str, grid: dict, resolution: dict, symbol: str,
         regime_period=int(resolution.get("regime_period") or 14),
         regime_adx_threshold=float(resolution.get("regime_adx_threshold") or 20.0),
         allowed_regimes=resolution.get("allowed_regimes"),
+        regime_windows_spec=resolution.get("regime_windows_spec"),
+        regime_gate_on_failure=resolution.get("regime_gate_on_failure") or "open",
+        regime_label_plan=plan,
         close_strategies=resolution.get("close_strategies") or None,
         stop_loss_atr_mult=resolution.get("stop_loss_atr_mult"),
         trailing_stop_atr_mult=resolution.get("trailing_stop_atr_mult"),

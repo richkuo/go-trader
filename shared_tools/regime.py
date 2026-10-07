@@ -706,6 +706,9 @@ def classifier_for_window(regime: dict | None, window_key: str) -> str:
         key = primary_regime_window_key(windows).strip().lower()
     for name, spec in windows.items():
         if str(name).strip().lower() == key:
+            # An integer window is an ADX period, matching RegimeWindowsMap.
+            if isinstance(spec, int) and not isinstance(spec, bool):
+                return CLASSIFIER_ADX
             classifier = str((spec or {}).get("classifier") or "").strip().lower()
             return classifier or CLASSIFIER_ADX
     return CLASSIFIER_ADX

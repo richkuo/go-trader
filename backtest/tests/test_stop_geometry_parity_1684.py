@@ -286,9 +286,9 @@ def test_preview_payload_converts_once_and_requires_unit_marker():
 
 @pytest.mark.parametrize("window,windows,accepted", [
     ("medium", {"medium": 14, "long": 50}, True),
-    ("long", {"medium": 14, "long": 50}, False),
+    ("long", {"medium": 14, "long": 50}, True),
     ("", {"medium": 14, "long": 50}, True),
-    ("short", {"long": 50, "short": 7}, False),
+    ("short", {"long": 50, "short": 7}, True),
     ("long", {"long": 50, "short": 7}, True),
 ])
 def test_preview_regime_window_follows_translator_rule(tmp_path, window, windows, accepted):
@@ -322,9 +322,10 @@ def test_preview_composite_primary_window_uses_the_translator_label_vocabulary(t
               "windows": {"medium": {"classifier": "composite", "period": 14}}}
     strategy = {"trailing_stop_atr_mult_regime": block}
     Backtester(**_load(tmp_path, {"config": {"regime": regime}, "strategy": strategy}))
+    # The live lookback is at least 200 bars, so a shorter preview has blank labels.
     candles = [{"time": 1767225600 + i * 3600, "open": 100.0 + (i % 17) - (i % 7),
                 "high": 101.0 + (i % 17) - (i % 7), "low": 99.0 + (i % 17) - (i % 7),
-                "close": 100.5 + (i % 17) - (i % 7), "volume": 10.0} for i in range(120)]
+                "close": 100.5 + (i % 17) - (i % 7), "volume": 10.0} for i in range(320)]
     payload = {"type": "perps", "platform": "hyperliquid", "symbol": "BTC", "timeframe": "1h",
                "open_strategy": {"name": "sma_crossover"}, "stop_units": "live_percent",
                "leverage": 1, "leverage_source": "strategy_config", "max_drawdown_pct": 50,

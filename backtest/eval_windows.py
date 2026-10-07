@@ -287,6 +287,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             manifest_ctx: Optional[dict] = None,
             comparison_mode: Optional[str] = None,
             stop_kwargs: Optional[dict] = None,
+            regime_label_plan: Optional[dict] = None,
+            regime_gate_on_failure: str = "open",
             funding_mode: str = "charge") -> Optional[dict]:
     from atr import ensure_atr_indicator
     import pandas as pd
@@ -399,6 +401,24 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         if close_strategies:
             df_signals = ensure_atr_indicator(df_signals)
 
+    label_columns = None
+    feature_labels = {}
+    if regime_label_plan:
+        from regime_label_columns import (attach_regime_label_columns,
+                                          feature_label_kwargs)
+        plan_tf = str(regime_label_plan.get("timeframe") or "").strip().lower()
+        chart_tf = str(timeframe or "").strip().lower()
+        if plan_tf and plan_tf != chart_tf:
+            raise ValueError(
+                f"regime.timeframe {plan_tf!r} differs from chart timeframe "
+                f"{timeframe!r}; refusing to score a named window without the "
+                "regime-timeframe candles")
+        df_signals, label_columns = attach_regime_label_columns(
+            df_signals, regime_label_plan)
+        feature_labels = feature_label_kwargs(regime_label_plan)
+        if regime_windows_spec is None:
+            regime_windows_spec = regime_label_plan.get("windows_spec")
+
     use_regime = (regime_enabled or bool(allowed_regimes)
                   or bool(regime_windows_spec)
                   or bool(regime_directional_policy))
@@ -406,7 +426,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     indicator_frame = None
     if manifest_window is not None:
         import offline_manifest as om
-        if use_regime and "regime" not in df_signals.columns:
+        if use_regime and label_columns is None and "regime" not in df_signals.columns:
             from regime import ensure_regime_columns
             ensure_regime_columns(
                 df_signals,
@@ -430,6 +450,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         regime_adx_threshold=regime_adx_threshold,
         allowed_regimes=allowed_regimes,
         regime_windows_spec=regime_windows_spec,
+        regime_gate_on_failure=regime_gate_on_failure,
+        regime_label_columns=label_columns,
         commission_pct=commission_pct,
         intrabar_resolution=intrabar_resolution,
         comparison_mode=comparison_mode,
@@ -448,6 +470,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                     f"stop_kwargs.{key}={value!r} disagrees with {key}={bt_kwargs[key]!r}")
             continue
         bt_kwargs[key] = value
+    bt_kwargs.update(feature_labels)
     if manifest_ctx is None:
         from funding_fetcher import rejoin_funding_columns
         df_signals = rejoin_funding_columns(df_signals, df)
@@ -555,6 +578,30 @@ def validate_candidate(candidate: dict) -> dict:
                 "candidate.profile_allocation needs an inline 'window_spec' "
                 "({classifier, period[, thresholds|adx_threshold]}) so the "
                 "harness can compute the switch label series.")
+
+    plan = candidate.get("regime_label_windows")
+    if plan is not None:
+        if not isinstance(plan, dict) or not isinstance(plan.get("windows"), dict):
+            raise ValueError(
+                "candidate.regime_label_windows must be the resolved window plan")
+        named = plan.get("named") or {}
+        if not isinstance(named, dict):
+            raise ValueError("candidate.regime_label_windows.named must be an object")
+    for field in ("regime_gate_window", "regime_directional_window",
+                  "regime_atr_window"):
+        raw = str(candidate.get(field) or "").strip().lower()
+        if raw not in ("", "default") and not plan:
+            raise ValueError(
+                f"candidate {field}={raw!r} needs regime_label_windows; "
+                "refusing a named window with no column plan")
+    gate_failure = candidate.get("regime_gate_on_failure")
+    if gate_failure is not None:
+        from regime import normalize_regime_gate_on_failure
+        try:
+            candidate["regime_gate_on_failure"] = normalize_regime_gate_on_failure(
+                gate_failure)
+        except ValueError as exc:
+            raise ValueError(f"candidate.regime_gate_on_failure: {exc}") from exc
 
     ar = candidate.get("allowed_regimes")
     if ar is not None:
@@ -683,6 +730,8 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
         manifest_ctx=manifest_ctx,
         comparison_mode=candidate.get("comparison_mode"),
         stop_kwargs=candidate_stop_kwargs(candidate),
+        regime_label_plan=candidate.get("regime_label_windows"),
+        regime_gate_on_failure=candidate.get("regime_gate_on_failure") or "open",
         funding_mode=funding_mode,
     )
 

@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -22,16 +24,30 @@ sys.path.insert(0, root + "/backtest")
 sys.path.insert(0, root + "/shared_tools")
 
 from directional_certification import directional_cert_identity
-from regime import required_ohlcv_limit, resolve_strategy_regime_window
+from regime import (
+    classifier_for_window,
+    required_ohlcv_limit,
+    resolve_strategy_regime_window,
+    valid_labels_for_classifier,
+)
 
 req = json.load(sys.stdin)
 out = []
+fields = ("gate", "directional", "atr")
 for case in req["cases"]:
     regime = case["regime"]
+    strategy = case["strategy"]
+    windows = {field: resolve_strategy_regime_window(strategy, field, regime) for field in fields}
+    vocabularies = {
+        field: sorted(valid_labels_for_classifier(classifier_for_window(regime, windows[field])))
+        for field in fields
+    }
     out.append({
-        "window": resolve_strategy_regime_window(case["strategy"], case["field"], regime),
+        "window": resolve_strategy_regime_window(strategy, case["field"], regime),
         "limit": required_ohlcv_limit(int(regime.get("period") or 14), regime.get("windows") or None),
-        "identity": directional_cert_identity(case["strategy"], regime),
+        "identity": directional_cert_identity(strategy, regime),
+        "windows": windows,
+        "vocabularies": vocabularies,
     })
 json.dump(out, sys.stdout)
 `
@@ -101,6 +117,17 @@ func TestRegimeCompareResolversMatchLive(t *testing.T) {
 		if got[i].Identity.Asset != asset || got[i].Identity.Timeframe != tf || got[i].Identity.Classifier != classifier {
 			t.Fatalf("case %d identity: python %+v go %s %s %s", i, got[i].Identity, asset, tf, classifier)
 		}
+		for _, field := range []string{"gate", "directional", "atr"} {
+			wantWindow := resolveStrategyRegimeWindow(c.Strategy, field, c.Regime)
+			if got[i].Windows[field] != wantWindow {
+				t.Fatalf("case %d %s window: python %q go %q", i, field, got[i].Windows[field], wantWindow)
+			}
+			wantLabels := append([]string(nil), regimeLabelsForStrategyWindow(c.Strategy, c.Regime, field)...)
+			sort.Strings(wantLabels)
+			if strings.Join(got[i].Vocabularies[field], ",") != strings.Join(wantLabels, ",") {
+				t.Fatalf("case %d %s vocabulary: python %v go %v", i, field, got[i].Vocabularies[field], wantLabels)
+			}
+		}
 	}
 }
 
@@ -111,9 +138,11 @@ type regimeParityIdentity struct {
 }
 
 type regimeParityResult struct {
-	Window   string               `json:"window"`
-	Limit    int                  `json:"limit"`
-	Identity regimeParityIdentity `json:"identity"`
+	Window       string               `json:"window"`
+	Limit        int                  `json:"limit"`
+	Identity     regimeParityIdentity `json:"identity"`
+	Windows      map[string]string    `json:"windows"`
+	Vocabularies map[string][]string  `json:"vocabularies"`
 }
 
 func runRegimeCompareParityDriver(t *testing.T, req any) []regimeParityResult {

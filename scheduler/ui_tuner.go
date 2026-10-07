@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type UIEditableField struct {
@@ -59,6 +60,7 @@ type UISimulateResponse struct {
 	SimulatedMarkers []UITradeMarker `json:"simulated_markers"`
 	PreviewNote      string          `json:"preview_note,omitempty"`
 	LiveRefusal      string          `json:"live_refusal,omitempty"`
+	SimulatedRefusal string          `json:"simulated_refusal,omitempty"`
 	Error            string          `json:"error,omitempty"`
 }
 
@@ -164,23 +166,20 @@ func (ss *StatusServer) handleAPIStrategySimulate(w http.ResponseWriter, r *http
 	if _, ok := req.Overrides["leverage"]; ok {
 		simPayload["leverage_source"] = "tuner_override"
 	}
-	markersByLabel, liveRefusal, simErr := runTunerPreviewSimulate(candles, livePayload, simPayload)
+	preview, simErr := runTunerPreviewSimulate(candles, livePayload, simPayload)
 	if simErr != nil {
 		writeJSONError(w, http.StatusBadGateway, simErr.Error())
 		return
 	}
 
-	previewNote := "Gray markers replay the live config over fetched candles; they are not recorded trade history."
-	if liveRefusal != "" {
-		previewNote = "The live config was refused by the backtest stop policy, so only the simulated markers are shown."
-	}
 	writeJSON(w, UISimulateResponse{
 		StrategyID:       id,
 		Source:           source,
-		LiveMarkers:      markersByLabel["live"],
-		SimulatedMarkers: markersByLabel["simulated"],
-		PreviewNote:      previewNote,
-		LiveRefusal:      liveRefusal,
+		LiveMarkers:      preview.Markers["live"],
+		SimulatedMarkers: preview.Markers["simulated"],
+		PreviewNote:      tunerPreviewNote(preview.LiveRefusal, preview.SimulatedRefusal),
+		LiveRefusal:      preview.LiveRefusal,
+		SimulatedRefusal: preview.SimulatedRefusal,
 	})
 }
 
@@ -724,23 +723,34 @@ func (ss *StatusServer) previewPerpsSizing(sc StrategyConfig) map[string]interfa
 
 func simulateConfigPayload(sc StrategyConfig, regime *RegimeConfig) map[string]interface{} {
 	payload := map[string]interface{}{
-		"type":               sc.Type,
-		"platform":           sc.Platform,
-		"symbol":             strategyDisplaySymbol(sc),
-		"timeframe":          strategyDisplayTimeframe(sc),
-		"strategy":           effectiveOpenStrategy(sc),
-		"open_strategy":      sc.OpenStrategy,
-		"close_strategy":     sc.CloseStrategy,
-		"htf_filter":         sc.HTFFilter,
-		"allowed_regimes":    sc.AllowedRegimes,
-		"initial_capital":    sc.InitialCapital,
-		"stop_loss_pct":      sc.StopLossPct,
-		"stop_loss_atr_mult": sc.StopLossATRMult,
-		"stop_units":         "live_percent",
-		"leverage":           sc.Leverage,
-		"leverage_source":    "strategy_config",
-		"max_drawdown_pct":   sc.MaxDrawdownPct,
-		"regime_atr_window":  sc.RegimeATRWindow,
+		"type":                      sc.Type,
+		"platform":                  sc.Platform,
+		"symbol":                    strategyDisplaySymbol(sc),
+		"timeframe":                 strategyDisplayTimeframe(sc),
+		"strategy":                  effectiveOpenStrategy(sc),
+		"open_strategy":             sc.OpenStrategy,
+		"close_strategy":            sc.CloseStrategy,
+		"htf_filter":                sc.HTFFilter,
+		"allowed_regimes":           sc.AllowedRegimes,
+		"initial_capital":           sc.InitialCapital,
+		"stop_loss_pct":             sc.StopLossPct,
+		"stop_loss_atr_mult":        sc.StopLossATRMult,
+		"stop_units":                "live_percent",
+		"leverage":                  sc.Leverage,
+		"leverage_source":           "strategy_config",
+		"max_drawdown_pct":          sc.MaxDrawdownPct,
+		"regime_atr_window":         sc.RegimeATRWindow,
+		"regime_gate_window":        sc.RegimeGateWindow,
+		"regime_directional_window": sc.RegimeDirectionalWindow,
+		"regime_gate_on_failure":    sc.RegimeGateOnFailure,
+	}
+	if sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured() {
+		payload["regime_directional_policy"] = sc.RegimeDirectionalPolicy
+		states, ok := strategyDirectionalCertified(sc, regime, time.Now().UTC())
+		payload["regime_directional_certified"] = ok
+		if ok {
+			payload["regime_directional_certified_states"] = states
+		}
 	}
 	if sc.leverageDefaulted {
 		payload["leverage_source"] = "loader_default"
@@ -772,6 +782,12 @@ func simulateConfigPayload(sc StrategyConfig, regime *RegimeConfig) map[string]i
 		if len(regime.Windows) > 0 {
 			regimePayload["windows"] = regime.Windows
 		}
+		if tf := strings.TrimSpace(regime.Timeframe); tf != "" {
+			regimePayload["timeframe"] = tf
+		}
+		if gate := strings.TrimSpace(regime.GateOnFailure); gate != "" {
+			regimePayload["gate_on_failure"] = gate
+		}
 		payload["regime"] = regimePayload
 	}
 	if sc.OpenStrategy.Name == "" && effectiveOpenStrategy(sc) != "" {
@@ -802,22 +818,69 @@ func regimeADXThreshold(regime *RegimeConfig) float64 {
 	return 20
 }
 
-func runTunerPreviewSimulate(candles []UICandle, livePayload, simPayload map[string]interface{}) (map[string][]UITradeMarker, string, error) {
-	markersByLabel, err := runStrategySimulate(candles, map[string]map[string]interface{}{
+type tunerPreviewResult struct {
+	Markers          map[string][]UITradeMarker
+	LiveRefusal      string
+	SimulatedRefusal string
+}
+
+func tunerPreviewNote(liveRefusal, simulatedRefusal string) string {
+	switch {
+	case liveRefusal != "" && simulatedRefusal != "":
+		return "No markers are shown. Live config refused: " + liveRefusal + " Simulated config refused: " + simulatedRefusal
+	case liveRefusal != "":
+		return "Only the simulated markers are shown. Live config refused: " + liveRefusal
+	case simulatedRefusal != "":
+		return "Only the live markers are shown. Simulated config refused: " + simulatedRefusal
+	}
+	return "Gray markers replay the live config over fetched candles; they are not recorded trade history."
+}
+
+func runTunerPreviewSimulate(candles []UICandle, livePayload, simPayload map[string]interface{}) (tunerPreviewResult, error) {
+	run, err := runStrategySimulateArms(candles, map[string]map[string]interface{}{
 		"live":      livePayload,
 		"simulated": simPayload,
 	})
 	var refusal *simulateLabelRefusal
-	if !errors.As(err, &refusal) || refusal.Label != "live" {
-		return markersByLabel, "", err
+	if errors.As(err, &refusal) && refusal.Label == "live" {
+		run, err = runStrategySimulateArms(candles, map[string]map[string]interface{}{
+			"simulated": simPayload,
+		})
+		run.Refusals["live"] = refusal.Error()
 	}
-	markersByLabel, err = runStrategySimulate(candles, map[string]map[string]interface{}{
-		"simulated": simPayload,
-	})
-	return markersByLabel, refusal.Error(), err
+	if err != nil {
+		return tunerPreviewResult{}, err
+	}
+	return tunerPreviewResult{
+		Markers:          run.Markers,
+		LiveRefusal:      run.Refusals["live"],
+		SimulatedRefusal: run.Refusals["simulated"],
+	}, nil
+}
+
+type simulateArmsResult struct {
+	Markers  map[string][]UITradeMarker
+	Refusals map[string]string
 }
 
 func runStrategySimulate(candles []UICandle, configs map[string]map[string]interface{}) (map[string][]UITradeMarker, error) {
+	run, err := runStrategySimulateArms(candles, configs)
+	if err != nil {
+		return nil, err
+	}
+	if len(run.Refusals) > 0 {
+		labels := make([]string, 0, len(run.Refusals))
+		for label := range run.Refusals {
+			labels = append(labels, label)
+		}
+		sort.Strings(labels)
+		return run.Markers, &simulateLabelRefusal{Label: labels[0], Message: run.Refusals[labels[0]]}
+	}
+	return run.Markers, nil
+}
+
+func runStrategySimulateArms(candles []UICandle, configs map[string]map[string]interface{}) (simulateArmsResult, error) {
+	result := simulateArmsResult{Markers: map[string][]UITradeMarker{}, Refusals: map[string]string{}}
 	type cfgItem struct {
 		Label  string                 `json:"label"`
 		Config map[string]interface{} `json:"config"`
@@ -837,34 +900,47 @@ func runStrategySimulate(candles []UICandle, configs map[string]map[string]inter
 	}
 	stdin, err := json.Marshal(payload)
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 	stdout, stderr, runErr := runPythonReadOnlyWithStdin("shared_scripts/simulate_strategy.py", nil, stdin)
 	var resp struct {
 		pythonErrorResponse
 		Markers         map[string][]UITradeMarker `json:"markers"`
 		Label           string                     `json:"label"`
+		Refusals        map[string]string          `json:"refusals"`
 		CloseCapability json.RawMessage            `json:"close_capability"`
 	}
 	if err := json.Unmarshal(stdout, &resp); err != nil {
 		if runErr != nil {
-			return nil, fmt.Errorf("simulate_strategy: %w (stderr: %s)", runErr, strings.TrimSpace(string(stderr)))
+			return result, fmt.Errorf("simulate_strategy: %w (stderr: %s)", runErr, strings.TrimSpace(string(stderr)))
 		}
-		return nil, fmt.Errorf("parse simulate response: %w", err)
+		return result, fmt.Errorf("parse simulate response: %w", err)
 	}
 	if resp.Error != "" {
 		if resp.Label != "" && len(resp.CloseCapability) > 0 {
-			return nil, &simulateLabelRefusal{Label: resp.Label, Message: resp.Error}
+			return result, &simulateLabelRefusal{Label: resp.Label, Message: resp.Error}
 		}
-		return nil, fmt.Errorf("%s", resp.Error)
+		return result, fmt.Errorf("%s", resp.Error)
 	}
 	if runErr != nil {
-		return nil, fmt.Errorf("simulate_strategy: %w (stderr: %s)", runErr, strings.TrimSpace(string(stderr)))
+		return result, fmt.Errorf("simulate_strategy: %w (stderr: %s)", runErr, strings.TrimSpace(string(stderr)))
 	}
-	if resp.Markers == nil {
-		resp.Markers = map[string][]UITradeMarker{}
+	for label, markers := range resp.Markers {
+		result.Markers[label] = markers
 	}
-	return resp.Markers, nil
+	for label, reason := range resp.Refusals {
+		if _, ok := configs[label]; !ok {
+			return result, fmt.Errorf("simulate_strategy refused unknown arm %q", label)
+		}
+		if strings.TrimSpace(reason) == "" {
+			return result, fmt.Errorf("simulate_strategy refused arm %q with no reason", label)
+		}
+		if _, ok := resp.Markers[label]; ok {
+			return result, fmt.Errorf("simulate_strategy returned markers for refused arm %q", label)
+		}
+		result.Refusals[label] = reason
+	}
+	return result, nil
 }
 
 func applyStrategyConfigPatch(configPath, strategyID string, merged StrategyConfig, overrides map[string]json.RawMessage, hasOpen bool) (restartRequired bool, err error) {

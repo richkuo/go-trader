@@ -108,8 +108,8 @@
         }
       },
       "go_accept": true,
-      "python_refusal": "MISSING_STOP_INPUT",
-      "note": "the backtester stamps only the primary window label"
+      "python_refusal": null,
+      "note": "a prepared regime_atr_window column is admitted (#1732); ledger comparison still refuses a named ATR window"
     }
   ],
   "base_config": {

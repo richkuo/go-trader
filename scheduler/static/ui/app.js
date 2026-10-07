@@ -146,6 +146,7 @@
       liveMarkers: [],
       simulatedMarkers: [],
       liveRefusal: "",
+      simulatedRefusal: "",
       previewActive: false,
       simulateTimer: 0,
       loading: false,
@@ -1327,6 +1328,7 @@
     state.tuner.liveMarkers = [];
     state.tuner.simulatedMarkers = [];
     state.tuner.liveRefusal = "";
+    state.tuner.simulatedRefusal = "";
     state.tuner.previewActive = false;
     if (state.tuner.simulateTimer) {
       clearTimeout(state.tuner.simulateTimer);
@@ -1353,8 +1355,15 @@
       return;
     }
     if (tunerHasOverrides()) {
-      els.tunerStatus.textContent = state.tuner.liveRefusal
-        ? "Preview active; live markers unavailable: " + state.tuner.liveRefusal
+      const notes = [];
+      if (state.tuner.liveRefusal) {
+        notes.push("live markers unavailable: " + state.tuner.liveRefusal);
+      }
+      if (state.tuner.simulatedRefusal) {
+        notes.push("simulated markers unavailable: " + state.tuner.simulatedRefusal);
+      }
+      els.tunerStatus.textContent = notes.length
+        ? "Preview active; " + notes.join("; ")
         : "Preview active";
       els.tunerStatus.className = "tuner-status preview";
       return;
@@ -1769,6 +1778,7 @@
       state.tuner.liveMarkers = [];
       state.tuner.simulatedMarkers = [];
       state.tuner.liveRefusal = "";
+      state.tuner.simulatedRefusal = "";
       updateTunerStatus();
       await refreshChart();
       return;
@@ -1783,6 +1793,7 @@
       state.tuner.liveMarkers = resp.live_markers || [];
       state.tuner.simulatedMarkers = resp.simulated_markers || [];
       state.tuner.liveRefusal = resp.live_refusal || "";
+      state.tuner.simulatedRefusal = resp.simulated_refusal || "";
       state.tuner.previewActive = true;
       await refreshChart();
     } finally {
@@ -1825,6 +1836,7 @@
     state.tuner.liveMarkers = [];
     state.tuner.simulatedMarkers = [];
     state.tuner.liveRefusal = "";
+    state.tuner.simulatedRefusal = "";
     updateTunerStatus();
     refreshChart().catch(handleRefreshError);
   }

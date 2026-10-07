@@ -63,7 +63,7 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since,
 from htf_filter import get_default_htf, apply_htf_filter
 from registry_loader import load_registry
 from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
-                        FundingIncompleteError,
+                        FundingIncompleteError, _LABELS_UNSET,
                         STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS,
                         STOP_PERCENT_FIELD_KEYS, STOP_REGIME_FIELD_KEYS,
                         STOP_SCALAR_FIELD_KEYS, STOP_UNITS_LIVE_CONFIG,
@@ -240,30 +240,50 @@ def _resolve_backtestable_hurst_gate(
     return resolved
 
 
-def _validate_allowed_regimes_vocabulary(
+def allowed_regimes_vocabulary_error(
     allowed_regimes: Optional[List[str]],
-    windows_spec: Optional[dict],
-) -> None:
+    classifier: str,
+    window_key: Optional[str] = None,
+) -> Optional[str]:
     if not allowed_regimes:
-        return
-    classifier = _primary_window_classifier(windows_spec)
+        return None
     valid = valid_labels_for_classifier(classifier)
     invalid = [lab for lab in allowed_regimes if lab not in valid]
     if not invalid:
-        return
-    msg = (
-        f"--allowed-regimes {invalid!r}: not valid label(s) for the primary "
-        f"regime window's {classifier!r} classifier. Valid: "
-        f"{', '.join(sorted(valid))}."
-    )
+        return None
+    if window_key:
+        msg = (
+            f"allowed_regimes {invalid!r}: not valid label(s) for gate window "
+            f"{window_key!r} ({classifier!r} classifier). Valid: "
+            f"{', '.join(sorted(valid))}."
+        )
+    else:
+        msg = (
+            f"--allowed-regimes {invalid!r}: not valid label(s) for the primary "
+            f"regime window's {classifier!r} classifier. Valid: "
+            f"{', '.join(sorted(valid))}."
+        )
     if classifier == CLASSIFIER_ADX and any(lab in VALID_LABELS_COMPOSITE for lab in invalid):
         msg += (
             " (Composite 9-state labels require a composite primary window — "
             "supply --regime-windows-spec-json with a composite classifier, or "
             "use --config.)"
         )
-    print(msg)
-    sys.exit(1)
+    return msg
+
+
+def _validate_allowed_regimes_vocabulary(
+    allowed_regimes: Optional[List[str]],
+    windows_spec: Optional[dict],
+    window_key: Optional[str] = None,
+    classifier: Optional[str] = None,
+) -> None:
+    if classifier is None:
+        classifier = _primary_window_classifier(windows_spec)
+    msg = allowed_regimes_vocabulary_error(allowed_regimes, classifier, window_key)
+    if msg:
+        print(msg)
+        sys.exit(1)
 
 
 def _build_profile_label_series(df: pd.DataFrame, window_spec: dict) -> pd.Series:
@@ -783,14 +803,24 @@ def apply_live_scalar_stop_default(cfg: dict, sc: dict, platform: str, strategy_
     sc["stop_loss_atr_mult"] = default
 
 
-def _atr_window_evidence(sc: dict, regime_cfg: dict) -> dict:
+def _atr_window_evidence(sc: dict, regime_cfg: dict,
+                         prepared_windows: Optional[set] = None) -> dict:
+    """Admit a non-primary ATR window only when the caller prepared its column.
+
+    `prepared_windows is None` keeps the ledger and raw-config path primary-only:
+    a named non-primary window stays `missing` and the stop stays refused.
+    """
     window = str(sc.get("regime_atr_window") or "").strip().lower()
     if window in ("", "default"):
         return {"status": "verified", "source": "regime_atr_window", "value": window or None}
     windows = regime_cfg.get("windows") if regime_cfg.get("enabled") else None
     names = sorted(str(k).strip().lower() for k in (windows or {}))
     primary = "medium" if "medium" in names else (names[0] if names else "")
-    status = "verified" if window == primary else "missing"
+    prepared = {str(k).strip().lower() for k in (prepared_windows or set())}
+    if prepared_windows is None:
+        status = "verified" if window == primary else "missing"
+    else:
+        status = "verified" if window in prepared else "missing"
     return {"status": status, "source": "regime_atr_window", "value": window}
 
 
@@ -829,7 +859,8 @@ def live_stop_engine_inputs(resolved: dict, *, raw_fields: dict, source: str,
 
 
 def live_stop_resolution(cfg: dict, sc: dict, raw_fields: dict, *, platform: str,
-                         strategy_type: str, close_refs: list, regime_cfg: dict):
+                         strategy_type: str, close_refs: list, regime_cfg: dict,
+                         prepared_windows: Optional[set] = None):
     apply_live_scalar_stop_default(cfg, sc, platform, strategy_type, close_refs)
     resolved = {k: sc.get(k) for k in STOP_FIELD_KEYS}
     resolved["max_drawdown_pct"] = _live_max_drawdown_pct(cfg, sc, platform, strategy_type)
@@ -843,7 +874,8 @@ def live_stop_resolution(cfg: dict, sc: dict, raw_fields: dict, *, platform: str
         lev = leverage_evidence(raw_leverage, "config", True)
     kwargs, context = live_stop_engine_inputs(
         resolved, raw_fields=raw_fields, source=STOP_UNITS_LIVE_CONFIG, leverage=lev,
-        extra_evidence={"atr_regime_window": _atr_window_evidence(sc, regime_cfg)})
+        extra_evidence={"atr_regime_window": _atr_window_evidence(
+            sc, regime_cfg, prepared_windows)})
     kwargs["stop_platform"] = platform
     return kwargs, context
 
@@ -851,11 +883,12 @@ def live_stop_resolution(cfg: dict, sc: dict, raw_fields: dict, *, platform: str
 def live_stop_preflight(kwargs: dict, context, *, platform: str, strategy_type: str,
                         close_refs: list, regime_windows_spec, risk_per_trade_pct,
                         comparison_mode=None, consumer: str = "engine",
-                        phase: str = "preflight"):
+                        phase: str = "preflight", regime_labels=_LABELS_UNSET):
     preflight = build_stop_capability_context(
         platform=platform, strategy_type=strategy_type, close_refs=close_refs,
         fields=kwargs, regime_windows_spec=regime_windows_spec,
-        risk_per_trade_pct=risk_per_trade_pct, capability_context=context)
+        risk_per_trade_pct=risk_per_trade_pct, capability_context=context,
+        regime_labels=regime_labels)
     return validate_close_capabilities(
         close_refs=close_refs, comparison_mode=comparison_mode, platform=platform,
         strategy_type=strategy_type, consumer=consumer, phase=phase,
@@ -900,7 +933,8 @@ def strategy_close_refs(sc: dict, label: str) -> list:
 
 
 def resolve_live_strategy_stops(cfg: dict, sc: dict, user_defaults: Optional[dict], *,
-                                inject_user_defaults: bool, label: str) -> dict:
+                                inject_user_defaults: bool, label: str,
+                                prepared_windows: Optional[set] = None) -> dict:
     raw_stop_fields = stop_raw_fields(sc)
     close_refs = strategy_close_refs(sc, label)
     if inject_user_defaults:
@@ -912,7 +946,8 @@ def resolve_live_strategy_stops(cfg: dict, sc: dict, user_defaults: Optional[dic
     strategy_type = str(sc.get("type") or "perps")
     kwargs, context = live_stop_resolution(
         cfg, sc, raw_stop_fields, platform=platform, strategy_type=strategy_type,
-        close_refs=close_refs, regime_cfg=regime_cfg)
+        close_refs=close_refs, regime_cfg=regime_cfg,
+        prepared_windows=prepared_windows)
     return {
         "raw_stop_fields": raw_stop_fields,
         "close_refs": close_refs,
@@ -1166,9 +1201,15 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"strategy. Set hedge.enabled=false (or remove the block) to "
                 f"backtest the primary leg alone."
             )
+        from regime_label_columns import (prepared_window_keys,
+                                          resolve_feature_windows)
+        label_plan = resolve_feature_windows(
+            sc, regime_cfg, label=f"{config_path}: strategy {strategy_id!r}")
+        prepared = prepared_window_keys(label_plan) if regime_cfg.get("enabled") else None
         stops = resolve_live_strategy_stops(
             cfg, sc, user_defaults, inject_user_defaults=inject_user_defaults,
-            label=f"{config_path}: strategy {strategy_id!r}")
+            label=f"{config_path}: strategy {strategy_id!r}",
+            prepared_windows=prepared)
         close_refs = stops["close_refs"]
         stop_kwargs = stops["stop_kwargs"]
         stop_context = stops["stop_context"]
@@ -1184,6 +1225,8 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 regime_windows_spec=stops["regime_windows_spec"],
                 risk_per_trade_pct=sc.get("risk_per_trade_pct"),
                 comparison_mode=comparison_mode,
+                regime_labels=(label_plan["parser_labels"]["atr"]
+                               if regime_cfg.get("enabled") else _LABELS_UNSET),
             )
         except CloseCapabilityError as exc:
             raise exc.with_context(
@@ -1251,20 +1294,15 @@ def load_strategy_config(config_path: str, strategy_id: str,
             raise ValueError(
                 f"{config_path}: strategy {strategy_id!r} {exc}"
             ) from exc
-        gate_window = str(sc.get("regime_gate_window") or "").strip().lower()
-        if (
-            allowed_regimes
-            and regime_cfg.get("enabled")
-            and gate_window not in ("", "default")
-        ):
-            raise ValueError(
-                f"{config_path}: strategy {strategy_id!r} gates allowed_regimes "
-                f"on regime_gate_window={gate_window!r}, but the backtester models "
-                f"only the legacy single-lookback regime (regime.period / "
-                f"regime.adx_threshold) — a named gate window has no bar-level "
-                f"parity path. Gate on the default lookback (remove "
-                f"regime_gate_window) or drop allowed_regimes for backtesting."
+        if allowed_regimes and regime_cfg.get("enabled"):
+            vocab_err = allowed_regimes_vocabulary_error(
+                allowed_regimes,
+                label_plan["classifiers"]["gate"],
+                label_plan["windows"]["gate"],
             )
+            if vocab_err:
+                raise ValueError(
+                    f"{config_path}: strategy {strategy_id!r} {vocab_err}")
         hurst_gate_cfg = sc.get("hurst_gate")
         if isinstance(hurst_gate_cfg, dict) and hurst_gate_cfg.get("enabled"):
             hurst_gate_cfg = _resolve_backtestable_hurst_gate(
@@ -1399,6 +1437,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "regime_adx_threshold": float(regime_cfg.get("adx_threshold", 20.0) or 20.0),
             "regime_timeframe": regime_timeframe,
             "regime_windows_spec": _resolve_regime_windows_spec(regime_cfg),
+            "regime_label_windows": label_plan if regime_cfg.get("enabled") else None,
             "allowed_regimes": allowed_regimes,
             "regime_gate_on_failure": regime_gate_on_failure,
             "hurst_gate": hurst_gate_cfg,
@@ -1473,6 +1512,7 @@ def run_single_backtest(
     perps_sizing: Optional[dict] = None,
     liquidation_model: str = "none",
     venue_margin: Optional[dict] = None,
+    regime_label_plan: Optional[dict] = None,
 ) -> Optional[dict]:
     manifest = None
     manifest_dataset_entry = None
@@ -1611,7 +1651,22 @@ def run_single_backtest(
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)
         print(f"  HTF filter: applied (HTF={get_default_htf(timeframe)})")
 
-    if regime_enabled:
+    label_columns = None
+    if regime_enabled and regime_label_plan:
+        from regime_label_columns import (attach_regime_label_columns,
+                                          feature_label_kwargs)
+        regime_frame = None
+        regime_tf = str(regime_timeframe or "").strip().lower()
+        trade_tf = str(timeframe or "").strip().lower()
+        if regime_tf and regime_tf != trade_tf:
+            regime_frame = load_cached_data(symbol, regime_tf, start_date=since)
+            if regime_frame.empty:
+                print(f"No regime data available for {symbol} {regime_tf}")
+                return None
+        df_signals, label_columns = attach_regime_label_columns(
+            df_signals, regime_label_plan,
+            regime_frame=regime_frame if regime_frame is not None else None)
+    elif regime_enabled:
         df_signals = _apply_regime_timeframe_override(
             df_signals,
             symbol,
@@ -1705,6 +1760,8 @@ def run_single_backtest(
         perps_sizing=perps_sizing,
         liquidation_model=liquidation_model,
         venue_margin=venue_margin,
+        regime_label_columns=label_columns,
+        **(feature_label_kwargs(regime_label_plan) if label_columns else {}),
     )
     if manifest is None:
         from funding_fetcher import rejoin_funding_columns
@@ -1734,6 +1791,9 @@ def run_single_backtest(
               f"({margin.get('liquidation_formula')})")
         if margin.get("pool_cap_unverified"):
             print("  Pool cap: pool_cap_unverified (no per-entry available wallet margin)")
+    if regime_label_plan and isinstance(results, dict):
+        from regime_label_columns import regime_label_report
+        results["regime_label_windows"] = regime_label_report(regime_label_plan)
     return results
 
 
@@ -2221,9 +2281,14 @@ def _main():
         if args.mode != "single":
             print("--config is only valid with --mode single (loads one strategy by --strategy <id>)")
             sys.exit(1)
-        live_kwargs = load_strategy_config(args.config, args.strategy,
-                                           inject_user_defaults=(args.defaults == "user"),
-                                           comparison_mode=args.comparison_mode)
+        try:
+            live_kwargs = load_strategy_config(
+                args.config, args.strategy,
+                inject_user_defaults=(args.defaults == "user"),
+                comparison_mode=args.comparison_mode)
+        except ValueError as exc:
+            print(exc)
+            sys.exit(1)
         config_platform = live_kwargs.get("platform", "")
         if close_refs:
             print("--close-strategy is not allowed alongside --config (refs come from the live config)")
@@ -2292,8 +2357,20 @@ def _main():
         args.allowed_regimes = live_kwargs.get(
             "allowed_regimes", args.allowed_regimes,
         )
-        _validate_allowed_regimes_vocabulary(
-            args.allowed_regimes, live_kwargs.get("regime_windows_spec"))
+        label_plan = live_kwargs.get("regime_label_windows")
+        if label_plan:
+            _validate_allowed_regimes_vocabulary(
+                args.allowed_regimes, label_plan.get("windows_spec"),
+                window_key=label_plan["windows"]["gate"],
+                classifier=label_plan["classifiers"]["gate"])
+            if any(label_plan["named"].values()) and args.mode != "single":
+                print(f"--mode {args.mode} cannot model a named regime window; "
+                      "use --mode single")
+                sys.exit(1)
+            live_stop_kwargs["regime_label_plan"] = label_plan
+        else:
+            _validate_allowed_regimes_vocabulary(
+                args.allowed_regimes, live_kwargs.get("regime_windows_spec"))
 
     if args.platform is None:
         args.platform = "hyperliquid" if config_platform == "hyperliquid" else "binanceus"

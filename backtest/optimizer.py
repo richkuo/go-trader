@@ -236,6 +236,9 @@ def walk_forward_optimize(
     direction: Optional[str] = None,
     comparison_mode: Optional[str] = None,
     stop_kwargs: Optional[dict] = None,
+    regime_windows_spec: Optional[dict] = None,
+    regime_gate_on_failure: str = "open",
+    regime_label_plan: Optional[dict] = None,
 ) -> dict:
     total_len = len(df)
     window_size = total_len // n_splits
@@ -260,6 +263,17 @@ def walk_forward_optimize(
         extra_stop_kwargs[key] = value
     if close_stack_grid and direction is None:
         direction = "long"
+    label_columns = None
+    feature_labels = {}
+    if regime_label_plan:
+        from regime_label_columns import (engine_label_columns,
+                                          feature_label_kwargs,
+                                          require_label_frame)
+        require_label_frame(df, regime_label_plan)
+        label_columns = engine_label_columns(regime_label_plan)
+        feature_labels = feature_label_kwargs(regime_label_plan)
+        if regime_windows_spec is None:
+            regime_windows_spec = regime_label_plan.get("windows_spec")
     if direction == "short":
         raise ValueError(
             "direction='short' is not supported by walk-forward optimization "
@@ -298,11 +312,15 @@ def walk_forward_optimize(
             regime_enabled=regime_enabled, regime_period=regime_period,
             regime_adx_threshold=regime_adx_threshold,
             allowed_regimes=allowed_regimes,
+            regime_windows_spec=regime_windows_spec,
+            regime_gate_on_failure=regime_gate_on_failure,
+            regime_label_columns=label_columns,
             stop_loss_atr_mult=stack.get("stop_loss_atr_mult"),
             trailing_stop_atr_mult=stack.get("trailing_stop_atr_mult"),
             close_strategies=stack.get("close_strategies"),
             direction=direction,
             comparison_mode=comparison_mode,
+            **feature_labels,
             **extra_stop_kwargs,
         ))
         for stack in stacks
@@ -372,6 +390,9 @@ def walk_forward_optimize(
         for params in param_grid:
             try:
                 signals_ext = apply_strategy(strategy_name, train_ext_df, params)
+                if regime_label_plan:
+                    from regime_label_columns import overlay_regime_columns
+                    signals_ext = overlay_regime_columns(train_ext_df, signals_ext)
                 if uses_exits:
                     signals_ext = ensure_atr_indicator(signals_ext)
                 signals_df = signals_ext.iloc[train_boundary_idx:]
@@ -418,6 +439,9 @@ def walk_forward_optimize(
         test_boundary_idx = max(test_trim - 1, 0)
         try:
             test_signals_ext = apply_strategy(strategy_name, test_ext_df, best_params)
+            if regime_label_plan:
+                from regime_label_columns import overlay_regime_columns
+                test_signals_ext = overlay_regime_columns(test_ext_df, test_signals_ext)
             if uses_exits:
                 test_signals_ext = ensure_atr_indicator(test_signals_ext)
             test_signals_ext = rejoin_funding_columns(test_signals_ext, test_ext_df)

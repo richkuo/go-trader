@@ -871,11 +871,13 @@ def _check_stop_inputs(request: CloseCapabilityRequest) -> list:
         window = _stop_evidence(request, "atr_regime_window")
         if owner in STOP_OWNERS_NEEDING_LABEL and window is not None \
                 and window.get("status") != "verified":
+            from regime_label_columns import column_name
+            column = column_name(str(window.get("value") or ""))
             out.append(_stop_refusal(
                 "MISSING_STOP_INPUT", owner,
-                f"{owner} resolves from the regime_atr_window {window.get('value')!r} label, "
-                "which the backtester does not compute (it stamps only the primary regime "
-                "window); refusing instead of resolving the stop from the wrong label",
+                f"{owner} resolves from regime_atr_window {window.get('value')!r} "
+                f"but label column {column!r} was not prepared; refusing instead of "
+                "reading the primary column",
                 required_inputs=("atr_regime_label",),
                 details={"window": window.get("value")}))
         return out
@@ -1191,9 +1193,12 @@ def leverage_evidence(value, source: str, verified: bool) -> dict:
     return {"status": "verified" if verified else "unverified", "source": source, "value": lev}
 
 
+_LABELS_UNSET = object()
+
+
 def build_stop_capability_context(*, platform, strategy_type, close_refs, fields: Mapping,
                                   regime_windows_spec=None, risk_per_trade_pct=None,
-                                  capability_context=None):
+                                  capability_context=None, regime_labels=_LABELS_UNSET):
     if capability_context is not None and (
             not isinstance(capability_context, CapabilityContext) or capability_context.errors):
         return capability_context
@@ -1216,7 +1221,10 @@ def build_stop_capability_context(*, platform, strategy_type, close_refs, fields
     units = evidence.get("stop_units") if isinstance(evidence.get("stop_units"), dict) else {}
     live = units.get("status") == "verified" and units.get("source") in (
         STOP_UNITS_LIVE_CONFIG, STOP_UNITS_PREVIEW)
-    labels = _regime_primary_labels(regime_windows_spec)
+    if regime_labels is _LABELS_UNSET:
+        labels = _regime_primary_labels(regime_windows_spec)
+    else:
+        labels = regime_labels
     blocks, _ = _parse_stop_regime_blocks(plain, labels, live)
     unified = _unified_close_params(refs) is not None
     owner = resolve_static_stop_owner(
@@ -2280,7 +2288,12 @@ class Backtester:
                  perps_sizing: Optional[dict] = None,
                  liquidation_model: str = "none",
                  venue_margin: Optional[dict] = None,
-                 regime_label_columns: Optional[dict] = None):
+                 regime_label_columns: Optional[dict] = None,
+                 regime_feature_labels: Optional[dict] = None,
+                 regime_label_windows=None):
+        # regime_label_windows is the loader's plan. Callers splat
+        # load_strategy_config into this constructor; the columns themselves
+        # arrive only through regime_label_columns.
         self.initial_capital = initial_capital
         self._execution = normalize_execution_spec(execution_spec)
         if self._execution is not None and (
@@ -2406,13 +2419,22 @@ class Backtester:
         self.regime_adx_threshold = regime_adx_threshold
         self.regime_windows_spec = dict(regime_windows_spec) if regime_windows_spec else None
         self._regime_primary_labels = _regime_primary_labels(self.regime_windows_spec)
+        feature_labels = regime_feature_labels or {}
+        unknown_features = sorted(set(feature_labels) - {"atr", "directional"})
+        if unknown_features:
+            raise ValueError(
+                "unknown regime_feature_labels keys: " + ", ".join(unknown_features))
+        self._regime_atr_labels = (
+            feature_labels["atr"] if "atr" in feature_labels else self._regime_primary_labels)
+        self._regime_directional_labels = (
+            feature_labels["directional"] if "directional" in feature_labels else None)
         if self._resting_tp_model:
             _ensure_close_strategies_path()
             from tiered_tp_atr_regime import resting_ladder_errors
             _ladder_errs = []
             for _ref in self._close_refs:
                 _ladder_errs.extend(resting_ladder_errors(
-                    _ref["name"], _ref["params"], self._regime_primary_labels,
+                    _ref["name"], _ref["params"], self._regime_atr_labels,
                 ))
             if _ladder_errs:
                 raise ValueError(
@@ -2446,6 +2468,15 @@ class Backtester:
         self.regime_directional_policy = _normalize_regime_directional_policy(
             regime_directional_policy,
         )
+        if self.regime_directional_policy and self._regime_directional_labels is not None:
+            valid = set(self._regime_directional_labels)
+            bad = sorted(label for label in self.regime_directional_policy if label not in valid)
+            if bad:
+                raise ValueError(
+                    "regime_directional_policy labels "
+                    + ", ".join(bad)
+                    + " are not in the directional window vocabulary: "
+                    + ", ".join(sorted(valid)))
         if self.regime_directional_policy is not None:
             if regime_directional_certified_states is not None:
                 cert_states = regime_directional_certified_states
@@ -2541,7 +2572,7 @@ class Backtester:
             if self._unified_close_params is not None:
                 _unified_errs = validate_unified_regime_close(
                     self._unified_close_params,
-                    labels=self._regime_primary_labels,
+                    labels=self._regime_atr_labels,
                 )
                 if _unified_errs:
                     raise ValueError(
@@ -2553,7 +2584,7 @@ class Backtester:
                     "stop_loss_atr_mult_regime": self.stop_loss_atr_mult_regime,
                     "trailing_stop_atr_mult_regime": self.trailing_stop_atr_mult_regime,
                 },
-                self._regime_primary_labels,
+                self._regime_atr_labels,
                 self._stop_admission_live,
             )
             self._stop_loss_regime_block = _blocks["stop_loss_atr_mult_regime"]
@@ -2564,7 +2595,7 @@ class Backtester:
 
         self._sl_mod = _load_post_tp_sl()
         _tier_vocab_errs = self._sl_mod.validate_regime_tiered_tp_labels(
-            self._close_refs, labels=self._regime_primary_labels,
+            self._close_refs, labels=self._regime_atr_labels,
         )
         if _tier_vocab_errs:
             raise ValueError(
@@ -2572,7 +2603,7 @@ class Backtester:
             )
         self._sl_after_rules_static, _sl_parse_errs = (
             self._sl_mod.parse_strategy_tp_sl_after_rules(
-                self._close_refs, labels=self._regime_primary_labels)
+                self._close_refs, labels=self._regime_atr_labels)
         )
         self._tp_tier_thresholds_static = self._sl_mod.parse_tp_tier_close_fractions(
             self._close_refs,
@@ -2625,7 +2656,7 @@ class Backtester:
                 trailing_stop_pct=self.trailing_stop_pct,
                 stop_loss_atr_mult_regime=self.stop_loss_atr_mult_regime,
                 strategy_type=self.strategy_type,
-                labels=self._regime_primary_labels,
+                labels=self._regime_atr_labels,
             )
             if errs:
                 raise ValueError(
@@ -2687,6 +2718,17 @@ class Backtester:
     @property
     def stop_owner(self) -> str:
         return self._stop_owner
+
+    @property
+    def reads_regime_labels(self) -> bool:
+        return bool(
+            self.allowed_regimes
+            or self.regime_directional_policy is not None
+            or self._stop_owner in STOP_OWNERS_NEEDING_LABEL
+            or self.stop_loss_atr_mult_regime is not None
+            or self.trailing_stop_atr_mult_regime is not None
+            or self._uses_regime_tiered_close
+        )
 
     def _apply_direction_invert(self, sig_int: pd.Series,
                                 uses_open_close: bool) -> pd.Series:
@@ -3075,7 +3117,7 @@ class Backtester:
             if self._uses_regime_tiered_close:
                 rules_rt, _ = self._sl_mod.parse_strategy_tp_sl_after_rules(
                     self._close_refs, regime=lab,
-                    labels=self._regime_primary_labels,
+                    labels=self._regime_atr_labels,
                 )
                 self._active_sl_after_rules = rules_rt
                 self._run_tp_tier_thresholds = self._sl_mod.parse_tp_tier_close_fractions(
