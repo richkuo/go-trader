@@ -12,6 +12,7 @@ import pandas as pd
 from storage import (
     load_funding_coverage,
     load_funding_first_ts,
+    load_funding_last_ts,
     load_funding_rates,
     load_funding_venue_gaps,
     store_funding_fetch,
@@ -101,6 +102,15 @@ def _confirmed_venue_absent(candidates, records, observed_through_ms,
     return out
 
 
+def _unbracketable_in_coverage(hour: int, coverage, first_ts: Optional[int],
+                               last_ts: Optional[int]) -> bool:
+    if not any(s <= hour and hour + _HOUR_MS - 1 <= e for s, e in coverage):
+        return False
+    if first_ts is None or last_ts is None:
+        return True
+    return first_ts >= hour or last_ts < hour + _HOUR_MS
+
+
 def _strict_window(adapter):
     fn = getattr(adapter, "get_funding_history_window", None)
     return fn if callable(fn) else None
@@ -118,11 +128,18 @@ def _strict_download(fn, coin: str, start_ms: int, end_ms: int):
 
 
 def _refill_missing_hours(coin: str, start_ts: int, end_ts: int, exchange: str,
-                          adapter, db_kwargs: dict, errors: list, now_ms: int):
+                          adapter, db_kwargs: dict, errors: list, now_ms: int,
+                          coverage):
     stored = load_funding_rates(exchange, coin, start_ts, end_ts, **db_kwargs)
     marked = load_funding_venue_gaps(exchange, coin, _hour_bucket(start_ts), end_ts, **db_kwargs)
     missing = [h for h in _missing_hour_buckets(start_ts, end_ts, _event_times(stored), marked)
                if _hour_finalized(h, now_ms)]
+    if not missing:
+        return
+    first_ts = load_funding_first_ts(exchange, coin, **db_kwargs)
+    last_ts = load_funding_last_ts(exchange, coin, **db_kwargs)
+    missing = [h for h in missing
+               if not _unbracketable_in_coverage(h, coverage, first_ts, last_ts)]
     if not missing:
         return
     if adapter is None:
@@ -144,14 +161,14 @@ def _refill_missing_hours(coin: str, start_ts: int, end_ts: int, exchange: str,
         except Exception as exc:
             errors.append(f"{coin} funding refill {_iso_ms(ws)}..{_iso_ms(we)}: {exc}")
             continue
-        absent = []
         if strict is not None:
             absent = _confirmed_venue_absent(
                 run, records, observed, ws, we,
                 load_funding_first_ts(exchange, coin, **db_kwargs), now_ms)
-        if records or absent:
-            store_funding_fetch(exchange, coin, records, absent,
+            store_funding_fetch(exchange, coin, records, absent, coverage=(ws, we),
                                 observed_through_ms=observed, **db_kwargs)
+        elif records:
+            store_funding_fetch(exchange, coin, records, [], **db_kwargs)
 
 
 def load_cached_funding(coin: str,
@@ -173,7 +190,7 @@ def load_cached_funding(coin: str,
         if source_box is not None:
             source_box["source"] = "cache"
         _refill_missing_hours(coin, start_ts, end_ts, exchange, adapter,
-                              db_kwargs, errors, now_ms)
+                              db_kwargs, errors, now_ms, coverage)
     else:
         if source_box is not None:
             source_box["source"] = "fetched"

@@ -309,10 +309,19 @@ def load_funding_venue_gaps(exchange: str, coin: str,
 
 def load_funding_first_ts(exchange: str, coin: str,
                           db_path: str = DB_PATH) -> Optional[int]:
+    return _funding_ts_bound("MIN", exchange, coin, db_path)
+
+
+def load_funding_last_ts(exchange: str, coin: str,
+                         db_path: str = DB_PATH) -> Optional[int]:
+    return _funding_ts_bound("MAX", exchange, coin, db_path)
+
+
+def _funding_ts_bound(fn: str, exchange: str, coin: str, db_path: str) -> Optional[int]:
     conn = get_connection(db_path)
     try:
         row = conn.execute(
-            "SELECT MIN(timestamp) FROM funding_rates WHERE exchange=? AND coin=?",
+            f"SELECT {fn}(timestamp) FROM funding_rates WHERE exchange=? AND coin=?",
             (exchange, coin),
         ).fetchone()
     finally:

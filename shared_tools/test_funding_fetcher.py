@@ -283,16 +283,66 @@ def test_fetch_path_response_with_the_print_deletes_the_marker(db_path):
     assert len(_rates_in_hour(db_path, 10)) == 1
 
 
-def test_unbracketed_hours_get_no_marker(db_path):
-    _seed(db_path, _hour_prints(31)[5:], _BASE_MS + 40 * _HOUR_MS)
-    info = FakeInfo(_hour_prints(31)[5:])
+def _charge_block(db, adapter, end_hours=40):
+    frame = _bars(end_hours + 1, tz="UTC")
+    _out, block = _FUNDING_FETCHER.attach_backtest_funding(
+        frame, "BTC", "1h", "hyperliquid", "perps", "sma_crossover",
+        mode="charge", adapter=adapter, db_path=db)
+    return block
+
+
+def test_pre_listing_hours_inside_coverage_make_no_call(db_path):
+    _seed(db_path, _hour_prints(41)[5:], _BASE_MS + 40 * _HOUR_MS)
+    info = FakeInfo(_hour_prints(41)[5:])
+    _load(db_path, _real_adapter(info))
     box = {}
     _load(db_path, _real_adapter(info), box=box)
-    assert info.calls[0] == _BASE_MS
-    assert _BASE_MS + 31 * _HOUR_MS in info.calls
+    assert info.calls == []
     assert "fetch_error" not in box
     assert _markers(db_path) == []
-    for hour in list(range(5)) + list(range(31, 40)):
+    block = _charge_block(db_path, _real_adapter(info))
+    assert info.calls == []
+    assert block["coverage"]["missing_hours"] == 5
+    assert block["complete"] is False
+    for hour in range(5):
+        assert _rates_in_hour(db_path, hour) == []
+
+
+def test_pre_listing_hours_before_coverage_download_once(db_path):
+    store_funding_rates([{"time": t, "rate": 1.25e-5} for t in _hour_prints(41)[5:]],
+                        "hyperliquid", "BTC", db_path=db_path)
+    store_funding_coverage("hyperliquid", "BTC", _BASE_MS + 2 * _HOUR_MS,
+                           _BASE_MS + 40 * _HOUR_MS, db_path=db_path)
+    info = FakeInfo(_hour_prints(41)[5:])
+    box = {}
+    _load(db_path, _real_adapter(info), box=box)
+    assert info.calls == [_BASE_MS]
+    assert "fetch_error" not in box
+    assert _markers(db_path) == []
+    assert _rows(db_path, "SELECT start_ts, end_ts FROM funding_coverage ORDER BY start_ts") == [
+        (_BASE_MS, _BASE_MS + 2 * _HOUR_MS - 1),
+        (_BASE_MS + 2 * _HOUR_MS, _BASE_MS + 40 * _HOUR_MS)]
+    _load(db_path, _real_adapter(info))
+    assert info.calls == [_BASE_MS]
+
+
+def test_delisted_tail_settles_after_one_download(db_path):
+    _seed(db_path, _hour_prints(35), _BASE_MS + 38 * _HOUR_MS)
+    info = FakeInfo(_hour_prints(35))
+    box = {}
+    _load(db_path, _real_adapter(info), box=box)
+    assert info.calls == [_BASE_MS + 38 * _HOUR_MS]
+    assert "fetch_error" not in box
+    assert _rows(db_path, "SELECT start_ts, end_ts FROM funding_coverage") == [
+        (_BASE_MS, _BASE_MS + 40 * _HOUR_MS - 1)]
+    _load(db_path, _real_adapter(info))
+    assert len(info.calls) == 1
+    block = _charge_block(db_path, _real_adapter(info))
+    assert len(info.calls) == 1
+    assert block["coverage"]["missing_hours"] == 5
+    assert block["complete"] is False
+    assert _markers(db_path) == []
+    for hour in range(35, 40):
         assert _rates_in_hour(db_path, hour) == []
 
 
