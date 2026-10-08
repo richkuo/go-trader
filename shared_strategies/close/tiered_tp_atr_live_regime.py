@@ -2,16 +2,27 @@
 from __future__ import annotations
 
 from _helpers import (
+    RESTING_TP_RULE_KEY,
     clamp_fraction,
+    evaluate_resting_rule,
     current_close_fraction,
     float_from,
     resolve_tp_tier_geometry,
     with_tier_fill_price,
 )
-from tiered_tp_atr_regime import regime_ladder_for
+from tiered_tp_atr_regime import regime_ladder_for, resting_rule_regime_ladder
 
 
 def evaluate_live_regime_tiers(position: dict, market: dict, params: dict, reason_name: str) -> dict:
+    if isinstance(market, dict) and RESTING_TP_RULE_KEY in market:
+        return evaluate_resting_rule(
+            position, market, reason_name=reason_name, regime_keyed=True,
+            ladder=lambda geometry: resting_rule_regime_ladder(params, geometry),
+            reason_for=lambda geometry, multiple: (
+                f"{reason_name}:atr={geometry.atr_label}:"
+                f"regime={geometry.regime_label}:{geometry.regime}:{multiple:g}"
+            ),
+        )
     avg_cost = float_from(position, "avg_cost")
     current_quantity = float_from(position, "current_quantity")
     side = str(position.get("side", "") or "").strip().lower()

@@ -439,6 +439,7 @@ type InitOptions struct {
 	PortfolioWarnThresholdPct   float64 `json:"portfolioWarnThresholdPct,omitempty"`
 	AllowNoEdge                 bool    `json:"allowNoEdge,omitempty"`
 	ClosedBarDecisions          bool    `json:"closedBarDecisions,omitempty"`
+	RestingTPTradeThrough       bool    `json:"restingTPTradeThrough,omitempty"`
 	DiscordEnabled              bool
 	DiscordOwnerID              string
 	SpotChannelID               string
@@ -847,6 +848,17 @@ func generateConfig(opts InitOptions) *Config {
 			candidate.ClosedBarDecisions = true
 			if len(closedBarDecisionStrategyErrors(candidate, cfg)) == 0 {
 				cfg.Strategies[i].ClosedBarDecisions = true
+			}
+		}
+	}
+
+	if opts.RestingTPTradeThrough {
+		for i := range cfg.Strategies {
+			candidate := cfg.Strategies[i]
+			inferStrategyPlatform(&candidate)
+			candidate.RestingTPTradeThrough = true
+			if len(restingTPTradeThroughStrategyErrors(candidate, cfg)) == 0 {
+				cfg.Strategies[i].RestingTPTradeThrough = true
 			}
 		}
 	}
@@ -1394,6 +1406,10 @@ func runInit(args []string) int {
 	fmt.Println("Supported: Binance.US spot, OKX spot/perps and Hyperliquid perps on fixed-duration timeframes; other strategies keep forming-bar decisions.")
 	closedBarDecisions := p.YesNo("Enable closed_bar_decisions on supported strategies?", false)
 
+	fmt.Println("\nThe resting take-profit rule books a paper Hyperliquid perps tier take-profit only after a completed bar trades one price tick past the venue-rounded limit.")
+	fmt.Println("Live trading is unchanged. Supported: paper Hyperliquid perps strategies with a tier take-profit close and a check interval at or below the bar.")
+	restingTPTradeThrough := p.YesNo("Enable resting_tp_trade_through on supported paper strategies?", false)
+
 	perpsStratIDs := make([]string, len(perpsStrategies))
 	for i, s := range perpsStrategies {
 		perpsStratIDs[i] = s.ID
@@ -1480,6 +1496,7 @@ func runInit(args []string) int {
 		OKXDrawdown:               okxDrawdown,
 		HTFFilter:                 htfFilter,
 		ClosedBarDecisions:        closedBarDecisions,
+		RestingTPTradeThrough:     restingTPTradeThrough,
 		EnableManual:              enableManual,
 		ManualSymbol:              manualSymbol,
 		ManualTimeframe:           manualTimeframe,

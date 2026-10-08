@@ -478,6 +478,7 @@ func positionCtxForCheck(sc StrategyConfig, pos *Position, regime *RegimeConfig)
 	if sc.Platform == "hyperliquid" {
 		ctx.OnChainTPResting, ctx.OnChainTPBlocked = hlOnChainTPState(sc, pos)
 	}
+	ctx.RestingTP = restingTPRuleRequestFor(sc, pos, ctx)
 	return ctx
 }
 

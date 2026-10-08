@@ -995,6 +995,53 @@ def _is_live_args(args) -> bool:
     return _args_mode(args) == "live"
 
 
+def resting_tp_trade_through_from_config(config_path: str, strategy_id: str) -> tuple:
+    import json as _json
+    with open(config_path) as fh:
+        cfg = _json.load(fh)
+    for sc in cfg.get("strategies", []) or []:
+        if not isinstance(sc, dict) or sc.get("id") != strategy_id:
+            continue
+        live = _is_live_args(sc.get("args"))
+        if "resting_tp_trade_through" not in sc:
+            return False, live
+        value = sc["resting_tp_trade_through"]
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} resting_tp_trade_through must be "
+                f"the JSON literal true or false, got {_json.dumps(value)}")
+        if value and live:
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} sets resting_tp_trade_through on a "
+                "live strategy; the venue decides live fills, so the flag is paper-only "
+                "(use --resting-tp-trade-through to model a live strategy)")
+        return value, live
+    raise ValueError(f"{config_path}: no strategy with id={strategy_id!r}")
+
+
+def resolve_resting_tp_trade_through(*, cli: bool, config_path: Optional[str],
+                                     strategy_id: str, mode: str, manifest: Optional[str]) -> bool:
+    configured = False
+    if config_path:
+        configured, live = resting_tp_trade_through_from_config(config_path, strategy_id)
+        if cli and not live and not configured:
+            raise ValueError(
+                f"--resting-tp-trade-through disagrees with paper strategy {strategy_id!r}, "
+                "whose resting_tp_trade_through is false; a paper strategy's own flag owns "
+                "the rule (set it in the config or drop the option)")
+    enabled = bool(cli or configured)
+    if not enabled:
+        return False
+    if mode != "single":
+        raise ValueError("the resting take-profit trade-through rule needs --mode single")
+    if not manifest:
+        raise ValueError(
+            "the resting take-profit trade-through rule needs --manifest: the tick grid "
+            "comes from the manifest execution spec's size decimals, so without it the "
+            "tick is unknown")
+    return True
+
+
 def _unified_regime_close(close_refs) -> bool:
     for ref in close_refs or []:
         if not isinstance(ref, dict):
@@ -1513,7 +1560,12 @@ def run_single_backtest(
     liquidation_model: str = "none",
     venue_margin: Optional[dict] = None,
     regime_label_plan: Optional[dict] = None,
+    resting_tp_trade_through: bool = False,
 ) -> Optional[dict]:
+    if resting_tp_trade_through and not manifest_path:
+        raise SystemExit(
+            "the resting take-profit trade-through rule needs --manifest (the tick grid "
+            "comes from the manifest execution spec)")
     manifest = None
     manifest_dataset_entry = None
     if manifest_path:
@@ -1760,6 +1812,7 @@ def run_single_backtest(
         perps_sizing=perps_sizing,
         liquidation_model=liquidation_model,
         venue_margin=venue_margin,
+        resting_tp_trade_through=resting_tp_trade_through,
         regime_label_columns=label_columns,
         **(feature_label_kwargs(regime_label_plan) if label_columns else {}),
     )
@@ -2182,6 +2235,14 @@ def _build_parser() -> argparse.ArgumentParser:
                              "detected on the close only, filled at the next "
                              "bar's open) for reproducing documented "
                              "baselines. Single mode only.")
+    parser.add_argument("--resting-tp-trade-through", dest="resting_tp_trade_through",
+                        action="store_true", default=False,
+                        help="#1727 Hyperliquid resting take-profit rule: a tier fills "
+                             "only when a completed bar traded at least one tick beyond "
+                             "the adapter-rounded limit (the entry bar counts only its "
+                             "close). Needs --mode single and --manifest. A paper "
+                             "--config strategy uses its own resting_tp_trade_through "
+                             "flag; this option models a live strategy. Default: off.")
     parser.add_argument("--comparison-mode", dest="comparison_mode", default=None,
                         metavar="MODE",
                         help="#1683 close comparison mode, every --mode. Omitted = "
@@ -2277,6 +2338,13 @@ def _main():
     open_params: Optional[dict] = None
     live_stop_kwargs: dict = {}
     config_platform = ""
+    try:
+        resting_tp_trade_through = resolve_resting_tp_trade_through(
+            cli=args.resting_tp_trade_through, config_path=args.config,
+            strategy_id=args.strategy, mode=args.mode, manifest=args.manifest)
+    except (OSError, ValueError) as exc:
+        print(exc)
+        sys.exit(1)
     if args.config:
         if args.mode != "single":
             print("--config is only valid with --mode single (loads one strategy by --strategy <id>)")
@@ -2438,6 +2506,7 @@ def _main():
                                 comparison_mode=args.comparison_mode,
                                 funding_mode=args.funding,
                                 liquidation_model=args.liquidation_model,
+                                resting_tp_trade_through=resting_tp_trade_through,
                                 **live_stop_kwargs)
         except FundingIncompleteError as exc:
             _funding_refusal(args.strategy, args.symbol, exc)

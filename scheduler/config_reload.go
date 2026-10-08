@@ -546,6 +546,7 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		if sc.ClosedBarDecisions != ns.ClosedBarDecisions {
 			errs = append(errs, fmt.Sprintf("strategy[%s] closed_bar_decisions changed (%t -> %t; restart required)", sc.ID, sc.ClosedBarDecisions, ns.ClosedBarDecisions))
 		}
+		errs = append(errs, restingTPTradeThroughReloadErrors(sc, ns)...)
 	}
 
 	for _, msg := range hyperliquidPeerStrategyErrors(next.Strategies) {
@@ -604,6 +605,7 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
+		errs = append(errs, restingTPTradeThroughStateReloadErrors(sc, ns, strategyHasOpenPositions(stateStrategy(state, sc.ID)))...)
 		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] hedge block changed with open positions (flatten both the primary and the hedge leg first, or restart after close)",
 				sc.ID))

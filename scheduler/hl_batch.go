@@ -166,6 +166,7 @@ type hlBatchSlot struct {
 	PositionSide    string          `json:"position_side,omitempty"`
 	PositionCtx     map[string]any  `json:"position_ctx,omitempty"`
 	ClosedBar       bool            `json:"closed_bar_decisions,omitempty"`
+	RestingTPRule   json.RawMessage `json:"resting_tp_rule,omitempty"`
 }
 
 type hlBatchRequest struct {
@@ -209,6 +210,11 @@ func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *Re
 	if len(refsArgs) == 2 {
 		slot.StrategyRefs = json.RawMessage(refsArgs[1])
 	}
+	rule, err := restingTPRuleJSON(posCtx.RestingTP)
+	if err != nil {
+		return hlBatchSlot{}, fmt.Errorf("marshal resting take-profit rule: %w", err)
+	}
+	slot.RestingTPRule = rule
 	if usesOpenCloseConfig(sc) {
 		ctx := map[string]any{}
 		if side := strings.TrimSpace(posCtx.Side); side != "" {

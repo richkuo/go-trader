@@ -85,6 +85,7 @@ type feedStrategyRequirement struct {
 	OpenInterest   bool
 	ObsWindowMs    int64
 	ClosedBar      bool
+	Timed          bool
 }
 
 func (e feedStrategyRequirement) observationNeeds() map[feedObservationKey]int64 {
@@ -187,12 +188,17 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 		if sc.ClosedBarDecisions {
 			closedBarExtra = 1
 		}
+		timedExtra := 0
+		if needsTimedSignalFrame(sc) {
+			timedExtra = 1
+		}
 		entry := feedStrategyRequirement{
 			ID:             sc.ID,
 			Signal:         feedKeyFor(symbol, timeframe),
-			SignalLookback: feedSignalLookback(rc) + closedBarExtra,
+			SignalLookback: feedSignalLookback(rc) + timedExtra,
 			Coin:           symbol,
 			ClosedBar:      sc.ClosedBarDecisions,
+			Timed:          needsTimedSignalFrame(sc),
 		}
 		req.addKey(entry.Signal, entry.SignalLookback)
 

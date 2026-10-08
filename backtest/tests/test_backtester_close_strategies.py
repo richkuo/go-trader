@@ -892,3 +892,101 @@ def test_hyperliquid_backtest_ladder_load_matches_the_daemon(case):
             Backtester(**kwargs)
     else:
         Backtester(**kwargs)
+
+
+_FILL_RULE_EVALUATORS = (
+    "tiered_tp_atr",
+    "tiered_tp_atr_live",
+    "tiered_tp_atr_regime",
+    "tiered_tp_atr_live_regime",
+)
+
+
+def _tracker_fill_rule_params():
+    for case in _TP_TIER_PARITY["fill_rule"]:
+        if case.get("tracker") is False:
+            continue
+        for name in case.get("evaluators", _FILL_RULE_EVALUATORS):
+            yield pytest.param(case, name, id=f"{case['id']}-{name}")
+
+
+@pytest.mark.parametrize("case,name", list(_tracker_fill_rule_params()))
+def test_hyperliquid_backtest_resting_rule_matches_the_parity_fixture(case, name):
+    from backtester import _RestingReachTracker
+    params = _TP_TIER_PARITY["fill_rule_ladders"][name]
+    bt = Backtester(platform="hyperliquid", close_strategies=[{"name": name, "params": params}])
+    p = case["position"]
+    tracker = _RestingReachTracker(case["sz_decimals"], case["mode"] == "ohlc_walk")
+    position_token = object()
+    rule = None
+    idx = None
+    for i, candle in enumerate(case["candles"]):
+        idx = pd.Timestamp(candle[0], unit="ms")
+        row = {"open": candle[1], "high": candle[2], "low": candle[3], "close": candle[4]}
+        rule = tracker.rule_for(position_token, p["side"], row, idx, i)
+    market = case["market"]
+    fraction, reason, fill = bt._evaluate_close_strategies(
+        p["quantity"] if p["side"] == "long" else -p["quantity"],
+        p["risk_anchor_price"] or p["avg_cost"],
+        p["initial_quantity"],
+        p["entry_atr"],
+        case["candles"][-1][4],
+        pd.Series([market["atr"]], index=[idx]),
+        idx,
+        position_regime=p["regime"],
+        market_regime=market["regime"],
+        resting_rule=rule,
+    )
+    want = case["want"]
+
+    assert fraction == pytest.approx(want["close_fraction"])
+    assert fill == pytest.approx(want["fill_price"], abs=0, rel=1e-12)
+    if "reason" in want:
+        assert reason == ("" if want["close_fraction"] == 0 else want["reason"])
+    assert bt._last_resting_fill["verdict"] == want["verdict"]
+
+
+def _fill_rule_run_frame(bars, atr):
+    idx = pd.date_range("2024-01-01", periods=len(bars), freq="h")
+    return pd.DataFrame({
+        "open": [b[0] for b in bars],
+        "high": [b[1] for b in bars],
+        "low": [b[2] for b in bars],
+        "close": [b[3] for b in bars],
+        "open_action": ["long"] + ["none"] * (len(bars) - 1),
+        "atr": [atr] * len(bars),
+    }, index=idx)
+
+
+def _fill_rule_run_kwargs(**overrides):
+    runs = _TP_TIER_PARITY["fill_rule_runs"]
+    kwargs = {
+        "initial_capital": 1000, "platform": "hyperliquid", "strategy_type": "perps",
+        "execution_spec": dict(runs["execution_spec"]),
+        "close_strategies": [dict(runs["close"])],
+        "resting_tp_trade_through": True,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+@pytest.mark.parametrize("run", _TP_TIER_PARITY["fill_rule_runs"]["runs"], ids=lambda r: r["id"])
+def test_hyperliquid_backtest_resting_rule_runs_match_the_parity_fixture(run):
+    df = _fill_rule_run_frame(run["bars"], _TP_TIER_PARITY["fill_rule_runs"]["atr"])
+    bt = Backtester(**_fill_rule_run_kwargs(
+        stop_loss_atr_mult=run["stop_loss_atr_mult"], intrabar_resolution=run["mode"],
+    ))
+    result = bt.run(df, save=False)
+
+    got = [
+        [list(df.index.astype(str)).index(t["exit_date"]), t["exit_price"], t["shares"],
+         t["exit_reason"].split(":")[0]]
+        for t in result["trades"]
+    ]
+    assert got == run["want"]
+
+
+@pytest.mark.parametrize("case", _TP_TIER_PARITY["fill_rule_runs"]["refusals"], ids=lambda r: r["id"])
+def test_hyperliquid_backtest_resting_rule_refusals_match_the_parity_fixture(case):
+    with pytest.raises(ValueError, match=case["match"]):
+        Backtester(**_fill_rule_run_kwargs(**case["kwargs"]))

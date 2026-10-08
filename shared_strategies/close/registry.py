@@ -93,6 +93,8 @@ def _normalize_result(name: str, result: Optional[dict]) -> dict:
         fill_price = 0.0
     if close_fraction > 0 and math.isfinite(fill_price) and fill_price > 0:
         out["tier_fill_price"] = fill_price
+    if isinstance(result.get("resting_fill"), dict):
+        out["resting_fill"] = dict(result["resting_fill"])
     return out
 
 

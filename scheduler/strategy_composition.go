@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type StrategyDecisionFields struct {
@@ -22,23 +23,32 @@ type StrategyDecisionFields struct {
 	Regime             *RegimePayload     `json:"regime,omitempty"`
 	ClosedBar          *ClosedBarDecision `json:"closed_bar_decision,omitempty"`
 	DecisionRegime     *RegimePayload     `json:"decision_regime,omitempty"`
+	RestingTPRule      *RestingTPRuleEcho `json:"resting_tp_rule,omitempty"`
+	CloseRestingFill   json.RawMessage    `json:"close_resting_fill,omitempty"`
 }
 
 type PositionCtx struct {
-	Side                           string
-	AvgCost                        float64
-	Quantity                       float64
-	InitialQuantity                float64
-	EntryATR                       float64
-	RiskAnchorPrice                float64
-	Regime                         string
-	DirectionalRegime              string
-	RegimeWindows                  map[string]string
-	Profile                        string
-	DirectionCertifiedAtOpen       bool
-	DirectionCertifiedStatesAtOpen map[string]string
-	OnChainTPResting               bool
-	OnChainTPBlocked               string
+	Side                            string
+	AvgCost                         float64
+	Quantity                        float64
+	InitialQuantity                 float64
+	EntryATR                        float64
+	RiskAnchorPrice                 float64
+	Regime                          string
+	DirectionalRegime               string
+	RegimeWindows                   map[string]string
+	Profile                         string
+	DirectionCertifiedAtOpen        bool
+	DirectionCertifiedStatesAtOpen  map[string]string
+	OnChainTPResting                bool
+	OnChainTPBlocked                string
+	OpenedAt                        time.Time
+	StopLossTriggerPx               float64
+	RatchetFallbackNormalizePending bool
+	RestingTPScannedOpenMs          int64
+	RestingTPReachPx                float64
+	RestingTPStopTriggerPx          float64
+	RestingTP                       *restingTPRuleRequest
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
@@ -171,18 +181,24 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		return PositionCtx{}
 	}
 	return PositionCtx{
-		Side:                           pos.Side,
-		AvgCost:                        pos.AvgCost,
-		Quantity:                       pos.Quantity,
-		InitialQuantity:                pos.InitialQuantity,
-		EntryATR:                       pos.EntryATR,
-		RiskAnchorPrice:                pos.RiskAnchorPrice,
-		Regime:                         pos.Regime,
-		DirectionalRegime:              pos.Regime,
-		RegimeWindows:                  cloneStringMap(pos.RegimeWindows),
-		Profile:                        pos.OpenProfile,
-		DirectionCertifiedAtOpen:       pos.DirectionCertifiedAtOpen,
-		DirectionCertifiedStatesAtOpen: cloneStringMap(pos.DirectionCertifiedStatesAtOpen),
+		Side:                            pos.Side,
+		AvgCost:                         pos.AvgCost,
+		Quantity:                        pos.Quantity,
+		InitialQuantity:                 pos.InitialQuantity,
+		EntryATR:                        pos.EntryATR,
+		RiskAnchorPrice:                 pos.RiskAnchorPrice,
+		Regime:                          pos.Regime,
+		DirectionalRegime:               pos.Regime,
+		RegimeWindows:                   cloneStringMap(pos.RegimeWindows),
+		Profile:                         pos.OpenProfile,
+		DirectionCertifiedAtOpen:        pos.DirectionCertifiedAtOpen,
+		DirectionCertifiedStatesAtOpen:  cloneStringMap(pos.DirectionCertifiedStatesAtOpen),
+		OpenedAt:                        pos.OpenedAt,
+		StopLossTriggerPx:               pos.StopLossTriggerPx,
+		RatchetFallbackNormalizePending: pos.RatchetFallbackNormalizePending,
+		RestingTPScannedOpenMs:          pos.RestingTPScannedOpenMs,
+		RestingTPReachPx:                pos.RestingTPReachPx,
+		RestingTPStopTriggerPx:          pos.RestingTPStopTriggerPx,
 	}
 }
 
