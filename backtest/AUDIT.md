@@ -207,7 +207,10 @@ the owner DM reports the stop recorded after the same-cycle trailing update.
   a 2026-10-06 live capture ([evidence comment](https://github.com/richkuo/go-trader/issues/1726#issuecomment-6055361624), private and not
   verifiable from the repository) reports every booked fee group at or below
   the taker constant, 0 take-profit tier rows, and no stop slippage evidence.
-  Both rate constants stay and every surface charges taker on tier fills.
+  Both rate constants stay. Paper and the backtester without a maker rate
+  charge taker on tier fills. The one exception is the live ledger
+  comparison, which charges the manifest `maker_fee_pct` on tier fills; the
+  committed ledger comparison manifests are frozen at a maker rate of 0.00015.
   Still unverified: the exact taker rate, the maker rate, the tier-fill role
   and live stop slippage (they need a `userFillsByTime` capture).
 - Live-strategy comparability: the ledger comparison refuses regime gating

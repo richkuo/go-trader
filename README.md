@@ -514,7 +514,7 @@ Capture runs on Linux only: SQLite reads each file through `VACUUM INTO` from a 
 | Robinhood Crypto | No commission (spread embedded) | 0.05% against the trade (paper and backtest) |
 | Robinhood Options | $0.03/contract (regulatory fee) | — |
 
-Live fills record exchange-reported fees and order IDs. The fee rates are the code constants. An operator check of a 2026-10-06 live capture ([issue 1726](https://github.com/richkuo/go-trader/issues/1726#issuecomment-6055361624)) reports every booked fee group at or below the 0.045% taker constant and could not classify take-profit tier fills as maker, so paper and the backtester charge taker on tier fills. The capture is private, so the repository cannot verify this check; the exact account rate and the maker rate stay unverified.
+Live fills record exchange-reported fees and order IDs. The fee rates are the code constants. An operator check of a 2026-10-06 live capture ([issue 1726](https://github.com/richkuo/go-trader/issues/1726#issuecomment-6055361624)) reports every booked fee group at or below the 0.045% taker constant and could not classify take-profit tier fills as maker, so paper and the backtester without a maker rate charge taker on tier fills. The live ledger comparison is the one exception: it charges the manifest `maker_fee_pct` on simulated tier fills. The capture is private, so the repository cannot verify this check; the exact account rate and the maker rate stay unverified.
 
 ---
 
