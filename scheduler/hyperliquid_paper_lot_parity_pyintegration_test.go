@@ -122,8 +122,11 @@ for c in req["costs"]:
     df["close_fraction"] = 0.0
     if c["kind"] == "tier":
         df["atr"] = float(c["atr"])
-    bt = Backtester(initial_capital=c["capital"], platform="hyperliquid", execution_spec=paper_spec,
-                    direction="both", **kwargs)
+    if c.get("no_spec"):
+        bt = Backtester(initial_capital=c["capital"], platform="hyperliquid", direction="both", **kwargs)
+    else:
+        bt = Backtester(initial_capital=c["capital"], platform="hyperliquid", execution_spec=paper_spec,
+                        direction="both", **kwargs)
     res = bt.run(df, strategy_name="cost-parity", symbol="ETH/USDT", timeframe="1h", save=False, record_events=True)
     evs = [{k: float(e[k]) if k in ("quantity", "raw_price", "effective_price", "fee_charged") else e[k]
             for k in ("kind", "timing", "quantity", "raw_price", "effective_price", "fee_charged", "reason")}
@@ -196,6 +199,7 @@ type hlCostParityCase struct {
 	StopFrac float64 `json:"stop_frac,omitempty"`
 	ATR      float64 `json:"atr,omitempty"`
 	ATRMult  float64 `json:"atr_mult,omitempty"`
+	NoSpec   bool    `json:"no_spec,omitempty"`
 }
 
 type hlCostParityEvent struct {
@@ -298,6 +302,7 @@ func TestHLPaperLotParityWithLiveGateAndBacktester(t *testing.T) {
 		{Kind: "stop", Side: "long", Capital: 1000, Price: 100, MoveTo: 90, StopFrac: 0.03},
 		{Kind: "stop", Side: "short", Capital: 1000, Price: 100, MoveTo: 110, StopFrac: 0.03},
 		{Kind: "tier", Side: "long", Capital: 1000, Price: 100, MoveTo: 110, ATR: 2, ATRMult: 2},
+		{Kind: "tier", Side: "long", Capital: 1000, Price: 100, MoveTo: 110, ATR: 2, ATRMult: 2, NoSpec: true},
 	}
 	out := runHLLotParityDriver(t, map[string]any{"floors": floors, "closes": closes, "entries": entries, "costs": costs})
 
@@ -433,6 +438,14 @@ func TestHLPaperLotParityWithLiveGateAndBacktester(t *testing.T) {
 				t.Fatalf("cost case %d: paper tier fill booked %d trades", i, n)
 			}
 			tier := lastTrade(t, s)
+			if c.NoSpec {
+				paperRate := tier.ExchangeFee / (tier.Quantity * tier.Price)
+				btRate := btTier.FeeCharged / (btTier.Quantity * btTier.EffectivePrice)
+				if tier.Price != btTier.EffectivePrice || hlCostParityRel(paperRate, HyperliquidTakerFeePct) > 1e-9 || hlCostParityRel(btRate, HyperliquidTakerFeePct) > 1e-9 {
+					t.Fatalf("cost case %d (non-spec tier fill): paper price %v fee rate %v, backtester price %v fee rate %v, want both at the taker rate %v", i, tier.Price, paperRate, btTier.EffectivePrice, btRate, HyperliquidTakerFeePct)
+				}
+				continue
+			}
 			if tier.Quantity != btTier.Quantity || tier.Price != btTier.EffectivePrice || hlCostParityRel(tier.ExchangeFee, btTier.FeeCharged) > 1e-9 {
 				t.Fatalf("cost case %d (tier fill): paper qty %v price %v fee %v, backtester qty %v price %v fee %v", i, tier.Quantity, tier.Price, tier.ExchangeFee, btTier.Quantity, btTier.EffectivePrice, btTier.FeeCharged)
 			}

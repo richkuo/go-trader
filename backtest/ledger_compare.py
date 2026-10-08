@@ -84,6 +84,16 @@ PAPER_COST_MODEL_FROZEN_FROM = {
     "tier_fee_pct": "fees.go HyperliquidTakerFeePct (tier fills pay taker in this version)",
     "slippage_pct": "fees.go SlippagePct",
 }
+HL_TIER_FEE_RULE = (
+    "issue 1726 evidence (operator-reported check of the 2026-10-06 live capture, not verifiable from "
+    "the repository) did not classify live Hyperliquid take-profit tier fills as maker, so paper and "
+    "the backtester without a maker rate charge taker on tier fills; this live comparison charges the "
+    "manifest maker_fee_pct on simulated tier fills, which a Hyperliquid comparison manifest must set "
+    "equal to taker_fee_pct to match the evidence (the committed fixture manifests are frozen at a lower "
+    "maker rate and do not meet this rule yet), so maker_equals_taker false means the simulated tier "
+    "fees differ from what the evidence supports; this check is informational and never refuses: "
+    "https://github.com/richkuo/go-trader/issues/1726#issuecomment-6055361624"
+)
 PAPER_COST_UNAPPROXIMABLE_REASONS = (
     "paper_cost_model_partition_unknown", "paper_cost_model_mode_disagrees", "paper_cost_model_mixed",
     "paper_cost_model_unknown",
@@ -1968,6 +1978,12 @@ def market_strategy_checks(market: dict, name: str, params: dict, direction: str
     return out
 
 
+def _tier_fee_check(spec: dict) -> dict:
+    return {"maker_fee_pct": spec["maker_fee_pct"], "taker_fee_pct": spec["taker_fee_pct"],
+            "maker_equals_taker": spec["maker_fee_pct"] == spec["taker_fee_pct"],
+            "rule": HL_TIER_FEE_RULE}
+
+
 def run_simulation(market: dict, signals: pd.DataFrame, plan: dict) -> dict:
     manifest, dataset, win = market["manifest"], market["dataset"], market["window"]
     spec = om.execution_spec(manifest, dataset)
@@ -1990,8 +2006,10 @@ def run_simulation(market: dict, signals: pd.DataFrame, plan: dict) -> dict:
             mechanism = {"execution_spec": paper_spec}
         else:
             kwargs["commission_pct"] = vals["taker_fee_pct"]
+            kwargs["maker_fee_pct"] = vals["tier_fee_pct"]
             kwargs["slippage_pct"] = vals["half_spread_pct"] + vals["slippage_pct"]
-            mechanism = {"commission_pct": kwargs["commission_pct"], "slippage_pct": kwargs["slippage_pct"]}
+            mechanism = {"commission_pct": kwargs["commission_pct"], "maker_fee_pct": kwargs["maker_fee_pct"],
+                         "slippage_pct": kwargs["slippage_pct"]}
         cost_model = {"kind": PAPER_COST_MODEL_KIND, "version": paper["version"],
                       "version_source": paper["version_source"], "values": paper["values"], **mechanism}
     elif plan["execution_spec"]:
@@ -2005,16 +2023,21 @@ def run_simulation(market: dict, signals: pd.DataFrame, plan: dict) -> dict:
                           "size_decimals": "manifest dataset size_decimals",
                           "min_notional_usd": "manifest costs.min_notional_usd",
                           "min_notional_margin": "manifest costs.min_notional_margin",
-                      }}
+                      },
+                      "tier_fee_check": _tier_fee_check(spec)}
     else:
         kwargs["commission_pct"] = spec["taker_fee_pct"]
+        kwargs["maker_fee_pct"] = spec["maker_fee_pct"]
         kwargs["slippage_pct"] = spec["half_spread_pct"] + spec["slippage_pct"]
         cost_model = {"kind": "flat_taker_fee_and_adverse_price",
-                      "commission_pct": kwargs["commission_pct"], "slippage_pct": kwargs["slippage_pct"],
+                      "commission_pct": kwargs["commission_pct"], "maker_fee_pct": kwargs["maker_fee_pct"],
+                      "slippage_pct": kwargs["slippage_pct"],
                       "value_sources": {
                           "commission_pct": "manifest costs.taker_fee_pct",
+                          "maker_fee_pct": "manifest costs.maker_fee_pct",
                           "slippage_pct": "manifest dataset half_spread_bps + manifest costs.slippage_bps",
-                      }}
+                      },
+                      "tier_fee_check": _tier_fee_check(spec)}
     stop = plan.get("stop") or {}
     if stop.get("kwargs"):
         kwargs.update(stop["kwargs"])

@@ -117,6 +117,20 @@ def test_resting_take_profit_uses_maker_fee():
     assert t["exit_price"] == pytest.approx(102.0)
     assert t["exit_fee"] == pytest.approx(t["shares"] * 102.0 * 0.0001)
     assert t["entry_fee"] == pytest.approx(t["shares"] * 100.0 * 0.0005)
+    tiers = [{"name": "tiered_tp_atr",
+              "params": {"tp_tiers": [{"atr_multiple": 2.0, "close_fraction": 1.0}]}}]
+    cases = [
+        ({"maker_fee_pct": 0.0001}, 0.0001, 0.00045),
+        ({"commission_pct": 0.0}, 0.0, 0.0),
+        ({"commission_pct": 0.0007}, 0.0007, 0.0007),
+        ({"commission_pct": 0.0007, "maker_fee_pct": 0.0002}, 0.0002, 0.0007),
+        ({}, 0.00045, 0.00045),
+    ]
+    for kw, tier_rate, entry_rate in cases:
+        nt = _run(df, None, close_strategies=tiers, slippage_pct=0.0, **kw)["trades"][0]
+        assert nt["exit_price"] == pytest.approx(102.0)
+        assert nt["exit_fee"] == pytest.approx(nt["shares"] * 102.0 * tier_rate, abs=1e-6)
+        assert nt["entry_fee"] == pytest.approx(1000.0 * entry_rate, abs=1e-6)
 
 
 def test_spec_guards():
@@ -125,6 +139,17 @@ def test_spec_guards():
         Backtester(execution_spec=_spec(), commission_pct=0.001)
     with pytest.raises(ValueError, match="charged twice"):
         Backtester(execution_spec=_spec(), slippage_pct=0.001)
+    with pytest.raises(ValueError, match="charged twice"):
+        Backtester(execution_spec=_spec(), maker_fee_pct=0.0001)
+    with pytest.raises(ValueError, match="must be a number"):
+        Backtester(maker_fee_pct=True)
+    with pytest.raises(ValueError, match="must be a number"):
+        Backtester(maker_fee_pct="0.0001")
+    for bad in (-0.1, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="finite and >= 0"):
+            Backtester(maker_fee_pct=bad)
+    with pytest.raises(ValueError, match="not plausible"):
+        Backtester(maker_fee_pct=0.2)
     with pytest.raises(ValueError, match="keys must be exactly"):
         Backtester(execution_spec={**_spec(), "lot": 1})
     with pytest.raises(ValueError, match="integer"):
