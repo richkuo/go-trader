@@ -151,6 +151,8 @@ def test_strict_fixture_reaches_strict_success_offline(tmp_path, monkeypatch):
     check = live_cost["tier_fee_check"]
     assert (check["maker_fee_pct"], check["taker_fee_pct"], check["maker_equals_taker"]) == (0.00015, 0.00045, False)
     assert "issue 1726" in check["rule"] and "never refuses" in check["rule"]
+    assert "the models charge taker" not in check["rule"]
+    assert "this live comparison charges the manifest maker_fee_pct" in check["rule"]
 
     fx = _copy(tmp_path / "paper")
     rc, rep = _run(fx, tmp_path, export="export_paper.json", name="paper.json")
@@ -336,6 +338,8 @@ def test_scale_in_fixture_conserves_booked_accounting_and_refuses_strict(tmp_pat
     assert flat["commission_pct"] == 0.00045 and flat["maker_fee_pct"] == 0.00015
     assert flat["value_sources"]["maker_fee_pct"] == "manifest costs.maker_fee_pct"
     assert flat["tier_fee_check"]["maker_equals_taker"] is False
+    assert "this live comparison charges the manifest maker_fee_pct" in flat["tier_fee_check"]["rule"]
+    assert "the models charge taker" not in flat["tier_fee_check"]["rule"]
     assert all(c["ok"] for c in rep["conservation"]["checks"])
     assert rep["matching"]["unmatched_booked"] and rep["matching"]["unmatched_simulated"]
 

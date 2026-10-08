@@ -86,9 +86,11 @@ PAPER_COST_MODEL_FROZEN_FROM = {
 }
 HL_TIER_FEE_RULE = (
     "issue 1726 evidence (operator-reported check of the 2026-10-06 live capture, not verifiable from "
-    "the repository) did not classify live Hyperliquid take-profit tier fills as maker, so the models "
-    "charge taker on tier fills and a Hyperliquid comparison manifest sets maker_fee_pct equal to "
-    "taker_fee_pct; this check is informational and never refuses: "
+    "the repository) did not classify live Hyperliquid take-profit tier fills as maker, so paper and "
+    "the backtester without a maker rate charge taker on tier fills; this live comparison charges the "
+    "manifest maker_fee_pct on simulated tier fills, which a Hyperliquid comparison manifest sets equal "
+    "to taker_fee_pct, so maker_equals_taker false means the simulated tier fees differ from what the "
+    "evidence supports; this check is informational and never refuses: "
     "https://github.com/richkuo/go-trader/issues/1726#issuecomment-6055361624"
 )
 PAPER_COST_UNAPPROXIMABLE_REASONS = (
