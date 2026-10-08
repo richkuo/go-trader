@@ -1,7 +1,7 @@
 {
   "blockers": [
     {
-      "evidence_sha256": "4e074074ca70b9efb836a89f28663fecfc1b46b1afc41901b06d219a058b06e5",
+      "evidence_sha256": "df79bd1c6f14c5f359b99da196150cfd73dd6b25b84dcbc16c450de939aba8db",
       "fact": "candle_price_basis",
       "status": "unconfirmed"
     },
@@ -16,6 +16,17 @@
       "status": "pending"
     }
   ],
+  "cancel_time_source": "unconfirmed",
+  "candle_price_basis": "unconfirmed",
+  "candle_price_basis_evidence": {
+    "contradictions": 0,
+    "covered_bars": 0,
+    "evidence_sha256": "df79bd1c6f14c5f359b99da196150cfd73dd6b25b84dcbc16c450de939aba8db",
+    "reasons": [
+      "interval_mismatch",
+      "no_independent_trade_evidence"
+    ]
+  },
   "fee_rates": [
     {
       "fee_rate": "0.00015",
@@ -44,66 +55,77 @@
       "fee_rate": null,
       "order_ordinal": 1,
       "outcome": "lifetime_unknown",
+      "prediction_status": null,
       "side": "long"
     },
     {
       "fee_rate": "0.00015",
       "order_ordinal": 2,
       "outcome": "full_fill",
+      "prediction_status": "scored",
       "side": "long"
     },
     {
       "fee_rate": "0.00015",
       "order_ordinal": 3,
       "outcome": "partial_fill",
+      "prediction_status": "scored",
       "side": "long"
     },
     {
       "fee_rate": null,
       "order_ordinal": 4,
       "outcome": "no_fill_touch",
+      "prediction_status": "scored",
       "side": "long"
     },
     {
       "fee_rate": null,
       "order_ordinal": 5,
       "outcome": "no_fill_trade_through",
+      "prediction_status": "scored",
       "side": "long"
     },
     {
       "fee_rate": null,
       "order_ordinal": 6,
       "outcome": "not_reached",
+      "prediction_status": "scored",
       "side": "long"
     },
     {
       "fee_rate": null,
       "order_ordinal": 7,
       "outcome": "boundary_unknown",
+      "prediction_status": null,
       "side": "long"
     },
     {
       "fee_rate": null,
       "order_ordinal": 8,
       "outcome": "shared_coin_ambiguous",
+      "prediction_status": null,
       "side": null
     },
     {
       "fee_rate": null,
       "order_ordinal": 9,
       "outcome": "limit_off_grid",
+      "prediction_status": null,
       "side": "long"
     },
     {
       "fee_rate": "0.00015",
       "order_ordinal": 10,
       "outcome": "full_fill",
+      "prediction_status": "scored",
       "side": "long"
     },
     {
       "fee_rate": null,
       "order_ordinal": 11,
       "outcome": "acquisition_incomplete",
+      "prediction_status": null,
       "side": "long"
     }
   ],
@@ -112,25 +134,35 @@
     "same_bar_stop_and_tier": 1,
     "unknown": 1
   },
+  "rule_count_basis": {
+    "agreements": "scored_bars",
+    "early_fills": "scored_bars",
+    "false_fills": "scored_bars",
+    "fill_bar_unresolved": "terminal_bar",
+    "missed_fills": "terminal_bar_upper_bound",
+    "quantity_errors": "scored_bars"
+  },
   "rules": {
     "close": {
       "long": {
-        "agreements": 4,
+        "agreements": 3,
         "bps_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         },
+        "early_fills": 1,
         "false_fills": 0,
+        "fill_bar_unresolved": 1,
         "missed_fills": 1,
-        "quantity_errors": 1,
+        "quantity_errors": 0,
         "tick_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         }
       },
@@ -143,7 +175,9 @@
           "2-4": "unmeasured",
           "5-9": "unmeasured"
         },
+        "early_fills": 0,
         "false_fills": 0,
+        "fill_bar_unresolved": 0,
         "missed_fills": 0,
         "quantity_errors": 0,
         "tick_buckets": {
@@ -157,22 +191,24 @@
     },
     "touch": {
       "long": {
-        "agreements": 3,
+        "agreements": 1,
         "bps_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         },
+        "early_fills": 1,
         "false_fills": 2,
+        "fill_bar_unresolved": 2,
         "missed_fills": 0,
-        "quantity_errors": 1,
+        "quantity_errors": 0,
         "tick_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         }
       },
@@ -185,7 +221,9 @@
           "2-4": "unmeasured",
           "5-9": "unmeasured"
         },
+        "early_fills": 0,
         "false_fills": 0,
+        "fill_bar_unresolved": 0,
         "missed_fills": 0,
         "quantity_errors": 0,
         "tick_buckets": {
@@ -199,22 +237,24 @@
     },
     "trade_through_1": {
       "long": {
-        "agreements": 4,
+        "agreements": 2,
         "bps_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         },
+        "early_fills": 1,
         "false_fills": 1,
+        "fill_bar_unresolved": 2,
         "missed_fills": 0,
-        "quantity_errors": 1,
+        "quantity_errors": 0,
         "tick_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         }
       },
@@ -227,7 +267,9 @@
           "2-4": "unmeasured",
           "5-9": "unmeasured"
         },
+        "early_fills": 0,
         "false_fills": 0,
+        "fill_bar_unresolved": 0,
         "missed_fills": 0,
         "quantity_errors": 0,
         "tick_buckets": {
@@ -241,22 +283,24 @@
     },
     "trade_through_2": {
       "long": {
-        "agreements": 4,
+        "agreements": 2,
         "bps_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         },
+        "early_fills": 1,
         "false_fills": 1,
+        "fill_bar_unresolved": 2,
         "missed_fills": 0,
-        "quantity_errors": 1,
+        "quantity_errors": 0,
         "tick_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         }
       },
@@ -269,7 +313,9 @@
           "2-4": "unmeasured",
           "5-9": "unmeasured"
         },
+        "early_fills": 0,
         "false_fills": 0,
+        "fill_bar_unresolved": 0,
         "missed_fills": 0,
         "quantity_errors": 0,
         "tick_buckets": {
@@ -283,22 +329,24 @@
     },
     "trade_through_3": {
       "long": {
-        "agreements": 4,
+        "agreements": 2,
         "bps_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         },
+        "early_fills": 1,
         "false_fills": 1,
+        "fill_bar_unresolved": 2,
         "missed_fills": 0,
-        "quantity_errors": 1,
+        "quantity_errors": 0,
         "tick_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         }
       },
@@ -311,7 +359,9 @@
           "2-4": "unmeasured",
           "5-9": "unmeasured"
         },
+        "early_fills": 0,
         "false_fills": 0,
+        "fill_bar_unresolved": 0,
         "missed_fills": 0,
         "quantity_errors": 0,
         "tick_buckets": {
@@ -325,22 +375,24 @@
     },
     "trade_through_4": {
       "long": {
-        "agreements": 4,
+        "agreements": 3,
         "bps_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         },
+        "early_fills": 1,
         "false_fills": 0,
+        "fill_bar_unresolved": 1,
         "missed_fills": 1,
-        "quantity_errors": 1,
+        "quantity_errors": 0,
         "tick_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         }
       },
@@ -353,7 +405,9 @@
           "2-4": "unmeasured",
           "5-9": "unmeasured"
         },
+        "early_fills": 0,
         "false_fills": 0,
+        "fill_bar_unresolved": 0,
         "missed_fills": 0,
         "quantity_errors": 0,
         "tick_buckets": {
@@ -367,22 +421,24 @@
     },
     "trade_through_5": {
       "long": {
-        "agreements": 4,
+        "agreements": 3,
         "bps_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         },
+        "early_fills": 1,
         "false_fills": 0,
+        "fill_bar_unresolved": 0,
         "missed_fills": 2,
         "quantity_errors": 0,
         "tick_buckets": {
-          "0": 2,
+          "0": 4,
           "1": "unmeasured",
           "10+": "unmeasured",
-          "2-4": 3,
+          "2-4": 1,
           "5-9": 1
         }
       },
@@ -395,7 +451,9 @@
           "2-4": "unmeasured",
           "5-9": "unmeasured"
         },
+        "early_fills": 0,
         "false_fills": 0,
+        "fill_bar_unresolved": 0,
         "missed_fills": 0,
         "quantity_errors": 0,
         "tick_buckets": {
@@ -444,6 +502,9 @@
         "not_reached": 1,
         "partial_fill": 1
       }
+    },
+    "orders_per_prediction_status": {
+      "scored": 6
     },
     "strategies": [
       "strat-a",
@@ -530,5 +591,5 @@
     ]
   },
   "schema": "go-trader.resting-tp-fill-study",
-  "schema_version": 1
+  "schema_version": 2
 }
