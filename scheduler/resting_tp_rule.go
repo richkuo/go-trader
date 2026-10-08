@@ -21,7 +21,7 @@ const (
 	restingTPHoldStopUnarmed     = "stop_unarmed"
 	restingTPCoverageTruncated   = "frame_truncated"
 	restingTPUnsupportedDynamic  = dynamicCloseStrategyName
-	restingTPProbeRuleJSONSample = `{"v":1,"k_ticks":1,"sz_decimals":5,"entry_time_ms":1,"stop_trigger_px":0,"hold_reason":""}`
+	restingTPProbeRuleJSONSample = `{"v":1,"k_ticks":1,"sz_decimals":5,"entry_time_ms":1,"stop_trigger_px":0,"hold_reason":"","scanned_through_ms":0,"prior_reach_px":null}`
 )
 
 var restingTPTierCloseNames = map[string]bool{
@@ -32,33 +32,39 @@ var restingTPTierCloseNames = map[string]bool{
 }
 
 type restingTPRuleRequest struct {
-	V             int     `json:"v"`
-	KTicks        int     `json:"k_ticks"`
-	SzDecimals    *int    `json:"sz_decimals"`
-	EntryTimeMs   int64   `json:"entry_time_ms"`
-	StopTriggerPx float64 `json:"stop_trigger_px"`
-	HoldReason    string  `json:"hold_reason"`
+	V                int      `json:"v"`
+	KTicks           int      `json:"k_ticks"`
+	SzDecimals       *int     `json:"sz_decimals"`
+	EntryTimeMs      int64    `json:"entry_time_ms"`
+	StopTriggerPx    float64  `json:"stop_trigger_px"`
+	HoldReason       string   `json:"hold_reason"`
+	ScannedThroughMs int64    `json:"scanned_through_ms"`
+	PriorReachPx     *float64 `json:"prior_reach_px"`
 }
 
 type RestingTPRuleEcho struct {
-	V                    int     `json:"v"`
-	Enabled              bool    `json:"enabled"`
-	Held                 bool    `json:"held"`
-	HoldReason           string  `json:"hold_reason,omitempty"`
-	KTicks               int     `json:"k_ticks"`
-	SzDecimals           *int    `json:"sz_decimals"`
-	CutoffMs             int64   `json:"cutoff_ms"`
-	EntryTimeMs          int64   `json:"entry_time_ms"`
-	EntryBarOpenMs       int64   `json:"entry_bar_open_ms"`
-	StopTriggerPx        float64 `json:"stop_trigger_px"`
-	Coverage             string  `json:"coverage"`
-	ObservedBars         int     `json:"observed_bars"`
-	FirstObservedOpenMs  int64   `json:"first_observed_open_ms"`
-	LastObservedOpenMs   int64   `json:"last_observed_open_ms"`
-	ObservedRowsSHA256   string  `json:"observed_rows_sha256"`
-	ReachBarOpenMs       int64   `json:"reach_bar_open_ms"`
-	StopReachedBarOpenMs int64   `json:"stop_reached_bar_open_ms"`
-	Verdict              string  `json:"verdict,omitempty"`
+	V                    int      `json:"v"`
+	Enabled              bool     `json:"enabled"`
+	Held                 bool     `json:"held"`
+	HoldReason           string   `json:"hold_reason,omitempty"`
+	KTicks               int      `json:"k_ticks"`
+	SzDecimals           *int     `json:"sz_decimals"`
+	CutoffMs             int64    `json:"cutoff_ms"`
+	EntryTimeMs          int64    `json:"entry_time_ms"`
+	EntryBarOpenMs       int64    `json:"entry_bar_open_ms"`
+	StopTriggerPx        float64  `json:"stop_trigger_px"`
+	Coverage             string   `json:"coverage"`
+	ObservedBars         int      `json:"observed_bars"`
+	FirstObservedOpenMs  int64    `json:"first_observed_open_ms"`
+	LastObservedOpenMs   int64    `json:"last_observed_open_ms"`
+	ObservedRowsSHA256   string   `json:"observed_rows_sha256"`
+	ScannedThroughMs     int64    `json:"scanned_through_ms"`
+	PriorReachPx         *float64 `json:"prior_reach_px"`
+	NextScannedThroughMs int64    `json:"next_scanned_through_ms"`
+	NextReachPx          *float64 `json:"next_reach_px"`
+	ReachBarOpenMs       int64    `json:"reach_bar_open_ms"`
+	StopReachedBarOpenMs int64    `json:"stop_reached_bar_open_ms"`
+	Verdict              string   `json:"verdict,omitempty"`
 }
 
 func restingTPTradeThroughRawErrors(prefix string, entry map[string]json.RawMessage) []string {
@@ -192,6 +198,11 @@ func restingTPRuleRequestFor(sc StrategyConfig, pos *Position, ctx PositionCtx) 
 	if !ctx.OpenedAt.IsZero() && ctx.OpenedAt.UnixMilli() > 0 {
 		req.EntryTimeMs = ctx.OpenedAt.UnixMilli()
 	}
+	if ctx.RestingTPScannedOpenMs > 0 && ctx.RestingTPReachPx > 0 && !math.IsInf(ctx.RestingTPReachPx, 0) {
+		reach := ctx.RestingTPReachPx
+		req.ScannedThroughMs = ctx.RestingTPScannedOpenMs
+		req.PriorReachPx = &reach
+	}
 	if lot := hlLotMetadata.Peek(hyperliquidSymbol(sc.Args)); lot.Known {
 		d := lot.SzDecimals
 		req.SzDecimals = &d
@@ -226,7 +237,33 @@ func appendRestingTPRuleArg(args []string, ctx PositionCtx) ([]string, error) {
 	return append(args, restingTPRuleFlag+"="+string(blob)), nil
 }
 
-func restingTPRuleContractError(sent *restingTPRuleRequest, fields StrategyDecisionFields) string {
+func restingTPNextScanError(sent *restingTPRuleRequest, echo *RestingTPRuleEcho, side string) string {
+	if echo.NextScannedThroughMs < sent.ScannedThroughMs {
+		return "the next scan watermark moved backwards"
+	}
+	next := echo.NextReachPx
+	if next == nil {
+		if sent.PriorReachPx != nil || echo.NextScannedThroughMs != sent.ScannedThroughMs {
+			return "the next reach is missing"
+		}
+		return ""
+	}
+	if *next <= 0 || math.IsInf(*next, 0) || math.IsNaN(*next) || echo.NextScannedThroughMs <= 0 {
+		return "the next reach or watermark is not usable"
+	}
+	if sent.PriorReachPx != nil {
+		prior := *sent.PriorReachPx
+		if (side == "short" && *next > prior) || (side != "short" && *next < prior) {
+			return "the next reach falls behind the prior reach"
+		}
+	}
+	if echo.Held && (echo.NextScannedThroughMs != sent.ScannedThroughMs || !floatPtrEqual(next, sent.PriorReachPx)) {
+		return "a held rule advanced the scan"
+	}
+	return ""
+}
+
+func restingTPRuleContractError(sent *restingTPRuleRequest, side string, fields StrategyDecisionFields) string {
 	echo := fields.RestingTPRule
 	const redeploy = " (redeploy with scripts/update.sh so Go and Python match)"
 	switch {
@@ -236,8 +273,11 @@ func restingTPRuleContractError(sent *restingTPRuleRequest, fields StrategyDecis
 		return ""
 	case echo == nil || !echo.Enabled:
 		return "resting take-profit rule contract mismatch: sent a resting_tp_rule but the check returned no echo; holding this signal because the check may have used the mark rule" + redeploy
-	case echo.V != sent.V || echo.KTicks != sent.KTicks || !intPtrEqual(echo.SzDecimals, sent.SzDecimals) || echo.EntryTimeMs != sent.EntryTimeMs || echo.StopTriggerPx != sent.StopTriggerPx:
-		return "resting take-profit rule contract mismatch: the echo disagrees with the sent k_ticks, sz_decimals, entry_time_ms or stop_trigger_px; holding this signal" + redeploy
+	case echo.V != sent.V || echo.KTicks != sent.KTicks || !intPtrEqual(echo.SzDecimals, sent.SzDecimals) || echo.EntryTimeMs != sent.EntryTimeMs || echo.StopTriggerPx != sent.StopTriggerPx ||
+		echo.ScannedThroughMs != sent.ScannedThroughMs || !floatPtrEqual(echo.PriorReachPx, sent.PriorReachPx):
+		return "resting take-profit rule contract mismatch: the echo disagrees with the sent k_ticks, sz_decimals, entry_time_ms, stop_trigger_px, scanned_through_ms or prior_reach_px; holding this signal" + redeploy
+	case restingTPNextScanError(sent, echo, side) != "":
+		return "resting take-profit rule contract mismatch: " + restingTPNextScanError(sent, echo, side) + "; holding this signal" + redeploy
 	case echo.Held && fields.CloseTierFillPrice > 0:
 		return "resting take-profit rule contract mismatch: the rule was held but the check returned a tier fill price; holding this signal" + redeploy
 	case fields.CloseFraction > 0 && restingTPTierCloseNames[strings.TrimSpace(fields.CloseStrategy)] &&
@@ -291,4 +331,21 @@ func ensureRestingTPLotMetadata(due []StrategyConfig) {
 		seen[sym] = true
 		hlLotMetadata.Ensure(sym)
 	}
+}
+
+func recordRestingTPScan(s *StrategyState, symbol string, sent *restingTPRuleRequest, fields StrategyDecisionFields) bool {
+	echo := fields.RestingTPRule
+	if s == nil || sent == nil || echo == nil || echo.Held || echo.NextReachPx == nil {
+		return false
+	}
+	pos := s.Positions[symbol]
+	if pos == nil || pos.Quantity <= 0 || pos.OpenedAt.IsZero() || pos.OpenedAt.UnixMilli() != sent.EntryTimeMs {
+		return false
+	}
+	if pos.RestingTPScannedOpenMs != sent.ScannedThroughMs {
+		return false
+	}
+	pos.RestingTPScannedOpenMs = echo.NextScannedThroughMs
+	pos.RestingTPReachPx = *echo.NextReachPx
+	return true
 }

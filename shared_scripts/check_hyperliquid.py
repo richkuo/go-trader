@@ -576,7 +576,8 @@ def _shared_decision_funding_records(shared, symbol, start_ms, boundary_ms):
     return out
 
 
-RESTING_RULE_REQUEST_KEYS = frozenset({"v", "k_ticks", "sz_decimals", "entry_time_ms", "stop_trigger_px", "hold_reason"})
+RESTING_RULE_REQUEST_KEYS = frozenset({"v", "k_ticks", "sz_decimals", "entry_time_ms", "stop_trigger_px", "hold_reason",
+                                       "scanned_through_ms", "prior_reach_px"})
 
 
 def _request_int(raw, field, minimum=None, maximum=None, allow_none=False):
@@ -614,7 +615,16 @@ def parse_resting_rule_request(raw):
         raise ValueError(f"resting_tp_rule.stop_trigger_px must be a finite number >= 0, got {stop!r}")
     if not isinstance(raw["hold_reason"], str):
         raise ValueError(f"resting_tp_rule.hold_reason must be a string, got {raw['hold_reason']!r}")
+    scanned_through = _request_int(raw["scanned_through_ms"], "scanned_through_ms", minimum=0)
+    prior = raw["prior_reach_px"]
+    if prior is not None and (isinstance(prior, bool) or not isinstance(prior, (int, float))
+                              or not math.isfinite(float(prior)) or float(prior) <= 0):
+        raise ValueError(f"resting_tp_rule.prior_reach_px must be null or a finite number > 0, got {prior!r}")
+    if (prior is None) != (scanned_through == 0):
+        raise ValueError("resting_tp_rule.prior_reach_px and scanned_through_ms must both be set or both be empty")
     return {
+        "scanned_through_ms": scanned_through,
+        "prior_reach_px": prior,
         "v": raw["v"],
         "k_ticks": raw["k_ticks"],
         "sz_decimals": _request_int(raw["sz_decimals"], "sz_decimals", minimum=0, maximum=12, allow_none=True),
@@ -658,22 +668,29 @@ def _resting_rule_observation(shared, request, side):
         else:
             selection = primary["selection"]
             entry_ms = request["entry_time_ms"]
+            scanned_through = request["scanned_through_ms"]
             interval = int(selection.interval_ms)
             start = None
             entry_idx = None
             for i, timing in enumerate(selection.timings):
                 if timing.open_ms <= entry_ms < timing.open_ms + interval:
-                    entry_idx = i
+                    obs["entry_bar_open_ms"] = int(timing.open_ms)
+                    if not scanned_through:
+                        entry_idx = i
+                        start = i
+                        break
+                if scanned_through and timing.open_ms > scanned_through:
                     start = i
                     break
-                if timing.open_ms > entry_ms:
+                if not scanned_through and timing.open_ms > entry_ms:
                     start = i
                     break
             if start is not None:
-                if entry_idx is None:
+                if scanned_through:
+                    if int(selection.timings[start].open_ms) > scanned_through + interval:
+                        obs["coverage"] = "frame_truncated"
+                elif entry_idx is None:
                     obs["coverage"] = "frame_truncated"
-                else:
-                    obs["entry_bar_open_ms"] = int(selection.timings[entry_idx].open_ms)
                 obs["rows"] = selection.rows[start:]
                 obs["timings"] = selection.timings[start:]
                 obs["bars"] = [
@@ -686,8 +703,19 @@ def _resting_rule_observation(shared, request, side):
     obs["rule"] = helpers.build_resting_rule(
         sz_decimals=request["sz_decimals"], bars=obs["bars"],
         stop_trigger_px=request["stop_trigger_px"], coverage=obs["coverage"],
+        prior_reach_px=request["prior_reach_px"],
         held=bool(obs["hold_reason"]), hold_reason=obs["hold_reason"],
     )
+    obs["next_scanned_through_ms"] = request["scanned_through_ms"]
+    obs["next_reach_px"] = request["prior_reach_px"]
+    obs["stop_reached_bar_open_ms"] = 0
+    if not obs["hold_reason"]:
+        scan = helpers.resting_rule_scan(helpers.resting_rule_input({helpers.RESTING_TP_RULE_KEY: obs["rule"]}), side)
+        if scan["last_scanned_open_ms"]:
+            obs["next_scanned_through_ms"] = int(scan["last_scanned_open_ms"])
+        if scan["best"] is not None:
+            obs["next_reach_px"] = float(scan["best"])
+        obs["stop_reached_bar_open_ms"] = int(scan["stop_bar"] or 0)
     return obs
 
 
@@ -710,8 +738,12 @@ def _resting_rule_echo(request, obs, decision):
         "first_observed_open_ms": int(timings[0].open_ms) if timings else 0,
         "last_observed_open_ms": int(timings[-1].open_ms) if timings else 0,
         "observed_rows_sha256": rows_sha256(obs["rows"], timings) if timings else "",
+        "scanned_through_ms": request["scanned_through_ms"],
+        "prior_reach_px": request["prior_reach_px"],
+        "next_scanned_through_ms": obs["next_scanned_through_ms"],
+        "next_reach_px": obs["next_reach_px"],
         "reach_bar_open_ms": int(evidence.get("reach_bar_open_ms") or 0),
-        "stop_reached_bar_open_ms": int(evidence.get("stop_reached_bar_open_ms") or 0),
+        "stop_reached_bar_open_ms": obs["stop_reached_bar_open_ms"],
         "verdict": str(evidence.get("verdict") or ""),
     }
 

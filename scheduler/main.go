@@ -2429,6 +2429,11 @@ func main() {
 						}
 					} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, hlBatchResults, feedCtx); ok {
 						prices[result.Symbol] = price
+						if hlPosCtx.RestingTP != nil {
+							mu.Lock()
+							recordRestingTPScan(stratState, result.Symbol, hlPosCtx.RestingTP, result.StrategyDecisionFields)
+							mu.Unlock()
+						}
 						hlStep = beginHyperliquidStepTradeAlerts(sc, stratState, &mu)
 						guardSameSideClose(sc, result, hlPosSide, hlPosQty, notifier, logger)
 						if cbManageOnly {
@@ -3935,7 +3940,7 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 			errMsg = msg
 			mode = scriptFailureError
 			result = nil
-		} else if msg := restingTPRuleContractError(posCtx.RestingTP, result.StrategyDecisionFields); msg != "" {
+		} else if msg := restingTPRuleContractError(posCtx.RestingTP, posCtx.Side, result.StrategyDecisionFields); msg != "" {
 			errMsg = msg
 			mode = scriptFailureError
 			result = nil

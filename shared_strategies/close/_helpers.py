@@ -450,11 +450,11 @@ def _bps_through(reach: Decimal, limit: Decimal, side: str) -> float:
     return max(float(raw * Decimal(10000)), 0.0)
 
 
-def resting_rule_hit_tiers(tiers, side: str, geometry: TierGeometry, rule: dict):
-    sz_decimals = rule["sz_decimals"]
+def resting_rule_scan(rule: dict, side: str) -> dict:
     stop = _rule_price(rule["stop_trigger_px"]) if rule["stop_trigger_px"] > 0 else None
     scanned = []
     stop_bar = 0
+    last_scanned = 0
     if rule["prior_reach_px"] is not None:
         scanned.append((None, _rule_price(rule["prior_reach_px"])))
     for bar in rule["bars"]:
@@ -462,11 +462,25 @@ def resting_rule_hit_tiers(tiers, side: str, geometry: TierGeometry, rule: dict)
             stop_bar = bar["open_ms"]
             break
         scanned.append((bar["open_ms"], _rule_price(bar["favorable_px"])))
+        last_scanned = bar["open_ms"]
     best = None
     best_bar = None
     for open_ms, reach in scanned:
         if best is None or _reaches(reach, best, side) and reach != best:
             best, best_bar = reach, open_ms
+    return {
+        "scanned": scanned,
+        "best": best,
+        "best_bar": best_bar,
+        "stop_bar": stop_bar,
+        "last_scanned_open_ms": last_scanned,
+    }
+
+
+def resting_rule_hit_tiers(tiers, side: str, geometry: TierGeometry, rule: dict):
+    sz_decimals = rule["sz_decimals"]
+    scan = resting_rule_scan(rule, side)
+    scanned, best, best_bar, stop_bar = scan["scanned"], scan["best"], scan["best_bar"], scan["stop_bar"]
     evidence = []
     hit = []
     limits = {}

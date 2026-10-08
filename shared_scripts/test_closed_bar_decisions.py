@@ -638,7 +638,7 @@ def _resting_paper(bars, stop_trigger_px, mode="paper", batch=False):
     entry = len(bars) - 4
     refs = {"open": {"name": "breakout", "params": {}}, "closes": [{"name": "tiered_tp_atr", "params": {"tp_tiers": _RESTING_TIERS}}]}
     rule = {"v": 1, "k_ticks": 1, "sz_decimals": 2, "entry_time_ms": bars[entry]["t"] + 600_000,
-            "stop_trigger_px": stop_trigger_px, "hold_reason": ""}
+            "stop_trigger_px": stop_trigger_px, "hold_reason": "", "scanned_through_ms": 0, "prior_reach_px": None}
     market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=bars[-1]["t"] + H // 2, mid=bars[-1]["c"])
     if batch:
         slot = {"id": "rule", "strategy": "breakout", "mode": mode, "mode_args": [f"--mode={mode}"], "strategy_refs": refs,
@@ -714,3 +714,77 @@ def test_resting_rule_refuses_live_mode(batch):
     out = json.loads(proc.stdout)
     error = out["results"][0]["error"] if batch else out["error"]
     assert "paper-only" in error
+
+
+def _moving_stop_bars(tail):
+    bars = [{"t": T0 + i * H, "T": T0 + (i + 1) * H - 1, "o": 100.0, "h": 100.2, "l": 99.8, "c": 100.0, "v": 1000.0}
+            for i in range(60)]
+    for o, h, low, c in tail:
+        t = T0 + len(bars) * H
+        bars.append({"t": t, "T": t + H - 1, "o": o, "h": h, "l": low, "c": c, "v": 1000.0})
+    return bars
+
+
+def _moving_stop_cycle(bars, tiers, *, entry, closed_through, qty, stop, scanned_through=0, prior=None):
+    frame = bars[:closed_through + 2]
+    refs = {"open": {"name": "breakout", "params": {}}, "closes": [{"name": "tiered_tp_atr", "params": {"tp_tiers": tiers}}]}
+    rule = {"v": 1, "k_ticks": 1, "sz_decimals": 2, "entry_time_ms": bars[entry]["t"] + 600_000, "stop_trigger_px": stop,
+            "hold_reason": "", "scanned_through_ms": scanned_through, "prior_reach_px": prior}
+    market = _market({"BTC|1h": _hl_frame(frame)}, cutoff_ms=frame[-1]["t"] + H // 2, mid=frame[-1]["c"])
+    argv = ["breakout", "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200",
+            "--strategy-refs", json.dumps(refs), "--position-side", "long", "--position-avg-cost=100",
+            f"--position-qty={qty}", "--position-initial-qty=1", "--position-entry-atr=2",
+            "--resting-tp-rule-json=" + json.dumps(rule)]
+    proc = _run(CHECK_HL, argv, {"v": 2, "market": market})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    return json.loads(proc.stdout)
+
+
+def _two_cycle(bars, tiers, second_stop):
+    entry = 60
+    first = _moving_stop_cycle(bars, tiers, entry=entry, closed_through=entry + 1, qty=1, stop=98.0)
+    echo = first["resting_tp_rule"]
+    second = _moving_stop_cycle(bars, tiers, entry=entry, closed_through=entry + 2, qty=0.5, stop=second_stop,
+                                scanned_through=echo["next_scanned_through_ms"], prior=echo["next_reach_px"])
+    return first, second
+
+
+def test_resting_rule_breakeven_stop_after_tier_one_does_not_block_tier_two_and_matches_the_backtester():
+    tiers = [{"atr_multiple": 1.0, "close_fraction": 0.5}, {"atr_multiple": 2.0, "close_fraction": 1.0}]
+    bars = _moving_stop_bars([(100.0, 100.3, 99.8, 99.95), (99.95, 102.5, 99.9, 102.2),
+                              (102.2, 104.01, 101.0, 103.5), (103.5, 104.2, 103.2, 103.9)])
+    first, second = _two_cycle(bars, tiers, second_stop=100.0)
+
+    assert (first["close_fraction"], first["close_tier_fill_price"]) == (0.5, 102.0)
+    assert first["resting_tp_rule"]["next_scanned_through_ms"] == bars[61]["t"]
+    assert (second["close_fraction"], second["close_tier_fill_price"]) == (1.0, 104.0)
+    assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == 0
+
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "backtest"))
+    from backtester import Backtester
+    closed = bars[:63]
+    df = _frame_from_rows(_hl_rows(closed))
+    df["open_action"] = ["long" if i == 59 else "none" for i in range(len(closed))]
+    df["atr"] = 2.0
+    bt = Backtester(initial_capital=1000.0, platform="hyperliquid", strategy_type="perps",
+                    execution_spec=dict(_RESTING_SPEC), stop_loss_atr_mult=1.0,
+                    close_strategies=[{"name": "tiered_tp_atr", "params": {"tp_tiers": tiers}}],
+                    resting_tp_trade_through=True)
+    trades = bt.run(df, strategy_name="breakout", symbol="BTC", timeframe="1h", save=False)["trades"]
+    assert [(t["exit_date"], t["exit_price"]) for t in trades] == [(str(df.index[61]), 102.0), (str(df.index[62]), 104.0)]
+
+
+@pytest.mark.parametrize("crossing_low,want_fraction", [(104.0, 1.0), (102.9, 0.0)])
+def test_resting_rule_trailing_stop_tests_each_bar_against_the_stop_armed_when_it_traded(crossing_low, want_fraction):
+    tiers = [{"atr_multiple": 1.0, "close_fraction": 0.5}, {"atr_multiple": 3.0, "close_fraction": 1.0}]
+    bars = _moving_stop_bars([(100.0, 100.3, 99.8, 100.1), (100.1, 102.5, 101.0, 102.2),
+                              (104.5, 106.01, crossing_low, 105.5), (105.5, 105.8, 105.2, 105.6)])
+    first, second = _two_cycle(bars, tiers, second_stop=103.0)
+
+    assert (first["close_fraction"], first["close_tier_fill_price"]) == (0.5, 102.0)
+    assert second["close_fraction"] == want_fraction
+    if want_fraction:
+        assert second["close_tier_fill_price"] == 106.0
+    else:
+        assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[62]["t"]
+        assert second["resting_tp_rule"]["next_scanned_through_ms"] == bars[61]["t"]

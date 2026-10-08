@@ -45,6 +45,8 @@ type PositionCtx struct {
 	OpenedAt                        time.Time
 	StopLossTriggerPx               float64
 	RatchetFallbackNormalizePending bool
+	RestingTPScannedOpenMs          int64
+	RestingTPReachPx                float64
 	RestingTP                       *restingTPRuleRequest
 }
 
@@ -193,6 +195,8 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		OpenedAt:                        pos.OpenedAt,
 		StopLossTriggerPx:               pos.StopLossTriggerPx,
 		RatchetFallbackNormalizePending: pos.RatchetFallbackNormalizePending,
+		RestingTPScannedOpenMs:          pos.RestingTPScannedOpenMs,
+		RestingTPReachPx:                pos.RestingTPReachPx,
 	}
 }
 
