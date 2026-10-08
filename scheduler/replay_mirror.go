@@ -287,7 +287,8 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 		regime = cfg.Regime
 	}
 	sizing := PerpsSizingFor(sc, row.ReferencePrice, indicatorsATRValue(indicators))
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, sig, row.Symbol, ApplyAdverseSlippage(row.ReferencePrice, sig == 1), sizing, row.Quantity, "", 0, DirectionBoth, 0, logger)
+	bookPx := ApplyAdverseSlippage(row.ReferencePrice, sig == 1)
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, sig, row.Symbol, bookPx, sizing, row.Quantity, "", 0, DirectionBoth, 0, logger)
 	if err != nil || exec.TradesExecuted == 0 || exec.OpenTrade == nil {
 		if err != nil {
 			logger.Error("Replay mirror: open booking failed for %s: %v (#1431)", row.Symbol, err)
@@ -322,7 +323,7 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 		pos = p
 	}
 	recordPositionOpen(s, sc, exec.OpenTrade, pos)
-	return exec.TradesExecuted, fmt.Sprintf("[%s] REPLAY OPEN %s %s %.6f @ $%.2f", sc.ID, row.Side, row.Symbol, row.Quantity, row.ReferencePrice)
+	return exec.TradesExecuted, fmt.Sprintf("[%s] REPLAY OPEN %s %s %.6f @ $%.2f", sc.ID, row.Side, row.Symbol, row.Quantity, bookPx)
 }
 
 func mergeTradeDetails(existing string, parts ...string) string {

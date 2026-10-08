@@ -64,6 +64,20 @@ func TestMirrorReplayOpenBooksLiveFill(t *testing.T) {
 	if !strings.Contains(s.TradeHistory[0].Details, "replay_live_mirror") {
 		t.Errorf("open trade missing mirror tag: %q", s.TradeHistory[0].Details)
 	}
+	for _, c := range []struct {
+		side, wantDetail string
+		wantPx           float64
+	}{
+		{"long", "@ $2001.00", 2000 * (1 + SlippagePct)},
+		{"short", "@ $1999.00", 2000 * (1 - SlippagePct)},
+	} {
+		sc2, s2, logger2 := replayMirrorTestSetup(t, "hl-paper-eth")
+		row := ReplayDecision{DecisionID: 8, StrategyID: sc2.ID, DecisionType: ReplayDecisionOpen, DecidedAt: decidedAt, Symbol: "ETH", Side: c.side, Quantity: 0.25, ReferencePrice: 2000}
+		_, n, det, _ := applyReplayedLiveDecisions(sc2, s2, []ReplayDecision{row}, 2000, replayTestResult(), cfg, logger2)
+		if n != 1 || len(det) != 1 || !strings.Contains(det[0], c.wantDetail) || len(s2.TradeHistory) != 1 || math.Abs(s2.TradeHistory[0].Price-c.wantPx) > 1e-9 {
+			t.Errorf("replay %s open at 2000: trades %d details %v history %+v, want detail %q and trade price %.9f", c.side, n, det, s2.TradeHistory, c.wantDetail, c.wantPx)
+		}
+	}
 }
 
 func TestMirrorReplayFullCloseBooksMirrorReason(t *testing.T) {
