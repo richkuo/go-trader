@@ -11,7 +11,7 @@ import urllib.request
 
 INFO_URL = "https://api.hyperliquid.xyz/info"
 SCHEMA = "go-trader.resting-tp-capture"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ALLOWED_TYPES = frozenset({
     "userFillsByTime",
     "orderStatus",
@@ -25,6 +25,11 @@ HISTORICAL_ORDERS_MAX = 2000
 DEFAULT_TIMEOUT_S = 20.0
 DEFAULT_RETRIES = 3
 CANDLE_HISTORY_BARS = 5000
+BASIS_PROBE_MAX_BARS = 3
+BASIS_POLL_MIN_S = 1.0
+BASIS_POLL_MAX_S = 10.0
+DEFAULT_BASIS_POLL_S = 2.0
+BASIS_SETTLE_MAX_MS = 120_000
 INTERVAL_MS = {
     "5m": 300_000,
     "15m": 900_000,
@@ -321,7 +326,8 @@ def _candle_limit_reason(since_ms, interval, clock_ms):
     return None
 
 
-def _check_capture_inputs(since_ms, interval, timeout, retries):
+def _check_capture_inputs(since_ms, interval, timeout, retries, basis_probe_bars=0,
+                          basis_poll_seconds=DEFAULT_BASIS_POLL_S):
     if interval not in INTERVAL_MS:
         raise CaptureError(f"interval must be one of {sorted(INTERVAL_MS)}, got {interval!r}")
     if int(since_ms) % INTERVAL_MS[interval] != 0:
@@ -330,10 +336,140 @@ def _check_capture_inputs(since_ms, interval, timeout, retries):
         raise CaptureError("timeout must be positive")
     if retries < 1:
         raise CaptureError("retries must be at least 1")
+    if (isinstance(basis_probe_bars, bool) or not isinstance(basis_probe_bars, int)
+            or basis_probe_bars < 0 or basis_probe_bars > BASIS_PROBE_MAX_BARS):
+        raise CaptureError(
+            f"--basis-probe-bars must be an integer from 0 to {BASIS_PROBE_MAX_BARS}")
+    poll = float(basis_poll_seconds)
+    if not (BASIS_POLL_MIN_S <= poll <= BASIS_POLL_MAX_S):
+        raise CaptureError(
+            f"--basis-poll-seconds must be from {BASIS_POLL_MIN_S:g} to {BASIS_POLL_MAX_S:g}")
 
 
-def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, interval, opener=None, clock_ms=None):
-    _check_capture_inputs(since_ms, interval, timeout, retries)
+def _probe_rows(raw):
+    try:
+        parsed = _parse_json(raw)
+    except CaptureError:
+        return None, "response was not json"
+    if not isinstance(parsed, list):
+        return None, "recentTrades response is not a list"
+    for row in parsed:
+        if not isinstance(row, dict) or any(row.get(key) is None for key in ("tid", "time", "px")):
+            return None, "trade row without tid, time or px"
+    return parsed, None
+
+
+def _probe_ranges(polls):
+    ranges = []
+    previous = None
+    for rows in polls:
+        if not rows:
+            previous = None
+            continue
+        tids = {str(row["tid"]) for row in rows}
+        times = [int(row["time"]) for row in rows]
+        if previous is not None and tids & previous and ranges:
+            ranges[-1][1] = max(ranges[-1][1], max(times))
+        else:
+            ranges.append([min(times), max(times)])
+        previous = tids
+    return ranges
+
+
+def _basis_probe(coins, interval, bars, poll_seconds, timeout, retries, record, opener=None,
+                 now_fn=None, sleep_fn=None):
+    if bars <= 0 or not coins:
+        return {}
+    clock = now_fn if now_fn is not None else (lambda: int(time.time() * 1000))
+    pause = sleep_fn if sleep_fn is not None else time.sleep
+    step = INTERVAL_MS[interval]
+    state = {coin: {"polls": [], "complete": True, "reason": None, "requests": 0} for coin in coins}
+    first_ms = None
+    target_end = None
+    settle_until = None
+    while True:
+        for coin in coins:
+            slot = state[coin]
+            if not slot["complete"]:
+                continue
+            try:
+                attempt, status, raw = post_info(
+                    {"type": "recentTrades", "coin": coin}, timeout, retries, opener=opener)
+            except CaptureError as exc:
+                slot["complete"] = False
+                slot["reason"] = f"request failed: {exc}"
+                continue
+            record({"type": "recentTrades", "coin": coin}, attempt, status, raw, purpose="basis_probe")
+            slot["requests"] += 1
+            if status != 200:
+                slot["complete"] = False
+                slot["reason"] = f"status {status}"
+                continue
+            rows, reason = _probe_rows(raw)
+            if reason:
+                slot["complete"] = False
+                slot["reason"] = reason
+                continue
+            slot["polls"].append(rows)
+        now = int(clock())
+        if first_ms is None:
+            first_ms = now
+            first_open = (first_ms // step + 1) * step
+            target_end = first_open + bars * step
+            settle_until = target_end + min(step, BASIS_SETTLE_MAX_MS)
+        live = [coin for coin in coins if state[coin]["complete"]]
+        if not live:
+            break
+        if now >= target_end:
+            settled = all(
+                (_probe_ranges(state[coin]["polls"]) or [[0, 0]])[-1][1] >= target_end
+                for coin in live)
+            if settled or now >= settle_until:
+                break
+        pause(float(poll_seconds))
+    first_open = target_end - bars * step
+    out = {}
+    for coin in coins:
+        slot = state[coin]
+        snapshot_ref = None
+        if slot["complete"]:
+            payload = {
+                "type": "candleSnapshot",
+                "req": {
+                    "coin": coin,
+                    "interval": interval,
+                    "startTime": int(first_open),
+                    "endTime": int(target_end),
+                },
+            }
+            try:
+                attempt, status, raw = post_info(payload, timeout, retries, opener=opener)
+            except CaptureError as exc:
+                slot["complete"] = False
+                slot["reason"] = f"request failed: {exc}"
+            else:
+                snapshot_ref = record(payload, attempt, status, raw, purpose="basis_probe")
+                if status != 200 or not _candle_coverage(raw, first_open, target_end, step):
+                    slot["complete"] = False
+                    slot["reason"] = "probe snapshot_incomplete"
+        entry = {
+            "complete": slot["complete"],
+            "interval": interval,
+            "polls": slot["requests"],
+            "probe_from_ms": int(first_open),
+            "probe_to_ms": int(target_end),
+            "ranges": _probe_ranges(slot["polls"]),
+            "snapshot_ref": snapshot_ref,
+        }
+        if slot["reason"]:
+            entry["reason"] = slot["reason"]
+        out[coin] = entry
+    return out
+
+
+def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, interval, opener=None, clock_ms=None,
+            basis_probe_bars=0, basis_poll_seconds=DEFAULT_BASIS_POLL_S, now_fn=None, sleep_fn=None):
+    _check_capture_inputs(since_ms, interval, timeout, retries, basis_probe_bars, basis_poll_seconds)
     step = INTERVAL_MS[interval]
     now_ms = int(time.time() * 1000) if clock_ms is None else int(clock_ms)
     oids = []
@@ -360,7 +496,7 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, inter
     n = 0
     failed = False
 
-    def record(payload, attempt, status, raw):
+    def record(payload, attempt, status, raw, purpose=None):
         nonlocal n, failed
         n += 1
         digest = sha256_bytes(raw or b"")
@@ -379,6 +515,8 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, inter
         }
         if payload.get("type") == "userFillsByTime":
             line["startTime"] = payload.get("startTime")
+        if purpose:
+            line["purpose"] = purpose
         if "coin" in payload:
             line["coin"] = payload["coin"]
         req = payload.get("req")
@@ -388,6 +526,7 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, inter
             fh.write(canonical(line) + "\n")
         if status != 200:
             failed = True
+        return f"responses/{name}"
 
     fills = _page_user_fills(
         address, since_ms, end_ms, timeout, retries, record, opener=opener)
@@ -435,11 +574,19 @@ def capture(exports, address, since_ms, end_ms, out_dir, timeout, retries, inter
         candle_rows.append(candles)
         if not trades["complete"] or not candles["complete"]:
             failed = True
+    probe = _basis_probe(
+        coins, interval, int(basis_probe_bars), basis_poll_seconds, timeout, retries, record,
+        opener=opener, now_fn=now_fn, sleep_fn=sleep_fn)
+    if any(not row["complete"] for row in probe.values()):
+        failed = True
     bundle = {
+        "basis_probe": probe,
         "schema": SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "inputs": {
             "address_sha256": sha256_bytes(address.encode("utf-8")),
+            "basis_poll_seconds": float(basis_poll_seconds),
+            "basis_probe_bars": int(basis_probe_bars),
             "end_ms": int(end_ms),
             "export_sha256": export_hashes,
             "interval": interval,
@@ -488,16 +635,25 @@ def main(argv):
                         help="new empty directory outside the repository")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES)
+    parser.add_argument("--basis-probe-bars", type=int, default=0,
+                        help=f"after the capture, poll public recentTrades until this many full "
+                             f"--interval bars close (0 = off, maximum {BASIS_PROBE_MAX_BARS})")
+    parser.add_argument("--basis-poll-seconds", type=float, default=DEFAULT_BASIS_POLL_S,
+                        help=f"seconds between basis probe polls ({BASIS_POLL_MIN_S:g} to {BASIS_POLL_MAX_S:g})")
     args = parser.parse_args(argv)
     if args.since_ms < 0 or args.end_ms <= args.since_ms:
         raise CaptureError("--since-ms must be >= 0 and less than --end-ms")
     address = _address_from(args)
-    _check_capture_inputs(args.since_ms, args.interval, args.timeout, args.retries)
+    _check_capture_inputs(
+        args.since_ms, args.interval, args.timeout, args.retries,
+        args.basis_probe_bars, args.basis_poll_seconds)
     for path in args.export:
         read_export_targets(path)
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     out = _prepare_out(args.out, repo_root)
-    capture(args.export, address, args.since_ms, args.end_ms, out, args.timeout, args.retries, args.interval)
+    capture(
+        args.export, address, args.since_ms, args.end_ms, out, args.timeout, args.retries, args.interval,
+        basis_probe_bars=args.basis_probe_bars, basis_poll_seconds=args.basis_poll_seconds)
 
 
 if __name__ == "__main__":
