@@ -30,8 +30,10 @@ to end:
   take-profit model and sends `tp_model: resting_limit` to the evaluators; a
   tier that the bar close crosses is booked in that same bar at the
   quantity-weighted tier fill price with timing `intrabar_trigger_fill`,
-  charged the execution-spec maker fee when one is set, else the platform
-  commission (#1576, PR 1590). Other platforms keep the next-open fill.
+  charged the execution-spec maker fee when one is set, else an explicit
+  `maker_fee_pct`, else an explicit `commission_pct`, else the platform taker
+  rate (#1576, PR 1590; precedence from #1726 Run 3; `execution_spec` plus
+  `maker_fee_pct` raises). Other platforms keep the next-open fill.
 - `_regime_bar_close` is snapshotted **before** the regime shift and is only
   fed to close evaluators as `market_regime` — bar-N data for an end-of-bar
   decision. Audit-time (2026-06): "matching live". Correction (2026-10,
@@ -69,7 +71,7 @@ label parity).
 
 | Surface | State |
 |---|---|
-| Fees | Matches — `PLATFORM_FEE_PCT` matches `fees.go`; `test_platform_fees.py` scrapes the Go source so drift fails CI. deribit/ibkr/topstep flow through option/futures fee functions, not the spot table. Issue #1726 Run 1 pins `SlippagePct` to `DEFAULT_SLIPPAGE_PCT`. Run 2 makes paper slippage deterministic and adverse (`ApplyAdverseSlippage`, the backtester formula) on market opens, adds, signal closes and paper stops, and stamps `cost_model_version` (`FillCostModelVersion`, mirrored by `FILL_COST_MODEL_VERSION` and the frozen `PAPER_FILL_COST_MODELS` history) on every new trade row. The production fee tier is still unverified. |
+| Fees | Matches — `PLATFORM_FEE_PCT` matches `fees.go`; `test_platform_fees.py` scrapes the Go source so drift fails CI. deribit/ibkr/topstep flow through option/futures fee functions, not the spot table. Issue #1726 Run 1 pins `SlippagePct` to `DEFAULT_SLIPPAGE_PCT`. Run 2 makes paper slippage deterministic and adverse (`ApplyAdverseSlippage`, the backtester formula) on market opens, adds, signal closes and paper stops, and stamps `cost_model_version` (`FillCostModelVersion`, mirrored by `FILL_COST_MODEL_VERSION` and the frozen `PAPER_FILL_COST_MODELS` history) on every new trade row. Run 3 adds the `maker_fee_pct` tier fee precedence (taker by default), takes the `backtest_pairs.py` defaults from `PLATFORM_FEE_PCT` and `HYPERLIQUID_MAKER_FEE_PCT`, and pins both in `test_platform_fees.py`. The exact production fee rate, the maker rate and the tier-fill role are still unverified ([operator check](https://github.com/richkuo/go-trader/issues/1726#issuecomment-6055361624), not verifiable from the repository). |
 | Initial/trailing ATR SL (#885) | Matches — same trigger formula (`entry ± mult×EntryATR`) and same-bar arming on both sides. Correction (2026-10, issue #1724): issue #1684 (PR 1698) made the engine arm the same single stop owner that live arms (trailing, fixed ATR, percent, margin percent with verified leverage, drawdown fallback), with refusals for unsupported owners, pinned by the Go and Python fixture `backtest/testdata/stop_geometry_parity.json`. |
 | Default tier ladders (#870/#887) | Matches — values synced across Go and all three Python mirrors, now pinned: `backtest/tests/test_default_tier_ladders.py` reads `defaultHLProtectionTiers()` from `scheduler/hyperliquid_protection.go`, and `backtest/testdata/tp_tier_parity.json` exists. Issue #944 is closed. |
 | Single close ref (#842) | Matches — `--config` rejects legacy `len>1` arrays with the same semantics live rejects them; the engine's max-wins multi-ref path remains for direct-constructor/test use only. |
@@ -201,8 +203,13 @@ the owner DM reports the stop recorded after the same-cycle trailing update.
 - Fees and slippage (finding H): the production fee tier is not verified and
   paper slippage is not reconciled with recorded fills — #1726. Run 2: paper
   slippage is now deterministic and adverse, the backtester formula, and each
-  trade row records its paper cost model version; the fee tier check is still
-  open.
+  trade row records its paper cost model version. Run 3: an operator check of
+  a 2026-10-06 live capture ([evidence comment](https://github.com/richkuo/go-trader/issues/1726#issuecomment-6055361624), private and not
+  verifiable from the repository) reports every booked fee group at or below
+  the taker constant, 0 take-profit tier rows, and no stop slippage evidence.
+  Both rate constants stay and every surface charges taker on tier fills.
+  Still unverified: the exact taker rate, the maker rate, the tier-fill role
+  and live stop slippage (they need a `userFillsByTime` capture).
 - Live-strategy comparability: the ledger comparison refuses regime gating
   fields, the directional policy and `margin_per_trade_usd` sizing, and the
   2026-10-06 run found no strict-comparable live Hyperliquid strategy — #1730.

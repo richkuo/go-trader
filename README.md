@@ -509,12 +509,12 @@ Capture runs on Linux only: SQLite reads each file through `VACUUM INTO` from a 
 | Binance US Spot | 0.1% taker | 0.05% against the trade (paper and backtest) |
 | Deribit Options | 0.03% of premium | — |
 | IBKR/CME Options | $0.25/contract | — |
-| Hyperliquid Perps | 0.045% taker / 0.015% maker (base tier) | 0.05% against the trade (paper and backtest) |
+| Hyperliquid Perps | 0.045% taker (also on resting take-profit tier fills); 0.015% maker constant, unverified and not applied to tier fills | 0.05% against the trade (paper and backtest) |
 | TopStep Futures | Per-contract (configurable) | 0.05% against the trade (paper and backtest) |
 | Robinhood Crypto | No commission (spread embedded) | 0.05% against the trade (paper and backtest) |
 | Robinhood Options | $0.03/contract (regulatory fee) | — |
 
-Live fills record exchange-reported fees and order IDs. The fee rates are the code constants; the production account rate is not yet verified (issue 1726).
+Live fills record exchange-reported fees and order IDs. The fee rates are the code constants. An operator check of a 2026-10-06 live capture ([issue 1726](https://github.com/richkuo/go-trader/issues/1726#issuecomment-6055361624)) reports every booked fee group at or below the 0.045% taker constant and could not classify take-profit tier fills as maker, so paper and the backtester charge taker on tier fills. The capture is private, so the repository cannot verify this check; the exact account rate and the maker rate stay unverified.
 
 ---
 

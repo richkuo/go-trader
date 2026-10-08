@@ -1,3 +1,4 @@
+import inspect
 import re
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from backtester import (
     PLATFORM_FEE_PCT,
     fee_pct_for_platform,
 )
+from backtest_pairs import PairsBacktester
 
 
 FEES_GO = Path(__file__).resolve().parents[2] / "scheduler" / "fees.go"
@@ -75,6 +77,9 @@ def test_hyperliquid_maker_rate_matches_fees_go():
     go_rates = _scrape_fees_go_constants()
     assert go_rates["HyperliquidMakerFeePct"] == HYPERLIQUID_MAKER_FEE_PCT
     assert HYPERLIQUID_MAKER_FEE_PCT < PLATFORM_FEE_PCT["hyperliquid"]
+    params = inspect.signature(PairsBacktester).parameters
+    assert params["taker_fee_pct"].default == PLATFORM_FEE_PCT["hyperliquid"] == go_rates["HyperliquidTakerFeePct"]
+    assert params["maker_fee_pct"].default == HYPERLIQUID_MAKER_FEE_PCT
 
 
 def test_audit_fee_axis_decoupled_from_data_axis():

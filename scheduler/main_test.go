@@ -88,25 +88,31 @@ func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
 func TestExecuteHyperliquidResult_PaperTierFillBooksAtTierPrice(t *testing.T) {
 	useHLLotMetadataForTest(t, map[string]int{"BTC": 5})
 	cases := []struct {
-		name      string
-		args      []string
-		side      string
-		blob      string
-		mid       float64
-		exec      *HyperliquidExecuteResult
-		wantPrice float64
-		wantTol   float64
+		name          string
+		args          []string
+		side          string
+		blob          string
+		mid           float64
+		exec          *HyperliquidExecuteResult
+		wantPrice     float64
+		wantTol       float64
+		wantFee       float64
+		wantFeeSource string
 	}{
 		{"paper long books the tier price below the mid", []string{"sma", "BTC", "1h", "--mode=paper"}, "long",
-			`{"signal":-1,"symbol":"BTC","close_fraction":0.5,"close_tier_fill_price":104}`, 106, nil, 104, 1e-9},
+			`{"signal":-1,"symbol":"BTC","close_fraction":0.5,"close_tier_fill_price":104}`, 106, nil, 104, 1e-9,
+			0.5 * 104 * HyperliquidTakerFeePct, FeeSourceModeled},
 		{"paper short books the tier price above the mid", []string{"sma", "BTC", "1h", "--mode=paper"}, "short",
-			`{"signal":1,"symbol":"BTC","close_fraction":0.5,"close_tier_fill_price":96}`, 94, nil, 96, 1e-9},
+			`{"signal":1,"symbol":"BTC","close_fraction":0.5,"close_tier_fill_price":96}`, 94, nil, 96, 1e-9,
+			0.5 * 96 * HyperliquidTakerFeePct, FeeSourceModeled},
 		{"paper close without a tier price books the mid moved against the sell", []string{"sma", "BTC", "1h", "--mode=paper"}, "long",
-			`{"signal":-1,"symbol":"BTC","close_fraction":0.5}`, 106, nil, 106 * (1 - SlippagePct), 1e-9},
+			`{"signal":-1,"symbol":"BTC","close_fraction":0.5}`, 106, nil, 106 * (1 - SlippagePct), 1e-9,
+			0.5 * 106 * (1 - SlippagePct) * HyperliquidTakerFeePct, FeeSourceModeled},
 		{"live fill ignores the tier price", []string{"sma", "BTC", "1h", "--mode=live"}, "long",
 			`{"signal":-1,"symbol":"BTC","close_fraction":0.5,"close_tier_fill_price":104}`, 106,
 			&HyperliquidExecuteResult{Execution: &HyperliquidExecution{Action: "sell", Symbol: "BTC", Size: 0.5,
-				Fill: &HyperliquidFill{AvgPx: 105.5, TotalSz: 0.5, OID: 7}}, Platform: "hyperliquid"}, 105.5, 1e-9},
+				Fill: &HyperliquidFill{AvgPx: 105.5, TotalSz: 0.5, OID: 7}}, Platform: "hyperliquid"}, 105.5, 1e-9,
+			0.5 * 105.5 * HyperliquidTakerFeePct, FeeSourceModeled},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -132,6 +138,12 @@ func TestExecuteHyperliquidResult_PaperTierFillBooksAtTierPrice(t *testing.T) {
 			}
 			if got := s.TradeHistory[0].Price; math.Abs(got-tc.wantPrice) > tc.wantTol {
 				t.Fatalf("close booked at %g, want %g", got, tc.wantPrice)
+			}
+			if got := s.TradeHistory[0].ExchangeFee; math.Abs(got-tc.wantFee) > 1e-9 {
+				t.Fatalf("close fee = %g, want %g (taker on every surface, issue 1726)", got, tc.wantFee)
+			}
+			if got := s.TradeHistory[0].FeeSource; got != tc.wantFeeSource {
+				t.Fatalf("fee source = %q, want %q", got, tc.wantFeeSource)
 			}
 			if pos := s.Positions["BTC"]; pos == nil || math.Abs(pos.Quantity-0.5) > 1e-9 {
 				t.Fatalf("remaining position = %+v, want 0.5 left", pos)

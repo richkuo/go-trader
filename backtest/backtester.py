@@ -2381,20 +2381,33 @@ class Backtester:
                  regime_label_columns: Optional[dict] = None,
                  regime_feature_labels: Optional[dict] = None,
                  regime_label_windows=None,
-                 resting_tp_trade_through: bool = False):
+                 resting_tp_trade_through: bool = False,
+                 maker_fee_pct: Optional[float] = None):
         # regime_label_windows is the loader's plan. Callers splat
         # load_strategy_config into this constructor; the columns themselves
         # arrive only through regime_label_columns.
         self.initial_capital = initial_capital
         self._execution = normalize_execution_spec(execution_spec)
         if self._execution is not None and (
-            commission_pct is not None or slippage_pct != DEFAULT_SLIPPAGE_PCT
+            commission_pct is not None
+            or maker_fee_pct is not None
+            or slippage_pct != DEFAULT_SLIPPAGE_PCT
         ):
             raise ValueError(
                 "execution_spec owns fees, spread and slippage; do not also pass "
-                "commission_pct or a non-default slippage_pct (each cost would be "
-                "charged twice)"
+                "commission_pct, maker_fee_pct or a non-default slippage_pct (each "
+                "cost would be charged twice)"
             )
+        if maker_fee_pct is not None:
+            if isinstance(maker_fee_pct, bool) or not isinstance(maker_fee_pct, (int, float)):
+                raise ValueError(f"maker_fee_pct must be a number, got {maker_fee_pct!r}")
+            maker_fee_pct = float(maker_fee_pct)
+            if not math.isfinite(maker_fee_pct) or maker_fee_pct < 0:
+                raise ValueError(f"maker_fee_pct must be finite and >= 0, got {maker_fee_pct!r}")
+            if maker_fee_pct >= 0.1:
+                raise ValueError(
+                    f"maker_fee_pct is a fraction (0.00015 = 0.015%); {maker_fee_pct!r} is not plausible"
+                )
         self.platform = platform
         self.intrabar_resolution = str(intrabar_resolution or "").strip().lower()
         if self.intrabar_resolution not in ("ohlc_walk", "bar_close"):
@@ -2407,7 +2420,9 @@ class Backtester:
             else fee_pct_for_platform(platform)
         )
         self.slippage_pct = slippage_pct
-        self._maker_fee_pct: Optional[float] = None
+        self._maker_fee_pct: float = (
+            maker_fee_pct if maker_fee_pct is not None else self.commission_pct
+        )
         if self._execution is not None:
             self.commission_pct = self._execution["taker_fee_pct"]
             self.slippage_pct = (

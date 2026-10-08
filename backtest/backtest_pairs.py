@@ -14,6 +14,8 @@ import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
+from backtester import HYPERLIQUID_MAKER_FEE_PCT, PLATFORM_FEE_PCT
+
 
 SIDE_LONG_A = +1
 SIDE_SHORT_A = -1
@@ -90,8 +92,8 @@ class PairsBacktester:
         lookback: int = 30,
         entry_z: float = 2.0,
         exit_z: float = 0.5,
-        taker_fee_pct: float = 0.000432,
-        maker_fee_pct: float = 0.000144,
+        taker_fee_pct: float = PLATFORM_FEE_PCT["hyperliquid"],
+        maker_fee_pct: float = HYPERLIQUID_MAKER_FEE_PCT,
         use_maker: bool = False,
         funding_a_per_hour: float = 0.0,
         funding_b_per_hour: float = 0.0,
@@ -318,8 +320,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--lookback", type=int, default=168, help="bars (default 168 = 1 week on 1h)")
     p.add_argument("--entry-z", type=float, default=2.0)
     p.add_argument("--exit-z", type=float, default=0.5)
-    p.add_argument("--taker-fee", type=float, default=0.000432)
-    p.add_argument("--maker-fee", type=float, default=0.000144)
+    p.add_argument("--taker-fee", type=float, default=PLATFORM_FEE_PCT["hyperliquid"],
+                   help="taker fee fraction (default %(default)s, backtester PLATFORM_FEE_PCT['hyperliquid'])")
+    p.add_argument("--maker-fee", type=float, default=HYPERLIQUID_MAKER_FEE_PCT,
+                   help="maker fee fraction, used only with --use-maker (default %(default)s, "
+                        "backtester HYPERLIQUID_MAKER_FEE_PCT)")
     p.add_argument("--use-maker", action="store_true")
     p.add_argument("--funding-a-per-hour", type=float, default=0.0)
     p.add_argument("--funding-b-per-hour", type=float, default=0.0)

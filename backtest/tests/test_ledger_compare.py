@@ -148,6 +148,9 @@ def test_strict_fixture_reaches_strict_success_offline(tmp_path, monkeypatch):
     live_cost = rep["simulation"]["cost_model"]
     assert live_cost["kind"] == "market_manifest_execution_spec"
     assert live_cost["value_sources"]["taker_fee_pct"] == "manifest costs.taker_fee_pct"
+    check = live_cost["tier_fee_check"]
+    assert (check["maker_fee_pct"], check["taker_fee_pct"], check["maker_equals_taker"]) == (0.00015, 0.00045, False)
+    assert "issue 1726" in check["rule"] and "never refuses" in check["rule"]
 
     fx = _copy(tmp_path / "paper")
     rc, rep = _run(fx, tmp_path, export="export_paper.json", name="paper.json")
@@ -167,6 +170,20 @@ def test_strict_fixture_reaches_strict_success_offline(tmp_path, monkeypatch):
     comps = [c for m in rep["matching"]["matched"] for c in m["components"]]
     assert len(comps) == 4 and all(c["price_relative_delta"] <= 1e-9 for c in comps)
     assert _dispositions_complete(rep, _load(fx / "export_paper.json"))
+    assert "tier_fee_check" not in cost
+
+    (tmp_path / "paper_no_spec").mkdir()
+    nospec = _copy(tmp_path / "paper_no_spec")
+    cin = _load(nospec / "comparison_input_paper.json")
+    for seg in cin["historical_configuration"]["timeline"]:
+        seg["strategy"]["allow_scale_in"] = True
+    _dump(nospec / "comparison_input_paper.json", cin)
+    _rebind(nospec)
+    rc, rep = _run(nospec, tmp_path, export="export_paper.json", mode="approximate", name="paper-no-spec.json")
+    assert rep["simulation"]["status"] == "run"
+    cost = rep["simulation"]["cost_model"]
+    assert cost["kind"] == "paper_fill_cost_model" and "execution_spec" not in cost
+    assert (cost["commission_pct"], cost["maker_fee_pct"], cost["slippage_pct"]) == (0.00045, 0.00045, 0.0005)
 
     doc = _load(fx / "export_paper.json")
     fill = next(e for e in doc["events"] if e["event_kind"]["value"] == "close" and _in_interval(e))
@@ -315,6 +332,10 @@ def test_scale_in_fixture_conserves_booked_accounting_and_refuses_strict(tmp_pat
     assert arms and all(a["owner"] == "fixed_atr" and a["trigger"] > 0 for a in arms)
     assert rep["simulation"]["status"] == "run"
     assert rep["simulation"]["cost_model"]["kind"] == "flat_taker_fee_and_adverse_price"
+    flat = rep["simulation"]["cost_model"]
+    assert flat["commission_pct"] == 0.00045 and flat["maker_fee_pct"] == 0.00015
+    assert flat["value_sources"]["maker_fee_pct"] == "manifest costs.maker_fee_pct"
+    assert flat["tier_fee_check"]["maker_equals_taker"] is False
     assert all(c["ok"] for c in rep["conservation"]["checks"])
     assert rep["matching"]["unmatched_booked"] and rep["matching"]["unmatched_simulated"]
 
