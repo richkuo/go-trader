@@ -82,6 +82,7 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 			}
 			errs = append(errs, msg)
 		}
+		errs = append(errs, restingTPTradeThroughRawErrors(prefix, s)...)
 		errs = append(errs, nestedObjectUnknownKeyErrors(s, "hedge", knownHedgeConfigKeys(), prefix)...)
 		errs = append(errs, nestedObjectUnknownKeyErrors(s, "hurst_gate", knownHurstGateKeys(), prefix)...)
 	}

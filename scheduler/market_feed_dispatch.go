@@ -79,7 +79,7 @@ func (c *marketFeedContext) frameSpecs(sc StrategyConfig) ([]marketPayloadFrameS
 	if !ok {
 		return nil, "", false
 	}
-	specs := []marketPayloadFrameSpec{{Key: entry.Signal, Required: entry.SignalLookback, Timing: entry.ClosedBar}}
+	specs := []marketPayloadFrameSpec{{Key: entry.Signal, Required: entry.SignalLookback, Timing: entry.Timed}}
 	if entry.HasHTF {
 		specs = append(specs, marketPayloadFrameSpec{Key: entry.HTF, Required: entry.HTFLookback, Timing: entry.ClosedBar})
 	}
@@ -121,13 +121,17 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 	}
 	signalKey := feedKeyFor(key.Symbol, key.Timeframe)
 	anyClosedBar := false
+	anyTimed := false
 	for _, sc := range members {
 		if sc.ClosedBarDecisions {
 			anyClosedBar = true
 		}
+		if needsTimedSignalFrame(sc) {
+			anyTimed = true
+		}
 	}
 	signalLimit := key.OhlcvLimit
-	if anyClosedBar {
+	if anyTimed {
 		signalLimit++
 	}
 	raise(signalKey, signalLimit)
@@ -156,7 +160,7 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 	}
 	for i := range specs {
 		specs[i].Required = seen[specs[i].Key]
-		specs[i].Timing = anyClosedBar
+		specs[i].Timing = anyClosedBar || (anyTimed && specs[i].Key == signalKey)
 	}
 	payload, err := marketPayloadFor(c.Snapshot, specs, []string{key.Symbol})
 	if err != nil {

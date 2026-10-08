@@ -57,10 +57,10 @@ var probeCompositeArgv = []string{
 }
 
 var hyperliquidMarketCheckProbeArgv = append(append([]string{}, probeArgv[:len(probeArgv)-1]...),
-	"--market-stdin", "--probe-only")
+	"--market-stdin", restingTPRuleFlag+"="+restingTPProbeRuleJSONSample, "--probe-only")
 
 var hyperliquidMarketCheckCompositeProbeArgv = append(append([]string{}, probeCompositeArgv[:len(probeCompositeArgv)-1]...),
-	"--market-stdin", "--probe-only")
+	"--market-stdin", restingTPRuleFlag+"="+restingTPProbeRuleJSONSample, "--probe-only")
 
 var fetchATRProbeArgv = []string{
 	"--fetch-atr", "--symbol=BTC", "--timeframe=1h", "--period=14", "--atr-method=simple", "--probe-only",

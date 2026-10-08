@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import os
 from types import ModuleType
@@ -24,6 +25,11 @@ def _load_registry() -> ModuleType:
 
 def evaluate(name: str, position: dict, market: dict, params: Optional[dict] = None) -> dict:
     return _load_registry().evaluate(name, position, market, params)
+
+
+def resting_rule_helpers() -> ModuleType:
+    _load_registry()
+    return importlib.import_module("_helpers")
 
 
 def build_close_registry(platform: str):

@@ -4,7 +4,9 @@ from __future__ import annotations
 from typing import List, Tuple
 
 from _helpers import (
+    RESTING_TP_RULE_KEY,
     clamp_fraction,
+    evaluate_resting_rule,
     current_close_fraction,
     finalize_tp_tiers,
     float_from,
@@ -100,7 +102,20 @@ def regime_ladder_for(params: dict, regime: str, resting: bool) -> dict:
     return {"tiers": tiers}
 
 
+def resting_rule_regime_ladder(params: dict, geometry):
+    ladder = regime_ladder_for(params, geometry.regime, geometry.resting_limit)
+    if "tiers" not in ladder:
+        return None, ladder["reason"]
+    return ladder["tiers"], ""
+
+
 def evaluate(position: dict, market: dict, params: dict) -> dict:
+    if isinstance(market, dict) and RESTING_TP_RULE_KEY in market:
+        return evaluate_resting_rule(
+            position, market, reason_name="tiered_tp_atr_regime", regime_keyed=True,
+            ladder=lambda geometry: resting_rule_regime_ladder(params, geometry),
+            reason_for=lambda geometry, multiple: f"tiered_tp_atr_regime:{geometry.regime}:{multiple:g}",
+        )
     avg_cost = float_from(position, "avg_cost")
     current_quantity = float_from(position, "current_quantity")
     entry_atr = float_from(position, "entry_atr")

@@ -25,6 +25,7 @@ class CloseEvaluation:
     strategy: str
     close_fraction: float
     tier_fill_price: float = 0.0
+    resting_fill: Optional[dict] = None
 
 
 @dataclass
@@ -553,6 +554,7 @@ def evaluate_open_close(
                     strategy=resolved,
                     close_fraction=result.get("close_fraction", 0.0),
                     tier_fill_price=_positive_price(result.get("tier_fill_price")),
+                    resting_fill=result["resting_fill"] if isinstance(result.get("resting_fill"), dict) else None,
                 ))
                 continue
             except ValueError as exc:
@@ -607,4 +609,9 @@ def finalize_decision(
     best = best_close_evaluation(evaluation.close_evaluations)
     if best is not None and best.tier_fill_price > 0:
         decision["close_tier_fill_price"] = best.tier_fill_price
+    resting_fill = best.resting_fill if best is not None and best.resting_fill is not None else None
+    if resting_fill is None:
+        resting_fill = next((e.resting_fill for e in evaluation.close_evaluations if e.resting_fill is not None), None)
+    if resting_fill is not None:
+        decision["close_resting_fill"] = resting_fill
     return decision

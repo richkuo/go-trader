@@ -314,6 +314,7 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `interval_seconds` | Check interval (0 → global) | 0 |
 | `htf_filter` | Higher-timeframe trend filter | false |
 | `closed_bar_decisions` | Binance.US spot, OKX spot/perps, HL perps — signal, entry ATR and entry sizing use the last closed bar (as the backtester does); protection keeps current prices; restart-required | false |
+| `resting_tp_trade_through` | HL perps paper only — a tier take-profit books only after a completed bar since entry traded one tick past the venue-rounded limit (the backtester models the same rule with `--resting-tp-trade-through`); live is unchanged; JSON `true`/`false` only; restart-required | false |
 | `open_strategy` | Co-located ref `{name, params}` overriding entry; falls back to `args[0]` | null |
 | `close_strategy` | Single `{name, params}` close evaluator ref | null |
 | `leverage` | Perps — exchange leverage (also sizing if `sizing_leverage` omitted) | 1 |

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from _helpers import (
+    RESTING_TP_RULE_KEY,
     current_close_fraction,
+    evaluate_resting_rule,
     float_from,
     resolve_tp_tier_geometry,
     with_tier_fill_price,
@@ -10,7 +12,18 @@ from _helpers import (
 from tiered_tp_atr import ladder_for
 
 
+def _resting_rule_ladder(params: dict, geometry):
+    tiers = ladder_for(params, geometry.resting_limit)
+    return tiers, "noop:tier_ladder_rejected"
+
+
 def evaluate(position: dict, market: dict, params: dict) -> dict:
+    if isinstance(market, dict) and RESTING_TP_RULE_KEY in market:
+        return evaluate_resting_rule(
+            position, market, reason_name="tiered_tp_atr_live", regime_keyed=False,
+            ladder=lambda geometry: _resting_rule_ladder(params, geometry),
+            reason_for=lambda geometry, multiple: f"tiered_tp_atr_live:{geometry.atr_label}:{multiple:g}",
+        )
     avg_cost = float_from(position, "avg_cost")
     current_quantity = float_from(position, "current_quantity")
     side = str(position.get("side", "") or "").strip().lower()

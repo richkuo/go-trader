@@ -358,6 +358,11 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   #1725: that DM now reports the stop recorded after the same-cycle trailing update, not the alert-only intended price. An unknown venue result is named in the DM.
 
 **Opt-in field**
+- **Resting take-profit trade-through (#1727)**: a paper Hyperliquid perps strategy with `resting_tp_trade_through: true` books a tier take-profit only after a completed bar since entry traded one tick past the adapter-rounded tier limit, at that limit; the entry bar counts only its close, the forming bar never counts, and a bar that reaches the stop trigger ends the scan.
+  Nothing changes until an operator sets the field; with it off the check argv, batch slots and check output are unchanged, and live strategies refuse the field.
+  Restart-required; `null` or a non-boolean value fails the load; replay mirrors, the dynamic close, scale-in and a check interval longer than the bar are refused (SKILL.md § Resting Take-Profit Trade-Through).
+  The probe now sends `--resting-tp-rule-json`, so warn before the restart if a config names a custom check script, and update a `market_feed: shared` feed service in the same release because flagged strategies request timed signal frames.
+  Recommend a new paper strategy ID for a comparison run; fees are unchanged.
 - **Closed-bar decisions (#1712)**: a strategy with `closed_bar_decisions: true` takes its signal, exported entry ATR and entry sizing from the last bar closed at or before the check's evaluation cutoff, as the backtester does; stops, trailing stops, ratchets and take-profits keep current inputs.
   Nothing changes until an operator sets the field; with it off the check argv, batch slots and check output are unchanged.
   Supported on Binance.US spot, OKX spot/perps and Hyperliquid perps with the built-in check scripts and fixed-duration timeframes; `loadConfig` refuses every other combination (SKILL.md § Closed-Bar Decisions lists them).

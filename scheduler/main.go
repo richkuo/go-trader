@@ -1869,6 +1869,7 @@ func main() {
 			})
 			recordHeldStrategies(dueStrategies, scopeRisk, store, time.Now())
 			dueUnlatched := dueStrategiesPersistable(store, dueStrategiesNotLatched(dueStrategies, scopeRisk))
+			ensureRestingTPLotMetadata(dueUnlatched)
 			hlBatchResults := runHyperliquidBatchPrePass(dueUnlatched, state, &mu, cfg, prices, notifier, func(format string, a ...any) {
 				fmt.Printf(format+"\n", a...)
 			}, feedCtx)
@@ -3877,6 +3878,12 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	args = appendRegimePayloadArg(args, *sc, regime)
 	args = appendATRMethodArg(args, atrMethod)
 	args = appendClosedBarDecisionArgs(args, *sc, regime)
+	withRule, ruleErr := appendRestingTPRuleArg(args, posCtx)
+	if ruleErr != nil {
+		logger.Error("Resting take-profit rule request could not be encoded: %v - skipping this strategy this cycle (#1727)", ruleErr)
+		return nil, "", 0, false
+	}
+	args = withRule
 	if refsArgs, err := buildStrategyRefsArg(*sc, closeOwner, sentInvert); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
@@ -3928,6 +3935,10 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 			errMsg = msg
 			mode = scriptFailureError
 			result = nil
+		} else if msg := restingTPRuleContractError(posCtx.RestingTP, result.StrategyDecisionFields); msg != "" {
+			errMsg = msg
+			mode = scriptFailureError
+			result = nil
 		}
 	}
 	if errMsg != "" {
@@ -3950,6 +3961,7 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 	logger.ScriptStderr(stderr)
 	if result.Degraded == "" {
 		clearScriptFailure(notifier, *sc)
+		logRestingTPRule(*sc, posCtx, result.StrategyDecisionFields, logger)
 	}
 	overrides := applyCheckDirectionalOverrides(sc, regimePayloadValue(result.Regime), posCtx, regime)
 	if overrides.PolicyApplied {
@@ -4272,7 +4284,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		if qty := paperTierFillQty(s.Positions[result.Symbol], result.CloseFraction); qty > 0 {
 			bookPrice = tierPx
 			fillQty = qty
-			logger.Info("Paper take-profit tier fill at tier price $%.4f qty=%.6f (mid was $%.4f)", tierPx, qty, price)
+			logger.Info("Paper take-profit tier fill at tier price $%.4f qty=%.6f (mid was $%.4f)%s", tierPx, qty, price, restingTPFillLogSuffix(result))
 		}
 	}
 

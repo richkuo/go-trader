@@ -270,6 +270,87 @@ def _ensure_close_strategies_path() -> None:
         sys.path.insert(0, _CLOSE_STRATEGIES_DIR)
 
 
+RESTING_TP_TIER_CLOSES = (
+    "tiered_tp_atr",
+    "tiered_tp_atr_live",
+    "tiered_tp_atr_regime",
+    "tiered_tp_atr_live_regime",
+)
+RESTING_TP_UNSUPPORTED_CLOSE = "tiered_tp_atr_live_regime_dynamic"
+
+
+def _validate_resting_tp_trade_through(value, *, platform, strategy_type, execution,
+                                       close_names, allow_scale_in) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"resting_tp_trade_through must be a boolean, got {value!r}")
+    if not value:
+        return False
+    if str(platform or "").strip().lower() != "hyperliquid":
+        raise ValueError(
+            "resting_tp_trade_through models Hyperliquid resting take-profit "
+            f"limits; it needs platform='hyperliquid', got {platform!r}")
+    if str(strategy_type or "").strip().lower() != "perps":
+        raise ValueError(
+            "resting_tp_trade_through supports Hyperliquid perps only, got "
+            f"strategy_type={strategy_type!r}")
+    if execution is None:
+        raise ValueError(
+            "resting_tp_trade_through needs execution_spec: the tick grid comes "
+            "from its size_decimals, so without it the tick is unknown")
+    names = list(close_names or [])
+    if RESTING_TP_UNSUPPORTED_CLOSE in names:
+        raise ValueError(
+            "resting_tp_trade_through does not support "
+            f"{RESTING_TP_UNSUPPORTED_CLOSE} (a Hyperliquid live-only close)")
+    if not any(name in RESTING_TP_TIER_CLOSES for name in names):
+        raise ValueError(
+            "resting_tp_trade_through needs a tier close ("
+            + ", ".join(RESTING_TP_TIER_CLOSES) + f"); close refs are {names}")
+    if allow_scale_in:
+        raise ValueError(
+            "resting_tp_trade_through does not model scale-in adds; the tier "
+            "geometry must stay frozen")
+    return True
+
+
+class _RestingReachTracker:
+
+    def __init__(self, sz_decimals: int, walk_mode: bool):
+        _ensure_close_strategies_path()
+        from _helpers import build_resting_rule, resting_rule_bar
+        self._build_rule = build_resting_rule
+        self._bar = resting_rule_bar
+        self.sz_decimals = int(sz_decimals)
+        self.walk_mode = walk_mode
+        self.trade = None
+        self.prior = None
+
+    def rule_for(self, trade, side: str, row, idx, bar_index: int) -> dict:
+        entry_bar = trade is not self.trade
+        if entry_bar:
+            self.trade = trade
+            self.prior = None
+        close = float(row["close"])
+        try:
+            open_ms = int(pd.Timestamp(idx).value // 1_000_000)
+        except (TypeError, ValueError):
+            open_ms = int(bar_index)
+        bar = self._bar(
+            max(open_ms, 0), float(row.get("high", close) or close),
+            float(row.get("low", close) or close), close, side,
+            entry_bar=entry_bar, walk_mode=self.walk_mode,
+        )
+        rule = self._build_rule(
+            sz_decimals=self.sz_decimals, bars=[bar], stop_trigger_px=0.0,
+            prior_reach_px=self.prior,
+        )
+        favorable = bar["favorable_px"]
+        if self.prior is None or (favorable > self.prior if side == "long" else favorable < self.prior):
+            self.prior = favorable
+        return rule
+
+
 def _rewrite_deprecated_close_ref(name: str, params: dict) -> tuple[str, dict]:
     if name != "tp_at_pct":
         return name, dict(params or {})
@@ -2299,7 +2380,8 @@ class Backtester:
                  venue_margin: Optional[dict] = None,
                  regime_label_columns: Optional[dict] = None,
                  regime_feature_labels: Optional[dict] = None,
-                 regime_label_windows=None):
+                 regime_label_windows=None,
+                 resting_tp_trade_through: bool = False):
         # regime_label_windows is the loader's plan. Callers splat
         # load_strategy_config into this constructor; the columns themselves
         # arrive only through regime_label_columns.
@@ -2723,6 +2805,12 @@ class Backtester:
                 "the constant-dollar-risk invariant; the live daemon rejects "
                 "this config at startup)"
             )
+        self._resting_tp_trade_through = _validate_resting_tp_trade_through(
+            resting_tp_trade_through, platform=platform, strategy_type=strategy_type,
+            execution=self._execution, close_names=self.close_strategies,
+            allow_scale_in=self.allow_scale_in,
+        )
+        self._last_resting_fill: Optional[dict] = None
 
     @property
     def stop_owner(self) -> str:
@@ -3063,6 +3151,10 @@ class Backtester:
 
         pending_signal_sl_close = False
         walk_mode = self.intrabar_resolution == "ohlc_walk"
+        resting_reach = (
+            _RestingReachTracker(self._execution["size_decimals"], walk_mode)
+            if self._resting_tp_trade_through else None
+        )
         sl_pierce_armed = False
         self._active_sl_after_rules = self._sl_after_rules_static
         self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
@@ -4099,6 +4191,11 @@ class Backtester:
                             )
 
                 if self.close_strategies and position != 0 and avg_cost > 0:
+                    resting_rule = None
+                    if resting_reach is not None:
+                        resting_rule = resting_reach.rule_for(
+                            current_trade, "long" if position > 0 else "short", row, idx, i,
+                        )
                     pending_close_fraction, pending_close_reason, tier_fill_price = self._evaluate_close_strategies(
                         position, scale.geom_cost(avg_cost), initial_quantity,
                         entry_atr_value,
@@ -4108,6 +4205,7 @@ class Backtester:
                         bars_held=hold.bars,
                         zscore_series=zscore_series,
                         avwap_series=avwap_series,
+                        resting_rule=resting_rule,
                     )
                     if (
                         self._resting_tp_model
@@ -5032,7 +5130,8 @@ class Backtester:
                                    market_regime: str = "",
                                    bars_held: int = 0,
                                    zscore_series: Optional[pd.Series] = None,
-                                   avwap_series: Optional[pd.Series] = None
+                                   avwap_series: Optional[pd.Series] = None,
+                                   resting_rule: Optional[dict] = None
                                    ) -> Tuple[float, str, float]:
         evaluate, _list_strategies = _load_close_registry()
         side = "long" if position > 0 else "short"
@@ -5052,6 +5151,9 @@ class Backtester:
             "mark_price": float(mark_price),
             "regime": str(market_regime or ""),
         }
+        if resting_rule is not None:
+            market_dict["resting_tp_rule"] = resting_rule
+        self._last_resting_fill = None
         if atr_series is not None:
             try:
                 live_atr = float(atr_series.loc[idx])
@@ -5083,6 +5185,9 @@ class Backtester:
             params = self.close_params.get(name)
             result = evaluate(name, position_dict, market_dict, params)
             fraction = float(result.get("close_fraction", 0.0) or 0.0)
+            if resting_rule is not None and isinstance(result.get("resting_fill"), dict) and (
+                    fraction > best or self._last_resting_fill is None):
+                self._last_resting_fill = result["resting_fill"]
             if fraction > best:
                 best = fraction
                 best_reason = str(result.get("reason") or name)
