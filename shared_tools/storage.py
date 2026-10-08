@@ -82,6 +82,15 @@ def init_db(db_path: str = DB_PATH):
             UNIQUE(exchange, coin, start_ts)
         );
 
+        CREATE TABLE IF NOT EXISTS funding_venue_gaps (
+            exchange TEXT NOT NULL,
+            coin TEXT NOT NULL,
+            timestamp INTEGER NOT NULL CHECK (timestamp % 3600000 = 0),
+            observed_through_ms INTEGER NOT NULL,
+            recorded_at_ms INTEGER NOT NULL,
+            UNIQUE(exchange, coin, timestamp)
+        );
+
         CREATE TABLE IF NOT EXISTS backtest_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             strategy_name TEXT NOT NULL,
@@ -213,18 +222,113 @@ def load_ohlcv(exchange: str, symbol: str, timeframe: str,
     return df
 
 
+_FUNDING_HOUR_MS = 3_600_000
+
+
 def store_funding_rates(records: list, exchange: str, coin: str,
                         db_path: str = DB_PATH):
     if not records:
         return
+    store_funding_fetch(exchange, coin, records, [], db_path=db_path)
+
+
+def store_funding_fetch(exchange: str, coin: str, records: list,
+                        absent_hours, coverage=None,
+                        observed_through_ms: Optional[int] = None,
+                        db_path: str = DB_PATH) -> list:
+    rate_rows = [(exchange, coin, int(r["time"]), float(r["rate"])) for r in records]
+    hours = sorted({int(h) for h in absent_hours})
+    for h in hours:
+        if h % _FUNDING_HOUR_MS != 0:
+            raise ValueError(f"venue-absent hour {h} is not an hour bucket")
+    if hours and observed_through_ms is None:
+        raise ValueError("venue-absent hours need observed_through_ms")
+    if not rate_rows and not hours and coverage is None:
+        return []
     conn = get_connection(db_path)
-    conn.executemany(
-        "INSERT OR REPLACE INTO funding_rates (exchange, coin, timestamp, rate)"
-        " VALUES (?, ?, ?, ?)",
-        [(exchange, coin, int(r["time"]), float(r["rate"])) for r in records],
-    )
-    conn.commit()
-    conn.close()
+    written = []
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if rate_rows:
+            conn.executemany(
+                "INSERT OR REPLACE INTO funding_rates (exchange, coin, timestamp, rate)"
+                " VALUES (?, ?, ?, ?)",
+                rate_rows,
+            )
+            buckets = sorted({(t // _FUNDING_HOUR_MS) * _FUNDING_HOUR_MS
+                              for _e, _c, t, _r in rate_rows})
+            conn.executemany(
+                "DELETE FROM funding_venue_gaps WHERE exchange=? AND coin=? AND timestamp=?",
+                [(exchange, coin, b) for b in buckets],
+            )
+        recorded_at = int(datetime.now().timestamp() * 1000)
+        for h in hours:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO funding_venue_gaps"
+                " (exchange, coin, timestamp, observed_through_ms, recorded_at_ms)"
+                " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS ("
+                " SELECT 1 FROM funding_rates WHERE exchange=? AND coin=?"
+                " AND timestamp >= ? AND timestamp < ?)",
+                (exchange, coin, h, int(observed_through_ms), recorded_at,
+                 exchange, coin, h, h + _FUNDING_HOUR_MS),
+            )
+            if cur.rowcount:
+                written.append(h)
+        if coverage is not None:
+            _merge_funding_coverage(conn, exchange, coin,
+                                    int(coverage[0]), int(coverage[1]))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return written
+
+
+def load_funding_venue_gaps(exchange: str, coin: str,
+                            start_ts: Optional[int] = None,
+                            end_ts: Optional[int] = None,
+                            db_path: str = DB_PATH) -> list:
+    conn = get_connection(db_path)
+    query = "SELECT timestamp FROM funding_venue_gaps WHERE exchange=? AND coin=?"
+    params = [exchange, coin]
+    if start_ts is not None:
+        query += " AND timestamp >= ?"
+        params.append(int(start_ts))
+    if end_ts is not None:
+        query += " AND timestamp <= ?"
+        params.append(int(end_ts))
+    query += " ORDER BY timestamp ASC"
+    try:
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+    return [int(r[0]) for r in rows]
+
+
+def load_funding_first_ts(exchange: str, coin: str,
+                          db_path: str = DB_PATH) -> Optional[int]:
+    return _funding_ts_bound("MIN", exchange, coin, db_path)
+
+
+def load_funding_last_ts(exchange: str, coin: str,
+                         db_path: str = DB_PATH) -> Optional[int]:
+    return _funding_ts_bound("MAX", exchange, coin, db_path)
+
+
+def _funding_ts_bound(fn: str, exchange: str, coin: str, db_path: str) -> Optional[int]:
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            f"SELECT {fn}(timestamp) FROM funding_rates WHERE exchange=? AND coin=?",
+            (exchange, coin),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or row[0] is None:
+        return None
+    return int(row[0])
 
 
 def load_funding_rates(exchange: str, coin: str,
@@ -261,10 +365,14 @@ def load_funding_coverage(exchange: str, coin: str,
     return [(int(s), int(e)) for s, e in rows]
 
 
-def store_funding_coverage(exchange: str, coin: str,
-                           start_ts: int, end_ts: int,
-                           db_path: str = DB_PATH):
-    intervals = load_funding_coverage(exchange, coin, db_path=db_path)
+def _merge_funding_coverage(conn: sqlite3.Connection, exchange: str, coin: str,
+                            start_ts: int, end_ts: int):
+    rows = conn.execute(
+        "SELECT start_ts, end_ts FROM funding_coverage WHERE exchange=? AND coin=?"
+        " ORDER BY start_ts ASC",
+        (exchange, coin),
+    ).fetchall()
+    intervals = [(int(s), int(e)) for s, e in rows]
     intervals.append((int(start_ts), int(end_ts)))
     intervals.sort()
     merged = []
@@ -273,7 +381,6 @@ def store_funding_coverage(exchange: str, coin: str,
             merged[-1][1] = max(merged[-1][1], e)
         else:
             merged.append([s, e])
-    conn = get_connection(db_path)
     conn.execute("DELETE FROM funding_coverage WHERE exchange=? AND coin=?",
                  (exchange, coin))
     conn.executemany(
@@ -281,8 +388,21 @@ def store_funding_coverage(exchange: str, coin: str,
         " VALUES (?, ?, ?, ?)",
         [(exchange, coin, s, e) for s, e in merged],
     )
-    conn.commit()
-    conn.close()
+
+
+def store_funding_coverage(exchange: str, coin: str,
+                           start_ts: int, end_ts: int,
+                           db_path: str = DB_PATH):
+    conn = get_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _merge_funding_coverage(conn, exchange, coin, int(start_ts), int(end_ts))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def store_backtest_result(result: dict, db_path: str = DB_PATH):
