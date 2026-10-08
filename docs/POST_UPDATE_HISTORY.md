@@ -362,7 +362,7 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   Nothing changes until an operator sets the field; with it off the check argv, batch slots and check output are unchanged, and live strategies refuse the field.
   Restart-required; `null` or a non-boolean value fails the load; replay mirrors, the dynamic close, scale-in and a check interval longer than the bar are refused (SKILL.md § Resting Take-Profit Trade-Through).
   The probe now sends `--resting-tp-rule-json`, so warn before the restart if a config names a custom check script, and update a `market_feed: shared` feed service in the same release because flagged strategies request timed signal frames.
-  The `positions` table gains `resting_tp_scanned_open_ms` and `resting_tp_reach_px` (idempotent `ALTER TABLE`, default 0) so each bar is stop-tested once against the stop in force when it completed.
+  The `positions` table gains `resting_tp_scanned_open_ms`, `resting_tp_reach_px` and `resting_tp_stop_trigger_px` (idempotent `ALTER TABLE`, default 0) so each bar is stop-tested once against a stop that was in force from its open.
   Recommend a new paper strategy ID for a comparison run; fees are unchanged.
 - **Closed-bar decisions (#1712)**: a strategy with `closed_bar_decisions: true` takes its signal, exported entry ATR and entry sizing from the last bar closed at or before the check's evaluation cutoff, as the backtester does; stops, trailing stops, ratchets and take-profits keep current inputs.
   Nothing changes until an operator sets the field; with it off the check argv, batch slots and check output are unchanged.

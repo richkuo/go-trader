@@ -42,6 +42,7 @@ type Position struct {
 	SLAfterTriggerPx                float64           `json:"sl_after_trigger_px,omitempty"`
 	RestingTPScannedOpenMs          int64             `json:"resting_tp_scanned_open_ms,omitempty"`
 	RestingTPReachPx                float64           `json:"resting_tp_reach_px,omitempty"`
+	RestingTPStopTriggerPx          float64           `json:"resting_tp_stop_trigger_px,omitempty"`
 	TPConsumptions                  []TPConsumption   `json:"tp_consumptions,omitempty"`
 	PostTPTrailingATRMult           *float64          `json:"post_tp_trailing_atr_mult,omitempty"`
 	ScaleInCount                    int               `json:"scale_in_count,omitempty"`

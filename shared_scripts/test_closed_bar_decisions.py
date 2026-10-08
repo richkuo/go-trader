@@ -725,12 +725,13 @@ def _moving_stop_bars(tail):
     return bars
 
 
-def _moving_stop_cycle(bars, tiers, *, entry, closed_through, qty, stop, scanned_through=0, prior=None):
+def _moving_stop_cycle(bars, tiers, *, entry, closed_through, qty, stop, scanned_through=0, prior=None, mid=None):
     frame = bars[:closed_through + 2]
     refs = {"open": {"name": "breakout", "params": {}}, "closes": [{"name": "tiered_tp_atr", "params": {"tp_tiers": tiers}}]}
     rule = {"v": 1, "k_ticks": 1, "sz_decimals": 2, "entry_time_ms": bars[entry]["t"] + 600_000, "stop_trigger_px": stop,
             "hold_reason": "", "scanned_through_ms": scanned_through, "prior_reach_px": prior}
-    market = _market({"BTC|1h": _hl_frame(frame)}, cutoff_ms=frame[-1]["t"] + H // 2, mid=frame[-1]["c"])
+    market = _market({"BTC|1h": _hl_frame(frame)}, cutoff_ms=frame[-1]["t"] + H // 2,
+                     mid=frame[-1]["c"] if mid is None else mid)
     argv = ["breakout", "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200",
             "--strategy-refs", json.dumps(refs), "--position-side", "long", "--position-avg-cost=100",
             f"--position-qty={qty}", "--position-initial-qty=1", "--position-entry-atr=2",
@@ -787,4 +788,90 @@ def test_resting_rule_trailing_stop_tests_each_bar_against_the_stop_armed_when_i
         assert second["close_tier_fill_price"] == 106.0
     else:
         assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[62]["t"]
-        assert second["resting_tp_rule"]["next_scanned_through_ms"] == bars[61]["t"]
+        assert second["resting_tp_rule"]["next_scanned_through_ms"] == bars[62]["t"]
+
+
+_STOP_BAR_TIERS = [{"atr_multiple": 1.0, "close_fraction": 0.5}, {"atr_multiple": 3.0, "close_fraction": 1.0}]
+
+
+def _stop_bar_bars(bar63_low):
+    return _moving_stop_bars([(100.0, 102.3, 99.9, 102.2), (102.2, 103.8, 103.2, 103.6), (103.6, 105.8, 102.9, 105.5),
+                              (105.5, 106.01, bar63_low, 105.9), (105.9, 106.0, 105.5, 105.8)])
+
+
+def _stop_bar_cycles(bars, stops, mids=None):
+    out = []
+    scanned_through, prior, qty = 0, None, 1.0
+    for i, stop in enumerate(stops):
+        cycle = _moving_stop_cycle(bars, _STOP_BAR_TIERS, entry=60, closed_through=60 + i, qty=qty, stop=stop,
+                                   scanned_through=scanned_through, prior=prior, mid=(mids or {}).get(i))
+        echo = cycle["resting_tp_rule"]
+        scanned_through, prior = echo["next_scanned_through_ms"], echo["next_reach_px"]
+        qty = round(qty * (1 - cycle["close_fraction"]), 8) if cycle["close_fraction"] < 1 else 0.0
+        out.append(cycle)
+    return out
+
+
+@pytest.mark.parametrize("bar63_low,want_fraction", [(105.2, 1.0), (102.95, 0.0)])
+def test_resting_rule_stop_bar_the_paper_stop_did_not_book_drops_only_that_bar(bar63_low, want_fraction):
+    bars = _stop_bar_bars(bar63_low)
+    first, second, third, fourth = _stop_bar_cycles(bars, [98.0, 98.0, 103.0, 103.0])
+
+    assert (first["close_fraction"], first["close_tier_fill_price"]) == (0.5, 102.0)
+    assert second["close_fraction"] == 0.0
+    assert second["resting_tp_rule"]["next_scanned_through_ms"] == bars[61]["t"]
+    assert third["close_fraction"] == 0.0
+    assert "close_tier_fill_price" not in third
+    assert third["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[62]["t"]
+    assert third["resting_tp_rule"]["next_scanned_through_ms"] == bars[62]["t"]
+    assert third["resting_tp_rule"]["next_reach_px"] == 103.8
+    assert fourth["resting_tp_rule"]["next_scanned_through_ms"] == bars[63]["t"]
+    assert fourth["close_fraction"] == want_fraction
+    if want_fraction:
+        assert fourth["close_tier_fill_price"] == 106.0
+        assert fourth["resting_tp_rule"]["stop_reached_bar_open_ms"] == 0
+    else:
+        assert "close_tier_fill_price" not in fourth
+        assert fourth["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[63]["t"]
+
+
+def test_resting_rule_stop_bar_with_a_breaching_mark_books_no_tier_from_that_bar():
+    bars = _stop_bar_bars(105.2)
+    cycles = _stop_bar_cycles(bars, [98.0, 98.0, 103.0], mids={2: 102.8})
+    third = cycles[2]
+    assert third["close_fraction"] == 0.0
+    assert "close_tier_fill_price" not in third
+    assert third["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[62]["t"]
+
+
+@pytest.mark.parametrize("bar_low,sent_stop,want", [(99.5, 99.0, "tier"), (98.9, 99.0, "sl")])
+def test_resting_rule_trailing_stop_ratcheted_inside_a_bar_tests_the_bar_against_the_stop_at_its_open(bar_low, sent_stop, want):
+    tiers = [{"atr_multiple": 1.5, "close_fraction": 0.5}, {"atr_multiple": 3.0, "close_fraction": 1.0}]
+    bars = _moving_stop_bars([(100.0, 100.2, 99.8, 100.0), (100.0, 103.5, bar_low, 103.0), (103.0, 103.2, 102.8, 103.0)])
+    first = _moving_stop_cycle(bars, tiers, entry=60, closed_through=60, qty=1, stop=99.0)
+    assert first["close_fraction"] == 0.0
+    echo = first["resting_tp_rule"]
+    second = _moving_stop_cycle(bars, tiers, entry=60, closed_through=61, qty=1, stop=sent_stop,
+                                scanned_through=echo["next_scanned_through_ms"], prior=echo["next_reach_px"])
+
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "backtest"))
+    from backtester import Backtester
+    closed = bars[:62]
+    df = _frame_from_rows(_hl_rows(closed))
+    df["open_action"] = ["long" if i == 59 else "none" for i in range(len(closed))]
+    df["atr"] = 2.0
+    bt = Backtester(initial_capital=1000.0, platform="hyperliquid", strategy_type="perps",
+                    execution_spec=dict(_RESTING_SPEC), trailing_stop_pct=0.01,
+                    close_strategies=[{"name": "tiered_tp_atr", "params": {"tp_tiers": tiers}}],
+                    resting_tp_trade_through=True)
+    trades = bt.run(df, strategy_name="breakout", symbol="BTC", timeframe="1h", save=False)["trades"]
+    booked = [(t["exit_date"], t["exit_price"], t["exit_reason"].split(":")[0]) for t in trades if t["exit_reason"] != "end_of_data"]
+    if want == "tier":
+        assert (second["close_fraction"], second["close_tier_fill_price"]) == (0.5, 103.0)
+        assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == 0
+        assert booked[0][:2] == (str(df.index[61]), 103.0)
+        assert booked[0][2].startswith("tiered_tp_atr")
+    else:
+        assert second["close_fraction"] == 0.0
+        assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[61]["t"]
+        assert booked == [(str(df.index[61]), 99.0, "sl")]

@@ -40,6 +40,7 @@ type restingTPRuleRequest struct {
 	HoldReason       string   `json:"hold_reason"`
 	ScannedThroughMs int64    `json:"scanned_through_ms"`
 	PriorReachPx     *float64 `json:"prior_reach_px"`
+	PhaseOneStopPx   float64  `json:"-"`
 }
 
 type RestingTPRuleEcho struct {
@@ -137,7 +138,7 @@ func restingTPTradeThroughStrategyErrors(sc StrategyConfig, cfg *Config) []strin
 		global = cfg.IntervalSeconds
 	}
 	if every := configuredStrategyIntervalSeconds(sc, global); int64(every)*1000 > intervalMs {
-		errs = append(errs, fmt.Sprintf("%s needs a check interval at or below the %s bar (got %ds); the limit does not guarantee one check per bar, because each check rescans every completed bar since entry", prefix, timeframe, every))
+		errs = append(errs, fmt.Sprintf("%s needs a check interval at or below the %s bar (got %ds); the limit does not guarantee one check per bar, and each completed bar is stop-tested once, on the first check after it completes", prefix, timeframe, every))
 	}
 	return errs
 }
@@ -191,17 +192,20 @@ func restingTPRuleRequestFor(sc StrategyConfig, pos *Position, ctx PositionCtx) 
 		return nil
 	}
 	req := &restingTPRuleRequest{
-		V:             restingTPRuleVersion,
-		KTicks:        restingTPTradeThroughTicks,
-		StopTriggerPx: ctx.StopLossTriggerPx,
+		V:              restingTPRuleVersion,
+		KTicks:         restingTPTradeThroughTicks,
+		StopTriggerPx:  restingTPScanStopTriggerPx(ctx),
+		PhaseOneStopPx: ctx.StopLossTriggerPx,
 	}
 	if !ctx.OpenedAt.IsZero() && ctx.OpenedAt.UnixMilli() > 0 {
 		req.EntryTimeMs = ctx.OpenedAt.UnixMilli()
 	}
-	if ctx.RestingTPScannedOpenMs > 0 && ctx.RestingTPReachPx > 0 && !math.IsInf(ctx.RestingTPReachPx, 0) {
-		reach := ctx.RestingTPReachPx
+	if ctx.RestingTPScannedOpenMs > 0 {
 		req.ScannedThroughMs = ctx.RestingTPScannedOpenMs
-		req.PriorReachPx = &reach
+		if ctx.RestingTPReachPx > 0 && !math.IsInf(ctx.RestingTPReachPx, 0) {
+			reach := ctx.RestingTPReachPx
+			req.PriorReachPx = &reach
+		}
 	}
 	if lot := hlLotMetadata.Peek(hyperliquidSymbol(sc.Args)); lot.Known {
 		d := lot.SzDecimals
@@ -216,6 +220,21 @@ func restingTPRuleRequestFor(sc StrategyConfig, pos *Position, ctx PositionCtx) 
 		req.HoldReason = restingTPHoldStopUnarmed
 	}
 	return req
+}
+
+func restingTPScanStopTriggerPx(ctx PositionCtx) float64 {
+	current := ctx.StopLossTriggerPx
+	if ctx.RestingTPScannedOpenMs <= 0 {
+		return current
+	}
+	stored := ctx.RestingTPStopTriggerPx
+	if current <= 0 || stored <= 0 {
+		return 0
+	}
+	if ctx.Side == "short" {
+		return math.Max(current, stored)
+	}
+	return math.Min(current, stored)
 }
 
 func restingTPRuleJSON(req *restingTPRuleRequest) (json.RawMessage, error) {
@@ -242,8 +261,11 @@ func restingTPNextScanError(sent *restingTPRuleRequest, echo *RestingTPRuleEcho,
 		return "the next scan watermark moved backwards"
 	}
 	next := echo.NextReachPx
+	if echo.Held && (echo.NextScannedThroughMs != sent.ScannedThroughMs || !floatPtrEqual(next, sent.PriorReachPx)) {
+		return "a held rule advanced the scan"
+	}
 	if next == nil {
-		if sent.PriorReachPx != nil || echo.NextScannedThroughMs != sent.ScannedThroughMs {
+		if sent.PriorReachPx != nil {
 			return "the next reach is missing"
 		}
 		return ""
@@ -256,9 +278,6 @@ func restingTPNextScanError(sent *restingTPRuleRequest, echo *RestingTPRuleEcho,
 		if (side == "short" && *next > prior) || (side != "short" && *next < prior) {
 			return "the next reach falls behind the prior reach"
 		}
-	}
-	if echo.Held && (echo.NextScannedThroughMs != sent.ScannedThroughMs || !floatPtrEqual(next, sent.PriorReachPx)) {
-		return "a held rule advanced the scan"
 	}
 	return ""
 }
@@ -304,7 +323,7 @@ func logRestingTPRule(sc StrategyConfig, posCtx PositionCtx, fields StrategyDeci
 		logger.Warn("Resting take-profit rule: the candle frame starts after the entry bar (frame_truncated); a tier crossed in a bar outside the frame cannot fill, so fills can only be missed (#1727)")
 	}
 	if echo.StopReachedBarOpenMs > 0 && logger.Changed("resting-tp-stop-bar", position+"|"+fmt.Sprintf("%d", echo.StopReachedBarOpenMs)) {
-		logger.Warn("Resting take-profit rule: the bar opened %s reached the stop trigger $%.4f; tiers crossed in that bar or later do not fill (stop-first) (#1727)", formatClosedBarMs(echo.StopReachedBarOpenMs), echo.StopTriggerPx)
+		logger.Warn("Resting take-profit rule: the bar opened %s reached the stop trigger $%.4f; tiers crossed in that bar do not fill (stop-first); later bars are scanned from the next check (#1727)", formatClosedBarMs(echo.StopReachedBarOpenMs), echo.StopTriggerPx)
 	}
 	logger.Debug("Resting take-profit rule: %d observed bar(s) %s..%s (cutoff %s, entry bar %s, coverage %s, rows sha256 %s, verdict %s)",
 		echo.ObservedBars, formatClosedBarMs(echo.FirstObservedOpenMs), formatClosedBarMs(echo.LastObservedOpenMs),
@@ -335,7 +354,7 @@ func ensureRestingTPLotMetadata(due []StrategyConfig) {
 
 func recordRestingTPScan(s *StrategyState, symbol string, sent *restingTPRuleRequest, fields StrategyDecisionFields) bool {
 	echo := fields.RestingTPRule
-	if s == nil || sent == nil || echo == nil || echo.Held || echo.NextReachPx == nil {
+	if s == nil || sent == nil || echo == nil || echo.Held {
 		return false
 	}
 	pos := s.Positions[symbol]
@@ -345,7 +364,13 @@ func recordRestingTPScan(s *StrategyState, symbol string, sent *restingTPRuleReq
 	if pos.RestingTPScannedOpenMs != sent.ScannedThroughMs {
 		return false
 	}
+	if echo.NextScannedThroughMs <= sent.ScannedThroughMs {
+		return false
+	}
 	pos.RestingTPScannedOpenMs = echo.NextScannedThroughMs
-	pos.RestingTPReachPx = *echo.NextReachPx
+	if echo.NextReachPx != nil {
+		pos.RestingTPReachPx = *echo.NextReachPx
+	}
+	pos.RestingTPStopTriggerPx = sent.PhaseOneStopPx
 	return true
 }

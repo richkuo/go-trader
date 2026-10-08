@@ -460,6 +460,7 @@ def resting_rule_scan(rule: dict, side: str) -> dict:
     for bar in rule["bars"]:
         if stop is not None and _reaches(_rule_price(bar["adverse_px"]), stop, "short" if side == "long" else "long"):
             stop_bar = bar["open_ms"]
+            last_scanned = bar["open_ms"]
             break
         scanned.append((bar["open_ms"], _rule_price(bar["favorable_px"])))
         last_scanned = bar["open_ms"]

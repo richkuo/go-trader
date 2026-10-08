@@ -620,8 +620,8 @@ def parse_resting_rule_request(raw):
     if prior is not None and (isinstance(prior, bool) or not isinstance(prior, (int, float))
                               or not math.isfinite(float(prior)) or float(prior) <= 0):
         raise ValueError(f"resting_tp_rule.prior_reach_px must be null or a finite number > 0, got {prior!r}")
-    if (prior is None) != (scanned_through == 0):
-        raise ValueError("resting_tp_rule.prior_reach_px and scanned_through_ms must both be set or both be empty")
+    if prior is not None and scanned_through == 0:
+        raise ValueError("resting_tp_rule.prior_reach_px needs a scanned_through_ms watermark")
     return {
         "scanned_through_ms": scanned_through,
         "prior_reach_px": prior,
