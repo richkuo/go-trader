@@ -20,6 +20,8 @@ INPUTS = {
     "export_scale_in.json": "comparison_input_scale_in.json",
     "export_manual.json": "comparison_input_manual.json",
     "export_paper.json": "comparison_input_paper.json",
+    "export_paper_resting.json": "comparison_input_paper_resting.json",
+    "export_paper_resting_touch.json": "comparison_input_paper_resting_touch.json",
 }
 INTERVAL_START = "2026-01-05T00:00:00Z"
 START_MS = 1767571200000
@@ -48,12 +50,11 @@ def _copy(tmp_path):
 
 
 def _rebind(fx):
-    manifest_sha = _sha(fx / "market" / "manifest.json")
     for export, inp in INPUTS.items():
         doc = _load(fx / export)
         cin = _load(fx / inp)
         cin["export"]["booked_sections_sha256"] = lc.booked_sections_sha256(doc)
-        cin["market"]["manifest"]["sha256"] = manifest_sha
+        cin["market"]["manifest"]["sha256"] = _sha(fx / cin["market"]["manifest"]["path"])
         _dump(fx / inp, cin)
 
 
@@ -2484,3 +2485,160 @@ def test_paper_funding_rows_with_position_ids_report_as_strategy_funding(tmp_pat
     assert info["booked_strategy_funding_unallocated"]["allocated_to_positions"] == 0.0
     assert set(rep["booked"]["dispositions"]) >= {e["event_key"] for e in funding_in}
     assert rc == 0 and rep["outcome"] == "strict_success"
+
+
+RESTING_EXPORT = "export_paper_resting.json"
+RESTING_TOUCH_EXPORT = "export_paper_resting_touch.json"
+RESTING_LIMIT_PX = 62125.0
+
+
+def _resting_row(rep):
+    return next(r for r in rep["eligibility"]["capability_matrix"] if r["field"] == "resting_tp_trade_through")
+
+
+def _resting_codes(rep):
+    return [f["code"] for f in rep["resting_fill"]["failures"]]
+
+
+def _refusal_codes(rep):
+    return {r.get("reason_code") or r["reason"] for r in rep["eligibility"]["refusals"]}
+
+
+def _edit_strategy(fx, inp, edit, version=None, rule=None):
+    cin = _load(fx / inp)
+    for seg in cin["historical_configuration"]["timeline"]:
+        edit(seg["strategy"])
+    if version is not None:
+        cin["schema_version"] = version
+    if rule is not None:
+        cin["resting_tp_rule"] = rule
+    _dump(fx / inp, cin)
+
+
+def test_resting_pair_verifies_each_tier_close_with_the_winning_evidence(tmp_path):
+    fx = _copy(tmp_path)
+    rc, rep = _run(fx, tmp_path, export=RESTING_EXPORT)
+    assert rc == 0 and rep["outcome"] == "strict_success" and all(rep["strict_checks"].values())
+    assert rep["schema_version"] == lc.REPORT_SCHEMA_VERSION == 2
+    assert rep["provenance"]["comparison_input_schema"][1] == 4
+    assert rep["provenance"]["simulator_events_schema"][1] == lc.LEDGER_EVENTS_SCHEMA_VERSION == 3
+    row = _resting_row(rep)
+    assert row["decision"] == "modeled" and row["approximable"] is False
+    assert row["value"]["source"] == "paper_strategy_flag" and row["value"]["k_ticks"] == 1
+    assert row["value"]["provenance"] == "structural_floor"
+    section = rep["resting_fill"]
+    assert section["verified"] is True and section["failures"] == []
+    sims = section["simulated_tier_closes"]
+    assert len(sims) == 1
+    for sim in sims:
+        evidence = sim["resting_fill"]
+        assert evidence["rule"] == "trade_through" and evidence["k_ticks"] == 1
+        assert evidence["verdict"] == "traded_through" and evidence["fill_px"] == sim["raw_price"]
+        assert evidence["tiers"][0]["limit_px"] == RESTING_LIMIT_PX and evidence["tiers"][0]["ticks_through"] >= 1
+        assert sim["bar_timestamp"] == "2026-01-05T15:00:00Z" and sim["disposition"] == "matched"
+    booked = section["booked_tier_closes"]
+    assert [b["classification"] for b in booked] == ["possible_tier"]
+    assert booked[0]["simulated_event_id"] == sims[0]["event_id"] and booked[0]["within_tolerance"] is True
+
+
+def test_resting_touch_close_fails_out_of_tolerance(tmp_path):
+    fx = _copy(tmp_path)
+    rc, rep = _run(fx, tmp_path, export=RESTING_TOUCH_EXPORT)
+    assert rc == 1 and rep["outcome"] == "mismatch"
+    assert sorted(k for k, v in rep["strict_checks"].items() if not v) == [
+        "matched_within_tolerance", "resting_tier_closes_verified"]
+    section = rep["resting_fill"]
+    booked = section["booked_tier_closes"][0]
+    sim = section["simulated_tier_closes"][0]
+    assert booked["timestamp"] == "2026-01-05T12:00:41Z" and booked["within_tolerance"] is False
+    assert sim["resting_fill"]["verdict"] == "traded_through"
+    assert [(f["code"], f["booked_event_key"], f["simulated_event_id"]) for f in section["failures"]] == [
+        ("tier_close_out_of_tolerance", booked["event_key"], sim["event_id"])]
+
+
+def test_resting_rule_off_suppressed_and_reclassified_variants(tmp_path):
+    inp = INPUTS[RESTING_EXPORT]
+    fx = _copy(tmp_path)
+    _, on = _run(fx, tmp_path, export=RESTING_EXPORT, name="on.json")
+
+    _edit_strategy(fx, inp, lambda st: st.update(resting_tp_trade_through=False))
+    rc, off = _run(fx, tmp_path, export=RESTING_EXPORT, name="off.json")
+    assert rc == 1 and off["strict_checks"]["resting_tier_closes_verified"] is False
+    assert "resting_fill_unverified" in _resting_codes(off)
+    assert _resting_row(off)["decision"] == "informational"
+    assert json.dumps(off["simulation"]["cost_model"], sort_keys=True) == json.dumps(
+        on["simulation"]["cost_model"], sort_keys=True)
+
+    fx = _copy(tmp_path / "far")
+
+    def raise_first_tier(st):
+        st["close_strategy"]["params"]["tp_tiers"][0]["atr_multiple"] += 1.0
+
+    _edit_strategy(fx, inp, raise_first_tier)
+    rc, far = _run(fx, tmp_path, export=RESTING_EXPORT, name="far.json")
+    assert rc == 1 and far["resting_fill"]["simulated_tier_closes"] == []
+    suppressed = [f for f in far["resting_fill"]["failures"] if f["code"] == "resting_rule_suppressed_every_tier_close"]
+    booked_key = far["resting_fill"]["booked_tier_closes"][0]["event_key"]
+    assert len(suppressed) == 1 and booked_key in suppressed[0]["detail"]
+
+    fx = _copy(tmp_path / "hl_sync")
+    doc = _load(fx / RESTING_EXPORT)
+    close = next(e for e in doc["events"] if e["event_kind"]["value"] == "close" and _in_interval(e))
+    close["close_reason"] = {"value": "hl_sync_tp1_fill", "raw_value": "hl_sync_tp1_fill", "status": "available",
+                             "reason": None, "provenance": []}
+    _dump(fx / RESTING_EXPORT, doc)
+    _rebind(fx)
+    rc, synced = _run(fx, tmp_path, export=RESTING_EXPORT, name="hl_sync.json")
+    assert rc == 0 and synced["strict_checks"]["resting_tier_closes_verified"] is True
+    assert [b["classification"] for b in synced["resting_fill"]["booked_tier_closes"]] == ["tier"]
+
+
+@pytest.mark.parametrize("case,code", [
+    ("conflict", "resting_rule_conflict"),
+    ("k_ticks", "resting_rule_k_unsupported"),
+    ("null_flag", "resting_rule_flag_invalid"),
+])
+def test_resting_rule_refusals_are_never_simulated(tmp_path, case, code):
+    inp = INPUTS[RESTING_EXPORT]
+    fx = _copy(tmp_path)
+    if case == "conflict":
+        _edit_strategy(fx, inp, lambda st: None, rule={"enabled": False, "k_ticks": 1, "source": "test input"})
+    elif case == "k_ticks":
+        _edit_strategy(fx, inp, lambda st: None, rule={"enabled": True, "k_ticks": 2, "source": "test input"})
+    else:
+        _edit_strategy(fx, inp, lambda st: st.update(resting_tp_trade_through=None))
+    for mode in ("strict", "approximate"):
+        rc, rep = _run(fx, tmp_path, export=RESTING_EXPORT, mode=mode, name=f"{case}-{mode}.json")
+        assert rc == 1 and rep["simulation"]["status"] == "not_run"
+        assert code in _refusal_codes(rep)
+        row = _resting_row(rep)
+        assert row["decision"] == "refused" and row["reason_code"] == code and row["approximable"] is False
+
+
+def test_resting_rule_input_needs_version_four(tmp_path):
+    fx = _copy(tmp_path)
+    _edit_strategy(fx, INPUTS[RESTING_EXPORT], lambda st: None, version=3,
+                   rule={"enabled": True, "k_ticks": 1, "source": "test input"})
+    rc, rep = _run(fx, tmp_path, export=RESTING_EXPORT)
+    assert rc == 2 and rep is None
+
+
+def test_live_resting_rule_source_is_the_comparison_input(tmp_path):
+    fx = _copy(tmp_path)
+    _edit_strategy(fx, "comparison_input.json", lambda st: None, version=4,
+                   rule={"enabled": False, "k_ticks": 1, "source": "test input"})
+    rc, rep = _run(fx, tmp_path, name="live-off.json")
+    assert rc == 0 and rep["outcome"] == "strict_success"
+    row = _resting_row(rep)
+    assert row["decision"] == "inactive" and row["value"]["source"] == "comparison_input"
+
+    _edit_strategy(fx, "comparison_input.json", lambda st: None,
+                   rule={"enabled": True, "k_ticks": 1, "source": "test input"})
+    rc, rep = _run(fx, tmp_path, name="live-on.json")
+    assert rc == 1 and "resting_rule_ineligible" in _refusal_codes(rep)
+    assert _resting_row(rep)["value"]["source"] == "comparison_input"
+
+    fx = _copy(tmp_path / "flag")
+    _edit_strategy(fx, "comparison_input.json", lambda st: st.update(resting_tp_trade_through=True))
+    rc, rep = _run(fx, tmp_path, name="live-flag.json")
+    assert rc == 1 and "resting_rule_live_flag" in _refusal_codes(rep)

@@ -1,0 +1,51 @@
+{
+  "schema": "offline_candle_manifest/v1",
+  "study": "ledger_compare_resting_fixture_1727",
+  "venue": "hyperliquid",
+  "provenance": {
+    "kind": "proxy",
+    "label": "derived from market/ with two highs raised; not market data"
+  },
+  "interval": "1h",
+  "warmup_bars": 60,
+  "windows": {
+    "comparison": {
+      "start": "2026-01-05T00:00:00Z",
+      "end": "2026-01-06T20:00:00Z",
+      "role": "comparison interval for the booked-ledger fixture; start inclusive, end exclusive"
+    }
+  },
+  "acquisition": {
+    "source": "generate_market.py (no network access)",
+    "note": "market/generate_market.py candles and funding with the 2026-01-05T11:00Z high raised from 62124.2 to 62125.0 (a touch of a whole-dollar limit) and the 2026-01-05T15:00Z high raised from 61624.5 to 62127.0 (a two-tick wick with the close back inside); gzip mtime 0; rerunning the generator reproduces every byte."
+  },
+  "costs": {
+    "taker_fee_pct": 0.00045,
+    "maker_fee_pct": 0.00015,
+    "slippage_bps": 1.0,
+    "min_notional_usd": 10.0,
+    "min_notional_margin": 0.03
+  },
+  "venue_reference": {
+    "meta": {
+      "path": "venue_meta.json",
+      "sha256": "0ddfc0245694096bc211c63da1d38d94f8ec32bb51aff7c635030e8aecda0404"
+    }
+  },
+  "datasets": [
+    {
+      "coin": "BTC",
+      "symbol": "BTC/USDT",
+      "size_decimals": 5,
+      "half_spread_bps": 0.5,
+      "candles": {
+        "path": "BTC_1h_candles.csv.gz",
+        "sha256": "8e3ef363ab7ad1895b9bdb6a7838fe805ec5faae5442ee5152a71380c058ce0b"
+      },
+      "funding": {
+        "path": "BTC_funding.csv.gz",
+        "sha256": "d70316f6c50ad6942f405bfecf9280f44b925c2890cbad0710b0dbed5b9da7a0"
+      }
+    }
+  ]
+}

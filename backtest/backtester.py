@@ -1958,7 +1958,7 @@ class _HoldTracker:
 
 
 LEDGER_EVENTS_SCHEMA = "go-trader.backtester-ledger-events"
-LEDGER_EVENTS_SCHEMA_VERSION = 2
+LEDGER_EVENTS_SCHEMA_VERSION = 3
 HL_LIQUIDATION_STOP_BUFFER_PCT = 0.5
 PARTIAL_LIQUIDATION_NOTIONAL_USD = 100_000.0
 LEDGER_EVENT_TIMING = {
@@ -1999,7 +1999,8 @@ class _LedgerEventRecorder:
                funding_cash: Optional[float] = None,
                funding_rate: Optional[float] = None,
                margin_loss: Optional[float] = None,
-               synthetic: bool = False) -> None:
+               synthetic: bool = False,
+               resting_fill: Optional[dict] = None) -> None:
         if kind in ("open", "seed_inventory"):
             self.position_seq += 1
             self.position_id = f"sim-pos-{self.position_seq:04d}"
@@ -2036,6 +2037,7 @@ class _LedgerEventRecorder:
             "avg_cost_after": avg_cost_after,
             "cash_before": cash_before,
             "cash_after": cash_after,
+            "resting_fill": copy.deepcopy(resting_fill),
         })
         if kind in ("close", "terminal_liquidation") and qty_after == 0:
             self.position_id = None
@@ -2826,6 +2828,7 @@ class Backtester:
             allow_scale_in=self.allow_scale_in,
         )
         self._last_resting_fill: Optional[dict] = None
+        self._winning_resting_fill: Optional[dict] = None
 
     @property
     def stop_owner(self) -> str:
@@ -3546,7 +3549,8 @@ class Backtester:
                         reason: str, bar_mark: float, seed_price: float,
                         fee_pct: Optional[float] = None, decision_bar=None,
                         timing: str = "bar_open_fill",
-                        margin_loss: Optional[float] = None) -> bool:
+                        margin_loss: Optional[float] = None,
+                        resting_fill: Optional[dict] = None) -> bool:
             nonlocal position, cash, avg_cost, initial_quantity, entry_atr_value
             nonlocal current_trade, sl_trigger_px, sl_tiers_processed
             nonlocal post_tp_trail_mult, sl_high_water_px
@@ -3675,6 +3679,7 @@ class Backtester:
                     gross_realized=gross_realized,
                     entry_fee_allocated=entry_fee_allocated,
                     margin_loss=margin_loss,
+                    resting_fill=resting_fill,
                 )
             return sl_after_moved
 
@@ -4227,10 +4232,21 @@ class Backtester:
                         and pending_close_fraction > 0
                         and tier_fill_price > 0
                     ):
+                        if resting_rule is not None:
+                            booked_resting_fill = self._winning_resting_fill
+                        else:
+                            booked_resting_fill = {
+                                "rule": "legacy_mark_cross",
+                                "k_ticks": None,
+                                "verdict": "resting_fill_unverified",
+                                "reach_px": mark_price,
+                                "fill_px": tier_fill_price,
+                            }
                         if _book_close(idx, pending_close_fraction, tier_fill_price, 0.0,
                                        pending_close_reason, mark_price, mark_price,
                                        fee_pct=self._maker_fee_pct,
-                                       timing="intrabar_trigger_fill"):
+                                       timing="intrabar_trigger_fill",
+                                       resting_fill=booked_resting_fill):
                             sl_after_just_applied = True
                         pending_close_fraction = 0.0
                         pending_close_reason = ""
@@ -5169,6 +5185,7 @@ class Backtester:
         if resting_rule is not None:
             market_dict["resting_tp_rule"] = resting_rule
         self._last_resting_fill = None
+        self._winning_resting_fill = None
         if atr_series is not None:
             try:
                 live_atr = float(atr_series.loc[idx])
@@ -5196,6 +5213,7 @@ class Backtester:
         best = 0.0
         best_reason = ""
         best_fill = 0.0
+        best_resting_fill: Optional[dict] = None
         for name in self.close_strategies:
             params = self.close_params.get(name)
             result = evaluate(name, position_dict, market_dict, params)
@@ -5207,8 +5225,16 @@ class Backtester:
                 best = fraction
                 best_reason = str(result.get("reason") or name)
                 best_fill = float(result.get("tier_fill_price", 0.0) or 0.0)
+                evidence = result.get("resting_fill")
+                best_resting_fill = (
+                    copy.deepcopy(evidence)
+                    if resting_rule is not None and isinstance(evidence, dict)
+                    else None
+                )
                 if best >= 1.0:
+                    self._winning_resting_fill = best_resting_fill
                     return 1.0, best_reason, best_fill
+        self._winning_resting_fill = best_resting_fill
         return min(max(best, 0.0), 1.0), best_reason, best_fill
 
     def _initial_sl_trigger(self, side: str, avg_cost: float,

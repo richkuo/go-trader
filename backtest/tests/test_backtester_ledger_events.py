@@ -25,6 +25,8 @@ CASES = {
                               close_strategies=[{"name": "tiered_tp_atr", "params": {}}]), {}, "rsi", {}),
     "engine_execution_spec": (dict(execution_spec=SPEC, close_strategies=[{"name": "tiered_tp_pct", "params": {}}]),
                               {}, "rsi", {}),
+    "engine_resting_rule": (dict(execution_spec=SPEC, close_strategies=[{"name": "tiered_tp_atr", "params": {}}],
+                                 resting_tp_trade_through=True), {}, "rsi", {}),
     "engine_scale_in": (dict(allow_scale_in=True, scale_in={"max_adds": 2},
                              close_strategies=[{"name": "tiered_tp_pct", "params": {}}]), {}, "rsi", {}),
     "engine_trailing_ratchet": (dict(trailing_stop_atr_mult=1.5,
