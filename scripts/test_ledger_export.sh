@@ -402,7 +402,7 @@ mkdir -p "$EXPORTS" "$WORK/cwd"
 [[ -z "$(ls -A "$WORK/cwd")" ]] || fail "export created files in its working directory"
 LIVE="$EXPORTS/live.json"
 eq "schema" "$(get "$LIVE" schema)" "go-trader.booked-ledger"
-eq "schema_version" "$(get "$LIVE" schema_version)" "1"
+eq "schema_version" "$(get "$LIVE" schema_version)" "2"
 eq "manifest hash" "$(get "$LIVE" capture_manifest_sha256)" "$("$FX" sha256 "$SNAP/capture.json")"
 eq "time basis" "$(get "$LIVE" time_basis)" "UTC"
 eq "selection" "$(get "$LIVE" selection.partition selection.process_strategy_id selection.storage_strategy_id selection.source_role selection.platform | tr '\n' ' ')" "live hl-live-btc hl-live-btc primary hyperliquid "
@@ -410,7 +410,7 @@ eq "consistency" "$(get "$LIVE" capture.consistency)" "transactional_per_file"
 echo "== export inspected_revision: $(get "$LIVE" inspected_revision); capture source_revision: $(get "$LIVE" capture.source_revision)"
 eq "config basis" "$(get "$LIVE" current_effective_configuration.basis)" "current_at_capture"
 grep -q "fixture-discord-token" "$LIVE" && fail "export leaked a notifier token"
-"$FX" evidence-shape "$LIVE" >/dev/null || fail "evidence fields do not follow the version 1 shape"
+"$FX" evidence-shape "$LIVE" >/dev/null || fail "evidence fields do not follow the export evidence shape"
 eq "live event keys" "$("$FX" events "$LIVE" event_key | tr '\n' ' ')" "primary/trades/5 primary/trades/9 primary/trades/17 primary/trades/18 primary/trades/1001 primary/trades/4000 "
 eq "event kinds" "$("$FX" events "$LIVE" event_kind.value | tr '\n' ' ')" "non_close scale_in close funding close non_close "
 eq "row net pnl" "$("$FX" events "$LIVE" row_net_pnl.value | tr '\n' ' ')" "0 0 98.75 -0.75 300 0 "
@@ -429,6 +429,8 @@ eq "legacy unavailable history" "$(get "$LIVE" events.5.fee_source.reason events
 eq "derived provenance" "$(get "$LIVE" events.2.row_net_pnl.provenance.0.kind events.2.row_net_pnl.provenance.0.source_field events.2.row_net_pnl.raw_value | tr '\n' '|')" "derived|tradeNetPnL(pnl_gross, realized_pnl, exchange_fee)|null|"
 eq "wallet context" "$(get "$LIVE" wallet_orphan_context.status wallet_orphan_context.ownership wallet_orphan_context.allocation wallet_orphan_context.records | tr '\n' ' ')" "available live_wallet unallocated array:2 "
 eq "wallet records" "$(get "$LIVE" wallet_orphan_context.records.0.event_key wallet_orphan_context.records.1.event_key wallet_orphan_context.records.1.amount_usd wallet_orphan_context.records.1.time_ms wallet_orphan_context.records.1.account wallet_orphan_context.records.1.process_strategy_id | tr '\n' ' ')" "primary/wallet_transfers/3 primary/wallet_transfers/2000 0.125 1767229200000 0xabc null "
+eq "unstamped cost model version" "$("$FX" events "$LIVE" cost_model_version.reason | tr '\n' ' ')" "unstamped unstamped unstamped unstamped unstamped unstamped "
+eq "unstamped cost model raw value" "$(get "$LIVE" events.0.cost_model_version.status events.0.cost_model_version.raw_value events.0.cost_model_version.provenance.0.source_field | tr '\n' ' ')" "unavailable 0 cost_model_version "
 ok "live export: complete selected ledger with WAL-only rows, raw fees and gross flags, both accounting helpers, explicit unavailable history, unallocated funding and separate wallet context"
 
 ledger "$SNAP/capture.json" live hl-live-eth "$EXPORTS/many.json" || fail "multi-page export refused"
@@ -623,6 +625,20 @@ capture "$LEG/cfg/config.json" "$WORK/snapshots/legacy" || fail "capture of the 
 stop_writer close
 expect_export_refused "migration-required accounting schema" "$WORK/snapshots/legacy/capture.json" live hl-live-btc "$EXPORTS/l1.json" "lacks mandatory accounting column\(s\) pnl_gross"
 
+NOCM="$WORK/nocostmodel"
+make_config "$NOCM" unsplit
+create_schema "$NOCM"
+"$FX" exec "$NOCM/state/primary.db" \
+    "INSERT INTO strategies (id, type, platform) VALUES ('hl-live-btc','perps','hyperliquid'), ('hl-paper-btc','perps','hyperliquid')" \
+    "INSERT INTO trades ($T_COLS) VALUES (21,'hl-live-btc','2026-01-01T00:00:00Z','BTC','c-1','buy',1,10,10,'perps','','',0.25,0,0,1,'userfills','',0,NULL,0,0,'','',0)" \
+    "ALTER TABLE trades DROP COLUMN cost_model_version"
+start_writer "$NOCM/state/primary.db"
+capture "$NOCM/cfg/config.json" "$WORK/snapshots/nocostmodel" || fail "capture of the pre-stamp schema fixture refused"
+stop_writer close
+ledger "$WORK/snapshots/nocostmodel/capture.json" live hl-live-btc "$EXPORTS/nocm.json" || fail "export of a schema without cost_model_version refused"
+eq "cost model column absent" "$(get "$EXPORTS/nocm.json" schema_version events.0.cost_model_version.status events.0.cost_model_version.reason events.0.cost_model_version.raw_value | tr '\n' ' ')" "2 unavailable column_absent null "
+ok "a schema without the optional cost_model_version column exports it as column_absent"
+
 NOT="$WORK/notrades"
 make_config "$NOT" unsplit
 create_schema "$NOT"
@@ -677,4 +693,4 @@ ok "interrupted exports publish either nothing or the complete file ($seen_absen
 
 "$FX" fingerprint "$WORK/snap.final.json" "$SNAP"
 cmp -s "$WORK/snap.before.json" "$WORK/snap.final.json" || { diff "$WORK/snap.before.json" "$WORK/snap.final.json" | head -20 >&2; fail "the snapshot set changed during the suite"; }
-echo "PASS: ledger capture and export (active-WAL capture without source effects, version 1 export contract, every refusal leaves inputs unchanged)"
+echo "PASS: ledger capture and export (active-WAL capture without source effects, version 2 export contract, every refusal leaves inputs unchanged)"

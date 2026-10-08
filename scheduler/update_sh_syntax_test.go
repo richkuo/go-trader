@@ -48,7 +48,7 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 	},
 	"test_ledger_export.sh": {
 		ciStep:     true,
-		marker:     "PASS: ledger capture and export (active-WAL capture without source effects, version 1 export contract, every refusal leaves inputs unchanged)",
+		marker:     "PASS: ledger capture and export (active-WAL capture without source effects, version 2 export contract, every refusal leaves inputs unchanged)",
 		requireEnv: []string{"LEDGER_EXPORT_REQUIRE_CAPTURE", "LEDGER_EXPORT_REQUIRE_STRACE"},
 		forbidden: []string{
 			"NOTE: strace is not installed; the syscall audit of capture is skipped",

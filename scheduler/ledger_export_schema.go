@@ -11,7 +11,7 @@ import (
 
 const (
 	LedgerExportSchema        = "go-trader.booked-ledger"
-	LedgerExportSchemaVersion = 1
+	LedgerExportSchemaVersion = 2
 )
 
 const (
@@ -103,6 +103,7 @@ type ledgerEvent struct {
 	StopLossOID        ledgerEvidence[string]  `json:"stop_loss_oid"`
 	TPOIDsJSON         ledgerEvidence[string]  `json:"tp_oids_json"`
 	TPTiersJSON        ledgerEvidence[string]  `json:"tp_tiers_json"`
+	CostModelVersion   ledgerEvidence[int64]   `json:"cost_model_version"`
 }
 
 type ledgerTimestampMeanings struct {
@@ -361,6 +362,26 @@ func (c ledgerFieldContext) boolEvidence(column string) (ledgerEvidence[bool], e
 	return ledgerAvailable(b, b, c.stored(column)), nil
 }
 
+func (c ledgerFieldContext) costModelEvidence(column string) (ledgerEvidence[int64], error) {
+	if !c.present(column) {
+		return ledgerUnavailable[int64](nil, ledgerReasonColumnAbsent, nil), nil
+	}
+	n, ok, err := c.integer(column)
+	if err != nil {
+		return ledgerEvidence[int64]{}, err
+	}
+	if !ok {
+		return ledgerUnavailable[int64](nil, ledgerReasonStoredNull, c.stored(column)), nil
+	}
+	if n < 0 {
+		return ledgerEvidence[int64]{}, fmt.Errorf("trades row %d column %s holds a negative cost model version %d", c.rowID, column, n)
+	}
+	if n == 0 {
+		return ledgerUnavailable(&n, ledgerReasonUnstamped, c.stored(column)), nil
+	}
+	return ledgerAvailable(n, n, c.stored(column)), nil
+}
+
 func (c ledgerFieldContext) oidEvidence(column string) (ledgerEvidence[string], error) {
 	if !c.present(column) {
 		return ledgerUnavailable[string](nil, ledgerReasonColumnAbsent, nil), nil
@@ -608,6 +629,9 @@ func buildLedgerEvent(read *ledgerFileRead, row ledgerTradeRow, partition RiskPa
 		return ledgerEvent{}, err
 	}
 	if ev.TPTiersJSON, err = c.geometryJSONEvidence("tp_tiers_json", false); err != nil {
+		return ledgerEvent{}, err
+	}
+	if ev.CostModelVersion, err = c.costModelEvidence("cost_model_version"); err != nil {
 		return ledgerEvent{}, err
 	}
 	return ev, nil

@@ -19,6 +19,7 @@ INPUTS = {
     "export.json": "comparison_input.json",
     "export_scale_in.json": "comparison_input_scale_in.json",
     "export_manual.json": "comparison_input_manual.json",
+    "export_paper.json": "comparison_input_paper.json",
 }
 INTERVAL_START = "2026-01-05T00:00:00Z"
 START_MS = 1767571200000
@@ -144,6 +145,63 @@ def test_strict_fixture_reaches_strict_success_offline(tmp_path, monkeypatch):
     assert rep["costs"]["actual_recorded"]["fees"] != rep["costs"]["modeled"]["fees"]
     assert all(c["ok"] for c in rep["conservation"]["checks"])
     assert _dispositions_complete(rep, _load(os.path.join(FIXTURE, "export.json")))
+    live_cost = rep["simulation"]["cost_model"]
+    assert live_cost["kind"] == "market_manifest_execution_spec"
+    assert live_cost["value_sources"]["taker_fee_pct"] == "manifest costs.taker_fee_pct"
+
+    fx = _copy(tmp_path / "paper")
+    rc, rep = _run(fx, tmp_path, export="export_paper.json", name="paper.json")
+    assert rc == 0 and rep["outcome"] == "strict_success"
+    assert rep["tolerances"]["price_relative"]["value"] == 1e-9
+    cost = rep["simulation"]["cost_model"]
+    assert cost["kind"] == "paper_fill_cost_model" and cost["version"] == 1 and cost["version_source"] == "booked_rows"
+    assert {k: v["value"] for k, v in cost["values"].items()} == {
+        "taker_fee_pct": 0.00045, "tier_fee_pct": 0.00045, "slippage_pct": 0.0005, "half_spread_pct": 0.0}
+    manifest = _load(fx / "market" / "manifest.json")
+    spec = cost["execution_spec"]
+    assert spec["size_decimals"] == manifest["datasets"][0]["size_decimals"]
+    assert (spec["min_notional_usd"], spec["min_notional_margin"]) == (
+        manifest["costs"]["min_notional_usd"], manifest["costs"]["min_notional_margin"])
+    assert (spec["taker_fee_pct"], spec["maker_fee_pct"], spec["half_spread_pct"], spec["slippage_pct"]) == (
+        0.00045, 0.00045, 0.0, 0.0005)
+    comps = [c for m in rep["matching"]["matched"] for c in m["components"]]
+    assert len(comps) == 4 and all(c["price_relative_delta"] <= 1e-9 for c in comps)
+    assert _dispositions_complete(rep, _load(fx / "export_paper.json"))
+
+    doc = _load(fx / "export_paper.json")
+    fill = next(e for e in doc["events"] if e["event_kind"]["value"] == "close" and _in_interval(e))
+    fill["cost_model_version"].update(value=None, raw_value=0, status="unavailable", reason="unstamped")
+    _dump(fx / "export_paper.json", doc)
+    _rebind(fx)
+    for mode in ("strict", "approximate"):
+        rc, rep = _run(fx, tmp_path, export="export_paper.json", mode=mode, name=f"mixed-{mode}.json")
+        assert rc == 1 and rep["simulation"]["status"] == "not_run"
+        assert "paper_cost_model_mixed" in {r["reason"] for r in rep["eligibility"]["refusals"]}
+
+    v1 = _load(os.path.join(FIXTURE, "export_paper.json"))
+    v1["schema_version"] = 1
+    for ev in v1["events"]:
+        del ev["cost_model_version"]
+    _dump(fx / "export_paper.json", v1)
+    cin = _load(fx / "comparison_input_paper.json")
+    cin["export"]["schema_version"] = 1
+    _dump(fx / "comparison_input_paper.json", cin)
+    _rebind(fx)
+    rc, rep = _run(fx, tmp_path, export="export_paper.json", name="v1-strict.json")
+    assert rc == 1 and rep["simulation"]["status"] == "not_run"
+    assert "paper_cost_model_not_reproducible" in {r["reason"] for r in rep["eligibility"]["refusals"]}
+    rc, rep = _run(fx, tmp_path, export="export_paper.json", mode="approximate", name="v1-approx.json")
+    assert rep["simulation"]["status"] == "run"
+    assert rep["simulation"]["cost_model"]["version"] == 0
+    assert rep["simulation"]["cost_model"]["version_source"] == "export_version_1_rows_read_as_0"
+    assert rep["simulation"]["cost_model"]["execution_spec"]["slippage_pct"] == 0.0
+
+    cin = _load(fx / "comparison_input_paper.json")
+    for seg in cin["historical_configuration"]["timeline"]:
+        seg["strategy"]["args"] = [a for a in seg["strategy"]["args"] if not a.startswith("--mode")] + ["--mode=live"]
+    _dump(fx / "comparison_input_paper.json", cin)
+    rc, rep = _run(fx, tmp_path, export="export_paper.json", name="mode.json")
+    assert rc == 1 and "paper_cost_model_mode_disagrees" in {r["reason"] for r in rep["eligibility"]["refusals"]}
 
 
 def test_known_divergence_fails_and_restoration_passes(tmp_path):

@@ -25,6 +25,7 @@ from regime_context import SIZING_REASON_CODES, configuration_sha256, resolve_re
 from backtester import (
     COMPARISON_MODE_APPROXIMATE,
     COMPARISON_MODE_STRICT,
+    FILL_COST_MODEL_VERSION,
     LEDGER_EVENTS_SCHEMA,
     LEDGER_EVENTS_SCHEMA_VERSION,
     STOP_FIELD_KEYS,
@@ -37,6 +38,7 @@ from backtester import (
     Backtester,
     CapabilityContext,
     CloseCapabilityError,
+    PAPER_FILL_COST_MODELS,
     _apply_direction_invert_value,
     _close_fraction_columns,
     _finite_number,
@@ -54,7 +56,7 @@ REPORT_SCHEMA_VERSION = 1
 INPUT_SCHEMA = "go-trader.ledger-comparison-input"
 SUPPORTED_INPUT_VERSIONS = (1, 2, 3)
 EXPORT_SCHEMA = "go-trader.booked-ledger"
-SUPPORTED_EXPORT_VERSIONS = (1,)
+SUPPORTED_EXPORT_VERSIONS = (1, 2)
 EXIT_STRICT_SUCCESS = 0
 EXIT_NOT_STRICT = 1
 EXIT_INPUT_ERROR = 2
@@ -74,6 +76,17 @@ EVENT_EVIDENCE_FIELDS = (
     "manual", "row_net_pnl", "ledger_delta", "event_kind", "close_reason", "close_extent",
     "position_allocation", "entry_atr", "stop_loss_atr_mult", "stop_loss_trigger_px",
     "stop_loss_oid", "tp_oids_json", "tp_tiers_json",
+)
+EVENT_EVIDENCE_FIELDS_V2 = EVENT_EVIDENCE_FIELDS + ("cost_model_version",)
+PAPER_COST_MODEL_KIND = "paper_fill_cost_model"
+PAPER_COST_MODEL_FROZEN_FROM = {
+    "taker_fee_pct": "fees.go HyperliquidTakerFeePct",
+    "tier_fee_pct": "fees.go HyperliquidTakerFeePct (tier fills pay taker in this version)",
+    "slippage_pct": "fees.go SlippagePct",
+}
+PAPER_COST_UNAPPROXIMABLE_REASONS = (
+    "paper_cost_model_partition_unknown", "paper_cost_model_mode_disagrees", "paper_cost_model_mixed",
+    "paper_cost_model_unknown",
 )
 EXPORT_SECTIONS = (
     "schema", "schema_version", "inspected_revision", "capture_manifest_sha256", "time_basis",
@@ -252,13 +265,33 @@ def _validate_evidence(ev, label: str) -> None:
         raise LedgerInputError(f"{label}.provenance is not a list")
 
 
+def event_evidence_fields(doc) -> tuple:
+    return EVENT_EVIDENCE_FIELDS_V2 if doc["schema_version"] >= 2 else EVENT_EVIDENCE_FIELDS
+
+
+def _is_strict_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _validate_cost_model_version(ev: dict, label: str) -> None:
+    if ev["status"] == "available":
+        if not _is_strict_int(ev["value"]) or ev["value"] < 1:
+            raise LedgerInputError(f"{label} is available but its value {ev['value']!r} is not an integer >= 1")
+    elif ev["status"] != "unavailable":
+        raise LedgerInputError(f"{label} status {ev['status']!r} is not available or unavailable")
+    raw = ev["raw_value"]
+    if raw is not None and (not _is_strict_int(raw) or raw < 0):
+        raise LedgerInputError(f"{label}.raw_value {raw!r} is not a non-negative integer")
+
+
 def validate_export(doc) -> None:
     if not isinstance(doc, dict):
         raise LedgerInputError("export is not a JSON object")
     missing = [k for k in EXPORT_SECTIONS if k not in doc]
     if missing:
         raise LedgerInputError(f"export lacks sections {missing}")
-    if doc["schema"] != EXPORT_SCHEMA or doc["schema_version"] not in SUPPORTED_EXPORT_VERSIONS:
+    if (doc["schema"] != EXPORT_SCHEMA or isinstance(doc["schema_version"], bool)
+            or doc["schema_version"] not in SUPPORTED_EXPORT_VERSIONS):
         raise LedgerInputError(
             f"export is {doc['schema']!r} version {doc['schema_version']!r}; this comparison reads "
             f"{EXPORT_SCHEMA!r} versions {list(SUPPORTED_EXPORT_VERSIONS)}")
@@ -286,8 +319,10 @@ def validate_export(doc) -> None:
             if ev.get(field) != sel[field]:
                 raise LedgerInputError(f"{key} {field} {ev.get(field)!r} disagrees with the selection")
         _utc(ev.get("timestamp"), f"{key}.timestamp")
-        for field in EVENT_EVIDENCE_FIELDS:
+        for field in event_evidence_fields(doc):
             _validate_evidence(ev.get(field), f"{key}.{field}")
+        if doc["schema_version"] >= 2:
+            _validate_cost_model_version(ev["cost_model_version"], f"{key}.cost_model_version")
         for field in ("quantity", "price", "value", "exchange_fee", "realized_pnl", "row_net_pnl", "ledger_delta"):
             v = ev[field]["value"]
             if v is not None and not _is_number(v):
@@ -611,7 +646,7 @@ def normalize_booked(doc: dict, start: pd.Timestamp, end: pd.Timestamp, coin: st
     records.sort(key=lambda r: (r["ts"], r["event_key"]))
     field_evidence = {}
     for ev in doc["events"]:
-        for field in EVENT_EVIDENCE_FIELDS:
+        for field in event_evidence_fields(doc):
             item = ev[field]
             label = item["status"] if item["reason"] is None else f"{item['status']}:{item['reason']}"
             counts = field_evidence.setdefault(field, {})
@@ -1225,6 +1260,98 @@ def _stop_rows(verdict: dict, strategy: dict) -> list:
                      "active": decision not in ("inactive", "informational"), "decision": decision,
                      "reason": reason, "approximable": False, "stop_owner": verdict["owner"]})
     return rows
+
+
+def _args_are_live(args) -> bool:
+    if not isinstance(args, list):
+        return False
+    for i, arg in enumerate(args):
+        if arg == "--mode=live":
+            return True
+        if arg == "--mode" and i + 1 < len(args) and args[i + 1] == "live":
+            return True
+    return False
+
+
+def _is_paper_partition(partition) -> bool:
+    return partition == "paper" or (isinstance(partition, str) and partition.startswith("paper:")
+                                    and len(partition) > len("paper:"))
+
+
+def _booked_row_cost_model_version(doc: dict, ev: dict) -> int:
+    if doc["schema_version"] < 2:
+        return 0
+    item = ev["cost_model_version"]
+    return int(item["value"]) if item["status"] == "available" else 0
+
+
+def resolve_comparison_cost_model(doc: dict, start: pd.Timestamp, end: pd.Timestamp, strategy: dict,
+                                  mode: str) -> dict:
+    partition = doc["selection"]["partition"]
+    live_args = _args_are_live(strategy.get("args"))
+    out = {"partition": partition, "refusals": [], "approximations": [], "paper": None}
+    if partition == "live":
+        if not live_args:
+            out["refusals"].append({"reason": "paper_cost_model_mode_disagrees",
+                                    "detail": "the export is the live partition but the strategy args are not live"})
+        return out
+    if not _is_paper_partition(partition):
+        out["refusals"].append({"reason": "paper_cost_model_partition_unknown",
+                                "detail": f"partition {partition!r} is neither live, paper nor paper:<id>"})
+        return out
+    if live_args:
+        out["refusals"].append({"reason": "paper_cost_model_mode_disagrees",
+                                "detail": f"the export is the {partition!r} partition but the strategy args are live"})
+        return out
+    versions = set()
+    for ev in doc["events"]:
+        ts = _utc(ev["timestamp"], ev["event_key"])
+        if not (start <= ts < end):
+            continue
+        if _ev(ev, "event_kind") not in ("non_close", "scale_in", "close"):
+            continue
+        versions.add(_booked_row_cost_model_version(doc, ev))
+    if not versions:
+        version, source = FILL_COST_MODEL_VERSION, "no_in_interval_fills"
+    elif len(versions) > 1:
+        out["refusals"].append({"reason": "paper_cost_model_mixed", "versions": sorted(versions),
+                                "detail": "in-interval paper fills were booked by different paper cost model "
+                                          "versions; one model cannot reproduce them all"})
+        return out
+    else:
+        version = next(iter(versions))
+        source = "booked_rows" if doc["schema_version"] >= 2 else "export_version_1_rows_read_as_0"
+    entry = PAPER_FILL_COST_MODELS.get(version)
+    if entry is None:
+        out["refusals"].append({"reason": "paper_cost_model_unknown", "version": version,
+                                "detail": f"paper cost model version {version} has no PAPER_FILL_COST_MODELS entry"})
+        return out
+    slippage = entry["slippage_pct"]
+    if not entry["price_reproducible"]:
+        if mode == COMPARISON_MODE_STRICT:
+            out["refusals"].append({"reason": "paper_cost_model_not_reproducible", "version": version,
+                                    "detail": f"paper cost model version {version} booked random slippage; "
+                                              "its fill prices cannot be reproduced"})
+            return out
+        out["approximations"].append({"feature": "paper_cost_model", "category": "execution_cost",
+                                      "assumption": f"paper cost model version {version} booked random "
+                                                    "slippage; the simulation uses zero slippage",
+                                      "effect": "paper fill prices are not reproducible"})
+        slippage = 0.0
+    src = f"PAPER_FILL_COST_MODELS[{version}]"
+    values = {
+        "taker_fee_pct": {"value": entry["taker_fee_pct"],
+                          "source": f"{src} (frozen from {PAPER_COST_MODEL_FROZEN_FROM['taker_fee_pct']})"},
+        "tier_fee_pct": {"value": entry["tier_fee_pct"],
+                         "source": f"{src} (frozen from {PAPER_COST_MODEL_FROZEN_FROM['tier_fee_pct']})"},
+        "slippage_pct": {"value": slippage,
+                         "source": (f"{src} (frozen from {PAPER_COST_MODEL_FROZEN_FROM['slippage_pct']})"
+                                    if entry["price_reproducible"] else
+                                    f"{src} has no reproducible slippage; approximate mode substitutes 0")},
+        "half_spread_pct": {"value": 0.0, "source": "paper books no spread"},
+    }
+    out["paper"] = {"version": version, "version_source": source, "values": values}
+    return out
 
 
 def _comparison_mode_name(args) -> str:
@@ -1852,14 +1979,42 @@ def run_simulation(market: dict, signals: pd.DataFrame, plan: dict) -> dict:
         invert_signal=plan["invert_signal"], atr_method=plan["atr_method"],
         comparison_mode=plan["comparison_mode"],
     )
-    if plan["execution_spec"]:
+    paper = plan.get("paper_cost_model")
+    if paper is not None:
+        vals = {k: v["value"] for k, v in paper["values"].items()}
+        if plan["execution_spec"]:
+            paper_spec = dict(spec)
+            paper_spec.update(taker_fee_pct=vals["taker_fee_pct"], maker_fee_pct=vals["tier_fee_pct"],
+                              half_spread_pct=vals["half_spread_pct"], slippage_pct=vals["slippage_pct"])
+            kwargs["execution_spec"] = paper_spec
+            mechanism = {"execution_spec": paper_spec}
+        else:
+            kwargs["commission_pct"] = vals["taker_fee_pct"]
+            kwargs["slippage_pct"] = vals["half_spread_pct"] + vals["slippage_pct"]
+            mechanism = {"commission_pct": kwargs["commission_pct"], "slippage_pct": kwargs["slippage_pct"]}
+        cost_model = {"kind": PAPER_COST_MODEL_KIND, "version": paper["version"],
+                      "version_source": paper["version_source"], "values": paper["values"], **mechanism}
+    elif plan["execution_spec"]:
         kwargs["execution_spec"] = spec
-        cost_model = {"kind": "market_manifest_execution_spec", "spec": spec}
+        cost_model = {"kind": "market_manifest_execution_spec", "spec": spec,
+                      "value_sources": {
+                          "taker_fee_pct": "manifest costs.taker_fee_pct",
+                          "maker_fee_pct": "manifest costs.maker_fee_pct",
+                          "half_spread_pct": "manifest dataset half_spread_bps",
+                          "slippage_pct": "manifest costs.slippage_bps",
+                          "size_decimals": "manifest dataset size_decimals",
+                          "min_notional_usd": "manifest costs.min_notional_usd",
+                          "min_notional_margin": "manifest costs.min_notional_margin",
+                      }}
     else:
         kwargs["commission_pct"] = spec["taker_fee_pct"]
         kwargs["slippage_pct"] = spec["half_spread_pct"] + spec["slippage_pct"]
         cost_model = {"kind": "flat_taker_fee_and_adverse_price",
-                      "commission_pct": kwargs["commission_pct"], "slippage_pct": kwargs["slippage_pct"]}
+                      "commission_pct": kwargs["commission_pct"], "slippage_pct": kwargs["slippage_pct"],
+                      "value_sources": {
+                          "commission_pct": "manifest costs.taker_fee_pct",
+                          "slippage_pct": "manifest dataset half_spread_bps + manifest costs.slippage_bps",
+                      }}
     stop = plan.get("stop") or {}
     if stop.get("kwargs"):
         kwargs.update(stop["kwargs"])
@@ -2499,6 +2654,12 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                                    "be reproduced; execution-spec runs refuse seeded inventory",
                          "declared": inv_value, "booked_replay": replay_inv})
 
+    cost_resolution = None
+    if seg and not manual and strategy:
+        cost_resolution = resolve_comparison_cost_model(doc, start, end, strategy, mode)
+        refusals.extend(cost_resolution["refusals"])
+        approximations.extend(cost_resolution["approximations"])
+
     close_validation = None
     sim = None
     sim_status = {"status": "not_run", "reasons": []}
@@ -2510,7 +2671,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
     elif approx_ok and any(r["reason"] in ("input_binding", "seeded_inventory_unsupported",
                                            "configuration_transition_unsupported", "market_input_integrity",
                                            "market_manifest_hash_mismatch") + STOP_UNAPPROXIMABLE_REASONS
-                           + ATR_UNAPPROXIMABLE_REASONS
+                           + ATR_UNAPPROXIMABLE_REASONS + PAPER_COST_UNAPPROXIMABLE_REASONS
                            or r["reason"].startswith("capability_")
                            or r.get("reason_code")
                            for r in refusals):
@@ -2518,12 +2679,19 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
         sim_status["reasons"].append("an unapproximable refusal blocks simulation")
     if manual:
         sim_status["reasons"].append("manual owner: no signal model")
+    if can_sim and (cost_resolution is None or (cost_resolution["paper"] is None
+                                                and cost_resolution["partition"] != "live")):
+        can_sim = False
+        sim_status["reasons"].append("no comparison cost model was resolved")
     if can_sim:
         use_spec = has_close and not strategy.get("allow_scale_in")
+        paper_cost = cost_resolution["paper"]
         if not use_spec:
             approximations.append({"feature": "execution_cost", "category": "execution_cost",
-                                   "assumption": "flat taker fee and combined spread/slippage from the manifest replace "
-                                                 "the lot- and minimum-aware execution spec",
+                                   "assumption": ("flat paper taker fee and paper slippage replace the lot- and "
+                                                  "minimum-aware execution spec" if paper_cost is not None else
+                                                  "flat taker fee and combined spread/slippage from the manifest "
+                                                  "replace the lot- and minimum-aware execution spec"),
                                    "effect": "fills are not lot-floored or minimum-checked"})
         plan = {
             "open_name": open_name, "params": dict(open_ref.get("params") or {}),
@@ -2538,6 +2706,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             "liquidation_model": "none",
             "venue_margin": None,
             "regime_engine": (regime_context or {}).get("engine"),
+            "paper_cost_model": paper_cost,
         }
         if (plan["perps_sizing"] and _is_number(strategy.get("leverage")) and strategy.get("leverage") > 1
                 and _comparison_mode_name(strategy.get("args")) != "paper"

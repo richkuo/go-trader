@@ -325,6 +325,10 @@ func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, 
 		fillFee = fill.Fee
 		useFillFee = true
 		logger.Info("Live scale-in fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillAddQty, price)
+	} else if !hyperliquidIsLive(sc.Args) {
+		if pos := s.Positions[result.Symbol]; pos != nil {
+			fillPrice = ApplyAdverseSlippage(price, pos.Side == "long")
+		}
 	}
 	if lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil); lotPolicy != nil {
 		d := lotPolicy.entry(fillAddQty, fillPrice)

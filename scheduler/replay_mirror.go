@@ -194,13 +194,14 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 				markApplied(row.DecisionID)
 				continue
 			}
-			n, trade := applyPerpsScaleIn(s, sc, row.Symbol, row.ReferencePrice, row.Quantity, 0, "", false, logger)
+			addPx := ApplyAdverseSlippage(row.ReferencePrice, pos.Side == "long")
+			n, trade := applyPerpsScaleIn(s, sc, row.Symbol, addPx, row.Quantity, 0, "", false, logger)
 			if n > 0 && trade != nil {
 				trade.Timestamp = row.DecidedAt
 				trade.Details = fmt.Sprintf("%s [replay_live_mirror]", trade.Details)
 				recordPositionOpen(s, sc, trade, pos)
 				trades += n
-				details = append(details, fmt.Sprintf("[%s] REPLAY SCALE-IN %s +%.6f @ $%.2f", sc.ID, row.Symbol, row.Quantity, row.ReferencePrice))
+				details = append(details, fmt.Sprintf("[%s] REPLAY SCALE-IN %s +%.6f @ $%.2f", sc.ID, row.Symbol, row.Quantity, addPx))
 			} else {
 				logger.Warn("Replay mirror: scale-in %s %s +%.6f @ $%.4f booked no trade — marking applied to avoid wedging the mirror (#1431)",
 					row.Side, row.Symbol, row.Quantity, row.ReferencePrice)
@@ -218,14 +219,15 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 			}
 			preQty := pos.Quantity
 			preInit := pos.InitialQuantity
-			if bookPerpsPartialCloseWithFillFee(s, row.Symbol, row.Quantity, price, 0, false, "", "replay_live_mirror", "Live mirror partial close", "Live mirror partial close", logger) {
+			closePx, closeLabel := replayClosePrice(row, pos.Side, price, logger)
+			if bookPerpsPartialCloseWithFillFee(s, row.Symbol, row.Quantity, closePx, 0, false, "", "replay_live_mirror", "Live mirror partial close"+closeLabel, "Live mirror partial close", logger) {
 				if replayCloseReasonIsTakeProfit(row.CloseReason) {
 					if cur := s.Positions[row.Symbol]; cur != nil && cur.Quantity > 0 {
 						recordPaperUnifiedTPConsumption(sc, cur, preQty, preInit)
 					}
 				}
 				trades++
-				details = append(details, fmt.Sprintf("[%s] REPLAY PARTIAL CLOSE %s %.6f @ $%.2f", sc.ID, row.Symbol, row.Quantity, price))
+				details = append(details, fmt.Sprintf("[%s] REPLAY PARTIAL CLOSE %s %.6f @ $%.2f", sc.ID, row.Symbol, row.Quantity, closePx))
 			} else {
 				logger.Warn("Replay mirror: partial close %s %.6f booked no trade — marking applied to avoid wedging the mirror (#1431)", row.Symbol, row.Quantity)
 			}
@@ -237,9 +239,10 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 				markApplied(row.DecisionID)
 				continue
 			}
-			if bookPerpsClose(s, row.Symbol, price, "replay_live_mirror", "Live mirror close", "Live mirror close", logger) {
+			closePx, closeLabel := replayClosePrice(row, pos.Side, price, logger)
+			if bookPerpsClose(s, row.Symbol, closePx, "replay_live_mirror", "Live mirror close"+closeLabel, "Live mirror close", logger) {
 				trades++
-				details = append(details, fmt.Sprintf("[%s] REPLAY CLOSE %s @ $%.2f (live reason: %s)", sc.ID, row.Symbol, price, row.CloseReason))
+				details = append(details, fmt.Sprintf("[%s] REPLAY CLOSE %s @ $%.2f (live reason: %s)", sc.ID, row.Symbol, closePx, row.CloseReason))
 			} else {
 				logger.Warn("Replay mirror: full close %s booked no trade — marking applied to avoid wedging the mirror (#1431)", row.Symbol)
 			}
@@ -254,6 +257,17 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 		s.ReplayMirrorWatermark = lastApplied
 	}
 	return appliedIDs, trades, details, driftDMs
+}
+
+func replayClosePrice(row ReplayDecision, posSide string, cyclePrice float64, logger *StrategyLogger) (float64, string) {
+	if !replayCloseReasonIsTakeProfit(row.CloseReason) {
+		return ApplyAdverseSlippage(cyclePrice, posSide == "short"), ""
+	}
+	if px := row.ReferencePrice; px > 0 && !math.IsInf(px, 0) && !math.IsNaN(px) {
+		return px, ""
+	}
+	logger.Warn("Replay mirror: take-profit close %s (%s) carries no usable live tier price (%g) — booking at the cycle price $%.4f with no slippage (tier_price_source=cycle_price)", row.Symbol, row.CloseReason, row.ReferencePrice, cyclePrice)
+	return cyclePrice, " tier_price_source=cycle_price"
 }
 
 func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, result *HyperliquidResult, cfg *Config, logger *StrategyLogger) (int, string) {
@@ -273,7 +287,8 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 		regime = cfg.Regime
 	}
 	sizing := PerpsSizingFor(sc, row.ReferencePrice, indicatorsATRValue(indicators))
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, sig, row.Symbol, row.ReferencePrice, sizing, row.Quantity, "", 0, DirectionBoth, 0, logger)
+	bookPx := ApplyAdverseSlippage(row.ReferencePrice, sig == 1)
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, sig, row.Symbol, bookPx, sizing, row.Quantity, "", 0, DirectionBoth, 0, logger)
 	if err != nil || exec.TradesExecuted == 0 || exec.OpenTrade == nil {
 		if err != nil {
 			logger.Error("Replay mirror: open booking failed for %s: %v (#1431)", row.Symbol, err)
@@ -308,7 +323,7 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 		pos = p
 	}
 	recordPositionOpen(s, sc, exec.OpenTrade, pos)
-	return exec.TradesExecuted, fmt.Sprintf("[%s] REPLAY OPEN %s %s %.6f @ $%.2f", sc.ID, row.Side, row.Symbol, row.Quantity, row.ReferencePrice)
+	return exec.TradesExecuted, fmt.Sprintf("[%s] REPLAY OPEN %s %s %.6f @ $%.2f", sc.ID, row.Side, row.Symbol, row.Quantity, bookPx)
 }
 
 func mergeTradeDetails(existing string, parts ...string) string {

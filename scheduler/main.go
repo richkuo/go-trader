@@ -2539,6 +2539,7 @@ func main() {
 										pos.StopLossTriggerPx = newTrigger
 									}
 									stopAt := hlStep.historyLenLocked()
+									breachPx = paperStopBookPx(hlPosSide, breachPx)
 									if recordPerpsStopLossClose(stratState, result.Symbol, breachPx, paperStopReasonTrailing, logger) {
 										hlStep.bindWindowLocked(stopAt, fmt.Sprintf("[%s] PAPER TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, breachPx))
 									}
@@ -2593,6 +2594,7 @@ func main() {
 								}
 								if breach {
 									stopAt := hlStep.historyLenLocked()
+									breachPx = paperStopBookPx(hlPosSide, breachPx)
 									if recordPerpsStopLossClose(stratState, result.Symbol, breachPx, stopReason, logger) {
 										hlStep.bindWindowLocked(stopAt, fmt.Sprintf("[%s] %s %s @ $%.2f", sc.ID, paperStopLossDetailLabel(stopReason), result.Symbol, breachPx))
 									}
@@ -4326,6 +4328,9 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 			var pos *Position
 			if p, ok := s.Positions[result.Symbol]; ok {
 				pos = p
+			}
+			if pos != nil {
+				stopPx = paperStopBookPx(pos.Side, stopPx)
 			}
 			if recordPositionOpen(s, sc, openTrade, pos) {
 				openTrade = nil

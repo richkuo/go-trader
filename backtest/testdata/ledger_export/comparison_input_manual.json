@@ -4,9 +4,9 @@
   "description": "Manual-owner fixture: hl-manual-eth; strict comparison refuses it and reports every event as not comparable.",
   "export": {
     "schema": "go-trader.booked-ledger",
-    "schema_version": 1,
+    "schema_version": 2,
     "capture_manifest_sha256": "a35623c14d5675b735b9a7ba01f0cd574c0b06bf280ea67ed8acf2a437cf0703",
-    "booked_sections_sha256": "3e77a006a6ac820ccbab81d06c9be0ea7438046f5896e80f40f8b00ceb3ceac2",
+    "booked_sections_sha256": "50290d1de966d511373410af2286b50144d71cc863476e9886a4b77e3a77e269",
     "selection": {
       "partition": "live",
       "process_strategy_id": "hl-manual-eth"

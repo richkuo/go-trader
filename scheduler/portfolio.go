@@ -438,8 +438,9 @@ type Trade struct {
 	IsClose     bool    `json:"is_close,omitempty"`
 	RealizedPnL float64 `json:"realized_pnl,omitempty"`
 
-	PnLGross  bool   `json:"pnl_gross,omitempty"`
-	FeeSource string `json:"fee_source,omitempty"`
+	PnLGross         bool   `json:"pnl_gross,omitempty"`
+	FeeSource        string `json:"fee_source,omitempty"`
+	CostModelVersion int    `json:"cost_model_version,omitempty"`
 
 	Regime               string `json:"regime,omitempty"`
 	RegimeDivergenceNote string `json:"-"`
@@ -1006,7 +1007,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if fillQty > 0 {
 				execPrice = price
 			} else {
-				execPrice = ApplySlippage(price)
+				execPrice = ApplyAdverseSlippage(price, true)
 			}
 			pnl := closeQty * (pos.AvgCost - execPrice)
 			terminalClose := closeOnlyAction || !allowsLong
@@ -1090,7 +1091,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				return tradesExecuted, "", nil
 			}
 		} else {
-			execPrice = ApplySlippage(price)
+			execPrice = ApplyAdverseSlippage(price, true)
 			if execPrice <= 0 {
 				return tradesExecuted, "", nil
 			}
@@ -1195,7 +1196,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if fillQty > 0 {
 				execPrice = price
 			} else {
-				execPrice = ApplySlippage(price)
+				execPrice = ApplyAdverseSlippage(price, false)
 			}
 			pnl := closeQty * (execPrice - pos.AvgCost)
 			terminalClose := closeOnlyAction || !allowsShort
@@ -1279,7 +1280,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				return tradesExecuted, "", nil
 			}
 		} else {
-			execPrice = ApplySlippage(price)
+			execPrice = ApplyAdverseSlippage(price, false)
 			if execPrice <= 0 {
 				return tradesExecuted, "", nil
 			}
@@ -1432,7 +1433,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			if fillQty > 0 {
 				execPrice = price
 			} else {
-				execPrice = ApplySlippage(price)
+				execPrice = ApplyAdverseSlippage(price, true)
 			}
 			buyCost := closeQty * execPrice
 			useFillMetadata := fillQty > 0 && !fillMetadataUsed
@@ -1505,7 +1506,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			execPrice = price
 			qty = fillQty
 		} else {
-			execPrice = ApplySlippage(price)
+			execPrice = ApplyAdverseSlippage(price, true)
 			if execPrice <= 0 {
 				out.TradesExecuted = tradesExecuted
 				return out, nil
@@ -1579,7 +1580,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			if fillQty > 0 {
 				execPrice = price
 			} else {
-				execPrice = ApplySlippage(price)
+				execPrice = ApplyAdverseSlippage(price, false)
 			}
 			saleValue := closeQty * execPrice
 			useFillMetadata := fillQty > 0 && !fillMetadataUsed
@@ -1695,7 +1696,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			if fillContracts > 0 {
 				execPrice = price
 			} else {
-				execPrice = ApplySlippage(price)
+				execPrice = ApplyAdverseSlippage(price, true)
 			}
 			pnl := float64(contracts) * multiplier * (pos.AvgCost - execPrice)
 			useFillMetadata := fillContracts > 0 && !fillMetadataUsed
@@ -1765,7 +1766,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				marginPerContract = price * multiplier
 			}
 		} else {
-			execPrice = ApplySlippage(price)
+			execPrice = ApplyAdverseSlippage(price, true)
 			if marginPerContract <= 0 {
 				marginPerContract = execPrice * multiplier
 			}
@@ -1840,7 +1841,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			if fillContracts > 0 {
 				execPrice = price
 			} else {
-				execPrice = ApplySlippage(price)
+				execPrice = ApplyAdverseSlippage(price, false)
 			}
 			pnl := float64(contracts) * multiplier * (execPrice - pos.AvgCost)
 			useFillMetadata := fillContracts > 0 && !fillMetadataUsed
@@ -1911,7 +1912,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 					marginPerContract = price * multiplier
 				}
 			} else {
-				execPrice = ApplySlippage(price)
+				execPrice = ApplyAdverseSlippage(price, false)
 				if marginPerContract <= 0 {
 					marginPerContract = execPrice * multiplier
 				}

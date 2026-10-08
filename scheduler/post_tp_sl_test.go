@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -461,8 +462,8 @@ func TestPaperPartialCloseMovesStopBeforeNextBreach(t *testing.T) {
 				pos.StopLossHighWaterPx, pos.StopLossTriggerPx = hw, trigger
 			}
 			n, _ := applyPaperStopLossBreach(sc, s, "ETH", "long", c.breachMark, &mu, logger)
-			if n != 1 || s.Positions["ETH"] != nil || len(s.ClosedPositions) != 1 || !approxEq(s.ClosedPositions[0].ClosePrice, c.wantBreachPx) {
-				t.Fatalf("next-cycle breach = trades %d closed %+v, want the rest closed @ %v", n, s.ClosedPositions, c.wantBreachPx)
+			if n != 1 || s.Positions["ETH"] != nil || len(s.ClosedPositions) != 1 || math.Abs(s.ClosedPositions[0].ClosePrice-c.wantBreachPx*(1-SlippagePct)) > 1e-9 {
+				t.Fatalf("next-cycle breach = trades %d closed %+v, want the rest closed @ %v moved against the sell by SlippagePct", n, s.ClosedPositions, c.wantBreachPx)
 			}
 		})
 	}

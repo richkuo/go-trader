@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,8 +44,8 @@ func TestReplayMirrorAppliesDecisionsFromNamedSource(t *testing.T) {
 		t.Fatalf("trades=%d applied=%v, want the live decision booked into the paper book", trades, applied)
 	}
 	pos := s.Positions["ETH"]
-	if pos == nil || pos.Quantity != 0.4 || pos.AvgCost != 1900 {
-		t.Fatalf("position mismatch: %+v", pos)
+	if pos == nil || pos.Quantity != 0.4 || math.Abs(pos.AvgCost-1900*(1+SlippagePct)) > 1e-9 {
+		t.Fatalf("position mismatch: %+v, want 0.4 @ the 1900 reference moved against the buy by SlippagePct", pos)
 	}
 	if err := db.MarkDecisionsApplied(applied); err != nil {
 		t.Fatalf("MarkDecisionsApplied: %v", err)

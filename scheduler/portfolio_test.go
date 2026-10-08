@@ -156,6 +156,17 @@ func TestExecuteSpotWithFillFeeBuy(t *testing.T) {
 	if math.Abs(s.Cash-expectedCash) > 0.01 {
 		t.Errorf("cash = %.4f, want %.4f (initial - budget - fee)", s.Cash, expectedCash)
 	}
+	wantPx := 50000 * (1 + SlippagePct)
+	if math.Abs(s.TradeHistory[0].Price-wantPx) > 1e-9 || math.Abs(pos.AvgCost-wantPx) > 1e-9 {
+		t.Errorf("paper buy price = %.9f avg = %.9f, want %.9f (reference moved against the buy by SlippagePct)", s.TradeHistory[0].Price, pos.AvgCost, wantPx)
+	}
+	again := &StrategyState{Cash: 1000, Platform: "binanceus", Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition)}
+	if _, err := ExecuteSpotSignalWithFillFee(again, 1, "BTC/USDT", 50000, 0, 0, "", 0, logger); err != nil {
+		t.Fatal(err)
+	}
+	if len(again.TradeHistory) != 1 || again.TradeHistory[0].Price != s.TradeHistory[0].Price {
+		t.Errorf("repeat paper buy = %+v, want identical price %.9f", again.TradeHistory, s.TradeHistory[0].Price)
+	}
 }
 
 func TestExecuteSpotWithFillFeeSell(t *testing.T) {
@@ -195,6 +206,21 @@ func TestExecuteSpotWithFillFeeSell(t *testing.T) {
 	expectedCash := 100.0 + saleValue - fee
 	if math.Abs(s.Cash-expectedCash) > 0.01 {
 		t.Errorf("cash = %.4f, want %.4f (initial + sale - fee)", s.Cash, expectedCash)
+	}
+	if wantPx := 55000 * (1 - SlippagePct); math.Abs(execPrice-wantPx) > 1e-9 {
+		t.Errorf("paper sell price = %.9f, want %.9f (reference moved against the sell by SlippagePct)", execPrice, wantPx)
+	}
+	again := &StrategyState{
+		ID: "test", Cash: 100, Platform: "binanceus",
+		Positions:       map[string]*Position{"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 50000, Side: "long"}},
+		OptionPositions: make(map[string]*OptionPosition),
+		RiskState:       RiskState{PeakValue: 1000},
+	}
+	if _, err := ExecuteSpotSignalWithFillFee(again, -1, "BTC/USDT", 55000, 0, 0, "", 0, logger); err != nil {
+		t.Fatal(err)
+	}
+	if len(again.TradeHistory) != 1 || again.TradeHistory[0].Price != execPrice {
+		t.Errorf("repeat paper sell = %+v, want identical price %.9f", again.TradeHistory, execPrice)
 	}
 }
 
@@ -307,6 +333,17 @@ func TestExecutePerpsWithLeveragePaperBuyNoNotionalDeduction(t *testing.T) {
 	if s.Cash >= 1000 {
 		t.Errorf("cash = %v, should have some fee deducted", s.Cash)
 	}
+	wantPx := 2000 * (1 + SlippagePct)
+	if math.Abs(pos.AvgCost-wantPx) > 1e-9 || math.Abs(s.TradeHistory[0].Price-wantPx) > 1e-9 {
+		t.Errorf("paper perps buy avg = %.9f price = %.9f, want %.9f", pos.AvgCost, s.TradeHistory[0].Price, wantPx)
+	}
+	again := &StrategyState{ID: "hl-test-eth", Cash: 1000, Platform: "hyperliquid", Type: "perps", Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition)}
+	if _, err := ExecutePerpsSignalWithLeverage(again, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 5, ExchangeLeverage: 5}, 0, "", 0, DirectionLong, 0, logger); err != nil {
+		t.Fatal(err)
+	}
+	if len(again.TradeHistory) != 1 || again.TradeHistory[0].Price != s.TradeHistory[0].Price || again.TradeHistory[0].Quantity != s.TradeHistory[0].Quantity || again.Cash != s.Cash {
+		t.Errorf("repeat paper perps buy = %+v cash %.9f, want identical to %+v cash %.9f", again.TradeHistory, again.Cash, s.TradeHistory, s.Cash)
+	}
 }
 
 func TestExecutePerpsWithLeverageDecouplesSizingAndExchangeLeverage(t *testing.T) {
@@ -413,6 +450,9 @@ func TestExecutePerpsWithLeverageCloseLong(t *testing.T) {
 	if s.Cash < 1039 || s.Cash > 1040.5 {
 		t.Errorf("cash = %v, want ~1039.6 (990 + 50 - fee)", s.Cash)
 	}
+	if len(s.TradeHistory) != 1 || s.TradeHistory[0].Price != 2100 {
+		t.Errorf("close with a venue fill quantity booked %+v, want the unslipped fill price 2100", s.TradeHistory)
+	}
 }
 
 func TestExecuteFuturesWithFillFeeLiveFillUsesExchangeFee(t *testing.T) {
@@ -500,6 +540,17 @@ func TestExecutePerpsWithLeverageOpenShortFromFlat(t *testing.T) {
 	}
 	if s.TradeHistory[0].Side != "sell" {
 		t.Errorf("Trade.Side = %q, want \"sell\"", s.TradeHistory[0].Side)
+	}
+	wantPx := 2000 * (1 - SlippagePct)
+	if math.Abs(pos.AvgCost-wantPx) > 1e-9 || math.Abs(s.TradeHistory[0].Price-wantPx) > 1e-9 {
+		t.Errorf("paper short open avg = %.9f price = %.9f, want %.9f (reference moved against the sell)", pos.AvgCost, s.TradeHistory[0].Price, wantPx)
+	}
+	again := &StrategyState{ID: "hl-temab-eth", Cash: 1000, Platform: "hyperliquid", Type: "perps", Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition)}
+	if _, err := ExecutePerpsSignalWithLeverage(again, -1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionBoth, 0, logger); err != nil {
+		t.Fatal(err)
+	}
+	if len(again.TradeHistory) != 1 || again.TradeHistory[0].Price != s.TradeHistory[0].Price || again.Cash != s.Cash {
+		t.Errorf("repeat paper short open = %+v cash %.9f, want identical to %+v cash %.9f", again.TradeHistory, again.Cash, s.TradeHistory, s.Cash)
 	}
 }
 

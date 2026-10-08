@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -48,8 +49,8 @@ func TestMirrorReplayOpenBooksLiveFill(t *testing.T) {
 	if pos == nil {
 		t.Fatal("no position booked")
 	}
-	if pos.Quantity != 0.5 || pos.AvgCost != 1908.25 || pos.Side != "long" {
-		t.Errorf("position mismatch: %+v", pos)
+	if pos.Quantity != 0.5 || math.Abs(pos.AvgCost-1908.25*(1+SlippagePct)) > 1e-9 || pos.Side != "long" {
+		t.Errorf("position mismatch: %+v, want 0.5 long @ the live reference 1908.25 moved against the buy by SlippagePct", pos)
 	}
 	if !pos.OpenedAt.Equal(decidedAt) {
 		t.Errorf("OpenedAt = %v, want %v", pos.OpenedAt, decidedAt)
@@ -62,6 +63,20 @@ func TestMirrorReplayOpenBooksLiveFill(t *testing.T) {
 	}
 	if !strings.Contains(s.TradeHistory[0].Details, "replay_live_mirror") {
 		t.Errorf("open trade missing mirror tag: %q", s.TradeHistory[0].Details)
+	}
+	for _, c := range []struct {
+		side, wantDetail string
+		wantPx           float64
+	}{
+		{"long", "@ $2001.00", 2000 * (1 + SlippagePct)},
+		{"short", "@ $1999.00", 2000 * (1 - SlippagePct)},
+	} {
+		sc2, s2, logger2 := replayMirrorTestSetup(t, "hl-paper-eth")
+		row := ReplayDecision{DecisionID: 8, StrategyID: sc2.ID, DecisionType: ReplayDecisionOpen, DecidedAt: decidedAt, Symbol: "ETH", Side: c.side, Quantity: 0.25, ReferencePrice: 2000}
+		_, n, det, _ := applyReplayedLiveDecisions(sc2, s2, []ReplayDecision{row}, 2000, replayTestResult(), cfg, logger2)
+		if n != 1 || len(det) != 1 || !strings.Contains(det[0], c.wantDetail) || len(s2.TradeHistory) != 1 || math.Abs(s2.TradeHistory[0].Price-c.wantPx) > 1e-9 {
+			t.Errorf("replay %s open at 2000: trades %d details %v history %+v, want detail %q and trade price %.9f", c.side, n, det, s2.TradeHistory, c.wantDetail, c.wantPx)
+		}
 	}
 }
 
@@ -82,8 +97,8 @@ func TestMirrorReplayFullCloseBooksMirrorReason(t *testing.T) {
 		t.Fatalf("closed positions = %d, want 1", len(s.ClosedPositions))
 	}
 	cp := s.ClosedPositions[0]
-	if cp.CloseReason != "replay_live_mirror" || cp.ClosePrice != 1902.0 {
-		t.Errorf("closed position = %+v, want reason replay_live_mirror @ 1902", cp)
+	if cp.CloseReason != "replay_live_mirror" || math.Abs(cp.ClosePrice-1902.0*(1-SlippagePct)) > 1e-9 {
+		t.Errorf("closed position = %+v, want reason replay_live_mirror @ the 1902 cycle price moved against the sell by SlippagePct", cp)
 	}
 	if len(details) != 1 || !strings.Contains(details[0], "hl_sync_stop_loss") {
 		t.Errorf("details = %v — want the live close reason surfaced", details)
@@ -101,8 +116,12 @@ func TestMirrorReplayScaleInBlends(t *testing.T) {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
 	pos := s.Positions["ETH"]
-	if pos.Quantity != 1.0 || pos.AvgCost != 1910 {
-		t.Errorf("blended position qty=%.4f avg=%.4f, want 1.0 @ 1910", pos.Quantity, pos.AvgCost)
+	wantAvg := (0.5*1900 + 0.5*1920*(1+SlippagePct)) / 1.0
+	if pos.Quantity != 1.0 || math.Abs(pos.AvgCost-wantAvg) > 1e-9 {
+		t.Errorf("blended position qty=%.4f avg=%.9f, want 1.0 @ %.9f (add at the 1920 reference moved against the buy)", pos.Quantity, pos.AvgCost, wantAvg)
+	}
+	if last := s.TradeHistory[len(s.TradeHistory)-1]; math.Abs(last.Price-1920*(1+SlippagePct)) > 1e-9 {
+		t.Errorf("replay add trade price = %.9f, want %.9f", last.Price, 1920*(1+SlippagePct))
 	}
 	if len(details) != 1 || !strings.Contains(details[0], "REPLAY SCALE-IN") {
 		t.Errorf("details = %v", details)
@@ -123,8 +142,8 @@ func TestMirrorReplayPartialCloseReduces(t *testing.T) {
 	if pos == nil || pos.Quantity != 0.6 {
 		t.Fatalf("remaining = %+v, want 0.6", pos)
 	}
-	if len(s.TradeHistory) != 1 || s.TradeHistory[0].Quantity != 0.4 || s.TradeHistory[0].Price != 1911.0 {
-		t.Errorf("partial close trade = %+v, want 0.4 @ paper mark 1911", s.TradeHistory)
+	if len(s.TradeHistory) != 1 || s.TradeHistory[0].Quantity != 0.4 || math.Abs(s.TradeHistory[0].Price-1911.0*(1-SlippagePct)) > 1e-9 {
+		t.Errorf("partial close trade = %+v, want 0.4 @ paper mark 1911 moved against the sell by SlippagePct (reason tiered_tp is not a resting tier fill)", s.TradeHistory)
 	}
 }
 
@@ -487,8 +506,8 @@ func TestMirrorReplayClosedBarOpenAfterZeroEntryATRRowBooksFromRowATR(t *testing
 		t.Fatalf("applied=%v trades=%d, want both rows applied and one open booked", applied, trades)
 	}
 	pos := s.Positions["ETH"]
-	if pos == nil || pos.Quantity != 0.25 || pos.AvgCost != 1905 {
-		t.Fatalf("position = %+v, want the second open 0.25 @ 1905", pos)
+	if pos == nil || pos.Quantity != 0.25 || math.Abs(pos.AvgCost-1905*(1+SlippagePct)) > 1e-9 {
+		t.Fatalf("position = %+v, want the second open 0.25 @ 1905 moved against the buy by SlippagePct", pos)
 	}
 	if pos.EntryATR != 1584 {
 		t.Fatalf("EntryATR = %v, want the row's 1584 (not paper's 99)", pos.EntryATR)

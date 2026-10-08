@@ -1,7 +1,5 @@
 package main
 
-import "math/rand"
-
 const (
 	BinanceSpotFeePct = 0.001
 
@@ -21,11 +19,15 @@ const (
 	OKXOptionFeePct     = 0.0003
 
 	SlippagePct = 0.0005
+
+	FillCostModelVersion = 1
 )
 
-func ApplySlippage(price float64) float64 {
-	slippage := (rand.Float64()*2 - 1) * SlippagePct
-	return price * (1 + slippage)
+func ApplyAdverseSlippage(price float64, isBuy bool) float64 {
+	if isBuy {
+		return price * (1 + SlippagePct)
+	}
+	return price * (1 - SlippagePct)
 }
 
 func CalculateSpotFee(value float64) float64 {

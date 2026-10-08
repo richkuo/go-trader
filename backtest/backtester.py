@@ -1490,6 +1490,15 @@ def fee_pct_for_platform(platform: str) -> float:
 
 DEFAULT_SLIPPAGE_PCT = 0.0005
 
+FILL_COST_MODEL_VERSION = 1
+
+PAPER_FILL_COST_MODELS = {
+    0: {"taker_fee_pct": 0.00045, "tier_fee_pct": 0.00045, "slippage_pct": None,
+        "stop_slippage": False, "price_reproducible": False},
+    1: {"taker_fee_pct": 0.00045, "tier_fee_pct": 0.00045, "slippage_pct": 0.0005,
+        "stop_slippage": True, "price_reproducible": True},
+}
+
 EXECUTION_SPEC_KEYS = (
     "taker_fee_pct",
     "maker_fee_pct",

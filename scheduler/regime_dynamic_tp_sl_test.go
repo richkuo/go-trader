@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -79,8 +80,12 @@ func TestAdvancePaperDynamicCloseRegime(t *testing.T) {
 			}
 			if wantClosed {
 				last := st.TradeHistory[len(st.TradeHistory)-1]
-				if !last.IsClose || !approxEq(last.Price, mark) {
-					t.Fatalf("stop close = %+v, want a close at the mark %.2f", last, mark)
+				wantPx := mark * (1 - SlippagePct)
+				if pos.Side == "short" {
+					wantPx = mark * (1 + SlippagePct)
+				}
+				if !last.IsClose || math.Abs(last.Price-wantPx) > 1e-9 || !approxEq(last.StopLossTriggerPx, tc.wantStop) {
+					t.Fatalf("stop close = %+v, want a close at the mark %.2f moved against the position (%.6f) with the unslipped trigger %v", last, mark, wantPx, tc.wantStop)
 				}
 			}
 			if pos.RegimeAppliedLabel != tc.wantApplied {

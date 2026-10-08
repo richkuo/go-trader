@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"testing"
 )
@@ -220,6 +221,11 @@ func TestExecuteHyperliquidResult_StopLossFilledImmediately_ReconcilesState(t *t
 	if cp.RealizedPnL >= 0 {
 		t.Errorf("RealizedPnL=%v should be negative for a long stopped out below entry", cp.RealizedPnL)
 	}
+	last := state.TradeHistory[len(state.TradeHistory)-1]
+	wantFee := 0.1 * 3104.0 * HyperliquidTakerFeePct
+	if !last.IsClose || last.Price != 3104.0 || math.Abs(last.ExchangeFee-wantFee) > 1e-12 || last.FeeSource != FeeSourceModeled {
+		t.Errorf("live stop close row = %+v, want price 3104 unslipped with the taker fallback fee %v (modeled)", last, wantFee)
+	}
 }
 
 func paperStopTestState(sc StrategyConfig, pos *Position) *StrategyState {
@@ -308,8 +314,15 @@ func TestPaperStopArmsTheLiveTriggerForEveryOwner(t *testing.T) {
 			if n != 1 || s.Positions["ETH"] != nil {
 				t.Fatalf("mark past the trigger: trades %d, position %+v; want one stop close", n, s.Positions["ETH"])
 			}
-			if len(s.ClosedPositions) != 1 || s.ClosedPositions[0].ClosePrice != past || s.ClosedPositions[0].CloseReason != c.wantReason {
-				t.Fatalf("closed = %+v, want one close @ %v reason %q", s.ClosedPositions, past, c.wantReason)
+			wantClose := past * (1 - SlippagePct)
+			if c.side == "short" {
+				wantClose = past * (1 + SlippagePct)
+			}
+			if len(s.ClosedPositions) != 1 || math.Abs(s.ClosedPositions[0].ClosePrice-wantClose) > 1e-9 || s.ClosedPositions[0].CloseReason != c.wantReason {
+				t.Fatalf("closed = %+v, want one close @ %v (mark %v moved against the position by SlippagePct) reason %q", s.ClosedPositions, wantClose, past, c.wantReason)
+			}
+			if last := s.TradeHistory[len(s.TradeHistory)-1]; !last.IsClose || !approxEq(last.StopLossTriggerPx, live) {
+				t.Fatalf("stop close row trigger = %v, want the unslipped trigger %v", last.StopLossTriggerPx, live)
 			}
 		})
 	}
@@ -351,8 +364,15 @@ func TestPaperStopBreachesOnEveryCycle(t *testing.T) {
 			s := paperStopTestState(sc, &Position{Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: c.side, StopLossTriggerPx: c.trigger})
 			var mu sync.RWMutex
 			n, _ := applyPaperStopLossBreach(sc, s, "ETH", c.side, c.mark, &mu, logger)
-			if n != 1 || len(s.ClosedPositions) != 1 || s.ClosedPositions[0].ClosePrice != c.wantFill {
-				t.Fatalf("stop = trades %d closed %+v, want one close @ %v", n, s.ClosedPositions, c.wantFill)
+			wantBook := c.wantFill * (1 - SlippagePct)
+			if c.side == "short" {
+				wantBook = c.wantFill * (1 + SlippagePct)
+			}
+			if n != 1 || len(s.ClosedPositions) != 1 || math.Abs(s.ClosedPositions[0].ClosePrice-wantBook) > 1e-9 {
+				t.Fatalf("stop = trades %d closed %+v, want one close @ %v (fill %v moved against the position by SlippagePct)", n, s.ClosedPositions, wantBook, c.wantFill)
+			}
+			if last := s.TradeHistory[len(s.TradeHistory)-1]; !last.IsClose || last.StopLossTriggerPx != c.trigger || math.Abs(last.Price-wantBook) > 1e-9 {
+				t.Fatalf("stop close row = %+v, want price %v with the unslipped trigger %v", last, wantBook, c.trigger)
 			}
 			if c.signal == 0 {
 				return
@@ -414,4 +434,17 @@ func TestDeferredOpenArmsTheStopOnlyForPaper(t *testing.T) {
 			}
 		})
 	}
+	t.Run("paper open that breaches a tight stop books the slipped breach", func(t *testing.T) {
+		sc := StrategyConfig{ID: "hl-open", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h"}, StopLossPct: pf(0.01), Direction: DirectionLong, Leverage: 1, SizingLeverage: 1}
+		s := &StrategyState{ID: sc.ID, Platform: "hyperliquid", Type: "perps", Cash: 1000, Positions: map[string]*Position{}}
+		trades, _, _, _ := executeHyperliquidResultDeferredOpen(sc, s, &HyperliquidResult{Symbol: "ETH", Signal: 1, Price: 2000}, nil, "BUY", 2000, nil, &Config{}, HurstGateDecision{}, silentStrategyLogger(sc.ID))
+		if trades != 2 || s.Positions["ETH"] != nil || len(s.TradeHistory) != 2 {
+			t.Fatalf("open-cycle breach = trades %d position %+v history %+v, want open then stop close", trades, s.Positions["ETH"], s.TradeHistory)
+		}
+		open, stop := s.TradeHistory[0], s.TradeHistory[1]
+		wantTrigger := open.Price * (1 - 0.0001)
+		if math.Abs(open.Price-2000*(1+SlippagePct)) > 1e-9 || !stop.IsClose || math.Abs(stop.Price-2000*(1-SlippagePct)) > 1e-9 || !approxEq(stop.StopLossTriggerPx, wantTrigger) {
+			t.Fatalf("open %+v stop %+v, want open @ %v, stop @ %v, unslipped trigger %v", open, stop, 2000*(1+SlippagePct), 2000*(1-SlippagePct), wantTrigger)
+		}
+	})
 }

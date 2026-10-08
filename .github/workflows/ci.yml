@@ -147,7 +147,7 @@ jobs:
       - name: Ledger capture and export suite
         run: |
           bash scripts/run_ci_shell_suite.sh \
-            --marker 'PASS: ledger capture and export (active-WAL capture without source effects, version 1 export contract, every refusal leaves inputs unchanged)' \
+            --marker 'PASS: ledger capture and export (active-WAL capture without source effects, version 2 export contract, every refusal leaves inputs unchanged)' \
             --forbid 'NOTE: strace is not installed; the syscall audit of capture is skipped' \
             --forbid 'NOTE: unshare --user is unavailable here; the shared-mount-namespace worker refusal in a new user namespace is not checked' \
             --forbid 'NOTE: running as root; the permission-denied refusal is not exercised' \

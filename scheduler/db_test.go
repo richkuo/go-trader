@@ -995,6 +995,45 @@ func TestLoadState_TradePositionIDRoundTripAndLegacyNull(t *testing.T) {
 	if got := trades[1].PositionID; got != "" {
 		t.Errorf("legacy NULL PositionID = %q, want empty string", got)
 	}
+	if trades[0].CostModelVersion != 0 || trades[1].CostModelVersion != 0 {
+		t.Fatalf("legacy cost_model_version = (%d, %d), want 0 for rows booked before the stamp", trades[0].CostModelVersion, trades[1].CostModelVersion)
+	}
+	prevRecorder := tradeRecorder
+	tradeRecorder = nil
+	defer func() { tradeRecorder = prevRecorder }()
+	RecordTrade(loaded.Strategies["s1"], Trade{Timestamp: now.Add(2 * time.Second), Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 50000, Value: 5000, TradeType: "perps", Details: "Open long"})
+	if err := db.SaveState(loaded); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	stampRows, err := db.db.Query("SELECT cost_model_version, COUNT(*) FROM trades GROUP BY 1 ORDER BY 1")
+	if err != nil {
+		t.Fatalf("query stamps: %v", err)
+	}
+	stamps := map[int]int{}
+	for stampRows.Next() {
+		var v, n int
+		if err := stampRows.Scan(&v, &n); err != nil {
+			t.Fatalf("scan stamps: %v", err)
+		}
+		stamps[v] = n
+	}
+	stampRows.Close()
+	if len(stamps) != 2 || stamps[0] != 2 || stamps[FillCostModelVersion] != 1 {
+		t.Fatalf("stored cost_model_version counts = %v, want 2 legacy rows at 0 and the new row at %d", stamps, FillCostModelVersion)
+	}
+	reloaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState after save: %v", err)
+	}
+	for _, tr := range reloaded.Strategies["s1"].TradeHistory {
+		want := 0
+		if tr.Details == "Open long" {
+			want = FillCostModelVersion
+		}
+		if tr.CostModelVersion != want {
+			t.Errorf("reloaded %q cost_model_version = %d, want %d", tr.Details, tr.CostModelVersion, want)
+		}
+	}
 }
 
 func TestQueryTradeHistory_PositionIDRoundTripAndLegacyNull(t *testing.T) {
