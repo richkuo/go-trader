@@ -31,6 +31,9 @@ func RecordTrade(s *StrategyState, trade Trade) {
 			trade.PositionID = ensureOptionTradeID(s.ID, opt)
 		}
 	}
+	if trade.CostModelVersion == 0 {
+		trade.CostModelVersion = FillCostModelVersion
+	}
 	s.TradeHistory = append(s.TradeHistory, trade)
 	if tradeRecorder == nil {
 		return

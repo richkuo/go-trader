@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -31,7 +32,7 @@ spec = importlib.util.spec_from_file_location("_lot_parity_check_hl", os.path.jo
 check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check)
 from adapter import MIN_ORDER_NOTIONAL_SAFETY_MARGIN, MIN_ORDER_NOTIONAL_USD, floor_lot_size
-from backtester import Backtester
+from backtester import FILL_COST_MODEL_VERSION, PAPER_FILL_COST_MODELS, Backtester
 
 
 def execution_spec(d, taker=0.0):
@@ -96,6 +97,39 @@ for e in req["entries"]:
         "live_round": round(e["capital"] / e["price"], e["d"]),
     })
 
+paper_model = PAPER_FILL_COST_MODELS[FILL_COST_MODEL_VERSION]
+paper_spec = {"taker_fee_pct": paper_model["taker_fee_pct"], "maker_fee_pct": paper_model["tier_fee_pct"],
+              "half_spread_pct": 0.0, "slippage_pct": paper_model["slippage_pct"], "size_decimals": 4,
+              "min_notional_usd": MIN_ORDER_NOTIONAL_USD, "min_notional_margin": MIN_ORDER_NOTIONAL_SAFETY_MARGIN}
+out["costs"] = []
+for c in req["costs"]:
+    n = 40
+    o = np.full(n, float(c["price"]))
+    h, l, cl = o + 0.5, o - 0.5, o.copy()
+    kwargs = {}
+    if c["kind"] == "stop":
+        o[30] = h[30] = l[30] = cl[30] = float(c["move_to"])
+        kwargs["stop_loss_pct"] = c["stop_frac"]
+    elif c["kind"] == "tier":
+        h[30] = float(c["move_to"]) + 10.0
+        cl[30] = float(c["move_to"])
+        kwargs["close_strategies"] = [{"name": "tiered_tp_atr", "params": {"tp_tiers": [
+            {"atr_multiple": c["atr_mult"], "close_fraction": 0.5}, {"atr_multiple": 50, "close_fraction": 1.0}]}}]
+    df = pd.DataFrame({"open": o, "high": h, "low": l, "close": cl, "volume": np.ones(n)},
+                      index=pd.date_range("2026-01-01", periods=n, freq="1h"))
+    df["open_action"] = ["none"] * n
+    df.loc[df.index[25], "open_action"] = c["side"]
+    df["close_fraction"] = 0.0
+    if c["kind"] == "tier":
+        df["atr"] = float(c["atr"])
+    bt = Backtester(initial_capital=c["capital"], platform="hyperliquid", execution_spec=paper_spec,
+                    direction="both", **kwargs)
+    res = bt.run(df, strategy_name="cost-parity", symbol="ETH/USDT", timeframe="1h", save=False, record_events=True)
+    evs = [{k: float(e[k]) if k in ("quantity", "raw_price", "effective_price", "fee_charged") else e[k]
+            for k in ("kind", "timing", "quantity", "raw_price", "effective_price", "fee_charged", "reason")}
+           for e in res["ledger_events"]["events"] if e["kind"] in ("open", "close")]
+    out["costs"].append({"events": evs})
+
 try:
     Backtester(initial_capital=1000.0, platform="hyperliquid", execution_spec=execution_spec(4),
                allow_scale_in=True).run(frame(100.0, "long", []), strategy_name="lot-parity", symbol="ETH/USDT",
@@ -148,6 +182,37 @@ type hlLotParityOutput struct {
 		LiveRound  float64 `json:"live_round"`
 	} `json:"entries"`
 	ScaleInError string `json:"scale_in_error"`
+	Costs        []struct {
+		Events []hlCostParityEvent `json:"events"`
+	} `json:"costs"`
+}
+
+type hlCostParityCase struct {
+	Kind     string  `json:"kind"`
+	Side     string  `json:"side"`
+	Capital  float64 `json:"capital"`
+	Price    float64 `json:"price"`
+	MoveTo   float64 `json:"move_to,omitempty"`
+	StopFrac float64 `json:"stop_frac,omitempty"`
+	ATR      float64 `json:"atr,omitempty"`
+	ATRMult  float64 `json:"atr_mult,omitempty"`
+}
+
+type hlCostParityEvent struct {
+	Kind           string  `json:"kind"`
+	Timing         string  `json:"timing"`
+	Quantity       float64 `json:"quantity"`
+	RawPrice       float64 `json:"raw_price"`
+	EffectivePrice float64 `json:"effective_price"`
+	FeeCharged     float64 `json:"fee_charged"`
+	Reason         string  `json:"reason"`
+}
+
+func hlCostParityRel(a, b float64) float64 {
+	if b == 0 {
+		return math.Abs(a)
+	}
+	return math.Abs(a-b) / math.Abs(b)
 }
 
 func hlLotParityFloorInputs() [][2]float64 {
@@ -227,7 +292,14 @@ func TestHLPaperLotParityWithLiveGateAndBacktester(t *testing.T) {
 		{Capital: 1000, Price: 100, D: 2, Taker: 0.00045},
 		{Capital: 841.58, Price: 2000, D: 4, Taker: 0},
 	}
-	out := runHLLotParityDriver(t, map[string]any{"floors": floors, "closes": closes, "entries": entries})
+	costs := []hlCostParityCase{
+		{Kind: "open", Side: "long", Capital: 1000, Price: 2000},
+		{Kind: "open", Side: "short", Capital: 1000, Price: 2000},
+		{Kind: "stop", Side: "long", Capital: 1000, Price: 100, MoveTo: 90, StopFrac: 0.03},
+		{Kind: "stop", Side: "short", Capital: 1000, Price: 100, MoveTo: 110, StopFrac: 0.03},
+		{Kind: "tier", Side: "long", Capital: 1000, Price: 100, MoveTo: 110, ATR: 2, ATRMult: 2},
+	}
+	out := runHLLotParityDriver(t, map[string]any{"floors": floors, "closes": closes, "entries": entries, "costs": costs})
 
 	if len(out.Floors) != len(floors) {
 		t.Fatalf("driver returned %d floors, want %d", len(out.Floors), len(floors))
@@ -298,6 +370,71 @@ func TestHLPaperLotParityWithLiveGateAndBacktester(t *testing.T) {
 		if c.OpenAction != "" {
 			if pos := s.Positions["ETH"]; pos == nil || pos.Side != c.Side {
 				t.Fatalf("case %d: a held close with open intent %q left %+v, want the %s book kept", i, c.OpenAction, pos, c.Side)
+			}
+		}
+	}
+
+	if len(out.Costs) != len(costs) {
+		t.Fatalf("driver returned %d cost cases, want %d", len(out.Costs), len(costs))
+	}
+	for i, c := range costs {
+		evs := out.Costs[i].Events
+		if len(evs) < 1 || evs[0].Kind != "open" {
+			t.Fatalf("cost case %d (%s %s): backtester events %+v, want an open first", i, c.Kind, c.Side, evs)
+		}
+		btOpen := evs[0]
+		useHLLotMetadataForTest(t, map[string]int{"ETH": 4})
+		pf := func(v float64) *float64 { return &v }
+		sc := StrategyConfig{ID: "hl-cost-parity", Type: "perps", Platform: "hyperliquid", Args: []string{"sma", "ETH", "1h", "--mode=paper"}, Direction: DirectionBoth, Leverage: 1, SizingLeverage: 1}
+		openSig := 1
+		if c.Side == "short" {
+			openSig = -1
+		}
+		switch c.Kind {
+		case "open":
+			s := &StrategyState{ID: sc.ID, Type: "perps", Platform: "hyperliquid", Cash: c.Capital, Positions: map[string]*Position{}}
+			if n := paperDispatch(t, sc, s, hlLotTestResult("ETH", openSig, c.Price, 0, 0), c.Price); n != 1 {
+				t.Fatalf("cost case %d: paper open booked %d trades", i, n)
+			}
+			open := lastTrade(t, s)
+			if hlCostParityRel(open.Price, btOpen.EffectivePrice) > 1e-9 || hlCostParityRel(open.ExchangeFee/open.Quantity, btOpen.FeeCharged/btOpen.Quantity) > 1e-9 {
+				t.Fatalf("cost case %d (%s open): paper price %v fee/qty %v, backtester price %v fee/qty %v", i, c.Side, open.Price, open.ExchangeFee/open.Quantity, btOpen.EffectivePrice, btOpen.FeeCharged/btOpen.Quantity)
+			}
+		case "stop":
+			if len(evs) != 2 || evs[1].Kind != "close" || evs[1].Reason != "sl" {
+				t.Fatalf("cost case %d: backtester events %+v, want an open and a stop close", i, evs)
+			}
+			btStop := evs[1]
+			sc.StopLossPct = pf(c.StopFrac * 100)
+			trigger := btOpen.EffectivePrice * (1 - c.StopFrac)
+			if c.Side == "short" {
+				trigger = btOpen.EffectivePrice * (1 + c.StopFrac)
+			}
+			s := &StrategyState{ID: sc.ID, Type: "perps", Platform: "hyperliquid", Cash: c.Capital, Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Side: c.Side, Quantity: btStop.Quantity, InitialQuantity: btStop.Quantity, AvgCost: btOpen.EffectivePrice, Multiplier: 1, Leverage: 1, OwnerStrategyID: sc.ID, StopLossTriggerPx: trigger},
+			}}
+			var mu sync.RWMutex
+			if n, _ := applyPaperStopLossBreach(sc, s, "ETH", c.Side, btStop.RawPrice, &mu, silentStrategyLogger(sc.ID)); n != 1 {
+				t.Fatalf("cost case %d: paper stop booked %d trades", i, n)
+			}
+			stop := lastTrade(t, s)
+			if stop.Quantity != btStop.Quantity || hlCostParityRel(stop.Price, btStop.EffectivePrice) > 1e-9 || hlCostParityRel(stop.ExchangeFee, btStop.FeeCharged) > 1e-9 {
+				t.Fatalf("cost case %d (%s stop): paper qty %v price %v fee %v, backtester qty %v price %v fee %v", i, c.Side, stop.Quantity, stop.Price, stop.ExchangeFee, btStop.Quantity, btStop.EffectivePrice, btStop.FeeCharged)
+			}
+		case "tier":
+			if len(evs) < 2 || evs[1].Kind != "close" || evs[1].Timing != "intrabar_trigger_fill" || evs[1].RawPrice != evs[1].EffectivePrice {
+				t.Fatalf("cost case %d: backtester events %+v, want a resting tier fill at the tier price", i, evs)
+			}
+			btTier := evs[1]
+			s := &StrategyState{ID: sc.ID, Type: "perps", Platform: "hyperliquid", Cash: c.Capital, Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Side: c.Side, Quantity: btOpen.Quantity, InitialQuantity: btOpen.Quantity, AvgCost: btOpen.EffectivePrice, Multiplier: 1, Leverage: 1, OwnerStrategyID: sc.ID},
+			}}
+			if n := paperDispatch(t, sc, s, hlLotTestResult("ETH", -openSig, c.MoveTo, 0.5, btTier.RawPrice), c.MoveTo); n != 1 {
+				t.Fatalf("cost case %d: paper tier fill booked %d trades", i, n)
+			}
+			tier := lastTrade(t, s)
+			if tier.Quantity != btTier.Quantity || tier.Price != btTier.EffectivePrice || hlCostParityRel(tier.ExchangeFee, btTier.FeeCharged) > 1e-9 {
+				t.Fatalf("cost case %d (tier fill): paper qty %v price %v fee %v, backtester qty %v price %v fee %v", i, tier.Quantity, tier.Price, tier.ExchangeFee, btTier.Quantity, btTier.EffectivePrice, btTier.FeeCharged)
 			}
 		}
 	}

@@ -69,7 +69,7 @@ label parity).
 
 | Surface | State |
 |---|---|
-| Fees | Matches — `PLATFORM_FEE_PCT` matches `fees.go`; `test_platform_fees.py` scrapes the Go source so drift fails CI. deribit/ibkr/topstep flow through option/futures fee functions, not the spot table. |
+| Fees | Matches — `PLATFORM_FEE_PCT` matches `fees.go`; `test_platform_fees.py` scrapes the Go source so drift fails CI. deribit/ibkr/topstep flow through option/futures fee functions, not the spot table. Issue #1726 Run 1 pins `SlippagePct` to `DEFAULT_SLIPPAGE_PCT`. Run 2 makes paper slippage deterministic and adverse (`ApplyAdverseSlippage`, the backtester formula) on market opens, adds, signal closes and paper stops, and stamps `cost_model_version` (`FillCostModelVersion`, mirrored by `FILL_COST_MODEL_VERSION` and the frozen `PAPER_FILL_COST_MODELS` history) on every new trade row. The production fee tier is still unverified. |
 | Initial/trailing ATR SL (#885) | Matches — same trigger formula (`entry ± mult×EntryATR`) and same-bar arming on both sides. Correction (2026-10, issue #1724): issue #1684 (PR 1698) made the engine arm the same single stop owner that live arms (trailing, fixed ATR, percent, margin percent with verified leverage, drawdown fallback), with refusals for unsupported owners, pinned by the Go and Python fixture `backtest/testdata/stop_geometry_parity.json`. |
 | Default tier ladders (#870/#887) | Matches — values synced across Go and all three Python mirrors, now pinned: `backtest/tests/test_default_tier_ladders.py` reads `defaultHLProtectionTiers()` from `scheduler/hyperliquid_protection.go`, and `backtest/testdata/tp_tier_parity.json` exists. Issue #944 is closed. |
 | Single close ref (#842) | Matches — `--config` rejects legacy `len>1` arrays with the same semantics live rejects them; the engine's max-wins multi-ref path remains for direct-constructor/test use only. |
@@ -199,7 +199,10 @@ the owner DM reports the stop recorded after the same-cycle trailing update.
   the bar close crosses it, while a resting venue order can also fill on a
   touch inside the bar; not measured — #1727.
 - Fees and slippage (finding H): the production fee tier is not verified and
-  paper slippage is not reconciled with recorded fills — #1726.
+  paper slippage is not reconciled with recorded fills — #1726. Run 2: paper
+  slippage is now deterministic and adverse, the backtester formula, and each
+  trade row records its paper cost model version; the fee tier check is still
+  open.
 - Live-strategy comparability: the ledger comparison refuses regime gating
   fields, the directional policy and `margin_per_trade_usd` sizing, and the
   2026-10-06 run found no strict-comparable live Hyperliquid strategy — #1730.

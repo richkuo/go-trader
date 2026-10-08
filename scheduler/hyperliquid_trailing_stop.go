@@ -399,6 +399,10 @@ func paperStopFillPx(side string, mark, trigger float64) float64 {
 	return trigger
 }
 
+func paperStopBookPx(side string, rawFillPx float64) float64 {
+	return ApplyAdverseSlippage(rawFillPx, side == "short")
+}
+
 func runPaperFixedStopLoss(side string, mark, currentTrigger, armTrigger float64) (newTrigger float64, breach bool, breachPx float64) {
 	if mark <= 0 {
 		return 0, false, 0
@@ -476,7 +480,7 @@ func applyPaperStopLossBreach(sc StrategyConfig, s *StrategyState, symbol, side 
 	if !ok || pos == nil || pos.Quantity <= 0 || pos.Side != side || !trailingStopBreached(side, mark, pos.StopLossTriggerPx) {
 		return 0, ""
 	}
-	fillPx := paperStopFillPx(side, mark, pos.StopLossTriggerPx)
+	fillPx := paperStopBookPx(side, paperStopFillPx(side, mark, pos.StopLossTriggerPx))
 	reason := paperStopLossCloseReason(sc, hyperliquidProtectionPositionSnapshot(pos))
 	if !recordPerpsStopLossClose(s, symbol, fillPx, reason, logger) {
 		return 0, ""

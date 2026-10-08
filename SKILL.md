@@ -593,7 +593,7 @@ Mandatory `trades` accounting columns missing = refused (no migration runs); inv
 The output must not exist (symlinks and hard links included), must not use a sidecar name, and must sit outside the snapshot, state and configuration directories; it is written to a private staging file beside it and linked into place without replacement only after every input is re-verified.
 A killed export leaves no output, at most a `.<name>.<hex>.staging` file.
 
-**Contract (schema `go-trader.booked-ledger`, `schema_version` 1).** Required top-level fields: `inspected_revision` (the binary's source commit from `-X main.SourceCommit`, which `update.sh` stamps from the exported commit; else `null`, never the version label), `capture_manifest_sha256`, `time_basis` `UTC`, `timestamp_meanings`, `selection`, `capture`, `snapshot_files`, `current_effective_configuration` (basis `current_at_capture`: selected strategy, `regime`, partition `portfolio_risk`, and the optional `atr_method` object with the strategy value, the root value and the method `resolveATRMethod` resolves; no tokens or credentials), `events` and `wallet_orphan_context`.
+**Contract (schema `go-trader.booked-ledger`, `schema_version` 2).** Required top-level fields: `inspected_revision` (the binary's source commit from `-X main.SourceCommit`, which `update.sh` stamps from the exported commit; else `null`, never the version label), `capture_manifest_sha256`, `time_basis` `UTC`, `timestamp_meanings`, `selection`, `capture`, `snapshot_files`, `current_effective_configuration` (basis `current_at_capture`: selected strategy, `regime`, partition `portfolio_risk`, and the optional `atr_method` object with the strategy value, the root value and the method `resolveATRMethod` resolves; no tokens or credentials), `events` and `wallet_orphan_context`.
 Events are the selected strategy's every `trades` row in `rowid` order (keyset pages of 500 in one transaction); `event_key` = `<source_role>/trades/<rowid>`, unique only within its manifest.
 Every data field is `{value, raw_value, status, reason, provenance[]}`: status `available`/`unavailable`/`not_applicable`, reason `column_absent`/`stored_null`/`unstamped`/`not_recorded`/`ambiguous_evidence`/`not_applicable`.
 Stored amounts, gross flags, fees (zero and negative kept) and identifiers are copied, never recomputed; order ids are decimal strings.
@@ -603,7 +603,9 @@ Stored amounts, gross flags, fees (zero and negative kept) and identifiers are c
 Entry ATR and stop/TP geometry come from the trade row only; unstamped zeros and blanks stay unavailable with the stored sentinel in `raw_value`.
 Funding with no position id is `position_allocation: unallocated` and stays the strategy's.
 `wallet_orphan_context` (live only, read from the primary file in its own transaction) lists Hyperliquid `funding_orphan` rows of `wallet_transfers` as `live_wallet`/`unallocated` with null strategy and position; it is outside the strategy's totals.
-Within version 1, only optional fields may be added; any change to required fields, types, units, enumerations, ordering, accounting or event keys is a new version, and consumers must refuse an unknown `schema` or `schema_version`.
+`cost_model_version` (version 2, issue 1726) is the paper cost model that booked the row: `available` when the stored value is at least 1, `unavailable`/`unstamped` with raw value 0 for a row booked before the stamp, and `unavailable`/`column_absent` when the file has no such column; a negative value fails the export.
+Within a version, only optional fields may be added; any change to required fields, types, units, enumerations, ordering, accounting or event keys is a new version, and consumers must refuse an unknown `schema` or `schema_version`.
+Version 2 differs from version 1 only by the `cost_model_version` field; `ledger_compare.py` and `fee_evidence.py` read both, and every row of a version 1 export reads as cost model version 0.
 
 Proof: `GO_TRADER_BIN=<binary> bash scripts/test_ledger_export.sh` (Linux with a private mount namespace for the capture checks; elsewhere it checks the refusal and prints SKIP, and `LEDGER_EXPORT_REQUIRE_CAPTURE=1` turns that SKIP into a failure). The `shell-suites` CI job runs it as the runner user with `LEDGER_EXPORT_REQUIRE_CAPTURE=1` and `LEDGER_EXPORT_REQUIRE_STRACE=1` (see Tests).
 
@@ -729,6 +731,16 @@ Regenerate exports only on purpose (export schema change, configuration-version 
 It refuses unless the snapshot and `source/seed.sql` match the latest documented capture, and, without an export schema-version change, it may change only `current_effective_configuration`, plus `capture_manifest_sha256`, `capture` and `snapshot_files` after a documented re-capture, plus `events` and `wallet_orphan_context` only when that capture records a changed seed.
 When `MinSupportedConfigVersion` passes the snapshot's configuration version, re-capture on Linux per the fixture README.
 
+**Cost model by partition (issue 1726).** A `live` export keeps the manifest costs, and the report `cost_model` adds `value_sources` naming the manifest keys.
+A `paper` or `paper:<id>` export is simulated with the paper fill cost model of the version stamped on its rows: the frozen `PAPER_FILL_COST_MODELS[<version>]` taker and tier rates, the paper slippage and zero half spread, whatever the manifest cost block says.
+With the execution spec, only the cost fields are overridden; `size_decimals`, `min_notional_usd` and `min_notional_margin` stay from the manifest.
+The version is the one value shared by every in-interval fill row (funding excluded); with no in-interval fill it is the current `FILL_COST_MODEL_VERSION` (`version_source: no_in_interval_fills`).
+The report `cost_model` is `{kind: "paper_fill_cost_model", version, version_source, values: {name: {value, source}}}` plus the spec or flat values used.
+Refusals: `paper_cost_model_partition_unknown` (a partition that is neither live nor paper), `paper_cost_model_mode_disagrees` (a paper partition with live args, or a live partition without them; live args follow `isLiveArgs`), `paper_cost_model_mixed` (rows from more than one version), `paper_cost_model_unknown` (no history entry), all in both modes, and `paper_cost_model_not_reproducible` in strict mode for version 0 (random slippage); approximate mode runs version 0 with zero slippage and lists the approximation.
+The check runs only for a non-manual owner with a resolved configuration segment.
+The price tolerance stays an input, because decision timing (issues 1712 and 1723) still moves the reference price.
+`export_paper.json` with `comparison_input_paper.json` is a synthetic paper fixture made by `source/build_paper_fixture.py` from the live fixture; it reaches strict success at a relative price tolerance of `1e-9`.
+
 **Limitations.** Strict support covers flat-start, single-configuration Hyperliquid perps owners on the open/close engine with verified stops and no scale-in, leverage, regime gating or HTF inputs. The committed exports carry no stop stamps, so their initial geometry is `unavailable`; agreement is proven only on synthetic test copies. Booked timestamps are ledger record times, not exchange fill times. Live sizing is not modeled beyond the simulator's all-cash sizing from the verified starting cash; quantity deltas expose differences. Separate state files are separate snapshots; the comparison makes no cross-file simultaneity claim.
 
 ### Fee evidence (issue 1726)
@@ -737,6 +749,25 @@ When `MinSupportedConfigVersion` passes the snapshot's configuration version, re
 Every export must have `selection.platform = hyperliquid`; any other platform exits 1. Rows count only when the partition is `live`, `fee_source` is `userfills` and `value` is nonzero; funding, modeled and `reconcile_adjustment` rows are counted as excluded. Hedge-leg rows are `hedge` and operator rows (`manual = true`, including manual and manual-limit opens and adds) are `manual`; other opens and adds are `open` and `add`, and close rows are grouped by `close_reason`, else by the booking code's details prefix; anything else is `unclassified` and listed. A row that appears in several exports (same storage strategy, source role and row id) counts once, and the run refuses when the copies disagree.
 Live stop slippage needs venue fills: the reconcile path books a confirmed live stop at the stored trigger (`hyperliquid_balance.go`), so its exported `price` equals `stop_loss_trigger_px`. Pass raw `userFillsByTime` captures with `--user-fills` (account address only, no trading key); fills join rows by order id, and the role comes from the fill's `crossed` flag. A trigger-priced row with no venue fill is `booked_at_trigger_no_venue_evidence`, never a zero-slippage sample. Market-fill slippage needs a `--fill-log` extract and is labelled "reference price as logged"; it uses the exact booked fill price, so only the 2-decimal logged reference is rounded, and samples whose rounding bound exceeds 0.5 bps are excluded.
 Production evidence is captured read-only (export capture and `export ledger`, no `--once`, no restart, no state write). Post only the derived numbers; never post or commit the account address, raw fills or exports.
+
+### Paper fill cost model (issue 1726)
+
+The Hyperliquid taker rate 0.045%, maker rate 0.015% and paper slippage 0.05% in `scheduler/fees.go` are code constants. They are an unverified assumption: no production fee evidence has been recorded yet (checked 2026-10-08).
+`ApplyAdverseSlippage(price, isBuy)` returns exactly `price * (1 + SlippagePct)` for a buy and `price * (1 - SlippagePct)` for a sell, the backtester formula; there is no random slippage.
+Paper market opens, flips, signal closes and partial closes on perps, spot and futures take it inside the existing no-fill branch (`fillQty == 0` or `fillContracts == 0`), so a venue-filled live row keeps its venue price.
+OKX, Robinhood and TopStep live executes whose result has no fill (or `AvgPx <= 0`) also reach that branch, so those live modeled rows now book the deterministic adverse price instead of a random one; Hyperliquid live never reaches it, because the open returns unless `confirmHyperliquidExecuteFill` confirms the fill.
+Paper Hyperliquid scale-in adds book at the mid moved against the add side; the add quantity stays the decision quantity.
+A paper stop books the worse of the trigger and the mark moved against the position (`paperStopBookPx`), applied only at the six paper stop sites (`applyPaperStopLossBreach`, `advancePaperDynamicCloseRegime`, the open-cycle arm, the main-loop trailing and fixed stops, the ratchet same-cycle trailing stop); the shared booking functions are unchanged, so live stop bookings keep their trigger or venue price, and the close row keeps the unslipped `stop_loss_trigger_px`.
+A paper take-profit tier fill books at the tier price with no slippage and the taker fee.
+The replay mirror books an open at the live reference price moved against the trade, with the live quantity; that reference is the live venue average, so a replay open or add carries the real live slippage plus the paper slippage.
+A replay add books the same way; a replay take-profit close (`replayCloseReasonIsTakeProfit`) books at the row's live tier price with no slippage, else at the cycle price with no slippage and `tier_price_source=cycle_price` in the details; any other replay close books at the cycle price moved against the close side.
+Exceptions in version 1: paper hedge legs and the paper hedge unwind book at the mark with no slippage (the backtester rejects hedge).
+`CalculateHyperliquidFee` and `CalculatePlatformSpotFee` stay the taker rate because they are the live fallback fee, and `executionFee` uses the venue fee only when it is greater than 0, so a zero-fee or rebate venue fill books the modeled taker fee with `fee_source = modeled`.
+Every new trade row stores `cost_model_version` = `FillCostModelVersion` (1), set only by `RecordTrade`; rows booked before this change keep 0 and are never restamped, because loads read the stored value and saves skip persisted rows.
+Version 0 means random slippage on market fills, no stop slippage and taker on every fill; version 1 is the model above.
+Any change to `SlippagePct`, a Hyperliquid fee constant or which fill kind pays maker or taker raises `FillCostModelVersion` and adds a new literal `PAPER_FILL_COST_MODELS` entry in `backtester.py`; existing entries are never edited, and `test_platform_fees.py` holds a literal copy of each.
+Live rows carry the stamp too; only paper comparisons use it.
+Every paper strategy's booked fill prices change at the deploy of this model, so a paper comparison window (issue 1723) must not span that deploy.
 
 ---
 
@@ -1221,7 +1252,7 @@ The percentage owners use `riskAnchorPrice × (1 ∓ EffectiveStopLossPct / 100)
 Paper arms the trigger at open from the booked paper fill (the fill is also the trailing high-water mark) and tests it against the mark in that cycle.
 Each later cycle tests the stored trigger against the mark before signal handling, for any signal.
 A breach closes the position (`trailing_stop_loss_paper`, `stop_loss_atr_paper` or `stop_loss_pct_paper`), and the signal of that cycle then runs against the flat book.
-A paper stop books at the worse of the trigger and the mark: the lower for a long, the higher for a short.
+A paper stop books at the worse of the trigger and the mark (the lower for a long, the higher for a short), moved against the position by `SlippagePct` (see Paper fill cost model).
 Paper triggers are not rounded to the venue tick, and the liquidation clamp is live-only.
 As in live, the trailing walk and the arm of a missing trigger run only on `Signal == 0` cycles.
 A paper position also moves its stop after a take-profit tier under `sl_after` (see that row).

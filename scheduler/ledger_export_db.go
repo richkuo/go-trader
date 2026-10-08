@@ -18,7 +18,7 @@ var ledgerTradeMandatoryColumns = []string{
 
 var ledgerTradeOptionalColumns = []string{
 	"trade_type", "details", "position_id", "exchange_order_id", "fee_source", "regime", "manual",
-	"entry_atr", "stop_loss_atr_mult", "stop_loss_trigger_px", "stop_loss_oid", "tp_oids_json", "tp_tiers_json",
+	"entry_atr", "stop_loss_atr_mult", "stop_loss_trigger_px", "stop_loss_oid", "tp_oids_json", "tp_tiers_json", "cost_model_version",
 }
 
 var ledgerDiagnosticColumns = []string{"strategy_id", "position_id", "symbol", "close_reason", "exit_price", "quantity", "closed_at"}

@@ -505,15 +505,15 @@ Capture runs on Linux only: SQLite reads each file through `VACUUM INTO` from a 
 
 | Market | Fee | Slippage |
 |--------|-----|----------|
-| Binance US Spot | 0.1% taker | ±0.05% |
+| Binance US Spot | 0.1% taker | 0.05% against the trade (paper and backtest) |
 | Deribit Options | 0.03% of premium | — |
 | IBKR/CME Options | $0.25/contract | — |
-| Hyperliquid Perps | 0.045% taker / 0.015% maker (base tier) | ±0.05% |
-| TopStep Futures | Per-contract (configurable) | ±0.05% |
-| Robinhood Crypto | No commission (spread embedded) | ±0.05% |
+| Hyperliquid Perps | 0.045% taker / 0.015% maker (base tier) | 0.05% against the trade (paper and backtest) |
+| TopStep Futures | Per-contract (configurable) | 0.05% against the trade (paper and backtest) |
+| Robinhood Crypto | No commission (spread embedded) | 0.05% against the trade (paper and backtest) |
 | Robinhood Options | $0.03/contract (regulatory fee) | — |
 
-Live fills record exchange-reported fees and order IDs.
+Live fills record exchange-reported fees and order IDs. The fee rates are the code constants; the production account rate is not yet verified (issue 1726).
 
 ---
 

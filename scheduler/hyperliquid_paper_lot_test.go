@@ -628,8 +628,12 @@ func runPaperLotScenario(t *testing.T, fx paperLotFixture, coin string, d int, p
 	if pos = s.Positions[coin]; !approxEq(pos.Quantity, remaining+wantAdd) || pos.InitialQuantity != wantQty+wantAdd || pos.ScaleInCount != 1 {
 		t.Fatalf("after the add %+v, want qty %v initial %v", pos, remaining+wantAdd, wantQty+wantAdd)
 	}
-	if !approxEq(s.Cash, cash-CalculatePlatformSpotFee("hyperliquid", wantAdd*px)) {
-		t.Fatalf("scale-in cash %v", s.Cash)
+	addPx := px * (1 + SlippagePct)
+	if side == "short" {
+		addPx = px * (1 - SlippagePct)
+	}
+	if math.Abs(add.Price-addPx) > 1e-9 || !approxEq(s.Cash, cash-CalculatePlatformSpotFee("hyperliquid", wantAdd*addPx)) {
+		t.Fatalf("scale-in cash %v price %v, want the add at %v (mid moved against the add side by SlippagePct)", s.Cash, add.Price, addPx)
 	}
 	requireHeld(t, "scale-in below the venue minimum", sc, s, func() int {
 		n, _, _, _ := executeHyperliquidScaleInDeferredOpen(sc, s, addRes, nil, "ADD", px, 5/px, silentStrategyLogger(sc.ID))
@@ -983,8 +987,8 @@ func TestPaperHLHeldPartialCloseRunsQuietCycleMaintenance(t *testing.T) {
 		if s.Positions["ETH"] != nil {
 			t.Fatal("the breach at the re-armed stop left the position open")
 		}
-		if last := lastTrade(t, s); !last.IsClose || last.Price != 1950 || last.Quantity != 1 {
-			t.Fatalf("stop close = %+v, want the whole position closed at the 1950 mark", last)
+		if last := lastTrade(t, s); !last.IsClose || math.Abs(last.Price-1950*(1-SlippagePct)) > 1e-9 || last.Quantity != 1 || last.StopLossTriggerPx != 1968 {
+			t.Fatalf("stop close = %+v, want the whole position closed at the 1950 mark moved against the sell by SlippagePct, trigger 1968 unslipped", last)
 		}
 	})
 

@@ -141,7 +141,7 @@ func advancePaperDynamicCloseRegime(sc StrategyConfig, stratState *StrategyState
 	if !trailingStopBreached(pos.Side, mark, newTrigger) {
 		return 0, ""
 	}
-	fillPx := paperStopFillPx(pos.Side, mark, newTrigger)
+	fillPx := paperStopBookPx(pos.Side, paperStopFillPx(pos.Side, mark, newTrigger))
 	if !recordPerpsStopLossClose(stratState, symbol, fillPx, paperStopReasonATR, logger) {
 		return 0, ""
 	}

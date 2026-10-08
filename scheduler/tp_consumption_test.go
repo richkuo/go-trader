@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"math"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -310,18 +312,33 @@ func TestReplayTakeProfitPartialCreatesOneRecord(t *testing.T) {
 	sc := unifiedSLStrategy("tiered_tp_atr_regime", "perps", false, "breakeven")
 	pos := &Position{Symbol: "ETH", Side: "long", Quantity: 2, InitialQuantity: 2, AvgCost: 2000, EntryATR: 40, Regime: "ranging"}
 	st := &StrategyState{ID: sc.ID, Cash: 5000, Positions: map[string]*Position{"ETH": pos}}
-	row := ReplayDecision{DecisionID: 1, DecisionType: ReplayDecisionPartialClose, Symbol: "ETH", Side: "long", Quantity: 1, CloseReason: "hl_sync_tp1_fill"}
+	row := ReplayDecision{DecisionID: 1, DecisionType: ReplayDecisionPartialClose, Symbol: "ETH", Side: "long", Quantity: 1, ReferencePrice: 2090, CloseReason: "hl_sync_tp1_fill"}
 	applyReplayedLiveDecisions(sc, st, []ReplayDecision{row}, 2100, &HyperliquidResult{Symbol: "ETH"}, &Config{}, &StrategyLogger{stratID: sc.ID, writer: &bytes.Buffer{}})
 	if len(pos.TPConsumptions) != 1 || pos.TPConsumptions[0].Stage != tpConsumptionBooked {
 		t.Fatalf("replay record = %+v", pos.TPConsumptions)
 	}
+	if len(st.TradeHistory) != 1 || st.TradeHistory[0].Price != 2090 || strings.Contains(st.TradeHistory[0].Details, "tier_price_source") {
+		t.Fatalf("take-profit replay close = %+v, want the live tier price 2090 with no slippage", st.TradeHistory)
+	}
+	noTier := &Position{Symbol: "ETH", Side: "long", Quantity: 2, InitialQuantity: 2, AvgCost: 2000, EntryATR: 40, Regime: "ranging"}
+	stNoTier := &StrategyState{ID: sc.ID, Cash: 5000, Positions: map[string]*Position{"ETH": noTier}}
+	noTierRow := row
+	noTierRow.DecisionID = 2
+	noTierRow.ReferencePrice = 0
+	applyReplayedLiveDecisions(sc, stNoTier, []ReplayDecision{noTierRow}, 2100, &HyperliquidResult{Symbol: "ETH"}, &Config{}, &StrategyLogger{stratID: sc.ID, writer: &bytes.Buffer{}})
+	if len(stNoTier.TradeHistory) != 1 || stNoTier.TradeHistory[0].Price != 2100 || !strings.Contains(stNoTier.TradeHistory[0].Details, "tier_price_source=cycle_price") {
+		t.Fatalf("take-profit replay close without a tier price = %+v, want the cycle price 2100 unslipped and labeled tier_price_source=cycle_price", stNoTier.TradeHistory)
+	}
 	other := &Position{Symbol: "ETH", Side: "long", Quantity: 2, InitialQuantity: 2, AvgCost: 2000, EntryATR: 40, Regime: "ranging"}
 	st2 := &StrategyState{ID: sc.ID, Cash: 5000, Positions: map[string]*Position{"ETH": other}}
-	row.DecisionID = 2
+	row.DecisionID = 3
 	row.CloseReason = "stop_loss"
 	applyReplayedLiveDecisions(sc, st2, []ReplayDecision{row}, 2100, &HyperliquidResult{Symbol: "ETH"}, &Config{}, &StrategyLogger{stratID: sc.ID, writer: &bytes.Buffer{}})
 	if len(other.TPConsumptions) != 0 {
 		t.Fatalf("non-take-profit replay created %+v", other.TPConsumptions)
+	}
+	if len(st2.TradeHistory) != 1 || math.Abs(st2.TradeHistory[0].Price-2100*(1-SlippagePct)) > 1e-9 {
+		t.Fatalf("non-take-profit replay close = %+v, want the 2100 cycle price moved against the sell by SlippagePct", st2.TradeHistory)
 	}
 }
 

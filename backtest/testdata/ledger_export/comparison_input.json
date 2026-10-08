@@ -4,9 +4,9 @@
   "description": "Strict-supported fixture: hl-strict-btc over the frozen synthetic BTC 1h window.",
   "export": {
     "schema": "go-trader.booked-ledger",
-    "schema_version": 1,
+    "schema_version": 2,
     "capture_manifest_sha256": "a35623c14d5675b735b9a7ba01f0cd574c0b06bf280ea67ed8acf2a437cf0703",
-    "booked_sections_sha256": "65d0d83f79a988a2104ea59e45d1abd3054b2f4569807eaeba1776dcdfa75fac",
+    "booked_sections_sha256": "fbd3b4fcbee49dedff798498fa2ebb980d6d9d5bda2b265fa372964c724659ad",
     "selection": {
       "partition": "live",
       "process_strategy_id": "hl-strict-btc"
