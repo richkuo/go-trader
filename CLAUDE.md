@@ -39,7 +39,7 @@ Guardrails only; mechanism: SKILL.md, docs/POST_UPDATE_HISTORY.md. CI fails at 1
 - `shared_wallet*.go`: PRE-FEE `realized_pnl`, net via `tradeNetPnL*`. Pool budgeting: 2+ live HL/OKX perps omit capital fields, `margin_per_trade_usd`>0; allocated-pool flat-only.
 - `kill_switch_limit_orders.go`: cancel each `pending_limit_orders` ROW pre-flatten; **never gate `reconcilePendingLimitOrders` on kill-switch**; cancel!=adoption, never auto-delete unadopted fill.
 - `orphan_limit_cancel_alerts.go`: cancel-only lane, status-FIRST finalize, books NO fill; `orphanLimitCancelState`=SSoT (off-book fill=UNTRACKED POSITION). `limit_fill_exposure.go`: books limit fill ONLY once live exposure confirms; per-coin aggregate, never per-row greedy; fail-closed same-dir+contained; `unreadable`/`unbacked` refuse book+block delete.
-- `shared_scripts/`: check scripts take `--regime-payload-json`, probed at start. Lot gate (floor, never full close): live partial=`check_hyperliquid.py`, no lot=no gate; HL perps paper (+opens/adds)=Go, sub-min/no lot=HOLD+no write+quiet cycle. `platforms/<name>/adapter.py`: 1 `*ExchangeAdapter`; HL `_sz_decimals()` via `name_to_asset`. `funding_fetcher.py`: `merge_asof` backward, DISJOINT `funding_coverage`; `regime.py` ATR `simple`.
+- `shared_scripts/`: check scripts take `--regime-payload-json`, probed at start. Lot gate (floor, never full close): live partial=`check_hyperliquid.py`, no lot=no gate; HL perps paper (+opens/adds)=Go, sub-min/no lot=HOLD+no write+quiet cycle. `platforms/<name>/adapter.py`: 1 `*ExchangeAdapter`; HL `_sz_decimals()` via `name_to_asset`. `funding_fetcher.py`: `merge_asof` backward, DISJOINT `funding_coverage`; in-coverage gaps refill by strict download only, `funding_venue_gaps`=venue-absent (charge 0), failed refill writes nothing; `regime.py` ATR `simple`.
 - `shared_strategies/`: open SSoT `open/registry.py`; **`open/{spot,futures}/strategies.py`=shims, never edit.** Close: `close/registry.py` via `from close_registry_loader import ..`, never bare `import registry`. `hurst_exponent`=SSoT.
 - HL tier parity: `tp_model: resting_limit` evaluators == `buildHyperliquidProtectionPlan` (SSoT `tp_tier_parity.json`); `close_tier_fill_price` paper-only; ladder load=`validateTPTierLadders`.
 - `ledger_compare.py`: sim tier close needs winning `resting_fill`; same costs.
@@ -78,6 +78,7 @@ Guardrails only; mechanism: SKILL.md, docs/POST_UPDATE_HISTORY.md. CI fails at 1
 - Harness map `docs/backtesting-registry.md`: add/deprecate PR updates row.
 - SL-vs-TP races default `ohlc_walk`.
 - Look-ahead: bar N signal fills at N+1 open; regime gate reads N-1; closes use closed-bar ATR. **HTF series indexed by candle OPEN time MUST `.shift(1)` BEFORE `reindex(..,method="ffill")`.**
+- HL perps backtests charge funding (`--funding charge`); incomplete=refuse save, block promotion.
 - Backtester rejects HL-live-only closes (`regime_window_divergence`/`tiered_tp_atr_live_regime_dynamic`); no options regime gating.
 - M1-M6, auto_suggest, regime promotion, `tune_live.py`=SUGGEST-ONLY: **never write live defaults/config/PRs.**
 
