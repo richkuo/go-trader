@@ -1083,7 +1083,11 @@ Every full close eagerly inserts a `trade_diagnostics` row at close time; a back
 
 Run every backtest through `uv run --no-sync python`. Harness map: [`docs/backtesting-registry.md`](docs/backtesting-registry.md).
 
-Hyperliquid perps runs charge hourly funding by default (`--funding charge`). The shared helper attaches right-closed accrual (a funding time is in a bar when it is after the previous bar open and at or before that bar). Missing-hour counts use that same bar for every bar width. The engine refuses an incomplete charge result before it saves. Compare and multi-asset record a refused strategy and still run the others, then exit 1. A frame that does not charge funding is stored as `not_priced` (`off` stays `off`). `--funding partial` keeps a flagged result. `--funding off` reproduces the older directional result: cash still includes `delta_neutral_funding` accrual, and per-trade statistics stay on price PnL. M1 noise, the fee audit, and Monte Carlo take that same option and record `funding_incomplete`. M1–M6, `auto_suggest`, and `tune_live` stay suggest-only.
+Hyperliquid perps runs charge hourly funding by default (`--funding charge`). The shared helper attaches right-closed accrual (a funding time is in a bar when it is after the previous bar open and at or before that bar). Missing-hour counts use that same bar for every bar width. The engine refuses an incomplete charge result before it saves. Compare and multi-asset record a refused strategy and still run the others, then exit 1. A frame that does not charge funding is stored as `not_priced` (`off` stays `off`). `--funding partial` keeps a flagged result. `--funding off` reproduces the older directional result: cash still includes `delta_neutral_funding` accrual, and per-trade statistics stay on price PnL.
+A cache hit also refills finalized hours that have no stored rate inside a covered interval, by a strict Hyperliquid download of each contiguous run (#1747).
+Only a complete download with ascending, contiguous pages and a print on both sides of an hour records that hour as venue-absent in `funding_venue_gaps`, and charge counts a marked hour as present at zero accrual.
+A failed download writes nothing and reports `fetch_error`.
+M1 noise, the fee audit, and Monte Carlo take that same option and record `funding_incomplete`. M1–M6, `auto_suggest`, and `tune_live` stay suggest-only.
 
 ```bash
 uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode single|compare|multi|optimize
