@@ -7,6 +7,7 @@ import itertools
 import json
 import math
 import os
+import re
 import sys
 import traceback
 from typing import Optional
@@ -39,7 +40,10 @@ from backtester import (
     CapabilityContext,
     CloseCapabilityError,
     PAPER_FILL_COST_MODELS,
+    RESTING_TP_TIER_CLOSES,
+    RESTING_TP_UNSUPPORTED_CLOSE,
     _apply_direction_invert_value,
+    _ensure_close_strategies_path,
     _close_fraction_columns,
     _finite_number,
     _normalize_open_action,
@@ -52,9 +56,9 @@ from backtester import (
 )
 
 REPORT_SCHEMA = "go-trader.ledger-reconciliation-report"
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
 INPUT_SCHEMA = "go-trader.ledger-comparison-input"
-SUPPORTED_INPUT_VERSIONS = (1, 2, 3)
+SUPPORTED_INPUT_VERSIONS = (1, 2, 3, 4)
 EXPORT_SCHEMA = "go-trader.booked-ledger"
 SUPPORTED_EXPORT_VERSIONS = (1, 2)
 EXIT_STRICT_SUCCESS = 0
@@ -176,6 +180,20 @@ INFORMATIONAL_FIELDS = {
 DECISION_TIMING_CLOSED_BAR = "closed_bar"
 DECISION_TIMING_LEGACY = "legacy_runtime"
 
+RESTING_RULE_INPUT_KEYS = ("enabled", "k_ticks", "source")
+RESTING_RULE_INPUT_VERSION = 4
+RESTING_RULE_PROVENANCE = "structural_floor"
+RESTING_TIER_CLOSE_REASONS = tuple(RESTING_TP_TIER_CLOSES) + (RESTING_TP_UNSUPPORTED_CLOSE,)
+RESTING_REPLAY_FIELDS = ("replay_sharing", "replay_source_id")
+RESTING_HL_SYNC_TP_REASON = re.compile(r"^hl_sync_tp[0-9]+_fill$")
+RESTING_POSSIBLE_TIER_REASONS = ("signal",)
+RESTING_FILL_PARITY_SCOPE = (
+    "agreement is claimed only for tier closes on frames where no armed stop is reached, under ohlc_walk; stop "
+    "closes are not claimed equal; an intrabar tier close matches a booked record time inside its bar plus the "
+    "time tolerance, so a booked touch fill recorded inside the next bar's window cannot be told apart from a "
+    "trade-through in that bar; that window is unchanged by the rule"
+)
+
 
 class LedgerInputError(ValueError):
     pass
@@ -202,6 +220,82 @@ def resolve_decision_timing(strategy: dict) -> dict:
             "basis": "closed_bar_decisions is off or omitted, so live checks may have decided on a forming bar",
             "limitation": "a closed-bar simulation cannot establish historical forming-bar decision parity without "
                           "recorded decision evidence; this diagnostic never implies verified input parity"}
+
+
+def _resting_rule_floor_ticks() -> int:
+    _ensure_close_strategies_path()
+    from _helpers import RESTING_TP_TRADE_THROUGH_TICKS
+    return int(RESTING_TP_TRADE_THROUGH_TICKS)
+
+
+def _close_ref_names(refs) -> list:
+    names = []
+    for ref in refs or []:
+        if isinstance(ref, dict):
+            name = ref.get("name")
+        else:
+            name = ref
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
+def resolve_resting_rule(strategy: dict, close_names, input_rule: Optional[dict]) -> dict:
+    floor = _resting_rule_floor_ticks()
+    names = list(close_names or [])
+    live = _args_are_live(strategy.get("args"))
+    flag_present = "resting_tp_trade_through" in strategy
+    flag_value = strategy.get("resting_tp_trade_through") if flag_present else None
+    out = {
+        "status": "off", "enabled": False, "source": None, "k_ticks": floor,
+        "provenance": RESTING_RULE_PROVENANCE, "mode": "live" if live else "paper",
+        "flag_present": flag_present, "flag_value": flag_value,
+        "input": copy.deepcopy(input_rule),
+        "tier_strategy": any(name in RESTING_TIER_CLOSE_REASONS for name in names),
+        "close_names": names, "refusal": None,
+    }
+
+    def refuse(code: str, detail: str) -> dict:
+        out.update(status="refused", enabled=False, refusal={"reason_code": code, "detail": detail})
+        return out
+
+    if flag_present and not isinstance(flag_value, bool):
+        return refuse("resting_rule_flag_invalid",
+                      f"resting_tp_trade_through must be a JSON boolean, got {flag_value!r}")
+    if live:
+        if flag_value is True:
+            return refuse("resting_rule_live_flag",
+                          "a live strategy refuses resting_tp_trade_through at config load; the venue decides "
+                          "live take-profit fills, so the comparison input names the rule")
+        out["source"] = "comparison_input" if input_rule is not None else "default_off"
+        enabled = bool(input_rule["enabled"]) if input_rule is not None else False
+    else:
+        out["source"] = "paper_strategy_flag"
+        enabled = flag_value is True
+    if input_rule is not None and input_rule["k_ticks"] != floor:
+        return refuse("resting_rule_k_unsupported",
+                      f"resting_tp_rule.k_ticks {input_rule['k_ticks']!r} is not the structural floor {floor}; "
+                      "a different threshold needs a recorded measurement")
+    if not live and input_rule is not None and bool(input_rule["enabled"]) != enabled:
+        return refuse("resting_rule_conflict",
+                      f"resting_tp_rule.enabled {input_rule['enabled']!r} disagrees with the paper strategy's "
+                      f"own resting_tp_trade_through {flag_value!r}")
+    if enabled:
+        why = None
+        if str(strategy.get("platform") or "").strip().lower() != "hyperliquid" or strategy.get("type") != "perps":
+            why = "the rule models Hyperliquid perps resting take-profit limits only"
+        elif RESTING_TP_UNSUPPORTED_CLOSE in names:
+            why = f"the rule does not support {RESTING_TP_UNSUPPORTED_CLOSE} (a Hyperliquid live-only close)"
+        elif not any(name in RESTING_TP_TIER_CLOSES for name in names):
+            why = f"the rule needs a tier close ({', '.join(RESTING_TP_TIER_CLOSES)}); close refs are {names}"
+        elif strategy.get("allow_scale_in"):
+            why = "the rule does not model scale-in adds; the tier geometry must stay frozen"
+        elif any(_active(strategy.get(field)) for field in RESTING_REPLAY_FIELDS):
+            why = "a replay-mirror strategy books live take-profit closes at the live tier price"
+        if why is not None:
+            return refuse("resting_rule_ineligible", why)
+        out.update(status="enabled", enabled=True)
+    return out
 
 
 def _sha256(data: bytes) -> str:
@@ -443,8 +537,24 @@ def validate_comparison_input(doc, base_dir: str) -> dict:
         if version < 2:
             raise LedgerInputError("initial_stop_geometry_evidence needs comparison input version 2")
         _validate_geometry_evidence(geometry)
+    if "resting_tp_rule" in doc:
+        if version < RESTING_RULE_INPUT_VERSION:
+            raise LedgerInputError(
+                f"resting_tp_rule needs comparison input version {RESTING_RULE_INPUT_VERSION}")
+        _validate_resting_rule_input(doc["resting_tp_rule"])
     return {"manifest_path": manifest_path, "start": start, "end": end, "tolerances": tolerances,
             "input_version": version}
+
+
+def _validate_resting_rule_input(rule) -> None:
+    if not isinstance(rule, dict) or set(rule) != set(RESTING_RULE_INPUT_KEYS):
+        raise LedgerInputError(f"resting_tp_rule must be an object with exactly the keys {list(RESTING_RULE_INPUT_KEYS)}")
+    if not isinstance(rule["enabled"], bool):
+        raise LedgerInputError("resting_tp_rule.enabled must be a JSON boolean")
+    if not _is_strict_int(rule["k_ticks"]):
+        raise LedgerInputError("resting_tp_rule.k_ticks must be an integer")
+    if not isinstance(rule["source"], str) or not rule["source"].strip():
+        raise LedgerInputError("resting_tp_rule.source must be a non-empty string")
 
 
 def _validate_provenance(entry, label: str, presence: bool) -> None:
@@ -1483,7 +1593,7 @@ def _comparison_perps_sizing(strategy: dict, evidence: dict, version: int):
 
 def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_verdict: dict,
                       atr_verdict: Optional[dict] = None, regime_context: Optional[dict] = None,
-                      input_version: int = 2) -> list:
+                      input_version: int = 2, resting_rule: Optional[dict] = None) -> list:
     strategy = seg.get("strategy") or {}
     regime = seg.get("regime") or {}
     risk = seg.get("portfolio_risk") or {}
@@ -1673,6 +1783,26 @@ def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_v
     else:
         row("closed_bar_decisions", "decision_timing", timing["value"], "informational",
             f"{timing['basis']}; {timing['limitation']}")
+    handled.add("resting_tp_trade_through")
+    if resting_rule is None:
+        close_ref = strategy.get("close_strategy")
+        resting_rule = resolve_resting_rule(strategy, _close_ref_names([close_ref] if close_ref else []), None)
+    rule_value = {"enabled": resting_rule["enabled"], "source": resting_rule["source"],
+                  "k_ticks": resting_rule["k_ticks"], "provenance": resting_rule["provenance"],
+                  "flag_value": resting_rule["flag_value"]}
+    if resting_rule["status"] == "refused":
+        row("resting_tp_trade_through", "take_profit_fill_model", rule_value, "refused",
+            resting_rule["refusal"]["detail"], reason_code=resting_rule["refusal"]["reason_code"])
+    elif resting_rule["enabled"]:
+        row("resting_tp_trade_through", "take_profit_fill_model", rule_value, "modeled",
+            f"one-tick trade-through on adapter-rounded limits; source {resting_rule['source']}")
+    elif resting_rule["tier_strategy"]:
+        row("resting_tp_trade_through", "take_profit_fill_model", rule_value, "informational",
+            f"rule off (source {resting_rule['source']}): simulated tier closes are resting_fill_unverified, "
+            "so a tier close on either side refuses strict success")
+    else:
+        row("resting_tp_trade_through", "take_profit_fill_model", rule_value, "inactive",
+            f"no tier close evaluator (source {resting_rule['source']})")
     regime_rows = (regime_context or {}).get("rows") or []
     for item in regime_rows:
         handled.add(item["field"])
@@ -2038,6 +2168,8 @@ def run_simulation(market: dict, signals: pd.DataFrame, plan: dict) -> dict:
                           "slippage_pct": "manifest dataset half_spread_bps + manifest costs.slippage_bps",
                       },
                       "tier_fee_check": _tier_fee_check(spec)}
+    if plan.get("resting_tp_trade_through"):
+        kwargs["resting_tp_trade_through"] = True
     stop = plan.get("stop") or {}
     if stop.get("kwargs"):
         kwargs.update(stop["kwargs"])
@@ -2073,11 +2205,21 @@ def run_simulation(market: dict, signals: pd.DataFrame, plan: dict) -> dict:
             "stop_warmup_skipped_entries": res.get("stop_warmup_skipped_entries", 0)}
 
 
+def _close_reason_name(reason) -> str:
+    return str(reason or "").split(":", 1)[0]
+
+
+def is_simulated_tier_close(event: dict) -> bool:
+    return (event.get("kind") == "close" and not event.get("synthetic")
+            and _close_reason_name(event.get("reason")) in RESTING_TIER_CLOSE_REASONS)
+
+
 def normalize_simulated(env: dict) -> dict:
     positions = {}
     funding = []
     synthetic = []
     dispositions = {}
+    tier_closes = [e for e in env["events"] if is_simulated_tier_close(e)]
     for e in env["events"]:
         if e["kind"] == "funding":
             funding.append(e)
@@ -2108,10 +2250,11 @@ def normalize_simulated(env: dict) -> dict:
             "net": _fsum(e["gross_realized"] or 0.0 for e in closes) - _fsum(e["fee_charged"] for e in evs),
             "entry_fee_allocated": _fsum(e["entry_fee_allocated"] or 0.0 for e in closes),
             "entry_fee_outstanding": (end.get("entry_fee_outstanding") or 0.0) if end.get("position_local_id") == pid else 0.0,
+            "tier_close_event_ids": [e["event_id"] for e in closes if is_simulated_tier_close(e)],
         })
         out.append(p)
     return {"positions": out, "funding": funding, "synthetic": synthetic, "dispositions": dispositions,
-            "interval_end": end}
+            "interval_end": end, "tier_closes": tier_closes}
 
 
 def _time_window(sim_event: dict, step_s: float, tol_s: float):
@@ -2508,6 +2651,181 @@ def conservation(booked_doc: dict, norm: dict, sim: Optional[dict], sim_env: Opt
     return {"checks": checks, "all_passed": all(c["ok"] for c in checks), "informational_totals": informational}
 
 
+def classify_booked_close(close_reason) -> str:
+    if close_reason is None or close_reason in RESTING_POSSIBLE_TIER_REASONS:
+        return "possible_tier"
+    reason = str(close_reason)
+    if _close_reason_name(reason) in RESTING_TIER_CLOSE_REASONS or RESTING_HL_SYNC_TP_REASON.match(reason):
+        return "tier"
+    return "non_tier"
+
+
+def _resting_fill_consistent(evidence: dict, event: dict, k_ticks: int) -> bool:
+    return (evidence.get("rule") == "trade_through" and evidence.get("k_ticks") == k_ticks
+            and evidence.get("verdict") == "traded_through" and _is_number(evidence.get("fill_px"))
+            and _is_number(event.get("raw_price")) and evidence["fill_px"] == event["raw_price"])
+
+
+def resting_fill_populations(rule: Optional[dict], booked: dict, simulated: Optional[dict], matched: list,
+                             booked_disp: dict, sim_disp: dict) -> dict:
+    enabled = bool(rule and rule["enabled"])
+    tier_strategy = bool(rule and rule["tier_strategy"])
+    comp_by_b, comp_by_s = {}, {}
+    for pair in matched:
+        for comp in pair["components"]:
+            comp_by_b[comp["booked_event_key"]] = comp
+            comp_by_s[comp["simulated_event_id"]] = comp
+    sim_events = {}
+    if simulated is not None:
+        for p in simulated["positions"]:
+            for e in p["_events"]:
+                sim_events[e["event_id"]] = e
+    records = {r["event_key"]: r for r in booked["records"]}
+
+    def disposition(comp, disp):
+        if comp is not None:
+            return "matched"
+        return "ambiguous" if disp == "ambiguous" else "unmatched"
+
+    booked_rows = []
+    booked_class = {}
+    if tier_strategy:
+        for r in booked["records"]:
+            if r["relation"] != "in" or r["kind"] != "close" or booked_disp.get(r["event_key"]) == "not_comparable":
+                continue
+            cls = classify_booked_close(r["close_reason"])
+            comp = comp_by_b.get(r["event_key"])
+            sim_ev = sim_events.get(comp["simulated_event_id"]) if comp else None
+            sim_tier = is_simulated_tier_close(sim_ev) if sim_ev is not None else None
+            if cls == "possible_tier" and comp is not None and sim_tier is False and comp["within_tolerance"]:
+                cls = "resolved_non_tier"
+            booked_class[r["event_key"]] = cls
+            if cls == "non_tier":
+                continue
+            booked_rows.append({
+                "event_key": r["event_key"], "position_id": r["position_id"], "timestamp": r["timestamp"],
+                "close_reason": r["close_reason"], "classification": cls,
+                "disposition": disposition(comp, booked_disp.get(r["event_key"])),
+                "simulated_event_id": comp["simulated_event_id"] if comp else None,
+                "simulated_is_tier_close": sim_tier,
+                "within_tolerance": comp["within_tolerance"] if comp else None,
+            })
+    sim_rows = []
+    for e in (simulated or {}).get("tier_closes") or []:
+        comp = comp_by_s.get(e["event_id"])
+        bkey = comp["booked_event_key"] if comp else None
+        if bkey is not None and bkey not in booked_class and bkey in records:
+            booked_class[bkey] = classify_booked_close(records[bkey]["close_reason"])
+        sim_rows.append({
+            "event_id": e["event_id"], "position_local_id": e["position_local_id"],
+            "bar_timestamp": e["bar_timestamp"], "reason": e["reason"], "quantity": e["quantity"],
+            "raw_price": e["raw_price"], "disposition": disposition(comp, sim_disp.get(e["event_id"])),
+            "booked_event_key": bkey, "booked_classification": booked_class.get(bkey) if bkey else None,
+            "within_tolerance": comp["within_tolerance"] if comp else None,
+            "resting_fill": copy.deepcopy(e.get("resting_fill")),
+        })
+
+    failures = []
+    failed_ids = set()
+    out_of_tolerance_pairs = set()
+
+    def fail(code, detail, event_id=None, event_key=None):
+        failures.append({"code": code, "detail": detail, "simulated_event_id": event_id,
+                         "booked_event_key": event_key})
+        if event_id is not None:
+            failed_ids.add(("s", event_id))
+        if event_key is not None:
+            failed_ids.add(("b", event_key))
+
+    def out_of_tolerance(event_id, event_key):
+        if (event_id, event_key) in out_of_tolerance_pairs:
+            return
+        out_of_tolerance_pairs.add((event_id, event_key))
+        fail("tier_close_out_of_tolerance",
+             f"booked close {event_key} and simulated close {event_id} are paired outside the time, price, "
+             "quantity or fee tolerance", event_id, event_key)
+
+    k_ticks = rule["k_ticks"] if rule else None
+    counted_booked = [b for b in booked_rows if b["classification"] in ("tier", "possible_tier")]
+    if not enabled:
+        for srow in sim_rows:
+            fail("resting_fill_unverified",
+                 "the resting take-profit rule is off, so this simulated tier close books on the mark without "
+                 "trade-through evidence", srow["event_id"], srow["booked_event_key"])
+        for brow in counted_booked:
+            fail("resting_fill_unverified",
+                 f"the resting take-profit rule is off, so booked {brow['classification']} close cannot be "
+                 "verified against a trade-through", brow["simulated_event_id"], brow["event_key"])
+    else:
+        for srow in sim_rows:
+            evidence = srow["resting_fill"]
+            sid, bkey = srow["event_id"], srow["booked_event_key"]
+            if not isinstance(evidence, dict):
+                fail("resting_fill_missing", "a rule-on simulated tier close carries no resting_fill record", sid, bkey)
+            elif not _resting_fill_consistent(evidence, srow, k_ticks):
+                fail("resting_fill_inconsistent",
+                     f"resting_fill rule {evidence.get('rule')!r}, k_ticks {evidence.get('k_ticks')!r}, verdict "
+                     f"{evidence.get('verdict')!r} and fill_px {evidence.get('fill_px')!r} do not prove a "
+                     f"{k_ticks}-tick trade-through fill at the event price {srow['raw_price']!r}", sid, bkey)
+            if srow["disposition"] != "matched":
+                fail("simulated_tier_close_unmatched",
+                     f"simulated tier close is {srow['disposition']}; no booked close is paired with it", sid, None)
+            else:
+                if srow["booked_classification"] == "non_tier":
+                    fail("simulated_tier_close_paired_with_non_tier",
+                         f"simulated tier close is paired with booked non-tier close {bkey}", sid, bkey)
+                if not srow["within_tolerance"]:
+                    out_of_tolerance(sid, bkey)
+        for brow in counted_booked:
+            sid, bkey = brow["simulated_event_id"], brow["event_key"]
+            if brow["disposition"] != "matched":
+                fail("booked_tier_close_unmatched",
+                     f"booked {brow['classification']} close is {brow['disposition']}; no simulated close is paired "
+                     "with it", None, bkey)
+                continue
+            if brow["classification"] == "tier" and brow["simulated_is_tier_close"] is False:
+                fail("booked_tier_close_paired_with_non_tier",
+                     f"booked tier close is paired with simulated non-tier close {sid}", sid, bkey)
+            if not brow["within_tolerance"]:
+                out_of_tolerance(sid, bkey)
+        if not sim_rows and counted_booked:
+            fail("resting_rule_suppressed_every_tier_close",
+                 f"the enabled rule left no simulated tier close while {len(counted_booked)} booked tier or "
+                 "possible tier close(s) remain: " + ", ".join(b["event_key"] for b in counted_booked))
+    for srow in sim_rows:
+        srow["status"] = "failed" if ("s", srow["event_id"]) in failed_ids else "verified"
+    for brow in booked_rows:
+        if brow["classification"] == "resolved_non_tier":
+            brow["status"] = "resolved_non_tier"
+        else:
+            brow["status"] = "failed" if ("b", brow["event_key"]) in failed_ids else "verified"
+    counts = {
+        "simulated_tier_closes": len(sim_rows),
+        "simulated_with_resting_fill": sum(1 for r in sim_rows if isinstance(r["resting_fill"], dict)),
+        "booked_tier": sum(1 for b in booked_rows if b["classification"] == "tier"),
+        "booked_possible_tier": sum(1 for b in booked_rows if b["classification"] == "possible_tier"),
+        "booked_resolved_non_tier": sum(1 for b in booked_rows if b["classification"] == "resolved_non_tier"),
+        "failures": len(failures),
+    }
+    return {
+        "rule": copy.deepcopy(rule),
+        "simulated_tier_closes": sim_rows,
+        "booked_tier_closes": booked_rows,
+        "counts": counts,
+        "failures": failures,
+        "parity_scope": RESTING_FILL_PARITY_SCOPE,
+        "classification": {
+            "simulated": "a non-synthetic simulated close whose reason name (text before the first ':') is one of "
+                         + ", ".join(RESTING_TIER_CLOSE_REASONS) + "; resting_fill presence never decides membership",
+            "booked": "on a strategy whose close refs include a tier evaluator: tier when close_reason starts with a "
+                      "tier evaluator name or is hl_sync_tp<N>_fill; possible_tier when close_reason is unavailable "
+                      "or 'signal'; non_tier otherwise; a possible_tier close paired within tolerance with a "
+                      "simulated non-tier close resolves to non_tier",
+        },
+        "verified": not failures,
+    }
+
+
 def _decision_class(rows: list) -> tuple:
     refusals = [r for r in rows if r["decision"] == "refused"]
     return refusals, [r for r in rows if r["decision"] == "requires_evidence_verified"]
@@ -2581,6 +2899,10 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                      "input_version": input_version, "basis": None, "resolved_live_units": None,
                      "capability_context": None, "close_refs": None})
     has_close = bool(strategy.get("close_strategy"))
+    plan_close_refs = ((copy.deepcopy(stop_verdict["close_refs"]) if stop_verdict.get("close_refs") is not None
+                        else [strategy["close_strategy"]]) if has_close else None)
+    resting_rule = (resolve_resting_rule(strategy, _close_ref_names(plan_close_refs), cin.get("resting_tp_rule"))
+                    if seg else None)
     atr_verdict = resolve_atr_method(seg, has_close or stop_verdict.get("owner") in STOP_OWNERS_NEEDING_ATR)
     regime_context = None
     if seg:
@@ -2599,7 +2921,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             seg, cin.get("capability_evidence") or {}, regime_binding, market_for_regime,
             bool(stop_verdict.get("needs_labels")), mode, os.path.dirname(input_path))
     matrix = (capability_matrix(seg, cin.get("capability_evidence", {}), market_ctx, stop_verdict, atr_verdict,
-                                regime_context, input_version)
+                                regime_context, input_version, resting_rule)
               if seg else [])
     cap_refusals, cap_evidence = _decision_class(matrix)
     manual = strategy.get("type") == "manual"
@@ -2706,8 +3028,15 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                                                 and cost_resolution["partition"] != "live")):
         can_sim = False
         sim_status["reasons"].append("no comparison cost model was resolved")
+    use_spec = has_close and not strategy.get("allow_scale_in")
+    if can_sim and resting_rule is not None and resting_rule["enabled"] and not use_spec:
+        can_sim = False
+        refusals.append({"reason": "resting_rule_tick_unknown", "reason_code": "resting_rule_tick_unknown",
+                         "category": "take_profit_fill_model", "field": "resting_tp_trade_through",
+                         "detail": "the resting take-profit rule reads its tick grid from the execution spec, and "
+                                   "this run would not use one; the cost mode is never switched for the rule"})
+        sim_status["reasons"].append("the resting take-profit rule needs the execution spec")
     if can_sim:
-        use_spec = has_close and not strategy.get("allow_scale_in")
         paper_cost = cost_resolution["paper"]
         if not use_spec:
             approximations.append({"feature": "execution_cost", "category": "execution_cost",
@@ -2718,8 +3047,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                                    "effect": "fills are not lot-floored or minimum-checked"})
         plan = {
             "open_name": open_name, "params": dict(open_ref.get("params") or {}),
-            "close_refs": ((copy.deepcopy(stop_verdict["close_refs"]) if stop_verdict.get("close_refs") is not None
-                            else [strategy["close_strategy"]]) if has_close else None),
+            "close_refs": copy.deepcopy(plan_close_refs),
             "direction": direction, "invert_signal": invert,
             "atr_method": atr_method,
             "comparison_mode": mode, "initial_cash": float(cin["starting_state"]["cash_usd"]["value"]),
@@ -2730,6 +3058,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             "venue_margin": None,
             "regime_engine": (regime_context or {}).get("engine"),
             "paper_cost_model": paper_cost,
+            "resting_tp_trade_through": bool(resting_rule is not None and resting_rule["enabled"]),
         }
         if (plan["perps_sizing"] and _is_number(strategy.get("leverage")) and strategy.get("leverage") > 1
                 and _comparison_mode_name(strategy.get("args")) != "paper"
@@ -2843,6 +3172,8 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                 unverified.append({"input": "initial_stop_geometry", "reason": res["reason"],
                                    "booked_position_id": res["booked_position_id"]})
 
+    resting_fill = resting_fill_populations(resting_rule, booked, simulated, matched, booked_disp, sim_disp)
+
     pos_by_id = {p["position_id"]: p for p in booked["positions"]}
     booked_sections = {
         "matched_components": [c["booked_event_key"] for p in matched for c in p["components"]],
@@ -2916,6 +3247,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
         "strategy_totals_within_tolerance": bool(totals_ok),
         "initial_stop_geometry_consistent": initial_geometry is None or all(
             r["status"] in ("agreement", "unavailable") for r in initial_geometry["positions"]),
+        "resting_tier_closes_verified": resting_fill["verified"],
     }
     strict_success = all(strict_checks.values())
     if strict_success:
@@ -3049,6 +3381,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                             if e.get("event") == "arm"] if sim else None),
         },
         "initial_stop_geometry": initial_geometry,
+        "resting_fill": resting_fill,
         "matching": {
             "matched": matched,
             "ambiguous": ambiguous,
