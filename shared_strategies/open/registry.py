@@ -50,6 +50,7 @@ from connors_rsi import connors_rsi_reversion_core
 from vortex_trend import vortex_trend_core
 from relative_vigor_index import relative_vigor_index_core
 from awesome_oscillator import awesome_oscillator_core
+from money_flow_index import money_flow_index_reversal_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -1721,6 +1722,27 @@ def awesome_oscillator_strategy(df: pd.DataFrame, fast_period: int = 5, slow_per
 
 
 @register(
+    "money_flow_index_reversal",
+    "RESEARCH, no-edge (#1658) \u2014 Money Flow Index reversal: typical price times volume, split into positive and negative flow by the change in typical price, summed over lookback bars into a 0-100 oscillator; long when it rises strictly above oversold from at or below it, short when it falls strictly below overbought from at or above it. Missing or invalid volume holds; volume is never invented. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"lookback": 14, "oversold": 20.0, "overbought": 80.0},
+    platforms=("futures",),
+    constraints=[
+        "lookback >= 2",
+        "lookback <= 198",
+        "oversold >= 0",
+        "oversold < overbought",
+        "overbought <= 100",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/money_flow_index_reversal_1658/REPORT.md",
+    short_entries=True,
+)
+def money_flow_index_reversal_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return money_flow_index_reversal_core(df, **params)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1992,6 +2014,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
         "chaikin_money_flow_breakout", "open_interest_breakout", "connors_rsi_reversion",
         "vortex_trend", "relative_vigor_index", "awesome_oscillator",
+        "money_flow_index_reversal",
         "hold",
     ],
 }

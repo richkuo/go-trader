@@ -177,3 +177,81 @@ def test_malformed_batch_evidence_rejects_the_payload_before_evaluation(bad):
     assert payload["error_scope"] == "shared_state"
     assert payload["results"] == []
     assert payload["error"].startswith("invalid batch payload")
+
+
+MFI = "money_flow_index_reversal"
+MFI_REF = {"name": MFI, "params": {"lookback": 14, "oversold": 20.0, "overbought": 80.0}}
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_money_flow_index_reversal_is_refused_outside_explicit_paper(extra, reason):
+    proc = _run("check_hyperliquid.py", [MFI, "BTC", "4h"] + extra)
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert f"open strategy '{MFI}' is edge_status=no_edge" in payload["error"]
+    assert "backtest/candidates/money_flow_index_reversal_1658/REPORT.md" in payload["error"]
+    assert reason in payload["error"]
+
+
+@pytest.mark.parametrize("refs,mode,needle", [
+    ({"open": MFI_REF}, ["--mode=live"], f"open strategy '{MFI}' is edge_status=no_edge"),
+    ({"open": MFI_REF}, [], "missing mode"),
+    ({"open": {"name": "breakout"}, "closes": [{"name": MFI}]}, ["--mode=live"],
+     f"close strategy '{MFI}' is edge_status=no_edge"),
+    ({"open": {"name": "breakout"}, "closes": [{"name": MFI}]}, [], "missing mode"),
+])
+def test_money_flow_index_effective_open_and_close_fallback_are_gated(refs, mode, needle):
+    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--strategy-refs", json.dumps(refs),
+                                         "--market-stdin"] + mode, _solo_envelope())
+    assert proc.returncode == 1
+    error = _payload(proc)["error"]
+    assert needle in error
+
+
+@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],
+                                   ["--allow-no-edge"]])
+def test_money_flow_index_paper_or_acknowledged_runs_on_sealed_input(extra):
+    refs = {"open": MFI_REF, "closes": [{"name": "tiered_tp_atr", "params": {}}]}
+    proc = _run("check_hyperliquid.py", [MFI, "BTC", "4h", "--strategy-refs", json.dumps(refs), "--market-stdin"]
+                + extra, _solo_envelope())
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = _payload(proc)
+    assert not out.get("error")
+    assert out["open_strategy"] == MFI and out["close_strategies"] == ["tiered_tp_atr"]
+    assert out["indicators"]["mfi_lookback"] == 14.0
+    assert out["indicators"]["mfi_valid"] in (0.0, 1.0)
+    assert "fill" not in out and "order" not in out
+
+
+def test_money_flow_index_batch_slots_apply_the_same_admission_and_match_solo():
+    refs = {"open": MFI_REF, "closes": [{"name": "tiered_tp_atr", "params": {}}]}
+    fallback = {"open": {"name": "breakout"}, "closes": [{"name": MFI}]}
+    proc = _batch([
+        {"id": "paper", "strategy": MFI, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
+        {"id": "acked", "strategy": MFI, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True,
+         "strategy_refs": refs},
+        {"id": "unacked-live", "strategy": MFI, "mode": "live", "mode_args": ["--mode=live"], "strategy_refs": refs},
+        {"id": "missing", "strategy": MFI, "mode": "paper", "strategy_refs": refs},
+        {"id": "repeated", "strategy": MFI, "mode": "paper", "mode_args": ["--mode=paper", "--mode=paper"],
+         "strategy_refs": refs},
+        {"id": "fallback-live", "strategy": "breakout", "mode": "live", "mode_args": ["--mode=live"],
+         "strategy_refs": fallback},
+        {"id": "fallback-paper", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"],
+         "strategy_refs": fallback},
+    ])
+    assert proc.returncode == 1
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    for ok in ("paper", "acked", "fallback-paper"):
+        assert not results[ok].get("error"), results[ok]
+    assert "explicit live mode" in results["unacked-live"]["error"]
+    assert "missing mode" in results["missing"]["error"]
+    assert "invalid mode input" in results["repeated"]["error"]
+    assert f"close strategy '{MFI}' is edge_status=no_edge" in results["fallback-live"]["error"]
+
+    solo = _run("check_hyperliquid.py", [MFI, "BTC", "4h", "--mode=paper", "--strategy-refs", json.dumps(refs),
+                                         "--market-stdin"], _solo_envelope())
+    solo_out = _payload(solo)
+    for key in ("signal", "open_action", "close_fraction", "indicators"):
+        assert results["paper"].get(key) == solo_out.get(key)
+        assert results["acked"].get(key) == solo_out.get(key)

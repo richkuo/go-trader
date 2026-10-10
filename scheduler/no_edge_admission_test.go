@@ -638,3 +638,132 @@ func TestNoEdgeBatchSlotCarriesRawModeEvidenceAndAcknowledgement(t *testing.T) {
 		t.Fatal("acknowledgement must be part of the slot fingerprint")
 	}
 }
+
+func TestMoneyFlowIndexReversalAdmissionAndPaperAdd(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	const name = "money_flow_index_reversal"
+	const ref = "backtest/candidates/money_flow_index_reversal_1658/REPORT.md"
+	mfi := func(args ...string) map[string]interface{} {
+		return noEdgeHLStrategy("hl-mfi-eth", append([]string{name, "ETH", "4h"}, args...)...)
+	}
+	ack := func(sc map[string]interface{}) map[string]interface{} {
+		sc["allow_no_edge"] = true
+		return sc
+	}
+	openRef := func(sc map[string]interface{}) map[string]interface{} {
+		sc["open_strategy"] = map[string]interface{}{"name": name}
+		return sc
+	}
+	closeRef := func(sc map[string]interface{}) map[string]interface{} {
+		sc["close_strategy"] = map[string]interface{}{"name": name}
+		return sc
+	}
+	withArgs := func(sc map[string]interface{}, args ...string) map[string]interface{} {
+		sc["args"] = append([]string{"breakout", "ETH", "4h"}, args...)
+		return sc
+	}
+	cases := []struct {
+		name    string
+		sc      map[string]interface{}
+		wantErr []string
+		scope   PortfolioScope
+	}{
+		{"explicit paper", mfi("--mode=paper"), nil, ScopePaper},
+		{"explicit paper space form", mfi("--mode", "paper"), nil, ScopePaper},
+		{"live refused", mfi("--mode=live"), []string{`open strategy "` + name + `"`, "source study_fail", ref, "explicit live mode"}, ""},
+		{"missing mode refused", mfi(), []string{"missing --mode"}, ""},
+		{"live acknowledged", ack(mfi("--mode=live")), nil, ScopeLive},
+		{"missing mode acknowledged stays paper", ack(mfi()), nil, ScopePaper},
+		{"repeated mode refused", ack(mfi("--mode=paper", "--mode=paper")), []string{"invalid mode", "given 2 times"}, ""},
+		{"unknown mode refused", mfi("--mode=Paper"), []string{"invalid mode"}, ""},
+		{"effective open live refused", withArgs(openRef(mfi()), "--mode=live"), []string{`open strategy "` + name + `"`, "explicit live mode"}, ""},
+		{"effective open missing mode refused", withArgs(openRef(mfi())), []string{"missing --mode"}, ""},
+		{"effective open paper", withArgs(openRef(mfi()), "--mode=paper"), nil, ScopePaper},
+		{"close fallback live refused", withArgs(closeRef(mfi()), "--mode=live"), []string{`close strategy "` + name + `"`, "explicit live mode"}, ""},
+		{"close fallback missing mode refused", withArgs(closeRef(mfi())), []string{"missing --mode"}, ""},
+		{"close fallback acknowledged", ack(withArgs(closeRef(mfi()), "--mode=live")), nil, ScopeLive},
+		{"native close keeps live admission", func() map[string]interface{} {
+			sc := withArgs(mfi(), "--mode=live")
+			sc["close_strategy"] = map[string]interface{}{"name": "tiered_tp_atr"}
+			return sc
+		}(), nil, ScopeLive},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeNoEdgeConfig(t, CurrentConfigVersion, tc.sc)
+			cfg, loadErr := LoadConfig(path)
+			_, probeErr := LoadConfigForProbe(path)
+			if (loadErr == nil) != (probeErr == nil) {
+				t.Fatalf("LoadConfig err=%v but LoadConfigForProbe err=%v", loadErr, probeErr)
+			}
+			if len(tc.wantErr) == 0 {
+				if loadErr != nil {
+					t.Fatalf("unexpected refusal: %v", loadErr)
+				}
+				if got := portfolioScopeFor(cfg.Strategies[0]); got != tc.scope {
+					t.Fatalf("portfolio scope = %q, want %q", got, tc.scope)
+				}
+				return
+			}
+			if loadErr == nil {
+				t.Fatalf("expected refusal containing %q", tc.wantErr)
+			}
+			for _, want := range tc.wantErr {
+				if !strings.Contains(loadErr.Error(), want) || !strings.Contains(probeErr.Error(), want) {
+					t.Fatalf("errors missing %q:\nload:  %v\nprobe: %v", want, loadErr, probeErr)
+				}
+			}
+		})
+	}
+
+	id, entry, err := buildAddStrategyEntry(name, "hyperliquid", "sol")
+	if err != nil {
+		t.Fatalf("paper add refused: %v", err)
+	}
+	if id != "hl-mfi-sol" {
+		t.Fatalf("add id = %q, want hl-mfi-sol", id)
+	}
+	var sc map[string]interface{}
+	if err := json.Unmarshal(entry, &sc); err != nil {
+		t.Fatal(err)
+	}
+	if sc["direction"] != DirectionBoth {
+		t.Fatalf("direction = %v, want both", sc["direction"])
+	}
+	if got := sc["args"].([]interface{}); len(got) != 4 || got[0] != name || got[3] != "--mode=paper" {
+		t.Fatalf("args = %v, want explicit paper", got)
+	}
+	if _, has := sc["allow_no_edge"]; has {
+		t.Fatal("paper add must not write an acknowledgement")
+	}
+	if _, _, err := buildAddStrategyEntry(name, "binanceus", "BTC"); err == nil {
+		t.Fatal("futures-only candidate must not be addable to binanceus")
+	}
+	root := map[string]json.RawMessage{"strategies": json.RawMessage(`[]`)}
+	addedID, err := addStrategyToRoot(root, name, "hyperliquid", "SOL")
+	if err != nil || addedID != id {
+		t.Fatalf("shared add path = %q, %v", addedID, err)
+	}
+	if _, err := addStrategyToRoot(root, name, "hyperliquid", "SOL"); err == nil {
+		t.Fatal("duplicate add must be refused")
+	}
+	list, err := configStrategies(root)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("strategies after add = %v, %v", list, err)
+	}
+	var added map[string]interface{}
+	if err := json.Unmarshal(list[0], &added); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(writeNoEdgeConfigRoot(t, CurrentConfigVersion, map[string]interface{}{"market_feed": "websocket"}, added))
+	if err != nil {
+		t.Fatalf("added paper entry must load without acknowledgement: %v", err)
+	}
+	got := cfg.Strategies[0]
+	if portfolioScopeFor(got) != ScopePaper || edgeGateModeForStrategy(got).Kind != edgeGateModePaper || got.AllowNoEdgeAcknowledged() {
+		t.Fatalf("added entry is not explicit unacknowledged paper: %+v", got)
+	}
+	if got.Direction != DirectionBoth {
+		t.Fatalf("loaded direction = %q, want both", got.Direction)
+	}
+}

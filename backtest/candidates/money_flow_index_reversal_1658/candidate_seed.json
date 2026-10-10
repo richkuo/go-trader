@@ -1,0 +1,27 @@
+{
+  "name": "money_flow_index_reversal",
+  "params": {
+    "lookback": 14,
+    "oversold": 20.0,
+    "overbought": 80.0
+  },
+  "direction": "both",
+  "close_strategies": [
+    {
+      "name": "tiered_tp_atr",
+      "params": {
+        "tp_tiers": [
+          {
+            "atr_multiple": 2.0,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "allowed_regimes": ["ranging"],
+  "regime_period": 14,
+  "regime_adx_threshold": 20.0,
+  "regime_gate_on_failure": "closed"
+}

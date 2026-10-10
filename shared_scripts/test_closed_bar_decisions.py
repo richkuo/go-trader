@@ -875,3 +875,101 @@ def test_resting_rule_trailing_stop_ratcheted_inside_a_bar_tests_the_bar_against
         assert second["close_fraction"] == 0.0
         assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[61]["t"]
         assert booked == [(str(df.index[61]), 99.0, "sl")]
+
+
+MFI = "money_flow_index_reversal"
+MFI_PARAMS = {"lookback": 2, "oversold": 30.0, "overbought": 70.0}
+
+
+def _set_bar(bar, price, volume):
+    return dict(bar, o=price + 0.1, h=price + 0.5, l=price - 0.5, c=price, v=volume)
+
+
+def _mfi_reversal_bars(n=240, forming_price_jump=5.0, forming_volume=50_000.0):
+    bars = _bars(n)
+    base = bars[-5]["c"]
+    bars[-4] = _set_bar(bars[-4], base - 2.0, 1000.0)
+    bars[-3] = _set_bar(bars[-3], base - 4.0, 1000.0)
+    bars[-2] = _set_bar(bars[-2], base - 6.0, 1000.0)
+    bars[-1] = _set_bar(bars[-1], base - 6.0 + forming_price_jump, forming_volume)
+    return bars
+
+
+def _mfi_refs(closes=None):
+    refs = {"open": {"name": MFI, "params": dict(MFI_PARAMS)}}
+    if closes:
+        refs["closes"] = closes
+    return json.dumps(refs)
+
+
+def test_money_flow_index_forming_bar_cannot_create_a_closed_bar_entry():
+    bars = _mfi_reversal_bars()
+    cutoff = bars[-1]["t"] + H // 2
+    extra = ["--strategy-refs", _mfi_refs()]
+    disabled = _hl_check(MFI, bars, cutoff, closed=False, extra=extra)
+    enabled = _hl_check(MFI, bars, cutoff, closed=True, extra=extra)
+    calm_bars = [dict(b) for b in bars]
+    calm_bars[-1] = _set_bar(calm_bars[-1], bars[-2]["c"], 1.0)
+    calm = _hl_check(MFI, calm_bars, cutoff, closed=True, extra=extra)
+    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
+    assert enabled["signal"] == 0 and enabled["open_action"] == "none"
+    assert enabled["indicators"] == calm["indicators"]
+    assert enabled["closed_bar_decision"]["input_sha256"] == calm["closed_bar_decision"]["input_sha256"]
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
+    closed_df = _strategies().apply_strategy(MFI, _frame_from_rows(_hl_rows(bars[:-1])), MFI_PARAMS)
+    last = closed_df.iloc[-1]
+    assert enabled["indicators"]["mfi_value"] == float(last["mfi_value"])
+    assert enabled["indicators"]["mfi_prev_value"] == float(last["mfi_prev_value"])
+    assert enabled["indicators"]["mfi_positive_total"] == float(last["mfi_positive_total"])
+    assert enabled["indicators"]["mfi_reason_code"] == 0
+    assert enabled["indicators"]["mfi_volume"] == bars[-2]["v"]
+    assert enabled["indicators"]["mfi_eval_ts_ms"] == float(bars[-2]["T"])
+    assert disabled["indicators"]["mfi_volume"] == bars[-1]["v"]
+
+
+def test_money_flow_index_closed_bar_batch_matches_individual_checks():
+    bars = _mfi_reversal_bars()
+    cutoff = bars[-1]["t"] + H // 2
+    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
+    refs = json.loads(_mfi_refs())
+    slots = [
+        {"id": "on", "strategy": MFI, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs,
+         "closed_bar_decisions": True},
+        {"id": "off", "strategy": MFI, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
+    ]
+    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200",
+                           "--atr-method=simple", "--market-stdin"], {"v": 2, "slots": slots, "market": market})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
+    for slot_id, closed in (("on", True), ("off", False)):
+        argv = [MFI, "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200",
+                "--strategy-refs", _mfi_refs()]
+        if closed:
+            argv.append("--closed-bar-decisions")
+        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
+        assert single.returncode == 0, single.stderr
+        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
+    assert results["on"]["signal"] == 0
+    assert results["off"]["signal"] == 1
+
+
+@pytest.mark.parametrize("closed", [True, False])
+def test_money_flow_index_invalid_volume_holds_the_entry_and_keeps_protection(closed):
+    bars = [dict(b, v=-1.0) for b in _mfi_reversal_bars()]
+    cutoff = bars[-1]["t"] + H // 2
+    refs = _mfi_refs([{"name": "tiered_tp_pct", "params": {}}])
+    held_long = ["--strategy-refs", refs, "--position-side", "long", "--position-avg-cost=50",
+                 "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(MFI, bars, cutoff, closed=closed, extra=held_long, mid=bars[-1]["c"])
+    if closed:
+        assert out["closed_bar_decision"]["held"] is True
+        assert "negative volume" in out["closed_bar_decision"]["hold_reason"]
+        assert out["indicators"] == {}
+    else:
+        assert out["indicators"]["mfi_reason_code"] == 15
+        assert out["indicators"]["mfi_valid"] == 0.0
+    assert out["open_action"] == "none"
+    assert out["close_strategy"] == "tiered_tp_pct" and out["close_fraction"] == 1.0
+    assert out["signal"] == -1
+    flat = _hl_check(MFI, bars, cutoff, closed=closed, extra=["--strategy-refs", refs])
+    assert flat["signal"] == 0 and flat["open_action"] == "none"
