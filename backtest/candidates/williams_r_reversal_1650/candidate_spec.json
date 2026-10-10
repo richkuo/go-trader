@@ -1,0 +1,106 @@
+{
+  "schema": "williams_r_reversal_1650/spec/v1",
+  "issue": 1650,
+  "tracking_group": "hyperliquid-strategy-candidates-2026-10-02",
+  "candidate": "williams_r_reversal",
+  "registry": "futures",
+  "promotion_record": {
+    "short_name": "wrr",
+    "direction": "both",
+    "edge_status": "no_edge"
+  },
+  "seed_params": {
+    "lookback": 14,
+    "oversold": -80.0,
+    "overbought": -20.0
+  },
+  "parameter_bounds": {
+    "lookback": "integer in [2, 100]; booleans, strings and fractional values are refused",
+    "oversold": "finite number, -100 <= oversold < overbought",
+    "overbought": "finite number, oversold < overbought <= 0"
+  },
+  "warmup_rule": "a decision needs lookback + 1 consecutive valid candles (prior and current %R); the manifest supplies 300 unscored warm-up bars and the live check window is 200 candles",
+  "optimizer_grid": {
+    "lookback": [7, 14, 21, 28],
+    "oversold": [-90.0, -80.0, -70.0],
+    "overbought": [-30.0, -20.0, -10.0]
+  },
+  "comparators": ["rsi", "stoch_rsi", "mean_reversion_pro"],
+  "direction": "both",
+  "close_strategies": [
+    {
+      "name": "tiered_tp_atr",
+      "params": {
+        "tp_tiers": [
+          {
+            "atr_multiple": 2.0,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "comparison_mode": "strict",
+  "stop_loss_atr_mult": 1.0,
+  "atr_method": "simple",
+  "capital_usd": 1000.0,
+  "leverage": 1,
+  "scale_in": false,
+  "implicit_reversal": false,
+  "range_regime_gate": {
+    "classifier": "adx",
+    "period": 14,
+    "adx_threshold": 20.0,
+    "allowed_labels": ["ranging"],
+    "on_failure": "closed",
+    "timeframe": "4h",
+    "trailing_rows": 200,
+    "timing": "each bar's label comes from the trailing 200 rows ending at that bar with no shift; an entry decided on closed bar N is gated by bar N's label and fills at bar N+1 open; the gate blocks entries only"
+  },
+  "selection_window": "train",
+  "held_out_window": "test",
+  "cost_multipliers": {
+    "base": 1.0,
+    "stress": 2.0
+  },
+  "selection_rule": {
+    "min_train_positions": 10,
+    "text": "eligible = all datasets scored with complete candle and funding coverage, no liquidated leg, >= 10 independent positions; pick max mean Sharpe, then max mean DD-adjusted return, then earliest grid order; the same rule tunes every comparator on its own DEFAULT_PARAM_RANGES grid"
+  },
+  "verdict_rule": {
+    "min_test_positions": 30,
+    "inconclusive_when": [
+      "candle or funding coverage incomplete on any held-out candidate or comparator leg",
+      "no eligible candidate combination on the training window",
+      "fewer than 30 independent held-out candidate positions",
+      "any held-out candidate or comparator leg with incomplete close parity"
+    ],
+    "pass_requires": [
+      "candidate mean net return > 0 at cost x1",
+      "candidate mean net return > 0 at cost x2",
+      "candidate mean Sharpe above each comparator's (selected, cost x1)",
+      "candidate mean DD-adjusted return above each comparator's (selected, cost x1)",
+      "candidate M1 incumbent verdict 'pass' on the held-out window"
+    ],
+    "otherwise": "fail",
+    "registry_source": {
+      "pass": "unvalidated",
+      "fail": "study_fail",
+      "inconclusive": "study_inconclusive"
+    }
+  },
+  "source_files": [
+    "shared_strategies/open/williams_r.py",
+    "shared_strategies/open/registry.py",
+    "shared_tools/strategy_composition.py",
+    "shared_tools/regime.py",
+    "shared_strategies/close/tiered_tp_atr.py",
+    "backtest/backtester.py",
+    "backtest/eval_windows.py",
+    "backtest/offline_manifest.py",
+    "backtest/optimizer.py",
+    "backtest/parity_diff.py",
+    "backtest/regime_label_columns.py",
+    "backtest/candidates/williams_r_reversal_1650/run_study.py"
+  ]
+}

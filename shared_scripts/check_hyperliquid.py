@@ -141,6 +141,7 @@ def _signal_check_deps():
     apply_strategy = _strategies.apply_strategy
     get_strategy = _strategies.get_strategy
     list_strategies = _strategies.list_strategies
+    validate_params = _strategies.validate_params
     from close_registry_loader import (
         evaluate as close_evaluate,
         get_strategy as get_close_strategy,
@@ -155,12 +156,14 @@ def _signal_check_deps():
         admit_configured_strategies,
         parse_allow_no_edge_value,
         parse_raw_gate_mode,
+        preflight_reference_params,
     )
 
     return SimpleNamespace(
         apply_strategy=apply_strategy,
         get_strategy=get_strategy,
         list_strategies=list_strategies,
+        validate_params=validate_params,
         close_evaluate=close_evaluate,
         get_close_strategy=get_close_strategy,
         list_close_strategies=list_close_strategies,
@@ -172,6 +175,7 @@ def _signal_check_deps():
         admit_configured_strategies=admit_configured_strategies,
         parse_allow_no_edge_value=parse_allow_no_edge_value,
         parse_raw_gate_mode=parse_raw_gate_mode,
+        preflight_reference_params=preflight_reference_params,
     )
 
 
@@ -271,9 +275,10 @@ def slot_admission(slot, deps):
     )
 
 
-def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission):
+def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
+                                  params=None, close_params_by_name=None):
     gate_mode, acknowledgement = admission
-    deps.admit_configured_strategies(
+    references = deps.admit_configured_strategies(
         strategy_name,
         open_strategy,
         close_strategies,
@@ -283,6 +288,20 @@ def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_stra
         deps.get_close_strategy,
         deps.list_strategies,
         deps.list_close_strategies,
+    )
+    deps.preflight_reference_params(
+        references, params, close_params_by_name, deps.get_strategy, deps.validate_params)
+
+
+def preflight_signal_slot(slot, deps):
+    _validate_slot_strategy_names(
+        deps,
+        slot["strategy"],
+        slot.get("open_strategy") or None,
+        slot.get("close_strategies") or None,
+        slot_admission(slot, deps),
+        slot.get("params") or None,
+        slot.get("close_params_by_name") or None,
     )
 
 
@@ -770,7 +789,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     invert_present = "invert_open_signal" in slot
     invert_open_signal = deps.parse_invert_open_signal(slot.get("invert_open_signal")) if invert_present else False
 
-    _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission)
+    _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
+                                  strategy_params_override, close_params_by_name)
     resting_request = parse_resting_rule_request(slot.get("resting_tp_rule"))
     if resting_request is not None:
         refusal = _resting_rule_refusal(mode, deps.parse_close_strategies(close_strategies))
@@ -1019,7 +1039,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         deps = _signal_check_deps()
         from strategy_composition import parse_allow_no_edge_tokens
         admission = (deps.parse_raw_gate_mode(mode_args), parse_allow_no_edge_tokens(mode_args))
-        _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission)
+        _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
+                                      strategy_params_override, close_params_by_name)
 
         adapter = None
         if market is None:
@@ -1204,6 +1225,21 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
     }
     try:
         deps = _signal_check_deps()
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        envelope["error"] = str(e)
+        envelope["error_scope"] = "shared_state"
+        return envelope, 1
+
+    preflight_errors = {}
+    for idx, slot in enumerate(slots):
+        try:
+            preflight_signal_slot(slot, deps)
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            preflight_errors[idx] = str(e)
+
+    try:
         if market is not None:
             adapter = None
             df = None
@@ -1232,7 +1268,12 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
         return envelope, 1
 
     failed = False
-    for slot in slots:
+    for idx, slot in enumerate(slots):
+        if idx in preflight_errors:
+            failed = True
+            envelope["results"].append(
+                _batch_slot_error(slot, symbol, timeframe, preflight_errors[idx]))
+            continue
         try:
             output = evaluate_signal_slot(shared, slot, deps=deps)
             output["id"] = slot.get("id", "")
