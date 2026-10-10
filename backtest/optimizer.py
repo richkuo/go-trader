@@ -718,6 +718,11 @@ DEFAULT_PARAM_RANGES = {
         "fast_period": [3, 5, 8, 13],
         "slow_period": [21, 34, 55, 89],
     },
+    "williams_r_reversal": {
+        "lookback": [7, 14, 21, 28],
+        "oversold": [-90.0, -80.0, -70.0],
+        "overbought": [-30.0, -20.0, -10.0],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],

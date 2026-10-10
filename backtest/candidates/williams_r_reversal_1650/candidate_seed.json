@@ -1,0 +1,79 @@
+{
+  "allowed_regimes": [
+    "ranging"
+  ],
+  "close_strategies": [
+    {
+      "name": "tiered_tp_atr",
+      "params": {
+        "tp_tiers": [
+          {
+            "atr_multiple": 2.0,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "comparison_mode": "strict",
+  "direction": "both",
+  "name": "williams_r_reversal",
+  "params": {
+    "lookback": 14,
+    "overbought": -20.0,
+    "oversold": -80.0
+  },
+  "regime_gate_on_failure": "closed",
+  "regime_label_windows": {
+    "adx_threshold": 20.0,
+    "classifiers": {
+      "atr": "adx",
+      "directional": "adx",
+      "gate": "adx"
+    },
+    "limit": 200,
+    "lookbacks": {
+      "atr": 14,
+      "directional": 14,
+      "gate": 14
+    },
+    "named": {
+      "atr": false,
+      "directional": false,
+      "gate": false
+    },
+    "parser_labels": {
+      "atr": null,
+      "directional": null,
+      "gate": null
+    },
+    "period": 14,
+    "primary": "default",
+    "source": "bounded_window_labels",
+    "timeframe": "4h",
+    "vocabularies": {
+      "atr": [
+        "ranging",
+        "trending_down",
+        "trending_up"
+      ],
+      "directional": [
+        "ranging",
+        "trending_down",
+        "trending_up"
+      ],
+      "gate": [
+        "ranging",
+        "trending_down",
+        "trending_up"
+      ]
+    },
+    "windows": {
+      "atr": "default",
+      "directional": "default",
+      "gate": "default"
+    },
+    "windows_spec": null
+  },
+  "stop_loss_atr_mult": 1.0
+}

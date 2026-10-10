@@ -1393,8 +1393,9 @@ New spot or futures strategy:
 3. Append the name to `PLATFORM_ORDER`.
 4. Add the short name to `knownShortNames`, the `registeredOpenStrategyPlatforms` row and default entries in `scheduler/init.go`; with `short_entries=True`, also add it to `bidirectionalPerpsStrategies` (wizard and Discord add write `direction: both` only for listed names).
 5. Add a param grid to `DEFAULT_PARAM_RANGES` in `backtest/optimizer.py`.
-6. A strategy without approved edge evidence registers `edge_status="no_edge"` with a valid `edge_source` and a nonempty `edge_ref` (the evidence file); mirror it in `noEdgeStrategies` in `scheduler/edge_status.go`. That hides it from discovery, runs it with explicit `--mode=paper`, and needs `allow_no_edge: true` for live use. A new study records its verdict without changing that rule.
-7. Run the registry, optimizer and `scripts/test_go_python_registry_parity.py` tests.
+6. A parameter rule the binary `constraints` cannot express (integer-only, finite, type checks) goes in an optional `param_validator=` callback on `@register`: `validate_params` runs it on the effective parameters, and `check_hyperliquid.py` runs it for every admitted open and open-fallback close reference before any candle fetch (solo) or shared-state build (batch), failing only that slot.
+7. A strategy without approved edge evidence registers `edge_status="no_edge"` with a valid `edge_source` and a nonempty `edge_ref` (the evidence file); mirror it in `noEdgeStrategies` in `scheduler/edge_status.go`. That hides it from discovery, runs it with explicit `--mode=paper`, and needs `allow_no_edge: true` for live use. A new study records its verdict without changing that rule.
+8. Run the registry, optimizer and `scripts/test_go_python_registry_parity.py` tests.
 
 For a close evaluator, add an `evaluate(position, market, params)` implementation under `shared_strategies/close/` and register it in `close/registry.py`.
 
