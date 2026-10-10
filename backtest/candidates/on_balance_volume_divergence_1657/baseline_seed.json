@@ -1,0 +1,23 @@
+{
+  "name": "volume_weighted",
+  "params": {
+    "sma_period": 20,
+    "vol_multiplier": 1.5
+  },
+  "direction": "long",
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "profit_pct": 0.02,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict"
+}

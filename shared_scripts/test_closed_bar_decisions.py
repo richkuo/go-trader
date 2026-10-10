@@ -875,3 +875,120 @@ def test_resting_rule_trailing_stop_ratcheted_inside_a_bar_tests_the_bar_against
         assert second["close_fraction"] == 0.0
         assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[61]["t"]
         assert booked == [(str(df.index[61]), 99.0, "sl")]
+
+
+_OBV = "on_balance_volume_divergence"
+_OBV_PARAMS = {"left_span": 2, "right_span": 2, "min_separation": 3, "max_separation": 20,
+               "volume_threshold": 0.1, "setup_expiry": 5, "volume_test": True}
+_OBV_CLOSES = ([100.0] * 103 + [100.0, 97.0, 91.0, 97.0, 100.0, 100.0, 100.0]
+               + [99.0, 98.0, 96.0, 98.0, 100.0, 101.0, 100.0, 98.0, 96.0, 95.0, 97.0, 98.0, 98.5, 100.0]
+               + [100.5, 101.0, 101.5, 102.0])
+_OBV_CONFIRM = 121
+_OBV_ENTRY = 123
+_OBV_TP = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}]
+
+
+def _obv_bars(last, *, bad_volume_at=None):
+    out = []
+    prev = None
+    for i, c in enumerate(_OBV_CLOSES[:last + 1]):
+        v = 5.0 if prev is None or c == prev else (10.0 if c > prev else 1.0)
+        if bad_volume_at is not None and i == bad_volume_at:
+            v = -1.0
+        out.append({"t": T0 + i * H, "T": T0 + (i + 1) * H - 1, "o": c, "h": c + 1.0, "l": c - 1.0, "c": c, "v": v})
+        prev = c
+    return out
+
+
+def _obv_refs(closes=None):
+    refs = {"open": {"name": _OBV, "params": _OBV_PARAMS}}
+    if closes:
+        refs["closes"] = closes
+    return ["--strategy-refs", json.dumps(refs)]
+
+
+def test_obv_forming_reclaim_bar_is_excluded_and_the_closed_bar_enters():
+    bars = _obv_bars(_OBV_ENTRY)
+    forming = bars[-1]["t"] + H // 2
+    disabled = _hl_check(_OBV, bars, forming, closed=False, extra=_obv_refs())
+    enabled = _hl_check(_OBV, bars, forming, closed=True, extra=_obv_refs())
+    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
+    assert enabled["signal"] == 0 and enabled["open_action"] == "none"
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
+    assert enabled["indicators"]["obvd_reason_code"] == 3
+
+    closed = _hl_check(_OBV, bars, bars[-1]["t"] + H + 5_000, closed=True, extra=_obv_refs())
+    assert closed["closed_bar_decision"]["forming_rows_dropped"] == 0
+    assert closed["signal"] == 1 and closed["open_action"] == "long"
+    assert closed["indicators"]["obvd_long_reclaim"] == 99.0
+    assert closed["indicators"]["obvd_long_divergence"] == disabled["indicators"]["obvd_long_divergence"]
+
+    direct = _strategies().apply_strategy(_OBV, _frame_from_rows(_hl_rows(bars)), _OBV_PARAMS)
+    assert int(direct["signal"].iloc[-1]) == 1
+    assert closed["indicators"]["obvd_support_start_ts_ms"] == float(direct["obvd_support_start_ts_ms"].iloc[-1])
+
+
+@pytest.mark.parametrize("offset,dropped,signal", [(-1, 1, 0), (0, 0, 1), (1, 0, 1)])
+def test_obv_reclaim_bar_closure_boundary(offset, dropped, signal):
+    bars = _obv_bars(_OBV_ENTRY)
+    out = _hl_check(_OBV, bars, bars[-1]["t"] + H + offset, closed=True, extra=_obv_refs())
+    assert out["closed_bar_decision"]["forming_rows_dropped"] == dropped
+    assert out["signal"] == signal
+
+
+def test_obv_forming_confirmation_bar_does_not_arm_a_setup():
+    bars = _obv_bars(_OBV_CONFIRM)
+    forming = bars[-1]["t"] + H // 2
+    disabled = _hl_check(_OBV, bars, forming, closed=False, extra=_obv_refs())
+    enabled = _hl_check(_OBV, bars, forming, closed=True, extra=_obv_refs())
+    assert disabled["indicators"]["obvd_long_state"] == 2
+    assert disabled["indicators"]["obvd_long_pivot2_price"] == 94.0
+    assert enabled["indicators"].get("obvd_long_pivot2_price") != 94.0
+    assert enabled["indicators"]["obvd_long_state"] != 2
+
+
+@pytest.mark.parametrize("closed", [True, False])
+def test_obv_invalid_entry_volume_holds_while_the_current_mark_close_still_runs(closed):
+    bars = _obv_bars(_OBV_ENTRY + 1, bad_volume_at=_OBV_ENTRY)
+    cutoff = bars[-1]["t"] + H // 2
+    held_long = _obv_refs(_OBV_TP) + ["--position-side", "long", "--position-avg-cost=90",
+                                      "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(_OBV, bars, cutoff, closed=closed, extra=held_long, mid=bars[-1]["c"])
+    if closed:
+        assert out["closed_bar_decision"]["held"] is True
+        assert "volume" in out["closed_bar_decision"]["hold_reason"]
+        assert out["indicators"] == {}
+    else:
+        assert out["indicators"]["obvd_reason_code"] == 16
+    assert out["open_action"] == "none"
+    assert out["close_fraction"] == 1.0
+    assert out["close_strategy"] == "tiered_tp_pct"
+    assert out["price"] == bars[-1]["c"]
+
+    flat = _hl_check(_OBV, bars, cutoff, closed=closed, extra=_obv_refs(_OBV_TP))
+    assert flat["signal"] == 0 and flat["open_action"] == "none"
+
+
+def test_obv_mixed_batch_matches_individual_checks():
+    bars = _obv_bars(_OBV_ENTRY)
+    cutoff = bars[-1]["t"] + H // 2
+    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
+    refs = {"open": {"name": _OBV, "params": _OBV_PARAMS}}
+    slots = [
+        {"id": "on", "strategy": _OBV, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs,
+         "closed_bar_decisions": True},
+        {"id": "off", "strategy": _OBV, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
+    ]
+    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--atr-method=simple",
+                           "--market-stdin"], {"v": 2, "slots": slots, "market": market})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
+    for slot_id, closed in (("on", True), ("off", False)):
+        argv = [_OBV, "BTC", "1h", "--mode=paper", "--market-stdin", *_obv_refs()]
+        if closed:
+            argv.append("--closed-bar-decisions")
+        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
+        assert single.returncode == 0, single.stderr
+        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
+    assert results["on"]["signal"] == 0
+    assert results["off"]["signal"] == 1

@@ -1,0 +1,28 @@
+{
+  "name": "on_balance_volume_divergence",
+  "params": {
+    "left_span": 3,
+    "right_span": 3,
+    "min_separation": 5,
+    "max_separation": 40,
+    "volume_threshold": 0.1,
+    "setup_expiry": 12,
+    "volume_test": true
+  },
+  "direction": "both",
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "profit_pct": 0.02,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict"
+}

@@ -718,6 +718,15 @@ DEFAULT_PARAM_RANGES = {
         "fast_period": [3, 5, 8, 13],
         "slow_period": [21, 34, 55, 89],
     },
+    "on_balance_volume_divergence": {
+        "left_span": [2, 3, 5],
+        "right_span": [2, 3, 5],
+        "min_separation": [3, 5, 8],
+        "max_separation": [20, 40, 60],
+        "volume_threshold": [0.0, 0.05, 0.10, 0.20],
+        "setup_expiry": [6, 12, 24],
+        "volume_test": [True],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],
