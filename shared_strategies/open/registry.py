@@ -50,6 +50,7 @@ from connors_rsi import connors_rsi_reversion_core
 from vortex_trend import vortex_trend_core
 from relative_vigor_index import relative_vigor_index_core
 from awesome_oscillator import awesome_oscillator_core
+from on_balance_volume import on_balance_volume_divergence_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -1721,6 +1722,36 @@ def awesome_oscillator_strategy(df: pd.DataFrame, fast_period: int = 5, slow_per
 
 
 @register(
+    "on_balance_volume_divergence",
+    "RESEARCH, no-edge (#1657) \u2014 On Balance Volume divergence: signed volume is +volume after a higher close, -volume after a lower close and 0 after an equal close; a strict price pivot (left_span/right_span) is usable only once its right-side bars close; each newly confirmed low pairs with the nearest earlier confirmed low min_separation..max_separation bars back, and a strictly lower low whose signed-volume sum over the pair interval, divided by the absolute-volume sum over the same interval, exceeds volume_threshold arms a long; the mirror high arms a short. The setup enters once on the first later close strictly beyond the reclaim level (highest high, or lowest low, from the second pivot through its confirmation bar) within setup_expiry bars; a newer pivot replaces it and simultaneous opposite events hold. Every decision reads exactly its trailing left_span + max_separation + right_span + setup_expiry + 1 bars (at most 200); bad prices, bad volume, timestamp defects and cadence gaps inside that span hold. volume_test=false is the price-pivot-only ablation. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {
+        "left_span": 3, "right_span": 3, "min_separation": 5, "max_separation": 40,
+        "volume_threshold": 0.10, "setup_expiry": 12, "volume_test": True,
+    },
+    platforms=("futures",),
+    constraints=[
+        "left_span >= 1",
+        "left_span <= 10",
+        "right_span >= 1",
+        "right_span <= 10",
+        "min_separation >= 1",
+        "max_separation <= 100",
+        "min_separation <= max_separation",
+        "volume_threshold >= 0",
+        "volume_threshold <= 1",
+        "setup_expiry >= 1",
+        "setup_expiry <= 50",
+    ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/on_balance_volume_divergence_1657/REPORT.md",
+    short_entries=True,
+)
+def on_balance_volume_divergence_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return on_balance_volume_divergence_core(df, **params)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1992,6 +2023,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
         "chaikin_money_flow_breakout", "open_interest_breakout", "connors_rsi_reversion",
         "vortex_trend", "relative_vigor_index", "awesome_oscillator",
+        "on_balance_volume_divergence",
         "hold",
     ],
 }

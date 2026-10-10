@@ -177,3 +177,59 @@ def test_malformed_batch_evidence_rejects_the_payload_before_evaluation(bad):
     assert payload["error_scope"] == "shared_state"
     assert payload["results"] == []
     assert payload["error"].startswith("invalid batch payload")
+
+
+OBV = "on_balance_volume_divergence"
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_obv_candidate_is_refused_outside_explicit_paper(extra, reason):
+    proc = _run("check_hyperliquid.py", [OBV, "BTC", "4h"] + extra)
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert f"open strategy '{OBV}' is edge_status=no_edge" in payload["error"]
+    assert reason in payload["error"]
+
+
+@pytest.mark.parametrize("extra,reason", [(["--mode=live"], "explicit live mode"), ([], "missing mode")])
+def test_obv_close_fallback_reference_is_refused_without_paper_or_acknowledgement(extra, reason):
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": OBV}]})
+    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--strategy-refs", refs] + extra)
+    assert proc.returncode == 1
+    error = _payload(proc)["error"]
+    assert f"close strategy '{OBV}' is edge_status=no_edge" in error and reason in error
+
+
+@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode=live", "--allow-no-edge"]])
+def test_obv_paper_or_acknowledged_frozen_input_check_runs_without_an_order(extra):
+    refs = json.dumps({"open": {"name": OBV}, "closes": [{"name": "tiered_tp_pct"}]})
+    proc = _run("check_hyperliquid.py", [OBV, "BTC", "4h", "--strategy-refs", refs, "--market-stdin"] + extra,
+                _solo_envelope())
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = _payload(proc)
+    assert out["strategy"] == OBV and out["open_strategy"] == OBV
+    assert out["close_strategies"] == ["tiered_tp_pct"]
+    assert out["signal"] in (-1, 0, 1)
+    assert not out.get("error")
+    assert out["indicators"]["obvd_support_bars"] == 59
+    assert "order" not in out and "fill" not in out
+
+
+def test_obv_batch_slots_carry_their_own_mode_evidence_and_match_solo():
+    proc = _batch([
+        {"id": "paper", "strategy": OBV, "mode": "paper", "mode_args": ["--mode=paper"]},
+        {"id": "normalized-paper-only", "strategy": OBV, "mode": "paper"},
+        {"id": "acked", "strategy": OBV, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},
+        {"id": "unacked-live", "strategy": OBV, "mode": "live", "mode_args": ["--mode=live"]},
+        {"id": "peer", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"]},
+    ])
+    assert proc.returncode == 1
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    assert not results["paper"].get("error") and not results["acked"].get("error") and not results["peer"].get("error")
+    assert "missing mode" in results["normalized-paper-only"]["error"]
+    assert "explicit live mode" in results["unacked-live"]["error"]
+    solo = _payload(_run("check_hyperliquid.py", [OBV, "BTC", "4h", "--mode=paper", "--market-stdin"], _solo_envelope()))
+    for key in ("signal", "open_action", "close_fraction", "indicators"):
+        assert results["paper"].get(key) == solo.get(key)
+        assert results["acked"].get(key) == solo.get(key)
