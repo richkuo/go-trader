@@ -1,0 +1,6743 @@
+{
+ "bars": 400,
+ "batched": true,
+ "cells": [
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 7,
+   "entry_short": 25,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 7,
+   "entry_short": 25,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 7,
+   "entry_short": 25,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 7,
+   "entry_short": 13,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 7,
+   "entry_short": 13,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 7,
+   "entry_short": 13,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 7,
+   "entry_short": 10,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 7,
+   "entry_short": 10,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 7,
+   "entry_short": 10,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 10,
+   "entry_short": 25,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 10,
+   "entry_short": 25,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 3
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 10,
+   "entry_short": 25,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 3
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 10,
+   "entry_short": 13,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 10,
+   "entry_short": 13,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 10,
+   "entry_short": 13,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 10,
+   "entry_short": 10,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 10,
+   "entry_short": 10,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 10,
+   "entry_short": 10,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 17,
+   "entry_short": 25,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 17,
+   "entry_short": 25,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 3
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 17,
+   "entry_short": 25,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 3
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 17,
+   "entry_short": 13,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 17,
+   "entry_short": 13,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 17,
+   "entry_short": 13,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 17,
+   "entry_short": 10,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 17,
+   "entry_short": 10,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 17,
+   "entry_short": 10,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 12,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 12,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 12,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 9,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 9,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 9,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 5,
+   "entry_short": 12,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 5,
+   "entry_short": 12,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 5,
+   "entry_short": 12,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 5,
+   "entry_short": 9,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 5,
+   "entry_short": 9,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 5,
+   "entry_short": 9,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 5,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 5,
+   "entry_short": 2,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 5,
+   "entry_short": 2,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 9,
+   "entry_short": 12,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 9,
+   "entry_short": 12,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 9,
+   "entry_short": 12,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 9,
+   "entry_short": 9,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 9,
+   "entry_short": 9,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 9,
+   "entry_short": 9,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 9,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 9,
+   "entry_short": 2,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 9,
+   "entry_short": 2,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 6,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 6,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 3,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 3,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 1,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 1,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 3,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 44,
+   "entry_short": 53,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 2,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 44,
+   "entry_short": 53,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 2,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 3
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 44,
+   "entry_short": 53,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 2,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 3
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 198,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 198,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 198,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 100.0,
+    "oversold": 0.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 100.0,
+    "oversold": 0.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 100.0,
+    "oversold": 0.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 19,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 19,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 19,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 17,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 17,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 17,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 5,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 5,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 18,
+   "entry_short": 19,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 18,
+   "entry_short": 19,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 18,
+   "entry_short": 19,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 18,
+   "entry_short": 17,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 18,
+   "entry_short": 17,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 18,
+   "entry_short": 17,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 18,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 18,
+   "entry_short": 5,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 18,
+   "entry_short": 5,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 27,
+   "entry_short": 19,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 27,
+   "entry_short": 19,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 27,
+   "entry_short": 19,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 27,
+   "entry_short": 17,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 27,
+   "entry_short": 17,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 27,
+   "entry_short": 17,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 27,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 27,
+   "entry_short": 5,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 27,
+   "entry_short": 5,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 13,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 13,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 13,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 4,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 4,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 4,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 13,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 13,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 13,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 4,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 4,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 4,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 1,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 1,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 11,
+   "entry_short": 13,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 11,
+   "entry_short": 13,
+   "long_context_closes": 4,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 11,
+   "entry_short": 13,
+   "long_context_closes": 4,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 11,
+   "entry_short": 4,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 11,
+   "entry_short": 4,
+   "long_context_closes": 6,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 11,
+   "entry_short": 4,
+   "long_context_closes": 6,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 11,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 11,
+   "entry_short": 1,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 11,
+   "entry_short": 1,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 1,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 1,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 1,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 1,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 1,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 1,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 1,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 1,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 1,
+   "entry_short": 2,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 52,
+   "entry_short": 52,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 2,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 52,
+   "entry_short": 52,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 2,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 52,
+   "entry_short": 52,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 2,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 198,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 198,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 198,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 100.0,
+    "oversold": 0.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 100.0,
+    "oversold": 0.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 100.0,
+    "oversold": 0.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 19,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 19,
+   "long_context_closes": 4,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 3
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 19,
+   "long_context_closes": 4,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 3
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 18,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 18,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 18,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 7,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 7,
+   "long_context_closes": 4,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 7,
+   "long_context_closes": 4,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 13,
+   "entry_short": 19,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 13,
+   "entry_short": 19,
+   "long_context_closes": 4,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 13,
+   "entry_short": 19,
+   "long_context_closes": 4,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 13,
+   "entry_short": 18,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 13,
+   "entry_short": 18,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 13,
+   "entry_short": 18,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 13,
+   "entry_short": 7,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 13,
+   "entry_short": 7,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 13,
+   "entry_short": 7,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 22,
+   "entry_short": 19,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 22,
+   "entry_short": 19,
+   "long_context_closes": 4,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 22,
+   "entry_short": 19,
+   "long_context_closes": 4,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 22,
+   "entry_short": 18,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 22,
+   "entry_short": 18,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 22,
+   "entry_short": 18,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 22,
+   "entry_short": 7,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 22,
+   "entry_short": 7,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 22,
+   "entry_short": 7,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 7,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 11,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 11,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 11,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 4,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 4,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 4,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 11,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 11,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 11,
+   "long_context_closes": 1,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 6,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 6,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 4,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 4,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 4,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 11,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 11,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 11,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 6,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 6,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 1
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 4,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 4,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 8,
+   "entry_short": 4,
+   "long_context_closes": 5,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 5,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 5,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 5,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 1,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 1,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 1,
+   "long_context_closes": 2,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 0,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 4,
+   "entry_short": 0,
+   "long_context_closes": 3,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 28,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 10.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 6,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 70.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 80.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 56,
+    "overbought": 90.0,
+    "oversold": 30.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 43,
+   "entry_short": 53,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 2,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 43,
+   "entry_short": 53,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 2,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 43,
+   "entry_short": 53,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 2,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 2
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 198,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 198,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 198,
+    "overbought": 80.0,
+    "oversold": 20.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "entry",
+   "params": {
+    "lookback": 14,
+    "overbought": 100.0,
+    "oversold": 0.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "composed",
+   "params": {
+    "lookback": 14,
+    "overbought": 100.0,
+    "oversold": 0.0
+   },
+   "short_context_closes": 0
+  },
+  {
+   "bars_compared": 371,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "entry_long": 0,
+   "entry_short": 0,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "mode": "regime",
+   "params": {
+    "lookback": 14,
+    "overbought": 100.0,
+    "oversold": 0.0
+   },
+   "short_context_closes": 0
+  }
+ ],
+ "clean": true,
+ "close_refs": [
+  {
+   "name": "tiered_tp_atr",
+   "params": {
+    "tp_tiers": [
+     {
+      "atr_multiple": 2.0,
+      "close_fraction": 1.0
+     }
+    ]
+   }
+  }
+ ],
+ "datasets": [
+  "BTC 4h",
+  "ETH 4h",
+  "SOL 4h"
+ ],
+ "manifest_sha256": "2287bfeb11523de22adcd409a8342da6a5bb33d08939272fa99d2ae56735b3ef",
+ "problems": [],
+ "registry": "futures",
+ "strategy": "money_flow_index_reversal",
+ "totals": {
+  "composed": {
+   "batch_mismatches": 0,
+   "cells": 117,
+   "close_parity": [
+    "unverified"
+   ],
+   "empty_cells": 0,
+   "entry_long": 667,
+   "entry_short": 857,
+   "long_context_closes": 131,
+   "mismatches": 0,
+   "short_context_closes": 47,
+   "unclean_cells": 0
+  },
+  "entry": {
+   "batch_mismatches": 0,
+   "cells": 117,
+   "close_parity": [
+    "unverified"
+   ],
+   "empty_cells": 0,
+   "entry_long": 667,
+   "entry_short": 857,
+   "long_context_closes": 0,
+   "mismatches": 0,
+   "short_context_closes": 0,
+   "unclean_cells": 0
+  },
+  "regime": {
+   "batch_mismatches": 0,
+   "cells": 117,
+   "close_parity": [
+    "unverified"
+   ],
+   "empty_cells": 0,
+   "entry_long": 667,
+   "entry_short": 857,
+   "long_context_closes": 131,
+   "mismatches": 0,
+   "short_context_closes": 47,
+   "unclean_cells": 0
+  }
+ },
+ "window": 0
+}
