@@ -413,6 +413,32 @@ def admit_configured_strategies(
     return references
 
 
+def preflight_reference_params(
+    references: Iterable[StrategyReference],
+    open_params: Optional[dict],
+    close_params_by_name: Optional[dict[str, dict]],
+    get_strategy: Callable[[str], object],
+    validate_params: Callable[[str, Optional[dict]], None],
+) -> None:
+    open_name = next((ref.name for ref in references if ref.role == "open"), "")
+    for ref in references:
+        entry = get_strategy(ref.name)
+        if not isinstance(entry, dict) or entry.get("param_validator") is None:
+            continue
+        if ref.role == "open":
+            params = open_params
+        elif close_params_by_name and ref.name in close_params_by_name:
+            params = close_params_by_name[ref.name]
+        elif ref.name == open_name:
+            params = open_params
+        else:
+            params = None
+        try:
+            validate_params(ref.name, dict(params or {}))
+        except ValueError as exc:
+            raise ValueError(f"{ref.role} strategy '{ref.name}' has invalid parameters: {exc}") from exc
+
+
 def _last_signal(result_df: pd.DataFrame) -> int:
     if result_df.empty:
         return 0
