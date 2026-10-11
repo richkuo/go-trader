@@ -267,6 +267,8 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	mixed["close_strategy"] = map[string]interface{}{"name": "vortex_trend"}
 	allowedOpenRefusedClose := noEdgeHLStrategy("hl-bo-cci", "breakout", "BTC", "1h", "--mode=live")
 	allowedOpenRefusedClose["close_strategy"] = map[string]interface{}{"name": "commodity_channel_trend"}
+	mfiClose := noEdgeHLStrategy("hl-bo-mfi", "breakout", "SOL", "4h", "--mode=live")
+	mfiClose["close_strategy"] = map[string]interface{}{"name": "money_flow_index_reversal"}
 	explicitFalse := noEdgeHLStrategy("hl-false", "rsi", "SOL", "1h", "--mode=live")
 	explicitFalse["allow_no_edge"] = false
 	explicitFalse["allow_deprecated"] = true
@@ -274,15 +276,27 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 		mixed,
 		allowedOpenRefusedClose,
 		noEdgeHLStrategy("hl-ao", "awesome_oscillator", "ETH", "4h", "--mode=live"),
+		noEdgeHLStrategy("hl-mfi", "money_flow_index_reversal", "ETH", "4h", "--mode=live"),
+		mfiClose,
 		noEdgeHLStrategy("hl-missing", "rsi", "DOGE", "1h"),
 		noEdgeHLStrategy("hl-invalid", "rsi", "LINK", "1h", "--mode=live", "--mode=live"),
 		explicitFalse,
 	)
-	_, err := LoadConfig(path)
+	report, err := migrateV20NoEdge(readRawConfig(t, path), 19)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"hl-ao", "hl-bo-cci", "hl-bo-mfi", "hl-mfi", "hl-mix"}; !reflect.DeepEqual(report.VetoedResearch, want) {
+		t.Fatalf("vetoed research = %v, want %v", report.VetoedResearch, want)
+	}
+	if len(report.Stamped) != 0 {
+		t.Fatalf("stamped = %v, want none", stampedIDs(report))
+	}
+	_, err = LoadConfig(path)
 	if err == nil {
 		t.Fatal("refused references must stay refused after migration")
 	}
-	for _, id := range []string{"hl-mix", "hl-bo-cci", "hl-ao", "hl-missing", "hl-invalid", "hl-false"} {
+	for _, id := range []string{"hl-mix", "hl-bo-cci", "hl-ao", "hl-mfi", "hl-bo-mfi", "hl-missing", "hl-invalid", "hl-false"} {
 		if !strings.Contains(err.Error(), "strategy "+id+":") {
 			t.Fatalf("%s should be refused after migration: %v", id, err)
 		}
