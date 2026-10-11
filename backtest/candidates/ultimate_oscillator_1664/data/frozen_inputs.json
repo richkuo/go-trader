@@ -1,0 +1,128 @@
+{
+ "candle_source": "binanceus spot OHLCV via ccxt (proxy for Hyperliquid perpetual prices)",
+ "files": [
+  {
+   "dataset": "BTC/USDT 1h",
+   "first_ms": 1688169600000,
+   "kind": "candles",
+   "last_ms": 1790809200000,
+   "path": "BTC_1h_candles.csv.gz",
+   "rows": 28503,
+   "sha256": "e063dd3a699acd77db0142d7e6c3e8b8e84403cbd9e1794c44425d2b3a8052c0",
+   "symbol": "BTC/USDT",
+   "timeframe": "1h"
+  },
+  {
+   "dataset": "BTC/USDT 4h",
+   "first_ms": 1688169600000,
+   "kind": "candles",
+   "last_ms": 1790798400000,
+   "path": "BTC_4h_candles.csv.gz",
+   "rows": 7126,
+   "sha256": "38a4f470c90145a88910e5ccac97ba8b187d8a50a41c74555c34ca0f6dfc1ae4",
+   "symbol": "BTC/USDT",
+   "timeframe": "4h"
+  },
+  {
+   "dataset": "ETH/USDT 1h",
+   "first_ms": 1688169600000,
+   "kind": "candles",
+   "last_ms": 1790809200000,
+   "path": "ETH_1h_candles.csv.gz",
+   "rows": 28503,
+   "sha256": "fcf1da5abd8add2b2a60e6484636e1363e069f24bdf83613fa91883b23140760",
+   "symbol": "ETH/USDT",
+   "timeframe": "1h"
+  },
+  {
+   "dataset": "ETH/USDT 4h",
+   "first_ms": 1688169600000,
+   "kind": "candles",
+   "last_ms": 1790798400000,
+   "path": "ETH_4h_candles.csv.gz",
+   "rows": 7126,
+   "sha256": "39835d146d9f679bb2a1f697ec42cce7d9d78ef0a7ed3f7b50538bdd1275e20c",
+   "symbol": "ETH/USDT",
+   "timeframe": "4h"
+  },
+  {
+   "dataset": "SOL/USDT 1h",
+   "first_ms": 1688169600000,
+   "kind": "candles",
+   "last_ms": 1790809200000,
+   "path": "SOL_1h_candles.csv.gz",
+   "rows": 28503,
+   "sha256": "27a5740fe6bd35e884c77647df5c5678494972faffeacf301eda7c115a714e8d",
+   "symbol": "SOL/USDT",
+   "timeframe": "1h"
+  },
+  {
+   "dataset": "SOL/USDT 4h",
+   "first_ms": 1688169600000,
+   "kind": "candles",
+   "last_ms": 1790798400000,
+   "path": "SOL_4h_candles.csv.gz",
+   "rows": 7126,
+   "sha256": "8ce5448e10a7e693f6d02cd825af9f435bfc3841819b61e334f77ea074e3fb54",
+   "symbol": "SOL/USDT",
+   "timeframe": "4h"
+  },
+  {
+   "coin": "BTC",
+   "first_ms": 1688166000500,
+   "kind": "funding",
+   "last_ms": 1790809200017,
+   "path": "BTC_funding.csv.gz",
+   "rows": 28510,
+   "sha256": "57cdfd2f7027433cbb7143a32d681fac5f2f6f6db853010d4c53481d09168ba2"
+  },
+  {
+   "coin": "BTC",
+   "coverage_intervals": 1,
+   "kind": "funding_meta",
+   "path": "BTC_funding_meta.json",
+   "sha256": "6ca619d02431870667c13e82352de05c091d91faca0f01bfdc71daaa3a553787",
+   "venue_gap_hours": 3
+  },
+  {
+   "coin": "ETH",
+   "first_ms": 1688166000500,
+   "kind": "funding",
+   "last_ms": 1790809200017,
+   "path": "ETH_funding.csv.gz",
+   "rows": 28510,
+   "sha256": "f0941836184fb98291140263074a289820db07906c0e15b9c01b532bd6314b53"
+  },
+  {
+   "coin": "ETH",
+   "coverage_intervals": 1,
+   "kind": "funding_meta",
+   "path": "ETH_funding_meta.json",
+   "sha256": "9f08324116e56ab6a9b874baddcf2fcc2e6790eabb54e35476ea1f8106650dac",
+   "venue_gap_hours": 3
+  },
+  {
+   "coin": "SOL",
+   "first_ms": 1688166000500,
+   "kind": "funding",
+   "last_ms": 1790809200017,
+   "path": "SOL_funding.csv.gz",
+   "rows": 28510,
+   "sha256": "685caaf85dd285ed3743419f337b0d535314a5bd65417cc61f832949c13f3192"
+  },
+  {
+   "coin": "SOL",
+   "coverage_intervals": 1,
+   "kind": "funding_meta",
+   "path": "SOL_funding_meta.json",
+   "sha256": "031afb0fbbe19f2021f02ef488d430b470243d08b3048571a6441628825e288c",
+   "venue_gap_hours": 3
+  }
+ ],
+ "funding_source": "Hyperliquid public info API fundingHistory via shared_tools/funding_fetcher.py",
+ "span": {
+  "end": "2026-10-01",
+  "start": "2023-07-01"
+ },
+ "study": "ultimate_oscillator_1664"
+}

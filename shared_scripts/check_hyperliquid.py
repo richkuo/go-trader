@@ -34,8 +34,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator, latest_atr
 from closed_bar import (
+    FRAME_INTERVAL_ATTR,
+    FRAME_TIMESTAMP_KIND_ATTR,
     RULE_HYPERLIQUID_NATIVE,
     ClosedBarHold,
+    declare_frame_cadence,
     filter_records_to_boundary,
     hold_metadata,
     htf_closed_fetcher,
@@ -43,6 +46,7 @@ from closed_bar import (
     rows_sha256,
     sealed_frame_timings,
     select_closed,
+    timings_timestamp_kind,
     unsupported_open_strategy_reason,
 )
 from hl_user_fills import apply_user_fills_lookup
@@ -69,6 +73,10 @@ def _make_dataframe(candles):
     return df
 
 
+def _frame_with_cadence(rows, timeframe, timings=None):
+    return declare_frame_cadence(_make_dataframe(rows), timeframe, timings_timestamp_kind(rows, timings))
+
+
 def _position_ctx_from_args(args):
     ctx = {}
     side = (args.position_side or "").lower()
@@ -92,7 +100,9 @@ def _position_ctx_from_args(args):
 
 TP_MODEL_RESTING_LIMIT = "resting_limit"
 
-FULL_PRECISION_INDICATOR_PREFIXES = ("mfi_",)
+FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_")
+
+TEXT_INDICATOR_COLUMNS = ("eom_reason",)
 
 BATCH_PROTOCOL_VERSION = 1
 
@@ -143,14 +153,13 @@ def _signal_check_deps():
     apply_strategy = _strategies.apply_strategy
     get_strategy = _strategies.get_strategy
     list_strategies = _strategies.list_strategies
-    preflight_strategy_params = _strategies._registry.preflight_strategy_params
+    validate_params = _strategies.validate_params
     from close_registry_loader import (
         evaluate as close_evaluate,
         get_strategy as get_close_strategy,
         list_strategies as list_close_strategies,
     )
     from strategy_composition import (
-        canonical_close_name,
         evaluate_open_close,
         finalize_decision,
         normalize_signal,
@@ -159,12 +168,14 @@ def _signal_check_deps():
         admit_configured_strategies,
         parse_allow_no_edge_value,
         parse_raw_gate_mode,
+        preflight_reference_params,
     )
 
     return SimpleNamespace(
         apply_strategy=apply_strategy,
         get_strategy=get_strategy,
         list_strategies=list_strategies,
+        validate_params=validate_params,
         close_evaluate=close_evaluate,
         get_close_strategy=get_close_strategy,
         list_close_strategies=list_close_strategies,
@@ -176,8 +187,7 @@ def _signal_check_deps():
         admit_configured_strategies=admit_configured_strategies,
         parse_allow_no_edge_value=parse_allow_no_edge_value,
         parse_raw_gate_mode=parse_raw_gate_mode,
-        preflight_strategy_params=preflight_strategy_params,
-        canonical_close_name=canonical_close_name,
+        preflight_reference_params=preflight_reference_params,
     )
 
 
@@ -277,9 +287,10 @@ def slot_admission(slot, deps):
     )
 
 
-def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission):
+def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
+                                  params=None, close_params_by_name=None):
     gate_mode, acknowledgement = admission
-    deps.admit_configured_strategies(
+    references = deps.admit_configured_strategies(
         strategy_name,
         open_strategy,
         close_strategies,
@@ -290,23 +301,20 @@ def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_stra
         deps.list_strategies,
         deps.list_close_strategies,
     )
+    deps.preflight_reference_params(
+        references, params, close_params_by_name, deps.get_strategy, deps.validate_params)
 
 
-def _preflight_slot_params(deps, strategy_name, open_strategy, close_strategies, params,
-                           close_params_by_name):
-    open_name = (open_strategy or strategy_name or "").strip()
-    deps.preflight_strategy_params(open_name, params)
-    for name in deps.parse_close_strategies(close_strategies):
-        resolved = deps.canonical_close_name(name)
-        if close_params_by_name and name in close_params_by_name:
-            close_params = close_params_by_name[name]
-        elif close_params_by_name and resolved in close_params_by_name:
-            close_params = close_params_by_name[resolved]
-        elif resolved == open_name:
-            close_params = params
-        else:
-            close_params = None
-        deps.preflight_strategy_params(resolved, close_params)
+def preflight_signal_slot(slot, deps):
+    _validate_slot_strategy_names(
+        deps,
+        slot["strategy"],
+        slot.get("open_strategy") or None,
+        slot.get("close_strategies") or None,
+        slot_admission(slot, deps),
+        slot.get("params") or None,
+        slot.get("close_params_by_name") or None,
+    )
 
 
 def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
@@ -341,10 +349,13 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
             rows = market_frame_rows(market, symbol, timeframe, MarketPayloadError, limit=ohlcv_limit)
         if len(rows) < 30:
             raise InsufficientCandlesError(len(rows))
-        df = _make_dataframe(rows)
+        df = _frame_with_cadence(rows, timeframe)
         adapter = None
-    elif timed and df is not None:
-        closed["hold"] = "a prebuilt candle frame carries no bar timing"
+    elif df is not None:
+        if timed:
+            closed["hold"] = "a prebuilt candle frame carries no bar timing"
+        if FRAME_INTERVAL_ATTR not in df.attrs:
+            df = declare_frame_cadence(df.copy(), timeframe, df.attrs.get(FRAME_TIMESTAMP_KIND_ATTR))
 
     if df is None:
         if adapter is None:
@@ -363,7 +374,7 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
             candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
         if not candles or len(candles) < 30:
             raise InsufficientCandlesError(len(candles) if candles else 0)
-        df = _make_dataframe(candles)
+        df = _frame_with_cadence(candles, timeframe)
 
     price_override = 0.0
     if mark_price and mark_price > 0:
@@ -793,9 +804,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     invert_present = "invert_open_signal" in slot
     invert_open_signal = deps.parse_invert_open_signal(slot.get("invert_open_signal")) if invert_present else False
 
-    _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission)
-    _preflight_slot_params(deps, strategy_name, open_strategy, close_strategies,
-                           strategy_params_override, close_params_by_name)
+    _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
+                                  strategy_params_override, close_params_by_name)
     resting_request = parse_resting_rule_request(slot.get("resting_tp_rule"))
     if resting_request is not None:
         refusal = _resting_rule_refusal(mode, deps.parse_close_strategies(close_strategies))
@@ -868,7 +878,7 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             print(f"Closed-bar decision held for {symbol} {timeframe}: {hold}", file=sys.stderr)
         else:
             closed_meta = selection.metadata()
-            decision_df = _make_dataframe(selection.rows)
+            decision_df = _frame_with_cadence(selection.rows, timeframe, selection.timings)
             strategy_params = decision_params
     else:
         strategy_params = {}
@@ -979,6 +989,7 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         signal = decision["signal"]
 
     indicators = {}
+    indicator_labels = {}
     skip_cols = {
         "open", "high", "low", "close", "volume",
         "timestamp", "signal", "position", "datetime",
@@ -988,6 +999,10 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             if col in skip_cols:
                 continue
             val = last.get(col)
+            if col in TEXT_INDICATOR_COLUMNS:
+                if isinstance(val, str):
+                    indicator_labels[col] = val
+                continue
             if val is not None:
                 try:
                     fval = float(val)
@@ -1014,6 +1029,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         "platform": "hyperliquid",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    if indicator_labels:
+        output["indicator_labels"] = indicator_labels
     if decision:
         output.update(decision)
     if resting_request is not None:
@@ -1045,9 +1062,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         deps = _signal_check_deps()
         from strategy_composition import parse_allow_no_edge_tokens
         admission = (deps.parse_raw_gate_mode(mode_args), parse_allow_no_edge_tokens(mode_args))
-        _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission)
-        _preflight_slot_params(deps, strategy_name, open_strategy, close_strategies,
-                               strategy_params_override, close_params_by_name)
+        _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
+                                      strategy_params_override, close_params_by_name)
 
         adapter = None
         if market is None:
@@ -1232,6 +1248,21 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
     }
     try:
         deps = _signal_check_deps()
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        envelope["error"] = str(e)
+        envelope["error_scope"] = "shared_state"
+        return envelope, 1
+
+    preflight_errors = {}
+    for idx, slot in enumerate(slots):
+        try:
+            preflight_signal_slot(slot, deps)
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            preflight_errors[idx] = str(e)
+
+    try:
         if market is not None:
             adapter = None
             df = None
@@ -1260,7 +1291,12 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
         return envelope, 1
 
     failed = False
-    for slot in slots:
+    for idx, slot in enumerate(slots):
+        if idx in preflight_errors:
+            failed = True
+            envelope["results"].append(
+                _batch_slot_error(slot, symbol, timeframe, preflight_errors[idx]))
+            continue
         try:
             output = evaluate_signal_slot(shared, slot, deps=deps)
             output["id"] = slot.get("id", "")

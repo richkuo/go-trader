@@ -209,6 +209,43 @@ func TestUIAddStrategyCreatesPaperMoneyFlowIndexReversal(t *testing.T) {
 	}
 }
 
+func TestUIAddNoEdgeResearchStrategyIsBothSidedPaperWithoutAcknowledgement(t *testing.T) {
+	ss, path, _ := newStructuralTestServer(t)
+	params := `{"name":"ultimate_oscillator","platform":"hyperliquid","asset":"SOL"}`
+	confirm := structuralConfirm(t, ss, "add-strategy", "", params)
+	if confirm.ConfirmPhrase != "hl-uo-sol" {
+		t.Fatalf("confirm phrase = %q, want hl-uo-sol", confirm.ConfirmPhrase)
+	}
+	body := fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params)
+	w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("add-strategy status = %d, body %s", w.Code, w.Body.String())
+	}
+	raw := rawStrategiesByID(t, path)["hl-uo-sol"]
+	if raw == nil {
+		t.Fatalf("hl-uo-sol missing from config: %v", configStrategyIDs(t, path))
+	}
+	args, _ := raw["args"].([]interface{})
+	if len(args) != 4 || args[0] != "ultimate_oscillator" || args[3] != "--mode=paper" {
+		t.Fatalf("args = %v, want ultimate_oscillator in explicit paper mode", raw["args"])
+	}
+	if raw["direction"] != DirectionBoth {
+		t.Fatalf("direction = %v, want %s for a short-entry strategy", raw["direction"], DirectionBoth)
+	}
+	if _, has := raw["allow_no_edge"]; has {
+		t.Fatal("status-page add must never grant a live acknowledgement")
+	}
+	cfg, err := LoadConfigForProbe(path)
+	if err != nil {
+		t.Fatalf("config after add-strategy fails validation: %v", err)
+	}
+	for _, sc := range cfg.Strategies {
+		if sc.ID == "hl-uo-sol" && (portfolioScopeFor(sc) != ScopePaper || sc.AllowNoEdgeAcknowledged()) {
+			t.Fatalf("hl-uo-sol must load as unacknowledged paper: scope=%s ack=%v", portfolioScopeFor(sc), sc.AllowNoEdgeAcknowledged())
+		}
+	}
+}
+
 func TestUIAddStrategyRestartParamFiresRestart(t *testing.T) {
 	ss, _, restarts := newStructuralTestServer(t)
 	params := `{"name":"momentum","platform":"hyperliquid","asset":"SOL","restart":true}`

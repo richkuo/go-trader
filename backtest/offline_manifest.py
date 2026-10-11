@@ -338,6 +338,8 @@ def window_frame(manifest: dict, dataset: dict, window_name: str):
     first = int(pre[-warmup]) if warmup > 0 else int(np.flatnonzero(in_window)[0])
     last = int(np.flatnonzero(in_window)[-1])
     frame = candles.iloc[first:last + 1].copy()
+    from closed_bar import TIMESTAMP_KIND_OPEN, declare_frame_cadence
+    declare_frame_cadence(frame, manifest["interval"], TIMESTAMP_KIND_OPEN)
     step = manifest["interval_ms"]
     expected = (win["end_ms"] - win["start_ms"]) // step
     present = int(in_window.sum())

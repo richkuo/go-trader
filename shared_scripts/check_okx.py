@@ -14,13 +14,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 from atr import ensure_atr_indicator, latest_atr
 from closed_bar import (
     ClosedBarHold,
+    declare_frame_cadence,
     fetch_rows_or_hold,
     hold_metadata,
     htf_closed_fetcher,
     select_opening_time,
+    timings_timestamp_kind,
     unsupported_open_strategy_reason,
 )
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+
+TEXT_INDICATOR_COLUMNS = ("eom_reason",)
 
 _inst_type = "swap"
 for _arg in sys.argv:
@@ -175,7 +179,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             }))
             sys.exit(1)
 
-        df = _make_dataframe(candles)
+        df = declare_frame_cadence(_make_dataframe(candles), timeframe, getattr(adapter, "OHLCV_TIMESTAMP_KIND", None))
         stdout_regime, live_regime, strategy_regime = prepare_check_regime(
             df,
             regime_enabled=regime_enabled,
@@ -224,7 +228,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                     htf_frame = _make_dataframe(select_opening_time(
                         fetch_rows_or_hold(lambda: adapter.fetch_candles(symbol, htf_tf, 61, inst_type=inst_type), symbol, htf_tf),
                         timeframe=htf_tf, cutoff_ms=selection.boundary_ms, keep=60, min_rows=50).rows)
-                decision_df = _make_dataframe(selection.rows)
+                decision_df = declare_frame_cadence(_make_dataframe(selection.rows), timeframe,
+                                                    timings_timestamp_kind(selection.rows, selection.timings))
                 closed_meta = selection.metadata()
             except ClosedBarHold as e:
                 hold = e.reason
@@ -314,6 +319,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             pass
 
         indicators = {}
+        indicator_labels = {}
         skip_cols = {
             "open", "high", "low", "close", "volume",
             "timestamp", "signal", "position", "datetime",
@@ -322,6 +328,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             if col in skip_cols:
                 continue
             val = last.get(col)
+            if col in TEXT_INDICATOR_COLUMNS:
+                if isinstance(val, str):
+                    indicator_labels[col] = val
+                continue
             if val is not None:
                 try:
                     fval = float(val)
@@ -347,6 +357,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "platform": "okx",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+        if indicator_labels:
+            output["indicator_labels"] = indicator_labels
         if decision:
             output.update(decision)
         if closed_meta is not None:

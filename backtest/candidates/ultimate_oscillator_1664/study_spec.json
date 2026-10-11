@@ -1,0 +1,139 @@
+{
+ "issue": 1664,
+ "frozen_before_held_out": true,
+ "signal_contract": {
+  "buying_pressure": "close - min(low, previous close)",
+  "true_range": "max(high, previous close) - min(low, previous close)",
+  "window_average": "sum(buying_pressure over window) / sum(true_range over window); a zero range sum holds",
+  "oscillator": "100 * (4 * short_average + 2 * mid_average + long_average) / 7",
+  "bullish_event": "close > max(high over the prior breakout_lookback bars) and previous close <= the previous upper channel (donchian_breakout_core)",
+  "bearish_event": "close < min(low over the prior breakout_lookback bars) and previous close >= the previous lower channel",
+  "required_history_bars": "max(long_window + 1, breakout_lookback + 2)",
+  "validity": "every bar in the trailing required-history span has finite positive high, low and close with low <= close <= high and a finite timestamp; timestamp steps inside the span are positive and equal; every pressure, range, sum, average and the oscillator are finite"
+ },
+ "event_truth_table": [
+  {
+   "event": "bullish",
+   "oscillator": "> bullish_threshold",
+   "signal": 1,
+   "reason": "entry_long"
+  },
+  {
+   "event": "bullish",
+   "oscillator": "<= bullish_threshold (including equality and any bearish reading)",
+   "signal": 0,
+   "reason": "unconfirmed_long"
+  },
+  {
+   "event": "bearish",
+   "oscillator": "< bearish_threshold",
+   "signal": -1,
+   "reason": "entry_short"
+  },
+  {
+   "event": "bearish",
+   "oscillator": ">= bearish_threshold (including equality and any bullish reading)",
+   "signal": 0,
+   "reason": "unconfirmed_short"
+  },
+  {
+   "event": "none",
+   "oscillator": "any",
+   "signal": 0,
+   "reason": "no_breakout"
+  },
+  {
+   "event": "any",
+   "oscillator": "invalid span",
+   "signal": 0,
+   "reason": "the latest bad-bar, timestamp, cadence, zero-range or computation reason"
+  }
+ ],
+ "seed_params": {
+  "short_window": 7,
+  "mid_window": 14,
+  "long_window": 28,
+  "bullish_threshold": 70.0,
+  "bearish_threshold": 30.0,
+  "breakout_lookback": 20
+ },
+ "grid": {
+  "short_window": [
+   5,
+   7,
+   9
+  ],
+  "mid_window": [
+   12,
+   14,
+   18
+  ],
+  "long_window": [
+   24,
+   28,
+   40
+  ],
+  "bullish_threshold": [
+   60.0,
+   70.0,
+   80.0
+  ],
+  "bearish_threshold": [
+   20.0,
+   30.0,
+   40.0
+  ],
+  "breakout_lookback": [
+   10,
+   20,
+   40
+  ],
+  "max_required_history_bars": 42
+ },
+ "close_owner": "tiered_tp_pct, one tier at 3% profit closing the full position (live-supported close capability, strict comparison)",
+ "stop_owner": "stop_loss_atr_mult 1.0 (fixed entry ATR stop), the only stop owner",
+ "direction": "both",
+ "intrabar_resolution": "ohlc_walk",
+ "funding": "--funding charge on every ordinary leg; a leg with an unpriced held hour is funding-incomplete",
+ "datasets": [
+  "BTC/USDT 1h",
+  "BTC/USDT 4h",
+  "ETH/USDT 1h",
+  "ETH/USDT 4h",
+  "SOL/USDT 1h",
+  "SOL/USDT 4h"
+ ],
+ "windows": {
+  "is": [
+   "2025-06-10",
+   "2026-01-01",
+   "selection"
+  ],
+  "2023H2": [
+   "2023-07-01",
+   "2024-01-01",
+   "held-out; replaces the M1 2023 window because Hyperliquid funding history starts on 2023-05-12 and prints only every 8 hours until 2023-06-07, so earlier hours cannot be priced"
+  ],
+  "2024": [
+   "2024-01-01",
+   "2025-01-01",
+   "held-out"
+  ],
+  "2025H1": [
+   "2025-01-01",
+   "2025-07-01",
+   "held-out"
+  ],
+  "oos": [
+   "2026-01-01",
+   "2026-10-01",
+   "held-out; the M1 open end is frozen at 2026-10-01"
+  ]
+ },
+ "selection_rule": "eligible combinations score all six datasets, have no liquidated leg and at least 30 positions on the selection window; pick the highest mean Sharpe, then the highest mean DD-adjusted return, then the earliest grid order.",
+ "sample_rule": "the pooled held-out result for the selected parameters needs at least 30 independent position clusters and at least 10 long and 10 short positions. A cluster merges positions of the same side in the same window whose holding intervals overlap on any dataset, so the 1h and 4h legs of one asset and simultaneous positions across assets count once.",
+ "candle_coverage_rule": "a held-out window and dataset counts as covered when its first and last bars sit on the window bounds and missing bars are at most 0.5% of expected bars; every gap is listed.",
+ "verdict_rule": "inconclusive when held-out candle or funding coverage is incomplete (candidate, stress, masked control or incumbent legs), when a leg is missing, when the sample rule fails, or when no neighbouring variant is evaluable. Pass only when there is no liquidation, pooled net PnL is positive at base cost and with doubled slippage, the pooled mean Sharpe and mean DD-adjusted return beat both the fixed-incumbent median bar and the masked Donchian control, and at least two thirds of the evaluable one-step grid neighbours are net positive and beat their own masked control on both metrics. Any other fully evaluated result is fail.",
+ "control": "donchian_breakout with entry_period = breakout_lookback; entries are zeroed wherever the candidate validity column is false; the same close, stop, direction, capital, costs and data. The raw unmasked control is reported separately.",
+ "promotion": "none; research is suggest-only and the candidate stays edge_status no_edge for every outcome"
+}

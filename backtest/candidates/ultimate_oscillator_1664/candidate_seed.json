@@ -1,0 +1,19 @@
+{
+ "name": "ultimate_oscillator",
+ "registry": "futures",
+ "type": "perps",
+ "platform": "hyperliquid",
+ "direction": "both",
+ "params": {
+  "short_window": 7,
+  "mid_window": 14,
+  "long_window": 28,
+  "bullish_threshold": 70.0,
+  "bearish_threshold": 30.0,
+  "breakout_lookback": 20
+ },
+ "close_strategies": [
+  {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}
+ ],
+ "stop_loss_atr_mult": 1.0
+}

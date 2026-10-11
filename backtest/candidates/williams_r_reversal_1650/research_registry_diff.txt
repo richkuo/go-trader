@@ -1,0 +1,27 @@
+--- research_registry_before
++++ research_registry_after
+@@ -727,5 +727,24 @@
+   "study_fail",
+   "backtest/candidates/awesome_oscillator_1660/REPORT.md",
+   "RESEARCH, no-edge (#1660) \u2014 Awesome Oscillator zero cross: the mean candle midpoint over fast_period bars minus the mean over slow_period bars; long when it turns positive after a negative value, short when it turns negative after a positive value, crossing at most 7 exact-zero bars (8-bar predecessor horizon). Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true"
++ ],
++ [
++  "williams_r_reversal",
++  {
++   "lookback": 14,
++   "overbought": -20.0,
++   "oversold": -80.0
++  },
++  true,
++  [
++   "lookback >= 2",
++   "lookback <= 100",
++   "oversold >= -100",
++   "overbought <= 0",
++   "oversold < overbought"
++  ],
++  "study_fail",
++  "backtest/candidates/williams_r_reversal_1650/REPORT.md",
++  "RESEARCH, no-edge (#1650) \u2014 Williams %R reversal: %R = -100 x (highest high - close) / (highest high - lowest low) over the lookback bars ending at the decision bar; long when the previous %R is at or below oversold and the current %R is strictly above it, short when the previous %R is at or above overbought and the current %R is strictly below it. Needs lookback + 1 valid consecutive candles; any bad candle, timestamp defect or zero-range window holds. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true"
+  ]
+ ]
