@@ -92,6 +92,8 @@ def _position_ctx_from_args(args):
 
 TP_MODEL_RESTING_LIMIT = "resting_limit"
 
+FULL_PRECISION_INDICATOR_PREFIXES = ("mfi_",)
+
 BATCH_PROTOCOL_VERSION = 1
 
 BATCH_PROTOCOL_VERSIONS = frozenset({1, 2})
@@ -967,7 +969,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
                 try:
                     fval = float(val)
                     if math.isfinite(fval):
-                        indicators[col] = round(fval, 6)
+                        indicators[col] = (fval if col.startswith(FULL_PRECISION_INDICATOR_PREFIXES)
+                                           else round(fval, 6))
                 except (ValueError, TypeError):
                     pass
 

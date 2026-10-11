@@ -722,6 +722,11 @@ DEFAULT_PARAM_RANGES = {
         "period": [10, 14, 20, 30, 40, 60],
         "threshold": [10.0, 15.0, 25.0, 35.0, 50.0],
     },
+    "money_flow_index_reversal": {
+        "lookback": [7, 14, 28, 56],
+        "oversold": [10.0, 20.0, 30.0],
+        "overbought": [70.0, 80.0, 90.0],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],
