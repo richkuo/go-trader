@@ -1,0 +1,25 @@
+{
+  "direction": "both",
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "profit_pct": 0.03,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict",
+  "name": "regression_channel_reversion",
+  "params": {
+    "fit_window": 35,
+    "band_multiplier": 2.0,
+    "slope_ceiling": 0.025,
+    "min_residual_std": 0.0
+  }
+}

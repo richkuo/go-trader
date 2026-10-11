@@ -1534,3 +1534,217 @@ def test_aroon_mixed_batch_matches_individual_checks():
         assert single.returncode == 0, single.stderr
         assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
     assert results["on"]["signal"] == 1
+
+
+_RCR = "regression_channel_reversion"
+_RCR_PARAMS = {"fit_window": 8, "band_multiplier": 2.0, "slope_ceiling": 0.10, "min_residual_std": 0.0}
+_RCR_TP = {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}
+_RCR_PATTERN = (0.5, -0.5, -0.5, 0.5)
+
+
+def _rcr_bars(n, *, closes=None, flat=False, bad_at=None):
+    out = []
+    for i in range(n):
+        c = 100.0 if flat else 100.0 + _RCR_PATTERN[i % 4]
+        if closes and i in closes:
+            c = closes[i]
+        o, h, low = c, c + 0.6, c - 0.6
+        if bad_at is not None and i == bad_at:
+            c = o = low = 0.0
+        out.append({"t": T0 + i * H, "T": T0 + (i + 1) * H - 1, "o": o, "h": h, "l": low, "c": c, "v": 1000.0})
+    return out
+
+
+def _rcr_reentry(n, last_closed):
+    return {last_closed - 1: 97.5, last_closed: 100.0}
+
+
+def _rcr_refs(params=None):
+    refs = {"open": {"name": _RCR, "params": params or _RCR_PARAMS}, "closes": [_RCR_TP]}
+    return ["--strategy-refs", json.dumps(refs)]
+
+
+def _rcr_direct(bars, params):
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
+    from closed_bar import declare_frame_cadence
+    df = declare_frame_cadence(_frame_from_rows(_hl_rows(bars)), "1h", "native_close_inclusive")
+    return _strategies().apply_strategy(_RCR, df, dict(params)).iloc[-1]
+
+
+def test_rcr_closed_decision_ignores_the_forming_candle_and_reports_full_precision():
+    n = 40
+    bars = _rcr_bars(n, closes=_rcr_reentry(n, n - 2))
+    cutoff = bars[-1]["t"] + H // 2
+    enabled = _hl_check(_RCR, bars, cutoff, closed=True, extra=_rcr_refs(), mid=100.25)
+    meta = enabled["closed_bar_decision"]
+    assert meta["held"] is False and meta["forming_rows_dropped"] == 1
+    assert meta["bar_open_ms"] == bars[-2]["t"]
+    assert enabled["signal"] == 1
+    assert enabled["indicator_labels"]["rcr_reason"] == "entry_long"
+    assert enabled["indicators"]["rcr_reason_code"] == 1
+    direct = _rcr_direct(bars[:-1], _RCR_PARAMS)
+    for col in ("rcr_lower", "rcr_upper", "rcr_prev_lower", "rcr_resid_std", "rcr_slope", "rcr_slope_norm",
+                "rcr_intercept", "rcr_forecast", "rcr_close", "rcr_prev_close"):
+        assert enabled["indicators"][col] == float(direct[col]), col
+    assert enabled["indicators"]["rcr_eval_ts_ms"] == bars[-2]["t"]
+    assert enabled["indicators"]["rcr_row_ts_ms"] == bars[-2]["T"]
+    assert enabled["indicators"]["rcr_interval_ms"] == H
+
+    for forming in (50.0, 100.0, 150.0):
+        moved = [dict(b) for b in bars]
+        moved[-1] = dict(moved[-1], c=forming, o=forming, h=forming + 0.6, l=forming - 0.6)
+        again = _hl_check(_RCR, moved, cutoff, closed=True, extra=_rcr_refs(), mid=100.25)
+        assert _strip(again) == _strip(enabled)
+        assert again["price"] == 100.25
+
+
+def test_rcr_legacy_path_scores_the_forming_candle():
+    n = 40
+    bars = _rcr_bars(n, closes={n - 2: 97.5, n - 1: 100.0})
+    cutoff = bars[-1]["t"] + H // 2
+    disabled = _hl_check(_RCR, bars, cutoff, closed=False, extra=_rcr_refs())
+    enabled = _hl_check(_RCR, bars, cutoff, closed=True, extra=_rcr_refs())
+    assert "closed_bar_decision" not in disabled
+    assert disabled["signal"] == 1 and disabled["indicator_labels"]["rcr_reason"] == "entry_long"
+    assert disabled["indicators"]["rcr_row_ts_ms"] == bars[-1]["T"]
+    assert "rcr_eval_ts_ms" not in disabled["indicators"]
+    assert enabled["signal"] == 0 and enabled["indicator_labels"]["rcr_reason"] == "no_reentry"
+    assert enabled["indicators"]["rcr_eval_ts_ms"] == bars[-2]["t"]
+
+
+@pytest.mark.parametrize("offset,dropped", [(0, 0), (-1, 1)])
+def test_rcr_cutoff_at_the_closing_boundary_includes_the_bar(offset, dropped):
+    n = 40
+    bars = _rcr_bars(n, closes=_rcr_reentry(n, n - 1))
+    cutoff = bars[-1]["t"] + H + offset
+    out = _hl_check(_RCR, bars, cutoff, closed=True, extra=_rcr_refs())
+    assert out["closed_bar_decision"]["forming_rows_dropped"] == dropped
+    assert out["signal"] == (1 if dropped == 0 else 0)
+
+
+@pytest.mark.parametrize("closed_rows,valid", [(199, True), (198, False)])
+def test_rcr_maximum_fit_window_needs_one_hundred_ninety_nine_closed_rows(closed_rows, valid):
+    params = dict(_RCR_PARAMS, fit_window=197)
+    bars = _rcr_bars(closed_rows + 1, closes=_rcr_reentry(closed_rows + 1, closed_rows - 1))
+    cutoff = bars[-1]["t"] + H // 2
+    out = _hl_check(_RCR, bars, cutoff, closed=True, extra=_rcr_refs(params))
+    meta = out["closed_bar_decision"]
+    assert meta["held"] is False and meta["forming_rows_dropped"] == 1 and meta["rows"] == closed_rows
+    assert out["indicators"]["rcr_fit_window"] == 197
+    assert bool(out["indicators"]["rcr_valid"]) is valid
+    if valid:
+        direct = _rcr_direct(bars[:-1], params)
+        assert out["signal"] == int(direct["signal"])
+        assert out["indicators"]["rcr_lower"] == float(direct["rcr_lower"])
+        assert out["indicator_labels"]["rcr_reason"] == direct["rcr_reason"]
+    else:
+        assert out["signal"] == 0
+        assert out["indicators"]["rcr_reason_code"] == 10
+
+
+@pytest.mark.parametrize("case", ["no_timing", "short_history", "no_cutoff"])
+def test_rcr_unverifiable_closure_holds_and_keeps_close_management(case):
+    n = 40
+    bars = _rcr_bars(n, closes=_rcr_reentry(n, n - 2))
+    cutoff = bars[-1]["t"] + H // 2
+    timing = case != "no_timing"
+    if case == "short_history":
+        bars = bars[-30:]
+    if case == "no_cutoff":
+        cutoff = None
+    mark = bars[-1]["c"]
+    held = _rcr_refs() + ["--position-side", "long", f"--position-avg-cost={mark * 0.9}",
+                          "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(_RCR, bars, cutoff, closed=True, extra=held, timing=timing, mid=mark)
+    assert out["closed_bar_decision"]["held"] is True
+    assert out["indicators"] == {}
+    assert out["open_action"] == "none"
+    assert out["close_fraction"] == 1.0 and out["close_strategy"] == "tiered_tp_pct"
+    assert out["signal"] == -1
+    flat = _hl_check(_RCR, bars, cutoff, closed=True, extra=_rcr_refs(), timing=timing, mid=mark)
+    assert flat["signal"] == 0 and flat["open_action"] == "none"
+
+
+@pytest.mark.parametrize("closed", [True, False])
+@pytest.mark.parametrize("hold", ["flat", "bad"])
+@pytest.mark.parametrize("side", ["long", "short"])
+def test_rcr_data_hold_keeps_the_explicit_close_running(closed, hold, side):
+    n = 41
+    bars = _rcr_bars(n, flat=True) if hold == "flat" else _rcr_bars(n, bad_at=n - 3)
+    mark = bars[-1]["c"]
+    avg_cost = mark * (0.9 if side == "long" else 1.1)
+    cutoff = bars[-1]["t"] + H // 2
+    held = _rcr_refs() + ["--position-side", side, f"--position-avg-cost={avg_cost}",
+                          "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(_RCR, bars, cutoff, closed=closed, extra=held, mid=mark)
+    if closed and hold == "bad":
+        assert out["closed_bar_decision"]["held"] is True
+        assert out["indicators"] == {}
+    else:
+        assert out["indicators"]["rcr_reason_code"] == (17 if hold == "flat" else 16)
+        assert out["indicator_labels"]["rcr_reason"] == ("degenerate_fit" if hold == "flat" else "nonpositive_price")
+        assert out["indicators"]["rcr_valid"] == 0.0
+    assert out["open_action"] == "none"
+    assert out["close_fraction"] == 1.0
+    assert out["close_strategy"] == "tiered_tp_pct"
+    assert out["signal"] == (-1 if side == "long" else 1)
+    assert out["price"] == mark
+
+    flat = _hl_check(_RCR, bars, cutoff, closed=closed, extra=_rcr_refs(), mid=mark)
+    assert flat["signal"] == 0 and flat["open_action"] == "none"
+
+
+def test_rcr_unavailable_protection_inputs_invent_no_close_price():
+    bars = _rcr_bars(41, flat=True)
+    cutoff = bars[-1]["t"] + H // 2
+    held_without_cost = _rcr_refs() + ["--position-side", "long", "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(_RCR, bars, cutoff, closed=True, extra=held_without_cost, mid=bars[-1]["c"])
+    assert out["indicators"]["rcr_reason_code"] == 17
+    assert out["close_fraction"] == 0.0
+    assert out["signal"] == 0 and out["open_action"] == "none"
+
+
+@pytest.mark.parametrize("side", ["long", "short"])
+def test_rcr_open_position_blocks_a_new_entry_reversal_or_add(side):
+    n = 40
+    bars = _rcr_bars(n, closes=_rcr_reentry(n, n - 2))
+    cutoff = bars[-1]["t"] + H // 2
+    mark = bars[-1]["c"]
+    held = _rcr_refs() + ["--position-side", side, f"--position-avg-cost={mark}",
+                          "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(_RCR, bars, cutoff, closed=True, extra=held, mid=mark)
+    assert out["indicators"]["rcr_reason_code"] == 1
+    assert out["open_action"] == "long"
+    assert out["close_fraction"] == 0.0
+    assert out["signal"] == 0
+
+
+def test_rcr_mixed_batch_matches_individual_checks():
+    n = 40
+    bars = _rcr_bars(n, closes=_rcr_reentry(n, n - 2))
+    cutoff = bars[-1]["t"] + H // 2
+    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
+    refs = {"open": {"name": _RCR, "params": _RCR_PARAMS}, "closes": [_RCR_TP]}
+    slots = [
+        {"id": "on", "strategy": _RCR, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs,
+         "closed_bar_decisions": True},
+        {"id": "off", "strategy": _RCR, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
+        {"id": "bad", "strategy": _RCR, "mode": "paper", "mode_args": ["--mode=paper"],
+         "strategy_refs": {"open": {"name": _RCR, "params": {"fit_window": 1}}, "closes": [_RCR_TP]}},
+        {"id": "peer", "strategy": "breakout", "mode": "paper"},
+    ]
+    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--atr-method=simple",
+                           "--market-stdin"], {"v": 2, "slots": slots, "market": market})
+    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
+    assert "fit_window" in results["bad"]["error"]
+    assert not results["peer"].get("error")
+    for slot_id, closed in (("on", True), ("off", False)):
+        argv = [_RCR, "BTC", "1h", "--mode=paper", "--market-stdin", *_rcr_refs()]
+        if closed:
+            argv.append("--closed-bar-decisions")
+        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
+        assert single.returncode == 0, single.stderr
+        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
+    assert results["on"]["signal"] == 1
+    assert results["off"]["signal"] == 0
+    assert results["off"]["indicator_labels"]["rcr_reason"] == "no_reentry"

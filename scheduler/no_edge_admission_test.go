@@ -1537,3 +1537,191 @@ func TestChandeMomentumStudyParityConfigsStillLoad(t *testing.T) {
 		})
 	}
 }
+
+func TestRegressionChannelReversionLegacyConfigsGainNoGeneratedAcknowledgement(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	rcrOpen := noEdgeHLStrategy("hl-rcr", "regression_channel_reversion", "BTC", "4h", "--mode=live")
+	eligibleOpenRCRClose := noEdgeHLStrategy("hl-macd-rcr", "macd", "ETH", "4h", "--mode=live")
+	eligibleOpenRCRClose["close_strategy"] = map[string]interface{}{"name": "regression_channel_reversion"}
+	rcrOpenEligibleClose := noEdgeHLStrategy("hl-rcr-adx", "regression_channel_reversion", "SOL", "4h", "--mode=live")
+	rcrOpenEligibleClose["close_strategy"] = map[string]interface{}{"name": "adx_trend"}
+	control := noEdgeHLStrategy("hl-macd", "macd", "BTC", "1h", "--mode=live")
+
+	report, err := migrateV20NoEdge(readRawConfig(t, writeNoEdgeConfig(t, 19, rcrOpen)), 19)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Stamped) != 0 || !reflect.DeepEqual(report.VetoedResearch, []string{"hl-rcr"}) {
+		t.Fatalf("candidate alone: stamped=%v vetoed=%v", stampedIDs(report), report.VetoedResearch)
+	}
+
+	path := writeNoEdgeConfig(t, 19, rcrOpen, eligibleOpenRCRClose, rcrOpenEligibleClose, control)
+	report, err = migrateV20NoEdge(readRawConfig(t, path), 19)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"hl-macd-rcr", "hl-rcr", "hl-rcr-adx"}; !reflect.DeepEqual(report.VetoedResearch, want) {
+		t.Fatalf("vetoed research = %v, want %v", report.VetoedResearch, want)
+	}
+	if got := stampedIDs(report); !reflect.DeepEqual(got, []string{"hl-macd"}) {
+		t.Fatalf("stamped = %v, want only the eligible control hl-macd", got)
+	}
+
+	_, err = LoadConfig(path)
+	if err == nil {
+		t.Fatal("legacy explicit-live candidate references must stay refused after migration")
+	}
+	for _, id := range []string{"hl-rcr", "hl-macd-rcr", "hl-rcr-adx"} {
+		if !strings.Contains(err.Error(), "strategy "+id+":") {
+			t.Fatalf("%s should be refused after migration: %v", id, err)
+		}
+	}
+	if strings.Contains(err.Error(), "strategy hl-macd:") {
+		t.Fatalf("the stamped eligible control must load: %v", err)
+	}
+	raw := rawStrategiesByID(t, path)
+	for _, id := range []string{"hl-rcr", "hl-macd-rcr", "hl-rcr-adx"} {
+		if _, has := raw[id]["allow_no_edge"]; has {
+			t.Fatalf("%s names regression_channel_reversion and gained allow_no_edge=%v", id, raw[id]["allow_no_edge"])
+		}
+	}
+	if raw["hl-macd"]["allow_no_edge"] != true {
+		t.Fatalf("eligible control allow_no_edge = %v, want true", raw["hl-macd"]["allow_no_edge"])
+	}
+}
+
+func rcrStudyStrategy(id string, params map[string]interface{}, modeArgs ...string) map[string]interface{} {
+	sc := noEdgeHLStrategy(id, append([]string{"regression_channel_reversion", "BTC", "4h"}, modeArgs...)...)
+	delete(sc, "stop_loss_pct")
+	sc["direction"] = DirectionBoth
+	sc["stop_loss_atr_mult"] = 1.0
+	sc["open_strategy"] = map[string]interface{}{"name": "regression_channel_reversion", "params": params}
+	sc["close_strategy"] = map[string]interface{}{
+		"name":   "tiered_tp_pct",
+		"params": map[string]interface{}{"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 0.03, "close_fraction": 1.0}}},
+	}
+	return sc
+}
+
+func TestRegressionChannelReversionAddAdmissionAndParamPreflightThroughRealLoaders(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	id, entry, err := buildAddStrategyEntry("regression_channel_reversion", "hyperliquid", "BTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "hl-rcr-btc" {
+		t.Fatalf("generated id = %q, want hl-rcr-btc", id)
+	}
+	owners := 0
+	for name, short := range knownShortNames {
+		if short == "rcr" {
+			owners++
+			if name != "regression_channel_reversion" {
+				t.Fatalf("short name rcr also owned by %s", name)
+			}
+		}
+	}
+	if owners != 1 {
+		t.Fatalf("short name rcr owners = %d", owners)
+	}
+	if !isBidirectionalPerpsStrategy("regression_channel_reversion") {
+		t.Fatal("regression_channel_reversion must be in the bidirectional perps set")
+	}
+	if _, _, err := buildAddStrategyEntry("regression_channel_reversion", "binanceus", "BTC"); err == nil {
+		t.Fatal("regression_channel_reversion is futures-only but binanceus add accepted it")
+	}
+	var added map[string]interface{}
+	if err := json.Unmarshal(entry, &added); err != nil {
+		t.Fatal(err)
+	}
+	path := writeNoEdgeConfig(t, CurrentConfigVersion, added)
+	cfg, loadErr := LoadConfig(path)
+	if _, probeErr := LoadConfigForProbe(path); loadErr != nil || probeErr != nil {
+		t.Fatalf("generated entry must load: load=%v probe=%v", loadErr, probeErr)
+	}
+	got := cfg.Strategies[0]
+	if got.Direction != DirectionBoth || portfolioScopeFor(got) != ScopePaper || edgeGateModeForStrategy(got).Kind != edgeGateModePaper || got.AllowNoEdgeAcknowledged() {
+		t.Fatalf("generated entry direction=%q scope=%q gate=%q ack=%v", got.Direction, portfolioScopeFor(got), edgeGateModeForStrategy(got).Kind, got.AllowNoEdgeAcknowledged())
+	}
+	ev, ok := noEdgeEvidenceFor("regression_channel_reversion")
+	if !ok || ev.Ref != "backtest/candidates/regression_channel_reversion_1644/REPORT.md" {
+		t.Fatalf("no-edge evidence = %+v ok=%v", ev, ok)
+	}
+	if tag := edgeStatusSummaryTag(got); tag != "edge=no_edge:"+ev.Source+"(paper)" {
+		t.Fatalf("summary tag = %q", tag)
+	}
+
+	seed := map[string]interface{}{"fit_window": 50.0, "band_multiplier": 2.0, "slope_ceiling": 0.1, "min_residual_std": 0.0}
+	study := rcrStudyStrategy("hl-rcr-study", seed, "--mode=paper")
+	cfg, err = LoadConfig(writeNoEdgeConfig(t, CurrentConfigVersion, study))
+	if err != nil {
+		t.Fatalf("study config must load: %v", err)
+	}
+	if sc := cfg.Strategies[0]; sc.CloseStrategy == nil || sc.CloseStrategy.Name != "tiered_tp_pct" || sc.StopLossATRMult == nil || *sc.StopLossATRMult != 1.0 {
+		t.Fatalf("study close/stop owners = %+v / %v", sc.CloseStrategy, sc.StopLossATRMult)
+	}
+
+	ack := func(sc map[string]interface{}) map[string]interface{} {
+		sc["allow_no_edge"] = true
+		return sc
+	}
+	fallback := func(params map[string]interface{}, modeArgs ...string) map[string]interface{} {
+		sc := noEdgeHLStrategy("hl-rcr-fb", append([]string{"breakout", "BTC", "4h"}, modeArgs...)...)
+		sc["close_strategy"] = map[string]interface{}{"name": "regression_channel_reversion", "params": params}
+		return sc
+	}
+	legacyArgs := rcrStudyStrategy("hl-rcr-legacy", seed, "--mode=paper")
+	legacyArgs["args"] = []string{"regression_channel_reversion", "BTC", "4h", "--mode=paper", "--params", `{"fit_window":true}`}
+	cases := []struct {
+		name    string
+		sc      map[string]interface{}
+		wantErr []string
+	}{
+		{"live refused without acknowledgement", rcrStudyStrategy("hl-r", seed, "--mode=live"), []string{`open strategy "regression_channel_reversion"`, "backtest/candidates/regression_channel_reversion_1644/REPORT.md", "explicit live mode"}},
+		{"live acknowledged", ack(rcrStudyStrategy("hl-r", seed, "--mode=live")), nil},
+		{"missing mode refused", rcrStudyStrategy("hl-r", seed), []string{"missing --mode"}},
+		{"repeated mode refused", rcrStudyStrategy("hl-r", seed, "--mode=paper", "--mode=paper"), []string{"regression_channel_reversion"}},
+		{"invalid acknowledgement type", func() map[string]interface{} {
+			sc := rcrStudyStrategy("hl-r", seed, "--mode=live")
+			sc["allow_no_edge"] = "yes"
+			return sc
+		}(), []string{"allow_no_edge"}},
+		{"boundary low", rcrStudyStrategy("hl-r", map[string]interface{}{"fit_window": 2.0, "band_multiplier": 1e-9, "slope_ceiling": 0.0, "min_residual_std": 0.0}, "--mode=paper"), nil},
+		{"boundary high", rcrStudyStrategy("hl-r", map[string]interface{}{"fit_window": 197.0, "band_multiplier": 3.0, "slope_ceiling": 0.2, "min_residual_std": 1.0}, "--mode=paper"), nil},
+		{"fit window below range", rcrStudyStrategy("hl-r", map[string]interface{}{"fit_window": 1.0}, "--mode=paper"), []string{"open strategy regression_channel_reversion params", "fit_window must be in [2, 197]"}},
+		{"fit window above range", rcrStudyStrategy("hl-r", map[string]interface{}{"fit_window": 198.0}, "--mode=paper"), []string{"fit_window must be in [2, 197]"}},
+		{"fractional fit window", rcrStudyStrategy("hl-r", map[string]interface{}{"fit_window": 2.5}, "--mode=paper"), []string{"fit_window must be an integer"}},
+		{"boolean fit window", rcrStudyStrategy("hl-r", map[string]interface{}{"fit_window": true}, "--mode=paper"), []string{"fit_window must be a number"}},
+		{"string fit window", rcrStudyStrategy("hl-r", map[string]interface{}{"fit_window": "50"}, "--mode=paper"), []string{"fit_window must be a number"}},
+		{"zero band multiplier", rcrStudyStrategy("hl-r", map[string]interface{}{"band_multiplier": 0.0}, "--mode=paper"), []string{"band_multiplier must be finite and greater than 0"}},
+		{"null band multiplier", rcrStudyStrategy("hl-r", map[string]interface{}{"band_multiplier": nil}, "--mode=paper"), []string{"band_multiplier must be a number"}},
+		{"negative slope ceiling", rcrStudyStrategy("hl-r", map[string]interface{}{"slope_ceiling": -0.01}, "--mode=paper"), []string{"slope_ceiling must be finite and at least 0"}},
+		{"negative deviation floor", rcrStudyStrategy("hl-r", map[string]interface{}{"min_residual_std": -1.0}, "--mode=paper"), []string{"min_residual_std must be finite and at least 0"}},
+		{"close fallback params checked", fallback(map[string]interface{}{"fit_window": 0.0}, "--mode=paper"), []string{"close strategy regression_channel_reversion params", "fit_window must be in"}},
+		{"close fallback valid in paper", fallback(map[string]interface{}{"fit_window": 20.0}, "--mode=paper"), nil},
+		{"close fallback live refused", fallback(map[string]interface{}{"fit_window": 20.0}, "--mode=live"), []string{`close strategy "regression_channel_reversion"`, "explicit live mode"}},
+		{"close fallback missing mode refused", fallback(map[string]interface{}{"fit_window": 20.0}), []string{"missing --mode"}},
+		{"ignored legacy params are not active inputs", legacyArgs, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeNoEdgeConfig(t, CurrentConfigVersion, tc.sc)
+			_, loadErr := LoadConfig(path)
+			_, probeErr := LoadConfigForProbe(path)
+			if len(tc.wantErr) == 0 {
+				if loadErr != nil || probeErr != nil {
+					t.Fatalf("unexpected refusal: load=%v probe=%v", loadErr, probeErr)
+				}
+				return
+			}
+			if loadErr == nil || probeErr == nil {
+				t.Fatalf("expected refusal containing %q: load=%v probe=%v", tc.wantErr, loadErr, probeErr)
+			}
+			for _, want := range tc.wantErr {
+				if !strings.Contains(loadErr.Error(), want) || !strings.Contains(probeErr.Error(), want) {
+					t.Fatalf("errors missing %q:\nload:  %v\nprobe: %v", want, loadErr, probeErr)
+				}
+			}
+		})
+	}
+}

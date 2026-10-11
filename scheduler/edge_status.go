@@ -52,6 +52,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"parabolic_sar":                {"fee_audit_m5", noEdgeRefFeeAudit},
 	"range_scalper":                {"study_fail", "docs/research/range_scalper_987.md"},
 	"regime_adaptive":              {"fee_audit_m5", noEdgeRefLimbo},
+	"regression_channel_reversion": {"study_fail", "backtest/candidates/regression_channel_reversion_1644/REPORT.md"},
 	"relative_vigor_index":         {"study_fail", "backtest/candidates/relative_vigor_index_1666/REPORT.md"},
 	"rsi":                          {"fee_audit_m5", noEdgeRefFeeAudit},
 	"rsi_macd_combo":               {"fee_audit_m5", noEdgeRefFeeAudit},

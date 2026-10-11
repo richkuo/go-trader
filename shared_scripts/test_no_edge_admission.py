@@ -633,3 +633,114 @@ def test_aroon_batch_slots_admit_refuse_and_match_solo():
     for key in ("signal", "open_action", "close_fraction", "indicators"):
         assert results["paper"].get(key) == solo.get(key)
         assert results["acked"].get(key) == solo.get(key)
+
+
+RCR = ["regression_channel_reversion", "BTC", "4h"]
+RCR_PARAMS = {"fit_window": 50, "band_multiplier": 2.0, "slope_ceiling": 0.10, "min_residual_std": 0.0}
+RCR_TP = {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}
+RCR_REPORT = "backtest/candidates/regression_channel_reversion_1644/REPORT.md"
+
+
+def _rcr_refs(params=None, closes=(RCR_TP,)):
+    refs = {"open": {"name": "regression_channel_reversion", "params": params or RCR_PARAMS},
+            "closes": list(closes)}
+    return ["--strategy-refs", json.dumps(refs)]
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_rcr_solo_check_refuses_outside_explicit_paper(extra, reason):
+    proc = _run("check_hyperliquid.py", RCR + extra + _rcr_refs())
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert "open strategy 'regression_channel_reversion' is edge_status=no_edge" in payload["error"]
+    assert RCR_REPORT in payload["error"]
+    assert reason in payload["error"]
+    assert "Fetching" not in proc.stderr
+
+
+@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],
+                                   ["--allow-no-edge"]])
+def test_rcr_paper_or_acknowledged_solo_check_runs_offline(extra):
+    proc = _run("check_hyperliquid.py", RCR + ["--market-stdin"] + extra + _rcr_refs(), _solo_envelope())
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = _payload(proc)
+    assert out["strategy"] == "regression_channel_reversion" and not out.get("error")
+    assert out["close_strategies"] == ["tiered_tp_pct"]
+    assert out["indicators"]["rcr_fit_window"] == 50
+    assert out["indicators"]["rcr_interval_ms"] == 14_400_000
+    assert out["indicators"]["rcr_reason_code"] in (-1, 0, 1, 2, 3, 17)
+    assert out["indicator_labels"]["rcr_reason"]
+
+
+@pytest.mark.parametrize("params,needle", [
+    ({"fit_window": True}, "fit_window"),
+    ({"fit_window": 2.5}, "fit_window must be an integer"),
+    ({"fit_window": 1}, "fit_window"),
+    ({"fit_window": 198}, "fit_window"),
+    ({"fit_window": "50"}, "fit_window must be an integer"),
+    ({"band_multiplier": 0}, "band_multiplier"),
+    ({"band_multiplier": None}, "band_multiplier must be a number"),
+    ({"slope_ceiling": -0.1}, "slope_ceiling"),
+    ({"min_residual_std": "1"}, "min_residual_std must be a number"),
+])
+def test_rcr_invalid_parameters_are_refused_before_any_market_fetch(params, needle):
+    proc = _run("check_hyperliquid.py", RCR + ["--mode=paper"] + _rcr_refs(params))
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert needle in payload["error"]
+    assert "Fetching" not in proc.stderr
+
+
+def test_rcr_close_fallback_is_gated_and_its_parameters_are_preflighted():
+    fallback = {"name": "regression_channel_reversion", "params": {"fit_window": 20}}
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [fallback]})
+    for mode in (["--mode=live"], []):
+        refused = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", *mode, "--strategy-refs", refs])
+        assert refused.returncode == 1
+        assert "close strategy 'regression_channel_reversion' is edge_status=no_edge" in _payload(refused)["error"]
+
+    acked = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--mode=live", "--allow-no-edge",
+                                          "--strategy-refs", refs, "--market-stdin"], _solo_envelope())
+    assert acked.returncode == 0, acked.stderr[-2000:]
+    assert _payload(acked)["close_strategies"] == ["regression_channel_reversion"]
+
+    bad = json.dumps({"open": {"name": "breakout"},
+                      "closes": [{"name": "regression_channel_reversion", "params": {"fit_window": 0}}]})
+    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--mode=paper", "--strategy-refs", bad])
+    assert proc.returncode == 1
+    assert "fit_window" in _payload(proc)["error"]
+
+
+def test_rcr_batch_slots_admit_refuse_and_match_solo():
+    refs = {"open": {"name": "regression_channel_reversion", "params": RCR_PARAMS}, "closes": [RCR_TP]}
+    name = "regression_channel_reversion"
+    proc = _batch([
+        {"id": "paper", "strategy": name, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
+        {"id": "acked", "strategy": name, "mode": "live", "mode_args": ["--mode=live"],
+         "allow_no_edge": True, "strategy_refs": refs},
+        {"id": "unacked-live", "strategy": name, "mode": "live", "mode_args": ["--mode=live"], "strategy_refs": refs},
+        {"id": "missing", "strategy": name, "mode": "paper", "strategy_refs": refs},
+        {"id": "repeated", "strategy": name, "mode": "paper", "mode_args": ["--mode=paper", "--mode=live"],
+         "strategy_refs": refs},
+        {"id": "bad-params", "strategy": name, "mode": "paper", "mode_args": ["--mode=paper"],
+         "strategy_refs": {"open": {"name": name, "params": {"fit_window": 2.5}}}},
+        {"id": "fallback-live", "strategy": "breakout", "mode": "live", "mode_args": ["--mode=live"],
+         "strategy_refs": {"open": {"name": "breakout"}, "closes": [{"name": name}]}},
+        {"id": "peer", "strategy": "breakout", "mode": "paper"},
+    ])
+    assert proc.returncode == 1
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    assert not results["paper"].get("error") and not results["acked"].get("error") and not results["peer"].get("error")
+    assert "explicit live mode" in results["unacked-live"]["error"]
+    assert "missing mode" in results["missing"]["error"]
+    assert "invalid mode input" in results["repeated"]["error"]
+    assert "fit_window must be an integer" in results["bad-params"]["error"]
+    assert "close strategy 'regression_channel_reversion'" in results["fallback-live"]["error"]
+
+    solo = _payload(_run("check_hyperliquid.py", RCR + ["--mode=paper", "--market-stdin"] + _rcr_refs(),
+                         _solo_envelope()))
+    for key in ("signal", "open_action", "close_fraction", "indicators", "indicator_labels"):
+        assert results["paper"].get(key) == solo.get(key)
+        assert results["acked"].get(key) == solo.get(key)

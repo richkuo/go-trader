@@ -22,6 +22,7 @@ var v20FormerResearchStrategies = map[string]struct{}{
 	"money_flow_index_reversal":    {},
 	"on_balance_volume_divergence": {},
 	"open_interest_breakout":       {},
+	"regression_channel_reversion": {},
 	"relative_vigor_index":         {},
 	"ultimate_oscillator":          {},
 	"vortex_trend":                 {},

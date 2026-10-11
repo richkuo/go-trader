@@ -1742,6 +1742,63 @@ func aroonTrendParamErrors(strategies []StrategyConfig) []string {
 	return errs
 }
 
+const (
+	regressionChannelStrategyName = "regression_channel_reversion"
+	regressionChannelFitWindowMin = 2
+	regressionChannelFitWindowMax = 197
+)
+
+func regressionChannelParamsError(params map[string]interface{}) error {
+	if fit, ok, err := aroonTrendParamNumber(params, "fit_window"); err != nil {
+		return err
+	} else if ok {
+		if math.IsNaN(fit) || math.IsInf(fit, 0) || fit != math.Trunc(fit) {
+			return fmt.Errorf("fit_window must be an integer, got %v", fit)
+		}
+		if fit < regressionChannelFitWindowMin || fit > regressionChannelFitWindowMax {
+			return fmt.Errorf("fit_window must be in [%d, %d], got %v", regressionChannelFitWindowMin, regressionChannelFitWindowMax, fit)
+		}
+	}
+	if k, ok, err := aroonTrendParamNumber(params, "band_multiplier"); err != nil {
+		return err
+	} else if ok && (math.IsNaN(k) || math.IsInf(k, 0) || k <= 0) {
+		return fmt.Errorf("band_multiplier must be finite and greater than 0, got %v", k)
+	}
+	for _, key := range []string{"slope_ceiling", "min_residual_std"} {
+		v, ok, err := aroonTrendParamNumber(params, key)
+		if err != nil {
+			return err
+		}
+		if ok && (math.IsNaN(v) || math.IsInf(v, 0) || v < 0) {
+			return fmt.Errorf("%s must be finite and at least 0, got %v", key, v)
+		}
+	}
+	return nil
+}
+
+func regressionChannelParamErrors(strategies []StrategyConfig) []string {
+	var errs []string
+	for _, sc := range strategies {
+		if sc.Type == "options" {
+			continue
+		}
+		if effectiveOpenStrategy(sc) == regressionChannelStrategyName {
+			if err := regressionChannelParamsError(sc.OpenStrategy.Params); err != nil {
+				errs = append(errs, fmt.Sprintf("strategy %s: open strategy %s params: %v", sc.ID, regressionChannelStrategyName, err))
+			}
+		}
+		for _, ref := range sc.closeRefs() {
+			if canonicalCloseStrategyName(ref.Name) != regressionChannelStrategyName {
+				continue
+			}
+			if err := regressionChannelParamsError(ref.Params); err != nil {
+				errs = append(errs, fmt.Sprintf("strategy %s: close strategy %s params: %v", sc.ID, regressionChannelStrategyName, err))
+			}
+		}
+	}
+	return errs
+}
+
 func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	var errs []string
 	seenIDs := make(map[string]bool)
@@ -1770,6 +1827,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 
 	errs = append(errs, fixedIntervalStrategyErrors(cfg.Strategies)...)
 	errs = append(errs, aroonTrendParamErrors(cfg.Strategies)...)
+	errs = append(errs, regressionChannelParamErrors(cfg.Strategies)...)
 
 	errs = append(errs, validatePaperSourcesConfig(cfg)...)
 

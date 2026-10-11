@@ -56,6 +56,7 @@ from on_balance_volume import on_balance_volume_divergence_core
 from williams_r import williams_r_param_validator, williams_r_reversal_core
 from money_flow_index import money_flow_index_reversal_core
 from aroon_trend import aroon_trend_core, validate_aroon_param_dict
+from regression_channel_reversion import regression_channel_reversion_core, validate_rcr_param_dict
 from ultimate_oscillator import ultimate_oscillator_core
 from fisher_reversal import fisher_reversal_core
 
@@ -76,7 +77,7 @@ VALID_EDGE_SOURCES: Tuple[str, ...] = (
 )
 
 
-SINGLE_VALUE_VALIDATED_STRATEGIES: Tuple[str, ...] = ("aroon_trend",)
+SINGLE_VALUE_VALIDATED_STRATEGIES: Tuple[str, ...] = ("aroon_trend", "regression_channel_reversion")
 
 
 def no_edge_strategies() -> frozenset:
@@ -1939,6 +1940,31 @@ def aroon_trend_strategy(df: pd.DataFrame, period: int = 25, strength: float = 7
 
 
 @register(
+    "regression_channel_reversion",
+    "RESEARCH, no-edge (#1644) \u2014 Regression-channel reversion: at decision bar N a least-squares line is fitted to the fit_window closes strictly before N, frozen with its population residual deviation and extended to N; the bands are that forecast plus or minus band_multiplier times the deviation. Long when the previous close was at or below its own frozen lower band and the current close is strictly above the current lower band and at or below the current upper band; short mirrors at the upper band. Entries also need the normalized slope (absolute fitted change over the window divided by the window mean) at or below slope_ceiling and the residual deviation at or above min_residual_std (quote-price units). Needs fit_window+2 rows with declared bar cadence; bad prices, timestamp defects, cadence gaps and degenerate fits hold with a reason code. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"fit_window": 50, "band_multiplier": 2.0, "slope_ceiling": 0.10, "min_residual_std": 0.0},
+    platforms=("futures",),
+    constraints=[
+        "fit_window >= 2",
+        "fit_window <= 197",
+        "band_multiplier > 0",
+        "slope_ceiling >= 0",
+        "min_residual_std >= 0",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/regression_channel_reversion_1644/REPORT.md",
+    short_entries=True,
+    param_validator=validate_rcr_param_dict,
+)
+def regression_channel_reversion_strategy(df: pd.DataFrame, fit_window: int = 50, band_multiplier: float = 2.0,
+                                          slope_ceiling: float = 0.10,
+                                          min_residual_std: float = 0.0) -> pd.DataFrame:
+    return regression_channel_reversion_core(df, fit_window=fit_window, band_multiplier=band_multiplier,
+                                             slope_ceiling=slope_ceiling, min_residual_std=min_residual_std)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -2213,6 +2239,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "on_balance_volume_divergence", "chande_momentum",
         "money_flow_index_reversal",
         "aroon_trend",
+        "regression_channel_reversion",
         "ease_of_movement_breakout",
         "fisher_reversal",
         "ultimate_oscillator",

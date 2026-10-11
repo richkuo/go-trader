@@ -755,6 +755,12 @@ DEFAULT_PARAM_RANGES = {
         "period": [10, 14, 25, 50, 100],
         "strength": [50.0, 70.0, 85.0],
     },
+    "regression_channel_reversion": {
+        "fit_window": [20, 35, 50, 75, 100, 150, 197],
+        "band_multiplier": [1.5, 2.0, 2.5, 3.0],
+        "slope_ceiling": [0.0, 0.025, 0.05, 0.10, 0.20],
+        "min_residual_std": [0.0, 0.1, 1.0],
+    },
     "ultimate_oscillator": {
         "short_window": [5, 7, 9],
         "mid_window": [12, 14, 18],
