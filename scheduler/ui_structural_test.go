@@ -170,6 +170,45 @@ func TestUIAddStrategyEndToEnd(t *testing.T) {
 	}
 }
 
+func TestUIAddStrategyCreatesPaperMoneyFlowIndexReversal(t *testing.T) {
+	ss, path, _ := newStructuralTestServer(t)
+	params := `{"name":"money_flow_index_reversal","platform":"hyperliquid","asset":"BTC"}`
+	confirm := structuralConfirm(t, ss, "add-strategy", "", params)
+	if confirm.ConfirmPhrase != "hl-mfi-btc" {
+		t.Fatalf("confirm phrase = %q, want hl-mfi-btc", confirm.ConfirmPhrase)
+	}
+	body := fmt.Sprintf(`{"nonce":%q,"params":%s}`, confirm.Nonce, params)
+	w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("add-strategy status = %d, body %s", w.Code, w.Body.String())
+	}
+	list, err := configStrategies(readConfigRoot(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var added map[string]interface{}
+	for _, raw := range list {
+		if strategyRawID(raw) == "hl-mfi-btc" {
+			if err := json.Unmarshal(raw, &added); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if added == nil {
+		t.Fatalf("hl-mfi-btc missing from config: %s", mustReadFile(t, path))
+	}
+	args := added["args"].([]interface{})
+	if added["direction"] != DirectionBoth || args[0] != "money_flow_index_reversal" || args[len(args)-1] != "--mode=paper" {
+		t.Fatalf("added entry = %v, want direction both and explicit paper", added)
+	}
+	if _, has := added["allow_no_edge"]; has {
+		t.Fatal("status-page add must not write an acknowledgement")
+	}
+	if _, err := LoadConfigForProbe(path); err != nil {
+		t.Fatalf("config after add-strategy fails validation: %v", err)
+	}
+}
+
 func TestUIAddStrategyRestartParamFiresRestart(t *testing.T) {
 	ss, _, restarts := newStructuralTestServer(t)
 	params := `{"name":"momentum","platform":"hyperliquid","asset":"SOL","restart":true}`

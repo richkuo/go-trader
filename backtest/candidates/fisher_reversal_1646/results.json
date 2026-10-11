@@ -57237,11 +57237,11 @@
   "backtest/candidates/fisher_reversal_1646/run_study.py": "e24be8b087030d11dc663f2f265e74a0d69698e5985157659f8133ce61454812",
   "backtest/eval_windows.py": "695b99541bfeafe963d1f83f336a7abd0776257e6741bb6b4ea38de73dfe0102",
   "backtest/offline_manifest.py": "175869204e24496839bb2175d645fbce89376e2a574f2b025751f34b3e7fe1b7",
-  "backtest/optimizer.py": "abf5974492a652f884edbf1c5183c724b2cec1c1741bc64533ba07d22d790fdf",
+  "backtest/optimizer.py": "8a416dbb1871b69d6406e4e039a37de354e71d5adee99ce677fd33d31b50db5a",
   "shared_strategies/close/tiered_tp_pct.py": "f6a480628c37f0da329336aa5efaeacd3dced5fe73622ccfc4ee47a16e07daa6",
   "shared_strategies/open/fisher_reversal.py": "e0828c1f5fd50e544c9b7723fda9030b117c84431269375db1b17fef9c3bfe9f",
   "shared_strategies/open/mean_reversion_pro.py": "4b2ab686d35f96682a39861e86e045b19b4cc686d41b20764754fbfbd8c168a8",
-  "shared_strategies/open/registry.py": "dadf09cf5902ef74739029d770b3865f84fc616a61d5786e0d6c3aba7d35f107",
+  "shared_strategies/open/registry.py": "761bc7191d4389410ffde46410e532febca21432ccff456f788fcd88d6ef6bbc",
   "shared_tools/strategy_composition.py": "a256556a86e2492406bfcb481dc1dc3270e334230961641c2075a9000cef32de"
  },
  "study": "fisher_reversal_1646",
