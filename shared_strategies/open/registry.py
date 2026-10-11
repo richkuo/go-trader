@@ -45,13 +45,17 @@ from anchored_vwap_channel import anchored_vwap_channel_core
 from anchored_vwap_reversion import anchored_vwap_reversion_core
 from analog_retrieval import analog_retrieval_core
 from chaikin_money_flow import chaikin_money_flow_breakout_core
+from ease_of_movement import ease_of_movement_breakout_core
 from open_interest_breakout import open_interest_breakout_core
 from connors_rsi import connors_rsi_reversion_core
 from vortex_trend import vortex_trend_core
 from relative_vigor_index import relative_vigor_index_core
 from awesome_oscillator import awesome_oscillator_core
+from on_balance_volume import on_balance_volume_divergence_core
+from williams_r import williams_r_param_validator, williams_r_reversal_core
 from money_flow_index import money_flow_index_reversal_core
 from ultimate_oscillator import ultimate_oscillator_core
+from fisher_reversal import fisher_reversal_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -226,6 +230,9 @@ def validate_params(name: str, params: dict,
     effective = {**base, **(params or {})}
     parsed = [(expr, _parse_constraint(name, expr)) for expr in entry["constraints"]]
     _enforce_parsed_constraints(name, effective, parsed)
+    validator = entry.get("param_validator")
+    if validator is not None:
+        validator(effective)
 
 
 def validate_param_value(name: str, param: str, value) -> None:
@@ -254,6 +261,7 @@ def register(
     edge_ref: Optional[str] = None,
     *,
     short_entries: bool,
+    param_validator=None,
 ):
     if name in STRATEGIES:
         raise ValueError(f"Strategy '{name}' is already registered")
@@ -274,6 +282,8 @@ def register(
             f"{name}: variants keys {sorted(bad_v)} not in platforms {platforms}"
         )
     _validate_short_entries(name, short_entries, default_params, platforms, variants)
+    if param_validator is not None and not callable(param_validator):
+        raise ValueError(f"{name}: param_validator must be callable, got {param_validator!r}")
 
     constraint_list = tuple(constraints or ())
     known_params = set(default_params)
@@ -301,6 +311,7 @@ def register(
             "edge_source": edge_source,
             "edge_ref": edge_ref,
             "short_entries": short_entries,
+            "param_validator": param_validator,
         }
         return fn
 
@@ -344,6 +355,7 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
             "edge_status": entry.get("edge_status"),
             "edge_source": entry.get("edge_source"),
             "edge_ref": entry.get("edge_ref"),
+            "param_validator": entry.get("param_validator"),
         }
     return out
 
@@ -1723,6 +1735,59 @@ def awesome_oscillator_strategy(df: pd.DataFrame, fast_period: int = 5, slow_per
 
 
 @register(
+    "williams_r_reversal",
+    "RESEARCH, no-edge (#1650) \u2014 Williams %R reversal: %R = -100 x (highest high - close) / (highest high - lowest low) over the lookback bars ending at the decision bar; long when the previous %R is at or below oversold and the current %R is strictly above it, short when the previous %R is at or above overbought and the current %R is strictly below it. Needs lookback + 1 valid consecutive candles; any bad candle, timestamp defect or zero-range window holds. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"lookback": 14, "oversold": -80.0, "overbought": -20.0},
+    platforms=("futures",),
+    constraints=[
+        "lookback >= 2",
+        "lookback <= 100",
+        "oversold >= -100",
+        "overbought <= 0",
+        "oversold < overbought",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/williams_r_reversal_1650/REPORT.md",
+    short_entries=True,
+    param_validator=williams_r_param_validator,
+)
+def williams_r_reversal_strategy(df: pd.DataFrame, lookback: int = 14, oversold: float = -80.0,
+                                 overbought: float = -20.0) -> pd.DataFrame:
+    return williams_r_reversal_core(df, lookback=lookback, oversold=oversold, overbought=overbought)
+
+
+@register(
+    "on_balance_volume_divergence",
+    "RESEARCH, no-edge (#1657) \u2014 On Balance Volume divergence: signed volume is +volume after a higher close, -volume after a lower close and 0 after an equal close; a strict price pivot (left_span/right_span) is usable only once its right-side bars close; each newly confirmed low pairs with the nearest earlier confirmed low min_separation..max_separation bars back, and a strictly lower low whose signed-volume sum over the pair interval, divided by the absolute-volume sum over the same interval, exceeds volume_threshold arms a long; the mirror high arms a short. The setup enters once on the first later close strictly beyond the reclaim level (highest high, or lowest low, from the second pivot through its confirmation bar) within setup_expiry bars; a newer pivot replaces it and simultaneous opposite events hold. Every decision reads exactly its trailing left_span + max_separation + right_span + setup_expiry + 1 bars (at most 200); bad prices, bad volume, timestamp defects and cadence gaps inside that span hold. volume_test=false is the price-pivot-only ablation. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {
+        "left_span": 3, "right_span": 3, "min_separation": 5, "max_separation": 40,
+        "volume_threshold": 0.10, "setup_expiry": 12, "volume_test": True,
+    },
+    platforms=("futures",),
+    constraints=[
+        "left_span >= 1",
+        "left_span <= 10",
+        "right_span >= 1",
+        "right_span <= 10",
+        "min_separation >= 1",
+        "max_separation <= 100",
+        "min_separation <= max_separation",
+        "volume_threshold >= 0",
+        "volume_threshold <= 1",
+        "setup_expiry >= 1",
+        "setup_expiry <= 50",
+    ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/on_balance_volume_divergence_1657/REPORT.md",
+    short_entries=True,
+)
+def on_balance_volume_divergence_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return on_balance_volume_divergence_core(df, **params)
+
+
+@register(
     "money_flow_index_reversal",
     "RESEARCH, no-edge (#1658) \u2014 Money Flow Index reversal: typical price times volume, split into positive and negative flow by the change in typical price, summed over lookback bars into a 0-100 oscillator; long when it rises strictly above oversold from at or below it, short when it falls strictly below overbought from at or above it. Missing or invalid volume holds; volume is never invented. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"lookback": 14, "oversold": 20.0, "overbought": 80.0},
@@ -1779,6 +1844,47 @@ def ultimate_oscillator_strategy(df: pd.DataFrame, short_window: int = 7, mid_wi
         df, short_window=short_window, mid_window=mid_window, long_window=long_window,
         bullish_threshold=bullish_threshold, bearish_threshold=bearish_threshold,
         breakout_lookback=breakout_lookback)
+
+
+@register(
+    "fisher_reversal",
+    "RESEARCH, no-edge (#1646) \u2014 Fisher Transform reversal: the candle midpoint is normalized into [-1, 1] against its inclusive lookback-bar range, smoothed by x = 0.33 * normalized + 0.67 * previous x (clamped 1e-6 inside +/-1) and transformed by F = 0.5 * ln((1 + x) / (1 - x)) + 0.5 * previous F, both recurrences restarted from zero over exactly 64 bars for every timestamp (lookback + 65 bars of history); long when F crosses above its one-bar-lagged trigger after the trigger is below -extreme, short is the mirror above +extreme. Bad, gapped or flat input holds the entry. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"lookback": 9, "extreme": 1.5},
+    platforms=("futures",),
+    constraints=[
+        "lookback >= 2",
+        "lookback <= 32",
+        "extreme >= 0.5",
+        "extreme <= 3.0",
+    ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/fisher_reversal_1646/REPORT.md",
+    short_entries=True,
+)
+def fisher_reversal_strategy(df: pd.DataFrame, lookback: int = 9, extreme: float = 1.5) -> pd.DataFrame:
+    return fisher_reversal_core(df, lookback=lookback, extreme=extreme)
+
+
+@register(
+    "ease_of_movement_breakout",
+    "RESEARCH, no-edge (#1671) \u2014 Ease of Movement breakout confirmation: one-bar Ease of Movement is the change in candle midpoint times the current high-minus-low range divided by current base volume, averaged over eom_period bars; long on the first close strictly above the prior breakout_window high while the average is strictly positive, short on the mirror below the prior low with a strictly negative average. Needs declared bar cadence; zero or negative volume, bad candles, timestamp defects and cadence gaps inside the window hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"eom_period": 14, "breakout_window": 20},
+    platforms=("futures",),
+    constraints=[
+        "eom_period >= 2",
+        "eom_period <= 100",
+        "breakout_window >= 2",
+        "breakout_window <= 100",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/ease_of_movement_1671/REPORT.md",
+    short_entries=True,
+)
+def ease_of_movement_breakout_strategy(df: pd.DataFrame, eom_period: int = 14,
+                                       breakout_window: int = 20) -> pd.DataFrame:
+    return ease_of_movement_breakout_core(df, eom_period=eom_period, breakout_window=breakout_window)
 
 
 @register(
@@ -2052,8 +2158,12 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
         "chaikin_money_flow_breakout", "open_interest_breakout", "connors_rsi_reversion",
-        "vortex_trend", "relative_vigor_index", "awesome_oscillator",
-        "money_flow_index_reversal", "ultimate_oscillator",
+        "vortex_trend", "relative_vigor_index", "awesome_oscillator", "williams_r_reversal",
+        "on_balance_volume_divergence",
+        "money_flow_index_reversal",
+        "ease_of_movement_breakout",
+        "fisher_reversal",
+        "ultimate_oscillator",
         "hold",
     ],
 }

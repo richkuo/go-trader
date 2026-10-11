@@ -1,0 +1,62 @@
+{
+  "issue": 1646,
+  "name": "fisher_reversal",
+  "formula": {
+    "midpoint": "(high + low) / 2",
+    "normalized": "2 * (midpoint - min(midpoint over the inclusive lookback bars)) / (max - min) - 1; max == min is a flat_range hold",
+    "smoothed": "x = 0.33 * normalized + 0.67 * previous_x, then clamp x to [-1 + 0.000001, 1 - 0.000001]",
+    "fisher": "F = 0.5 * ln((1 + x) / (1 - x)) + 0.5 * previous_F",
+    "initialization": "for every timestamp t, previous_x = 0 and previous_F = 0 before the first of exactly 64 normalized observations ending at t, processed in timestamp order",
+    "trigger": "trigger(t) = F(t - 1), evaluated independently from its own 64-observation recurrence",
+    "long_entry": "F(t) > F(t-1) and F(t-1) <= F(t-2) and F(t-1) < -extreme",
+    "short_entry": "F(t) < F(t-1) and F(t-1) >= F(t-2) and F(t-1) > extreme",
+    "smooth_new_weight": 0.33,
+    "smooth_prev_weight": 0.67,
+    "fisher_prev_weight": 0.5,
+    "clamp_epsilon": 0.000001,
+    "recurrence_horizon": 64,
+    "required_history": "lookback + 64 + 1 rows (F(t-2) needs rows t-2-64-lookback+2 .. t-2); maximum 97 rows at lookback 32"
+  },
+  "params": {"lookback": 9, "extreme": 1.5},
+  "parameter_domains": {
+    "lookback": {"type": "integer", "min": 2, "max": 32},
+    "extreme": {"type": "finite number", "min": 0.5, "max": 3.0}
+  },
+  "optimizer_grid": {"lookback": [5, 9, 13, 21], "extreme": [0.75, 1.0, 1.5, 2.0]},
+  "manifest": "backtest/candidates/fisher_reversal_1646_manifest.json",
+  "selection_window": "train",
+  "held_out_window": "test",
+  "capital": 1000.0,
+  "close_strategies": [{"name": "tiered_tp_pct", "params": {}}],
+  "close_default_ladder": [
+    {"profit_pct": 0.01, "close_fraction": 0.25},
+    {"profit_pct": 0.02, "close_fraction": 0.5},
+    {"profit_pct": 0.03, "close_fraction": 0.75},
+    {"profit_pct": 0.04, "close_fraction": 1.0}
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict",
+  "arms": {
+    "fisher_reversal": {"direction": "both"},
+    "mean_reversion_pro": {"direction": "both"},
+    "rsi": {"direction": "long", "note": "rsi registers short_entries=False, so its arm stays long-only"}
+  },
+  "selection": {
+    "eligible": "complete candle and funding coverage, every dataset scored, no liquidated leg, at least min_train_independent_positions independent positions",
+    "min_train_independent_positions": 10,
+    "order": ["max mean net Sharpe", "max mean drawdown-adjusted return", "earliest grid order"]
+  },
+  "held_out": {
+    "min_independent_positions_per_arm": 30,
+    "candidate_requires_both_directions": true
+  },
+  "cost_runs": {
+    "base": {"cost_multiplier": 1.0, "meaning": "manifest fees, per-coin half spread and slippage"},
+    "stress": {"cost_multiplier": 2.0, "meaning": "manifest fees unchanged, half spread and slippage doubled"}
+  },
+  "verdict": {
+    "inconclusive": "any coverage refusal, no eligible training selection for an arm, or a held-out sample gate that fails",
+    "pass": "complete coverage, every sample gate met, candidate net PnL > 0 at base and stress cost, candidate base mean Sharpe and base mean drawdown-adjusted return both strictly above each selected comparator",
+    "fail": "a complete study that misses any pass condition"
+  }
+}

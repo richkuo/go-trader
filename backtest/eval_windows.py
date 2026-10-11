@@ -282,6 +282,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             commission_pct: Optional[float] = None,
             slippage_pct: Optional[float] = None,
             keep_trades: bool = False,
+            keep_positions: bool = False,
             intrabar_resolution: str = "ohlc_walk",
             exchange_id: Optional[str] = None,
             manifest_ctx: Optional[dict] = None,
@@ -489,6 +490,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     leg["close_validation"] = results.get("close_validation")
     if keep_trades:
         leg["trade_samples"] = trade_samples_from_results(results)
+    if keep_positions:
+        leg["positions"] = positions_from_results(results)
     if manifest_info is not None:
         leg["manifest"] = manifest_info
         leg["execution"] = execution_metrics(results, capital)

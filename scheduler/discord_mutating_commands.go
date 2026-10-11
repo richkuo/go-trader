@@ -89,6 +89,15 @@ func strategyRawID(raw json.RawMessage) string {
 	return item.ID
 }
 
+type addStrategyEntryOnlyCandidate struct {
+	CloseStrategy      string
+	ClosedBarDecisions bool
+}
+
+var addStrategyEntryOnlyCandidates = map[string]addStrategyEntryOnlyCandidate{
+	"ease_of_movement_breakout": {CloseStrategy: "tiered_tp_atr", ClosedBarDecisions: true},
+}
+
 func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessage, error) {
 	name = strings.TrimSpace(name)
 	asset = strings.ToUpper(strings.TrimSpace(asset))
@@ -137,6 +146,12 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 			"leverage":         1.0,
 			"direction":        direction,
 			"margin_mode":      "isolated",
+		}
+		if candidate, ok := addStrategyEntryOnlyCandidates[name]; ok {
+			obj["close_strategy"] = map[string]interface{}{"name": candidate.CloseStrategy}
+			if candidate.ClosedBarDecisions {
+				obj["closed_bar_decisions"] = true
+			}
 		}
 	case "binanceus":
 		id = fmt.Sprintf("%s-%s", short, strings.ToLower(asset))
