@@ -91,6 +91,7 @@ var knownShortNames = map[string]string{
 	"chaikin_money_flow_breakout":  "cmfbo",
 	"commodity_channel_trend":      "cci",
 	"connors_rsi_reversion":        "crsi",
+	"money_flow_index_reversal":    "mfi",
 	"on_balance_volume_divergence": "obvdiv",
 	"open_interest_breakout":       "oibo",
 	"relative_vigor_index":         "rvi",
@@ -129,6 +130,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"mean_reversion_pro":           {"spot", "futures"},
 	"momentum":                     {"spot", "futures"},
 	"momentum_pro":                 {"spot", "futures"},
+	"money_flow_index_reversal":    {"futures"},
 	"mtf_confluence":               {"spot", "futures"},
 	"on_balance_volume_divergence": {"futures"},
 	"open_interest_breakout":       {"futures"},
@@ -196,6 +198,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"vortex_trend":                 true,
 	"relative_vigor_index":         true,
 	"awesome_oscillator":           true,
+	"money_flow_index_reversal":    true,
 	"on_balance_volume_divergence": true,
 }
 

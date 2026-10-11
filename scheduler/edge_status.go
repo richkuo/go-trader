@@ -39,6 +39,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"macd":                         {"fee_audit_m5", noEdgeRefFeeAudit},
 	"mean_reversion":               {"fee_audit_m5", noEdgeRefFeeAudit},
 	"momentum":                     {"fee_audit_m5", noEdgeRefFeeAudit},
+	"money_flow_index_reversal":    {"study_fail", "backtest/candidates/money_flow_index_reversal_1658/REPORT.md"},
 	"mtf_confluence":               {"fee_audit_m5", noEdgeRefFeeAudit},
 	"on_balance_volume_divergence": {"study_inconclusive", "backtest/candidates/on_balance_volume_divergence_1657/REPORT.md"},
 	"open_interest_breakout":       {"study_inconclusive", "backtest/candidates/open_interest_breakout_1637/REPORT.md"},
