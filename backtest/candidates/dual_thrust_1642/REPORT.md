@@ -624,4 +624,4 @@ uv run --no-sync python backtest/candidates/dual_thrust_1642/run_study.py parity
 uv run --no-sync python backtest/candidates/dual_thrust_1642/run_study.py render
 ```
 
-Results: `results.json` (source commit `165c26492bd2c1d26374c5784bfcf6558273b7b0+uncommitted-changes`, runtime 408.7 s, manifest sha256 `1add7d1cdd46af1fdfe61420f5dc28386f7dbddf36c5d5f31b8cc2029bf6bb87`, venue manifest sha256 `8e21fa954d56207fc0a36994a8fa6283f711a9a8e18774844459ca63b52f7bae`), `parity_results.json` (source commit `165c26492bd2c1d26374c5784bfcf6558273b7b0+uncommitted-changes`).
+Results: `results.json` (source commit `d0c719b18a26a2ce2b0fa69ea284029baf5da7e1`, runtime 324.8 s, manifest sha256 `1add7d1cdd46af1fdfe61420f5dc28386f7dbddf36c5d5f31b8cc2029bf6bb87`, venue manifest sha256 `8e21fa954d56207fc0a36994a8fa6283f711a9a8e18774844459ca63b52f7bae`), `parity_results.json` (source commit `d0c719b18a26a2ce2b0fa69ea284029baf5da7e1+uncommitted-changes`).
