@@ -316,6 +316,81 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	}
 }
 
+func TestV20NoEdgeMigrationStampsOnlyNamesThatRanLiveBeforeV20(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	assertUnstamped := func(t *testing.T, path string, version int, id string) {
+		t.Helper()
+		report, err := migrateV20NoEdge(readRawConfig(t, path), version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Stamped) != 0 || !reflect.DeepEqual(report.VetoedResearch, []string{id}) {
+			t.Fatalf("report stamped=%v unstamped=%v, want no stamp and %s listed unstamped", stampedIDs(report), report.VetoedResearch, id)
+		}
+		if !strings.Contains(strings.Join(report.lines(), "\n"), "did not stamp "+id+":") {
+			t.Fatalf("notice does not name %s as unstamped: %v", id, report.lines())
+		}
+		_, err = LoadConfig(path)
+		if err == nil || !strings.Contains(err.Error(), "strategy "+id+":") {
+			t.Fatalf("%s must be refused by the no-edge admission after migration, got %v", id, err)
+		}
+		if v, has := rawStrategiesByID(t, path)[id]["allow_no_edge"]; has {
+			t.Fatalf("%s gained allow_no_edge=%v", id, v)
+		}
+	}
+
+	t.Run("versionless live williams_r_reversal open", func(t *testing.T) {
+		path := writeNoEdgeConfig(t, 0, noEdgeHLStrategy("hl-wrr", "williams_r_reversal", "BTC", "4h", "--mode=live"))
+		assertUnstamped(t, path, 0, "hl-wrr")
+	})
+
+	t.Run("v19 live breakout with a williams_r_reversal close_strategies fallback", func(t *testing.T) {
+		sc := noEdgeHLStrategy("hl-bo-wrr", "breakout", "BTC", "4h", "--mode=live")
+		sc["close_strategies"] = []interface{}{map[string]interface{}{"name": "williams_r_reversal"}}
+		path := writeNoEdgeConfig(t, 19, sc)
+		assertUnstamped(t, path, 19, "hl-bo-wrr")
+	})
+
+	t.Run("a no-edge name registered after v20 is unstamped without a deny-set entry", func(t *testing.T) {
+		const later = "later_no_edge_candidate"
+		if _, research := v20FormerResearchStrategies[later]; research {
+			t.Fatalf("%s must stay outside the research deny set for this case", later)
+		}
+		noEdgeStrategies[later] = noEdgeEvidence{Source: "study_fail", Ref: "backtest/candidates/later/REPORT.md"}
+		t.Cleanup(func() { delete(noEdgeStrategies, later) })
+		openRef := noEdgeHLStrategy("hl-later", later, "BTC", "4h", "--mode=live")
+		closeRef := noEdgeHLStrategy("hl-rsi-later", "rsi", "ETH", "4h", "--mode=live")
+		closeRef["close_strategy"] = map[string]interface{}{"name": later}
+		eligible := noEdgeHLStrategy("hl-rsi", "rsi", "SOL", "4h", "--mode=live")
+		raw := readRawConfig(t, writeNoEdgeConfig(t, 19, openRef, closeRef, eligible))
+		report, err := migrateV20NoEdge(raw, 19)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"hl-later", "hl-rsi-later"}; !reflect.DeepEqual(report.VetoedResearch, want) {
+			t.Fatalf("unstamped = %v, want %v", report.VetoedResearch, want)
+		}
+		if got := stampedIDs(report); !reflect.DeepEqual(got, []string{"hl-rsi"}) {
+			t.Fatalf("stamped = %v, want only the pre-v20 rsi strategy", got)
+		}
+		for _, item := range raw["strategies"].([]interface{}) {
+			sc := item.(map[string]interface{})
+			_, has := sc["allow_no_edge"]
+			if want := sc["id"] == "hl-rsi"; has != want {
+				t.Fatalf("%v allow_no_edge present=%v, want %v", sc["id"], has, want)
+			}
+		}
+	})
+
+	t.Run("the stamp allowlist and the research deny set are disjoint", func(t *testing.T) {
+		for name := range v20StampEligibleStrategies {
+			if _, research := v20FormerResearchStrategies[name]; research {
+				t.Fatalf("%s is both stamp-eligible and research-only", name)
+			}
+		}
+	})
+}
+
 func TestV20NoEdgeMigrationOrderingAndOwnership(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	live := func(id string) map[string]interface{} {
