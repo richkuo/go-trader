@@ -15,6 +15,7 @@ var v20FormerResearchStrategies = map[string]struct{}{
 	"chaikin_money_flow_breakout": {},
 	"commodity_channel_trend":     {},
 	"connors_rsi_reversion":       {},
+	"money_flow_index_reversal":   {},
 	"open_interest_breakout":      {},
 	"relative_vigor_index":        {},
 	"vortex_trend":                {},

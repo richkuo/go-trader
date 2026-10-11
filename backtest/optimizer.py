@@ -723,6 +723,11 @@ DEFAULT_PARAM_RANGES = {
         "oversold": [-90.0, -80.0, -70.0],
         "overbought": [-30.0, -20.0, -10.0],
     },
+    "money_flow_index_reversal": {
+        "lookback": [7, 14, 28, 56],
+        "oversold": [10.0, 20.0, 30.0],
+        "overbought": [70.0, 80.0, 90.0],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],
