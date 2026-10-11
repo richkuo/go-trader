@@ -17,6 +17,7 @@ var v20FormerResearchStrategies = map[string]struct{}{
 	"connors_rsi_reversion":       {},
 	"open_interest_breakout":      {},
 	"relative_vigor_index":        {},
+	"ultimate_oscillator":         {},
 	"vortex_trend":                {},
 }
 

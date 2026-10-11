@@ -278,10 +278,15 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	explicitFalse := noEdgeHLStrategy("hl-false", "rsi", "SOL", "1h", "--mode=live")
 	explicitFalse["allow_no_edge"] = false
 	explicitFalse["allow_deprecated"] = true
+	allowedOpenUOClose := noEdgeHLStrategy("hl-bo-uo", "breakout", "SOL", "1h", "--mode=live")
+	allowedOpenUOClose["close_strategy"] = map[string]interface{}{"name": "ultimate_oscillator"}
+	uoOpen := noEdgeHLStrategy("hl-uo", "ultimate_oscillator", "SOL", "1h", "--mode=live")
 	path := writeNoEdgeConfig(t, 19,
 		mixed,
 		allowedOpenRefusedClose,
 		noEdgeHLStrategy("hl-ao", "awesome_oscillator", "ETH", "4h", "--mode=live"),
+		uoOpen,
+		allowedOpenUOClose,
 		noEdgeHLStrategy("hl-missing", "rsi", "DOGE", "1h"),
 		noEdgeHLStrategy("hl-invalid", "rsi", "LINK", "1h", "--mode=live", "--mode=live"),
 		explicitFalse,
@@ -290,7 +295,7 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	if err == nil {
 		t.Fatal("refused references must stay refused after migration")
 	}
-	for _, id := range []string{"hl-mix", "hl-bo-cci", "hl-ao", "hl-missing", "hl-invalid", "hl-false"} {
+	for _, id := range []string{"hl-mix", "hl-bo-cci", "hl-ao", "hl-uo", "hl-bo-uo", "hl-missing", "hl-invalid", "hl-false"} {
 		if !strings.Contains(err.Error(), "strategy "+id+":") {
 			t.Fatalf("%s should be refused after migration: %v", id, err)
 		}
@@ -303,6 +308,26 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	}
 	if raw["hl-false"]["allow_no_edge"] != false {
 		t.Fatal("an existing explicit false must be preserved")
+	}
+	legacy := map[string]interface{}{"strategies": []interface{}{
+		noEdgeHLStrategy("hl-uo", "ultimate_oscillator", "SOL", "1h", "--mode=live"),
+		func() map[string]interface{} {
+			sc := noEdgeHLStrategy("hl-bo-uo", "breakout", "SOL", "1h", "--mode=live")
+			sc["close_strategy"] = map[string]interface{}{"name": "ultimate_oscillator"}
+			return sc
+		}(),
+	}}
+	report, err := migrateV20NoEdge(legacy, 19)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(report.VetoedResearch, []string{"hl-bo-uo", "hl-uo"}) || len(report.Stamped) != 0 {
+		t.Fatalf("ultimate_oscillator open and close-fallback references must be vetoed, never stamped: vetoed=%v stamped=%+v", report.VetoedResearch, report.Stamped)
+	}
+	for _, item := range legacy["strategies"].([]interface{}) {
+		if _, has := item.(map[string]interface{})["allow_no_edge"]; has {
+			t.Fatalf("%v gained allow_no_edge", item.(map[string]interface{})["id"])
+		}
 	}
 }
 
