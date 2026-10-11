@@ -16,6 +16,7 @@ var v20FormerResearchStrategies = map[string]struct{}{
 	"commodity_channel_trend":     {},
 	"connors_rsi_reversion":       {},
 	"ease_of_movement_breakout":   {},
+	"money_flow_index_reversal":   {},
 	"open_interest_breakout":      {},
 	"relative_vigor_index":        {},
 	"vortex_trend":                {},

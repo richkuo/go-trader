@@ -92,6 +92,7 @@ var knownShortNames = map[string]string{
 	"commodity_channel_trend":     "cci",
 	"connors_rsi_reversion":       "crsi",
 	"ease_of_movement_breakout":   "eombo",
+	"money_flow_index_reversal":   "mfi",
 	"open_interest_breakout":      "oibo",
 	"relative_vigor_index":        "rvi",
 	"vortex_trend":                "vortex",
@@ -130,6 +131,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"mean_reversion_pro":          {"spot", "futures"},
 	"momentum":                    {"spot", "futures"},
 	"momentum_pro":                {"spot", "futures"},
+	"money_flow_index_reversal":   {"futures"},
 	"mtf_confluence":              {"spot", "futures"},
 	"open_interest_breakout":      {"futures"},
 	"order_blocks":                {"spot", "futures"},
@@ -197,6 +199,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"relative_vigor_index":        true,
 	"awesome_oscillator":          true,
 	"ease_of_movement_breakout":   true,
+	"money_flow_index_reversal":   true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {
