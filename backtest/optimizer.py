@@ -718,6 +718,11 @@ DEFAULT_PARAM_RANGES = {
         "fast_period": [3, 5, 8, 13],
         "slow_period": [21, 34, 55, 89],
     },
+    "money_flow_index_reversal": {
+        "lookback": [7, 14, 28, 56],
+        "oversold": [10.0, 20.0, 30.0],
+        "overbought": [70.0, 80.0, 90.0],
+    },
     "ultimate_oscillator": {
         "short_window": [5, 7, 9],
         "mid_window": [12, 14, 18],
