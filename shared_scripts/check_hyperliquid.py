@@ -34,8 +34,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator, latest_atr
 from closed_bar import (
+    FRAME_INTERVAL_ATTR,
+    FRAME_TIMESTAMP_KIND_ATTR,
     RULE_HYPERLIQUID_NATIVE,
     ClosedBarHold,
+    declare_frame_cadence,
     filter_records_to_boundary,
     hold_metadata,
     htf_closed_fetcher,
@@ -43,6 +46,7 @@ from closed_bar import (
     rows_sha256,
     sealed_frame_timings,
     select_closed,
+    timings_timestamp_kind,
     unsupported_open_strategy_reason,
 )
 from hl_user_fills import apply_user_fills_lookup
@@ -69,6 +73,10 @@ def _make_dataframe(candles):
     return df
 
 
+def _frame_with_cadence(rows, timeframe, timings=None):
+    return declare_frame_cadence(_make_dataframe(rows), timeframe, timings_timestamp_kind(rows, timings))
+
+
 def _position_ctx_from_args(args):
     ctx = {}
     side = (args.position_side or "").lower()
@@ -91,6 +99,10 @@ def _position_ctx_from_args(args):
 
 
 TP_MODEL_RESTING_LIMIT = "resting_limit"
+
+FULL_PRECISION_INDICATOR_PREFIXES = ("eom_",)
+
+TEXT_INDICATOR_COLUMNS = ("eom_reason",)
 
 BATCH_PROTOCOL_VERSION = 1
 
@@ -318,10 +330,13 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
             rows = market_frame_rows(market, symbol, timeframe, MarketPayloadError, limit=ohlcv_limit)
         if len(rows) < 30:
             raise InsufficientCandlesError(len(rows))
-        df = _make_dataframe(rows)
+        df = _frame_with_cadence(rows, timeframe)
         adapter = None
-    elif timed and df is not None:
-        closed["hold"] = "a prebuilt candle frame carries no bar timing"
+    elif df is not None:
+        if timed:
+            closed["hold"] = "a prebuilt candle frame carries no bar timing"
+        if FRAME_INTERVAL_ATTR not in df.attrs:
+            df = declare_frame_cadence(df.copy(), timeframe, df.attrs.get(FRAME_TIMESTAMP_KIND_ATTR))
 
     if df is None:
         if adapter is None:
@@ -340,7 +355,7 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
             candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
         if not candles or len(candles) < 30:
             raise InsufficientCandlesError(len(candles) if candles else 0)
-        df = _make_dataframe(candles)
+        df = _frame_with_cadence(candles, timeframe)
 
     price_override = 0.0
     if mark_price and mark_price > 0:
@@ -843,7 +858,7 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             print(f"Closed-bar decision held for {symbol} {timeframe}: {hold}", file=sys.stderr)
         else:
             closed_meta = selection.metadata()
-            decision_df = _make_dataframe(selection.rows)
+            decision_df = _frame_with_cadence(selection.rows, timeframe, selection.timings)
             strategy_params = decision_params
     else:
         strategy_params = {}
@@ -954,6 +969,7 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         signal = decision["signal"]
 
     indicators = {}
+    indicator_labels = {}
     skip_cols = {
         "open", "high", "low", "close", "volume",
         "timestamp", "signal", "position", "datetime",
@@ -963,11 +979,16 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             if col in skip_cols:
                 continue
             val = last.get(col)
+            if col in TEXT_INDICATOR_COLUMNS:
+                if isinstance(val, str):
+                    indicator_labels[col] = val
+                continue
             if val is not None:
                 try:
                     fval = float(val)
                     if math.isfinite(fval):
-                        indicators[col] = round(fval, 6)
+                        indicators[col] = (fval if col.startswith(FULL_PRECISION_INDICATOR_PREFIXES)
+                                           else round(fval, 6))
                 except (ValueError, TypeError):
                     pass
 
@@ -988,6 +1009,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         "platform": "hyperliquid",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    if indicator_labels:
+        output["indicator_labels"] = indicator_labels
     if decision:
         output.update(decision)
     if resting_request is not None:

@@ -45,6 +45,7 @@ from anchored_vwap_channel import anchored_vwap_channel_core
 from anchored_vwap_reversion import anchored_vwap_reversion_core
 from analog_retrieval import analog_retrieval_core
 from chaikin_money_flow import chaikin_money_flow_breakout_core
+from ease_of_movement import ease_of_movement_breakout_core
 from open_interest_breakout import open_interest_breakout_core
 from connors_rsi import connors_rsi_reversion_core
 from vortex_trend import vortex_trend_core
@@ -1721,6 +1722,27 @@ def awesome_oscillator_strategy(df: pd.DataFrame, fast_period: int = 5, slow_per
 
 
 @register(
+    "ease_of_movement_breakout",
+    "RESEARCH, no-edge (#1671) \u2014 Ease of Movement breakout confirmation: one-bar Ease of Movement is the change in candle midpoint times the current high-minus-low range divided by current base volume, averaged over eom_period bars; long on the first close strictly above the prior breakout_window high while the average is strictly positive, short on the mirror below the prior low with a strictly negative average. Needs declared bar cadence; zero or negative volume, bad candles, timestamp defects and cadence gaps inside the window hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"eom_period": 14, "breakout_window": 20},
+    platforms=("futures",),
+    constraints=[
+        "eom_period >= 2",
+        "eom_period <= 100",
+        "breakout_window >= 2",
+        "breakout_window <= 100",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/ease_of_movement_1671/REPORT.md",
+    short_entries=True,
+)
+def ease_of_movement_breakout_strategy(df: pd.DataFrame, eom_period: int = 14,
+                                       breakout_window: int = 20) -> pd.DataFrame:
+    return ease_of_movement_breakout_core(df, eom_period=eom_period, breakout_window=breakout_window)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1992,6 +2014,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
         "chaikin_money_flow_breakout", "open_interest_breakout", "connors_rsi_reversion",
         "vortex_trend", "relative_vigor_index", "awesome_oscillator",
+        "ease_of_movement_breakout",
         "hold",
     ],
 }

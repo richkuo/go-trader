@@ -638,3 +638,158 @@ func TestNoEdgeBatchSlotCarriesRawModeEvidenceAndAcknowledgement(t *testing.T) {
 		t.Fatal("acknowledgement must be part of the slot fingerprint")
 	}
 }
+
+func TestEaseOfMovementAdmissionThroughRealLoaders(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	const name = "ease_of_movement_breakout"
+	const ref = "backtest/candidates/ease_of_movement_1671/REPORT.md"
+	ack := func(sc map[string]interface{}) map[string]interface{} {
+		sc["allow_no_edge"] = true
+		return sc
+	}
+	asClose := func(sc map[string]interface{}) map[string]interface{} {
+		sc["close_strategy"] = map[string]interface{}{"name": name}
+		return sc
+	}
+	cases := []struct {
+		label     string
+		sc        map[string]interface{}
+		wantErr   []string
+		wantScope PortfolioScope
+	}{
+		{"explicit paper", noEdgeHLStrategy("hl-eombo-btc", name, "BTC", "1h", "--mode=paper"), nil, ScopePaper},
+		{"explicit live refused", noEdgeHLStrategy("hl-eombo-btc", name, "BTC", "1h", "--mode=live"),
+			[]string{`open strategy "` + name + `"`, "source study_fail", ref, "explicit live mode"}, ""},
+		{"missing mode refused", noEdgeHLStrategy("hl-eombo-btc", name, "BTC", "1h"), []string{"missing --mode"}, ""},
+		{"invalid mode refused", noEdgeHLStrategy("hl-eombo-btc", name, "BTC", "1h", "--mode=paper", "--mode=live"), []string{"invalid mode"}, ""},
+		{"explicit live acknowledged", ack(noEdgeHLStrategy("hl-eombo-btc", name, "BTC", "1h", "--mode=live")), nil, ScopeLive},
+		{"close fallback refused live", asClose(noEdgeHLStrategy("hl-bo-btc", "breakout", "BTC", "1h", "--mode=live")),
+			[]string{`close strategy "` + name + `"`, "explicit live mode"}, ""},
+		{"close fallback refused missing mode", asClose(noEdgeHLStrategy("hl-bo-btc", "breakout", "BTC", "1h")),
+			[]string{`close strategy "` + name + `"`, "missing --mode"}, ""},
+		{"close fallback paper", asClose(noEdgeHLStrategy("hl-bo-btc", "breakout", "BTC", "1h", "--mode=paper")), nil, ScopePaper},
+		{"close fallback acknowledged", ack(asClose(noEdgeHLStrategy("hl-bo-btc", "breakout", "BTC", "1h", "--mode=live"))), nil, ScopeLive},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			path := writeNoEdgeConfig(t, CurrentConfigVersion, tc.sc)
+			cfg, loadErr := LoadConfig(path)
+			_, probeErr := LoadConfigForProbe(path)
+			if (loadErr == nil) != (probeErr == nil) {
+				t.Fatalf("LoadConfig err=%v but LoadConfigForProbe err=%v", loadErr, probeErr)
+			}
+			if len(tc.wantErr) == 0 {
+				if loadErr != nil {
+					t.Fatalf("unexpected refusal: %v", loadErr)
+				}
+				if got := portfolioScopeFor(cfg.Strategies[0]); got != tc.wantScope {
+					t.Fatalf("portfolio scope = %q, want %q", got, tc.wantScope)
+				}
+				return
+			}
+			if loadErr == nil {
+				t.Fatalf("expected refusal containing %q", tc.wantErr)
+			}
+			for _, want := range tc.wantErr {
+				if !strings.Contains(loadErr.Error(), want) || !strings.Contains(probeErr.Error(), want) {
+					t.Fatalf("errors missing %q:\nload:  %v\nprobe: %v", want, loadErr, probeErr)
+				}
+			}
+		})
+	}
+}
+
+func assertEaseOfMovementPaperEntry(t *testing.T, sc StrategyConfig) {
+	t.Helper()
+	if sc.ID != "hl-eombo-btc" || sc.Direction != DirectionBoth || sc.MarginMode != "isolated" {
+		t.Fatalf("entry identity = %s direction=%q margin=%q", sc.ID, sc.Direction, sc.MarginMode)
+	}
+	if sc.AllowNoEdge != nil || portfolioScopeFor(sc) != ScopePaper || edgeGateModeForStrategy(sc).Kind != edgeGateModePaper {
+		t.Fatalf("%s must be explicit paper with no acknowledgement", sc.ID)
+	}
+	refs := sc.closeRefs()
+	if len(refs) != 1 || refs[0].Name != "tiered_tp_atr" {
+		t.Fatalf("close owners = %+v, want exactly tiered_tp_atr", refs)
+	}
+	if sc.StopLossATRMult == nil || *sc.StopLossATRMult != DefaultStopLossATRMult {
+		t.Fatalf("stop owner = %v, want the loader default stop_loss_atr_mult %g", sc.StopLossATRMult, DefaultStopLossATRMult)
+	}
+	if sc.StopLossPct != nil || sc.StopLossMarginPct != nil || sc.TrailingStopPct != nil || sc.TrailingStopATRMult != nil ||
+		sc.StopLossATRMultRegime.IsConfigured() || sc.TrailingStopATRMultRegime.IsConfigured() || strategyUsesUnifiedRegimeClose(sc) {
+		t.Fatalf("%s has a second stop owner", sc.ID)
+	}
+	if refsEdge := noEdgeReferences(sc); len(refsEdge) != 1 || refsEdge[0] != (edgeReference{Role: edgeRefRoleOpen, Name: "ease_of_movement_breakout"}) {
+		t.Fatalf("no-edge references = %+v", refsEdge)
+	}
+}
+
+func TestEaseOfMovementOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	id, entry, err := buildAddStrategyEntry("ease_of_movement_breakout", "hyperliquid", "btc")
+	if err != nil || id != "hl-eombo-btc" {
+		t.Fatalf("build = %q, %v", id, err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(entry, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(raw["args"], []interface{}{"ease_of_movement_breakout", "BTC", "1h", "--mode=paper"}) {
+		t.Fatalf("args = %v", raw["args"])
+	}
+	if !reflect.DeepEqual(raw["close_strategy"], map[string]interface{}{"name": "tiered_tp_atr"}) {
+		t.Fatalf("close_strategy = %v", raw["close_strategy"])
+	}
+	if _, _, err := buildAddStrategyEntry("ease_of_movement_breakout", "binanceus", "BTC"); err == nil {
+		t.Fatal("futures-only candidate was accepted for binanceus")
+	}
+	if _, momentum, err := buildAddStrategyEntry("momentum", "hyperliquid", "BTC"); err != nil || strings.Contains(string(momentum), "close_strategy") {
+		t.Fatalf("other strategies must keep their existing add entry: %s %v", momentum, err)
+	}
+
+	t.Run("discord", func(t *testing.T) {
+		path := writeNoEdgeConfig(t, CurrentConfigVersion, noEdgeHLStrategy("hl-rsi-eth", "rsi", "ETH", "1h", "--mode=paper"))
+		root := readConfigRoot(t, path)
+		if _, err := addStrategyToRoot(root, "ease_of_movement_breakout", "hyperliquid", "BTC"); err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.MarshalIndent(root, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("Discord-added candidate must load without acknowledgement: %v", err)
+		}
+		assertEaseOfMovementPaperEntry(t, cfg.Strategies[1])
+	})
+
+	t.Run("status page", func(t *testing.T) {
+		ss, path, _ := newStructuralTestServer(t)
+		params := `{"name":"ease_of_movement_breakout","platform":"hyperliquid","asset":"BTC"}`
+		confirm := structuralConfirm(t, ss, "add-strategy", "", params)
+		if confirm.ConfirmPhrase != "hl-eombo-btc" {
+			t.Fatalf("confirm phrase = %q", confirm.ConfirmPhrase)
+		}
+		body := `{"nonce":"` + confirm.Nonce + `","params":` + params + `}`
+		if w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil); w.Code != 200 {
+			t.Fatalf("add-strategy status = %d, body %s", w.Code, w.Body.String())
+		}
+		cfg, err := LoadConfigForProbe(path)
+		if err != nil {
+			t.Fatalf("status-page-added candidate must load: %v", err)
+		}
+		var found bool
+		for _, sc := range cfg.Strategies {
+			if sc.ID == "hl-eombo-btc" {
+				found = true
+				assertEaseOfMovementPaperEntry(t, sc)
+			}
+		}
+		if !found {
+			t.Fatal("status-page add did not write hl-eombo-btc")
+		}
+	})
+}

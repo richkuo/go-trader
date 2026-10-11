@@ -32,6 +32,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"connors_rsi_reversion":       {"study_fail", "backtest/candidates/connors_rsi_reversion_1645/REPORT.md"},
 	"consolidation_range":         {"fee_audit_m5", noEdgeRefLimbo},
 	"donchian_breakout":           {"study_fail", "docs/research/985-donchian-regime-gate-m1.md"},
+	"ease_of_movement_breakout":   {"study_fail", "backtest/candidates/ease_of_movement_1671/REPORT.md"},
 	"ema_crossover":               {"fee_audit_m5", noEdgeRefFeeAudit},
 	"funding_skew":                {"fee_audit_m5", noEdgeRefLimbo},
 	"heikin_ashi_ema":             {"fee_audit_m5", noEdgeRefFeeAudit},

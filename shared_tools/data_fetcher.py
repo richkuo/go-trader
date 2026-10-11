@@ -6,10 +6,11 @@ from datetime import datetime
 import ccxt
 import pandas as pd
 
+from closed_bar import TIMESTAMP_KIND_OPEN, declare_frame_cadence
 from storage import store_ohlcv, load_ohlcv
 
 
-OHLCV_TIMESTAMP_KIND = "open"
+OHLCV_TIMESTAMP_KIND = TIMESTAMP_KIND_OPEN
 
 
 def get_exchange(exchange_id: str = "binanceus") -> ccxt.Exchange:
@@ -47,7 +48,7 @@ def fetch_ohlcv(
     df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
     df.set_index("datetime", inplace=True)
 
-    return df
+    return declare_frame_cadence(df, timeframe, OHLCV_TIMESTAMP_KIND)
 
 
 def fetch_ohlcv_rows(
@@ -147,7 +148,7 @@ def fetch_full_history(
     df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
     df.set_index("datetime", inplace=True)
 
-    return df
+    return declare_frame_cadence(df, timeframe, OHLCV_TIMESTAMP_KIND)
 
 
 def load_cached_data(
@@ -171,7 +172,7 @@ def load_cached_data(
         since = start_date or "2020-01-01"
         df = fetch_full_history(symbol, timeframe, since, exchange_id, store=True)
 
-    return df
+    return declare_frame_cadence(df, timeframe, OHLCV_TIMESTAMP_KIND)
 
 
 if __name__ == "__main__":

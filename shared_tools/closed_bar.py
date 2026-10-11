@@ -15,6 +15,10 @@ RULE_HYPERLIQUID_NATIVE = "hyperliquid_native_close"
 
 TIMESTAMP_KIND_OPEN = "open"
 TIMESTAMP_KIND_NATIVE_CLOSE = "native_close_inclusive"
+TIMESTAMP_KINDS = (TIMESTAMP_KIND_OPEN, TIMESTAMP_KIND_NATIVE_CLOSE)
+
+FRAME_INTERVAL_ATTR = "bar_interval_ms"
+FRAME_TIMESTAMP_KIND_ATTR = "bar_timestamp_kind"
 
 MIN_CLOSED_ROWS = 30
 
@@ -98,6 +102,32 @@ def interval_ms_for(timeframe: str) -> int:
             f"(supported: {', '.join(FIXED_DURATION_MS)})"
         )
     return ms
+
+
+def declare_frame_cadence(df, timeframe: str, timestamp_kind: Optional[str] = None):
+    interval = FIXED_DURATION_MS.get(str(timeframe or "").strip())
+    if not interval:
+        df.attrs.pop(FRAME_INTERVAL_ATTR, None)
+        df.attrs.pop(FRAME_TIMESTAMP_KIND_ATTR, None)
+        return df
+    df.attrs[FRAME_INTERVAL_ATTR] = int(interval)
+    if timestamp_kind in TIMESTAMP_KINDS:
+        df.attrs[FRAME_TIMESTAMP_KIND_ATTR] = timestamp_kind
+    else:
+        df.attrs.pop(FRAME_TIMESTAMP_KIND_ATTR, None)
+    return df
+
+
+def timings_timestamp_kind(rows: list, timings: Optional[list]) -> Optional[str]:
+    if not rows or not timings or len(rows) != len(timings):
+        return None
+    if all(t.native_close_ms is not None and int(r[0]) == int(t.native_close_ms)
+           for r, t in zip(rows, timings)):
+        return TIMESTAMP_KIND_NATIVE_CLOSE
+    if all(t.native_close_ms is None and int(r[0]) == int(t.open_ms)
+           for r, t in zip(rows, timings)):
+        return TIMESTAMP_KIND_OPEN
+    return None
 
 
 def unsupported_open_strategy_reason(name: str) -> str:

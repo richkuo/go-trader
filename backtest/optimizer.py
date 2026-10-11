@@ -718,6 +718,10 @@ DEFAULT_PARAM_RANGES = {
         "fast_period": [3, 5, 8, 13],
         "slow_period": [21, 34, 55, 89],
     },
+    "ease_of_movement_breakout": {
+        "eom_period": [7, 14, 21, 28],
+        "breakout_window": [10, 20, 40, 60],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],
