@@ -270,9 +270,15 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	explicitFalse := noEdgeHLStrategy("hl-false", "rsi", "SOL", "1h", "--mode=live")
 	explicitFalse["allow_no_edge"] = false
 	explicitFalse["allow_deprecated"] = true
+	eomOpen := noEdgeHLStrategy("hl-eombo", "ease_of_movement_breakout", "ARB", "1h", "--mode=live")
+	eomOpen["allow_deprecated"] = true
+	eomClose := noEdgeHLStrategy("hl-bo-eom", "breakout", "OP", "1h", "--mode=live")
+	eomClose["close_strategy"] = map[string]interface{}{"name": "ease_of_movement_breakout"}
 	path := writeNoEdgeConfig(t, 19,
 		mixed,
 		allowedOpenRefusedClose,
+		eomOpen,
+		eomClose,
 		noEdgeHLStrategy("hl-ao", "awesome_oscillator", "ETH", "4h", "--mode=live"),
 		noEdgeHLStrategy("hl-missing", "rsi", "DOGE", "1h"),
 		noEdgeHLStrategy("hl-invalid", "rsi", "LINK", "1h", "--mode=live", "--mode=live"),
@@ -282,7 +288,7 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	if err == nil {
 		t.Fatal("refused references must stay refused after migration")
 	}
-	for _, id := range []string{"hl-mix", "hl-bo-cci", "hl-ao", "hl-missing", "hl-invalid", "hl-false"} {
+	for _, id := range []string{"hl-mix", "hl-bo-cci", "hl-eombo", "hl-bo-eom", "hl-ao", "hl-missing", "hl-invalid", "hl-false"} {
 		if !strings.Contains(err.Error(), "strategy "+id+":") {
 			t.Fatalf("%s should be refused after migration: %v", id, err)
 		}
