@@ -7,7 +7,7 @@ This report is rendered by `run_study.py run` from [`results.json`](results.json
 
 ## Provenance
 
-- Source commit at run time: `0715416732ccb93275e81e3e7a096d887a1bdfed` (the run may precede the final commit; the per-file source sha256 values in `results.json` pin the code that ran).
+- Source commit at run time: `f262c410b62a506125b3d622b9bdce25c6db94fa` (the run may precede the final commit; the per-file source sha256 values in `results.json` pin the code that ran).
 - Candles and base volume: Binance US spot BTC/USDT, ETH/USDT and SOL/USDT at 1h and 4h, used as proxies for Hyperliquid perpetual prices and volume.
 - Funding: Hyperliquid hourly funding charged through `shared_tools/funding_fetcher.py`; the replay runs with network fetches disabled, so a missing hour is recorded as incomplete.
 - Fees: Hyperliquid taker 0.045% per fill. Slippage: the engine default 0.05% per fill (x1), with 0.10% (x2) and 0.20% (x4) stress runs of the selected candidate.

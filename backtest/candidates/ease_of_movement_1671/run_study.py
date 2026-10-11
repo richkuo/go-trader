@@ -536,9 +536,9 @@ def verdict(summary, selected_label, selected):
         "volume_weighted": summary["volume_weighted"]["scored"],
     }
     checks = []
-    arms_needed = {"candidate": sel, "stress_x2": stress, **comparators}
     incomplete = []
-    for arm, agg in sorted(arms_needed.items()):
+    for arm, info in sorted(summary.items()):
+        agg = info.get("scored")
         if agg is None or agg["missing_legs"] or agg["funding_incomplete_legs"]:
             incomplete.append(arm)
     checks.append({"rule": 1, "name": "coverage", "incomplete_arms": incomplete, "ok": not incomplete})

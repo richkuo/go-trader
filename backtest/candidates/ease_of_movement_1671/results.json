@@ -18077,14 +18077,14 @@
    ]
   }
  },
- "source_commit": "0715416732ccb93275e81e3e7a096d887a1bdfed",
+ "source_commit": "f262c410b62a506125b3d622b9bdce25c6db94fa",
  "source_sha256": {
   "backtest/backtester.py": "e8233491bb19e59ae80115cabeea5644cdd0d6cebbf589c465d6c79f2941b8e0",
   "backtest/candidates/ease_of_movement_1671/candidate_seed.json": "edd1c0947a468d22adbea4cdd4eff5fbfb8337c5a54cb6ba79075bcb80915ca3",
-  "backtest/candidates/ease_of_movement_1671/run_study.py": "69484c2733636f89f35f36799e900066d55a560f8fa1bd845bb6e24c4a81e643",
+  "backtest/candidates/ease_of_movement_1671/run_study.py": "4be40f69186e166bfd7894752f36f871cc9ecfc2496922b1e535e090c834884c",
   "backtest/eval_windows.py": "30df19aea3da9860d176bb85b14ec4c6d5a7e0087941dc259d3349675975ba88",
   "shared_strategies/open/ease_of_movement.py": "79aa8b5289f6976ed471e269f29168a34f01ff7bee79ad9c53cf597d620fd072",
-  "shared_strategies/open/registry.py": "ecc4a00f514129c00fe00f82c2ab5996647a500e54b528aa7a91381c71ca29af",
+  "shared_strategies/open/registry.py": "e2a8a795b53a1edfe682b9d46aa351f9ea57a97596206bb5c7fe26c0aa7501e6",
   "shared_tools/closed_bar.py": "6722e6cf159e1871cf3008bd9193ae66d65316dba92f8f707da3f3427448b1ee",
   "shared_tools/data_fetcher.py": "896b241e97c499db759d1053bc03a3dcffedccbfb2e8f3db01dc4536b1a80659",
   "shared_tools/funding_fetcher.py": "875f0a3c83edc849e307affe1ad6a91fcc340624eecc349883da04d94947b91e"

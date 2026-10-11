@@ -351,6 +351,15 @@ print(json.dumps({"attrs": frame.attrs, "leg": leg}, default=str))
 """
 
 
+def _load_run_study(repo):
+    import importlib.util
+    path = os.path.join(repo, "backtest", "candidates", "ease_of_movement_1671", "run_study.py")
+    spec = importlib.util.spec_from_file_location("eom1671_run_study", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_cached_loader_declares_cadence_and_m1_marks_unpriced_funding_incomplete(tmp_path):
     import subprocess
     import json
@@ -382,8 +391,7 @@ def test_cached_loader_declares_cadence_and_m1_marks_unpriced_funding_incomplete
     assert leg["trades"] > 0 and leg["positions"]
     assert leg["funding_incomplete"] is True
 
-    sys.path.insert(0, os.path.join(repo, "backtest", "candidates", "ease_of_movement_1671"))
-    import run_study
+    run_study = _load_run_study(repo)
     agg = run_study._aggregate([run_study._summ_leg(leg)])
     assert agg["funding_incomplete_legs"] == 1
     base = {"scored": agg}
@@ -397,3 +405,30 @@ def test_cached_loader_declares_cadence_and_m1_marks_unpriced_funding_incomplete
     verdict = run_study.verdict(summary, "P3_B4", {"eom_period": 3, "breakout_window": 4})
     assert verdict["verdict"] == "inconclusive"
     assert verdict["checks"][0]["ok"] is False
+
+
+@pytest.mark.parametrize("arm,field,want", [
+    (None, None, "fail"),
+    ("candidate_{sel}_slip0.002", "funding_incomplete_legs", "inconclusive"),
+    ("candidate_P7_B10", "missing_legs", "inconclusive"),
+    ("donchian_breakout_B20", "funding_incomplete_legs", "inconclusive"),
+])
+def test_frozen_verdict_coverage_rule_reads_every_arm(arm, field, want):
+    import copy
+    import json
+    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    path_before = list(sys.path)
+    run_study = _load_run_study(repo)
+    assert sys.path == path_before
+    with open(run_study.RESULTS_PATH) as fh:
+        results = json.load(fh)
+    selected = results["selection"]["selected"]
+    summary = copy.deepcopy(results["summary"])
+    if arm is not None:
+        summary[arm.format(sel=selected)]["scored"][field] = 1
+    verdict = run_study.verdict(summary, selected, results["selection"]["params"])
+    assert verdict["verdict"] == want
+    coverage = verdict["checks"][0]
+    assert coverage["ok"] is (arm is None)
+    if arm is not None:
+        assert coverage["incomplete_arms"] == [arm.format(sel=selected)]

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -856,6 +857,12 @@ func assertEaseOfMovementPaperEntry(t *testing.T, sc StrategyConfig) {
 	if sc.AllowNoEdge != nil || portfolioScopeFor(sc) != ScopePaper || edgeGateModeForStrategy(sc).Kind != edgeGateModePaper {
 		t.Fatalf("%s must be explicit paper with no acknowledgement", sc.ID)
 	}
+	if !sc.ClosedBarDecisions {
+		t.Fatalf("%s must decide on closed bars", sc.ID)
+	}
+	if args := appendClosedBarDecisionArgs(sc.Args, sc, nil); !slices.Contains(args, closedBarDecisionsFlag) {
+		t.Fatalf("%s check args %v lack %s", sc.ID, args, closedBarDecisionsFlag)
+	}
 	refs := sc.closeRefs()
 	if len(refs) != 1 || refs[0].Name != "tiered_tp_atr" {
 		t.Fatalf("close owners = %+v, want exactly tiered_tp_atr", refs)
@@ -888,10 +895,13 @@ func TestEaseOfMovementOperatorAddPathsCreateExplicitPaperEntries(t *testing.T) 
 	if !reflect.DeepEqual(raw["close_strategy"], map[string]interface{}{"name": "tiered_tp_atr"}) {
 		t.Fatalf("close_strategy = %v", raw["close_strategy"])
 	}
+	if raw["closed_bar_decisions"] != true {
+		t.Fatalf("closed_bar_decisions = %v, want true", raw["closed_bar_decisions"])
+	}
 	if _, _, err := buildAddStrategyEntry("ease_of_movement_breakout", "binanceus", "BTC"); err == nil {
 		t.Fatal("futures-only candidate was accepted for binanceus")
 	}
-	if _, momentum, err := buildAddStrategyEntry("momentum", "hyperliquid", "BTC"); err != nil || strings.Contains(string(momentum), "close_strategy") {
+	if _, momentum, err := buildAddStrategyEntry("momentum", "hyperliquid", "BTC"); err != nil || strings.Contains(string(momentum), "close_strategy") || strings.Contains(string(momentum), "closed_bar_decisions") {
 		t.Fatalf("other strategies must keep their existing add entry: %s %v", momentum, err)
 	}
 

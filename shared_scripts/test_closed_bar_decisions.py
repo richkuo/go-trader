@@ -1101,3 +1101,103 @@ def test_eom_mixed_batch_matches_individual_checks():
         assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
     assert results["on"]["signal"] == 0
     assert results["off"]["signal"] == 1
+
+
+def _eom_rows_at(start_ms, rows, *, gap_after=None):
+    out = []
+    t = start_ms
+    for i, (o, h, low, c, v) in enumerate(rows):
+        out.append({"t": t, "T": t + H - 1, "o": o, "h": h, "l": low, "c": c, "v": v})
+        t += 2 * H if gap_after is not None and i == gap_after else H
+    return out
+
+
+_EOM_FLAT = (100.0, 101.0, 99.0, 100.0, 1000.0)
+_EOM_BREAKOUT = (100.0, 104.0, 100.0, 103.5, 1000.0)
+
+
+def test_eom_okx_swap_paper_check_declares_cadence_and_enters_on_a_valid_window(tmp_path):
+    forming = CLOCK_MS - CLOCK_MS % H
+    rows = [_EOM_FLAT] * 60 + [_EOM_BREAKOUT, (103.5, 103.6, 103.4, 103.5, 500.0)]
+    bars = _eom_rows_at(forming - 61 * H, rows)
+    assert bars[-1]["t"] == forming
+    fakes = _fake_ccxt_dir(tmp_path, {"BTC/USDT:USDT|1h": _open_time_rows(bars)})
+    env = _clock_env(tmp_path, fakes)
+    argv = [_EOM, "BTC", "1h", "--mode=paper", "--inst-type=swap", *_eom_refs()]
+
+    closed = _run(CHECK_OKX, argv + ["--closed-bar-decisions"], env_extra=env)
+    assert closed.returncode == 0, closed.stderr + closed.stdout
+    out = json.loads(closed.stdout)
+    assert out["closed_bar_decision"]["forming_rows_dropped"] == 1
+    assert out["signal"] == 1 and out["open_action"] == "long"
+    assert out["indicator_labels"]["eom_reason"] == "entry_long"
+    assert out["indicators"]["eom_interval_ms"] == H
+    assert out["indicators"]["eom_eval_ts_ms"] == bars[-2]["t"]
+
+    legacy_bars = bars[:-1]
+    legacy_fakes = _fake_ccxt_dir(tmp_path / "legacy", {"BTC/USDT:USDT|1h": _open_time_rows(legacy_bars)})
+    legacy = _run(CHECK_OKX, argv, env_extra={"PYTHONPATH": legacy_fakes})
+    assert legacy.returncode == 0, legacy.stderr + legacy.stdout
+    out = json.loads(legacy.stdout)
+    assert "closed_bar_decision" not in out
+    assert out["signal"] == 1 and out["open_action"] == "long"
+    assert out["indicator_labels"]["eom_reason"] == "entry_long"
+    assert out["indicators"]["eom_eval_ts_ms"] == legacy_bars[-1]["t"]
+
+
+def _fake_topstep_dir(tmp_path, bars):
+    root = tmp_path / "tsfakes"
+    (root / "yfinance").mkdir(parents=True)
+    fixture = tmp_path / "yf_rows.json"
+    fixture.write_text(json.dumps(_open_time_rows(bars)))
+    (root / "yfinance" / "__init__.py").write_text(textwrap.dedent(f"""
+        import json
+
+        import pandas as pd
+
+        _ROWS = json.load(open({str(fixture)!r}))
+
+
+        class Ticker:
+            def __init__(self, symbol):
+                self.symbol = symbol
+
+            def history(self, period=None, interval=None):
+                index = pd.to_datetime([r[0] for r in _ROWS], unit="ms", utc=True)
+                return pd.DataFrame({{
+                    "Open": [r[1] for r in _ROWS], "High": [r[2] for r in _ROWS], "Low": [r[3] for r in _ROWS],
+                    "Close": [r[4] for r in _ROWS], "Volume": [r[5] for r in _ROWS],
+                }}, index=index)
+    """))
+    (root / "sitecustomize.py").write_text(textwrap.dedent("""
+        import builtins
+
+        _real_import = builtins.__import__
+
+
+        def _import(name, globals=None, locals=None, fromlist=(), level=0):
+            module = _real_import(name, globals, locals, fromlist, level)
+            cls = getattr(module, "TopStepExchangeAdapter", None)
+            if cls is not None:
+                cls.is_market_open = lambda self: True
+            return module
+
+
+        builtins.__import__ = _import
+    """))
+    return str(root)
+
+
+@pytest.mark.parametrize("bars_after_break,signal,reason", [(2, 0, "cadence_gap"), (10, 1, "entry_long")])
+def test_eom_topstep_check_holds_only_when_the_window_spans_a_session_break(tmp_path, bars_after_break,
+                                                                           signal, reason):
+    rows = [_EOM_FLAT] * 40 + [_EOM_FLAT] * bars_after_break + [_EOM_BREAKOUT]
+    bars = _eom_rows_at(T0, rows, gap_after=39)
+    fakes = _fake_topstep_dir(tmp_path, bars)
+    proc = _run(CHECK_TS, [_EOM, "ES", "1h", "--mode=paper", *_eom_refs()], env_extra={"PYTHONPATH": fakes})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    out = json.loads(proc.stdout)
+    assert out["market_open"] is True
+    assert out["indicators"]["eom_interval_ms"] == H
+    assert out["indicator_labels"]["eom_reason"] == reason
+    assert out["signal"] == signal
