@@ -1,0 +1,643 @@
+{
+ "acquisition": [
+  {
+   "bars": 8753,
+   "dataset": "BTC/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": false,
+   "funding_coverage": {
+    "complete": false,
+    "expected_hours": 8759,
+    "max_gap_hours": 3144,
+    "missing_hours": 3144,
+    "present_hours": 5615,
+    "venue_absent_hours": 569
+   },
+   "passes": 6,
+   "window": "2023"
+  },
+  {
+   "bars": 8784,
+   "dataset": "BTC/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 8783,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 8783,
+    "venue_absent_hours": 1
+   },
+   "passes": 1,
+   "window": "2024"
+  },
+  {
+   "bars": 4344,
+   "dataset": "BTC/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4343,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4343,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "2025H1"
+  },
+  {
+   "bars": 4920,
+   "dataset": "BTC/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4919,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4919,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "is"
+  },
+  {
+   "bars": 5088,
+   "dataset": "BTC/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 5087,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 5087,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "oos"
+  },
+  {
+   "bars": 2189,
+   "dataset": "BTC/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": false,
+   "funding_coverage": {
+    "complete": false,
+    "expected_hours": 8756,
+    "max_gap_hours": 3144,
+    "missing_hours": 3144,
+    "present_hours": 5612,
+    "venue_absent_hours": 569
+   },
+   "passes": 6,
+   "window": "2023"
+  },
+  {
+   "bars": 2196,
+   "dataset": "BTC/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 8780,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 8780,
+    "venue_absent_hours": 1
+   },
+   "passes": 1,
+   "window": "2024"
+  },
+  {
+   "bars": 1086,
+   "dataset": "BTC/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4340,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4340,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "2025H1"
+  },
+  {
+   "bars": 1230,
+   "dataset": "BTC/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4916,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4916,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "is"
+  },
+  {
+   "bars": 1272,
+   "dataset": "BTC/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 5084,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 5084,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "oos"
+  },
+  {
+   "bars": 8753,
+   "dataset": "ETH/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": false,
+   "funding_coverage": {
+    "complete": false,
+    "expected_hours": 8759,
+    "max_gap_hours": 3144,
+    "missing_hours": 3144,
+    "present_hours": 5615,
+    "venue_absent_hours": 569
+   },
+   "passes": 6,
+   "window": "2023"
+  },
+  {
+   "bars": 8784,
+   "dataset": "ETH/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 8783,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 8783,
+    "venue_absent_hours": 1
+   },
+   "passes": 4,
+   "window": "2024"
+  },
+  {
+   "bars": 4344,
+   "dataset": "ETH/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4343,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4343,
+    "venue_absent_hours": 0
+   },
+   "passes": 4,
+   "window": "2025H1"
+  },
+  {
+   "bars": 4920,
+   "dataset": "ETH/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4919,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4919,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "is"
+  },
+  {
+   "bars": 5088,
+   "dataset": "ETH/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 5087,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 5087,
+    "venue_absent_hours": 0
+   },
+   "passes": 4,
+   "window": "oos"
+  },
+  {
+   "bars": 2189,
+   "dataset": "ETH/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": false,
+   "funding_coverage": {
+    "complete": false,
+    "expected_hours": 8756,
+    "max_gap_hours": 3144,
+    "missing_hours": 3144,
+    "present_hours": 5612,
+    "venue_absent_hours": 569
+   },
+   "passes": 6,
+   "window": "2023"
+  },
+  {
+   "bars": 2196,
+   "dataset": "ETH/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 8780,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 8780,
+    "venue_absent_hours": 1
+   },
+   "passes": 3,
+   "window": "2024"
+  },
+  {
+   "bars": 1086,
+   "dataset": "ETH/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4340,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4340,
+    "venue_absent_hours": 0
+   },
+   "passes": 3,
+   "window": "2025H1"
+  },
+  {
+   "bars": 1230,
+   "dataset": "ETH/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4916,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4916,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "is"
+  },
+  {
+   "bars": 1272,
+   "dataset": "ETH/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 5084,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 5084,
+    "venue_absent_hours": 0
+   },
+   "passes": 3,
+   "window": "oos"
+  },
+  {
+   "bars": 8753,
+   "dataset": "SOL/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": false,
+   "funding_coverage": {
+    "complete": false,
+    "expected_hours": 8759,
+    "max_gap_hours": 3144,
+    "missing_hours": 3144,
+    "present_hours": 5615,
+    "venue_absent_hours": 569
+   },
+   "passes": 6,
+   "window": "2023"
+  },
+  {
+   "bars": 8784,
+   "dataset": "SOL/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 8783,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 8783,
+    "venue_absent_hours": 1
+   },
+   "passes": 1,
+   "window": "2024"
+  },
+  {
+   "bars": 4344,
+   "dataset": "SOL/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4343,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4343,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "2025H1"
+  },
+  {
+   "bars": 4920,
+   "dataset": "SOL/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4919,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4919,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "is"
+  },
+  {
+   "bars": 5088,
+   "dataset": "SOL/USDT 1h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 5087,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 5087,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "oos"
+  },
+  {
+   "bars": 2189,
+   "dataset": "SOL/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": false,
+   "funding_coverage": {
+    "complete": false,
+    "expected_hours": 8756,
+    "max_gap_hours": 3144,
+    "missing_hours": 3144,
+    "present_hours": 5612,
+    "venue_absent_hours": 569
+   },
+   "passes": 6,
+   "window": "2023"
+  },
+  {
+   "bars": 2196,
+   "dataset": "SOL/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 8780,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 8780,
+    "venue_absent_hours": 1
+   },
+   "passes": 1,
+   "window": "2024"
+  },
+  {
+   "bars": 1086,
+   "dataset": "SOL/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4340,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4340,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "2025H1"
+  },
+  {
+   "bars": 1230,
+   "dataset": "SOL/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 4916,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 4916,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "is"
+  },
+  {
+   "bars": 1272,
+   "dataset": "SOL/USDT 4h",
+   "fetch_error": null,
+   "funding_complete": true,
+   "funding_coverage": {
+    "complete": true,
+    "expected_hours": 5084,
+    "max_gap_hours": 0,
+    "missing_hours": 0,
+    "present_hours": 5084,
+    "venue_absent_hours": 0
+   },
+   "passes": 1,
+   "window": "oos"
+  }
+ ],
+ "files": {
+  "BTC_1h_candles.csv.gz": {
+   "exchange": "binanceus",
+   "first_ms": 1672531200000,
+   "kind": "candles",
+   "last_ms": 1785538800000,
+   "rows": 31385,
+   "sha256": "c6b7575ebe1cad3a874259b83a106fd688f49dc45e3e98165191ae62a9b44fc8",
+   "symbol": "BTC/USDT",
+   "timeframe": "1h"
+  },
+  "BTC_4h_candles.csv.gz": {
+   "exchange": "binanceus",
+   "first_ms": 1672531200000,
+   "kind": "candles",
+   "last_ms": 1785528000000,
+   "rows": 7847,
+   "sha256": "c37b47e50f9083bd64bea2f932a49dcbabe18e37d2e3d8032134fa67df20b3ef",
+   "symbol": "BTC/USDT",
+   "timeframe": "4h"
+  },
+  "BTC_funding.csv.gz": {
+   "coin": "BTC",
+   "exchange": "hyperliquid",
+   "kind": "funding_rates",
+   "rows": 27676,
+   "sha256": "00dc1b06a3d2d4786a5c5c4f2a9464b24bb099864026f3f0f47e41cb5856dbf4"
+  },
+  "BTC_funding_coverage.csv.gz": {
+   "coin": "BTC",
+   "exchange": "hyperliquid",
+   "kind": "funding_coverage",
+   "rows": 3,
+   "sha256": "4c376e1fb61f4c6c507292c79f082985938b44fd3f31981ffca026971f04e7fa"
+  },
+  "BTC_funding_venue_gaps.csv.gz": {
+   "coin": "BTC",
+   "exchange": "hyperliquid",
+   "kind": "funding_venue_gaps",
+   "rows": 570,
+   "sha256": "e2effa549b4fd89d4b6903517cc00233f5804812cb81cc0558d23033f4766728"
+  },
+  "ETH_1h_candles.csv.gz": {
+   "exchange": "binanceus",
+   "first_ms": 1672531200000,
+   "kind": "candles",
+   "last_ms": 1785538800000,
+   "rows": 31385,
+   "sha256": "6851eea9301674c27bfbd4a3659042d48cfe8484dfc6c7787261aa17ae9b54da",
+   "symbol": "ETH/USDT",
+   "timeframe": "1h"
+  },
+  "ETH_4h_candles.csv.gz": {
+   "exchange": "binanceus",
+   "first_ms": 1672531200000,
+   "kind": "candles",
+   "last_ms": 1785528000000,
+   "rows": 7847,
+   "sha256": "c67f435025afe275037fef7477365c640e76059c89bd426bd832f269fa475d84",
+   "symbol": "ETH/USDT",
+   "timeframe": "4h"
+  },
+  "ETH_funding.csv.gz": {
+   "coin": "ETH",
+   "exchange": "hyperliquid",
+   "kind": "funding_rates",
+   "rows": 27675,
+   "sha256": "f03859ea64a6f1875ad68ca17bb3cafef52a834c385aee3cac941c99b586cc55"
+  },
+  "ETH_funding_coverage.csv.gz": {
+   "coin": "ETH",
+   "exchange": "hyperliquid",
+   "kind": "funding_coverage",
+   "rows": 4,
+   "sha256": "f24ce4911b5e964be29f8ab62d5d06b9deb3d0b0944625c6c8b4b232b5d3e654"
+  },
+  "ETH_funding_venue_gaps.csv.gz": {
+   "coin": "ETH",
+   "exchange": "hyperliquid",
+   "kind": "funding_venue_gaps",
+   "rows": 570,
+   "sha256": "65dd305093f9f9fa5cb1e20c12709f3632c5c89bd880ab560e6a033e228327ec"
+  },
+  "SOL_1h_candles.csv.gz": {
+   "exchange": "binanceus",
+   "first_ms": 1672531200000,
+   "kind": "candles",
+   "last_ms": 1785538800000,
+   "rows": 31385,
+   "sha256": "a0317b0acfebb8b543f4e743a6d1a0ef85ce518a7a7e68841dc78c9c901ff0ce",
+   "symbol": "SOL/USDT",
+   "timeframe": "1h"
+  },
+  "SOL_4h_candles.csv.gz": {
+   "exchange": "binanceus",
+   "first_ms": 1672531200000,
+   "kind": "candles",
+   "last_ms": 1785528000000,
+   "rows": 7847,
+   "sha256": "5e4bac024eb5510efb022d1f47a6d876bba351b8e776f3477ca49e7535486b77",
+   "symbol": "SOL/USDT",
+   "timeframe": "4h"
+  },
+  "SOL_funding.csv.gz": {
+   "coin": "SOL",
+   "exchange": "hyperliquid",
+   "kind": "funding_rates",
+   "rows": 27675,
+   "sha256": "58b9b6b00599198c83cf73479d6561fc94e512f2d749add7d370729dbdeea00c"
+  },
+  "SOL_funding_coverage.csv.gz": {
+   "coin": "SOL",
+   "exchange": "hyperliquid",
+   "kind": "funding_coverage",
+   "rows": 4,
+   "sha256": "e3f845b044f80b2814e811ccb2b83978d5a950aadc7a29da3b79c89739e1d168"
+  },
+  "SOL_funding_venue_gaps.csv.gz": {
+   "coin": "SOL",
+   "exchange": "hyperliquid",
+   "kind": "funding_venue_gaps",
+   "rows": 570,
+   "sha256": "860489a7f24b1560a99cac10cf2825e1275e15d423f7f7e4526621e4f578e05a"
+  }
+ },
+ "provenance": {
+  "candles": "Binance US spot OHLCV from the shared OHLCV cache (proxy for Hyperliquid perpetual prices and base volume)",
+  "frozen_at_utc": "2026-10-11T03:17:30Z",
+  "frozen_from_commit": "0715416732ccb93275e81e3e7a096d887a1bdfed",
+  "funding": "Hyperliquid hourly funding from the shared funding cache, refilled by shared_tools/funding_fetcher.py"
+ },
+ "range": {
+  "end_exclusive": "2026-08-01",
+  "start": "2023-01-01"
+ },
+ "schema": "ease_of_movement_1671/frozen_cache/v1",
+ "study": "ease_of_movement_1671",
+ "windows": {
+  "2023": {
+   "end": "2024-01-01",
+   "start": "2023-01-01"
+  },
+  "2024": {
+   "end": "2025-01-01",
+   "start": "2024-01-01"
+  },
+  "2025H1": {
+   "end": "2025-07-01",
+   "start": "2025-01-01"
+  },
+  "is": {
+   "end": "2026-01-01",
+   "start": "2025-06-10"
+  },
+  "oos": {
+   "end": "2026-08-01",
+   "start": "2026-01-01"
+  }
+ }
+}

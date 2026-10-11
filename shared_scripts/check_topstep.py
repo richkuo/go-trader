@@ -12,7 +12,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
+from closed_bar import declare_frame_cadence
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+
+TEXT_INDICATOR_COLUMNS = ("eom_reason",)
 
 
 def _make_dataframe(candles):
@@ -169,7 +172,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             }))
             sys.exit(1)
 
-        df = _make_dataframe(candles)
+        df = declare_frame_cadence(_make_dataframe(candles), timeframe)
         stdout_regime, live_regime, strategy_regime = prepare_check_regime(
             df,
             regime_enabled=regime_enabled,
@@ -238,6 +241,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             pass
 
         indicators = {}
+        indicator_labels = {}
         skip_cols = {
             "open", "high", "low", "close", "volume",
             "timestamp", "signal", "position", "datetime",
@@ -246,6 +250,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             if col in skip_cols:
                 continue
             val = last.get(col)
+            if col in TEXT_INDICATOR_COLUMNS:
+                if isinstance(val, str):
+                    indicator_labels[col] = val
+                continue
             if val is not None:
                 try:
                     fval = float(val)
@@ -273,6 +281,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "platform": "topstep",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+        if indicator_labels:
+            output["indicator_labels"] = indicator_labels
         if decision:
             output.update(decision)
         print(json.dumps(output))

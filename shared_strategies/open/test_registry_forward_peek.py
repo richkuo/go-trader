@@ -156,8 +156,19 @@ def _with_open_interest(fn):
     return wrapped
 
 
+def _with_declared_cadence(fn):
+    def wrapped(df, **params):
+        out = df.copy()
+        step_ms = int((out.index[1] - out.index[0]) / pd.Timedelta(milliseconds=1))
+        out.attrs["bar_interval_ms"] = step_ms
+        out.attrs["bar_timestamp_kind"] = "open"
+        return fn(out, **params)
+    return wrapped
+
+
 STRATEGY_INPUTS = {
     "open_interest_breakout": _with_open_interest,
+    "ease_of_movement_breakout": _with_declared_cadence,
 }
 
 _FIXTURE_CACHE = {}

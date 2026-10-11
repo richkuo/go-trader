@@ -877,6 +877,123 @@ def test_resting_rule_trailing_stop_ratcheted_inside_a_bar_tests_the_bar_against
         assert booked == [(str(df.index[61]), 99.0, "sl")]
 
 
+_OBV = "on_balance_volume_divergence"
+_OBV_PARAMS = {"left_span": 2, "right_span": 2, "min_separation": 3, "max_separation": 20,
+               "volume_threshold": 0.1, "setup_expiry": 5, "volume_test": True}
+_OBV_CLOSES = ([100.0] * 103 + [100.0, 97.0, 91.0, 97.0, 100.0, 100.0, 100.0]
+               + [99.0, 98.0, 96.0, 98.0, 100.0, 101.0, 100.0, 98.0, 96.0, 95.0, 97.0, 98.0, 98.5, 100.0]
+               + [100.5, 101.0, 101.5, 102.0])
+_OBV_CONFIRM = 121
+_OBV_ENTRY = 123
+_OBV_TP = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}]
+
+
+def _obv_bars(last, *, bad_volume_at=None):
+    out = []
+    prev = None
+    for i, c in enumerate(_OBV_CLOSES[:last + 1]):
+        v = 5.0 if prev is None or c == prev else (10.0 if c > prev else 1.0)
+        if bad_volume_at is not None and i == bad_volume_at:
+            v = -1.0
+        out.append({"t": T0 + i * H, "T": T0 + (i + 1) * H - 1, "o": c, "h": c + 1.0, "l": c - 1.0, "c": c, "v": v})
+        prev = c
+    return out
+
+
+def _obv_refs(closes=None):
+    refs = {"open": {"name": _OBV, "params": _OBV_PARAMS}}
+    if closes:
+        refs["closes"] = closes
+    return ["--strategy-refs", json.dumps(refs)]
+
+
+def test_obv_forming_reclaim_bar_is_excluded_and_the_closed_bar_enters():
+    bars = _obv_bars(_OBV_ENTRY)
+    forming = bars[-1]["t"] + H // 2
+    disabled = _hl_check(_OBV, bars, forming, closed=False, extra=_obv_refs())
+    enabled = _hl_check(_OBV, bars, forming, closed=True, extra=_obv_refs())
+    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
+    assert enabled["signal"] == 0 and enabled["open_action"] == "none"
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
+    assert enabled["indicators"]["obvd_reason_code"] == 3
+
+    closed = _hl_check(_OBV, bars, bars[-1]["t"] + H + 5_000, closed=True, extra=_obv_refs())
+    assert closed["closed_bar_decision"]["forming_rows_dropped"] == 0
+    assert closed["signal"] == 1 and closed["open_action"] == "long"
+    assert closed["indicators"]["obvd_long_reclaim"] == 99.0
+    assert closed["indicators"]["obvd_long_divergence"] == disabled["indicators"]["obvd_long_divergence"]
+
+    direct = _strategies().apply_strategy(_OBV, _frame_from_rows(_hl_rows(bars)), _OBV_PARAMS)
+    assert int(direct["signal"].iloc[-1]) == 1
+    assert closed["indicators"]["obvd_support_start_ts_ms"] == float(direct["obvd_support_start_ts_ms"].iloc[-1])
+
+
+@pytest.mark.parametrize("offset,dropped,signal", [(-1, 1, 0), (0, 0, 1), (1, 0, 1)])
+def test_obv_reclaim_bar_closure_boundary(offset, dropped, signal):
+    bars = _obv_bars(_OBV_ENTRY)
+    out = _hl_check(_OBV, bars, bars[-1]["t"] + H + offset, closed=True, extra=_obv_refs())
+    assert out["closed_bar_decision"]["forming_rows_dropped"] == dropped
+    assert out["signal"] == signal
+
+
+def test_obv_forming_confirmation_bar_does_not_arm_a_setup():
+    bars = _obv_bars(_OBV_CONFIRM)
+    forming = bars[-1]["t"] + H // 2
+    disabled = _hl_check(_OBV, bars, forming, closed=False, extra=_obv_refs())
+    enabled = _hl_check(_OBV, bars, forming, closed=True, extra=_obv_refs())
+    assert disabled["indicators"]["obvd_long_state"] == 2
+    assert disabled["indicators"]["obvd_long_pivot2_price"] == 94.0
+    assert enabled["indicators"].get("obvd_long_pivot2_price") != 94.0
+    assert enabled["indicators"]["obvd_long_state"] != 2
+
+
+@pytest.mark.parametrize("closed", [True, False])
+def test_obv_invalid_entry_volume_holds_while_the_current_mark_close_still_runs(closed):
+    bars = _obv_bars(_OBV_ENTRY + 1, bad_volume_at=_OBV_ENTRY)
+    cutoff = bars[-1]["t"] + H // 2
+    held_long = _obv_refs(_OBV_TP) + ["--position-side", "long", "--position-avg-cost=90",
+                                      "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(_OBV, bars, cutoff, closed=closed, extra=held_long, mid=bars[-1]["c"])
+    if closed:
+        assert out["closed_bar_decision"]["held"] is True
+        assert "volume" in out["closed_bar_decision"]["hold_reason"]
+        assert out["indicators"] == {}
+    else:
+        assert out["indicators"]["obvd_reason_code"] == 16
+    assert out["open_action"] == "none"
+    assert out["close_fraction"] == 1.0
+    assert out["close_strategy"] == "tiered_tp_pct"
+    assert out["price"] == bars[-1]["c"]
+
+    flat = _hl_check(_OBV, bars, cutoff, closed=closed, extra=_obv_refs(_OBV_TP))
+    assert flat["signal"] == 0 and flat["open_action"] == "none"
+
+
+def test_obv_mixed_batch_matches_individual_checks():
+    bars = _obv_bars(_OBV_ENTRY)
+    cutoff = bars[-1]["t"] + H // 2
+    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
+    refs = {"open": {"name": _OBV, "params": _OBV_PARAMS}}
+    slots = [
+        {"id": "on", "strategy": _OBV, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs,
+         "closed_bar_decisions": True},
+        {"id": "off", "strategy": _OBV, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
+    ]
+    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--atr-method=simple",
+                           "--market-stdin"], {"v": 2, "slots": slots, "market": market})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
+    for slot_id, closed in (("on", True), ("off", False)):
+        argv = [_OBV, "BTC", "1h", "--mode=paper", "--market-stdin", *_obv_refs()]
+        if closed:
+            argv.append("--closed-bar-decisions")
+        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
+        assert single.returncode == 0, single.stderr
+        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
+    assert results["on"]["signal"] == 0
+    assert results["off"]["signal"] == 1
+
+
 MFI = "money_flow_index_reversal"
 MFI_PARAMS = {"lookback": 2, "oversold": 30.0, "overbought": 70.0}
 
@@ -973,3 +1090,231 @@ def test_money_flow_index_invalid_volume_holds_the_entry_and_keeps_protection(cl
     assert out["signal"] == -1
     flat = _hl_check(MFI, bars, cutoff, closed=closed, extra=["--strategy-refs", refs])
     assert flat["signal"] == 0 and flat["open_action"] == "none"
+
+
+_EOM = "ease_of_movement_breakout"
+_EOM_PARAMS = {"eom_period": 3, "breakout_window": 4}
+_EOM_TP = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}]
+
+
+def _eom_bars(n_flat=60, last=(100.0, 104.0, 100.0, 103.5, 1000.0), *, zero_volume_at=None, drop=None):
+    out = []
+    rows = [(100.0, 101.0, 99.0, 100.0, 1000.0)] * n_flat + [last]
+    for i, (o, h, low, c, v) in enumerate(rows):
+        if zero_volume_at is not None and i == zero_volume_at:
+            v = 0.0
+        out.append({"t": T0 + i * H, "T": T0 + (i + 1) * H - 1, "o": o, "h": h, "l": low, "c": c, "v": v})
+    if drop is not None:
+        out.pop(drop)
+    return out
+
+
+def _eom_refs(closes=None):
+    refs = {"open": {"name": _EOM, "params": _EOM_PARAMS}}
+    if closes:
+        refs["closes"] = closes
+    return ["--strategy-refs", json.dumps(refs)]
+
+
+def test_eom_forming_breakout_bar_is_excluded_and_the_closed_bar_enters():
+    bars = _eom_bars()
+    forming = bars[-1]["t"] + H // 2
+    disabled = _hl_check(_EOM, bars, forming, closed=False, extra=_eom_refs())
+    enabled = _hl_check(_EOM, bars, forming, closed=True, extra=_eom_refs())
+    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
+    assert "eom_eval_ts_ms" not in disabled["indicators"]
+    assert enabled["signal"] == 0 and enabled["open_action"] == "none"
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
+    assert enabled["indicator_labels"]["eom_reason"] == "no_breakout"
+    assert enabled["indicators"]["eom_eval_ts_ms"] == bars[-2]["t"]
+
+    closed = _hl_check(_EOM, bars, bars[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs())
+    assert closed["closed_bar_decision"]["forming_rows_dropped"] == 0
+    assert closed["signal"] == 1 and closed["open_action"] == "long"
+    assert closed["indicators"]["eom_eval_ts_ms"] == bars[-1]["t"]
+    assert closed["indicator_labels"]["eom_reason"] == "entry_long"
+
+    frame = _frame_from_rows(_hl_rows(bars))
+    frame.attrs["bar_interval_ms"] = H
+    direct = _strategies().apply_strategy(_EOM, frame, _EOM_PARAMS)
+    assert int(direct["signal"].iloc[-1]) == 1
+    assert closed["indicators"]["eom_smoothed"] == float(direct["eom_smoothed"].iloc[-1])
+    assert closed["indicators"]["eom_raw"] == float(direct["eom_raw"].iloc[-1])
+
+
+@pytest.mark.parametrize("forming", [(103.5, 140.0, 103.0, 139.0, 50.0), (103.5, 104.0, 60.0, 61.0, 0.0),
+                                     (103.5, 103.6, 103.4, 103.5, 9_000.0)])
+def test_eom_forming_bar_values_never_change_the_closed_bar_decision(forming):
+    base = _eom_bars()
+    bars = base + [{"t": base[-1]["t"] + H, "T": base[-1]["T"] + H, "o": forming[0], "h": forming[1],
+                    "l": forming[2], "c": forming[3], "v": forming[4]}]
+    cutoff = bars[-1]["t"] + H // 3
+    reference = _hl_check(_EOM, base, base[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs())
+    out = _hl_check(_EOM, bars, cutoff, closed=True, extra=_eom_refs())
+    assert out["closed_bar_decision"]["forming_rows_dropped"] == 1
+    assert out["signal"] == reference["signal"] == 1
+    assert out["indicators"] == reference["indicators"]
+    assert out["indicator_labels"] == reference["indicator_labels"]
+
+
+def test_eom_missing_bar_timing_holds_the_entry_with_a_reason():
+    bars = _eom_bars()
+    out = _hl_check(_EOM, bars, bars[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs(), timing=False)
+    assert out["closed_bar_decision"]["held"] is True
+    assert "timing" in out["closed_bar_decision"]["hold_reason"]
+    assert out["signal"] == 0 and out["indicators"] == {}
+
+
+def test_eom_cadence_gap_in_the_closed_window_holds_then_recovers():
+    bars = _eom_bars(drop=58)
+    out = _hl_check(_EOM, bars, bars[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs())
+    assert out["closed_bar_decision"]["held"] is False
+    assert out["signal"] == 0
+    assert out["indicator_labels"]["eom_reason"] == "cadence_gap"
+    assert out["indicators"]["eom_valid"] == 0.0
+
+    far = _eom_bars(drop=40)
+    recovered = _hl_check(_EOM, far, far[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs())
+    assert recovered["signal"] == 1
+
+
+@pytest.mark.parametrize("closed", [True, False])
+def test_eom_invalid_entry_volume_holds_while_the_mark_close_still_runs(closed):
+    bars = _eom_bars(zero_volume_at=60)
+    cutoff = bars[-1]["t"] + H + 5_000
+    held_long = _eom_refs(_EOM_TP) + ["--position-side", "long", "--position-avg-cost=90",
+                                      "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(_EOM, bars, cutoff, closed=closed, extra=held_long, mid=bars[-1]["c"])
+    assert out["indicator_labels"]["eom_reason"] == "invalid_volume"
+    assert out["open_action"] == "none"
+    assert out["close_fraction"] == 1.0
+    assert out["close_strategy"] == "tiered_tp_pct"
+    assert out["price"] == bars[-1]["c"]
+
+    flat = _hl_check(_EOM, bars, cutoff, closed=closed, extra=_eom_refs(_EOM_TP))
+    assert flat["signal"] == 0 and flat["open_action"] == "none"
+
+
+def test_eom_mixed_batch_matches_individual_checks():
+    bars = _eom_bars()
+    cutoff = bars[-1]["t"] + H // 2
+    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
+    refs = {"open": {"name": _EOM, "params": _EOM_PARAMS}}
+    slots = [
+        {"id": "on", "strategy": _EOM, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs,
+         "closed_bar_decisions": True},
+        {"id": "off", "strategy": _EOM, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
+    ]
+    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--atr-method=simple",
+                           "--market-stdin"], {"v": 2, "slots": slots, "market": market})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
+    for slot_id, closed in (("on", True), ("off", False)):
+        argv = [_EOM, "BTC", "1h", "--mode=paper", "--market-stdin", *_eom_refs()]
+        if closed:
+            argv.append("--closed-bar-decisions")
+        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
+        assert single.returncode == 0, single.stderr
+        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
+    assert results["on"]["signal"] == 0
+    assert results["off"]["signal"] == 1
+
+
+def _eom_rows_at(start_ms, rows, *, gap_after=None):
+    out = []
+    t = start_ms
+    for i, (o, h, low, c, v) in enumerate(rows):
+        out.append({"t": t, "T": t + H - 1, "o": o, "h": h, "l": low, "c": c, "v": v})
+        t += 2 * H if gap_after is not None and i == gap_after else H
+    return out
+
+
+_EOM_FLAT = (100.0, 101.0, 99.0, 100.0, 1000.0)
+_EOM_BREAKOUT = (100.0, 104.0, 100.0, 103.5, 1000.0)
+
+
+def test_eom_okx_swap_paper_check_declares_cadence_and_enters_on_a_valid_window(tmp_path):
+    forming = CLOCK_MS - CLOCK_MS % H
+    rows = [_EOM_FLAT] * 60 + [_EOM_BREAKOUT, (103.5, 103.6, 103.4, 103.5, 500.0)]
+    bars = _eom_rows_at(forming - 61 * H, rows)
+    assert bars[-1]["t"] == forming
+    fakes = _fake_ccxt_dir(tmp_path, {"BTC/USDT:USDT|1h": _open_time_rows(bars)})
+    env = _clock_env(tmp_path, fakes)
+    argv = [_EOM, "BTC", "1h", "--mode=paper", "--inst-type=swap", *_eom_refs()]
+
+    closed = _run(CHECK_OKX, argv + ["--closed-bar-decisions"], env_extra=env)
+    assert closed.returncode == 0, closed.stderr + closed.stdout
+    out = json.loads(closed.stdout)
+    assert out["closed_bar_decision"]["forming_rows_dropped"] == 1
+    assert out["signal"] == 1 and out["open_action"] == "long"
+    assert out["indicator_labels"]["eom_reason"] == "entry_long"
+    assert out["indicators"]["eom_interval_ms"] == H
+    assert out["indicators"]["eom_eval_ts_ms"] == bars[-2]["t"]
+
+    legacy_bars = bars[:-1]
+    legacy_fakes = _fake_ccxt_dir(tmp_path / "legacy", {"BTC/USDT:USDT|1h": _open_time_rows(legacy_bars)})
+    legacy = _run(CHECK_OKX, argv, env_extra={"PYTHONPATH": legacy_fakes})
+    assert legacy.returncode == 0, legacy.stderr + legacy.stdout
+    out = json.loads(legacy.stdout)
+    assert "closed_bar_decision" not in out
+    assert out["signal"] == 1 and out["open_action"] == "long"
+    assert out["indicator_labels"]["eom_reason"] == "entry_long"
+    assert out["indicators"]["eom_eval_ts_ms"] == legacy_bars[-1]["t"]
+
+
+def _fake_topstep_dir(tmp_path, bars):
+    root = tmp_path / "tsfakes"
+    (root / "yfinance").mkdir(parents=True)
+    fixture = tmp_path / "yf_rows.json"
+    fixture.write_text(json.dumps(_open_time_rows(bars)))
+    (root / "yfinance" / "__init__.py").write_text(textwrap.dedent(f"""
+        import json
+
+        import pandas as pd
+
+        _ROWS = json.load(open({str(fixture)!r}))
+
+
+        class Ticker:
+            def __init__(self, symbol):
+                self.symbol = symbol
+
+            def history(self, period=None, interval=None):
+                index = pd.to_datetime([r[0] for r in _ROWS], unit="ms", utc=True)
+                return pd.DataFrame({{
+                    "Open": [r[1] for r in _ROWS], "High": [r[2] for r in _ROWS], "Low": [r[3] for r in _ROWS],
+                    "Close": [r[4] for r in _ROWS], "Volume": [r[5] for r in _ROWS],
+                }}, index=index)
+    """))
+    (root / "sitecustomize.py").write_text(textwrap.dedent("""
+        import builtins
+
+        _real_import = builtins.__import__
+
+
+        def _import(name, globals=None, locals=None, fromlist=(), level=0):
+            module = _real_import(name, globals, locals, fromlist, level)
+            cls = getattr(module, "TopStepExchangeAdapter", None)
+            if cls is not None:
+                cls.is_market_open = lambda self: True
+            return module
+
+
+        builtins.__import__ = _import
+    """))
+    return str(root)
+
+
+@pytest.mark.parametrize("bars_after_break,signal,reason", [(2, 0, "cadence_gap"), (10, 1, "entry_long")])
+def test_eom_topstep_check_holds_only_when_the_window_spans_a_session_break(tmp_path, bars_after_break,
+                                                                           signal, reason):
+    rows = [_EOM_FLAT] * 40 + [_EOM_FLAT] * bars_after_break + [_EOM_BREAKOUT]
+    bars = _eom_rows_at(T0, rows, gap_after=39)
+    fakes = _fake_topstep_dir(tmp_path, bars)
+    proc = _run(CHECK_TS, [_EOM, "ES", "1h", "--mode=paper", *_eom_refs()], env_extra={"PYTHONPATH": fakes})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    out = json.loads(proc.stdout)
+    assert out["market_open"] is True
+    assert out["indicators"]["eom_interval_ms"] == H
+    assert out["indicator_labels"]["eom_reason"] == reason
+    assert out["signal"] == signal
