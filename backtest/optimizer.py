@@ -18,6 +18,7 @@ _SHARED_TOOLS = os.path.join(os.path.dirname(__file__), "..", "shared_tools")
 if _SHARED_TOOLS not in sys.path:
     sys.path.insert(0, _SHARED_TOOLS)
 from funding_fetcher import rejoin_funding_columns
+from closed_bar import bind_fixed_interval_params
 
 
 _EXPECTED_FOLD_ERRORS = (KeyError, ValueError, TypeError, IndexError, ZeroDivisionError)
@@ -286,7 +287,10 @@ def walk_forward_optimize(
     reg = load_registry(registry)
     apply_strategy = reg.apply_strategy
 
-    param_grid = generate_param_grid(param_ranges)
+    default_params = reg.STRATEGY_REGISTRY[strategy_name]["default_params"] \
+        if strategy_name in reg.STRATEGY_REGISTRY else {}
+    param_grid = [bind_fixed_interval_params(default_params, p, timeframe)
+                  for p in generate_param_grid(param_ranges)]
     warmup = max_indicator_lookback(param_ranges)
 
     if close_stack_grid:

@@ -378,6 +378,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     strat = reg.STRATEGY_REGISTRY.get(name)
     if strat is None:
         raise SystemExit(f"Unknown strategy {name!r}; available: {reg.list_strategies()}")
+    from closed_bar import bind_fixed_interval_params
+    params = bind_fixed_interval_params(strat["default_params"], params, timeframe)
     strat_params = params if params is not None else strat["default_params"]
 
     if profile_allocation:

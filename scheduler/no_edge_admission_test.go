@@ -972,3 +972,125 @@ func TestMoneyFlowIndexReversalAdmissionAndPaperAdd(t *testing.T) {
 		t.Fatalf("loaded direction = %q, want both", got.Direction)
 	}
 }
+
+func TestChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	t.Setenv("TOPSTEP_API_KEY", "k")
+	t.Setenv("TOPSTEP_API_SECRET", "s")
+	t.Setenv("TOPSTEP_ACCOUNT_ID", "1")
+	const cmo = "chande_momentum"
+	withOpenParams := func(sc map[string]interface{}, params map[string]interface{}) map[string]interface{} {
+		sc["open_strategy"] = map[string]interface{}{"name": cmo, "params": params}
+		return sc
+	}
+	withCloseParams := func(sc map[string]interface{}, params map[string]interface{}) map[string]interface{} {
+		ref := map[string]interface{}{"name": cmo}
+		if params != nil {
+			ref["params"] = params
+		}
+		sc["close_strategy"] = ref
+		return sc
+	}
+	okx := func(timeframe string) map[string]interface{} {
+		return map[string]interface{}{
+			"id": "okx-cmo", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py",
+			"args": []string{cmo, "ETH", timeframe, "--mode=paper"}, "capital": 100.0, "max_drawdown_pct": 10.0,
+			"leverage": 1.0,
+		}
+	}
+	topstep := map[string]interface{}{
+		"id": "ts-cmo", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py",
+		"args": []string{cmo, "ES", "1h", "--mode=paper"}, "capital": 1000.0, "max_drawdown_pct": 10.0,
+	}
+	interval := func(ms interface{}) map[string]interface{} {
+		return map[string]interface{}{"expected_interval_ms": ms}
+	}
+	cases := []struct {
+		name    string
+		sc      map[string]interface{}
+		wantErr []string
+		wantRef string
+	}{
+		{"hourly registry default loads", noEdgeHLStrategy("hl-cmo", cmo, "ETH", "1h", "--mode=paper"), nil, ""},
+		{"4h registry default refused", noEdgeHLStrategy("hl-cmo", cmo, "ETH", "4h", "--mode=paper"),
+			[]string{`strategy hl-cmo: open strategy "chande_momentum": registry default expected_interval_ms=3600000 does not match timeframe 4h (14400000 ms)`, `"expected_interval_ms": 14400000`}, ""},
+		{"daily registry default refused", noEdgeHLStrategy("hl-cmo", cmo, "ETH", "1d", "--mode=paper"),
+			[]string{"does not match timeframe 1d (86400000 ms)"}, ""},
+		{"4h explicit match loads", withOpenParams(noEdgeHLStrategy("hl-cmo", cmo, "ETH", "4h", "--mode=paper"), interval(14400000)), nil, `"expected_interval_ms":14400000`},
+		{"hourly explicit 4h value refused", withOpenParams(noEdgeHLStrategy("hl-cmo", cmo, "ETH", "1h", "--mode=paper"), interval(14400000)),
+			[]string{"explicit expected_interval_ms=14400000 does not match timeframe 1h (3600000 ms)"}, ""},
+		{"non-integer value refused", withOpenParams(noEdgeHLStrategy("hl-cmo", cmo, "ETH", "4h", "--mode=paper"), interval(14400000.5)),
+			[]string{"params.expected_interval_ms must be a positive integer"}, ""},
+		{"string value refused", withOpenParams(noEdgeHLStrategy("hl-cmo", cmo, "ETH", "4h", "--mode=paper"), interval("14400000")),
+			[]string{"params.expected_interval_ms must be a positive integer"}, ""},
+		{"close fallback registry default refused on 4h", withCloseParams(noEdgeHLStrategy("hl-cmo", "breakout", "ETH", "4h", "--mode=paper"), nil),
+			[]string{`close strategy "chande_momentum": registry default expected_interval_ms=3600000 does not match timeframe 4h`}, ""},
+		{"close fallback explicit match loads", withCloseParams(noEdgeHLStrategy("hl-cmo", "breakout", "ETH", "4h", "--mode=paper"), interval(14400000)), nil, ""},
+		{"close fallback inherits the open params", withCloseParams(withOpenParams(noEdgeHLStrategy("hl-cmo", cmo, "ETH", "4h", "--mode=paper"), interval(14400000)), nil), nil, ""},
+		{"okx perps 4h explicit match loads", withOpenParams(okx("4h"), interval(14400000)), nil, ""},
+		{"okx perps 4h registry default refused", okx("4h"), []string{`strategy okx-cmo: open strategy "chande_momentum": registry default`}, ""},
+		{"topstep refused for session breaks", topstep, []string{`strategy ts-cmo: open strategy "chande_momentum" holds every entry`, "type=futures platform=topstep", "runs only on perps"}, ""},
+		{"other strategies on 4h unchanged", noEdgeHLStrategy("hl-x", "breakout", "ETH", "4h", "--mode=paper"), nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeNoEdgeConfig(t, CurrentConfigVersion, tc.sc)
+			original, _ := os.ReadFile(path)
+			cfg, loadErr := LoadConfig(path)
+			_, probeErr := LoadConfigForProbe(path)
+			_, readErr := LoadConfigReadOnly(path)
+			for name, err := range map[string]error{"load": loadErr, "probe": probeErr, "readonly": readErr} {
+				if len(tc.wantErr) == 0 {
+					if err != nil {
+						t.Fatalf("%s: unexpected refusal: %v", name, err)
+					}
+					continue
+				}
+				if err == nil {
+					t.Fatalf("%s: expected refusal containing %q", name, tc.wantErr)
+				}
+				for _, want := range tc.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("%s: error missing %q: %v", name, want, err)
+					}
+				}
+			}
+			if len(tc.wantErr) > 0 {
+				if after, _ := os.ReadFile(path); !bytes.Equal(original, after) {
+					t.Fatal("a refused config must stay byte-identical")
+				}
+				return
+			}
+			if tc.wantRef != "" {
+				args, err := buildStrategyRefsArg(cfg.Strategies[0], "", false)
+				if err != nil || len(args) != 2 || !strings.Contains(args[1], tc.wantRef) {
+					t.Fatalf("strategy refs = %v, %v; want %s", args, err, tc.wantRef)
+				}
+			}
+		})
+	}
+}
+
+func TestChandeMomentumStudyParityConfigsStillLoad(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	for timeframe, want := range map[string]string{"1h": `"expected_interval_ms":3600000`, "4h": `"expected_interval_ms":14400000`} {
+		t.Run(timeframe, func(t *testing.T) {
+			src, err := os.ReadFile(filepath.Join("..", "backtest", "candidates", "chande_momentum_1661", "paper_parity_"+timeframe+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, src, 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("study parity config refused: %v", err)
+			}
+			args, err := buildStrategyRefsArg(cfg.Strategies[0], "", false)
+			if err != nil || len(args) != 2 || !strings.Contains(args[1], want) {
+				t.Fatalf("strategy refs = %v, %v; want %s", args, err, want)
+			}
+		})
+	}
+}

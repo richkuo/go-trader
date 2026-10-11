@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from numbers import Real
 from typing import Callable, Optional
 
 
@@ -98,6 +99,31 @@ def interval_ms_for(timeframe: str) -> int:
             f"(supported: {', '.join(FIXED_DURATION_MS)})"
         )
     return ms
+
+
+FIXED_INTERVAL_PARAM = "expected_interval_ms"
+
+
+def bind_fixed_interval_params(default_params: Optional[dict], params: Optional[dict],
+                               timeframe: str) -> Optional[dict]:
+    if FIXED_INTERVAL_PARAM not in (default_params or {}):
+        return params
+    key = str(timeframe or "").strip()
+    want = FIXED_DURATION_MS.get(key)
+    if not want:
+        raise ValueError(
+            f"{FIXED_INTERVAL_PARAM} needs a fixed-duration timeframe, got {key!r} "
+            f"(supported: {', '.join(FIXED_DURATION_MS)})")
+    if params is None or FIXED_INTERVAL_PARAM not in params:
+        bound = dict(default_params if params is None else params)
+        bound[FIXED_INTERVAL_PARAM] = want
+        return bound
+    value = params[FIXED_INTERVAL_PARAM]
+    if isinstance(value, bool) or not isinstance(value, Real) or float(value) != float(want):
+        raise ValueError(
+            f"{FIXED_INTERVAL_PARAM}={value!r} does not match timeframe {key!r} ({want} ms); "
+            f"every entry would hold on a cadence gap")
+    return params
 
 
 def unsupported_open_strategy_reason(name: str) -> str:

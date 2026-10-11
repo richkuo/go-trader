@@ -72,6 +72,23 @@ def go_v20_former_research_strategies():
     return set(entries)
 
 
+def go_fixed_interval_defaults():
+    block = _go_block(_go_source("fixed_interval_strategies.go"),
+                      "var fixedIntervalStrategyDefaults = map[string]int64{")
+    entries = re.findall(r'^\s*"(\w+)":\s*([0-9_]+),\s*$', block, re.M)
+    assert len(entries) == len([line for line in block.splitlines() if line.strip()]), (
+        "unparsed line in fixedIntervalStrategyDefaults")
+    return {name: int(value.replace("_", "")) for name, value in entries}
+
+
+def python_fixed_interval_defaults():
+    return {
+        name: entry["default_params"]["expected_interval_ms"]
+        for name, entry in OPEN_REGISTRY.STRATEGIES.items()
+        if "expected_interval_ms" in entry["default_params"]
+    }
+
+
 def python_short_entries():
     return {name: True for name in OPEN_REGISTRY.short_entry_strategies()}
 
@@ -136,6 +153,12 @@ def test_v20_auto_acknowledgement_exclusions_are_registered_no_edge_names():
     excluded = go_v20_former_research_strategies()
     assert "chande_momentum" in excluded
     assert excluded <= set(python_no_edge_metadata())
+
+
+def test_go_fixed_interval_defaults_equal_python_registry():
+    go, py = go_fixed_interval_defaults(), python_fixed_interval_defaults()
+    assert py.get("chande_momentum") == 3_600_000
+    assert go == py
 
 
 def test_go_bidirectional_perps_equal_python_short_entries():

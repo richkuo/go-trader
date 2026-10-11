@@ -13,6 +13,7 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, normalize_atr_method
+from closed_bar import bind_fixed_interval_params
 from data_fetcher import load_cached_data
 from directional_certification import (
     config_directional_classifier,
@@ -1621,6 +1622,10 @@ def run_single_backtest(
         print(f"Available: {reg.list_strategies()}")
         return None
 
+    try:
+        params = bind_fixed_interval_params(strat["default_params"], params, timeframe)
+    except ValueError as exc:
+        raise SystemExit(f"{strategy_name}: {exc}")
     strat_params = params or strat["default_params"]
     print(f"\n▶ Strategy: {strat['description']}")
     print(f"  Params: {strat_params}")

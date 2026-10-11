@@ -266,6 +266,8 @@ def run_leg_results(reg, name: str, params: Optional[dict], symbol: str,
     strat = reg.STRATEGY_REGISTRY.get(name)
     if strat is None:
         raise SystemExit(f"Unknown strategy {name!r}; available: {reg.list_strategies()}")
+    from closed_bar import bind_fixed_interval_params
+    params = bind_fixed_interval_params(strat["default_params"], params, timeframe)
     strat_params = params if params is not None else strat["default_params"]
 
     df_signals = reg.apply_strategy(name, df, strat_params)

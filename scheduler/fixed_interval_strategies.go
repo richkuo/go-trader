@@ -1,0 +1,107 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"strings"
+)
+
+const fixedIntervalParam = "expected_interval_ms"
+
+var fixedIntervalStrategyDefaults = map[string]int64{
+	"chande_momentum": 3_600_000,
+}
+
+type fixedIntervalUse struct {
+	Role   string
+	Name   string
+	Params map[string]interface{}
+}
+
+func fixedIntervalUses(sc StrategyConfig) []fixedIntervalUse {
+	if sc.Type == "manual" || sc.Type == "options" {
+		return nil
+	}
+	var uses []fixedIntervalUse
+	openName := strings.TrimSpace(effectiveOpenStrategy(sc))
+	if _, ok := fixedIntervalStrategyDefaults[openName]; ok {
+		uses = append(uses, fixedIntervalUse{Role: edgeRefRoleOpen, Name: openName, Params: sc.OpenStrategy.Params})
+	}
+	for _, ref := range sc.closeRefs() {
+		name := canonicalCloseStrategyName(ref.Name)
+		if _, ok := fixedIntervalStrategyDefaults[name]; !ok {
+			continue
+		}
+		params := ref.Params
+		if len(params) == 0 {
+			params = nil
+			if name == openName {
+				params = sc.OpenStrategy.Params
+			}
+		}
+		uses = append(uses, fixedIntervalUse{Role: edgeRefRoleClose, Name: name, Params: params})
+	}
+	return uses
+}
+
+func fixedIntervalParamValue(params map[string]interface{}) (int64, bool, error) {
+	raw, ok := params[fixedIntervalParam]
+	if !ok {
+		return 0, false, nil
+	}
+	var f float64
+	switch v := raw.(type) {
+	case float64:
+		f = v
+	case int:
+		f = float64(v)
+	case int64:
+		f = float64(v)
+	case json.Number:
+		parsed, err := v.Float64()
+		if err != nil {
+			return 0, true, fmt.Errorf("must be a positive integer, got %v", raw)
+		}
+		f = parsed
+	default:
+		return 0, true, fmt.Errorf("must be a positive integer, got %#v", raw)
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < 1 || f != math.Trunc(f) || f > math.MaxInt64/2 {
+		return 0, true, fmt.Errorf("must be a positive integer, got %v", raw)
+	}
+	return int64(f), true, nil
+}
+
+func fixedIntervalStrategyErrors(strategies []StrategyConfig) []string {
+	var errs []string
+	for _, sc := range strategies {
+		for _, use := range fixedIntervalUses(sc) {
+			label := fmt.Sprintf("strategy %s: %s strategy %q", sc.ID, use.Role, use.Name)
+			if sc.Type != "perps" {
+				errs = append(errs, fmt.Sprintf("%s holds every entry unless its candles are spaced exactly %s apart; type=%s platform=%s has trading-session breaks or no continuous candle contract, so it runs only on perps (hyperliquid, okx)", label, fixedIntervalParam, sc.Type, sc.Platform))
+				continue
+			}
+			_, timeframe := strategyArgSymbolTimeframe(sc.Args)
+			want, ok := closedBarDecisionIntervalsMs[timeframe]
+			if !ok {
+				errs = append(errs, fmt.Sprintf("%s needs a fixed-duration timeframe in args to check %s, got %q (supported: %s)", label, fixedIntervalParam, timeframe, closedBarSupportedIntervals()))
+				continue
+			}
+			got, explicit, err := fixedIntervalParamValue(use.Params)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: params.%s %v", label, fixedIntervalParam, err))
+				continue
+			}
+			source := "explicit"
+			if !explicit {
+				got = fixedIntervalStrategyDefaults[use.Name]
+				source = "registry default"
+			}
+			if got != want {
+				errs = append(errs, fmt.Sprintf("%s: %s %s=%d does not match timeframe %s (%d ms), so every entry would hold on a cadence gap; set \"%s\": %d in its params", label, source, fixedIntervalParam, got, timeframe, want, fixedIntervalParam, want))
+			}
+		}
+	}
+	return errs
+}
