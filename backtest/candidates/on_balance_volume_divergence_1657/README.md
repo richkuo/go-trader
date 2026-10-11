@@ -167,9 +167,12 @@ expiry `[6, 12, 24]`, `volume_test` `[true]`. Synthetic fixture seed: 1657.
 
 ## Data and costs
 
-`study_manifest.json` and `data/` are byte-identical copies (same sha256) of the frozen
-Hyperliquid 4h candles, volume, funding, venue metadata and spread snapshot first frozen by
-`chaikin_money_flow_1649` and copied by `relative_vigor_index_1666`. This reuses a historical
+The eight files under `data/` are byte-identical copies (same sha256) of the frozen Hyperliquid
+4h candles, volume, funding, venue metadata and spread snapshot first frozen by
+`chaikin_money_flow_1649` and copied by `relative_vigor_index_1666`. `study_manifest.json` copies
+the windows, costs and dataset entries of the #1649 manifest. It is not byte-identical: only the
+`study` name and the added `copied_from` note differ, so its own sha256 is the one `REPORT.md`
+records. This reuses a historical
 panel that earlier candidates also studied. Candles and volume come from the Hyperliquid
 `candleSnapshot` rows, so neither is a proxy. Windows: train [2024-09-01, 2025-09-01) for
 selection, test [2025-09-01, 2026-09-01) held out, 300 unscored warm-up bars. Costs come from the
