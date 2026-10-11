@@ -64,6 +64,14 @@ def go_bidirectional_perps():
     return {name: True for name, value in entries if value == "true"}
 
 
+def go_v20_former_research_strategies():
+    block = _go_block(_go_source("config_migration_v20.go"), "var v20FormerResearchStrategies = map[string]struct{}{")
+    entries = re.findall(r'^\s*"(\w+)":\s*\{\},\s*$', block, re.M)
+    assert len(entries) == len([line for line in block.splitlines() if line.strip()]), (
+        "unparsed line in v20FormerResearchStrategies")
+    return set(entries)
+
+
 def python_short_entries():
     return {name: True for name in OPEN_REGISTRY.short_entry_strategies()}
 
@@ -101,7 +109,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 42
+    assert len(py) == 43
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -122,6 +130,12 @@ def test_metadata_parity_detects_a_removed_name_or_changed_field(side):
     for mutated in (removed, changed, moved):
         pair = (mutated, py) if side == "go" else (go, mutated)
         assert len(mapping_mismatches(*pair)) == 1
+
+
+def test_v20_auto_acknowledgement_exclusions_are_registered_no_edge_names():
+    excluded = go_v20_former_research_strategies()
+    assert "chande_momentum" in excluded
+    assert excluded <= set(python_no_edge_metadata())
 
 
 def test_go_bidirectional_perps_equal_python_short_entries():

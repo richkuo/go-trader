@@ -177,3 +177,112 @@ def test_malformed_batch_evidence_rejects_the_payload_before_evaluation(bad):
     assert payload["error_scope"] == "shared_state"
     assert payload["results"] == []
     assert payload["error"].startswith("invalid batch payload")
+
+
+CMO = "chande_momentum"
+HOUR_MS = 3_600_000
+
+
+def _hourly_market():
+    rows = _candles(step_ms=HOUR_MS)
+    market = _market(rows, rows[-1][4])
+    market["snapshot_id"] = "3600s/1"
+    market["frames"] = {"BTC|1h": market["frames"]["BTC|4h"]}
+    return market
+
+
+def _cmo_run(argv):
+    return _run("check_hyperliquid.py", argv + ["--market-stdin"], {"v": 2, "market": _hourly_market()})
+
+
+def _cmo_batch(slots):
+    return _run("check_hyperliquid.py", ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--market-stdin"],
+                {"v": 2, "slots": slots, "market": _hourly_market()})
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_chande_open_reference_is_refused_outside_explicit_paper(extra, reason):
+    proc = _run("check_hyperliquid.py", [CMO, "BTC", "1h"] + extra)
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert payload["strategy"] == CMO
+    assert f"open strategy '{CMO}' is edge_status=no_edge" in payload["error"]
+    assert reason in payload["error"]
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_chande_close_fallback_reference_is_refused_outside_explicit_paper(extra, reason):
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": CMO}]})
+    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "1h", "--strategy-refs", refs] + extra)
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    error = _payload(proc)["error"]
+    assert f"close strategy '{CMO}' is edge_status=no_edge" in error
+    assert reason in error
+
+
+@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],
+                                   ["--allow-no-edge"]])
+def test_chande_paper_or_acknowledged_evaluation_runs_offline_and_reports_inputs(extra):
+    proc = _cmo_run([CMO, "BTC", "1h"] + extra)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = _payload(proc)
+    assert out["strategy"] == CMO and not out.get("error")
+    assert out["signal"] in (-1, 0, 1)
+    ind = out["indicators"]
+    for key in ("cmo", "cmo_prev", "cmo_gain_sum", "cmo_loss_sum", "cmo_close", "cmo_eval_ts_ms",
+                "cmo_valid", "cmo_reason_code"):
+        assert key in ind, key
+    assert ind["cmo_valid"] == 1.0
+
+
+@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode=live", "--allow-no-edge"]])
+def test_chande_close_fallback_admitted_in_paper_or_acknowledged(extra):
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": CMO}]})
+    proc = _cmo_run(["breakout", "BTC", "1h", "--strategy-refs", refs] + extra)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = _payload(proc)
+    assert not out.get("error")
+    assert out["close_strategies"] == [CMO]
+
+
+def test_chande_batch_slots_apply_the_admission_matrix_and_match_solo():
+    fallback = {"strategy": "breakout", "open_strategy": "breakout", "close_strategies": [CMO]}
+    proc = _cmo_batch([
+        {"id": "paper", "strategy": CMO, "mode": "paper", "mode_args": ["--mode=paper"]},
+        {"id": "paper-space", "strategy": CMO, "mode": "paper", "mode_args": ["--mode", "paper"]},
+        {"id": "acked", "strategy": CMO, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},
+        {"id": "unacked-live", "strategy": CMO, "mode": "live", "mode_args": ["--mode=live"]},
+        {"id": "false-live", "strategy": CMO, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": False},
+        {"id": "missing", "strategy": CMO, "mode": "paper"},
+        {"id": "repeated", "strategy": CMO, "mode": "paper", "mode_args": ["--mode=paper", "--mode=paper"]},
+        dict(fallback, id="close-paper", mode="paper", mode_args=["--mode=paper"]),
+        dict(fallback, id="close-acked", mode="live", mode_args=["--mode=live"], allow_no_edge=True),
+        dict(fallback, id="close-unacked", mode="live", mode_args=["--mode=live"]),
+        dict(fallback, id="close-missing", mode="paper"),
+    ])
+    assert proc.returncode == 1
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    for ok in ("paper", "paper-space", "acked", "close-paper", "close-acked"):
+        assert not results[ok].get("error"), (ok, results[ok].get("error"))
+    assert "explicit live mode" in results["unacked-live"]["error"]
+    assert "explicit live mode" in results["false-live"]["error"]
+    assert "missing mode" in results["missing"]["error"]
+    assert "invalid mode input" in results["repeated"]["error"]
+    assert f"close strategy '{CMO}'" in results["close-unacked"]["error"]
+    assert "explicit live mode" in results["close-unacked"]["error"]
+    assert "missing mode" in results["close-missing"]["error"]
+
+    solo = _payload(_cmo_run([CMO, "BTC", "1h", "--mode=paper"]))
+    for key in ("signal", "open_action", "close_fraction", "indicators"):
+        assert results["paper"].get(key) == solo.get(key)
+        assert results["acked"].get(key) == solo.get(key)
+
+
+@pytest.mark.parametrize("bad", [{"allow_no_edge": "true"}, {"allow_no_edge": 1}, {"mode_args": "--mode=paper"}])
+def test_chande_malformed_batch_evidence_rejects_the_payload(bad):
+    proc = _cmo_batch([dict({"id": "slot", "strategy": CMO, "mode": "paper"}, **bad)])
+    assert proc.returncode == 1
+    payload = _payload(proc)
+    assert payload["error_scope"] == "shared_state"
+    assert payload["results"] == []

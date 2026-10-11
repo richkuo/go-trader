@@ -875,3 +875,87 @@ def test_resting_rule_trailing_stop_ratcheted_inside_a_bar_tests_the_bar_against
         assert second["close_fraction"] == 0.0
         assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[61]["t"]
         assert booked == [(str(df.index[61]), 99.0, "sl")]
+
+
+CMO = "chande_momentum"
+
+
+def _cmo_bars(closes):
+    out = []
+    prev = closes[0]
+    for i, c in enumerate(closes):
+        out.append({"t": T0 + i * H, "T": T0 + (i + 1) * H - 1, "o": prev, "h": max(prev, c) + 0.5,
+                    "l": min(prev, c) - 0.5, "c": c, "v": 1000.0 + i})
+        prev = c
+    return out
+
+
+def _cmo_closed_frame(bars):
+    rows = _hl_rows(bars)
+    return _strategies().apply_strategy(CMO, _frame_from_rows(rows), None)
+
+
+def test_chande_closed_bar_decision_reads_the_closed_frame_and_ignores_the_forming_bar():
+    bars = _cmo_bars([100.0] * 60 + [101.0, 96.0])
+    cutoff = bars[-1]["t"] + H // 2
+    enabled = _hl_check(CMO, bars, cutoff, closed=True)
+    disabled = _hl_check(CMO, bars, cutoff, closed=False)
+    closed_df = _cmo_closed_frame(bars[:-1])
+    full_df = _cmo_closed_frame(bars)
+    assert enabled["closed_bar_decision"]["held"] is False
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
+    assert enabled["signal"] == int(closed_df["signal"].iloc[-1]) == 1
+    assert disabled["signal"] == int(full_df["signal"].iloc[-1]) == -1
+    ind = enabled["indicators"]
+    assert ind["cmo"] == 100.0 and ind["cmo_prev"] == 0.0
+    assert ind["cmo_gain_sum"] == 1.0 and ind["cmo_loss_sum"] == 0.0
+    assert ind["cmo_close"] == 101.0 and ind["cmo_eval_ts_ms"] == float(bars[-2]["T"])
+    assert ind["cmo_valid"] == 1.0 and ind["cmo_reason_code"] == 1.0
+    calm = _hl_check(CMO, bars[:-1], cutoff, closed=True)
+    assert calm["indicators"] == enabled["indicators"]
+    assert calm["closed_bar_decision"]["input_sha256"] == enabled["closed_bar_decision"]["input_sha256"]
+
+
+def test_chande_closed_bar_batch_slots_match_individual_checks():
+    bars = _cmo_bars([100.0] * 220 + [101.0, 96.0])
+    cutoff = bars[-1]["t"] + H // 2
+    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
+    slots = [
+        {"id": "on", "strategy": CMO, "mode": "paper", "mode_args": ["--mode=paper"], "closed_bar_decisions": True},
+        {"id": "off", "strategy": CMO, "mode": "paper", "mode_args": ["--mode=paper"]},
+    ]
+    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200",
+                           "--atr-method=simple", "--market-stdin"], {"v": 2, "slots": slots, "market": market})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
+    for slot_id, closed in (("on", True), ("off", False)):
+        argv = [CMO, "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200"]
+        if closed:
+            argv.append("--closed-bar-decisions")
+        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
+        assert single.returncode == 0, single.stderr
+        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
+    assert results["on"]["signal"] == 1
+    assert results["off"]["signal"] == -1
+
+
+@pytest.mark.parametrize("closed", [True, False])
+def test_chande_invalid_entry_data_holds_the_entry_and_keeps_close_management(closed):
+    bars = _cmo_bars([100.0] * 60 + [101.0, 102.0, 103.0])
+    gapped = bars[:-3] + [dict(b, t=b["t"] + H, T=b["T"] + H) for b in bars[-3:]]
+    cutoff = gapped[-1]["t"] + H // 2
+    refs = json.dumps({"open": {"name": CMO, "params": {}},
+                       "closes": [{"name": "tiered_tp_pct",
+                                   "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}]})
+    flat = _hl_check(CMO, gapped, cutoff, closed=closed, extra=["--strategy-refs", refs])
+    assert flat["signal"] == 0 and flat["open_action"] == "none"
+    held_long = ["--strategy-refs", refs, "--position-side", "long", "--position-avg-cost=100",
+                 "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(CMO, gapped, cutoff, closed=closed, extra=held_long, mid=104.0)
+    assert out["open_action"] == "none"
+    assert out["close_fraction"] == 1.0 and out["close_strategy"] == "tiered_tp_pct"
+    assert out["signal"] == -1
+    assert out["indicators"]["cmo_valid"] == 0.0
+    assert out["indicators"]["cmo_reason_code"] == 16.0
+    if closed:
+        assert out["closed_bar_decision"]["held"] is False

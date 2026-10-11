@@ -13,6 +13,7 @@ var v20FormerResearchStrategies = map[string]struct{}{
 	"analog_retrieval":            {},
 	"awesome_oscillator":          {},
 	"chaikin_money_flow_breakout": {},
+	"chande_momentum":             {},
 	"commodity_channel_trend":     {},
 	"connors_rsi_reversion":       {},
 	"open_interest_breakout":      {},

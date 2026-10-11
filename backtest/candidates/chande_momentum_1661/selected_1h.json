@@ -1,0 +1,24 @@
+{
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "close_fraction": 1.0,
+            "profit_pct": 0.03
+          }
+        ]
+      }
+    }
+  ],
+  "direction": "both",
+  "name": "chande_momentum",
+  "params": {
+    "expected_interval_ms": 3600000,
+    "period": 20,
+    "threshold": 10.0
+  },
+  "stop_loss_atr_mult": 1.0,
+  "type": "perps"
+}

@@ -1393,7 +1393,7 @@ New spot or futures strategy:
 3. Append the name to `PLATFORM_ORDER`.
 4. Add the short name to `knownShortNames`, the `registeredOpenStrategyPlatforms` row and default entries in `scheduler/init.go`; with `short_entries=True`, also add it to `bidirectionalPerpsStrategies` (wizard and Discord add write `direction: both` only for listed names).
 5. Add a param grid to `DEFAULT_PARAM_RANGES` in `backtest/optimizer.py`.
-6. A strategy without approved edge evidence registers `edge_status="no_edge"` with a valid `edge_source` and a nonempty `edge_ref` (the evidence file); mirror it in `noEdgeStrategies` in `scheduler/edge_status.go`. That hides it from discovery, runs it with explicit `--mode=paper`, and needs `allow_no_edge: true` for live use. A new study records its verdict without changing that rule.
+6. A strategy without approved edge evidence registers `edge_status="no_edge"` with a valid `edge_source` and a nonempty `edge_ref` (the evidence file); mirror it in `noEdgeStrategies` in `scheduler/edge_status.go`. That hides it from discovery, runs it with explicit `--mode=paper`, and needs `allow_no_edge: true` for live use. A new study records its verdict without changing that rule. A name new to the registry also joins `v20FormerResearchStrategies` in `scheduler/config_migration_v20.go`, so the legacy v20 migration never grants it `allow_no_edge: true` as an open or close-fallback reference.
 7. Run the registry, optimizer and `scripts/test_go_python_registry_parity.py` tests.
 
 For a close evaluator, add an `evaluate(position, market, params)` implementation under `shared_strategies/close/` and register it in `close/registry.py`.

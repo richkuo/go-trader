@@ -1,0 +1,45 @@
+{
+  "config_version": 20,
+  "interval_seconds": 3600,
+  "db_file": "chande_momentum_1661_paper_1h.db",
+  "strategies": [
+    {
+      "id": "hl-cmo-btc-1h",
+      "type": "perps",
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": [
+        "chande_momentum",
+        "BTC",
+        "1h",
+        "--mode=paper"
+      ],
+      "open_strategy": {
+        "name": "chande_momentum",
+        "params": {
+          "period": 20,
+          "threshold": 25.0,
+          "expected_interval_ms": 3600000
+        }
+      },
+      "close_strategy": {
+        "name": "tiered_tp_pct",
+        "params": {
+          "tp_tiers": [
+            {
+              "profit_pct": 0.03,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      },
+      "stop_loss_atr_mult": 1.0,
+      "direction": "both",
+      "capital": 1000.0,
+      "max_drawdown_pct": 10.0,
+      "leverage": 1.0,
+      "margin_mode": "isolated",
+      "interval_seconds": 3600
+    }
+  ]
+}

@@ -1,0 +1,169 @@
+{
+  "study": "chande_momentum_1661",
+  "issue": 1661,
+  "status": "frozen before any window was scored; amended once before scoring (see amendment) after acquisition showed Hyperliquid funding history starts in May 2023; run_study.py records this file's sha256 in results.json",
+  "candidate": "chande_momentum",
+  "registry": "futures",
+  "fee_platform": "hyperliquid",
+  "strategy_type": "perps",
+  "capital_usd": 1000.0,
+  "direction": "both",
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "profit_pct": 0.03,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "intrabar_resolution": "ohlc_walk",
+  "funding_mode": "charge",
+  "comparison_mode": null,
+  "candle_source": "binanceus spot USDT pairs (M1 non-manifest path), proxy for Hyperliquid perpetual prices",
+  "funding_source": "Hyperliquid fundingHistory through shared_tools/funding_fetcher.py",
+  "acquisition_start": "2023-01-01",
+  "pinned_end": "2026-10-01",
+  "symbols": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT"
+  ],
+  "groups": {
+    "1h": {
+      "expected_interval_ms": 3600000
+    },
+    "4h": {
+      "expected_interval_ms": 14400000
+    }
+  },
+  "windows": {
+    "is": [
+      "2025-06-10",
+      "2026-01-01"
+    ],
+    "oos": [
+      "2026-01-01",
+      "2026-10-01"
+    ],
+    "2023": [
+      "2023-01-01",
+      "2024-01-01"
+    ],
+    "2024": [
+      "2024-01-01",
+      "2025-01-01"
+    ],
+    "2025H1": [
+      "2025-01-01",
+      "2025-07-01"
+    ]
+  },
+  "training_window": "is",
+  "confirmation_windows": [
+    "oos",
+    "2023",
+    "2024",
+    "2025H1"
+  ],
+  "held_out_windows": [
+    "2023",
+    "2024",
+    "2025H1"
+  ],
+  "seed_params": {
+    "period": 20,
+    "threshold": 25.0
+  },
+  "grids": {
+    "chande_momentum": {
+      "period": [
+        10,
+        14,
+        20,
+        30,
+        40,
+        60
+      ],
+      "threshold": [
+        10.0,
+        15.0,
+        25.0,
+        35.0,
+        50.0
+      ]
+    },
+    "momentum": {
+      "roc_period": [
+        10,
+        14,
+        21,
+        30
+      ],
+      "threshold": [
+        3.0,
+        5.0,
+        7.0,
+        10.0
+      ]
+    },
+    "rsi": {
+      "period": [
+        10,
+        14,
+        21
+      ],
+      "overbought": [
+        65,
+        70,
+        75
+      ],
+      "oversold": [
+        25,
+        30,
+        35
+      ]
+    }
+  },
+  "comparators": [
+    "momentum",
+    "rsi"
+  ],
+  "selection_rule": {
+    "window": "is",
+    "eligible": "every dataset of the group has at least min_training_trades trades and the M1 verdict is not funding_incomplete",
+    "min_training_trades": 10,
+    "objective": "highest mean M1 ddadj (return_pct / |max_dd_pct|) across the group's datasets",
+    "tie_break": [
+      "higher mean M1 sharpe",
+      "smaller first grid parameter",
+      "smaller second grid parameter"
+    ],
+    "fallback": "no eligible combination keeps the registry seed for the candidate and the registry defaults for a comparator, recorded as seed_fallback"
+  },
+  "verdict_rules": {
+    "scope": "per interval group, on the confirmation windows with the locked selections",
+    "unscorable_window": "a confirmation window where any candidate leg, matched-exit comparator leg or incumbent-median dataset is funding_incomplete or missing; partial or off never substitutes",
+    "min_confirmation_positions": 60,
+    "insufficient_sample": "fewer than min_confirmation_positions candidate positions across the scorable confirmation windows gives inconclusive",
+    "conditions": {
+      "oos_pass": "M1 verdict pass in oos; unknown when oos is unscorable",
+      "held_out_passes": "M1 verdict pass in at least 2 of the 3 held-out windows; true once 2 scorable passes exist, false once scorable passes plus unscorable held-out windows are below 2, else unknown",
+      "net_pnl_positive": "summed candidate net PnL across confirmation legs > 0; unknown when any confirmation window is unscorable",
+      "beats_comparators": "candidate mean confirmation return_pct > each matched-exit comparator's; unknown when any confirmation window is unscorable",
+      "not_concentrated": "largest single position net PnL <= 25% of the summed positive position PnL; unknown when any confirmation window is unscorable"
+    },
+    "pass": "every condition true",
+    "fail": "adequate sample and at least one condition false",
+    "inconclusive": "insufficient sample, or no condition false while at least one is unknown",
+    "overall": "pass only if every group passes; fail only if every group fails; otherwise inconclusive",
+    "metadata": "pass keeps edge_source unvalidated pending separate approval; fail records study_fail; inconclusive records study_inconclusive; edge_status stays no_edge after every outcome"
+  },
+  "stability_sweep": "exploratory only: the full candidate grid on every confirmation window after the confirmation run; never changes the selection or the verdict",
+  "amendment": "Acquisition found no Hyperliquid funding rate before the venue's first record (2023-05-12 for BTC), so legs holding a position in early 2023 are funding-incomplete under charge. Before any scoring, the verdict rule changed from 'any incomplete confirmation leg gives inconclusive' to the three-valued rule below, so incomplete funding can never support a pass but complete windows can still establish a fail."
+}

@@ -718,6 +718,10 @@ DEFAULT_PARAM_RANGES = {
         "fast_period": [3, 5, 8, 13],
         "slow_period": [21, 34, 55, 89],
     },
+    "chande_momentum": {
+        "period": [10, 14, 20, 30, 40, 60],
+        "threshold": [10.0, 15.0, 25.0, 35.0, 50.0],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],
