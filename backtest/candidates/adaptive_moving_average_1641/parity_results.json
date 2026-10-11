@@ -1,0 +1,711 @@
+{
+  "clean": true,
+  "manifest_sha256": "2589a9a07a8afe34f788a1c6e0f36e4591cef3009aa1dcf20984ab576b2ced01",
+  "runs": [
+    {
+      "bars_compared": 2000,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 45,
+      "live_short_entries": 52,
+      "long_position_closes": 3,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 2,
+        "recursion_length": 120,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "seed",
+      "seconds": 8.4,
+      "short_position_closes": 0,
+      "span": [
+        "2026-07-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-1h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2170,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 46,
+      "live_short_entries": 54,
+      "long_position_closes": 3,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 2,
+        "recursion_length": 120,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "seed",
+      "seconds": 11.4,
+      "short_position_closes": 0,
+      "span": [
+        "2026-07-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-1h",
+      "window": 0
+    },
+    {
+      "bars_compared": 2000,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 45,
+      "live_short_entries": 52,
+      "long_position_closes": 3,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 2,
+        "recursion_length": 120,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "seed",
+      "seconds": 36.1,
+      "short_position_closes": 0,
+      "span": [
+        "2026-07-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-1h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2170,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 46,
+      "live_short_entries": 54,
+      "long_position_closes": 3,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 2,
+        "recursion_length": 120,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "seed",
+      "seconds": 48.4,
+      "short_position_closes": 0,
+      "span": [
+        "2026-07-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-1h",
+      "window": 0
+    },
+    {
+      "bars_compared": 2000,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 38,
+      "live_short_entries": 38,
+      "long_position_closes": 4,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 3,
+        "recursion_length": 60,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "selected",
+      "seconds": 7.9,
+      "short_position_closes": 1,
+      "span": [
+        "2026-07-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-1h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2170,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 44,
+      "live_short_entries": 45,
+      "long_position_closes": 4,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 3,
+        "recursion_length": 60,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "selected",
+      "seconds": 10.3,
+      "short_position_closes": 1,
+      "span": [
+        "2026-07-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-1h",
+      "window": 0
+    },
+    {
+      "bars_compared": 2000,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 38,
+      "live_short_entries": 38,
+      "long_position_closes": 4,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 3,
+        "recursion_length": 60,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "selected",
+      "seconds": 32.6,
+      "short_position_closes": 1,
+      "span": [
+        "2026-07-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-1h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2170,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 44,
+      "live_short_entries": 45,
+      "long_position_closes": 4,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 3,
+        "recursion_length": 60,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "selected",
+      "seconds": 41.6,
+      "short_position_closes": 1,
+      "span": [
+        "2026-07-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-1h",
+      "window": 0
+    },
+    {
+      "bars_compared": 1989,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 51,
+      "live_short_entries": 48,
+      "long_position_closes": 7,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 2,
+        "recursion_length": 120,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "seed",
+      "seconds": 8.3,
+      "short_position_closes": 10,
+      "span": [
+        "2025-10-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2159,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 55,
+      "live_short_entries": 50,
+      "long_position_closes": 8,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 2,
+        "recursion_length": 120,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "seed",
+      "seconds": 10.5,
+      "short_position_closes": 11,
+      "span": [
+        "2025-10-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-4h",
+      "window": 0
+    },
+    {
+      "bars_compared": 1989,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 51,
+      "live_short_entries": 48,
+      "long_position_closes": 7,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 2,
+        "recursion_length": 120,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "seed",
+      "seconds": 35.7,
+      "short_position_closes": 10,
+      "span": [
+        "2025-10-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2159,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 55,
+      "live_short_entries": 50,
+      "long_position_closes": 8,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 10,
+        "fast_period": 2,
+        "recursion_length": 120,
+        "slope_span": 3,
+        "slow_period": 30
+      },
+      "params_label": "seed",
+      "seconds": 45.0,
+      "short_position_closes": 11,
+      "span": [
+        "2025-10-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-4h",
+      "window": 0
+    },
+    {
+      "bars_compared": 1989,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 34,
+      "live_short_entries": 34,
+      "long_position_closes": 6,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 20,
+        "fast_period": 3,
+        "recursion_length": 60,
+        "slope_span": 3,
+        "slow_period": 50
+      },
+      "params_label": "selected",
+      "seconds": 7.0,
+      "short_position_closes": 2,
+      "span": [
+        "2025-10-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2159,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 39,
+      "live_short_entries": 36,
+      "long_position_closes": 7,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 20,
+        "fast_period": 3,
+        "recursion_length": 60,
+        "slope_span": 3,
+        "slow_period": 50
+      },
+      "params_label": "selected",
+      "seconds": 9.4,
+      "short_position_closes": 2,
+      "span": [
+        "2025-10-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-4h",
+      "window": 0
+    },
+    {
+      "bars_compared": 1989,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 34,
+      "live_short_entries": 34,
+      "long_position_closes": 6,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 20,
+        "fast_period": 3,
+        "recursion_length": 60,
+        "slope_span": 3,
+        "slow_period": 50
+      },
+      "params_label": "selected",
+      "seconds": 30.1,
+      "short_position_closes": 2,
+      "span": [
+        "2025-10-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2159,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "live_long_entries": 39,
+      "live_short_entries": 36,
+      "long_position_closes": 7,
+      "mismatches": 0,
+      "params": {
+        "efficiency_period": 20,
+        "fast_period": 3,
+        "recursion_length": 60,
+        "slope_span": 3,
+        "slow_period": 50
+      },
+      "params_label": "selected",
+      "seconds": 37.7,
+      "short_position_closes": 2,
+      "span": [
+        "2025-10-01",
+        "2026-10-01"
+      ],
+      "strategy_id": "hl-ama-btc-4h",
+      "window": 0
+    }
+  ],
+  "source_commit": "64456817451ab5d7f96d5b962cec307a6986c425+uncommitted-changes"
+}

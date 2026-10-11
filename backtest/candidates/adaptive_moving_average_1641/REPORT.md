@@ -13,7 +13,7 @@ Close owner: `tiered_tp_pct` (`{"tp_tiers": [{"profit_pct": 0.03, "close_fractio
 ## Protocol and provenance
 
 - Protocol: `protocol.json`, sha256 `981b6ec8ac6f76db5afd2a6c0501d2350edab804d1f452a3afc90800406091b6` (frozen before scoring; `study_manifest.json` records the same hash at freeze time, sha256 `2589a9a07a8afe34f788a1c6e0f36e4591cef3009aa1dcf20984ab576b2ced01`).
-- Source commit of the run: `165c26492bd2c1d26374c5784bfcf6558273b7b0+uncommitted-changes`; runtime 517.1 s.
+- Source commit of the run: `64456817451ab5d7f96d5b962cec307a6986c425`; runtime 441.5 s.
 - Inputs: the frozen files of study `chande_momentum_1661`, read in place and verified against the pins in `protocol.json` (source manifest sha256 `f5bd9d2672abf5880b8af57cb01a0ffb70b21ccdf5eab464a9d351e121d580e3`, acquired 2026-10-11T03:16:15Z at commit `0715416732ccb93275e81e3e7a096d887a1bdfed`). The run rebuilds a fresh cache from them and disables every network fetch.
 - Windows (start inclusive, end exclusive): `train` 2024-01-01 to 2025-01-01; `h2023H2` 2023-07-01 to 2024-01-01; `h2025` 2025-01-01 to 2026-01-01; `oos` 2026-01-01 to 2026-10-01. Training window `train`; held-out `h2023H2, h2025, oos`. The open-ended M1 oos window is pinned to 2026-10-01.
 - Warmup: every leg (candidate, comparators, incumbents) computes indicators and ATR on the 300 consecutive bars before the window start and scores only the window from a flat book (eval_windows.run_leg warmup_bars); 300 exceeds the largest candidate history requirement (185 rows) and the 200-bar EMA of the momentum_pro incumbent; a missing pre-window bar is an error.
@@ -315,7 +315,7 @@ Best five candidate training variants by DD-adj (every variant, eligible or not,
 
 ## Decision parity
 
-`parity_results.json` (source commit `165c26492bd2c1d26374c5784bfcf6558273b7b0+uncommitted-changes`): clean = yes. Each run feeds the frozen BTC candles through `parity_diff.compute_parity_frame` with the paper configuration (explicit `--mode=paper`, `closed_bar_decisions: true`, `tiered_tp_pct`, one ATR stop, `direction: both`), comparing the full-series backtest decision with the live check decision on a trailing 200-row frame (window 200) or the whole prefix (window 0), solo and batched, in the flat, long and short position contexts the simulation produces. These runs prove supplied-frame parity; the closed-bar cutoff is proved separately by the subprocess checks in `shared_scripts/test_adaptive_moving_average_checks.py`.
+`parity_results.json` (source commit `64456817451ab5d7f96d5b962cec307a6986c425+uncommitted-changes`): clean = yes. Each run feeds the frozen BTC candles through `parity_diff.compute_parity_frame` with the paper configuration (explicit `--mode=paper`, `closed_bar_decisions: true`, `tiered_tp_pct`, one ATR stop, `direction: both`), comparing the full-series backtest decision with the live check decision on a trailing 200-row frame (window 200) or the whole prefix (window 0), solo and batched, in the flat, long and short position contexts the simulation produces. These runs prove supplied-frame parity; the closed-bar cutoff is proved separately by the subprocess checks in `shared_scripts/test_adaptive_moving_average_checks.py`.
 
 | config | params | batched | window | bars | mismatches | batch mismatches | long entries | short entries | long closes | short closes | clean |
 |---|---|---|---|---|---|---|---|---|---|---|---|
