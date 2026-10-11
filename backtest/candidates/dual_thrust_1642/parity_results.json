@@ -1,0 +1,1592 @@
+{
+  "clean": true,
+  "manifest_sha256": "1add7d1cdd46af1fdfe61420f5dc28386f7dbddf36c5d5f31b8cc2029bf6bb87",
+  "runs": [
+    {
+      "bars_compared": 2000,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "e73b91d1077d41da927ecf9318488f00544c5a2b71ccfdb202258d06f2518c6c",
+      "live_long_signals": 8,
+      "live_short_signals": 5,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 3600000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 6.7,
+      "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-1h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2170,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "e73b91d1077d41da927ecf9318488f00544c5a2b71ccfdb202258d06f2518c6c",
+      "live_long_signals": 8,
+      "live_short_signals": 6,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 3600000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 8.5,
+      "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-1h",
+      "window": "every prefix"
+    },
+    {
+      "bars_compared": 2000,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "e73b91d1077d41da927ecf9318488f00544c5a2b71ccfdb202258d06f2518c6c",
+      "live_long_signals": 8,
+      "live_short_signals": 5,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 3600000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 28.6,
+      "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-1h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2170,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "e73b91d1077d41da927ecf9318488f00544c5a2b71ccfdb202258d06f2518c6c",
+      "live_long_signals": 8,
+      "live_short_signals": 6,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 3600000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 37.9,
+      "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-1h",
+      "window": "every prefix"
+    },
+    {
+      "bars_compared": 2000,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "e73b91d1077d41da927ecf9318488f00544c5a2b71ccfdb202258d06f2518c6c",
+      "live_long_signals": 6,
+      "live_short_signals": 5,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 3600000,
+        "k_long": 0.5,
+        "k_short": 1.0,
+        "lookback_sessions": 7,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 7.5,
+      "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-1h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2170,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "e73b91d1077d41da927ecf9318488f00544c5a2b71ccfdb202258d06f2518c6c",
+      "live_long_signals": 6,
+      "live_short_signals": 5,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 3600000,
+        "k_long": 0.5,
+        "k_short": 1.0,
+        "lookback_sessions": 7,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 8.6,
+      "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-1h",
+      "window": "every prefix"
+    },
+    {
+      "bars_compared": 2000,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "e73b91d1077d41da927ecf9318488f00544c5a2b71ccfdb202258d06f2518c6c",
+      "live_long_signals": 6,
+      "live_short_signals": 5,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 3600000,
+        "k_long": 0.5,
+        "k_short": 1.0,
+        "lookback_sessions": 7,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 29.4,
+      "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-1h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2170,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2199,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "e73b91d1077d41da927ecf9318488f00544c5a2b71ccfdb202258d06f2518c6c",
+      "live_long_signals": 6,
+      "live_short_signals": 5,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 3600000,
+        "k_long": 0.5,
+        "k_short": 1.0,
+        "lookback_sessions": 7,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 43.8,
+      "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-1h",
+      "window": "every prefix"
+    },
+    {
+      "bars_compared": 1989,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "341388ca519e2c87e8693594c22464cbc2f83a6256adbc1b45e346caf55b0767",
+      "live_long_signals": 35,
+      "live_short_signals": 35,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 8.3,
+      "source": "proxy BTC/USDT 4h 2025-10-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2159,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "341388ca519e2c87e8693594c22464cbc2f83a6256adbc1b45e346caf55b0767",
+      "live_long_signals": 37,
+      "live_short_signals": 39,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 12.9,
+      "source": "proxy BTC/USDT 4h 2025-10-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": "every prefix"
+    },
+    {
+      "bars_compared": 1989,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "341388ca519e2c87e8693594c22464cbc2f83a6256adbc1b45e346caf55b0767",
+      "live_long_signals": 35,
+      "live_short_signals": 35,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 44.4,
+      "source": "proxy BTC/USDT 4h 2025-10-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2159,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "341388ca519e2c87e8693594c22464cbc2f83a6256adbc1b45e346caf55b0767",
+      "live_long_signals": 37,
+      "live_short_signals": 39,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 78.0,
+      "source": "proxy BTC/USDT 4h 2025-10-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": "every prefix"
+    },
+    {
+      "bars_compared": 1989,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "341388ca519e2c87e8693594c22464cbc2f83a6256adbc1b45e346caf55b0767",
+      "live_long_signals": 27,
+      "live_short_signals": 30,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 5,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 7.8,
+      "source": "proxy BTC/USDT 4h 2025-10-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2159,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "341388ca519e2c87e8693594c22464cbc2f83a6256adbc1b45e346caf55b0767",
+      "live_long_signals": 29,
+      "live_short_signals": 33,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 5,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 12.9,
+      "source": "proxy BTC/USDT 4h 2025-10-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": "every prefix"
+    },
+    {
+      "bars_compared": 1989,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "341388ca519e2c87e8693594c22464cbc2f83a6256adbc1b45e346caf55b0767",
+      "live_long_signals": 27,
+      "live_short_signals": 30,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 5,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 32.1,
+      "source": "proxy BTC/USDT 4h 2025-10-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2159,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2188,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "341388ca519e2c87e8693594c22464cbc2f83a6256adbc1b45e346caf55b0767",
+      "live_long_signals": 29,
+      "live_short_signals": 33,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 5,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 50.9,
+      "source": "proxy BTC/USDT 4h 2025-10-01..2026-10-01",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": "every prefix"
+    },
+    {
+      "bars_compared": 2291,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2490,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "b80faa811b6bed75820361b30b33dd6805b702dafe52b5c0f80febbccd5f1623",
+      "live_long_signals": 38,
+      "live_short_signals": 36,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 8.5,
+      "source": "venue BTC 4h test window with warmup",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2461,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2490,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "b80faa811b6bed75820361b30b33dd6805b702dafe52b5c0f80febbccd5f1623",
+      "live_long_signals": 42,
+      "live_short_signals": 39,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 14.3,
+      "source": "venue BTC 4h test window with warmup",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": "every prefix"
+    },
+    {
+      "bars_compared": 2291,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2490,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "b80faa811b6bed75820361b30b33dd6805b702dafe52b5c0f80febbccd5f1623",
+      "live_long_signals": 38,
+      "live_short_signals": 36,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 35.9,
+      "source": "venue BTC 4h test window with warmup",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2461,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2490,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "b80faa811b6bed75820361b30b33dd6805b702dafe52b5c0f80febbccd5f1623",
+      "live_long_signals": 42,
+      "live_short_signals": 39,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 0.5,
+        "k_short": 0.5,
+        "lookback_sessions": 4,
+        "session_start_hour": 0
+      },
+      "params_label": "seed",
+      "seconds": 59.6,
+      "source": "venue BTC 4h test window with warmup",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": "every prefix"
+    },
+    {
+      "bars_compared": 2291,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2490,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "b80faa811b6bed75820361b30b33dd6805b702dafe52b5c0f80febbccd5f1623",
+      "live_long_signals": 7,
+      "live_short_signals": 6,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 1.0,
+        "k_short": 0.75,
+        "lookback_sessions": 7,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 8.0,
+      "source": "venue BTC 4h test window with warmup",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2461,
+      "batch_mismatches": null,
+      "batched": false,
+      "candles": 2490,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "b80faa811b6bed75820361b30b33dd6805b702dafe52b5c0f80febbccd5f1623",
+      "live_long_signals": 7,
+      "live_short_signals": 6,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 1.0,
+        "k_short": 0.75,
+        "lookback_sessions": 7,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 13.7,
+      "source": "venue BTC 4h test window with warmup",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": "every prefix"
+    },
+    {
+      "bars_compared": 2291,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2490,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "b80faa811b6bed75820361b30b33dd6805b702dafe52b5c0f80febbccd5f1623",
+      "live_long_signals": 7,
+      "live_short_signals": 6,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 1.0,
+        "k_short": 0.75,
+        "lookback_sessions": 7,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 36.2,
+      "source": "venue BTC 4h test window with warmup",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": 200
+    },
+    {
+      "bars_compared": 2461,
+      "batch_mismatches": 0,
+      "batched": true,
+      "candles": 2490,
+      "clean": true,
+      "close_parity": "unverified",
+      "close_refs": [
+        {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 0.03
+              }
+            ]
+          }
+        }
+      ],
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "direction": "both",
+      "input_sha256": "b80faa811b6bed75820361b30b33dd6805b702dafe52b5c0f80febbccd5f1623",
+      "live_long_signals": 7,
+      "live_short_signals": 6,
+      "mismatches": 0,
+      "params": {
+        "expected_interval_ms": 14400000,
+        "k_long": 1.0,
+        "k_short": 0.75,
+        "lookback_sessions": 7,
+        "session_start_hour": 0
+      },
+      "params_label": "selected",
+      "seconds": 59.6,
+      "source": "venue BTC 4h test window with warmup",
+      "stop_kwargs": {
+        "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
+        "leverage": 1.0,
+        "max_drawdown_pct": 0.1,
+        "perps_sizing": {
+          "budget_source": "strategy_cash",
+          "exchange_leverage": 1.0,
+          "margin_mode": "isolated",
+          "margin_per_trade_usd": null,
+          "pool_available_margin": null,
+          "pool_evidence": "verified",
+          "provenance": {
+            "source": "load_strategy_config"
+          },
+          "sizing_leverage": 1.0
+        },
+        "stop_loss_atr_mult": 1.0,
+        "stop_loss_atr_mult_regime": null,
+        "stop_loss_margin_pct": null,
+        "stop_loss_pct": null,
+        "stop_platform": "hyperliquid",
+        "trailing_stop_atr_mult": null,
+        "trailing_stop_atr_mult_regime": null,
+        "trailing_stop_min_move_pct": null,
+        "trailing_stop_pct": null
+      },
+      "strategy_id": "hl-dt-btc-4h",
+      "window": "every prefix"
+    }
+  ],
+  "source_commit": "165c26492bd2c1d26374c5784bfcf6558273b7b0+uncommitted-changes",
+  "venue_manifest_sha256": "8e21fa954d56207fc0a36994a8fa6283f711a9a8e18774844459ca63b52f7bae"
+}

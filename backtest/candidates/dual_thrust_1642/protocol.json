@@ -1,0 +1,199 @@
+{
+  "study": "dual_thrust_1642",
+  "issue": 1642,
+  "tracking_group": "hyperliquid-strategy-candidates-2026-10-02",
+  "status": "frozen before any window was scored; run_study.py lock wrote protocol_lock.json with this file's sha256 before the first score, and run, parity and render refuse a protocol whose sha256 differs from the lock",
+  "candidate": "dual_thrust",
+  "comparators": [
+    "breakout",
+    "session_breakout"
+  ],
+  "registry": "futures",
+  "fee_platform": "hyperliquid",
+  "strategy_type": "perps",
+  "capital_usd": 1000.0,
+  "contract": {
+    "direction": "both",
+    "close_strategies": [
+      {
+        "name": "tiered_tp_pct",
+        "params": {
+          "tp_tiers": [
+            {
+              "profit_pct": 0.03,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      }
+    ],
+    "stop_loss_atr_mult": 1.0,
+    "comparison_mode": "strict"
+  },
+  "contract_note": "Every arm (candidate, both comparators) and every M1 incumbent runs under this one contract: direction both, the single tiered_tp_pct close owner (+3%, full position), the single fixed entry-ATR stop owner (1.0 x ATR), strict close capability checks, the same capital, sizing and execution costs. Incumbents receive it through eval_windows compute_incumbent_legs(contract=...).",
+  "intrabar_resolution": "ohlc_walk",
+  "parameters": {
+    "names": [
+      "lookback_sessions",
+      "k_long",
+      "k_short",
+      "session_start_hour",
+      "expected_interval_ms"
+    ],
+    "seed": {
+      "lookback_sessions": 4,
+      "k_long": 0.5,
+      "k_short": 0.5,
+      "session_start_hour": 0
+    },
+    "bounds": {
+      "lookback_sessions": "integer 1 through 199",
+      "k_long": "finite number strictly above 0 and at most 2",
+      "k_short": "finite number strictly above 0 and at most 2",
+      "session_start_hour": "integer 0 through 23 whose boundary lies on the candle grid",
+      "expected_interval_ms": "positive integer that divides 86400000 exactly; bound per group from the timeframe",
+      "combined": "(lookback_sessions + 1) x (86400000 / expected_interval_ms) <= 200, the default Go and Python check window",
+      "types": "booleans, strings, nulls and non-integral values are refused where an integer is required"
+    },
+    "initialization": "a decision on a bar needs the immediately preceding lookback_sessions complete, consecutive daily sessions and every candle of the current session from its exact opening candle through the decision bar; anything less holds with a reason (insufficient_history or the defect found)",
+    "equality": "a close exactly equal to a threshold emits no entry; entries need a close strictly above anchor + k_long x range or strictly below anchor - k_short x range",
+    "events": "at most one raw entry per side per session, consumed on the first crossing bar whether or not a position, regime or risk rule suppresses it",
+    "groups": {
+      "1h": {
+        "expected_interval_ms": 3600000,
+        "bars_per_session": 24
+      },
+      "4h": {
+        "expected_interval_ms": 14400000,
+        "bars_per_session": 6
+      }
+    },
+    "grid": {
+      "lookback_sessions": [
+        2,
+        3,
+        4,
+        5,
+        7
+      ],
+      "k_long": [
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "k_short": [
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "session_start_hour": [
+        0
+      ]
+    },
+    "grid_order": "itertools.product over the grid keys in the order listed; this order breaks the final selection tie",
+    "grid_exclusions": "every grid point is checked with the registry validator for each group's interval before scoring; a refused point is excluded and listed with the refusal text (none is expected at 1h or 4h: the largest span is (7 + 1) x 24 = 192 bars)",
+    "alternate_boundaries": "session_start_hour values other than 0 are verification cases in the integration tests; they are never scored",
+    "comparator_params": "registry default_params of breakout and session_breakout, frozen; comparators are not tuned"
+  },
+  "proxy": {
+    "inputs": "study_manifest.json: byte-identical copies of the chande_momentum_1661 frozen Binance US 1h and 4h candles and Hyperliquid hourly funding under data/proxy/",
+    "label": "proxy evidence: Binance US spot USDT candles stand in for Hyperliquid perpetual prices; this is not measured Hyperliquid candle evidence",
+    "symbols": [
+      "BTC/USDT",
+      "ETH/USDT",
+      "SOL/USDT"
+    ],
+    "funding_mode": "charge",
+    "funding_note": "eval_windows run_leg with funding_mode charge on every candidate, comparator and incumbent leg, priced from the rebuilt offline cache; a leg holding a position in an hour with neither a rate nor a venue-absent mark is funding_incomplete. Hyperliquid funding starts in May 2023, so 2023 legs that hold positions before the first rate are funding_incomplete.",
+    "windows": {
+      "is": [
+        "2025-06-10",
+        "2026-01-01"
+      ],
+      "oos": [
+        "2026-01-01",
+        "2026-10-01"
+      ],
+      "2023": [
+        "2023-01-01",
+        "2024-01-01"
+      ],
+      "2024": [
+        "2024-01-01",
+        "2025-01-01"
+      ],
+      "2025H1": [
+        "2025-01-01",
+        "2025-06-10"
+      ]
+    },
+    "departures_from_m1_windows": [
+      "oos end pinned at 2026-10-01 (M1 leaves it open)",
+      "2025H1 ends at 2025-06-10 (M1: 2025-07-01) so it cannot overlap the is selection window"
+    ],
+    "selection_window": "is",
+    "primary_window": "oos",
+    "secondary_windows": [
+      "2023",
+      "2024",
+      "2025H1"
+    ],
+    "start_of_window_history": "non-manifest M1 legs load only each window's candles, so the first (lookback_sessions + 1) sessions of every window cannot fire (insufficient_history); the report records the held bars per leg. Comparators and incumbents also start cold at each window.",
+    "cost_model": "the engine's Hyperliquid fee (commission) and default slippage per fill; this legacy M1 screen has no spread replay, lot rounding or minimum order, so it cannot by itself establish venue execution parity"
+  },
+  "venue": {
+    "inputs": "venue_manifest.json: byte-identical copies of the aroon_trend_1643 frozen Hyperliquid 4h candles, hourly funding, venue meta and L2 snapshot under data/venue/",
+    "label": "venue evidence: Hyperliquid mainnet perpetual candles",
+    "interval": "4h",
+    "selection_window": "train",
+    "held_out_window": "test",
+    "warmup": "the manifest warmup_bars (300) precede each window: the evaluator reads them, the engine neither scores nor trades them",
+    "funding": "the manifest's existing funding attachment and coverage semantics (attach_funding_cost); no --funding option applies on this path",
+    "execution": "the manifest execution specification with the explicit close owner: taker and maker fee, per-coin half spread plus slippage, szDecimals lot rounding, the venue minimum notional with its margin",
+    "cost_multipliers": {
+      "base": 1.0,
+      "stress": 2.0
+    },
+    "stress_note": "cost x2 doubles half spread and slippage; fees are unchanged"
+  },
+  "selection_rule": {
+    "who": "candidate only, per group (proxy 1h, proxy 4h, venue 4h), on that group's selection window",
+    "eligible": "every dataset scored; no funding_incomplete leg; no liquidated leg; no funding row fetched while scoring; at least min_training_clusters independent position clusters pooled across the group's datasets; venue only: candle and funding coverage complete",
+    "objective": "highest mean Sharpe across the group's datasets, then highest mean drawdown-adjusted return, then earliest grid order",
+    "no_eligible": "the group verdict is inconclusive; the seed is scored for the record only"
+  },
+  "sample_rules": {
+    "cluster_definition": "positions pooled across a group's datasets, sorted by entry time; overlapping holding spans merge into one independent cluster",
+    "min_training_clusters": 10,
+    "min_held_out_clusters": 30
+  },
+  "verdict_rules": {
+    "proxy_group": {
+      "scorable_window": "a held-out window is scorable when every candidate, comparator and incumbent leg of the group exists and none is funding_incomplete; missing funding is never filled with an assumed zero rate",
+      "checks": {
+        "m1_oos_pass": "contract-aware M1 verdict pass in oos; unknown when oos is unscorable",
+        "m1_secondary_passes": "M1 verdict pass in at least 2 of 2023, 2024, 2025H1; true once 2 scorable passes exist, false once scorable passes plus unscorable secondary windows are below 2, else unknown",
+        "oos_net_positive": "candidate summed oos net PnL > 0; unknown when oos is unscorable",
+        "oos_beats_breakout_sharpe": "candidate oos mean Sharpe > breakout oos mean Sharpe; unknown when oos is unscorable",
+        "oos_beats_session_breakout_sharpe": "candidate oos mean Sharpe > session_breakout oos mean Sharpe; unknown when oos is unscorable"
+      },
+      "order": "no eligible selection -> inconclusive; oos unscorable -> inconclusive; oos candidate clusters < min_held_out_clusters -> inconclusive; any check false -> fail; every check true -> pass; else inconclusive"
+    },
+    "venue_group": {
+      "evidence_complete": "provenance kind venue, candle and funding coverage complete, and no funding_incomplete candidate, comparator or incumbent leg at either cost multiplier",
+      "checks": {
+        "net_positive_x1": "candidate summed test net PnL > 0 at cost x1",
+        "net_positive_x2": "candidate summed test net PnL > 0 at cost x2",
+        "m1_test_pass_x1": "contract-aware M1 verdict pass on test at cost x1",
+        "beats_breakout_sharpe_x1": "candidate mean Sharpe > breakout at cost x1",
+        "beats_session_breakout_sharpe_x1": "candidate mean Sharpe > session_breakout at cost x1"
+      },
+      "order": "evidence incomplete -> inconclusive; no eligible selection -> inconclusive; test candidate clusters at x1 < min_held_out_clusters -> inconclusive; any check false -> fail; every check true -> pass"
+    },
+    "overall": "pass only if proxy 1h, proxy 4h and venue 4h all pass; fail if any group is fail; otherwise inconclusive",
+    "metadata": "edge_status stays no_edge after every outcome; pass keeps edge_source unvalidated, fail records study_fail, inconclusive records study_inconclusive; no outcome approves deployment or adds allow_no_edge"
+  },
+  "reporting": "every training variant and exclusion per group, the held-out metrics of every variant as a diagnostic that never changes the selection, net results, drawdown, turnover, symbol and side concentration, independent position clusters, neighbouring-grid stability, funding coverage and provenance, the exact data venue, source and funding hashes, fees, spread, slippage, rounding, minimums, capital, leverage, sizing and stop assumptions, and a per-entry audit of the evaluated inputs and indicator values"
+}

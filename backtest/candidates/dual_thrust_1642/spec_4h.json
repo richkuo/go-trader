@@ -1,0 +1,27 @@
+{
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "close_fraction": 1.0,
+            "profit_pct": 0.03
+          }
+        ]
+      }
+    }
+  ],
+  "comparison_mode": "strict",
+  "direction": "both",
+  "name": "dual_thrust",
+  "params": {
+    "expected_interval_ms": 14400000,
+    "k_long": 0.5,
+    "k_short": 0.5,
+    "lookback_sessions": 4,
+    "session_start_hour": 0
+  },
+  "stop_loss_atr_mult": 1.0,
+  "type": "perps"
+}

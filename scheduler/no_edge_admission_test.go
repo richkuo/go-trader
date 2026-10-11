@@ -1537,3 +1537,296 @@ func TestChandeMomentumStudyParityConfigsStillLoad(t *testing.T) {
 		})
 	}
 }
+
+func TestDualThrustAdmissionMatrixThroughRealLoaders(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	const dt = "dual_thrust"
+	ack := func(sc map[string]interface{}, v interface{}) map[string]interface{} {
+		sc["allow_no_edge"] = v
+		return sc
+	}
+	withClose := func(sc map[string]interface{}, name string) map[string]interface{} {
+		sc["close_strategy"] = map[string]interface{}{"name": name}
+		return sc
+	}
+	cases := []struct {
+		name      string
+		sc        map[string]interface{}
+		wantErr   []string
+		wantScope PortfolioScope
+	}{
+		{"paper equals form", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper"), nil, ScopePaper},
+		{"paper space form", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode", "paper"), nil, ScopePaper},
+		{"live refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"),
+			[]string{`open strategy "dual_thrust"`, "source study_fail", "backtest/candidates/dual_thrust_1642/REPORT.md", "explicit live mode", `"allow_no_edge": true`}, ""},
+		{"live acknowledged", ack(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"), true), nil, ScopeLive},
+		{"explicit false refused", ack(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"), false), []string{"explicit live mode"}, ""},
+		{"missing mode refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h"), []string{`open strategy "dual_thrust"`, "missing --mode"}, ""},
+		{"missing mode acknowledged keeps paper scope", ack(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h"), true), nil, ScopePaper},
+		{"repeated mode refused even acknowledged", ack(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper", "--mode=paper"), true), []string{"invalid mode", "given 2 times"}, ""},
+		{"conflicting mode refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper", "--mode", "live"), []string{"invalid mode", "given 2 times"}, ""},
+		{"dangling mode refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode"), []string{"invalid mode", "dangling --mode"}, ""},
+		{"unknown mode refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=Paper"), []string{"invalid mode", `"Paper"`}, ""},
+		{"close fallback paper", withClose(noEdgeHLStrategy("hl-dt", "breakout", "ETH", "1h", "--mode=paper"), dt), nil, ScopePaper},
+		{"close fallback live refused", withClose(noEdgeHLStrategy("hl-dt", "breakout", "ETH", "1h", "--mode=live"), dt),
+			[]string{`close strategy "dual_thrust"`, "source study_fail", "explicit live mode"}, ""},
+		{"close fallback missing mode refused", withClose(noEdgeHLStrategy("hl-dt", "breakout", "ETH", "1h"), dt),
+			[]string{`close strategy "dual_thrust"`, "missing --mode"}, ""},
+		{"close fallback acknowledged", ack(withClose(noEdgeHLStrategy("hl-dt", "breakout", "ETH", "1h", "--mode=live"), dt), true), nil, ScopeLive},
+		{"open with native close live refused", withClose(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"), "tiered_tp_pct"),
+			[]string{`open strategy "dual_thrust"`, "explicit live mode"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeNoEdgeConfig(t, CurrentConfigVersion, tc.sc)
+			original, _ := os.ReadFile(path)
+			cfg, loadErr := LoadConfig(path)
+			_, probeErr := LoadConfigForProbe(path)
+			_, readErr := LoadConfigReadOnly(path)
+			for loader, err := range map[string]error{"load": loadErr, "probe": probeErr, "readonly": readErr} {
+				if (err == nil) != (len(tc.wantErr) == 0) {
+					t.Fatalf("%s: err=%v, want refusal %v", loader, err, tc.wantErr)
+				}
+				for _, want := range tc.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("%s: error missing %q: %v", loader, want, err)
+					}
+				}
+			}
+			if len(tc.wantErr) > 0 {
+				if after, _ := os.ReadFile(path); !bytes.Equal(original, after) {
+					t.Fatal("a refused config must stay byte-identical")
+				}
+				return
+			}
+			got := cfg.Strategies[0]
+			if scope := portfolioScopeFor(got); scope != tc.wantScope {
+				t.Fatalf("portfolio scope = %q, want %q", scope, tc.wantScope)
+			}
+			if _, gated := noEdgeEvidenceFor(dt); !gated {
+				t.Fatal("dual_thrust must stay a no-edge name")
+			}
+		})
+	}
+	for _, v := range []interface{}{"true", 1, "yes"} {
+		sc := noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live")
+		sc["allow_no_edge"] = v
+		if cfg, err := LoadConfig(writeNoEdgeConfig(t, CurrentConfigVersion, sc)); err == nil {
+			t.Fatalf("allow_no_edge=%#v loaded (ack=%v); a non-boolean must never grant live admission", v, cfg.Strategies[0].AllowNoEdgeAcknowledged())
+		}
+	}
+}
+
+func TestDualThrustIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	const dt = "dual_thrust"
+	withOpenParams := func(sc map[string]interface{}, params map[string]interface{}) map[string]interface{} {
+		sc["open_strategy"] = map[string]interface{}{"name": dt, "params": params}
+		return sc
+	}
+	withClose := func(sc map[string]interface{}) map[string]interface{} {
+		sc["close_strategy"] = map[string]interface{}{"name": dt}
+		return sc
+	}
+	manual := map[string]interface{}{
+		"id": "hl-dt-manual", "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "timeframe": "4h",
+		"leverage": 1.0, "capital": 100.0, "allow_no_edge": true, "close_strategy": map[string]interface{}{"name": dt},
+	}
+	cases := []struct {
+		name    string
+		sc      map[string]interface{}
+		wantErr string
+		wantRef string
+	}{
+		{"hourly registry default loads", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper"), "", ""},
+		{"4h registry default refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "4h", "--mode=paper"),
+			`open strategy "dual_thrust": registry default expected_interval_ms=3600000 does not match timeframe 4h (14400000 ms)`, ""},
+		{"4h explicit match loads", withOpenParams(noEdgeHLStrategy("hl-dt", dt, "ETH", "4h", "--mode=paper"),
+			map[string]interface{}{"expected_interval_ms": 14400000, "lookback_sessions": 4}), "", `"expected_interval_ms":14400000`},
+		{"hourly explicit 4h value refused", withOpenParams(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper"),
+			map[string]interface{}{"expected_interval_ms": 14400000}), "explicit expected_interval_ms=14400000 does not match timeframe 1h (3600000 ms)", ""},
+		{"4h close fallback default refused", withClose(noEdgeHLStrategy("hl-dt", "breakout", "ETH", "4h", "--mode=paper")),
+			`close strategy "dual_thrust": registry default expected_interval_ms=3600000 does not match timeframe 4h`, ""},
+		{"hl manual 4h default refused", manual, `strategy hl-dt-manual: close strategy "dual_thrust"`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeNoEdgeConfig(t, CurrentConfigVersion, tc.sc)
+			cfg, loadErr := LoadConfig(path)
+			_, readErr := LoadConfigReadOnly(path)
+			for loader, err := range map[string]error{"load": loadErr, "readonly": readErr} {
+				if (err == nil) != (tc.wantErr == "") {
+					t.Fatalf("%s: err=%v, want refusal %q", loader, err, tc.wantErr)
+				}
+				if err != nil && !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("%s: error missing %q: %v", loader, tc.wantErr, err)
+				}
+			}
+			if tc.wantErr != "" {
+				return
+			}
+			if portfolioScopeFor(cfg.Strategies[0]) != ScopePaper {
+				t.Fatalf("scope = %q, want paper", portfolioScopeFor(cfg.Strategies[0]))
+			}
+			if tc.wantRef != "" {
+				args, err := buildStrategyRefsArg(cfg.Strategies[0], "", false)
+				if err != nil || len(args) != 2 || !strings.Contains(args[1], tc.wantRef) {
+					t.Fatalf("strategy refs = %v, %v; want %s", args, err, tc.wantRef)
+				}
+			}
+		})
+	}
+}
+
+func dualThrustLegacyFixture() []map[string]interface{} {
+	openLive := noEdgeHLStrategy("hl-dt-open", "dual_thrust", "BTC", "1h", "--mode=live")
+	openLive["allow_deprecated"] = true
+	closeOnly := noEdgeHLStrategy("hl-dt-close", "breakout", "ETH", "1h", "--mode", "live")
+	closeOnly["close_strategy"] = map[string]interface{}{"name": "dual_thrust"}
+	mixed := noEdgeHLStrategy("hl-dt-mixed", "rsi", "SOL", "1h", "--mode=live")
+	mixed["close_strategy"] = map[string]interface{}{"name": "dual_thrust"}
+	explicitFalse := noEdgeHLStrategy("hl-dt-false", "dual_thrust", "AVAX", "1h", "--mode=live")
+	explicitFalse["allow_no_edge"] = false
+	preAck := noEdgeHLStrategy("hl-dt-ack", "dual_thrust", "LINK", "1h", "--mode=live")
+	preAck["allow_no_edge"] = true
+	return []map[string]interface{}{
+		openLive,
+		closeOnly,
+		mixed,
+		explicitFalse,
+		preAck,
+		noEdgeHLStrategy("hl-dt-paper", "dual_thrust", "XRP", "1h", "--mode=paper"),
+		noEdgeHLStrategy("hl-control", "macd", "BTC", "4h", "--mode=live"),
+	}
+}
+
+func TestV20NoEdgeMigrationNeverGrantsDualThrust(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	if _, eligible := v20StampEligibleStrategies["dual_thrust"]; eligible {
+		t.Fatal("dual_thrust must never be v20 stamp-eligible")
+	}
+	refusedIDs := []string{"hl-dt-close", "hl-dt-false", "hl-dt-mixed", "hl-dt-open"}
+	for _, version := range []int{0, 19} {
+		t.Run(map[int]string{0: "versionless", 19: "v19"}[version], func(t *testing.T) {
+			path := writeNoEdgeConfig(t, version, dualThrustLegacyFixture()...)
+			original, _ := os.ReadFile(path)
+			if cfg, err := LoadConfigReadOnly(path); err == nil {
+				for _, sc := range cfg.Strategies {
+					if slices.Contains(refusedIDs, sc.ID) && sc.AllowNoEdgeAcknowledged() {
+						t.Fatalf("readonly: %s gained an in-memory acknowledgement", sc.ID)
+					}
+				}
+			}
+			if after, _ := os.ReadFile(path); !bytes.Equal(original, after) {
+				t.Fatal("the read-only loader changed source bytes")
+			}
+			_, err := LoadConfig(path)
+			if err == nil {
+				t.Fatal("unacknowledged live dual_thrust references must stay refused after migration")
+			}
+			for _, id := range refusedIDs {
+				if !strings.Contains(err.Error(), "strategy "+id+":") {
+					t.Fatalf("%s should be refused after migration: %v", id, err)
+				}
+			}
+			for _, id := range []string{"hl-dt-ack", "hl-dt-paper", "hl-control"} {
+				if strings.Contains(err.Error(), "strategy "+id+":") {
+					t.Fatalf("%s should be admitted: %v", id, err)
+				}
+			}
+			raw := rawStrategiesByID(t, path)
+			for _, id := range []string{"hl-dt-open", "hl-dt-close", "hl-dt-mixed", "hl-dt-paper"} {
+				if v, has := raw[id]["allow_no_edge"]; has {
+					t.Fatalf("%s gained allow_no_edge=%v from the legacy migration", id, v)
+				}
+			}
+			if raw["hl-dt-false"]["allow_no_edge"] != false || raw["hl-dt-ack"]["allow_no_edge"] != true {
+				t.Fatal("existing explicit acknowledgement values must be preserved")
+			}
+			if raw["hl-control"]["allow_no_edge"] != true {
+				t.Fatal("the legacy migration did not run: the non-candidate control was not stamped")
+			}
+		})
+	}
+	raw := map[string]interface{}{"strategies": []interface{}{}}
+	for _, sc := range dualThrustLegacyFixture() {
+		blob, _ := json.Marshal(sc)
+		var generic map[string]interface{}
+		_ = json.Unmarshal(blob, &generic)
+		raw["strategies"] = append(raw["strategies"].([]interface{}), generic)
+	}
+	report, err := migrateV20NoEdge(raw, 19)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stampedIDs(report); !reflect.DeepEqual(got, []string{"hl-control"}) {
+		t.Fatalf("stamped = %v, want only the non-candidate control", got)
+	}
+	if want := []string{"hl-dt-close", "hl-dt-mixed", "hl-dt-open"}; !reflect.DeepEqual(report.VetoedResearch, want) {
+		t.Fatalf("vetoed = %v, want %v", report.VetoedResearch, want)
+	}
+}
+
+func TestDualThrustOperatorAddCreatesBothDirectionHourlyPaperEntry(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	id, entry, err := buildAddStrategyEntry("dual_thrust", "hyperliquid", "eth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "hl-dt-eth" {
+		t.Fatalf("id = %q, want hl-dt-eth", id)
+	}
+	var sc map[string]interface{}
+	if err := json.Unmarshal(entry, &sc); err != nil {
+		t.Fatal(err)
+	}
+	if sc["direction"] != DirectionBoth {
+		t.Fatalf("direction = %v, want %q", sc["direction"], DirectionBoth)
+	}
+	if _, has := sc["allow_no_edge"]; has {
+		t.Fatal("operator add must not acknowledge no-edge live use")
+	}
+	args, _ := sc["args"].([]interface{})
+	if !reflect.DeepEqual(args, []interface{}{"dual_thrust", "ETH", "1h", "--mode=paper"}) {
+		t.Fatalf("args = %v, want the 1h explicit-paper positional form", args)
+	}
+	cfg, err := LoadConfig(writeNoEdgeConfigRoot(t, CurrentConfigVersion, map[string]interface{}{"market_feed": "websocket"}, sc))
+	if err != nil {
+		t.Fatalf("operator-added dual_thrust must load as paper without acknowledgement: %v", err)
+	}
+	got := cfg.Strategies[0]
+	if portfolioScopeFor(got) != ScopePaper || edgeGateModeForStrategy(got).Kind != edgeGateModePaper || got.AllowNoEdgeAcknowledged() {
+		t.Fatalf("operator-added entry is not explicit unacknowledged paper: scope=%q", portfolioScopeFor(got))
+	}
+	if _, _, err := buildAddStrategyEntry("dual_thrust", "binanceus", "ETH"); err == nil {
+		t.Fatal("spot add must refuse the futures-only dual_thrust")
+	}
+}
+
+func TestDualThrustStudyParityConfigsStillLoad(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	for timeframe, want := range map[string]string{"1h": `"expected_interval_ms":3600000`, "4h": `"expected_interval_ms":14400000`} {
+		t.Run(timeframe, func(t *testing.T) {
+			src, err := os.ReadFile(filepath.Join("..", "backtest", "candidates", "dual_thrust_1642", "paper_parity_"+timeframe+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, src, 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("study parity config refused: %v", err)
+			}
+			got := cfg.Strategies[0]
+			if portfolioScopeFor(got) != ScopePaper || got.AllowNoEdgeAcknowledged() {
+				t.Fatalf("study parity config must be unacknowledged paper: scope=%q", portfolioScopeFor(got))
+			}
+			args, err := buildStrategyRefsArg(got, "", false)
+			if err != nil || len(args) != 2 || !strings.Contains(args[1], want) {
+				t.Fatalf("strategy refs = %v, %v; want %s", args, err, want)
+			}
+		})
+	}
+}

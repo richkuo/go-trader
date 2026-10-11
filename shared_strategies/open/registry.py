@@ -52,6 +52,7 @@ from vortex_trend import vortex_trend_core
 from relative_vigor_index import relative_vigor_index_core
 from awesome_oscillator import awesome_oscillator_core
 from chande_momentum import chande_momentum_core
+from dual_thrust import dual_thrust_core, validate_dual_thrust_param_dict
 from on_balance_volume import on_balance_volume_divergence_core
 from williams_r import williams_r_param_validator, williams_r_reversal_core
 from money_flow_index import money_flow_index_reversal_core
@@ -1765,6 +1766,38 @@ def chande_momentum_strategy(df: pd.DataFrame, period: int = 20, threshold: floa
 
 
 @register(
+    "dual_thrust",
+    "RESEARCH, no-edge (#1642) \u2014 Dual Thrust session breakout: at each UTC session boundary (session_start_hour) it freezes range = max(HH - LC, HC - LL) over the immediately preceding lookback_sessions complete daily sessions (highest high, lowest daily close, highest daily close, lowest low) and anchors on the current session's opening candle open; long on the first closed bar strictly above anchor + k_long x range, short on the first closed bar strictly below anchor - k_short x range, at most one raw signal per side per session, reconstructed from the supplied closed bars each evaluation. Every candle of the prior sessions and of the current session through the decision bar must be present, on the expected_interval_ms grid and well formed, else the entry holds with a reason; (lookback_sessions + 1) sessions must fit the 200-bar check window. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"lookback_sessions": 4, "k_long": 0.5, "k_short": 0.5, "session_start_hour": 0,
+     "expected_interval_ms": 3600000},
+    platforms=("futures",),
+    constraints=[
+        "lookback_sessions >= 1",
+        "lookback_sessions <= 199",
+        "k_long > 0",
+        "k_long <= 2",
+        "k_short > 0",
+        "k_short <= 2",
+        "session_start_hour >= 0",
+        "session_start_hour <= 23",
+        "expected_interval_ms >= 1",
+        "expected_interval_ms <= 86400000",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/dual_thrust_1642/REPORT.md",
+    short_entries=True,
+    param_validator=validate_dual_thrust_param_dict,
+)
+def dual_thrust_strategy(df: pd.DataFrame, lookback_sessions: int = 4, k_long: float = 0.5,
+                         k_short: float = 0.5, session_start_hour: int = 0,
+                         expected_interval_ms: int = 3600000) -> pd.DataFrame:
+    return dual_thrust_core(df, lookback_sessions=lookback_sessions, k_long=k_long, k_short=k_short,
+                            session_start_hour=session_start_hour,
+                            expected_interval_ms=expected_interval_ms)
+
+
+@register(
     "williams_r_reversal",
     "RESEARCH, no-edge (#1650) \u2014 Williams %R reversal: %R = -100 x (highest high - close) / (highest high - lowest low) over the lookback bars ending at the decision bar; long when the previous %R is at or below oversold and the current %R is strictly above it, short when the previous %R is at or above overbought and the current %R is strictly below it. Needs lookback + 1 valid consecutive candles; any bad candle, timestamp defect or zero-range window holds. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"lookback": 14, "oversold": -80.0, "overbought": -20.0},
@@ -2216,6 +2249,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "ease_of_movement_breakout",
         "fisher_reversal",
         "ultimate_oscillator",
+        "dual_thrust",
         "hold",
     ],
 }
