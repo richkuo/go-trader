@@ -267,6 +267,8 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	mixed["close_strategy"] = map[string]interface{}{"name": "vortex_trend"}
 	allowedOpenRefusedClose := noEdgeHLStrategy("hl-bo-cci", "breakout", "BTC", "1h", "--mode=live")
 	allowedOpenRefusedClose["close_strategy"] = map[string]interface{}{"name": "commodity_channel_trend"}
+	wrrClose := noEdgeHLStrategy("hl-wrr-close", "breakout", "ETH", "1h", "--mode=live")
+	wrrClose["close_strategy"] = map[string]interface{}{"name": "williams_r_reversal"}
 	explicitFalse := noEdgeHLStrategy("hl-false", "rsi", "SOL", "1h", "--mode=live")
 	explicitFalse["allow_no_edge"] = false
 	explicitFalse["allow_deprecated"] = true
@@ -274,6 +276,8 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 		mixed,
 		allowedOpenRefusedClose,
 		noEdgeHLStrategy("hl-ao", "awesome_oscillator", "ETH", "4h", "--mode=live"),
+		noEdgeHLStrategy("hl-wrr", "williams_r_reversal", "BTC", "4h", "--mode=live"),
+		wrrClose,
 		noEdgeHLStrategy("hl-missing", "rsi", "DOGE", "1h"),
 		noEdgeHLStrategy("hl-invalid", "rsi", "LINK", "1h", "--mode=live", "--mode=live"),
 		explicitFalse,
@@ -282,7 +286,7 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	if err == nil {
 		t.Fatal("refused references must stay refused after migration")
 	}
-	for _, id := range []string{"hl-mix", "hl-bo-cci", "hl-ao", "hl-missing", "hl-invalid", "hl-false"} {
+	for _, id := range []string{"hl-mix", "hl-bo-cci", "hl-ao", "hl-wrr", "hl-wrr-close", "hl-missing", "hl-invalid", "hl-false"} {
 		if !strings.Contains(err.Error(), "strategy "+id+":") {
 			t.Fatalf("%s should be refused after migration: %v", id, err)
 		}

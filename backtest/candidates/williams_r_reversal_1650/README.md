@@ -107,6 +107,9 @@ simulator.
   `study_fail`, pointing at `REPORT.md`. The registry started at `unvalidated`
   and moved to `study_fail` after the frozen verdict; a pass would have kept
   `unvalidated`. Every outcome keeps `edge_status="no_edge"`.
+- The name is in `v20FormerResearchStrategies` (`scheduler/config_migration_v20.go`),
+  so the legacy v20 no-edge migration vetoes a legacy explicit-live config that
+  names it and never stamps `allow_no_edge: true` on it.
 - `discovery_before.json` and `discovery_after.json` hold the spot and futures
   `--list-json` output before and after the change; they are byte-identical.
   `research_registry_diff.txt` holds the only research-registry difference,

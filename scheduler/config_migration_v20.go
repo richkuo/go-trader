@@ -18,6 +18,7 @@ var v20FormerResearchStrategies = map[string]struct{}{
 	"open_interest_breakout":      {},
 	"relative_vigor_index":        {},
 	"vortex_trend":                {},
+	"williams_r_reversal":         {},
 }
 
 type noEdgeStampedStrategy struct {
