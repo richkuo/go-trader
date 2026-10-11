@@ -1,0 +1,23 @@
+{
+  "direction": "both",
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "profit_pct": 0.03,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict",
+  "name": "aroon_trend",
+  "params": {
+    "period": 50,
+    "strength": 85.0
+  }
+}

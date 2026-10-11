@@ -638,3 +638,123 @@ func TestNoEdgeBatchSlotCarriesRawModeEvidenceAndAcknowledgement(t *testing.T) {
 		t.Fatal("acknowledgement must be part of the slot fingerprint")
 	}
 }
+
+func aroonStudyStrategy(id string, params map[string]interface{}, modeArgs ...string) map[string]interface{} {
+	sc := noEdgeHLStrategy(id, append([]string{"aroon_trend", "BTC", "4h"}, modeArgs...)...)
+	delete(sc, "stop_loss_pct")
+	sc["direction"] = DirectionBoth
+	sc["stop_loss_atr_mult"] = 1.0
+	sc["open_strategy"] = map[string]interface{}{"name": "aroon_trend", "params": params}
+	sc["close_strategy"] = map[string]interface{}{
+		"name":   "tiered_tp_pct",
+		"params": map[string]interface{}{"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 0.03, "close_fraction": 1.0}}},
+	}
+	return sc
+}
+
+func TestAroonTrendAddAdmissionAndParamPreflightThroughRealLoaders(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	id, entry, err := buildAddStrategyEntry("aroon_trend", "hyperliquid", "BTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "hl-aroon-btc" {
+		t.Fatalf("generated id = %q, want hl-aroon-btc", id)
+	}
+	owners := 0
+	for name, short := range knownShortNames {
+		if short == "aroon" {
+			owners++
+			if name != "aroon_trend" {
+				t.Fatalf("short name aroon also owned by %s", name)
+			}
+		}
+	}
+	if owners != 1 {
+		t.Fatalf("short name aroon owners = %d", owners)
+	}
+	if _, _, err := buildAddStrategyEntry("aroon_trend", "binanceus", "BTC"); err == nil {
+		t.Fatal("aroon_trend is futures-only but binanceus add accepted it")
+	}
+	var added map[string]interface{}
+	if err := json.Unmarshal(entry, &added); err != nil {
+		t.Fatal(err)
+	}
+	path := writeNoEdgeConfig(t, CurrentConfigVersion, added)
+	cfg, loadErr := LoadConfig(path)
+	if _, probeErr := LoadConfigForProbe(path); loadErr != nil || probeErr != nil {
+		t.Fatalf("generated entry must load: load=%v probe=%v", loadErr, probeErr)
+	}
+	got := cfg.Strategies[0]
+	if got.Direction != DirectionBoth || portfolioScopeFor(got) != ScopePaper || edgeGateModeForStrategy(got).Kind != edgeGateModePaper || got.AllowNoEdgeAcknowledged() {
+		t.Fatalf("generated entry direction=%q scope=%q gate=%q ack=%v", got.Direction, portfolioScopeFor(got), edgeGateModeForStrategy(got).Kind, got.AllowNoEdgeAcknowledged())
+	}
+	if tag := edgeStatusSummaryTag(got); tag != "edge=no_edge:study_inconclusive(paper)" {
+		t.Fatalf("summary tag = %q", tag)
+	}
+
+	seed := map[string]interface{}{"period": 25.0, "strength": 70.0}
+	study := aroonStudyStrategy("hl-aroon-study", seed, "--mode=paper")
+	cfg, err = LoadConfig(writeNoEdgeConfig(t, CurrentConfigVersion, study))
+	if err != nil {
+		t.Fatalf("study config must load: %v", err)
+	}
+	if sc := cfg.Strategies[0]; sc.CloseStrategy == nil || sc.CloseStrategy.Name != "tiered_tp_pct" || sc.StopLossATRMult == nil || *sc.StopLossATRMult != 1.0 {
+		t.Fatalf("study close/stop owners = %+v / %v", sc.CloseStrategy, sc.StopLossATRMult)
+	}
+
+	ack := func(sc map[string]interface{}) map[string]interface{} {
+		sc["allow_no_edge"] = true
+		return sc
+	}
+	fallback := func(params map[string]interface{}) map[string]interface{} {
+		sc := noEdgeHLStrategy("hl-aroon-fb", "breakout", "BTC", "4h", "--mode=paper")
+		sc["close_strategy"] = map[string]interface{}{"name": "aroon_trend", "params": params}
+		return sc
+	}
+	legacyArgs := aroonStudyStrategy("hl-aroon-legacy", seed, "--mode=paper")
+	legacyArgs["args"] = []string{"aroon_trend", "BTC", "4h", "--mode=paper", "--params", `{"period":true}`}
+	cases := []struct {
+		name    string
+		sc      map[string]interface{}
+		wantErr []string
+	}{
+		{"live refused without acknowledgement", aroonStudyStrategy("hl-a", seed, "--mode=live"), []string{`open strategy "aroon_trend"`, "source study_inconclusive", "backtest/candidates/aroon_trend_1643/REPORT.md", "explicit live mode"}},
+		{"live acknowledged", ack(aroonStudyStrategy("hl-a", seed, "--mode=live")), nil},
+		{"missing mode refused", aroonStudyStrategy("hl-a", seed), []string{"missing --mode"}},
+		{"boundary low", aroonStudyStrategy("hl-a", map[string]interface{}{"period": 2.0, "strength": 0.0}, "--mode=paper"), nil},
+		{"boundary high", aroonStudyStrategy("hl-a", map[string]interface{}{"period": 198.0, "strength": 100.0}, "--mode=paper"), nil},
+		{"period below range", aroonStudyStrategy("hl-a", map[string]interface{}{"period": 1.0}, "--mode=paper"), []string{"open strategy aroon_trend params", "period must be in [2, 198]"}},
+		{"period above range", aroonStudyStrategy("hl-a", map[string]interface{}{"period": 199.0}, "--mode=paper"), []string{"period must be in [2, 198]"}},
+		{"fractional period", aroonStudyStrategy("hl-a", map[string]interface{}{"period": 2.5}, "--mode=paper"), []string{"period must be an integer"}},
+		{"boolean period", aroonStudyStrategy("hl-a", map[string]interface{}{"period": true}, "--mode=paper"), []string{"period must be a number"}},
+		{"string period", aroonStudyStrategy("hl-a", map[string]interface{}{"period": "25"}, "--mode=paper"), []string{"period must be a number"}},
+		{"null strength", aroonStudyStrategy("hl-a", map[string]interface{}{"strength": nil}, "--mode=paper"), []string{"strength must be a number"}},
+		{"strength above range", aroonStudyStrategy("hl-a", map[string]interface{}{"strength": 100.5}, "--mode=paper"), []string{"strength must be finite and in [0, 100]"}},
+		{"negative strength", aroonStudyStrategy("hl-a", map[string]interface{}{"strength": -1.0}, "--mode=paper"), []string{"strength must be finite"}},
+		{"close fallback params checked", fallback(map[string]interface{}{"period": 0.0}), []string{"close strategy aroon_trend params", "period must be in"}},
+		{"close fallback valid", fallback(map[string]interface{}{"period": 14.0}), nil},
+		{"ignored legacy params are not active inputs", legacyArgs, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeNoEdgeConfig(t, CurrentConfigVersion, tc.sc)
+			_, loadErr := LoadConfig(path)
+			_, probeErr := LoadConfigForProbe(path)
+			if len(tc.wantErr) == 0 {
+				if loadErr != nil || probeErr != nil {
+					t.Fatalf("unexpected refusal: load=%v probe=%v", loadErr, probeErr)
+				}
+				return
+			}
+			if loadErr == nil || probeErr == nil {
+				t.Fatalf("expected refusal containing %q: load=%v probe=%v", tc.wantErr, loadErr, probeErr)
+			}
+			for _, want := range tc.wantErr {
+				if !strings.Contains(loadErr.Error(), want) || !strings.Contains(probeErr.Error(), want) {
+					t.Fatalf("errors missing %q:\nload:  %v\nprobe: %v", want, loadErr, probeErr)
+				}
+			}
+		})
+	}
+}

@@ -141,12 +141,14 @@ def _signal_check_deps():
     apply_strategy = _strategies.apply_strategy
     get_strategy = _strategies.get_strategy
     list_strategies = _strategies.list_strategies
+    preflight_strategy_params = _strategies._registry.preflight_strategy_params
     from close_registry_loader import (
         evaluate as close_evaluate,
         get_strategy as get_close_strategy,
         list_strategies as list_close_strategies,
     )
     from strategy_composition import (
+        canonical_close_name,
         evaluate_open_close,
         finalize_decision,
         normalize_signal,
@@ -172,6 +174,8 @@ def _signal_check_deps():
         admit_configured_strategies=admit_configured_strategies,
         parse_allow_no_edge_value=parse_allow_no_edge_value,
         parse_raw_gate_mode=parse_raw_gate_mode,
+        preflight_strategy_params=preflight_strategy_params,
+        canonical_close_name=canonical_close_name,
     )
 
 
@@ -284,6 +288,23 @@ def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_stra
         deps.list_strategies,
         deps.list_close_strategies,
     )
+
+
+def _preflight_slot_params(deps, strategy_name, open_strategy, close_strategies, params,
+                           close_params_by_name):
+    open_name = (open_strategy or strategy_name or "").strip()
+    deps.preflight_strategy_params(open_name, params)
+    for name in deps.parse_close_strategies(close_strategies):
+        resolved = deps.canonical_close_name(name)
+        if close_params_by_name and name in close_params_by_name:
+            close_params = close_params_by_name[name]
+        elif close_params_by_name and resolved in close_params_by_name:
+            close_params = close_params_by_name[resolved]
+        elif resolved == open_name:
+            close_params = params
+        else:
+            close_params = None
+        deps.preflight_strategy_params(resolved, close_params)
 
 
 def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
@@ -771,6 +792,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     invert_open_signal = deps.parse_invert_open_signal(slot.get("invert_open_signal")) if invert_present else False
 
     _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission)
+    _preflight_slot_params(deps, strategy_name, open_strategy, close_strategies,
+                           strategy_params_override, close_params_by_name)
     resting_request = parse_resting_rule_request(slot.get("resting_tp_rule"))
     if resting_request is not None:
         refusal = _resting_rule_refusal(mode, deps.parse_close_strategies(close_strategies))
@@ -1020,6 +1043,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         from strategy_composition import parse_allow_no_edge_tokens
         admission = (deps.parse_raw_gate_mode(mode_args), parse_allow_no_edge_tokens(mode_args))
         _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission)
+        _preflight_slot_params(deps, strategy_name, open_strategy, close_strategies,
+                               strategy_params_override, close_params_by_name)
 
         adapter = None
         if market is None:

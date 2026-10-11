@@ -177,3 +177,103 @@ def test_malformed_batch_evidence_rejects_the_payload_before_evaluation(bad):
     assert payload["error_scope"] == "shared_state"
     assert payload["results"] == []
     assert payload["error"].startswith("invalid batch payload")
+
+
+AROON = ["aroon_trend", "BTC", "4h"]
+AROON_TP = {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}
+
+
+def _aroon_refs(params=None, closes=(AROON_TP,)):
+    refs = {"open": {"name": "aroon_trend", "params": params or {"period": 25, "strength": 70.0}},
+            "closes": list(closes)}
+    return ["--strategy-refs", json.dumps(refs)]
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_aroon_solo_check_refuses_outside_explicit_paper(extra, reason):
+    proc = _run("check_hyperliquid.py", AROON + extra + _aroon_refs())
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert "open strategy 'aroon_trend' is edge_status=no_edge" in payload["error"]
+    assert "backtest/candidates/aroon_trend_1643/REPORT.md" in payload["error"]
+    assert reason in payload["error"]
+
+
+@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],
+                                   ["--allow-no-edge"]])
+def test_aroon_paper_or_acknowledged_solo_check_runs_offline(extra):
+    proc = _run("check_hyperliquid.py", AROON + ["--market-stdin"] + extra + _aroon_refs(), _solo_envelope())
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = _payload(proc)
+    assert out["strategy"] == "aroon_trend" and not out.get("error")
+    assert out["close_strategies"] == ["tiered_tp_pct"]
+    assert out["indicators"]["aroon_valid"] == 1.0
+    assert out["indicators"]["aroon_reason_code"] in (-1, 0, 1, 2)
+
+
+@pytest.mark.parametrize("params,needle", [
+    ({"period": True}, "period"),
+    ({"period": 2.5}, "period must be an integer"),
+    ({"period": 1}, "period"),
+    ({"period": 199}, "period"),
+    ({"period": "25"}, "period"),
+    ({"strength": None}, "strength must be a number"),
+    ({"strength": 100.5}, "strength"),
+    ({"strength": "70"}, "strength must be a number"),
+])
+def test_aroon_invalid_parameters_are_refused_before_any_market_fetch(params, needle):
+    proc = _run("check_hyperliquid.py", AROON + ["--mode=paper"] + _aroon_refs(params))
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert needle in payload["error"]
+    assert "Fetching" not in proc.stderr
+
+
+def test_aroon_close_fallback_is_gated_and_its_parameters_are_preflighted():
+    fallback = {"name": "aroon_trend", "params": {"period": 14, "strength": 50.0}}
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [fallback]})
+    refused = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--mode=live", "--strategy-refs", refs])
+    assert refused.returncode == 1
+    assert "close strategy 'aroon_trend' is edge_status=no_edge" in _payload(refused)["error"]
+
+    acked = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--mode=live", "--allow-no-edge",
+                                          "--strategy-refs", refs, "--market-stdin"], _solo_envelope())
+    assert acked.returncode == 0, acked.stderr[-2000:]
+    assert _payload(acked)["close_strategies"] == ["aroon_trend"]
+
+    bad = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": "aroon_trend", "params": {"period": 0}}]})
+    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--mode=paper", "--strategy-refs", bad])
+    assert proc.returncode == 1
+    assert "period" in _payload(proc)["error"]
+
+
+def test_aroon_batch_slots_admit_refuse_and_match_solo():
+    refs = {"open": {"name": "aroon_trend", "params": {"period": 25, "strength": 70.0}}, "closes": [AROON_TP]}
+    proc = _batch([
+        {"id": "paper", "strategy": "aroon_trend", "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
+        {"id": "acked", "strategy": "aroon_trend", "mode": "live", "mode_args": ["--mode=live"],
+         "allow_no_edge": True, "strategy_refs": refs},
+        {"id": "unacked-live", "strategy": "aroon_trend", "mode": "live", "mode_args": ["--mode=live"],
+         "strategy_refs": refs},
+        {"id": "missing", "strategy": "aroon_trend", "mode": "paper", "strategy_refs": refs},
+        {"id": "repeated", "strategy": "aroon_trend", "mode": "paper", "mode_args": ["--mode=paper", "--mode=live"],
+         "strategy_refs": refs},
+        {"id": "bad-params", "strategy": "aroon_trend", "mode": "paper", "mode_args": ["--mode=paper"],
+         "strategy_refs": {"open": {"name": "aroon_trend", "params": {"period": 2.5}}}},
+        {"id": "peer", "strategy": "breakout", "mode": "paper"},
+    ])
+    assert proc.returncode == 1
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    assert not results["paper"].get("error") and not results["acked"].get("error") and not results["peer"].get("error")
+    assert "explicit live mode" in results["unacked-live"]["error"]
+    assert "missing mode" in results["missing"]["error"]
+    assert "invalid mode input" in results["repeated"]["error"]
+    assert "period must be an integer" in results["bad-params"]["error"]
+
+    solo = _payload(_run("check_hyperliquid.py", AROON + ["--mode=paper", "--market-stdin"] + _aroon_refs(),
+                         _solo_envelope()))
+    for key in ("signal", "open_action", "close_fraction", "indicators"):
+        assert results["paper"].get(key) == solo.get(key)
+        assert results["acked"].get(key) == solo.get(key)

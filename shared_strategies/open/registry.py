@@ -50,6 +50,7 @@ from connors_rsi import connors_rsi_reversion_core
 from vortex_trend import vortex_trend_core
 from relative_vigor_index import relative_vigor_index_core
 from awesome_oscillator import awesome_oscillator_core
+from aroon_trend import aroon_trend_core, validate_aroon_param_dict
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -66,6 +67,17 @@ VALID_EDGE_SOURCES: Tuple[str, ...] = (
     "study_inconclusive",
     "unvalidated",
 )
+
+
+PARAM_VALIDATORS: Dict[str, Any] = {
+    "aroon_trend": validate_aroon_param_dict,
+}
+
+
+def preflight_strategy_params(name: str, params: Optional[dict]) -> None:
+    validator = PARAM_VALIDATORS.get(name)
+    if validator is not None:
+        validator(dict(params or {}))
 
 
 def no_edge_strategies() -> frozenset:
@@ -224,6 +236,7 @@ def validate_params(name: str, params: dict,
     effective = {**base, **(params or {})}
     parsed = [(expr, _parse_constraint(name, expr)) for expr in entry["constraints"]]
     _enforce_parsed_constraints(name, effective, parsed)
+    preflight_strategy_params(name, effective)
 
 
 def validate_param_value(name: str, param: str, value) -> None:
@@ -238,6 +251,8 @@ def validate_param_value(name: str, param: str, value) -> None:
         if lhs == param and isinstance(rhs, float):
             single.append((expr, (lhs, op, rhs)))
     _enforce_parsed_constraints(name, {param: value}, single)
+    if name in PARAM_VALIDATORS:
+        preflight_strategy_params(name, {**entry["default_params"], param: value})
 
 
 def register(
@@ -1721,6 +1736,26 @@ def awesome_oscillator_strategy(df: pd.DataFrame, fast_period: int = 5, slow_per
 
 
 @register(
+    "aroon_trend",
+    "RESEARCH, no-edge (#1643) — Aroon trend crossover: over the trailing period+1 closed bars (decision bar included), Aroon Up = 100*(period - bars since the highest high)/period and Aroon Down = 100*(period - bars since the lowest low)/period, ties picking the most recent bar; long on the bar Up rises strictly above Down from at or below it while Up is strictly above strength, short on the mirror with Down. Needs period+2 valid rows; bad, flat or short windows hold with a reason code. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"period": 25, "strength": 70.0},
+    platforms=("futures",),
+    constraints=[
+        "period >= 2",
+        "period <= 198",
+        "strength >= 0",
+        "strength <= 100",
+    ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/aroon_trend_1643/REPORT.md",
+    short_entries=True,
+)
+def aroon_trend_strategy(df: pd.DataFrame, period: int = 25, strength: float = 70.0) -> pd.DataFrame:
+    return aroon_trend_core(df, period=period, strength=strength)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1992,6 +2027,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
         "chaikin_money_flow_breakout", "open_interest_breakout", "connors_rsi_reversion",
         "vortex_trend", "relative_vigor_index", "awesome_oscillator",
+        "aroon_trend",
         "hold",
     ],
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1667,6 +1668,80 @@ func openStrategyParamsEqual(raw string, params map[string]interface{}) bool {
 	return string(sa) == string(sb)
 }
 
+const (
+	aroonTrendStrategyName = "aroon_trend"
+	aroonTrendPeriodMin    = 2
+	aroonTrendPeriodMax    = 198
+	aroonTrendStrengthMin  = 0.0
+	aroonTrendStrengthMax  = 100.0
+)
+
+func aroonTrendParamNumber(params map[string]interface{}, key string) (float64, bool, error) {
+	raw, ok := params[key]
+	if !ok {
+		return 0, false, nil
+	}
+	switch v := raw.(type) {
+	case float64:
+		return v, true, nil
+	case int:
+		return float64(v), true, nil
+	case int64:
+		return float64(v), true, nil
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return 0, true, fmt.Errorf("%s must be a number, got %q", key, v.String())
+		}
+		return f, true, nil
+	}
+	return 0, true, fmt.Errorf("%s must be a number, got %T %v", key, raw, raw)
+}
+
+func aroonTrendParamsError(params map[string]interface{}) error {
+	if period, ok, err := aroonTrendParamNumber(params, "period"); err != nil {
+		return err
+	} else if ok {
+		if math.IsNaN(period) || math.IsInf(period, 0) || period != math.Trunc(period) {
+			return fmt.Errorf("period must be an integer, got %v", period)
+		}
+		if period < aroonTrendPeriodMin || period > aroonTrendPeriodMax {
+			return fmt.Errorf("period must be in [%d, %d], got %v", aroonTrendPeriodMin, aroonTrendPeriodMax, period)
+		}
+	}
+	if strength, ok, err := aroonTrendParamNumber(params, "strength"); err != nil {
+		return err
+	} else if ok {
+		if math.IsNaN(strength) || math.IsInf(strength, 0) || strength < aroonTrendStrengthMin || strength > aroonTrendStrengthMax {
+			return fmt.Errorf("strength must be finite and in [%g, %g], got %v", aroonTrendStrengthMin, aroonTrendStrengthMax, strength)
+		}
+	}
+	return nil
+}
+
+func aroonTrendParamErrors(strategies []StrategyConfig) []string {
+	var errs []string
+	for _, sc := range strategies {
+		if sc.Type == "options" {
+			continue
+		}
+		if effectiveOpenStrategy(sc) == aroonTrendStrategyName {
+			if err := aroonTrendParamsError(sc.OpenStrategy.Params); err != nil {
+				errs = append(errs, fmt.Sprintf("strategy %s: open strategy %s params: %v", sc.ID, aroonTrendStrategyName, err))
+			}
+		}
+		for _, ref := range sc.closeRefs() {
+			if canonicalCloseStrategyName(ref.Name) != aroonTrendStrategyName {
+				continue
+			}
+			if err := aroonTrendParamsError(ref.Params); err != nil {
+				errs = append(errs, fmt.Sprintf("strategy %s: close strategy %s params: %v", sc.ID, aroonTrendStrategyName, err))
+			}
+		}
+	}
+	return errs
+}
+
 func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	var errs []string
 	seenIDs := make(map[string]bool)
@@ -1692,6 +1767,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	errs = append(errs, validateUserDefaults(cfg.UserDefaults)...)
 
 	errs = append(errs, noEdgeAdmissionErrors(cfg.Strategies)...)
+
+	errs = append(errs, aroonTrendParamErrors(cfg.Strategies)...)
 
 	errs = append(errs, validatePaperSourcesConfig(cfg)...)
 

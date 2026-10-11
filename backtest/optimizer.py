@@ -718,6 +718,10 @@ DEFAULT_PARAM_RANGES = {
         "fast_period": [3, 5, 8, 13],
         "slow_period": [21, 34, 55, 89],
     },
+    "aroon_trend": {
+        "period": [10, 14, 25, 50, 100],
+        "strength": [50.0, 70.0, 85.0],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],

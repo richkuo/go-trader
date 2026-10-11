@@ -1,0 +1,314 @@
+{
+ "cache_db_name": "aroon_1643_proxy.db",
+ "exchange": "binanceus",
+ "fetch_since": "2022-12-01",
+ "frames": {
+  "BTC/USDT 1h 2023": {
+   "expected_rows": 8760,
+   "first": "2023-01-01 00:00:00",
+   "last": "2023-12-31 23:00:00",
+   "max_gap_bars": 7,
+   "missing_rows": 7,
+   "rows": 8753,
+   "sha256": "8373e69f7f8ea3426357fa1c1cba00650131fb8b93af6903857c2c5f112ff27b"
+  },
+  "BTC/USDT 1h 2024": {
+   "expected_rows": 8784,
+   "first": "2024-01-01 00:00:00",
+   "last": "2024-12-31 23:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 8784,
+   "sha256": "43598f3fa86ede1f077154f188b558fac419f564108d5c4ebf0c4f01ee41d9d0"
+  },
+  "BTC/USDT 1h 2025H1": {
+   "expected_rows": 4344,
+   "first": "2025-01-01 00:00:00",
+   "last": "2025-06-30 23:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 4344,
+   "sha256": "6bc6e97e6a8ef1233bb6935e331da43076dbeb9d5da843db7c1a94d3f3290c34"
+  },
+  "BTC/USDT 1h is": {
+   "expected_rows": 4920,
+   "first": "2025-06-10 00:00:00",
+   "last": "2025-12-31 23:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 4920,
+   "sha256": "fa4ed6a88266ab3ae3376bfbba5607dd5abffbf580015a9b884a4309261d1dc8"
+  },
+  "BTC/USDT 1h oos": {
+   "expected_rows": 6552,
+   "first": "2026-01-01 00:00:00",
+   "last": "2026-09-30 23:00:00",
+   "max_gap_bars": 9,
+   "missing_rows": 9,
+   "rows": 6543,
+   "sha256": "6a49f3d8eb3ec6456150759c249edfbfe15294fdff750f1fb7c89de4d7fed358"
+  },
+  "BTC/USDT 4h 2023": {
+   "expected_rows": 2190,
+   "first": "2023-01-01 00:00:00",
+   "last": "2023-12-31 20:00:00",
+   "max_gap_bars": 1,
+   "missing_rows": 1,
+   "rows": 2189,
+   "sha256": "637611a90d3e405a808b0d55caa421b1aa507b34403b2de71e9bd5949e751eac"
+  },
+  "BTC/USDT 4h 2024": {
+   "expected_rows": 2196,
+   "first": "2024-01-01 00:00:00",
+   "last": "2024-12-31 20:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 2196,
+   "sha256": "fb6daa13aab807c2223315cc33c90a22a75ba37df7ff6e6d914959d6e16e9ae9"
+  },
+  "BTC/USDT 4h 2025H1": {
+   "expected_rows": 1086,
+   "first": "2025-01-01 00:00:00",
+   "last": "2025-06-30 20:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 1086,
+   "sha256": "f863fe5d407868c0a5459ac03c79e139f3581491a226859953dac6d2c1cf9cb2"
+  },
+  "BTC/USDT 4h is": {
+   "expected_rows": 1230,
+   "first": "2025-06-10 00:00:00",
+   "last": "2025-12-31 20:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 1230,
+   "sha256": "1ef74e7c04ed0a4c1634d2676899317dfa7cc88a2f4e80f594ba2a55cbc3ab7d"
+  },
+  "BTC/USDT 4h oos": {
+   "expected_rows": 1638,
+   "first": "2026-01-01 00:00:00",
+   "last": "2026-09-30 20:00:00",
+   "max_gap_bars": 2,
+   "missing_rows": 2,
+   "rows": 1636,
+   "sha256": "71bc810f25c3c30f4c45c32f191e557398b9050577b0eeab2e07df70559b8b9e"
+  },
+  "ETH/USDT 1h 2023": {
+   "expected_rows": 8760,
+   "first": "2023-01-01 00:00:00",
+   "last": "2023-12-31 23:00:00",
+   "max_gap_bars": 7,
+   "missing_rows": 7,
+   "rows": 8753,
+   "sha256": "715bb098069b18ca1efe36a4f6f0caaa833f4af3443d2fb77ef18d2a43dec7be"
+  },
+  "ETH/USDT 1h 2024": {
+   "expected_rows": 8784,
+   "first": "2024-01-01 00:00:00",
+   "last": "2024-12-31 23:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 8784,
+   "sha256": "4a44ef9be3e0c5e425af74bf9e23ce87e33c29479a12b71c70b17f6cc29aea12"
+  },
+  "ETH/USDT 1h 2025H1": {
+   "expected_rows": 4344,
+   "first": "2025-01-01 00:00:00",
+   "last": "2025-06-30 23:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 4344,
+   "sha256": "6d76def9d68e971b69330f1e5ad2f70c6c56aa2c883c7ffbbdc06e7fdcfe0af4"
+  },
+  "ETH/USDT 1h is": {
+   "expected_rows": 4920,
+   "first": "2025-06-10 00:00:00",
+   "last": "2025-12-31 23:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 4920,
+   "sha256": "0e576bad1a6f9a30e38eee0993612c367d8a2ea048ed82f4c94e6016e3d260b5"
+  },
+  "ETH/USDT 1h oos": {
+   "expected_rows": 6552,
+   "first": "2026-01-01 00:00:00",
+   "last": "2026-09-30 23:00:00",
+   "max_gap_bars": 9,
+   "missing_rows": 9,
+   "rows": 6543,
+   "sha256": "c645eddbb6f10812d36bffc149ff2834e760edfa3a7492598ef52f3c88a84d39"
+  },
+  "ETH/USDT 4h 2023": {
+   "expected_rows": 2190,
+   "first": "2023-01-01 00:00:00",
+   "last": "2023-12-31 20:00:00",
+   "max_gap_bars": 1,
+   "missing_rows": 1,
+   "rows": 2189,
+   "sha256": "98c1374a865a6c0856b56e422dc07f78c46e18db7ba1dcba9a28692c8b435f60"
+  },
+  "ETH/USDT 4h 2024": {
+   "expected_rows": 2196,
+   "first": "2024-01-01 00:00:00",
+   "last": "2024-12-31 20:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 2196,
+   "sha256": "c645a68883ad2c260a7a7d2c6e5f42939ed27d8a7b32f5b977a032a7022b76fa"
+  },
+  "ETH/USDT 4h 2025H1": {
+   "expected_rows": 1086,
+   "first": "2025-01-01 00:00:00",
+   "last": "2025-06-30 20:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 1086,
+   "sha256": "e765583a8b856ba3292d4d5e83e046b1f0cfa337a7fcc7a3de29f72bf091a885"
+  },
+  "ETH/USDT 4h is": {
+   "expected_rows": 1230,
+   "first": "2025-06-10 00:00:00",
+   "last": "2025-12-31 20:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 1230,
+   "sha256": "07818db241e64f5f734cffb11d7a865fa1aa6e144dbd10cd7f713392ae53c1c8"
+  },
+  "ETH/USDT 4h oos": {
+   "expected_rows": 1638,
+   "first": "2026-01-01 00:00:00",
+   "last": "2026-09-30 20:00:00",
+   "max_gap_bars": 2,
+   "missing_rows": 2,
+   "rows": 1636,
+   "sha256": "aecbbc3b106bff73f0f60a00aa1124a3faa2510699975737af8f85609c446596"
+  },
+  "SOL/USDT 1h 2023": {
+   "expected_rows": 8760,
+   "first": "2023-01-01 00:00:00",
+   "last": "2023-12-31 23:00:00",
+   "max_gap_bars": 7,
+   "missing_rows": 7,
+   "rows": 8753,
+   "sha256": "88e5bce2c886af62f42fafb86b6b4714a55ee12aaa0955437868fe08edc5cec6"
+  },
+  "SOL/USDT 1h 2024": {
+   "expected_rows": 8784,
+   "first": "2024-01-01 00:00:00",
+   "last": "2024-12-31 23:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 8784,
+   "sha256": "15de446324bcd04089e1d0f7774a902a422f03dfa31213554c38c389df721f99"
+  },
+  "SOL/USDT 1h 2025H1": {
+   "expected_rows": 4344,
+   "first": "2025-01-01 00:00:00",
+   "last": "2025-06-30 23:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 4344,
+   "sha256": "acc22fdc3d305bad4a4aab7ccdabd0f755d1ee0dd8be9f26f6ca0287f48aeb16"
+  },
+  "SOL/USDT 1h is": {
+   "expected_rows": 4920,
+   "first": "2025-06-10 00:00:00",
+   "last": "2025-12-31 23:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 4920,
+   "sha256": "e0586b3cae07eff0958a0d008f64d66fa78ee5840829161ad281a3189af2ca11"
+  },
+  "SOL/USDT 1h oos": {
+   "expected_rows": 6552,
+   "first": "2026-01-01 00:00:00",
+   "last": "2026-09-30 23:00:00",
+   "max_gap_bars": 9,
+   "missing_rows": 9,
+   "rows": 6543,
+   "sha256": "2f045e9449b808f511f73e1a6cf636891505d172e6111b14c79f45973eead645"
+  },
+  "SOL/USDT 4h 2023": {
+   "expected_rows": 2190,
+   "first": "2023-01-01 00:00:00",
+   "last": "2023-12-31 20:00:00",
+   "max_gap_bars": 1,
+   "missing_rows": 1,
+   "rows": 2189,
+   "sha256": "ca34ab259be122fccc2cc9c4842e2c6ce6001218aa2de83db82931b68a79c91d"
+  },
+  "SOL/USDT 4h 2024": {
+   "expected_rows": 2196,
+   "first": "2024-01-01 00:00:00",
+   "last": "2024-12-31 20:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 2196,
+   "sha256": "6ddac57c6408f523e804909166acdc09234ea2784db6345fab3aabdca2540151"
+  },
+  "SOL/USDT 4h 2025H1": {
+   "expected_rows": 1086,
+   "first": "2025-01-01 00:00:00",
+   "last": "2025-06-30 20:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 1086,
+   "sha256": "5c626b9f5518ac3630eb5bbfe5367f303fe3022447216ead711067215b66608a"
+  },
+  "SOL/USDT 4h is": {
+   "expected_rows": 1230,
+   "first": "2025-06-10 00:00:00",
+   "last": "2025-12-31 20:00:00",
+   "max_gap_bars": 0,
+   "missing_rows": 0,
+   "rows": 1230,
+   "sha256": "fe348163783129f840c5c341b189db90cbab5d3adedb83398a3c4b4aabe7ca87"
+  },
+  "SOL/USDT 4h oos": {
+   "expected_rows": 1638,
+   "first": "2026-01-01 00:00:00",
+   "last": "2026-09-30 20:00:00",
+   "max_gap_bars": 2,
+   "missing_rows": 2,
+   "rows": 1636,
+   "sha256": "a799ccdc264877a46235deead3137b72f0b3d3283d3e1480eceec3b6a371564e"
+  }
+ },
+ "funding": {
+  "BTC": {
+   "coverage": [
+    [
+     1669852800000,
+     1790812800000
+    ]
+   ],
+   "first_record": "2023-05-12 00:00:00.048000",
+   "rows": 29142,
+   "sha256": "1f6918a9a9151f783784fac618279b7ef681e79e81651ecbde076b26ef8016d9"
+  },
+  "ETH": {
+   "coverage": [
+    [
+     1669852800000,
+     1790812800000
+    ]
+   ],
+   "first_record": "2023-05-12 00:00:00.048000",
+   "rows": 29142,
+   "sha256": "3ec0d7aae99c82ce0f6382d5f82c9f064b843c76d35ee88cdd83e986f783874d"
+  },
+  "SOL": {
+   "coverage": [
+    [
+     1669852800000,
+     1790812800000
+    ]
+   ],
+   "first_record": "2023-05-12 00:00:00.048000",
+   "rows": 29142,
+   "sha256": "6e70ffe15a6c15127dda25861a9351340a1184e53b4efc132ff9ba28f5939f42"
+  }
+ },
+ "note": "Binance US USDT candles are a price proxy for Hyperliquid perpetuals. The cache is an isolated SQLite file outside the repository; replay refetches it with --freeze-proxy and the run refuses any frame or funding digest that differs from this file.",
+ "oos_end": "2026-10-01"
+}

@@ -24,6 +24,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"adx_trend":                   {"fee_audit_m5", noEdgeRefFeeAudit},
 	"amd_ifvg":                    {"study_fail", "docs/research/amd_ifvg_1023.md"},
 	"analog_retrieval":            {"study_fail", "docs/research/1138-analog-retrieval-m1.md"},
+	"aroon_trend":                 {"study_inconclusive", "backtest/candidates/aroon_trend_1643/REPORT.md"},
 	"atr_breakout":                {"fee_audit_m5", noEdgeRefFeeAudit},
 	"awesome_oscillator":          {"study_fail", "backtest/candidates/awesome_oscillator_1660/REPORT.md"},
 	"bollinger_bands":             {"fee_audit_m5", noEdgeRefFeeAudit},

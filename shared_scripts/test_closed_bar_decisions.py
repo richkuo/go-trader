@@ -875,3 +875,135 @@ def test_resting_rule_trailing_stop_ratcheted_inside_a_bar_tests_the_bar_against
         assert second["close_fraction"] == 0.0
         assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[61]["t"]
         assert booked == [(str(df.index[61]), 99.0, "sl")]
+
+
+_AROON = "aroon_trend"
+_AROON_TP = {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}
+
+
+def _aroon_bars(n, *, spike_at=None, flat=False, bad_at=None):
+    out = []
+    price = 200.0
+    for i in range(n):
+        if not flat:
+            price -= 0.5
+        o, h, low, c = price + 0.2, price + 0.4, price - 0.4, price
+        if spike_at is not None and i == spike_at:
+            o, h, low, c = price + 0.3, price + 150.0, price + 0.2, price + 149.0
+        if flat:
+            o = h = low = c = price
+        if bad_at is not None and i == bad_at:
+            h, low = low, h
+        out.append({"t": T0 + i * H, "T": T0 + (i + 1) * H - 1, "o": o, "h": h, "l": low, "c": c, "v": 1000.0})
+    return out
+
+
+def _aroon_refs(params=None):
+    refs = {"open": {"name": _AROON, "params": params or {"period": 25, "strength": 70.0}}, "closes": [_AROON_TP]}
+    return ["--strategy-refs", json.dumps(refs)]
+
+
+def test_aroon_forming_bar_crossing_is_excluded_from_the_closed_decision():
+    bars = _aroon_bars(60, spike_at=59)
+    cutoff = bars[-1]["t"] + H // 2
+    disabled = _hl_check(_AROON, bars, cutoff, closed=False, extra=_aroon_refs())
+    enabled = _hl_check(_AROON, bars, cutoff, closed=True, extra=_aroon_refs())
+    assert disabled["signal"] == 1 and disabled["indicators"]["aroon_reason_code"] == 1
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
+    assert enabled["signal"] == 0
+    assert enabled["indicators"]["aroon_reason_code"] == 0
+    assert enabled["indicators"]["aroon_down"] == 100.0
+
+
+@pytest.mark.parametrize("closed_rows,signal,code", [(200, 1, 1), (199, 0, 10)])
+def test_aroon_maximum_period_needs_two_hundred_closed_rows_plus_the_forming_row(closed_rows, signal, code):
+    bars = _aroon_bars(closed_rows + 1, spike_at=closed_rows - 1)
+    cutoff = bars[-1]["t"] + H // 2
+    out = _hl_check(_AROON, bars, cutoff, closed=True, extra=_aroon_refs({"period": 198, "strength": 70.0}))
+    meta = out["closed_bar_decision"]
+    assert meta["held"] is False and meta["forming_rows_dropped"] == 1
+    assert out["signal"] == signal
+    assert out["indicators"]["aroon_reason_code"] == code
+    assert out["indicators"]["aroon_period"] == 198
+    if signal:
+        assert out["indicators"]["aroon_up"] == 100.0
+        assert out["indicators"]["aroon_high_age"] == 0
+        assert out["indicators"]["aroon_low_age"] == 1
+        assert out["indicators"]["aroon_prev_up"] <= out["indicators"]["aroon_prev_down"]
+
+
+@pytest.mark.parametrize("closed", [True, False])
+@pytest.mark.parametrize("hold", ["flat", "bad"])
+@pytest.mark.parametrize("side", ["long", "short"])
+def test_aroon_data_hold_keeps_the_explicit_close_running(closed, hold, side):
+    n = 61
+    bars = _aroon_bars(n, flat=True) if hold == "flat" else _aroon_bars(n, bad_at=n - 2)
+    mark = bars[-1]["c"]
+    avg_cost = mark * (0.9 if side == "long" else 1.1)
+    cutoff = bars[-1]["t"] + H // 2
+    held = _aroon_refs() + ["--position-side", side, f"--position-avg-cost={avg_cost}",
+                            "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(_AROON, bars, cutoff, closed=closed, extra=held, mid=mark)
+    if closed and hold == "bad":
+        assert out["closed_bar_decision"]["held"] is True
+        assert out["indicators"] == {}
+    else:
+        assert out["indicators"]["aroon_reason_code"] == (14 if hold == "flat" else 12)
+        assert out["indicators"]["aroon_valid"] == 0.0
+    assert out["open_action"] == "none"
+    assert out["close_fraction"] == 1.0
+    assert out["close_strategy"] == "tiered_tp_pct"
+    assert out["signal"] == (-1 if side == "long" else 1)
+    assert out["price"] == mark
+
+    flat = _hl_check(_AROON, bars, cutoff, closed=closed, extra=_aroon_refs(), mid=mark)
+    assert flat["signal"] == 0 and flat["open_action"] == "none"
+
+
+def test_aroon_unavailable_protection_inputs_invent_no_close_price():
+    bars = _aroon_bars(61, flat=True)
+    cutoff = bars[-1]["t"] + H // 2
+    held_without_cost = _aroon_refs() + ["--position-side", "long", "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(_AROON, bars, cutoff, closed=True, extra=held_without_cost, mid=bars[-1]["c"])
+    assert out["indicators"]["aroon_reason_code"] == 14
+    assert out["close_fraction"] == 0.0
+    assert out["signal"] == 0 and out["open_action"] == "none"
+
+
+@pytest.mark.parametrize("side", ["long", "short"])
+def test_aroon_open_position_blocks_a_new_entry_reversal_or_add(side):
+    bars = _aroon_bars(61, spike_at=59)
+    cutoff = bars[-1]["t"] + H // 2
+    mark = bars[-1]["c"]
+    held = _aroon_refs() + ["--position-side", side, f"--position-avg-cost={mark}",
+                            "--position-qty=1", "--position-initial-qty=1"]
+    out = _hl_check(_AROON, bars, cutoff, closed=True, extra=held, mid=mark)
+    assert out["indicators"]["aroon_reason_code"] == 1
+    assert out["open_action"] == "long"
+    assert out["close_fraction"] == 0.0
+    assert out["signal"] == 0
+
+
+def test_aroon_mixed_batch_matches_individual_checks():
+    bars = _aroon_bars(61, spike_at=59)
+    cutoff = bars[-1]["t"] + H // 2
+    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
+    refs = {"open": {"name": _AROON, "params": {"period": 25, "strength": 70.0}}, "closes": [_AROON_TP]}
+    slots = [
+        {"id": "on", "strategy": _AROON, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs,
+         "closed_bar_decisions": True},
+        {"id": "off", "strategy": _AROON, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
+        {"id": "peer", "strategy": "breakout", "mode": "paper"},
+    ]
+    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--atr-method=simple",
+                           "--market-stdin"], {"v": 2, "slots": slots, "market": market})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
+    for slot_id, closed in (("on", True), ("off", False)):
+        argv = [_AROON, "BTC", "1h", "--mode=paper", "--market-stdin", *_aroon_refs()]
+        if closed:
+            argv.append("--closed-bar-decisions")
+        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
+        assert single.returncode == 0, single.stderr
+        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
+    assert results["on"]["signal"] == 1
