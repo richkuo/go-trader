@@ -23,6 +23,7 @@ var v20FormerResearchStrategies = map[string]struct{}{
 	"on_balance_volume_divergence": {},
 	"open_interest_breakout":       {},
 	"relative_vigor_index":         {},
+	"schaff_trend_cycle":           {},
 	"ultimate_oscillator":          {},
 	"vortex_trend":                 {},
 	"williams_r_reversal":          {},

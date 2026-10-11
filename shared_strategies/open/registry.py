@@ -58,6 +58,7 @@ from money_flow_index import money_flow_index_reversal_core
 from aroon_trend import aroon_trend_core, validate_aroon_param_dict
 from ultimate_oscillator import ultimate_oscillator_core
 from fisher_reversal import fisher_reversal_core
+from schaff_trend_cycle import schaff_trend_cycle_core, stc_param_validator
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -1877,6 +1878,46 @@ def ultimate_oscillator_strategy(df: pd.DataFrame, short_window: int = 7, mid_wi
 
 
 @register(
+    "schaff_trend_cycle",
+    "RESEARCH, no-edge (#1651) \u2014 Schaff Trend Cycle entries: for every timestamp the fast and slow close EMAs (weight 2 / (period + 1)) restart from the first close of exactly 192 trailing bars, MACD = fast EMA - slow EMA drops its first slow_period - 1 samples, each complete cycle_length window of MACD is normalized to 0-100 and smoothed recursively by smoothing (seeded with its first value), and the smoothed series is normalized and smoothed again into the 0-100 oscillator. Long when the previous oscillator is at or below lower_threshold, the current one is strictly above it and the current MACD endpoint is strictly above the previous one; short is the mirror at upper_threshold with a falling MACD. Needs 193 valid consecutive closed bars and declared bar cadence; any bad candle, timestamp defect, cadence gap or zero normalization range holds, and a check-time frame whose last bar is not the latest closed bar holds. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {
+        "fast_period": 23,
+        "slow_period": 50,
+        "cycle_length": 10,
+        "smoothing": 0.5,
+        "lower_threshold": 25.0,
+        "upper_threshold": 75.0,
+    },
+    platforms=("futures",),
+    constraints=[
+        "fast_period >= 2",
+        "fast_period <= 32",
+        "slow_period >= 3",
+        "slow_period <= 64",
+        "fast_period < slow_period",
+        "cycle_length >= 2",
+        "cycle_length <= 16",
+        "smoothing >= 0.25",
+        "smoothing <= 1",
+        "lower_threshold > 0",
+        "upper_threshold < 100",
+        "lower_threshold < upper_threshold",
+    ],
+    edge_status="no_edge",
+    edge_source="unvalidated",
+    edge_ref="backtest/candidates/schaff_trend_cycle_1651/REPORT.md",
+    short_entries=True,
+    param_validator=stc_param_validator,
+)
+def schaff_trend_cycle_strategy(df: pd.DataFrame, fast_period: int = 23, slow_period: int = 50,
+                                cycle_length: int = 10, smoothing: float = 0.5,
+                                lower_threshold: float = 25.0, upper_threshold: float = 75.0) -> pd.DataFrame:
+    return schaff_trend_cycle_core(
+        df, fast_period=fast_period, slow_period=slow_period, cycle_length=cycle_length,
+        smoothing=smoothing, lower_threshold=lower_threshold, upper_threshold=upper_threshold)
+
+
+@register(
     "fisher_reversal",
     "RESEARCH, no-edge (#1646) \u2014 Fisher Transform reversal: the candle midpoint is normalized into [-1, 1] against its inclusive lookback-bar range, smoothed by x = 0.33 * normalized + 0.67 * previous x (clamped 1e-6 inside +/-1) and transformed by F = 0.5 * ln((1 + x) / (1 - x)) + 0.5 * previous F, both recurrences restarted from zero over exactly 64 bars for every timestamp (lookback + 65 bars of history); long when F crosses above its one-bar-lagged trigger after the trigger is below -extreme, short is the mirror above +extreme. Bad, gapped or flat input holds the entry. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"lookback": 9, "extreme": 1.5},
@@ -2216,6 +2257,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "ease_of_movement_breakout",
         "fisher_reversal",
         "ultimate_oscillator",
+        "schaff_trend_cycle",
         "hold",
     ],
 }

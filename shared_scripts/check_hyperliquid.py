@@ -34,7 +34,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator, latest_atr
 from closed_bar import (
+    FRAME_DECISION_TIME_ATTR,
     FRAME_INTERVAL_ATTR,
+    FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
     FRAME_TIMESTAMP_KIND_ATTR,
     RULE_HYPERLIQUID_NATIVE,
     ClosedBarHold,
@@ -67,9 +69,15 @@ from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_
 def _make_dataframe(candles):
     import pandas as pd
     df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    received = pd.to_numeric(df["timestamp"], errors="coerce").tolist()
+    defects = sorted({int(received[i]) for i in range(1, len(received))
+                      if received[i] == received[i] and received[i - 1] == received[i - 1]
+                      and received[i] <= received[i - 1]})
     df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     df = df.set_index("datetime")
     df.sort_index(inplace=True)
+    if defects:
+        df.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = defects
     return df
 
 
@@ -100,9 +108,9 @@ def _position_ctx_from_args(args):
 
 TP_MODEL_RESTING_LIMIT = "resting_limit"
 
-FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_")
+FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_", "stc_")
 
-TEXT_INDICATOR_COLUMNS = ("eom_reason",)
+TEXT_INDICATOR_COLUMNS = ("eom_reason", "stc_reason")
 
 BATCH_PROTOCOL_VERSION = 1
 
@@ -350,6 +358,7 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
         if len(rows) < 30:
             raise InsufficientCandlesError(len(rows))
         df = _frame_with_cadence(rows, timeframe)
+        df.attrs[FRAME_DECISION_TIME_ATTR] = {}
         adapter = None
     elif df is not None:
         if timed:
@@ -375,6 +384,7 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
         if not candles or len(candles) < 30:
             raise InsufficientCandlesError(len(candles) if candles else 0)
         df = _frame_with_cadence(candles, timeframe)
+        df.attrs[FRAME_DECISION_TIME_ATTR] = {}
 
     price_override = 0.0
     if mark_price and mark_price > 0:
@@ -879,6 +889,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         else:
             closed_meta = selection.metadata()
             decision_df = _frame_with_cadence(selection.rows, timeframe, selection.timings)
+            decision_df.attrs[FRAME_DECISION_TIME_ATTR] = {
+                "cutoff_ms": int(selection.cutoff_ms), "boundary_ms": int(selection.boundary_ms)}
             strategy_params = decision_params
     else:
         strategy_params = {}

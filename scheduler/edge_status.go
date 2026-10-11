@@ -55,6 +55,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"relative_vigor_index":         {"study_fail", "backtest/candidates/relative_vigor_index_1666/REPORT.md"},
 	"rsi":                          {"fee_audit_m5", noEdgeRefFeeAudit},
 	"rsi_macd_combo":               {"fee_audit_m5", noEdgeRefFeeAudit},
+	"schaff_trend_cycle":           {"unvalidated", "backtest/candidates/schaff_trend_cycle_1651/REPORT.md"},
 	"session_breakout":             {"study_fail", "docs/research/1031-session-breakout-short-m1.md"},
 	"sma_crossover":                {"fee_audit_m5", noEdgeRefFeeAudit},
 	"squeeze_momentum":             {"fee_audit_m5", noEdgeRefFeeAudit},
