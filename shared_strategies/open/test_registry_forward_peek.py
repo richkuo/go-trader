@@ -185,6 +185,7 @@ def _with_declared_cadence(fn):
 STRATEGY_INPUTS = {
     "open_interest_breakout": _with_open_interest,
     "ease_of_movement_breakout": _with_declared_cadence,
+    "schaff_trend_cycle": _with_declared_cadence,
 }
 
 _FIXTURE_CACHE = {}

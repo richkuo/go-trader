@@ -1904,7 +1904,7 @@ def ultimate_oscillator_strategy(df: pd.DataFrame, short_window: int = 7, mid_wi
         "lower_threshold < upper_threshold",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_fail",
     edge_ref="backtest/candidates/schaff_trend_cycle_1651/REPORT.md",
     short_entries=True,
     param_validator=stc_param_validator,

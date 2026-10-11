@@ -758,7 +758,8 @@ def render(result: dict) -> str:
         f"`{json.dumps(seed['close_default_ladder'], sort_keys=True)}`, comparison mode `{seed['comparison_mode']}`, stop owner "
         f"fixed entry ATR x{seed['stop_loss_atr_mult']}, capital ${seed['capital']:.0f}; signals on bar N fill at "
         "the bar N+1 open.",
-        "- Arms: " + ", ".join(f"`{n}` (`{a['strategy']}`, {a['direction']})" for n, a in seed["arms"].items()) + ".",
+        "- Arms: " + ", ".join(f"`{n}` (`{seed['arms'][n]['strategy']}`, {seed['arms'][n]['direction']})"
+                               for n in ARMS) + ".",
         f"- Selection on `{seed['selection_window']}` only: {seed['selection']['eligible']}; order "
         f"{'; '.join(seed['selection']['order'])}.",
         f"- Held-out `{seed['held_out_window']}`: at least {MIN_TEST_POSITIONS} independent positions for every "
@@ -853,10 +854,11 @@ def render(result: dict) -> str:
         f"- Decision mismatches {tot['decision_mismatches']} (share {_fmt(tot['mismatch_share_of_scored_rows'], 4)}): "
         f"finite_zero_range_hold {tot['finite_zero_range_hold']}, seed_divergence {tot['seed_divergence']}, "
         f"unclassified {tot['unclassified']}.",
-        "- Cause: a zero range happens when a cycle window of MACD or of the first smoothed stage is exactly "
-        "constant, which in a finite replay mostly occurs where the recursion is seeded at 0 or 100 inside a "
-        "monotonic stretch. The continuous series carries through it; the finite series refuses to invent a "
-        "value. Seed divergence is the remaining EMA and smoothing start-up effect of the 192-bar replay.",
+        "- Cause: a zero range needs an exactly constant cycle window of MACD or of the first smoothed stage. "
+        "For the first stage this can happen when its recursion is seeded at 0 or 100 and the raw value stays "
+        "there; this study did not attribute each hold to one mechanism. The continuous series carries the "
+        "previous value through a zero range; the finite series holds instead. Seed divergence is the "
+        "remaining EMA and smoothing start-up effect of the 192-bar replay.",
         "",
         "| Dataset | Window | Scored | Finite valid | Zero range | Finite entries | Continuous entries | "
         "Mismatches | Zero-range holds | Seed divergence | Unclassified | Max abs value diff | Rows diff > 1 |",
@@ -869,7 +871,8 @@ def render(result: dict) -> str:
                      f"{r['unclassified']} | {_fmt(r['value_abs_diff_max'], 6)} | {r['rows_value_diff_over_1']} |")
     st = result["parameter_stability"]
     lines += ["", "## Parameter stability and unsuccessful variants", ""]
-    for arm, s in st.items():
+    for arm in CANDIDATE_ARMS:
+        s = st[arm]
         lines.append(f"- `{arm}`: training-eligible variants {s['train_eligible_variants']}/{s['variants']}; "
                      f"Spearman train vs held-out mean Sharpe {_fmt(s['spearman_train_vs_test_sharpe'], 3)}; "
                      f"held-out net-positive variants {s['test_net_positive_variants']}/{s['variants']}")
