@@ -716,6 +716,13 @@ DEFAULT_PARAM_RANGES = {
         "lookback": [5, 9, 13, 21],
         "extreme": [0.75, 1.0, 1.5, 2.0],
     },
+    "adaptive_moving_average": {
+        "efficiency_period": [5, 10, 20],
+        "fast_period": [2, 3],
+        "slow_period": [20, 30, 50],
+        "slope_span": [1, 3, 5],
+        "recursion_length": [60, 120, 160],
+    },
     "vortex_trend": {
         "period": [7, 14, 21, 28],
         "min_separation": [0.0, 0.02, 0.05, 0.10],

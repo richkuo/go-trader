@@ -21,6 +21,7 @@ const (
 )
 
 var noEdgeStrategies = map[string]noEdgeEvidence{
+	"adaptive_moving_average":      {"study_fail", "backtest/candidates/adaptive_moving_average_1641/REPORT.md"},
 	"adx_trend":                    {"fee_audit_m5", noEdgeRefFeeAudit},
 	"amd_ifvg":                     {"study_fail", "docs/research/amd_ifvg_1023.md"},
 	"analog_retrieval":             {"study_fail", "docs/research/1138-analog-retrieval-m1.md"},

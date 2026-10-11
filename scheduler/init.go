@@ -86,6 +86,7 @@ var knownShortNames = map[string]string{
 	"regime_adaptive_htf":          "rahtf",
 	"amd_ifvg":                     "amdifvg",
 	"pairs_spread":                 "pairs",
+	"adaptive_moving_average":      "ama",
 	"analog_retrieval":             "analog",
 	"aroon_trend":                  "aroon",
 	"awesome_oscillator":           "ao",
@@ -106,6 +107,7 @@ var knownShortNames = map[string]string{
 }
 
 var registeredOpenStrategyPlatforms = map[string][]string{
+	"adaptive_moving_average":      {"futures"},
 	"adx_trend":                    {"spot", "futures"},
 	"amd_ifvg":                     {"spot", "futures"},
 	"analog_retrieval":             {"spot", "futures"},
@@ -218,6 +220,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"on_balance_volume_divergence": true,
 	"ultimate_oscillator":          true,
 	"aroon_trend":                  true,
+	"adaptive_moving_average":      true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {

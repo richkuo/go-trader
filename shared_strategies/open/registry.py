@@ -58,6 +58,7 @@ from money_flow_index import money_flow_index_reversal_core
 from aroon_trend import aroon_trend_core, validate_aroon_param_dict
 from ultimate_oscillator import ultimate_oscillator_core
 from fisher_reversal import fisher_reversal_core
+from adaptive_moving_average import adaptive_moving_average_core, ama_param_validator
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -1897,6 +1898,38 @@ def fisher_reversal_strategy(df: pd.DataFrame, lookback: int = 9, extreme: float
 
 
 @register(
+    "adaptive_moving_average",
+    "RESEARCH, no-edge (#1641) \u2014 Kaufman adaptive moving average trend entries: efficiency over efficiency_period bars is the absolute close change divided by the sum of absolute one-bar changes (0 when that sum is 0); the smoothing constant is (efficiency * (2/(fast_period+1) - 2/(slow_period+1)) + 2/(slow_period+1)) squared; every average restarts from the close recursion_length bars back and applies exactly recursion_length updates, so a decision reads recursion_length + efficiency_period + max(slope_span, 1) bars (at most 199). Long when the close crosses strictly above the average from at or below it and the average rose over slope_span bars; short is the exact mirror. Needs declared bar cadence; bad candles, timestamp defects and cadence gaps inside the window hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"efficiency_period": 10, "fast_period": 2, "slow_period": 30, "slope_span": 3, "recursion_length": 120},
+    platforms=("futures",),
+    constraints=[
+        "efficiency_period >= 1",
+        "efficiency_period <= 64",
+        "fast_period >= 1",
+        "fast_period <= 64",
+        "slow_period >= 2",
+        "slow_period <= 256",
+        "fast_period < slow_period",
+        "slope_span >= 1",
+        "slope_span <= 64",
+        "recursion_length >= 1",
+        "recursion_length <= 197",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/adaptive_moving_average_1641/REPORT.md",
+    short_entries=True,
+    param_validator=ama_param_validator,
+)
+def adaptive_moving_average_strategy(df: pd.DataFrame, efficiency_period: int = 10, fast_period: int = 2,
+                                     slow_period: int = 30, slope_span: int = 3,
+                                     recursion_length: int = 120) -> pd.DataFrame:
+    return adaptive_moving_average_core(df, efficiency_period=efficiency_period, fast_period=fast_period,
+                                        slow_period=slow_period, slope_span=slope_span,
+                                        recursion_length=recursion_length)
+
+
+@register(
     "ease_of_movement_breakout",
     "RESEARCH, no-edge (#1671) \u2014 Ease of Movement breakout confirmation: one-bar Ease of Movement is the change in candle midpoint times the current high-minus-low range divided by current base volume, averaged over eom_period bars; long on the first close strictly above the prior breakout_window high while the average is strictly positive, short on the mirror below the prior low with a strictly negative average. Needs declared bar cadence; zero or negative volume, bad candles, timestamp defects and cadence gaps inside the window hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"eom_period": 14, "breakout_window": 20},
@@ -2216,6 +2249,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "ease_of_movement_breakout",
         "fisher_reversal",
         "ultimate_oscillator",
+        "adaptive_moving_average",
         "hold",
     ],
 }
