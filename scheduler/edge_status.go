@@ -33,6 +33,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"consolidation_range":         {"fee_audit_m5", noEdgeRefLimbo},
 	"donchian_breakout":           {"study_fail", "docs/research/985-donchian-regime-gate-m1.md"},
 	"ema_crossover":               {"fee_audit_m5", noEdgeRefFeeAudit},
+	"fisher_reversal":             {"study_inconclusive", "backtest/candidates/fisher_reversal_1646/REPORT.md"},
 	"funding_skew":                {"fee_audit_m5", noEdgeRefLimbo},
 	"heikin_ashi_ema":             {"fee_audit_m5", noEdgeRefFeeAudit},
 	"ichimoku_cloud":              {"fee_audit_m5", noEdgeRefFeeAudit},

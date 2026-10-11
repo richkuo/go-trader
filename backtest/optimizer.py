@@ -706,6 +706,10 @@ DEFAULT_PARAM_RANGES = {
         "oversold": [5.0, 10.0, 20.0],
         "overbought": [80.0, 90.0, 95.0],
     },
+    "fisher_reversal": {
+        "lookback": [5, 9, 13, 21],
+        "extreme": [0.75, 1.0, 1.5, 2.0],
+    },
     "vortex_trend": {
         "period": [7, 14, 21, 28],
         "min_separation": [0.0, 0.02, 0.05, 0.10],
