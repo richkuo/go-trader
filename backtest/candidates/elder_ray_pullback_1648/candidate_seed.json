@@ -1,0 +1,80 @@
+{
+  "issue": 1648,
+  "name": "elder_ray_pullback",
+  "formula": {
+    "finite_ema": "for every timestamp t: e = close[t-63]; for k = t-62 .. t in order: e = alpha * close[k] + (1 - alpha) * e, with alpha = 2 / (ema_period + 1). Each earlier average E(t-j) is computed independently by the same rule from its own 64 closes",
+    "difference_from_unrestricted_ema": "an unrestricted EMA starts once at the first input row and carries every older close with geometrically decaying weight; this finite EMA forgets everything older than 64 closes and restarts from the oldest close of the span, so its value depends only on closes[t-63 .. t] and is the same in any frame that contains them",
+    "slope": "S(t) = E(t) - E(t - slope_span), in price units",
+    "bull_power": "BU(t) = high(t) - E(t)",
+    "bear_power": "BE(t) = low(t) - E(t)",
+    "long_condition": "L(t) = S(t) > 0 and BE(t) < 0 (both strict)",
+    "short_condition": "H(t) = S(t) < 0 and BU(t) > 0 (both strict)",
+    "arming": "a long setup arms at bar a when L(a) is true and L(a-1) is false; the setup age at bar t is t - a. Short mirrors with H",
+    "continuation": "while L stays true the setup keeps its original arming bar; the same excursion never rearms",
+    "long_entry": "bar t with L(t-1) true, S(t) > 0, BE(t) >= 0 (zero counts as recovery) and setup age t - a <= pullback_window",
+    "short_entry": "bar t with H(t-1) true, S(t) < 0, BU(t) <= 0 (zero counts as recovery) and setup age t - a <= pullback_window",
+    "expiry": "age strictly above pullback_window: no entry on recovery; age equal to pullback_window is still eligible",
+    "trend_clear": "S(t) <= 0 while a long setup is live (S(t) >= 0 for short) ends the setup without an entry; a later bar where the condition is true again after a false bar arms a new setup",
+    "consumption": "the recovery bar ends the run, so one setup gives at most one entry",
+    "required_history": "64 + slope_span + pullback_window + 1 rows: the decision reads L/H on bars t - pullback_window - 1 .. t, each needs E at that bar and slope_span bars earlier, and each E needs 64 closes; maximum 89 rows at slope_span 8 and pullback_window 16",
+    "validity": "a decision is made only when every row of its own required span is finite, positive, has high >= max(open, close), low <= min(open, close), volume >= 0, strictly increasing timestamps with one constant spacing, and every computed E, S, BU and BE on bars t - pullback_window - 1 .. t is finite; anything else holds with a reason code",
+    "recurrence_horizon": 64
+  },
+  "params": {"ema_period": 13, "slope_span": 3, "pullback_window": 8},
+  "parameter_domains": {
+    "ema_period": {"type": "integer", "min": 2, "max": 32},
+    "slope_span": {"type": "integer", "min": 1, "max": 8},
+    "pullback_window": {"type": "integer", "min": 1, "max": 16}
+  },
+  "optimizer_grid": {"ema_period": [8, 13, 21], "slope_span": [1, 3, 5], "pullback_window": [4, 8, 16]},
+  "manifest": "backtest/candidates/elder_ray_pullback_1648_manifest.json",
+  "selection_window": "train",
+  "held_out_window": "test",
+  "capital": 1000.0,
+  "close_strategies": [{"name": "tiered_tp_pct", "params": {}}],
+  "close_default_ladder": [
+    {"profit_pct": 0.01, "close_fraction": 0.25},
+    {"profit_pct": 0.02, "close_fraction": 0.5},
+    {"profit_pct": 0.03, "close_fraction": 0.75},
+    {"profit_pct": 0.04, "close_fraction": 1.0}
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict",
+  "arms": {
+    "elder_ray_pullback": {"direction": "both"},
+    "momentum_pro": {"direction": "both", "note": "M1 incumbent; short_entries=True"},
+    "bear_pullback_st": {"direction": "short", "note": "not an M1 incumbent; native short-only entries, run as a second comparison arm"}
+  },
+  "incumbent_contract": {
+    "direction": "both",
+    "close_strategies": [{"name": "tiered_tp_pct", "params": {}}],
+    "stop_loss_atr_mult": 1.0,
+    "comparison_mode": "strict"
+  },
+  "selection": {
+    "eligible": "complete candle and funding coverage, every dataset scored, no liquidated leg, at least min_train_independent_positions independent positions",
+    "min_train_independent_positions": 10,
+    "order": ["max mean net Sharpe", "max mean drawdown-adjusted return", "earliest grid order"]
+  },
+  "held_out": {
+    "min_independent_positions_per_arm": 30,
+    "candidate_requires_both_directions": true
+  },
+  "uncertainty": {
+    "method": "percentile bootstrap of the mean net PnL per closed position, pooled over datasets",
+    "resamples": 2000,
+    "rng_seed": 1648,
+    "interval": [0.05, 0.95],
+    "role": "descriptive only; positions overlap in time and are not independent, so the interval is optimistic and never a verdict input"
+  },
+  "descriptive_outputs": ["defaults", "unsuccessful variants", "turnover", "independent position counts", "long and short net PnL", "dataset and top-5 position concentration", "one-step neighbour Sharpe", "train vs held-out Spearman rank correlation", "bootstrap interval"],
+  "cost_runs": {
+    "base": {"cost_multiplier": 1.0, "meaning": "manifest fees, per-coin half spread and slippage"},
+    "stress": {"cost_multiplier": 2.0, "meaning": "manifest fees unchanged, half spread and slippage doubled"}
+  },
+  "verdict": {
+    "inconclusive": "any coverage refusal, no eligible training selection for an arm, or a held-out sample gate that fails",
+    "pass": "complete coverage, every sample gate met, candidate net PnL > 0 at base and stress cost, candidate base mean Sharpe and base mean drawdown-adjusted return both strictly above each selected comparator",
+    "fail": "a complete study that misses any pass condition"
+  }
+}

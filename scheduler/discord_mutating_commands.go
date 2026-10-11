@@ -96,6 +96,7 @@ type addStrategyEntryOnlyCandidate struct {
 
 var addStrategyEntryOnlyCandidates = map[string]addStrategyEntryOnlyCandidate{
 	"ease_of_movement_breakout": {CloseStrategy: "tiered_tp_atr", ClosedBarDecisions: true},
+	"elder_ray_pullback":        {CloseStrategy: "tiered_tp_pct", ClosedBarDecisions: true},
 }
 
 func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessage, error) {

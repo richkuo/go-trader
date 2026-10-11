@@ -58,6 +58,7 @@ from money_flow_index import money_flow_index_reversal_core
 from aroon_trend import aroon_trend_core, validate_aroon_param_dict
 from ultimate_oscillator import ultimate_oscillator_core
 from fisher_reversal import fisher_reversal_core
+from elder_ray_pullback import elder_ray_pullback_core, validate_elder_ray_param_dict
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -1897,6 +1898,31 @@ def fisher_reversal_strategy(df: pd.DataFrame, lookback: int = 9, extreme: float
 
 
 @register(
+    "elder_ray_pullback",
+    "RESEARCH, no-edge (#1648) \u2014 Elder Ray pullback: a finite exponential moving average of close (weight 2/(ema_period+1), seeded at the oldest close of each timestamp's own trailing 64 closes), slope = average minus the average slope_span bars earlier, bull power = high minus average and bear power = low minus average. A long setup arms on the first bar with slope strictly positive and bear power strictly negative after a bar where that pair was false; it enters once when bear power returns to zero or above while slope stays strictly positive, at most pullback_window bars after arming. Short is the mirror with negative slope and bull power. A zero or opposite slope clears the setup and recovery consumes it. Every decision reads exactly its trailing 64 + slope_span + pullback_window + 1 rows (at most 89); bad candles, timestamp defects and cadence gaps inside that span hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"ema_period": 13, "slope_span": 3, "pullback_window": 8},
+    platforms=("futures",),
+    constraints=[
+        "ema_period >= 2",
+        "ema_period <= 32",
+        "slope_span >= 1",
+        "slope_span <= 8",
+        "pullback_window >= 1",
+        "pullback_window <= 16",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/elder_ray_pullback_1648/REPORT.md",
+    short_entries=True,
+    param_validator=validate_elder_ray_param_dict,
+)
+def elder_ray_pullback_strategy(df: pd.DataFrame, ema_period: int = 13, slope_span: int = 3,
+                                pullback_window: int = 8) -> pd.DataFrame:
+    return elder_ray_pullback_core(df, ema_period=ema_period, slope_span=slope_span,
+                                   pullback_window=pullback_window)
+
+
+@register(
     "ease_of_movement_breakout",
     "RESEARCH, no-edge (#1671) \u2014 Ease of Movement breakout confirmation: one-bar Ease of Movement is the change in candle midpoint times the current high-minus-low range divided by current base volume, averaged over eom_period bars; long on the first close strictly above the prior breakout_window high while the average is strictly positive, short on the mirror below the prior low with a strictly negative average. Needs declared bar cadence; zero or negative volume, bad candles, timestamp defects and cadence gaps inside the window hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"eom_period": 14, "breakout_window": 20},
@@ -2216,6 +2242,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "ease_of_movement_breakout",
         "fisher_reversal",
         "ultimate_oscillator",
+        "elder_ray_pullback",
         "hold",
     ],
 }
