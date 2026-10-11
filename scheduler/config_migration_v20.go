@@ -10,14 +10,15 @@ import (
 const v20LegacyAllowDeprecatedKey = "allow_deprecated"
 
 var v20FormerResearchStrategies = map[string]struct{}{
-	"analog_retrieval":            {},
-	"awesome_oscillator":          {},
-	"chaikin_money_flow_breakout": {},
-	"commodity_channel_trend":     {},
-	"connors_rsi_reversion":       {},
-	"open_interest_breakout":      {},
-	"relative_vigor_index":        {},
-	"vortex_trend":                {},
+	"analog_retrieval":             {},
+	"awesome_oscillator":           {},
+	"chaikin_money_flow_breakout":  {},
+	"commodity_channel_trend":      {},
+	"connors_rsi_reversion":        {},
+	"on_balance_volume_divergence": {},
+	"open_interest_breakout":       {},
+	"relative_vigor_index":         {},
+	"vortex_trend":                 {},
 }
 
 type noEdgeStampedStrategy struct {

@@ -143,6 +143,9 @@ expiry `[6, 12, 24]`, `volume_test` `[true]`. Synthetic fixture seed: 1657.
   `bidirectionalPerpsStrategies` true. The name is in no starter or default strategy list, and
   both compatibility shims are unchanged. The short name lets the Discord and status-page add
   paths build a configuration; the existing admission gate and warnings still apply to it.
+- The legacy v20 config migration lists it in `v20FormerResearchStrategies`, as it does for the
+  earlier research candidates, so a legacy explicit-live strategy that names it (open or close
+  fallback) is vetoed and never stamped `allow_no_edge: true`.
 
 ## Close, stop and bar contract
 
