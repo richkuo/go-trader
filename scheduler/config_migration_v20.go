@@ -20,6 +20,44 @@ var v20FormerResearchStrategies = map[string]struct{}{
 	"open_interest_breakout":       {},
 	"relative_vigor_index":         {},
 	"vortex_trend":                 {},
+	"williams_r_reversal":          {},
+}
+
+var v20StampEligibleStrategies = map[string]struct{}{
+	"adx_trend":           {},
+	"amd_ifvg":            {},
+	"atr_breakout":        {},
+	"bollinger_bands":     {},
+	"consolidation_range": {},
+	"donchian_breakout":   {},
+	"ema_crossover":       {},
+	"funding_skew":        {},
+	"heikin_ashi_ema":     {},
+	"ichimoku_cloud":      {},
+	"macd":                {},
+	"mean_reversion":      {},
+	"momentum":            {},
+	"mtf_confluence":      {},
+	"order_blocks":        {},
+	"pairs_spread":        {},
+	"parabolic_sar":       {},
+	"range_scalper":       {},
+	"regime_adaptive":     {},
+	"rsi":                 {},
+	"rsi_macd_combo":      {},
+	"session_breakout":    {},
+	"sma_crossover":       {},
+	"squeeze_momentum":    {},
+	"stoch_rsi":           {},
+	"supertrend":          {},
+	"sweep_squeeze_combo": {},
+	"tema_cross":          {},
+	"tema_cross_bd":       {},
+	"triple_ema":          {},
+	"triple_ema_bidir":    {},
+	"vol_momentum":        {},
+	"volume_weighted":     {},
+	"vwap_reversion":      {},
 }
 
 type noEdgeStampedStrategy struct {
@@ -63,7 +101,7 @@ func (r *noEdgeMigrationReport) lines() []string {
 			len(r.Stamped), strings.Join(parts, "; ")))
 	}
 	if len(r.VetoedResearch) > 0 {
-		lines = append(lines, fmt.Sprintf("v20 no-edge migration did not stamp %s: a former research-only reference was never allowed live, so add allow_no_edge: true yourself only if you accept live use.",
+		lines = append(lines, fmt.Sprintf("v20 no-edge migration did not stamp %s: a research-only reference, or one registered after v20, never ran live before the update, so add allow_no_edge: true yourself only if you accept live use.",
 			strings.Join(r.VetoedResearch, ", ")))
 	}
 	if len(r.RemovedKeyIDs) > 0 {
@@ -153,6 +191,9 @@ func migrateV20NoEdge(raw map[string]interface{}, inputVersion int) (*noEdgeMigr
 			}
 			if _, ok := noEdgeEvidenceFor(ref.Name); ok {
 				gated = append(gated, ref)
+				if _, eligible := v20StampEligibleStrategies[strings.TrimSpace(ref.Name)]; !eligible {
+					vetoed = true
+				}
 			}
 		}
 		if len(gated) == 0 {

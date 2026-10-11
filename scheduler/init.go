@@ -96,6 +96,7 @@ var knownShortNames = map[string]string{
 	"open_interest_breakout":       "oibo",
 	"relative_vigor_index":         "rvi",
 	"vortex_trend":                 "vortex",
+	"williams_r_reversal":          "wrr",
 	"hold":                         "hold",
 }
 
@@ -159,6 +160,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"vortex_trend":                 {"futures"},
 	"vwap_rejection_st":            {"futures"},
 	"vwap_reversion":               {"spot", "futures"},
+	"williams_r_reversal":          {"futures"},
 }
 
 func openStrategyRegisteredFor(name, registryPlatform string) bool {
@@ -198,6 +200,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"vortex_trend":                 true,
 	"relative_vigor_index":         true,
 	"awesome_oscillator":           true,
+	"williams_r_reversal":          true,
 	"money_flow_index_reversal":    true,
 	"on_balance_volume_divergence": true,
 }
