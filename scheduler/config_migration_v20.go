@@ -11,6 +11,7 @@ const v20LegacyAllowDeprecatedKey = "allow_deprecated"
 
 var v20FormerResearchStrategies = map[string]struct{}{
 	"analog_retrieval":            {},
+	"aroon_trend":                 {},
 	"awesome_oscillator":          {},
 	"chaikin_money_flow_breakout": {},
 	"commodity_channel_trend":     {},

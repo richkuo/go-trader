@@ -270,10 +270,14 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	explicitFalse := noEdgeHLStrategy("hl-false", "rsi", "SOL", "1h", "--mode=live")
 	explicitFalse["allow_no_edge"] = false
 	explicitFalse["allow_deprecated"] = true
+	aroonClose := noEdgeHLStrategy("hl-bo-aroon", "breakout", "ETH", "4h", "--mode=live")
+	aroonClose["close_strategy"] = map[string]interface{}{"name": "aroon_trend"}
 	path := writeNoEdgeConfig(t, 19,
 		mixed,
 		allowedOpenRefusedClose,
 		noEdgeHLStrategy("hl-ao", "awesome_oscillator", "ETH", "4h", "--mode=live"),
+		noEdgeHLStrategy("hl-aroon", "aroon_trend", "BTC", "4h", "--mode=live"),
+		aroonClose,
 		noEdgeHLStrategy("hl-missing", "rsi", "DOGE", "1h"),
 		noEdgeHLStrategy("hl-invalid", "rsi", "LINK", "1h", "--mode=live", "--mode=live"),
 		explicitFalse,
@@ -282,7 +286,7 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	if err == nil {
 		t.Fatal("refused references must stay refused after migration")
 	}
-	for _, id := range []string{"hl-mix", "hl-bo-cci", "hl-ao", "hl-missing", "hl-invalid", "hl-false"} {
+	for _, id := range []string{"hl-mix", "hl-bo-cci", "hl-ao", "hl-aroon", "hl-bo-aroon", "hl-missing", "hl-invalid", "hl-false"} {
 		if !strings.Contains(err.Error(), "strategy "+id+":") {
 			t.Fatalf("%s should be refused after migration: %v", id, err)
 		}
@@ -295,6 +299,19 @@ func TestV20NoEdgeMigrationNeverGrantsRefusedOrNonLiveReferences(t *testing.T) {
 	}
 	if raw["hl-false"]["allow_no_edge"] != false {
 		t.Fatal("an existing explicit false must be preserved")
+	}
+	for _, id := range []string{"hl-aroon", "hl-bo-aroon"} {
+		if _, has := raw[id]["allow_no_edge"]; has {
+			t.Fatalf("%s names aroon_trend and must be vetoed, never stamped", id)
+		}
+	}
+	report, err := migrateV20NoEdge(readRawConfig(t, writeNoEdgeConfig(t, 19,
+		noEdgeHLStrategy("hl-aroon", "aroon_trend", "BTC", "4h", "--mode=live"), aroonClose)), 19)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Stamped) != 0 || !reflect.DeepEqual(report.VetoedResearch, []string{"hl-aroon", "hl-bo-aroon"}) {
+		t.Fatalf("aroon_trend references must be vetoed: stamped=%v vetoed=%v", stampedIDs(report), report.VetoedResearch)
 	}
 }
 
