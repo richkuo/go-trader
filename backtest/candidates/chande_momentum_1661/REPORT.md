@@ -502,4 +502,4 @@ GO_TRADER_OHLCV_CACHE_DB=/tmp/cmo_run.db uv run --no-sync python backtest/eval_w
 
 The stock CLI keeps `oos` open-ended, so `run_study.py` pins its end to 2026-10-01 instead.
 
-Study runtime: 332.2 s on commit `0715416732ccb93275e81e3e7a096d887a1bdfed`.
+Study runtime: 320.0 s on commit `6361b20931c6d70f0ab2e35b2940eb17e07b8f19`.
