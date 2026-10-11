@@ -1,5 +1,7 @@
+import json
 import math
 import os
+import subprocess
 import sys
 
 import numpy as np
@@ -444,3 +446,88 @@ def test_period_198_parity_at_the_window_boundary():
     frame = compute_parity_frame(_market(260), cfg=cfg, window=200)
     s = summarize(frame)
     assert s["bars_compared"] > 0 and s["mismatches"] == 0 and s["clean"] is True
+
+
+RUN_BACKTEST = os.path.join(_REPO, "backtest", "run_backtest.py")
+_TIMEFRAME_FREQ = {"1h": "1h", "4h": "4h", "1w": "7D"}
+
+
+@pytest.fixture(scope="module")
+def cached_candles(tmp_path_factory):
+    import storage
+    db = str(tmp_path_factory.mktemp("cmo_interval") / "ohlcv.db")
+    storage.init_db(db)
+    for timeframe, freq in _TIMEFRAME_FREQ.items():
+        df = _frame(_walk(600), freq=freq, start="2025-01-01")
+        rows = df.reset_index(drop=True)
+        rows.insert(0, "timestamp", (df.index.astype("int64") // 10**6).astype("int64"))
+        storage.store_ohlcv(rows, "binanceus", "BTC/USDT", timeframe, db_path=db)
+    env = dict(os.environ)
+    env["GO_TRADER_OHLCV_CACHE_DB"] = db
+    return env
+
+
+def _run_backtest_cli(env, strategy, timeframe):
+    cmd = [sys.executable, RUN_BACKTEST, "--mode", "single", "--strategy", strategy, "--registry", "futures",
+           "--platform", "hyperliquid", "--symbol", "BTC/USDT", "--since", "2025-01-01", "--timeframe", timeframe,
+           "--funding", "off", "--direction", "both", "--close-strategy", json.dumps(TP),
+           "--stop-loss-atr-mult", "1.0"]
+    return subprocess.run(cmd, cwd=_REPO, env=env, capture_output=True, text=True, timeout=600)
+
+
+def _printed_params(stdout):
+    line = next(l for l in stdout.splitlines() if l.strip().startswith("Params:"))
+    return line.split("Params:", 1)[1].strip()
+
+
+def test_run_backtest_binds_the_interval_from_a_non_hourly_timeframe(cached_candles):
+    proc = _run_backtest_cli(cached_candles, NAME, "4h")
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert "'expected_interval_ms': 14400000" in _printed_params(proc.stdout)
+    trades = [l for l in proc.stdout.splitlines() if "Total Trades:" in l]
+    assert trades and int(trades[0].split(":")[1]) > 0
+
+
+def test_run_backtest_refuses_an_explicit_interval_that_disagrees_with_the_timeframe(cached_candles):
+    snippet = (
+        "import sys; sys.path[:0] = ['backtest', 'shared_tools']\n"
+        "from run_backtest import run_single_backtest\n"
+        "run_single_backtest('chande_momentum', 'BTC/USDT', '4h', '2025-01-01', "
+        "params={'expected_interval_ms': 3600000}, registry='futures', platform='hyperliquid', "
+        "funding_mode='off')\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", snippet], cwd=_REPO, env=cached_candles,
+                          capture_output=True, text=True, timeout=600)
+    assert proc.returncode != 0
+    assert "chande_momentum: expected_interval_ms=3600000 does not match timeframe '4h' (14400000 ms)" in proc.stderr
+
+
+def test_strategies_without_the_interval_parameter_run_unchanged_on_any_timeframe(cached_candles):
+    proc = _run_backtest_cli(cached_candles, "sma_crossover", "1w")
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    defaults = load_registry("futures").STRATEGY_REGISTRY["sma_crossover"]["default_params"]
+    assert _printed_params(proc.stdout) == str(defaults)
+    assert "expected_interval_ms" not in proc.stdout
+
+
+def _walk_forward(df, grid, timeframe, capsys):
+    from optimizer import walk_forward_optimize
+    result = walk_forward_optimize(df, NAME, grid, n_splits=3, timeframe=timeframe, registry="futures",
+                                   platform="hyperliquid", verbose=True, close_strategies=[TP],
+                                   stop_loss_atr_mult=1.0, direction="long")
+    warmup = [l for l in capsys.readouterr().out.splitlines() if "Warmup bars per fold:" in l]
+    return result, warmup
+
+
+def test_walk_forward_warmup_ignores_the_interval_and_binds_it_from_the_timeframe(capsys):
+    hourly = _frame(_walk(900), freq="1h", start="2025-01-01")
+    base = {"period": [20], "threshold": [25.0]}
+    _, without = _walk_forward(hourly, base, "1h", capsys)
+    _, with_interval = _walk_forward(hourly, dict(base, expected_interval_ms=[H]), "1h", capsys)
+    assert without == with_interval == ["  Warmup bars per fold: 20"]
+
+    from optimizer import DEFAULT_PARAM_RANGES
+    four_hour = _frame(_walk(900), freq="4h", start="2025-01-01")
+    result, _ = _walk_forward(four_hour, DEFAULT_PARAM_RANGES[NAME], "4h", capsys)
+    assert result["n_valid_folds"] == 3
+    assert all(w["best_params"]["expected_interval_ms"] == 4 * H for w in result["window_results"])

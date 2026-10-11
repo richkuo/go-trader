@@ -20,7 +20,7 @@ type fixedIntervalUse struct {
 }
 
 func fixedIntervalUses(sc StrategyConfig) []fixedIntervalUse {
-	if sc.Type == "manual" || sc.Type == "options" {
+	if sc.Type == "options" {
 		return nil
 	}
 	var uses []fixedIntervalUse
@@ -73,16 +73,23 @@ func fixedIntervalParamValue(params map[string]interface{}) (int64, bool, error)
 	return int64(f), true, nil
 }
 
+func fixedIntervalContinuousCandles(sc StrategyConfig) bool {
+	return sc.Type == "perps" || (sc.Type == "manual" && sc.Platform == "hyperliquid")
+}
+
 func fixedIntervalStrategyErrors(strategies []StrategyConfig) []string {
 	var errs []string
 	for _, sc := range strategies {
 		for _, use := range fixedIntervalUses(sc) {
 			label := fmt.Sprintf("strategy %s: %s strategy %q", sc.ID, use.Role, use.Name)
-			if sc.Type != "perps" {
-				errs = append(errs, fmt.Sprintf("%s holds every entry unless its candles are spaced exactly %s apart; type=%s platform=%s has trading-session breaks or no continuous candle contract, so it runs only on perps (hyperliquid, okx)", label, fixedIntervalParam, sc.Type, sc.Platform))
+			if !fixedIntervalContinuousCandles(sc) {
+				errs = append(errs, fmt.Sprintf("%s holds every signal unless its candles are spaced exactly %s apart; type=%s platform=%s has trading-session breaks or no continuous candle contract, so it runs only on perps (hyperliquid, okx) and Hyperliquid manual strategies", label, fixedIntervalParam, sc.Type, sc.Platform))
 				continue
 			}
 			_, timeframe := strategyArgSymbolTimeframe(sc.Args)
+			if timeframe == "" && sc.Type == "manual" {
+				timeframe = strings.TrimSpace(sc.Timeframe)
+			}
 			want, ok := closedBarDecisionIntervalsMs[timeframe]
 			if !ok {
 				errs = append(errs, fmt.Sprintf("%s needs a fixed-duration timeframe in args to check %s, got %q (supported: %s)", label, fixedIntervalParam, timeframe, closedBarSupportedIntervals()))
@@ -99,7 +106,7 @@ func fixedIntervalStrategyErrors(strategies []StrategyConfig) []string {
 				source = "registry default"
 			}
 			if got != want {
-				errs = append(errs, fmt.Sprintf("%s: %s %s=%d does not match timeframe %s (%d ms), so every entry would hold on a cadence gap; set \"%s\": %d in its params", label, source, fixedIntervalParam, got, timeframe, want, fixedIntervalParam, want))
+				errs = append(errs, fmt.Sprintf("%s: %s %s=%d does not match timeframe %s (%d ms), so every signal would hold on a cadence gap; set \"%s\": %d in its params", label, source, fixedIntervalParam, got, timeframe, want, fixedIntervalParam, want))
 			}
 		}
 	}

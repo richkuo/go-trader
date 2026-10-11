@@ -1005,6 +1005,16 @@ func TestChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
 	interval := func(ms interface{}) map[string]interface{} {
 		return map[string]interface{}{"expected_interval_ms": ms}
 	}
+	manual := func(closeParams map[string]interface{}) map[string]interface{} {
+		ref := map[string]interface{}{"name": cmo}
+		if closeParams != nil {
+			ref["params"] = closeParams
+		}
+		return map[string]interface{}{
+			"id": "hl-cmo-manual", "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "timeframe": "4h",
+			"leverage": 1.0, "capital": 100.0, "allow_no_edge": true, "close_strategy": ref,
+		}
+	}
 	cases := []struct {
 		name    string
 		sc      map[string]interface{}
@@ -1029,7 +1039,10 @@ func TestChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
 		{"close fallback inherits the open params", withCloseParams(withOpenParams(noEdgeHLStrategy("hl-cmo", cmo, "ETH", "4h", "--mode=paper"), interval(14400000)), nil), nil, ""},
 		{"okx perps 4h explicit match loads", withOpenParams(okx("4h"), interval(14400000)), nil, ""},
 		{"okx perps 4h registry default refused", okx("4h"), []string{`strategy okx-cmo: open strategy "chande_momentum": registry default`}, ""},
-		{"topstep refused for session breaks", topstep, []string{`strategy ts-cmo: open strategy "chande_momentum" holds every entry`, "type=futures platform=topstep", "runs only on perps"}, ""},
+		{"topstep refused for session breaks", topstep, []string{`strategy ts-cmo: open strategy "chande_momentum" holds every signal`, "type=futures platform=topstep", "runs only on perps"}, ""},
+		{"manual close fallback registry default refused on 4h", manual(nil),
+			[]string{`strategy hl-cmo-manual: close strategy "chande_momentum": registry default expected_interval_ms=3600000 does not match timeframe 4h`, `"expected_interval_ms": 14400000`}, ""},
+		{"manual close fallback explicit match loads", manual(interval(14400000)), nil, ""},
 		{"other strategies on 4h unchanged", noEdgeHLStrategy("hl-x", "breakout", "ETH", "4h", "--mode=paper"), nil, ""},
 	}
 	for _, tc := range cases {
