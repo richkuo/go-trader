@@ -756,3 +756,39 @@ def _assert_inverted_short_parity(name):
     assert (after["bt_close_fraction"] == 0).all()
     assert (after["live_signal"] == 0).all()
     assert (after["bt_signal"] == 0).all()
+
+
+def _eom_cfg(batched):
+    return ParityConfig(
+        strategy_name="ease_of_movement_breakout",
+        params={"eom_period": 14, "breakout_window": 20},
+        registry="futures",
+        platform="hyperliquid",
+        symbol="BTC",
+        timeframe="1h",
+        close_refs=[{"name": "tiered_tp_atr", "params": {}}],
+        direction="both",
+        batched=batched,
+    )
+
+
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("window", [None, 200])
+def test_eom_candidate_full_prefix_window_and_batch_parity(window, batched):
+    from closed_bar import declare_frame_cadence
+    df = declare_frame_cadence(_ohlcv(330, seed=3), "1h", "open")
+    frame = compute_parity_frame(df, cfg=_eom_cfg(batched), window=window, stride=1)
+    result = summarize(frame)
+    assert result["bars_compared"] > 100
+    assert result["clean"], frame[~frame["match"]].head()
+    assert result["close_parity"] != "unknown"
+    assert set(frame["live_signal"]) >= {1, -1}
+    assert (frame["live_close_fraction"] > 0).any()
+    if batched:
+        assert result["batch_mismatches"] == 0 and result["batch_clean"]
+
+
+def test_eom_candidate_without_declared_cadence_holds_in_both_paths():
+    frame = compute_parity_frame(_ohlcv(260, seed=3), cfg=_eom_cfg(False), window=200, stride=5)
+    assert summarize(frame)["clean"]
+    assert (frame["live_signal"] == 0).all() and (frame["bt_signal"] == 0).all()

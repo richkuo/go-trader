@@ -179,6 +179,62 @@ def test_malformed_batch_evidence_rejects_the_payload_before_evaluation(bad):
     assert payload["error"].startswith("invalid batch payload")
 
 
+OBV = "on_balance_volume_divergence"
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_obv_candidate_is_refused_outside_explicit_paper(extra, reason):
+    proc = _run("check_hyperliquid.py", [OBV, "BTC", "4h"] + extra)
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert f"open strategy '{OBV}' is edge_status=no_edge" in payload["error"]
+    assert reason in payload["error"]
+
+
+@pytest.mark.parametrize("extra,reason", [(["--mode=live"], "explicit live mode"), ([], "missing mode")])
+def test_obv_close_fallback_reference_is_refused_without_paper_or_acknowledgement(extra, reason):
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": OBV}]})
+    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--strategy-refs", refs] + extra)
+    assert proc.returncode == 1
+    error = _payload(proc)["error"]
+    assert f"close strategy '{OBV}' is edge_status=no_edge" in error and reason in error
+
+
+@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode=live", "--allow-no-edge"]])
+def test_obv_paper_or_acknowledged_frozen_input_check_runs_without_an_order(extra):
+    refs = json.dumps({"open": {"name": OBV}, "closes": [{"name": "tiered_tp_pct"}]})
+    proc = _run("check_hyperliquid.py", [OBV, "BTC", "4h", "--strategy-refs", refs, "--market-stdin"] + extra,
+                _solo_envelope())
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = _payload(proc)
+    assert out["strategy"] == OBV and out["open_strategy"] == OBV
+    assert out["close_strategies"] == ["tiered_tp_pct"]
+    assert out["signal"] in (-1, 0, 1)
+    assert not out.get("error")
+    assert out["indicators"]["obvd_support_bars"] == 59
+    assert "order" not in out and "fill" not in out
+
+
+def test_obv_batch_slots_carry_their_own_mode_evidence_and_match_solo():
+    proc = _batch([
+        {"id": "paper", "strategy": OBV, "mode": "paper", "mode_args": ["--mode=paper"]},
+        {"id": "normalized-paper-only", "strategy": OBV, "mode": "paper"},
+        {"id": "acked", "strategy": OBV, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},
+        {"id": "unacked-live", "strategy": OBV, "mode": "live", "mode_args": ["--mode=live"]},
+        {"id": "peer", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"]},
+    ])
+    assert proc.returncode == 1
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    assert not results["paper"].get("error") and not results["acked"].get("error") and not results["peer"].get("error")
+    assert "missing mode" in results["normalized-paper-only"]["error"]
+    assert "explicit live mode" in results["unacked-live"]["error"]
+    solo = _payload(_run("check_hyperliquid.py", [OBV, "BTC", "4h", "--mode=paper", "--market-stdin"], _solo_envelope()))
+    for key in ("signal", "open_action", "close_fraction", "indicators"):
+        assert results["paper"].get(key) == solo.get(key)
+        assert results["acked"].get(key) == solo.get(key)
+
+
 CMO = "chande_momentum"
 HOUR_MS = 3_600_000
 
@@ -364,3 +420,216 @@ def test_money_flow_index_batch_slots_apply_the_same_admission_and_match_solo():
     for key in ("signal", "open_action", "close_fraction", "indicators"):
         assert results["paper"].get(key) == solo_out.get(key)
         assert results["acked"].get(key) == solo_out.get(key)
+
+
+EOM = "ease_of_movement_breakout"
+EOM_REFS = json.dumps({"open": {"name": EOM}, "closes": [{"name": "tiered_tp_atr"}]})
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_eom_candidate_is_refused_outside_explicit_paper(extra, reason):
+    proc = _run("check_hyperliquid.py", [EOM, "BTC", "4h"] + extra)
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert f"open strategy '{EOM}' is edge_status=no_edge" in payload["error"]
+    assert "source study_fail" in payload["error"]
+    assert reason in payload["error"]
+
+
+@pytest.mark.parametrize("extra,reason", [(["--mode=live"], "explicit live mode"), ([], "missing mode"),
+                                          (["--mode", "live"], "explicit live mode")])
+def test_eom_close_fallback_reference_is_refused_without_paper_or_acknowledgement(extra, reason):
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": EOM}]})
+    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--strategy-refs", refs] + extra)
+    assert proc.returncode == 1
+    error = _payload(proc)["error"]
+    assert f"close strategy '{EOM}' is edge_status=no_edge" in error and reason in error
+
+
+@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],
+                                   ["--allow-no-edge"]])
+def test_eom_paper_or_acknowledged_frozen_input_check_runs_without_an_order(extra):
+    proc = _run("check_hyperliquid.py", [EOM, "BTC", "4h", "--strategy-refs", EOM_REFS, "--market-stdin"] + extra,
+                _solo_envelope())
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = _payload(proc)
+    assert out["strategy"] == EOM and out["open_strategy"] == EOM
+    assert out["close_strategies"] == ["tiered_tp_atr"]
+    assert out["signal"] in (-1, 0, 1)
+    assert not out.get("error")
+    assert out["indicators"]["eom_interval_ms"] == 14_400_000
+    assert out["indicators"]["eom_valid"] == 1.0
+    assert "eom_eval_ts_ms" not in out["indicators"]
+    assert out["indicator_labels"]["eom_reason"] in ("no_breakout", "breakout_continuation", "entry_long",
+                                                     "entry_short", "indicator_disagrees", "zero_indicator")
+    assert "order" not in out and "fill" not in out
+
+
+def test_eom_batch_slots_carry_their_own_mode_evidence_and_match_solo():
+    proc = _batch([
+        {"id": "paper", "strategy": EOM, "mode": "paper", "mode_args": ["--mode=paper"]},
+        {"id": "normalized-paper-only", "strategy": EOM, "mode": "paper"},
+        {"id": "acked", "strategy": EOM, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},
+        {"id": "unacked-live", "strategy": EOM, "mode": "live", "mode_args": ["--mode=live"]},
+        {"id": "close-fallback-live", "strategy": "breakout", "mode": "live", "mode_args": ["--mode=live"],
+         "close_strategies": EOM},
+        {"id": "peer", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"]},
+    ])
+    assert proc.returncode == 1
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    assert not results["paper"].get("error") and not results["acked"].get("error") and not results["peer"].get("error")
+    assert "missing mode" in results["normalized-paper-only"]["error"]
+    assert "explicit live mode" in results["unacked-live"]["error"]
+    assert f"close strategy '{EOM}'" in results["close-fallback-live"]["error"]
+    solo = _payload(_run("check_hyperliquid.py", [EOM, "BTC", "4h", "--mode=paper", "--market-stdin"], _solo_envelope()))
+    for key in ("signal", "open_action", "close_fraction", "indicators", "indicator_labels"):
+        assert results["paper"].get(key) == solo.get(key)
+        assert results["acked"].get(key) == solo.get(key)
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_ultimate_oscillator_open_reference_is_refused_outside_explicit_paper(extra, reason):
+    proc = _run("check_hyperliquid.py", ["ultimate_oscillator", "BTC", "4h", "--market-stdin"] + extra,
+                _solo_envelope())
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert "open strategy 'ultimate_oscillator' is edge_status=no_edge" in payload["error"]
+    assert reason in payload["error"]
+
+
+@pytest.mark.parametrize("extra,reason", [(["--mode=live"], "explicit live mode"), ([], "missing mode"),
+                                          (["--mode=live", "--allow-no-edge=1"], "invalid acknowledgement")])
+def test_ultimate_oscillator_close_fallback_is_refused_before_market_access(extra, reason):
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": "ultimate_oscillator"}]})
+    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--strategy-refs", refs] + extra)
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    error = _payload(proc)["error"]
+    assert "close strategy 'ultimate_oscillator' is edge_status=no_edge" in error and reason in error
+
+
+def test_ultimate_oscillator_paper_and_acknowledged_solo_and_batch_agree_offline():
+    solo = _run("check_hyperliquid.py", ["ultimate_oscillator", "BTC", "4h", "--mode=paper", "--market-stdin"],
+                _solo_envelope())
+    assert solo.returncode == 0, solo.stderr[-2000:]
+    solo_out = _payload(solo)
+    assert solo_out["strategy"] == "ultimate_oscillator" and not solo_out.get("error")
+    assert "uo_reason_code" in solo_out["indicators"]
+    acked = _run("check_hyperliquid.py", ["ultimate_oscillator", "BTC", "4h", "--mode=live", "--allow-no-edge",
+                                          "--market-stdin"], _solo_envelope())
+    assert acked.returncode == 0, acked.stderr[-2000:]
+    proc = _batch([
+        {"id": "paper", "strategy": "ultimate_oscillator", "mode": "paper", "mode_args": ["--mode=paper"]},
+        {"id": "fallback", "strategy": "breakout", "open_strategy": "breakout",
+         "close_strategies": "ultimate_oscillator", "mode": "paper", "mode_args": ["--mode=paper"]},
+        {"id": "unacked-live", "strategy": "ultimate_oscillator", "mode": "live", "mode_args": ["--mode=live"]},
+        {"id": "fallback-live", "strategy": "breakout", "open_strategy": "breakout",
+         "close_strategies": "ultimate_oscillator", "mode": "live", "mode_args": ["--mode=live"]},
+    ])
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    assert not results["paper"].get("error") and not results["fallback"].get("error")
+    assert "explicit live mode" in results["unacked-live"]["error"]
+    assert "close strategy 'ultimate_oscillator'" in results["fallback-live"]["error"]
+    for key in ("signal", "open_action", "close_fraction"):
+        assert results["paper"].get(key) == solo_out.get(key) == _payload(acked).get(key)
+
+
+AROON = ["aroon_trend", "BTC", "4h"]
+AROON_TP = {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}
+
+
+def _aroon_refs(params=None, closes=(AROON_TP,)):
+    refs = {"open": {"name": "aroon_trend", "params": params or {"period": 25, "strength": 70.0}},
+            "closes": list(closes)}
+    return ["--strategy-refs", json.dumps(refs)]
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_aroon_solo_check_refuses_outside_explicit_paper(extra, reason):
+    proc = _run("check_hyperliquid.py", AROON + extra + _aroon_refs())
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert "open strategy 'aroon_trend' is edge_status=no_edge" in payload["error"]
+    assert "backtest/candidates/aroon_trend_1643/REPORT.md" in payload["error"]
+    assert reason in payload["error"]
+
+
+@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],
+                                   ["--allow-no-edge"]])
+def test_aroon_paper_or_acknowledged_solo_check_runs_offline(extra):
+    proc = _run("check_hyperliquid.py", AROON + ["--market-stdin"] + extra + _aroon_refs(), _solo_envelope())
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = _payload(proc)
+    assert out["strategy"] == "aroon_trend" and not out.get("error")
+    assert out["close_strategies"] == ["tiered_tp_pct"]
+    assert out["indicators"]["aroon_valid"] == 1.0
+    assert out["indicators"]["aroon_reason_code"] in (-1, 0, 1, 2)
+
+
+@pytest.mark.parametrize("params,needle", [
+    ({"period": True}, "period"),
+    ({"period": 2.5}, "period must be an integer"),
+    ({"period": 1}, "period"),
+    ({"period": 199}, "period"),
+    ({"period": "25"}, "period"),
+    ({"strength": None}, "strength must be a number"),
+    ({"strength": 100.5}, "strength"),
+    ({"strength": "70"}, "strength must be a number"),
+])
+def test_aroon_invalid_parameters_are_refused_before_any_market_fetch(params, needle):
+    proc = _run("check_hyperliquid.py", AROON + ["--mode=paper"] + _aroon_refs(params))
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert needle in payload["error"]
+    assert "Fetching" not in proc.stderr
+
+
+def test_aroon_close_fallback_is_gated_and_its_parameters_are_preflighted():
+    fallback = {"name": "aroon_trend", "params": {"period": 14, "strength": 50.0}}
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [fallback]})
+    refused = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--mode=live", "--strategy-refs", refs])
+    assert refused.returncode == 1
+    assert "close strategy 'aroon_trend' is edge_status=no_edge" in _payload(refused)["error"]
+
+    acked = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--mode=live", "--allow-no-edge",
+                                          "--strategy-refs", refs, "--market-stdin"], _solo_envelope())
+    assert acked.returncode == 0, acked.stderr[-2000:]
+    assert _payload(acked)["close_strategies"] == ["aroon_trend"]
+
+    bad = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": "aroon_trend", "params": {"period": 0}}]})
+    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--mode=paper", "--strategy-refs", bad])
+    assert proc.returncode == 1
+    assert "period" in _payload(proc)["error"]
+
+
+def test_aroon_batch_slots_admit_refuse_and_match_solo():
+    refs = {"open": {"name": "aroon_trend", "params": {"period": 25, "strength": 70.0}}, "closes": [AROON_TP]}
+    proc = _batch([
+        {"id": "paper", "strategy": "aroon_trend", "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
+        {"id": "acked", "strategy": "aroon_trend", "mode": "live", "mode_args": ["--mode=live"],
+         "allow_no_edge": True, "strategy_refs": refs},
+        {"id": "unacked-live", "strategy": "aroon_trend", "mode": "live", "mode_args": ["--mode=live"],
+         "strategy_refs": refs},
+        {"id": "missing", "strategy": "aroon_trend", "mode": "paper", "strategy_refs": refs},
+        {"id": "repeated", "strategy": "aroon_trend", "mode": "paper", "mode_args": ["--mode=paper", "--mode=live"],
+         "strategy_refs": refs},
+        {"id": "bad-params", "strategy": "aroon_trend", "mode": "paper", "mode_args": ["--mode=paper"],
+         "strategy_refs": {"open": {"name": "aroon_trend", "params": {"period": 2.5}}}},
+        {"id": "peer", "strategy": "breakout", "mode": "paper"},
+    ])
+    assert proc.returncode == 1
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    assert not results["paper"].get("error") and not results["acked"].get("error") and not results["peer"].get("error")
+    assert "explicit live mode" in results["unacked-live"]["error"]
+    assert "missing mode" in results["missing"]["error"]
+    assert "invalid mode input" in results["repeated"]["error"]
+    assert "period must be an integer" in results["bad-params"]["error"]
+
+    solo = _payload(_run("check_hyperliquid.py", AROON + ["--mode=paper", "--market-stdin"] + _aroon_refs(),
+                         _solo_envelope()))
+    for key in ("signal", "open_action", "close_fraction", "indicators"):
+        assert results["paper"].get(key) == solo.get(key)
+        assert results["acked"].get(key) == solo.get(key)

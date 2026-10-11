@@ -712,6 +712,10 @@ DEFAULT_PARAM_RANGES = {
         "oversold": [5.0, 10.0, 20.0],
         "overbought": [80.0, 90.0, 95.0],
     },
+    "fisher_reversal": {
+        "lookback": [5, 9, 13, 21],
+        "extreme": [0.75, 1.0, 1.5, 2.0],
+    },
     "vortex_trend": {
         "period": [7, 14, 21, 28],
         "min_separation": [0.0, 0.02, 0.05, 0.10],
@@ -728,10 +732,40 @@ DEFAULT_PARAM_RANGES = {
         "period": [10, 14, 20, 30, 40, 60],
         "threshold": [10.0, 15.0, 25.0, 35.0, 50.0],
     },
+    "on_balance_volume_divergence": {
+        "left_span": [2, 3, 5],
+        "right_span": [2, 3, 5],
+        "min_separation": [3, 5, 8],
+        "max_separation": [20, 40, 60],
+        "volume_threshold": [0.0, 0.05, 0.10, 0.20],
+        "setup_expiry": [6, 12, 24],
+        "volume_test": [True],
+    },
+    "williams_r_reversal": {
+        "lookback": [7, 14, 21, 28],
+        "oversold": [-90.0, -80.0, -70.0],
+        "overbought": [-30.0, -20.0, -10.0],
+    },
     "money_flow_index_reversal": {
         "lookback": [7, 14, 28, 56],
         "oversold": [10.0, 20.0, 30.0],
         "overbought": [70.0, 80.0, 90.0],
+    },
+    "aroon_trend": {
+        "period": [10, 14, 25, 50, 100],
+        "strength": [50.0, 70.0, 85.0],
+    },
+    "ultimate_oscillator": {
+        "short_window": [5, 7, 9],
+        "mid_window": [12, 14, 18],
+        "long_window": [24, 28, 40],
+        "bullish_threshold": [60.0, 70.0, 80.0],
+        "bearish_threshold": [20.0, 30.0, 40.0],
+        "breakout_lookback": [10, 20, 40],
+    },
+    "ease_of_movement_breakout": {
+        "eom_period": [7, 14, 21, 28],
+        "breakout_window": [10, 20, 40, 60],
     },
     "analog_retrieval": {
         "horizon": [6, 12, 24],

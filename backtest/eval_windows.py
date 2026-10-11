@@ -282,6 +282,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             commission_pct: Optional[float] = None,
             slippage_pct: Optional[float] = None,
             keep_trades: bool = False,
+            keep_positions: bool = False,
             intrabar_resolution: str = "ohlc_walk",
             exchange_id: Optional[str] = None,
             manifest_ctx: Optional[dict] = None,
@@ -491,8 +492,12 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     leg["close_validation"] = results.get("close_validation")
     if keep_trades:
         leg["trade_samples"] = trade_samples_from_results(results)
+    if keep_positions:
+        leg["positions"] = positions_from_results(results)
     if manifest_info is not None:
         leg["manifest"] = manifest_info
+        leg["execution"] = execution_metrics(results, capital)
+    elif keep_trades:
         leg["execution"] = execution_metrics(results, capital)
     block = results.get("funding")
     if isinstance(block, dict):
@@ -504,11 +509,45 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     return leg
 
 
+INCUMBENT_CONTRACT_KEYS = ("direction", "close_strategies", "stop_loss_atr_mult",
+                           "trailing_stop_atr_mult", "comparison_mode", "stop_context")
+
+
+def incumbent_contract_kwargs(contract: Optional[dict]) -> dict:
+    if contract is None:
+        return {}
+    if not isinstance(contract, dict):
+        raise ValueError(f"incumbent contract must be an object, got {contract!r}")
+    unknown = sorted(set(contract) - set(INCUMBENT_CONTRACT_KEYS))
+    if unknown:
+        raise ValueError(
+            f"incumbent contract carries unsupported keys {unknown}; "
+            f"allowed: {list(INCUMBENT_CONTRACT_KEYS)}")
+    probe = dict(contract, name="incumbent_contract")
+    validate_candidate(probe)
+    return {
+        "close_strategies": probe.get("close_strategies"),
+        "direction": probe.get("direction") or "long",
+        "stop_loss_atr_mult": probe.get("stop_loss_atr_mult"),
+        "trailing_stop_atr_mult": probe.get("trailing_stop_atr_mult"),
+        "comparison_mode": probe.get("comparison_mode"),
+        "stop_kwargs": candidate_stop_kwargs(probe),
+    }
+
+
+def incumbent_contract_identity(contract: Optional[dict]) -> Optional[str]:
+    if contract is None:
+        return None
+    return json.dumps(contract, sort_keys=True, separators=(",", ":"), default=str)
+
+
 def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
                            capital: float, *,
                            intrabar_resolution: str = "ohlc_walk",
                            manifest_ctx: Optional[dict] = None,
-                           funding_mode: str = "charge") -> dict:
+                           funding_mode: str = "charge",
+                           contract: Optional[dict] = None) -> dict:
+    contract_kwargs = incumbent_contract_kwargs(contract)
     out = {}
     for symbol, timeframe in datasets:
         ds = dataset_key(symbol, timeframe)
@@ -518,7 +557,8 @@ def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
                                     window, capital=capital,
                                     intrabar_resolution=intrabar_resolution,
                                     manifest_ctx=manifest_ctx,
-                                    funding_mode=funding_mode)
+                                    funding_mode=funding_mode,
+                                    **contract_kwargs)
     return out
 
 
@@ -744,8 +784,10 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
                     intrabar_resolution: str = "ohlc_walk",
                     manifest: Optional[dict] = None,
                     cost_multiplier: float = 1.0,
-                    funding_mode: str = "charge") -> dict:
+                    funding_mode: str = "charge",
+                    incumbent_contract: Optional[dict] = None) -> dict:
     validate_candidate(candidate)
+    incumbent_contract_kwargs(incumbent_contract)
     manifest_ctx = None
     if manifest is not None:
         window = manifest_windows(manifest)[window_name]
@@ -755,12 +797,15 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
         window = WINDOWS[window_name]
     memo_key = ((window_name, funding_mode) if manifest is None
                 else (manifest["path"], window_name, cost_multiplier, funding_mode))
+    if incumbent_contract is not None:
+        memo_key = memo_key + (incumbent_contract_identity(incumbent_contract),)
     if memo_key not in bars_memo:
         bars_memo[memo_key] = incumbent_bars(
             compute_incumbent_legs(reg, datasets, window, capital,
                                    intrabar_resolution=intrabar_resolution,
                                    manifest_ctx=manifest_ctx,
-                                   funding_mode=funding_mode))
+                                   funding_mode=funding_mode,
+                                   contract=incumbent_contract))
     bars = bars_memo[memo_key]
 
     candidate_legs = {}
@@ -775,6 +820,8 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
     score["window"] = window_name
     score["window_range"] = list(window)
     score["bars"] = bars
+    if incumbent_contract is not None:
+        score["incumbent_contract"] = incumbent_contract
     from backtester import aggregate_close_validations
     ran = [leg.get("close_validation") for leg in candidate_legs.values() if leg is not None]
     score["close_validation"] = aggregate_close_validations(

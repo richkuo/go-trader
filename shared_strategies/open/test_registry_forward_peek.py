@@ -125,9 +125,25 @@ def _sweep_squeeze_combo_fixture() -> pd.DataFrame:
     return df
 
 
+def _ultimate_oscillator_fixture() -> pd.DataFrame:
+    rng = np.random.RandomState(_SEED + 4)
+    n = 600
+    t = np.arange(n)
+    drift = np.where((t // 60) % 2 == 0, 0.45, -0.45)
+    close = 200.0 + np.cumsum(drift + rng.randn(n) * 0.6)
+    open_ = np.concatenate([[close[0]], close[:-1]])
+    span = np.abs(rng.randn(n)) * 0.5 + 0.1
+    return pd.DataFrame(
+        {"open": open_, "high": np.maximum(open_, close) + span,
+         "low": np.minimum(open_, close) - span, "close": close, "volume": np.full(n, 100.0)},
+        index=pd.date_range("2026-01-01", periods=n, freq="1h"),
+    )
+
+
 STRATEGY_FIXTURES = {
     "range_scalper": _range_scalper_fixture,
     "sweep_squeeze_combo": _sweep_squeeze_combo_fixture,
+    "ultimate_oscillator": _ultimate_oscillator_fixture,
 }
 
 
@@ -156,8 +172,19 @@ def _with_open_interest(fn):
     return wrapped
 
 
+def _with_declared_cadence(fn):
+    def wrapped(df, **params):
+        out = df.copy()
+        step_ms = int((out.index[1] - out.index[0]) / pd.Timedelta(milliseconds=1))
+        out.attrs["bar_interval_ms"] = step_ms
+        out.attrs["bar_timestamp_kind"] = "open"
+        return fn(out, **params)
+    return wrapped
+
+
 STRATEGY_INPUTS = {
     "open_interest_breakout": _with_open_interest,
+    "ease_of_movement_breakout": _with_declared_cadence,
 }
 
 _FIXTURE_CACHE = {}
