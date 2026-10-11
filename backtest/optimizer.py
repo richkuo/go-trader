@@ -718,6 +718,14 @@ DEFAULT_PARAM_RANGES = {
         "fast_period": [3, 5, 8, 13],
         "slow_period": [21, 34, 55, 89],
     },
+    "ultimate_oscillator": {
+        "short_window": [5, 7, 9],
+        "mid_window": [12, 14, 18],
+        "long_window": [24, 28, 40],
+        "bullish_threshold": [60.0, 70.0, 80.0],
+        "bearish_threshold": [20.0, 30.0, 40.0],
+        "breakout_lookback": [10, 20, 40],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],

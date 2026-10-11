@@ -50,6 +50,7 @@ from connors_rsi import connors_rsi_reversion_core
 from vortex_trend import vortex_trend_core
 from relative_vigor_index import relative_vigor_index_core
 from awesome_oscillator import awesome_oscillator_core
+from ultimate_oscillator import ultimate_oscillator_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -1721,6 +1722,44 @@ def awesome_oscillator_strategy(df: pd.DataFrame, fast_period: int = 5, slow_per
 
 
 @register(
+    "ultimate_oscillator",
+    "RESEARCH, no-edge (#1664) \u2014 Ultimate Oscillator confirmation of Donchian breakouts: buying pressure is close minus min(low, previous close), true range is max(high, previous close) minus that minimum, and the oscillator is 100 x (4 x short + 2 x mid + long window averages of summed pressure over summed range) / 7; long only when the close first breaks strictly above the prior breakout_lookback high and the oscillator on that same closed bar is strictly above bullish_threshold, short on the mirror below the prior low and bearish_threshold. A failed confirmation holds and no later bar confirms it. Any bad candle, timestamp defect, cadence gap or zero range inside the trailing dependency span holds. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {
+        "short_window": 7,
+        "mid_window": 14,
+        "long_window": 28,
+        "bullish_threshold": 70.0,
+        "bearish_threshold": 30.0,
+        "breakout_lookback": 20,
+    },
+    platforms=("futures",),
+    constraints=[
+        "short_window >= 1",
+        "short_window < mid_window",
+        "mid_window < long_window",
+        "long_window <= 198",
+        "breakout_lookback >= 1",
+        "breakout_lookback <= 197",
+        "bearish_threshold > 0",
+        "bearish_threshold < bullish_threshold",
+        "bullish_threshold < 100",
+    ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/ultimate_oscillator_1664/REPORT.md",
+    short_entries=True,
+)
+def ultimate_oscillator_strategy(df: pd.DataFrame, short_window: int = 7, mid_window: int = 14,
+                                 long_window: int = 28, bullish_threshold: float = 70.0,
+                                 bearish_threshold: float = 30.0,
+                                 breakout_lookback: int = 20) -> pd.DataFrame:
+    return ultimate_oscillator_core(
+        df, short_window=short_window, mid_window=mid_window, long_window=long_window,
+        bullish_threshold=bullish_threshold, bearish_threshold=bearish_threshold,
+        breakout_lookback=breakout_lookback)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1991,7 +2030,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
         "chaikin_money_flow_breakout", "open_interest_breakout", "connors_rsi_reversion",
-        "vortex_trend", "relative_vigor_index", "awesome_oscillator",
+        "vortex_trend", "relative_vigor_index", "awesome_oscillator", "ultimate_oscillator",
         "hold",
     ],
 }

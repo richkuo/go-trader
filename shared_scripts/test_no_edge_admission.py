@@ -177,3 +177,50 @@ def test_malformed_batch_evidence_rejects_the_payload_before_evaluation(bad):
     assert payload["error_scope"] == "shared_state"
     assert payload["results"] == []
     assert payload["error"].startswith("invalid batch payload")
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_ultimate_oscillator_open_reference_is_refused_outside_explicit_paper(extra, reason):
+    proc = _run("check_hyperliquid.py", ["ultimate_oscillator", "BTC", "4h", "--market-stdin"] + extra,
+                _solo_envelope())
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    payload = _payload(proc)
+    assert payload["signal"] == 0
+    assert "open strategy 'ultimate_oscillator' is edge_status=no_edge" in payload["error"]
+    assert reason in payload["error"]
+
+
+@pytest.mark.parametrize("extra,reason", [(["--mode=live"], "explicit live mode"), ([], "missing mode"),
+                                          (["--mode=live", "--allow-no-edge=1"], "invalid acknowledgement")])
+def test_ultimate_oscillator_close_fallback_is_refused_before_market_access(extra, reason):
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": "ultimate_oscillator"}]})
+    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--strategy-refs", refs] + extra)
+    assert proc.returncode == 1, proc.stderr[-2000:]
+    error = _payload(proc)["error"]
+    assert "close strategy 'ultimate_oscillator' is edge_status=no_edge" in error and reason in error
+
+
+def test_ultimate_oscillator_paper_and_acknowledged_solo_and_batch_agree_offline():
+    solo = _run("check_hyperliquid.py", ["ultimate_oscillator", "BTC", "4h", "--mode=paper", "--market-stdin"],
+                _solo_envelope())
+    assert solo.returncode == 0, solo.stderr[-2000:]
+    solo_out = _payload(solo)
+    assert solo_out["strategy"] == "ultimate_oscillator" and not solo_out.get("error")
+    assert "uo_reason_code" in solo_out["indicators"]
+    acked = _run("check_hyperliquid.py", ["ultimate_oscillator", "BTC", "4h", "--mode=live", "--allow-no-edge",
+                                          "--market-stdin"], _solo_envelope())
+    assert acked.returncode == 0, acked.stderr[-2000:]
+    proc = _batch([
+        {"id": "paper", "strategy": "ultimate_oscillator", "mode": "paper", "mode_args": ["--mode=paper"]},
+        {"id": "fallback", "strategy": "breakout", "open_strategy": "breakout",
+         "close_strategies": "ultimate_oscillator", "mode": "paper", "mode_args": ["--mode=paper"]},
+        {"id": "unacked-live", "strategy": "ultimate_oscillator", "mode": "live", "mode_args": ["--mode=live"]},
+        {"id": "fallback-live", "strategy": "breakout", "open_strategy": "breakout",
+         "close_strategies": "ultimate_oscillator", "mode": "live", "mode_args": ["--mode=live"]},
+    ])
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    assert not results["paper"].get("error") and not results["fallback"].get("error")
+    assert "explicit live mode" in results["unacked-live"]["error"]
+    assert "close strategy 'ultimate_oscillator'" in results["fallback-live"]["error"]
+    for key in ("signal", "open_action", "close_fraction"):
+        assert results["paper"].get(key) == solo_out.get(key) == _payload(acked).get(key)
