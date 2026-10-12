@@ -86,11 +86,13 @@ var knownShortNames = map[string]string{
 	"regime_adaptive_htf":          "rahtf",
 	"amd_ifvg":                     "amdifvg",
 	"pairs_spread":                 "pairs",
+	"adaptive_moving_average":      "ama",
 	"analog_retrieval":             "analog",
 	"aroon_trend":                  "aroon",
 	"awesome_oscillator":           "ao",
 	"chaikin_money_flow_breakout":  "cmfbo",
 	"chande_momentum":              "cmo",
+	"dual_thrust":                  "dt",
 	"commodity_channel_trend":      "cci",
 	"connors_rsi_reversion":        "crsi",
 	"ease_of_movement_breakout":    "eombo",
@@ -107,6 +109,7 @@ var knownShortNames = map[string]string{
 }
 
 var registeredOpenStrategyPlatforms = map[string][]string{
+	"adaptive_moving_average":      {"futures"},
 	"adx_trend":                    {"spot", "futures"},
 	"amd_ifvg":                     {"spot", "futures"},
 	"analog_retrieval":             {"spot", "futures"},
@@ -122,6 +125,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"breakout":                     {"futures"},
 	"chaikin_money_flow_breakout":  {"futures"},
 	"chande_momentum":              {"futures"},
+	"dual_thrust":                  {"futures"},
 	"chart_pattern":                {"spot", "futures"},
 	"commodity_channel_trend":      {"futures"},
 	"connors_rsi_reversion":        {"futures"},
@@ -213,6 +217,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"relative_vigor_index":         true,
 	"awesome_oscillator":           true,
 	"chande_momentum":              true,
+	"dual_thrust":                  true,
 	"ease_of_movement_breakout":    true,
 	"elder_ray_pullback":           true,
 	"fisher_reversal":              true,
@@ -221,6 +226,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"on_balance_volume_divergence": true,
 	"ultimate_oscillator":          true,
 	"aroon_trend":                  true,
+	"adaptive_moving_average":      true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {

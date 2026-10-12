@@ -91,12 +91,21 @@ func strategyRawID(raw json.RawMessage) string {
 
 type addStrategyEntryOnlyCandidate struct {
 	CloseStrategy      string
+	CloseParams        func() map[string]interface{}
 	ClosedBarDecisions bool
 }
 
 var addStrategyEntryOnlyCandidates = map[string]addStrategyEntryOnlyCandidate{
+	"adaptive_moving_average":   {CloseStrategy: "tiered_tp_pct", ClosedBarDecisions: true},
 	"ease_of_movement_breakout": {CloseStrategy: "tiered_tp_atr", ClosedBarDecisions: true},
 	"elder_ray_pullback":        {CloseStrategy: "tiered_tp_pct", ClosedBarDecisions: true},
+	dualThrustStrategyName: {
+		CloseStrategy: "tiered_tp_pct",
+		CloseParams: func() map[string]interface{} {
+			return map[string]interface{}{"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 0.03, "close_fraction": 1.0}}}
+		},
+		ClosedBarDecisions: true,
+	},
 }
 
 func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessage, error) {
@@ -149,7 +158,11 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 			"margin_mode":      "isolated",
 		}
 		if candidate, ok := addStrategyEntryOnlyCandidates[name]; ok {
-			obj["close_strategy"] = map[string]interface{}{"name": candidate.CloseStrategy}
+			closeRef := map[string]interface{}{"name": candidate.CloseStrategy}
+			if candidate.CloseParams != nil {
+				closeRef["params"] = candidate.CloseParams()
+			}
+			obj["close_strategy"] = closeRef
 			if candidate.ClosedBarDecisions {
 				obj["closed_bar_decisions"] = true
 			}

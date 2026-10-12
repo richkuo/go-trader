@@ -15,6 +15,7 @@ var v20FormerResearchStrategies = map[string]struct{}{
 	"awesome_oscillator":           {},
 	"chaikin_money_flow_breakout":  {},
 	"chande_momentum":              {},
+	"dual_thrust":                  {},
 	"commodity_channel_trend":      {},
 	"connors_rsi_reversion":        {},
 	"ease_of_movement_breakout":    {},

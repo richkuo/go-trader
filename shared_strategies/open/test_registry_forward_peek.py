@@ -185,6 +185,8 @@ def _with_declared_cadence(fn):
 STRATEGY_INPUTS = {
     "open_interest_breakout": _with_open_interest,
     "ease_of_movement_breakout": _with_declared_cadence,
+    "adaptive_moving_average": _with_declared_cadence,
+    "dual_thrust": _with_declared_cadence,
 }
 
 _FIXTURE_CACHE = {}

@@ -100,9 +100,9 @@ def _position_ctx_from_args(args):
 
 TP_MODEL_RESTING_LIMIT = "resting_limit"
 
-FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_", "erp_")
+FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_", "ama_", "dt_", "erp_")
 
-TEXT_INDICATOR_COLUMNS = ("eom_reason", "erp_reason")
+TEXT_INDICATOR_COLUMNS = ("eom_reason", "ama_reason", "dt_reason", "erp_reason")
 
 BATCH_PROTOCOL_VERSION = 1
 
