@@ -1105,7 +1105,8 @@ def render(result: dict) -> str:
     lines += ["", "## Per-entry audit (held-out, selected, base cost)", "",
               "Each row joins a simulated position to its decision bar in the evaluator output. Every fill is at "
               "the open of the bar after its decision bar.", ""]
-    for arm, rows in result["entry_audit"].items():
+    for arm in (a for a in ARMS if a in result["entry_audit"]):
+        rows = result["entry_audit"][arm]
         late = sum(1 for r in rows if not r["fill_after_decision_bar"])
         mismatched = sum(1 for r in rows if r["decision_signal"] != (1 if r["side"] == "long" else -1))
         lines += [f"### `{arm}`: {len(rows)} positions; fills not after the decision bar {late}; decision signal "
