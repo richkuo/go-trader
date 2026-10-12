@@ -1,0 +1,227 @@
+{
+  "study": "adaptive_moving_average_1641",
+  "issue": 1641,
+  "status": "frozen before any window was scored; run_study.py records this file's sha256 in results.json and refuses to run when the frozen inputs differ from the pins below",
+  "candidate": "adaptive_moving_average",
+  "registry": "futures",
+  "fee_platform": "hyperliquid",
+  "strategy_type": "perps",
+  "capital_usd": 1000.0,
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "profit_pct": 0.03,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "intrabar_resolution": "ohlc_walk",
+  "funding_mode": "charge",
+  "warmup_bars": 300,
+  "warmup_rule": "every leg (candidate, comparators, incumbents) computes indicators and ATR on the 300 consecutive bars before the window start and scores only the window from a flat book (eval_windows.run_leg warmup_bars); 300 exceeds the largest candidate history requirement (185 rows) and the 200-bar EMA of the momentum_pro incumbent; a missing pre-window bar is an error",
+  "cost_model": {
+    "commission_pct": 0.00045,
+    "slippage_pct": 0.0005,
+    "source": "Backtester(platform='hyperliquid') defaults: Hyperliquid taker fee per side and a flat slippage per fill; no separate spread, lot-size or venue-minimum model on the M1 cached path",
+    "stress": {
+      "slippage_multiplier": 2.0
+    }
+  },
+  "candle_source": "binanceus spot USDT pairs (M1 non-manifest cached path), a proxy for Hyperliquid perpetual prices",
+  "funding_source": "Hyperliquid fundingHistory, frozen by study chande_momentum_1661",
+  "pinned_end": "2026-10-01",
+  "symbols": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT"
+  ],
+  "groups": [
+    "1h",
+    "4h"
+  ],
+  "windows": {
+    "train": [
+      "2024-01-01",
+      "2025-01-01"
+    ],
+    "h2023H2": [
+      "2023-07-01",
+      "2024-01-01"
+    ],
+    "h2025": [
+      "2025-01-01",
+      "2026-01-01"
+    ],
+    "oos": [
+      "2026-01-01",
+      "2026-10-01"
+    ]
+  },
+  "training_window": "train",
+  "held_out_windows": [
+    "h2023H2",
+    "h2025",
+    "oos"
+  ],
+  "window_notes": "The four windows are disjoint. Every window starts after the first Hyperliquid funding rate (2023-05-12), so a held hour without a rate is a coverage defect. The open-ended M1 oos window is pinned to end 2026-10-01. The candles were scored before by study chande_momentum_1661 for a different strategy; this candidate was never scored on them, but the held-out windows are retrospective data, not live forward evidence.",
+  "directions": {
+    "adaptive_moving_average": "both",
+    "ema_crossover": "long",
+    "vol_momentum": "both"
+  },
+  "comparators": [
+    "ema_crossover",
+    "vol_momentum"
+  ],
+  "side_population_note": "ema_crossover declares short_entries=False and stays long-only; vol_momentum declares short_entries=True and its futures variant ships allow_short=true, so it runs bidirectionally like the candidate",
+  "seed_params": {
+    "efficiency_period": 10,
+    "fast_period": 2,
+    "slow_period": 30,
+    "slope_span": 3,
+    "recursion_length": 120
+  },
+  "grids": {
+    "adaptive_moving_average": {
+      "efficiency_period": [
+        5,
+        10,
+        20
+      ],
+      "fast_period": [
+        2,
+        3
+      ],
+      "slow_period": [
+        20,
+        30,
+        50
+      ],
+      "slope_span": [
+        1,
+        3,
+        5
+      ],
+      "recursion_length": [
+        60,
+        120,
+        160
+      ]
+    },
+    "ema_crossover": {
+      "fast_period": [
+        8,
+        12,
+        16,
+        20
+      ],
+      "slow_period": [
+        21,
+        26,
+        34,
+        50
+      ]
+    },
+    "vol_momentum": {
+      "mom_window": [
+        16,
+        24,
+        48
+      ],
+      "entry_threshold": [
+        0.2,
+        0.3,
+        0.4
+      ],
+      "eff_entry": [
+        0.25,
+        0.35,
+        0.45
+      ]
+    }
+  },
+  "fixed_params": {
+    "vol_momentum": {
+      "allow_short": true,
+      "exit_threshold": 0.05,
+      "atr_period": 14,
+      "eff_exit": 0.15
+    }
+  },
+  "selection_rule": {
+    "window": "train",
+    "eligible": "every symbol leg ran, no leg is funding-incomplete and every leg has at least min_training_positions positions",
+    "min_training_positions": 5,
+    "rank": "highest mean drawdown-adjusted return over the three symbol legs, then highest mean Sharpe, then the smallest parameter tuple in grid key order",
+    "fallback": "seed parameters (candidate) or registry defaults (comparators) when nothing is eligible"
+  },
+  "verdict_rules": {
+    "scope": "each timeframe group gets its own verdict from the three held-out windows; the study verdict is pass only if both groups pass, fail only if both fail, else inconclusive",
+    "unscorable_window": "a held-out window where any candidate, stressed candidate, comparator or incumbent leg is missing or funding-incomplete (unpriced held hours under --funding charge) is unscorable; it cannot support a pass",
+    "min_held_out_entry_clusters": 30,
+    "entry_cluster": "candidate positions in scorable held-out windows, counting entries on the same bar across symbols once",
+    "pass_conditions": {
+      "net_positive_base": "summed candidate net PnL after fees and funding over scorable held-out legs > 0",
+      "net_positive_stress": "the same sum at 2x slippage > 0",
+      "m1_passes": "the M1 incumbent-relative verdict is pass in at least 2 of the 3 held-out windows",
+      "beats_comparators": "candidate mean return over scorable held-out legs > each comparator's mean return over the same legs",
+      "not_concentrated": "the largest single position is at most 25% of the summed positive position PnL"
+    },
+    "fail": "entry clusters meet the floor and any pass condition is false on the scorable windows",
+    "inconclusive": "entry clusters below the floor, or a condition that cannot be evaluated because a window is unscorable while no condition is false",
+    "edge_effect": "pass keeps edge_status no_edge and edge_source unvalidated pending a separate reviewed edge decision; fail records study_fail; inconclusive records study_inconclusive"
+  },
+  "parity": {
+    "paper_configs": [
+      "paper_parity_1h.json",
+      "paper_parity_4h.json"
+    ],
+    "spans": {
+      "1h": [
+        "2026-07-01",
+        "2026-10-01"
+      ],
+      "4h": [
+        "2025-10-01",
+        "2026-10-01"
+      ]
+    },
+    "windows": [
+      200,
+      0
+    ],
+    "batched": [
+      false,
+      true
+    ]
+  },
+  "data": {
+    "source_study": "chande_momentum_1661",
+    "source_dir": "backtest/candidates/chande_momentum_1661/data",
+    "source_manifest": "backtest/candidates/chande_momentum_1661/study_manifest.json",
+    "source_manifest_sha256": "f5bd9d2672abf5880b8af57cb01a0ffb70b21ccdf5eab464a9d351e121d580e3",
+    "files": {
+      "BTC_1h_candles.csv.gz": "d107c60f72363372d03273ba6439ca42a0d867a9089c5de171e9306af3ba2d17",
+      "BTC_4h_candles.csv.gz": "dd0758a2862955eb53b060df5fbace3e98f8bc2a3e0254842bca0d36c96f106f",
+      "BTC_funding.csv.gz": "520fd979d5594b4c2fb950cd52aa327749a124d9971a59ec3419752dd24a27f8",
+      "ETH_1h_candles.csv.gz": "59d08735aecb22b63bab8189c7c32b11101e80da42b2ec724f39e308548b7913",
+      "ETH_4h_candles.csv.gz": "03df63c5dc65ba532a252e8c00118986321fcb124934bb7536e842d678fc9dd8",
+      "ETH_funding.csv.gz": "4b7694d8fc26cb7245ffa882cbdcb2d571d17f3a9f1abd6832fb0deed4985b41",
+      "SOL_1h_candles.csv.gz": "e4e5c15ffcce696253d78dc3b3c3448725e8cf3a0114a9fbc4b1df5f2a0efeec",
+      "SOL_4h_candles.csv.gz": "c1e5775973d00b0b07597da3db4213d62378ef566fe2e4a3b619612b59abc8ab",
+      "SOL_funding.csv.gz": "b29de7625f7484f0971336e31ba52f5b042127e4eef4d8ee1e4554994383cd2b"
+    }
+  },
+  "limitations": [
+    "Binance US spot candles stand in for Hyperliquid perpetual prices; proxy results cannot establish Hyperliquid profitability.",
+    "Costs are the Backtester Hyperliquid taker fee (0.045% per side) and a flat 0.05% slippage per fill; there is no separate spread, lot-size or venue-minimum model on this path.",
+    "Funding is charged from frozen Hyperliquid rates (--funding charge); a leg with unpriced held hours is incomplete and cannot count as economic evidence.",
+    "No higher-timeframe filter is used."
+  ]
+}

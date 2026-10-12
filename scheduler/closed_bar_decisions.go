@@ -38,7 +38,7 @@ var closedBarRequiredOpenStrategies = map[string]string{
 	"schaff_trend_cycle": "its last-bar decision needs the verified closed-bar cutoff; without it the Hyperliquid check holds every entry and close-fallback signal, and other venues would decide on the forming bar",
 }
 
-func closedBarRequiredStrategyErrors(sc StrategyConfig) []string {
+func closedBarRequiredOpenStrategyErrors(sc StrategyConfig) []string {
 	if sc.Type == "options" {
 		return nil
 	}
@@ -222,7 +222,7 @@ func closedBarDecisionsConfigErrors(cfg *Config) []string {
 	var errs []string
 	for _, sc := range cfg.Strategies {
 		errs = append(errs, closedBarDecisionStrategyErrors(sc, cfg)...)
-		errs = append(errs, closedBarRequiredStrategyErrors(sc)...)
+		errs = append(errs, closedBarRequiredOpenStrategyErrors(sc)...)
 	}
 	errs = append(errs, closedBarDecisionReplayErrors(cfg)...)
 	return errs

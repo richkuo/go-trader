@@ -312,6 +312,14 @@ def grid_combos(grid: dict) -> list:
     return [dict(zip(keys, vals)) for vals in itertools.product(*(grid[k] for k in keys))]
 
 
+def funding_coverage_counts(cov: dict) -> dict:
+    present = cov.get("present_hours")
+    absent = cov.get("venue_absent_hours")
+    priced = present - absent if present is not None and absent is not None else None
+    return {"expected_hours": cov.get("expected_hours"), "present_hours": present, "priced_hours": priced,
+            "missing_hours": cov.get("missing_hours"), "venue_absent_hours": absent}
+
+
 def leg_summary(leg, results, capital: float) -> dict:
     from eval_windows import execution_metrics
     if leg is None:
@@ -339,9 +347,7 @@ def leg_summary(leg, results, capital: float) -> dict:
             "mode": block.get("mode"), "source": block.get("source"), "available": block.get("available"),
             "complete": block.get("complete"), "sha256": block.get("sha256"), "row_count": block.get("row_count"),
             "first": block.get("first"), "last": block.get("last"),
-            "expected_hours": cov.get("expected_hours"), "priced_hours": cov.get("priced_hours"),
-            "missing_hours": cov.get("missing_hours"), "venue_absent_hours": cov.get("venue_absent_hours"),
-            "frame_complete": cov.get("complete"),
+            **funding_coverage_counts(cov), "frame_complete": cov.get("complete"),
             "unpriced_held_hours": block.get("unpriced_held_hours"),
             "fetch_error": block.get("fetch_error"), "error": block.get("error"),
         },

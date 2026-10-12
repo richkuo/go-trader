@@ -52,12 +52,15 @@ from vortex_trend import vortex_trend_core
 from relative_vigor_index import relative_vigor_index_core
 from awesome_oscillator import awesome_oscillator_core
 from chande_momentum import chande_momentum_core
+from dual_thrust import dual_thrust_core, validate_dual_thrust_param_dict
 from on_balance_volume import on_balance_volume_divergence_core
 from williams_r import williams_r_param_validator, williams_r_reversal_core
 from money_flow_index import money_flow_index_reversal_core
 from aroon_trend import aroon_trend_core, validate_aroon_param_dict
 from ultimate_oscillator import ultimate_oscillator_core
 from fisher_reversal import fisher_reversal_core
+from elder_ray_pullback import elder_ray_pullback_core, validate_elder_ray_param_dict
+from adaptive_moving_average import adaptive_moving_average_core, ama_param_validator
 from schaff_trend_cycle import schaff_trend_cycle_core, stc_param_validator
 
 
@@ -1766,6 +1769,38 @@ def chande_momentum_strategy(df: pd.DataFrame, period: int = 20, threshold: floa
 
 
 @register(
+    "dual_thrust",
+    "RESEARCH, no-edge (#1642) \u2014 Dual Thrust session breakout: at each UTC session boundary (session_start_hour) it freezes range = max(HH - LC, HC - LL) over the immediately preceding lookback_sessions complete daily sessions (highest high, lowest daily close, highest daily close, lowest low) and anchors on the current session's opening candle open; long on the first closed bar strictly above anchor + k_long x range, short on the first closed bar strictly below anchor - k_short x range, at most one raw signal per side per session, reconstructed from the supplied closed bars each evaluation. Every candle of the prior sessions and of the current session through the decision bar must be present, on the expected_interval_ms grid and well formed, else the entry holds with a reason; (lookback_sessions + 1) sessions must fit the 200-bar check window. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"lookback_sessions": 4, "k_long": 0.5, "k_short": 0.5, "session_start_hour": 0,
+     "expected_interval_ms": 3600000},
+    platforms=("futures",),
+    constraints=[
+        "lookback_sessions >= 1",
+        "lookback_sessions <= 199",
+        "k_long > 0",
+        "k_long <= 2",
+        "k_short > 0",
+        "k_short <= 2",
+        "session_start_hour >= 0",
+        "session_start_hour <= 23",
+        "expected_interval_ms >= 1",
+        "expected_interval_ms <= 86400000",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/dual_thrust_1642/REPORT.md",
+    short_entries=True,
+    param_validator=validate_dual_thrust_param_dict,
+)
+def dual_thrust_strategy(df: pd.DataFrame, lookback_sessions: int = 4, k_long: float = 0.5,
+                         k_short: float = 0.5, session_start_hour: int = 0,
+                         expected_interval_ms: int = 3600000) -> pd.DataFrame:
+    return dual_thrust_core(df, lookback_sessions=lookback_sessions, k_long=k_long, k_short=k_short,
+                            session_start_hour=session_start_hour,
+                            expected_interval_ms=expected_interval_ms)
+
+
+@register(
     "williams_r_reversal",
     "RESEARCH, no-edge (#1650) \u2014 Williams %R reversal: %R = -100 x (highest high - close) / (highest high - lowest low) over the lookback bars ending at the decision bar; long when the previous %R is at or below oversold and the current %R is strictly above it, short when the previous %R is at or above overbought and the current %R is strictly below it. Needs lookback + 1 valid consecutive candles; any bad candle, timestamp defect or zero-range window holds. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"lookback": 14, "oversold": -80.0, "overbought": -20.0},
@@ -1935,6 +1970,63 @@ def schaff_trend_cycle_strategy(df: pd.DataFrame, fast_period: int = 23, slow_pe
 )
 def fisher_reversal_strategy(df: pd.DataFrame, lookback: int = 9, extreme: float = 1.5) -> pd.DataFrame:
     return fisher_reversal_core(df, lookback=lookback, extreme=extreme)
+
+
+@register(
+    "elder_ray_pullback",
+    "RESEARCH, no-edge (#1648) \u2014 Elder Ray pullback: a finite exponential moving average of close (weight 2/(ema_period+1), seeded at the oldest close of each timestamp's own trailing 64 closes), slope = average minus the average slope_span bars earlier, bull power = high minus average and bear power = low minus average. A long setup arms on the first bar with slope strictly positive and bear power strictly negative after a bar where that pair was false; it enters once when bear power returns to zero or above while slope stays strictly positive, at most pullback_window bars after arming. Short is the mirror with negative slope and bull power. A zero or opposite slope clears the setup and recovery consumes it. Every decision reads exactly its trailing 64 + slope_span + pullback_window + 1 rows (at most 89); bad candles, timestamp defects and cadence gaps inside that span hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"ema_period": 13, "slope_span": 3, "pullback_window": 8},
+    platforms=("futures",),
+    constraints=[
+        "ema_period >= 2",
+        "ema_period <= 32",
+        "slope_span >= 1",
+        "slope_span <= 8",
+        "pullback_window >= 1",
+        "pullback_window <= 16",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/elder_ray_pullback_1648/REPORT.md",
+    short_entries=True,
+    param_validator=validate_elder_ray_param_dict,
+)
+def elder_ray_pullback_strategy(df: pd.DataFrame, ema_period: int = 13, slope_span: int = 3,
+                                pullback_window: int = 8) -> pd.DataFrame:
+    return elder_ray_pullback_core(df, ema_period=ema_period, slope_span=slope_span,
+                                   pullback_window=pullback_window)
+
+
+@register(
+    "adaptive_moving_average",
+    "RESEARCH, no-edge (#1641) \u2014 Kaufman adaptive moving average trend entries: efficiency over efficiency_period bars is the absolute close change divided by the sum of absolute one-bar changes (0 when that sum is 0); the smoothing constant is (efficiency * (2/(fast_period+1) - 2/(slow_period+1)) + 2/(slow_period+1)) squared; every average restarts from the close recursion_length bars back and applies exactly recursion_length updates, so a decision reads recursion_length + efficiency_period + max(slope_span, 1) bars (at most 199). Long when the close crosses strictly above the average from at or below it and the average rose over slope_span bars; short is the exact mirror. Needs declared bar cadence; bad candles, timestamp defects and cadence gaps inside the window hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"efficiency_period": 10, "fast_period": 2, "slow_period": 30, "slope_span": 3, "recursion_length": 120},
+    platforms=("futures",),
+    constraints=[
+        "efficiency_period >= 1",
+        "efficiency_period <= 64",
+        "fast_period >= 1",
+        "fast_period <= 64",
+        "slow_period >= 2",
+        "slow_period <= 256",
+        "fast_period < slow_period",
+        "slope_span >= 1",
+        "slope_span <= 64",
+        "recursion_length >= 1",
+        "recursion_length <= 197",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/adaptive_moving_average_1641/REPORT.md",
+    short_entries=True,
+    param_validator=ama_param_validator,
+)
+def adaptive_moving_average_strategy(df: pd.DataFrame, efficiency_period: int = 10, fast_period: int = 2,
+                                     slow_period: int = 30, slope_span: int = 3,
+                                     recursion_length: int = 120) -> pd.DataFrame:
+    return adaptive_moving_average_core(df, efficiency_period=efficiency_period, fast_period=fast_period,
+                                        slow_period=slow_period, slope_span=slope_span,
+                                        recursion_length=recursion_length)
 
 
 @register(
@@ -2257,6 +2349,9 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "ease_of_movement_breakout",
         "fisher_reversal",
         "ultimate_oscillator",
+        "adaptive_moving_average",
+        "dual_thrust",
+        "elder_ray_pullback",
         "schaff_trend_cycle",
         "hold",
     ],

@@ -1,0 +1,48 @@
+{
+  "config_version": 20,
+  "interval_seconds": 3600,
+  "db_file": "adaptive_moving_average_1641_paper_1h.db",
+  "strategies": [
+    {
+      "id": "hl-ama-btc-1h",
+      "type": "perps",
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": [
+        "adaptive_moving_average",
+        "BTC",
+        "1h",
+        "--mode=paper"
+      ],
+      "open_strategy": {
+        "name": "adaptive_moving_average",
+        "params": {
+          "efficiency_period": 10,
+          "fast_period": 2,
+          "slow_period": 30,
+          "slope_span": 3,
+          "recursion_length": 120
+        }
+      },
+      "close_strategy": {
+        "name": "tiered_tp_pct",
+        "params": {
+          "tp_tiers": [
+            {
+              "profit_pct": 0.03,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      },
+      "stop_loss_atr_mult": 1.0,
+      "direction": "both",
+      "closed_bar_decisions": true,
+      "capital": 1000.0,
+      "max_drawdown_pct": 10.0,
+      "leverage": 1.0,
+      "margin_mode": "isolated",
+      "interval_seconds": 3600
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "close_fraction": 1.0,
+            "profit_pct": 0.03
+          }
+        ]
+      }
+    }
+  ],
+  "direction": "both",
+  "name": "adaptive_moving_average",
+  "params": {
+    "efficiency_period": 10,
+    "fast_period": 3,
+    "recursion_length": 60,
+    "slope_span": 3,
+    "slow_period": 30
+  },
+  "stop_loss_atr_mult": 1.0,
+  "type": "perps"
+}

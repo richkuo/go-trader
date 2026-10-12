@@ -716,6 +716,18 @@ DEFAULT_PARAM_RANGES = {
         "lookback": [5, 9, 13, 21],
         "extreme": [0.75, 1.0, 1.5, 2.0],
     },
+    "elder_ray_pullback": {
+        "ema_period": [8, 13, 21],
+        "slope_span": [1, 3, 5],
+        "pullback_window": [4, 8, 16],
+    },
+    "adaptive_moving_average": {
+        "efficiency_period": [5, 10, 20],
+        "fast_period": [2, 3],
+        "slow_period": [20, 30, 50],
+        "slope_span": [1, 3, 5],
+        "recursion_length": [60, 120, 160],
+    },
     "schaff_trend_cycle": {
         "fast_period": [12, 23],
         "slow_period": [26, 50],
@@ -738,6 +750,12 @@ DEFAULT_PARAM_RANGES = {
     "chande_momentum": {
         "period": [10, 14, 20, 30, 40, 60],
         "threshold": [10.0, 15.0, 25.0, 35.0, 50.0],
+    },
+    "dual_thrust": {
+        "lookback_sessions": [2, 3, 4, 5, 7],
+        "k_long": [0.25, 0.5, 0.75, 1.0],
+        "k_short": [0.25, 0.5, 0.75, 1.0],
+        "session_start_hour": [0],
     },
     "on_balance_volume_divergence": {
         "left_span": [2, 3, 5],

@@ -290,7 +290,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             stop_kwargs: Optional[dict] = None,
             regime_label_plan: Optional[dict] = None,
             regime_gate_on_failure: str = "open",
-            funding_mode: str = "charge") -> Optional[dict]:
+            funding_mode: str = "charge",
+            warmup_bars: int = 0) -> Optional[dict]:
     from atr import ensure_atr_indicator
     import pandas as pd
     from data_fetcher import load_cached_data
@@ -301,8 +302,16 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     validate_close_capabilities(close_refs=close_strategies,
                                 comparison_mode=comparison_mode,
                                 platform=FEE_PLATFORM, phase="preflight")
+    warmup_bars = validate_warmup_bars(warmup_bars)
+    if warmup_bars and manifest_ctx is not None:
+        raise ValueError("warmup_bars applies to the cached path only; the manifest owns its warmup")
+    if warmup_bars and name in FUNDING_COLUMN_STRATEGIES:
+        raise ValueError(f"{name} reads funding as an entry input; warmup_bars does not attach funding "
+                         "to pre-window bars")
 
     manifest_window = None
+    warmup_start = None
+    strategy_df = None
     manifest_info = None
     execution_spec = None
     observation_params = {}
@@ -361,12 +370,22 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     else:
         start, end = window
         load_kwargs = {} if exchange_id is None else {"exchange_id": exchange_id}
-        df = load_cached_data(symbol, timeframe, start_date=start, end_date=end,
+        load_start = start
+        if warmup_bars:
+            load_start = warmup_load_start(start, timeframe, warmup_bars)
+        df = load_cached_data(symbol, timeframe, start_date=load_start, end_date=end,
                               **load_kwargs)
         if df.empty:
             return None
         if end is not None:
             df = df[df.index < pd.Timestamp(end)]
+            if df.empty:
+                return None
+        if warmup_bars:
+            warmup_start = pd.Timestamp(start)
+            check_warmup_prehistory(df, warmup_start, timeframe, warmup_bars, symbol)
+            strategy_df = df
+            df = df[df.index >= warmup_start]
             if df.empty:
                 return None
         strategy_type = str((stop_kwargs or {}).get("strategy_type") or "perps")
@@ -376,6 +395,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             mode=funding_mode, timeframe=timeframe,
         )
 
+    if strategy_df is None:
+        strategy_df = df
     strat = reg.STRATEGY_REGISTRY.get(name)
     if strat is None:
         raise SystemExit(f"Unknown strategy {name!r}; available: {reg.list_strategies()}")
@@ -388,7 +409,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         df_signals = None
         for p in sorted(param_sets):
             p_params = {**(strat_params or {}), **(param_sets[p] or {}), **observation_params}
-            res = reg.apply_strategy(name, df, p_params)
+            res = reg.apply_strategy(name, strategy_df, p_params)
             if df_signals is None:
                 df_signals = res.copy()
                 df_signals["signal__" + p] = df_signals.pop("signal")
@@ -399,7 +420,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         df_signals["_profile_label"] = _build_profile_label_series(
             df_signals, profile_allocation["window_spec"]).values
     else:
-        df_signals = reg.apply_strategy(name, df, {**(strat_params or {}), **observation_params}
+        df_signals = reg.apply_strategy(name, strategy_df, {**(strat_params or {}), **observation_params}
                                         if observation_params else strat_params)
         if close_strategies:
             df_signals = ensure_atr_indicator(df_signals)
@@ -427,8 +448,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                   or bool(regime_directional_policy))
 
     indicator_frame = None
-    if manifest_window is not None:
-        import offline_manifest as om
+    if manifest_window is not None or warmup_start is not None:
         if use_regime and label_columns is None and "regime" not in df_signals.columns:
             from regime import ensure_regime_columns
             ensure_regime_columns(
@@ -438,8 +458,12 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                 windows_spec=regime_windows_spec,
             )
         indicator_frame = df_signals
-        df_signals = om.slice_window(df_signals, manifest_window)
-        df = om.slice_window(df, manifest_window)
+        if manifest_window is not None:
+            import offline_manifest as om
+            df_signals = om.slice_window(df_signals, manifest_window)
+            df = om.slice_window(df, manifest_window)
+        else:
+            df_signals = df_signals[df_signals.index >= warmup_start].copy()
     bt_kwargs = dict(
         initial_capital=capital, platform=FEE_PLATFORM,
         open_strategy={"name": name, "params": dict(strat_params or {})},
@@ -494,6 +518,9 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         leg["trade_samples"] = trade_samples_from_results(results)
     if keep_positions:
         leg["positions"] = positions_from_results(results)
+    if warmup_bars:
+        leg["warmup"] = {"bars": warmup_bars, "first_bar": str(indicator_frame.index[0]),
+                         "scored_first_bar": str(df.index[0])}
     if manifest_info is not None:
         leg["manifest"] = manifest_info
         leg["execution"] = execution_metrics(results, capital)
@@ -507,6 +534,40 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         if (mode == "charge" and unpriced > 0) or (mode == "partial" and not block.get("complete")):
             leg["funding_incomplete"] = True
     return leg
+
+
+def validate_warmup_bars(warmup_bars) -> int:
+    if isinstance(warmup_bars, bool) or not isinstance(warmup_bars, int) or warmup_bars < 0:
+        raise ValueError(f"warmup_bars must be a non-negative integer, got {warmup_bars!r}")
+    return warmup_bars
+
+
+def warmup_load_start(start, timeframe: str, warmup_bars: int):
+    import pandas as pd
+    from closed_bar import FIXED_DURATION_MS
+    interval = FIXED_DURATION_MS.get(str(timeframe or "").strip())
+    if not interval:
+        raise ValueError(f"warmup_bars needs a fixed-duration timeframe, got {timeframe!r}")
+    if start is None:
+        raise ValueError("warmup_bars needs a window with an explicit start")
+    return pd.Timestamp(start) - pd.Timedelta(milliseconds=interval * warmup_bars)
+
+
+def check_warmup_prehistory(df, start, timeframe: str, warmup_bars: int, symbol: str) -> None:
+    import pandas as pd
+    from closed_bar import FIXED_DURATION_MS
+    step = pd.Timedelta(milliseconds=FIXED_DURATION_MS[str(timeframe).strip()])
+    pre = df[df.index < start]
+    first = start - step * warmup_bars
+    expected = pd.date_range(first, periods=warmup_bars, freq=step)
+    got_ms = pre.index.values.astype("datetime64[ms]")
+    want_ms = expected.values.astype("datetime64[ms]")
+    if len(pre) != warmup_bars or not (got_ms == want_ms).all():
+        missing = expected.difference(pre.index)
+        raise ValueError(
+            f"{symbol} {timeframe}: warmup needs the {warmup_bars} consecutive bars from {first} "
+            f"before {start}; found {len(pre)} rows, {len(missing)} missing"
+            + (f" (first missing {missing[0]})" if len(missing) else ""))
 
 
 INCUMBENT_CONTRACT_KEYS = ("direction", "close_strategies", "stop_loss_atr_mult",
@@ -546,7 +607,8 @@ def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
                            intrabar_resolution: str = "ohlc_walk",
                            manifest_ctx: Optional[dict] = None,
                            funding_mode: str = "charge",
-                           contract: Optional[dict] = None) -> dict:
+                           contract: Optional[dict] = None,
+                           warmup_bars: int = 0) -> dict:
     contract_kwargs = incumbent_contract_kwargs(contract)
     out = {}
     for symbol, timeframe in datasets:
@@ -558,6 +620,7 @@ def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
                                     intrabar_resolution=intrabar_resolution,
                                     manifest_ctx=manifest_ctx,
                                     funding_mode=funding_mode,
+                                    warmup_bars=warmup_bars,
                                     **contract_kwargs)
     return out
 
@@ -750,7 +813,8 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
                       keep_trades: bool = False,
                       intrabar_resolution: str = "ohlc_walk",
                       manifest_ctx: Optional[dict] = None,
-                      funding_mode: str = "charge") -> Optional[dict]:
+                      funding_mode: str = "charge",
+                      warmup_bars: int = 0) -> Optional[dict]:
     return run_leg(
         reg, candidate["name"], candidate.get("params"),
         symbol, timeframe, window, capital=capital,
@@ -775,6 +839,7 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
         regime_label_plan=candidate.get("regime_label_windows"),
         regime_gate_on_failure=candidate.get("regime_gate_on_failure") or "open",
         funding_mode=funding_mode,
+        warmup_bars=warmup_bars,
     )
 
 
@@ -785,9 +850,13 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
                     manifest: Optional[dict] = None,
                     cost_multiplier: float = 1.0,
                     funding_mode: str = "charge",
-                    incumbent_contract: Optional[dict] = None) -> dict:
+                    incumbent_contract: Optional[dict] = None,
+                    warmup_bars: int = 0) -> dict:
     validate_candidate(candidate)
     incumbent_contract_kwargs(incumbent_contract)
+    warmup_bars = validate_warmup_bars(warmup_bars)
+    if warmup_bars and manifest is not None:
+        raise ValueError("warmup_bars applies to the cached path only; the manifest owns its warmup")
     manifest_ctx = None
     if manifest is not None:
         window = manifest_windows(manifest)[window_name]
@@ -799,13 +868,16 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
                 else (manifest["path"], window_name, cost_multiplier, funding_mode))
     if incumbent_contract is not None:
         memo_key = memo_key + (incumbent_contract_identity(incumbent_contract),)
+    if warmup_bars:
+        memo_key = memo_key + (("warmup_bars", warmup_bars),)
     if memo_key not in bars_memo:
         bars_memo[memo_key] = incumbent_bars(
             compute_incumbent_legs(reg, datasets, window, capital,
                                    intrabar_resolution=intrabar_resolution,
                                    manifest_ctx=manifest_ctx,
                                    funding_mode=funding_mode,
-                                   contract=incumbent_contract))
+                                   contract=incumbent_contract,
+                                   warmup_bars=warmup_bars))
     bars = bars_memo[memo_key]
 
     candidate_legs = {}
@@ -815,13 +887,16 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
             reg, candidate, symbol, timeframe, window, capital=capital,
             intrabar_resolution=intrabar_resolution,
             manifest_ctx=manifest_ctx,
-            funding_mode=funding_mode)
+            funding_mode=funding_mode,
+            warmup_bars=warmup_bars)
     score = score_candidate(candidate_legs, bars)
     score["window"] = window_name
     score["window_range"] = list(window)
     score["bars"] = bars
     if incumbent_contract is not None:
         score["incumbent_contract"] = incumbent_contract
+    if warmup_bars:
+        score["warmup_bars"] = warmup_bars
     from backtester import aggregate_close_validations
     ran = [leg.get("close_validation") for leg in candidate_legs.values() if leg is not None]
     score["close_validation"] = aggregate_close_validations(
@@ -999,6 +1074,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "funding cost, fees, spread/slippage and lot/minimum "
                         "rules come from the manifest; hashes are verified and "
                         "no network fetch happens. Default: off (legacy loader).")
+    p.add_argument("--warmup-bars", type=int, default=0, metavar="N",
+                   help="Cached path only: compute indicators and ATR on the N "
+                        "consecutive bars before each window start, then score "
+                        "only the window from a flat book. A missing pre-window "
+                        "bar is an error. Default 0 (window start).")
     p.add_argument("--cost-multiplier", type=float, default=1.0,
                    help="With --manifest: scale spread and slippage (cost "
                         "sensitivity). Default 1.0.")
@@ -1085,6 +1165,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                              f"(known: {list(known_windows)})")
     elif args.cost_multiplier != 1.0:
         raise SystemExit("--cost-multiplier needs --manifest")
+    if args.warmup_bars < 0:
+        raise SystemExit("--warmup-bars must be non-negative")
+    if args.warmup_bars and manifest is not None:
+        raise SystemExit("--warmup-bars applies to the cached path; the manifest owns its warmup")
     sweep_window = args.sweep_window or "oos"
     if args.sweep and sweep_window not in known_windows:
         raise SystemExit(f"unknown --sweep-window {sweep_window!r}; known: {list(known_windows)}")
@@ -1121,7 +1205,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                                 intrabar_resolution=args.intrabar_resolution,
                                 manifest=manifest,
                                 cost_multiplier=args.cost_multiplier,
-                                funding_mode=args.funding)
+                                funding_mode=args.funding,
+                                warmup_bars=args.warmup_bars)
         window_scores.append(score)
         print(format_window_report(score))
 
@@ -1142,7 +1227,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                                     intrabar_resolution=args.intrabar_resolution,
                                     manifest=manifest,
                                     cost_multiplier=args.cost_multiplier,
-                                    funding_mode=args.funding)
+                                    funding_mode=args.funding,
+                                    warmup_bars=args.warmup_bars)
             sweep_rows.append({"label": label, "params": params, "score": score})
         print(format_sweep_report(sweep_rows, sweep_window))
 
@@ -1158,6 +1244,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             }
         payload = {
             "funding_mode": args.funding,
+            "warmup_bars": args.warmup_bars,
             "candidate": candidate,
             "registry": args.registry,
             "incumbents": INCUMBENTS,

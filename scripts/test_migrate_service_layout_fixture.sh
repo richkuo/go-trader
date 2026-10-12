@@ -192,6 +192,8 @@ make_deployment() {
     write_stubs "$src"
     if [[ "$layout" != "nogit" ]]; then
         git -C "$src" init -q
+        git -C "$src" config gc.auto 0
+        git -C "$src" config maintenance.auto false
         git -C "$src" -c user.email=fixture@example.invalid -c user.name=fixture add -A
         git -C "$src" -c user.email=fixture@example.invalid -c user.name=fixture commit -qm fixture
     fi
