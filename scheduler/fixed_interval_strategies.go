@@ -11,6 +11,7 @@ const fixedIntervalParam = "expected_interval_ms"
 
 var fixedIntervalStrategyDefaults = map[string]int64{
 	"chande_momentum": 3_600_000,
+	"dual_thrust":     3_600_000,
 }
 
 type fixedIntervalUse struct {
@@ -20,17 +21,24 @@ type fixedIntervalUse struct {
 }
 
 func fixedIntervalUses(sc StrategyConfig) []fixedIntervalUse {
+	return namedStrategyUses(sc, func(name string) bool {
+		_, ok := fixedIntervalStrategyDefaults[name]
+		return ok
+	})
+}
+
+func namedStrategyUses(sc StrategyConfig, match func(string) bool) []fixedIntervalUse {
 	if sc.Type == "options" {
 		return nil
 	}
 	var uses []fixedIntervalUse
 	openName := strings.TrimSpace(effectiveOpenStrategy(sc))
-	if _, ok := fixedIntervalStrategyDefaults[openName]; ok {
+	if match(openName) {
 		uses = append(uses, fixedIntervalUse{Role: edgeRefRoleOpen, Name: openName, Params: sc.OpenStrategy.Params})
 	}
 	for _, ref := range sc.closeRefs() {
 		name := canonicalCloseStrategyName(ref.Name)
-		if _, ok := fixedIntervalStrategyDefaults[name]; !ok {
+		if !match(name) {
 			continue
 		}
 		params := ref.Params

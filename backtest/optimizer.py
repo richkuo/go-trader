@@ -739,6 +739,12 @@ DEFAULT_PARAM_RANGES = {
         "period": [10, 14, 20, 30, 40, 60],
         "threshold": [10.0, 15.0, 25.0, 35.0, 50.0],
     },
+    "dual_thrust": {
+        "lookback_sessions": [2, 3, 4, 5, 7],
+        "k_long": [0.25, 0.5, 0.75, 1.0],
+        "k_short": [0.25, 0.5, 0.75, 1.0],
+        "session_start_hour": [0],
+    },
     "on_balance_volume_divergence": {
         "left_span": [2, 3, 5],
         "right_span": [2, 3, 5],

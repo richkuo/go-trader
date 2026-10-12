@@ -31,6 +31,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"bollinger_bands":              {"fee_audit_m5", noEdgeRefFeeAudit},
 	"chaikin_money_flow_breakout":  {"study_fail", "backtest/candidates/chaikin_money_flow_1649/REPORT.md"},
 	"chande_momentum":              {"study_fail", "backtest/candidates/chande_momentum_1661/REPORT.md"},
+	"dual_thrust":                  {"study_fail", "backtest/candidates/dual_thrust_1642/REPORT.md"},
 	"commodity_channel_trend":      {"study_fail", "backtest/candidates/commodity_channel_trend_1656/REPORT.md"},
 	"connors_rsi_reversion":        {"study_fail", "backtest/candidates/connors_rsi_reversion_1645/REPORT.md"},
 	"consolidation_range":          {"fee_audit_m5", noEdgeRefLimbo},
