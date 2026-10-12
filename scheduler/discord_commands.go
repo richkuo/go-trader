@@ -40,6 +40,7 @@ var opsCommandNames = map[string]bool{
 	"paper-to-live":        true,
 	"apply-regime-gate":    true,
 	"clear-cash-reconcile": true,
+	"resolve-entry":        true,
 }
 
 func authorizeCommand(name, invokerID, guildID, ownerID string) (bool, string) {
@@ -461,6 +462,10 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		{Name: commandPrefix + "clear-cash-reconcile", Description: "Clear CashReconcileRequired after books match the venue (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID whose cash-reconcile latch to clear", Required: true},
 		}},
+		{Name: commandPrefix + "resolve-entry", Description: "Re-check a held live entry; release only on complete no-execution evidence (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the attempt", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "attempt", Description: "Attempt id (ei-...) from the LIVE ENTRY alert or the startup log", Required: true},
+		}},
 	}
 }
 
@@ -542,6 +547,8 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		d.handleApplyRegimeGate(s, i, data.Options)
 	case "clear-cash-reconcile":
 		d.handleClearCashReconcile(s, i, data.Options)
+	case "resolve-entry":
+		d.handleResolveEntry(s, i, data.Options)
 	default:
 		respondEphemeral(s, i, "unknown command")
 	}

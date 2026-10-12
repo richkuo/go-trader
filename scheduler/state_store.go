@@ -840,6 +840,34 @@ func (st *StateStore) PersistEntryGuardProgress(s *StrategyState) error {
 	return db.persistEntryGuardProgress(s)
 }
 
+func (st *StateStore) ReadEntryIntent(strategyID string, p RiskPartition, intentID string) (*entryIntent, error) {
+	db, err := st.dbForStrategy(strategyID)
+	if err != nil {
+		return nil, err
+	}
+	sid, err := db.entryOwner(strategyID, p)
+	if err != nil {
+		return nil, err
+	}
+	in, storedID, err := db.readEntryIntent(intentID)
+	if err != nil {
+		return nil, err
+	}
+	if storedID != sid || in.Partition != p {
+		return nil, fmt.Errorf("attempt %s belongs to another strategy or partition", intentID)
+	}
+	in.StrategyID = strategyID
+	return in, nil
+}
+
+func (st *StateStore) ReleaseEntryIntentByOperator(strategyID string, prior *entryIntent, evidenceJSON string, nowMs int64) error {
+	db, err := st.dbForStrategy(strategyID)
+	if err != nil {
+		return err
+	}
+	return db.releaseEntryIntentByOperator(strategyID, prior, evidenceJSON, nowMs)
+}
+
 func (st *StateStore) MarkEntryIntentReplayDelivered(strategyID string, in *entryIntent, seq int64) error {
 	db, err := st.dbForStrategy(strategyID)
 	if err != nil {

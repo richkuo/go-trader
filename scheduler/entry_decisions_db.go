@@ -475,6 +475,53 @@ func (sdb *StateDB) markEntryIntentReplayDelivered(procID string, in *entryInten
 	return nil
 }
 
+func (sdb *StateDB) releaseEntryIntentByOperator(procID string, prior *entryIntent, evidenceJSON string, nowMs int64) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	if sdb.readOnly {
+		return fmt.Errorf("%s state file is open read-only", sdb.storageRoleOf())
+	}
+	if prior == nil || prior.Status != entryIntentSubmitting {
+		return fmt.Errorf("only a submitting attempt can be released by the operator")
+	}
+	sid, err := sdb.entryOwner(procID, prior.Partition)
+	if err != nil {
+		return err
+	}
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin operator release: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`UPDATE entry_order_intents SET status = 'no_fill', evidence_json = ?, hold_reason = '', updated_at_ms = MAX(updated_at_ms, ?)
+		WHERE intent_id = ? AND scope = ? AND source = ? AND strategy_id = ? AND status = 'submitting'
+		  AND provider = ? AND account_key = ? AND instrument_type = ? AND symbol = ?
+		  AND client_order_id = ? AND initial_stop_client_id = ? AND request_json = ? AND evidence_json = ?
+		  AND venue_order_id = '' AND confirmed_qty = 0 AND confirmed_notional = 0 AND confirmed_fee = 0
+		  AND applied_qty = 0 AND applied_notional = 0 AND applied_fee = 0 AND settlement_seq = 0`,
+		evidenceJSON, nowMs,
+		prior.IntentID, string(prior.Partition.Scope), prior.Partition.Source, sid,
+		prior.Provider, prior.AccountKey, prior.InstrumentType, prior.Symbol,
+		prior.ClientOrderID, prior.InitialStopClientID, prior.RequestJSON, prior.EvidenceJSON)
+	if err != nil {
+		return fmt.Errorf("operator release of entry intent %s: %w", prior.IntentID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("operator release of entry intent %s: %w", prior.IntentID, err)
+	}
+	if n != 1 {
+		return errEntryOperatorReleaseStale
+	}
+	if storeCommitHook != nil {
+		if err := storeCommitHook(sdb.storageRoleOf()); err != nil {
+			return fmt.Errorf("commit hook (%s): %w", sdb.storageRoleOf(), err)
+		}
+	}
+	return tx.Commit()
+}
+
 func (sdb *StateDB) readEntryIntent(intentID string) (*entryIntent, string, error) {
 	row := sdb.db.QueryRow(`SELECT `+entryIntentColumns+` FROM entry_order_intents WHERE intent_id = ?`, intentID)
 	in, sid, err := scanEntryIntent(row.Scan)

@@ -672,10 +672,19 @@ class HyperliquidExchangeAdapter:
             raise RuntimeError("query_order_by_cloid requires HYPERLIQUID_ACCOUNT_ADDRESS")
         return self._info.query_order_by_cloid(self._account_address, _to_cloid(cloid))
 
+    def query_order_by_oid(self, oid: int) -> dict:
+        if not self._account_address:
+            raise RuntimeError("query_order_by_oid requires HYPERLIQUID_ACCOUNT_ADDRESS")
+        return self._info.query_order_by_oid(self._account_address, int(oid))
+
     def user_fills_since(self, since_ms: int) -> list:
         if not self._account_address:
             raise RuntimeError("user_fills_since requires HYPERLIQUID_ACCOUNT_ADDRESS")
         return self._info.user_fills_by_time(self._account_address, int(since_ms))
+
+    @property
+    def account_address(self) -> str:
+        return str(self._account_address or "")
 
     def limit_open(
         self,

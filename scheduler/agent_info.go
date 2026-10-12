@@ -73,6 +73,7 @@ var agentInfoEnvVars = []agentEnvVar{
 	{Name: "OKX_API_KEY", Purpose: "OKX API key for live OKX spot.", Secret: true},
 	{Name: "OKX_API_SECRET", Purpose: "OKX API secret for live OKX spot.", Secret: true},
 	{Name: "OKX_PASSPHRASE", Purpose: "OKX API passphrase for live OKX spot.", Secret: true},
+	{Name: "OKX_SANDBOX", Purpose: "Set to 1 to use the OKX sandbox; the live entry account key (#1771) records it so a recovery query on the other network never proves absence.", Secret: false},
 	{Name: "ROBINHOOD_PASSWORD", Purpose: "Robinhood password for live options.", Secret: true},
 	{Name: "ROBINHOOD_TOTP_SECRET", Purpose: "Robinhood TOTP secret for live options 2FA.", Secret: true},
 	{Name: "ROBINHOOD_USERNAME", Purpose: "Robinhood username for live options.", Secret: false},

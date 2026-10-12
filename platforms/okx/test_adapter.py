@@ -200,3 +200,51 @@ class TestGuardedEntryDeadlineHeader:
         assert "expTime" not in (ex.headers or {})
         a.market_open("BTC", True, 3, inst_type="swap", client_order_id="gtabd")
         assert "expTime" not in sent[-1][2]
+
+
+class TestFillHistoryPage:
+
+    def test_fill_pages_reach_the_signed_endpoint_and_refuse_venue_errors(self):
+        import json as _json
+        with patch.dict(os.environ, {"OKX_API_KEY": "k", "OKX_API_SECRET": "s", "OKX_PASSPHRASE": "p"}, clear=False):
+            os.environ.pop("OKX_SANDBOX", None)
+            a = OKXExchangeAdapter()
+        ex = a._exchange
+        sent = []
+        replies = []
+
+        class _Response:
+            status_code = 200
+            reason = "OK"
+            headers = {}
+
+            def __init__(self, body):
+                self.text = body
+                self.content = body.encode()
+
+            def raise_for_status(self):
+                pass
+
+        def _request(method, url, data=None, headers=None, **kwargs):
+            sent.append((method, url))
+            return _Response(_json.dumps(replies.pop(0)))
+
+        ex.session.request = _request
+        replies.append({"code": "0", "msg": "", "data": [{"clOrdId": "gtabc", "billId": "9", "fillSz": "1", "fillPx": "100"}]})
+        rows = a.fetch_fills_page("swap", 1000, 2000, 100, after="77")
+        method, url = sent[-1]
+        assert method == "GET" and "/api/v5/trade/fills?" in url
+        for part in ("instType=SWAP", "begin=1000", "end=2000", "limit=100", "after=77"):
+            assert part in url
+        assert rows[0]["clOrdId"] == "gtabc"
+        replies.append({"code": "0", "msg": "", "data": []})
+        assert a.fetch_fills_page("spot", 1000, 2000, 100, history=True) == []
+        assert "/api/v5/trade/fills-history?" in sent[-1][1] and "instType=SPOT" in sent[-1][1] and "after=" not in sent[-1][1]
+        replies.append({"code": "50011", "msg": "rate limit", "data": []})
+        with pytest.raises(Exception):
+            a.fetch_fills_page("swap", 1000, 2000, 100)
+
+    def test_fill_pages_need_live_credentials(self, adapter):
+        a, _ = adapter
+        with pytest.raises(RuntimeError):
+            a.fetch_fills_page("swap", 1, 2, 100)

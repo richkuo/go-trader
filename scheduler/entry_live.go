@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -50,6 +52,9 @@ type entryIntentEvidence struct {
 	StopTriggerPx  float64 `json:"stop_trigger_px,omitempty"`
 	ObservedAtMs   int64   `json:"observed_at_ms"`
 	RecoveredAfter bool    `json:"recovered_after_restart,omitempty"`
+
+	Absence  *entryAbsenceAudit  `json:"absence,omitempty"`
+	Operator *entryOperatorAudit `json:"operator,omitempty"`
 }
 
 func marshalEntryJSON(v interface{}) string {
@@ -77,15 +82,68 @@ func parseEntryIntentRequest(in *entryIntent) (entryIntentRequest, error) {
 func entryAccountKey(sc StrategyConfig) string {
 	switch sc.Platform {
 	case "hyperliquid":
-		return strings.ToLower(strings.TrimSpace(hyperliquidAccountAddress()))
+		return hyperliquidEntryAccountKey()
 	case "okx":
-		return "okx:" + okxInstType(sc.Args)
+		return okxEntryAccountKey(okxInstType(sc.Args))
 	}
 	return sc.Platform
 }
 
 var hyperliquidAccountAddress = func() string {
 	return strings.TrimSpace(os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"))
+}
+
+func hyperliquidEntryAccountKey() string {
+	addr := strings.ToLower(hyperliquidAccountAddress())
+	if addr == "" {
+		return ""
+	}
+	network := "mainnet"
+	if os.Getenv("HYPERLIQUID_TESTNET") == "1" {
+		network = "testnet"
+	}
+	return "hyperliquid:" + network + ":" + addr
+}
+
+func okxEntryAccountKey(instType string) string {
+	apiKey := strings.TrimSpace(os.Getenv("OKX_API_KEY"))
+	if apiKey == "" {
+		return ""
+	}
+	network := "live"
+	if os.Getenv("OKX_SANDBOX") == "1" {
+		network = "sandbox"
+	}
+	sum := sha256.Sum256([]byte("go-trader/okx-api-key/v1:" + apiKey))
+	return "okx:" + instType + ":" + network + ":key-" + hex.EncodeToString(sum[:])[:16]
+}
+
+func currentEntryAccountKey(in *entryIntent) string {
+	switch in.Provider {
+	case entryProviderHyperliquid:
+		return hyperliquidEntryAccountKey()
+	case entryProviderOKX:
+		return okxEntryAccountKey(in.InstrumentType)
+	}
+	return ""
+}
+
+func entryAccountBound(in *entryIntent) bool {
+	switch in.Provider {
+	case entryProviderHyperliquid:
+		for _, network := range []string{"mainnet", "testnet"} {
+			if addr, ok := strings.CutPrefix(in.AccountKey, "hyperliquid:"+network+":"); ok {
+				return strings.HasPrefix(addr, "0x") && len(addr) == 42
+			}
+		}
+	case entryProviderOKX:
+		for _, network := range []string{"live", "sandbox"} {
+			if fp, ok := strings.CutPrefix(in.AccountKey, "okx:"+in.InstrumentType+":"+network+":key-"); ok {
+				return len(fp) == 16
+			}
+		}
+	}
+	return false
 }
 
 func reserveLiveEntryIntent(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, adm entryAdmission, provider string, req entryIntentRequest, now time.Time) (*entryIntent, error) {
@@ -135,19 +193,27 @@ func reserveLiveEntryIntent(store *StateStore, sc StrategyConfig, s *StrategySta
 	req.Version = entryIntentRequestVersion
 	req.Script = sc.Script
 	in.RequestJSON = marshalEntryJSON(req)
+	release, ok := tryLockEntryAttempt(sc.ID)
+	if !ok {
+		return nil, fmt.Errorf("another resolution of this strategy's live entry attempt is in progress")
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	g := s.EntryGuard
 	if g == nil {
+		release()
 		return nil, fmt.Errorf("durable entry record unavailable")
 	}
 	if prev := g.unresolvedIntent(); prev != nil {
+		release()
 		return nil, fmt.Errorf("live entry %s is still unresolved", prev.IntentID)
 	}
 	if err := store.ReserveEntryIntent(s, in); err != nil {
+		release()
 		return nil, err
 	}
 	g.Intents[in.IntentID] = in
+	holdLiveEntryAttempt(in, release)
 	return in, nil
 }
 
@@ -210,13 +276,19 @@ func okxEntrySubmitGateFor(store *StateStore, s *StrategyState, mu *sync.RWMutex
 	}
 }
 
-func resolveEntryIntentNoFill(store *StateStore, s *StrategyState, mu *sync.RWMutex, in *entryIntent, ev entryIntentEvidence, logger *StrategyLogger) bool {
+func resolveEntryIntentNoFill(store *StateStore, s *StrategyState, mu *sync.RWMutex, in *entryIntent, ev entryIntentEvidence, logger *StrategyLogger, stale func() string) bool {
 	if in == nil {
 		return false
 	}
 	ev.ObservedAtMs = time.Now().UnixMilli()
 	mu.Lock()
 	defer mu.Unlock()
+	if stale != nil {
+		if why := stale(); why != "" {
+			logStaleEntryRecovery(logger, in, why)
+			return false
+		}
+	}
 	next := *in
 	next.EvidenceJSON = marshalEntryJSON(ev)
 	next.HoldReason = ""

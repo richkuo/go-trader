@@ -958,6 +958,7 @@ func entryTestUnknownAttempt(t *testing.T) (*entryTestEnv, StrategyConfig) {
 	sc := entryTestHLStrategy("hl-live", "live")
 	pct := 2.0
 	sc.StopLossPct = &pct
+	useEntryTestHLAccount(t)
 	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
 	useEntryTradeRecorder(t, env.store)
 	venue := &entryLiveVenue{t: t, env: env, respond: func([]string) (*HyperliquidExecuteResult, error) { return nil, errors.New("execute error: timeout") }}
@@ -984,6 +985,7 @@ func backdateEntryDeadlines(t *testing.T, env *entryTestEnv, id string) {
 		}
 		req.ExpiresAfterMs = time.Now().Add(-10 * time.Minute).UnixMilli()
 		req.StopExpiresAfterMs = time.Now().Add(-9 * time.Minute).UnixMilli()
+		req.SubmittedAtMs = req.ExpiresAfterMs - hlEntryOrderExpiry.Milliseconds()
 		in.RequestJSON = marshalEntryJSON(req)
 	}
 }
@@ -1041,7 +1043,7 @@ func TestClosedBarLiveEntryRecoveryKeepsAmbiguousEvidenceHeld(t *testing.T) {
 		{"incomplete fills", &entryRecoveryResult{Order: &entryRecoveryOrder{Found: true, Status: "filled", OrderID: "9", OrigSz: 0.4, ExecutedSz: 0.4, Terminal: true, FillQty: 0.1, FillAvgPx: 100, FillCount: 1, FillsComplete: false}, Stop: &entryRecoveryOrder{Found: false}}, nil, entryIntentSubmitting},
 		{"order still open", &entryRecoveryResult{Order: &entryRecoveryOrder{Found: true, Status: "open", OrderID: "9", Terminal: false}}, nil, entryIntentSubmitting},
 		{"fills without an order", &entryRecoveryResult{Order: &entryRecoveryOrder{Found: false, FillQty: 0.2}}, nil, entryIntentSubmitting},
-		{"unknown after the deadline", &entryRecoveryResult{Order: &entryRecoveryOrder{Found: false}}, nil, entryIntentNoFill},
+		{"unknown after the deadline", &entryRecoveryResult{Account: entryTestHLAccountKey, Order: &entryRecoveryOrder{Found: false, Coverage: entryTestCoverage()}, Stop: &entryRecoveryOrder{Found: false, Coverage: entryTestCoverage()}}, nil, entryIntentNoFill},
 		{"terminal zero fill", &entryRecoveryResult{Order: &entryRecoveryOrder{Found: true, Status: "canceled", OrderID: "9", OrigSz: 0.4, RemainingSz: 0.4, Terminal: true}}, nil, entryIntentNoFill},
 		{"partial fill on an open order", &entryRecoveryResult{Order: &entryRecoveryOrder{Found: true, Status: "open", OrderID: "9", OrigSz: 0.4, ExecutedSz: 0.1, Terminal: false, FillQty: 0.1, FillAvgPx: 100, FillCount: 1, FillsComplete: true}}, nil, entryIntentSettling},
 	}
@@ -1296,7 +1298,7 @@ func TestClosedBarOKXLiveEntryNeedsAConfirmedFillAndRecovers(t *testing.T) {
 			prev := runOKXRecoverEntryFn
 			t.Cleanup(func() { runOKXRecoverEntryFn = prev })
 			recCalls := 0
-			runOKXRecoverEntryFn = func(script, symbol, inst, cid string) (*entryRecoveryResult, string, error) {
+			runOKXRecoverEntryFn = func(script, symbol, inst, cid string, sinceMs int64) (*entryRecoveryResult, string, error) {
 				recCalls++
 				if cid != venue.opts[0].ClientOrderID || inst != instType {
 					return nil, "", fmt.Errorf("recovery asked for %s %s", inst, cid)
@@ -1537,6 +1539,7 @@ func TestClosedBarOKXLiveEntryVenueDeadlineGatesRelease(t *testing.T) {
 	sc := StrategyConfig{ID: "okx-live", Type: "perps", Platform: "okx", Script: "shared_scripts/check_okx.py",
 		Args: []string{"breakout", "BTC", "1h", "--mode=live", "--inst-type=swap"}, ClosedBarDecisions: true,
 		Direction: DirectionLong, Capital: 1000, Leverage: 1, SizingLeverage: 1}
+	useEntryTestOKXAccount(t)
 	newAttempt := func(t *testing.T) (*entryTestEnv, *entryOKXVenue, time.Time, time.Time) {
 		env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
 		useEntryTradeRecorder(t, env.store)
@@ -1567,7 +1570,7 @@ func TestClosedBarOKXLiveEntryVenueDeadlineGatesRelease(t *testing.T) {
 		prev := runOKXRecoverEntryFn
 		t.Cleanup(func() { runOKXRecoverEntryFn = prev })
 		calls := 0
-		runOKXRecoverEntryFn = func(script, symbol, inst, cid string) (*entryRecoveryResult, string, error) {
+		runOKXRecoverEntryFn = func(script, symbol, inst, cid string, sinceMs int64) (*entryRecoveryResult, string, error) {
 			res := results[len(results)-1]
 			if calls < len(results) {
 				res = results[calls]
@@ -1577,7 +1580,7 @@ func TestClosedBarOKXLiveEntryVenueDeadlineGatesRelease(t *testing.T) {
 		}
 		return &calls
 	}
-	missing := &entryRecoveryResult{Platform: "okx", Order: &entryRecoveryOrder{Found: false}}
+	missing := &entryRecoveryResult{Platform: "okx", Account: okxEntryAccountKey("swap"), Order: &entryRecoveryOrder{Found: false, Coverage: entryTestCoverage()}}
 
 	t.Run("unsent order released only after the deadline and never resent before", func(t *testing.T) {
 		env, venue, at, bar := newAttempt(t)

@@ -207,6 +207,30 @@ class OKXExchangeAdapter:
             )
         return self._exchange.fetch_order(None, self.order_pair(symbol, inst_type), params={"clOrdId": client_order_id})
 
+    def fetch_fills_page(self, inst_type: str, begin_ms: int, end_ms: int, limit: int, after: str = "", history: bool = False) -> list:
+        if not self._is_live:
+            raise RuntimeError(
+                "fetch_fills_page requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
+            )
+        params = {
+            "instType": "SPOT" if inst_type == "spot" else "SWAP",
+            "begin": str(int(begin_ms)),
+            "end": str(int(end_ms)),
+            "limit": str(int(limit)),
+        }
+        if after:
+            params["after"] = str(after)
+        if history:
+            resp = self._exchange.privateGetTradeFillsHistory(params)
+        else:
+            resp = self._exchange.privateGetTradeFills(params)
+        if not isinstance(resp, dict) or str(resp.get("code")) != "0":
+            raise RuntimeError(f"OKX fills query failed: {resp!r}")
+        data = resp.get("data")
+        if not isinstance(data, list):
+            raise RuntimeError(f"OKX fills query returned no list: {resp!r}")
+        return data
+
     def fetch_order_trades(self, symbol: str, inst_type: str, order_id: str) -> list:
         if not self._is_live:
             raise RuntimeError(

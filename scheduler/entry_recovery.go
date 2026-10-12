@@ -14,7 +14,20 @@ const (
 	entryRecoveryGrace         = 2 * time.Minute
 	entryRecoveryFillLookback  = 2 * time.Minute
 	entryRecoveryQueryInterval = time.Minute
+	entryRecoveryQueryTimeout  = 45 * time.Second
 )
+
+type entryFillCoverage struct {
+	Complete     bool    `json:"complete"`
+	Reason       string  `json:"reason,omitempty"`
+	FromMs       int64   `json:"from_ms"`
+	ThroughMs    int64   `json:"through_ms"`
+	Pages        int     `json:"pages"`
+	Rows         int     `json:"rows"`
+	MatchedCount int     `json:"matched_count"`
+	MatchedQty   float64 `json:"matched_qty"`
+	Source       string  `json:"source,omitempty"`
+}
 
 type entryRecoveryOrder struct {
 	Found         bool    `json:"found"`
@@ -31,10 +44,13 @@ type entryRecoveryOrder struct {
 	FillCount     int     `json:"fill_count"`
 	FillAvgPx     float64 `json:"fill_avg_px"`
 	FillsComplete bool    `json:"fills_complete"`
+
+	Coverage *entryFillCoverage `json:"coverage,omitempty"`
 }
 
 type entryRecoveryResult struct {
 	Platform    string              `json:"platform"`
+	Account     string              `json:"account,omitempty"`
 	Order       *entryRecoveryOrder `json:"order"`
 	Stop        *entryRecoveryOrder `json:"stop,omitempty"`
 	CheckedAtMs int64               `json:"checked_at_ms"`
@@ -49,8 +65,15 @@ func parseEntryRecoveryOutput(stdout []byte, stderr string, runErr error) (*entr
 		}
 		return nil, stderr, fmt.Errorf("parse recovery output: %w (stdout: %s)", err, string(stdout))
 	}
-	if runErr != nil && res.Error == "" {
-		return &res, stderr, fmt.Errorf("recovery query error: %w (stderr: %s)", runErr, stderr)
+	if runErr != nil {
+		why := res.Error
+		if why == "" {
+			why = stderr
+		}
+		return &res, stderr, fmt.Errorf("recovery query error: %w (%s)", runErr, why)
+	}
+	if res.Error != "" {
+		return &res, stderr, fmt.Errorf("recovery query error: %s", res.Error)
 	}
 	return &res, stderr, nil
 }
@@ -70,22 +93,23 @@ func buildHyperliquidRecoverEntryArgs(symbol, cloid, stopCloid string, sinceMs i
 }
 
 func RunHyperliquidRecoverEntry(script, symbol, cloid, stopCloid string, sinceMs int64) (*entryRecoveryResult, string, error) {
-	stdout, stderr, err := runPythonReadOnly(script, buildHyperliquidRecoverEntryArgs(symbol, cloid, stopCloid, sinceMs))
+	stdout, stderr, err := runPythonWithTimeout(shutdownReadOnlyCtx, script, buildHyperliquidRecoverEntryArgs(symbol, cloid, stopCloid, sinceMs), nil, entryRecoveryQueryTimeout)
 	return parseEntryRecoveryOutput(stdout, string(stderr), err)
 }
 
-func buildOKXRecoverEntryArgs(symbol, instType, clientOrderID string) []string {
+func buildOKXRecoverEntryArgs(symbol, instType, clientOrderID string, sinceMs int64) []string {
 	return []string{
 		"--recover-entry",
 		"--symbol=" + symbol,
 		"--inst-type=" + instType,
 		"--client-order-id=" + clientOrderID,
+		fmt.Sprintf("--since-ms=%d", sinceMs),
 		"--mode=live",
 	}
 }
 
-func RunOKXRecoverEntry(script, symbol, instType, clientOrderID string) (*entryRecoveryResult, string, error) {
-	stdout, stderr, err := runPythonReadOnly(script, buildOKXRecoverEntryArgs(symbol, instType, clientOrderID))
+func RunOKXRecoverEntry(script, symbol, instType, clientOrderID string, sinceMs int64) (*entryRecoveryResult, string, error) {
+	stdout, stderr, err := runPythonWithTimeout(shutdownReadOnlyCtx, script, buildOKXRecoverEntryArgs(symbol, instType, clientOrderID, sinceMs), nil, entryRecoveryQueryTimeout)
 	return parseEntryRecoveryOutput(stdout, string(stderr), err)
 }
 
@@ -117,19 +141,28 @@ func classifyEntryRecovery(in *entryIntent, req entryIntentRequest, res *entryRe
 		}
 		return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: why}
 	}
+	stored := entryStoredExecutionProof(in)
 	o := res.Order
 	ev.VenueOrderID = o.OrderID
 	ev.OrderStatus = o.Status
 	if !o.Found {
-		if o.FillQty > 0 {
+		if o.FillQty != 0 || o.FillCount != 0 || (o.Coverage != nil && (o.Coverage.MatchedCount != 0 || o.Coverage.MatchedQty != 0)) {
 			return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: "the venue reports fills for the client order id but no order"}
 		}
-		if req.ExpiresAfterMs > 0 && now.UnixMilli() > req.ExpiresAfterMs+entryRecoveryGrace.Milliseconds() {
-			ev.Outcome = "expired_unaccepted"
-			ev.Detail = fmt.Sprintf("no order or fill carries the client order id after its venue deadline %s", formatClosedBarMs(req.ExpiresAfterMs))
-			return entryRecoveryVerdict{Kind: entryRecoveryNoFill, Evidence: ev}
+		if stored != "" {
+			return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: "the venue has no order for the client order id, but " + stored + " proves execution; an empty venue result cannot release it"}
 		}
-		return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: "the venue has no order for the client order id; that alone does not prove the order was never accepted"}
+		audit, why := proveEntryAbsence(in, req, res, now)
+		if why != "" {
+			return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: "the venue has no order for the client order id, but that does not prove the order was never accepted: " + why}
+		}
+		ev.Outcome = "expired_unaccepted"
+		ev.Detail = fmt.Sprintf("no order or fill carries the client order id after its venue deadline %s; the fill history from %s through %s is complete", formatClosedBarMs(req.ExpiresAfterMs), formatClosedBarMs(audit.WindowStartMs), formatClosedBarMs(audit.OrderCoverage.ThroughMs))
+		ev.Absence = audit
+		return entryRecoveryVerdict{Kind: entryRecoveryNoFill, Evidence: ev}
+	}
+	if in.ConfirmedQty > 0 && o.FillQty < in.ConfirmedQty-math.Max(1e-9, in.ConfirmedQty*1e-6) {
+		return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: fmt.Sprintf("order %s now shows %.8f filled, less than the saved proven fill %.8f", o.OrderID, o.FillQty, in.ConfirmedQty)}
 	}
 	if !o.Terminal {
 		if o.FillQty > 0 && o.FillsComplete && finitePositive(o.FillAvgPx) {
@@ -142,6 +175,12 @@ func classifyEntryRecovery(in *entryIntent, req entryIntentRequest, res *entryRe
 		return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: fmt.Sprintf("order %s is still %s", o.OrderID, o.Status)}
 	}
 	if o.ExecutedSz <= 0 && o.FillQty <= 0 {
+		if stored != "" {
+			return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: fmt.Sprintf("order %s ended %s with no execution, but %s contradicts it", o.OrderID, o.Status, stored)}
+		}
+		if o.Coverage != nil && (o.Coverage.MatchedCount != 0 || o.Coverage.MatchedQty != 0) {
+			return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: fmt.Sprintf("order %s ended %s with no execution, but the fill history holds %d fill(s) for the client order id", o.OrderID, o.Status, o.Coverage.MatchedCount)}
+		}
 		ev.Outcome = "terminal_zero_fill"
 		ev.Detail = fmt.Sprintf("order %s ended %s with no execution", o.OrderID, o.Status)
 		return entryRecoveryVerdict{Kind: entryRecoveryNoFill, Evidence: ev}
@@ -196,28 +235,37 @@ func entryRecoveryNotBefore(in *entryIntent, req entryIntentRequest) int64 {
 	return deadline + entryRecoveryGrace.Milliseconds()
 }
 
+func entryRecoveryWindowStart(in *entryIntent) int64 {
+	return in.CreatedAtMs - entryRecoveryFillLookback.Milliseconds()
+}
+
 func queryEntryRecovery(in *entryIntent, req entryIntentRequest, script string) (*entryRecoveryResult, error) {
+	since := entryRecoveryWindowStart(in)
 	switch in.Provider {
 	case entryProviderHyperliquid:
-		since := in.CreatedAtMs - entryRecoveryFillLookback.Milliseconds()
-		stopCloid := ""
-		if req.StopLossPct > 0 {
-			stopCloid = in.InitialStopClientID
-		}
-		res, _, err := runHyperliquidRecoverEntryFn(script, in.Symbol, in.ClientOrderID, stopCloid, since)
+		res, _, err := runHyperliquidRecoverEntryFn(script, in.Symbol, in.ClientOrderID, in.InitialStopClientID, since)
 		return res, err
 	case entryProviderOKX:
-		res, _, err := runOKXRecoverEntryFn(script, in.Symbol, in.InstrumentType, in.ClientOrderID)
+		res, _, err := runOKXRecoverEntryFn(script, in.Symbol, in.InstrumentType, in.ClientOrderID, since)
 		return res, err
 	}
 	return nil, fmt.Errorf("provider %q has no recovery query", in.Provider)
 }
 
 type entryRecoveryJob struct {
+	app    *AppState
 	sc     StrategyConfig
 	state  *StrategyState
 	intent *entryIntent
 	snap   entryIntent
+}
+
+func (job *entryRecoveryJob) staleLocked() string {
+	return entryIntentStaleLocked(job.app, job.state, job.intent, &job.snap)
+}
+
+func (job *entryRecoveryJob) adoptLocked() {
+	job.snap = *job.intent
 }
 
 var entryRecoveryAlerted sync.Map
@@ -228,11 +276,17 @@ func recoverEntryIntents(cfg *Config, state *AppState, store *StateStore, mu *sy
 	if cfg == nil || state == nil || store == nil {
 		return
 	}
+	releaseHeldLiveEntryAttempts()
 	byID := make(map[string]StrategyConfig, len(cfg.Strategies))
 	for _, sc := range cfg.Strategies {
 		byID[sc.ID] = sc
 	}
-	var jobs []entryRecoveryJob
+	type pendingRecovery struct {
+		sc       StrategyConfig
+		state    *StrategyState
+		intentID string
+	}
+	var pending []pendingRecovery
 	mu.RLock()
 	for _, id := range sortedEntryGuardStrategyIDs(state) {
 		sc, ok := byID[id]
@@ -241,14 +295,30 @@ func recoverEntryIntents(cfg *Config, state *AppState, store *StateStore, mu *sy
 		}
 		s := state.Strategies[id]
 		for _, intentID := range s.EntryGuard.sortedIntentIDs() {
-			in := s.EntryGuard.Intents[intentID]
-			jobs = append(jobs, entryRecoveryJob{sc: sc, state: s, intent: in, snap: *in})
+			pending = append(pending, pendingRecovery{sc: sc, state: s, intentID: intentID})
 		}
 	}
 	mu.RUnlock()
-	for _, job := range jobs {
-		logger := entryRecoveryLogger(logMgr, job.sc.ID)
-		recoverOneEntryIntent(cfg, store, mu, job, notifier, logger, now)
+	for _, p := range pending {
+		logger := entryRecoveryLogger(logMgr, p.sc.ID)
+		release, ok := tryLockEntryAttempt(p.sc.ID)
+		if !ok {
+			logger.Info("Live entry %s: another resolution of this strategy's entry attempt is in progress; recovery retries next cycle (#1771)", p.intentID)
+			logger.Close()
+			continue
+		}
+		var job *entryRecoveryJob
+		mu.RLock()
+		if state.Strategies[p.sc.ID] == p.state && p.state.EntryGuard != nil {
+			if in := p.state.EntryGuard.Intents[p.intentID]; in != nil {
+				job = &entryRecoveryJob{app: state, sc: p.sc, state: p.state, intent: in, snap: *in}
+			}
+		}
+		mu.RUnlock()
+		if job != nil {
+			recoverOneEntryIntent(cfg, store, mu, job, notifier, logger, now)
+		}
+		release()
 		logger.Close()
 	}
 }
@@ -262,29 +332,40 @@ func entryRecoveryLogger(logMgr *LogManager, id string) *StrategyLogger {
 	return &StrategyLogger{stratID: id, writer: os.Stdout}
 }
 
-func recoverOneEntryIntent(cfg *Config, store *StateStore, mu *sync.RWMutex, job entryRecoveryJob, notifier *MultiNotifier, logger *StrategyLogger, now time.Time) {
+func logStaleEntryRecovery(logger *StrategyLogger, in *entryIntent, why string) {
+	if logger != nil {
+		logger.Warn("Live entry %s: a stale recovery result was discarded (%s); nothing was booked or changed (#1771)", in.IntentID, why)
+	}
+}
+
+func recoverOneEntryIntent(cfg *Config, store *StateStore, mu *sync.RWMutex, job *entryRecoveryJob, notifier *MultiNotifier, logger *StrategyLogger, now time.Time) {
 	in := job.intent
 	s := job.state
 	sc := job.sc
 	switch {
 	case job.snap.replayPending():
 		mu.Lock()
+		if why := job.staleLocked(); why != "" {
+			mu.Unlock()
+			logStaleEntryRecovery(logger, in, why)
+			return
+		}
 		publishEntryReplayLocked(store, s, in, logger)
 		mu.Unlock()
 		return
 	case job.snap.Status == entryIntentReserved:
-		resolveEntryIntentNoFill(store, s, mu, in, entryIntentEvidence{Outcome: "never_submitted", Detail: "the attempt was reserved but its submission was never recorded, so no order was sent"}, logger)
+		resolveEntryIntentNoFill(store, s, mu, in, entryIntentEvidence{Outcome: "never_submitted", Detail: "the attempt was reserved but its submission was never recorded, so no order was sent"}, logger, job.staleLocked)
 		return
 	case !job.snap.unresolved():
 		return
 	}
 	req, err := parseEntryIntentRequest(&job.snap)
 	if err != nil {
-		noteEntryRecoveryHold(store, sc, s, mu, in, err.Error(), notifier, logger)
+		job.noteHold(store, mu, err.Error(), notifier, logger)
 		return
 	}
 	if notBefore := entryRecoveryNotBefore(&job.snap, req); notBefore > 0 && now.UnixMilli() <= notBefore {
-		noteEntryRecoveryHold(store, sc, s, mu, in, fmt.Sprintf("waiting for the venue order deadline (recovery after %s)", formatClosedBarMs(notBefore)), notifier, logger)
+		job.noteHold(store, mu, fmt.Sprintf("waiting for the venue order deadline (recovery after %s)", formatClosedBarMs(notBefore)), notifier, logger)
 		return
 	}
 	if last, ok := entryRecoveryLastQuery.Load(in.IntentID); ok && now.Sub(last.(time.Time)) < entryRecoveryQueryInterval {
@@ -296,47 +377,62 @@ func recoverOneEntryIntent(cfg *Config, store *StateStore, mu *sync.RWMutex, job
 		script = sc.Script
 	}
 	res, qerr := queryEntryRecovery(&job.snap, req, script)
-	if qerr != nil && res == nil {
-		noteEntryRecoveryHold(store, sc, s, mu, in, "the venue recovery query failed: "+qerr.Error(), notifier, logger)
+	if qerr != nil {
+		job.noteHold(store, mu, "the venue recovery query failed: "+qerr.Error(), notifier, logger)
 		return
 	}
 	verdict := classifyEntryRecovery(&job.snap, req, res, time.Now())
 	switch verdict.Kind {
 	case entryRecoveryNoFill:
-		resolveEntryIntentNoFill(store, s, mu, in, verdict.Evidence, logger)
+		resolveEntryIntentNoFill(store, s, mu, in, verdict.Evidence, logger, job.staleLocked)
 	case entryRecoverySettling:
 		mu.Lock()
+		if why := job.staleLocked(); why != "" {
+			mu.Unlock()
+			logStaleEntryRecovery(logger, in, why)
+			return
+		}
 		markEntryConsumedLocked(s.EntryGuard, in.key(), in.BarOpenMs, now)
 		in.Status = entryIntentSettling
-		in.HoldReason = verdict.Reason
 		in.EvidenceJSON = marshalEntryJSON(verdict.Evidence)
+		if verdict.Evidence.VenueOrderID != "" {
+			in.VenueOrderID = verdict.Evidence.VenueOrderID
+		}
 		in.ConfirmedQty = verdict.Evidence.FilledQty
 		in.ConfirmedNotional = verdict.Evidence.FilledQty * verdict.Evidence.AvgPx
 		in.ConfirmedFee = verdict.Evidence.Fee
 		in.UpdatedAtMs = now.UnixMilli()
 		perr := store.PersistEntryGuardProgress(s)
+		job.adoptLocked()
 		mu.Unlock()
 		if perr != nil && logger != nil {
 			logger.Error("CRITICAL: saving the partial fill of entry %s failed: %v", in.IntentID, perr)
 		}
-		noteEntryRecoveryHold(store, sc, s, mu, in, verdict.Reason, notifier, logger)
+		job.noteHold(store, mu, verdict.Reason, notifier, logger)
 	case entryRecoveryFilled:
-		trades := bookRecoveredEntry(cfg, store, sc, s, mu, in, req, verdict.Evidence, notifier, logger)
+		trades := bookRecoveredEntry(cfg, store, mu, job, req, verdict.Evidence, notifier, logger)
 		if trades > 0 {
 			sendTradeAlerts(sc, s, trades, mu, notifier, cfg.Regime)
 		}
 	default:
-		noteEntryRecoveryHold(store, sc, s, mu, in, verdict.Reason, notifier, logger)
+		job.noteHold(store, mu, verdict.Reason, notifier, logger)
 	}
 }
 
-func noteEntryRecoveryHold(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, in *entryIntent, reason string, notifier *MultiNotifier, logger *StrategyLogger) {
+func (job *entryRecoveryJob) noteHold(store *StateStore, mu *sync.RWMutex, reason string, notifier *MultiNotifier, logger *StrategyLogger) {
+	in := job.intent
+	sc := job.sc
 	mu.Lock()
+	if why := job.staleLocked(); why != "" {
+		mu.Unlock()
+		logStaleEntryRecovery(logger, in, why)
+		return
+	}
 	changed := in.HoldReason != reason
 	in.HoldReason = reason
 	var perr error
 	if changed {
-		perr = store.PersistEntryGuardProgress(s)
+		perr = store.PersistEntryGuardProgress(job.state)
 	}
 	mu.Unlock()
 	if perr != nil && logger != nil {
@@ -346,13 +442,21 @@ func noteEntryRecoveryHold(store *StateStore, sc StrategyConfig, s *StrategyStat
 		logger.Warn("Live entry %s (%s %s, client order %s) stays held: %s — no new entry is sent for this strategy; exits, stops and protection continue (#1769)", in.IntentID, in.Symbol, in.TargetSide, in.ClientOrderID, reason)
 	}
 	if _, loaded := entryRecoveryAlerted.LoadOrStore(in.IntentID, true); !loaded && notifier != nil && notifier.HasOwner() {
-		notifier.SendOwnerDM(fmt.Sprintf("**LIVE ENTRY UNRESOLVED** [%s] %s %s entry %s (client order %s, candle %s): %s. New entries for this strategy stay held until venue evidence resolves it; exits, stops and protection continue.",
-			sc.ID, in.Symbol, in.TargetSide, in.IntentID, in.ClientOrderID, formatClosedBarMs(in.BarOpenMs), reason))
+		notifier.SendOwnerDM(fmt.Sprintf("**LIVE ENTRY UNRESOLVED** [%s] %s %s entry %s (client order %s, candle %s): %s. New entries for this strategy stay held until venue evidence resolves it; exits, stops and protection continue. The owner can request a fresh check with /%s%s.",
+			sc.ID, in.Symbol, in.TargetSide, in.IntentID, in.ClientOrderID, formatClosedBarMs(in.BarOpenMs), reason, commandPrefix, entryOperatorCommandName))
 	}
 }
 
-func bookRecoveredEntry(cfg *Config, store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, in *entryIntent, req entryIntentRequest, ev entryIntentEvidence, notifier *MultiNotifier, logger *StrategyLogger) int {
+func bookRecoveredEntry(cfg *Config, store *StateStore, mu *sync.RWMutex, job *entryRecoveryJob, req entryIntentRequest, ev entryIntentEvidence, notifier *MultiNotifier, logger *StrategyLogger) int {
+	in := job.intent
+	s := job.state
+	sc := job.sc
 	mu.Lock()
+	if why := job.staleLocked(); why != "" {
+		mu.Unlock()
+		logStaleEntryRecovery(logger, in, why)
+		return 0
+	}
 	pos := s.Positions[in.Symbol]
 	conflict := ""
 	absorbedQty, absorbedAvg := 0.0, 0.0
@@ -380,8 +484,13 @@ func bookRecoveredEntry(cfg *Config, store *StateStore, sc StrategyConfig, s *St
 		conflict = fmt.Sprintf("entry kind %q has no recovery booking", req.Kind)
 	}
 	if conflict != "" {
+		perr := persistUnbookedEntryProofLocked(store, s, in, ev, conflict)
+		job.adoptLocked()
 		mu.Unlock()
-		noteEntryRecoveryHold(store, sc, s, mu, in, "a fill was proven but "+conflict, notifier, logger)
+		if perr != nil && logger != nil {
+			logger.Error("CRITICAL: saving the proven fill of entry %s failed: %v — the attempt stays held in memory (#1771)", in.IntentID, perr)
+		}
+		job.noteHold(store, mu, "a fill was proven but "+conflict, notifier, logger)
 		return 0
 	}
 	restoreAbsorbed := func() {
@@ -435,7 +544,7 @@ func bookRecoveredEntry(cfg *Config, store *StateStore, sc StrategyConfig, s *St
 			endCapture()
 			restoreAbsorbed()
 			mu.Unlock()
-			noteEntryRecoveryHold(store, sc, s, mu, in, "the owning state file is unavailable: "+err.Error(), notifier, logger)
+			job.noteHold(store, mu, "the owning state file is unavailable: "+err.Error(), notifier, logger)
 			return 0
 		}
 		result := &OKXResult{StrategyDecisionFields: fields, Symbol: in.Symbol, Signal: req.Signal, Price: ev.AvgPx, Indicators: indicators}
@@ -456,6 +565,22 @@ func bookRecoveredEntry(cfg *Config, store *StateStore, sc StrategyConfig, s *St
 			sc.ID, in.Symbol, in.TargetSide, in.IntentID, ev.FilledQty, ev.AvgPx, ev.VenueOrderID))
 	}
 	return trades
+}
+
+func persistUnbookedEntryProofLocked(store *StateStore, s *StrategyState, in *entryIntent, ev entryIntentEvidence, conflict string) error {
+	proof := ev
+	proof.Outcome = "filled_unbooked"
+	proof.Detail = "the fill was proven but " + conflict
+	proof.ObservedAtMs = time.Now().UnixMilli()
+	in.EvidenceJSON = marshalEntryJSON(proof)
+	if ev.VenueOrderID != "" {
+		in.VenueOrderID = ev.VenueOrderID
+	}
+	in.ConfirmedQty = ev.FilledQty
+	in.ConfirmedNotional = ev.FilledQty * ev.AvgPx
+	in.ConfirmedFee = ev.Fee
+	in.UpdatedAtMs = proof.ObservedAtMs
+	return store.PersistEntryGuardProgress(s)
 }
 
 func entryRecoveryQtyMatches(book, want float64) bool {

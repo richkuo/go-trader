@@ -2374,15 +2374,157 @@ def _aggregate_recovery_fills(fills, oid=None, cloid=None):
     return qty, notional, fee, count, sorted(tids)
 
 
-def entry_recovery_evidence(adapter, cloid, since_ms):
+HL_FILLS_PAGE_LIMIT = 2000
+HL_FILLS_RECENT_LIMIT = 10000
+HL_RECOVERY_MAX_OID_LOOKUPS = 40
+
+
+def hyperliquid_account_key(address):
+    addr = str(address or "").strip().lower()
+    if not addr:
+        return ""
+    network = "testnet" if os.environ.get("HYPERLIQUID_TESTNET", "") == "1" else "mainnet"
+    return f"hyperliquid:{network}:{addr}"
+
+
+def _recovery_fill_key(f):
+    if f.get("tid") is not None:
+        return ("tid", str(f.get("tid")))
+    return ("row", str(f.get("hash")), str(f.get("oid")), str(f.get("time")), str(f.get("sz")), str(f.get("px")))
+
+
+def scan_recovery_fills(adapter, since_ms):
+    start = int(since_ms)
+    fills = []
+    seen = set()
+    pages = 0
+    max_pages = HL_FILLS_RECENT_LIMIT // HL_FILLS_PAGE_LIMIT + 1
+    scan = {"fills": fills, "complete": False, "reason": "", "from_ms": int(since_ms), "through_ms": 0, "pages": 0}
+    while True:
+        if pages >= max_pages:
+            scan["reason"] = f"the fill history needs more than {max_pages} pages"
+            return scan
+        requested_at = int(time.time() * 1000)
+        page = adapter.user_fills_since(start)
+        pages += 1
+        scan["pages"] = pages
+        if not isinstance(page, list):
+            raise ValueError(f"userFillsByTime returned no list: {page!r}")
+        for f in page:
+            if not isinstance(f, dict):
+                raise ValueError(f"userFillsByTime returned a non-object fill: {f!r}")
+            key = _recovery_fill_key(f)
+            if key in seen:
+                continue
+            seen.add(key)
+            fills.append(f)
+        if len(fills) >= HL_FILLS_RECENT_LIMIT:
+            scan["reason"] = f"{len(fills)} fills since the attempt window reach the {HL_FILLS_RECENT_LIMIT} fills the venue retains"
+            return scan
+        if len(page) < HL_FILLS_PAGE_LIMIT:
+            scan["complete"] = True
+            scan["through_ms"] = requested_at
+            return scan
+        times = []
+        for f in page:
+            try:
+                times.append(int(f.get("time")))
+            except (TypeError, ValueError):
+                scan["reason"] = "a full fill page carries a fill with no time, so the next page cannot be read"
+                return scan
+        if times != sorted(times):
+            scan["reason"] = "a full fill page is not in time order, so the next page cannot be read"
+            return scan
+        if times[-1] <= start:
+            scan["reason"] = "a full fill page did not advance in time"
+            return scan
+        start = times[-1]
+
+
+def _order_cloid(resp):
+    if not isinstance(resp, dict):
+        raise ValueError(f"orderStatus returned no object: {resp!r}")
+    if resp.get("status") != "order":
+        return None, False
+    wrapper = resp.get("order")
+    if not isinstance(wrapper, dict) or not isinstance(wrapper.get("order"), dict):
+        raise ValueError("orderStatus returned no order body")
+    cloid = wrapper["order"].get("cloid")
+    return (str(cloid).lower() if cloid else ""), True
+
+
+def attribute_recovery_fills(adapter, fills):
+    out = []
+    by_oid = {}
+    lookups = 0
+    for f in fills:
+        cloid = f.get("cloid")
+        if cloid:
+            out.append(str(cloid).lower())
+            continue
+        try:
+            oid = int(f.get("oid"))
+        except (TypeError, ValueError):
+            return out, False, "a fill carries neither a client order id nor an order id"
+        if oid not in by_oid:
+            if lookups >= HL_RECOVERY_MAX_OID_LOOKUPS:
+                return out, False, f"more than {HL_RECOVERY_MAX_OID_LOOKUPS} fill orders need a client id lookup"
+            lookups += 1
+            found_cloid, found = _order_cloid(adapter.query_order_by_oid(oid))
+            if not found:
+                return out, False, f"order {oid} of a fill in the window is no longer retained, so its client id is unknown"
+            by_oid[oid] = found_cloid
+        out.append(by_oid[oid])
+    return out, True, ""
+
+
+def _recovery_coverage(scan, attributed_ok, attribution_reason, matched_count, matched_qty):
+    complete = bool(scan["complete"]) and attributed_ok
+    reason = scan["reason"] or attribution_reason
+    return {
+        "complete": complete,
+        "reason": "" if complete else (reason or "the fill history is incomplete"),
+        "from_ms": scan["from_ms"],
+        "through_ms": scan["through_ms"] if complete else 0,
+        "pages": scan["pages"],
+        "rows": len(scan["fills"]),
+        "matched_count": matched_count,
+        "matched_qty": matched_qty,
+        "source": "userFillsByTime",
+    }
+
+
+class _RecoveryFillScan:
+    def __init__(self, adapter, since_ms):
+        self.adapter = adapter
+        self.scan = scan_recovery_fills(adapter, since_ms)
+        self._attribution = None
+
+    def attribution(self):
+        if self._attribution is None:
+            if self.scan["complete"]:
+                self._attribution = attribute_recovery_fills(self.adapter, self.scan["fills"])
+            else:
+                self._attribution = ([], False, "")
+        return self._attribution
+
+
+def entry_recovery_evidence(adapter, cloid, since_ms, scan=None):
     order = _order_status_evidence(adapter.query_order_by_cloid(cloid))
-    fills = adapter.user_fills_since(since_ms)
-    if not isinstance(fills, list):
-        raise ValueError(f"userFillsByTime returned no list: {fills!r}")
+    if scan is None:
+        scan = _RecoveryFillScan(adapter, since_ms)
+    fills = scan.scan["fills"]
     if order.get("found"):
         qty, notional, fee, count, tids = _aggregate_recovery_fills(fills, oid=order["oid"])
+        coverage = _recovery_coverage(scan.scan, True, "", count, qty)
     else:
-        qty, notional, fee, count, tids = _aggregate_recovery_fills(fills, cloid=cloid)
+        labels, attributed_ok, attribution_reason = scan.attribution()
+        want = str(cloid).lower()
+        mine = [f for f, label in zip(fills, labels) if label == want]
+        if not attributed_ok:
+            mine += [f for f in fills[len(labels):] if str(f.get("cloid") or "").lower() == want]
+        qty, notional, fee, count, tids = _aggregate_recovery_fills(mine)
+        coverage = _recovery_coverage(scan.scan, attributed_ok, attribution_reason, count, qty)
     order["fill_qty"] = qty
     order["fill_notional"] = notional
     order["fill_fee"] = fee
@@ -2392,6 +2534,7 @@ def entry_recovery_evidence(adapter, cloid, since_ms):
     executed = order.get("executed_sz", 0.0)
     tolerance = max(1e-9, abs(executed) * 1e-6)
     order["fills_complete"] = bool(order.get("found")) and abs(qty - executed) <= tolerance
+    order["coverage"] = coverage
     return order
 
 
@@ -2410,10 +2553,12 @@ def run_recover_entry(symbol, cloid, stop_cloid, since_ms, mode):
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
-        out["order"] = entry_recovery_evidence(adapter, cloid, since_ms)
+        out["account"] = hyperliquid_account_key(adapter.account_address)
+        scan = _RecoveryFillScan(adapter, since_ms)
+        out["order"] = entry_recovery_evidence(adapter, cloid, since_ms, scan=scan)
         if stop_cloid:
             out["stop_client_order_id"] = stop_cloid
-            out["stop"] = entry_recovery_evidence(adapter, stop_cloid, since_ms)
+            out["stop"] = entry_recovery_evidence(adapter, stop_cloid, since_ms, scan=scan)
         out["checked_at_ms"] = int(time.time() * 1000)
         print(json.dumps(out, cls=SafeEncoder))
     except Exception as e:

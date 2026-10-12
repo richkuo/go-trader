@@ -108,6 +108,7 @@ var okxRecoverEntryProbeArgv = []string{
 	"--symbol=BTC",
 	"--inst-type=swap",
 	"--client-order-id=gtprobe",
+	"--since-ms=1",
 	"--mode=live",
 	"--probe-only",
 }

@@ -503,6 +503,7 @@ func finishEntryBookingLocked(store *StateStore, s *StrategyState, adm entryAdmi
 	}
 	if in != nil {
 		commitLiveEntrySettlementLocked(store, s, in, fromIdx, captured, ev, logger)
+		releaseLiveEntryAttempt(in)
 		return
 	}
 	settleClosedBarEntryLocked(s, adm, fromIdx, time.Now())
@@ -512,8 +513,9 @@ func finishFailedLiveEntry(store *StateStore, sc StrategyConfig, s *StrategyStat
 	if in == nil {
 		return
 	}
+	defer releaseLiveEntryAttempt(in)
 	if noFill, label := entryIntentFromSubmissionOutcome(submitted, outcome); noFill {
-		resolveEntryIntentNoFill(store, s, mu, in, entryIntentEvidence{Outcome: label, Detail: detail}, logger)
+		resolveEntryIntentNoFill(store, s, mu, in, entryIntentEvidence{Outcome: label, Detail: detail}, logger, nil)
 		return
 	}
 	reason := fmt.Sprintf("the order call returned no confirmed fill and no rejection (outcome %q)", outcome)
