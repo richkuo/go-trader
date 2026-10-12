@@ -645,3 +645,7 @@ def test_missing_held_hour_funding_makes_every_arm_unscorable_and_the_verdict_in
         assert label in bad, bad
     assert verdict["checks"]["scorable_windows"] == []
     assert out["legs"]["candidate"]["BTC/USDT 1h"]["funding"]["unpriced_held_hours"] > 0
+    funding = out["legs"]["candidate"]["BTC/USDT 1h"]["funding"]
+    assert funding["priced_hours"] == funding["present_hours"] - funding["venue_absent_hours"]
+    assert 0 <= funding["priced_hours"] < funding["expected_hours"]
+    assert funding["coverage_complete"] is False

@@ -241,6 +241,14 @@ def next_bar_fill_check(run: dict) -> dict:
             "first_scored_bar": str(sig.index[0]) if len(sig) else None}
 
 
+def funding_coverage_counts(cov: dict) -> dict:
+    present = cov.get("present_hours")
+    absent = cov.get("venue_absent_hours")
+    priced = present - absent if present is not None and absent is not None else None
+    return {"expected_hours": cov.get("expected_hours"), "present_hours": present, "priced_hours": priced,
+            "missing_hours": cov.get("missing_hours"), "venue_absent_hours": absent}
+
+
 def leg_summary(leg, run, capital: float) -> dict:
     from eval_windows import execution_metrics
     if leg is None:
@@ -267,8 +275,7 @@ def leg_summary(leg, run, capital: float) -> dict:
         "funding": {
             "mode": block.get("mode"), "source": block.get("source"), "complete": block.get("complete"),
             "sha256": block.get("sha256"), "row_count": block.get("row_count"),
-            "expected_hours": cov.get("expected_hours"), "priced_hours": cov.get("priced_hours"),
-            "missing_hours": cov.get("missing_hours"), "venue_absent_hours": cov.get("venue_absent_hours"),
+            **funding_coverage_counts(cov), "coverage_complete": cov.get("complete"),
             "unpriced_held_hours": block.get("unpriced_held_hours"),
             "fetch_error": block.get("fetch_error"), "error": block.get("error"),
         },
