@@ -45,7 +45,7 @@
       "params": {
         "expected_interval_ms": 900000
       },
-      "seconds": 12.4,
+      "seconds": 8.1,
       "source": "synthetic seeded walk 15m (2200 bars, seed 1669)",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -110,7 +110,7 @@
       "params": {
         "expected_interval_ms": 900000
       },
-      "seconds": 35.1,
+      "seconds": 8.2,
       "source": "synthetic seeded walk 15m (2200 bars, seed 1669)",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -175,7 +175,7 @@
       "params": {
         "expected_interval_ms": 900000
       },
-      "seconds": 179.5,
+      "seconds": 32.5,
       "source": "synthetic seeded walk 15m (2200 bars, seed 1669)",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -240,7 +240,7 @@
       "params": {
         "expected_interval_ms": 900000
       },
-      "seconds": 142.2,
+      "seconds": 39.3,
       "source": "synthetic seeded walk 15m (2200 bars, seed 1669)",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -305,7 +305,7 @@
       "params": {
         "expected_interval_ms": 1800000
       },
-      "seconds": 28.7,
+      "seconds": 7.1,
       "source": "synthetic seeded walk 30m (2200 bars, seed 1669)",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -370,7 +370,7 @@
       "params": {
         "expected_interval_ms": 1800000
       },
-      "seconds": 44.4,
+      "seconds": 8.8,
       "source": "synthetic seeded walk 30m (2200 bars, seed 1669)",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -435,7 +435,7 @@
       "params": {
         "expected_interval_ms": 1800000
       },
-      "seconds": 168.0,
+      "seconds": 32.3,
       "source": "synthetic seeded walk 30m (2200 bars, seed 1669)",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -500,7 +500,7 @@
       "params": {
         "expected_interval_ms": 1800000
       },
-      "seconds": 171.8,
+      "seconds": 41.0,
       "source": "synthetic seeded walk 30m (2200 bars, seed 1669)",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -565,7 +565,7 @@
       "params": {
         "expected_interval_ms": 3600000
       },
-      "seconds": 29.1,
+      "seconds": 7.7,
       "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -630,7 +630,7 @@
       "params": {
         "expected_interval_ms": 3600000
       },
-      "seconds": 35.9,
+      "seconds": 8.0,
       "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -695,7 +695,7 @@
       "params": {
         "expected_interval_ms": 3600000
       },
-      "seconds": 99.9,
+      "seconds": 38.0,
       "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -760,7 +760,7 @@
       "params": {
         "expected_interval_ms": 3600000
       },
-      "seconds": 474.7,
+      "seconds": 38.8,
       "source": "proxy BTC/USDT 1h 2026-07-01..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -825,7 +825,7 @@
       "params": {
         "expected_interval_ms": 7200000
       },
-      "seconds": 8.0,
+      "seconds": 7.0,
       "source": "proxy BTC/USDT 1h aggregated to 2h (complete groups of 2) 2026-03-31..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -890,7 +890,7 @@
       "params": {
         "expected_interval_ms": 7200000
       },
-      "seconds": 12.1,
+      "seconds": 8.2,
       "source": "proxy BTC/USDT 1h aggregated to 2h (complete groups of 2) 2026-03-31..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -955,7 +955,7 @@
       "params": {
         "expected_interval_ms": 7200000
       },
-      "seconds": 47.8,
+      "seconds": 35.0,
       "source": "proxy BTC/USDT 1h aggregated to 2h (complete groups of 2) 2026-03-31..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1020,7 +1020,7 @@
       "params": {
         "expected_interval_ms": 7200000
       },
-      "seconds": 40.9,
+      "seconds": 37.4,
       "source": "proxy BTC/USDT 1h aggregated to 2h (complete groups of 2) 2026-03-31..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1150,7 +1150,7 @@
       "params": {
         "expected_interval_ms": 14400000
       },
-      "seconds": 10.7,
+      "seconds": 7.6,
       "source": "proxy BTC/USDT 4h 2025-09-29..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1215,7 +1215,7 @@
       "params": {
         "expected_interval_ms": 14400000
       },
-      "seconds": 47.8,
+      "seconds": 29.4,
       "source": "proxy BTC/USDT 4h 2025-09-29..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1280,7 +1280,7 @@
       "params": {
         "expected_interval_ms": 14400000
       },
-      "seconds": 40.9,
+      "seconds": 36.8,
       "source": "proxy BTC/USDT 4h 2025-09-29..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1345,7 +1345,7 @@
       "params": {
         "expected_interval_ms": 28800000
       },
-      "seconds": 6.3,
+      "seconds": 7.4,
       "source": "proxy BTC/USDT 1h aggregated to 8h (complete groups of 8) 2024-09-27..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1410,7 +1410,7 @@
       "params": {
         "expected_interval_ms": 28800000
       },
-      "seconds": 11.6,
+      "seconds": 8.1,
       "source": "proxy BTC/USDT 1h aggregated to 8h (complete groups of 8) 2024-09-27..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1475,7 +1475,7 @@
       "params": {
         "expected_interval_ms": 28800000
       },
-      "seconds": 35.4,
+      "seconds": 36.3,
       "source": "proxy BTC/USDT 1h aggregated to 8h (complete groups of 8) 2024-09-27..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1540,7 +1540,7 @@
       "params": {
         "expected_interval_ms": 28800000
       },
-      "seconds": 39.8,
+      "seconds": 37.9,
       "source": "proxy BTC/USDT 1h aggregated to 8h (complete groups of 8) 2024-09-27..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1605,7 +1605,7 @@
       "params": {
         "expected_interval_ms": 43200000
       },
-      "seconds": 6.6,
+      "seconds": 8.4,
       "source": "proxy BTC/USDT 1h aggregated to 12h (complete groups of 12) 2023-09-26..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1670,7 +1670,7 @@
       "params": {
         "expected_interval_ms": 43200000
       },
-      "seconds": 8.8,
+      "seconds": 12.3,
       "source": "proxy BTC/USDT 1h aggregated to 12h (complete groups of 12) 2023-09-26..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1735,7 +1735,7 @@
       "params": {
         "expected_interval_ms": 43200000
       },
-      "seconds": 29.4,
+      "seconds": 38.8,
       "source": "proxy BTC/USDT 1h aggregated to 12h (complete groups of 12) 2023-09-26..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1800,7 +1800,7 @@
       "params": {
         "expected_interval_ms": 43200000
       },
-      "seconds": 36.2,
+      "seconds": 56.3,
       "source": "proxy BTC/USDT 1h aggregated to 12h (complete groups of 12) 2023-09-26..2026-10-01",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1865,7 +1865,7 @@
       "params": {
         "expected_interval_ms": 14400000
       },
-      "seconds": 8.2,
+      "seconds": 7.6,
       "source": "venue BTC 4h test window with warmup",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1930,7 +1930,7 @@
       "params": {
         "expected_interval_ms": 14400000
       },
-      "seconds": 9.0,
+      "seconds": 9.1,
       "source": "venue BTC 4h test window with warmup",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -1995,7 +1995,7 @@
       "params": {
         "expected_interval_ms": 14400000
       },
-      "seconds": 32.0,
+      "seconds": 34.8,
       "source": "venue BTC 4h test window with warmup",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -2060,7 +2060,7 @@
       "params": {
         "expected_interval_ms": 14400000
       },
-      "seconds": 40.4,
+      "seconds": 64.7,
       "source": "venue BTC 4h test window with warmup",
       "stop_kwargs": {
         "capability_context": "CapabilityContext(raw_fields=mappingproxy({'stop_loss_atr_mult': mappingproxy({'present': True, 'value': 1.0}), 'stop_loss_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_margin_pct': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult': mappingproxy({'present': False, 'value': None}), 'trailing_stop_pct': mappingproxy({'present': False, 'value': None}), 'stop_loss_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'trailing_stop_atr_mult_regime': mappingproxy({'present': False, 'value': None}), 'leverage': mappingproxy({'present': True, 'value': 1.0}), 'max_drawdown_pct': mappingproxy({'present': True, 'value': 10.0}), 'trailing_stop_min_move_pct': mappingproxy({'present': False, 'value': None})}), resolved_stop_owner=None, input_evidence=mappingproxy({'stop_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': 'live_percent_to_engine_fraction'}), 'leverage': mappingproxy({'status': 'verified', 'source': 'config', 'value': 1.0}), 'resolved_live_units': mappingproxy({'status': 'verified', 'source': 'live_config', 'value': mappingproxy({'stop_loss_atr_mult': 1.0, 'stop_loss_pct': None, 'stop_loss_margin_pct': None, 'trailing_stop_atr_mult': None, 'trailing_stop_pct': None, 'stop_loss_atr_mult_regime': None, 'trailing_stop_atr_mult_regime': None, 'leverage': 1.0, 'max_drawdown_pct': 10.0, 'trailing_stop_min_move_pct': None})}), 'atr_regime_window': mappingproxy({'status': 'verified', 'source': 'regime_atr_window', 'value': None})}), errors=())",
@@ -2092,6 +2092,6 @@
       "window": "every prefix"
     }
   ],
-  "source_commit": "e51b85423e9b695a679bd30d255c0b3987de6cbd",
+  "source_commit": "0d21b651dcf710ecff127fb586061c9995d710f0",
   "venue_manifest_sha256": "ce0795d9f2ff57c649c2d75e4ecb4b8fa0a7b4e086a0d875f6db7aa08d16550f"
 }

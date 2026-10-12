@@ -2,6 +2,8 @@
 
 **Verdict: FAIL** (proxy 1h: fail, proxy 4h: fail, venue 4h: pass). Registry metadata after this study: `edge_status="no_edge"`, `edge_source="study_fail"`, `edge_ref` = this file. The candidate stays hidden from discovery. Explicit paper mode is admitted; live use still needs `allow_no_edge: true`, and no result here adds one or approves deployment. Every command in this study is suggest-only and sends no order. The proxy groups are proxy evidence (Binance US candles with Hyperliquid fees and funding); the venue group is Hyperliquid candle evidence.
 
+Group reasons: proxy_1h: fail (false: m1_oos_pass, m1_secondary_passes, oos_beats_mean_reversion_pro_sharpe, oos_beats_prior_day_reclaim_sharpe, oos_net_positive); proxy_4h: fail (false: oos_beats_prior_day_reclaim_sharpe); venue_4h: pass (every frozen venue check is true). The frozen overall rule needs every group to pass, so one group's pass cannot offset another group's fail; the venue windows were also used by earlier studies, so venue evidence is retrospective.
+
 ## Signal
 
 `camarilla_pivot_reversal` (`shared_strategies/open/camarilla_pivot_reversal.py`) reads the previous complete UTC day (00:00 to 24:00, by bar opening time) and freezes its high H, low L and final close C for the current UTC day: S3 = C - 1.1 x (H - L) / 4, R3 = C + 1.1 x (H - L) / 4, S4 = C - 1.1 x (H - L) / 2, R4 = C + 1.1 x (H - L) / 2. It enters long when the preceding closed candle closes at or below S3 and the current closed candle closes strictly above S3 and strictly below R3 with both lows strictly above S4, and short on the mirror at R3 with both highs strictly below R4. Both candles are consecutive bars of the current UTC day; a jump across the opposite level holds. Every bar of the prior day must be present, aligned and well formed; the frame must declare its bar interval and timestamp kind; a later defect never changes an earlier decision; levels never carry over a missing day. Bad entry data gives a reasoned hold (`cpr_reason`), and close and stop management continue. The evaluator tunes nothing.
@@ -12,7 +14,7 @@
 
 Contract for the candidate, the three comparators and the M1 incumbent median: direction `both`, one `tiered_tp_pct` close (+3%, full position), one fixed entry-ATR stop (`stop_loss_atr_mult: 1.0`), `comparison_mode: strict`, `intrabar_resolution: ohlc_walk`, no regime gate, capital $1000 per leg. Comparators keep their registry defaults: `anchored_vwap_reversion` {"atr_period": 14, "buffer_atr_mult": 0.25, "confirm_bars": 2, "entry_atr_mult": 1.5, "pivot_strength": 5}; `mean_reversion_pro` {"adx_max": 25.0, "adx_period": 14, "confirm_window": 3, "entry_std": 2.0, "lookback": 30, "rsi_overbought": 70.0, "rsi_oversold": 30.0, "rsi_period": 14, "touch_entry": 0, "turn_entry": 0}. `prior_day_reclaim_1669` is the study-local prior-day reclaim: uses the candidate's complete prior UTC day (H, L, C), the same consecutive current-day crossing pair and the same outer S4/R4 invalidation; long when the preceding close is at or below L and the current close is strictly above L and strictly below H, with both lows strictly above S4; short when the preceding close is at or above H and the current close is strictly below H and strictly above L, with both highs strictly below R4; every candidate hold (timing, defect, missing or incomplete prior day, first bar of day) holds it too. run_study.py installs its callable into the futures research registry instance that eval_windows uses in this process only, and removes it in a finally block after the comparison, also after a failure; it is never added to shared_strategies, PLATFORM_ORDER, discovery or any Go table (removed after the run: yes).
 
-Warm-up: every arm and every incumbent of a window loads the same 300 verified consecutive bars before the window start (eval_windows warmup_bars on the cached path, the manifest warmup_bars on the venue path); the evaluator reads them, the engine neither scores nor trades them. the proxy candles start at 2023-01-01, so the 2023 window has no prehistory; it runs every arm with warmup 0 and its first complete prior day plus crossing pair holds with insufficient_history; this is a coverage restriction, never evidence of an economic failure.
+Warm-up: every arm and every incumbent of a window loads the same 300 verified consecutive bars before the window start (eval_windows warmup_bars on the cached path, the manifest warmup_bars on the venue path); the evaluator reads them, the engine neither scores nor trades them. The proxy candles start at 2023-01-01, so the 2023 window has no prehistory; it runs every arm with warmup 0 and its first complete prior day plus crossing pair holds with insufficient_history; this is a coverage restriction, never evidence of an economic failure.
 
 Proxy group rule: oos unscorable -> inconclusive; oos candidate clusters < min_held_out_clusters -> inconclusive; any check false -> fail; every check true -> pass; else inconclusive. Venue group rule: evidence incomplete -> inconclusive; test candidate clusters at x1 < min_held_out_clusters -> inconclusive; any check false -> fail; every check true -> pass. Overall: pass only if proxy 1h, proxy 4h and venue 4h all pass; fail if any group is fail; otherwise inconclusive. The proxy groups are proxy evidence and the venue group is venue evidence; the report states both.
 
@@ -24,7 +26,7 @@ Proxy group rule: oos unscorable -> inconclusive; oos candidate clusters < min_h
 | 2024 | 2024-01-01 | 2025-01-01 | secondary held-out |
 | 2025H1 | 2025-01-01 | 2025-07-01 | secondary held-out |
 
-Departures from the default M1 windows: oos end pinned at 2026-10-01, the end of the frozen candles (M1 leaves it open). the other M1 windows are unchanged. The #1642 study ended 2025H1 at 2025-06-10 so it could not overlap its parameter-selection window; this study selects nothing, so that cause does not apply and the M1 end 2025-07-01 stays.
+Departures from the default M1 windows: oos end pinned at 2026-10-01, the end of the frozen candles (M1 leaves it open). The other M1 windows are unchanged. The #1642 study ended 2025H1 at 2025-06-10 so it could not overlap its parameter-selection window; this study selects nothing, so that cause does not apply and the M1 end 2025-07-01 stays.
 
 | venue window | start | end (exclusive) | role |
 |---|---|---|---|
@@ -73,6 +75,15 @@ Departures from the default M1 windows: oos end pinned at 2026-10-01, the end of
 | oos_beats_prior_day_reclaim_sharpe | false |
 | oos_net_positive | false |
 
+### `oos` (warm-up 300 bars)
+
+| arm | M1 verdict | mean Sharpe | mean return % | net PnL $ | worst DD % | positions (L/S) | clusters | turnover | fees $ | funding $ | incomplete legs |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| anchored_vwap_reversion | fail | -1.72 | -24.27 | -728.84 | -46.47 | 429 (207/222) | 251 | 243.28 | 328.51 | 5.30 | 0 |
+| candidate | fail | -0.66 | -14.91 | -448.90 | -33.63 | 501 (274/227) | 235 | 305.41 | 412.39 | -5.13 | 0 |
+| mean_reversion_pro | pass | 0.56 | 3.89 | 115.80 | -7.17 | 72 (34/38) | 57 | 47.99 | 64.80 | 2.97 | 0 |
+| prior_day_reclaim_1669 | pass | 0.11 | 2.88 | 86.39 | -24.67 | 285 (145/140) | 174 | 199.66 | 269.60 | -1.05 | 0 |
+
 ### `2023` (warm-up 0 bars)
 
 | arm | M1 verdict | mean Sharpe | mean return % | net PnL $ | worst DD % | positions (L/S) | clusters | turnover | fees $ | funding $ | incomplete legs |
@@ -108,15 +119,6 @@ Departures from the default M1 windows: oos end pinned at 2026-10-01, the end of
 | candidate | pass | 0.28 | 2.18 | 62.22 | -30.25 | 399 (202/197) | 175 | 266.46 | 359.80 | 10.84 | 0 |
 | mean_reversion_pro | pass | 0.21 | 1.33 | 39.87 | -9.99 | 35 (11/24) | 29 | 23.03 | 31.10 | 1.78 | 0 |
 | prior_day_reclaim_1669 | pass | -0.39 | -8.16 | -244.68 | -26.28 | 227 (95/132) | 138 | 141.89 | 191.60 | 9.07 | 0 |
-
-### `oos` (warm-up 300 bars)
-
-| arm | M1 verdict | mean Sharpe | mean return % | net PnL $ | worst DD % | positions (L/S) | clusters | turnover | fees $ | funding $ | incomplete legs |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| anchored_vwap_reversion | fail | -1.72 | -24.27 | -728.84 | -46.47 | 429 (207/222) | 251 | 243.28 | 328.51 | 5.30 | 0 |
-| candidate | fail | -0.66 | -14.91 | -448.90 | -33.63 | 501 (274/227) | 235 | 305.41 | 412.39 | -5.13 | 0 |
-| mean_reversion_pro | pass | 0.56 | 3.89 | 115.80 | -7.17 | 72 (34/38) | 57 | 47.99 | 64.80 | 2.97 | 0 |
-| prior_day_reclaim_1669 | pass | 0.11 | 2.88 | 86.39 | -24.67 | 285 (145/140) | 174 | 199.66 | 269.60 | -1.05 | 0 |
 
 Concentration (candidate, oos): top dataset share of absolute net PnL 0.36, top five positions' share 0.05, long net $-215.03, short net $-233.90.
 
@@ -178,6 +180,15 @@ Entry audit: 501 held-out candidate entries; each fill follows a valid raw signa
 | oos_beats_prior_day_reclaim_sharpe | false |
 | oos_net_positive | true |
 
+### `oos` (warm-up 300 bars)
+
+| arm | M1 verdict | mean Sharpe | mean return % | net PnL $ | worst DD % | positions (L/S) | clusters | turnover | fees $ | funding $ | incomplete legs |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| anchored_vwap_reversion | pass | -0.06 | 1.17 | 34.27 | -22.57 | 98 (44/54) | 62 | 62.11 | 83.87 | -1.07 | 0 |
+| candidate | pass | -0.01 | 0.61 | 18.35 | -25.81 | 155 (79/76) | 85 | 105.34 | 142.24 | -2.66 | 0 |
+| mean_reversion_pro | pass | -0.45 | -0.24 | -7.24 | -9.50 | 15 (4/11) | 13 | 10.07 | 13.60 | 2.10 | 0 |
+| prior_day_reclaim_1669 | pass | 0.26 | 7.61 | 228.22 | -16.97 | 90 (48/42) | 57 | 63.99 | 86.40 | -0.17 | 0 |
+
 ### `2023` (warm-up 0 bars)
 
 | arm | M1 verdict | mean Sharpe | mean return % | net PnL $ | worst DD % | positions (L/S) | clusters | turnover | fees $ | funding $ | incomplete legs |
@@ -213,15 +224,6 @@ Entry audit: 501 held-out candidate entries; each fill follows a valid raw signa
 | candidate | pass | 1.48 | 21.09 | 632.82 | -23.67 | 105 (56/49) | 55 | 78.88 | 106.51 | -1.69 | 0 |
 | mean_reversion_pro | fail | -0.70 | -1.58 | -47.47 | -11.04 | 7 (3/4) | 7 | 4.50 | 6.07 | -0.15 | 0 |
 | prior_day_reclaim_1669 | fail | -0.32 | -4.71 | -141.26 | -23.92 | 71 (22/49) | 53 | 45.12 | 60.92 | 8.21 | 0 |
-
-### `oos` (warm-up 300 bars)
-
-| arm | M1 verdict | mean Sharpe | mean return % | net PnL $ | worst DD % | positions (L/S) | clusters | turnover | fees $ | funding $ | incomplete legs |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| anchored_vwap_reversion | pass | -0.06 | 1.17 | 34.27 | -22.57 | 98 (44/54) | 62 | 62.11 | 83.87 | -1.07 | 0 |
-| candidate | pass | -0.01 | 0.61 | 18.35 | -25.81 | 155 (79/76) | 85 | 105.34 | 142.24 | -2.66 | 0 |
-| mean_reversion_pro | pass | -0.45 | -0.24 | -7.24 | -9.50 | 15 (4/11) | 13 | 10.07 | 13.60 | 2.10 | 0 |
-| prior_day_reclaim_1669 | pass | 0.26 | 7.61 | 228.22 | -16.97 | 90 (48/42) | 57 | 63.99 | 86.40 | -0.17 | 0 |
 
 Concentration (candidate, oos): top dataset share of absolute net PnL 0.47, top five positions' share 0.10, long net $167.86, short net $-149.56.
 
@@ -423,4 +425,4 @@ uv run --no-sync python backtest/candidates/camarilla_pivot_reversal_1669/run_st
 uv run --no-sync python backtest/candidates/camarilla_pivot_reversal_1669/run_study.py render
 ```
 
-Results: `results.json` (source commit `e51b85423e9b695a679bd30d255c0b3987de6cbd`, runtime 575.6 s, manifest sha256 `7823cafaa17b635060c5188dba709cb8758aaf8c78aa08404be7cdf3d06394ee`, venue manifest sha256 `ce0795d9f2ff57c649c2d75e4ecb4b8fa0a7b4e086a0d875f6db7aa08d16550f`), `parity_results.json` (source commit `e51b85423e9b695a679bd30d255c0b3987de6cbd`).
+Results: `results.json` (source commit `0d21b651dcf710ecff127fb586061c9995d710f0`, runtime 122.3 s, manifest sha256 `7823cafaa17b635060c5188dba709cb8758aaf8c78aa08404be7cdf3d06394ee`, venue manifest sha256 `ce0795d9f2ff57c649c2d75e4ecb4b8fa0a7b4e086a0d875f6db7aa08d16550f`), `parity_results.json` (source commit `0d21b651dcf710ecff127fb586061c9995d710f0`).
