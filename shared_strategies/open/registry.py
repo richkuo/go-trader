@@ -2029,7 +2029,7 @@ def camarilla_pivot_reversal_strategy(df: pd.DataFrame, expected_interval_ms: in
         "bulge_filter <= 1",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_inconclusive",
     edge_ref="backtest/candidates/mass_index_reversal_1670/REPORT.md",
     short_entries=True,
     param_validator=mir_param_validator,
