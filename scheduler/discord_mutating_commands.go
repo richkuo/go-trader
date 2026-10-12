@@ -101,6 +101,14 @@ var addStrategyEntryOnlyCandidates = map[string]addStrategyEntryOnlyCandidate{
 	"ease_of_movement_breakout": {CloseStrategy: "tiered_tp_atr", ClosedBarDecisions: true},
 	"schaff_trend_cycle":        {CloseStrategy: "tiered_tp_pct", ClosedBarDecisions: true, StopLossATRMult: 1.0},
 	"elder_ray_pullback":        {CloseStrategy: "tiered_tp_pct", ClosedBarDecisions: true},
+	camarillaPivotReversalStrategyName: {
+		CloseStrategy: "tiered_tp_pct",
+		CloseParams: func() map[string]interface{} {
+			return map[string]interface{}{"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 0.03, "close_fraction": 1.0}}}
+		},
+		ClosedBarDecisions: true,
+		StopLossATRMult:    1.0,
+	},
 	dualThrustStrategyName: {
 		CloseStrategy: "tiered_tp_pct",
 		CloseParams: func() map[string]interface{} {

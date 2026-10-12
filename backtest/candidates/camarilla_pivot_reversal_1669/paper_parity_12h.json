@@ -1,0 +1,44 @@
+{
+  "config_version": 20,
+  "interval_seconds": 43200,
+  "db_file": "camarilla_pivot_reversal_1669_paper_12h.db",
+  "strategies": [
+    {
+      "id": "hl-cpr-btc-12h",
+      "type": "perps",
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": [
+        "camarilla_pivot_reversal",
+        "BTC",
+        "12h",
+        "--mode=paper"
+      ],
+      "open_strategy": {
+        "name": "camarilla_pivot_reversal",
+        "params": {
+          "expected_interval_ms": 43200000
+        }
+      },
+      "close_strategy": {
+        "name": "tiered_tp_pct",
+        "params": {
+          "tp_tiers": [
+            {
+              "profit_pct": 0.03,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      },
+      "stop_loss_atr_mult": 1.0,
+      "direction": "both",
+      "capital": 1000.0,
+      "max_drawdown_pct": 10.0,
+      "leverage": 1.0,
+      "margin_mode": "isolated",
+      "closed_bar_decisions": true,
+      "interval_seconds": 43200
+    }
+  ]
+}

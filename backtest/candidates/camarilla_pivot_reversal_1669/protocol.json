@@ -1,0 +1,162 @@
+{
+  "study": "camarilla_pivot_reversal_1669",
+  "issue": 1669,
+  "tracking_group": "hyperliquid-strategy-candidates-2026-10-02",
+  "status": "frozen before any window was scored; run_study.py lock writes protocol_lock.json with this file's sha256 before the first score, and run, parity and render refuse a protocol whose sha256 differs from the lock",
+  "candidate": "camarilla_pivot_reversal",
+  "comparators": [
+    "mean_reversion_pro",
+    "anchored_vwap_reversion",
+    "prior_day_reclaim_1669"
+  ],
+  "study_local_comparator": {
+    "name": "prior_day_reclaim_1669",
+    "definition": "uses the candidate's complete prior UTC day (H, L, C), the same consecutive current-day crossing pair and the same outer S4/R4 invalidation; long when the preceding close is at or below L and the current close is strictly above L and strictly below H, with both lows strictly above S4; short when the preceding close is at or above H and the current close is strictly below H and strictly above L, with both highs strictly below R4; every candidate hold (timing, defect, missing or incomplete prior day, first bar of day) holds it too",
+    "registration": "run_study.py installs its callable into the futures research registry instance that eval_windows uses in this process only, and removes it in a finally block after the comparison, also after a failure; it is never added to shared_strategies, PLATFORM_ORDER, discovery or any Go table"
+  },
+  "registry": "futures",
+  "fee_platform": "hyperliquid",
+  "strategy_type": "perps",
+  "capital_usd": 1000.0,
+  "contract": {
+    "direction": "both",
+    "close_strategies": [
+      {
+        "name": "tiered_tp_pct",
+        "params": {
+          "tp_tiers": [
+            {
+              "profit_pct": 0.03,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      }
+    ],
+    "stop_loss_atr_mult": 1.0,
+    "comparison_mode": "strict"
+  },
+  "contract_note": "Every arm (candidate, the three comparators) and every M1 incumbent runs under this one contract: direction both, the single tiered_tp_pct close owner (+3%, full position), the single fixed entry-ATR stop owner (1.0 x ATR), strict close capability checks, no regime gate, the same capital, sizing, execution costs, data and warm-up. Incumbents receive it through eval_windows compute_incumbent_legs(contract=...). The close and stop choice follows the #1642 Dual Thrust study and the operator add template.",
+  "regime": "none: no regime gate on any arm (regime_enabled false, no allowed_regimes, no directional policy); frozen before scoring and never varied",
+  "intrabar_resolution": "ohlc_walk",
+  "parameters": {
+    "formula": "S3 = C - 1.1 x (H - L) / 4, R3 = C + 1.1 x (H - L) / 4, S4 = C - 1.1 x (H - L) / 2, R4 = C + 1.1 x (H - L) / 2 from the previous complete UTC day (00:00 to 24:00)",
+    "tuned": "nothing: the coefficients, the day boundary and the entry rule are fixed; the optimizer grid row is empty",
+    "expected_interval_ms": "bound per group from the timeframe through closed_bar.bind_fixed_interval_params (1h: 3600000, 4h: 14400000)",
+    "supported_intervals": [
+      "15m",
+      "30m",
+      "1h",
+      "2h",
+      "4h",
+      "8h",
+      "12h"
+    ],
+    "scored_intervals": [
+      "1h",
+      "4h"
+    ],
+    "unscored_intervals_note": "15m, 30m, 2h, 8h and 12h have no frozen candle set; they are decision-parity cases only (2h, 8h and 12h aggregate the frozen 1h proxy candles, 15m and 30m use a seeded synthetic walk), never economic evidence",
+    "comparator_params": "registry default_params of mean_reversion_pro and anchored_vwap_reversion, frozen; comparators are not tuned"
+  },
+  "warmup": {
+    "bars": 300,
+    "policy": "every arm and every incumbent of a window loads the same 300 verified consecutive bars before the window start (eval_windows warmup_bars on the cached path, the manifest warmup_bars on the venue path); the evaluator reads them, the engine neither scores nor trades them",
+    "restriction": "the proxy candles start at 2023-01-01, so the 2023 window has no prehistory; it runs every arm with warmup 0 and its first complete prior day plus crossing pair holds with insufficient_history; this is a coverage restriction, never evidence of an economic failure"
+  },
+  "proxy": {
+    "inputs": "study_manifest.json: the #1642 frozen Binance US 1h and 4h candles and Hyperliquid hourly funding, read in place under backtest/candidates/dual_thrust_1642/data with every sha256 verified",
+    "label": "proxy evidence: Binance US spot USDT candles stand in for Hyperliquid perpetual prices with Hyperliquid fees and funding; this is not measured Hyperliquid candle evidence",
+    "symbols": [
+      "BTC/USDT",
+      "ETH/USDT",
+      "SOL/USDT"
+    ],
+    "funding_mode": "charge",
+    "funding_note": "eval_windows run_leg with funding_mode charge on every candidate, comparator and incumbent leg, priced from the rebuilt offline cache; a leg holding a position in an hour with neither a rate nor a venue-absent mark is funding_incomplete. Hyperliquid funding starts in May 2023, so 2023 legs that hold positions before the first rate are funding_incomplete.",
+    "windows": {
+      "is": [
+        "2025-06-10",
+        "2026-01-01"
+      ],
+      "oos": [
+        "2026-01-01",
+        "2026-10-01"
+      ],
+      "2023": [
+        "2023-01-01",
+        "2024-01-01"
+      ],
+      "2024": [
+        "2024-01-01",
+        "2025-01-01"
+      ],
+      "2025H1": [
+        "2025-01-01",
+        "2025-07-01"
+      ]
+    },
+    "departures_from_m1_windows": [
+      "oos end pinned at 2026-10-01, the end of the frozen candles (M1 leaves it open)"
+    ],
+    "window_note": "the other M1 windows are unchanged. The #1642 study ended 2025H1 at 2025-06-10 so it could not overlap its parameter-selection window; this study selects nothing, so that cause does not apply and the M1 end 2025-07-01 stays",
+    "primary_window": "oos",
+    "secondary_windows": [
+      "2023",
+      "2024",
+      "2025H1"
+    ],
+    "diagnostic_windows": [
+      "is"
+    ],
+    "cost_model": "the engine's Hyperliquid fee (commission) and default slippage per fill; this legacy M1 screen has no spread replay, lot rounding or minimum order, so it cannot by itself establish venue execution parity"
+  },
+  "venue": {
+    "inputs": "backtest/candidates/camarilla_pivot_reversal_1669_manifest.json: the #1642 frozen Hyperliquid 4h candles, hourly funding, venue meta and L2 snapshot, referenced in place through manifest-relative paths",
+    "label": "venue evidence: Hyperliquid mainnet perpetual candles",
+    "interval": "4h",
+    "held_out_window": "test",
+    "secondary_window": "train",
+    "warmup": "the manifest warmup_bars (300) precede each window",
+    "funding": "the manifest's existing funding attachment and coverage semantics (attach_funding_cost); no --funding option applies on this path",
+    "execution": "the manifest execution specification with the explicit close owner: taker and maker fee, per-coin half spread plus slippage, szDecimals lot rounding, the venue minimum notional with its margin",
+    "cost_multipliers": {
+      "base": 1.0,
+      "stress": 2.0
+    },
+    "stress_note": "cost x2 doubles half spread and slippage; fees are unchanged"
+  },
+  "sample_rules": {
+    "cluster_definition": "positions pooled across a group's datasets, sorted by entry time; overlapping holding spans merge into one independent cluster",
+    "min_held_out_clusters": 30
+  },
+  "verdict_rules": {
+    "proxy_group": {
+      "scorable_window": "a window is scorable when every candidate, comparator and incumbent leg of the group exists, none is funding_incomplete and none fetched funding while scoring; missing funding is never filled with an assumed zero rate",
+      "checks": {
+        "m1_oos_pass": "contract-aware M1 verdict pass in oos; unknown when oos is unscorable",
+        "m1_secondary_passes": "M1 verdict pass in at least 2 of 2023, 2024, 2025H1; true once 2 scorable passes exist, false once scorable passes plus unscorable secondary windows are below 2, else unknown",
+        "oos_net_positive": "candidate summed oos net PnL > 0; unknown when oos is unscorable",
+        "oos_beats_mean_reversion_pro_sharpe": "candidate oos mean Sharpe > mean_reversion_pro oos mean Sharpe; unknown when oos is unscorable",
+        "oos_beats_anchored_vwap_reversion_sharpe": "candidate oos mean Sharpe > anchored_vwap_reversion oos mean Sharpe; unknown when oos is unscorable",
+        "oos_beats_prior_day_reclaim_sharpe": "candidate oos mean Sharpe > prior_day_reclaim_1669 oos mean Sharpe; unknown when oos is unscorable"
+      },
+      "order": "oos unscorable -> inconclusive; oos candidate clusters < min_held_out_clusters -> inconclusive; any check false -> fail; every check true -> pass; else inconclusive"
+    },
+    "venue_group": {
+      "evidence_complete": "provenance kind venue, candle and funding coverage complete, and no funding_incomplete candidate, comparator or incumbent leg at either cost multiplier",
+      "checks": {
+        "net_positive_x1": "candidate summed test net PnL > 0 at cost x1",
+        "net_positive_x2": "candidate summed test net PnL > 0 at cost x2",
+        "m1_test_pass_x1": "contract-aware M1 verdict pass on test at cost x1",
+        "beats_mean_reversion_pro_sharpe_x1": "candidate mean Sharpe > mean_reversion_pro at cost x1",
+        "beats_anchored_vwap_reversion_sharpe_x1": "candidate mean Sharpe > anchored_vwap_reversion at cost x1",
+        "beats_prior_day_reclaim_sharpe_x1": "candidate mean Sharpe > prior_day_reclaim_1669 at cost x1"
+      },
+      "order": "evidence incomplete -> inconclusive; test candidate clusters at x1 < min_held_out_clusters -> inconclusive; any check false -> fail; every check true -> pass"
+    },
+    "overall": "pass only if proxy 1h, proxy 4h and venue 4h all pass; fail if any group is fail; otherwise inconclusive. The proxy groups are proxy evidence and the venue group is venue evidence; the report states both",
+    "metadata": "edge_status stays no_edge after every outcome; pass keeps edge_source unvalidated, fail records study_fail, inconclusive records study_inconclusive; no outcome approves deployment or adds allow_no_edge"
+  },
+  "reporting": "net results, drawdown, turnover, symbol and side concentration, independent position clusters, stability across the 1h and 4h intervals and the proxy and venue windows, funding coverage and provenance, the exact data venue, source and funding hashes, fees, spread, slippage, rounding, minimums, capital, leverage, sizing and stop assumptions, start-of-window holds, and a per-entry audit of the evaluated inputs, prior-day levels and crossing closes"
+}

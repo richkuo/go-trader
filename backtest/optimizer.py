@@ -735,6 +735,7 @@ DEFAULT_PARAM_RANGES = {
         "lower_threshold": [20.0, 25.0],
         "upper_threshold": [75.0, 80.0],
     },
+    "camarilla_pivot_reversal": {},
     "vortex_trend": {
         "period": [7, 14, 21, 28],
         "min_separation": [0.0, 0.02, 0.05, 0.10],

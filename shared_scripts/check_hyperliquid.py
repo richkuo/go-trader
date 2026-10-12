@@ -108,9 +108,10 @@ def _position_ctx_from_args(args):
 
 TP_MODEL_RESTING_LIMIT = "resting_limit"
 
-FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_", "ama_", "dt_", "erp_", "stc_", "rcr_")
+FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_", "ama_", "dt_", "erp_", "stc_", "rcr_", "cpr_")
 
-TEXT_INDICATOR_COLUMNS = ("eom_reason", "ama_reason", "dt_reason", "erp_reason", "stc_reason", "rcr_reason")
+TEXT_INDICATOR_COLUMNS = ("eom_reason", "ama_reason", "dt_reason", "erp_reason", "stc_reason", "rcr_reason",
+                          "cpr_reason")
 
 BATCH_PROTOCOL_VERSION = 1
 
@@ -296,7 +297,7 @@ def slot_admission(slot, deps):
 
 
 def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
-                                  params=None, close_params_by_name=None):
+                                  params=None, close_params_by_name=None, timeframe=None):
     gate_mode, acknowledgement = admission
     references = deps.admit_configured_strategies(
         strategy_name,
@@ -310,10 +311,10 @@ def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_stra
         deps.list_close_strategies,
     )
     deps.preflight_reference_params(
-        references, params, close_params_by_name, deps.get_strategy, deps.validate_params)
+        references, params, close_params_by_name, deps.get_strategy, deps.validate_params, timeframe=timeframe)
 
 
-def preflight_signal_slot(slot, deps):
+def preflight_signal_slot(slot, deps, timeframe=None):
     _validate_slot_strategy_names(
         deps,
         slot["strategy"],
@@ -322,6 +323,7 @@ def preflight_signal_slot(slot, deps):
         slot_admission(slot, deps),
         slot.get("params") or None,
         slot.get("close_params_by_name") or None,
+        timeframe,
     )
 
 
@@ -815,7 +817,7 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     invert_open_signal = deps.parse_invert_open_signal(slot.get("invert_open_signal")) if invert_present else False
 
     _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
-                                  strategy_params_override, close_params_by_name)
+                                  strategy_params_override, close_params_by_name, shared.get("timeframe"))
     resting_request = parse_resting_rule_request(slot.get("resting_tp_rule"))
     if resting_request is not None:
         refusal = _resting_rule_refusal(mode, deps.parse_close_strategies(close_strategies))
@@ -1075,7 +1077,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         from strategy_composition import parse_allow_no_edge_tokens
         admission = (deps.parse_raw_gate_mode(mode_args), parse_allow_no_edge_tokens(mode_args))
         _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission,
-                                      strategy_params_override, close_params_by_name)
+                                      strategy_params_override, close_params_by_name, timeframe)
 
         adapter = None
         if market is None:
@@ -1269,10 +1271,15 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
     preflight_errors = {}
     for idx, slot in enumerate(slots):
         try:
-            preflight_signal_slot(slot, deps)
+            preflight_signal_slot(slot, deps, timeframe)
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             preflight_errors[idx] = str(e)
+
+    if slots and len(preflight_errors) == len(slots):
+        for idx, slot in enumerate(slots):
+            envelope["results"].append(_batch_slot_error(slot, symbol, timeframe, preflight_errors[idx]))
+        return envelope, 1
 
     try:
         if market is not None:
