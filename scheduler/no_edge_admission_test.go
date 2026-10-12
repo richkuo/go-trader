@@ -1538,6 +1538,12 @@ func TestChandeMomentumStudyParityConfigsStillLoad(t *testing.T) {
 	}
 }
 
+func dualThrustHLStrategy(id string, args ...string) map[string]interface{} {
+	sc := noEdgeHLStrategy(id, args...)
+	sc["closed_bar_decisions"] = true
+	return sc
+}
+
 func TestDualThrustAdmissionMatrixThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const dt = "dual_thrust"
@@ -1555,26 +1561,37 @@ func TestDualThrustAdmissionMatrixThroughRealLoaders(t *testing.T) {
 		wantErr   []string
 		wantScope PortfolioScope
 	}{
-		{"paper equals form", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper"), nil, ScopePaper},
-		{"paper space form", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode", "paper"), nil, ScopePaper},
-		{"live refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"),
+		{"paper equals form", dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper"), nil, ScopePaper},
+		{"paper space form", dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode", "paper"), nil, ScopePaper},
+		{"live refused", dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"),
 			[]string{`open strategy "dual_thrust"`, "source study_fail", "backtest/candidates/dual_thrust_1642/REPORT.md", "explicit live mode", `"allow_no_edge": true`}, ""},
-		{"live acknowledged", ack(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"), true), nil, ScopeLive},
-		{"explicit false refused", ack(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"), false), []string{"explicit live mode"}, ""},
-		{"missing mode refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h"), []string{`open strategy "dual_thrust"`, "missing --mode"}, ""},
-		{"missing mode acknowledged keeps paper scope", ack(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h"), true), nil, ScopePaper},
-		{"repeated mode refused even acknowledged", ack(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper", "--mode=paper"), true), []string{"invalid mode", "given 2 times"}, ""},
-		{"conflicting mode refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper", "--mode", "live"), []string{"invalid mode", "given 2 times"}, ""},
-		{"dangling mode refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode"), []string{"invalid mode", "dangling --mode"}, ""},
-		{"unknown mode refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=Paper"), []string{"invalid mode", `"Paper"`}, ""},
-		{"close fallback paper", withClose(noEdgeHLStrategy("hl-dt", "breakout", "ETH", "1h", "--mode=paper"), dt), nil, ScopePaper},
-		{"close fallback live refused", withClose(noEdgeHLStrategy("hl-dt", "breakout", "ETH", "1h", "--mode=live"), dt),
+		{"live acknowledged", ack(dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"), true), nil, ScopeLive},
+		{"explicit false refused", ack(dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"), false), []string{"explicit live mode"}, ""},
+		{"missing mode refused", dualThrustHLStrategy("hl-dt", dt, "ETH", "1h"), []string{`open strategy "dual_thrust"`, "missing --mode"}, ""},
+		{"missing mode acknowledged keeps paper scope", ack(dualThrustHLStrategy("hl-dt", dt, "ETH", "1h"), true), nil, ScopePaper},
+		{"repeated mode refused even acknowledged", ack(dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper", "--mode=paper"), true), []string{"invalid mode", "given 2 times"}, ""},
+		{"conflicting mode refused", dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper", "--mode", "live"), []string{"invalid mode", "given 2 times"}, ""},
+		{"dangling mode refused", dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode"), []string{"invalid mode", "dangling --mode"}, ""},
+		{"unknown mode refused", dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=Paper"), []string{"invalid mode", `"Paper"`}, ""},
+		{"close fallback paper", withClose(dualThrustHLStrategy("hl-dt", "breakout", "ETH", "1h", "--mode=paper"), dt), nil, ScopePaper},
+		{"close fallback live refused", withClose(dualThrustHLStrategy("hl-dt", "breakout", "ETH", "1h", "--mode=live"), dt),
 			[]string{`close strategy "dual_thrust"`, "source study_fail", "explicit live mode"}, ""},
-		{"close fallback missing mode refused", withClose(noEdgeHLStrategy("hl-dt", "breakout", "ETH", "1h"), dt),
+		{"close fallback missing mode refused", withClose(dualThrustHLStrategy("hl-dt", "breakout", "ETH", "1h"), dt),
 			[]string{`close strategy "dual_thrust"`, "missing --mode"}, ""},
-		{"close fallback acknowledged", ack(withClose(noEdgeHLStrategy("hl-dt", "breakout", "ETH", "1h", "--mode=live"), dt), true), nil, ScopeLive},
-		{"open with native close live refused", withClose(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"), "tiered_tp_pct"),
+		{"close fallback acknowledged", ack(withClose(dualThrustHLStrategy("hl-dt", "breakout", "ETH", "1h", "--mode=live"), dt), true), nil, ScopeLive},
+		{"open with native close live refused", withClose(dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"), "tiered_tp_pct"),
 			[]string{`open strategy "dual_thrust"`, "explicit live mode"}, ""},
+		{"open without closed bar decisions refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper"),
+			[]string{`strategy hl-dt: open strategy "dual_thrust" decides only on closed candles`, `"closed_bar_decisions": true`}, ""},
+		{"open with closed bar decisions false refused", func() map[string]interface{} {
+			sc := dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper")
+			sc["closed_bar_decisions"] = false
+			return sc
+		}(), []string{`strategy hl-dt: open strategy "dual_thrust" decides only on closed candles`}, ""},
+		{"acknowledged live without closed bar decisions refused", ack(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live"), true),
+			[]string{`open strategy "dual_thrust" decides only on closed candles`}, ""},
+		{"close fallback without closed bar decisions refused", withClose(noEdgeHLStrategy("hl-dt", "breakout", "ETH", "1h", "--mode=paper"), dt),
+			[]string{`strategy hl-dt: close strategy "dual_thrust" decides only on closed candles`}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1609,7 +1626,7 @@ func TestDualThrustAdmissionMatrixThroughRealLoaders(t *testing.T) {
 		})
 	}
 	for _, v := range []interface{}{"true", 1, "yes"} {
-		sc := noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live")
+		sc := dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=live")
 		sc["allow_no_edge"] = v
 		if cfg, err := LoadConfig(writeNoEdgeConfig(t, CurrentConfigVersion, sc)); err == nil {
 			t.Fatalf("allow_no_edge=%#v loaded (ack=%v); a non-boolean must never grant live admission", v, cfg.Strategies[0].AllowNoEdgeAcknowledged())
@@ -1632,22 +1649,46 @@ func TestDualThrustIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
 		"id": "hl-dt-manual", "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "timeframe": "4h",
 		"leverage": 1.0, "capital": 100.0, "allow_no_edge": true, "close_strategy": map[string]interface{}{"name": dt},
 	}
+	manualMatched := map[string]interface{}{
+		"id": "hl-dt-manual", "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "timeframe": "4h",
+		"leverage": 1.0, "capital": 100.0, "allow_no_edge": true,
+		"close_strategy": map[string]interface{}{"name": dt, "params": map[string]interface{}{"expected_interval_ms": 14400000}},
+	}
+	withCloseParams := func(sc map[string]interface{}, params map[string]interface{}) map[string]interface{} {
+		sc["close_strategy"] = map[string]interface{}{"name": dt, "params": params}
+		return sc
+	}
 	cases := []struct {
 		name    string
 		sc      map[string]interface{}
 		wantErr string
 		wantRef string
 	}{
-		{"hourly registry default loads", noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper"), "", ""},
-		{"4h registry default refused", noEdgeHLStrategy("hl-dt", dt, "ETH", "4h", "--mode=paper"),
+		{"hourly registry default loads", dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper"), "", ""},
+		{"4h registry default refused", dualThrustHLStrategy("hl-dt", dt, "ETH", "4h", "--mode=paper"),
 			`open strategy "dual_thrust": registry default expected_interval_ms=3600000 does not match timeframe 4h (14400000 ms)`, ""},
-		{"4h explicit match loads", withOpenParams(noEdgeHLStrategy("hl-dt", dt, "ETH", "4h", "--mode=paper"),
+		{"4h explicit match loads", withOpenParams(dualThrustHLStrategy("hl-dt", dt, "ETH", "4h", "--mode=paper"),
 			map[string]interface{}{"expected_interval_ms": 14400000, "lookback_sessions": 4}), "", `"expected_interval_ms":14400000`},
-		{"hourly explicit 4h value refused", withOpenParams(noEdgeHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper"),
+		{"hourly explicit 4h value refused", withOpenParams(dualThrustHLStrategy("hl-dt", dt, "ETH", "1h", "--mode=paper"),
 			map[string]interface{}{"expected_interval_ms": 14400000}), "explicit expected_interval_ms=14400000 does not match timeframe 1h (3600000 ms)", ""},
-		{"4h close fallback default refused", withClose(noEdgeHLStrategy("hl-dt", "breakout", "ETH", "4h", "--mode=paper")),
+		{"4h close fallback default refused", withClose(dualThrustHLStrategy("hl-dt", "breakout", "ETH", "4h", "--mode=paper")),
 			`close strategy "dual_thrust": registry default expected_interval_ms=3600000 does not match timeframe 4h`, ""},
 		{"hl manual 4h default refused", manual, `strategy hl-dt-manual: close strategy "dual_thrust"`, ""},
+		{"hl manual with matching interval refused for closed bars", manualMatched,
+			`strategy hl-dt-manual: close strategy "dual_thrust" decides only on closed candles`, ""},
+		{"30m default lookback refused", withOpenParams(dualThrustHLStrategy("hl-dt", dt, "ETH", "30m", "--mode=paper"),
+			map[string]interface{}{"expected_interval_ms": 1800000}),
+			"open strategy dual_thrust params: (lookback_sessions + 1) x bars per session = (4 + 1) x 48 = 240 exceeds the 200-bar check window", ""},
+		{"30m lookback 3 loads", withOpenParams(dualThrustHLStrategy("hl-dt", dt, "ETH", "30m", "--mode=paper"),
+			map[string]interface{}{"expected_interval_ms": 1800000, "lookback_sessions": 3}), "", `"lookback_sessions":3`},
+		{"4h off-grid session hour refused", withOpenParams(dualThrustHLStrategy("hl-dt", dt, "ETH", "4h", "--mode=paper"),
+			map[string]interface{}{"expected_interval_ms": 14400000, "session_start_hour": 1}),
+			"open strategy dual_thrust params: session_start_hour=1 is not on the 14400000 ms candle grid", ""},
+		{"4h on-grid session hour loads", withOpenParams(dualThrustHLStrategy("hl-dt", dt, "ETH", "4h", "--mode=paper"),
+			map[string]interface{}{"expected_interval_ms": 14400000, "session_start_hour": 4}), "", `"session_start_hour":4`},
+		{"30m close fallback default lookback refused", withCloseParams(dualThrustHLStrategy("hl-dt", "breakout", "ETH", "30m", "--mode=paper"),
+			map[string]interface{}{"expected_interval_ms": 1800000}),
+			"close strategy dual_thrust params: (lookback_sessions + 1) x bars per session = (4 + 1) x 48 = 240 exceeds the 200-bar check window", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1679,15 +1720,15 @@ func TestDualThrustIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
 }
 
 func dualThrustLegacyFixture() []map[string]interface{} {
-	openLive := noEdgeHLStrategy("hl-dt-open", "dual_thrust", "BTC", "1h", "--mode=live")
+	openLive := dualThrustHLStrategy("hl-dt-open", "dual_thrust", "BTC", "1h", "--mode=live")
 	openLive["allow_deprecated"] = true
-	closeOnly := noEdgeHLStrategy("hl-dt-close", "breakout", "ETH", "1h", "--mode", "live")
+	closeOnly := dualThrustHLStrategy("hl-dt-close", "breakout", "ETH", "1h", "--mode", "live")
 	closeOnly["close_strategy"] = map[string]interface{}{"name": "dual_thrust"}
-	mixed := noEdgeHLStrategy("hl-dt-mixed", "rsi", "SOL", "1h", "--mode=live")
+	mixed := dualThrustHLStrategy("hl-dt-mixed", "rsi", "SOL", "1h", "--mode=live")
 	mixed["close_strategy"] = map[string]interface{}{"name": "dual_thrust"}
-	explicitFalse := noEdgeHLStrategy("hl-dt-false", "dual_thrust", "AVAX", "1h", "--mode=live")
+	explicitFalse := dualThrustHLStrategy("hl-dt-false", "dual_thrust", "AVAX", "1h", "--mode=live")
 	explicitFalse["allow_no_edge"] = false
-	preAck := noEdgeHLStrategy("hl-dt-ack", "dual_thrust", "LINK", "1h", "--mode=live")
+	preAck := dualThrustHLStrategy("hl-dt-ack", "dual_thrust", "LINK", "1h", "--mode=live")
 	preAck["allow_no_edge"] = true
 	return []map[string]interface{}{
 		openLive,
@@ -1695,7 +1736,7 @@ func dualThrustLegacyFixture() []map[string]interface{} {
 		mixed,
 		explicitFalse,
 		preAck,
-		noEdgeHLStrategy("hl-dt-paper", "dual_thrust", "XRP", "1h", "--mode=paper"),
+		dualThrustHLStrategy("hl-dt-paper", "dual_thrust", "XRP", "1h", "--mode=paper"),
 		noEdgeHLStrategy("hl-control", "macd", "BTC", "4h", "--mode=live"),
 	}
 }
@@ -1786,6 +1827,14 @@ func TestDualThrustOperatorAddCreatesBothDirectionHourlyPaperEntry(t *testing.T)
 	if _, has := sc["allow_no_edge"]; has {
 		t.Fatal("operator add must not acknowledge no-edge live use")
 	}
+	if sc["closed_bar_decisions"] != true {
+		t.Fatalf("closed_bar_decisions = %v, want true", sc["closed_bar_decisions"])
+	}
+	wantClose := map[string]interface{}{"name": "tiered_tp_pct", "params": map[string]interface{}{
+		"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 0.03, "close_fraction": 1.0}}}}
+	if !reflect.DeepEqual(sc["close_strategy"], wantClose) {
+		t.Fatalf("close_strategy = %v, want the study close %v", sc["close_strategy"], wantClose)
+	}
 	args, _ := sc["args"].([]interface{})
 	if !reflect.DeepEqual(args, []interface{}{"dual_thrust", "ETH", "1h", "--mode=paper"}) {
 		t.Fatalf("args = %v, want the 1h explicit-paper positional form", args)
@@ -1797,6 +1846,9 @@ func TestDualThrustOperatorAddCreatesBothDirectionHourlyPaperEntry(t *testing.T)
 	got := cfg.Strategies[0]
 	if portfolioScopeFor(got) != ScopePaper || edgeGateModeForStrategy(got).Kind != edgeGateModePaper || got.AllowNoEdgeAcknowledged() {
 		t.Fatalf("operator-added entry is not explicit unacknowledged paper: scope=%q", portfolioScopeFor(got))
+	}
+	if !got.ClosedBarDecisions {
+		t.Fatal("operator-added entry must load with closed_bar_decisions")
 	}
 	if _, _, err := buildAddStrategyEntry("dual_thrust", "binanceus", "ETH"); err == nil {
 		t.Fatal("spot add must refuse the futures-only dual_thrust")
@@ -1820,8 +1872,8 @@ func TestDualThrustStudyParityConfigsStillLoad(t *testing.T) {
 				t.Fatalf("study parity config refused: %v", err)
 			}
 			got := cfg.Strategies[0]
-			if portfolioScopeFor(got) != ScopePaper || got.AllowNoEdgeAcknowledged() {
-				t.Fatalf("study parity config must be unacknowledged paper: scope=%q", portfolioScopeFor(got))
+			if portfolioScopeFor(got) != ScopePaper || got.AllowNoEdgeAcknowledged() || !got.ClosedBarDecisions {
+				t.Fatalf("study parity config must be unacknowledged paper with closed_bar_decisions: scope=%q closed=%t", portfolioScopeFor(got), got.ClosedBarDecisions)
 			}
 			args, err := buildStrategyRefsArg(got, "", false)
 			if err != nil || len(args) != 2 || !strings.Contains(args[1], want) {

@@ -700,6 +700,25 @@ def test_closed_bar_decisions_drop_the_forming_bar_and_report_full_precision_inp
     assert calm["indicators"] == ind
 
 
+def test_closed_bar_decisions_emit_the_session_long_from_the_closed_bar_after_a_forming_miss():
+    bars = _crossing_bars()
+    crossing = bars[-1]
+    forming_inside = dict(crossing, h=crossing["o"] + 0.1, l=crossing["o"] - 0.1, c=crossing["o"])
+    early = bars[:-1] + [forming_inside]
+    early_default = _hl_check(early, closed=False)
+    assert early_default["signal"] == 0 and early_default["indicator_labels"]["dt_reason"] == "inside_range"
+    assert _hl_check(early, closed=True)["signal"] == 0
+    nxt = {"t": crossing["t"] + H, "T": crossing["T"] + H, "o": crossing["c"], "h": crossing["c"] + 0.6,
+           "l": crossing["c"] - 0.1, "c": crossing["c"] + 0.5, "v": 1000.0}
+    late = bars + [nxt]
+    late_closed = _hl_check(late, closed=True)
+    assert late_closed["closed_bar_decision"]["forming_rows_dropped"] == 1
+    assert late_closed["signal"] == 1 and late_closed["indicator_labels"]["dt_reason"] == "entry_long"
+    assert late_closed["indicators"]["dt_eval_ts_ms"] == float(crossing["t"])
+    late_default = _hl_check(late, closed=False)
+    assert late_default["signal"] == 0 and late_default["indicator_labels"]["dt_reason"] == "long_consumed"
+
+
 def test_batch_slots_match_individual_checks():
     bars = _crossing_bars()[-200:]
     cutoff = bars[-1]["t"] + H // 2
