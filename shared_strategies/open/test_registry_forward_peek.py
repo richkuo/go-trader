@@ -188,6 +188,7 @@ STRATEGY_INPUTS = {
     "adaptive_moving_average": _with_declared_cadence,
     "dual_thrust": _with_declared_cadence,
     "schaff_trend_cycle": _with_declared_cadence,
+    "klinger_divergence": _with_declared_cadence,
     "regression_channel_reversion": _with_declared_cadence,
     "trix_momentum": _with_declared_cadence,
     "camarilla_pivot_reversal": _with_declared_cadence,

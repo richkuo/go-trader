@@ -1,0 +1,138 @@
+{
+  "issue": 1662,
+  "tracking_group": "hyperliquid-strategy-candidates-2026-10-02",
+  "name": "klinger_divergence",
+  "short_name": "klingerdiv",
+  "status": "research settings, not approved trading settings",
+  "formula": {
+    "replay": "every oscillator endpoint t is computed from exactly replay_bars + 1 trailing closed bars, rows t-replay_bars .. t inclusive; no state is carried between endpoints or between evaluator calls",
+    "seed_row": "at row t-replay_bars: trend = -1 (no earlier price is read), dm = high - low, cm = dm, volume force = volume * 2 * (dm / cm - 1) * trend * 100 (zero when dm > 0); the fast and slow EMAs start at that volume force and the signal line starts at the seed oscillator fast - slow = 0",
+    "trend": "for every later replay row j: trend(j) = +1 when high(j) + low(j) + close(j) > high(j-1) + low(j-1) + close(j-1), else -1; an equal sum gives -1",
+    "dm": "dm(j) = high(j) - low(j)",
+    "cm": "cm(j) = cm(j-1) + dm(j) when trend(j) == trend(j-1); cm(j) = dm(j-1) + dm(j) on a trend change",
+    "volume_force": "vf(j) = volume(j) * 2 * (dm(j) / cm(j) - 1) * trend(j) * 100; because cm >= dm, the factor (dm / cm - 1) is <= 0, so vf has the opposite sign of trend except when dm == cm (vf = 0); this is the issue formula, implemented as written",
+    "oscillator": "fast EMA(vf) - slow EMA(vf) with weight alpha = 2 / (period + 1), updated inside the same replay",
+    "signal_line": "signal_period EMA of the replay's own oscillator values (alpha = 2 / (signal_period + 1)), updated inside the same replay; never fed from oscillator values with a longer history",
+    "first_valid_endpoint": "row replay_bars (the endpoint needs replay_bars + 1 rows)",
+    "zero_cm": "cm that is not strictly positive (or not finite) at any row of an endpoint replay invalidates that endpoint (reason zero_cm); a zero-range bar with positive cm is valid",
+    "zero_volume": "valid: zero volume gives zero volume force when cm is positive",
+    "previous_endpoint": "the endpoint t-1 is computed independently from its own replay (rows t-1-replay_bars .. t-1)",
+    "cross": "upward cross at t: osc(t-1) <= sig(t-1) and osc(t) > sig(t); downward cross: osc(t-1) >= sig(t-1) and osc(t) < sig(t); both endpoints from their own replays",
+    "pivots": "strict price pivots: a low pivot at q has low(q) strictly below every low in q-left_span .. q-1 and q+1 .. q+right_span (a high pivot mirrors on high); it is confirmed and usable at bar c = q + right_span",
+    "pairing": "each newly confirmed pivot pairs with the nearest earlier same-side pivot p with min_separation <= q - p <= max_separation: the largest pivot index p <= q - min_separation, and no pair when that p < q - max_separation; no farther pivot is searched for a more favorable divergence",
+    "divergence": "long: low(q) < low(p) strictly and osc(q) > osc(p) strictly; short: high(q) > high(p) strictly and osc(q) < osc(p) strictly; equal prices or equal oscillator values fail",
+    "arming": "a paired pivot that passes the divergence test arms its side; divergence_test = false (the signal-cross-only ablation) keeps pivot confirmation, pairing, replacement, expiry, crossing and consumption and drops only the two strict comparisons; no ablation strategy is registered",
+    "entry_window": "an armed setup confirmed at c can enter only on bars c+1 .. c+setup_expiry inclusive; the confirmation bar itself cannot enter",
+    "replacement": "every newly confirmed same-side pivot replaces the previous same-side setup on its own confirmation bar, also when its new pair fails divergence or has no pair",
+    "consumption": "the first eligible cross in the setup's direction (upward for long, downward for short) inside its entry window enters and consumes the setup; later crosses do nothing; consumption depends only on the cross, never on whether that bar's entry was held",
+    "opposite_events": "long and short setups are independent; simultaneous long and short entries hold and consume both (an upward and a downward cross cannot occur on one bar, so this rule is unreachable under the cross definition and is kept for completeness)",
+    "support": "S = replay_bars + left_span + max_separation + right_span + setup_expiry + 2 rows ending at the decision bar k; S <= 200 for every allowed parameter set; default S = 172, grid maximum 188",
+    "support_proof": "an entry at k needs c >= k - setup_expiry, so the second pivot q >= k - setup_expiry - right_span and the first pivot p >= q - max_separation; the earliest read is min(p - left_span, p - replay_bars) >= k - setup_expiry - right_span - max_separation - max(left_span, replay_bars), which is >= k - S + 1 + 1; every cross in c+1 .. k reads endpoints >= c >= k - setup_expiry; every pivot whose confirmation could replace the setup lies inside c .. k; so every read lies inside rows k-S+1 .. k",
+    "input_validity": "inside rows k-S+1 .. k: finite positive open, high, low and close, low <= open, close <= high, finite volume >= 0, a timestamp on every row, strictly increasing timestamps spaced exactly at the declared cadence (frame attribute bar_interval_ms), no row received out of order; and every oscillator endpoint k-S+1+replay_bars .. k is valid (positive finite cm in its replay and finite derived values)",
+    "runtime_freshness": "only a Hyperliquid check-time frame carries a decision_time attribute; its last row is fresh only when the selected closed bar boundary equals the row boundary and 0 <= cutoff - boundary < interval; an untimed check-time frame holds (decision_time_missing); historical frames carry no attribute and use each row's own boundary",
+    "reason_priority": "frame defects (missing_columns, missing_cadence, missing_timestamps); else the latest row or timestamp defect in the support (nonfinite_input, nonpositive_price, invalid_candle_geometry, negative_volume, missing_timestamps, timestamp_order, cadence_gap); else insufficient_history; else zero_cm; else nonfinite_derived; else, on the last check-time row only, decision_time_missing, decision_boundary_mismatch, decision_bar_future, decision_bar_stale; else opposite_events, entry_long, entry_short, setup_armed, awaiting_cross, setup_consumed, no_divergence or no_pivot_pair (long side reported first), no_setup",
+    "timestamps": "diagnostic timestamps are bar open times in milliseconds (a native-close frame subtracts interval - 1)",
+    "invalid_value_representation": "invalid values are NaN in the evaluator frame and are omitted from check output; validity flags are 0.0 or 1.0; setup columns are blank on rows whose decision is invalid"
+  },
+  "params": {
+    "fast_period": 34,
+    "slow_period": 55,
+    "signal_period": 13,
+    "replay_bars": 112,
+    "left_span": 3,
+    "right_span": 3,
+    "min_separation": 5,
+    "max_separation": 40,
+    "setup_expiry": 12,
+    "divergence_test": true
+  },
+  "parameter_domains": {
+    "fast_period": {"type": "integer", "min": 2, "max": 120, "rule": "fast_period < slow_period"},
+    "slow_period": {"type": "integer", "min": 3, "max": 150, "rule": "slow_period < replay_bars"},
+    "signal_period": {"type": "integer", "min": 2, "max": 150, "rule": "signal_period < replay_bars"},
+    "replay_bars": {"type": "integer", "min": 4, "max": 190},
+    "left_span": {"type": "integer", "min": 1, "max": 10},
+    "right_span": {"type": "integer", "min": 1, "max": 10},
+    "min_separation": {"type": "integer", "min": 1, "max": 100, "rule": "min_separation <= max_separation"},
+    "max_separation": {"type": "integer", "min": 1, "max": 100},
+    "setup_expiry": {"type": "integer", "min": 1, "max": 50},
+    "divergence_test": {"type": "boolean"},
+    "support": "replay_bars + left_span + max_separation + right_span + setup_expiry + 2 <= 200"
+  },
+  "optimizer_grid": {
+    "fast_period": [21, 34],
+    "slow_period": [55, 65],
+    "signal_period": [9, 13],
+    "replay_bars": [96, 112, 128],
+    "left_span": [2, 3],
+    "right_span": [2, 3],
+    "min_separation": [3, 5],
+    "max_separation": [24, 40],
+    "setup_expiry": [6, 12],
+    "divergence_test": [true]
+  },
+  "manifest": "backtest/candidates/klinger_divergence_1662_manifest.json",
+  "selection_window": "train",
+  "held_out_window": "test",
+  "capital": 1000.0,
+  "close_strategies": [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict",
+  "intrabar_resolution": "ohlc_walk",
+  "arms": {
+    "klinger_long": {"strategy": "klinger_divergence", "direction": "long", "selection": "grid", "role": "long-only primary candidate arm"},
+    "klinger_both": {"strategy": "klinger_divergence", "direction": "both", "selection": "grid", "role": "bidirectional primary candidate arm"},
+    "ablation_long": {"strategy": "klinger_divergence", "direction": "long", "selection": "inherit", "inherits": "klinger_long", "override": {"divergence_test": false}, "role": "signal-cross-only ablation of the selected long-only parameters"},
+    "ablation_both": {"strategy": "klinger_divergence", "direction": "both", "selection": "inherit", "inherits": "klinger_both", "override": {"divergence_test": false}, "role": "signal-cross-only ablation of the selected bidirectional parameters"},
+    "obv_long": {"strategy": "on_balance_volume_divergence", "direction": "long", "selection": "grid", "role": "On Balance Volume divergence comparator, long only"},
+    "obv_both": {"strategy": "on_balance_volume_divergence", "direction": "both", "selection": "grid", "role": "On Balance Volume divergence comparator, bidirectional"},
+    "volume_weighted": {"strategy": "volume_weighted", "direction": "long", "selection": "grid", "role": "volume-weighted comparator; it registers short_entries=False, so it is compared only with the long-only arm"}
+  },
+  "candidate_arms": ["klinger_long", "klinger_both"],
+  "comparisons": {
+    "klinger_long": ["volume_weighted", "obv_long", "ablation_long"],
+    "klinger_both": ["obv_both", "ablation_both"]
+  },
+  "selection": {
+    "eligible": "complete candle and funding coverage, every dataset scored, no liquidated leg, no incomplete-funding leg, at least min_train_independent_positions independent position clusters",
+    "independent_positions": "position intervals [entry, exit] pooled across all datasets and merged when they overlap; each merged interval is one cluster",
+    "min_train_independent_positions": 10,
+    "order": ["max mean net Sharpe", "max mean drawdown-adjusted return", "earliest grid order"],
+    "grids": "each grid arm uses its own DEFAULT_PARAM_RANGES grid expanded over its registry defaults; on_balance_volume_divergence and volume_weighted use their existing grids unchanged"
+  },
+  "held_out": {
+    "min_independent_positions_per_candidate_arm": 30,
+    "bidirectional_arm_requires_both_directions": true
+  },
+  "cost_runs": {
+    "base": {"cost_multiplier": 1.0, "meaning": "manifest fees, per-coin half spread and slippage"},
+    "stress": {"cost_multiplier": 2.0, "meaning": "manifest fees unchanged, half spread and slippage doubled (the manifest cost multiplier does not scale fees)"}
+  },
+  "incumbent_contract": {
+    "direction": "long",
+    "close_strategies": [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}],
+    "stop_loss_atr_mult": 1.0,
+    "comparison_mode": "strict"
+  },
+  "continuous_reference": {
+    "definition": "the same recurrence evaluated once over the whole manifest frame from its first row (seed trend -1, cm = dm, EMAs and signal line seeded as in the replay), with the same pivot, pairing, divergence, cross, expiry and consumption rules applied to the continuous oscillator",
+    "scope": "selected klinger_both parameters, every dataset, both windows, scored rows only",
+    "mismatch_classes": {
+      "finite_invalid_hold": "the finite decision is invalid (zero_cm or nonfinite) while the continuous calculation emits an entry",
+      "continuous_invalid": "the continuous calculation is undefined at that row (non-positive cm somewhere in its history) while the finite decision emits",
+      "seed_divergence": "both calculations are valid and their decisions differ because the finite replay restarts cm, trend, both EMAs and the signal line replay_bars back"
+    },
+    "acceptance": "every decision mismatch must fall in a listed class; an unclassified mismatch makes the study inconclusive"
+  },
+  "parity": {
+    "decision": "parity_diff.compute_parity_frame over the last 600 held-out bars of every dataset with the common close owner, direction both, window 200 and window None (every prefix), solo composer and batched explicit-paper slots",
+    "indicator": "for every scored row of both windows, the full-frame evaluation equals the evaluation on that row's own prefix and on its trailing 200 rows: oscillator, signal line, previous values and cross within absolute tolerance 1e-9 (relative to max(1, |value|)), and signal, reason and setup states exactly"
+  },
+  "verdict": {
+    "inconclusive": "any coverage refusal, no eligible training selection for a grid arm, a held-out sample gate that fails, an unclassified continuous-reference mismatch, or a parity failure",
+    "pass": "complete coverage and samples, both primary candidate arms net PnL > 0 at base and stress cost, and at base cost each primary arm has a strictly higher mean net return than each of its comparators and a worst drawdown no larger than each of its comparators",
+    "fail": "a complete study that misses any pass condition",
+    "edge_status": "every outcome keeps edge_status=no_edge; a pass keeps edge_source unvalidated, a fail records study_fail and an inconclusive result records study_inconclusive, identically in Go and Python"
+  },
+  "cache_legs": "none; the study uses only the hash-pinned Hyperliquid venue manifest, so no Binance US proxy leg and no --funding cache option is used"
+}

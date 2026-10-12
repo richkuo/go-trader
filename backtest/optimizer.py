@@ -741,6 +741,18 @@ DEFAULT_PARAM_RANGES = {
         "recursion_length": [120, 144, 192],
     },
     "camarilla_pivot_reversal": {},
+    "klinger_divergence": {
+        "fast_period": [21, 34],
+        "slow_period": [55, 65],
+        "signal_period": [9, 13],
+        "replay_bars": [96, 112, 128],
+        "left_span": [2, 3],
+        "right_span": [2, 3],
+        "min_separation": [3, 5],
+        "max_separation": [24, 40],
+        "setup_expiry": [6, 12],
+        "divergence_test": [True],
+    },
     "vortex_trend": {
         "period": [7, 14, 21, 28],
         "min_separation": [0.0, 0.02, 0.05, 0.10],

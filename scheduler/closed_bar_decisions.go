@@ -37,6 +37,7 @@ var closedBarUnsupportedOpenStrategies = map[string]string{
 var closedBarRequiredOpenStrategies = map[string]string{
 	"schaff_trend_cycle":               "its last-bar decision needs the verified closed-bar cutoff; without it the Hyperliquid check holds every entry and close-fallback signal, and other venues would decide on the forming bar",
 	camarillaPivotReversalStrategyName: "its last-bar decision needs the verified closed-bar cutoff and boundary; without them the Hyperliquid check holds every entry and close-fallback signal, and other venues would compare the forming candle with the frozen daily levels",
+	"klinger_divergence":               "its last-bar pivot confirmation and signal-line cross need the verified closed-bar cutoff; without it the Hyperliquid check holds every entry and close-fallback signal, and other venues would decide on the forming bar's volume",
 }
 
 func closedBarRequiredOpenStrategyErrors(sc StrategyConfig) []string {

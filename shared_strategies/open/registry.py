@@ -65,6 +65,7 @@ from adaptive_moving_average import adaptive_moving_average_core, ama_param_vali
 from schaff_trend_cycle import schaff_trend_cycle_core, stc_param_validator
 from trix_momentum import trix_momentum_core, trix_param_validator
 from camarilla_pivot_reversal import camarilla_pivot_reversal_core, validate_camarilla_param_dict
+from klinger_divergence import klinger_divergence_core, klinger_param_validator
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -1999,6 +2000,60 @@ def camarilla_pivot_reversal_strategy(df: pd.DataFrame, expected_interval_ms: in
 
 
 @register(
+    "klinger_divergence",
+    "RESEARCH, no-edge (#1662) \u2014 Klinger Oscillator divergence entries: every oscillator endpoint t is replayed from exactly replay_bars + 1 trailing closed bars (rows t-replay_bars .. t); the replay seeds trend -1, cm = dm (high - low) and the seed volume force, then trend is +1 when high + low + close exceeds the previous sum (else -1), cm adds dm while the trend repeats and restarts at previous dm + dm on a change, volume force = volume * 2 * (dm / cm - 1) * trend * 100, the oscillator is its fast_period EMA minus its slow_period EMA (both seeded at the seed force) and the signal line is a signal_period EMA of the oscillator (seeded at the seed oscillator). A strict price pivot (left_span/right_span) is usable once its right-side bars close; each newly confirmed low pairs with the nearest earlier confirmed low min_separation..max_separation bars back, and a strictly lower low with a strictly higher oscillator arms a long (the mirror high arms a short). The setup enters once on the first strict oscillator cross of its signal line in its direction on bars confirmation+1 .. confirmation+setup_expiry; a newer same-side pivot replaces it. divergence_test=false is the signal-cross-only ablation. Every decision reads exactly replay_bars + left_span + max_separation + right_span + setup_expiry + 2 bars (at most 200); bad prices or volume, timestamp defects, cadence gaps, zero cm and a check-time frame whose last bar is not the latest closed bar hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {
+        "fast_period": 34,
+        "slow_period": 55,
+        "signal_period": 13,
+        "replay_bars": 112,
+        "left_span": 3,
+        "right_span": 3,
+        "min_separation": 5,
+        "max_separation": 40,
+        "setup_expiry": 12,
+        "divergence_test": True,
+    },
+    platforms=("futures",),
+    constraints=[
+        "fast_period >= 2",
+        "fast_period <= 120",
+        "slow_period >= 3",
+        "slow_period <= 150",
+        "signal_period >= 2",
+        "signal_period <= 150",
+        "replay_bars >= 4",
+        "replay_bars <= 190",
+        "fast_period < slow_period",
+        "slow_period < replay_bars",
+        "signal_period < replay_bars",
+        "left_span >= 1",
+        "left_span <= 10",
+        "right_span >= 1",
+        "right_span <= 10",
+        "min_separation >= 1",
+        "max_separation <= 100",
+        "min_separation <= max_separation",
+        "setup_expiry >= 1",
+        "setup_expiry <= 50",
+    ],
+    edge_status="no_edge",
+    edge_source="unvalidated",
+    edge_ref="backtest/candidates/klinger_divergence_1662/REPORT.md",
+    short_entries=True,
+    param_validator=klinger_param_validator,
+)
+def klinger_divergence_strategy(df: pd.DataFrame, fast_period: int = 34, slow_period: int = 55,
+                                signal_period: int = 13, replay_bars: int = 112, left_span: int = 3,
+                                right_span: int = 3, min_separation: int = 5, max_separation: int = 40,
+                                setup_expiry: int = 12, divergence_test: bool = True) -> pd.DataFrame:
+    return klinger_divergence_core(
+        df, fast_period=fast_period, slow_period=slow_period, signal_period=signal_period,
+        replay_bars=replay_bars, left_span=left_span, right_span=right_span, min_separation=min_separation,
+        max_separation=max_separation, setup_expiry=setup_expiry, divergence_test=divergence_test)
+
+
+@register(
     "fisher_reversal",
     "RESEARCH, no-edge (#1646) \u2014 Fisher Transform reversal: the candle midpoint is normalized into [-1, 1] against its inclusive lookback-bar range, smoothed by x = 0.33 * normalized + 0.67 * previous x (clamped 1e-6 inside +/-1) and transformed by F = 0.5 * ln((1 + x) / (1 - x)) + 0.5 * previous F, both recurrences restarted from zero over exactly 64 bars for every timestamp (lookback + 65 bars of history); long when F crosses above its one-bar-lagged trigger after the trigger is below -extreme, short is the mirror above +extreme. Bad, gapped or flat input holds the entry. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"lookback": 9, "extreme": 1.5},
@@ -2427,6 +2482,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "schaff_trend_cycle",
         "trix_momentum",
         "camarilla_pivot_reversal",
+        "klinger_divergence",
         "hold",
     ],
 }

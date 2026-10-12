@@ -129,6 +129,14 @@ var addStrategyEntryOnlyCandidates = map[string]addStrategyEntryOnlyCandidate{
 		},
 		ClosedBarDecisions: true,
 	},
+	"klinger_divergence": {
+		CloseStrategy: "tiered_tp_pct",
+		CloseParams: func() map[string]interface{} {
+			return map[string]interface{}{"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 0.02, "close_fraction": 1.0}}}
+		},
+		ClosedBarDecisions: true,
+		StopLossATRMult:    1.0,
+	},
 }
 
 func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessage, error) {
