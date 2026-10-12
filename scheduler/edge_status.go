@@ -29,7 +29,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"atr_breakout":                 {"fee_audit_m5", noEdgeRefFeeAudit},
 	"awesome_oscillator":           {"study_fail", "backtest/candidates/awesome_oscillator_1660/REPORT.md"},
 	"bollinger_bands":              {"fee_audit_m5", noEdgeRefFeeAudit},
-	"calendar_conditioned_entry":   {"unvalidated", "backtest/candidates/calendar_conditioned_entry_1653/REPORT.md"},
+	"calendar_conditioned_entry":   {"study_inconclusive", "backtest/candidates/calendar_conditioned_entry_1653/REPORT.md"},
 	"camarilla_pivot_reversal":     {"study_fail", "backtest/candidates/camarilla_pivot_reversal_1669/REPORT.md"},
 	"chaikin_money_flow_breakout":  {"study_fail", "backtest/candidates/chaikin_money_flow_1649/REPORT.md"},
 	"chande_momentum":              {"study_fail", "backtest/candidates/chande_momentum_1661/REPORT.md"},

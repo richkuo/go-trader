@@ -1,0 +1,550 @@
+{
+  "batch_agreement": true,
+  "cli": [
+    {
+      "argv": [
+        "backtest/parity_diff.py",
+        "--config",
+        "backtest/candidates/calendar_conditioned_entry_1653/paper_parity_1h.json",
+        "--strategy-id",
+        "hl-cce-btc-1h",
+        "--window",
+        "0",
+        "--comparison-mode",
+        "approximate",
+        "--funding",
+        "charge",
+        "--since",
+        "2025-10-01"
+      ],
+      "bars_compared": 8722,
+      "bt_entries": 0,
+      "close_parity": "incomplete",
+      "exit_code": 3,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "last_mismatch": null,
+      "live_entries": 0,
+      "mismatches": 0,
+      "seconds": 55.1
+    },
+    {
+      "argv": [
+        "backtest/parity_diff.py",
+        "--config",
+        "backtest/candidates/calendar_conditioned_entry_1653/paper_parity_1h.json",
+        "--strategy-id",
+        "hl-cce-btc-1h",
+        "--window",
+        "200",
+        "--comparison-mode",
+        "approximate",
+        "--funding",
+        "charge",
+        "--since",
+        "2025-10-01"
+      ],
+      "bars_compared": 8552,
+      "bt_entries": 0,
+      "close_parity": "incomplete",
+      "exit_code": 3,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "last_mismatch": null,
+      "live_entries": 0,
+      "mismatches": 0,
+      "seconds": 33.0
+    }
+  ],
+  "complete_live_parity": false,
+  "expanding_decision_agreement": {
+    "proxy BTC/USDT 1h 2025-10-01..2026-10-01 batched=False": true,
+    "proxy BTC/USDT 1h 2025-10-01..2026-10-01 batched=True": true,
+    "synthetic seeded 1h walk with weekly cells (5300 bars, seed 1653) batched=False": true,
+    "synthetic seeded 1h walk with weekly cells (5300 bars, seed 1653) batched=True": true,
+    "venue BTC 4h test window with warmup batched=False": true,
+    "venue BTC 4h test window with warmup batched=True": true
+  },
+  "manifest_sha256": "50e87869492fc1212d78822ef29dfa6a29a9037b820abee07b52e58d35fa9051",
+  "prefix": {
+    "proxy BTC/USDT 1h 2025-10-01..2026-10-01": {
+      "bars": 8751,
+      "first_mismatches": [],
+      "input_sha256": "28ddf59bb7f522734d8801ac44f5eea0a1018fc4a665ef3d2f6685efd9536680",
+      "long_signals": 0,
+      "mismatches": 0,
+      "reasons": {
+        "below_threshold": 3533,
+        "cadence_gap": 1,
+        "history_cadence_gap": 730,
+        "insufficient_history": 4487
+      },
+      "refit_tables": 22,
+      "seconds": 69.1,
+      "shifted_start": {
+        "1": {
+          "decisions_without_history_after_shift": 0,
+          "mismatches": 0
+        },
+        "167": {
+          "decisions_without_history_after_shift": 168,
+          "mismatches": 0
+        },
+        "168": {
+          "decisions_without_history_after_shift": 168,
+          "mismatches": 0
+        },
+        "25": {
+          "decisions_without_history_after_shift": 0,
+          "mismatches": 0
+        }
+      },
+      "short_signals": 0,
+      "table_mismatches": [],
+      "valid_bars": 3533
+    },
+    "synthetic seeded 1h walk with weekly cells (5300 bars, seed 1653)": {
+      "bars": 5300,
+      "first_mismatches": [],
+      "input_sha256": "43ddd63dc82e834c729974b9ed58c8e37fe84b4ccdcb837c09190e03b749bbb0",
+      "long_signals": 18,
+      "mismatches": 0,
+      "reasons": {
+        "below_threshold": 910,
+        "entry_long": 18,
+        "entry_short": 5,
+        "insufficient_history": 4367
+      },
+      "refit_tables": 6,
+      "seconds": 18.6,
+      "shifted_start": {
+        "1": {
+          "decisions_without_history_after_shift": 168,
+          "mismatches": 0
+        },
+        "167": {
+          "decisions_without_history_after_shift": 168,
+          "mismatches": 0
+        },
+        "168": {
+          "decisions_without_history_after_shift": 168,
+          "mismatches": 0
+        },
+        "25": {
+          "decisions_without_history_after_shift": 168,
+          "mismatches": 0
+        }
+      },
+      "short_signals": 5,
+      "table_mismatches": [],
+      "valid_bars": 933
+    },
+    "venue BTC 4h test window with warmup": {
+      "bars": 3323,
+      "first_mismatches": [],
+      "input_sha256": "e3d76fcd940b256b5bb8c56e7bc0a3fb6227886ace0d03466def29df1f9cf8d2",
+      "long_signals": 0,
+      "mismatches": 0,
+      "reasons": {
+        "below_threshold": 2191,
+        "insufficient_history": 1132
+      },
+      "refit_tables": 53,
+      "seconds": 20.8,
+      "shifted_start": {
+        "1": {
+          "decisions_without_history_after_shift": 0,
+          "mismatches": 0
+        },
+        "25": {
+          "decisions_without_history_after_shift": 0,
+          "mismatches": 0
+        },
+        "41": {
+          "decisions_without_history_after_shift": 0,
+          "mismatches": 0
+        },
+        "42": {
+          "decisions_without_history_after_shift": 42,
+          "mismatches": 0
+        }
+      },
+      "short_signals": 0,
+      "table_mismatches": [],
+      "valid_bars": 2191
+    }
+  },
+  "prefix_clean": true,
+  "runs": [
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 8552,
+      "batch_mismatches": null,
+      "batched": false,
+      "bounded_frame_last_bar_reasons_sampled": {
+        "history_cadence_gap": 1,
+        "insufficient_history": 50
+      },
+      "bt_entries": 0,
+      "candles": 8751,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "input_sha256": "28ddf59bb7f522734d8801ac44f5eea0a1018fc4a665ef3d2f6685efd9536680",
+      "interval": "1h",
+      "last_mismatch": null,
+      "live_entries": 0,
+      "mismatches": 0,
+      "open_action_mismatches": 0,
+      "seconds": 32.1,
+      "source": "proxy BTC/USDT 1h 2025-10-01..2026-10-01",
+      "strategy_id": "hl-cce-btc-1h",
+      "window": 200
+    },
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 8722,
+      "batch_mismatches": null,
+      "batched": false,
+      "bt_entries": 0,
+      "candles": 8751,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "input_sha256": "28ddf59bb7f522734d8801ac44f5eea0a1018fc4a665ef3d2f6685efd9536680",
+      "interval": "1h",
+      "last_mismatch": null,
+      "live_entries": 0,
+      "mismatches": 0,
+      "open_action_mismatches": 0,
+      "seconds": 55.8,
+      "source": "proxy BTC/USDT 1h 2025-10-01..2026-10-01",
+      "strategy_id": "hl-cce-btc-1h",
+      "window": "every prefix"
+    },
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 8552,
+      "batch_mismatches": 0,
+      "batched": true,
+      "bounded_frame_last_bar_reasons_sampled": {
+        "history_cadence_gap": 1,
+        "insufficient_history": 50
+      },
+      "bt_entries": 0,
+      "candles": 8751,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "input_sha256": "28ddf59bb7f522734d8801ac44f5eea0a1018fc4a665ef3d2f6685efd9536680",
+      "interval": "1h",
+      "last_mismatch": null,
+      "live_entries": 0,
+      "mismatches": 0,
+      "open_action_mismatches": 0,
+      "seconds": 126.9,
+      "source": "proxy BTC/USDT 1h 2025-10-01..2026-10-01",
+      "strategy_id": "hl-cce-btc-1h",
+      "window": 200
+    },
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 8722,
+      "batch_mismatches": 0,
+      "batched": true,
+      "bt_entries": 0,
+      "candles": 8751,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "input_sha256": "28ddf59bb7f522734d8801ac44f5eea0a1018fc4a665ef3d2f6685efd9536680",
+      "interval": "1h",
+      "last_mismatch": null,
+      "live_entries": 0,
+      "mismatches": 0,
+      "open_action_mismatches": 0,
+      "seconds": 221.6,
+      "source": "proxy BTC/USDT 1h 2025-10-01..2026-10-01",
+      "strategy_id": "hl-cce-btc-1h",
+      "window": "every prefix"
+    },
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 5101,
+      "batch_mismatches": null,
+      "batched": false,
+      "bounded_frame_last_bar_reasons_sampled": {
+        "insufficient_history": 51
+      },
+      "bt_entries": 23,
+      "candles": 5300,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_1h.json",
+      "decision_agreement": false,
+      "first_mismatch": "2025-07-07 10:00:00+00:00",
+      "incomplete_parity": true,
+      "input_sha256": "43ddd63dc82e834c729974b9ed58c8e37fe84b4ccdcb837c09190e03b749bbb0",
+      "interval": "1h",
+      "last_mismatch": "2025-08-13 23:00:00+00:00",
+      "live_entries": 0,
+      "mismatches": 23,
+      "open_action_mismatches": 23,
+      "seconds": 16.6,
+      "source": "synthetic seeded 1h walk with weekly cells (5300 bars, seed 1653)",
+      "strategy_id": "hl-cce-btc-1h",
+      "window": 200
+    },
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 5271,
+      "batch_mismatches": null,
+      "batched": false,
+      "bt_entries": 23,
+      "candles": 5300,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "input_sha256": "43ddd63dc82e834c729974b9ed58c8e37fe84b4ccdcb837c09190e03b749bbb0",
+      "interval": "1h",
+      "last_mismatch": null,
+      "live_entries": 23,
+      "mismatches": 0,
+      "open_action_mismatches": 0,
+      "seconds": 23.7,
+      "source": "synthetic seeded 1h walk with weekly cells (5300 bars, seed 1653)",
+      "strategy_id": "hl-cce-btc-1h",
+      "window": "every prefix"
+    },
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 5101,
+      "batch_mismatches": 0,
+      "batched": true,
+      "bounded_frame_last_bar_reasons_sampled": {
+        "insufficient_history": 51
+      },
+      "bt_entries": 23,
+      "candles": 5300,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_1h.json",
+      "decision_agreement": false,
+      "first_mismatch": "2025-07-07 10:00:00+00:00",
+      "incomplete_parity": true,
+      "input_sha256": "43ddd63dc82e834c729974b9ed58c8e37fe84b4ccdcb837c09190e03b749bbb0",
+      "interval": "1h",
+      "last_mismatch": "2025-08-13 23:00:00+00:00",
+      "live_entries": 0,
+      "mismatches": 23,
+      "open_action_mismatches": 23,
+      "seconds": 80.2,
+      "source": "synthetic seeded 1h walk with weekly cells (5300 bars, seed 1653)",
+      "strategy_id": "hl-cce-btc-1h",
+      "window": 200
+    },
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 5271,
+      "batch_mismatches": 0,
+      "batched": true,
+      "bt_entries": 23,
+      "candles": 5300,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_1h.json",
+      "decision_agreement": true,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "input_sha256": "43ddd63dc82e834c729974b9ed58c8e37fe84b4ccdcb837c09190e03b749bbb0",
+      "interval": "1h",
+      "last_mismatch": null,
+      "live_entries": 23,
+      "mismatches": 0,
+      "open_action_mismatches": 0,
+      "seconds": 105.3,
+      "source": "synthetic seeded 1h walk with weekly cells (5300 bars, seed 1653)",
+      "strategy_id": "hl-cce-btc-1h",
+      "window": "every prefix"
+    },
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 3124,
+      "batch_mismatches": null,
+      "batched": false,
+      "bounded_frame_last_bar_reasons_sampled": {
+        "insufficient_history": 51
+      },
+      "bt_entries": 0,
+      "candles": 3323,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "input_sha256": "e3d76fcd940b256b5bb8c56e7bc0a3fb6227886ace0d03466def29df1f9cf8d2",
+      "interval": "4h",
+      "last_mismatch": null,
+      "live_entries": 0,
+      "mismatches": 0,
+      "open_action_mismatches": 0,
+      "seconds": 10.3,
+      "source": "venue BTC 4h test window with warmup",
+      "strategy_id": "hl-cce-btc-4h",
+      "window": 200
+    },
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 3294,
+      "batch_mismatches": null,
+      "batched": false,
+      "bt_entries": 0,
+      "candles": 3323,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "input_sha256": "e3d76fcd940b256b5bb8c56e7bc0a3fb6227886ace0d03466def29df1f9cf8d2",
+      "interval": "4h",
+      "last_mismatch": null,
+      "live_entries": 0,
+      "mismatches": 0,
+      "open_action_mismatches": 0,
+      "seconds": 19.8,
+      "source": "venue BTC 4h test window with warmup",
+      "strategy_id": "hl-cce-btc-4h",
+      "window": "every prefix"
+    },
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 3124,
+      "batch_mismatches": 0,
+      "batched": true,
+      "bounded_frame_last_bar_reasons_sampled": {
+        "insufficient_history": 51
+      },
+      "bt_entries": 0,
+      "candles": 3323,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "input_sha256": "e3d76fcd940b256b5bb8c56e7bc0a3fb6227886ace0d03466def29df1f9cf8d2",
+      "interval": "4h",
+      "last_mismatch": null,
+      "live_entries": 0,
+      "mismatches": 0,
+      "open_action_mismatches": 0,
+      "seconds": 43.5,
+      "source": "venue BTC 4h test window with warmup",
+      "strategy_id": "hl-cce-btc-4h",
+      "window": 200
+    },
+    {
+      "approximation_codes": [
+        "RESEARCH_ONLY_CLOSE_CONTEXT"
+      ],
+      "bars_compared": 3294,
+      "batch_mismatches": 0,
+      "batched": true,
+      "bt_entries": 0,
+      "candles": 3323,
+      "clean": false,
+      "close_eligibility": "approximate",
+      "close_fraction_mismatches": 0,
+      "close_parity": "incomplete",
+      "comparison_mode": "approximate",
+      "config": "paper_parity_4h.json",
+      "decision_agreement": true,
+      "first_mismatch": null,
+      "incomplete_parity": true,
+      "input_sha256": "e3d76fcd940b256b5bb8c56e7bc0a3fb6227886ace0d03466def29df1f9cf8d2",
+      "interval": "4h",
+      "last_mismatch": null,
+      "live_entries": 0,
+      "mismatches": 0,
+      "open_action_mismatches": 0,
+      "seconds": 91.7,
+      "source": "venue BTC 4h test window with warmup",
+      "strategy_id": "hl-cce-btc-4h",
+      "window": "every prefix"
+    }
+  ],
+  "source_commit": "8a12abbb2b833c51e4ba327eb04d755effda8f2f",
+  "venue_manifest_sha256": "9338a5beb52a07093ddc18de07c53c517a4f82d45239504ae7bb5989186daa3d"
+}

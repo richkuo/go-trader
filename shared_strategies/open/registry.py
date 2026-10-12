@@ -2067,7 +2067,7 @@ def mass_index_reversal_strategy(df: pd.DataFrame, ema_period: int = 9, sum_peri
         "expected_interval_ms <= 86400000",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_inconclusive",
     edge_ref="backtest/candidates/calendar_conditioned_entry_1653/REPORT.md",
     short_entries=True,
     param_validator=calendar_param_validator,
