@@ -684,6 +684,7 @@ def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms,
         coverage["complete"] = False
         coverage["through_ms"] = 0
         coverage["reason"] = f"the fill history query failed: {e}"
+        coverage["query_error"] = str(e)
         return coverage, notional, fee
 
 

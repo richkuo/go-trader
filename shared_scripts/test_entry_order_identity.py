@@ -376,6 +376,7 @@ def test_okx_recovery_fill_scan_failure_is_incomplete_coverage(monkeypatch, caps
         cov = out["order"]["coverage"]
         assert code == 0 and "error" not in out and out["order"]["found"] is False
         assert not cov["complete"] and cov["through_ms"] == 0 and "fill history query failed" in cov["reason"], cov
+        assert cov["query_error"], cov
 
 
 def test_okx_recovery_books_a_found_order_while_the_fill_history_fails(monkeypatch, capsys):

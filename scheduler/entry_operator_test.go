@@ -427,6 +427,23 @@ func TestEntryRecoveryOKXFillHistoryFailureOnlyBlocksTheRelease(t *testing.T) {
 			t.Fatalf("intents %v", got)
 		}
 	})
+	t.Run("a terminal zero-fill order with a failed fill history stays held", func(t *testing.T) {
+		f := newEntryOperatorFixture(t, "okx-swap")
+		f.backdate()
+		cov := failed()
+		cov.QueryError = "OKX fills query failed: {'code': '50011'}"
+		res := &entryRecoveryResult{Platform: "okx", Account: okxEntryAccountKey("swap"), Order: &entryRecoveryOrder{Found: true, Status: "canceled", OrderID: "okx-1", Terminal: true, Coverage: cov}}
+		installEntryVenueQuery(t, fixedVenue(res, nil))
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+		if r := f.row(); r.Status != entryIntentSubmitting || !strings.Contains(r.Hold, "fill history query failed") {
+			t.Fatalf("row %+v", r)
+		}
+		cov.QueryError = ""
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now().Add(2*entryRecoveryQueryInterval))
+		if got := f.env.intentStatuses(f.sc.ID); len(got) != 1 || got[0] != entryIntentNoFill {
+			t.Fatalf("after the fill history recovers: intents %v", got)
+		}
+	})
 	t.Run("a missing order with a failed fill history stays held", func(t *testing.T) {
 		f := newEntryOperatorFixture(t, "okx-swap")
 		f.backdate()

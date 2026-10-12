@@ -27,6 +27,7 @@ type entryFillCoverage struct {
 	MatchedCount int     `json:"matched_count"`
 	MatchedQty   float64 `json:"matched_qty"`
 	Source       string  `json:"source,omitempty"`
+	QueryError   string  `json:"query_error,omitempty"`
 }
 
 type entryRecoveryOrder struct {
@@ -182,6 +183,9 @@ func classifyEntryRecovery(in *entryIntent, req entryIntentRequest, res *entryRe
 		}
 		if o.Coverage != nil && (o.Coverage.MatchedCount != 0 || o.Coverage.MatchedQty != 0) {
 			return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: fmt.Sprintf("order %s ended %s with no execution, but the fill history holds %d fill(s) for the client order id", o.OrderID, o.Status, o.Coverage.MatchedCount)}
+		}
+		if o.Coverage != nil && o.Coverage.QueryError != "" {
+			return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: fmt.Sprintf("order %s ended %s with no execution, but the fill history query failed, so the client order id cannot be cross-checked: %s", o.OrderID, o.Status, o.Coverage.QueryError)}
 		}
 		ev.Outcome = "terminal_zero_fill"
 		ev.Detail = fmt.Sprintf("order %s ended %s with no execution", o.OrderID, o.Status)
