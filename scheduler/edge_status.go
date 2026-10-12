@@ -65,6 +65,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"sma_crossover":                {"fee_audit_m5", noEdgeRefFeeAudit},
 	"squeeze_momentum":             {"fee_audit_m5", noEdgeRefFeeAudit},
 	"stoch_rsi":                    {"fee_audit_m5", noEdgeRefFeeAudit},
+	"stochastic_momentum_index":    {"unvalidated", "backtest/candidates/stochastic_momentum_index_1663/REPORT.md"},
 	"supertrend":                   {"fee_audit_m5", noEdgeRefFeeAudit},
 	"sweep_squeeze_combo":          {"fee_audit_m5", noEdgeRefFeeAudit},
 	"tema_cross":                   {"fee_audit_m5", noEdgeRefLimbo},

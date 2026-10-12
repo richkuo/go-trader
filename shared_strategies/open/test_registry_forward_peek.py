@@ -191,6 +191,7 @@ STRATEGY_INPUTS = {
     "regression_channel_reversion": _with_declared_cadence,
     "trix_momentum": _with_declared_cadence,
     "camarilla_pivot_reversal": _with_declared_cadence,
+    "stochastic_momentum_index": _with_declared_cadence,
 }
 
 _FIXTURE_CACHE = {}

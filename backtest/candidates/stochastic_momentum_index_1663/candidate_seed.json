@@ -1,0 +1,131 @@
+{
+  "issue": 1663,
+  "name": "stochastic_momentum_index",
+  "short_name": "smi",
+  "status": "research settings, not approved trading settings",
+  "formula": {
+    "range_inputs": "for bar i, HH(i) and LL(i) are the highest high and lowest low of the range_period bars ending at i (rows i-range_period+1 .. i); range(i) = HH(i) - LL(i); relative(i) = close(i) - (HH(i) + LL(i)) / 2",
+    "seed": "for endpoint t the seed bar is s = t - recursion_length; every recursion restarts there with no state carried between endpoints",
+    "numerator": "n1(s) = n2(s) = relative(s); for k = s+1 .. t: n1(k) = a * relative(k) + (1 - a) * n1(k-1), n2(k) = a * n1(k) + (1 - a) * n2(k-1), a = 2 / (smoothing_period + 1)",
+    "denominator": "d1(s) = d2(s) = range(s); the same two recursions on range(k)",
+    "oscillator": "smi(k) = 200 * n2(k) / d2(k); the endpoint value is smi(t)",
+    "signal_line": "line(s) = smi(s); for k = s+1 .. t: line(k) = b * smi(k) + (1 - b) * line(k-1), b = 2 / (signal_period + 1); the oscillator sequence is the one of this same endpoint replay",
+    "updates": "exactly recursion_length updates after the seed in every recursion",
+    "previous_endpoint": "endpoint t-1 is replayed independently from its own seed t-1-recursion_length; the penultimate value of the endpoint t replay is never used",
+    "difference": "diff(t) = smi(t) - line(t), each from its own endpoint replay",
+    "long_entry": "smi(t-1) <= oversold and smi(t) > oversold and diff(t-1) <= 0 and diff(t) > 0",
+    "short_entry": "smi(t-1) >= overbought and smi(t) < overbought and diff(t-1) >= 0 and diff(t) < 0",
+    "other_cases": "no entry; level_cross_only when only the threshold crossing occurs, signal_cross_only when only the signal-line crossing occurs, else no_cross",
+    "endpoint_bars": "recursion_length + range_period input bars (rows t-recursion_length-range_period+1 .. t)",
+    "required_history": "recursion_length + range_period + 1 valid consecutive closed bars for a crossing; recursion_length + range_period <= 198, so a crossing fits in 199 closed rows of a 200-row check input that also holds a forming row",
+    "input_validity": "inside rows t-recursion_length-range_period .. t: finite positive open, high, low and close, low <= open, close <= high, high >= low, a timestamp on every row, strictly increasing timestamps spaced exactly at the declared cadence (frame attribute bar_interval_ms), and no row that was received out of order; volume is not an input",
+    "zero_range": "d2 that is not strictly positive at any step of either endpoint replay (both signal-line seeds included) invalidates the decision; no carried value is substituted",
+    "nonfinite_derived": "any non-finite smoothed value, oscillator or signal line in either replay invalidates the decision",
+    "runtime_freshness": "only a Hyperliquid check-time frame carries a decision_time attribute; its last row is fresh only when the selected closed bar boundary equals the row boundary and 0 <= cutoff - boundary < interval; an untimed check-time frame holds (decision_time_missing); historical frames have no attribute and use each row's own boundary",
+    "reason_priority": "frame defects (missing_columns, missing_cadence, missing_timestamps); else the latest row or timestamp defect in the dependency span (nonfinite_input, nonpositive_price, invalid_candle_geometry, missing_timestamps, timestamp_order, cadence_gap); else insufficient_history; else nonfinite_derived; else zero_range; else, on the last check-time row only, decision_time_missing, decision_boundary_mismatch, decision_bar_future, decision_bar_stale; else entry_long, entry_short, level_cross_only, signal_cross_only or no_cross",
+    "invalid_value_representation": "invalid values are NaN in the evaluator frame and are omitted from check output; validity flags are 0.0 or 1.0",
+    "definition_scope": "the finite replay is the candidate definition; it is history-length independent for identical valid trailing inputs and is not claimed equal to a continuously seeded indicator"
+  },
+  "params": {
+    "range_period": 10,
+    "smoothing_period": 3,
+    "signal_period": 3,
+    "recursion_length": 60,
+    "oversold": -40.0,
+    "overbought": 40.0
+  },
+  "parameter_domains": {
+    "range_period": {"type": "positive integer"},
+    "smoothing_period": {"type": "positive integer"},
+    "signal_period": {"type": "positive integer"},
+    "recursion_length": {"type": "positive integer", "rule": "recursion_length >= 8 * max(smoothing_period, signal_period) and recursion_length + range_period <= 198"},
+    "oversold": {"type": "finite number", "rule": "-100 < oversold < overbought < 100"},
+    "overbought": {"type": "finite number", "rule": "-100 < oversold < overbought < 100"},
+    "refused": "booleans, strings, fractional or non-finite periods and non-finite thresholds; integer-valued floats are accepted"
+  },
+  "optimizer_grid": {
+    "range_period": [8, 10, 14],
+    "smoothing_period": [2, 3, 4],
+    "signal_period": [2, 3, 4],
+    "recursion_length": [48, 60, 80],
+    "oversold": [-50.0, -40.0, -30.0],
+    "overbought": [30.0, 40.0, 50.0]
+  },
+  "comparator_grids": "the unchanged DEFAULT_PARAM_RANGES rows of stoch_rsi (81 combinations) and mean_reversion_pro (972 combinations) in backtest/optimizer.py over each strategy's registry defaults",
+  "manifest": "backtest/candidates/stochastic_momentum_index_1663_manifest.json",
+  "proxy_inputs": {
+    "inventory": "backtest/candidates/ultimate_oscillator_1664/data/frozen_inputs.json",
+    "files": ["BTC_4h_candles.csv.gz", "ETH_4h_candles.csv.gz", "SOL_4h_candles.csv.gz", "BTC_funding.csv.gz", "ETH_funding.csv.gz", "SOL_funding.csv.gz", "BTC_funding_meta.json", "ETH_funding_meta.json", "SOL_funding_meta.json"],
+    "use": "referenced in place and verified against the inventory sha256; loaded into a private scratch SQLite cache (GO_TRADER_OHLCV_CACHE_DB) with the candle fetcher and the funding adapter disabled; shared caches are never opened",
+    "provenance": "Binance US spot 4h candles as a Hyperliquid price proxy, Hyperliquid funding history",
+    "coverage_rule": "a proxy window and dataset is covered when its first and last bars sit on the window bounds, the warmup_bars bars before the window start are consecutive, and missing bars are at most 0.5% of the expected bars; every missing bar is listed; funding is complete when the leg reports funding mode charge, complete coverage and no unpriced held hour",
+    "max_missing_bar_share": 0.005
+  },
+  "venue_coverage_rule": "exact candle grid with every warm-up and window bar present, valid rows, at least 199 warm-up bars, complete left-closed funding hours and a complete right-closed accrual span",
+  "datasets": ["BTC 4h", "ETH 4h", "SOL 4h"],
+  "windows": {
+    "train": ["2024-09-01", "2025-09-01", "selection on venue data only"],
+    "test": ["2025-09-01", "2026-09-01", "held-out; scored once with the frozen venue selections"]
+  },
+  "warmup_bars": 300,
+  "retrospective": "both windows were used by earlier candidate studies on the same inputs, so every result is retrospective candidate evidence",
+  "selection_window": "train",
+  "held_out_window": "test",
+  "selection_provenance": "venue",
+  "capital": 1000.0,
+  "leverage": 1.0,
+  "atr_method": "simple",
+  "intrabar_resolution": "ohlc_walk",
+  "close_strategies": [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict",
+  "funding_mode": "charge",
+  "arms": {
+    "smi_long": {"strategy": "stochastic_momentum_index", "direction": "long", "role": "matched long-only candidate arm", "baseline": "stoch_rsi"},
+    "smi_both": {"strategy": "stochastic_momentum_index", "direction": "both", "role": "bidirectional candidate arm", "baseline": "mean_reversion_pro"},
+    "stoch_rsi": {"strategy": "stoch_rsi", "direction": "long", "role": "long-only baseline; stoch_rsi registers short_entries=False, so its -1 is a long exit and never a short entry"},
+    "mean_reversion_pro": {"strategy": "mean_reversion_pro", "direction": "both", "role": "bidirectional baseline; mean_reversion_pro registers short_entries=True"}
+  },
+  "candidate_arms": ["smi_long", "smi_both"],
+  "baseline_arms": ["stoch_rsi", "mean_reversion_pro"],
+  "incumbent_reference": {
+    "members": "eval_windows.INCUMBENTS",
+    "contract": {"direction": "long", "close_strategies": "the frozen close owner", "stop_loss_atr_mult": 1.0},
+    "aggregate": "median Sharpe and median drawdown-adjusted return of the incumbents per dataset (eval_windows.incumbent_bars), registry defaults, run long-only under the frozen close, stop, capital and cost contract",
+    "role": "descriptive; not a verdict input"
+  },
+  "selection": {
+    "eligible": "every dataset scored, complete candle and funding coverage on every leg, no liquidated leg, at least min_train_independent_positions independent position clusters",
+    "min_train_independent_positions": 30,
+    "order": ["max mean net Sharpe", "max mean drawdown-adjusted return", "earliest grid order"]
+  },
+  "independent_positions": "positions of all datasets of one arm and window are sorted by entry time and every overlapping holding interval (entry at or before the latest exit so far) merges into one cluster",
+  "held_out": {
+    "min_independent_positions_per_arm": 30,
+    "min_positions_per_direction_bidirectional": 10
+  },
+  "cost_runs": {
+    "venue_base": {"cost_multiplier": 1.0, "meaning": "manifest taker and maker fees, per-coin half spread, slippage, szDecimals lot flooring and the $10 minimum"},
+    "venue_stress": {"cost_multiplier": 2.0, "meaning": "manifest fees unchanged, half spread and slippage doubled through the manifest cost multiplier"},
+    "proxy_base": {"slippage_mult": 1.0, "meaning": "Hyperliquid fees and the configured default slippage, which stands in for spread on this path; no lot or minimum rule"},
+    "proxy_stress": {"slippage_mult": 2.0, "meaning": "slippage doubled"}
+  },
+  "stability": {
+    "neighbours": "grid combinations one index step away in exactly one parameter from the selected candidate parameters; frozen before scoring",
+    "rule": "at least two thirds of the evaluable one-step neighbours of each candidate arm have positive held-out net PnL at base cost; a neighbour is evaluable when every dataset scored with complete coverage; no reselection from held-out results"
+  },
+  "verdict": {
+    "per_provenance": "computed separately for venue and proxy evidence with the venue-selected parameters",
+    "inconclusive": "a coverage refusal or incomplete leg in a named arm, no eligible training selection for an arm, a held-out sample gate that fails, or no evaluable neighbour",
+    "pass": "complete coverage and sample gates, no liquidated leg, both candidate arms net PnL > 0 at base and stress cost, smi_long base mean Sharpe and base mean drawdown-adjusted return both strictly above stoch_rsi, smi_both both strictly above mean_reversion_pro, and the stability rule met for both candidate arms",
+    "fail": "a complete study that misses any pass condition",
+    "overall": "the venue verdict when it is fail or inconclusive; a venue pass is the overall pass only when the proxy verdict is also pass, otherwise the overall verdict is inconclusive",
+    "funding": "partial and off funding never support a verdict; a leg with an unpriced held hour is incomplete and is excluded from selection and economic conclusions",
+    "edge_status": "every outcome keeps edge_status=no_edge; a pass keeps edge_source unvalidated, a fail records study_fail and an inconclusive result records study_inconclusive, identically in Go and Python"
+  },
+  "continuous_reference": {
+    "definition": "the same equations seeded once at the first bar with a complete range window of the whole frame and carried through the frame; a separately named research diagnostic",
+    "scope": "selected smi_both parameters, venue datasets, both windows, scored rows only",
+    "role": "descriptive; it never redefines the finite-replay candidate or its acceptance"
+  }
+}
