@@ -1644,6 +1644,7 @@ It is off by default; the default stays off until a paper comparison measures th
 
 **Supported scope.** Binance.US spot (`shared_scripts/check_strategy.py`), OKX spot and perps (`shared_scripts/check_okx.py`) and Hyperliquid perps (`shared_scripts/check_hyperliquid.py`), legacy and composed strategies, on the fixed-duration timeframes `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h` and `1d` (Hyperliquid: only its own intervals).
 `loadConfig` refuses the flag on `manual`, options, TopStep, Robinhood, a custom check script, another timeframe, a higher-timeframe filter or regime timeframe outside that list, `delta_neutral_funding`, `open_interest_breakout`, `funding_skew` on OKX, and `regime_directional_policy`, `regime_window_divergence` or `regime_profile_allocation` (those resolve before the check runs, so they would read the current regime).
+The reverse rule (`closedBarRequiredOpenStrategies`): `loadConfig` refuses every `schaff_trend_cycle` reference (positional open, `open_strategy`, `close_strategy` fallback) unless the strategy is Hyperliquid perps with the flag on, because its last-bar decision needs the verified closed-bar cutoff (#1651).
 A replay mirror with the flag needs an explicit `replay_source_id`, and a named mirror and its source must agree on the flag.
 Changing the flag is restart-required; SIGHUP refuses it.
 

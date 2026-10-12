@@ -81,6 +81,10 @@ selected bar boundary; its last row is fresh only when that boundary equals
 the row's own boundary and `0 <= cutoff - boundary < interval`. A check-time
 frame without timing (untimed checks, which include the forming bar) holds
 with `decision_time_missing`, so runtime use needs `closed_bar_decisions`.
+`LoadConfig` and `LoadConfigForProbe` enforce this: they refuse every
+`schaff_trend_cycle` reference (positional open, `open_strategy`,
+`close_strategy` fallback) unless the strategy is Hyperliquid perps with
+`closed_bar_decisions: true` (`closedBarRequiredOpenStrategies`).
 `check_hyperliquid.py` also records timestamps that arrive out of order before
 its frame builder sorts the rows. Historical registry, simulator and parity
 frames carry no attribute and use each row's own boundary. OKX and other

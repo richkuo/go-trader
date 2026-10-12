@@ -373,6 +373,26 @@ HELD_SHORT = ["--position-side", "short", "--position-avg-cost=5000", "--positio
               "--position-initial-qty=1"]
 
 
+@pytest.mark.parametrize("entry_side,held,close_signal", [(-1, HELD_LONG, -1), (1, HELD_SHORT, 1)])
+def test_closed_bar_close_fallback_closes_on_an_opposite_entry(entry_side, held, close_signal):
+    bars = _entry_bars(entry_side)
+    boundary = bars[-1]["T"] + 1
+    refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME, "params": PARAMS}]})
+    argv = ["breakout", "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200",
+            "--closed-bar-decisions", "--strategy-refs", refs]
+    envelope = _envelope(bars, H, "BTC|1h", cutoff=boundary)
+    proc = _run(argv + held, envelope)
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    out = json.loads(proc.stdout)
+    assert out["closed_bar_decision"]["held"] is False
+    assert out["close_strategies"] == [NAME]
+    assert out["close_strategy"] == NAME and out["close_fraction"] == 1.0
+    assert out["signal"] == close_signal
+    same_side = HELD_SHORT if held is HELD_LONG else HELD_LONG
+    kept = json.loads(_run(argv + same_side, envelope).stdout)
+    assert kept["close_fraction"] == 0.0
+
+
 def _reordered(bars):
     out = [dict(b) for b in bars]
     out[-30], out[-29] = out[-29], out[-30]

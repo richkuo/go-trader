@@ -34,6 +34,38 @@ var closedBarUnsupportedOpenStrategies = map[string]string{
 	openInterestBreakoutStrategyName: "its open-interest observations have no closed-bar decision contract yet",
 }
 
+var closedBarRequiredOpenStrategies = map[string]string{
+	"schaff_trend_cycle": "its last-bar decision needs the verified closed-bar cutoff; without it the Hyperliquid check holds every entry and close-fallback signal, and other venues would decide on the forming bar",
+}
+
+func closedBarRequiredStrategyErrors(sc StrategyConfig) []string {
+	if sc.Type == "options" {
+		return nil
+	}
+	type use struct{ role, name string }
+	uses := []use{{edgeRefRoleOpen, strategyNameFromArgs(sc.Args)}, {edgeRefRoleOpen, effectiveOpenStrategy(sc)}}
+	for _, ref := range sc.closeRefs() {
+		uses = append(uses, use{edgeRefRoleClose, canonicalCloseStrategyName(ref.Name)})
+	}
+	supported := sc.Type == "perps" && sc.Platform == "hyperliquid" && sc.ClosedBarDecisions
+	var errs []string
+	seen := map[string]bool{}
+	for _, u := range uses {
+		name := strings.TrimSpace(u.name)
+		key := u.role + "=" + name
+		if name == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		reason, ok := closedBarRequiredOpenStrategies[name]
+		if !ok || supported {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("strategy[%s]: %s strategy %q runs only on a Hyperliquid perps strategy with \"closed_bar_decisions\": true (got type=%s platform=%s closed_bar_decisions=%t): %s", sc.ID, u.role, name, sc.Type, sc.Platform, sc.ClosedBarDecisions, reason))
+	}
+	return errs
+}
+
 type ClosedBarDecision struct {
 	Enabled            bool   `json:"enabled"`
 	Held               bool   `json:"held"`
@@ -190,6 +222,7 @@ func closedBarDecisionsConfigErrors(cfg *Config) []string {
 	var errs []string
 	for _, sc := range cfg.Strategies {
 		errs = append(errs, closedBarDecisionStrategyErrors(sc, cfg)...)
+		errs = append(errs, closedBarRequiredStrategyErrors(sc)...)
 	}
 	errs = append(errs, closedBarDecisionReplayErrors(cfg)...)
 	return errs

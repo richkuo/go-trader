@@ -15,7 +15,9 @@ func TestSchaffTrendCycleAdmissionThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const ref = "backtest/candidates/schaff_trend_cycle_1651/REPORT.md"
 	stc := func(args ...string) map[string]interface{} {
-		return noEdgeHLStrategy("hl-stc-eth", append([]string{schaffName, "ETH", "4h"}, args...)...)
+		sc := noEdgeHLStrategy("hl-stc-eth", append([]string{schaffName, "ETH", "4h"}, args...)...)
+		sc["closed_bar_decisions"] = true
+		return sc
 	}
 	ack := func(sc map[string]interface{}) map[string]interface{} {
 		sc["allow_no_edge"] = true
@@ -92,10 +94,97 @@ func TestSchaffTrendCycleAdmissionThroughRealLoaders(t *testing.T) {
 	}
 }
 
+func TestSchaffTrendCycleRequiresHyperliquidClosedBarDecisions(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	t.Setenv("TOPSTEP_API_KEY", "k")
+	t.Setenv("TOPSTEP_API_SECRET", "s")
+	t.Setenv("TOPSTEP_ACCOUNT_ID", "1")
+	closed := func(sc map[string]interface{}, on bool) map[string]interface{} {
+		sc["closed_bar_decisions"] = on
+		return sc
+	}
+	closeRef := func(sc map[string]interface{}) map[string]interface{} {
+		sc["close_strategy"] = map[string]interface{}{"name": schaffName}
+		return sc
+	}
+	openRef := func(sc map[string]interface{}) map[string]interface{} {
+		sc["open_strategy"] = map[string]interface{}{"name": schaffName}
+		return sc
+	}
+	okx := func() map[string]interface{} {
+		return map[string]interface{}{
+			"id": "okx-stc", "type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py",
+			"args": []string{schaffName, "ETH", "4h", "--mode=paper"}, "capital": 100.0, "max_drawdown_pct": 10.0,
+			"leverage": 1.0,
+		}
+	}
+	topstep := map[string]interface{}{
+		"id": "ts-stc", "type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py",
+		"args": []string{schaffName, "ES", "1h", "--mode=paper"}, "capital": 1000.0, "max_drawdown_pct": 10.0,
+	}
+	manual := map[string]interface{}{
+		"id": "hl-stc-manual", "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "timeframe": "4h",
+		"leverage": 1.0, "capital": 100.0, "allow_no_edge": true, "close_strategy": map[string]interface{}{"name": schaffName},
+	}
+	const needs = `runs only on a Hyperliquid perps strategy with "closed_bar_decisions": true`
+	cases := []struct {
+		name    string
+		sc      map[string]interface{}
+		wantErr []string
+	}{
+		{"hyperliquid close fallback without closed bars refused",
+			closeRef(noEdgeHLStrategy("hl-stc-close", "breakout", "ETH", "4h", "--mode=paper")),
+			[]string{`close strategy "` + schaffName + `"`, needs, "closed_bar_decisions=false"}},
+		{"hyperliquid close fallback with closed bars off refused",
+			closed(closeRef(noEdgeHLStrategy("hl-stc-close", "breakout", "ETH", "4h", "--mode=paper")), false),
+			[]string{`close strategy "` + schaffName + `"`, needs}},
+		{"hyperliquid positional open without closed bars refused",
+			noEdgeHLStrategy("hl-stc-eth", schaffName, "ETH", "4h", "--mode=paper"),
+			[]string{`open strategy "` + schaffName + `"`, needs}},
+		{"hyperliquid effective open without closed bars refused",
+			openRef(noEdgeHLStrategy("hl-stc-open", "breakout", "ETH", "4h", "--mode=paper")),
+			[]string{`open strategy "` + schaffName + `"`, needs}},
+		{"okx positional open without closed bars refused", okx(),
+			[]string{`open strategy "` + schaffName + `"`, needs, "platform=okx"}},
+		{"okx positional open with closed bars refused", closed(okx(), true),
+			[]string{`open strategy "` + schaffName + `"`, needs, "platform=okx", "closed_bar_decisions=true"}},
+		{"topstep positional open refused", topstep,
+			[]string{`open strategy "` + schaffName + `"`, needs, "platform=topstep"}},
+		{"hyperliquid manual close refused", manual,
+			[]string{`close strategy "` + schaffName + `"`, needs, "type=manual"}},
+		{"hyperliquid close fallback with closed bars loads",
+			closed(closeRef(noEdgeHLStrategy("hl-stc-close", "breakout", "ETH", "4h", "--mode=paper")), true), nil},
+		{"hyperliquid positional open with closed bars loads",
+			closed(noEdgeHLStrategy("hl-stc-eth", schaffName, "ETH", "4h", "--mode=paper"), true), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeNoEdgeConfig(t, CurrentConfigVersion, tc.sc)
+			_, loadErr := LoadConfig(path)
+			_, probeErr := LoadConfigForProbe(path)
+			if len(tc.wantErr) == 0 {
+				if loadErr != nil || probeErr != nil {
+					t.Fatalf("unexpected refusal:\nload:  %v\nprobe: %v", loadErr, probeErr)
+				}
+				return
+			}
+			if loadErr == nil || probeErr == nil {
+				t.Fatalf("expected both loaders to refuse, load=%v probe=%v", loadErr, probeErr)
+			}
+			for _, want := range append([]string{"closed_bar_decisions"}, tc.wantErr...) {
+				if !strings.Contains(loadErr.Error(), want) || !strings.Contains(probeErr.Error(), want) {
+					t.Fatalf("errors missing %q:\nload:  %v\nprobe: %v", want, loadErr, probeErr)
+				}
+			}
+		})
+	}
+}
+
 func TestSchaffTrendCycleAcknowledgementMustBeABoolean(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	for _, raw := range []interface{}{"true", 1, map[string]interface{}{}} {
 		sc := noEdgeHLStrategy("hl-stc-eth", schaffName, "ETH", "4h", "--mode=live")
+		sc["closed_bar_decisions"] = true
 		sc["allow_no_edge"] = raw
 		if _, err := LoadConfig(writeNoEdgeConfig(t, CurrentConfigVersion, sc)); err == nil {
 			t.Fatalf("allow_no_edge=%v must be refused", raw)
