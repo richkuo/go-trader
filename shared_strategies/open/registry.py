@@ -2002,7 +2002,7 @@ def trix_momentum_strategy(df: pd.DataFrame, period: int = 18, signal_period: in
         "oversold < overbought",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_inconclusive",
     edge_ref="backtest/candidates/stochastic_momentum_index_1663/REPORT.md",
     short_entries=True,
     param_validator=smi_param_validator,
