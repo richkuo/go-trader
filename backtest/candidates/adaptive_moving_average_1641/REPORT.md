@@ -13,7 +13,7 @@ Close owner: `tiered_tp_pct` (`{"tp_tiers": [{"profit_pct": 0.03, "close_fractio
 ## Protocol and provenance
 
 - Protocol: `protocol.json`, sha256 `981b6ec8ac6f76db5afd2a6c0501d2350edab804d1f452a3afc90800406091b6` (frozen before scoring; `study_manifest.json` records the same hash at freeze time, sha256 `2589a9a07a8afe34f788a1c6e0f36e4591cef3009aa1dcf20984ab576b2ced01`).
-- Source commit of the run: `64456817451ab5d7f96d5b962cec307a6986c425`; runtime 441.5 s.
+- Source commit of the run: `fb327f377dafa632234b550b29f936a0e53e0c72`; runtime 435.6 s.
 - Inputs: the frozen files of study `chande_momentum_1661`, read in place and verified against the pins in `protocol.json` (source manifest sha256 `f5bd9d2672abf5880b8af57cb01a0ffb70b21ccdf5eab464a9d351e121d580e3`, acquired 2026-10-11T03:16:15Z at commit `0715416732ccb93275e81e3e7a096d887a1bdfed`). The run rebuilds a fresh cache from them and disables every network fetch.
 - Windows (start inclusive, end exclusive): `train` 2024-01-01 to 2025-01-01; `h2023H2` 2023-07-01 to 2024-01-01; `h2025` 2025-01-01 to 2026-01-01; `oos` 2026-01-01 to 2026-10-01. Training window `train`; held-out `h2023H2, h2025, oos`. The open-ended M1 oos window is pinned to 2026-10-01.
 - Warmup: every leg (candidate, comparators, incumbents) computes indicators and ATR on the 300 consecutive bars before the window start and scores only the window from a flat book (eval_windows.run_leg warmup_bars); 300 exceeds the largest candidate history requirement (185 rows) and the 200-bar EMA of the momentum_pro incumbent; a missing pre-window bar is an error.
@@ -240,78 +240,78 @@ Best five candidate training variants by DD-adj (every variant, eligible or not,
 
 | group | window | arm | dataset | frame hours | priced | venue-absent | missing | unpriced held | rows sha256 |
 |---|---|---|---|---|---|---|---|---|---|
-| 1h | h2023H2 | candidate | BTC/USDT 1h | 4415 | None | 2 | 0 | 0 | `fcc17e246d052cd0` |
-| 1h | h2023H2 | candidate | ETH/USDT 1h | 4415 | None | 2 | 0 | 0 | `f871b8fbc47840ed` |
-| 1h | h2023H2 | candidate | SOL/USDT 1h | 4415 | None | 2 | 0 | 0 | `8fedf15bd5a0081b` |
-| 1h | h2023H2 | candidate x2 | BTC/USDT 1h | 4415 | None | 2 | 0 | 0 | `fcc17e246d052cd0` |
-| 1h | h2023H2 | candidate x2 | ETH/USDT 1h | 4415 | None | 2 | 0 | 0 | `f871b8fbc47840ed` |
-| 1h | h2023H2 | candidate x2 | SOL/USDT 1h | 4415 | None | 2 | 0 | 0 | `8fedf15bd5a0081b` |
-| 1h | h2023H2 | ema_crossover | BTC/USDT 1h | 4415 | None | 2 | 0 | 0 | `fcc17e246d052cd0` |
-| 1h | h2023H2 | ema_crossover | ETH/USDT 1h | 4415 | None | 2 | 0 | 0 | `f871b8fbc47840ed` |
-| 1h | h2023H2 | ema_crossover | SOL/USDT 1h | 4415 | None | 2 | 0 | 0 | `8fedf15bd5a0081b` |
-| 1h | h2023H2 | vol_momentum | BTC/USDT 1h | 4415 | None | 2 | 0 | 0 | `fcc17e246d052cd0` |
-| 1h | h2023H2 | vol_momentum | ETH/USDT 1h | 4415 | None | 2 | 0 | 0 | `f871b8fbc47840ed` |
-| 1h | h2023H2 | vol_momentum | SOL/USDT 1h | 4415 | None | 2 | 0 | 0 | `8fedf15bd5a0081b` |
-| 1h | h2025 | candidate | BTC/USDT 1h | 8759 | None | 0 | 0 | 0 | `50ac5ca92d5cbda7` |
-| 1h | h2025 | candidate | ETH/USDT 1h | 8759 | None | 0 | 0 | 0 | `c9ea7fe5a178b743` |
-| 1h | h2025 | candidate | SOL/USDT 1h | 8759 | None | 0 | 0 | 0 | `e5a6de717c3559c8` |
-| 1h | h2025 | candidate x2 | BTC/USDT 1h | 8759 | None | 0 | 0 | 0 | `50ac5ca92d5cbda7` |
-| 1h | h2025 | candidate x2 | ETH/USDT 1h | 8759 | None | 0 | 0 | 0 | `c9ea7fe5a178b743` |
-| 1h | h2025 | candidate x2 | SOL/USDT 1h | 8759 | None | 0 | 0 | 0 | `e5a6de717c3559c8` |
-| 1h | h2025 | ema_crossover | BTC/USDT 1h | 8759 | None | 0 | 0 | 0 | `50ac5ca92d5cbda7` |
-| 1h | h2025 | ema_crossover | ETH/USDT 1h | 8759 | None | 0 | 0 | 0 | `c9ea7fe5a178b743` |
-| 1h | h2025 | ema_crossover | SOL/USDT 1h | 8759 | None | 0 | 0 | 0 | `e5a6de717c3559c8` |
-| 1h | h2025 | vol_momentum | BTC/USDT 1h | 8759 | None | 0 | 0 | 0 | `50ac5ca92d5cbda7` |
-| 1h | h2025 | vol_momentum | ETH/USDT 1h | 8759 | None | 0 | 0 | 0 | `c9ea7fe5a178b743` |
-| 1h | h2025 | vol_momentum | SOL/USDT 1h | 8759 | None | 0 | 0 | 0 | `e5a6de717c3559c8` |
-| 1h | oos | candidate | BTC/USDT 1h | 6551 | None | 0 | 0 | 0 | `920006cfb21d6b65` |
-| 1h | oos | candidate | ETH/USDT 1h | 6551 | None | 0 | 0 | 0 | `51039b1ca124e8b2` |
-| 1h | oos | candidate | SOL/USDT 1h | 6551 | None | 0 | 0 | 0 | `2c0d96e1d7d8bf4a` |
-| 1h | oos | candidate x2 | BTC/USDT 1h | 6551 | None | 0 | 0 | 0 | `920006cfb21d6b65` |
-| 1h | oos | candidate x2 | ETH/USDT 1h | 6551 | None | 0 | 0 | 0 | `51039b1ca124e8b2` |
-| 1h | oos | candidate x2 | SOL/USDT 1h | 6551 | None | 0 | 0 | 0 | `2c0d96e1d7d8bf4a` |
-| 1h | oos | ema_crossover | BTC/USDT 1h | 6551 | None | 0 | 0 | 0 | `920006cfb21d6b65` |
-| 1h | oos | ema_crossover | ETH/USDT 1h | 6551 | None | 0 | 0 | 0 | `51039b1ca124e8b2` |
-| 1h | oos | ema_crossover | SOL/USDT 1h | 6551 | None | 0 | 0 | 0 | `2c0d96e1d7d8bf4a` |
-| 1h | oos | vol_momentum | BTC/USDT 1h | 6551 | None | 0 | 0 | 0 | `920006cfb21d6b65` |
-| 1h | oos | vol_momentum | ETH/USDT 1h | 6551 | None | 0 | 0 | 0 | `51039b1ca124e8b2` |
-| 1h | oos | vol_momentum | SOL/USDT 1h | 6551 | None | 0 | 0 | 0 | `2c0d96e1d7d8bf4a` |
-| 4h | h2023H2 | candidate | BTC/USDT 4h | 4412 | None | 2 | 0 | 0 | `e40e8a580dff0e90` |
-| 4h | h2023H2 | candidate | ETH/USDT 4h | 4412 | None | 2 | 0 | 0 | `f8c768a16351073e` |
-| 4h | h2023H2 | candidate | SOL/USDT 4h | 4412 | None | 2 | 0 | 0 | `c36ef8aa95c722ec` |
-| 4h | h2023H2 | candidate x2 | BTC/USDT 4h | 4412 | None | 2 | 0 | 0 | `e40e8a580dff0e90` |
-| 4h | h2023H2 | candidate x2 | ETH/USDT 4h | 4412 | None | 2 | 0 | 0 | `f8c768a16351073e` |
-| 4h | h2023H2 | candidate x2 | SOL/USDT 4h | 4412 | None | 2 | 0 | 0 | `c36ef8aa95c722ec` |
-| 4h | h2023H2 | ema_crossover | BTC/USDT 4h | 4412 | None | 2 | 0 | 0 | `e40e8a580dff0e90` |
-| 4h | h2023H2 | ema_crossover | ETH/USDT 4h | 4412 | None | 2 | 0 | 0 | `f8c768a16351073e` |
-| 4h | h2023H2 | ema_crossover | SOL/USDT 4h | 4412 | None | 2 | 0 | 0 | `c36ef8aa95c722ec` |
-| 4h | h2023H2 | vol_momentum | BTC/USDT 4h | 4412 | None | 2 | 0 | 0 | `e40e8a580dff0e90` |
-| 4h | h2023H2 | vol_momentum | ETH/USDT 4h | 4412 | None | 2 | 0 | 0 | `f8c768a16351073e` |
-| 4h | h2023H2 | vol_momentum | SOL/USDT 4h | 4412 | None | 2 | 0 | 0 | `c36ef8aa95c722ec` |
-| 4h | h2025 | candidate | BTC/USDT 4h | 8756 | None | 0 | 0 | 0 | `754dbc30a01fb40c` |
-| 4h | h2025 | candidate | ETH/USDT 4h | 8756 | None | 0 | 0 | 0 | `609f3e8a021f5e1c` |
-| 4h | h2025 | candidate | SOL/USDT 4h | 8756 | None | 0 | 0 | 0 | `0303f699aa1cd74f` |
-| 4h | h2025 | candidate x2 | BTC/USDT 4h | 8756 | None | 0 | 0 | 0 | `754dbc30a01fb40c` |
-| 4h | h2025 | candidate x2 | ETH/USDT 4h | 8756 | None | 0 | 0 | 0 | `609f3e8a021f5e1c` |
-| 4h | h2025 | candidate x2 | SOL/USDT 4h | 8756 | None | 0 | 0 | 0 | `0303f699aa1cd74f` |
-| 4h | h2025 | ema_crossover | BTC/USDT 4h | 8756 | None | 0 | 0 | 0 | `754dbc30a01fb40c` |
-| 4h | h2025 | ema_crossover | ETH/USDT 4h | 8756 | None | 0 | 0 | 0 | `609f3e8a021f5e1c` |
-| 4h | h2025 | ema_crossover | SOL/USDT 4h | 8756 | None | 0 | 0 | 0 | `0303f699aa1cd74f` |
-| 4h | h2025 | vol_momentum | BTC/USDT 4h | 8756 | None | 0 | 0 | 0 | `754dbc30a01fb40c` |
-| 4h | h2025 | vol_momentum | ETH/USDT 4h | 8756 | None | 0 | 0 | 0 | `609f3e8a021f5e1c` |
-| 4h | h2025 | vol_momentum | SOL/USDT 4h | 8756 | None | 0 | 0 | 0 | `0303f699aa1cd74f` |
-| 4h | oos | candidate | BTC/USDT 4h | 6548 | None | 0 | 0 | 0 | `c9efdb7d129a9a70` |
-| 4h | oos | candidate | ETH/USDT 4h | 6548 | None | 0 | 0 | 0 | `c313f79e21796506` |
-| 4h | oos | candidate | SOL/USDT 4h | 6548 | None | 0 | 0 | 0 | `246de07d578592eb` |
-| 4h | oos | candidate x2 | BTC/USDT 4h | 6548 | None | 0 | 0 | 0 | `c9efdb7d129a9a70` |
-| 4h | oos | candidate x2 | ETH/USDT 4h | 6548 | None | 0 | 0 | 0 | `c313f79e21796506` |
-| 4h | oos | candidate x2 | SOL/USDT 4h | 6548 | None | 0 | 0 | 0 | `246de07d578592eb` |
-| 4h | oos | ema_crossover | BTC/USDT 4h | 6548 | None | 0 | 0 | 0 | `c9efdb7d129a9a70` |
-| 4h | oos | ema_crossover | ETH/USDT 4h | 6548 | None | 0 | 0 | 0 | `c313f79e21796506` |
-| 4h | oos | ema_crossover | SOL/USDT 4h | 6548 | None | 0 | 0 | 0 | `246de07d578592eb` |
-| 4h | oos | vol_momentum | BTC/USDT 4h | 6548 | None | 0 | 0 | 0 | `c9efdb7d129a9a70` |
-| 4h | oos | vol_momentum | ETH/USDT 4h | 6548 | None | 0 | 0 | 0 | `c313f79e21796506` |
-| 4h | oos | vol_momentum | SOL/USDT 4h | 6548 | None | 0 | 0 | 0 | `246de07d578592eb` |
+| 1h | h2023H2 | candidate | BTC/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `fcc17e246d052cd0` |
+| 1h | h2023H2 | candidate | ETH/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `f871b8fbc47840ed` |
+| 1h | h2023H2 | candidate | SOL/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `8fedf15bd5a0081b` |
+| 1h | h2023H2 | candidate x2 | BTC/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `fcc17e246d052cd0` |
+| 1h | h2023H2 | candidate x2 | ETH/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `f871b8fbc47840ed` |
+| 1h | h2023H2 | candidate x2 | SOL/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `8fedf15bd5a0081b` |
+| 1h | h2023H2 | ema_crossover | BTC/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `fcc17e246d052cd0` |
+| 1h | h2023H2 | ema_crossover | ETH/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `f871b8fbc47840ed` |
+| 1h | h2023H2 | ema_crossover | SOL/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `8fedf15bd5a0081b` |
+| 1h | h2023H2 | vol_momentum | BTC/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `fcc17e246d052cd0` |
+| 1h | h2023H2 | vol_momentum | ETH/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `f871b8fbc47840ed` |
+| 1h | h2023H2 | vol_momentum | SOL/USDT 1h | 4415 | 4413 | 2 | 0 | 0 | `8fedf15bd5a0081b` |
+| 1h | h2025 | candidate | BTC/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `50ac5ca92d5cbda7` |
+| 1h | h2025 | candidate | ETH/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `c9ea7fe5a178b743` |
+| 1h | h2025 | candidate | SOL/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `e5a6de717c3559c8` |
+| 1h | h2025 | candidate x2 | BTC/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `50ac5ca92d5cbda7` |
+| 1h | h2025 | candidate x2 | ETH/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `c9ea7fe5a178b743` |
+| 1h | h2025 | candidate x2 | SOL/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `e5a6de717c3559c8` |
+| 1h | h2025 | ema_crossover | BTC/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `50ac5ca92d5cbda7` |
+| 1h | h2025 | ema_crossover | ETH/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `c9ea7fe5a178b743` |
+| 1h | h2025 | ema_crossover | SOL/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `e5a6de717c3559c8` |
+| 1h | h2025 | vol_momentum | BTC/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `50ac5ca92d5cbda7` |
+| 1h | h2025 | vol_momentum | ETH/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `c9ea7fe5a178b743` |
+| 1h | h2025 | vol_momentum | SOL/USDT 1h | 8759 | 8759 | 0 | 0 | 0 | `e5a6de717c3559c8` |
+| 1h | oos | candidate | BTC/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `920006cfb21d6b65` |
+| 1h | oos | candidate | ETH/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `51039b1ca124e8b2` |
+| 1h | oos | candidate | SOL/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `2c0d96e1d7d8bf4a` |
+| 1h | oos | candidate x2 | BTC/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `920006cfb21d6b65` |
+| 1h | oos | candidate x2 | ETH/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `51039b1ca124e8b2` |
+| 1h | oos | candidate x2 | SOL/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `2c0d96e1d7d8bf4a` |
+| 1h | oos | ema_crossover | BTC/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `920006cfb21d6b65` |
+| 1h | oos | ema_crossover | ETH/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `51039b1ca124e8b2` |
+| 1h | oos | ema_crossover | SOL/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `2c0d96e1d7d8bf4a` |
+| 1h | oos | vol_momentum | BTC/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `920006cfb21d6b65` |
+| 1h | oos | vol_momentum | ETH/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `51039b1ca124e8b2` |
+| 1h | oos | vol_momentum | SOL/USDT 1h | 6551 | 6551 | 0 | 0 | 0 | `2c0d96e1d7d8bf4a` |
+| 4h | h2023H2 | candidate | BTC/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `e40e8a580dff0e90` |
+| 4h | h2023H2 | candidate | ETH/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `f8c768a16351073e` |
+| 4h | h2023H2 | candidate | SOL/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `c36ef8aa95c722ec` |
+| 4h | h2023H2 | candidate x2 | BTC/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `e40e8a580dff0e90` |
+| 4h | h2023H2 | candidate x2 | ETH/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `f8c768a16351073e` |
+| 4h | h2023H2 | candidate x2 | SOL/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `c36ef8aa95c722ec` |
+| 4h | h2023H2 | ema_crossover | BTC/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `e40e8a580dff0e90` |
+| 4h | h2023H2 | ema_crossover | ETH/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `f8c768a16351073e` |
+| 4h | h2023H2 | ema_crossover | SOL/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `c36ef8aa95c722ec` |
+| 4h | h2023H2 | vol_momentum | BTC/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `e40e8a580dff0e90` |
+| 4h | h2023H2 | vol_momentum | ETH/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `f8c768a16351073e` |
+| 4h | h2023H2 | vol_momentum | SOL/USDT 4h | 4412 | 4410 | 2 | 0 | 0 | `c36ef8aa95c722ec` |
+| 4h | h2025 | candidate | BTC/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `754dbc30a01fb40c` |
+| 4h | h2025 | candidate | ETH/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `609f3e8a021f5e1c` |
+| 4h | h2025 | candidate | SOL/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `0303f699aa1cd74f` |
+| 4h | h2025 | candidate x2 | BTC/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `754dbc30a01fb40c` |
+| 4h | h2025 | candidate x2 | ETH/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `609f3e8a021f5e1c` |
+| 4h | h2025 | candidate x2 | SOL/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `0303f699aa1cd74f` |
+| 4h | h2025 | ema_crossover | BTC/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `754dbc30a01fb40c` |
+| 4h | h2025 | ema_crossover | ETH/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `609f3e8a021f5e1c` |
+| 4h | h2025 | ema_crossover | SOL/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `0303f699aa1cd74f` |
+| 4h | h2025 | vol_momentum | BTC/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `754dbc30a01fb40c` |
+| 4h | h2025 | vol_momentum | ETH/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `609f3e8a021f5e1c` |
+| 4h | h2025 | vol_momentum | SOL/USDT 4h | 8756 | 8756 | 0 | 0 | 0 | `0303f699aa1cd74f` |
+| 4h | oos | candidate | BTC/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `c9efdb7d129a9a70` |
+| 4h | oos | candidate | ETH/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `c313f79e21796506` |
+| 4h | oos | candidate | SOL/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `246de07d578592eb` |
+| 4h | oos | candidate x2 | BTC/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `c9efdb7d129a9a70` |
+| 4h | oos | candidate x2 | ETH/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `c313f79e21796506` |
+| 4h | oos | candidate x2 | SOL/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `246de07d578592eb` |
+| 4h | oos | ema_crossover | BTC/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `c9efdb7d129a9a70` |
+| 4h | oos | ema_crossover | ETH/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `c313f79e21796506` |
+| 4h | oos | ema_crossover | SOL/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `246de07d578592eb` |
+| 4h | oos | vol_momentum | BTC/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `c9efdb7d129a9a70` |
+| 4h | oos | vol_momentum | ETH/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `c313f79e21796506` |
+| 4h | oos | vol_momentum | SOL/USDT 4h | 6548 | 6548 | 0 | 0 | 0 | `246de07d578592eb` |
 
 ## Decision parity
 
