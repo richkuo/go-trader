@@ -66,6 +66,7 @@ from schaff_trend_cycle import schaff_trend_cycle_core, stc_param_validator
 from trix_momentum import trix_momentum_core, trix_param_validator
 from camarilla_pivot_reversal import camarilla_pivot_reversal_core, validate_camarilla_param_dict
 from mass_index_reversal import mass_index_reversal_core, mir_param_validator
+from calendar_conditioned_entry import calendar_conditioned_entry_core, calendar_param_validator
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -2047,6 +2048,41 @@ def mass_index_reversal_strategy(df: pd.DataFrame, ema_period: int = 9, sum_peri
 
 
 @register(
+    "calendar_conditioned_entry",
+    "RESEARCH, no-edge (#1653) \u2014 calendar-conditioned entries: at each scheduled refit (every refit_bars bars on a grid anchored at 1970-01-05T00:00:00Z UTC) a table of UTC weekday/hour cells is fitted from the trailing training_bars bars, using only completed labels whose exit open is present at the refit: label = open(entry + holding_bars) / open(entry) - 1, the same nominal entry and exit opens as time_stop(max_bars=holding_bars). Each cell averages its labels per UTC week, takes a Newey-West standard error over the weekly series (lag ceil(holding_bars x interval / 1 week), at least 1) and a conservative effective sample; the long edge is mean - cost_hurdle, the short edge is -mean - cost_hurdle, and a direction qualifies when its lower bound at a one-sided Bonferroni level (1 - confidence) / 336 is strictly positive with at least min_effective_obs effective weeks. A closed bar enters when the next bar's cell (from expected_interval_ms) qualifies in the last scheduled table; the table stays fixed until the next refit. Missing, duplicate, descending, misaligned or invalid bars inside the required history, or undeclared timing, hold with a reason. Entry-only; pair with time_stop and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"training_bars": 4368, "holding_bars": 4, "refit_bars": 168, "min_effective_obs": 8, "confidence": 0.9,
+     "cost_hurdle": 0.002, "expected_interval_ms": 3600000},
+    platforms=("futures",),
+    constraints=[
+        "training_bars >= 2",
+        "holding_bars >= 1",
+        "refit_bars >= 1",
+        "min_effective_obs >= 2",
+        "holding_bars < training_bars",
+        "refit_bars <= training_bars",
+        "confidence > 0",
+        "confidence < 1",
+        "cost_hurdle >= 0",
+        "expected_interval_ms >= 60000",
+        "expected_interval_ms <= 86400000",
+    ],
+    edge_status="no_edge",
+    edge_source="unvalidated",
+    edge_ref="backtest/candidates/calendar_conditioned_entry_1653/REPORT.md",
+    short_entries=True,
+    param_validator=calendar_param_validator,
+)
+def calendar_conditioned_entry_strategy(df: pd.DataFrame, training_bars: int = 4368, holding_bars: int = 4,
+                                        refit_bars: int = 168, min_effective_obs: int = 8,
+                                        confidence: float = 0.9, cost_hurdle: float = 0.002,
+                                        expected_interval_ms: int = 3600000) -> pd.DataFrame:
+    return calendar_conditioned_entry_core(
+        df, training_bars=training_bars, holding_bars=holding_bars, refit_bars=refit_bars,
+        min_effective_obs=min_effective_obs, confidence=confidence, cost_hurdle=cost_hurdle,
+        expected_interval_ms=expected_interval_ms)
+
+
+@register(
     "fisher_reversal",
     "RESEARCH, no-edge (#1646) \u2014 Fisher Transform reversal: the candle midpoint is normalized into [-1, 1] against its inclusive lookback-bar range, smoothed by x = 0.33 * normalized + 0.67 * previous x (clamped 1e-6 inside +/-1) and transformed by F = 0.5 * ln((1 + x) / (1 - x)) + 0.5 * previous F, both recurrences restarted from zero over exactly 64 bars for every timestamp (lookback + 65 bars of history); long when F crosses above its one-bar-lagged trigger after the trigger is below -extreme, short is the mirror above +extreme. Bad, gapped or flat input holds the entry. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"lookback": 9, "extreme": 1.5},
@@ -2476,6 +2512,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "trix_momentum",
         "camarilla_pivot_reversal",
         "mass_index_reversal",
+        "calendar_conditioned_entry",
         "hold",
     ],
 }

@@ -156,7 +156,26 @@ def _mass_index_reversal_fixture() -> pd.DataFrame:
     )
 
 
+def _calendar_conditioned_entry_fixture() -> pd.DataFrame:
+    rng = np.random.RandomState(_SEED + 5)
+    n = 6000
+    idx = pd.date_range("2026-01-05", periods=n, freq="1h")
+    ret = rng.randn(n) * 0.003
+    cell = idx.dayofweek * 24 + idx.hour
+    ret[cell == 14] += 0.006
+    ret[cell == 3 * 24 + 3] -= 0.006
+    close = 100.0 * np.exp(np.cumsum(ret))
+    open_ = np.concatenate([[100.0], close[:-1]])
+    span = np.abs(rng.randn(n)) * 0.001 + 0.0005
+    return pd.DataFrame(
+        {"open": open_, "high": np.maximum(open_, close) * (1 + span),
+         "low": np.minimum(open_, close) * (1 - span), "close": close, "volume": np.full(n, 100.0)},
+        index=idx,
+    )
+
+
 STRATEGY_FIXTURES = {
+    "calendar_conditioned_entry": _calendar_conditioned_entry_fixture,
     "range_scalper": _range_scalper_fixture,
     "sweep_squeeze_combo": _sweep_squeeze_combo_fixture,
     "ultimate_oscillator": _ultimate_oscillator_fixture,
@@ -209,6 +228,7 @@ STRATEGY_INPUTS = {
     "trix_momentum": _with_declared_cadence,
     "camarilla_pivot_reversal": _with_declared_cadence,
     "mass_index_reversal": _with_declared_cadence,
+    "calendar_conditioned_entry": _with_declared_cadence,
 }
 
 _FIXTURE_CACHE = {}

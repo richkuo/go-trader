@@ -1,0 +1,173 @@
+{
+  "study": "calendar_conditioned_entry_1653",
+  "issue": 1653,
+  "tracking_group": "hyperliquid-strategy-candidates-2026-10-02",
+  "status": "frozen before any window was scored; run_study.py lock writes protocol_lock.json with this file's sha256 before the first score, and run, parity and render refuse a protocol whose sha256 differs from the lock",
+  "candidate": "calendar_conditioned_entry",
+  "registry": "futures",
+  "fee_platform": "hyperliquid",
+  "strategy_type": "perps",
+  "capital_usd": 1000.0,
+  "reference_note": "the candidate reference (Finance Research Letters, S1544612324004598) is a research lead only; its contents were not checked and it supplies no formula, threshold or Hyperliquid edge claim used here",
+  "statistics": {
+    "return_unit": "arithmetic open-to-open return fraction: label = open[e + holding_bars] / open[e] - 1 for entry bar e, the same nominal entry and exit opens as time_stop(max_bars=holding_bars) in the simulator (signal on closed bar N, entry at open N+1, bars_held counts the entry bar, the scheduled close fills at open N+holding_bars+1)",
+    "label_completion": "a label enters a table only when its exit open (bar e + holding_bars) is at or before the refit bar, so every exit price is present at the refit decision; no future open is used",
+    "calendar_cell": "UTC weekday (Monday = 0) x UTC hour of the entry bar's opening time: 168 cells; naive indexes are UTC, aware indexes are converted to UTC; the next entry bar's opening time is the decision bar's opening time + expected_interval_ms",
+    "refit_grid": "refits fall on closed-bar boundaries that are multiples of refit_bars x expected_interval_ms after the fixed epoch 1970-01-05T00:00:00Z (a Monday); a decision uses the last scheduled table, reconstructed from the frame's history on every evaluation, and eligibility stays fixed until the next refit; refit timing never depends on the first row or length of the frame",
+    "training_sample": "the training_bars bars ending at the refit bar (inclusive); every one of them and every bar up to the decision bar must be present, consecutive on the expected_interval_ms grid and well formed, else the decision holds with a reason",
+    "cluster": "each cell's labels are averaged per UTC week (weeks anchored at the same epoch); the cell mean is the equal-weight mean of its weekly cluster means; repeated calendar cells within one week are never treated as independent",
+    "uncertainty": "Newey-West (Bartlett weights) long-run variance of the chronological weekly cluster series with lag L = max(1, ceil(holding_bars x expected_interval_ms / 1 week)), which covers every overlap between same-cell holding outcomes of consecutive weeks; the variance used is max(Newey-West, sample variance) x n / (n - 1), standard error sqrt(variance / n)",
+    "effective_sample": "n_eff = n x sample variance / max(Newey-West, sample variance), capped at n (the number of observed weekly clusters); a cell with n_eff < min_effective_obs holds",
+    "undefined_uncertainty": "fewer than 2 weekly clusters, a zero or non-finite standard error holds (no_uncertainty_estimate or nonfinite_statistic)",
+    "directional_edges": "long net edge = mean - cost_hurdle; short net edge = -mean - cost_hurdle; costs are subtracted after the sign is applied, so negating a cost-adjusted value can never create a short edge",
+    "threshold": "one-sided normal approximation; family = 168 cells x 2 directions = 336 at every refit, empty cells included; Bonferroni alpha = (1 - confidence) / 336, z = inverse normal(1 - alpha); a direction qualifies only when its lower bound (net edge - z x standard error) is strictly greater than 0 (equality holds)",
+    "tie_rule": "if both directions qualify, the larger lower bound wins; an exact tie holds (direction_tie)",
+    "refit_threshold_scope": "the refit threshold controls the per-refit family only; it is not an experiment-wide significance claim",
+    "cost_hurdle": "0.002 round trip: Hyperliquid base taker fee 0.045% per side (0.09%) plus the engine's 5 bps slippage per fill (0.10%), rounded up; no funding reserve is included because the engine charges realized signed funding separately"
+  },
+  "parameters": {
+    "proxy_1h_primary": {
+      "training_bars": 4368,
+      "holding_bars": 4,
+      "refit_bars": 168,
+      "min_effective_obs": 8,
+      "confidence": 0.9,
+      "cost_hurdle": 0.002,
+      "expected_interval_ms": 3600000
+    },
+    "proxy_1h_variant_grid": {
+      "training_bars": [2184, 4368],
+      "holding_bars": [1, 4, 8],
+      "refit_bars": [168],
+      "min_effective_obs": [8],
+      "confidence": [0.9],
+      "cost_hurdle": [0.002],
+      "expected_interval_ms": [3600000]
+    },
+    "venue_4h_primary": {
+      "training_bars": 1092,
+      "holding_bars": 1,
+      "refit_bars": 42,
+      "min_effective_obs": 8,
+      "confidence": 0.9,
+      "cost_hurdle": 0.002,
+      "expected_interval_ms": 14400000
+    },
+    "selection": "nothing is selected: the primary parameters are the registry defaults (1h) and their 4h equivalents (26 weeks of training, a 4-hour hold, weekly refits); the variant grid equals optimizer DEFAULT_PARAM_RANGES and is reported as stability and unsuccessful-variant evidence only; no variant can change a verdict",
+    "seed": 1653
+  },
+  "contract": {
+    "direction": "both",
+    "stop_loss_atr_mult": 3.0,
+    "comparison_mode": "approximate",
+    "close": "time_stop with max_bars = the arm's holding_bars (4 on proxy 1h primary, the variant's holding_bars on each variant, 1 on venue 4h)"
+  },
+  "contract_note": "every arm (candidate, variants, unconditional, randomized) and every M1 incumbent of a group runs under one contract: direction both, the single time_stop close owner with the group's holding horizon, the single fixed entry-ATR stop owner (3.0 x ATR, a protective stop wide enough that the horizon close normally owns the exit), comparison_mode approximate (time_stop reads simulator-only bars_held, so every close_validation block records RESEARCH_ONLY_CLOSE_CONTEXT and close parity is incomplete), no regime gate, the same capital, sizing, execution costs, funding mode, data and warm-up. Incumbents receive it through eval_windows compute_incumbent_legs(contract=...). Variants with another holding_bars use their own time_stop and are compared only descriptively.",
+  "intrabar_resolution": "ohlc_walk",
+  "baselines": {
+    "unconditional": {
+      "name": "unconditional_entry_1653",
+      "definition": "the candidate's estimator with every label pooled into one cell (no calendar conditioning): the same training sample, completed labels, weekly clusters, Newey-West error, effective sample, cost hurdle, refit grid, holds and tie rule; family size 2 (long and short), alpha = (1 - confidence) / 2; enters on every valid closed bar whose pooled direction qualifies"
+    },
+    "randomized": {
+      "name": "randomized_entry_1653",
+      "seeds": 20,
+      "definition": "within every refit block (decision bars that share the candidate's last scheduled refit), the same number of long and of short raw entry signals as the candidate, placed uniformly at random without replacement among that block's valid candidate decision bars (cce_valid = 1); the block counts come from the candidate's causal training tables only, so no held-out outcome sets timing or direction; generator numpy default_rng([1653, seed, refit_boundary_ms // 1000]); the composer then blocks entries while a position is open, so realized exposure can differ and is recorded",
+      "comparison": "the candidate beats the randomized control when its summed net PnL is greater than every seed's summed net PnL in the same window (an empirical one-sided rank level of 1/21)"
+    },
+    "registration": "run_study.py installs both callables into the futures research registry instance that eval_windows uses in this process only and removes them in a finally block, also after a failure; they are never added to shared_strategies, PLATFORM_ORDER, discovery or any Go table"
+  },
+  "warmup": {
+    "rule": "required history = training_bars + refit_bars - 1 bars ending at the decision bar (the training span plus the largest distance to the last scheduled refit; completed labels lie inside the training span, the 14-bar ATR stop history is shorter); the first scored decision is the first window bar on the M1 path and the boundary bar on the walk-forward path",
+    "proxy_1h_bars": 4535,
+    "venue_4h_bars": 1133,
+    "policy": "every arm and every incumbent of a window loads the same verified consecutive prefix (eval_windows warmup_bars on the cached proxy path, the manifest warmup_bars on the venue path); the evaluator reads it, the engine neither scores nor trades it, funding is attached to the scored window only, and every scored window starts flat",
+    "refusal": "a window whose prefix is not fully present and consecutive is refused by the existing coverage check; it is recorded as an inconclusive window, never scored and never filled"
+  },
+  "proxy": {
+    "inputs": "study_manifest.json: the #1642 frozen Binance US 1h candles and Hyperliquid hourly funding, read in place under backtest/candidates/dual_thrust_1642/data with every sha256 verified",
+    "label": "proxy evidence: Binance US spot USDT candles stand in for Hyperliquid perpetual prices with Hyperliquid fees and funding; this is not measured Hyperliquid candle evidence",
+    "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+    "timeframe": "1h",
+    "funding_mode": "charge",
+    "windows": {
+      "oos": ["2026-01-01", "2026-10-01"],
+      "2023": ["2023-01-01", "2024-01-01"],
+      "2024": ["2024-01-01", "2025-01-01"],
+      "2025H1": ["2025-01-01", "2025-07-01"],
+      "is": ["2025-06-10", "2026-01-01"]
+    },
+    "departures_from_m1_windows": [
+      "oos end pinned at 2026-10-01, the end of the frozen candles (M1 leaves it open)"
+    ],
+    "primary_window": "oos",
+    "secondary_windows": ["2024", "2025H1"],
+    "refused_windows": ["2023"],
+    "diagnostic_windows": ["is"],
+    "window_note": "the candles start 2023-01-01, so the 2023 window has no 4535-bar prefix and is refused (inconclusive); the frozen candles have a 10-bar gap on 2026-08-31, so oos decisions after it hold until 4535 clean bars exist again, which the frozen data never reaches",
+    "cost_model": "the engine's Hyperliquid fee (commission) and default slippage per fill; this legacy M1 screen has no spread replay, lot rounding or minimum order, so it cannot by itself establish venue execution parity"
+  },
+  "venue": {
+    "inputs": "backtest/candidates/calendar_conditioned_entry_1653_manifest.json: the #1642 frozen Hyperliquid 4h candles, hourly funding, venue meta and L2 snapshot, referenced in place through manifest-relative paths",
+    "label": "venue evidence: Hyperliquid mainnet perpetual candles",
+    "interval": "4h",
+    "held_out_window": "test",
+    "funding": "the manifest's existing funding attachment and coverage semantics (attach_funding_cost); no --funding option applies on this path and the cached warmup is not passed",
+    "execution": "the manifest execution specification with the explicit close owner: taker and maker fee, per-coin half spread plus slippage, szDecimals lot rounding, the venue minimum notional with its margin",
+    "cost_multipliers": {"base": 1.0, "stress": 2.0},
+    "stress_note": "cost x2 doubles half spread and slippage; fees are unchanged",
+    "window_note": "the venue candles start 2024-06-22, so only the test window (2025-09-01 to 2026-09-01) has the 1133-bar prefix; the earlier train window of prior studies cannot be scored"
+  },
+  "sample_rules": {
+    "cluster_definition": "positions pooled across a group's datasets, sorted by entry time; overlapping holding spans merge into one independent cluster",
+    "min_held_out_clusters": 30
+  },
+  "economic_correction": {
+    "statistic": "pooled held-out per-position net return (net PnL including fees and funding divided by entry notional); one-sided normal lower bound mean - z x sd / sqrt(independent clusters)",
+    "family": 7,
+    "family_note": "6 proxy variants (the grid, primary included) plus the venue primary: every economic significance statement is Bonferroni-corrected at alpha 0.05 / 7, whether or not a variant is the primary",
+    "alpha": 0.05
+  },
+  "verdict_rules": {
+    "proxy_group": {
+      "scorable_window": "a window is scorable when every candidate, baseline and incumbent leg of the group exists, none is funding_incomplete and none fetched funding while scoring; missing funding is never filled with an assumed zero rate",
+      "checks": {
+        "m1_oos_pass": "contract-aware M1 verdict pass in oos; unknown when oos is unscorable",
+        "m1_secondary_passes": "M1 verdict pass in both 2024 and 2025H1; false once a scorable window does not pass, else unknown while either is unscorable",
+        "oos_net_positive": "candidate summed oos net PnL > 0",
+        "oos_corrected_lower_bound_positive": "economic_correction lower bound of the candidate's oos per-position net return > 0",
+        "oos_beats_unconditional": "candidate oos summed net PnL > unconditional_entry_1653 oos summed net PnL",
+        "oos_beats_randomized": "candidate oos summed net PnL > every randomized_entry_1653 seed's oos summed net PnL"
+      },
+      "order": "oos unscorable -> inconclusive; oos candidate clusters < min_held_out_clusters -> inconclusive; any check false -> fail; every check true -> pass; else inconclusive"
+    },
+    "venue_group": {
+      "evidence_complete": "provenance kind venue, candle and funding coverage complete, and no funding_incomplete candidate, baseline or incumbent leg at either cost multiplier",
+      "checks": {
+        "net_positive_x1": "candidate summed test net PnL > 0 at cost x1",
+        "net_positive_x2": "candidate summed test net PnL > 0 at cost x2",
+        "m1_test_pass_x1": "contract-aware M1 verdict pass on test at cost x1",
+        "corrected_lower_bound_positive_x1": "economic_correction lower bound of the candidate's test per-position net return > 0 at cost x1",
+        "beats_unconditional_x1": "candidate summed net PnL > unconditional_entry_1653 at cost x1",
+        "beats_randomized_x1": "candidate summed net PnL > every randomized_entry_1653 seed at cost x1"
+      },
+      "order": "evidence incomplete -> inconclusive; test candidate clusters at x1 < min_held_out_clusters -> inconclusive; any check false -> fail; every check true -> pass"
+    },
+    "overall": "pass only if proxy 1h and venue 4h both pass; fail if any group is fail; otherwise inconclusive. The proxy group is proxy evidence and the venue group is venue evidence; the report states both",
+    "metadata": "edge_status stays no_edge after every outcome; pass keeps edge_source unvalidated, fail records study_fail, inconclusive records study_inconclusive; no outcome approves deployment or adds allow_no_edge"
+  },
+  "parity": {
+    "prefix": "the pure evaluator through the futures registry on the full frame and on every historical prefix: raw entry signal, validity and reason of each prefix's last bar equal the full-frame row, every refit table reconstructed on the prefix ending at its refit bar equals the full-frame table, and dropping leading rows changes no decision that still has its required history",
+    "parity_diff": "backtest/parity_diff.py in approximate mode with the explicit time_stop close and funding charge: CLI non-batched runs at --window 0 and --window 200 on the frozen proxy BTC 1h cache, and compute_parity_frame non-batched and batched (solo vs batch slots through the real Hyperliquid check evaluator) on the same frames; every mismatch, hold and close_validation block is saved; exit 3 is decision agreement with incomplete close parity, exit 1 records mismatches, neither is reported as complete live parity, and a zero-bar comparison cannot pass",
+    "bounded_frame": "a 200-bar live frame lacks the 4535-bar (1h) or 1133-bar (4h) history, so it must hold every entry with insufficient_history; differences against the full-history backtest decisions are the expected bounded-history limitation"
+  },
+  "promotion_boundary": {
+    "proposed_table_contract": "a frozen, versioned table artifact: market identity (venue, coin, perpetual), universe, timeframe and expected_interval_ms, UTC basis and the 1970-01-05 epoch, training cutoff (last completed label exit open), generation counter, expiry (the next scheduled refit boundary), the full per-cell statistics and a sha256; a live loader must hold on a stale, missing, corrupt or wrong-market table and may replace it only while flat",
+    "unresolved_limits": [
+      "the production Hyperliquid check frame is 200 candles, far below the 4535-bar (1h) training and refit history, so every live or paper check holds with insufficient_history",
+      "the live close context has no bars_held, so time_stop never fires live; only the protective stop would manage a live position"
+    ],
+    "scope": "this study implements neither the loader nor a live holding-horizon close"
+  },
+  "reporting": "net results, drawdown, turnover, calendar-cell, weekday, symbol and side concentration, independent position clusters, parameter stability across the variant grid, every unsuccessful variant, cost stress, funding coverage and provenance, source and input hashes, start-of-window holds, per-refit tables and a per-entry audit with an independent recomputation of the selected cell"
+}

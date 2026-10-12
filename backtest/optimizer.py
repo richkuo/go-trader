@@ -87,6 +87,19 @@ def max_indicator_lookback(param_ranges: Dict[str, list]) -> int:
 
 ATR_CLOSE_WARMUP = 14
 
+_OPEN_STRATEGIES = os.path.join(os.path.dirname(__file__), "..", "shared_strategies", "open")
+
+UNSEEDED_ENTRY_ONLY_STRATEGIES = frozenset({"calendar_conditioned_entry"})
+
+
+def strategy_warmup_bars(strategy_name: str, param_grid: List[dict], param_ranges: Dict[str, list]) -> int:
+    if strategy_name == "calendar_conditioned_entry":
+        if _OPEN_STRATEGIES not in sys.path:
+            sys.path.insert(0, _OPEN_STRATEGIES)
+        from calendar_conditioned_entry import required_history_bars
+        return max(required_history_bars(p) for p in param_grid)
+    return max_indicator_lookback(param_ranges)
+
 _CLOSE_STACK_SPEC_KEYS = {"close", "stop_loss_atr_mult", "trailing_stop_atr_mult"}
 
 
@@ -293,7 +306,8 @@ def walk_forward_optimize(
         if strategy_name in reg.STRATEGY_REGISTRY else {}
     param_grid = [bind_fixed_interval_params(default_params, p, timeframe)
                   for p in generate_param_grid(param_ranges)]
-    warmup = max_indicator_lookback(param_ranges)
+    warmup = strategy_warmup_bars(strategy_name, param_grid, param_ranges)
+    seed_warmup = strategy_name not in UNSEEDED_ENTRY_ONLY_STRATEGIES
 
     if close_stack_grid:
         stacks = close_stack_grid
@@ -404,7 +418,7 @@ def walk_forward_optimize(
                 signals_df = signals_ext.iloc[train_boundary_idx:]
                 train_seed = warmup_exit_long_entry(
                     signals_ext.iloc[:train_boundary_idx], bt.slippage_pct,
-                ) if train_boundary_idx else None
+                ) if train_boundary_idx and seed_warmup else None
             except CloseCapabilityError:
                 raise
             except _EXPECTED_FOLD_ERRORS as e:
@@ -454,7 +468,7 @@ def walk_forward_optimize(
             test_signals = test_signals_ext.iloc[test_boundary_idx:]
             test_seed = warmup_exit_long_entry(
                 test_signals_ext.iloc[:test_boundary_idx], bt.slippage_pct,
-            ) if test_boundary_idx else None
+            ) if test_boundary_idx and seed_warmup else None
             test_result = best_bt.run(test_signals, strategy_name=strategy_name,
                                       symbol=symbol, timeframe=timeframe,
                                       params=best_params, save=False,
@@ -752,6 +766,14 @@ DEFAULT_PARAM_RANGES = {
         "max_bulge_age": [25, 50],
         "recursion_length": [72],
         "bulge_filter": [1],
+    },
+    "calendar_conditioned_entry": {
+        "training_bars": [2184, 4368],
+        "holding_bars": [1, 4, 8],
+        "refit_bars": [168],
+        "min_effective_obs": [8],
+        "confidence": [0.9],
+        "cost_hurdle": [0.002],
     },
     "vortex_trend": {
         "period": [7, 14, 21, 28],
