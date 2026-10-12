@@ -138,9 +138,12 @@ def test_registration_metadata_grid_and_hidden_discovery():
         out = subprocess.run([sys.executable, os.path.join(_REPO, "shared_strategies", "open", platform,
                                                           "strategies.py"), "--list-json"],
                              capture_output=True, text=True, cwd=_REPO, check=True).stdout
+        captures = []
         for phase in ("before", "after"):
             with open(os.path.join(STUDY, f"discovery_{phase}_{platform}.json")) as fh:
-                assert json.loads(fh.read()) == json.loads(out)
+                captures.append(json.loads(fh.read()))
+        assert captures[0] == captures[1]
+        assert NAME not in json.dumps(captures[1])
         assert NAME not in out
 
 

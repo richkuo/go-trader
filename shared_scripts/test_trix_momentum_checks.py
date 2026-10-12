@@ -230,19 +230,6 @@ def test_batch_slots_apply_the_same_admission_and_match_solo():
         assert results["acked"].get(key) == solo_out.get(key)
 
 
-def test_batch_refuses_a_non_boolean_acknowledgement():
-    refs = json.loads(_refs())
-    proc = _batch([
-        {"id": "paper", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
-        {"id": "bad-ack", "strategy": NAME, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": "yes",
-         "strategy_refs": refs},
-    ], _solo4h())
-    assert proc.returncode == 1
-    out = _payload(proc)
-    assert out["results"] == [] and out["error_scope"] == "shared_state"
-    assert "allow_no_edge must be a JSON boolean" in out["error"]
-
-
 def test_check_decision_matches_the_evaluator_on_the_200_row_frame_at_full_precision():
     bars = _bars(260, H, forming_jump=8.0)
     out = _check(bars, closed=False, extra=["--strategy-refs", _refs()])

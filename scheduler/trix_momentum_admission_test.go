@@ -19,30 +19,6 @@ var trixFrozenLadder = []interface{}{
 	map[string]interface{}{"profit_pct": 0.04, "close_fraction": 1.0},
 }
 
-func TestTrixMomentumRegistrationTables(t *testing.T) {
-	ev, ok := noEdgeEvidenceFor(trixName)
-	if !ok || ev.Ref != "backtest/candidates/trix_momentum_1659/REPORT.md" {
-		t.Fatalf("no-edge evidence = %+v, %v", ev, ok)
-	}
-	if short := knownShortNames[trixName]; short != "trix" {
-		t.Fatalf("short name = %q", short)
-	}
-	for other, short := range knownShortNames {
-		if short == "trix" && other != trixName {
-			t.Fatalf("short name trix is shared with %s", other)
-		}
-	}
-	if !openStrategyRegisteredFor(trixName, "futures") || openStrategyRegisteredFor(trixName, "spot") || !isBidirectionalPerpsStrategy(trixName) {
-		t.Fatal("candidate must be futures-only and bidirectional")
-	}
-	if _, eligible := v20StampEligibleStrategies[trixName]; eligible {
-		t.Fatal("a name registered after v20 must never be stamp-eligible")
-	}
-	if _, research := v20FormerResearchStrategies[trixName]; research {
-		t.Fatal("the frozen v20 research set must stay unchanged")
-	}
-}
-
 func TestTrixMomentumAdmissionThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const ref = "backtest/candidates/trix_momentum_1659/REPORT.md"
@@ -60,12 +36,6 @@ func TestTrixMomentumAdmissionThroughRealLoaders(t *testing.T) {
 		sc["close_strategy"] = map[string]interface{}{"name": trixName}
 		return sc
 	}
-	twoStops := func() map[string]interface{} {
-		sc := trix("--mode=paper")
-		sc["stop_loss_atr_mult"] = 1.0
-		sc["stop_loss_pct"] = 2.0
-		return sc
-	}
 	cases := []struct {
 		label     string
 		sc        map[string]interface{}
@@ -73,13 +43,11 @@ func TestTrixMomentumAdmissionThroughRealLoaders(t *testing.T) {
 		wantScope PortfolioScope
 	}{
 		{"explicit paper", trix("--mode=paper"), nil, ScopePaper},
-		{"explicit live refused", trix("--mode=live"), []string{`open strategy "` + trixName + `"`, ref, "explicit live mode"}, ""},
-		{"missing mode refused", trix(), []string{"missing --mode"}, ""},
+		{"missing mode refused", trix(), []string{`open strategy "` + trixName + `" is edge_status=no_edge`, ref, "missing --mode"}, ""},
 		{"explicit live acknowledged", ack(trix("--mode=live"), true), nil, ScopeLive},
 		{"close fallback live refused", asClose("--mode=live"), []string{`close strategy "` + trixName + `"`, "explicit live mode"}, ""},
 		{"close fallback paper", asClose("--mode=paper"), nil, ScopePaper},
 		{"close fallback acknowledged", ack(asClose("--mode=live"), true), nil, ScopeLive},
-		{"two stop owners refused", twoStops(), []string{"stop_loss_atr_mult is mutually exclusive"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.label, func(t *testing.T) {

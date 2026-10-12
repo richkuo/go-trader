@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -447,4 +448,35 @@ func TestDeferredOpenArmsTheStopOnlyForPaper(t *testing.T) {
 			t.Fatalf("open %+v stop %+v, want open @ %v, stop @ %v, unslipped trigger %v", open, stop, 2000*(1+SlippagePct), 2000*(1-SlippagePct), wantTrigger)
 		}
 	})
+}
+
+func TestStopLossATRMultRefusesASecondStopOwnerThroughRealLoaders(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	strategy := func(extra map[string]interface{}) map[string]interface{} {
+		sc := noEdgeHLStrategy("hl-rsi-eth", "rsi", "ETH", "1h", "--mode=paper")
+		delete(sc, "stop_loss_pct")
+		sc["stop_loss_atr_mult"] = 1.0
+		for k, v := range extra {
+			sc[k] = v
+		}
+		return sc
+	}
+	path := writeNoEdgeConfig(t, CurrentConfigVersion, strategy(nil))
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("a single stop_loss_atr_mult owner must load: %v", err)
+	}
+	const want = "stop_loss_atr_mult is mutually exclusive"
+	for _, second := range []string{"stop_loss_pct", "stop_loss_margin_pct", "trailing_stop_pct", "trailing_stop_atr_mult"} {
+		t.Run(second, func(t *testing.T) {
+			path := writeNoEdgeConfig(t, CurrentConfigVersion, strategy(map[string]interface{}{second: 2.0}))
+			_, loadErr := LoadConfig(path)
+			_, probeErr := LoadConfigForProbe(path)
+			if loadErr == nil || probeErr == nil {
+				t.Fatalf("expected both loaders to refuse; load=%v probe=%v", loadErr, probeErr)
+			}
+			if !strings.Contains(loadErr.Error(), want) || !strings.Contains(probeErr.Error(), want) {
+				t.Fatalf("errors missing %q:\nload:  %v\nprobe: %v", want, loadErr, probeErr)
+			}
+		})
+	}
 }

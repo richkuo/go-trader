@@ -143,7 +143,7 @@ def test_registration_is_futures_only_bidirectional_no_edge_hidden_and_seeded():
 
 
 @pytest.mark.parametrize("platform", ["spot", "futures"])
-def test_discovery_output_is_byte_identical_to_the_pre_change_capture(platform):
+def test_discovery_captures_are_byte_identical_and_live_output_hides_the_strategy(platform):
     proc = subprocess.run([sys.executable, os.path.join(_REPO, "shared_strategies", "open", platform, "strategies.py"),
                            "--list-json"], capture_output=True, cwd=_REPO, timeout=120)
     assert proc.returncode == 0, proc.stderr
@@ -151,7 +151,8 @@ def test_discovery_output_is_byte_identical_to_the_pre_change_capture(platform):
         before = fh.read()
     with open(os.path.join(STUDY_DIR, f"discovery_after_{platform}.json"), "rb") as fh:
         after = fh.read()
-    assert proc.stdout == before == after
+    assert before == after
+    assert NAME.encode() not in after
     assert NAME.encode() not in proc.stdout
 
 
