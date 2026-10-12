@@ -989,6 +989,10 @@ def _funding_lines(per_dataset: dict) -> list:
     return lines
 
 
+def _sentence(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
 def render() -> None:
     proto = load_json(PROTOCOL_PATH)
     res = load_json(RESULTS_PATH)
@@ -1005,6 +1009,12 @@ def render() -> None:
              "`allow_no_edge: true`, and no result here adds one or approves deployment. Every command in this study "
              "is suggest-only and sends no order. The proxy groups are proxy evidence (Binance US candles with "
              "Hyperliquid fees and funding); the venue group is Hyperliquid candle evidence.")
+    L.append("")
+    L.append("Group reasons: " + "; ".join(f"{g}: {d['verdict']['outcome']} ({d['verdict']['reason']})"
+                                         for g, d in res["groups"].items()) + "."
+             + (" The frozen overall rule needs every group to pass, so one group's pass cannot offset another "
+                "group's fail; the venue windows were also used by earlier studies, so venue evidence is "
+                "retrospective." if len(set(v["groups"].values())) > 1 else ""))
     L.append("")
     L.append("## Signal")
     L.append("")
@@ -1041,7 +1051,7 @@ def render() -> None:
              + proto["study_local_comparator"]["registration"]
              + f" (removed after the run: {fmt(res.get('local_comparator_removed'))}).")
     L.append("")
-    L.append("Warm-up: " + proto["warmup"]["policy"] + ". " + proto["warmup"]["restriction"] + ".")
+    L.append("Warm-up: " + proto["warmup"]["policy"] + ". " + _sentence(proto["warmup"]["restriction"]) + ".")
     L.append("")
     L.append("Proxy group rule: " + proto["verdict_rules"]["proxy_group"]["order"] + ". Venue group rule: "
              + proto["verdict_rules"]["venue_group"]["order"] + ". Overall: " + proto["verdict_rules"]["overall"] + ".")
@@ -1054,7 +1064,7 @@ def render() -> None:
         L.append(f"| {w} | {s} | {e} | {role} |")
     L.append("")
     L.append("Departures from the default M1 windows: " + "; ".join(proto["proxy"]["departures_from_m1_windows"])
-             + ". " + proto["proxy"]["window_note"] + ".")
+             + ". " + _sentence(proto["proxy"]["window_note"]) + ".")
     L.append("")
     vm = res["venue_manifest"]
     L.append("| venue window | start | end (exclusive) | role |")
@@ -1100,12 +1110,13 @@ def render() -> None:
     venue_g = res["groups"].get("venue_4h")
     rejected = venue_g["held_out"]["candidate"]["base"].get("rejected_entries") if venue_g else None
     span = f"${min(notionals):.2f} to ${max(notionals):.2f}" if notionals else "none (no entries)"
+    binds = ("so the minimum does not bind at this size" if rejected == 0 else
+             "so the minimum binds at this size and those entries never filled")
     L.append(f"- Sizing: capital ${eng['capital_usd']:.0f} per leg, no leverage and no perps sizing block (Backtester "
              f"leverage {eng['leverage']}, sizing defaults {json.dumps(eng['sizing_defaults'], sort_keys=True)}), so "
              "each entry commits the leg's available cash unlevered; candidate entry notionals ranged from "
              f"{span}. Venue lot rounding and the $10 minimum rejected {fmt(rejected)} candidate entries in the held-out "
-             "venue window at cost x1, so the minimum does not bind at this size; lot rounding trims each order by at "
-             "most one szDecimals step.")
+             f"venue window at cost x1, {binds}; lot rounding trims each order by at most one szDecimals step.")
     L.append(f"- Stop: one fixed entry-ATR stop at {c['stop_loss_atr_mult']} x ATR. Close: one `tiered_tp_pct` "
              "tier at +3%.")
     L.append("")
@@ -1148,7 +1159,10 @@ def render() -> None:
                          f"| {fmt(item['min_entry_notional_usd'])} |")
             L.append("")
         else:
-            for w, arms in g["held_out"].items():
+            order = ([proto["proxy"]["primary_window"]] + proto["proxy"]["secondary_windows"]
+                     + proto["proxy"]["diagnostic_windows"])
+            for w in order:
+                arms = g["held_out"][w]
                 L.append(f"### `{w}` (warm-up {g['warmup_by_window'][w]} bars)")
                 L.append("")
                 L.extend(_arm_table(arms))
