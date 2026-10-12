@@ -5018,12 +5018,13 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 	instType := okxInstType(sc.Args)
 	var opts okxExecuteOptions
 	if result.EntrySubmitGate != nil {
-		clientID, gateErr := result.EntrySubmitGate(side, size)
+		tags, gateErr := result.EntrySubmitGate(side, size)
 		if gateErr != nil {
 			logger.Error("Live entry %s not sent: the durable submission record failed: %v (#1769)", result.Symbol, gateErr)
 			return nil, false
 		}
-		opts.ClientOrderID = clientID
+		opts.ClientOrderID = tags.ClientOrderID
+		opts.ExpiresAfterMs = tags.ExpiresAfterMs
 	}
 	opts.ReduceOnly = result.CloseReduceOnly && sc.Type == "perps"
 	logger.Info("Placing live %s %s size=%.6f inst_type=%s", side, result.Symbol, size, instType)

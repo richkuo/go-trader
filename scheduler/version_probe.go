@@ -98,6 +98,7 @@ var okxExecuteProbeArgv = []string{
 	"--mode=paper",
 	"--inst-type=swap",
 	"--client-order-id=gtprobe",
+	"--exp-time-ms=1",
 	"--reduce-only",
 	"--probe-only",
 }

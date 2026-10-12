@@ -436,8 +436,13 @@ def _okx_entry_create_error_outcome(exc):
         return "unknown"
     if isinstance(exc, ccxt.NetworkError):
         return "unknown"
-    if isinstance(exc, ccxt.ExchangeError):
+    if isinstance(exc, (ccxt.DuplicateOrderId, ccxt.OrderNotFound)):
+        return "confirm"
+    if isinstance(exc, (ccxt.InsufficientFunds, ccxt.BadRequest, ccxt.AuthenticationError,
+                        ccxt.ArgumentsRequired, ccxt.InvalidOrder)):
         return "rejected"
+    if isinstance(exc, ccxt.ExchangeError):
+        return "confirm"
     return "unknown"
 
 
@@ -456,7 +461,49 @@ def _confirm_okx_entry(adapter, symbol, inst_type, client_order_id, attempts=4, 
     return None, last_err
 
 
-def run_execute(symbol, side, size, mode, inst_type="swap", client_order_id="", reduce_only=False):
+def okx_entry_deadline_error(client_order_id, exp_time_ms, now_ms):
+    if not client_order_id:
+        if exp_time_ms:
+            return "--exp-time-ms requires --client-order-id"
+        return ""
+    try:
+        deadline = int(exp_time_ms or 0)
+    except (TypeError, ValueError):
+        return f"--exp-time-ms must be an integer, got {exp_time_ms!r}"
+    if deadline <= 0:
+        return "--client-order-id requires --exp-time-ms so an unreachable order can be proven never accepted"
+    if deadline <= now_ms:
+        return f"the order deadline {deadline} has already passed (now {now_ms})"
+    return ""
+
+
+def _okx_entry_fill_output(is_buy, symbol, size, client_order_id, evidence):
+    outcome = okx_entry_outcome(evidence)
+    out = {
+        "execution": {
+            "action": "buy" if is_buy else "sell",
+            "symbol": symbol,
+            "size": size,
+            "fill": {
+                "avg_px": evidence["avg_px"],
+                "total_sz": evidence["executed_sz"],
+                "fee": evidence["fee"],
+                "oid": evidence["order_id"],
+            },
+        },
+        "platform": "okx",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "order_outcome": outcome,
+        "order_status": evidence["status"],
+        "client_order_id": client_order_id,
+    }
+    if outcome != "filled":
+        out["execution"] = None
+        out["error"] = f"order {evidence['order_id']} ended {evidence['status']!r} with no fill"
+    return out
+
+
+def run_execute(symbol, side, size, mode, inst_type="swap", client_order_id="", reduce_only=False, exp_time_ms=0):
     if mode != "live":
         out = {"error": "--execute requires --mode=live"}
         if client_order_id:
@@ -477,6 +524,13 @@ def run_execute(symbol, side, size, mode, inst_type="swap", client_order_id="", 
             print(json.dumps({"error": "--client-order-id tags a guarded entry and cannot be reduce-only",
                               "order_outcome": "not_sent", "client_order_id": cid}))
             sys.exit(1)
+    deadline_err = okx_entry_deadline_error(client_order_id, exp_time_ms, int(time.time() * 1000))
+    if deadline_err:
+        out = {"error": deadline_err, "order_outcome": "not_sent"}
+        if client_order_id:
+            out["client_order_id"] = str(client_order_id)
+        print(json.dumps(out))
+        sys.exit(1)
 
     adapter = None
     sent = False
@@ -488,15 +542,33 @@ def run_execute(symbol, side, size, mode, inst_type="swap", client_order_id="", 
         if client_order_id:
             try:
                 sent = True
-                result = adapter.market_open(symbol, is_buy, size, inst_type=inst_type, client_order_id=client_order_id)
+                result = adapter.market_open(symbol, is_buy, size, inst_type=inst_type,
+                                             client_order_id=client_order_id, exp_time_ms=int(exp_time_ms))
             except Exception as ce:
                 traceback.print_exc(file=sys.stderr)
+                create_outcome = _okx_entry_create_error_outcome(ce)
+                if create_outcome == "confirm":
+                    evidence, confirm_err = _confirm_okx_entry(adapter, symbol, inst_type, client_order_id)
+                    if evidence is not None:
+                        out = _okx_entry_fill_output(is_buy, symbol, size, client_order_id, evidence)
+                        out["create_error"] = str(ce)
+                        print(json.dumps(out))
+                        sys.exit(0 if out["order_outcome"] == "filled" else 1)
+                    print(json.dumps({
+                        "execution": None,
+                        "platform": "okx",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "error": f"order placement failed ({ce}) and the order read-back by client id gave no outcome: {confirm_err}",
+                        "order_outcome": "unknown",
+                        "client_order_id": client_order_id,
+                    }))
+                    sys.exit(1)
                 print(json.dumps({
                     "execution": None,
                     "platform": "okx",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "error": f"order placement failed: {ce}",
-                    "order_outcome": _okx_entry_create_error_outcome(ce),
+                    "order_outcome": create_outcome,
                     "client_order_id": client_order_id,
                 }))
                 sys.exit(1)
@@ -511,31 +583,10 @@ def run_execute(symbol, side, size, mode, inst_type="swap", client_order_id="", 
                     "client_order_id": client_order_id,
                 }))
                 sys.exit(1)
-            outcome = okx_entry_outcome(evidence)
-            out = {
-                "execution": {
-                    "action": "buy" if is_buy else "sell",
-                    "symbol": symbol,
-                    "size": size,
-                    "fill": {
-                        "avg_px": evidence["avg_px"],
-                        "total_sz": evidence["executed_sz"],
-                        "fee": evidence["fee"],
-                        "oid": evidence["order_id"],
-                    },
-                },
-                "platform": "okx",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "order_outcome": outcome,
-                "order_status": evidence["status"],
-                "client_order_id": client_order_id,
-            }
-            if outcome != "filled":
-                out["execution"] = None
-                out["error"] = f"order {evidence['order_id']} ended {evidence['status']!r} with no fill"
-                print(json.dumps(out))
-                sys.exit(1)
+            out = _okx_entry_fill_output(is_buy, symbol, size, client_order_id, evidence)
             print(json.dumps(out))
+            if out["order_outcome"] != "filled":
+                sys.exit(1)
             return
 
         if reduce_only:
@@ -666,6 +717,8 @@ def main():
         parser.add_argument("--inst-type", default="swap", choices=["spot", "swap"])
         parser.add_argument("--client-order-id", default="",
                             help="#1769: client order id of a guarded closed-bar entry, saved by Go before submission")
+        parser.add_argument("--exp-time-ms", type=int, default=0,
+                            help="#1769: OKX expTime request deadline (unix ms) of a guarded closed-bar entry, saved by Go before submission")
         parser.add_argument("--reduce-only", action="store_true", default=False,
                             help="#1769: send a swap close as reduce-only")
         parser.add_argument("--probe-only", action="store_true",
@@ -674,7 +727,8 @@ def main():
         if args.probe_only:
             sys.exit(0)
         run_execute(args.symbol, args.side, args.size, args.mode, args.inst_type,
-                    client_order_id=args.client_order_id, reduce_only=args.reduce_only)
+                    client_order_id=args.client_order_id, reduce_only=args.reduce_only,
+                    exp_time_ms=args.exp_time_ms)
     else:
         import argparse
         parser = argparse.ArgumentParser()

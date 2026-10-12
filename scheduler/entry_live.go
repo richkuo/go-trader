@@ -13,8 +13,9 @@ import (
 const entryIntentRequestVersion = 1
 
 const (
-	hlEntryOrderExpiry = 2 * time.Minute
-	hlEntryStopExpiry  = 3 * time.Minute
+	hlEntryOrderExpiry  = 2 * time.Minute
+	hlEntryStopExpiry   = 3 * time.Minute
+	okxEntryOrderExpiry = 2 * time.Minute
 )
 
 type entryIntentRequest struct {
@@ -192,18 +193,20 @@ func hyperliquidEntrySubmitGate(store *StateStore, s *StrategyState, mu *sync.RW
 }
 
 func okxEntrySubmitGateFor(store *StateStore, s *StrategyState, mu *sync.RWMutex, in *entryIntent) okxEntrySubmitGate {
-	return func(side string, size float64) (string, error) {
+	return func(side string, size float64) (okxEntryOrderTags, error) {
 		req, err := parseEntryIntentRequest(in)
 		if err != nil {
-			return "", err
+			return okxEntryOrderTags{}, err
 		}
+		now := time.Now()
 		req.Side = side
 		req.Size = size
-		req.SubmittedAtMs = time.Now().UnixMilli()
+		req.SubmittedAtMs = now.UnixMilli()
+		req.ExpiresAfterMs = now.Add(okxEntryOrderExpiry).UnixMilli()
 		if err := markEntryIntentSubmitting(store, s, mu, in, req); err != nil {
-			return "", err
+			return okxEntryOrderTags{}, err
 		}
-		return in.ClientOrderID, nil
+		return okxEntryOrderTags{ClientOrderID: in.ClientOrderID, ExpiresAfterMs: req.ExpiresAfterMs}, nil
 	}
 }
 

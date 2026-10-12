@@ -183,6 +183,7 @@ def test_hl_recovery_evidence_reports_unknown_order_with_cloid_fills():
 class _OKXVenue:
     def __init__(self, create_error=None, orders=None, trades=None, missing=False):
         self.calls = []
+        self.exp_times = []
         self.create_error = create_error
         self.orders = list(orders or [])
         self.trades = trades or []
@@ -193,8 +194,9 @@ class _OKXVenue:
         mod = types.ModuleType("adapter")
 
         class OKXExchangeAdapter:
-            def market_open(self, symbol, is_buy, size, inst_type="spot", client_order_id=None, reduce_only=False):
+            def market_open(self, symbol, is_buy, size, inst_type="spot", client_order_id=None, reduce_only=False, exp_time_ms=None):
                 venue.calls.append(("market_open", client_order_id, reduce_only))
+                venue.exp_times.append(exp_time_ms)
                 if venue.create_error:
                     raise venue.create_error
                 return {"id": "okx-1", "clientOrderId": client_order_id}
@@ -214,6 +216,11 @@ class _OKXVenue:
         return mod
 
 
+def _okx_deadline():
+    import time
+    return int(time.time() * 1000) + 120_000
+
+
 def _run_okx(monkeypatch, capsys, venue, fn, *args, **kwargs):
     mod = _load_script("check_okx.py", "entry_identity")
     monkeypatch.setitem(sys.modules, "adapter", venue.adapter_module())
@@ -228,7 +235,7 @@ def _run_okx(monkeypatch, capsys, venue, fn, *args, **kwargs):
 
 def test_okx_guarded_entry_reads_the_fill_back_by_client_id(monkeypatch, capsys):
     venue = _OKXVenue(orders=[{"id": "okx-1", "status": "closed", "filled": 0.3, "average": 101.0, "fee": {"cost": 0.02}}])
-    out, code = _run_okx(monkeypatch, capsys, venue, "run_execute", "BTC", "buy", 0.3, "live", "swap", client_order_id="gtabc")
+    out, code = _run_okx(monkeypatch, capsys, venue, "run_execute", "BTC", "buy", 0.3, "live", "swap", client_order_id="gtabc", exp_time_ms=_okx_deadline())
     assert code == 0 and out["order_outcome"] == "filled" and out["client_order_id"] == "gtabc"
     assert out["execution"]["fill"] == {"avg_px": 101.0, "total_sz": 0.3, "fee": 0.02, "oid": "okx-1"}
     assert venue.calls[0] == ("market_open", "gtabc", False)
@@ -243,7 +250,7 @@ def test_okx_guarded_entry_outcomes(monkeypatch, capsys):
         (_OKXVenue(orders=[{"id": "o", "status": "closed", "filled": 0.3, "average": 100}]), "unknown"),
     ]
     for venue, want in cases:
-        out, code = _run_okx(monkeypatch, capsys, venue, "run_execute", "BTC", "buy", 0.3, "live", "spot", client_order_id="gtabc")
+        out, code = _run_okx(monkeypatch, capsys, venue, "run_execute", "BTC", "buy", 0.3, "live", "spot", client_order_id="gtabc", exp_time_ms=_okx_deadline())
         assert code == 1 and out["order_outcome"] == want, (want, out)
 
 
@@ -256,6 +263,40 @@ def test_okx_reduce_only_close_and_id_validation(monkeypatch, capsys):
         venue = _OKXVenue()
         out, code = _run_okx(monkeypatch, capsys, venue, "run_execute", "BTC", "buy", 0.3, "live", "swap", client_order_id=bad)
         assert code == 1 and out["order_outcome"] == "not_sent" and venue.calls == []
+
+
+def test_okx_guarded_entry_sends_the_saved_deadline_and_refuses_without_one(monkeypatch, capsys):
+    deadline = _okx_deadline()
+    venue = _OKXVenue(orders=[{"id": "okx-1", "status": "closed", "filled": 0.3, "average": 101.0, "fee": {"cost": 0.02}}])
+    out, code = _run_okx(monkeypatch, capsys, venue, "run_execute", "BTC", "buy", 0.3, "live", "swap", client_order_id="gtabc", exp_time_ms=deadline)
+    assert code == 0 and venue.exp_times == [deadline]
+    for exp in (0, deadline - 10 * 60_000):
+        venue = _OKXVenue()
+        out, code = _run_okx(monkeypatch, capsys, venue, "run_execute", "BTC", "buy", 0.3, "live", "swap", client_order_id="gtabc", exp_time_ms=exp)
+        assert code == 1 and out["order_outcome"] == "not_sent" and venue.calls == [], (exp, out)
+    venue = _OKXVenue()
+    out, code = _run_okx(monkeypatch, capsys, venue, "run_execute", "BTC", "buy", 0.3, "live", "swap", exp_time_ms=deadline)
+    assert code == 1 and out["order_outcome"] == "not_sent" and venue.calls == []
+
+
+def test_okx_guarded_entry_reads_back_an_unclassified_create_error(monkeypatch, capsys):
+    filled = {"id": "okx-1", "status": "closed", "filled": 0.3, "average": 101.0, "fee": {"cost": 0.02}}
+    zero = {"id": "okx-1", "status": "canceled", "filled": 0, "average": None, "fee": {"cost": 0}}
+    cases = [
+        (_OKXVenue(create_error=ccxt.ExchangeError("okx 51999 unmapped"), orders=[filled]), "filled", 0, True),
+        (_OKXVenue(create_error=ccxt.DuplicateOrderId("51016"), orders=[filled]), "filled", 0, True),
+        (_OKXVenue(create_error=ccxt.ExchangeError("okx 51999 unmapped"), orders=[zero]), "rejected", 1, True),
+        (_OKXVenue(create_error=ccxt.ExchangeError("okx 51999 unmapped"), missing=True), "unknown", 1, True),
+        (_OKXVenue(create_error=ccxt.InsufficientFunds("51008")), "rejected", 1, False),
+        (_OKXVenue(create_error=ccxt.InvalidOrder("51020")), "rejected", 1, False),
+        (_OKXVenue(create_error=ccxt.NetworkError("reset")), "unknown", 1, False),
+    ]
+    for venue, want, want_code, reads_back in cases:
+        out, code = _run_okx(monkeypatch, capsys, venue, "run_execute", "BTC", "buy", 0.3, "live", "swap", client_order_id="gtabc", exp_time_ms=_okx_deadline())
+        assert code == want_code and out["order_outcome"] == want, (venue.create_error, out)
+        assert any(c[0] == "fetch" for c in venue.calls) == reads_back, (venue.create_error, venue.calls)
+        if want == "filled":
+            assert out["execution"]["fill"] == {"avg_px": 101.0, "total_sz": 0.3, "fee": 0.02, "oid": "okx-1"}
 
 
 def test_okx_recovery_reports_missing_and_matched_trades(monkeypatch, capsys):

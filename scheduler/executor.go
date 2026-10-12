@@ -1298,11 +1298,17 @@ type OKXResult struct {
 	OrderSubmitted  bool                   `json:"-"`
 }
 
-type okxEntrySubmitGate func(side string, size float64) (string, error)
+type okxEntrySubmitGate func(side string, size float64) (okxEntryOrderTags, error)
+
+type okxEntryOrderTags struct {
+	ClientOrderID  string
+	ExpiresAfterMs int64
+}
 
 type okxExecuteOptions struct {
-	ClientOrderID string
-	ReduceOnly    bool
+	ClientOrderID  string
+	ExpiresAfterMs int64
+	ReduceOnly     bool
 }
 
 type OKXFill struct {
@@ -1362,6 +1368,9 @@ func buildOKXExecuteArgs(symbol, side string, size float64, instType string, opt
 	}
 	if opts.ClientOrderID != "" {
 		args = append(args, "--client-order-id="+opts.ClientOrderID)
+	}
+	if opts.ExpiresAfterMs > 0 {
+		args = append(args, fmt.Sprintf("--exp-time-ms=%d", opts.ExpiresAfterMs))
 	}
 	if opts.ReduceOnly {
 		args = append(args, "--reduce-only")

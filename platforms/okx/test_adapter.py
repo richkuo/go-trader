@@ -155,3 +155,48 @@ class TestGetAccountBills:
         bills, capped = a.get_account_bills(since_ms=0, page_limit=10, max_bills=100)
         assert capped is True, "budget exhaustion must report capped=True, not False"
         assert len(bills) < 400
+
+
+class TestGuardedEntryDeadlineHeader:
+
+    def test_exp_time_reaches_the_signed_order_request_and_is_removed_after(self):
+        import json as _json
+        with patch.dict(os.environ, {"OKX_API_KEY": "k", "OKX_API_SECRET": "s", "OKX_PASSPHRASE": "p"}, clear=False):
+            os.environ.pop("OKX_SANDBOX", None)
+            a = OKXExchangeAdapter()
+        ex = a._exchange
+        ex.set_markets([{
+            "id": "BTC-USDT-SWAP", "symbol": "BTC/USDT:USDT", "base": "BTC", "quote": "USDT", "settle": "USDT",
+            "baseId": "BTC", "quoteId": "USDT", "settleId": "USDT", "type": "swap", "spot": False, "margin": False,
+            "swap": True, "future": False, "option": False, "contract": True, "linear": True, "inverse": False,
+            "active": True, "contractSize": 0.01, "precision": {"amount": 1, "price": 0.1},
+            "limits": {"amount": {"min": 1}}, "info": {"instType": "SWAP", "instId": "BTC-USDT-SWAP"},
+        }])
+        a._markets_loaded = True
+        sent = []
+
+        class _Response:
+            status_code = 200
+            reason = "OK"
+            headers = {}
+
+            def __init__(self, body):
+                self.text = body
+                self.content = body.encode()
+
+            def raise_for_status(self):
+                pass
+
+        def _request(method, url, data=None, headers=None, **kwargs):
+            sent.append((method, url, dict(headers or {}), data))
+            return _Response(_json.dumps({"code": "0", "msg": "", "data": [{"ordId": "1", "clOrdId": "gtabc", "sCode": "0", "sMsg": ""}]}))
+
+        ex.session.request = _request
+        a.market_open("BTC", True, 3, inst_type="swap", client_order_id="gtabc", exp_time_ms=1797026383085)
+        method, url, headers, body = sent[-1]
+        assert method == "POST" and "/api/v5/trade/" in url
+        assert headers.get("expTime") == "1797026383085"
+        assert b"gtabc" in (body if isinstance(body, bytes) else body.encode())
+        assert "expTime" not in (ex.headers or {})
+        a.market_open("BTC", True, 3, inst_type="swap", client_order_id="gtabd")
+        assert "expTime" not in sent[-1][2]

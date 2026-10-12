@@ -4,8 +4,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1408,4 +1411,215 @@ func TestEntryGuardStartupLinesNameUnresolvedAttempts(t *testing.T) {
 	if in == nil || in.ClientOrderID == "" || in.Status != entryIntentSubmitting {
 		t.Fatalf("loaded intent %+v", in)
 	}
+}
+
+func entryTestUnknownScaleIn(t *testing.T) (*entryTestEnv, StrategyConfig) {
+	t.Helper()
+	sc := entryTestHLStrategy("hl-live", "live")
+	sc.AllowScaleIn = true
+	sc.ScaleIn = &ScaleInConfig{MaxAdds: 3, AddNotionalUSD: 20}
+	env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
+	useEntryTradeRecorder(t, env.store)
+	s := env.strat(sc.ID)
+	env.mu.Lock()
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.4, InitialQuantity: 0.4, AvgCost: 100, EntryATR: 2, Side: "long", Multiplier: 1, Leverage: 1, OwnerStrategyID: sc.ID}
+	env.mu.Unlock()
+	at := time.Now().Add(-10 * time.Minute)
+	bar := at.Truncate(time.Hour).Add(-time.Hour)
+	adm := admitClosedBarEntry(sc, s, &env.mu, "BTC", entryTestDecision(bar, at), 1, 0, 0.4, "long", at)
+	if !adm.admitted() || adm.Kind != entryIncreaseAdd {
+		t.Fatalf("fixture add admission: admitted=%t kind=%s reason=%q", adm.admitted(), adm.Kind, adm.HoldReason)
+	}
+	in, err := reserveLiveEntryIntent(env.store, sc, s, &env.mu, adm, entryProviderHyperliquid, entryIntentRequest{Kind: adm.Kind.String(), Signal: 1, PrevPosQty: 0.4, PrevPosSide: "long", PrevAvgCost: 100, Price: 100, EntryATR: 2}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hyperliquidEntrySubmitGate(env.store, s, &env.mu, in)("buy", 0.2, 0); err != nil {
+		t.Fatal(err)
+	}
+	env.saveAll()
+	if got := env.intentStatuses(sc.ID); len(got) != 1 || got[0] != entryIntentSubmitting {
+		t.Fatalf("fixture intents %v", got)
+	}
+	return env, sc
+}
+
+func (e *entryTestEnv) hlAccountSync(sc StrategyConfig, onChainQty, entryPx float64) {
+	e.t.Helper()
+	positions := []HLPosition{{Coin: "BTC", Size: onChainQty, EntryPrice: entryPx, Leverage: 1}}
+	resolver := hlReconcileFillResolver(func(string, int64, float64) (HLFillLookup, bool) { return HLFillLookup{}, false })
+	var alerts []ProtectionFillAlert
+	var dms []string
+	e.mu.Lock()
+	reconcileHyperliquidPositionsForStrategy(sc, e.strat(sc.ID), "BTC", positions, resolver, silentStrategyLogger(sc.ID), &alerts, nil, &dms)
+	e.mu.Unlock()
+}
+
+func entryTestScaleInFill() *entryRecoveryResult {
+	return &entryRecoveryResult{Platform: "hyperliquid", Order: &entryRecoveryOrder{Found: true, Status: "filled", OrderID: "903", OrigSz: 0.2, ExecutedSz: 0.2, Terminal: true, FillQty: 0.2, FillNotional: 20.3, FillFee: 0.01, FillCount: 1, FillAvgPx: 101.5, FillsComplete: true}}
+}
+
+func TestClosedBarLiveScaleInRecoveryAfterAccountSyncBooksTheAddOnce(t *testing.T) {
+	env, sc := entryTestUnknownScaleIn(t)
+	env.hlAccountSync(sc, 0.6, 100.5)
+	if qty, _ := env.position(sc.ID, "BTC"); qty != 0.6 {
+		t.Fatalf("the sole-owner account sync did not copy the on-chain size into the book (%v); the fixture does not reproduce the case", qty)
+	}
+	env.mu.RLock()
+	cashBefore := env.strat(sc.ID).Cash
+	env.mu.RUnlock()
+	stub := &entryRecoveryStub{res: entryTestScaleInFill()}
+	installHLRecoveryStub(t, stub)
+	backdateEntryDeadlines(t, env, sc.ID)
+	recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now())
+
+	if got := env.intentStatuses(sc.ID); len(got) != 1 || got[0] != entryIntentCommitted {
+		t.Fatalf("intents %v, want [committed]", got)
+	}
+	qty, side := env.position(sc.ID, "BTC")
+	if math.Abs(qty-0.6) > 1e-12 || side != "long" {
+		t.Fatalf("book after recovery %v %q, want 0.6 long", qty, side)
+	}
+	env.mu.RLock()
+	pos := env.strat(sc.ID).Positions["BTC"]
+	avg, adds, cashAfter := pos.AvgCost, pos.ScaleInCount, env.strat(sc.ID).Cash
+	env.mu.RUnlock()
+	if want := (0.4*100 + 0.2*101.5) / 0.6; math.Abs(avg-want) > 1e-9 {
+		t.Fatalf("average cost %v, want the pre-add book blended with the fill %v", avg, want)
+	}
+	if adds != 1 {
+		t.Fatalf("scale-in count %d, want 1", adds)
+	}
+	if math.Abs((cashBefore-cashAfter)-0.01) > 1e-12 {
+		t.Fatalf("cash moved %v, want the 0.01 fill fee once", cashBefore-cashAfter)
+	}
+	if n := env.openTradeRows(sc.ID); n != 1 {
+		t.Fatalf("recovery wrote %d add rows, want 1", n)
+	}
+	env.hlAccountSync(sc, 0.6, 100.5)
+	recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now())
+	env = env.restart()
+	recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now())
+	if qty, _ := env.position(sc.ID, "BTC"); math.Abs(qty-0.6) > 1e-12 || stub.calls != 1 || env.openTradeRows(sc.ID) != 1 {
+		t.Fatalf("the add was applied again: qty=%v calls=%d rows=%d", qty, stub.calls, env.openTradeRows(sc.ID))
+	}
+}
+
+func TestClosedBarLiveScaleInRecoveryHoldsWhenTheBookMovedOtherwise(t *testing.T) {
+	env, sc := entryTestUnknownScaleIn(t)
+	env.hlAccountSync(sc, 0.5, 100.5)
+	stub := &entryRecoveryStub{res: entryTestScaleInFill()}
+	installHLRecoveryStub(t, stub)
+	backdateEntryDeadlines(t, env, sc.ID)
+	recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now())
+
+	if got := env.intentStatuses(sc.ID); len(got) != 1 || got[0] != entryIntentSubmitting {
+		t.Fatalf("intents %v, want the attempt held as submitting", got)
+	}
+	if qty, _ := env.position(sc.ID, "BTC"); qty != 0.5 {
+		t.Fatalf("a held recovery changed the book to %v", qty)
+	}
+	if n := env.openTradeRows(sc.ID); n != 0 {
+		t.Fatalf("a held recovery wrote %d rows", n)
+	}
+	env.mu.RLock()
+	var reason string
+	for _, in := range env.strat(sc.ID).EntryGuard.Intents {
+		reason = in.HoldReason
+	}
+	env.mu.RUnlock()
+	if !strings.Contains(reason, "position changed since the scale-in was sent") {
+		t.Fatalf("hold reason %q", reason)
+	}
+}
+
+func TestClosedBarOKXLiveEntryVenueDeadlineGatesRelease(t *testing.T) {
+	sc := StrategyConfig{ID: "okx-live", Type: "perps", Platform: "okx", Script: "shared_scripts/check_okx.py",
+		Args: []string{"breakout", "BTC", "1h", "--mode=live", "--inst-type=swap"}, ClosedBarDecisions: true,
+		Direction: DirectionLong, Capital: 1000, Leverage: 1, SizingLeverage: 1}
+	newAttempt := func(t *testing.T) (*entryTestEnv, *entryOKXVenue, time.Time, time.Time) {
+		env := openEntryTestEnv(t, newEntryTestConfig(t, sc))
+		useEntryTradeRecorder(t, env.store)
+		venue := &entryOKXVenue{res: &OKXExecuteResult{OrderOutcome: "unknown", Error: "order placement failed: network error"}}
+		venue.install(t)
+		at := time.Now().Add(-5 * time.Minute)
+		bar := at.Truncate(time.Hour).Add(-time.Hour)
+		before := time.Now()
+		env.dispatchOKX(sc, 1, 100, entryTestDecision(bar, at), at)
+		if venue.calls != 1 {
+			t.Fatalf("fixture calls %d", venue.calls)
+		}
+		opts := venue.opts[0]
+		if opts.ClientOrderID == "" || opts.ExpiresAfterMs < before.Add(okxEntryOrderExpiry).UnixMilli() {
+			t.Fatalf("the guarded OKX order carries no venue deadline: %+v", opts)
+		}
+		req, err := parseEntryIntentRequest(env.strat(sc.ID).EntryGuard.unresolvedIntent())
+		if err != nil || req.ExpiresAfterMs != opts.ExpiresAfterMs {
+			t.Fatalf("saved deadline %d (err %v) differs from the sent deadline %d", req.ExpiresAfterMs, err, opts.ExpiresAfterMs)
+		}
+		args := buildOKXExecuteArgs("BTC", "buy", 0.3, "swap", opts)
+		if !slices.Contains(args, fmt.Sprintf("--exp-time-ms=%d", opts.ExpiresAfterMs)) || !slices.Contains(args, "--client-order-id="+opts.ClientOrderID) {
+			t.Fatalf("execute argv %v does not carry the deadline", args)
+		}
+		return env, venue, at, bar
+	}
+	stubOKX := func(t *testing.T, results ...*entryRecoveryResult) *int {
+		prev := runOKXRecoverEntryFn
+		t.Cleanup(func() { runOKXRecoverEntryFn = prev })
+		calls := 0
+		runOKXRecoverEntryFn = func(script, symbol, inst, cid string) (*entryRecoveryResult, string, error) {
+			res := results[len(results)-1]
+			if calls < len(results) {
+				res = results[calls]
+			}
+			calls++
+			return res, "", nil
+		}
+		return &calls
+	}
+	missing := &entryRecoveryResult{Platform: "okx", Order: &entryRecoveryOrder{Found: false}}
+
+	t.Run("unsent order released only after the deadline and never resent before", func(t *testing.T) {
+		env, venue, at, bar := newAttempt(t)
+		calls := stubOKX(t, missing)
+		recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now())
+		if got := env.intentStatuses(sc.ID); got[0] != entryIntentSubmitting || *calls != 1 {
+			t.Fatalf("before the deadline: intents %v calls %d", got, *calls)
+		}
+		if adm := env.dispatchOKX(sc, 1, 100, entryTestDecision(bar, at.Add(time.Minute)), at.Add(time.Minute)); !adm.Held || venue.calls != 1 {
+			t.Fatalf("held attempt: held=%t sends=%d", adm.Held, venue.calls)
+		}
+		backdateEntryDeadlines(t, env, sc.ID)
+		recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now().Add(2*entryRecoveryQueryInterval))
+		if got := env.intentStatuses(sc.ID); got[0] != entryIntentNoFill {
+			t.Fatalf("after the deadline: intents %v", got)
+		}
+		if adm := env.dispatchOKX(sc, 1, 100, entryTestDecision(bar, at.Add(2*time.Minute)), at.Add(2*time.Minute)); !adm.admitted() || venue.calls != 2 {
+			t.Fatalf("released attempt: admitted=%t sends=%d reason=%q", adm.admitted(), venue.calls, adm.HoldReason)
+		}
+	})
+
+	t.Run("a fill missed once before the deadline stays held and is booked when found", func(t *testing.T) {
+		env, _, _, _ := newAttempt(t)
+		filled := &entryRecoveryResult{Platform: "okx", Order: &entryRecoveryOrder{Found: true, Status: "closed", OrderID: "okx-1", ExecutedSz: 0.3, Terminal: true, FillQty: 0.3, FillNotional: 30.3, FillFee: 0.03, FillCount: 1, FillAvgPx: 101, FillsComplete: true}}
+		calls := stubOKX(t, missing, filled)
+		recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now())
+		if got := env.intentStatuses(sc.ID); got[0] != entryIntentSubmitting {
+			t.Fatalf("a not-found read before the deadline released the attempt: %v", got)
+		}
+		recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now().Add(2*entryRecoveryQueryInterval))
+		if qty, _ := env.position(sc.ID, "BTC"); *calls != 2 || qty != 0.3 || env.intentStatuses(sc.ID)[0] != entryIntentCommitted {
+			t.Fatalf("calls=%d qty=%v intents=%v", *calls, qty, env.intentStatuses(sc.ID))
+		}
+	})
+
+	t.Run("an order the venue still shows is never released at the deadline", func(t *testing.T) {
+		env, _, _, _ := newAttempt(t)
+		stubOKX(t, &entryRecoveryResult{Platform: "okx", Order: &entryRecoveryOrder{Found: true, Status: "open", OrderID: "okx-1", Terminal: false}})
+		backdateEntryDeadlines(t, env, sc.ID)
+		recoverEntryIntents(env.cfg, env.state, env.store, &env.mu, nil, nil, time.Now())
+		if got := env.intentStatuses(sc.ID); got[0] != entryIntentSubmitting {
+			t.Fatalf("an existing order was released: %v", got)
+		}
+	})
 }

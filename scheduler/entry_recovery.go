@@ -124,7 +124,7 @@ func classifyEntryRecovery(in *entryIntent, req entryIntentRequest, res *entryRe
 		if o.FillQty > 0 {
 			return entryRecoveryVerdict{Kind: entryRecoveryHold, Reason: "the venue reports fills for the client order id but no order"}
 		}
-		if in.Provider == entryProviderHyperliquid && req.ExpiresAfterMs > 0 && now.UnixMilli() > req.ExpiresAfterMs+entryRecoveryGrace.Milliseconds() {
+		if req.ExpiresAfterMs > 0 && now.UnixMilli() > req.ExpiresAfterMs+entryRecoveryGrace.Milliseconds() {
 			ev.Outcome = "expired_unaccepted"
 			ev.Detail = fmt.Sprintf("no order or fill carries the client order id after its venue deadline %s", formatClosedBarMs(req.ExpiresAfterMs))
 			return entryRecoveryVerdict{Kind: entryRecoveryNoFill, Evidence: ev}
@@ -355,14 +355,26 @@ func bookRecoveredEntry(cfg *Config, store *StateStore, sc StrategyConfig, s *St
 	mu.Lock()
 	pos := s.Positions[in.Symbol]
 	conflict := ""
+	absorbedQty, absorbedAvg := 0.0, 0.0
 	switch req.Kind {
 	case entryIncreaseOpen.String():
 		if pos != nil && pos.Quantity > 0 {
 			conflict = fmt.Sprintf("the book already holds %.8f %s %s", pos.Quantity, pos.Side, in.Symbol)
 		}
 	case entryIncreaseAdd.String():
-		if pos == nil || pos.Side != in.TargetSide || math.Abs(pos.Quantity-req.PrevPosQty) > 1e-9*math.Max(1, req.PrevPosQty) {
+		switch {
+		case pos == nil || pos.Side != in.TargetSide:
 			conflict = "the position changed since the scale-in was sent"
+		case entryRecoveryQtyMatches(pos.Quantity, req.PrevPosQty):
+		case req.PrevPosQty > 0 && finitePositive(req.PrevAvgCost) && entryRecoveryQtyMatches(pos.Quantity, req.PrevPosQty+ev.FilledQty):
+			absorbedQty, absorbedAvg = pos.Quantity, pos.AvgCost
+			pos.Quantity = req.PrevPosQty
+			pos.AvgCost = req.PrevAvgCost
+			if logger != nil {
+				logger.Info("Live scale-in %s: the account sync already set the book to the on-chain %.8f %s (before the add %.8f, fill %.8f); the add is booked once from the pre-add book (#1769)", in.IntentID, absorbedQty, in.Symbol, req.PrevPosQty, ev.FilledQty)
+			}
+		default:
+			conflict = fmt.Sprintf("the position changed since the scale-in was sent (book %.8f, before the add %.8f, fill %.8f)", pos.Quantity, req.PrevPosQty, ev.FilledQty)
 		}
 	default:
 		conflict = fmt.Sprintf("entry kind %q has no recovery booking", req.Kind)
@@ -371,6 +383,12 @@ func bookRecoveredEntry(cfg *Config, store *StateStore, sc StrategyConfig, s *St
 		mu.Unlock()
 		noteEntryRecoveryHold(store, sc, s, mu, in, "a fill was proven but "+conflict, notifier, logger)
 		return 0
+	}
+	restoreAbsorbed := func() {
+		if absorbedQty > 0 && pos.Quantity == req.PrevPosQty {
+			pos.Quantity = absorbedQty
+			pos.AvgCost = absorbedAvg
+		}
 	}
 	fromIdx := len(s.TradeHistory)
 	endCapture := beginLiveEntrySettlement(s)
@@ -415,6 +433,7 @@ func bookRecoveredEntry(cfg *Config, store *StateStore, sc StrategyConfig, s *St
 		db, err := store.dbForStrategy(sc.ID)
 		if err != nil {
 			endCapture()
+			restoreAbsorbed()
 			mu.Unlock()
 			noteEntryRecoveryHold(store, sc, s, mu, in, "the owning state file is unavailable: "+err.Error(), notifier, logger)
 			return 0
@@ -424,6 +443,9 @@ func bookRecoveredEntry(cfg *Config, store *StateStore, sc StrategyConfig, s *St
 		trades, _, _ = executeOKXResult(sc, s, db, result, er, signalStr, ev.AvgPx, cfg.Regime, cfg, HurstGateDecision{}, logger)
 	}
 	captured := endCapture()
+	if trades == 0 {
+		restoreAbsorbed()
+	}
 	committed := commitLiveEntrySettlementLocked(store, s, in, fromIdx, captured, ev, logger)
 	mu.Unlock()
 	if committed && logger != nil {
@@ -434,6 +456,10 @@ func bookRecoveredEntry(cfg *Config, store *StateStore, sc StrategyConfig, s *St
 			sc.ID, in.Symbol, in.TargetSide, in.IntentID, ev.FilledQty, ev.AvgPx, ev.VenueOrderID))
 	}
 	return trades
+}
+
+func entryRecoveryQtyMatches(book, want float64) bool {
+	return math.Abs(book-want) <= 1e-9*math.Max(1, want)
 }
 
 func parseInt64(s string) (int64, error) {
