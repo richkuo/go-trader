@@ -1,0 +1,36 @@
+{
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "close_fraction": 0.25,
+            "profit_pct": 0.01
+          },
+          {
+            "close_fraction": 0.5,
+            "profit_pct": 0.02
+          },
+          {
+            "close_fraction": 0.75,
+            "profit_pct": 0.03
+          },
+          {
+            "close_fraction": 1.0,
+            "profit_pct": 0.04
+          }
+        ]
+      }
+    }
+  ],
+  "direction": "both",
+  "name": "trix_momentum",
+  "params": {
+    "period": 12,
+    "recursion_length": 120,
+    "signal_period": 12
+  },
+  "stop_loss_atr_mult": 1.0,
+  "type": "perps"
+}

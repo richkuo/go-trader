@@ -1968,7 +1968,7 @@ def schaff_trend_cycle_strategy(df: pd.DataFrame, fast_period: int = 23, slow_pe
         "recursion_length <= 197",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_fail",
     edge_ref="backtest/candidates/trix_momentum_1659/REPORT.md",
     short_entries=True,
     param_validator=trix_param_validator,
