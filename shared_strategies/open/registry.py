@@ -64,6 +64,7 @@ from elder_ray_pullback import elder_ray_pullback_core, validate_elder_ray_param
 from adaptive_moving_average import adaptive_moving_average_core, ama_param_validator
 from schaff_trend_cycle import schaff_trend_cycle_core, stc_param_validator
 from trix_momentum import trix_momentum_core, trix_param_validator
+from camarilla_pivot_reversal import camarilla_pivot_reversal_core, validate_camarilla_param_dict
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -1979,6 +1980,25 @@ def trix_momentum_strategy(df: pd.DataFrame, period: int = 18, signal_period: in
 
 
 @register(
+    "camarilla_pivot_reversal",
+    "RESEARCH, no-edge (#1669) \u2014 Camarilla pivot reversal: the previous complete UTC day (00:00 to 24:00) gives high H, low L and final close C, frozen for the current UTC day as S3 = C - 1.1 x (H - L) / 4, R3 = C + 1.1 x (H - L) / 4, S4 = C - 1.1 x (H - L) / 2 and R4 = C + 1.1 x (H - L) / 2. Long when the preceding closed candle closes at or below S3 and the current closed candle closes strictly above S3 and strictly below R3 with both lows strictly above S4; short when the preceding candle closes at or above R3 and the current candle closes strictly below R3 and strictly above S3 with both highs strictly below R4. Both candles are consecutive bars of the current UTC day; a jump across the opposite level holds. Every bar of the prior day must be present, on the expected_interval_ms grid (15m, 30m, 1h, 2h, 4h, 8h or 12h) and well formed, and the frame must declare its bar interval and timestamp kind, else the entry holds with a reason; levels never carry over a missing day. A check-time frame whose last bar is not the latest closed bar holds. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"expected_interval_ms": 3600000},
+    platforms=("futures",),
+    constraints=[
+        "expected_interval_ms >= 900000",
+        "expected_interval_ms <= 43200000",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/camarilla_pivot_reversal_1669/REPORT.md",
+    short_entries=True,
+    param_validator=validate_camarilla_param_dict,
+)
+def camarilla_pivot_reversal_strategy(df: pd.DataFrame, expected_interval_ms: int = 3600000) -> pd.DataFrame:
+    return camarilla_pivot_reversal_core(df, expected_interval_ms=expected_interval_ms)
+
+
+@register(
     "fisher_reversal",
     "RESEARCH, no-edge (#1646) \u2014 Fisher Transform reversal: the candle midpoint is normalized into [-1, 1] against its inclusive lookback-bar range, smoothed by x = 0.33 * normalized + 0.67 * previous x (clamped 1e-6 inside +/-1) and transformed by F = 0.5 * ln((1 + x) / (1 - x)) + 0.5 * previous F, both recurrences restarted from zero over exactly 64 bars for every timestamp (lookback + 65 bars of history); long when F crosses above its one-bar-lagged trigger after the trigger is below -extreme, short is the mirror above +extreme. Bad, gapped or flat input holds the entry. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"lookback": 9, "extreme": 1.5},
@@ -2406,6 +2426,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "elder_ray_pullback",
         "schaff_trend_cycle",
         "trix_momentum",
+        "camarilla_pivot_reversal",
         "hold",
     ],
 }

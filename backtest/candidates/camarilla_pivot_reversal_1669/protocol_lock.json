@@ -1,0 +1,6 @@
+{
+  "locked_at_utc": "2026-10-12T13:27:06Z",
+  "note": "written by run_study.py lock before any window was scored; run and parity refuse a different protocol.json",
+  "protocol_sha256": "168599acb779a5ee1fd6a5c83bae60c45e8717d1a9ccdbd61c30c4e51d21c898",
+  "source_commit": "7275d441eb3e0b2aa677acca776a949fabc9dc0f+uncommitted-changes"
+}

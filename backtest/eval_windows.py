@@ -309,6 +309,14 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         raise ValueError(f"{name} reads funding as an entry input; warmup_bars does not attach funding "
                          "to pre-window bars")
 
+    strat = reg.STRATEGY_REGISTRY.get(name)
+    if strat is None:
+        raise SystemExit(f"Unknown strategy {name!r}; available: {reg.list_strategies()}")
+    from closed_bar import bind_fixed_interval_params
+    params = bind_fixed_interval_params(strat["default_params"], params, timeframe)
+    if not profile_allocation and strat.get("param_validator") is not None:
+        reg.validate_params(name, params, strat["default_params"])
+
     manifest_window = None
     warmup_start = None
     strategy_df = None
@@ -397,11 +405,6 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
 
     if strategy_df is None:
         strategy_df = df
-    strat = reg.STRATEGY_REGISTRY.get(name)
-    if strat is None:
-        raise SystemExit(f"Unknown strategy {name!r}; available: {reg.list_strategies()}")
-    from closed_bar import bind_fixed_interval_params
-    params = bind_fixed_interval_params(strat["default_params"], params, timeframe)
     strat_params = params if params is not None else strat["default_params"]
 
     if profile_allocation:

@@ -413,17 +413,40 @@ def admit_configured_strategies(
     return references
 
 
+def check_fixed_interval_timeframe(default_params: Optional[dict], params: Optional[dict], timeframe: str) -> None:
+    from closed_bar import FIXED_DURATION_MS, FIXED_INTERVAL_PARAM
+    if FIXED_INTERVAL_PARAM not in (default_params or {}):
+        return
+    key = str(timeframe or "").strip()
+    want = FIXED_DURATION_MS.get(key)
+    if not want:
+        raise ValueError(
+            f"{FIXED_INTERVAL_PARAM} needs a fixed-duration timeframe, got {key!r} "
+            f"(supported: {', '.join(FIXED_DURATION_MS)})")
+    explicit = FIXED_INTERVAL_PARAM in (params or {})
+    value = (params or {})[FIXED_INTERVAL_PARAM] if explicit else default_params[FIXED_INTERVAL_PARAM]
+    source = "" if explicit else "registry default "
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) != float(want):
+        raise ValueError(
+            f"{source}{FIXED_INTERVAL_PARAM}={value!r} does not match timeframe {key!r} ({want} ms); "
+            f"every entry would hold on a cadence gap")
+
+
 def preflight_reference_params(
     references: Iterable[StrategyReference],
     open_params: Optional[dict],
     close_params_by_name: Optional[dict[str, dict]],
     get_strategy: Callable[[str], object],
     validate_params: Callable[[str, Optional[dict]], None],
+    timeframe: Optional[str] = None,
 ) -> None:
     open_name = next((ref.name for ref in references if ref.role == "open"), "")
     for ref in references:
         entry = get_strategy(ref.name)
-        if not isinstance(entry, dict) or entry.get("param_validator") is None:
+        if not isinstance(entry, dict):
+            continue
+        has_interval = timeframe is not None and "expected_interval_ms" in (entry.get("default_params") or {})
+        if entry.get("param_validator") is None and not has_interval:
             continue
         if ref.role == "open":
             params = open_params
@@ -434,7 +457,10 @@ def preflight_reference_params(
         else:
             params = None
         try:
-            validate_params(ref.name, dict(params or {}))
+            if entry.get("param_validator") is not None:
+                validate_params(ref.name, dict(params or {}))
+            if has_interval:
+                check_fixed_interval_timeframe(entry.get("default_params"), params, timeframe)
         except ValueError as exc:
             raise ValueError(f"{ref.role} strategy '{ref.name}' has invalid parameters: {exc}") from exc
 

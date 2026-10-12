@@ -10,8 +10,9 @@ import (
 const fixedIntervalParam = "expected_interval_ms"
 
 var fixedIntervalStrategyDefaults = map[string]int64{
-	"chande_momentum": 3_600_000,
-	"dual_thrust":     3_600_000,
+	"camarilla_pivot_reversal": 3_600_000,
+	"chande_momentum":          3_600_000,
+	"dual_thrust":              3_600_000,
 }
 
 type fixedIntervalUse struct {
