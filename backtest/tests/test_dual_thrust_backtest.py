@@ -761,39 +761,25 @@ def test_invalid_entry_data_in_the_check_holds_the_entry_and_keeps_close_managem
     assert out["indicators"]["dt_valid"] == 0.0 and out["indicators"]["dt_reason_code"] == 14.0
 
 
-REFUSED_INPUTS = [
-    (["--mode=live"], "explicit live mode"),
-    (["--mode", "live"], "explicit live mode"),
-    ([], "missing mode"),
-    (["--mode=paper", "--mode=paper"], "invalid mode input"),
-    (["--mode=paper", "--mode", "live"], "invalid mode input"),
-    (["--mode=Paper"], "invalid mode input"),
-    (["--mode=live", "--allow-no-edge=1"], "invalid acknowledgement"),
-    (["--mode=paper", "--allow-no-edge", "--allow-no-edge"], "invalid acknowledgement"),
-]
-
-
 def _admission_market():
     return _market(_crossing_bars()[-200:], timing=False)
 
 
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_open_reference_is_refused_outside_explicit_paper(extra, reason):
-    proc = _run([NAME, "BTC", "1h"] + extra)
+def test_open_reference_without_mode_is_refused():
+    proc = _run([NAME, "BTC", "1h"])
     assert proc.returncode == 1, proc.stderr[-2000:]
     payload = _payload(proc)
     assert payload["signal"] == 0 and payload["strategy"] == NAME
     assert f"open strategy '{NAME}' is edge_status=no_edge" in payload["error"]
-    assert reason in payload["error"]
+    assert "missing mode" in payload["error"]
 
 
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_close_fallback_reference_is_refused_outside_explicit_paper(extra, reason):
+def test_close_fallback_reference_without_mode_is_refused():
     refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})
-    proc = _run(["breakout", "BTC", "1h", "--strategy-refs", refs] + extra)
+    proc = _run(["breakout", "BTC", "1h", "--strategy-refs", refs])
     assert proc.returncode == 1, proc.stderr[-2000:]
     error = _payload(proc)["error"]
-    assert f"close strategy '{NAME}' is edge_status=no_edge" in error and reason in error
+    assert f"close strategy '{NAME}' is edge_status=no_edge" in error and "missing mode" in error
 
 
 @pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],

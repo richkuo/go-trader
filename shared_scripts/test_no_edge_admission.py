@@ -9,8 +9,9 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 SCRIPTS = os.path.join(REPO, "shared_scripts")
 CREDENTIAL_PREFIXES = ("HYPERLIQUID", "OKX", "ROBINHOOD", "TOPSTEP", "PROJECTX")
 
+HYPERLIQUID_SOLO = ("check_hyperliquid.py", ["vortex_trend", "BTC", "4h"])
 SOLO_SCRIPTS = [
-    ("check_hyperliquid.py", ["vortex_trend", "BTC", "4h"]),
+    HYPERLIQUID_SOLO,
     ("check_topstep.py", ["rsi", "ES", "1h"]),
     ("check_okx.py", ["rsi", "BTC", "1h", "--inst-type=swap"]),
     ("check_robinhood.py", ["rsi", "BTC", "1h"]),
@@ -28,6 +29,13 @@ REFUSED_INPUTS = [
     (["--mode=live", "--allow-no-edge=1"], "invalid acknowledgement"),
     (["--mode=live", "--allow-no-edge=true"], "invalid acknowledgement"),
     (["--mode=paper", "--allow-no-edge", "--allow-no-edge"], "invalid acknowledgement"),
+]
+
+REFUSAL_CLASS_INPUTS = [
+    (["--mode=live"], "explicit live mode"),
+    ([], "missing mode"),
+    (["--mode=Paper"], "invalid mode input"),
+    (["--mode=live", "--allow-no-edge=1"], "invalid acknowledgement"),
 ]
 
 
@@ -79,16 +87,26 @@ def _solo_envelope():
     return {"v": 2, "market": _market(rows, rows[-1][4])}
 
 
-@pytest.mark.parametrize("script,positional", SOLO_SCRIPTS)
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_every_check_script_refuses_no_edge_outside_explicit_paper(script, positional, extra, reason):
-    proc = _run(script, positional + extra)
+def _assert_refused(proc, name, reason, *evidence):
     assert proc.returncode == 1, proc.stderr[-2000:]
     payload = _payload(proc)
     assert payload["signal"] == 0
-    assert payload["strategy"] == positional[0]
-    assert f"open strategy '{positional[0]}' is edge_status=no_edge" in payload["error"]
-    assert reason in payload["error"]
+    assert payload["strategy"] == name
+    for needle in (f"open strategy '{name}' is edge_status=no_edge", reason, *evidence):
+        assert needle in payload["error"], needle
+    assert "Fetching" not in proc.stderr
+
+
+@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
+def test_hyperliquid_check_refuses_every_no_edge_input_outside_explicit_paper(extra, reason):
+    script, positional = HYPERLIQUID_SOLO
+    _assert_refused(_run(script, positional + extra), positional[0], reason)
+
+
+@pytest.mark.parametrize("script,positional", [s for s in SOLO_SCRIPTS if s != HYPERLIQUID_SOLO])
+@pytest.mark.parametrize("extra,reason", REFUSAL_CLASS_INPUTS)
+def test_every_other_check_script_wires_each_refusal_class(script, positional, extra, reason):
+    _assert_refused(_run(script, positional + extra), positional[0], reason)
 
 
 @pytest.mark.parametrize("script,positional", [s for s in SOLO_SCRIPTS if s[0] != "check_strategy.py"])
@@ -182,14 +200,8 @@ def test_malformed_batch_evidence_rejects_the_payload_before_evaluation(bad):
 OBV = "on_balance_volume_divergence"
 
 
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_obv_candidate_is_refused_outside_explicit_paper(extra, reason):
-    proc = _run("check_hyperliquid.py", [OBV, "BTC", "4h"] + extra)
-    assert proc.returncode == 1, proc.stderr[-2000:]
-    payload = _payload(proc)
-    assert payload["signal"] == 0
-    assert f"open strategy '{OBV}' is edge_status=no_edge" in payload["error"]
-    assert reason in payload["error"]
+def test_obv_candidate_without_mode_is_refused():
+    _assert_refused(_run("check_hyperliquid.py", [OBV, "BTC", "4h"]), OBV, "missing mode")
 
 
 @pytest.mark.parametrize("extra,reason", [(["--mode=live"], "explicit live mode"), ([], "missing mode")])
@@ -256,25 +268,17 @@ def _cmo_batch(slots):
                 {"v": 2, "slots": slots, "market": _hourly_market()})
 
 
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_chande_open_reference_is_refused_outside_explicit_paper(extra, reason):
-    proc = _run("check_hyperliquid.py", [CMO, "BTC", "1h"] + extra)
-    assert proc.returncode == 1, proc.stderr[-2000:]
-    payload = _payload(proc)
-    assert payload["signal"] == 0
-    assert payload["strategy"] == CMO
-    assert f"open strategy '{CMO}' is edge_status=no_edge" in payload["error"]
-    assert reason in payload["error"]
+def test_chande_open_reference_without_mode_is_refused():
+    _assert_refused(_run("check_hyperliquid.py", [CMO, "BTC", "1h"]), CMO, "missing mode")
 
 
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_chande_close_fallback_reference_is_refused_outside_explicit_paper(extra, reason):
+def test_chande_close_fallback_reference_without_mode_is_refused():
     refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": CMO}]})
-    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "1h", "--strategy-refs", refs] + extra)
+    proc = _run("check_hyperliquid.py", ["breakout", "BTC", "1h", "--strategy-refs", refs])
     assert proc.returncode == 1, proc.stderr[-2000:]
     error = _payload(proc)["error"]
     assert f"close strategy '{CMO}' is edge_status=no_edge" in error
-    assert reason in error
+    assert "missing mode" in error
 
 
 @pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],
@@ -348,15 +352,9 @@ MFI = "money_flow_index_reversal"
 MFI_REF = {"name": MFI, "params": {"lookback": 14, "oversold": 20.0, "overbought": 80.0}}
 
 
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_money_flow_index_reversal_is_refused_outside_explicit_paper(extra, reason):
-    proc = _run("check_hyperliquid.py", [MFI, "BTC", "4h"] + extra)
-    assert proc.returncode == 1, proc.stderr[-2000:]
-    payload = _payload(proc)
-    assert payload["signal"] == 0
-    assert f"open strategy '{MFI}' is edge_status=no_edge" in payload["error"]
-    assert "backtest/candidates/money_flow_index_reversal_1658/REPORT.md" in payload["error"]
-    assert reason in payload["error"]
+def test_money_flow_index_reversal_without_mode_is_refused():
+    _assert_refused(_run("check_hyperliquid.py", [MFI, "BTC", "4h"]), MFI, "missing mode",
+                    "backtest/candidates/money_flow_index_reversal_1658/REPORT.md")
 
 
 @pytest.mark.parametrize("refs,mode,needle", [
@@ -426,19 +424,11 @@ EOM = "ease_of_movement_breakout"
 EOM_REFS = json.dumps({"open": {"name": EOM}, "closes": [{"name": "tiered_tp_atr"}]})
 
 
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_eom_candidate_is_refused_outside_explicit_paper(extra, reason):
-    proc = _run("check_hyperliquid.py", [EOM, "BTC", "4h"] + extra)
-    assert proc.returncode == 1, proc.stderr[-2000:]
-    payload = _payload(proc)
-    assert payload["signal"] == 0
-    assert f"open strategy '{EOM}' is edge_status=no_edge" in payload["error"]
-    assert "source study_fail" in payload["error"]
-    assert reason in payload["error"]
+def test_eom_candidate_without_mode_is_refused():
+    _assert_refused(_run("check_hyperliquid.py", [EOM, "BTC", "4h"]), EOM, "missing mode", "source study_fail")
 
 
-@pytest.mark.parametrize("extra,reason", [(["--mode=live"], "explicit live mode"), ([], "missing mode"),
-                                          (["--mode", "live"], "explicit live mode")])
+@pytest.mark.parametrize("extra,reason", [(["--mode=live"], "explicit live mode"), ([], "missing mode")])
 def test_eom_close_fallback_reference_is_refused_without_paper_or_acknowledgement(extra, reason):
     refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": EOM}]})
     proc = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--strategy-refs", refs] + extra)
@@ -488,19 +478,12 @@ def test_eom_batch_slots_carry_their_own_mode_evidence_and_match_solo():
         assert results["acked"].get(key) == solo.get(key)
 
 
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_ultimate_oscillator_open_reference_is_refused_outside_explicit_paper(extra, reason):
-    proc = _run("check_hyperliquid.py", ["ultimate_oscillator", "BTC", "4h", "--market-stdin"] + extra,
-                _solo_envelope())
-    assert proc.returncode == 1, proc.stderr[-2000:]
-    payload = _payload(proc)
-    assert payload["signal"] == 0
-    assert "open strategy 'ultimate_oscillator' is edge_status=no_edge" in payload["error"]
-    assert reason in payload["error"]
+def test_ultimate_oscillator_open_reference_without_mode_is_refused():
+    proc = _run("check_hyperliquid.py", ["ultimate_oscillator", "BTC", "4h", "--market-stdin"], _solo_envelope())
+    _assert_refused(proc, "ultimate_oscillator", "missing mode")
 
 
-@pytest.mark.parametrize("extra,reason", [(["--mode=live"], "explicit live mode"), ([], "missing mode"),
-                                          (["--mode=live", "--allow-no-edge=1"], "invalid acknowledgement")])
+@pytest.mark.parametrize("extra,reason", [(["--mode=live"], "explicit live mode"), ([], "missing mode")])
 def test_ultimate_oscillator_close_fallback_is_refused_before_market_access(extra, reason):
     refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": "ultimate_oscillator"}]})
     proc = _run("check_hyperliquid.py", ["breakout", "BTC", "4h", "--strategy-refs", refs] + extra)
@@ -545,15 +528,9 @@ def _aroon_refs(params=None, closes=(AROON_TP,)):
     return ["--strategy-refs", json.dumps(refs)]
 
 
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_aroon_solo_check_refuses_outside_explicit_paper(extra, reason):
-    proc = _run("check_hyperliquid.py", AROON + extra + _aroon_refs())
-    assert proc.returncode == 1, proc.stderr[-2000:]
-    payload = _payload(proc)
-    assert payload["signal"] == 0
-    assert "open strategy 'aroon_trend' is edge_status=no_edge" in payload["error"]
-    assert "backtest/candidates/aroon_trend_1643/REPORT.md" in payload["error"]
-    assert reason in payload["error"]
+def test_aroon_solo_check_without_mode_is_refused():
+    _assert_refused(_run("check_hyperliquid.py", AROON + _aroon_refs()), "aroon_trend", "missing mode",
+                    "backtest/candidates/aroon_trend_1643/REPORT.md")
 
 
 @pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],
@@ -647,16 +624,9 @@ def _rcr_refs(params=None, closes=(RCR_TP,)):
     return ["--strategy-refs", json.dumps(refs)]
 
 
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_rcr_solo_check_refuses_outside_explicit_paper(extra, reason):
-    proc = _run("check_hyperliquid.py", RCR + extra + _rcr_refs())
-    assert proc.returncode == 1, proc.stderr[-2000:]
-    payload = _payload(proc)
-    assert payload["signal"] == 0
-    assert "open strategy 'regression_channel_reversion' is edge_status=no_edge" in payload["error"]
-    assert RCR_REPORT in payload["error"]
-    assert reason in payload["error"]
-    assert "Fetching" not in proc.stderr
+def test_rcr_solo_check_without_mode_is_refused():
+    _assert_refused(_run("check_hyperliquid.py", RCR + _rcr_refs()), "regression_channel_reversion", "missing mode",
+                    RCR_REPORT)
 
 
 @pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],

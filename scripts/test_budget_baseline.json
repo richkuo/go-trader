@@ -58,5 +58,9 @@
     "shared_scripts/test_regime_wiring.py::test_adx_classifier_never_emits_hurst_metric",
     "shared_scripts/test_regime_wiring.py::test_apply_strategy_does_not_crash_on_regime_injection",
     "shared_scripts/test_regime_wiring.py::test_composite_json_never_contains_nan_token_when_hurst_omitted"
+  ],
+  "refusal_grid_tests": [
+    "shared_scripts/test_no_edge_admission.py::test_every_other_check_script_wires_each_refusal_class",
+    "shared_scripts/test_no_edge_admission.py::test_hyperliquid_check_refuses_every_no_edge_input_outside_explicit_paper"
   ]
 }

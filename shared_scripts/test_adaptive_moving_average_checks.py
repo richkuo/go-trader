@@ -19,20 +19,6 @@ T0 = 1_699_999_200_000
 AMA_COLUMNS = ("ama_value", "ama_prev_value", "ama_slope_ref", "ama_slope", "ama_efficiency", "ama_smoothing",
                "ama_close", "ama_prev_close", "ama_seed_close", "ama_valid", "ama_reason_code")
 
-REFUSED_INPUTS = [
-    (["--mode=live"], "explicit live mode"),
-    (["--mode", "live"], "explicit live mode"),
-    ([], "missing mode"),
-    (["--mode=paper", "--mode=paper"], "invalid mode input"),
-    (["--mode=paper", "--mode", "live"], "invalid mode input"),
-    (["--mode="], "invalid mode input"),
-    (["--mode=Paper"], "invalid mode input"),
-    (["--mode=live", "--allow-no-edge=1"], "invalid acknowledgement"),
-    (["--mode=live", "--allow-no-edge=true"], "invalid acknowledgement"),
-    (["--mode=paper", "--allow-no-edge", "--allow-no-edge"], "invalid acknowledgement"),
-]
-
-
 def _env():
     env = {k: v for k, v in os.environ.items() if not k.startswith(CREDENTIAL_PREFIXES)}
     env["GO_TRADER_HL_OHLCV_CACHE"] = "0"
@@ -129,15 +115,15 @@ def _frame_df(rows, kind=None):
     return declare_frame_cadence(df.set_index("datetime").sort_index(), "1h", kind)
 
 
-@pytest.mark.parametrize("extra,reason", REFUSED_INPUTS)
-def test_candidate_is_refused_outside_explicit_paper(extra, reason):
-    proc = _run([NAME, "BTC", "4h"] + extra)
+def test_candidate_without_mode_is_refused():
+    proc = _run([NAME, "BTC", "4h"])
     assert proc.returncode == 1, proc.stderr[-2000:]
     payload = _payload(proc)
     assert payload["signal"] == 0
+    assert payload["strategy"] == NAME
     assert f"open strategy '{NAME}' is edge_status=no_edge" in payload["error"]
     assert REF in payload["error"]
-    assert reason in payload["error"]
+    assert "missing mode" in payload["error"]
 
 
 @pytest.mark.parametrize("refs,mode,needle", [

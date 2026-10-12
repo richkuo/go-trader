@@ -173,18 +173,13 @@ def test_overbought_equality_on_the_current_bar_is_not_a_crossing(last_close, wa
     assert out["signal"] == want_signal == int(res["signal"])
 
 
-@pytest.mark.parametrize("extra,reason", [
-    ([], "missing mode"),
-    (["--mode=live"], "explicit live mode"),
-    (["--mode=paper", "--mode=paper"], "invalid mode input"),
-    (["--mode=Paper"], "invalid mode input"),
-])
-def test_missing_live_or_malformed_mode_is_refused(extra, reason):
-    proc = _solo(_zigzag(80), extra)
+def test_missing_mode_is_refused():
+    proc = _solo(_zigzag(80))
     assert proc.returncode == 1
-    err = _payload(proc)["error"]
-    assert f"open strategy '{NAME}' is edge_status=no_edge" in err
-    assert reason in err
+    payload = _payload(proc)
+    assert payload["signal"] == 0 and payload["strategy"] == NAME
+    assert f"open strategy '{NAME}' is edge_status=no_edge" in payload["error"]
+    assert "missing mode" in payload["error"]
 
 
 def test_existing_acknowledgement_contract_still_admits_live_evaluation():

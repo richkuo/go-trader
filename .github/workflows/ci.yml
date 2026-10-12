@@ -186,10 +186,10 @@ jobs:
             | xargs -0 uv run python3 -m py_compile
 
       - name: Run tests
-        run: uv run pytest -n auto
+        run: uv run pytest -n auto --durations=25
 
       - name: Run shared_scripts tests (outside testpaths)
-        run: uv run pytest shared_scripts/
+        run: uv run pytest shared_scripts/ -n auto --durations=25
 
       - name: Test budget
         run: uv run python3 scripts/check_test_budget.py
