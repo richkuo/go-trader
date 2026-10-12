@@ -70,6 +70,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"tema_cross_bd":                {"fee_audit_m5", noEdgeRefLimbo},
 	"triple_ema":                   {"fee_audit_m5", noEdgeRefFeeAudit},
 	"triple_ema_bidir":             {"fee_audit_m5", noEdgeRefLimbo},
+	"trix_momentum":                {"unvalidated", "backtest/candidates/trix_momentum_1659/REPORT.md"},
 	"ultimate_oscillator":          {"study_inconclusive", "backtest/candidates/ultimate_oscillator_1664/REPORT.md"},
 	"vol_momentum":                 {"study_fail", "docs/research/vol_momentum_1021.md"},
 	"volume_weighted":              {"fee_audit_m5", noEdgeRefFeeAudit},

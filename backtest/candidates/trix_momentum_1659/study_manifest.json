@@ -1,0 +1,181 @@
+{
+  "data_reuse": "no new acquisition: the inputs are the hash-pinned frozen files of study chande_momentum_1661, read in place; no copies",
+  "files": {
+    "BTC_1h_candles.csv.gz": {
+      "exchange": "binanceus",
+      "first_ms": 1672531200000,
+      "gap_count": 2,
+      "kind": "candles",
+      "last_ms": 1790809200000,
+      "missing_bars": 16,
+      "rows": 32840,
+      "sha256": "d107c60f72363372d03273ba6439ca42a0d867a9089c5de171e9306af3ba2d17",
+      "symbol": "BTC/USDT",
+      "timeframe": "1h",
+      "venue_absent_hour_count": 0
+    },
+    "BTC_4h_candles.csv.gz": {
+      "exchange": "binanceus",
+      "first_ms": 1672531200000,
+      "gap_count": 2,
+      "kind": "candles",
+      "last_ms": 1790798400000,
+      "missing_bars": 3,
+      "rows": 8211,
+      "sha256": "dd0758a2862955eb53b060df5fbace3e98f8bc2a3e0254842bca0d36c96f106f",
+      "symbol": "BTC/USDT",
+      "timeframe": "4h",
+      "venue_absent_hour_count": 0
+    },
+    "BTC_funding.csv.gz": {
+      "coin": "BTC",
+      "coverage": [
+        [
+          1672531200000,
+          1790812800000
+        ]
+      ],
+      "exchange": "hyperliquid",
+      "first_ms": 1683849600048,
+      "first_venue_rate_ms": 1683849600048,
+      "kind": "funding",
+      "last_ms": 1790809200017,
+      "pre_venue_hours": 3144,
+      "rows": 29142,
+      "sha256": "520fd979d5594b4c2fb950cd52aa327749a124d9971a59ec3419752dd24a27f8",
+      "stored_coverage_intervals": [
+        [
+          1682899200000,
+          1685462400053
+        ],
+        [
+          1685491200000,
+          1790812800000
+        ]
+      ],
+      "venue_absent_hour_count": 570
+    },
+    "ETH_1h_candles.csv.gz": {
+      "exchange": "binanceus",
+      "first_ms": 1672531200000,
+      "gap_count": 2,
+      "kind": "candles",
+      "last_ms": 1790809200000,
+      "missing_bars": 16,
+      "rows": 32840,
+      "sha256": "59d08735aecb22b63bab8189c7c32b11101e80da42b2ec724f39e308548b7913",
+      "symbol": "ETH/USDT",
+      "timeframe": "1h",
+      "venue_absent_hour_count": 0
+    },
+    "ETH_4h_candles.csv.gz": {
+      "exchange": "binanceus",
+      "first_ms": 1672531200000,
+      "gap_count": 2,
+      "kind": "candles",
+      "last_ms": 1790798400000,
+      "missing_bars": 3,
+      "rows": 8211,
+      "sha256": "03df63c5dc65ba532a252e8c00118986321fcb124934bb7536e842d678fc9dd8",
+      "symbol": "ETH/USDT",
+      "timeframe": "4h",
+      "venue_absent_hour_count": 0
+    },
+    "ETH_funding.csv.gz": {
+      "coin": "ETH",
+      "coverage": [
+        [
+          1672531200000,
+          1790812800000
+        ]
+      ],
+      "exchange": "hyperliquid",
+      "first_ms": 1683849600048,
+      "first_venue_rate_ms": 1683849600048,
+      "kind": "funding",
+      "last_ms": 1790809200017,
+      "pre_venue_hours": 3144,
+      "rows": 29142,
+      "sha256": "4b7694d8fc26cb7245ffa882cbdcb2d571d17f3a9f1abd6832fb0deed4985b41",
+      "stored_coverage_intervals": [
+        [
+          1682899200000,
+          1685462400053
+        ],
+        [
+          1685491200000,
+          1790812800000
+        ]
+      ],
+      "venue_absent_hour_count": 570
+    },
+    "SOL_1h_candles.csv.gz": {
+      "exchange": "binanceus",
+      "first_ms": 1672531200000,
+      "gap_count": 2,
+      "kind": "candles",
+      "last_ms": 1790809200000,
+      "missing_bars": 16,
+      "rows": 32840,
+      "sha256": "e4e5c15ffcce696253d78dc3b3c3448725e8cf3a0114a9fbc4b1df5f2a0efeec",
+      "symbol": "SOL/USDT",
+      "timeframe": "1h",
+      "venue_absent_hour_count": 0
+    },
+    "SOL_4h_candles.csv.gz": {
+      "exchange": "binanceus",
+      "first_ms": 1672531200000,
+      "gap_count": 2,
+      "kind": "candles",
+      "last_ms": 1790798400000,
+      "missing_bars": 3,
+      "rows": 8211,
+      "sha256": "c1e5775973d00b0b07597da3db4213d62378ef566fe2e4a3b619612b59abc8ab",
+      "symbol": "SOL/USDT",
+      "timeframe": "4h",
+      "venue_absent_hour_count": 0
+    },
+    "SOL_funding.csv.gz": {
+      "coin": "SOL",
+      "coverage": [
+        [
+          1672531200000,
+          1790812800000
+        ]
+      ],
+      "exchange": "hyperliquid",
+      "first_ms": 1683849600048,
+      "first_venue_rate_ms": 1683849600048,
+      "kind": "funding",
+      "last_ms": 1790809200017,
+      "pre_venue_hours": 3144,
+      "rows": 29142,
+      "sha256": "b29de7625f7484f0971336e31ba52f5b042127e4eef4d8ee1e4554994383cd2b",
+      "stored_coverage_intervals": [
+        [
+          1682899200000,
+          1685462400053
+        ],
+        [
+          1685491200000,
+          1790812800000
+        ]
+      ],
+      "venue_absent_hour_count": 570
+    }
+  },
+  "frozen_at_utc": "2026-10-12T13:15:30Z",
+  "protocol_sha256": "5fcbba6e07839a590dde0a181a02968033c906405f5eefa6646dfb92359b77c3",
+  "source_commit": "7275d441eb3e0b2aa677acca776a949fabc9dc0f+uncommitted-changes",
+  "source_manifest": {
+    "acquired_at_utc": "2026-10-11T03:16:15Z",
+    "acquisition_start": "2023-01-01",
+    "candles": "ccxt binanceus fetch_ohlcv through shared_tools/data_fetcher.fetch_full_history; closed bars with opening time >= acquisition_start and < pinned_end",
+    "funding": "Hyperliquid fundingHistory through shared_tools/funding_fetcher.load_cached_funding in 30-day chunks; rows with timestamp >= acquisition_start and < pinned_end. Every hour after the venue's first rate has a rate or a strict-download venue-absent mark; the pre_venue_hours before it have neither and stay unpriced (the helper never refills hours it cannot bracket), so a leg holding a position then is funding-incomplete. The frozen coverage is the whole span; stored_coverage_intervals records the helper's own intervals",
+    "path": "backtest/candidates/chande_momentum_1661/study_manifest.json",
+    "pinned_end": "2026-10-01",
+    "sha256": "f5bd9d2672abf5880b8af57cb01a0ffb70b21ccdf5eab464a9d351e121d580e3",
+    "source_commit": "0715416732ccb93275e81e3e7a096d887a1bdfed"
+  },
+  "study": "trix_momentum_1659"
+}

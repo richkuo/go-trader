@@ -1,0 +1,265 @@
+{
+  "study": "trix_momentum_1659",
+  "issue": 1659,
+  "status": "frozen before any window was scored; run_study.py records this file's sha256 in results.json and refuses to run when this file changed after freeze or when the frozen inputs differ from the pins below",
+  "candidate": "trix_momentum",
+  "registry": "futures",
+  "fee_platform": "hyperliquid",
+  "strategy_type": "perps",
+  "capital_usd": 1000.0,
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "profit_pct": 0.01,
+            "close_fraction": 0.25
+          },
+          {
+            "profit_pct": 0.02,
+            "close_fraction": 0.5
+          },
+          {
+            "profit_pct": 0.03,
+            "close_fraction": 0.75
+          },
+          {
+            "profit_pct": 0.04,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "close_note": "the tiered_tp_pct default ladder (shared_strategies/close/tiered_tp_pct.py DEFAULT_TIERS) written out explicitly, so user close defaults cannot change it; the same ladder is in the paper configurations and the Discord add path",
+  "stop_loss_atr_mult": 1.0,
+  "intrabar_resolution": "ohlc_walk",
+  "funding_mode": "charge",
+  "warmup_bars": 300,
+  "warmup_rule": "every leg (candidate arms, comparators, incumbents) computes indicators and ATR on the 300 consecutive bars before the window start and scores only the window from a flat book (eval_windows.run_leg warmup_bars); 300 exceeds the largest candidate history requirement (recursion_length 192 + 2 = 194 rows) and the 200-bar EMA of the momentum_pro incumbent; a missing pre-window bar is an error",
+  "cost_model": {
+    "commission_pct": 0.00045,
+    "slippage_pct": 0.0005,
+    "source": "Backtester(platform='hyperliquid') defaults: Hyperliquid taker fee per side and a flat slippage per fill; the spread is not modeled separately (the flat slippage stands in for half-spread plus impact) and there is no lot-size or venue-minimum model on the M1 cached path",
+    "stress": {
+      "slippage_multiplier": 2.0
+    }
+  },
+  "candle_source": "binanceus spot USDT pairs (M1 non-manifest cached path), a proxy for Hyperliquid perpetual prices",
+  "funding_source": "Hyperliquid fundingHistory, frozen by study chande_momentum_1661",
+  "pinned_end": "2026-10-01",
+  "symbols": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT"
+  ],
+  "groups": [
+    "1h",
+    "4h"
+  ],
+  "windows": {
+    "is": [
+      "2025-06-10",
+      "2026-01-01"
+    ],
+    "2023H2": [
+      "2023-07-01",
+      "2024-01-01"
+    ],
+    "2024": [
+      "2024-01-01",
+      "2025-01-01"
+    ],
+    "2025H1a": [
+      "2025-01-01",
+      "2025-06-10"
+    ],
+    "oos": [
+      "2026-01-01",
+      "2026-10-01"
+    ]
+  },
+  "training_window": "is",
+  "held_out_windows": [
+    "2023H2",
+    "2024",
+    "2025H1a",
+    "oos"
+  ],
+  "window_notes": "Study-local finite copies of the M1 windows in backtest/eval_windows.py WINDOWS; the shared M1 defaults are unchanged. is is the M1 training window. oos is the open-ended M1 window pinned to end 2026-10-01 (the frozen data end). 2023H2 replaces the M1 2023 window: the frozen candles start 2023-01-01, so 2023-01-01 has no 300-bar warmup, and Hyperliquid funding starts 2023-05-12, so held hours before it are unpriced. 2025H1a is the M1 2025H1 window cut at 2025-06-10 so it does not overlap the is training window. The five windows are disjoint. The candles were scored before by studies chande_momentum_1661, adaptive_moving_average_1641 and dual_thrust_1642 for other strategies; this candidate was never scored on them, but the held-out windows are retrospective data, not live forward evidence.",
+  "arms": {
+    "candidate_both": {
+      "name": "trix_momentum",
+      "direction": "both"
+    },
+    "candidate_long": {
+      "name": "trix_momentum",
+      "direction": "long"
+    },
+    "macd": {
+      "name": "macd",
+      "direction": "long"
+    },
+    "tema_cross": {
+      "name": "tema_cross",
+      "direction": "long"
+    }
+  },
+  "candidate_arms": [
+    "candidate_both",
+    "candidate_long"
+  ],
+  "comparator_arms": [
+    "macd",
+    "tema_cross"
+  ],
+  "matched_long_arm": "candidate_long",
+  "side_population_note": "macd and tema_cross declare short_entries=False: their negative signal exits a long and never opens a short, so they run long-only with their registered signals. candidate_long is the candidate under the same direction, close, stop and costs; candidate_both is reported and gated separately.",
+  "seed_params": {
+    "period": 18,
+    "signal_period": 9,
+    "recursion_length": 120
+  },
+  "grids": {
+    "trix_momentum": {
+      "period": [
+        12,
+        18
+      ],
+      "signal_period": [
+        6,
+        9,
+        12
+      ],
+      "recursion_length": [
+        120,
+        144,
+        192
+      ]
+    },
+    "macd": {
+      "fast_period": [
+        8,
+        12,
+        16
+      ],
+      "slow_period": [
+        21,
+        26,
+        34
+      ],
+      "signal_period": [
+        7,
+        9,
+        12
+      ]
+    },
+    "tema_cross": {
+      "short_period": [
+        3,
+        5,
+        8
+      ],
+      "mid_period": [
+        10,
+        13,
+        18
+      ],
+      "long_period": [
+        25,
+        34,
+        50
+      ]
+    }
+  },
+  "grid_note": "each grid is the backtest/optimizer.py DEFAULT_PARAM_RANGES entry",
+  "selection_rule": {
+    "window": "is",
+    "per_arm": true,
+    "eligible": "every symbol leg ran, no leg is funding-incomplete, and the three symbol legs together have at least min_training_clusters independent position clusters",
+    "min_training_clusters": 10,
+    "rank": "highest mean drawdown-adjusted return over the three symbol legs, then highest mean Sharpe, then the smallest parameter tuple in grid key order",
+    "fallback": "seed parameters (candidate arms) or registry defaults (comparators) when nothing is eligible; a fallback selection is recorded and cannot support a pass"
+  },
+  "cluster_rule": "positions from every symbol leg of one arm in one window are sorted by entry time; a position whose entry is at or before the latest exit of the current cluster joins it, else it starts a new cluster; partial closes of one opening event are one position",
+  "verdict_rules": {
+    "scope": "each timeframe group gets its own verdict over the four held-out windows; the study verdict is pass only if both groups pass, fail only if both fail, else inconclusive",
+    "evidence_gates": {
+      "all_windows_scorable": "every leg of every arm (and the x2 slippage candidate legs) ran and is funding-complete, and every M1 incumbent median used for the reference is funding-complete, in every held-out window",
+      "selections_not_fallback": "every arm was selected from eligible training rows",
+      "candidate_clusters": "each candidate arm has at least min_held_out_clusters independent clusters over the held-out windows",
+      "both_sides": "candidate_both has at least one long and one short position over the held-out windows",
+      "integration_parity": "parity_results.json is clean for every paper configuration run and was produced from the same frozen manifest",
+      "close_capability": "validate_close_capabilities reports the close owner eligible with no approximation or refusal on Hyperliquid perps"
+    },
+    "min_held_out_clusters": 30,
+    "pass_conditions": {
+      "candidate_both_net_positive_base": "summed candidate_both net PnL after fees and funding over every held-out leg > 0",
+      "candidate_both_net_positive_stress": "the same sum at 2x slippage > 0",
+      "candidate_long_net_positive_base": "summed candidate_long net PnL over every held-out leg > 0",
+      "candidate_long_net_positive_stress": "the same sum at 2x slippage > 0",
+      "candidate_long_beats_macd_sharpe": "candidate_long mean Sharpe over every held-out leg > macd mean Sharpe over the same legs",
+      "candidate_long_beats_macd_ddadj": "candidate_long mean drawdown-adjusted return > macd's",
+      "candidate_long_beats_tema_cross_sharpe": "candidate_long mean Sharpe > tema_cross's",
+      "candidate_long_beats_tema_cross_ddadj": "candidate_long mean drawdown-adjusted return > tema_cross's"
+    },
+    "inconclusive": "any evidence gate is false",
+    "fail": "every evidence gate is true and any pass condition is false",
+    "pass": "every evidence gate and every pass condition is true",
+    "descriptive_only": "the M1 incumbent-relative verdict per window, concentration (largest position share of positive position PnL), turnover, fees, funding, parameter stability, unsuccessful variants and the continuous-history reference are reported and never change the verdict",
+    "edge_effect": "every outcome keeps edge_status no_edge; pass keeps edge_source unvalidated pending a separate reviewed edge decision, fail records study_fail, inconclusive records study_inconclusive"
+  },
+  "continuous_reference": {
+    "label": "continuous-history TRIX (all three EMAs and the signal line seeded once at the first bar of the warmed leg frame and never restarted); a descriptive reference only, it never makes a decision",
+    "compare": "on every held-out window bar of every symbol and group, with the selected candidate_both parameters: max and median absolute oscillator and signal-line difference, and the count of bars whose entry decision differs"
+  },
+  "parity": {
+    "paper_configs": [
+      "paper_parity_1h.json",
+      "paper_parity_4h.json"
+    ],
+    "spans": {
+      "1h": [
+        "2026-07-01",
+        "2026-10-01"
+      ],
+      "4h": [
+        "2025-10-01",
+        "2026-10-01"
+      ]
+    },
+    "windows": [
+      200,
+      0
+    ],
+    "batched": [
+      false,
+      true
+    ]
+  },
+  "data": {
+    "source_study": "chande_momentum_1661",
+    "source_dir": "backtest/candidates/chande_momentum_1661/data",
+    "source_manifest": "backtest/candidates/chande_momentum_1661/study_manifest.json",
+    "source_manifest_sha256": "f5bd9d2672abf5880b8af57cb01a0ffb70b21ccdf5eab464a9d351e121d580e3",
+    "files": {
+      "BTC_1h_candles.csv.gz": "d107c60f72363372d03273ba6439ca42a0d867a9089c5de171e9306af3ba2d17",
+      "BTC_4h_candles.csv.gz": "dd0758a2862955eb53b060df5fbace3e98f8bc2a3e0254842bca0d36c96f106f",
+      "BTC_funding.csv.gz": "520fd979d5594b4c2fb950cd52aa327749a124d9971a59ec3419752dd24a27f8",
+      "ETH_1h_candles.csv.gz": "59d08735aecb22b63bab8189c7c32b11101e80da42b2ec724f39e308548b7913",
+      "ETH_4h_candles.csv.gz": "03df63c5dc65ba532a252e8c00118986321fcb124934bb7536e842d678fc9dd8",
+      "ETH_funding.csv.gz": "4b7694d8fc26cb7245ffa882cbdcb2d571d17f3a9f1abd6832fb0deed4985b41",
+      "SOL_1h_candles.csv.gz": "e4e5c15ffcce696253d78dc3b3c3448725e8cf3a0114a9fbc4b1df5f2a0efeec",
+      "SOL_4h_candles.csv.gz": "c1e5775973d00b0b07597da3db4213d62378ef566fe2e4a3b619612b59abc8ab",
+      "SOL_funding.csv.gz": "b29de7625f7484f0971336e31ba52f5b042127e4eef4d8ee1e4554994383cd2b"
+    }
+  },
+  "limitations": [
+    "Binance US spot candles stand in for Hyperliquid perpetual prices; proxy results cannot establish Hyperliquid profitability or venue execution parity.",
+    "Costs are the Backtester Hyperliquid taker fee (0.045% per side) and a flat 0.05% slippage per fill; the spread is not modeled separately and there is no lot-size or venue-minimum model on this path.",
+    "Funding is charged from frozen Hyperliquid rates (--funding charge); a leg with unpriced held hours is incomplete and cannot count as economic evidence.",
+    "No venue execution manifest is used; the frozen offline manifest path (fees, spread, slippage, lots and minimums) is available in eval_windows.py but this study does not include venue evidence.",
+    "No higher-timeframe filter is used."
+  ]
+}

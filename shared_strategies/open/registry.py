@@ -63,6 +63,7 @@ from fisher_reversal import fisher_reversal_core
 from elder_ray_pullback import elder_ray_pullback_core, validate_elder_ray_param_dict
 from adaptive_moving_average import adaptive_moving_average_core, ama_param_validator
 from schaff_trend_cycle import schaff_trend_cycle_core, stc_param_validator
+from trix_momentum import trix_momentum_core, trix_param_validator
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -1954,6 +1955,30 @@ def schaff_trend_cycle_strategy(df: pd.DataFrame, fast_period: int = 23, slow_pe
 
 
 @register(
+    "trix_momentum",
+    "RESEARCH, no-edge (#1659) \u2014 triple-smoothed momentum (TRIX) crossover entries: for every endpoint the three chained close EMAs (weight 2 / (period + 1)) restart from the close recursion_length bars back and apply exactly recursion_length updates; the oscillator is 100 times the one-bar fractional change of the third EMA and the signal line is an EMA (weight 2 / (signal_period + 1)) of that local oscillator seeded with its first value. The previous endpoint uses its own trailing run, so a decision reads recursion_length + 2 bars (at most 199). Long when oscillator minus signal line is strictly positive, was at or below zero on the previous bar, and the oscillator is strictly positive; short is the exact mirror. Needs declared bar cadence and recursion_length >= 6 * period; bad candles, timestamp defects, cadence gaps and invalid derived values inside the window hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"period": 18, "signal_period": 9, "recursion_length": 120},
+    platforms=("futures",),
+    constraints=[
+        "period >= 1",
+        "period <= 32",
+        "signal_period >= 1",
+        "signal_period < recursion_length",
+        "recursion_length >= 6",
+        "recursion_length <= 197",
+    ],
+    edge_status="no_edge",
+    edge_source="unvalidated",
+    edge_ref="backtest/candidates/trix_momentum_1659/REPORT.md",
+    short_entries=True,
+    param_validator=trix_param_validator,
+)
+def trix_momentum_strategy(df: pd.DataFrame, period: int = 18, signal_period: int = 9,
+                           recursion_length: int = 120) -> pd.DataFrame:
+    return trix_momentum_core(df, period=period, signal_period=signal_period, recursion_length=recursion_length)
+
+
+@register(
     "fisher_reversal",
     "RESEARCH, no-edge (#1646) \u2014 Fisher Transform reversal: the candle midpoint is normalized into [-1, 1] against its inclusive lookback-bar range, smoothed by x = 0.33 * normalized + 0.67 * previous x (clamped 1e-6 inside +/-1) and transformed by F = 0.5 * ln((1 + x) / (1 - x)) + 0.5 * previous F, both recurrences restarted from zero over exactly 64 bars for every timestamp (lookback + 65 bars of history); long when F crosses above its one-bar-lagged trigger after the trigger is below -extreme, short is the mirror above +extreme. Bad, gapped or flat input holds the entry. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"lookback": 9, "extreme": 1.5},
@@ -2380,6 +2405,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "dual_thrust",
         "elder_ray_pullback",
         "schaff_trend_cycle",
+        "trix_momentum",
         "hold",
     ],
 }
