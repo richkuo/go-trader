@@ -398,6 +398,16 @@ func main() {
 		pruned = true
 	}
 
+	if !readOnlyReport {
+		if err := store.LoadEntryGuards(state, cfg.Strategies, persistedStrategyIDs); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to load closed-bar entry records: %v\n", err)
+			os.Exit(1)
+		}
+		for _, line := range entryGuardStartupLines(state) {
+			fmt.Println(line)
+		}
+	}
+
 	startupPartitions := activePartitions(cfg.Strategies)
 	liveCount, paperCount := scopeStrategyCounts(cfg.Strategies)
 	fmt.Printf("[config] portfolio scopes: live=%d paper=%d strategies\n", liveCount, paperCount)
@@ -877,6 +887,8 @@ func main() {
 		for _, ma := range limitAlerts {
 			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier, cfg.Regime)
 		}
+
+		recoverEntryIntents(cfg, state, store, &mu, notifier, logMgr, time.Now())
 
 		resolveCapitalPct(cfg.Strategies)
 
@@ -2160,22 +2172,43 @@ func main() {
 								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
 							}
+							entryAdm := admitClosedBarEntry(sc, stratState, &mu, result.Symbol, result.StrategyDecisionFields, result.Signal, result.CloseFraction, okxPosQty, okxPosSide, time.Now())
+							logEntryAdmission(entryAdm, signalStr, logger)
+							applyEntryAdmission(entryAdm, &result.Signal, &result.CloseFraction)
+							result.CloseReduceOnly = entryAdm.CloseOnly
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							mu.Unlock()
 							var execResult *OKXExecuteResult
+							var okxEntryIntent *entryIntent
 							liveExecFailed := false
-							if okxIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage, hurstDecision, notifier, logger); ok2 {
+							if okxIsLive(sc.Args) && result.Signal != 0 && entryAdm.admitted() {
+								in, reserveErr := reserveLiveEntryIntent(store, sc, stratState, &mu, entryAdm, entryProviderOKX, entryIntentRequest{Kind: entryAdm.Kind.String(), Signal: result.Signal, PrevPosQty: okxPosQty, PrevPosSide: okxPosSide, PrevAvgCost: okxAvgCost, Price: price, EntryATR: indicatorsATRValue(result.Indicators)}, time.Now())
+								if reserveErr != nil {
+									logger.Warn("Closed-bar entry: %s held — the live attempt could not be saved before sending: %v (#1769)", signalStr, reserveErr)
+									liveExecFailed = true
+								} else {
+									okxEntryIntent = in
+									result.EntrySubmitGate = okxEntrySubmitGateFor(store, stratState, &mu, in)
+								}
+							}
+							if okxIsLive(sc.Args) && result.Signal != 0 && !liveExecFailed {
+								er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage, hurstDecision, notifier, logger)
+								if ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
+									outcome, outcomeDetail := okxExecuteOutcome(er)
+									finishFailedLiveEntry(store, sc, stratState, &mu, okxEntryIntent, result.OrderSubmitted, outcome, outcomeDetail, notifier, logger)
 								}
 							}
 							if !liveExecFailed {
 								var cashAlert string
 								mu.Lock()
+								entryAt := len(stratState.TradeHistory)
+								endEntryBooking := beginEntryBookingLocked(stratState, entryAdm, okxEntryIntent)
 								trades, detail, cashAlert = executeOKXResult(sc, stratState, stratDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
+								finishEntryBookingLocked(store, stratState, entryAdm, okxEntryIntent, entryAt, endEntryBooking(), okxEntryEvidence(execResult), logger)
 								mu.Unlock()
 								if cashAlert != "" {
 									notifySpotLiveCashOverBudget(notifier, cashAlert)
@@ -2294,9 +2327,15 @@ func main() {
 							logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 							result.Signal = 0
 						}
+						entryAdm := admitClosedBarEntry(sc, stratState, &mu, result.Symbol, result.StrategyDecisionFields, result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, time.Now())
+						logEntryAdmission(entryAdm, signalStr, logger)
+						applyEntryAdmission(entryAdm, &result.Signal, &result.CloseFraction)
 						mu.Lock()
 						syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
+						entryAt := len(stratState.TradeHistory)
+						endEntryBooking := beginEntryBookingLocked(stratState, entryAdm, nil)
 						trades, detail = executeSpotResult(sc, stratState, stratDB, result, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
+						finishEntryBookingLocked(store, stratState, entryAdm, nil, entryAt, endEntryBooking(), entryIntentEvidence{}, logger)
 						mu.Unlock()
 					}
 				case "options":
@@ -2401,22 +2440,43 @@ func main() {
 								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
 							}
+							entryAdm := admitClosedBarEntry(sc, stratState, &mu, result.Symbol, result.StrategyDecisionFields, result.Signal, result.CloseFraction, okxPosQty, okxPosSide, time.Now())
+							logEntryAdmission(entryAdm, signalStr, logger)
+							applyEntryAdmission(entryAdm, &result.Signal, &result.CloseFraction)
+							result.CloseReduceOnly = entryAdm.CloseOnly
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							mu.Unlock()
 							var execResult *OKXExecuteResult
+							var okxEntryIntent *entryIntent
 							liveExecFailed := false
-							if okxIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage, hurstDecision, notifier, logger); ok2 {
+							if okxIsLive(sc.Args) && result.Signal != 0 && entryAdm.admitted() {
+								in, reserveErr := reserveLiveEntryIntent(store, sc, stratState, &mu, entryAdm, entryProviderOKX, entryIntentRequest{Kind: entryAdm.Kind.String(), Signal: result.Signal, PrevPosQty: okxPosQty, PrevPosSide: okxPosSide, PrevAvgCost: okxAvgCost, Price: price, EntryATR: indicatorsATRValue(result.Indicators)}, time.Now())
+								if reserveErr != nil {
+									logger.Warn("Closed-bar entry: %s held — the live attempt could not be saved before sending: %v (#1769)", signalStr, reserveErr)
+									liveExecFailed = true
+								} else {
+									okxEntryIntent = in
+									result.EntrySubmitGate = okxEntrySubmitGateFor(store, stratState, &mu, in)
+								}
+							}
+							if okxIsLive(sc.Args) && result.Signal != 0 && !liveExecFailed {
+								er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage, hurstDecision, notifier, logger)
+								if ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
+									outcome, outcomeDetail := okxExecuteOutcome(er)
+									finishFailedLiveEntry(store, sc, stratState, &mu, okxEntryIntent, result.OrderSubmitted, outcome, outcomeDetail, notifier, logger)
 								}
 							}
 							if !liveExecFailed {
 								var cashAlert string
 								mu.Lock()
+								entryAt := len(stratState.TradeHistory)
+								endEntryBooking := beginEntryBookingLocked(stratState, entryAdm, okxEntryIntent)
 								trades, detail, cashAlert = executeOKXResult(sc, stratState, stratDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
+								finishEntryBookingLocked(store, stratState, entryAdm, okxEntryIntent, entryAt, endEntryBooking(), okxEntryEvidence(execResult), logger)
 								mu.Unlock()
 								if cashAlert != "" {
 									notifySpotLiveCashOverBudget(notifier, cashAlert)
@@ -2499,6 +2559,9 @@ func main() {
 							logger.Warn("Market feed: %s signal suppressed (%s) — closes, stops, ratchet and protection continue (#1524)", signalStr, ageWhy)
 							result.Signal = 0
 						}
+						entryAdm := admitClosedBarEntry(sc, stratState, &mu, result.Symbol, result.StrategyDecisionFields, result.Signal, result.CloseFraction, hlPosQty, hlPosSide, time.Now())
+						logEntryAdmission(entryAdm, signalStr, logger)
+						applyEntryAdmission(entryAdm, &result.Signal, &result.CloseFraction)
 						mu.Lock()
 						syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 						updateStrategyDivergenceState(stratState, result.Divergence)
@@ -2692,13 +2755,26 @@ func main() {
 							}
 						}
 						var execRearm hlCloseRearmContext
-						if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
+						var hlEntryIntent *entryIntent
+						if hyperliquidIsLive(sc.Args) && result.Signal != 0 && entryAdm.admitted() && ((entryAdm.Kind == entryIncreaseAdd && scaleInAddQty > 0) || (entryAdm.Kind == entryIncreaseOpen && hlPosQty <= 0)) {
+							in, reserveErr := reserveLiveEntryIntent(store, sc, stratState, &mu, entryAdm, entryProviderHyperliquid, entryIntentRequest{Kind: entryAdm.Kind.String(), Signal: result.Signal, PrevPosQty: hlPosQty, PrevPosSide: hlPosSide, PrevAvgCost: hlAvgCost, Price: price, EntryATR: indicatorsATRValue(result.Indicators)}, time.Now())
+							if reserveErr != nil {
+								logger.Warn("Closed-bar entry: %s held — the live attempt could not be saved before sending: %v (#1769)", signalStr, reserveErr)
+								liveExecFailed = true
+							} else {
+								hlEntryIntent = in
+								result.EntrySubmitGate = hyperliquidEntrySubmitGate(store, stratState, &mu, in)
+							}
+						}
+						if hyperliquidIsLive(sc.Args) && result.Signal != 0 && !liveExecFailed {
 							walletSnapshot := hlExecuteSnapshotForCoin(hlPositions, result.Symbol)
 							if scaleInAddQty > 0 {
 								if er, ok2 := runHyperliquidScaleInOrder(sc, result, scaleInAddQty, walletSnapshot, notifier, logger); ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
+									outcome, outcomeDetail := hyperliquidExecuteOutcome(er)
+									finishFailedLiveEntry(store, sc, stratState, &mu, hlEntryIntent, result.LiveOrderSubmitted, outcome, outcomeDetail, notifier, logger)
 								}
 							} else {
 								closeCtx := hlCloseContext{PeerSameQty: hlPeerSameQty, PeerOppQty: hlPeerOppQty, OnChain: hlOnChainCoinView{Known: hlStateFetched, AbsQty: hlOnChainAbsQty, NetSide: hlNetSideByCoin}, Refetch: hlOnChainRefetcher(hlAddr)}
@@ -2737,6 +2813,8 @@ func main() {
 									execResult = er
 								} else {
 									liveExecFailed = true
+									outcome, outcomeDetail := hyperliquidExecuteOutcome(er)
+									finishFailedLiveEntry(store, sc, stratState, &mu, hlEntryIntent, result.LiveOrderSubmitted, outcome, outcomeDetail, notifier, logger)
 									canceledOIDs := append([]int64{hlStopLossOID}, hlTPOIDs...)
 									canceledOIDs = hyperliquidExecuteSucceededCancelOIDs(er, canceledOIDs)
 									if len(canceledOIDs) > 0 {
@@ -2771,6 +2849,7 @@ func main() {
 							var execTrades int
 							var execDetail string
 							execAt := hlStep.historyLenLocked()
+							endEntryBooking := beginEntryBookingLocked(stratState, entryAdm, hlEntryIntent)
 							if scaleInAddQty > 0 {
 								execTrades, execDetail, openTrade, ratchetAlert = executeHyperliquidScaleInDeferredOpen(sc, stratState, result, execResult, signalStr, price, scaleInAddQty, logger)
 							} else {
@@ -2783,6 +2862,7 @@ func main() {
 								}
 								recordPositionOpen(stratState, sc, openTrade, pos)
 							}
+							finishEntryBookingLocked(store, stratState, entryAdm, hlEntryIntent, execAt, endEntryBooking(), hyperliquidEntryEvidence(execResult), logger)
 							hlStep.bindExecuteLocked(execAt, execDetail)
 							mu.Unlock()
 							var postTradeStopEvidence ratchetStopEvidence
@@ -4149,6 +4229,14 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	} else {
 		logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
 	}
+	if result.EntrySubmitGate != nil {
+		tags, gateErr := result.EntrySubmitGate(side, size, slPct)
+		if gateErr != nil {
+			logger.Error("Live entry %s not sent: the durable submission record failed: %v (#1769)", result.Symbol, gateErr)
+			return nil, false
+		}
+		walletSnapshot.Entry = tags
+	}
 	result.LiveOrderSubmitted = true
 	result.LiveOrderCancelRequested = cancelOID > 0 || len(extraCancelOIDs) > 0
 	execResult, stderr, err := runHyperliquidExecuteFn(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeMode, walletSnapshot, extraCancelOIDs...)
@@ -4928,9 +5016,27 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 		side = "sell"
 	}
 	instType := okxInstType(sc.Args)
+	var opts okxExecuteOptions
+	if result.EntrySubmitGate != nil {
+		clientID, gateErr := result.EntrySubmitGate(side, size)
+		if gateErr != nil {
+			logger.Error("Live entry %s not sent: the durable submission record failed: %v (#1769)", result.Symbol, gateErr)
+			return nil, false
+		}
+		opts.ClientOrderID = clientID
+	}
+	opts.ReduceOnly = result.CloseReduceOnly && sc.Type == "perps"
 	logger.Info("Placing live %s %s size=%.6f inst_type=%s", side, result.Symbol, size, instType)
 
-	execResult, stderr, err := okxExecuteFn(sc.Script, result.Symbol, side, size, instType)
+	result.OrderSubmitted = true
+	var execResult *OKXExecuteResult
+	var stderr string
+	var err error
+	if opts.ClientOrderID != "" || opts.ReduceOnly {
+		execResult, stderr, err = okxExecuteGuardedFn(sc.Script, result.Symbol, side, size, instType, opts)
+	} else {
+		execResult, stderr, err = okxExecuteFn(sc.Script, result.Symbol, side, size, instType)
+	}
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
@@ -4941,15 +5047,41 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)
 		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, err.Error())
-		return nil, false
+		return execResult, false
 	}
 	if execResult.Error != "" {
 		logger.Error("Live execute returned error: %s", execResult.Error)
 		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, execResult.Error)
-		return nil, false
+		return execResult, false
+	}
+	if opts.ClientOrderID != "" {
+		if confirmErr := confirmOKXEntryFill(execResult); confirmErr != nil {
+			logger.Error("CRITICAL: live entry %s has no confirmed fill (%v); nothing is booked and the entry stays held until the venue order resolves (#1769)", result.Symbol, confirmErr)
+			notifyLiveExecFailure(notifier, sc, direction, result.Symbol, confirmErr.Error())
+			return execResult, false
+		}
 	}
 	clearLiveExecThrottle(sc, direction, result.Symbol)
 	return execResult, true
+}
+
+var okxExecuteGuardedFn = RunOKXExecuteWithOptions
+
+func confirmOKXEntryFill(res *OKXExecuteResult) error {
+	if res == nil {
+		return fmt.Errorf("exchange returned no order result")
+	}
+	if res.OrderOutcome != "filled" {
+		return fmt.Errorf("order outcome %q is not a confirmed fill", res.OrderOutcome)
+	}
+	if res.Execution == nil || res.Execution.Fill == nil {
+		return fmt.Errorf("exchange returned no fill")
+	}
+	f := res.Execution.Fill
+	if !(f.AvgPx > 0) || !(f.TotalSz > 0) || math.IsInf(f.AvgPx, 0) || math.IsInf(f.TotalSz, 0) || math.IsNaN(f.Fee) || math.IsInf(f.Fee, 0) {
+		return fmt.Errorf("exchange returned no confirmed fill (sz=%.8f px=%.8f)", f.TotalSz, f.AvgPx)
+	}
+	return nil
 }
 
 func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {

@@ -35,7 +35,7 @@ func RecordTrade(s *StrategyState, trade Trade) {
 		trade.CostModelVersion = FillCostModelVersion
 	}
 	s.TradeHistory = append(s.TradeHistory, trade)
-	if tradeRecorder == nil {
+	if tradeRecorder == nil || s.deferTradePersist {
 		return
 	}
 	if err := tradeRecorder(s.ID, trade); err != nil {
@@ -104,6 +104,10 @@ type StrategyState struct {
 	PaperFunding        *paperFundingState `json:"-"`
 	paperFundingRaw     string
 	paperFundingCorrupt bool
+
+	EntryGuard        *entryGuardState `json:"-"`
+	deferTradePersist bool
+	replayCapture     *[]ReplayDecision
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {

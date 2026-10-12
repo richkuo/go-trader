@@ -103,16 +103,18 @@ func (m storageIdentityMap) hasScope(scope PortfolioScope) bool {
 // StateDB so every strategy identifier is translated at the SQL boundary, in
 // both directions, with no caller able to skip the translation.
 type fileIdentity struct {
-	role        storageRole
-	procToStore map[string]string
-	storeToProc map[string]string
+	role          storageRole
+	procToStore   map[string]string
+	storeToProc   map[string]string
+	procPartition map[string]RiskPartition
 }
 
 func (m storageIdentityMap) fileIdentity(role storageRole) *fileIdentity {
 	fi := &fileIdentity{
-		role:        role,
-		procToStore: make(map[string]string),
-		storeToProc: make(map[string]string),
+		role:          role,
+		procToStore:   make(map[string]string),
+		storeToProc:   make(map[string]string),
+		procPartition: make(map[string]RiskPartition),
 	}
 	for procID, ident := range m.procToStore {
 		if ident.Role != role {
@@ -120,6 +122,7 @@ func (m storageIdentityMap) fileIdentity(role storageRole) *fileIdentity {
 		}
 		fi.procToStore[procID] = ident.StorageID
 		fi.storeToProc[ident.StorageID] = procID
+		fi.procPartition[procID] = ident.Partition
 	}
 	return fi
 }

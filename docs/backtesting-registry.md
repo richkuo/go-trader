@@ -160,6 +160,12 @@ earlier runs are unchanged and decode as unknown.
 
 `suggest.template.jsonc` is the annotated spec template for a new study.
 
+## Scheduler parity checks outside `backtest/`
+
+These are Go tests under the `pyintegration` build tag, not `backtest/` harnesses, so they have no table row; CI runs each one by name in the `go-python-integration` job and fails on a skip.
+
+- `scheduler/entry_decisions_pyintegration_test.go` (#1769): closed-bar entry allowance parity. It drives the real `check_hyperliquid.py` in `--closed-bar-decisions` mode on a sealed market payload at the 600-second and 90-second check cadences, books through the scheduler admission and paper booking path against a real state file (a stop-out inside the forming candle, a restart per candle), and compares the decision candles that opened with the `Backtester` entries on the same closed decisions. Price, fee, funding and fill-timing differences are out of scope.
+
 ## Where results are recorded
 
 - Committed run artifacts: `backtest/research/*.json` (e.g. `regime_1211_baseline_remeasure.json`).

@@ -75,6 +75,39 @@ var executeProbeArgv = []string{
 	"--margin-mode=cross", "--leverage=1",
 	"--account-leverage=1", "--account-margin-mode=cross",
 	"--close-mode=reduce_only",
+	"--cloid=0x00000000000000000000000000000001",
+	"--stop-cloid=0x00000000000000000000000000000002",
+	"--expires-after-ms=1",
+	"--stop-expires-after-ms=1",
+	"--probe-only",
+}
+
+var recoverEntryProbeArgv = []string{
+	"--recover-entry",
+	"--symbol=BTC",
+	"--cloid=0x00000000000000000000000000000001",
+	"--stop-cloid=0x00000000000000000000000000000002",
+	"--since-ms=1",
+	"--mode=live",
+	"--probe-only",
+}
+
+var okxExecuteProbeArgv = []string{
+	"--execute",
+	"--symbol=BTC", "--side=sell", "--size=0",
+	"--mode=paper",
+	"--inst-type=swap",
+	"--client-order-id=gtprobe",
+	"--reduce-only",
+	"--probe-only",
+}
+
+var okxRecoverEntryProbeArgv = []string{
+	"--recover-entry",
+	"--symbol=BTC",
+	"--inst-type=swap",
+	"--client-order-id=gtprobe",
+	"--mode=live",
 	"--probe-only",
 }
 
@@ -199,6 +232,17 @@ func probeCheckScripts(cfg *Config) error {
 				return err
 			}
 			if err := probeOneCheckScriptFn(script, hyperliquidMarketCheckCompositeProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, recoverEntryProbeArgv); err != nil {
+				return err
+			}
+		}
+		if filepath.Base(script) == "check_okx.py" {
+			if err := probeOneCheckScriptFn(script, okxExecuteProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, okxRecoverEntryProbeArgv); err != nil {
 				return err
 			}
 		}

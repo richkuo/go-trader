@@ -45,6 +45,19 @@ except ImportError:
     class _HLClientError(Exception):
         pass
 
+try:
+    from hyperliquid.utils.types import Cloid as _HLCloid
+except ImportError:
+    _HLCloid = None
+
+
+def _to_cloid(cloid):
+    if not cloid:
+        return None
+    if _HLCloid is None:
+        raise RuntimeError("hyperliquid-python-sdk has no Cloid type; cannot tag a client order id")
+    return _HLCloid.from_str(str(cloid))
+
 
 def _safe_float(v) -> float:
     if v is None:
@@ -640,13 +653,29 @@ class HyperliquidExchangeAdapter:
             return []
 
 
-    def market_open(self, symbol: str, is_buy: bool, size: float) -> dict:
+    def market_open(self, symbol: str, is_buy: bool, size: float, cloid: str | None = None) -> dict:
         exchange = self._require_exchange("market_open")
         sz_decimals = self._sz_decimals(symbol)
         size = round(size, sz_decimals)
         if size <= 0:
             raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
+        if cloid:
+            return exchange.market_open(symbol, is_buy, size, None, 0.01, cloid=_to_cloid(cloid))
         return exchange.market_open(symbol, is_buy, size, None, 0.01)
+
+    def set_order_expiry(self, expires_after_ms: int | None) -> None:
+        exchange = self._require_exchange("set_order_expiry")
+        exchange.set_expires_after(int(expires_after_ms) if expires_after_ms else None)
+
+    def query_order_by_cloid(self, cloid: str) -> dict:
+        if not self._account_address:
+            raise RuntimeError("query_order_by_cloid requires HYPERLIQUID_ACCOUNT_ADDRESS")
+        return self._info.query_order_by_cloid(self._account_address, _to_cloid(cloid))
+
+    def user_fills_since(self, since_ms: int) -> list:
+        if not self._account_address:
+            raise RuntimeError("user_fills_since requires HYPERLIQUID_ACCOUNT_ADDRESS")
+        return self._info.user_fills_by_time(self._account_address, int(since_ms))
 
     def limit_open(
         self,
@@ -807,6 +836,7 @@ class HyperliquidExchangeAdapter:
         trigger_px: float,
         is_buy: bool,
         limit_slippage_pct: float = 5.0,
+        cloid: str | None = None,
     ) -> dict:
         exchange = self._require_exchange("place_stop_loss")
         sz_decimals = self._sz_decimals(symbol)
@@ -825,6 +855,10 @@ class HyperliquidExchangeAdapter:
         trigger_px = _round_perps_px(trigger_px, sz_decimals)
 
         order_type = {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": "sl"}}
+        if cloid:
+            return exchange.order(
+                symbol, is_buy, sz, limit_px, order_type, reduce_only=True, cloid=_to_cloid(cloid)
+            )
         return exchange.order(
             symbol, is_buy, sz, limit_px, order_type, reduce_only=True
         )

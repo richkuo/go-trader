@@ -167,19 +167,43 @@ class OKXExchangeAdapter:
             )
         return self._exchange.fetch_positions() or []
 
-    def market_open(self, symbol: str, is_buy: bool, size: float, inst_type: str = "spot") -> dict:
+    @staticmethod
+    def order_pair(symbol: str, inst_type: str = "spot") -> str:
+        if inst_type == "swap":
+            return f"{symbol}/USDT:USDT"
+        return f"{symbol}/USDT"
+
+    def market_open(self, symbol: str, is_buy: bool, size: float, inst_type: str = "spot",
+                    client_order_id: str | None = None, reduce_only: bool = False) -> dict:
         if not self._is_live:
             raise RuntimeError(
                 "market_open requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
             )
         side = "buy" if is_buy else "sell"
+        pair = self.order_pair(symbol, inst_type)
         if inst_type == "swap":
-            pair = f"{symbol}/USDT:USDT"
             params = {"tdMode": "cross"}
+            if reduce_only:
+                params["reduceOnly"] = True
         else:
-            pair = f"{symbol}/USDT"
             params = {"tdMode": "cash"}
+        if client_order_id:
+            params["clOrdId"] = client_order_id
         return self._exchange.create_market_order(pair, side, size, params=params)
+
+    def fetch_order_by_client_id(self, symbol: str, inst_type: str, client_order_id: str) -> dict:
+        if not self._is_live:
+            raise RuntimeError(
+                "fetch_order_by_client_id requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
+            )
+        return self._exchange.fetch_order(None, self.order_pair(symbol, inst_type), params={"clOrdId": client_order_id})
+
+    def fetch_order_trades(self, symbol: str, inst_type: str, order_id: str) -> list:
+        if not self._is_live:
+            raise RuntimeError(
+                "fetch_order_trades requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
+            )
+        return self._exchange.fetch_order_trades(order_id, self.order_pair(symbol, inst_type))
 
     def market_close(self, symbol: str, sz: float | None = None) -> dict:
         if not self._is_live:

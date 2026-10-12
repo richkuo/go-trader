@@ -67,7 +67,17 @@ type HyperliquidResult struct {
 	SizedCloseBookedQty             float64                `json:"-"`
 	SizedClosePreSend               hlCloseView            `json:"-"`
 	PaperPartialCloseHold           string                 `json:"-"`
+	EntrySubmitGate                 hlEntrySubmitGate      `json:"-"`
 }
+
+type hlEntryOrderTags struct {
+	Cloid              string
+	StopCloid          string
+	ExpiresAfterMs     int64
+	StopExpiresAfterMs int64
+}
+
+type hlEntrySubmitGate func(side string, size, stopLossPct float64) (hlEntryOrderTags, error)
 
 type HyperliquidFill struct {
 	AvgPx             float64 `json:"avg_px"`
@@ -97,6 +107,8 @@ type HyperliquidExecuteResult struct {
 	StopLossError               string                `json:"stop_loss_error,omitempty"`
 	StopLossFilledImmediately   bool                  `json:"stop_loss_filled_immediately,omitempty"`
 	OrderOutcome                string                `json:"order_outcome,omitempty"`
+	ClientOrderID               string                `json:"client_order_id,omitempty"`
+	StopClientOrderID           string                `json:"stop_client_order_id,omitempty"`
 }
 
 type HyperliquidStopLossUpdateResult struct {
@@ -337,6 +349,7 @@ func runHyperliquidCheckStdout(stdout, stderr []byte, err error) (*HyperliquidRe
 type hlExecuteSnapshot struct {
 	AccountLeverage   int
 	AccountMarginMode string
+	Entry             hlEntryOrderTags
 }
 
 type hlCloseMode int
@@ -389,6 +402,18 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 	}
 	if prevPosQty > 0 {
 		args = append(args, fmt.Sprintf("--prev-pos-qty=%g", prevPosQty))
+	}
+	if snapshot.Entry.Cloid != "" {
+		args = append(args, "--cloid="+snapshot.Entry.Cloid)
+		if snapshot.Entry.ExpiresAfterMs > 0 {
+			args = append(args, fmt.Sprintf("--expires-after-ms=%d", snapshot.Entry.ExpiresAfterMs))
+		}
+		if snapshot.Entry.StopCloid != "" {
+			args = append(args, "--stop-cloid="+snapshot.Entry.StopCloid)
+		}
+		if snapshot.Entry.StopExpiresAfterMs > 0 {
+			args = append(args, fmt.Sprintf("--stop-expires-after-ms=%d", snapshot.Entry.StopExpiresAfterMs))
+		}
 	}
 	if marginMode != "" {
 		args = append(args, fmt.Sprintf("--margin-mode=%s", marginMode))
@@ -1258,16 +1283,26 @@ func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float6
 
 type OKXResult struct {
 	StrategyDecisionFields
-	Strategy   string                 `json:"strategy"`
-	Symbol     string                 `json:"symbol"`
-	Timeframe  string                 `json:"timeframe"`
-	Signal     int                    `json:"signal"`
-	Price      float64                `json:"price"`
-	Indicators map[string]interface{} `json:"indicators"`
-	Mode       string                 `json:"mode"`
-	Platform   string                 `json:"platform"`
-	Timestamp  string                 `json:"timestamp"`
-	Error      string                 `json:"error,omitempty"`
+	Strategy        string                 `json:"strategy"`
+	Symbol          string                 `json:"symbol"`
+	Timeframe       string                 `json:"timeframe"`
+	Signal          int                    `json:"signal"`
+	Price           float64                `json:"price"`
+	Indicators      map[string]interface{} `json:"indicators"`
+	Mode            string                 `json:"mode"`
+	Platform        string                 `json:"platform"`
+	Timestamp       string                 `json:"timestamp"`
+	Error           string                 `json:"error,omitempty"`
+	EntrySubmitGate okxEntrySubmitGate     `json:"-"`
+	CloseReduceOnly bool                   `json:"-"`
+	OrderSubmitted  bool                   `json:"-"`
+}
+
+type okxEntrySubmitGate func(side string, size float64) (string, error)
+
+type okxExecuteOptions struct {
+	ClientOrderID string
+	ReduceOnly    bool
 }
 
 type OKXFill struct {
@@ -1285,10 +1320,13 @@ type OKXExecution struct {
 }
 
 type OKXExecuteResult struct {
-	Execution *OKXExecution `json:"execution"`
-	Platform  string        `json:"platform"`
-	Timestamp string        `json:"timestamp"`
-	Error     string        `json:"error,omitempty"`
+	Execution     *OKXExecution `json:"execution"`
+	Platform      string        `json:"platform"`
+	Timestamp     string        `json:"timestamp"`
+	Error         string        `json:"error,omitempty"`
+	OrderOutcome  string        `json:"order_outcome,omitempty"`
+	ClientOrderID string        `json:"client_order_id,omitempty"`
+	OrderStatus   string        `json:"order_status,omitempty"`
 }
 
 func RunOKXCheck(script string, args []string) (*OKXResult, string, error) {
@@ -1310,6 +1348,10 @@ func RunOKXCheck(script string, args []string) (*OKXResult, string, error) {
 }
 
 func RunOKXExecute(script, symbol, side string, size float64, instType string) (*OKXExecuteResult, string, error) {
+	return RunOKXExecuteWithOptions(script, symbol, side, size, instType, okxExecuteOptions{})
+}
+
+func buildOKXExecuteArgs(symbol, side string, size float64, instType string, opts okxExecuteOptions) []string {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -1318,6 +1360,17 @@ func RunOKXExecute(script, symbol, side string, size float64, instType string) (
 		"--mode=live",
 		fmt.Sprintf("--inst-type=%s", instType),
 	}
+	if opts.ClientOrderID != "" {
+		args = append(args, "--client-order-id="+opts.ClientOrderID)
+	}
+	if opts.ReduceOnly {
+		args = append(args, "--reduce-only")
+	}
+	return args
+}
+
+func RunOKXExecuteWithOptions(script, symbol, side string, size float64, instType string, opts okxExecuteOptions) (*OKXExecuteResult, string, error) {
+	args := buildOKXExecuteArgs(symbol, side, size, instType, opts)
 	stdout, stderr, err := runPythonSideEffect(script, args)
 	stderrStr := string(stderr)
 	if err != nil {

@@ -385,17 +385,163 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         sys.exit(1)
 
 
-def run_execute(symbol, side, size, mode, inst_type="swap"):
-    if mode != "live":
-        print(json.dumps({"error": "--execute requires --mode=live"}))
-        sys.exit(1)
+OKX_ENTRY_TERMINAL_STATUSES = ("closed", "canceled", "cancelled", "expired", "rejected")
 
+
+def _okx_order_float(order, key):
+    value = _float_or_none(order.get(key)) if isinstance(order, dict) else None
+    if value is None or not math.isfinite(value):
+        return None
+    return value
+
+
+def okx_entry_order_evidence(order):
+    if not isinstance(order, dict):
+        raise ValueError(f"order lookup returned no object: {order!r}")
+    status = str(order.get("status") or "").lower()
+    filled = _okx_order_float(order, "filled")
+    average = _okx_order_float(order, "average")
+    fee = _extract_fee(order)
+    if fee is not None and not math.isfinite(fee):
+        fee = None
+    return {
+        "found": True,
+        "status": status,
+        "order_id": str(order.get("id") or ""),
+        "terminal": status in OKX_ENTRY_TERMINAL_STATUSES,
+        "executed_sz": filled if filled is not None and filled > 0 else 0.0,
+        "avg_px": average if average is not None and average > 0 else 0.0,
+        "fee": fee if fee is not None else 0.0,
+        "fee_known": fee is not None,
+        "filled_known": filled is not None,
+    }
+
+
+def okx_entry_outcome(evidence):
+    if not evidence.get("found") or not evidence.get("filled_known"):
+        return "unknown"
+    if not evidence.get("terminal"):
+        return "unknown"
+    if evidence.get("executed_sz", 0.0) > 0:
+        if evidence.get("avg_px", 0.0) > 0 and evidence.get("fee_known"):
+            return "filled"
+        return "unknown"
+    return "rejected"
+
+
+def _okx_entry_create_error_outcome(exc):
+    try:
+        import ccxt
+    except ImportError:
+        return "unknown"
+    if isinstance(exc, ccxt.NetworkError):
+        return "unknown"
+    if isinstance(exc, ccxt.ExchangeError):
+        return "rejected"
+    return "unknown"
+
+
+def _confirm_okx_entry(adapter, symbol, inst_type, client_order_id, attempts=4, delay_s=0.5):
+    last_err = ""
+    for attempt in range(attempts):
+        try:
+            evidence = okx_entry_order_evidence(adapter.fetch_order_by_client_id(symbol, inst_type, client_order_id))
+            if okx_entry_outcome(evidence) != "unknown":
+                return evidence, ""
+            last_err = f"order {evidence.get('order_id')} is {evidence.get('status')!r}"
+        except Exception as e:
+            last_err = str(e)
+        if attempt + 1 < attempts:
+            time.sleep(delay_s)
+    return None, last_err
+
+
+def run_execute(symbol, side, size, mode, inst_type="swap", client_order_id="", reduce_only=False):
+    if mode != "live":
+        out = {"error": "--execute requires --mode=live"}
+        if client_order_id:
+            out["order_outcome"] = "not_sent"
+            out["client_order_id"] = client_order_id
+        print(json.dumps(out))
+        sys.exit(1)
+    if reduce_only and inst_type != "swap":
+        print(json.dumps({"error": "--reduce-only applies to swap closes only", "order_outcome": "not_sent"}))
+        sys.exit(1)
+    if client_order_id:
+        cid = str(client_order_id)
+        if not (1 <= len(cid) <= 32) or not cid.isalnum() or cid.lower() != cid:
+            print(json.dumps({"error": f"--client-order-id must be 1-32 lowercase letters or digits, got {cid!r}",
+                              "order_outcome": "not_sent", "client_order_id": cid}))
+            sys.exit(1)
+        if reduce_only:
+            print(json.dumps({"error": "--client-order-id tags a guarded entry and cannot be reduce-only",
+                              "order_outcome": "not_sent", "client_order_id": cid}))
+            sys.exit(1)
+
+    adapter = None
+    sent = False
     try:
         from adapter import OKXExchangeAdapter
         adapter = OKXExchangeAdapter()
 
         is_buy = side.lower() == "buy"
-        result = adapter.market_open(symbol, is_buy, size, inst_type=inst_type)
+        if client_order_id:
+            try:
+                sent = True
+                result = adapter.market_open(symbol, is_buy, size, inst_type=inst_type, client_order_id=client_order_id)
+            except Exception as ce:
+                traceback.print_exc(file=sys.stderr)
+                print(json.dumps({
+                    "execution": None,
+                    "platform": "okx",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"order placement failed: {ce}",
+                    "order_outcome": _okx_entry_create_error_outcome(ce),
+                    "client_order_id": client_order_id,
+                }))
+                sys.exit(1)
+            evidence, confirm_err = _confirm_okx_entry(adapter, symbol, inst_type, client_order_id)
+            if evidence is None:
+                print(json.dumps({
+                    "execution": None,
+                    "platform": "okx",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"order {result.get('id') if isinstance(result, dict) else ''} has no confirmed outcome: {confirm_err}",
+                    "order_outcome": "unknown",
+                    "client_order_id": client_order_id,
+                }))
+                sys.exit(1)
+            outcome = okx_entry_outcome(evidence)
+            out = {
+                "execution": {
+                    "action": "buy" if is_buy else "sell",
+                    "symbol": symbol,
+                    "size": size,
+                    "fill": {
+                        "avg_px": evidence["avg_px"],
+                        "total_sz": evidence["executed_sz"],
+                        "fee": evidence["fee"],
+                        "oid": evidence["order_id"],
+                    },
+                },
+                "platform": "okx",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "order_outcome": outcome,
+                "order_status": evidence["status"],
+                "client_order_id": client_order_id,
+            }
+            if outcome != "filled":
+                out["execution"] = None
+                out["error"] = f"order {evidence['order_id']} ended {evidence['status']!r} with no fill"
+                print(json.dumps(out))
+                sys.exit(1)
+            print(json.dumps(out))
+            return
+
+        if reduce_only:
+            result = adapter.market_open(symbol, is_buy, size, inst_type=inst_type, reduce_only=True)
+        else:
+            result = adapter.market_open(symbol, is_buy, size, inst_type=inst_type)
 
         fill = {}
         try:
@@ -423,19 +569,93 @@ def run_execute(symbol, side, size, mode, inst_type="swap"):
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }))
 
+    except SystemExit:
+        raise
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        print(json.dumps({
+        payload = {
             "execution": None,
             "platform": "okx",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e),
-        }))
+        }
+        if client_order_id:
+            payload["order_outcome"] = "unknown" if sent else "not_sent"
+            payload["client_order_id"] = client_order_id
+        print(json.dumps(payload))
+        sys.exit(1)
+
+
+def run_recover_entry(symbol, inst_type, client_order_id, mode):
+    out = {
+        "platform": "okx",
+        "symbol": symbol,
+        "client_order_id": client_order_id,
+        "checked_at_ms": int(time.time() * 1000),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if mode != "live":
+        out["error"] = "--recover-entry requires --mode=live"
+        print(json.dumps(out))
+        sys.exit(1)
+    try:
+        import ccxt
+        from adapter import OKXExchangeAdapter
+        adapter = OKXExchangeAdapter()
+        try:
+            order = adapter.fetch_order_by_client_id(symbol, inst_type, client_order_id)
+        except ccxt.OrderNotFound:
+            out["order"] = {"found": False}
+            print(json.dumps(out))
+            return
+        evidence = okx_entry_order_evidence(order)
+        qty = notional = fee = 0.0
+        count = 0
+        if evidence["order_id"] and evidence["executed_sz"] > 0:
+            for t in adapter.fetch_order_trades(symbol, inst_type, evidence["order_id"]) or []:
+                amount = _okx_order_float(t, "amount")
+                price = _okx_order_float(t, "price")
+                if amount is None or price is None or amount <= 0 or price <= 0:
+                    raise ValueError(f"order trade carries no usable amount or price: {t!r}")
+                qty += amount
+                notional += amount * price
+                trade_fee = _extract_fee(t)
+                if trade_fee is not None and math.isfinite(trade_fee):
+                    fee += trade_fee
+                count += 1
+        evidence["fill_qty"] = qty
+        evidence["fill_notional"] = notional
+        evidence["fill_fee"] = fee
+        evidence["fill_count"] = count
+        evidence["fill_avg_px"] = (notional / qty) if qty > 0 else 0.0
+        tolerance = max(1e-9, abs(evidence["executed_sz"]) * 1e-6)
+        evidence["fills_complete"] = abs(qty - evidence["executed_sz"]) <= tolerance
+        out["order"] = evidence
+        out["checked_at_ms"] = int(time.time() * 1000)
+        print(json.dumps(out))
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        out["error"] = f"entry recovery query failed: {e}"
+        print(json.dumps(out))
         sys.exit(1)
 
 
 def main():
-    if "--execute" in sys.argv:
+    if "--recover-entry" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--recover-entry", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--inst-type", default="swap", choices=["spot", "swap"])
+        parser.add_argument("--client-order-id", required=True)
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#1769): validate argv shape and exit 0 without reading the venue.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        run_recover_entry(args.symbol, args.inst_type, args.client_order_id, args.mode)
+    elif "--execute" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
         parser.add_argument("--execute", action="store_true")
@@ -444,8 +664,17 @@ def main():
         parser.add_argument("--size", type=float, required=True)
         parser.add_argument("--mode", default="live")
         parser.add_argument("--inst-type", default="swap", choices=["spot", "swap"])
+        parser.add_argument("--client-order-id", default="",
+                            help="#1769: client order id of a guarded closed-bar entry, saved by Go before submission")
+        parser.add_argument("--reduce-only", action="store_true", default=False,
+                            help="#1769: send a swap close as reduce-only")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#1769): validate execute-mode argv shape and exit 0 without trading.")
         args = parser.parse_args()
-        run_execute(args.symbol, args.side, args.size, args.mode, args.inst_type)
+        if args.probe_only:
+            sys.exit(0)
+        run_execute(args.symbol, args.side, args.size, args.mode, args.inst_type,
+                    client_order_id=args.client_order_id, reduce_only=args.reduce_only)
     else:
         import argparse
         parser = argparse.ArgumentParser()
