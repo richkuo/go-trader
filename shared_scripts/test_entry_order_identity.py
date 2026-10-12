@@ -181,8 +181,9 @@ def test_hl_recovery_evidence_reports_unknown_order_with_cloid_fills():
 
 
 class _OKXVenue:
-    def __init__(self, create_error=None, orders=None, trades=None, missing=False, fill_pages=None):
+    def __init__(self, create_error=None, orders=None, trades=None, missing=False, fill_pages=None, fill_error=None):
         self.calls = []
+        self.fill_error = fill_error
         self.exp_times = []
         self.create_error = create_error
         self.orders = list(orders or [])
@@ -216,6 +217,8 @@ class _OKXVenue:
 
             def fetch_fills_page(self, inst_type, begin_ms, end_ms, limit, after="", history=False):
                 venue.fill_requests.append({"inst_type": inst_type, "begin": begin_ms, "end": end_ms, "limit": limit, "after": after, "history": history})
+                if venue.fill_error:
+                    raise venue.fill_error
                 page = len(venue.fill_requests) - 1
                 return venue.fill_pages[page] if page < len(venue.fill_pages) else []
 
@@ -366,10 +369,38 @@ def test_okx_recovery_fill_scan_reports_incomplete_history(monkeypatch, capsys):
         assert not cov["complete"] and reason in cov["reason"] and cov["through_ms"] == 0, (reason, cov)
 
 
-def test_okx_recovery_fill_scan_failure_is_an_error(monkeypatch, capsys):
-    venue = _OKXVenue(missing=True, fill_pages=[["not a row"]])
+def test_okx_recovery_fill_scan_failure_is_incomplete_coverage(monkeypatch, capsys):
+    for venue in (_OKXVenue(missing=True, fill_pages=[["not a row"]]),
+                  _OKXVenue(missing=True, fill_error=RuntimeError("OKX fills query failed: {'code': '50011'}"))):
+        out, code = _run_okx(monkeypatch, capsys, venue, "run_recover_entry", "BTC", "swap", "gtabc", "live", since_ms=_recent_ms(20))
+        cov = out["order"]["coverage"]
+        assert code == 0 and "error" not in out and out["order"]["found"] is False
+        assert not cov["complete"] and cov["through_ms"] == 0 and "fill history query failed" in cov["reason"], cov
+
+
+def test_okx_recovery_books_a_found_order_while_the_fill_history_fails(monkeypatch, capsys):
+    venue = _OKXVenue(orders=[{"id": "okx-9", "status": "closed", "filled": 0.3, "average": 100.5, "fee": {"cost": 0.02}}],
+                      trades=[{"amount": 0.1, "price": 100, "fee": {"cost": 0.01}}, {"amount": 0.2, "price": 100.75, "fee": {"cost": 0.01}}],
+                      fill_error=RuntimeError("OKX fills query failed: {'code': '50011'}"))
     out, code = _run_okx(monkeypatch, capsys, venue, "run_recover_entry", "BTC", "swap", "gtabc", "live", since_ms=_recent_ms(20))
-    assert code == 1 and "error" in out and "order" not in out
+    order = out["order"]
+    assert code == 0 and "error" not in out
+    assert order["found"] and order["terminal"] and order["fills_complete"] and order["fill_qty"] == pytest.approx(0.3)
+    assert not order["coverage"]["complete"] and "50011" in order["coverage"]["reason"]
+
+
+def test_okx_recovery_fill_scan_ends_at_the_release_deadline(monkeypatch, capsys):
+    until = _recent_ms(5)
+    venue = _OKXVenue(missing=True)
+    out, code = _run_okx(monkeypatch, capsys, venue, "run_recover_entry", "BTC", "swap", "gtabc", "live", since_ms=_recent_ms(20), until_ms=until)
+    cov = out["order"]["coverage"]
+    assert code == 0 and cov["complete"] and cov["through_ms"] == until
+    assert [r["end"] for r in venue.fill_requests] == [until]
+    future = _recent_ms(-60)
+    venue = _OKXVenue(missing=True)
+    out, code = _run_okx(monkeypatch, capsys, venue, "run_recover_entry", "BTC", "swap", "gtabc", "live", since_ms=_recent_ms(20), until_ms=future)
+    cov = out["order"]["coverage"]
+    assert code == 0 and cov["complete"] and cov["through_ms"] < future and venue.fill_requests[0]["end"] == cov["through_ms"]
 
 
 def test_okx_account_key_binds_the_api_key_and_network(monkeypatch):
@@ -470,3 +501,72 @@ def test_hl_run_recover_entry_reports_the_account_and_both_client_ids(monkeypatc
         ev = out[key]
         assert ev["found"] is False and ev["fill_qty"] == 0 and ev["coverage"]["complete"] and ev["coverage"]["rows"] == 1
     assert venue.fill_starts == [1]
+
+
+def test_hl_recovery_fills_after_the_release_deadline_need_no_client_id_lookup():
+    mod = _load_script("check_hyperliquid.py", "entry_recovery_bound")
+    until = 100
+    later = [_hl_fill(until + i, oid=1000 + i) for i in range(1, 42)]
+    venue = _HLHistoryVenue(pages={1: later})
+    venue.order_status[CLOID] = {"status": "unknownOid"}
+    ev = mod.entry_recovery_evidence(venue.adapter_module().HyperliquidExchangeAdapter(), CLOID, 1, until_ms=until)
+    cov = ev["coverage"]
+    assert venue.oid_lookups == [] and not ev["found"] and ev["fill_qty"] == 0
+    assert cov["complete"] and cov["through_ms"] == until and cov["matched_count"] == 0 and cov["rows"] == 41
+
+
+def test_hl_recovery_counts_fills_after_the_deadline_against_the_venue_retention():
+    mod = _load_script("check_hyperliquid.py", "entry_recovery_retention")
+    until = 100
+    pages = {}
+    start = 1
+    t = until + 1
+    for _ in range(6):
+        page = [_hl_fill(t + i, cloid="0x01", oid=t + i) for i in range(2000)]
+        pages[start] = page
+        start = page[-1]["time"]
+        t = start
+    venue = _HLHistoryVenue(pages=pages)
+    venue.order_status[CLOID] = {"status": "unknownOid"}
+    ev = mod.entry_recovery_evidence(venue.adapter_module().HyperliquidExchangeAdapter(), CLOID, 1, until_ms=until)
+    cov = ev["coverage"]
+    assert not cov["complete"] and "fills the venue retains" in cov["reason"] and cov["through_ms"] == 0
+
+
+def test_hl_recovery_matches_entry_fills_just_before_the_release_deadline():
+    mod = _load_script("check_hyperliquid.py", "entry_recovery_edge")
+    until = 100
+    cases = [
+        (_HLHistoryVenue(pages={1: [_hl_fill(until - 1, cloid=CLOID)]}), True),
+        (_HLHistoryVenue(pages={1: [_hl_fill(until - 1, oid=88)]}, orders_by_oid={88: _order_status("filled", oid=88)}), True),
+        (_HLHistoryVenue(pages={1: [_hl_fill(until + 1, cloid=CLOID)]}), True),
+        (_HLHistoryVenue(pages={1: [_hl_fill(until - 1, oid=88)]}), False),
+    ]
+    for venue, complete in cases:
+        venue.order_status[CLOID] = {"status": "unknownOid"}
+        ev = mod.entry_recovery_evidence(venue.adapter_module().HyperliquidExchangeAdapter(), CLOID, 1, until_ms=until)
+        cov = ev["coverage"]
+        assert not ev["found"] and cov["complete"] == complete, cov
+        if complete:
+            assert cov["matched_count"] == 1 and ev["fill_qty"] == pytest.approx(0.1), cov
+        else:
+            assert "no longer retained" in cov["reason"] and cov["through_ms"] == 0, cov
+
+
+def test_hl_recovery_keeps_paging_a_page_shorter_than_the_documented_maximum():
+    mod = _load_script("check_hyperliquid.py", "entry_recovery_short_page")
+    first = [_hl_fill(t, cloid="0x01", oid=t) for t in range(1, 501)]
+    second = [_hl_fill(500, cloid="0x01", oid=500), _hl_fill(501, cloid=CLOID, oid=501)]
+    venue = _HLHistoryVenue(pages={1: first, 500: second})
+    venue.order_status[CLOID] = {"status": "unknownOid"}
+    ev = mod.entry_recovery_evidence(venue.adapter_module().HyperliquidExchangeAdapter(), CLOID, 1, until_ms=1000)
+    assert venue.fill_starts == [1, 500] and ev["coverage"]["complete"] and ev["coverage"]["matched_count"] == 1
+
+
+def test_hl_recovery_books_a_found_stop_that_filled_after_the_release_deadline():
+    mod = _load_script("check_hyperliquid.py", "entry_recovery_late_stop")
+    until = 100
+    venue = _HLHistoryVenue(pages={1: [_hl_fill(until + 5000, oid=9001, sz="0.3")]})
+    venue.order_status[STOP_CLOID] = _order_status("filled", orig="0.3")
+    ev = mod.entry_recovery_evidence(venue.adapter_module().HyperliquidExchangeAdapter(), STOP_CLOID, 1, until_ms=until)
+    assert ev["found"] and ev["fills_complete"] and ev["fill_qty"] == pytest.approx(0.3)

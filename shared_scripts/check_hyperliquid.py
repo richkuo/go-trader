@@ -2374,7 +2374,7 @@ def _aggregate_recovery_fills(fills, oid=None, cloid=None):
     return qty, notional, fee, count, sorted(tids)
 
 
-HL_FILLS_PAGE_LIMIT = 2000
+HL_FILLS_MIN_PAGE = 500
 HL_FILLS_RECENT_LIMIT = 10000
 HL_RECOVERY_MAX_OID_LOOKUPS = 40
 
@@ -2393,13 +2393,21 @@ def _recovery_fill_key(f):
     return ("row", str(f.get("hash")), str(f.get("oid")), str(f.get("time")), str(f.get("sz")), str(f.get("px")))
 
 
-def scan_recovery_fills(adapter, since_ms):
+def _recovery_fill_time(f):
+    try:
+        return int(f.get("time"))
+    except (TypeError, ValueError):
+        return None
+
+
+def scan_recovery_fills(adapter, since_ms, until_ms=0):
     start = int(since_ms)
+    until = int(until_ms or 0)
     fills = []
     seen = set()
     pages = 0
-    max_pages = HL_FILLS_RECENT_LIMIT // HL_FILLS_PAGE_LIMIT + 1
-    scan = {"fills": fills, "complete": False, "reason": "", "from_ms": int(since_ms), "through_ms": 0, "pages": 0}
+    max_pages = HL_FILLS_RECENT_LIMIT // HL_FILLS_MIN_PAGE + 1
+    scan = {"fills": fills, "window": [], "later": [], "complete": False, "reason": "", "from_ms": int(since_ms), "through_ms": 0, "pages": 0}
     while True:
         if pages >= max_pages:
             scan["reason"] = f"the fill history needs more than {max_pages} pages"
@@ -2410,28 +2418,40 @@ def scan_recovery_fills(adapter, since_ms):
         scan["pages"] = pages
         if not isinstance(page, list):
             raise ValueError(f"userFillsByTime returned no list: {page!r}")
+        added = 0
+        times = []
         for f in page:
             if not isinstance(f, dict):
                 raise ValueError(f"userFillsByTime returned a non-object fill: {f!r}")
+            t = _recovery_fill_time(f)
+            if t is None and until > 0:
+                scan["reason"] = "a fill page carries a fill with no time, so the attempt window cannot be bounded"
+                return scan
+            times.append(t)
             key = _recovery_fill_key(f)
             if key in seen:
                 continue
             seen.add(key)
             fills.append(f)
+            added += 1
         if len(fills) >= HL_FILLS_RECENT_LIMIT:
             scan["reason"] = f"{len(fills)} fills since the attempt window reach the {HL_FILLS_RECENT_LIMIT} fills the venue retains"
             return scan
-        if len(page) < HL_FILLS_PAGE_LIMIT:
-            scan["complete"] = True
-            scan["through_ms"] = requested_at
+        if added == 0 and len(page) >= HL_FILLS_MIN_PAGE:
+            scan["reason"] = "a full fill page did not advance in time"
             return scan
-        times = []
-        for f in page:
-            try:
-                times.append(int(f.get("time")))
-            except (TypeError, ValueError):
-                scan["reason"] = "a full fill page carries a fill with no time, so the next page cannot be read"
-                return scan
+        if len(page) < HL_FILLS_MIN_PAGE or added == 0:
+            scan["complete"] = True
+            scan["through_ms"] = min(until, requested_at) if until > 0 else requested_at
+            if until > 0:
+                scan["window"] = [f for f in fills if _recovery_fill_time(f) <= until]
+                scan["later"] = [f for f in fills if _recovery_fill_time(f) > until]
+            else:
+                scan["window"] = list(fills)
+            return scan
+        if None in times:
+            scan["reason"] = "a full fill page carries a fill with no time, so the next page cannot be read"
+            return scan
         if times != sorted(times):
             scan["reason"] = "a full fill page is not in time order, so the next page cannot be read"
             return scan
@@ -2495,24 +2515,24 @@ def _recovery_coverage(scan, attributed_ok, attribution_reason, matched_count, m
 
 
 class _RecoveryFillScan:
-    def __init__(self, adapter, since_ms):
+    def __init__(self, adapter, since_ms, until_ms=0):
         self.adapter = adapter
-        self.scan = scan_recovery_fills(adapter, since_ms)
+        self.scan = scan_recovery_fills(adapter, since_ms, until_ms)
         self._attribution = None
 
     def attribution(self):
         if self._attribution is None:
             if self.scan["complete"]:
-                self._attribution = attribute_recovery_fills(self.adapter, self.scan["fills"])
+                self._attribution = attribute_recovery_fills(self.adapter, self.scan["window"])
             else:
                 self._attribution = ([], False, "")
         return self._attribution
 
 
-def entry_recovery_evidence(adapter, cloid, since_ms, scan=None):
+def entry_recovery_evidence(adapter, cloid, since_ms, scan=None, until_ms=0):
     order = _order_status_evidence(adapter.query_order_by_cloid(cloid))
     if scan is None:
-        scan = _RecoveryFillScan(adapter, since_ms)
+        scan = _RecoveryFillScan(adapter, since_ms, until_ms)
     fills = scan.scan["fills"]
     if order.get("found"):
         qty, notional, fee, count, tids = _aggregate_recovery_fills(fills, oid=order["oid"])
@@ -2520,9 +2540,10 @@ def entry_recovery_evidence(adapter, cloid, since_ms, scan=None):
     else:
         labels, attributed_ok, attribution_reason = scan.attribution()
         want = str(cloid).lower()
-        mine = [f for f, label in zip(fills, labels) if label == want]
-        if not attributed_ok:
-            mine += [f for f in fills[len(labels):] if str(f.get("cloid") or "").lower() == want]
+        window = scan.scan["window"] if scan.scan["complete"] else fills
+        mine = [f for f, label in zip(window, labels) if label == want]
+        rest = window[len(labels):] + scan.scan["later"]
+        mine += [f for f in rest if str(f.get("cloid") or "").lower() == want]
         qty, notional, fee, count, tids = _aggregate_recovery_fills(mine)
         coverage = _recovery_coverage(scan.scan, attributed_ok, attribution_reason, count, qty)
     order["fill_qty"] = qty
@@ -2538,7 +2559,7 @@ def entry_recovery_evidence(adapter, cloid, since_ms, scan=None):
     return order
 
 
-def run_recover_entry(symbol, cloid, stop_cloid, since_ms, mode):
+def run_recover_entry(symbol, cloid, stop_cloid, since_ms, mode, until_ms=0):
     out = {
         "platform": "hyperliquid",
         "symbol": symbol,
@@ -2554,7 +2575,7 @@ def run_recover_entry(symbol, cloid, stop_cloid, since_ms, mode):
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         out["account"] = hyperliquid_account_key(adapter.account_address)
-        scan = _RecoveryFillScan(adapter, since_ms)
+        scan = _RecoveryFillScan(adapter, since_ms, until_ms)
         out["order"] = entry_recovery_evidence(adapter, cloid, since_ms, scan=scan)
         if stop_cloid:
             out["stop_client_order_id"] = stop_cloid
@@ -3309,13 +3330,14 @@ def main():
         parser.add_argument("--cloid", required=True)
         parser.add_argument("--stop-cloid", default="")
         parser.add_argument("--since-ms", type=int, required=True)
+        parser.add_argument("--until-ms", type=int, required=True)
         parser.add_argument("--mode", default="live")
         parser.add_argument("--probe-only", action="store_true",
                             help="Startup compatibility probe (#1769): validate argv shape and exit 0 without reading the venue.")
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
-        run_recover_entry(args.symbol, args.cloid, args.stop_cloid, args.since_ms, args.mode)
+        run_recover_entry(args.symbol, args.cloid, args.stop_cloid, args.since_ms, args.mode, until_ms=args.until_ms)
     elif "--execute" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()

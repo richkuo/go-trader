@@ -947,7 +947,7 @@ type entryRecoveryStub struct {
 func installHLRecoveryStub(t *testing.T, stub *entryRecoveryStub) {
 	prev := runHyperliquidRecoverEntryFn
 	t.Cleanup(func() { runHyperliquidRecoverEntryFn = prev })
-	runHyperliquidRecoverEntryFn = func(script, symbol, cloid, stopCloid string, sinceMs int64) (*entryRecoveryResult, string, error) {
+	runHyperliquidRecoverEntryFn = func(script, symbol, cloid, stopCloid string, sinceMs, untilMs int64) (*entryRecoveryResult, string, error) {
 		stub.calls++
 		return stub.res, "", stub.err
 	}
@@ -1298,7 +1298,7 @@ func TestClosedBarOKXLiveEntryNeedsAConfirmedFillAndRecovers(t *testing.T) {
 			prev := runOKXRecoverEntryFn
 			t.Cleanup(func() { runOKXRecoverEntryFn = prev })
 			recCalls := 0
-			runOKXRecoverEntryFn = func(script, symbol, inst, cid string, sinceMs int64) (*entryRecoveryResult, string, error) {
+			runOKXRecoverEntryFn = func(script, symbol, inst, cid string, sinceMs, untilMs int64) (*entryRecoveryResult, string, error) {
 				recCalls++
 				if cid != venue.opts[0].ClientOrderID || inst != instType {
 					return nil, "", fmt.Errorf("recovery asked for %s %s", inst, cid)
@@ -1570,7 +1570,7 @@ func TestClosedBarOKXLiveEntryVenueDeadlineGatesRelease(t *testing.T) {
 		prev := runOKXRecoverEntryFn
 		t.Cleanup(func() { runOKXRecoverEntryFn = prev })
 		calls := 0
-		runOKXRecoverEntryFn = func(script, symbol, inst, cid string, sinceMs int64) (*entryRecoveryResult, string, error) {
+		runOKXRecoverEntryFn = func(script, symbol, inst, cid string, sinceMs, untilMs int64) (*entryRecoveryResult, string, error) {
 			res := results[len(results)-1]
 			if calls < len(results) {
 				res = results[calls]

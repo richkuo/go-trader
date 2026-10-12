@@ -31,7 +31,7 @@ func TestEntryOperatorRealOKXQueryErrorRefusesTheRelease(t *testing.T) {
 	t.Chdir(root)
 	cashBefore := f.cash()
 
-	res, _, err := RunOKXRecoverEntry("shared_scripts/check_okx.py", "BTC", "swap", "gtabc", 1)
+	res, _, err := RunOKXRecoverEntry("shared_scripts/check_okx.py", "BTC", "swap", "gtabc", 1, 2)
 	if err == nil || res == nil {
 		t.Fatalf("the real script must return its parsed result and an error: res=%+v err=%v", res, err)
 	}

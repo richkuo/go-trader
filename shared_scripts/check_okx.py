@@ -654,7 +654,7 @@ def okx_account_key(inst_type):
     return f"okx:{inst_type}:{network}:key-{fingerprint}"
 
 
-def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms):
+def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms, until_ms=0):
     coverage = {
         "complete": False,
         "reason": "",
@@ -674,6 +674,20 @@ def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms)
         return coverage, 0.0, 0.0
     history = since_ms < now_ms - OKX_FILLS_RECENT_MS + OKX_FILLS_MARGIN_MS
     coverage["source"] = "trade/fills-history" if history else "trade/fills"
+    end_ms = min(int(until_ms), int(now_ms)) if until_ms and until_ms > 0 else int(now_ms)
+    notional = 0.0
+    fee = 0.0
+    try:
+        return _scan_okx_client_fill_pages(adapter, inst_type, client_order_id, since_ms, end_ms, history, coverage)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        coverage["complete"] = False
+        coverage["through_ms"] = 0
+        coverage["reason"] = f"the fill history query failed: {e}"
+        return coverage, notional, fee
+
+
+def _scan_okx_client_fill_pages(adapter, inst_type, client_order_id, since_ms, end_ms, history, coverage):
     notional = 0.0
     fee = 0.0
     after = ""
@@ -681,7 +695,7 @@ def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms)
         if coverage["pages"] >= OKX_FILLS_MAX_PAGES:
             coverage["reason"] = f"the fill history needs more than {OKX_FILLS_MAX_PAGES} pages"
             return coverage, notional, fee
-        page = adapter.fetch_fills_page(inst_type, since_ms, now_ms, OKX_FILLS_PAGE_LIMIT, after=after, history=history)
+        page = adapter.fetch_fills_page(inst_type, since_ms, end_ms, OKX_FILLS_PAGE_LIMIT, after=after, history=history)
         coverage["pages"] += 1
         if not isinstance(page, list):
             raise ValueError(f"fills query returned no list: {page!r}")
@@ -706,7 +720,7 @@ def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms)
                 fee += -row_fee
         if len(page) < OKX_FILLS_PAGE_LIMIT:
             coverage["complete"] = True
-            coverage["through_ms"] = int(now_ms)
+            coverage["through_ms"] = int(end_ms)
             return coverage, notional, fee
         after = str(page[-1].get("billId") or "")
         if not after:
@@ -714,7 +728,7 @@ def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms)
             return coverage, notional, fee
 
 
-def run_recover_entry(symbol, inst_type, client_order_id, mode, since_ms=0):
+def run_recover_entry(symbol, inst_type, client_order_id, mode, since_ms=0, until_ms=0):
     out = {
         "platform": "okx",
         "symbol": symbol,
@@ -732,7 +746,7 @@ def run_recover_entry(symbol, inst_type, client_order_id, mode, since_ms=0):
         adapter = OKXExchangeAdapter()
         out["account"] = okx_account_key(inst_type)
         now_ms = int(time.time() * 1000)
-        coverage, scan_notional, scan_fee = scan_okx_client_fills(adapter, inst_type, client_order_id, int(since_ms or 0), now_ms)
+        coverage, scan_notional, scan_fee = scan_okx_client_fills(adapter, inst_type, client_order_id, int(since_ms or 0), now_ms, int(until_ms or 0))
         try:
             order = adapter.fetch_order_by_client_id(symbol, inst_type, client_order_id)
         except ccxt.OrderNotFound:
@@ -796,13 +810,14 @@ def main():
         parser.add_argument("--inst-type", default="swap", choices=["spot", "swap"])
         parser.add_argument("--client-order-id", required=True)
         parser.add_argument("--since-ms", type=int, required=True)
+        parser.add_argument("--until-ms", type=int, required=True)
         parser.add_argument("--mode", default="live")
         parser.add_argument("--probe-only", action="store_true",
                             help="Startup compatibility probe (#1769): validate argv shape and exit 0 without reading the venue.")
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
-        run_recover_entry(args.symbol, args.inst_type, args.client_order_id, args.mode, since_ms=args.since_ms)
+        run_recover_entry(args.symbol, args.inst_type, args.client_order_id, args.mode, since_ms=args.since_ms, until_ms=args.until_ms)
     elif "--execute" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()

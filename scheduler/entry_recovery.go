@@ -78,12 +78,13 @@ func parseEntryRecoveryOutput(stdout []byte, stderr string, runErr error) (*entr
 	return &res, stderr, nil
 }
 
-func buildHyperliquidRecoverEntryArgs(symbol, cloid, stopCloid string, sinceMs int64) []string {
+func buildHyperliquidRecoverEntryArgs(symbol, cloid, stopCloid string, sinceMs, untilMs int64) []string {
 	args := []string{
 		"--recover-entry",
 		"--symbol=" + symbol,
 		"--cloid=" + cloid,
 		fmt.Sprintf("--since-ms=%d", sinceMs),
+		fmt.Sprintf("--until-ms=%d", untilMs),
 		"--mode=live",
 	}
 	if stopCloid != "" {
@@ -92,24 +93,25 @@ func buildHyperliquidRecoverEntryArgs(symbol, cloid, stopCloid string, sinceMs i
 	return args
 }
 
-func RunHyperliquidRecoverEntry(script, symbol, cloid, stopCloid string, sinceMs int64) (*entryRecoveryResult, string, error) {
-	stdout, stderr, err := runPythonWithTimeout(shutdownReadOnlyCtx, script, buildHyperliquidRecoverEntryArgs(symbol, cloid, stopCloid, sinceMs), nil, entryRecoveryQueryTimeout)
+func RunHyperliquidRecoverEntry(script, symbol, cloid, stopCloid string, sinceMs, untilMs int64) (*entryRecoveryResult, string, error) {
+	stdout, stderr, err := runPythonWithTimeout(shutdownReadOnlyCtx, script, buildHyperliquidRecoverEntryArgs(symbol, cloid, stopCloid, sinceMs, untilMs), nil, entryRecoveryQueryTimeout)
 	return parseEntryRecoveryOutput(stdout, string(stderr), err)
 }
 
-func buildOKXRecoverEntryArgs(symbol, instType, clientOrderID string, sinceMs int64) []string {
+func buildOKXRecoverEntryArgs(symbol, instType, clientOrderID string, sinceMs, untilMs int64) []string {
 	return []string{
 		"--recover-entry",
 		"--symbol=" + symbol,
 		"--inst-type=" + instType,
 		"--client-order-id=" + clientOrderID,
 		fmt.Sprintf("--since-ms=%d", sinceMs),
+		fmt.Sprintf("--until-ms=%d", untilMs),
 		"--mode=live",
 	}
 }
 
-func RunOKXRecoverEntry(script, symbol, instType, clientOrderID string, sinceMs int64) (*entryRecoveryResult, string, error) {
-	stdout, stderr, err := runPythonWithTimeout(shutdownReadOnlyCtx, script, buildOKXRecoverEntryArgs(symbol, instType, clientOrderID, sinceMs), nil, entryRecoveryQueryTimeout)
+func RunOKXRecoverEntry(script, symbol, instType, clientOrderID string, sinceMs, untilMs int64) (*entryRecoveryResult, string, error) {
+	stdout, stderr, err := runPythonWithTimeout(shutdownReadOnlyCtx, script, buildOKXRecoverEntryArgs(symbol, instType, clientOrderID, sinceMs, untilMs), nil, entryRecoveryQueryTimeout)
 	return parseEntryRecoveryOutput(stdout, string(stderr), err)
 }
 
@@ -241,12 +243,16 @@ func entryRecoveryWindowStart(in *entryIntent) int64 {
 
 func queryEntryRecovery(in *entryIntent, req entryIntentRequest, script string) (*entryRecoveryResult, error) {
 	since := entryRecoveryWindowStart(in)
+	if req.SubmittedAtMs > 0 {
+		since = min(since, req.SubmittedAtMs)
+	}
+	until, _ := entryReleasableAfterMs(in, req)
 	switch in.Provider {
 	case entryProviderHyperliquid:
-		res, _, err := runHyperliquidRecoverEntryFn(script, in.Symbol, in.ClientOrderID, in.InitialStopClientID, since)
+		res, _, err := runHyperliquidRecoverEntryFn(script, in.Symbol, in.ClientOrderID, in.InitialStopClientID, since, until)
 		return res, err
 	case entryProviderOKX:
-		res, _, err := runOKXRecoverEntryFn(script, in.Symbol, in.InstrumentType, in.ClientOrderID, since)
+		res, _, err := runOKXRecoverEntryFn(script, in.Symbol, in.InstrumentType, in.ClientOrderID, since, until)
 		return res, err
 	}
 	return nil, fmt.Errorf("provider %q has no recovery query", in.Provider)

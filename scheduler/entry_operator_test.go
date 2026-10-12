@@ -68,10 +68,10 @@ func installEntryVenueQuery(t *testing.T, q *entryVenueQuery) {
 	t.Helper()
 	prevHL, prevOKX := runHyperliquidRecoverEntryFn, runOKXRecoverEntryFn
 	t.Cleanup(func() { runHyperliquidRecoverEntryFn, runOKXRecoverEntryFn = prevHL, prevOKX })
-	runHyperliquidRecoverEntryFn = func(script, symbol, cloid, stopCloid string, sinceMs int64) (*entryRecoveryResult, string, error) {
+	runHyperliquidRecoverEntryFn = func(script, symbol, cloid, stopCloid string, sinceMs, untilMs int64) (*entryRecoveryResult, string, error) {
 		return q.answer()
 	}
-	runOKXRecoverEntryFn = func(script, symbol, instType, clientOrderID string, sinceMs int64) (*entryRecoveryResult, string, error) {
+	runOKXRecoverEntryFn = func(script, symbol, instType, clientOrderID string, sinceMs, untilMs int64) (*entryRecoveryResult, string, error) {
 		return q.answer()
 	}
 }
@@ -324,6 +324,126 @@ func TestEntryOperatorReleasesAVerifiedAbsentAttemptExactlyOnce(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEntryOperatorQueriesFillHistoryOnlyThroughTheReleaseDeadline(t *testing.T) {
+	for _, provider := range []string{"hyperliquid", "okx-swap"} {
+		t.Run(provider, func(t *testing.T) {
+			f := newEntryOperatorFixture(t, provider)
+			f.backdate()
+			in := f.intent()
+			req, err := parseEntryIntentRequest(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantUntil, why := entryReleasableAfterMs(in, req)
+			if why != "" {
+				t.Fatal(why)
+			}
+			wantSince := min(entryRecoveryWindowStart(in), req.SubmittedAtMs)
+			var gotSince, gotUntil int64
+			answer := func(sinceMs, untilMs int64) (*entryRecoveryResult, string, error) {
+				gotSince, gotUntil = sinceMs, untilMs
+				res := entryAbsentHL()
+				if f.sc.Platform == "okx" {
+					res = entryAbsentOKX(okxInstType(f.sc.Args))
+				}
+				for _, o := range []*entryRecoveryOrder{res.Order, res.Stop} {
+					if o != nil {
+						o.Coverage.FromMs = sinceMs
+						o.Coverage.ThroughMs = untilMs
+					}
+				}
+				return res, "", nil
+			}
+			prevHL, prevOKX := runHyperliquidRecoverEntryFn, runOKXRecoverEntryFn
+			t.Cleanup(func() { runHyperliquidRecoverEntryFn, runOKXRecoverEntryFn = prevHL, prevOKX })
+			runHyperliquidRecoverEntryFn = func(script, symbol, cloid, stopCloid string, sinceMs, untilMs int64) (*entryRecoveryResult, string, error) {
+				return answer(sinceMs, untilMs)
+			}
+			runOKXRecoverEntryFn = func(script, symbol, instType, clientOrderID string, sinceMs, untilMs int64) (*entryRecoveryResult, string, error) {
+				return answer(sinceMs, untilMs)
+			}
+
+			msg := f.command()
+			if gotUntil != wantUntil || gotSince != wantSince {
+				t.Fatalf("query window %d..%d, want %d..%d", gotSince, gotUntil, wantSince, wantUntil)
+			}
+			if !strings.HasPrefix(msg, "Released attempt "+f.intentID) {
+				t.Fatalf("coverage through exactly the release deadline must release: %q", msg)
+			}
+			if r := f.row(); r.Status != entryIntentNoFill {
+				t.Fatalf("row after release %+v", r)
+			}
+		})
+	}
+}
+
+func TestEntryRecoveryAndCommandHoldOnAClientIDFillBeforeTheReleaseDeadline(t *testing.T) {
+	f := newEntryOperatorFixture(t, "hyperliquid")
+	f.backdate()
+	in := f.intent()
+	req, err := parseEntryIntentRequest(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	until, _ := entryReleasableAfterMs(in, req)
+	res := entryAbsentHL()
+	res.Order.Coverage.ThroughMs = until
+	res.Stop.Coverage.ThroughMs = until
+	res.Order.Coverage.MatchedCount, res.Order.Coverage.MatchedQty = 1, 0.1
+	installEntryVenueQuery(t, fixedVenue(res, nil))
+	cashBefore := f.cash()
+	recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+	if r := f.row(); r.Status != entryIntentSubmitting {
+		t.Fatalf("recovery changed the attempt to %s", r.Status)
+	}
+	msg := f.command()
+	if !strings.Contains(msg, "holds 1 fill(s)") {
+		t.Fatalf("reply %q", msg)
+	}
+	f.assertUnchanged(msg, cashBefore)
+}
+
+func TestEntryRecoveryOKXFillHistoryFailureOnlyBlocksTheRelease(t *testing.T) {
+	failed := func() *entryFillCoverage {
+		return &entryFillCoverage{Complete: false, Reason: "the fill history query failed: OKX fills query failed: {'code': '50011'}", Source: "trade/fills"}
+	}
+	t.Run("a found order with complete trades is booked once", func(t *testing.T) {
+		f := newEntryOperatorFixture(t, "okx-swap")
+		f.backdate()
+		res := &entryRecoveryResult{Platform: "okx", Account: okxEntryAccountKey("swap"), Order: &entryRecoveryOrder{Found: true, Status: "closed", OrderID: "okx-1", ExecutedSz: 0.3, Terminal: true,
+			FillQty: 0.3, FillNotional: 30.3, FillFee: 0.03, FillCount: 1, FillAvgPx: 101, FillsComplete: true, Coverage: failed()}}
+		installEntryVenueQuery(t, fixedVenue(res, nil))
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now().Add(2*entryRecoveryQueryInterval))
+		if qty, _ := f.env.position(f.sc.ID, "BTC"); qty != 0.3 {
+			t.Fatalf("position %v, want the proven 0.3 booked", qty)
+		}
+		if n := f.env.openTradeRows(f.sc.ID); n != 1 {
+			t.Fatalf("open trade rows %d, want 1", n)
+		}
+		if got := f.env.intentStatuses(f.sc.ID); len(got) != 1 || got[0] != entryIntentCommitted {
+			t.Fatalf("intents %v", got)
+		}
+	})
+	t.Run("a missing order with a failed fill history stays held", func(t *testing.T) {
+		f := newEntryOperatorFixture(t, "okx-swap")
+		f.backdate()
+		res := entryAbsentOKX("swap")
+		res.Order.Coverage = failed()
+		installEntryVenueQuery(t, fixedVenue(res, nil))
+		cashBefore := f.cash()
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+		if r := f.row(); r.Status != entryIntentSubmitting {
+			t.Fatalf("recovery changed the attempt to %s", r.Status)
+		}
+		msg := f.command()
+		if !strings.Contains(msg, "fill history query failed") {
+			t.Fatalf("reply %q", msg)
+		}
+		f.assertUnchanged(msg, cashBefore)
+	})
 }
 
 func TestEntryOperatorAuthorizationAndOwnershipRefuseBeforeMutation(t *testing.T) {
