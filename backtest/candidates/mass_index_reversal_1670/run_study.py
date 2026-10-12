@@ -918,10 +918,10 @@ def window_stability(groups: dict) -> list:
 def run(cache_db: str, groups=None) -> None:
     proto = load_json(PROTOCOL_PATH)
     held_lock = require_lock()
-    grid_check = check_grid(proto)
     frozen = verify_frozen()
     build_cache(cache_db, frozen["proxy"])
     forbid_network()
+    grid_check = check_grid(proto)
     study = Study(proto, frozen["proxy"], frozen["venue"])
     started = time.time()
     out = {
