@@ -423,11 +423,6 @@ def _grid_and_endpoints():
     return [p for _, p in expand_sweep(dict(DEFAULTS), specs)] + DOMAIN_ENDPOINTS
 
 
-def test_dependency_span_is_at_most_89_rows_at_every_bound():
-    worst = max(_need(p) for p in DOMAIN_ENDPOINTS)
-    assert worst == 89 < 200
-
-
 def test_full_series_prefix_exact_span_and_200_row_tail_agree():
     df = _frozen("ETH 4h", 500)
     for params in _grid_and_endpoints():

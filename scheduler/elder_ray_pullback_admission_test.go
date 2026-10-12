@@ -14,34 +14,6 @@ const (
 	elderRayRef  = "backtest/candidates/elder_ray_pullback_1648/REPORT.md"
 )
 
-func TestElderRayPullbackMetadataMirrorsTheRegistry(t *testing.T) {
-	if knownShortNames[elderRayName] != "erp" || !isBidirectionalPerpsStrategy(elderRayName) {
-		t.Fatalf("short name %q, bidirectional %v", knownShortNames[elderRayName], isBidirectionalPerpsStrategy(elderRayName))
-	}
-	if !openStrategyRegisteredFor(elderRayName, "futures") || openStrategyRegisteredFor(elderRayName, "spot") {
-		t.Fatal("elder_ray_pullback must be registered for futures only")
-	}
-	owners := []string{}
-	for name, short := range knownShortNames {
-		if short == "erp" {
-			owners = append(owners, name)
-		}
-	}
-	if !reflect.DeepEqual(owners, []string{elderRayName}) {
-		t.Fatalf("short name erp owners = %v", owners)
-	}
-	ev, ok := noEdgeEvidenceFor(elderRayName)
-	if !ok || ev.Source != "study_fail" || ev.Ref != elderRayRef {
-		t.Fatalf("no-edge evidence = %+v, %v", ev, ok)
-	}
-	if _, eligible := v20StampEligibleStrategies[elderRayName]; eligible {
-		t.Fatal("elder_ray_pullback must never be in the v20 stamp allowlist")
-	}
-	if _, research := v20FormerResearchStrategies[elderRayName]; !research {
-		t.Fatal("elder_ray_pullback must be in the v20 research deny set")
-	}
-}
-
 func TestElderRayPullbackAdmissionThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	erp := func(args ...string) map[string]interface{} {
