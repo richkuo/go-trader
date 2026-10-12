@@ -34,7 +34,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator, latest_atr
 from closed_bar import (
+    FRAME_DECISION_TIME_ATTR,
     FRAME_INTERVAL_ATTR,
+    FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
     FRAME_TIMESTAMP_KIND_ATTR,
     RULE_HYPERLIQUID_NATIVE,
     ClosedBarHold,
@@ -67,9 +69,15 @@ from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_
 def _make_dataframe(candles):
     import pandas as pd
     df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    received = pd.to_numeric(df["timestamp"], errors="coerce").tolist()
+    defects = sorted({int(received[i]) for i in range(1, len(received))
+                      if received[i] == received[i] and received[i - 1] == received[i - 1]
+                      and received[i] <= received[i - 1]})
     df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     df = df.set_index("datetime")
     df.sort_index(inplace=True)
+    if defects:
+        df.attrs[FRAME_RECEIVED_ORDER_DEFECTS_ATTR] = defects
     return df
 
 
@@ -100,9 +108,9 @@ def _position_ctx_from_args(args):
 
 TP_MODEL_RESTING_LIMIT = "resting_limit"
 
-FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_", "rcr_")
+FULL_PRECISION_INDICATOR_PREFIXES = ("eom_", "mfi_", "ama_", "dt_", "erp_", "stc_", "rcr_")
 
-TEXT_INDICATOR_COLUMNS = ("eom_reason", "rcr_reason")
+TEXT_INDICATOR_COLUMNS = ("eom_reason", "ama_reason", "dt_reason", "erp_reason", "stc_reason", "rcr_reason")
 
 BATCH_PROTOCOL_VERSION = 1
 
@@ -350,6 +358,7 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
         if len(rows) < 30:
             raise InsufficientCandlesError(len(rows))
         df = _frame_with_cadence(rows, timeframe)
+        df.attrs[FRAME_DECISION_TIME_ATTR] = {}
         adapter = None
     elif df is not None:
         if timed:
@@ -375,6 +384,7 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
         if not candles or len(candles) < 30:
             raise InsufficientCandlesError(len(candles) if candles else 0)
         df = _frame_with_cadence(candles, timeframe)
+        df.attrs[FRAME_DECISION_TIME_ATTR] = {}
 
     price_override = 0.0
     if mark_price and mark_price > 0:
@@ -879,6 +889,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         else:
             closed_meta = selection.metadata()
             decision_df = _frame_with_cadence(selection.rows, timeframe, selection.timings)
+            decision_df.attrs[FRAME_DECISION_TIME_ATTR] = {
+                "cutoff_ms": int(selection.cutoff_ms), "boundary_ms": int(selection.boundary_ms)}
             strategy_params = decision_params
     else:
         strategy_params = {}
@@ -1966,9 +1978,48 @@ def execute_close_mode_error(close_mode, close_full_position, size, stop_loss_pc
     return ""
 
 
-def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode="", close_mode=""):
+def execute_entry_tag_error(cloid, stop_cloid, expires_after_ms, close_mode, close_full_position, prev_pos_qty):
+    if not cloid:
+        if stop_cloid or expires_after_ms:
+            return "--stop-cloid and --expires-after-ms require --cloid"
+        return ""
+    if close_mode or close_full_position:
+        return "--cloid tags a guarded entry and cannot be combined with a close"
+    if float(prev_pos_qty or 0) > 0:
+        return "--cloid tags a guarded entry and cannot be combined with --prev-pos-qty (flip orders are not entries)"
+    for label, value in (("--cloid", cloid), ("--stop-cloid", stop_cloid)):
+        if not value:
+            continue
+        text = str(value)
+        if not text.startswith("0x") or len(text) != 34:
+            return f"{label} must be a 16-byte hex client order id, got {text!r}"
+        try:
+            int(text[2:], 16)
+        except ValueError:
+            return f"{label} must be a 16-byte hex client order id, got {text!r}"
+    try:
+        expiry = int(expires_after_ms or 0)
+    except (TypeError, ValueError):
+        return f"--expires-after-ms must be an integer, got {expires_after_ms!r}"
+    if expiry <= 0:
+        return "--cloid requires --expires-after-ms so an unreachable order can be proven never accepted"
+    return ""
+
+
+def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode="", close_mode="",
+                cloid="", stop_cloid="", expires_after_ms=0, stop_expires_after_ms=0):
     if mode != "live":
         print(json.dumps({"error": "--execute requires --mode=live", "order_outcome": "not_sent"}, cls=SafeEncoder))
+        sys.exit(1)
+    entry_tag_err = execute_entry_tag_error(cloid, stop_cloid, expires_after_ms, close_mode, close_full_position, prev_pos_qty)
+    if entry_tag_err:
+        print(json.dumps({
+            "execution": None,
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": entry_tag_err,
+            "order_outcome": "not_sent",
+        }, cls=SafeEncoder))
         sys.exit(1)
     close_mode_err = execute_close_mode_error(close_mode, close_full_position, size, stop_loss_pct, prev_pos_qty, margin_mode)
     if close_mode_err:
@@ -2087,12 +2138,35 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
 
         fills_since_ms = int(time.time() * 1000) - 10_000
 
+        if cloid:
+            try:
+                adapter.set_order_expiry(int(expires_after_ms))
+            except Exception as xe:
+                traceback.print_exc(file=sys.stderr)
+                print(json.dumps({
+                    "execution": None,
+                    "platform": "hyperliquid",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"could not set the entry order deadline ({xe}); no order sent",
+                    "order_outcome": "not_sent",
+                    "client_order_id": cloid,
+                }, cls=SafeEncoder))
+                sys.exit(1)
+
         if close_full_position:
             result = adapter.market_close(symbol, sz=None)
         elif close_mode:
             result = adapter.market_close_sized(symbol, is_buy, size, sized_close_px, reduce_only=(close_mode == "reduce_only"))
+        elif cloid:
+            result = adapter.market_open(symbol, is_buy, size, cloid=cloid)
         else:
             result = adapter.market_open(symbol, is_buy, size)
+
+        if cloid:
+            try:
+                adapter.set_order_expiry(int(stop_expires_after_ms) if stop_cloid and stop_expires_after_ms else None)
+            except Exception as xe:
+                print(f"[WARN] could not reset the order deadline after the entry: {xe}", file=sys.stderr)
 
         fill, fill_error, order_outcome = _extract_execute_fill(result)
         if fill_error:
@@ -2103,6 +2177,8 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                 "error": fill_error,
                 "order_outcome": order_outcome,
             }
+            if cloid:
+                err_payload["client_order_id"] = cloid
             _add_execute_cancel_metadata(
                 err_payload,
                 cancel_err,
@@ -2137,7 +2213,10 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                 sl_is_buy = True
             trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
             try:
-                sl_resp = adapter.place_stop_loss(symbol, sl_size, trigger_px, sl_is_buy)
+                if stop_cloid:
+                    sl_resp = adapter.place_stop_loss(symbol, sl_size, trigger_px, sl_is_buy, cloid=stop_cloid)
+                else:
+                    sl_resp = adapter.place_stop_loss(symbol, sl_size, trigger_px, sl_is_buy)
                 kind, payload = _classify_sl_response(sl_resp)
                 if kind == "resting":
                     fill["stop_loss_oid"] = payload
@@ -2178,6 +2257,10 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             out["stop_loss_error"] = sl_err
         if sl_filled_immediately:
             out["stop_loss_filled_immediately"] = True
+        if cloid:
+            out["client_order_id"] = cloid
+            if stop_cloid:
+                out["stop_client_order_id"] = stop_cloid
         print(json.dumps(out, cls=SafeEncoder))
 
     except Exception as e:
@@ -2189,6 +2272,13 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             "error": str(e),
             "order_outcome": "unknown",
         }
+        if cloid:
+            err_payload["client_order_id"] = cloid
+        if cloid:
+            try:
+                adapter.set_order_expiry(None)
+            except Exception:
+                pass
         _add_execute_cancel_metadata(
             err_payload,
             cancel_err,
@@ -2197,6 +2287,139 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             cancel_failed_oids,
         )
         print(json.dumps(err_payload, cls=SafeEncoder))
+        sys.exit(1)
+
+
+ENTRY_RECOVERY_LIVE_STATUSES = ("open", "triggered")
+
+
+def _recovery_float(value, label):
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} is not a number: {value!r}")
+    if not math.isfinite(out):
+        raise ValueError(f"{label} is not finite: {value!r}")
+    return out
+
+
+def _order_status_evidence(resp):
+    if not isinstance(resp, dict):
+        raise ValueError(f"orderStatus returned no object: {resp!r}")
+    top = resp.get("status")
+    if top == "unknownOid":
+        return {"found": False}
+    if top != "order":
+        raise ValueError(f"orderStatus returned an unexpected status {top!r}")
+    wrapper = resp.get("order")
+    if not isinstance(wrapper, dict) or not isinstance(wrapper.get("order"), dict):
+        raise ValueError("orderStatus returned no order body")
+    order = wrapper["order"]
+    status = str(wrapper.get("status") or "")
+    if not status:
+        raise ValueError("orderStatus returned no order state")
+    oid = int(order.get("oid"))
+    orig_sz = _recovery_float(order.get("origSz", order.get("sz")), "origSz")
+    remaining_sz = _recovery_float(order.get("sz"), "sz")
+    trigger_px = 0.0
+    if order.get("triggerPx") not in (None, ""):
+        trigger_px = _recovery_float(order.get("triggerPx"), "triggerPx")
+    terminal = status not in ENTRY_RECOVERY_LIVE_STATUSES
+    if status == "filled":
+        executed = orig_sz
+    else:
+        executed = max(orig_sz - remaining_sz, 0.0)
+    return {
+        "found": True,
+        "status": status,
+        "order_id": str(oid),
+        "oid": oid,
+        "orig_sz": orig_sz,
+        "remaining_sz": remaining_sz,
+        "executed_sz": executed,
+        "terminal": terminal,
+        "trigger_px": trigger_px,
+    }
+
+
+def _aggregate_recovery_fills(fills, oid=None, cloid=None):
+    qty = 0.0
+    notional = 0.0
+    fee = 0.0
+    count = 0
+    tids = []
+    for f in fills or []:
+        if not isinstance(f, dict):
+            continue
+        if oid is not None:
+            try:
+                if int(f.get("oid")) != int(oid):
+                    continue
+            except (TypeError, ValueError):
+                continue
+        elif cloid is not None:
+            if str(f.get("cloid") or "").lower() != str(cloid).lower():
+                continue
+        sz = _recovery_float(f.get("sz"), "fill sz")
+        px = _recovery_float(f.get("px"), "fill px")
+        if sz <= 0 or px <= 0:
+            raise ValueError(f"fill carries a non-positive size or price (sz={sz}, px={px})")
+        qty += sz
+        notional += sz * px
+        if f.get("fee") not in (None, ""):
+            fee += _recovery_float(f.get("fee"), "fill fee")
+        count += 1
+        if f.get("tid") is not None:
+            tids.append(str(f.get("tid")))
+    return qty, notional, fee, count, sorted(tids)
+
+
+def entry_recovery_evidence(adapter, cloid, since_ms):
+    order = _order_status_evidence(adapter.query_order_by_cloid(cloid))
+    fills = adapter.user_fills_since(since_ms)
+    if not isinstance(fills, list):
+        raise ValueError(f"userFillsByTime returned no list: {fills!r}")
+    if order.get("found"):
+        qty, notional, fee, count, tids = _aggregate_recovery_fills(fills, oid=order["oid"])
+    else:
+        qty, notional, fee, count, tids = _aggregate_recovery_fills(fills, cloid=cloid)
+    order["fill_qty"] = qty
+    order["fill_notional"] = notional
+    order["fill_fee"] = fee
+    order["fill_count"] = count
+    order["fill_avg_px"] = (notional / qty) if qty > 0 else 0.0
+    order["fill_tids"] = tids
+    executed = order.get("executed_sz", 0.0)
+    tolerance = max(1e-9, abs(executed) * 1e-6)
+    order["fills_complete"] = bool(order.get("found")) and abs(qty - executed) <= tolerance
+    return order
+
+
+def run_recover_entry(symbol, cloid, stop_cloid, since_ms, mode):
+    out = {
+        "platform": "hyperliquid",
+        "symbol": symbol,
+        "client_order_id": cloid,
+        "checked_at_ms": int(time.time() * 1000),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if mode != "live":
+        out["error"] = "--recover-entry requires --mode=live"
+        print(json.dumps(out, cls=SafeEncoder))
+        sys.exit(1)
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+        out["order"] = entry_recovery_evidence(adapter, cloid, since_ms)
+        if stop_cloid:
+            out["stop_client_order_id"] = stop_cloid
+            out["stop"] = entry_recovery_evidence(adapter, stop_cloid, since_ms)
+        out["checked_at_ms"] = int(time.time() * 1000)
+        print(json.dumps(out, cls=SafeEncoder))
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        out["error"] = f"entry recovery query failed: {e}"
+        print(json.dumps(out, cls=SafeEncoder))
         sys.exit(1)
 
 
@@ -2933,6 +3156,21 @@ def main():
         if args.probe_only:
             sys.exit(0)
         run_list_open_order_oids(args.symbol or None)
+    elif "--recover-entry" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--recover-entry", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--cloid", required=True)
+        parser.add_argument("--stop-cloid", default="")
+        parser.add_argument("--since-ms", type=int, required=True)
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#1769): validate argv shape and exit 0 without reading the venue.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        run_recover_entry(args.symbol, args.cloid, args.stop_cloid, args.since_ms, args.mode)
     elif "--execute" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
@@ -2959,6 +3197,14 @@ def main():
                             help="on-chain margin mode observed in Go's clearinghouseState snapshot; see --account-leverage (#768)")
         parser.add_argument("--close-mode", default="", choices=["", "reduce_only", "cross"],
                             help="sized close lane set by Go for a close only: reduce_only sends a reduce-only IOC, cross sends the netted IOC; both floor the size to the lot (#1577)")
+        parser.add_argument("--cloid", default="",
+                            help="#1769: client order id of a guarded closed-bar entry, saved by Go before submission")
+        parser.add_argument("--stop-cloid", default="",
+                            help="#1769: client order id of the initial stop placed after a guarded entry")
+        parser.add_argument("--expires-after-ms", type=int, default=0,
+                            help="#1769: venue deadline for the guarded entry order; a later arrival is rejected")
+        parser.add_argument("--stop-expires-after-ms", type=int, default=0,
+                            help="#1769: venue deadline for the initial stop of a guarded entry")
         parser.add_argument("--probe-only", action="store_true",
                             help="Startup compatibility probe (PR #769): validate execute-mode argv shape — including --account-leverage / --account-margin-mode — and exit 0 without trading.")
         args = parser.parse_args()
@@ -2974,7 +3220,11 @@ def main():
                     close_full_position=args.close_full_position,
                     account_leverage=args.account_leverage,
                     account_margin_mode=args.account_margin_mode,
-                    close_mode=args.close_mode)
+                    close_mode=args.close_mode,
+                    cloid=args.cloid,
+                    stop_cloid=args.stop_cloid,
+                    expires_after_ms=args.expires_after_ms,
+                    stop_expires_after_ms=args.stop_expires_after_ms)
     elif "--limit-open" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()

@@ -41,6 +41,8 @@ type ReplayDecision struct {
 	EntryATR       float64
 	Regime         string
 	ReplayStatus   string
+
+	SourceEntryEventID string
 }
 
 const replayLogSchemaDDL = `
@@ -69,7 +71,10 @@ CREATE INDEX IF NOT EXISTS idx_decisions_strategy_status_id ON decisions(strateg
 var replayLogColumnMigrations = []string{
 	"ALTER TABLE decisions ADD COLUMN entry_atr REAL NOT NULL DEFAULT 0",
 	"ALTER TABLE decisions ADD COLUMN regime TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE decisions ADD COLUMN source_entry_event_id TEXT",
 }
+
+const replayLogIndexDDL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_decisions_source_entry_event ON decisions(source_entry_event_id) WHERE source_entry_event_id IS NOT NULL`
 
 type DecisionLogDB struct {
 	db *sql.DB
@@ -105,6 +110,10 @@ func OpenDecisionLogDB(path string) (*DecisionLogDB, error) {
 			return nil, fmt.Errorf("replay log migration %q: %w", migration, err)
 		}
 	}
+	if _, err := db.Exec(replayLogIndexDDL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("replay log index: %w", err)
+	}
 	return &DecisionLogDB{db: db}, nil
 }
 
@@ -118,6 +127,18 @@ func (d *DecisionLogDB) Close() error {
 func (d *DecisionLogDB) InsertDecision(dec ReplayDecision) error {
 	if d == nil || d.db == nil {
 		return fmt.Errorf("replay log db unavailable")
+	}
+	if dec.SourceEntryEventID != "" {
+		_, err := d.db.Exec(`INSERT INTO decisions
+			(strategy_id, decision_type, decided_at, symbol, side, quantity, reference_price, close_reason, replay_status, entry_atr, regime, source_entry_event_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(source_entry_event_id) WHERE source_entry_event_id IS NOT NULL DO NOTHING`,
+			dec.StrategyID, dec.DecisionType, formatTime(dec.DecidedAt), dec.Symbol, dec.Side,
+			dec.Quantity, dec.ReferencePrice, dec.CloseReason, replayStatusPending, dec.EntryATR, dec.Regime, dec.SourceEntryEventID)
+		if err != nil {
+			return fmt.Errorf("insert replay decision %s for %s: %w", dec.SourceEntryEventID, dec.StrategyID, err)
+		}
+		return nil
 	}
 	_, err := d.db.Exec(`INSERT INTO decisions
 		(strategy_id, decision_type, decided_at, symbol, side, quantity, reference_price, close_reason, replay_status, entry_atr, regime)
@@ -297,6 +318,21 @@ const decisionLogAlertThreshold = 3
 
 func recordReplayDecision(s *StrategyState, decisionType, symbol, side string, qty, referencePrice float64, closeReason string, decidedAt time.Time, entryATR float64, regime string) {
 	if s == nil || decisionLogWriter == nil || !replaySourceActive(s.ID) {
+		return
+	}
+	if s.replayCapture != nil {
+		*s.replayCapture = append(*s.replayCapture, ReplayDecision{
+			StrategyID:     s.ID,
+			DecisionType:   decisionType,
+			DecidedAt:      decidedAt,
+			Symbol:         symbol,
+			Side:           side,
+			Quantity:       qty,
+			ReferencePrice: referencePrice,
+			CloseReason:    closeReason,
+			EntryATR:       entryATR,
+			Regime:         regime,
+		})
 		return
 	}
 	dec := ReplayDecision{

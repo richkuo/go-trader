@@ -40,6 +40,9 @@ type storageFileInspection struct {
 	PendingActions  int                  `json:"pending_manual_actions"`
 	RiskRows        []storageRiskRow     `json:"portfolio_risk_rows"`
 	LegacyUnscoped  bool                 `json:"legacy_unscoped_risk_row"`
+	EntryDecisions  int                  `json:"entry_decision_rows"`
+	EntryUnmapped   int                  `json:"entry_unmapped_rows"`
+	EntryHeld       []string             `json:"unresolved_entry_intents"`
 }
 
 type storageInspection struct {
@@ -236,6 +239,12 @@ func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storag
 		}
 	}
 
+	entryRejections, err := inspectEntryDecisionRows(db, fi, layout, ident, owned)
+	if err != nil {
+		return nil, err
+	}
+	rejections = append(rejections, entryRejections...)
+
 	if fi.LegacyUnscoped && layout.Split && fi.Role == storageRolePrimary && !hasLive {
 		rejections = append(rejections,
 			fmt.Sprintf("%s state file: an unscoped legacy portfolio_risk row cannot be placed — the split layout has no live strategy, so the row's historic mode is unknown; resolve it by hand", fi.Role))
@@ -333,6 +342,10 @@ func formatStorageInspection(si storageInspection) string {
 		if fi.LegacyUnscoped {
 			fmt.Fprintf(&b, "  legacy unscoped portfolio_risk row present\n")
 		}
+		fmt.Fprintf(&b, "  closed-bar entry records: %d (%d unmapped)\n", fi.EntryDecisions, fi.EntryUnmapped)
+		for _, line := range fi.EntryHeld {
+			fmt.Fprintf(&b, "    UNRESOLVED ENTRY %s\n", line)
+		}
 	}
 	if len(si.Rejections) == 0 {
 		b.WriteString("\nownership: OK\n")
@@ -353,4 +366,73 @@ func partitionTextList(parts []RiskPartition) []string {
 		out = append(out, p.String())
 	}
 	return out
+}
+
+func inspectEntryDecisionRows(db *StateDB, fi *storageFileInspection, layout storageLayout, ident storageIdentityMap, owned map[PortfolioScope]bool) ([]string, error) {
+	var rejections []string
+	ownedParts := make(map[string]bool, len(fi.PartitionsOwned))
+	for _, p := range fi.PartitionsOwned {
+		ownedParts[p] = true
+	}
+	check := func(table, scope, source, storageID string, unresolved bool) {
+		part := RiskPartition{Scope: PortfolioScope(scope), Source: source}
+		if !owned[part.Scope] || (len(ownedParts) > 0 && !ownedParts[part.String()]) {
+			rejections = append(rejections, fmt.Sprintf("%s state file: %s holds a %s row but the file owns %s", fi.Role, table, partitionLabel(part), strings.Join(fi.PartitionsOwned, ", ")))
+		}
+		if _, ok := ident.processFor(fi.Role, storageID); ok {
+			return
+		}
+		if other, ok := foreignRoleForStorageID(ident, layout, fi.Role, storageID); ok && unresolved {
+			rejections = append(rejections, fmt.Sprintf("%s state file: an unresolved live entry for stored strategy %q is held here but the strategy is mapped to the %s state file; resolve the venue order and move or re-map it by hand", fi.Role, storageID, other))
+		}
+		fi.EntryUnmapped++
+	}
+	if ok, err := tableExists(db, "entry_decision_state"); err != nil {
+		return nil, err
+	} else if ok {
+		rows, err := db.db.Query("SELECT scope, source, strategy_id FROM entry_decision_state ORDER BY scope, source, strategy_id, symbol, interval_ms, target_side")
+		if err != nil {
+			return nil, fmt.Errorf("read entry decisions in the %s state file: %w", fi.Role, err)
+		}
+		for rows.Next() {
+			var scope, source, sid string
+			if err := rows.Scan(&scope, &source, &sid); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan entry decision in the %s state file: %w", fi.Role, err)
+			}
+			fi.EntryDecisions++
+			check("entry_decision_state", scope, source, sid, false)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate entry decisions in the %s state file: %w", fi.Role, err)
+		}
+	}
+	if ok, err := tableExists(db, "entry_order_intents"); err != nil {
+		return nil, err
+	} else if ok {
+		rows, err := db.db.Query(`SELECT ` + entryIntentColumns + ` FROM entry_order_intents
+			WHERE status IN ('reserved','submitting','settling') ORDER BY created_at_ms, intent_id`)
+		if err != nil {
+			return nil, fmt.Errorf("read entry intents in the %s state file: %w", fi.Role, err)
+		}
+		for rows.Next() {
+			in, sid, err := scanEntryIntent(rows.Scan)
+			if err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan entry intent in the %s state file: %w", fi.Role, err)
+			}
+			check("entry_order_intents", string(in.Partition.Scope), in.Partition.Source, sid, true)
+			owner := sid
+			if procID, ok := ident.processFor(fi.Role, sid); ok {
+				owner = procID
+			}
+			fi.EntryHeld = append(fi.EntryHeld, owner+": "+entryIntentSummary(in))
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate entry intents in the %s state file: %w", fi.Role, err)
+		}
+	}
+	return rejections, nil
 }

@@ -289,7 +289,16 @@ func runHyperliquidScaleInOrder(sc StrategyConfig, result *HyperliquidResult, ad
 	if result.Signal == -1 {
 		side = "sell"
 	}
+	if result.EntrySubmitGate != nil {
+		tags, gateErr := result.EntrySubmitGate(side, addSize, 0)
+		if gateErr != nil {
+			logger.Error("Live scale-in %s not sent: the durable submission record failed: %v (#1769)", result.Symbol, gateErr)
+			return nil, false
+		}
+		walletSnapshot.Entry = tags
+	}
 	logger.Info("Placing live scale-in %s %s size=%.6f", side, result.Symbol, addSize)
+	result.LiveOrderSubmitted = true
 	execResult, stderr, err := runHyperliquidExecuteFn(sc.Script, result.Symbol, side, addSize, 0, 0, 0, "", 0, hlCloseModeNone, walletSnapshot)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)

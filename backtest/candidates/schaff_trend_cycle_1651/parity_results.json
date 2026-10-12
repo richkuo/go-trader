@@ -1,0 +1,115 @@
+{
+ "clean": true,
+ "close_strategies": [
+  {
+   "name": "tiered_tp_pct",
+   "params": {}
+  }
+ ],
+ "params": {
+  "cycle_length": 12,
+  "fast_period": 23,
+  "lower_threshold": 25.0,
+  "slow_period": 50,
+  "smoothing": 0.5,
+  "upper_threshold": 75.0
+ },
+ "runs": [
+  {
+   "bars_compared": 401,
+   "clean": true,
+   "close_parity": "unverified",
+   "closing_bars": 7,
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "first_bar": "2026-05-24 00:00:00",
+   "last_bar": "2026-08-31 20:00:00",
+   "long_opens": 9,
+   "mismatches": 0,
+   "mode": "composer",
+   "short_opens": 10,
+   "window": 200
+  },
+  {
+   "bars_compared": 401,
+   "batch_clean": true,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "closing_bars": 7,
+   "dataset": "BTC 4h",
+   "decision_agreement": true,
+   "first_bar": "2026-05-24 00:00:00",
+   "last_bar": "2026-08-31 20:00:00",
+   "long_opens": 9,
+   "mismatches": 0,
+   "mode": "batched_paper",
+   "short_opens": 10,
+   "window": 200
+  },
+  {
+   "bars_compared": 401,
+   "clean": true,
+   "close_parity": "unverified",
+   "closing_bars": 6,
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "first_bar": "2026-05-24 00:00:00",
+   "last_bar": "2026-08-31 20:00:00",
+   "long_opens": 6,
+   "mismatches": 0,
+   "mode": "composer",
+   "short_opens": 9,
+   "window": 200
+  },
+  {
+   "bars_compared": 401,
+   "batch_clean": true,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "closing_bars": 6,
+   "dataset": "ETH 4h",
+   "decision_agreement": true,
+   "first_bar": "2026-05-24 00:00:00",
+   "last_bar": "2026-08-31 20:00:00",
+   "long_opens": 6,
+   "mismatches": 0,
+   "mode": "batched_paper",
+   "short_opens": 9,
+   "window": 200
+  },
+  {
+   "bars_compared": 401,
+   "clean": true,
+   "close_parity": "unverified",
+   "closing_bars": 13,
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "first_bar": "2026-05-24 00:00:00",
+   "last_bar": "2026-08-31 20:00:00",
+   "long_opens": 11,
+   "mismatches": 0,
+   "mode": "composer",
+   "short_opens": 6,
+   "window": 200
+  },
+  {
+   "bars_compared": 401,
+   "batch_clean": true,
+   "batch_mismatches": 0,
+   "clean": true,
+   "close_parity": "unverified",
+   "closing_bars": 13,
+   "dataset": "SOL 4h",
+   "decision_agreement": true,
+   "first_bar": "2026-05-24 00:00:00",
+   "last_bar": "2026-08-31 20:00:00",
+   "long_opens": 11,
+   "mismatches": 0,
+   "mode": "batched_paper",
+   "short_opens": 6,
+   "window": 200
+  }
+ ]
+}

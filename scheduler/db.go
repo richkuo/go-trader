@@ -669,6 +669,9 @@ func (sdb *StateDB) migrateSchema() error {
 	if err := sdb.migratePortfolioRiskScopeColumns(); err != nil {
 		return err
 	}
+	if err := sdb.migrateEntryDecisionSchema(); err != nil {
+		return err
+	}
 	return sdb.backfillTradeCloseFlags()
 }
 
@@ -1703,6 +1706,12 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		flushedDiags = append(flushedDiags, rows...)
 	}
 
+	for _, s := range req.Strategies {
+		if err := sdb.writeEntryGuardTx(tx, s, true); err != nil {
+			return err
+		}
+	}
+
 	scopeFilter, scopeArgs := scopePlaceholders(req.Scopes)
 	if req.FullFile {
 		if _, err := tx.Exec("DELETE FROM portfolio_risk"); err != nil {
@@ -1808,6 +1817,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		s.ClosedPositions = nil
 		s.ClosedOptionPositions = nil
 		s.pendingTradeDiagnostics = nil
+		pruneEntryGuardAfterCommit(s)
 	}
 	for _, f := range flushed {
 		f.strat.TradeHistory[f.index].persisted = true
@@ -2088,6 +2098,10 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 		return err
 	}
 
+	if err := sdb.writeEntryGuardTx(tx, s, true); err != nil {
+		return err
+	}
+
 	if err := deletePendingManualActionsByID(tx, ackIDs); err != nil {
 		return err
 	}
@@ -2117,6 +2131,7 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 	for _, f := range flushed {
 		s.TradeHistory[f.index].persisted = true
 	}
+	pruneEntryGuardAfterCommit(s)
 	enqueueFlushedDiagnostics(flushedDiags)
 	return nil
 }

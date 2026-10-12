@@ -765,3 +765,85 @@ func (st *StateStore) readOnly() bool {
 	}
 	return false
 }
+
+func (st *StateStore) LoadEntryGuards(state *AppState, cfgs []StrategyConfig, persisted map[string]bool) error {
+	if st == nil || state == nil {
+		return fmt.Errorf("state store unavailable")
+	}
+	byRole := make(map[storageRole]map[string]entryGuardLoadOwner)
+	for _, sc := range cfgs {
+		if sc.ID == "" {
+			continue
+		}
+		db, err := st.dbForStrategy(sc.ID)
+		if err != nil {
+			return err
+		}
+		role := db.storageRoleOf()
+		if byRole[role] == nil {
+			byRole[role] = make(map[string]entryGuardLoadOwner)
+		}
+		part := partitionFor(sc)
+		if mapped, ok := st.partitionForStrategy(sc.ID); ok && mapped != part {
+			return fmt.Errorf("strategy %q is mapped to the %s partition, its configuration to %s", sc.ID, partitionLabel(mapped), partitionLabel(part))
+		}
+		byRole[role][sc.ID] = entryGuardLoadOwner{Partition: part, PreExisting: persisted[sc.ID]}
+	}
+	for _, role := range st.order {
+		if byRole[role] == nil {
+			continue
+		}
+		db := st.file(role)
+		if db == nil {
+			return fmt.Errorf("no %s state file", role)
+		}
+		guards, err := db.loadEntryGuards(byRole[role])
+		if err != nil {
+			return err
+		}
+		for id, g := range guards {
+			if s := state.Strategies[id]; s != nil {
+				s.EntryGuard = g
+			}
+		}
+	}
+	return nil
+}
+
+func (st *StateStore) ReserveEntryIntent(s *StrategyState, in *entryIntent) error {
+	if s == nil {
+		return fmt.Errorf("strategy state is nil")
+	}
+	db, err := st.dbForStrategy(s.ID)
+	if err != nil {
+		return err
+	}
+	return db.reserveEntryIntent(s, in)
+}
+
+func (st *StateStore) TransitionEntryIntent(strategyID string, in *entryIntent, from []string, to string) error {
+	db, err := st.dbForStrategy(strategyID)
+	if err != nil {
+		return err
+	}
+	return db.transitionEntryIntent(strategyID, in, from, to)
+}
+
+func (st *StateStore) PersistEntryGuardProgress(s *StrategyState) error {
+	if s == nil {
+		return fmt.Errorf("strategy state is nil")
+	}
+	db, err := st.dbForStrategy(s.ID)
+	if err != nil {
+		return err
+	}
+	return db.persistEntryGuardProgress(s)
+}
+
+func (st *StateStore) MarkEntryIntentReplayDelivered(strategyID string, in *entryIntent, seq int64) error {
+	db, err := st.dbForStrategy(strategyID)
+	if err != nil {
+		return err
+	}
+	return db.markEntryIntentReplayDelivered(strategyID, in, seq)
+}

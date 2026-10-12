@@ -21,6 +21,7 @@ const (
 )
 
 var noEdgeStrategies = map[string]noEdgeEvidence{
+	"adaptive_moving_average":      {"study_fail", "backtest/candidates/adaptive_moving_average_1641/REPORT.md"},
 	"adx_trend":                    {"fee_audit_m5", noEdgeRefFeeAudit},
 	"amd_ifvg":                     {"study_fail", "docs/research/amd_ifvg_1023.md"},
 	"analog_retrieval":             {"study_fail", "docs/research/1138-analog-retrieval-m1.md"},
@@ -30,11 +31,13 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"bollinger_bands":              {"fee_audit_m5", noEdgeRefFeeAudit},
 	"chaikin_money_flow_breakout":  {"study_fail", "backtest/candidates/chaikin_money_flow_1649/REPORT.md"},
 	"chande_momentum":              {"study_fail", "backtest/candidates/chande_momentum_1661/REPORT.md"},
+	"dual_thrust":                  {"study_fail", "backtest/candidates/dual_thrust_1642/REPORT.md"},
 	"commodity_channel_trend":      {"study_fail", "backtest/candidates/commodity_channel_trend_1656/REPORT.md"},
 	"connors_rsi_reversion":        {"study_fail", "backtest/candidates/connors_rsi_reversion_1645/REPORT.md"},
 	"consolidation_range":          {"fee_audit_m5", noEdgeRefLimbo},
 	"donchian_breakout":            {"study_fail", "docs/research/985-donchian-regime-gate-m1.md"},
 	"ease_of_movement_breakout":    {"study_fail", "backtest/candidates/ease_of_movement_1671/REPORT.md"},
+	"elder_ray_pullback":           {"study_fail", "backtest/candidates/elder_ray_pullback_1648/REPORT.md"},
 	"ema_crossover":                {"fee_audit_m5", noEdgeRefFeeAudit},
 	"fisher_reversal":              {"study_inconclusive", "backtest/candidates/fisher_reversal_1646/REPORT.md"},
 	"funding_skew":                 {"fee_audit_m5", noEdgeRefLimbo},
@@ -56,6 +59,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"relative_vigor_index":         {"study_fail", "backtest/candidates/relative_vigor_index_1666/REPORT.md"},
 	"rsi":                          {"fee_audit_m5", noEdgeRefFeeAudit},
 	"rsi_macd_combo":               {"fee_audit_m5", noEdgeRefFeeAudit},
+	"schaff_trend_cycle":           {"study_fail", "backtest/candidates/schaff_trend_cycle_1651/REPORT.md"},
 	"session_breakout":             {"study_fail", "docs/research/1031-session-breakout-short-m1.md"},
 	"sma_crossover":                {"fee_audit_m5", noEdgeRefFeeAudit},
 	"squeeze_momentum":             {"fee_audit_m5", noEdgeRefFeeAudit},

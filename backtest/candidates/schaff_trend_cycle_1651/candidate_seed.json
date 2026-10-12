@@ -1,0 +1,99 @@
+{
+  "issue": 1651,
+  "name": "schaff_trend_cycle",
+  "status": "research settings, not approved trading settings",
+  "formula": {
+    "input": "close prices of exactly 192 trailing closed bars ending at the endpoint t (rows t-191 .. t)",
+    "ema": "for each endpoint t, ema(t-191) = close(t-191); then ema(k) = alpha * close(k) + (1 - alpha) * ema(k-1) with alpha = 2 / (period + 1), for the fast and the slow period separately",
+    "macd": "macd(k) = fast_ema(k) - slow_ema(k); the first slow_period - 1 samples of the replay are discarded",
+    "stoch1_raw": "for every complete inclusive cycle_length window of kept macd samples: 100 * (macd(k) - min) / (max - min)",
+    "stoch1": "s1 = stoch1_raw at the first complete window; then s1(k) = s1(k-1) + smoothing * (stoch1_raw(k) - s1(k-1))",
+    "stoch2_raw": "for every complete inclusive cycle_length window of s1: 100 * (s1(k) - min) / (max - min)",
+    "oscillator": "stc = stoch2_raw at the first complete window of s1; then stc(k) = stc(k-1) + smoothing * (stoch2_raw(k) - stc(k-1)); the endpoint value is stc at row t",
+    "zero_range": "max - min that is not strictly positive in any normalization window of the endpoint replay invalidates that endpoint (reason zero_range); no carried value and no zero oscillator is substituted",
+    "previous_endpoint": "the endpoint t-1 is calculated independently from its own 192 bars (rows t-192 .. t-1)",
+    "long_entry": "stc(t-1) <= lower_threshold and stc(t) > lower_threshold and macd(t) > macd(t-1)",
+    "short_entry": "stc(t-1) >= upper_threshold and stc(t) < upper_threshold and macd(t) < macd(t-1)",
+    "slope_disagrees": "a threshold crossing whose macd endpoint change is zero or has the wrong sign holds",
+    "replay_bars": 192,
+    "required_history": "193 valid consecutive closed bars at the declared bar cadence; this fits the ordinary 200-row check window for every supported parameter set",
+    "input_validity": "inside rows t-192 .. t: finite positive open, high, low and close, low <= open, close <= high, finite volume >= 0, a timestamp on every row, strictly increasing timestamps spaced exactly at the declared cadence (frame attribute bar_interval_ms), and no row that was received out of order",
+    "runtime_freshness": "only a Hyperliquid check-time frame carries a decision_time attribute; its last row is fresh only when the selected closed bar boundary equals the row boundary and 0 <= cutoff - boundary < interval; an untimed check-time frame has no cutoff and holds (decision_time_missing); historical frames have no attribute and use each row's own boundary",
+    "reason_priority": "frame defects (missing_columns, missing_cadence, missing_timestamps); else the latest row or timestamp defect in rows t-192 .. t (nonfinite_input, nonpositive_price, invalid_candle_geometry, negative_volume, missing_timestamps, timestamp_order, cadence_gap); else insufficient_history; else nonfinite_derived; else zero_range; else, on the last check-time row only, decision_time_missing, decision_boundary_mismatch, decision_bar_future, decision_bar_stale; else entry_long, entry_short, slope_disagrees or no_cross",
+    "invalid_value_representation": "invalid values are NaN in the evaluator frame and are omitted from check output; validity flags are 0.0 or 1.0"
+  },
+  "params": {
+    "fast_period": 23,
+    "slow_period": 50,
+    "cycle_length": 10,
+    "smoothing": 0.5,
+    "lower_threshold": 25.0,
+    "upper_threshold": 75.0
+  },
+  "parameter_domains": {
+    "fast_period": {"type": "integer", "min": 2, "max": 32, "rule": "fast_period < slow_period"},
+    "slow_period": {"type": "integer", "min": 3, "max": 64},
+    "cycle_length": {"type": "integer", "min": 2, "max": 16},
+    "smoothing": {"type": "finite number", "min": 0.25, "max": 1.0},
+    "lower_threshold": {"type": "finite number", "rule": "0 < lower_threshold < upper_threshold < 100"},
+    "upper_threshold": {"type": "finite number", "rule": "0 < lower_threshold < upper_threshold < 100"}
+  },
+  "optimizer_grid": {
+    "fast_period": [12, 23],
+    "slow_period": [26, 50],
+    "cycle_length": [8, 10, 12],
+    "lower_threshold": [20.0, 25.0],
+    "upper_threshold": [75.0, 80.0]
+  },
+  "manifest": "backtest/candidates/schaff_trend_cycle_1651_manifest.json",
+  "selection_window": "train",
+  "held_out_window": "test",
+  "capital": 1000.0,
+  "close_strategies": [{"name": "tiered_tp_pct", "params": {}}],
+  "close_default_ladder": [
+    {"profit_pct": 0.01, "close_fraction": 0.25},
+    {"profit_pct": 0.02, "close_fraction": 0.5},
+    {"profit_pct": 0.03, "close_fraction": 0.75},
+    {"profit_pct": 0.04, "close_fraction": 1.0}
+  ],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict",
+  "arms": {
+    "schaff_long": {"strategy": "schaff_trend_cycle", "direction": "long", "role": "matched long-only candidate arm"},
+    "schaff_both": {"strategy": "schaff_trend_cycle", "direction": "both", "role": "separate bidirectional candidate arm"},
+    "macd": {"strategy": "macd", "direction": "long", "role": "comparator; macd registers short_entries=False"},
+    "stoch_rsi": {"strategy": "stoch_rsi", "direction": "long", "role": "comparator; stoch_rsi registers short_entries=False"}
+  },
+  "candidate_arms": ["schaff_long", "schaff_both"],
+  "matched_arm": "schaff_long",
+  "comparator_arms": ["macd", "stoch_rsi"],
+  "selection": {
+    "eligible": "complete candle and funding coverage, every dataset scored, no liquidated leg, at least min_train_independent_positions independent positions",
+    "min_train_independent_positions": 10,
+    "order": ["max mean net Sharpe", "max mean drawdown-adjusted return", "earliest grid order"]
+  },
+  "held_out": {
+    "min_independent_positions_per_arm": 30,
+    "bidirectional_arm_requires_both_directions": true
+  },
+  "cost_runs": {
+    "base": {"cost_multiplier": 1.0, "meaning": "manifest fees, per-coin half spread and slippage"},
+    "stress": {"cost_multiplier": 2.0, "meaning": "manifest fees unchanged, half spread and slippage doubled"}
+  },
+  "continuous_reference": {
+    "definition": "the same equations evaluated once over the whole manifest frame (EMAs seeded at the first frame close, normalizations from the first complete window); a zero normalization range carries the previous normalized value, which is the conventional continuous-history treatment",
+    "scope": "selected schaff_both parameters, every dataset, both windows, scored rows only",
+    "mismatch_classes": {
+      "finite_zero_range_hold": "the finite endpoint holds on zero_range while the continuous calculation emits an entry",
+      "seed_divergence": "both calculations are valid and their decisions differ because the finite replay restarts its recursions 192 bars back"
+    },
+    "acceptance": "every decision mismatch must fall in a listed class; an unclassified mismatch makes the study inconclusive"
+  },
+  "verdict": {
+    "inconclusive": "any coverage refusal, no eligible training selection for an arm, a held-out sample gate that fails, or an unclassified continuous-reference mismatch",
+    "pass": "complete coverage, every sample gate met, both candidate arms net PnL > 0 at base and stress cost, and the matched long-only candidate base mean Sharpe and base mean drawdown-adjusted return both strictly above each selected comparator",
+    "fail": "a complete study that misses any pass condition",
+    "edge_status": "a pass keeps edge_status=no_edge with edge_source unvalidated; a fail records study_fail and an inconclusive result records study_inconclusive, identically in Go and Python"
+  },
+  "cache_legs": "none; the study uses only the hash-pinned Hyperliquid venue manifest, so no Binance US proxy leg and no --funding cache option is used"
+}
