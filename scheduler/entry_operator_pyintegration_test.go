@@ -3,11 +3,14 @@
 package main
 
 import (
+	"encoding/json"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func entryOperatorRepoRoot(t *testing.T) string {
@@ -44,6 +47,90 @@ func TestEntryOperatorRealOKXQueryErrorRefusesTheRelease(t *testing.T) {
 		t.Fatalf("reply %q", msg)
 	}
 	f.assertUnchanged(msg, cashBefore)
+}
+
+const entryHLRecoveryDriver = `import json, runpy, sys, types
+script, spec = sys.argv[1], json.loads(sys.argv[2])
+argv = sys.argv[3:]
+cloids = {a.split("=", 1)[0]: a.split("=", 1)[1].lower() for a in argv if a.startswith("--cloid=") or a.startswith("--stop-cloid=")}
+mod = types.ModuleType("adapter")
+class HyperliquidExchangeAdapter:
+    account_address = spec["account"]
+    def query_order_by_cloid(self, cloid):
+        if cloid.lower() == cloids.get("--cloid") and spec["entry"] is not None:
+            return spec["entry"]
+        return {"status": "unknownOid"}
+    def user_fills_since(self, since_ms):
+        return [dict(f, time=since_ms + 1 + i, tid=i + 1) for i, f in enumerate(spec["fills"])]
+    def query_order_by_oid(self, oid):
+        raise ConnectionError("connection reset by peer")
+mod.HyperliquidExchangeAdapter = HyperliquidExchangeAdapter
+sys.modules["adapter"] = mod
+sys.argv = [script] + argv
+runpy.run_path(script, run_name="__main__")
+`
+
+func installEntryHLRecoveryDriver(t *testing.T, root string, entry map[string]any) {
+	t.Helper()
+	spec, err := json.Marshal(map[string]any{
+		"account": os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"),
+		"entry":   entry,
+		"fills": []map[string]any{
+			{"oid": 901, "sz": "0.25", "px": "100", "fee": "0.01", "coin": "BTC"},
+			{"oid": 901, "sz": "0.15", "px": "101", "fee": "0.008", "coin": "BTC"},
+			{"oid": 555, "sz": "1", "px": "100", "fee": "0.02", "coin": "BTC"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := runHyperliquidRecoverEntryFn
+	t.Cleanup(func() { runHyperliquidRecoverEntryFn = prev })
+	runHyperliquidRecoverEntryFn = func(script, symbol, cloid, stopCloid string, sinceMs, untilMs int64) (*entryRecoveryResult, string, error) {
+		args := append([]string{"-c", entryHLRecoveryDriver, filepath.Join(root, script), string(spec)}, buildHyperliquidRecoverEntryArgs(symbol, cloid, stopCloid, sinceMs, untilMs)...)
+		cmd := exec.Command(filepath.Join(root, ".venv", "bin", "python3"), args...)
+		cmd.Dir = root
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		stdout, err := cmd.Output()
+		return parseEntryRecoveryOutput(stdout, stderr.String(), err)
+	}
+}
+
+func TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease(t *testing.T) {
+	root := entryOperatorRepoRoot(t)
+	t.Run("a found filled entry books once when an unattributed fill lookup fails", func(t *testing.T) {
+		f := newEntryOperatorFixture(t, "hyperliquid")
+		f.backdate()
+		installEntryHLRecoveryDriver(t, root, map[string]any{"status": "order", "order": map[string]any{"status": "filled",
+			"order": map[string]any{"oid": 901, "origSz": "0.4", "sz": "0", "cloid": f.intent().ClientOrderID}}})
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now().Add(2*entryRecoveryQueryInterval))
+		if qty, _ := f.env.position(f.sc.ID, "BTC"); math.Abs(qty-0.4) > 1e-9 {
+			t.Fatalf("position %v, want the proven 0.4 booked", qty)
+		}
+		if n := f.env.openTradeRows(f.sc.ID); n != 1 {
+			t.Fatalf("open trade rows %d, want 1", n)
+		}
+		if got := f.env.intentStatuses(f.sc.ID); len(got) != 1 || got[0] != entryIntentCommitted {
+			t.Fatalf("intents %v", got)
+		}
+	})
+	t.Run("a missing entry stays held when an unattributed fill lookup fails", func(t *testing.T) {
+		f := newEntryOperatorFixture(t, "hyperliquid")
+		f.backdate()
+		installEntryHLRecoveryDriver(t, root, nil)
+		cashBefore := f.cash()
+		recoverEntryIntents(f.env.cfg, f.env.state, f.env.store, &f.env.mu, nil, nil, time.Now())
+		if r := f.row(); r.Status != entryIntentSubmitting || !strings.Contains(r.Hold, "lookup failed") {
+			t.Fatalf("row %+v", r)
+		}
+		msg := f.command()
+		if !strings.Contains(msg, "order 901 lookup failed") {
+			t.Fatalf("reply %q", msg)
+		}
+		f.assertUnchanged(msg, cashBefore)
+	})
 }
 
 func TestEntryAccountKeysMatchTheRecoveryScripts(t *testing.T) {

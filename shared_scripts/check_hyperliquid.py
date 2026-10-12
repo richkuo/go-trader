@@ -2490,7 +2490,10 @@ def attribute_recovery_fills(adapter, fills):
             if lookups >= HL_RECOVERY_MAX_OID_LOOKUPS:
                 return out, False, f"more than {HL_RECOVERY_MAX_OID_LOOKUPS} fill orders need a client id lookup"
             lookups += 1
-            found_cloid, found = _order_cloid(adapter.query_order_by_oid(oid))
+            try:
+                found_cloid, found = _order_cloid(adapter.query_order_by_oid(oid))
+            except Exception as e:
+                return out, False, f"order {oid} lookup failed: {e}"
             if not found:
                 return out, False, f"order {oid} of a fill in the window is no longer retained, so its client id is unknown"
             by_oid[oid] = found_cloid
