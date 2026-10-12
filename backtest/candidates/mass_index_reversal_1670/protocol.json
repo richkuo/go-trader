@@ -1,0 +1,170 @@
+{
+  "study": "mass_index_reversal_1670",
+  "issue": 1670,
+  "tracking_group": "hyperliquid-strategy-candidates-2026-10-02",
+  "status": "frozen before any window was scored; run_study.py lock writes protocol_lock.json with this file's sha256 before the first score, and run, parity and render refuse a protocol whose sha256 differs from the lock",
+  "candidate": "mass_index_reversal",
+  "short_name": "massrev",
+  "seed_params": {
+    "ema_period": 9,
+    "sum_period": 25,
+    "upper_threshold": 27.0,
+    "lower_threshold": 26.5,
+    "trend_period": 50,
+    "slope_span": 5,
+    "confirm_lookback": 5,
+    "max_bulge_age": 50,
+    "recursion_length": 72,
+    "bulge_filter": 1
+  },
+  "required_history_bars": 148,
+  "formula": "finite-recursion research variant: for every bar x the range high - low is smoothed by two exponential averages of period ema_period (weight 2 / (ema_period + 1)), both seeded with the range at x - recursion_length and updated exactly recursion_length times, so each ratio depends only on the trailing recursion_length + 1 bars; the Mass Index is the sum of sum_period consecutive ratios (first average / second average). It is not an exact copy of the infinite-history published formula",
+  "event_rules": "an upper crossing (previous Mass Index <= upper_threshold, current > upper_threshold) clears any older bulge and arms a new one only when the trend slope (close SMA of trend_period minus its value slope_span bars earlier) at that bar is nonzero; a rising slope permits a later short and a falling slope a later long. The first strict lower crossing (previous >= lower_threshold, current < lower_threshold) at age 1 to max_bulge_age completes and consumes the bulge; age max_bulge_age + 1 expires it. On the completion bar a long needs the close strictly above the previous confirm_lookback highs and a short strictly below their lows; a failed confirmation consumes the bulge without an entry",
+  "comparators": {
+    "mass_index_reversal_filter_off": {
+      "strategy": "mass_index_reversal",
+      "params": "seed_params with bulge_filter 0",
+      "definition": "the same evaluator, composer, contract and costs with the Mass Index filter removed: every valid bar is a completion bar, the side comes from the current trend slope (falling permits a long, rising a short, zero holds) and the same confirm_lookback price confirmation decides the entry"
+    },
+    "mean_reversion_pro": {
+      "strategy": "mean_reversion_pro",
+      "params": "registry default_params, frozen and never tuned"
+    }
+  },
+  "registry": "futures",
+  "fee_platform": "hyperliquid",
+  "strategy_type": "perps",
+  "capital_usd": 1000.0,
+  "contract": {
+    "direction": "both",
+    "close_strategies": [
+      {
+        "name": "tiered_tp_pct",
+        "params": {
+          "tp_tiers": [
+            {
+              "profit_pct": 0.03,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      }
+    ],
+    "stop_loss_atr_mult": 1.0,
+    "comparison_mode": "strict"
+  },
+  "contract_note": "Every arm (candidate, filter-off comparison, mean_reversion_pro) and every M1 incumbent runs under this one contract: direction both, the single tiered_tp_pct close owner (+3%, full position), the single fixed entry-ATR stop owner (1.0 x ATR), strict close capability checks, no regime gate, the same capital, sizing, execution costs, data and warm-up. Incumbents receive it through eval_windows compute_incumbent_legs(contract=...). M1's default incumbent bar is recorded as its own reference under this matched contract; its legs are not treated as matched both-side comparisons.",
+  "regime": "none: no regime gate on any arm (regime_enabled false, no allowed_regimes, no directional policy); frozen before scoring and never varied",
+  "intrabar_resolution": "ohlc_walk",
+  "parameter_protocol": {
+    "selection": "none: the seed is fixed before any score and is never replaced by a sweep result",
+    "grid": "backtest/optimizer.py DEFAULT_PARAM_RANGES['mass_index_reversal'] (bulge_filter fixed at 1); every combination passes the registry param_validator, checked before scoring",
+    "stability_neighbors": "every grid value adjacent to the seed value in one parameter's sorted grid list, all other parameters at the seed; each neighbor must pass the param_validator",
+    "stability_gate": "scored on each group's training window only (proxy: is, venue: train at cost x1) before its held-out windows are scored: at least two thirds of the valid neighbors must have a summed net PnL > 0 across the group's datasets; an unscorable neighbor (missing dataset, funding_incomplete or fetched funding) makes the gate unknown"
+  },
+  "warmup": {
+    "bars": 300,
+    "policy": "every arm and every incumbent of a window loads the same 300 verified consecutive bars before the window start (eval_windows warmup_bars on the cached path, the manifest warmup_bars on the venue path); 300 bars cover the 148-row decision requirement plus the entry ATR; the evaluator reads them, the engine neither scores nor trades them",
+    "restriction": "the proxy candles start at 2023-01-01, so the 2023 window has no prehistory; it runs every arm with warmup 0 and its first 147 bars hold with insufficient_history; this is a coverage restriction, never evidence of an economic failure"
+  },
+  "proxy": {
+    "inputs": "study_manifest.json: the #1642 frozen Binance US 1h and 4h candles and Hyperliquid hourly funding, read in place under backtest/candidates/dual_thrust_1642/data with every sha256 verified",
+    "label": "proxy evidence: Binance US spot USDT candles stand in for Hyperliquid perpetual prices with Hyperliquid fees and funding; slippage is the spread proxy; lot sizes and venue minimums are unmodeled; this is not measured Hyperliquid candle evidence and cannot claim complete Hyperliquid execution parity",
+    "intervals": [
+      "1h",
+      "4h"
+    ],
+    "symbols": [
+      "BTC/USDT",
+      "ETH/USDT",
+      "SOL/USDT"
+    ],
+    "funding_mode": "charge",
+    "funding_note": "eval_windows run_leg with funding_mode charge on every candidate, comparator, neighbor and incumbent leg, priced from the rebuilt offline cache; a leg holding a position in an hour with neither a rate nor a venue-absent mark is funding_incomplete. Hyperliquid funding starts in May 2023, so 2023 legs that hold positions before the first rate are funding_incomplete.",
+    "windows": {
+      "is": [
+        "2025-06-10",
+        "2026-01-01"
+      ],
+      "oos": [
+        "2026-01-01",
+        "2026-10-01"
+      ],
+      "2023": [
+        "2023-01-01",
+        "2024-01-01"
+      ],
+      "2024": [
+        "2024-01-01",
+        "2025-01-01"
+      ],
+      "2025H1": [
+        "2025-01-01",
+        "2025-07-01"
+      ]
+    },
+    "departures_from_m1_windows": [
+      "oos end pinned at 2026-10-01, the end of the frozen candles (M1 leaves it open)"
+    ],
+    "window_note": "the other M1 windows are unchanged. 2025H1 overlaps the is training window from 2025-06-10 to 2025-07-01; a trade in that overlap appears in both windows and is never counted twice as independent held-out evidence (only oos carries the sample floor)",
+    "primary_window": "oos",
+    "secondary_windows": [
+      "2023",
+      "2024",
+      "2025H1"
+    ],
+    "training_window": "is",
+    "cost_model": "the engine's Hyperliquid fee (commission) and default slippage per fill; this legacy M1 screen has no spread replay, lot rounding or minimum order, so it cannot by itself establish venue execution parity"
+  },
+  "venue": {
+    "inputs": "backtest/candidates/mass_index_reversal_1670_manifest.json: the #1642 frozen Hyperliquid 4h candles, hourly funding, venue meta and L2 snapshot, referenced in place through manifest-relative paths",
+    "label": "venue evidence: Hyperliquid mainnet perpetual candles",
+    "interval": "4h",
+    "held_out_window": "test",
+    "training_window": "train",
+    "warmup": "the manifest warmup_bars (300) precede each window",
+    "funding": "the manifest's existing funding attachment and coverage semantics (attach_funding_cost); no --funding option applies on this path",
+    "execution": "the manifest execution specification with the explicit close owner: taker and maker fee, per-coin half spread plus slippage, szDecimals lot rounding, the venue minimum notional with its margin",
+    "cost_multipliers": {
+      "base": 1.0,
+      "stress": 2.0
+    },
+    "stress_note": "cost x2 doubles half spread and slippage; fees are unchanged"
+  },
+  "sample_rules": {
+    "cluster_definition": "positions pooled across a group's datasets, sorted by entry time; overlapping holding spans merge into one independent cluster whose PnL is the sum of its positions' net PnL",
+    "min_held_out_clusters": 30,
+    "concentration_rule": "the largest positive independent cluster contributes at most half of the summed positive held-out cluster PnL; false when no cluster is positive"
+  },
+  "verdict_rules": {
+    "proxy_group": {
+      "scorable_window": "a window is scorable when every candidate, comparator and incumbent leg of the group exists, none is funding_incomplete and none fetched funding while scoring; missing funding is never filled with an assumed zero rate",
+      "checks": {
+        "training_stability": "the stability gate on the is window; unknown when a neighbor leg is unscorable",
+        "m1_oos_pass": "contract-aware M1 verdict pass in oos; unknown when oos is unscorable",
+        "m1_secondary_passes": "M1 verdict pass in at least 2 of 2023, 2024, 2025H1; true once 2 scorable passes exist, false once scorable passes plus unscorable secondary windows are below 2, else unknown",
+        "oos_net_positive": "candidate summed oos net PnL > 0; unknown when oos is unscorable",
+        "oos_beats_filter_off_sharpe": "candidate oos mean Sharpe > mass_index_reversal_filter_off oos mean Sharpe; unknown when oos is unscorable",
+        "oos_beats_mean_reversion_pro_sharpe": "candidate oos mean Sharpe > mean_reversion_pro oos mean Sharpe; unknown when oos is unscorable",
+        "oos_concentration": "the concentration rule on the candidate's oos clusters; unknown when oos is unscorable"
+      },
+      "order": "oos unscorable -> inconclusive; oos candidate clusters < min_held_out_clusters -> inconclusive; any check false -> fail; every check true -> pass; else inconclusive"
+    },
+    "venue_group": {
+      "evidence_complete": "provenance kind venue, candle and funding coverage complete, and no funding_incomplete candidate, comparator or incumbent leg at either cost multiplier",
+      "checks": {
+        "training_stability": "the stability gate on the train window at cost x1; unknown when a neighbor leg is unscorable",
+        "net_positive_x1": "candidate summed test net PnL > 0 at cost x1",
+        "net_positive_x2": "candidate summed test net PnL > 0 at cost x2",
+        "m1_test_pass_x1": "contract-aware M1 verdict pass on test at cost x1",
+        "beats_filter_off_sharpe_x1": "candidate mean Sharpe > mass_index_reversal_filter_off at cost x1",
+        "beats_mean_reversion_pro_sharpe_x1": "candidate mean Sharpe > mean_reversion_pro at cost x1",
+        "concentration_x1": "the concentration rule on the candidate's test clusters at cost x1"
+      },
+      "order": "evidence incomplete -> inconclusive; test candidate clusters at x1 < min_held_out_clusters -> inconclusive; any check false -> fail; every check true -> pass; else inconclusive"
+    },
+    "overall": "pass only if proxy 1h, proxy 4h and venue 4h all pass; fail if any group is fail; otherwise inconclusive. The proxy groups are proxy evidence and the venue group is venue evidence; the report states both",
+    "metadata": "edge_status stays no_edge after every outcome; pass keeps edge_source unvalidated, fail records study_fail, inconclusive records study_inconclusive; no outcome approves deployment or adds allow_no_edge"
+  },
+  "reporting": "completed bulges, filtered signals (completions whose price confirmation failed), entries, independent positions and clusters, net results, drawdown, turnover, symbol and side concentration, the largest cluster share, parameter stability (every neighbor's training result), funding coverage and provenance, the exact data venue, source and funding hashes, fees, spread, slippage, rounding, minimums, capital, leverage, sizing and stop assumptions, start-of-window holds, every searched variant, failed and inconclusive legs, and a per-entry audit of the evaluated inputs against an independent Mass Index recomputation"
+}

@@ -122,6 +122,14 @@ var addStrategyEntryOnlyCandidates = map[string]addStrategyEntryOnlyCandidate{
 		ClosedBarDecisions: true,
 		StopLossATRMult:    1.0,
 	},
+	"mass_index_reversal": {
+		CloseStrategy: "tiered_tp_pct",
+		CloseParams: func() map[string]interface{} {
+			return map[string]interface{}{"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 0.03, "close_fraction": 1.0}}}
+		},
+		ClosedBarDecisions: true,
+		StopLossATRMult:    1.0,
+	},
 	dualThrustStrategyName: {
 		CloseStrategy: "tiered_tp_pct",
 		CloseParams: func() map[string]interface{} {

@@ -106,6 +106,7 @@ var knownShortNames = map[string]string{
 	"schaff_trend_cycle":           "stc",
 	"trix_momentum":                "trix",
 	"camarilla_pivot_reversal":     "cpr",
+	"mass_index_reversal":          "massrev",
 	"vortex_trend":                 "vortex",
 	"williams_r_reversal":          "wrr",
 	"ultimate_oscillator":          "uo",
@@ -168,6 +169,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"schaff_trend_cycle":           {"futures"},
 	"trix_momentum":                {"futures"},
 	"camarilla_pivot_reversal":     {"futures"},
+	"mass_index_reversal":          {"futures"},
 	"session_breakout":             {"futures"},
 	"sma_crossover":                {"spot", "futures"},
 	"squeeze_momentum":             {"spot", "futures"},
@@ -239,6 +241,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"schaff_trend_cycle":           true,
 	"trix_momentum":                true,
 	"camarilla_pivot_reversal":     true,
+	"mass_index_reversal":          true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {

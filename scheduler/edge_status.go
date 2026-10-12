@@ -45,6 +45,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"heikin_ashi_ema":              {"fee_audit_m5", noEdgeRefFeeAudit},
 	"ichimoku_cloud":               {"fee_audit_m5", noEdgeRefFeeAudit},
 	"macd":                         {"fee_audit_m5", noEdgeRefFeeAudit},
+	"mass_index_reversal":          {"unvalidated", "backtest/candidates/mass_index_reversal_1670/REPORT.md"},
 	"mean_reversion":               {"fee_audit_m5", noEdgeRefFeeAudit},
 	"momentum":                     {"fee_audit_m5", noEdgeRefFeeAudit},
 	"money_flow_index_reversal":    {"study_fail", "backtest/candidates/money_flow_index_reversal_1658/REPORT.md"},
