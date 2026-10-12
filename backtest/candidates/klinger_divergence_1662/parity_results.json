@@ -1,0 +1,390 @@
+{
+ "clean": true,
+ "decision": {
+  "clean": true,
+  "close_strategies": [
+   {
+    "name": "tiered_tp_pct",
+    "params": {
+     "tp_tiers": [
+      {
+       "close_fraction": 1.0,
+       "profit_pct": 0.02
+      }
+     ]
+    }
+   }
+  ],
+  "params": {
+   "divergence_test": true,
+   "fast_period": 34,
+   "left_span": 2,
+   "max_separation": 40,
+   "min_separation": 5,
+   "replay_bars": 112,
+   "right_span": 2,
+   "setup_expiry": 6,
+   "signal_period": 13,
+   "slow_period": 55
+  },
+  "runs": [
+   {
+    "bars_compared": 401,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 4,
+    "dataset": "BTC 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 2,
+    "mismatches": 0,
+    "mode": "composer",
+    "short_opens": 4,
+    "window": 200
+   },
+   {
+    "bars_compared": 571,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 4,
+    "dataset": "BTC 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 4,
+    "mismatches": 0,
+    "mode": "composer",
+    "short_opens": 4,
+    "window": "every_prefix"
+   },
+   {
+    "bars_compared": 401,
+    "batch_clean": true,
+    "batch_mismatches": 0,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 4,
+    "dataset": "BTC 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 2,
+    "mismatches": 0,
+    "mode": "batched_paper",
+    "short_opens": 4,
+    "window": 200
+   },
+   {
+    "bars_compared": 571,
+    "batch_clean": true,
+    "batch_mismatches": 0,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 4,
+    "dataset": "BTC 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 4,
+    "mismatches": 0,
+    "mode": "batched_paper",
+    "short_opens": 4,
+    "window": "every_prefix"
+   },
+   {
+    "bars_compared": 401,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 2,
+    "dataset": "ETH 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 0,
+    "mismatches": 0,
+    "mode": "composer",
+    "short_opens": 6,
+    "window": 200
+   },
+   {
+    "bars_compared": 571,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 3,
+    "dataset": "ETH 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 1,
+    "mismatches": 0,
+    "mode": "composer",
+    "short_opens": 6,
+    "window": "every_prefix"
+   },
+   {
+    "bars_compared": 401,
+    "batch_clean": true,
+    "batch_mismatches": 0,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 2,
+    "dataset": "ETH 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 0,
+    "mismatches": 0,
+    "mode": "batched_paper",
+    "short_opens": 6,
+    "window": 200
+   },
+   {
+    "bars_compared": 571,
+    "batch_clean": true,
+    "batch_mismatches": 0,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 3,
+    "dataset": "ETH 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 1,
+    "mismatches": 0,
+    "mode": "batched_paper",
+    "short_opens": 6,
+    "window": "every_prefix"
+   },
+   {
+    "bars_compared": 401,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 2,
+    "dataset": "SOL 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 5,
+    "mismatches": 0,
+    "mode": "composer",
+    "short_opens": 2,
+    "window": 200
+   },
+   {
+    "bars_compared": 571,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 3,
+    "dataset": "SOL 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 6,
+    "mismatches": 0,
+    "mode": "composer",
+    "short_opens": 2,
+    "window": "every_prefix"
+   },
+   {
+    "bars_compared": 401,
+    "batch_clean": true,
+    "batch_mismatches": 0,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 2,
+    "dataset": "SOL 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 5,
+    "mismatches": 0,
+    "mode": "batched_paper",
+    "short_opens": 2,
+    "window": 200
+   },
+   {
+    "bars_compared": 571,
+    "batch_clean": true,
+    "batch_mismatches": 0,
+    "clean": true,
+    "close_parity": "unverified",
+    "closing_bars": 3,
+    "dataset": "SOL 4h",
+    "decision_agreement": true,
+    "first_bar": "2026-05-24 00:00:00",
+    "last_bar": "2026-08-31 20:00:00",
+    "long_opens": 6,
+    "mismatches": 0,
+    "mode": "batched_paper",
+    "short_opens": 2,
+    "window": "every_prefix"
+   }
+  ]
+ },
+ "indicator": {
+  "clean": true,
+  "exact_columns": [
+   "signal",
+   "klinger_reason",
+   "klinger_valid",
+   "klinger_long_state",
+   "klinger_short_state",
+   "klinger_long_pivot1_ts_ms",
+   "klinger_long_pivot2_ts_ms",
+   "klinger_short_pivot1_ts_ms",
+   "klinger_short_pivot2_ts_ms"
+  ],
+  "indicator_columns": [
+   "klinger_oscillator",
+   "klinger_signal_line",
+   "klinger_prev_oscillator",
+   "klinger_prev_signal_line",
+   "klinger_cross",
+   "klinger_cm",
+   "klinger_volume_force"
+  ],
+  "params": {
+   "divergence_test": true,
+   "fast_period": 34,
+   "left_span": 2,
+   "max_separation": 40,
+   "min_separation": 5,
+   "replay_bars": 112,
+   "right_span": 2,
+   "setup_expiry": 6,
+   "signal_period": 13,
+   "slow_period": 55
+  },
+  "runs": [
+   {
+    "compared": {
+     "exact_support": 2190,
+     "prefix": 2190,
+     "tail200": 2190
+    },
+    "dataset": "BTC 4h",
+    "endpoints": 2190,
+    "entries_compared": 61,
+    "first_mismatches": {
+     "exact_support": [],
+     "prefix": [],
+     "tail200": []
+    },
+    "mismatches": {
+     "exact_support": 0,
+     "prefix": 0,
+     "tail200": 0
+    },
+    "window": "train"
+   },
+   {
+    "compared": {
+     "exact_support": 2190,
+     "prefix": 2190,
+     "tail200": 2190
+    },
+    "dataset": "BTC 4h",
+    "endpoints": 2190,
+    "entries_compared": 51,
+    "first_mismatches": {
+     "exact_support": [],
+     "prefix": [],
+     "tail200": []
+    },
+    "mismatches": {
+     "exact_support": 0,
+     "prefix": 0,
+     "tail200": 0
+    },
+    "window": "test"
+   },
+   {
+    "compared": {
+     "exact_support": 2190,
+     "prefix": 2190,
+     "tail200": 2190
+    },
+    "dataset": "ETH 4h",
+    "endpoints": 2190,
+    "entries_compared": 54,
+    "first_mismatches": {
+     "exact_support": [],
+     "prefix": [],
+     "tail200": []
+    },
+    "mismatches": {
+     "exact_support": 0,
+     "prefix": 0,
+     "tail200": 0
+    },
+    "window": "train"
+   },
+   {
+    "compared": {
+     "exact_support": 2190,
+     "prefix": 2190,
+     "tail200": 2190
+    },
+    "dataset": "ETH 4h",
+    "endpoints": 2190,
+    "entries_compared": 53,
+    "first_mismatches": {
+     "exact_support": [],
+     "prefix": [],
+     "tail200": []
+    },
+    "mismatches": {
+     "exact_support": 0,
+     "prefix": 0,
+     "tail200": 0
+    },
+    "window": "test"
+   },
+   {
+    "compared": {
+     "exact_support": 2190,
+     "prefix": 2190,
+     "tail200": 2190
+    },
+    "dataset": "SOL 4h",
+    "endpoints": 2190,
+    "entries_compared": 75,
+    "first_mismatches": {
+     "exact_support": [],
+     "prefix": [],
+     "tail200": []
+    },
+    "mismatches": {
+     "exact_support": 0,
+     "prefix": 0,
+     "tail200": 0
+    },
+    "window": "train"
+   },
+   {
+    "compared": {
+     "exact_support": 2190,
+     "prefix": 2190,
+     "tail200": 2190
+    },
+    "dataset": "SOL 4h",
+    "endpoints": 2190,
+    "entries_compared": 49,
+    "first_mismatches": {
+     "exact_support": [],
+     "prefix": [],
+     "tail200": []
+    },
+    "mismatches": {
+     "exact_support": 0,
+     "prefix": 0,
+     "tail200": 0
+    },
+    "window": "test"
+   }
+  ],
+  "support_bars": 164,
+  "tolerance": 1e-09
+ }
+}

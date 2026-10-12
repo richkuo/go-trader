@@ -2038,7 +2038,7 @@ def camarilla_pivot_reversal_strategy(df: pd.DataFrame, expected_interval_ms: in
         "setup_expiry <= 50",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_fail",
     edge_ref="backtest/candidates/klinger_divergence_1662/REPORT.md",
     short_entries=True,
     param_validator=klinger_param_validator,
