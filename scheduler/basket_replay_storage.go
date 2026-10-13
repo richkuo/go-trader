@@ -59,6 +59,14 @@ CREATE TABLE IF NOT EXISTS basket_replay_venue_events (
     at_ms INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS basket_replay_steps (
+    run_id TEXT NOT NULL,
+    step_index INTEGER NOT NULL,
+    record_json TEXT NOT NULL,
+    lot_refusals INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, step_index)
+);
+
 CREATE INDEX IF NOT EXISTS idx_basket_replay_venue_cloid ON basket_replay_venue_events(run_id, client_order_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_basket_replay_venue_step ON basket_replay_venue_events(run_id, step_index, kind);
 `
@@ -388,6 +396,59 @@ func writeBasketReplayProgressTx(tx *sql.Tx, runID string, p basketReplayProgres
 		return fmt.Errorf("replay progress for %s would move back to step %d", runID, p.StepsApplied)
 	}
 	return nil
+}
+
+type basketReplayStoredStep struct {
+	Record      basketReplayStepRecord
+	LotRefusals int
+}
+
+func (sdb *StateDB) writeBasketReplaySteps(runID string, steps []basketReplayStoredStep) error {
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, st := range steps {
+		blob, err := json.Marshal(st.Record)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO basket_replay_steps (run_id, step_index, record_json, lot_refusals) VALUES (?, ?, ?, ?)
+			ON CONFLICT(run_id, step_index) DO UPDATE SET record_json = excluded.record_json, lot_refusals = excluded.lot_refusals`,
+			runID, st.Record.Index, string(blob), st.LotRefusals); err != nil {
+			return fmt.Errorf("record replay step %d: %w", st.Record.Index, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (sdb *StateDB) readBasketReplaySteps(runID string, applied int) ([]basketReplayStoredStep, error) {
+	rows, err := sdb.db.Query(`SELECT step_index, record_json, lot_refusals FROM basket_replay_steps WHERE run_id = ? AND step_index < ? ORDER BY step_index`, runID, applied)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []basketReplayStoredStep
+	for rows.Next() {
+		var idx, lots int
+		var blob string
+		if err := rows.Scan(&idx, &blob, &lots); err != nil {
+			return nil, err
+		}
+		var st basketReplayStoredStep
+		dec := json.NewDecoder(strings.NewReader(blob))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&st.Record); err != nil {
+			return nil, refuseReplay("state_foreign", fmt.Sprintf("the stored record of step %d is unreadable: %v", idx, err))
+		}
+		if st.Record.Index != idx {
+			return nil, refuseReplay("state_foreign", fmt.Sprintf("the stored record of step %d names step %d", idx, st.Record.Index))
+		}
+		st.LotRefusals = lots
+		out = append(out, st)
+	}
+	return out, rows.Err()
 }
 
 type basketReplayVenueEvent struct {

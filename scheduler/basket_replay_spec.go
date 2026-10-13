@@ -156,6 +156,7 @@ func decodeBasketReplaySpec(r io.Reader) (*basketReplaySpec, []byte, error) {
 func validateBasketReplaySpec(spec *basketReplaySpec) error {
 	var errs []string
 	add := func(format string, a ...interface{}) { errs = append(errs, fmt.Sprintf(format, a...)) }
+	var baselineKeys map[int64]string
 	if spec.Protocol != basketReplayProtocolName || spec.Version != basketReplayProtocolVersion {
 		return refuseReplay("protocol_unsupported", fmt.Sprintf("the step script names protocol %q version %d; this adapter reads %q version %d", spec.Protocol, spec.Version, basketReplayProtocolName, basketReplayProtocolVersion))
 	}
@@ -228,6 +229,7 @@ func validateBasketReplaySpec(spec *basketReplaySpec) error {
 		}
 	case basketReplayTargetsBaseline:
 		spec.baseline = make(map[int64]map[string]float64, len(spec.TargetInput.Weights))
+		baselineKeys = make(map[int64]string, len(spec.TargetInput.Weights))
 		dKeys := make([]string, 0, len(spec.TargetInput.Weights))
 		for k := range spec.TargetInput.Weights {
 			dKeys = append(dKeys, k)
@@ -248,7 +250,13 @@ func validateBasketReplaySpec(spec *basketReplaySpec) error {
 					add("target_input.weights[%s][%s] is not finite", k, coin)
 				}
 			}
-			spec.baseline[t.UTC().UnixMilli()] = w
+			ms := t.UTC().UnixMilli()
+			if prev, dup := baselineKeys[ms]; dup {
+				add("target_input.weights keys %q and %q name the same deadline", prev, k)
+				continue
+			}
+			baselineKeys[ms] = k
+			spec.baseline[ms] = w
 		}
 	default:
 		add("target_input.mode %q must be %q or %q", spec.TargetInput.Mode, basketReplayTargetsRanker, basketReplayTargetsBaseline)
@@ -346,6 +354,26 @@ func validateBasketReplaySpec(spec *basketReplaySpec) error {
 		for j, o := range append(append([]basketReplayScriptedOutcome(nil), st.Venue...), st.Queries...) {
 			if why := o.validate(); why != "" {
 				add("steps[%d] scripted outcome %d: %s", i, j, why)
+			}
+		}
+	}
+	if len(baselineKeys) > 0 && spec.Basket.RebalanceIntervalSeconds > 0 {
+		reached := make(map[int64]bool, len(spec.parsedSteps))
+		window := time.Duration(spec.Basket.EvaluationWindowSeconds) * time.Second
+		for _, t := range spec.parsedSteps {
+			d := evaluationDeadline(t, spec.Basket.RebalanceIntervalSeconds)
+			if window <= 0 || t.Before(d.Add(window)) {
+				reached[d.UnixMilli()] = true
+			}
+		}
+		deadlines := make([]int64, 0, len(baselineKeys))
+		for ms := range baselineKeys {
+			deadlines = append(deadlines, ms)
+		}
+		sort.Slice(deadlines, func(i, j int) bool { return deadlines[i] < deadlines[j] })
+		for _, ms := range deadlines {
+			if !reached[ms] {
+				add("target_input.weights key %q is not a rebalance deadline (every %d s) that a step reaches inside its %d s evaluation window, so its weights would never be used", baselineKeys[ms], spec.Basket.RebalanceIntervalSeconds, spec.Basket.EvaluationWindowSeconds)
 			}
 		}
 	}

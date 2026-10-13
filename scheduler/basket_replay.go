@@ -55,7 +55,9 @@ type basketReplayRuntime struct {
 	progress  basketReplayProgress
 	resumedAt int
 	records   []basketReplayStepRecord
-	coverage  map[string]bool
+	stored    []basketReplayStoredStep
+	pending   []basketReplayStoredStep
+	lotMark   int
 	cleanups  []func()
 	members   []StrategyConfig
 	partition RiskPartition
@@ -68,12 +70,8 @@ func (r *basketReplayRuntime) Close() {
 	r.cleanups = nil
 }
 
-func (r *basketReplayRuntime) noteCoverage(format string, a ...interface{}) {
-	r.coverage[fmt.Sprintf(format, a...)] = true
-}
-
 func openBasketReplay(spec *basketReplaySpec, raw []byte, opts basketReplayOptions) (*basketReplayRuntime, error) {
-	r := &basketReplayRuntime{spec: spec, opts: opts, mu: &sync.RWMutex{}, coverage: map[string]bool{}, notifier: NewMultiNotifier(), clock: &simulatedClock{}}
+	r := &basketReplayRuntime{spec: spec, opts: opts, mu: &sync.RWMutex{}, notifier: NewMultiNotifier(), clock: &simulatedClock{}}
 	ok := false
 	defer func() {
 		if !ok {
@@ -228,6 +226,11 @@ func openBasketReplay(spec *basketReplaySpec, raw []byte, opts basketReplayOptio
 		if p != r.progress {
 			return nil, refuseReplay("resume_refused", "the run progress changed while the adapter opened the state file")
 		}
+		stored, err := r.file.readBasketReplaySteps(spec.Run.RunID, p.StepsApplied)
+		if err != nil {
+			return nil, err
+		}
+		r.stored = stored
 	}
 	if err := r.loadState(); err != nil {
 		return nil, err
@@ -509,16 +512,33 @@ func (r *basketReplayRuntime) Run() error {
 		if err := r.clock.Set(at); err != nil {
 			return refuseReplay("step_before_cursor", err.Error())
 		}
-		rec, err := r.runStep(i, at, r.spec.Steps[i])
+		rec, saved, err := r.runStep(i, at, r.spec.Steps[i])
 		if err != nil {
 			return err
 		}
 		r.records = append(r.records, rec)
+		lots := r.lots.fetchRefusals()
+		r.pending = append(r.pending, basketReplayStoredStep{Record: rec, LotRefusals: lots - r.lotMark})
+		r.lotMark = lots
+		if saved {
+			r.flushStepRecords()
+		}
 	}
 	return nil
 }
 
-func (r *basketReplayRuntime) runStep(i int, at time.Time, step basketReplayStep) (basketReplayStepRecord, error) {
+func (r *basketReplayRuntime) flushStepRecords() {
+	if len(r.pending) == 0 {
+		return
+	}
+	if err := r.file.writeBasketReplaySteps(r.spec.Run.RunID, r.pending); err != nil {
+		fmt.Fprintf(os.Stderr, "[basket-replay] could not record %d step record(s) after a durable save: %v\n", len(r.pending), err)
+		return
+	}
+	r.pending = nil
+}
+
+func (r *basketReplayRuntime) runStep(i int, at time.Time, step basketReplayStep) (basketReplayStepRecord, bool, error) {
 	cfg, state, store, mu := r.cfg, r.state, r.store, r.mu
 	if step.SaveFailure {
 		prev := storeCommitHook
@@ -597,8 +617,9 @@ func (r *basketReplayRuntime) runStep(i int, at time.Time, step basketReplayStep
 			rec.SaveErrors = append(rec.SaveErrors, fmt.Sprintf("%s: %v", partitionLabel(out.part), out.err))
 		}
 	}
+	saveErr, attempted := outcomes[r.partition]
 	r.fillRecord(&rec, at, step, scopeRisk, prices)
-	return rec, nil
+	return rec, attempted && saveErr == nil, nil
 }
 
 func (r *basketReplayRuntime) manageMember(sc StrategyConfig, scopeRisk map[RiskPartition]*scopeCycleRisk, prices map[string]float64, feedCtx *marketFeedContext) {
@@ -972,9 +993,6 @@ func (r *basketReplayRuntime) fillRecord(rec *basketReplayStepRecord, at time.Ti
 		}
 	}
 	r.mu.RUnlock()
-	for _, line := range lines {
-		r.noteCoverage("%s", line)
-	}
 	rec.Coverage = append(rec.Coverage, lines...)
 	sort.Strings(rec.Coverage)
 }
@@ -1239,16 +1257,49 @@ func (r *basketReplayRuntime) output() (basketReplayOutput, error) {
 		out.Run.Cursor = time.UnixMilli(r.progress.CursorMs).UTC().Format(time.RFC3339Nano)
 	}
 	out.Cost = &basketReplayCostInfo{Applied: r.cost, DefaultParity: defaultFillCostPolicy(), SpreadModel: fillCostSpreadInSlippage, Path: "replay cost input passed into the shared paper open, add, partial close, full close, stop and kill-switch booking owners and the prospective margin gate; one booking and one cost application per confirmed fill"}
-	out.Steps = r.records
+	storedLots := 0
+	have := make(map[int]bool, len(r.stored))
+	steps := make([]basketReplayStepRecord, 0, len(r.stored)+len(r.records))
+	for _, st := range r.stored {
+		steps = append(steps, st.Record)
+		storedLots += st.LotRefusals
+		have[st.Record.Index] = true
+	}
+	out.Steps = append(steps, r.records...)
 	trades, err := r.storedTrades()
 	if err != nil {
 		return out, err
 	}
 	out.Trades = trades
-	out.LotFetches = r.lots.fetchRefusals()
-	gaps := make([]string, 0, len(r.coverage))
-	for g := range r.coverage {
-		gaps = append(gaps, g)
+	out.LotFetches = storedLots + r.lots.fetchRefusals()
+	seen := map[string]bool{}
+	var gaps []string
+	for _, st := range out.Steps {
+		for _, g := range st.Coverage {
+			if !seen[g] {
+				seen[g] = true
+				gaps = append(gaps, g)
+			}
+		}
+	}
+	for i := 0; i < r.resumedAt; i++ {
+		if !have[i] {
+			gaps = append(gaps, fmt.Sprintf("step %d has no stored step record, so its coverage cannot be shown", i))
+		}
+	}
+	for _, p := range r.pending {
+		if len(p.Record.SaveErrors) > 0 {
+			gaps = append(gaps, fmt.Sprintf("step %d: the state save failed and no later save made the step durable", p.Record.Index))
+		} else {
+			gaps = append(gaps, fmt.Sprintf("step %d: the step record was not written to the run state file", p.Record.Index))
+		}
+	}
+	durable, err := r.file.readBasketReplayProgress(r.spec.Run.RunID)
+	if err != nil {
+		return out, err
+	}
+	if durable != r.progress {
+		gaps = append(gaps, fmt.Sprintf("the run state file records %d applied steps, behind the %d steps this run applied", durable.StepsApplied, r.progress.StepsApplied))
 	}
 	gaps = append(gaps, r.fundingCoverageGaps()...)
 	r.mu.RLock()

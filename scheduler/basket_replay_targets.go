@@ -23,6 +23,9 @@ func basketBaselineRankRunner(weights map[int64]map[string]float64) basketRankRu
 		if err := json.Unmarshal(stdin, &req); err != nil {
 			return nil, nil, fmt.Errorf("decode baseline request: %w", err)
 		}
+		if req.V != basketRankRequestVersion {
+			return nil, nil, fmt.Errorf("the baseline target-input path reads ranker request version %d, got %d", basketRankRequestVersion, req.V)
+		}
 		res := basketRankResult{
 			V:                basketRankRequestVersion,
 			BasketID:         req.BasketID,
@@ -44,7 +47,7 @@ func basketBaselineRankRunner(weights map[int64]map[string]float64) basketRankRu
 			out, err := json.Marshal(res)
 			return out, nil, err
 		}
-		contract := basketContract{Listings: req.Listings, MinHistoryBars: req.MinHistoryBars}
+		contract := basketContract{Listings: req.Listings, MinHistoryBars: req.AllocationContext.MinHistoryBars}
 		members := make(map[string]bool, len(req.Members))
 		var invalid []string
 		for _, m := range req.Members {
@@ -64,7 +67,7 @@ func basketBaselineRankRunner(weights map[int64]map[string]float64) basketRankRu
 				out, err := json.Marshal(res)
 				return out, nil, err
 			}
-			res.Eligibility[m.Symbol] = basketRankEligibility{Symbol: m.Symbol, Status: "eligible", ClosedBars: req.LookbackBars, Mark: px, BoundaryMs: req.DeadlineMs}
+			res.Eligibility[m.Symbol] = basketRankEligibility{Symbol: m.Symbol, Status: "eligible", ClosedBars: req.AllocationContext.LookbackBars, Mark: px, BoundaryMs: req.DeadlineMs}
 			res.Weights[m.Symbol] = w[m.Symbol]
 			res.Scores[m.Symbol] = w[m.Symbol]
 		}

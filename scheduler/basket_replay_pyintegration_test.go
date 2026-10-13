@@ -145,7 +145,50 @@ func TestBasketReplayRestartMatchesAnUninterruptedRun(t *testing.T) {
 	if rest.Code != 0 || rest.Out.Status != basketReplayStatusComplete || rest.Out.Run.ResumedAt != 4 {
 		t.Fatalf("resume: exit %d status %s %+v %s", rest.Code, rest.Out.Status, rest.Out.Run, tail(rest.Stderr, 4000))
 	}
-	requireReplayParity(t, "stop and resume", full.Out.Steps, append(append([]basketReplayStepRecord(nil), part.Out.Steps...), rest.Out.Steps...), full.Out.Trades, rest.Out.Trades)
+	requireReplayParity(t, "stop and resume", full.Out.Steps, rest.Out.Steps, full.Out.Trades, rest.Out.Trades)
+	requireReplayParity(t, "stored steps of the stopped run", part.Out.Steps, rest.Out.Steps[:len(part.Out.Steps)], nil, nil)
+
+	held := ""
+	for _, m := range full.Out.Steps[2].Members {
+		if m.Qty != 0 {
+			held = m.Coin
+			break
+		}
+	}
+	if held == "" {
+		t.Fatal("no member holds a coin at step 2 of the restart scenario")
+	}
+	gapped := sc
+	gapped.RunID, gapped.DropMarks = "restart-gap", map[int][]string{2: {held}}
+	gapDir := filepath.Join(realTempDir(t), "gapped")
+	ga := runReplayAdapter(t, root, gapped.spec(t, fx, gapDir, basketReplayModeNew), "--max-steps", "3")
+	gb := runReplayAdapter(t, root, gapped.spec(t, fx, gapDir, basketReplayModeResume))
+	if ga.Code != 0 || ga.Out.Status != basketReplayStatusStopped || gb.Code != 0 || gb.Out.Run.ResumedAt != 3 || len(gb.Out.Steps) != sc.Steps {
+		t.Fatalf("gapped stop and resume: exits %d %d, status %s, resumed at %d, %d steps", ga.Code, gb.Code, ga.Out.Status, gb.Out.Run.ResumedAt, len(gb.Out.Steps))
+	}
+	for _, st := range gb.Out.Steps[3:] {
+		if len(st.Coverage) > 0 {
+			t.Fatalf("the resumed steps must add no gap of their own, step %d has %v", st.Index, st.Coverage)
+		}
+	}
+	gap := fmt.Sprintf("step 2: no frozen mark for %s while it is held or targeted", held)
+	if gb.Out.Status != basketReplayStatusIncomplete || !containsString(gb.Out.Coverage.Gaps, gap) {
+		t.Fatalf("a gap recorded before the stop must keep the resumed run incomplete: %s %+v", gb.Out.Status, gb.Out.Coverage)
+	}
+
+	midSave := sc
+	midSave.RunID, midSave.Extra = "restart-midsave", map[int]basketReplayStep{}
+	for i, ex := range sc.Extra {
+		midSave.Extra[i] = ex
+	}
+	first := midSave.Extra[0]
+	first.SaveFailure = true
+	midSave.Extra[0] = first
+	ms := runReplayAdapter(t, root, midSave.spec(t, fx, filepath.Join(realTempDir(t), "midsave"), basketReplayModeNew))
+	if ms.Code != 0 || ms.Out.Status != basketReplayStatusComplete || len(ms.Out.Steps[0].SaveErrors) == 0 {
+		t.Fatalf("a failed save followed by durable saves must stay complete: exit %d %s %+v save errors %v %s", ms.Code, ms.Out.Status, ms.Out.Coverage, ms.Out.Steps[0].SaveErrors, tail(ms.Stderr, 4000))
+	}
+	requireTradesMatchMemberBooks(t, ms.Out)
 
 	crashed := filepath.Join(realTempDir(t), "crashed")
 	crash := runReplayAdapter(t, root, sc.spec(t, fx, crashed, basketReplayModeNew), "--fault", "exit-after-submit:2")
@@ -251,6 +294,43 @@ func TestBasketReplayRiskClockAcrossSimulatedMidnight(t *testing.T) {
 	if !increaseHeld {
 		t.Fatal("no step ran at simulated midnight")
 	}
+	stopStep, stopMember := -1, ""
+	for k := 1; k < len(full.Out.Steps) && stopStep < 0; k++ {
+		acted := map[string]bool{}
+		for _, a := range full.Out.Steps[k].Actions {
+			acted[a.StrategyID] = true
+		}
+		for j, m := range full.Out.Steps[k].Members {
+			prev := full.Out.Steps[k-1].Members[j]
+			if prev.StrategyID == m.StrategyID && prev.Qty != 0 && m.Qty == 0 && m.Trades > prev.Trades && !acted[m.StrategyID] {
+				stopStep, stopMember = k, m.StrategyID
+				break
+			}
+		}
+	}
+	if stopStep < 0 {
+		t.Fatal("no paper stop closed a member between basket actions")
+	}
+	lastSave := sc
+	lastSave.RunID, lastSave.Steps, lastSave.Extra = "risk-last-save", stopStep+1, map[int]basketReplayStep{stopStep: {SaveFailure: true}}
+	ls := runReplayAdapter(t, root, lastSave.spec(t, fx, filepath.Join(realTempDir(t), "last-save"), basketReplayModeNew))
+	if ls.Code != 0 || len(ls.Out.Steps) != stopStep+1 || len(ls.Out.Steps[stopStep].SaveErrors) == 0 {
+		t.Fatalf("last-step save failure run: exit %d, %d steps %s", ls.Code, len(ls.Out.Steps), tail(ls.Stderr, 4000))
+	}
+	stopped := false
+	for j, m := range ls.Out.Steps[stopStep].Members {
+		prev := ls.Out.Steps[stopStep-1].Members[j]
+		if m.StrategyID == stopMember && prev.Qty != 0 && m.Qty == 0 && m.Trades > prev.Trades {
+			stopped = true
+		}
+	}
+	if !stopped {
+		t.Fatalf("the paper stop of %s must book on the last step %d", stopMember, stopStep)
+	}
+	lostSave := fmt.Sprintf("step %d: the state save failed and no later save made the step durable", stopStep)
+	if ls.Out.Status == basketReplayStatusComplete || ls.Out.Coverage.Complete || !containsString(ls.Out.Coverage.Gaps, lostSave) {
+		t.Fatalf("a failed last save must leave the run unscored: %s %+v", ls.Out.Status, ls.Out.Coverage)
+	}
 	for _, stop := range []string{"5", "7"} {
 		dir := filepath.Join(realTempDir(t), "r"+stop)
 		a := runReplayAdapter(t, root, sc.spec(t, fx, dir, basketReplayModeNew), "--max-steps", stop)
@@ -258,7 +338,8 @@ func TestBasketReplayRiskClockAcrossSimulatedMidnight(t *testing.T) {
 		if a.Code != 0 || b.Code != 0 {
 			t.Fatalf("resume at step %s: exits %d %d", stop, a.Code, b.Code)
 		}
-		requireReplayParity(t, "risk resume at step "+stop, full.Out.Steps, append(append([]basketReplayStepRecord(nil), a.Out.Steps...), b.Out.Steps...), full.Out.Trades, b.Out.Trades)
+		requireReplayParity(t, "risk resume at step "+stop, full.Out.Steps, b.Out.Steps, full.Out.Trades, b.Out.Trades)
+		requireReplayParity(t, "risk stored steps at step "+stop, a.Out.Steps, b.Out.Steps[:len(a.Out.Steps)], nil, nil)
 	}
 	t.Chdir(root)
 	ref := newReplayReference(t, sc.spec(t, fx, filepath.Join(realTempDir(t), "ref"), basketReplayModeNew), full.Out.Cost.Applied)
@@ -417,7 +498,8 @@ func TestBasketReplayCostPolicyAppliesOncePerFill(t *testing.T) {
 	if a.Code != 0 || b.Code != 0 {
 		t.Fatalf("stress resume exits %d %d", a.Code, b.Code)
 	}
-	requireReplayParity(t, "cost stress stop and resume", cs.Out.Steps, append(append([]basketReplayStepRecord(nil), a.Out.Steps...), b.Out.Steps...), cs.Out.Trades, b.Out.Trades)
+	requireReplayParity(t, "cost stress stop and resume", cs.Out.Steps, b.Out.Steps, cs.Out.Trades, b.Out.Trades)
+	requireReplayParity(t, "cost stress stored steps", a.Out.Steps, b.Out.Steps[:len(a.Out.Steps)], nil, nil)
 
 	rows, err := readReplayDB(t, dir)
 	if err != nil {
@@ -469,6 +551,29 @@ func replayAbs(v float64) float64 {
 		return -v
 	}
 	return v
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+func requireTradesMatchMemberBooks(t *testing.T, out basketReplayOutput) {
+	t.Helper()
+	stored := map[string]int{}
+	for _, tr := range out.Trades {
+		stored[tr.StrategyID]++
+	}
+	last := out.Steps[len(out.Steps)-1]
+	for _, m := range last.Members {
+		if m.Trades != stored[m.StrategyID] {
+			t.Fatalf("%s books %d trades but the state file holds %d", m.StrategyID, m.Trades, stored[m.StrategyID])
+		}
+	}
 }
 
 func memberQty(out basketReplayOutput, id string) float64 {
@@ -599,6 +704,16 @@ func TestBasketReplayRefusesBeforeOpeningState(t *testing.T) {
 	liveField.Members[0].Config["args"] = []string{"basket_member", "BTC", "1h", "--mode=live"}
 	routeField := sc.spec(t, fx, filepath.Join(realTempDir(t), "route"), basketReplayModeNew)
 	routeField.Members[1].Config["paper_source"] = "elsewhere"
+	deadline := time.UnixMilli(replayFixtureBaseMs + 264*3_600_000).UTC()
+	offGrid := sc.spec(t, fx, filepath.Join(realTempDir(t), "off-grid"), basketReplayModeNew)
+	offGrid.TargetInput = basketReplayTargetInput{Mode: basketReplayTargetsBaseline, Weights: map[string]map[string]float64{
+		deadline.Add(30 * time.Minute).Format(time.RFC3339): {"BTC": 0.2},
+	}}
+	dupKeys := sc.spec(t, fx, filepath.Join(realTempDir(t), "dup-keys"), basketReplayModeNew)
+	dupKeys.TargetInput = basketReplayTargetInput{Mode: basketReplayTargetsBaseline, Weights: map[string]map[string]float64{
+		deadline.Format(time.RFC3339):                     {"BTC": 0.2},
+		deadline.Format("2006-01-02T15:04:05") + "+00:00": {"BTC": 0.3},
+	}}
 	cases := []struct {
 		name   string
 		spec   *basketReplaySpec
@@ -613,6 +728,8 @@ func TestBasketReplayRefusesBeforeOpeningState(t *testing.T) {
 		{"unknown protocol version", unknownVersion, "protocol_unsupported"},
 		{"member args override", liveField, "spec_invalid"},
 		{"member storage route", routeField, "spec_invalid"},
+		{"baseline weights off the rebalance deadlines", offGrid, "spec_invalid"},
+		{"baseline weights for one deadline under two keys", dupKeys, "spec_invalid"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -660,6 +777,15 @@ func TestBasketReplayRefusesBeforeOpeningState(t *testing.T) {
 	lp := runReplayAdapter(t, root, lots.spec(t, fx, filepath.Join(realTempDir(t), "lots"), basketReplayModeNew))
 	if lp.Code != 0 || lp.Out.LotFetches == 0 || lp.Out.Coverage.Complete {
 		t.Fatalf("a coin absent from the frozen lot metadata must refuse the fetch and leave the run incomplete: exit %d fetches %d %+v", lp.Code, lp.Out.LotFetches, lp.Out.Coverage)
+	}
+	lotDir := filepath.Join(realTempDir(t), "lots-resume")
+	la := runReplayAdapter(t, root, lots.spec(t, fx, lotDir, basketReplayModeNew), "--max-steps", "1")
+	if la.Code != 0 || la.Out.LotFetches == 0 {
+		t.Fatalf("the refused lot lookup must happen before the stop: exit %d fetches %d", la.Code, la.Out.LotFetches)
+	}
+	lb := runReplayAdapter(t, root, lots.spec(t, fx, lotDir, basketReplayModeResume))
+	if lb.Code != 0 || lb.Out.LotFetches != lp.Out.LotFetches || lb.Out.Status == basketReplayStatusComplete || lb.Out.Coverage.Complete {
+		t.Fatalf("a resume must keep the lot refusals counted before the stop: exit %d fetches %d (uninterrupted %d) %s %+v", lb.Code, lb.Out.LotFetches, lp.Out.LotFetches, lb.Out.Status, lb.Out.Coverage)
 	}
 	for _, st := range lp.Out.Steps {
 		for _, a := range st.Actions {
@@ -742,8 +868,8 @@ func TestBasketReplayDriverRecordsScoredAndRefusedRuns(t *testing.T) {
 		}
 		return p
 	}
-	run := func(planPath, out string) (int, map[string]interface{}) {
-		cmd := exec.Command("uv", "run", "--no-sync", "python", "backtest/basket_replay.py", "--plan", planPath, "--binary", bin, "--out", out)
+	run := func(planPath, out string, extra ...string) (int, map[string]interface{}) {
+		cmd := exec.Command("uv", append([]string{"run", "--no-sync", "python", "backtest/basket_replay.py", "--plan", planPath, "--binary", bin, "--out", out}, extra...)...)
 		cmd.Dir = root
 		combined, err := cmd.CombinedOutput()
 		code := 0
@@ -776,6 +902,12 @@ func TestBasketReplayDriverRecordsScoredAndRefusedRuns(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(filepath.Join(work, "scored.json")); !bytes.Equal(after, kept) {
 		t.Fatal("the driver replaced an existing result record")
+	}
+	code, again := run(write("plan.json", plan), filepath.Join(work, "resumed.json"), "--resume")
+	firstCurve, _ := json.Marshal(rec["equity_curve"])
+	againCurve, _ := json.Marshal(again["equity_curve"])
+	if code != 0 || again["scored"] != true || !bytes.Equal(firstCurve, againCurve) {
+		t.Fatalf("a resume of a finished run must report every applied step: exit %d scored %v curve %s, first run %s", code, again["scored"], againCurve, firstCurve)
 	}
 
 	late := map[string]interface{}{}
