@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"os"
@@ -1042,6 +1043,9 @@ func TestBasketDeadlineWaitsForASealAfterTheBoundary(t *testing.T) {
 	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb != nil {
 		t.Fatalf("a snapshot sealed before the deadline must reserve nothing, got %+v", rb)
 	}
+	if d := env.bc.wakeDelay(deadline.Add(3 * time.Second)); d != 0 {
+		t.Fatalf("the late-seal case must keep the fast wake, got %s", d)
+	}
 	if n := env.dbCount(`SELECT COUNT(*) FROM basket_rebalances`); n != 0 {
 		t.Fatalf("rows reserved %d, want 0", n)
 	}
@@ -1057,5 +1061,113 @@ func TestBasketDeadlineWaitsForASealAfterTheBoundary(t *testing.T) {
 	env2.cycle(deadline.Add(time.Second), deadline, onTime, false)
 	if rb := env2.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status == basketRebalanceHeld || rb.TargetsJSON == "" {
 		t.Fatalf("a cycle that starts after the boundary must rank the deadline in that cycle, got %+v", rb)
+	}
+}
+
+func TestBasketStepIsOrderedAgainstConcurrentSaves(t *testing.T) {
+	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+		basketTestBasket(root)["max_transition_net_usd"] = 1100
+	})
+	deadline := basketTestDeadline()
+	next := deadline.Add(24 * time.Hour)
+	reversed := map[string]float64{"BTC": -0.25, "ETH": -0.25, "SOL": 0.25, "AVAX": 0.25}
+	ranker := func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
+		var req basketRankRequest
+		if err := json.Unmarshal(stdin, &req); err != nil {
+			return nil, nil, err
+		}
+		if req.DeadlineMs == next.UnixMilli() {
+			return basketTestRanker(reversed, "")(ctx, stdin, timeout)
+		}
+		return basketTestRanker(basketTestWeights, "")(ctx, stdin, timeout)
+	}
+	env := newBasketTestEnv(t, cfg, ranker, nil)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	saves := 0
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			env.mu.Lock()
+			if err := SaveStateWithStore(env.state, env.store); err != nil {
+				t.Errorf("concurrent save: %v", err)
+			}
+			saves++
+			env.mu.Unlock()
+		}
+	}()
+	env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
+	env.cycle(next.Add(time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
+	close(stop)
+	<-done
+	if saves == 0 {
+		t.Fatal("the concurrent saver never ran")
+	}
+	rt := env.rt()
+	if _, ok := rt.Rebalances[deadline.UnixMilli()]; ok {
+		t.Fatal("the superseded first deadline should be pruned from memory once it is durable")
+	}
+	rb := rt.Rebalances[next.UnixMilli()]
+	if rb == nil || rb.Status != basketRebalanceCompleted {
+		t.Fatalf("the second deadline did not complete: %+v", rb)
+	}
+	inMemory := map[string]string{}
+	for id, a := range rt.Actions {
+		inMemory[id] = a.Status
+	}
+	if len(inMemory) == 0 {
+		t.Fatal("the second deadline sent no action")
+	}
+	if n := env.dbCount(`SELECT COUNT(*) FROM basket_member_actions`); n < len(inMemory) {
+		t.Fatalf("the database holds %d actions, fewer than the %d in memory", n, len(inMemory))
+	}
+	reranks := 0
+	env.restartFromDisk(func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
+		reranks++
+		return ranker(ctx, stdin, timeout)
+	}, nil)
+	loaded := env.rt()
+	for id, status := range inMemory {
+		a := loaded.Actions[id]
+		if a == nil || a.Status != status {
+			t.Fatalf("after restart action %s is %+v, in memory it was %s", id, a, status)
+		}
+	}
+	if len(loaded.Actions) != len(inMemory) {
+		t.Fatalf("after restart %d actions loaded, %d were in memory", len(loaded.Actions), len(inMemory))
+	}
+	env.cycle(next.Add(2*time.Minute), next, basketTestSnapshot(next, 60, basketTestMarks(), 1), true)
+	if reranks != 0 {
+		t.Fatalf("a recorded deadline was reranked %d time(s) after restart", reranks)
+	}
+}
+
+func TestBasketSaveBlockedDeadlineWakesAtTheRetryCadence(t *testing.T) {
+	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+		basketTestBasket(root)["max_transition_net_usd"] = 1100
+	})
+	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), nil)
+	deadline := basketTestDeadline()
+	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+	now := deadline.Add(time.Minute)
+	env.bc.beginCycle()
+	env.bc.step(basketCycleInputs{Now: now, Snapshot: snap, SnapshotFor: func(*basketRuntime, time.Time) *marketSnapshot { return snap }, SaveBlocked: true, Once: true})
+	if _, ok := env.bc.dueDeadlines(now)["xs-test"]; !ok {
+		t.Fatal("a save-blocked deadline must stay due so a later cycle can rank it")
+	}
+	if d := env.bc.wakeDelay(now.Add(time.Second)); d < 30*time.Second {
+		t.Fatalf("a save-blocked deadline must not force a fast wake, got %s", d)
+	}
+	if d := env.bc.adjustDelay(10*time.Minute, now.Add(time.Second)); d != basketHeldWakeRetry-time.Second {
+		t.Fatalf("the loop should retry at the held cadence, got %s", d)
+	}
+	env.cycle(now.Add(basketHeldWakeRetry), deadline, snap, true)
+	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
+		t.Fatalf("after saves recover inside the window the deadline must rank, got %+v", rb)
 	}
 }

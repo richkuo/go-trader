@@ -259,6 +259,7 @@ type basketRuntime struct {
 	needsDurable    bool
 	rank            *basketRankJob
 	observations    map[string]basketMemberObservation
+	wakeRetryAt     time.Time
 }
 
 func newBasketRuntime(cfg BasketConfig, contract basketContract, p RiskPartition) *basketRuntime {

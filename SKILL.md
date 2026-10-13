@@ -1666,13 +1666,22 @@ Any missing, stale, short, malformed or mismatched input, a timeout, a failed pr
 A recorded deadline is never reranked, including after a restart.
 `basket_scripted_fixture` is the only registered evaluator: an integration fixture that returns scripted weights, `no_edge`, absent from every single-symbol registry.
 
-**Transitions.** Reductions run before increases; a reversal reconciles flat first. Each action is checked at both reachable endpoints (no fill and a full fill of its remaining quantity) against the gross budget, the absolute net bound and the per-coin cap, using current sealed marks; a missing mark on a member that holds a position or has a nonzero target holds every elective action, and a flat member with a zero target needs no mark. A member that holds a position in a coin the listing evidence excludes, with no mark, also raises one CRITICAL alert. An increase needs an in-limit starting state; a reduction may run from a breached state if it worsens no bound. An action that does not fit is cut to the largest legal lot-sized tranche; increases prefer the side that reduces net exposure. Every increase also needs an unused closed-bar decision on that member and passes the partition kill switch, persistence hold, daily-loss, notional-cap, exposure-cap, pause, circuit-breaker and paper-margin gates. A partial increase consumes its candle; the underfill waits for a later candle and is recorded as a deviation. Excluded or failed allocations are never moved to other members.
+**Transitions.** Reductions run before increases; a reversal reconciles flat first.
+Each action is checked at both reachable endpoints (no fill and a full fill of its remaining quantity) against the gross budget, the absolute net bound and the per-coin cap, using current sealed marks; a missing mark on a member that holds a position or has a nonzero target holds every elective action, and a flat member with a zero target needs no mark.
+A member that holds a position in a coin the listing evidence excludes, with no mark, also raises one CRITICAL alert.
+An increase needs an in-limit starting state; a reduction may run from a breached state if it worsens no bound.
+An action that does not fit is cut to the largest legal lot-sized tranche; increases prefer the side that reduces net exposure.
+Every increase also needs an unused closed-bar decision on that member and passes the partition kill switch, persistence hold, daily-loss, notional-cap, exposure-cap, pause, circuit-breaker and paper-margin gates.
+A partial increase consumes its candle; the underfill waits for a later candle and is recorded as a deviation.
+Excluded or failed allocations are never moved to other members.
 
 **Settlement and recovery.** An action is reserved durably, marked submitting durably before the order call, then settled.
 Paper actions book through the existing perps open, scale-in and close owners at the sealed mark and commit book, consumed decision and basket progress in one partition save; a save failure stops further elective actions until that file saves.
 A live-shaped transport (used only by controlled integration tests) also reserves an entry intent with the same client order id.
 An unknown outcome leaves the action unresolved and holds every other elective order until a query by client order id resolves it; a rejected leg freezes increases and starts reduce-only recovery.
 A stop, take-profit, kill switch, liquidation or operator close that changes a member book is recorded as a protective exception (never a bounded success): increases freeze, the breach is recorded and alerted, and reduce-only recovery restores the net bound.
+The coordinator step holds the state lock `mu` for every read and write of its runtime records and every basket row write, so a full save from another goroutine never sees them change; it releases `mu` only around the shared-feed snapshot fetch, the `--once` ranker wait and each venue submit or query, and it sends alerts and trade alerts after it unlocks.
+A due deadline that a save failure, a settlement that is not durable yet or an unresolved action keeps from reserving retries once a minute, never every second.
 At startup the coordinator refuses a changed contract while a rebalance or member position is open, refuses a removed basket that still holds recovery evidence, and resolves an interrupted deadline as a hold.
 
 ## Closed-Bar Decisions

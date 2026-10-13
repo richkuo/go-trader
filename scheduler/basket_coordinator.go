@@ -15,6 +15,8 @@ import (
 
 const basketMaxActionsPerStep = 64
 
+const basketHeldWakeRetry = time.Minute
+
 type basketMemberObservation struct {
 	Cycle      int
 	Fields     StrategyDecisionFields
@@ -47,6 +49,7 @@ type basketCoordinator struct {
 	lots     *hlLotMetadataCache
 	cycle    int
 	critical map[string]bool
+	outbox   []func()
 }
 
 func newBasketCoordinator(cfg *Config, state *AppState, store *StateStore, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager, runtimes map[string]*basketRuntime) *basketCoordinator {
@@ -127,11 +130,28 @@ func (bc *basketCoordinator) alert(rt *basketRuntime, rb *basketRebalance, key, 
 	if bc.notifier == nil {
 		return
 	}
-	if bc.notifier.HasOwner() {
-		bc.notifier.SendOwnerDM(text)
-	}
-	if critical && bc.notifier.HasBackends() {
-		bc.notifier.SendToPartitionChannels(rt.Partition, text)
+	notifier, partition := bc.notifier, rt.Partition
+	bc.outbox = append(bc.outbox, func() {
+		if notifier.HasOwner() {
+			notifier.SendOwnerDM(text)
+		}
+		if critical && notifier.HasBackends() {
+			notifier.SendToPartitionChannels(partition, text)
+		}
+	})
+}
+
+func (bc *basketCoordinator) unlocked(fn func()) {
+	bc.mu.Unlock()
+	defer bc.mu.Lock()
+	fn()
+}
+
+func (bc *basketCoordinator) flushOutbox() {
+	out := bc.outbox
+	bc.outbox = nil
+	for _, send := range out {
+		send()
 	}
 }
 
@@ -228,6 +248,11 @@ func (bc *basketCoordinator) startupCheck() error {
 }
 
 func (bc *basketCoordinator) recoverInterrupted(now time.Time) {
+	if !bc.active() {
+		return
+	}
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
 	for _, id := range bc.sortedIDs() {
 		rt := bc.runtimes[id]
 		changed := false
@@ -267,10 +292,16 @@ func (bc *basketCoordinator) observe(sc StrategyConfig, result *HyperliquidResul
 }
 
 func (bc *basketCoordinator) dueDeadlines(now time.Time) map[string]time.Time {
-	out := make(map[string]time.Time)
 	if !bc.active() {
-		return out
+		return make(map[string]time.Time)
 	}
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	return bc.dueDeadlinesLocked(now)
+}
+
+func (bc *basketCoordinator) dueDeadlinesLocked(now time.Time) map[string]time.Time {
+	out := make(map[string]time.Time)
 	for _, id := range bc.sortedIDs() {
 		rt := bc.runtimes[id]
 		d := evaluationDeadline(now, rt.Contract.RebalanceIntervalSeconds)
@@ -291,6 +322,8 @@ func (bc *basketCoordinator) wakeDelay(now time.Time) time.Duration {
 	if !bc.active() {
 		return -1
 	}
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
 	best := time.Duration(-1)
 	consider := func(d time.Duration) {
 		if d < 0 {
@@ -300,11 +333,15 @@ func (bc *basketCoordinator) wakeDelay(now time.Time) time.Duration {
 			best = d
 		}
 	}
-	if len(bc.dueDeadlines(now)) > 0 {
-		return 0
-	}
+	due := bc.dueDeadlinesLocked(now)
 	for _, id := range bc.sortedIDs() {
 		rt := bc.runtimes[id]
+		if _, ok := due[id]; ok {
+			if !rt.wakeRetryAt.After(now) {
+				return 0
+			}
+			consider(rt.wakeRetryAt.Sub(now))
+		}
 		interval := time.Duration(rt.Contract.RebalanceIntervalSeconds) * time.Second
 		next := evaluationDeadline(now, rt.Contract.RebalanceIntervalSeconds).Add(interval)
 		consider(next.Sub(now))
@@ -432,9 +469,19 @@ func (bc *basketCoordinator) step(in basketCycleInputs) {
 	if !bc.active() {
 		return
 	}
+	if bc.lots != nil {
+		for _, id := range bc.sortedIDs() {
+			for _, m := range bc.runtimes[id].Contract.Members {
+				bc.lots.Ensure(m.Coin)
+			}
+		}
+	}
+	bc.mu.Lock()
 	for _, id := range bc.sortedIDs() {
 		bc.stepRuntime(bc.runtimes[id], in)
 	}
+	bc.mu.Unlock()
+	bc.flushOutbox()
 }
 
 func (bc *basketCoordinator) memberLiveRefusal(rt *basketRuntime) string {
@@ -454,36 +501,40 @@ func (bc *basketCoordinator) memberLiveRefusal(rt *basketRuntime) string {
 }
 
 func (bc *basketCoordinator) stepRuntime(rt *basketRuntime, in basketCycleInputs) {
-	if bc.lots != nil {
-		for _, m := range rt.Contract.Members {
-			bc.lots.Ensure(m.Coin)
-		}
-	}
+	held := func() { rt.wakeRetryAt = in.Now.Add(basketHeldWakeRetry) }
 	if msg := bc.memberLiveRefusal(rt); msg != "" {
 		bc.alert(rt, nil, "live-refused", msg+"; no basket action is dispatched", true)
+		held()
 		return
 	}
 	if in.SaveBlocked {
 		bc.logf(rt, "state saves are failing for the %s scope; no elective basket action runs this cycle, and stops, closes and protection continue", partitionLabel(rt.Partition))
+		held()
 		return
 	}
 	if rt.needsDurable {
 		bc.logf(rt, "the last basket settlement is not durable yet; no new elective action runs until the %s state file saves", partitionLabel(rt.Partition))
+		held()
 		return
 	}
 	if a := rt.pendingAction(); a != nil {
 		if !bc.reconcileAction(rt, a, in) {
+			held()
 			return
 		}
 	}
+	rt.wakeRetryAt = time.Time{}
 	bc.detectExceptions(rt, in)
 	bc.collectRank(rt, in)
 	bc.maybeStartDeadline(rt, in)
 	if in.Once && rt.rank != nil {
-		select {
-		case <-rt.rank.done:
-		case <-time.After(rt.rank.Timeout + 2*time.Second):
-		}
+		job := rt.rank
+		bc.unlocked(func() {
+			select {
+			case <-job.done:
+			case <-time.After(job.Timeout + 2*time.Second):
+			}
+		})
 		bc.collectRank(rt, in)
 	}
 	bc.execute(rt, in)
@@ -524,7 +575,7 @@ func (bc *basketCoordinator) maybeStartDeadline(rt *basketRuntime, in basketCycl
 	}
 	var snap *marketSnapshot
 	if hold == "" && in.SnapshotFor != nil {
-		snap = in.SnapshotFor(rt, d)
+		bc.unlocked(func() { snap = in.SnapshotFor(rt, d) })
 		if snap != nil {
 			if cutoff := snap.decisionCutoff(); cutoff.Before(d) {
 				bc.logf(rt, "deadline %s: the cycle snapshot's decision cutoff %s is before the deadline; nothing is reserved, and a later cycle in the evaluation window ranks it", formatClosedBarMs(dMs), cutoff.Format(time.RFC3339))
@@ -734,7 +785,6 @@ func (bc *basketCoordinator) exposureLocked(rt *basketRuntime, marks map[string]
 }
 
 func (bc *basketCoordinator) detectExceptions(rt *basketRuntime, in basketCycleInputs) {
-	bc.mu.RLock()
 	type diff struct {
 		m             basketContractMember
 		exp, actual   float64
@@ -770,16 +820,13 @@ func (bc *basketCoordinator) detectExceptions(rt *basketRuntime, in basketCycleI
 		}
 		diffs = append(diffs, d)
 	}
-	bc.mu.RUnlock()
 	if len(diffs) == 0 {
 		return
 	}
 	rb := rt.latest()
 	now := in.Now
 	for _, d := range diffs {
-		bc.mu.Lock()
 		rt.Expected[d.m.StrategyID] = d.actual
-		bc.mu.Unlock()
 		msg := fmt.Sprintf("%s %s: expected %.10g, book holds %.10g — %s", d.m.StrategyID, d.m.Coin, d.exp, d.actual, d.cause)
 		if d.breach != "" {
 			msg += "; bound breach: " + d.breach
@@ -1037,9 +1084,7 @@ func (bc *basketCoordinator) execute(rt *basketRuntime, in basketCycleInputs) {
 			return
 		}
 		marks, missing := bc.marks(rt, in)
-		bc.mu.RLock()
 		exposure := bc.exposureLocked(rt, marks)
-		bc.mu.RUnlock()
 		if unpriced := bc.unpricedMembers(rt, rb, targets, exposure, missing, in.Now); len(unpriced) > 0 {
 			bc.logf(rt, "no valid sealed mark for %s; elective actions hold this cycle", strings.Join(unpriced, ", "))
 			return
@@ -1107,9 +1152,7 @@ func (bc *basketCoordinator) execute(rt *basketRuntime, in basketCycleInputs) {
 		var waits []string
 		for _, c := range basketOrderIncreases(increases, exposure) {
 			sc := bc.members[c.StrategyID]
-			bc.mu.RLock()
 			s := bc.state.Strategies[c.StrategyID]
-			bc.mu.RUnlock()
 			if s == nil {
 				waits = append(waits, c.StrategyID+": no state")
 				continue
@@ -1118,9 +1161,7 @@ func (bc *basketCoordinator) execute(rt *basketRuntime, in basketCycleInputs) {
 				waits = append(waits, c.StrategyID+": "+why)
 				continue
 			}
-			bc.mu.RLock()
 			obs, why := bc.admitIncrease(rt, sc, s, c, in.Now)
-			bc.mu.RUnlock()
 			if why != "" {
 				waits = append(waits, c.StrategyID+": "+why)
 				continue
@@ -1130,9 +1171,7 @@ func (bc *basketCoordinator) execute(rt *basketRuntime, in basketCycleInputs) {
 				waits = append(waits, tr.Detail)
 				continue
 			}
-			bc.mu.RLock()
 			gate := bc.partitionGate(rt, sc, s, c, tr.Qty, marks[c.Coin], marks)
-			bc.mu.RUnlock()
 			if gate != "" {
 				waits = append(waits, c.StrategyID+": "+gate)
 				continue
@@ -1226,9 +1265,7 @@ func (bc *basketCoordinator) complete(rt *basketRuntime, rb *basketRebalance, ta
 	rb.Outcome.CompletedAtMs = now.UnixMilli()
 	rb.UpdatedAtMs = now.UnixMilli()
 	bc.logf(rt, "deadline %s: %s (gross $%.2f, net $%.2f)", formatClosedBarMs(rb.DeadlineMs), rb.Outcome.Result, exposure.gross(), exposure.net())
-	bc.mu.Lock()
 	err := bc.store.SavePartition(bc.state, rt.Partition)
-	bc.mu.Unlock()
 	if err != nil {
 		rt.needsDurable = true
 		bc.logf(rt, "could not save the completed rebalance: %v; the next save retries", err)
@@ -1302,11 +1339,9 @@ func (bc *basketCoordinator) runAction(rt *basketRuntime, rb *basketRebalance, c
 		return false
 	}
 	now := in.Now
-	bc.mu.RLock()
 	s := bc.state.Strategies[sc.ID]
 	pre := basketPositionSigned(s, c.Coin)
 	protection := basketProtectionSnapshot(s, c.Coin, obs)
-	bc.mu.RUnlock()
 	if s == nil {
 		return false
 	}
@@ -1380,7 +1415,9 @@ func (bc *basketCoordinator) runAction(rt *basketRuntime, rb *basketRebalance, c
 		}
 	}
 	bc.logf(rt, "%s %s %s %s %.10g @ mark $%.4f (action %s, client %s)", sc.ID, c.Direction, c.OrderSide, c.Coin, qty, mark, a.ActionID, a.ClientOrderID)
-	outcome, err := venue.Submit(a)
+	var outcome basketVenueOutcome
+	submitted := *a
+	bc.unlocked(func() { outcome, err = venue.Submit(&submitted) })
 	if err != nil {
 		outcome = basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "transport failure: " + err.Error(), ObservedAtMs: time.Now().UnixMilli()}
 	}
@@ -1415,8 +1452,6 @@ func (bc *basketCoordinator) reserveIncreaseIntent(rt *basketRuntime, sc Strateg
 		UpdatedAtMs:        now.UnixMilli(),
 	}
 	in.RequestJSON = marshalEntryJSON(entryIntentRequest{Version: entryIntentRequestVersion, Kind: "basket:" + a.ActionID, Signal: signal, PrevPosQty: math.Abs(a.PreQty), Price: a.MarkPx, Size: a.RequestedQty, Script: basketRankerScript})
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
 	g := s.EntryGuard
 	if g == nil {
 		return nil, fmt.Errorf("durable entry record unavailable")
@@ -1432,8 +1467,6 @@ func (bc *basketCoordinator) reserveIncreaseIntent(rt *basketRuntime, sc Strateg
 }
 
 func (bc *basketCoordinator) markIntentSubmitting(sc StrategyConfig, s *StrategyState, in *entryIntent, a *basketAction) error {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
 	next := *in
 	if err := bc.store.TransitionEntryIntent(sc.ID, &next, []string{entryIntentReserved}, entryIntentSubmitting); err != nil {
 		return err
@@ -1445,8 +1478,6 @@ func (bc *basketCoordinator) markIntentSubmitting(sc StrategyConfig, s *Strategy
 }
 
 func (bc *basketCoordinator) releaseIntent(rt *basketRuntime, sc StrategyConfig, s *StrategyState, in *entryIntent, from, reason string) {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
 	next := *in
 	next.EvidenceJSON = marshalEntryJSON(entryIntentEvidence{Outcome: "no_fill", Detail: reason, ObservedAtMs: time.Now().UnixMilli()})
 	if err := bc.store.TransitionEntryIntent(sc.ID, &next, []string{from, entryIntentSubmitting}, entryIntentNoFill); err != nil {
@@ -1467,10 +1498,8 @@ func (bc *basketCoordinator) intentFor(s *StrategyState, a *basketAction) *entry
 
 func (bc *basketCoordinator) applyOutcome(rt *basketRuntime, rb *basketRebalance, a *basketAction, outcome basketVenueOutcome, obs basketMemberObservation, in basketCycleInputs, recovered bool) bool {
 	sc := bc.members[a.StrategyID]
-	bc.mu.RLock()
 	s := bc.state.Strategies[a.StrategyID]
 	intent := bc.intentFor(s, a)
-	bc.mu.RUnlock()
 	evidence := marshalEntryJSON(outcome)
 	if outcome.VenueOrderID != "" {
 		a.VenueOrderID = outcome.VenueOrderID
@@ -1534,9 +1563,7 @@ func (bc *basketCoordinator) applyOutcome(rt *basketRuntime, rb *basketRebalance
 		a.EvidenceJSON = evidence
 		a.UpdatedAtMs = now.UnixMilli()
 		if intent != nil {
-			bc.mu.Lock()
 			intent.HoldReason = a.HoldReason
-			bc.mu.Unlock()
 		}
 		bc.persistProgress(rt)
 		bc.alert(rt, rb, "unknown|"+a.ActionID, fmt.Sprintf("%s action %s (client %s): %s; new risk holds until it reconciles", a.StrategyID, a.ActionID, a.ClientOrderID, a.HoldReason), false)
@@ -1554,16 +1581,13 @@ func (bc *basketCoordinator) settleAction(rt *basketRuntime, rb *basketRebalance
 	logger := bc.memberLogger(a.StrategyID)
 	defer logger.Close()
 	now := in.Now
-	bc.mu.Lock()
 	s := bc.state.Strategies[a.StrategyID]
 	if s == nil {
-		bc.mu.Unlock()
 		return false
 	}
 	remaining := a.ConfirmedQty - a.AppliedQty
 	if remaining <= 1e-12 {
 		a.Status = basketActionCommitted
-		bc.mu.Unlock()
 		return true
 	}
 	var booked basketBooking
@@ -1581,7 +1605,6 @@ func (bc *basketCoordinator) settleAction(rt *basketRuntime, rb *basketRebalance
 		if reason == "" {
 			reason = "the booking owner recorded no fill"
 		}
-		bc.mu.Unlock()
 		if a.Provider == "paper" {
 			a.Status = basketActionNoFill
 			a.HoldReason = "paper booking held: " + reason
@@ -1635,7 +1658,6 @@ func (bc *basketCoordinator) settleAction(rt *basketRuntime, rb *basketRebalance
 	rb.UpdatedAtMs = now.UnixMilli()
 	newTrades := append([]Trade(nil), s.TradeHistory[from:]...)
 	err := bc.store.SavePartition(bc.state, rt.Partition)
-	bc.mu.Unlock()
 	if err != nil {
 		rt.needsDurable = true
 		bc.logf(rt, "action %s booked %.10g in memory, but the %s state file did not save: %v; no further elective action runs until it does", a.ActionID, booked.Qty, partitionLabel(rt.Partition), err)
@@ -1643,7 +1665,8 @@ func (bc *basketCoordinator) settleAction(rt *basketRuntime, rb *basketRebalance
 	}
 	bc.logf(rt, "action %s committed: %s %.10g %s @ $%.4f (fee $%.4f)", a.ActionID, a.OrderSide, booked.Qty, a.Symbol, booked.Px, booked.Fee)
 	if bc.notifier != nil && len(newTrades) > 0 {
-		sendTradeAlertRows(sc, newTrades, bc.notifier, bc.cfg.Regime)
+		notifier, regime := bc.notifier, bc.cfg.Regime
+		bc.outbox = append(bc.outbox, func() { sendTradeAlertRows(sc, newTrades, notifier, regime) })
 	}
 	return true
 }
@@ -1664,10 +1687,8 @@ func (bc *basketCoordinator) reconcileAction(rt *basketRuntime, a *basketAction,
 		a.Status = basketActionNoFill
 		a.HoldReason = "the action was reserved but never marked submitting, so no order was sent"
 		a.UpdatedAtMs = in.Now.UnixMilli()
-		bc.mu.RLock()
 		s := bc.state.Strategies[a.StrategyID]
 		intent := bc.intentFor(s, a)
-		bc.mu.RUnlock()
 		if intent != nil {
 			bc.releaseIntent(rt, sc, s, intent, entryIntentReserved, a.HoldReason)
 		}
@@ -1681,7 +1702,9 @@ func (bc *basketCoordinator) reconcileAction(rt *basketRuntime, a *basketAction,
 		bc.alert(rt, rb, "venue|"+err.Error(), err.Error(), true)
 		return false
 	}
-	outcome, err := venue.Query(a)
+	var outcome basketVenueOutcome
+	queried := *a
+	bc.unlocked(func() { outcome, err = venue.Query(&queried) })
 	if err != nil {
 		bc.logf(rt, "action %s (client %s) is still unresolved: the venue query failed: %v; new risk holds", a.ActionID, a.ClientOrderID, err)
 		return false

@@ -82,6 +82,9 @@ jobs:
       - name: Remaining Go tests
         run: cd scheduler && go test ./...
 
+      - name: Basket coordinator race check
+        run: cd scheduler && go test -race -count=1 -run '^TestBasket' .
+
       - name: Format check (every tracked Go file)
         run: |
           set -o pipefail
