@@ -1739,6 +1739,7 @@ Each weight key must be a rebalance deadline that some step reaches inside the e
 The path runs only inside the adapter.
 
 **Limits.** Fill role is taker for every fill; spread is inside slippage; regime labels are not frozen, so regime-keyed stops and unified regime closes are refused; venue-absent funding hours inside the window leave the run incomplete; `exit-after-submit` is a controlled restart fault for tests.
+The adapter builds each step's market snapshot in process and never writes or reads a sealed feed document, so the seal version (including version 4 trade-flow seals) does not apply; it freezes no open-interest or trade-flow observations, and a configuration that needs either is refused before any state is opened.
 
 ## Closed-Bar Decisions
 

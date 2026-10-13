@@ -284,6 +284,17 @@ func basketReplayConfigRefusal(cfg *Config, stateDir string) error {
 			errs = append(errs, fmt.Sprintf("strategy %s reads regime labels, which the replay does not freeze", sc.ID))
 		}
 	}
+	if req, err := deriveFeedRequirements(cfg); err != nil {
+		errs = append(errs, err.Error())
+	} else {
+		kinds := map[string]bool{}
+		for k := range req.Observations {
+			kinds[k.Kind] = true
+		}
+		for kind := range kinds {
+			errs = append(errs, fmt.Sprintf("the configuration needs %s observations, which the replay does not freeze (it builds no sealed feed snapshot of any version)", kind))
+		}
+	}
 	if len(errs) > 0 {
 		sort.Strings(errs)
 		return refuseReplay("config_refused", errs...)
