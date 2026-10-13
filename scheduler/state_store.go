@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -28,6 +29,7 @@ type StateStore struct {
 	pendingAcks    map[string][]int64
 	appliedActions map[storageKey]bool
 	failures       map[RiskPartition]int
+	saveExtra      func(tx *sql.Tx, role storageRole) error
 }
 
 func newStateStore(layout storageLayout, ident storageIdentityMap) *StateStore {
@@ -250,7 +252,16 @@ func (st *StateStore) buildRequest(state *AppState, role storageRole, parts []Ri
 		IncludeUnscoped: fullFile && !st.layout.Split,
 		WriteMeta:       writeMeta,
 		AckActionID:     st.acksForStrategies(ids),
+		Extra:           st.saveExtraFor(role),
 	}
+}
+
+func (st *StateStore) saveExtraFor(role storageRole) func(tx *sql.Tx) error {
+	if st.saveExtra == nil {
+		return nil
+	}
+	extra := st.saveExtra
+	return func(tx *sql.Tx) error { return extra(tx, role) }
 }
 
 // scopesOfPartitions reduces a file's partitions to the distinct execution

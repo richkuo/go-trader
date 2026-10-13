@@ -70,6 +70,8 @@ type hlLotMetadataCache struct {
 	retryWait map[string]time.Duration
 	lastErr   map[string]string
 	outages   map[hlLotKey]string
+	frozen    bool
+	refusals  int
 }
 
 var hlLotMetadata = newHLLotMetadataCache(nil)
@@ -89,6 +91,32 @@ func newHLLotMetadataCache(ctx context.Context) *hlLotMetadataCache {
 	}
 	c.baseCtx = hlLotMetadataLedgerContext(ctx)
 	return c
+}
+
+const hlFrozenLotEndpoint = "frozen-replay-lot-metadata"
+
+func newFrozenHLLotMetadataCache(coins map[string]int, logf func(format string, a ...any)) *hlLotMetadataCache {
+	c := newHLLotMetadataCache(nil)
+	c.frozen = true
+	c.endpoint = func() string { return hlFrozenLotEndpoint }
+	c.fetch = func(context.Context, string) ([]byte, error) {
+		return nil, errors.New("the offline replay refuses venue metadata fetches")
+	}
+	if logf != nil {
+		c.logf = logf
+	}
+	entries := make(map[string]hlLotEntry, len(coins))
+	for coin, sz := range coins {
+		entries[coin] = hlLotEntry{SzDecimals: sz}
+	}
+	c.snaps[hlFrozenLotEndpoint] = &hlLotSnapshot{Endpoint: hlFrozenLotEndpoint, Coins: entries}
+	return c
+}
+
+func (c *hlLotMetadataCache) fetchRefusals() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.refusals
 }
 
 func hlLotMetadataLedgerContext(ctx context.Context) context.Context {
@@ -115,6 +143,13 @@ func fetchHLLotMetadataRaw(ctx context.Context, endpoint string) ([]byte, error)
 func (c *hlLotMetadataCache) Ensure(coin string) {
 	endpoint := c.endpoint()
 	c.mu.Lock()
+	if c.frozen {
+		if snap := c.snaps[endpoint]; snap == nil || !hlFrozenLotHas(snap, coin) {
+			c.refusals++
+		}
+		c.mu.Unlock()
+		return
+	}
 	now := c.clock()
 	if snap := c.snaps[endpoint]; snap != nil {
 		if age := now.Sub(snap.FetchedAt); age >= 0 && age < hlLotMetadataRefreshAfter {
@@ -215,6 +250,16 @@ func (c *hlLotMetadataCache) lookupLocked(endpoint, coin string) hlLotLookup {
 		}
 		return res
 	}
+	if c.frozen {
+		entry, ok := snap.Coins[coin]
+		if !ok {
+			res.Reason = "coin absent from the frozen replay lot metadata; the offline replay never fetches venue metadata"
+			return res
+		}
+		res.Known = true
+		res.SzDecimals = entry.SzDecimals
+		return res
+	}
 	age := c.clock().Sub(snap.FetchedAt)
 	if age < 0 || age >= hlLotMetadataExpiry {
 		res.Reason = fmt.Sprintf("venue metadata expired (age %s, limit %s)", age.Round(time.Second), hlLotMetadataExpiry)
@@ -295,4 +340,9 @@ func parseHLSzDecimals(raw json.RawMessage) (int, string) {
 		return 0, fmt.Sprintf("szDecimals %d is outside 0..%d", v, hlLotMetadataMaxSzDecimals)
 	}
 	return int(v), ""
+}
+
+func hlFrozenLotHas(snap *hlLotSnapshot, coin string) bool {
+	_, ok := snap.Coins[coin]
+	return ok
 }

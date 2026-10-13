@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"sync"
-	"time"
 )
 
 func scaleInResizeTrailingSLNow(
@@ -218,7 +217,7 @@ func applyPerpsScaleInInner(s *StrategyState, sc StrategyConfig, symbol string, 
 		side = "sell"
 	}
 	applyScaleIn(pos, addQty, addPrice)
-	now := time.Now().UTC()
+	now := tradingNow().UTC()
 	var oid string
 	if useFillFee {
 		oid = fillOID

@@ -163,7 +163,7 @@ func bookPerpsCloseWithFillFeeInner(s *StrategyState, symbol string, closePx, fi
 		return false
 	}
 	if closePositionIsCorrupt(pos) {
-		now := time.Now().UTC()
+		now := tradingNow().UTC()
 		if logger != nil {
 			logger.Warn("%s: refusing to book PnL for corrupt position %s (qty=%.6f avg_cost=%.4f); clearing with zero realized PnL (#1009)", logPrefix, symbol, pos.Quantity, pos.AvgCost)
 		}
@@ -197,13 +197,13 @@ func bookPerpsCloseWithFillFeeInner(s *StrategyState, symbol string, closePx, fi
 		if logger != nil {
 			logger.Warn("%s: close for OID %s already booked — clearing virtual position without a duplicate Trade (#954)", logPrefix, exchangeOrderID)
 		}
-		recordClosedPosition(s, pos, closePx, 0, reason+"_dup_oid", time.Now().UTC())
+		recordClosedPosition(s, pos, closePx, 0, reason+"_dup_oid", tradingNow().UTC())
 		delete(s.Positions, symbol)
 		clearHLPerpsPositionAlertThrottles(s, symbol)
 		return true
 	}
 
-	now := time.Now().UTC()
+	now := tradingNow().UTC()
 	qty := pos.Quantity
 	avgCost := pos.AvgCost
 	side := pos.Side
@@ -279,7 +279,7 @@ func bookPerpsPartialCloseWithFillFeeInner(s *StrategyState, symbol string, clos
 		return false
 	}
 
-	now := time.Now().UTC()
+	now := tradingNow().UTC()
 	qty := closeQty
 	if qty > pos.Quantity {
 		if logger != nil {
@@ -444,6 +444,7 @@ type Trade struct {
 	PnLGross         bool   `json:"pnl_gross,omitempty"`
 	FeeSource        string `json:"fee_source,omitempty"`
 	CostModelVersion int    `json:"cost_model_version,omitempty"`
+	CostPolicyID     string `json:"cost_policy_id,omitempty"`
 
 	Regime               string `json:"regime,omitempty"`
 	RegimeDivergenceNote string `json:"-"`
@@ -480,7 +481,7 @@ var tradePositionNonce uint64
 
 func newTradePositionID(strategyID, symbol string, openedAt time.Time) string {
 	if openedAt.IsZero() {
-		openedAt = time.Now().UTC()
+		openedAt = tradingNow().UTC()
 	}
 	nonce := atomic.AddUint64(&tradePositionNonce, 1)
 	return fmt.Sprintf("%s:%s:%d:%d", strategyID, symbol, openedAt.UnixNano(), nonce)
@@ -1023,7 +1024,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			var closeOID string
 			if useFillFee {
@@ -1122,7 +1123,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 		}
 		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee
-		now := time.Now().UTC()
+		now := tradingNow().UTC()
 		positionID := newTradePositionID(s.ID, symbol, now)
 		var openOID string
 		if useFillFee {
@@ -1212,7 +1213,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			var closeOID string
 			if useFillFee {
@@ -1311,7 +1312,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 		}
 		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee
-		now := time.Now().UTC()
+		now := tradingNow().UTC()
 		positionID := newTradePositionID(s.ID, symbol, now)
 		var openOID string
 		if useFillFee {
@@ -1449,7 +1450,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			grossPnL := pnl + fee
 			s.Cash += closeQty*pos.AvgCost - totalCost
 			maybeClearCashReconcileRequired(s)
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			details := fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee)
 			if partialClose {
@@ -1526,7 +1527,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		cashBefore := s.Cash
 		overBudget := liveBuy && spotLiveBuyExceedsCash(cashBefore, totalDebit)
 		s.Cash -= totalDebit
-		now := time.Now().UTC()
+		now := tradingNow().UTC()
 		positionID := newTradePositionID(s.ID, symbol, now)
 		s.Positions[symbol] = &Position{
 			Symbol:          symbol,
@@ -1596,7 +1597,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			grossPnL := pnl + fee
 			s.Cash += netProceeds
 			maybeClearCashReconcileRequired(s)
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			details := fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee)
 			if partialClose {
@@ -1710,7 +1711,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			details := fmt.Sprintf("Close short %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee)
 			if partialClose {
@@ -1788,7 +1789,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			fillMetadataUsed = true
 		}
 		s.Cash -= fee
-		now := time.Now().UTC()
+		now := tradingNow().UTC()
 		positionID := newTradePositionID(s.ID, symbol, now)
 		s.Positions[symbol] = &Position{
 			Symbol:          symbol,
@@ -1855,7 +1856,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			details := fmt.Sprintf("Close long %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee)
 			if partialClose {
@@ -1934,7 +1935,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				fillMetadataUsed = true
 			}
 			s.Cash -= fee
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := newTradePositionID(s.ID, symbol, now)
 			s.Positions[symbol] = &Position{
 				Symbol:          symbol,

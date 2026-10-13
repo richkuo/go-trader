@@ -173,7 +173,7 @@ func completeBookedConsumptionGroup(pos *Position, label string, setMarker bool)
 	if pos == nil {
 		return
 	}
-	now := time.Now().UTC()
+	now := tradingNow().UTC()
 	highest := -1
 	for i := range pos.TPConsumptions {
 		rec := &pos.TPConsumptions[i]
@@ -275,7 +275,7 @@ func deferBookedConsumptionGroup(pos *Position, strategyID, symbol, label, reaso
 	if pos == nil {
 		return
 	}
-	now := time.Now().UTC()
+	now := tradingNow().UTC()
 	changed := false
 	for i := range pos.TPConsumptions {
 		rec := &pos.TPConsumptions[i]
@@ -370,7 +370,7 @@ func recordDiscoveredTPConsumptions(pos *Position, restingLabel, placedLabel str
 	if pos == nil || result == nil {
 		return
 	}
-	now := time.Now().UTC()
+	now := tradingNow().UTC()
 	for idx, filled := range result.TPFilledExternally {
 		if !filled || tierOutcomeUnknown(result, idx) {
 			continue
@@ -434,7 +434,7 @@ func recordTPConsumptionAtBooking(sc StrategyConfig, pos *Position, bookedQty fl
 		return
 	}
 	label := protectionATRRegimeLabel(pos, sc)
-	now := time.Now().UTC()
+	now := tradingNow().UTC()
 	tier, discLabel, fromDiscovery := attributeConsumptionTier(pos, lookupOID, candidateTier)
 	if !unifiedCloseLabelResolves(sc, label) {
 		promoteDiscoveredConsumptions(pos, sc, label, now, tpDeferLabelUnresolved)
@@ -660,7 +660,7 @@ func recordPaperUnifiedTPConsumptionAtLot(sc StrategyConfig, pos *Position, preQ
 	}
 	postRatio := 1 - pos.Quantity/postInit
 	label := protectionATRRegimeLabel(pos, sc)
-	now := time.Now().UTC()
+	now := tradingNow().UTC()
 	delta := preQty - pos.Quantity
 	if delta < 0 {
 		delta = 0

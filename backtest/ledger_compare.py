@@ -40,6 +40,7 @@ from backtester import (
     CapabilityContext,
     CloseCapabilityError,
     PAPER_FILL_COST_MODELS,
+    REPLAY_FILL_COST_MODEL_VERSIONS,
     RESTING_TP_TIER_CLOSES,
     RESTING_TP_UNSUPPORTED_CLOSE,
     _apply_direction_invert_value,
@@ -100,7 +101,7 @@ HL_TIER_FEE_RULE = (
 )
 PAPER_COST_UNAPPROXIMABLE_REASONS = (
     "paper_cost_model_partition_unknown", "paper_cost_model_mode_disagrees", "paper_cost_model_mixed",
-    "paper_cost_model_unknown",
+    "paper_cost_model_unknown", "paper_cost_model_replay_unsupported",
 )
 EXPORT_SECTIONS = (
     "schema", "schema_version", "inspected_revision", "capture_manifest_sha256", "time_basis",
@@ -1441,6 +1442,13 @@ def resolve_comparison_cost_model(doc: dict, start: pd.Timestamp, end: pd.Timest
     else:
         version = next(iter(versions))
         source = "booked_rows" if doc["schema_version"] >= 2 else "export_version_1_rows_read_as_0"
+    if version in REPLAY_FILL_COST_MODEL_VERSIONS:
+        out["refusals"].append({"reason": "paper_cost_model_replay_unsupported", "version": version,
+                                "detail": f"cost model version {version} marks offline basket replay fills booked with "
+                                          "a custom replay cost policy; their per-fill policy evidence lives in the "
+                                          "replay state file, and this comparison never substitutes the frozen "
+                                          "default paper costs for them"})
+        return out
     entry = PAPER_FILL_COST_MODELS.get(version)
     if entry is None:
         out["refusals"].append({"reason": "paper_cost_model_unknown", "version": version,

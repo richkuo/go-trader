@@ -76,11 +76,19 @@ type basketRankResult struct {
 	InputFingerprint string                           `json:"input_fingerprint"`
 }
 
+type basketRankClock int
+
+const (
+	basketRankClockRuntime basketRankClock = iota
+	basketRankClockSimulated
+)
+
 type basketRankJob struct {
 	DeadlineMs int64
 	Expected   basketRankExpected
 	WindowEnd  time.Time
 	Timeout    time.Duration
+	Clock      basketRankClock
 	Payload    *marketPayload
 	done       chan struct{}
 	result     *basketRankResult
@@ -151,7 +159,7 @@ func basketRankRequestFor(rt *basketRuntime, deadlineMs int64, payload *marketPa
 	return req
 }
 
-func startBasketRank(parent context.Context, rt *basketRuntime, deadlineMs int64, payload *marketPayload, now time.Time, run basketRankRunner) (*basketRankJob, error) {
+func startBasketRank(parent context.Context, rt *basketRuntime, deadlineMs int64, payload *marketPayload, now time.Time, run basketRankRunner, clock basketRankClock) (*basketRankJob, error) {
 	if payload == nil {
 		return nil, fmt.Errorf("no sealed basket payload")
 	}
@@ -167,16 +175,30 @@ func startBasketRank(parent context.Context, rt *basketRuntime, deadlineMs int64
 	if len(stdin) > marketPayloadMaxBytes {
 		return nil, fmt.Errorf("ranker request is %d bytes, over the %d-byte cap", len(stdin), marketPayloadMaxBytes)
 	}
+	remaining := windowEnd.Sub(now)
 	timeout := time.Duration(rt.Contract.RankerTimeoutSeconds) * time.Second
-	if remaining := windowEnd.Sub(now); remaining < timeout {
+	if remaining < timeout {
 		timeout = remaining
 	}
-	job := &basketRankJob{DeadlineMs: deadlineMs, Expected: req.Expected, WindowEnd: windowEnd, Timeout: timeout, Payload: payload, done: make(chan struct{})}
-	ctx, cancel := context.WithDeadline(parent, windowEnd)
+	job := &basketRankJob{DeadlineMs: deadlineMs, Expected: req.Expected, WindowEnd: windowEnd, Timeout: timeout, Clock: clock, Payload: payload, done: make(chan struct{})}
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if clock == basketRankClockSimulated {
+		ctx, cancel = context.WithTimeout(parent, remaining)
+	} else {
+		ctx, cancel = context.WithDeadline(parent, windowEnd)
+	}
 	go func() {
 		defer close(job.done)
 		defer cancel()
 		stdout, stderr, runErr := run(ctx, stdin, timeout)
+		if clock == basketRankClockSimulated {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				job.stderr = strings.TrimSpace(string(stderr))
+				job.err = fmt.Errorf("the ranker context ended before its result was accepted (%v); output from a cancelled or timed-out run never freezes targets", ctxErr)
+				return
+			}
+		}
 		job.stderr = strings.TrimSpace(string(stderr))
 		var res basketRankResult
 		parseErr := json.Unmarshal(stdout, &res)
@@ -203,7 +225,18 @@ func basketFiniteNumber(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0)
 }
 
+type basketTargetPolicy int
+
+const (
+	basketTargetsRanked basketTargetPolicy = iota
+	basketTargetsOfflineBaseline
+)
+
 func validateBasketRankResult(rt *basketRuntime, job *basketRankJob, res *basketRankResult) (string, error) {
+	return validateBasketTargetResult(rt, job, res, basketTargetsRanked)
+}
+
+func validateBasketTargetResult(rt *basketRuntime, job *basketRankJob, res *basketRankResult, policy basketTargetPolicy) (string, error) {
 	if res == nil {
 		return "", fmt.Errorf("the ranker returned no result")
 	}
@@ -291,11 +324,13 @@ func validateBasketRankResult(rt *basketRuntime, job *basketRankJob, res *basket
 	if abs > 1+1e-9 {
 		return "", fmt.Errorf("absolute target weights sum to %.9g, above 1", abs)
 	}
-	if !long {
-		return "the long side is empty", nil
-	}
-	if !short {
-		return "the short side is empty", nil
+	if policy == basketTargetsRanked {
+		if !long {
+			return "the long side is empty", nil
+		}
+		if !short {
+			return "the short side is empty", nil
+		}
 	}
 	if math.Abs(net)*rt.Contract.GrossBudgetUSD > rt.Contract.MaxTransitionNetUSD*(1+1e-9) {
 		return fmt.Sprintf("the target net exposure $%.2f exceeds max_transition_net_usd $%.2f, so no legal transition reaches it", math.Abs(net)*rt.Contract.GrossBudgetUSD, rt.Contract.MaxTransitionNetUSD), nil

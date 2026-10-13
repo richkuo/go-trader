@@ -34,22 +34,24 @@ type basketCycleInputs struct {
 }
 
 type basketCoordinator struct {
-	cfg      *Config
-	state    *AppState
-	store    *StateStore
-	mu       *sync.RWMutex
-	notifier *MultiNotifier
-	logMgr   *LogManager
-	runtimes map[string]*basketRuntime
-	byMember map[string]*basketRuntime
-	members  map[string]StrategyConfig
-	parent   context.Context
-	rankRun  basketRankRunner
-	venueFor func(StrategyConfig) (basketVenue, error)
-	lots     *hlLotMetadataCache
-	cycle    int
-	critical map[string]bool
-	outbox   []func()
+	cfg          *Config
+	state        *AppState
+	store        *StateStore
+	mu           *sync.RWMutex
+	notifier     *MultiNotifier
+	logMgr       *LogManager
+	runtimes     map[string]*basketRuntime
+	byMember     map[string]*basketRuntime
+	members      map[string]StrategyConfig
+	parent       context.Context
+	rankRun      basketRankRunner
+	rankClock    basketRankClock
+	targetPolicy basketTargetPolicy
+	venueFor     func(StrategyConfig) (basketVenue, error)
+	lots         *hlLotMetadataCache
+	cycle        int
+	critical     map[string]bool
+	outbox       []func()
 }
 
 func newBasketCoordinator(cfg *Config, state *AppState, store *StateStore, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager, runtimes map[string]*basketRuntime) *basketCoordinator {
@@ -635,7 +637,7 @@ func (bc *basketCoordinator) maybeStartDeadline(rt *basketRuntime, in basketCycl
 		holdNow("the sealed snapshot cannot supply every member frame: " + err.Error())
 		return
 	}
-	job, err := startBasketRank(bc.parent, rt, dMs, payload, now, bc.rankRun)
+	job, err := startBasketRank(bc.parent, rt, dMs, payload, now, bc.rankRun, bc.rankClock)
 	if err != nil {
 		holdNow(err.Error())
 		return
@@ -677,12 +679,16 @@ func (bc *basketCoordinator) collectRank(rt *basketRuntime, in basketCycleInputs
 		hold(job.err.Error())
 		return
 	}
+	if job.Clock == basketRankClockSimulated && !now.Before(job.WindowEnd) {
+		hold(fmt.Sprintf("the ranker result was collected at simulated time %s, at or after the evaluation window end %s", now.UTC().Format(time.RFC3339), job.WindowEnd.UTC().Format(time.RFC3339)))
+		return
+	}
 	res := job.result
 	if res != nil {
 		rb.InputFP = res.InputFingerprint
 		rb.EvidenceJSON = basketRankEvidenceJSON(res)
 	}
-	reason, err := validateBasketRankResult(rt, job, res)
+	reason, err := validateBasketTargetResult(rt, job, res, bc.targetPolicy)
 	if err != nil {
 		hold("invalid ranker output: " + err.Error())
 		return
@@ -965,7 +971,8 @@ func (bc *basketCoordinator) partitionGate(rt *basketRuntime, sc StrategyConfig,
 	if lev <= 0 {
 		lev = 1
 	}
-	if need := notional/lev + CalculatePlatformSpotFee("hyperliquid", notional); s.Cash < need {
+	execNotional := qty * ApplyAdverseSlippage(mark, c.OrderSide == "buy")
+	if need := execNotional/lev + CalculatePlatformSpotFee("hyperliquid", execNotional); s.Cash < need {
 		return fmt.Sprintf("%s paper margin $%.2f is below the $%.2f this tranche needs", sc.ID, s.Cash, need)
 	}
 	pr := partitionRiskConfig(bc.cfg, rt.Partition)
@@ -1420,7 +1427,7 @@ func (bc *basketCoordinator) runAction(rt *basketRuntime, rb *basketRebalance, c
 	submitted := *a
 	bc.unlocked(func() { outcome, err = venue.Submit(&submitted) })
 	if err != nil {
-		outcome = basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "transport failure: " + err.Error(), ObservedAtMs: time.Now().UnixMilli()}
+		outcome = basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "transport failure: " + err.Error(), ObservedAtMs: tradingNow().UnixMilli()}
 	}
 	return bc.applyOutcome(rt, rb, a, outcome, obs, in, false)
 }
@@ -1474,13 +1481,13 @@ func (bc *basketCoordinator) markIntentSubmitting(sc StrategyConfig, s *Strategy
 	}
 	in.Status = entryIntentSubmitting
 	in.durableStatus = entryIntentSubmitting
-	in.UpdatedAtMs = time.Now().UnixMilli()
+	in.UpdatedAtMs = tradingNow().UnixMilli()
 	return nil
 }
 
 func (bc *basketCoordinator) releaseIntent(rt *basketRuntime, sc StrategyConfig, s *StrategyState, in *entryIntent, from, reason string) {
 	next := *in
-	next.EvidenceJSON = marshalEntryJSON(entryIntentEvidence{Outcome: "no_fill", Detail: reason, ObservedAtMs: time.Now().UnixMilli()})
+	next.EvidenceJSON = marshalEntryJSON(entryIntentEvidence{Outcome: "no_fill", Detail: reason, ObservedAtMs: tradingNow().UnixMilli()})
 	if err := bc.store.TransitionEntryIntent(sc.ID, &next, []string{from, entryIntentSubmitting}, entryIntentNoFill); err != nil {
 		bc.logf(rt, "entry %s could not be released (%v); it stays unresolved", in.IntentID, err)
 		return
