@@ -108,6 +108,7 @@ var knownShortNames = map[string]string{
 	"camarilla_pivot_reversal":     "cpr",
 	"mass_index_reversal":          "massrev",
 	"calendar_conditioned_entry":   "cce",
+	"basket_scripted_fixture":      "bskfix",
 	"stochastic_momentum_index":    "smi",
 	"elder_force_pullback":         "efp",
 	"true_strength_index":          "tsi",
@@ -176,6 +177,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"camarilla_pivot_reversal":     {"futures"},
 	"mass_index_reversal":          {"futures"},
 	"calendar_conditioned_entry":   {"futures"},
+	"basket_scripted_fixture":      {"futures"},
 	"stochastic_momentum_index":    {"futures"},
 	"elder_force_pullback":         {"futures"},
 	"true_strength_index":          {"futures"},
@@ -200,6 +202,9 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 }
 
 func openStrategyRegisteredFor(name, registryPlatform string) bool {
+	if basketRankerStrategies[name] {
+		return false
+	}
 	for _, p := range registeredOpenStrategyPlatforms[name] {
 		if p == registryPlatform {
 			return true

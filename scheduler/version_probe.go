@@ -31,6 +31,7 @@ var probeArgv = []string{
 	allowNoEdgeFlag,
 	closedBarDecisionsFlag,
 	decisionRegimeTimeframeFlag + "=1h",
+	basketMemberFlag,
 	"--probe-only",
 }
 
@@ -53,6 +54,7 @@ var probeCompositeArgv = []string{
 	allowNoEdgeFlag,
 	closedBarDecisionsFlag,
 	decisionRegimeTimeframeFlag + "=1h",
+	basketMemberFlag,
 	"--probe-only",
 }
 
@@ -119,8 +121,11 @@ var sizedCloseProbeArgv = []string{
 	"--symbol=BTC", "--mode=live", "--sz=0.01",
 	"--side=sell", "--close-mode=reduce_only",
 	"--cancel-stop-loss-oid=1", "--cancel-protection-after-close", "--cancel-min-fill=0.01",
+	"--cloid=0x00000000000000000000000000000003",
 	"--probe-only",
 }
+
+var basketRankerProbeArgv = []string{"--probe-only"}
 
 var limitOpenProbeArgv = []string{
 	"--limit-open",
@@ -253,6 +258,11 @@ func probeCheckScripts(cfg *Config) error {
 	}
 	if anyHLLiveReconcilable(cfg) {
 		if err := probeOneCheckScriptFn(hyperliquidLiveCloseScript, sizedCloseProbeArgv); err != nil {
+			return err
+		}
+	}
+	if len(cfg.Baskets) > 0 {
+		if err := probeOneCheckScriptFn(basketRankerScript, basketRankerProbeArgv); err != nil {
 			return err
 		}
 	}

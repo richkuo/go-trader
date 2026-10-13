@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from atr import ensure_atr_indicator, latest_atr
 from regime import prepare_check_regime
-from registry_loader import load_registry
+from registry_loader import load_registry, refuse_basket_evaluator
 from strategy_composition import (
     compose_signal,
     evaluate_open_close,
@@ -698,6 +698,7 @@ def compute_parity_frame(
         phase="preflight",
     )
     reg = load_registry(cfg.registry)
+    refuse_basket_evaluator(reg, cfg.strategy_name)
     full_result = reg.apply_strategy(
         cfg.strategy_name, df.copy(), dict(cfg.params or {}))
     bt = _full_frame_decisions(full_result)
@@ -849,6 +850,7 @@ def extract_fills(df: pd.DataFrame, cfg: ParityConfig) -> list:
 
 def extract_fills_report(df: pd.DataFrame, cfg: ParityConfig) -> dict:
     reg = load_registry(cfg.registry)
+    refuse_basket_evaluator(reg, cfg.strategy_name)
     funded = df
     hl_perps = (str(cfg.platform or "").strip().lower() == "hyperliquid"
                 and str(cfg.strategy_type or "").strip().lower() == "perps")

@@ -725,7 +725,8 @@ class HyperliquidExchangeAdapter:
             raise ValueError(f"no usable mid price for {symbol}")
         return _round_perps_px(mid * (1.01 if is_buy else 0.99), sz_decimals)
 
-    def market_close_sized(self, symbol: str, is_buy: bool, size: float, px: float, reduce_only: bool) -> dict:
+    def market_close_sized(self, symbol: str, is_buy: bool, size: float, px: float, reduce_only: bool,
+                           cloid: str | None = None) -> dict:
         exchange = self._require_exchange("market_close_sized")
         sz_decimals = self._sz_decimals(symbol)
         size = floor_lot_size(size, sz_decimals)
@@ -735,6 +736,8 @@ class HyperliquidExchangeAdapter:
         if px <= 0 or not math.isfinite(px):
             raise ValueError(f"no usable limit price for {symbol}")
         order_type = {"limit": {"tif": "Ioc"}}
+        if cloid:
+            return exchange.order(symbol, is_buy, size, px, order_type, reduce_only=bool(reduce_only), cloid=_to_cloid(cloid))
         return exchange.order(symbol, is_buy, size, px, order_type, reduce_only=bool(reduce_only))
 
     def lookup_fill_fee_by_oid(

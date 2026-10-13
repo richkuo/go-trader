@@ -47,3 +47,11 @@ def load_registry(platform: str = "spot") -> ModuleType:
         )
     _cached[key] = mod
     return mod
+
+
+def refuse_basket_evaluator(reg: ModuleType, name: str) -> None:
+    canonical = getattr(reg, "_registry", None)
+    entry = getattr(canonical, "STRATEGIES", {}).get(name)
+    if isinstance(entry, dict) and entry.get("basket"):
+        raise ValueError(
+            f"{name} is a basket evaluator; a single-asset backtest or parity run cannot evaluate it")

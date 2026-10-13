@@ -289,6 +289,11 @@ func feedConsumerCadences(cfg *Config) []int {
 			set[c] = true
 		}
 	}
+	for _, b := range cfg.Baskets {
+		if b.RebalanceIntervalSeconds > 0 {
+			set[b.RebalanceIntervalSeconds] = true
+		}
+	}
 	out := make([]int, 0, len(set))
 	for c := range set {
 		out = append(out, c)

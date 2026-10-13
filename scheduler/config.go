@@ -308,6 +308,7 @@ type Config struct {
 	AutoUpdate               string                     `json:"auto_update,omitempty"`
 	LeaderboardPostTime      string                     `json:"leaderboard_post_time,omitempty"`
 	Strategies               []StrategyConfig           `json:"strategies"`
+	Baskets                  []BasketConfig             `json:"baskets,omitempty"`
 	PortfolioRisk            *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
 	Correlation              *CorrelationConfig         `json:"correlation,omitempty"`
 	Regime                   *RegimeConfig              `json:"regime,omitempty"`
@@ -687,6 +688,7 @@ type StrategyConfig struct {
 	ReplaySourceID              string                   `json:"replay_source_id,omitempty"`
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`
 	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`
+	BasketID                    string                   `json:"basket_id,omitempty"`
 }
 
 type HedgeConfig struct {
@@ -1062,6 +1064,7 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 	}
 	unknownErrs := validateStrategyJSONKeys(data)
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
+	unknownErrs = append(unknownErrs, validateBasketJSONKeys(data)...)
 	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
 	}
@@ -1083,6 +1086,11 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 	}
 	for i := range cfg.Strategies {
 		cfg.Strategies[i].PaperSource = strings.TrimSpace(cfg.Strategies[i].PaperSource)
+		cfg.Strategies[i].BasketID = strings.TrimSpace(cfg.Strategies[i].BasketID)
+	}
+	for i := range cfg.Baskets {
+		cfg.Baskets[i].ID = strings.TrimSpace(cfg.Baskets[i].ID)
+		cfg.Baskets[i].Ranker = strings.TrimSpace(cfg.Baskets[i].Ranker)
 	}
 	if cfg.AutoUpdate == "" {
 		cfg.AutoUpdate = "off"
@@ -1275,6 +1283,10 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 
 	if err := validateMarketFeedConfig(&cfg); err != nil {
 		return nil, err
+	}
+
+	if basketErrs := basketConfigErrors(&cfg); len(basketErrs) > 0 {
+		return nil, fmt.Errorf("basket config validation errors:\n  %s", strings.Join(basketErrs, "\n  "))
 	}
 
 	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {

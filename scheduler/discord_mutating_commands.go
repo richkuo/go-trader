@@ -196,6 +196,9 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 	if name == "" || asset == "" {
 		return "", nil, fmt.Errorf("name and asset are required")
 	}
+	if basketRankerStrategies[name] || name == basketMemberStrategyToken {
+		return "", nil, fmt.Errorf("%q is a basket evaluator or member token; configure it under the baskets block, not as a single-symbol strategy", name)
+	}
 	registryPlatform := ""
 	switch platform {
 	case "hyperliquid":

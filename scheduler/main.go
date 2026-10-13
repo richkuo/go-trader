@@ -408,6 +408,25 @@ func main() {
 		}
 	}
 
+	var basketCoord *basketCoordinator
+	if !readOnlyReport && len(cfg.Baskets) > 0 {
+		runtimes, basketErr := store.LoadBaskets(state, cfg)
+		if basketErr == nil {
+			basketCoord = newBasketCoordinator(cfg, state, store, &sync.RWMutex{}, notifier, nil, runtimes)
+			basketErr = basketCoord.startupCheck()
+		}
+		if basketErr != nil {
+			fmt.Fprintf(os.Stderr, "[basket] CRITICAL: refusing to start: %v\n", basketErr)
+			sendStartupRefusalDM(notifier, "Basket recovery", basketErr.Error())
+			cleanupNotifier()
+			os.Exit(1)
+		}
+		for _, line := range basketStartupLines(runtimes) {
+			fmt.Println(line)
+		}
+		basketCoord.recoverInterrupted(time.Now())
+	}
+
 	startupPartitions := activePartitions(cfg.Strategies)
 	liveCount, paperCount := scopeStrategyCounts(cfg.Strategies)
 	fmt.Printf("[config] portfolio scopes: live=%d paper=%d strategies\n", liveCount, paperCount)
@@ -463,6 +482,10 @@ func main() {
 	defer logMgr.Close()
 
 	var mu sync.RWMutex
+	if basketCoord != nil {
+		basketCoord.mu = &mu
+		basketCoord.logMgr = logMgr
+	}
 
 	initShutdownContexts()
 
@@ -781,6 +804,7 @@ func main() {
 		tickSeconds = schedulerTickSeconds(cfg)
 		drawdownWarnThresholdPct = configuredDrawdownWarnThresholdPct(cfg)
 		paperFundingSyncLines := syncPaperFundingEligibility(state, cfg.Strategies, paperFundingClock())
+		basketCoord.reload(cfg)
 		mu.Unlock()
 		for _, line := range paperFundingSyncLines {
 			fmt.Println("[reload] " + line)
@@ -864,6 +888,7 @@ func main() {
 		processConfigReloads()
 
 		cycleStart := time.Now()
+		basketCoord.beginCycle()
 		mu.Lock()
 		state.CycleCount++
 		cycle := state.CycleCount
@@ -924,7 +949,10 @@ func main() {
 
 		dueStrategies = orderReplaySourcesBeforeMirrors(dueStrategies)
 
-		if len(dueStrategies) == 0 {
+		basketDue := basketCoord.dueDeadlines(time.Now())
+		basketWork := len(basketDue) > 0 || basketCoord.rankReady()
+
+		if len(dueStrategies) == 0 && !basketWork {
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
 				now := time.Now().UTC()
 				if lastLiquidationAudit.IsZero() || now.Sub(lastLiquidationAudit) >= time.Duration(audSec)*time.Second {
@@ -939,7 +967,7 @@ func main() {
 					offCycleAuditSaveDirty = flushOffCycleLiquidationAuditState(state, cfg, store, &mu, mutations, offCycleAuditSaveDirty, false)
 					continue
 				}
-				delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
+				delay := basketCoord.adjustDelay(cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient)), time.Now())
 				if wait := time.Until(lastLiquidationAudit.Add(time.Duration(audSec) * time.Second)); wait < delay {
 					delay = wait
 				}
@@ -962,7 +990,7 @@ func main() {
 					return
 				}
 			}
-			delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
+			delay := basketCoord.adjustDelay(cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient)), time.Now())
 			armMainLoopDeadline(delay + mainLoopWakeGrace)
 			timer := time.NewTimer(delay)
 			select {
@@ -990,8 +1018,17 @@ func main() {
 
 		feedCtx := &marketFeedContext{Enabled: deadlineFeed, Requirements: feedReq, Interval: cfg.IntervalSeconds}
 		var cycleFeedReqs cycleMarketRequirements
+		basketDueAtShared := make(map[string]time.Time)
+		for id, d := range basketDue {
+			if d.Equal(sharedDeadline) {
+				basketDueAtShared[id] = d
+			}
+		}
 		if sharedFeed && sharedClient != nil && len(evaluationMarks) > 0 {
 			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
+			if len(basketDueAtShared) > 0 {
+				cycleFeedReqs = mergeCycleRequirements(cycleFeedReqs, basketCoord.cycleRequirements(basketDueAtShared, feedReq))
+			}
 			sharedKey := sharedDeadline.Unix()
 			snap, report := sharedClient.Fetch(shutdownReadOnlyCtx, sharedKey, cycleFeedReqs)
 			feedCtx.Snapshot = snap
@@ -1008,6 +1045,9 @@ func main() {
 		}
 		if websocketFeed && feedOwner != nil {
 			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
+			if len(basketDue) > 0 {
+				cycleFeedReqs = mergeCycleRequirements(cycleFeedReqs, basketCoord.cycleRequirements(basketDue, feedReq))
+			}
 			evalID := cycleEvaluationID(evaluationMarks, cycle)
 			feedCtx.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, cycleFeedReqs, evalID, time.Now().UTC())
 			globalMarketFeedStatus.setSnapshotID(evalID)
@@ -1120,6 +1160,41 @@ func main() {
 
 		runPaperFundingCycle(shutdownReadOnlyCtx, state, cfg, store, &mu, websocketFeed || sharedFeed, feedCtx.Snapshot, paperFundingMarks, notifier)
 
+		basketSnapshots := make(map[int64]*marketSnapshot)
+		basketSnapshotFor := func(rt *basketRuntime, deadline time.Time) *marketSnapshot {
+			if websocketFeed {
+				return feedCtx.Snapshot
+			}
+			if !sharedFeed || sharedClient == nil {
+				return nil
+			}
+			key := deadline.Unix()
+			if feedCtx.SharedKey == key && feedCtx.Snapshot != nil {
+				return feedCtx.Snapshot
+			}
+			if snap, ok := basketSnapshots[key]; ok {
+				return snap
+			}
+			reqs := basketCoord.cycleRequirements(map[string]time.Time{rt.Contract.BasketID: deadline}, feedReq)
+			snap, report := sharedClient.Fetch(shutdownReadOnlyCtx, key, reqs)
+			fmt.Println(sharedFeedAuditLine(report, 0, feedEffectiveCadences(cfg, intervals)))
+			basketSnapshots[key] = snap
+			return snap
+		}
+		basketMarkSnapshot := func() *marketSnapshot {
+			if feedCtx.Snapshot != nil {
+				return feedCtx.Snapshot
+			}
+			var best *marketSnapshot
+			var bestKey int64
+			for k, snap := range basketSnapshots {
+				if snap != nil && k > bestKey {
+					best, bestKey = snap, k
+				}
+			}
+			return best
+		}
+
 		var totalPV float64
 		sharedWallets := detectSharedWallets(cfg.Strategies)
 		walletBalances := make(map[SharedWalletKey]float64)
@@ -1141,6 +1216,7 @@ func main() {
 			mu.RLock()
 			totalPV, _ = computeTotalPortfolioValue(cfg.Strategies, state, prices, nil, sharedWallets)
 			mu.RUnlock()
+			basketCoord.step(basketCycleInputs{Now: time.Now(), Snapshot: feedCtx.Snapshot, SnapshotFor: basketSnapshotFor, SaveBlocked: true, Once: *once})
 		} else {
 			regimeStoreReady := startRegimeStorePopulation(globalRegimeStore, dueStrategies, cfg.Regime, notifier, feedCtx)
 			cyclePartitions := activePartitions(cfg.Strategies)
@@ -2489,6 +2565,13 @@ func main() {
 						}
 					} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, hlBatchResults, feedCtx); ok {
 						prices[result.Symbol] = price
+						if isBasketMember(sc) {
+							if pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+								logger.Error("Basket member check returned a position-increasing %s signal; only the basket coordinator places member increases, so it is dropped (#1781)", signalStr)
+								result.Signal = 0
+							}
+							basketCoord.observe(sc, result, price)
+						}
 						if hlPosCtx.RestingTP != nil {
 							mu.Lock()
 							recordRestingTPScan(stratState, result.Symbol, hlPosCtx.RestingTP, result.StrategyDecisionFields)
@@ -3271,6 +3354,28 @@ func main() {
 				mu.RUnlock()
 			}
 			setHLActiveCycleShare(nil)
+			if basketCoord.active() {
+				basketIn := basketCycleInputs{Now: time.Now(), Snapshot: feedCtx.Snapshot, SnapshotFor: basketSnapshotFor, ScopeRisk: scopeRisk, Once: *once}
+				if websocketFeed && feedOwner != nil {
+					markReqs := cycleMarketRequirements{Coins: append([]string(nil), feedReq.MidCoins...)}
+					markID := cycleEvaluationID(evaluationMarks, cycle) + "/basket-marks"
+					basketIn.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, markReqs, markID, time.Now().UTC())
+					for waitUntil := time.Now().Add(20 * time.Second); *once && time.Now().Before(waitUntil) && !snapshotHasFreshMids(basketIn.Snapshot, basketCoord.memberCoins()); {
+						time.Sleep(500 * time.Millisecond)
+						basketIn.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, markReqs, markID, time.Now().UTC())
+					}
+					basketIn.Now = time.Now()
+				}
+				if basketIn.Snapshot == nil {
+					for _, rt := range basketCoord.runtimes {
+						if d, ok := basketDue[rt.Contract.BasketID]; ok {
+							basketSnapshotFor(rt, d)
+						}
+					}
+					basketIn.Snapshot = basketMarkSnapshot()
+				}
+				basketCoord.step(basketIn)
+			}
 		}
 
 		mu.RLock()
@@ -3473,7 +3578,7 @@ func main() {
 		mu.RLock()
 		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
-		delay := cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
+		delay := basketCoord.adjustDelay(cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient)), time.Now())
 		armMainLoopDeadline(delay + mainLoopWakeGrace)
 		timer := time.NewTimer(delay)
 		select {
@@ -3980,6 +4085,9 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		}
 	}
 	args = appendAllowNoEdgeArg(args, *sc)
+	if isBasketMember(*sc) {
+		args = append(args, basketMemberFlag)
+	}
 	if marketStdin != nil {
 		args = append(args, marketStdinFlag)
 	}
@@ -4007,6 +4115,9 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 }
 
 func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode, sentInvert bool) (*HyperliquidResult, string, float64, bool) {
+	if isBasketMember(*sc) && result != nil && errMsg == "" && result.Degraded == "" && !result.BasketMember {
+		errMsg, mode, result = "the basket member check did not echo the management-only contract; no entry evaluator output is trusted (#1781)", scriptFailureError, nil
+	}
 	if result != nil && errMsg == "" && result.Degraded == "" {
 		if want := hlCloseOwnerForCheck(*sc, posCtx); want != "" && result.CloseOwner != want {
 			errMsg = fmt.Sprintf("close-owner contract mismatch: sent close_owner=%q but the check returned close_owner=%q; holding this signal because the check script may have evaluated a close the on-chain take-profit owns (redeploy with scripts/update.sh so Go and Python match)", want, result.CloseOwner)
@@ -4349,6 +4460,10 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		fillPrice = execResult.Execution.Fill.AvgPx
 		fillQty = execResult.Execution.Fill.TotalSz
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
+	}
+	if execResult == nil && result.BasketOpenQty > 0 {
+		fillQty = result.BasketOpenQty
+		fillPrice = ApplyAdverseSlippage(price, result.Signal > 0)
 	}
 
 	sizing := withEntrySizeMult(PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators)), hurst.OpenSizeMult())

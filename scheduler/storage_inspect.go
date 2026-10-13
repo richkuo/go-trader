@@ -27,22 +27,24 @@ type storageRiskRow struct {
 }
 
 type storageFileInspection struct {
-	Role            storageRole          `json:"role"`
-	Path            string               `json:"path"`
-	Canonical       string               `json:"canonical_path"`
-	Present         bool                 `json:"present"`
-	LockHeld        bool                 `json:"lock_held"`
-	LockHolderPID   int                  `json:"lock_holder_pid,omitempty"`
-	ScopesOwned     []PortfolioScope     `json:"scopes_owned"`
-	PartitionsOwned []string             `json:"partitions_owned"`
-	Strategies      []storageStrategyRow `json:"strategies"`
-	Orphans         []storageStrategyRow `json:"orphans"`
-	PendingActions  int                  `json:"pending_manual_actions"`
-	RiskRows        []storageRiskRow     `json:"portfolio_risk_rows"`
-	LegacyUnscoped  bool                 `json:"legacy_unscoped_risk_row"`
-	EntryDecisions  int                  `json:"entry_decision_rows"`
-	EntryUnmapped   int                  `json:"entry_unmapped_rows"`
-	EntryHeld       []string             `json:"unresolved_entry_intents"`
+	Role             storageRole          `json:"role"`
+	Path             string               `json:"path"`
+	Canonical        string               `json:"canonical_path"`
+	Present          bool                 `json:"present"`
+	LockHeld         bool                 `json:"lock_held"`
+	LockHolderPID    int                  `json:"lock_holder_pid,omitempty"`
+	ScopesOwned      []PortfolioScope     `json:"scopes_owned"`
+	PartitionsOwned  []string             `json:"partitions_owned"`
+	Strategies       []storageStrategyRow `json:"strategies"`
+	Orphans          []storageStrategyRow `json:"orphans"`
+	PendingActions   int                  `json:"pending_manual_actions"`
+	RiskRows         []storageRiskRow     `json:"portfolio_risk_rows"`
+	LegacyUnscoped   bool                 `json:"legacy_unscoped_risk_row"`
+	EntryDecisions   int                  `json:"entry_decision_rows"`
+	EntryUnmapped    int                  `json:"entry_unmapped_rows"`
+	EntryHeld        []string             `json:"unresolved_entry_intents"`
+	BasketRebalances int                  `json:"basket_rebalance_rows"`
+	BasketPending    []string             `json:"pending_basket_recovery"`
 }
 
 type storageInspection struct {
@@ -245,6 +247,12 @@ func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storag
 	}
 	rejections = append(rejections, entryRejections...)
 
+	basketRejections, err := inspectBasketRows(db, fi, ident)
+	if err != nil {
+		return nil, err
+	}
+	rejections = append(rejections, basketRejections...)
+
 	if fi.LegacyUnscoped && layout.Split && fi.Role == storageRolePrimary && !hasLive {
 		rejections = append(rejections,
 			fmt.Sprintf("%s state file: an unscoped legacy portfolio_risk row cannot be placed — the split layout has no live strategy, so the row's historic mode is unknown; resolve it by hand", fi.Role))
@@ -345,6 +353,10 @@ func formatStorageInspection(si storageInspection) string {
 		fmt.Fprintf(&b, "  closed-bar entry records: %d (%d unmapped)\n", fi.EntryDecisions, fi.EntryUnmapped)
 		for _, line := range fi.EntryHeld {
 			fmt.Fprintf(&b, "    UNRESOLVED ENTRY %s\n", line)
+		}
+		fmt.Fprintf(&b, "  basket rebalance records: %d\n", fi.BasketRebalances)
+		for _, line := range fi.BasketPending {
+			fmt.Fprintf(&b, "    PENDING BASKET RECOVERY %s\n", line)
 		}
 	}
 	if len(si.Rejections) == 0 {

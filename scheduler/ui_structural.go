@@ -299,6 +299,14 @@ func (ss *StatusServer) handleAPIStrategyStructural(w http.ResponseWriter, r *ht
 }
 
 func (ss *StatusServer) paperToLiveBlockedReason(id string, afterConfirm bool) string {
+	ss.strategiesMu.RLock()
+	for _, sc := range ss.strategies {
+		if sc.ID == id && isBasketMember(sc) {
+			ss.strategiesMu.RUnlock()
+			return fmt.Sprintf("strategy %q is a member of basket %q — live basket dispatch is refused until a separate promotion change", id, sc.BasketID)
+		}
+	}
+	ss.strategiesMu.RUnlock()
 	if !ss.strategyHasOpenPosition(id) {
 		return ""
 	}

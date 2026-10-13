@@ -167,6 +167,7 @@ type hlBatchSlot struct {
 	PositionCtx     map[string]any  `json:"position_ctx,omitempty"`
 	ClosedBar       bool            `json:"closed_bar_decisions,omitempty"`
 	RestingTPRule   json.RawMessage `json:"resting_tp_rule,omitempty"`
+	BasketMember    bool            `json:"basket_member,omitempty"`
 }
 
 type hlBatchRequest struct {
@@ -202,6 +203,7 @@ func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *Re
 		HTFFilter:       sc.HTFFilter,
 		RegimeATRWindow: hlBatchRegimeATRWindow(sc, regime),
 		ClosedBar:       sc.ClosedBarDecisions,
+		BasketMember:    isBasketMember(sc),
 	}
 	refsArgs, err := buildStrategyRefsArg(sc, hlCloseOwnerForCheck(sc, posCtx), hlInvertOpenSignalForCheck(sc, posCtx, regime))
 	if err != nil {

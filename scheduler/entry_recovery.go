@@ -300,7 +300,7 @@ func recoverEntryIntents(cfg *Config, state *AppState, store *StateStore, mu *sy
 	mu.RLock()
 	for _, id := range sortedEntryGuardStrategyIDs(state) {
 		sc, ok := byID[id]
-		if !ok {
+		if !ok || isBasketMember(sc) {
 			continue
 		}
 		s := state.Strategies[id]

@@ -14,6 +14,7 @@ CLOSE_OWNER_ON_CHAIN_TP = "on_chain_tp"
 VALID_CLOSE_OWNERS = {CLOSE_OWNER_ON_CHAIN_TP}
 VALID_POSITION_SIDES = {"", "long", "short"}
 VALID_OPEN_ACTIONS = {"long", "short", "none"}
+BASKET_MEMBER_TOKEN = "basket_member"
 POSITION_CONTEXT_PARAM_KEYS = {
     "side", "avg_cost", "current_quantity", "initial_quantity", "entry_atr", "regime",
     "risk_anchor_price", "tp_model",
@@ -369,6 +370,10 @@ def admit_strategy_references(
 ) -> None:
     for ref in references:
         entry = get_strategy(ref.name)
+        if isinstance(entry, dict) and entry.get("basket"):
+            raise ValueError(
+                f"{ref.role} strategy '{ref.name}' is a basket evaluator; "
+                "it ranks a basket universe and cannot run on one symbol")
         if not isinstance(entry, dict) or entry.get("edge_status") != EDGE_STATUS_NO_EDGE:
             continue
         source = entry.get("edge_source") or "unknown"
@@ -411,6 +416,36 @@ def admit_configured_strategies(
     )
     admit_strategy_references(references, gate_mode, acknowledgement, get_open_strategy)
     return references
+
+
+def resolve_basket_member_close_references(
+    positional_strategy: str,
+    open_strategy: Optional[str],
+    close_strategies: Optional[str | Iterable[str]],
+    close_owner: Optional[str],
+    get_close_strategy: Callable[[str], object],
+) -> list[StrategyReference]:
+    if (positional_strategy or "").strip() != BASKET_MEMBER_TOKEN:
+        raise ValueError(
+            f"a basket member check needs the {BASKET_MEMBER_TOKEN!r} positional strategy, got {positional_strategy!r}")
+    if open_strategy and open_strategy.strip() != BASKET_MEMBER_TOKEN:
+        raise ValueError(f"a basket member has no open strategy; got {open_strategy!r}")
+    names = parse_close_strategies(close_strategies)
+    if not names and close_owner is None:
+        raise ValueError("a basket member needs an explicit close strategy; no entry evaluator runs as a close fallback")
+    refs = []
+    for name in names:
+        resolved = canonical_close_name(name)
+        try:
+            get_close_strategy(resolved)
+        except ValueError as exc:
+            raise ValueError(
+                f"basket member close strategy {name!r} is not a native close strategy; "
+                "an open-strategy close fallback would run an independent entry evaluator") from exc
+        if resolved == "avwap_stop":
+            raise ValueError("basket member close strategy 'avwap_stop' needs an open-strategy avwap column")
+        refs.append(StrategyReference("close", resolved))
+    return refs
 
 
 def check_fixed_interval_timeframe(default_params: Optional[dict], params: Optional[dict], timeframe: str) -> None:
@@ -541,8 +576,14 @@ def evaluate_open_close(
     invert_open_signal: bool = False,
     protection_df: Optional[pd.DataFrame] = None,
     protection_params: Optional[dict] = None,
+    management_only: bool = False,
 ) -> OpenCloseEvaluation:
     open_name = (open_strategy or positional_strategy).strip()
+    if management_only:
+        if open_name != BASKET_MEMBER_TOKEN:
+            raise ValueError(f"management-only evaluation needs the {BASKET_MEMBER_TOKEN!r} positional strategy, got {open_name!r}")
+        if close_owner is None and not parse_close_strategies(close_strategies):
+            raise ValueError("management-only evaluation needs an explicit close strategy")
     close_names = effective_close_strategies(
         positional_strategy, open_name, close_strategies, close_owner
     )
@@ -560,7 +601,14 @@ def evaluate_open_close(
             cache[key] = apply_strategy(name, df, run_params)
         return cache[key]
 
-    if decision_available:
+    if management_only:
+        if decision_available:
+            open_result = df.copy()
+            open_result["signal"] = 0
+        else:
+            open_result = pd.DataFrame()
+        open_signal = 0
+    elif decision_available:
         open_result = run(open_name, params)
         open_signal = _last_signal(open_result)
     else:
@@ -573,7 +621,9 @@ def evaluate_open_close(
     else:
         market = _default_market_ctx(protection_df if protection_df is not None else df)
     avwap_source = open_result
-    if protection_df is not None and close_names:
+    if management_only:
+        avwap_source = pd.DataFrame()
+    elif protection_df is not None and close_names:
         get_strategy(open_name)
         avwap_source = apply_strategy(
             open_name, protection_df, protection_params if protection_params is not None else params)
@@ -612,6 +662,11 @@ def evaluate_open_close(
             except ValueError as exc:
                 if not _is_unknown_close_strategy_error(exc):
                     raise
+                if management_only:
+                    raise ValueError(
+                        f"management-only close strategy {resolved!r} is not a native close strategy") from exc
+        if management_only:
+            raise ValueError("management-only evaluation needs the native close evaluator")
         if not decision_available:
             close_evals.append(CloseEvaluation(strategy=resolved, close_fraction=0.0))
             continue
