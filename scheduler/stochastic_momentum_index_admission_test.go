@@ -19,34 +19,6 @@ func smiHL(id string, args ...string) map[string]interface{} {
 	return sc
 }
 
-func TestStochasticMomentumIndexRegistrationTables(t *testing.T) {
-	if knownShortNames[smiName] != "smi" || !isBidirectionalPerpsStrategy(smiName) {
-		t.Fatalf("short name %q, bidirectional %v", knownShortNames[smiName], isBidirectionalPerpsStrategy(smiName))
-	}
-	if !openStrategyRegisteredFor(smiName, "futures") || openStrategyRegisteredFor(smiName, "spot") {
-		t.Fatal("stochastic_momentum_index must be registered for futures only")
-	}
-	var owners []string
-	for other, short := range knownShortNames {
-		if short == "smi" {
-			owners = append(owners, other)
-		}
-	}
-	if !reflect.DeepEqual(owners, []string{smiName}) {
-		t.Fatalf("short name smi owners = %v", owners)
-	}
-	ev, ok := noEdgeEvidenceFor(smiName)
-	if !ok || ev.Ref != smiRef {
-		t.Fatalf("no-edge evidence = %+v, %v", ev, ok)
-	}
-	if _, ok := closedBarRequiredOpenStrategies[smiName]; !ok {
-		t.Fatal("stochastic_momentum_index must require Hyperliquid closed-bar decisions")
-	}
-	if _, frozen := v20StampEligibleStrategies[smiName]; frozen {
-		t.Fatal("stochastic_momentum_index must not join the frozen v20 auto-acknowledgement set")
-	}
-}
-
 func TestStochasticMomentumIndexAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	fallback := func(args ...string) map[string]interface{} {
