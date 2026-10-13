@@ -144,6 +144,12 @@ jobs:
             --marker 'PASS: observation replay harness (sealed payload decisions match recording replay; tampered and truncated recordings refused)' \
             -- bash scripts/test_observation_replay.sh
 
+      - name: Trade-flow replay suite
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'PASS: trade-flow replay harness (sealed trade-flow payloads and decisions match the independent recording replay; tampered, truncated and contradicted recordings refused)' \
+            -- bash scripts/test_trade_flow_replay.sh
+
       - name: Allow unprivileged user namespaces for the ledger capture worker
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 

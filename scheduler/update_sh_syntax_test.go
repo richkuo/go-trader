@@ -46,6 +46,10 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		ciStep: true,
 		marker: "PASS: observation replay harness (sealed payload decisions match recording replay; tampered and truncated recordings refused)",
 	},
+	"test_trade_flow_replay.sh": {
+		ciStep: true,
+		marker: "PASS: trade-flow replay harness (sealed trade-flow payloads and decisions match the independent recording replay; tampered, truncated and contradicted recordings refused)",
+	},
 	"test_ledger_export.sh": {
 		ciStep:     true,
 		marker:     "PASS: ledger capture and export (active-WAL capture without source effects, version 2 export contract, every refusal leaves inputs unchanged)",

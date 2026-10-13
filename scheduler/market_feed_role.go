@@ -23,7 +23,8 @@ const (
 	feedEstimateKeyBytes  = 1024
 	feedEstimateCoinBytes = 256
 
-	feedEstimateObservationBytes = 96
+	feedEstimateObservationBytes   = 96
+	feedEstimateTradeIntervalBytes = 256
 
 	feedEstimateAccountingRecordBytes = 64
 )
@@ -394,7 +395,11 @@ func estimateFeedSealBytes(union feedRequirements) int {
 	for range union.Funding {
 		total += 7 * 24 * 64
 	}
-	for _, window := range union.Observations {
+	for key, window := range union.Observations {
+		if key.Kind == feedObservationTradeFlow {
+			total += feedEstimateKeyBytes + int(window/feedTradeIntervalMs+2)*feedEstimateTradeIntervalBytes
+			continue
+		}
 		total += feedEstimateKeyBytes + int(window/feedObservationCadenceMs+2)*feedEstimateObservationBytes
 	}
 	for range union.AccountingCoins {
@@ -898,7 +903,7 @@ func runFeedProbe(configPath string) int {
 		fmt.Printf("probe: key %s lookback=%d cadences=%s\n", key.PayloadID(), union.Keys[key], formatCadences(union.KeyCadences[key]))
 	}
 	for _, key := range union.observationKeys() {
-		fmt.Printf("probe: observation %s window_ms=%d source=%s\n", key.PayloadID(), union.Observations[key], feedObservationSourceHLWS)
+		fmt.Printf("probe: observation %s window_ms=%d source=%s\n", key.PayloadID(), union.Observations[key], feedObservationSourceFor(key.Kind))
 	}
 	fmt.Printf("probe: OK (role=feed, source=%s, %d of %d consumer configs, %d keys, cadences %s, check scripts not probed, version=%s)\n",
 		cfg.Feed.Source, feedConsumersLoaded(consumers), len(consumers), len(union.Order), formatCadences(unionFeedCadences(consumers)), Version)
@@ -925,10 +930,12 @@ func dropUncollectableObservations(source string, consumers []feedConsumer) []fe
 		for id, entry := range c.Req.Strategies {
 			entry.OpenInterest = false
 			entry.ObsWindowMs = 0
+			entry.TradeFlow = false
+			entry.TradeWindowMs = 0
 			req.Strategies[id] = entry
 		}
 		c.Req = req
-		c.Notice = fmt.Sprintf("feed.source=%q cannot collect observations %s; only feed.source=%q subscribes to the venue open-interest stream, so this feed serves the consumer's candle, mid and funding keys without them and its open-interest strategies hold entries",
+		c.Notice = fmt.Sprintf("feed.source=%q cannot collect observations %s; only feed.source=%q subscribes to the venue open-interest and trade streams, so this feed serves the consumer's candle, mid and funding keys without them and its observation strategies hold entries",
 			source, strings.Join(names, ", "), feedSourceWebsocket)
 	}
 	return consumers

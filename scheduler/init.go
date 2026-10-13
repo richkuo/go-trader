@@ -118,6 +118,8 @@ var knownShortNames = map[string]string{
 	"williams_r_reversal":          "wrr",
 	"ultimate_oscillator":          "uo",
 	"hold":                         "hold",
+
+	"cumulative_volume_delta_divergence": "cvddiv",
 }
 
 var registeredOpenStrategyPlatforms = map[string][]string{
@@ -201,6 +203,8 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"vwap_rejection_st":            {"futures"},
 	"vwap_reversion":               {"spot", "futures"},
 	"williams_r_reversal":          {"futures"},
+
+	"cumulative_volume_delta_divergence": {"futures"},
 }
 
 func openStrategyRegisteredFor(name, registryPlatform string) bool {
@@ -264,6 +268,8 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"elder_force_pullback":         true,
 	"true_strength_index":          true,
 	"klinger_divergence":           true,
+
+	"cumulative_volume_delta_divergence": true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {

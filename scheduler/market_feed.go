@@ -489,6 +489,7 @@ type marketFeedOwner struct {
 	funding      map[string]*feedFunding
 	fundingNeeds map[string]feedFundingNeed
 	observations map[feedObservationKey]*feedObservationState
+	tradeFlows   map[feedObservationKey]*feedTradeFlowState
 	obsSession   uint64
 
 	accountingCoins   map[string]bool
@@ -538,6 +539,7 @@ func newMarketFeedOwner(clock func() time.Time, logf func(string, ...any)) *mark
 		funding:      make(map[string]*feedFunding),
 		fundingNeeds: make(map[string]feedFundingNeed),
 		observations: make(map[feedObservationKey]*feedObservationState),
+		tradeFlows:   make(map[feedObservationKey]*feedTradeFlowState),
 
 		accountingCoins:   make(map[string]bool),
 		accountingFunding: make(map[string]*feedAccountingFunding),
@@ -861,6 +863,13 @@ type marketFeedHealthObs struct {
 	Rejected   uint64 `json:"rejected"`
 	LastReject string `json:"last_reject,omitempty"`
 	Detail     string `json:"detail,omitempty"`
+
+	CompleteIntervals int    `json:"complete_intervals,omitempty"`
+	FrontierMs        int64  `json:"frontier_ms,omitempty"`
+	Duplicates        uint64 `json:"duplicates,omitempty"`
+	Conflicts         uint64 `json:"conflicts,omitempty"`
+	Late              uint64 `json:"late,omitempty"`
+	Invalid           uint64 `json:"invalid_intervals,omitempty"`
 }
 
 type marketFeedHealthMid struct {
@@ -875,6 +884,7 @@ type marketFeedHealthMid struct {
 func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 	readiness := o.Readiness()
 	obsReadiness := o.ObservationReadiness()
+	tradeReadiness := o.TradeFlowReadiness()
 	o.feedMu.Lock()
 	now := o.now()
 	health := marketFeedHealth{
@@ -919,6 +929,17 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 			LastReject: r.Stats.LastReject, Detail: r.Detail,
 		})
 	}
+	for _, r := range tradeReadiness {
+		health.Observations = append(health.Observations, marketFeedHealthObs{
+			Key: r.Key.PayloadID(), Status: r.Status, Ready: r.Ready,
+			CoveredMs: r.CoveredMs, WindowMs: r.WindowMs, OpenGap: r.OpenGap,
+			Received: r.Stats.Received, Rejected: r.Stats.Rejected,
+			LastReject: r.Stats.LastReject, Detail: r.Detail,
+			CompleteIntervals: r.Complete, FrontierMs: r.FrontierMs, Duplicates: r.Stats.Duplicates,
+			Conflicts: r.Stats.Conflicts, Late: r.Stats.Late, Invalid: r.Stats.Invalid,
+		})
+	}
+	sort.SliceStable(health.Observations, func(i, j int) bool { return health.Observations[i].Key < health.Observations[j].Key })
 	for _, r := range readiness {
 		health.Keys = append(health.Keys, marketFeedHealthKey{
 			Key:           r.Key.String(),

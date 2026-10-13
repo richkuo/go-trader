@@ -84,15 +84,24 @@ type feedStrategyRequirement struct {
 	FundingRecords bool
 	OpenInterest   bool
 	ObsWindowMs    int64
+	TradeFlow      bool
+	TradeWindowMs  int64
 	ClosedBar      bool
 	Timed          bool
 }
 
 func (e feedStrategyRequirement) observationNeeds() map[feedObservationKey]int64 {
-	if !e.OpenInterest {
+	if !e.OpenInterest && !e.TradeFlow {
 		return nil
 	}
-	return map[feedObservationKey]int64{openInterestKeyFor(e.Coin): e.ObsWindowMs}
+	out := make(map[feedObservationKey]int64, 2)
+	if e.OpenInterest {
+		out[openInterestKeyFor(e.Coin)] = e.ObsWindowMs
+	}
+	if e.TradeFlow {
+		out[tradeFlowKeyFor(e.Coin)] = e.TradeWindowMs
+	}
+	return out
 }
 
 type feedRequirements struct {
@@ -115,6 +124,27 @@ func (r *feedRequirements) addObservation(key feedObservationKey, windowMs int64
 	if existing, ok := r.Observations[key]; !ok || windowMs > existing {
 		r.Observations[key] = windowMs
 	}
+}
+
+func (r feedRequirements) hasObservationKind(kind string) bool {
+	for k := range r.Observations {
+		if k.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func describeHasObservationKind(d *feedDescribe, kind string) bool {
+	if d == nil {
+		return false
+	}
+	for _, ob := range d.Observations {
+		if ob.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func (r feedRequirements) observationKeys() []feedObservationKey {
@@ -250,6 +280,17 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				req.addObservation(openInterestKeyFor(symbol), window)
 			}
 		}
+		if feedStrategyUsesTradeFlow(sc) {
+			intervalMs, _ := hlCandleIntervalMs(timeframe)
+			window, werr := cvdSessionWindowMs(sc, intervalMs)
+			if werr != nil {
+				errs = append(errs, fmt.Sprintf("strategy[%s] %s: %v", sc.ID, cumulativeVolumeDeltaStrategyName, werr))
+			} else {
+				entry.TradeFlow = true
+				entry.TradeWindowMs = window
+				req.addObservation(tradeFlowKeyFor(symbol), window)
+			}
+		}
 
 		req.Strategies[sc.ID] = entry
 	}
@@ -285,6 +326,10 @@ func validateMarketFeedConfig(cfg *Config) error {
 		if ids := openInterestStrategyIDs(cfg); len(ids) > 0 {
 			return fmt.Errorf("market_feed=%q cannot supply open-interest observations for %s (strategies %s); use market_feed %q or %q",
 				marketFeedREST, openInterestBreakoutStrategyName, strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
+		}
+		if ids := tradeFlowStrategyIDs(cfg); len(ids) > 0 {
+			return fmt.Errorf("market_feed=%q cannot supply trade-flow observations for %s (strategies %s); use market_feed %q or %q",
+				marketFeedREST, cumulativeVolumeDeltaStrategyName, strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
 		}
 		return nil
 	case marketFeedWebsocket:
@@ -456,6 +501,17 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 		o.funding[coin] = entry
 		o.feedMu.Unlock()
 	}
+}
+
+func tradeFlowStrategyIDs(cfg *Config) []string {
+	var ids []string
+	for _, sc := range cfg.Strategies {
+		if feedScopedStrategy(sc) && feedStrategyUsesTradeFlow(sc) {
+			ids = append(ids, sc.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func openInterestStrategyIDs(cfg *Config) []string {

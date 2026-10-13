@@ -126,7 +126,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 65
+    assert len(py) == 66
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -147,6 +147,27 @@ def test_metadata_parity_detects_a_removed_name_or_changed_field(side):
     for mutated in (removed, changed, moved):
         pair = (mutated, py) if side == "go" else (go, mutated)
         assert len(mapping_mismatches(*pair)) == 1
+
+
+def go_production_refused():
+    source = _go_source("production_refusal.go")
+    block = _go_block(source, "var productionRefusedStrategies = map[string]string{")
+    consts = {"cumulativeVolumeDeltaStrategyName": _go_string_consts(_go_source("market_feed_trades.go"))[
+        "cumulativeVolumeDeltaStrategyName"]}
+    out = {}
+    for key, ref in re.findall(r'^\s*(\w+|"\w+"):\s*"([^"]*)",\s*$', block, re.M):
+        out[key.strip('"') if key.startswith('"') else consts[key]] = ref
+    assert len(out) == len([line for line in block.splitlines() if line.strip()]), "unparsed productionRefusedStrategies line"
+    return out
+
+
+def test_go_production_refusal_equals_python_registry():
+    go = go_production_refused()
+    py = {name: OPEN_REGISTRY.STRATEGIES[name]["edge_ref"] for name in OPEN_REGISTRY.production_refused_strategies()}
+    assert py == {"cumulative_volume_delta_divergence": "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md"}
+    assert go == py
+    for name in py:
+        assert OPEN_REGISTRY.STRATEGIES[name]["edge_status"] == OPEN_REGISTRY.EDGE_STATUS_NO_EDGE
 
 
 def test_v20_auto_acknowledgement_exclusions_are_registered_no_edge_names():

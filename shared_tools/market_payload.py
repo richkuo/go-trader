@@ -137,3 +137,21 @@ def market_observation(market, coin: str, kind: str, error_cls=None) -> dict:
                 "reason": f"market payload {key} observations are labelled "
                           f"{entry.get('coin')!r}|{entry.get('kind')!r}"}
     return dict(entry)
+
+
+def market_trade_flow(market, coin: str, error_cls=None) -> dict:
+    payload = validate_market_payload(market, error_cls)
+    key = f"{coin}|trade_flow"
+    flows = payload.get("trade_flows")
+    if not isinstance(flows, dict) or key not in flows:
+        return {"available": False, "kind": "trade_flow", "coin": coin,
+                "reason": f"market payload carries no {key} aggregates"}
+    entry = flows[key]
+    if not isinstance(entry, dict):
+        return {"available": False, "kind": "trade_flow", "coin": coin,
+                "reason": f"market payload {key} aggregates are not an object"}
+    if entry.get("kind") != "trade_flow" or entry.get("coin") != coin:
+        return {"available": False, "kind": "trade_flow", "coin": coin,
+                "reason": f"market payload {key} aggregates are labelled "
+                          f"{entry.get('coin')!r}|{entry.get('kind')!r}"}
+    return dict(entry)

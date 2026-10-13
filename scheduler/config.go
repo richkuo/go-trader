@@ -1281,6 +1281,10 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 
 	applyUserCloseDefaultRegimeATRs(&cfg)
 
+	if errs := productionRefusedAdmissionErrors(cfg.Strategies); len(errs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
+	}
+
 	if err := validateMarketFeedConfig(&cfg); err != nil {
 		return nil, err
 	}
@@ -1835,6 +1839,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 
 	errs = append(errs, validateUserDefaults(cfg.UserDefaults)...)
 
+	errs = append(errs, productionRefusedAdmissionErrors(cfg.Strategies)...)
 	errs = append(errs, noEdgeAdmissionErrors(cfg.Strategies)...)
 
 	errs = append(errs, fixedIntervalStrategyErrors(cfg.Strategies)...)

@@ -436,7 +436,7 @@ func TestOpenInterestObservationPipeline(t *testing.T) {
 	for _, tc := range []struct {
 		sealVersion int
 		compatible  bool
-	}{{feedSealVersionBase, true}, {feedSealVersion, true}, {feedSealVersionAccounting, true}, {feedSealVersionAccounting + 1, false}} {
+	}{{feedSealVersionBase, true}, {feedSealVersion, true}, {feedSealVersionAccounting, true}, {feedSealVersionTrades, true}, {feedSealVersionTrades + 1, false}} {
 		peer := oiTestOldPeer(t, sockDir, tc.sealVersion)
 		_, _, err := client.roundTrip(ctx, peer, feedWireRequest{V: feedWireVersion, Op: feedWireOpDescribe})
 		if tc.compatible && err != nil {

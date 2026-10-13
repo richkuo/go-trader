@@ -368,6 +368,14 @@ def admit_strategy_references(
     acknowledgement: Acknowledgement,
     get_strategy: Callable[[str], object],
 ) -> None:
+    references = list(references)
+    for ref in references:
+        entry = get_strategy(ref.name)
+        if isinstance(entry, dict) and entry.get("production_refused"):
+            raise ValueError(
+                f"{ref.role} strategy '{ref.name}' is production_refused: it is research-only "
+                f"(evidence {entry.get('edge_ref') or 'unknown'}) and every production check refuses it in any "
+                f"mode, with or without allow_no_edge, until a separate reviewed promotion")
     for ref in references:
         entry = get_strategy(ref.name)
         if isinstance(entry, dict) and entry.get("basket"):
@@ -414,7 +422,16 @@ def admit_configured_strategies(
         list_open_strategies,
         list_close_strategies,
     )
-    admit_strategy_references(references, gate_mode, acknowledgement, get_open_strategy)
+    positional = (positional_strategy or "").strip()
+    extra = []
+    if positional and all(ref.name != positional for ref in references):
+        try:
+            entry = get_open_strategy(positional)
+        except ValueError:
+            entry = None
+        if isinstance(entry, dict) and entry.get("production_refused"):
+            extra.append(StrategyReference("open", positional))
+    admit_strategy_references(extra + references, gate_mode, acknowledgement, get_open_strategy)
     return references
 
 

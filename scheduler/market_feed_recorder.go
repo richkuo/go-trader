@@ -21,14 +21,18 @@ import (
 )
 
 const (
-	observationRecordingSchema = "go_trader_observation_recording/v1"
-	observationSegmentSchema   = "go_trader_observation_segment/v1"
-	observationRunSchema       = "go_trader_observation_run/v1"
-	observationRecorderQueue   = 65536
-	observationFlushEvery      = time.Second
-	observationDefaultSegment  = time.Hour
-	observationRecorderWindow  = 2 * time.Hour
-	observationHealthEvery     = time.Minute
+	observationRecordingSchema   = "go_trader_observation_recording/v1"
+	observationSegmentSchema     = "go_trader_observation_segment/v1"
+	observationRunSchema         = "go_trader_observation_run/v1"
+	observationRecordingSchemaV2 = "go_trader_observation_recording/v2"
+	observationSegmentSchemaV2   = "go_trader_observation_segment/v2"
+	observationRunSchemaV2       = "go_trader_observation_run/v2"
+	observationRecorderQueue     = 65536
+	observationFlushEvery        = time.Second
+	observationDefaultSegment    = time.Hour
+	observationRecorderWindow    = 2 * time.Hour
+	observationHealthEvery       = time.Minute
+	observationAdvanceEvery      = 5 * time.Second
 )
 
 type observationRecord struct {
@@ -44,10 +48,17 @@ type observationRecord struct {
 	Reason    string
 	Raw       string
 	State     string
+	Extra     map[string]any
 }
 
 func (r observationRecord) fields() map[string]any {
 	out := map[string]any{"k": r.Kind, "recv_ms": r.RecvMs, "session": r.Session}
+	for k, v := range r.Extra {
+		if k == "k" || k == "session" {
+			continue
+		}
+		out[k] = v
+	}
 	switch r.Kind {
 	case "obs":
 		out["coin"] = r.Coin
@@ -71,6 +82,7 @@ func (r observationRecord) fields() map[string]any {
 type observationRecorderMeta struct {
 	RunID     string
 	Coins     []string
+	Kinds     []string
 	Segment   time.Duration
 	WSURL     string
 	StartedAt time.Time
@@ -96,6 +108,59 @@ type observationSegmentManifest struct {
 	Complete     bool     `json:"complete"`
 	CloseReason  string   `json:"close_reason"`
 	RecorderVers string   `json:"recorder_version"`
+	TradeFrames  int      `json:"trade_frames,omitempty"`
+	TradeRecords int      `json:"trade_records,omitempty"`
+	Intervals    int      `json:"intervals,omitempty"`
+}
+
+type observationTradeContract struct {
+	Source         string `json:"source"`
+	Units          string `json:"units"`
+	TimeBasis      string `json:"time_basis"`
+	Identity       string `json:"identity"`
+	SideEvidence   string `json:"side_evidence"`
+	IntervalMs     int64  `json:"interval_ms"`
+	ReorderGraceMs int64  `json:"reorder_grace_ms"`
+	MaxEventGapMs  int64  `json:"max_event_gap_ms"`
+	MaxFutureMs    int64  `json:"max_future_skew_ms"`
+	IdentityMs     int64  `json:"identity_retain_ms"`
+	IdentityCap    int    `json:"identity_cap"`
+	DecimalScale   int    `json:"decimal_scale"`
+}
+
+func currentTradeContract() observationTradeContract {
+	return observationTradeContract{
+		Source: feedTradeSourceHLWS, Units: feedTradeUnitsBase, TimeBasis: feedTradeTimeBasis, Identity: feedTradeIdentity,
+		SideEvidence: feedTradeSideEvidence, IntervalMs: feedTradeIntervalMs, ReorderGraceMs: feedTradeReorderGraceMs,
+		MaxEventGapMs: feedTradeMaxEventGapMs, MaxFutureMs: feedTradeMaxFutureSkewMs, IdentityMs: feedTradeIdentityRetain,
+		IdentityCap: feedTradeIdentityCap, DecimalScale: feedTradeDecimalScale,
+	}
+}
+
+type observationRunManifestV2 struct {
+	Schema        string                       `json:"schema"`
+	RunID         string                       `json:"run_id"`
+	Kinds         []string                     `json:"kinds"`
+	Sources       map[string]string            `json:"sources"`
+	TradeContract *observationTradeContract    `json:"trade_contract,omitempty"`
+	Host          string                       `json:"host"`
+	WSURL         string                       `json:"ws_url"`
+	Coins         []string                     `json:"coins"`
+	StartedMs     int64                        `json:"started_ms"`
+	ClosedMs      int64                        `json:"closed_ms,omitempty"`
+	Closed        bool                         `json:"closed"`
+	DroppedTotal  uint64                       `json:"dropped_total"`
+	RecorderVers  string                       `json:"recorder_version"`
+	Segments      []observationSegmentManifest `json:"segments"`
+}
+
+func recorderKindsHaveTrades(kinds []string) bool {
+	for _, k := range kinds {
+		if k == feedObservationTradeFlow {
+			return true
+		}
+	}
+	return false
 }
 
 type observationRunManifest struct {
@@ -127,6 +192,9 @@ type observationSegment struct {
 	bytes    int64
 	records  int
 	obs      int
+	frames   int
+	trades   int
+	ivs      int
 	rejected int
 	dropped  uint64
 	first    int64
@@ -176,6 +244,12 @@ func newObservationRecorder(dir string, meta observationRecorderMeta, clock func
 	coins := append([]string(nil), meta.Coins...)
 	sort.Strings(coins)
 	meta.Coins = coins
+	kinds := append([]string(nil), meta.Kinds...)
+	if len(kinds) == 0 {
+		kinds = []string{feedObservationOpenInterest}
+	}
+	sort.Strings(kinds)
+	meta.Kinds = kinds
 	r := &observationRecorder{
 		dir:   dir,
 		meta:  meta,
@@ -304,6 +378,20 @@ func (r *observationRecorder) handle(rec observationRecord) {
 			seg.rejected++
 		}
 	}
+	if rec.Kind == "trades" {
+		seg.frames++
+		if outs, ok := rec.Extra["outcomes"].([]feedTradeOutcome); ok {
+			seg.trades += len(outs)
+			for _, oc := range outs {
+				if oc.Outcome == feedTradeOutcomeRejected {
+					seg.rejected++
+				}
+			}
+		}
+	}
+	if rec.Kind == "interval" {
+		seg.ivs++
+	}
 	if seg.first == 0 || rec.RecvMs < seg.first {
 		seg.first = rec.RecvMs
 	}
@@ -351,6 +439,16 @@ func (r *observationRecorder) openSegment(atMs int64) error {
 	}
 	seg.buf = bufio.NewWriter(io.MultiWriter(f, h))
 	r.segment = seg
+	if r.v2() {
+		r.writeLine(seg, map[string]any{
+			"k": "header", "schema": observationRecordingSchemaV2, "run_id": r.meta.RunID, "index": seg.index,
+			"recv_ms": atMs, "kinds": r.meta.Kinds, "sources": r.sources(), "trade_contract": currentTradeContract(),
+			"open_interest_contract": map[string]any{"source": feedObservationSourceHLWS, "units": feedObservationUnitsBase,
+				"time_basis": feedObservationTimeReceipt, "cadence_ms": feedObservationCadenceMs},
+			"host": hlMainnetURL, "ws_url": r.meta.WSURL, "coins": r.meta.Coins, "recorder_version": Version,
+		})
+		return r.writeError
+	}
 	r.writeLine(seg, map[string]any{
 		"k": "header", "schema": observationRecordingSchema, "run_id": r.meta.RunID, "index": seg.index,
 		"recv_ms": atMs, "source": feedObservationSourceHLWS, "units": feedObservationUnitsBase,
@@ -405,8 +503,12 @@ func (r *observationRecorder) closeSegment(reason string) {
 		sessions = append(sessions, s)
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i] < sessions[j] })
+	schema := observationSegmentSchema
+	if r.v2() {
+		schema = observationSegmentSchemaV2
+	}
 	m := observationSegmentManifest{
-		Schema:       observationSegmentSchema,
+		Schema:       schema,
 		RunID:        r.meta.RunID,
 		Index:        seg.index,
 		File:         seg.name,
@@ -425,6 +527,9 @@ func (r *observationRecorder) closeSegment(reason string) {
 		Complete:     seg.dropped == 0 && r.writeError == nil,
 		CloseReason:  reason,
 		RecorderVers: Version,
+		TradeFrames:  seg.frames,
+		TradeRecords: seg.trades,
+		Intervals:    seg.ivs,
 	}
 	if err := writeJSONAtomic(filepath.Join(r.dir, seg.name+".manifest.json"), m); err != nil {
 		r.fail(err)
@@ -437,8 +542,30 @@ func (r *observationRecorder) closeSegment(reason string) {
 	}
 }
 
+func (r *observationRecorder) v2() bool {
+	return recorderKindsHaveTrades(r.meta.Kinds)
+}
+
+func (r *observationRecorder) sources() map[string]string {
+	out := make(map[string]string, len(r.meta.Kinds))
+	for _, k := range r.meta.Kinds {
+		out[k] = feedObservationSourceFor(k)
+	}
+	return out
+}
+
 func (r *observationRecorder) writeRunManifest() error {
-	return writeJSONAtomic(filepath.Join(r.dir, "run.manifest.json"), r.manifest)
+	if !r.v2() {
+		return writeJSONAtomic(filepath.Join(r.dir, "run.manifest.json"), r.manifest)
+	}
+	contract := currentTradeContract()
+	m := observationRunManifestV2{
+		Schema: observationRunSchemaV2, RunID: r.manifest.RunID, Kinds: r.meta.Kinds, Sources: r.sources(),
+		TradeContract: &contract, Host: r.manifest.Host, WSURL: r.manifest.WSURL, Coins: r.manifest.Coins,
+		StartedMs: r.manifest.StartedMs, ClosedMs: r.manifest.ClosedMs, Closed: r.manifest.Closed,
+		DroppedTotal: r.manifest.DroppedTotal, RecorderVers: r.manifest.RecorderVers, Segments: r.manifest.Segments,
+	}
+	return writeJSONAtomic(filepath.Join(r.dir, "run.manifest.json"), m)
 }
 
 func writeJSONAtomic(path string, v any) error {
@@ -500,9 +627,43 @@ func parseRecorderCoins(raw string) ([]string, error) {
 	return out, nil
 }
 
+func parseRecorderKinds(raw string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		k := strings.TrimSpace(part)
+		if k == "" {
+			continue
+		}
+		if k != feedObservationOpenInterest && k != feedObservationTradeFlow {
+			return nil, fmt.Errorf("kind %q is not %q or %q", k, feedObservationOpenInterest, feedObservationTradeFlow)
+		}
+		if seen[k] {
+			return nil, fmt.Errorf("kind %q is listed twice", k)
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("--kinds lists no kind")
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func recorderKindsInclude(kinds []string, kind string) bool {
+	for _, k := range kinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
 func runRecordObservations(args []string) int {
 	fs := flag.NewFlagSet("record-observations", flag.ContinueOnError)
-	coinsFlag := fs.String("coins", "", "Comma-separated Hyperliquid perpetual coins to record open interest for (e.g. BTC,ETH)")
+	coinsFlag := fs.String("coins", "", "Comma-separated Hyperliquid perpetual coins to record (e.g. BTC,ETH)")
+	kindsFlag := fs.String("kinds", feedObservationOpenInterest, "Comma-separated observation kinds to record: open_interest, trade_flow")
 	outDir := fs.String("out-dir", "", "Empty directory for the research recording (never a state or config directory)")
 	duration := fs.Duration("duration", 0, "Stop after this long (0 = until SIGINT or SIGTERM)")
 	segment := fs.Duration("segment", observationDefaultSegment, "Rotate to a new hashed segment after this long")
@@ -518,6 +679,11 @@ func runRecordObservations(args []string) int {
 		fmt.Fprintf(os.Stderr, "record-observations: %v\n", err)
 		return 2
 	}
+	kinds, err := parseRecorderKinds(*kindsFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "record-observations: %v\n", err)
+		return 2
+	}
 	if strings.TrimSpace(*outDir) == "" {
 		fmt.Fprintln(os.Stderr, "record-observations: --out-dir is required")
 		return 2
@@ -529,15 +695,20 @@ func runRecordObservations(args []string) int {
 	startedAt := time.Now().UTC()
 	runID := fmt.Sprintf("%s-%d", strings.ReplaceAll(newFeedInstanceID(startedAt), " ", "_"), startedAt.Unix())
 	rec, err := newObservationRecorder(*outDir, observationRecorderMeta{
-		RunID: runID, Coins: coins, Segment: *segment, WSURL: hlFeedWebsocketURL(), StartedAt: startedAt,
+		RunID: runID, Coins: coins, Kinds: kinds, Segment: *segment, WSURL: hlFeedWebsocketURL(), StartedAt: startedAt,
 	}, nil, feedLogf)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "record-observations: %v\n", err)
 		return 1
 	}
-	fmt.Printf("[recorder] run=%s coins=%s out=%s ws=%s source=%s units=%s time_basis=%s cadence_ms=%d segment=%s duration=%s\n",
-		runID, strings.Join(coins, ","), *outDir, hlFeedWebsocketURL(), feedObservationSourceHLWS, feedObservationUnitsBase,
+	fmt.Printf("[recorder] run=%s coins=%s kinds=%s out=%s ws=%s source=%s units=%s time_basis=%s cadence_ms=%d segment=%s duration=%s\n",
+		runID, strings.Join(coins, ","), strings.Join(kinds, ","), *outDir, hlFeedWebsocketURL(), feedObservationSourceHLWS, feedObservationUnitsBase,
 		feedObservationTimeReceipt, feedObservationCadenceMs, *segment, *duration)
+	if recorderKindsInclude(kinds, feedObservationTradeFlow) {
+		c := currentTradeContract()
+		fmt.Printf("[recorder] trade_flow source=%s identity=%s side_evidence=%s interval_ms=%d reorder_grace_ms=%d max_event_gap_ms=%d decimal_scale=%d\n",
+			c.Source, c.Identity, c.SideEvidence, c.IntervalMs, c.ReorderGraceMs, c.MaxEventGapMs, c.DecimalScale)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -559,7 +730,12 @@ func runRecordObservations(args []string) int {
 	}()
 
 	owner := newMarketFeedOwner(nil, feedLogf)
-	owner.trackObservations(coins, observationRecorderWindow.Milliseconds())
+	if recorderKindsInclude(kinds, feedObservationOpenInterest) {
+		owner.trackObservations(coins, observationRecorderWindow.Milliseconds())
+	}
+	if recorderKindsInclude(kinds, feedObservationTradeFlow) {
+		owner.trackTradeFlows(coins, observationRecorderWindow.Milliseconds())
+	}
 	owner.attachRecorder(rec)
 	recCtx, stopRec := context.WithCancel(context.Background())
 	go rec.run(recCtx)
@@ -570,12 +746,21 @@ func runRecordObservations(args []string) int {
 	}()
 	ticker := time.NewTicker(observationHealthEvery)
 	defer ticker.Stop()
+	advance := time.NewTicker(observationAdvanceEvery)
+	defer advance.Stop()
 loop:
 	for {
 		select {
 		case <-ctx.Done():
 			break loop
+		case <-advance.C:
+			owner.AdvanceTradeFlows(time.Now().UTC())
 		case <-ticker.C:
+			for _, rd := range owner.TradeFlowReadiness() {
+				fmt.Printf("[recorder] %s status=%s frames=%d received=%d accepted=%d duplicates=%d conflicts=%d late=%d uncovered=%d rejected=%d finalized=%d invalid=%d covered_ms=%d detail=%q\n",
+					rd.Key.PayloadID(), rd.Status, rd.Stats.Frames, rd.Stats.Received, rd.Stats.Accepted, rd.Stats.Duplicates, rd.Stats.Conflicts,
+					rd.Stats.Late, rd.Stats.Uncovered, rd.Stats.Rejected, rd.Stats.Finalized, rd.Stats.Invalid, rd.CoveredMs, rd.Detail)
+			}
 			for _, rd := range owner.ObservationReadiness() {
 				fmt.Printf("[recorder] %s status=%s samples=%d received=%d accepted=%d refreshed=%d rejected=%d covered_ms=%d detail=%q\n",
 					rd.Key.PayloadID(), rd.Status, rd.Samples, rd.Stats.Received, rd.Stats.Accepted, rd.Stats.Refreshed,

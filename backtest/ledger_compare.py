@@ -1657,6 +1657,9 @@ def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_v
         elif name in market["funding_input_strategies"]:
             row("open_strategy", "observation", open_ref, "refused",
                 f"{name} reads funding as an entry input; frozen funding attaches only as a cost")
+        elif name in market.get("trade_flow_input_strategies", ()):
+            row("open_strategy", "observation", open_ref, "refused",
+                f"{name} reads recorded trade flow, which the frozen ledger comparison does not prepare")
         elif name not in market["registry"]:
             row("open_strategy", "signal_model", open_ref, "refused", f"{name!r} is not in the futures registry")
         else:
@@ -2880,14 +2883,16 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                             market_spec["window"], start, end)
     refusals.extend(market["refusals"])
     market_ctx = {"coin": None, "interval": None, "registry": set(), "funding_input_strategies": set(),
-                  "observation_input_strategies": set()}
+                  "observation_input_strategies": set(), "trade_flow_input_strategies": set()}
     if "dataset" in market:
         from registry_loader import load_registry
-        from run_backtest import FUNDING_COLUMN_STRATEGIES, OBSERVATION_INPUT_STRATEGIES
+        from run_backtest import (FUNDING_COLUMN_STRATEGIES, OBSERVATION_INPUT_STRATEGIES,
+                                  TRADE_FLOW_INPUT_STRATEGIES)
         market_ctx = {"coin": market["dataset"]["coin"], "interval": market["manifest"]["interval"],
                       "registry": set(load_registry("futures").STRATEGY_REGISTRY),
                       "funding_input_strategies": set(FUNDING_COLUMN_STRATEGIES),
-                      "observation_input_strategies": set(OBSERVATION_INPUT_STRATEGIES)}
+                      "observation_input_strategies": set(OBSERVATION_INPUT_STRATEGIES),
+                      "trade_flow_input_strategies": set(TRADE_FLOW_INPUT_STRATEGIES)}
         try:
             import offline_manifest as om
             market_ctx["venue_margin"] = om.venue_margin(market["manifest"], market["dataset"])
