@@ -163,7 +163,7 @@ func bookPerpsCloseWithFillFeeInner(s *StrategyState, symbol string, closePx, fi
 		return false
 	}
 	if closePositionIsCorrupt(pos) {
-		now := tradingNow().UTC()
+		now := strategyBookNow(s)
 		if logger != nil {
 			logger.Warn("%s: refusing to book PnL for corrupt position %s (qty=%.6f avg_cost=%.4f); clearing with zero realized PnL (#1009)", logPrefix, symbol, pos.Quantity, pos.AvgCost)
 		}
@@ -197,13 +197,13 @@ func bookPerpsCloseWithFillFeeInner(s *StrategyState, symbol string, closePx, fi
 		if logger != nil {
 			logger.Warn("%s: close for OID %s already booked — clearing virtual position without a duplicate Trade (#954)", logPrefix, exchangeOrderID)
 		}
-		recordClosedPosition(s, pos, closePx, 0, reason+"_dup_oid", tradingNow().UTC())
+		recordClosedPosition(s, pos, closePx, 0, reason+"_dup_oid", strategyBookNow(s))
 		delete(s.Positions, symbol)
 		clearHLPerpsPositionAlertThrottles(s, symbol)
 		return true
 	}
 
-	now := tradingNow().UTC()
+	now := strategyBookNow(s)
 	qty := pos.Quantity
 	avgCost := pos.AvgCost
 	side := pos.Side
@@ -279,7 +279,7 @@ func bookPerpsPartialCloseWithFillFeeInner(s *StrategyState, symbol string, clos
 		return false
 	}
 
-	now := tradingNow().UTC()
+	now := strategyBookNow(s)
 	qty := closeQty
 	if qty > pos.Quantity {
 		if logger != nil {
@@ -1024,7 +1024,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
-			now := tradingNow().UTC()
+			now := strategyBookNow(s)
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			var closeOID string
 			if useFillFee {
@@ -1123,7 +1123,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 		}
 		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee
-		now := tradingNow().UTC()
+		now := strategyBookNow(s)
 		positionID := newTradePositionID(s.ID, symbol, now)
 		var openOID string
 		if useFillFee {
@@ -1213,7 +1213,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
-			now := tradingNow().UTC()
+			now := strategyBookNow(s)
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			var closeOID string
 			if useFillFee {
@@ -1312,7 +1312,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 		}
 		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee
-		now := tradingNow().UTC()
+		now := strategyBookNow(s)
 		positionID := newTradePositionID(s.ID, symbol, now)
 		var openOID string
 		if useFillFee {

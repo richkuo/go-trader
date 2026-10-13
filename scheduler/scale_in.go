@@ -217,7 +217,7 @@ func applyPerpsScaleInInner(s *StrategyState, sc StrategyConfig, symbol string, 
 		side = "sell"
 	}
 	applyScaleIn(pos, addQty, addPrice)
-	now := tradingNow().UTC()
+	now := strategyBookNow(s)
 	var oid string
 	if useFillFee {
 		oid = fillOID

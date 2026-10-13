@@ -111,6 +111,25 @@ type StrategyState struct {
 	Basket            *basketRuntime   `json:"-"`
 	deferTradePersist bool
 	replayCapture     *[]ReplayDecision
+	bookClock         time.Time
+}
+
+func strategyBookNow(s *StrategyState) time.Time {
+	if s != nil && !s.bookClock.IsZero() {
+		return s.bookClock.UTC()
+	}
+	return tradingNow().UTC()
+}
+
+func withStrategyBookClock(s *StrategyState, now time.Time, fn func()) {
+	if s == nil || now.IsZero() {
+		fn()
+		return
+	}
+	prev := s.bookClock
+	s.bookClock = now.UTC()
+	defer func() { s.bookClock = prev }()
+	fn()
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {

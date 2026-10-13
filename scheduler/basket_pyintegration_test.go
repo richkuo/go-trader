@@ -304,3 +304,47 @@ func TestBasketMemberBatchedNativeCloseBooks(t *testing.T) {
 		t.Fatalf("no close trade was booked: %+v", s.TradeHistory)
 	}
 }
+
+func TestBasketMemberBatchedNativeCloseClearsTheExpiryLifecycle(t *testing.T) {
+	root := basketPyRoot(t)
+	cfg := loadBasketTestConfig(t, func(r map[string]interface{}) {
+		r["paper_sources"] = []interface{}{map[string]interface{}{"id": "alt", "db_file": filepath.Join(t.TempDir(), "alt.db")}}
+		r["strategies"] = append(r["strategies"].([]interface{}), map[string]interface{}{
+			"id": "hl-alt-btc", "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py",
+			"args": []interface{}{"rsi", "BTC", "1h", "--mode=paper"}, "capital": 1000, "paper_source": "alt",
+		})
+		b := basketTestBasket(r)
+		b["holding_horizon_seconds"] = 3600
+		b["max_transition_net_usd"] = 1100
+	})
+	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), nil)
+	env.openMembers(basketTestDeadline())
+	before, _, _ := env.lifecycleRow("hl-bsk-btc")
+	if !before.active() {
+		t.Fatalf("the opened member must hold a lifecycle: %+v", before)
+	}
+	s := env.state.Strategies["hl-bsk-btc"]
+	s.Positions["BTC"].AvgCost = 30000
+	probe := *s.Positions["BTC"]
+	t.Chdir(root)
+	member, _, sc, _ := basketBatchRun(t, cfg, &probe)
+	if !member.BasketMember || member.Signal != -1 || member.CloseFraction != 1 {
+		t.Fatalf("the member's native close must come from the real check: %+v", member)
+	}
+	env.mu.Lock()
+	n, detail := executeHyperliquidResult(sc, s, member, nil, "SELL", 60000, cfg.Regime, cfg, HurstGateDecision{}, &StrategyLogger{stratID: sc.ID, writer: os.Stdout})
+	err := env.store.SavePartition(env.state, partitionFor(sc))
+	env.mu.Unlock()
+	if n == 0 || err != nil {
+		t.Fatalf("the native close did not book and save: %s %v", detail, err)
+	}
+	after, _, _ := env.lifecycleRow("hl-bsk-btc")
+	if after.active() || after.SuppressThroughMs != 0 {
+		t.Fatalf("a native close must clear the lifecycle in its book transaction, with no expiry suppression: %+v", after)
+	}
+	for _, id := range []string{"hl-bsk-avax", "hl-bsk-eth", "hl-bsk-sol"} {
+		if l, _, _ := env.lifecycleRow(id); !l.active() {
+			t.Fatalf("%s lifecycle cleared by another member's close: %+v", id, l)
+		}
+	}
+}

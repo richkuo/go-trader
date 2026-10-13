@@ -1717,15 +1717,19 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 			return err
 		}
 	}
-	basketFull, basketPartial := basketRuntimesForSave(req.Strategies)
-	basketNowMs := time.Now().UnixMilli()
-	for _, rt := range basketFull {
-		if err := sdb.writeBasketTx(tx, rt, true, basketNowMs); err != nil {
+	basketSaves := basketSavesFor(req.Strategies)
+	for _, bs := range basketSaves {
+		next, err := sdb.writeBasketTx(tx, bs.rt, bs.books, bs.rt.auditNowMs())
+		if err != nil {
 			return err
 		}
+		bs.next = next
 	}
-	for _, rt := range basketPartial {
-		if err := sdb.writeBasketTx(tx, rt, false, basketNowMs); err != nil {
+	for i, s := range req.Strategies {
+		if s.Basket != nil {
+			continue
+		}
+		if err := sdb.reconcileStoredBasketLifecycleTx(tx, storageIDs[i], s); err != nil {
 			return err
 		}
 	}
@@ -1843,11 +1847,8 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		s.pendingTradeDiagnostics = nil
 		pruneEntryGuardAfterCommit(s)
 	}
-	for _, rt := range basketFull {
-		markBasketDurable(rt, true)
-	}
-	for _, rt := range basketPartial {
-		markBasketDurable(rt, false)
+	for _, bs := range basketSaves {
+		markBasketDurable(bs.rt, bs.books, bs.next)
 	}
 	for _, f := range flushed {
 		f.strat.TradeHistory[f.index].persisted = true
@@ -2132,6 +2133,20 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 		return err
 	}
 
+	var basketSave *basketSave
+	if s.Basket != nil {
+		if saves := basketSavesFor([]*StrategyState{s}); len(saves) == 1 {
+			basketSave = saves[0]
+			next, err := sdb.writeBasketTx(tx, basketSave.rt, basketSave.books, basketSave.rt.auditNowMs())
+			if err != nil {
+				return err
+			}
+			basketSave.next = next
+		}
+	} else if err := sdb.reconcileStoredBasketLifecycleTx(tx, sid, s); err != nil {
+		return err
+	}
+
 	if err := deletePendingManualActionsByID(tx, ackIDs); err != nil {
 		return err
 	}
@@ -2162,6 +2177,9 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 		s.TradeHistory[f.index].persisted = true
 	}
 	pruneEntryGuardAfterCommit(s)
+	if basketSave != nil {
+		markBasketDurable(basketSave.rt, basketSave.books, basketSave.next)
+	}
 	enqueueFlushedDiagnostics(flushedDiags)
 	return nil
 }

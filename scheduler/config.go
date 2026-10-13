@@ -1052,6 +1052,9 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 			fmt.Printf("[migration] %s\n", line)
 		}
 	}
+	if rawErrs := validateBasketRawFields(data); len(rawErrs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(rawErrs, "\n  "))
+	}
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)

@@ -412,6 +412,7 @@ func main() {
 	}
 
 	var basketCoord *basketCoordinator
+	basketExpiryFeedState := &basketExpiryFeed{}
 	if !readOnlyReport && len(cfg.Baskets) > 0 {
 		runtimes, basketErr := store.LoadBaskets(state, cfg)
 		if basketErr == nil {
@@ -953,7 +954,7 @@ func main() {
 		dueStrategies = orderReplaySourcesBeforeMirrors(dueStrategies)
 
 		basketDue := basketCoord.dueDeadlines(time.Now())
-		basketWork := len(basketDue) > 0 || basketCoord.rankReady()
+		basketWork := len(basketDue) > 0 || basketCoord.rankReady() || basketCoord.expiryWork(time.Now())
 
 		if len(dueStrategies) == 0 && !basketWork {
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
@@ -1162,6 +1163,12 @@ func main() {
 		}
 
 		runPaperFundingCycle(shutdownReadOnlyCtx, state, cfg, store, &mu, websocketFeed || sharedFeed, feedCtx.Snapshot, paperFundingMarks, notifier)
+
+		if sharedFeed && feedCtx.Snapshot != nil {
+			if coins := basketCoord.expiryMarkCoins(time.Now()); len(coins) > 0 && snapshotHasFreshMids(feedCtx.Snapshot, coins) {
+				basketCoord.stepExpiry(basketCycleInputs{Now: time.Now(), Snapshot: feedCtx.Snapshot, SaveBlocked: allPartitionsSaveBlocked(store, cfg), Once: *once})
+			}
+		}
 
 		basketSnapshots := make(map[int64]*marketSnapshot)
 		basketSnapshotFor := func(rt *basketRuntime, deadline time.Time) *marketSnapshot {
@@ -2915,6 +2922,30 @@ func main() {
 						}
 					}
 					basketIn.Snapshot = basketMarkSnapshot()
+				}
+				if sharedFeed && sharedClient != nil {
+					if coins := basketCoord.expiryMarkCoins(time.Now()); len(coins) > 0 {
+						basketExpiryFeedState.client, basketExpiryFeedState.sched = sharedClient, sharedFeedScheduleFor(cfg, sharedClient)
+						got := basketExpiryFeedState.marks(shutdownReadOnlyCtx, time.Now(), coins, basketIn.Snapshot, feedCtx.SharedKey)
+						if got.Report != nil {
+							fmt.Println(sharedFeedAuditLine(*got.Report, 0, feedEffectiveCadences(cfg, intervals)))
+							for _, alert := range got.Report.Alerts {
+								fmt.Println("[feed] " + alert)
+								if notifier != nil && notifier.HasBackends() {
+									notifier.SendToAllChannels(alert)
+									notifier.SendOwnerDM(alert)
+								}
+							}
+						}
+						if got.Detail != "" {
+							fmt.Printf("[basket] holding-horizon marks for %s: %s\n", strings.Join(coins, ", "), got.Detail)
+						}
+						if got.Snapshot != nil {
+							basketIn.Snapshot = got.Snapshot
+						}
+						basketIn.MarksRetryAt = got.RetryAt
+						basketIn.Now = time.Now()
+					}
 				}
 				basketCoord.step(basketIn)
 			}
