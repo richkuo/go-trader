@@ -2,6 +2,7 @@
 import sys
 import os
 import json
+import importlib
 import itertools
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import timedelta
@@ -91,6 +92,8 @@ _OPEN_STRATEGIES = os.path.join(os.path.dirname(__file__), "..", "shared_strateg
 
 UNSEEDED_ENTRY_ONLY_STRATEGIES = frozenset({"calendar_conditioned_entry"})
 
+RECURSION_HISTORY_STRATEGIES = frozenset({"trix_momentum", "true_strength_index"})
+
 
 def strategy_warmup_bars(strategy_name: str, param_grid: List[dict], param_ranges: Dict[str, list]) -> int:
     if strategy_name == "calendar_conditioned_entry":
@@ -98,7 +101,15 @@ def strategy_warmup_bars(strategy_name: str, param_grid: List[dict], param_range
             sys.path.insert(0, _OPEN_STRATEGIES)
         from calendar_conditioned_entry import required_history_bars
         return max(required_history_bars(p) for p in param_grid)
-    return max_indicator_lookback(param_ranges)
+    lookback = max_indicator_lookback(param_ranges)
+    if strategy_name in RECURSION_HISTORY_STRATEGIES:
+        if _OPEN_STRATEGIES not in sys.path:
+            sys.path.insert(0, _OPEN_STRATEGIES)
+        module = importlib.import_module(strategy_name)
+        default = module.DEFAULT_PARAMS["recursion_length"]
+        return max([lookback] + [module.required_history_bars(p.get("recursion_length", default))
+                                 for p in param_grid])
+    return lookback
 
 HORIZON_BOUND_TIME_STOP_PARAMS = {"calendar_conditioned_entry": "holding_bars"}
 
