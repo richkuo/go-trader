@@ -89,7 +89,7 @@ ATR_CLOSE_WARMUP = 14
 
 _OPEN_STRATEGIES = os.path.join(os.path.dirname(__file__), "..", "shared_strategies", "open")
 
-UNSEEDED_ENTRY_ONLY_STRATEGIES = frozenset({"calendar_conditioned_entry"})
+UNSEEDED_ENTRY_ONLY_STRATEGIES = frozenset({"calendar_conditioned_entry", "elder_force_pullback"})
 
 
 def strategy_warmup_bars(strategy_name: str, param_grid: List[dict], param_ranges: Dict[str, list]) -> int:
@@ -98,6 +98,15 @@ def strategy_warmup_bars(strategy_name: str, param_grid: List[dict], param_range
             sys.path.insert(0, _OPEN_STRATEGIES)
         from calendar_conditioned_entry import required_history_bars
         return max(required_history_bars(p) for p in param_grid)
+    if strategy_name == "elder_force_pullback":
+        if _OPEN_STRATEGIES not in sys.path:
+            sys.path.insert(0, _OPEN_STRATEGIES)
+        from elder_force_pullback import DEFAULT_PARAMS, required_history_bars
+        history = max(
+            required_history_bars(merged["trend_period"], merged["slope_span"], merged["recursion_length"])
+            for merged in ({**DEFAULT_PARAMS, **p} for p in param_grid)
+        )
+        return max(history, max_indicator_lookback(param_ranges))
     return max_indicator_lookback(param_ranges)
 
 HORIZON_BOUND_TIME_STOP_PARAMS = {"calendar_conditioned_entry": "holding_bars"}
@@ -830,6 +839,13 @@ DEFAULT_PARAM_RANGES = {
         "recursion_length": [48, 60, 80],
         "oversold": [-50.0, -40.0, -30.0],
         "overbought": [30.0, 40.0, 50.0],
+    },
+    "elder_force_pullback": {
+        "force_period": [8, 13],
+        "trend_period": [30, 50, 80],
+        "slope_span": [3, 5, 10],
+        "recursion_length": [150, 180, 197],
+        "volume_weighting": [1],
     },
     "klinger_divergence": {
         "fast_period": [21, 34],

@@ -68,6 +68,7 @@ from camarilla_pivot_reversal import camarilla_pivot_reversal_core, validate_cam
 from mass_index_reversal import mass_index_reversal_core, mir_param_validator
 from calendar_conditioned_entry import calendar_conditioned_entry_core, calendar_param_validator
 from stochastic_momentum_index import smi_param_validator, stochastic_momentum_index_core
+from elder_force_pullback import efp_param_validator, elder_force_pullback_core
 from klinger_divergence import klinger_divergence_core, klinger_param_validator
 
 
@@ -2120,6 +2121,40 @@ def calendar_conditioned_entry_strategy(df: pd.DataFrame, training_bars: int = 4
 
 
 @register(
+    "elder_force_pullback",
+    "RESEARCH, no-edge (#1668) \u2014 Elder Force Index pullback: raw force is the close minus the previous close, multiplied by the candle volume (volume_weighting 1) or by one (volume_weighting 0, the ablation). The smoothed force at every bar is one exponential recursion with weight 2 / (force_period + 1) over exactly recursion_length raw-force values ending at that bar, seeded with the oldest of them, so each value reads only the trailing recursion_length + 1 closes. Uptrend: close strictly above the trend_period close SMA and that SMA strictly above its value slope_span bars earlier; downtrend reverses both. Long when the smoothed force crosses strictly from below zero on the preceding candle to above zero on the current candle while the uptrend holds on both candles; short is the mirror in a downtrend. Exact zero never triggers, and both crossing candles need positive supplied volume in both variants. recursion_length must be at least 10 x force_period and at most 197, and a decision needs max(recursion_length + 2, trend_period + slope_span + 1) clean rows (at most 199) with declared bar cadence; bad candles, timestamp defects, cadence gaps and derived overflow hold with a reason. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {
+        "force_period": 13,
+        "trend_period": 50,
+        "slope_span": 5,
+        "recursion_length": 150,
+        "volume_weighting": 1,
+    },
+    platforms=("futures",),
+    constraints=[
+        "force_period >= 2",
+        "trend_period >= 2",
+        "slope_span >= 1",
+        "recursion_length >= 20",
+        "recursion_length <= 197",
+        "volume_weighting >= 0",
+        "volume_weighting <= 1",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/elder_force_pullback_1668/REPORT.md",
+    short_entries=True,
+    param_validator=efp_param_validator,
+)
+def elder_force_pullback_strategy(df: pd.DataFrame, force_period: int = 13, trend_period: int = 50,
+                                  slope_span: int = 5, recursion_length: int = 150,
+                                  volume_weighting: int = 1) -> pd.DataFrame:
+    return elder_force_pullback_core(
+        df, force_period=force_period, trend_period=trend_period, slope_span=slope_span,
+        recursion_length=recursion_length, volume_weighting=volume_weighting)
+
+
+@register(
     "klinger_divergence",
     "RESEARCH, no-edge (#1662) \u2014 Klinger Oscillator divergence entries: every oscillator endpoint t is replayed from exactly replay_bars + 1 trailing closed bars (rows t-replay_bars .. t); the replay seeds trend -1, cm = dm (high - low) and the seed volume force, then trend is +1 when high + low + close exceeds the previous sum (else -1), cm adds dm while the trend repeats and restarts at previous dm + dm on a change, volume force = volume * 2 * (dm / cm - 1) * trend * 100, the oscillator is its fast_period EMA minus its slow_period EMA (both seeded at the seed force) and the signal line is a signal_period EMA of the oscillator (seeded at the seed oscillator). A strict price pivot (left_span/right_span) is usable once its right-side bars close; each newly confirmed low pairs with the nearest earlier confirmed low min_separation..max_separation bars back, and a strictly lower low with a strictly higher oscillator arms a long (the mirror high arms a short). The setup enters once on the first strict oscillator cross of its signal line in its direction on bars confirmation+1 .. confirmation+setup_expiry; a newer same-side pivot replaces it. divergence_test=false is the signal-cross-only ablation. Every decision reads exactly replay_bars + left_span + max_separation + right_span + setup_expiry + 2 bars (at most 200); bad prices or volume, timestamp defects, cadence gaps, zero cm and a check-time frame whose last bar is not the latest closed bar hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {
@@ -2605,6 +2640,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "mass_index_reversal",
         "calendar_conditioned_entry",
         "stochastic_momentum_index",
+        "elder_force_pullback",
         "klinger_divergence",
         "hold",
     ],

@@ -1,0 +1,106 @@
+{
+  "issue": 1668,
+  "name": "elder_force_pullback",
+  "formula": {
+    "raw_force": "F(t) = (close[t] - close[t-1]) * w(t), with w(t) = volume[t] when volume_weighting = 1 and w(t) = 1 when volume_weighting = 0 (the ablation)",
+    "fixed_length_recursion": "for every timestamp t: e = F(t - L + 1); for k = t - L + 2 .. t in order: e = alpha * F(k) + (1 - alpha) * e, with alpha = 2 / (force_period + 1) and L = recursion_length. EF(t) = e. Every bar restarts from its own seed, so EF(t) reads only closes[t-L .. t] (L + 1 closes)",
+    "difference_from_unrestricted_ema": "an unrestricted EMA starts once at the first raw-force value of the frame and carries all older history, so its value depends on where the frame starts; the fixed-length value forgets everything older than L raw-force values and is the same in any frame that contains them",
+    "trend_sma": "SMA(t) = mean(close[t - trend_period + 1 .. t]), summed in index order from each endpoint's own window",
+    "uptrend": "U(t) = close[t] > SMA(t) and SMA(t) > SMA(t - slope_span) (both strict)",
+    "downtrend": "D(t) = close[t] < SMA(t) and SMA(t) < SMA(t - slope_span) (both strict)",
+    "long_entry": "EF(t-1) < 0 and EF(t) > 0 and U(t-1) and U(t) and volume[t-1] > 0 and volume[t] > 0",
+    "short_entry": "EF(t-1) > 0 and EF(t) < 0 and D(t-1) and D(t) and volume[t-1] > 0 and volume[t] > 0",
+    "zero": "EF exactly zero on either crossing candle never triggers; constant closes give zero force",
+    "volume_eligibility": "both crossing candles need positive supplied volume in both variants, so eligibility is identical; an older zero-volume candle contributes zero raw force when weighted and the close change in the ablation",
+    "required_history": "max(L + 2, trend_period + slope_span + 1) rows: a crossing at t reads EF(t-1), which needs closes[t-1-L .. t-1]; the trend test at t and t-1 needs SMA(t-1-slope_span). 152 rows at the seed parameters, at most 199",
+    "validity": "a decision is made only when every row of its own required span has finite open, high, low, close and volume, positive prices, low <= open, close <= high, volume >= 0, a timestamp, no received-order defect, and every internal timestamp edge equals the declared bar cadence; EF, SMA and their lagged values must be finite (overflow holds); anything else holds with a reason code",
+    "cadence": "read from the closed_bar frame attributes bar_interval_ms and bar_timestamp_kind; a frame without a declared cadence holds every bar",
+    "volume_units": "supplied venue volume (Hyperliquid candleSnapshot v, base-asset units); aggressor direction is never inferred from candle colour"
+  },
+  "params": {"force_period": 13, "trend_period": 50, "slope_span": 5, "recursion_length": 150, "volume_weighting": 1},
+  "parameter_domains": {
+    "force_period": {"type": "integer", "min": 2, "max": 19},
+    "trend_period": {"type": "integer", "min": 2, "max": 197},
+    "slope_span": {"type": "integer", "min": 1, "max": 196},
+    "recursion_length": {"type": "integer", "min": 20, "max": 197, "rule": "recursion_length >= 10 x force_period"},
+    "volume_weighting": {"type": "integer", "values": [0, 1]},
+    "required_history": {"max": 199, "rule": "max(recursion_length + 2, trend_period + slope_span + 1)"}
+  },
+  "optimizer_grid": {
+    "force_period": [8, 13],
+    "trend_period": [30, 50, 80],
+    "slope_span": [3, 5, 10],
+    "recursion_length": [150, 180, 197],
+    "volume_weighting": [1]
+  },
+  "manifest": "backtest/candidates/elder_force_pullback_1668_manifest.json",
+  "selection_window": "train",
+  "held_out_window": "test",
+  "capital": 1000.0,
+  "close_strategies": [{"name": "tiered_tp_pct", "params": {"tp_tiers": [
+    {"profit_pct": 0.01, "close_fraction": 0.25},
+    {"profit_pct": 0.02, "close_fraction": 0.5},
+    {"profit_pct": 0.03, "close_fraction": 0.75},
+    {"profit_pct": 0.04, "close_fraction": 1.0}
+  ]}}],
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "strict",
+  "intrabar_resolution": "ohlc_walk",
+  "funding": "charge",
+  "arms": {
+    "elder_force_pullback": {"strategy": "elder_force_pullback", "direction": "both", "selection": "grid"},
+    "elder_force_pullback_vw0": {"strategy": "elder_force_pullback", "direction": "both", "selection": "paired",
+                                 "paired_with": "elder_force_pullback", "override": {"volume_weighting": 0},
+                                 "note": "volume ablation: the candidate's selected parameters with volume_weighting 0; never selected separately"},
+    "momentum_pro": {"strategy": "momentum_pro", "direction": "both", "selection": "grid", "note": "M1 incumbent; short_entries=True"},
+    "elder_ray_pullback": {"strategy": "elder_ray_pullback", "direction": "both", "selection": "grid", "note": "landed #1648 comparator, formula unchanged"}
+  },
+  "incumbent_contract": {
+    "direction": "both",
+    "close_strategies": [{"name": "tiered_tp_pct", "params": {"tp_tiers": [
+      {"profit_pct": 0.01, "close_fraction": 0.25},
+      {"profit_pct": 0.02, "close_fraction": 0.5},
+      {"profit_pct": 0.03, "close_fraction": 0.75},
+      {"profit_pct": 0.04, "close_fraction": 1.0}
+    ]}}],
+    "stop_loss_atr_mult": 1.0,
+    "comparison_mode": "strict"
+  },
+  "selection": {
+    "eligible": "complete candle and funding coverage, every dataset scored, no liquidated leg, at least min_train_independent_positions independent positions",
+    "min_train_independent_positions": 10,
+    "order": ["max mean net Sharpe", "max mean drawdown-adjusted return", "earliest grid order"]
+  },
+  "held_out": {
+    "min_independent_positions_per_arm": 30,
+    "candidate_requires_both_directions": true
+  },
+  "numerical": {
+    "reference_tolerance": {"abs": 1e-12, "rel": 1e-12, "role": "fixed-length force and trend SMA against an independent scalar reference"},
+    "zero_crossing_and_trend_epsilon": 0.0,
+    "sensitivity": {
+      "tolerance": 1e-8,
+      "normalized_difference": "abs(EF_fixed(t) - EF_unrestricted(t)) / max(1, max abs raw force over the rows the unrestricted average has read up to t)",
+      "unrestricted": "one EMA seeded at the first raw-force value of the full frozen series and updated on every later row",
+      "role": "descriptive; reports the largest normalized and absolute differences and every changed sign or entry decision; it does not change the finite signal contract"
+    }
+  },
+  "uncertainty": {
+    "method": "percentile bootstrap of the mean net PnL per closed position, pooled over datasets",
+    "resamples": 2000,
+    "rng_seed": 1668,
+    "interval": [0.05, 0.95],
+    "role": "descriptive only; positions overlap in time and are not independent, so the interval is optimistic and never a verdict input"
+  },
+  "cost_runs": {
+    "base": {"cost_multiplier": 1.0, "meaning": "manifest fees, per-coin half spread and slippage"},
+    "stress": {"cost_multiplier": 2.0, "meaning": "manifest fees unchanged, half spread and slippage doubled"}
+  },
+  "verdict": {
+    "inconclusive": "any coverage refusal, funding-incomplete leg, no eligible training selection for a selected arm, or a held-out sample gate that fails",
+    "pass": "complete coverage, every sample gate met, candidate net PnL > 0 at base and stress cost, candidate base mean Sharpe and base mean drawdown-adjusted return both strictly above each comparator (volume ablation, momentum_pro, elder_ray_pullback)",
+    "fail": "a complete study that misses any pass condition",
+    "edge_source": {"pass": "unvalidated", "fail": "study_fail", "inconclusive": "study_inconclusive"},
+    "edge_status": "no_edge for every outcome; a pass never approves live edge"
+  }
+}

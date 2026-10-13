@@ -111,6 +111,30 @@ def atr_sma(
     )
 
 
+def fixed_length_ema(values, period: int, length: int) -> np.ndarray:
+    if isinstance(period, bool) or isinstance(length, bool):
+        raise ValueError("fixed_length_ema: period and length must be integers")
+    period = int(period)
+    length = int(length)
+    if period < 1 or length < 1:
+        raise ValueError(f"fixed_length_ema: period and length must be >= 1, got {period} and {length}")
+    arr = np.asarray(values, dtype="float64")
+    n = len(arr)
+    out = np.full(n, np.nan)
+    if n < length:
+        return out
+    alpha = 2.0 / (period + 1.0)
+    keep = 1.0 - alpha
+    ends = np.arange(length - 1, n)
+    start = ends - (length - 1)
+    with np.errstate(over="ignore", invalid="ignore"):
+        acc = arr[start].copy()
+        for k in range(1, length):
+            acc = alpha * arr[start + k] + keep * acc
+    out[ends] = acc
+    return out
+
+
 HURST_DFA_MIN_POINTS = 100
 _HURST_DFA_MIN_SCALE = 8
 _HURST_DFA_NUM_SCALES = 12
