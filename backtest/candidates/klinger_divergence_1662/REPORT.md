@@ -2709,7 +2709,7 @@ Every input row and every evaluator value of the selected candidate parameters, 
 - `backtest/candidates/klinger_divergence_1662/run_study.py` `ff480675ddf7cf5a27242dba724bf3a9f43fecbbcc2d8912947df13dd247c824`
 - `backtest/eval_windows.py` `b32d5fbca2b241c25e014890347866f4533c0640318e4ddf34485f0b87fb3f9e`
 - `backtest/offline_manifest.py` `09cf40f4847afa0226b54da3ef495059112470f8e9479cf2b66e7c9c274918a8`
-- `backtest/optimizer.py` `2eb6b7fdc379c32060488d0bcc397f680284da3ca2496104812ac80d7c790b8a`
+- `backtest/optimizer.py` `230e1dc4815b4932ef40ef7b36b684b0ebae3cd0bcf377bee9e227647c07f408`
 - `backtest/parity_diff.py` `f4bd121ebd767a977c120ff2ce5b5b1742b56764892f706981bc5b2c6978ff64`
 - `shared_scripts/check_hyperliquid.py` `f1b63448c5608a2da6fdc2e4e91b5651e4427f2380dc4279d1c179b1bf69a0d8`
 - `shared_strategies/close/tiered_tp_pct.py` `f6a480628c37f0da329336aa5efaeacd3dced5fe73622ccfc4ee47a16e07daa6`
