@@ -24,7 +24,7 @@ from closed_bar import (
     declare_frame_cadence,
 )
 from eval_windows import expand_sweep
-from optimizer import DEFAULT_PARAM_RANGES
+from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid, max_indicator_lookback, strategy_warmup_bars
 from parity_diff import ParityConfig, compute_parity_frame, summarize
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -183,6 +183,18 @@ def test_registration_is_futures_only_bidirectional_no_edge_hidden_and_seeded():
         fut._registry.validate_params(NAME, params)
     assert max(_support(p) for _, p in combos) == 188 and _support(DEFAULTS) == 172
 
+
+def test_walk_forward_warmup_covers_the_largest_support_of_the_grid():
+    ranges = DEFAULT_PARAM_RANGES[NAME]
+    grid = generate_param_grid(ranges)
+    assert strategy_warmup_bars(NAME, grid, ranges) == max(_support(dict(DEFAULTS, **p)) for p in grid) == 188
+    one = {"replay_bars": [96]}
+    warmup = strategy_warmup_bars(NAME, generate_param_grid(one), one)
+    assert warmup == _support(dict(DEFAULTS, replay_bars=96)) == 156
+    assert warmup >= max_indicator_lookback(one)
+    for other in ("elder_force_pullback", "true_strength_index"):
+        assert strategy_warmup_bars(other, generate_param_grid(DEFAULT_PARAM_RANGES[other]),
+                                    DEFAULT_PARAM_RANGES[other]) == 199
 
 def test_hand_calculated_rising_falling_equal_and_trend_change_recurrences():
     p = dict(TINY)
