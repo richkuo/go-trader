@@ -220,13 +220,17 @@ def verify_recording(manifest: dict) -> dict:
         if committed["intervals_sha256"] != rebuilt["intervals_sha256"]:
             raise om.ManifestError(f"{ds['key']}: the committed trade-flow series differs from the raw recording")
         reasons = {}
+        events = []
         for iv in rebuilt["intervals"]:
             if iv["status"] == "invalid" or iv["invalid_ms"] is not None:
                 reasons[iv["reason"]] = reasons.get(iv["reason"], 0) + 1
+                events.append({"start_ms": iv["start_ms"], "status_at_finalize": iv["status"], "reason": iv["reason"],
+                               "finalized_ms": iv["finalized_ms"], "invalid_ms": iv["invalid_ms"]})
         out["series"][ds["coin"]] = {"intervals": len(rebuilt["intervals"]), "stats": rebuilt["stats"],
                                      "latency_ms": rebuilt["latency_ms"],
                                      "intervals_sha256": rebuilt["intervals_sha256"],
-                                     "invalid_reasons": dict(sorted(reasons.items()))}
+                                     "invalid_reasons": dict(sorted(reasons.items())),
+                                     "invalid_intervals": events}
     return out
 
 
@@ -649,6 +653,11 @@ def render(result: dict) -> str:
         lines.append(f"| {coin} | {sr['intervals']} | {st['accepted']} | {st['duplicates']} | {st['conflicts']} | "
                      f"{st['late']} | {st['uncovered']} | {st['rejected']} | {st['invalid']} | "
                      f"{lat['p50']}/{lat['p99']}/{lat['max']} | {r['max_frame_silence_ms'].get(coin)} | {reasons} |")
+    lines += ["", "Every invalid or revoked minute, with the time it was detected:", "",
+              "| Coin | Minute | Status when final | Reason | Detected |", "|---|---|---|---|---|"]
+    for coin, sr in sorted(r["series"].items()):
+        for ev in sr["invalid_intervals"]:
+            lines.append(f"| {coin} | {_ts(ev['start_ms'])} | {ev['status_at_finalize']} | {ev['reason']} | {_ts(ev['invalid_ms'])} |")
     lines += ["", "## Completeness against the venue 1m candles", "",
               "| Coin | Complete intervals | Compared | Volume and tally match | Volume only | Tally only | Neither | Match share |",
               "|---|---|---|---|---|---|---|---|"]
@@ -685,14 +694,16 @@ def render(result: dict) -> str:
         "| Window | Dataset | Scored bars | Flow-usable bars | Share | Reasons |",
         "|---|---|---|---|---|---|",
     ]
-    for w, per in result["flow_share"].items():
+    for w in (SELECTION_WINDOW, HELD_OUT_WINDOW):
+        per = result["flow_share"][w]
         for ds, sh in sorted(per.items()):
             reasons = ", ".join(f"{k} {n}" for k, n in sorted(sh["reasons"].items()))
             lines.append(f"| {w} | {ds} | {sh['bars']} | {sh['flow_available_bars']} | {_fmt(sh['share'], 3)} | {reasons} |")
     lines += ["", "## Held-out comparison", "",
               "| Arm | Cost | Positions (L/S) | Net $ | Fees $ | Funding $ | Mean ret % | Mean DDadj | Worst DD % | Turnover | Top coin share | Overlap share |",
               "|---|---|---|---|---|---|---|---|---|---|---|---|"]
-    for name, h in result["held_out"].items():
+    for name in (CANDIDATE, BASELINE):
+        h = result["held_out"][name]
         for label in ("base", "stress"):
             sm = h[label]
             if not sm.get("datasets"):
@@ -705,7 +716,8 @@ def render(result: dict) -> str:
                          f"{_fmt(sm['same_side_cross_asset_overlap_share'])} |")
     lines += ["", "## Train window (selected params)", "",
               "| Arm | Positions (L/S) | Net $ | Mean DDadj |", "|---|---|---|---|"]
-    for name, sm in result["train_selected"].items():
+    for name in (CANDIDATE, BASELINE):
+        sm = result["train_selected"][name]
         if not sm.get("datasets"):
             lines.append(f"| `{name}` | 0 | - | - |")
             continue

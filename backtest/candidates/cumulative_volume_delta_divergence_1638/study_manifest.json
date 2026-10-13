@@ -35,11 +35,11 @@
   "venue_reference": {
     "meta": {
       "path": "data/venue_meta.json",
-      "sha256": ""
+      "sha256": "458d89887417a477a93db9c93607de5f64b8813d88013e0f4883fc06d6c35249"
     },
     "l2_snapshot": {
       "path": "data/venue_l2_snapshot.json",
-      "sha256": ""
+      "sha256": "2d94003990daf2c46641085997a62e3751b6775ce0a8464684d3734400978258"
     },
     "documents": [
       {
@@ -91,36 +91,36 @@
       "coin": "BTC",
       "symbol": "BTC/USDT",
       "size_decimals": 5,
-      "half_spread_bps": 0.0,
+      "half_spread_bps": 0.0599,
       "candles": {
         "path": "data/BTC_5m_candles.csv.gz",
-        "sha256": ""
+        "sha256": "6101169d1e889ec9b29599d28b68a5e0e9e6c40898edb9ca64a4aaed5bd4fca9"
       },
       "funding": {
         "path": "data/BTC_funding.csv.gz",
-        "sha256": ""
+        "sha256": "7e33c607019a71741de58ecc2ded75646d2f0ddef2a2076a230ca6052e551eee"
       },
       "trade_flow": {
         "path": "data/BTC_trade_flow.json.gz",
-        "sha256": ""
+        "sha256": "b3aa235b8ca7ee89a49e14c8aa1dc8cf6578faf5b47beba43d8c6172304aa321"
       }
     },
     {
       "coin": "ETH",
       "symbol": "ETH/USDT",
       "size_decimals": 4,
-      "half_spread_bps": 0.0,
+      "half_spread_bps": 0.1984,
       "candles": {
         "path": "data/ETH_5m_candles.csv.gz",
-        "sha256": ""
+        "sha256": "f8afebc5ca7df70bae8dae52490ea633fc7c239b437e49a9fbd3e6684f2d38c3"
       },
       "funding": {
         "path": "data/ETH_funding.csv.gz",
-        "sha256": ""
+        "sha256": "2263c6ad16ea898e90e64d031975a055530c803236dd7b4f36e6a297d983edcc"
       },
       "trade_flow": {
         "path": "data/ETH_trade_flow.json.gz",
-        "sha256": ""
+        "sha256": "bd0e9c894e3cbce656d1d4e28f9dce78566f56e4b1bea798759845e9c0fcccc9"
       }
     }
   ],
@@ -131,13 +131,32 @@
       {
         "coin": "BTC",
         "path": "data/BTC_1m_candles.json.gz",
-        "sha256": ""
+        "sha256": "f272baacade6316208de90c7e2c0dfce9580cc3357ddbcd49a04f8981ed81460"
       },
       {
         "coin": "ETH",
         "path": "data/ETH_1m_candles.json.gz",
-        "sha256": ""
+        "sha256": "368b4eb73ab1f97d257cf920bd2773871891c38c1226126d3d84537a29a2f252"
       }
     ]
-  }
+  },
+  "recording": {
+    "path": "data/recording/run.manifest.json",
+    "sha256": "6f730262359dc7eeb176424b79df54da55d9c0081df1527ba0f9987eba769f20",
+    "run_id": "MacBookPro.hitronhub.home-93858-1791858355712-1791858355"
+  },
+  "side_evidence": [
+    {
+      "path": "data/side_evidence/side_evidence_segment-00002.json",
+      "sha256": "b916ed842f23e8c4b0591ed325a82b60f982e99a584de0afced35af22c4372d3"
+    },
+    {
+      "path": "data/side_evidence/side_evidence_segment-00008.json",
+      "sha256": "4b4ee2ee7293acd8e7f870bb9057731aac58174f394be686e2406fd2344b7520"
+    },
+    {
+      "path": "data/side_evidence/side_evidence_segment-00013.json",
+      "sha256": "02daf12e55bc0d935724be7fd9fe9e40541299ed8f800b0a5f60fd1c90acbe7d"
+    }
+  ]
 }

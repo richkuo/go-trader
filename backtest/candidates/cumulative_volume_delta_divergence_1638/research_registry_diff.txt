@@ -1,4 +1,5 @@
-research lookup before: 74 after: 75
+base: origin/main 7679218d27eca6a158e0dca1e699c128b1912e95 (before) against this branch (after); research lookup = build_registry('futures', include_hidden=True)
+research lookup before: 77 after: 78
 added: ['cumulative_volume_delta_divergence'] removed: []
 changed existing: []
-candidate: {"default_params": {"delta_confirmation": true, "delta_threshold": 0.05, "expected_interval_ms": 300000, "left_span": 3, "max_separation": 36, "min_separation": 3, "right_span": 3, "session_hours": 4, "setup_expiry": 6}, "edge_ref": "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md", "edge_source": "unvalidated", "edge_status": "no_edge", "production_refused": true}
+candidate: {"default_params": {"delta_confirmation": true, "delta_threshold": 0.05, "expected_interval_ms": 300000, "left_span": 3, "max_separation": 36, "min_separation": 3, "right_span": 3, "session_hours": 4, "setup_expiry": 6}, "edge_ref": "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md", "edge_source": "study_inconclusive", "edge_status": "no_edge", "production_refused": true}

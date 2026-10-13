@@ -553,12 +553,21 @@ def _singleton_grid(reg, name):
     return {k: [v[0]] for k, v in ranges.items()}
 
 
+def _singleton_grid_values(reg, name):
+    return {k: v[0] for k, v in _singleton_grid(reg, name).items()}
+
+
 def test_every_registered_short_entry_strategy_follows_the_engine_contract(monkeypatch):
     from optimizer import DEFAULT_PARAM_RANGES
     from registry_loader import load_registry
     reg = load_registry("futures")
+    from run_backtest import TRADE_FLOW_INPUT_STRATEGIES
     names = sorted(n for n in reg._registry.short_entry_strategies() if n in reg.STRATEGY_REGISTRY)
     assert set(names) <= set(DEFAULT_PARAM_RANGES)
+    for name in sorted(TRADE_FLOW_INPUT_STRATEGIES):
+        with pytest.raises(ValueError, match="cannot fit one"):
+            reg.validate_params(name, {**_singleton_grid_values(reg, name), "expected_interval_ms": 3_600_000})
+    names = [n for n in names if n not in TRADE_FLOW_INPUT_STRATEGIES]
     assert DEFAULT_PARAM_RANGES["camarilla_pivot_reversal"] == {}
     representatives = {"stochastic_momentum_index", "mass_index_reversal", "camarilla_pivot_reversal",
                        "trix_momentum", "elder_ray_pullback", "schaff_trend_cycle"}

@@ -1,0 +1,6111 @@
+{
+ "collected_at_ms": 1791871993709,
+ "endpoint": "https://api.hyperliquid.xyz/info",
+ "evidence_version": "hyperliquid-trades-side-aggressor/1638-v1",
+ "rule": "side B means the buyer (users[0]) crossed the book as taker and side A means the seller (users[1]) did; verified when every identified taker fill agrees and at least 30 trades identify a taker",
+ "schema": "cvd_1638_side_evidence/v1",
+ "segment": "segment-00002.jsonl",
+ "summary": {
+  "both_fills_found": 65,
+  "buyer_is_users0": 75,
+  "fill_content_mismatch": 0,
+  "sampled": 80,
+  "seller_is_users1": 70,
+  "side_differs_from_taker": 0,
+  "side_equals_taker": 80,
+  "taker_identified": 80
+ },
+ "trades": [
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": false,
+    "buyer_side_is_B": false,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791861959068,
+      "startTime": 1791861957068,
+      "type": "userFillsByTime",
+      "user": "0xd80adf681abe30a3d644db1daae9abaa2d25a895"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "buyer",
+     "user": "0xd80adf681abe30a3d644db1daae9abaa2d25a895"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+       "px": "82879.0",
+       "side": "A",
+       "sz": "0.002",
+       "tid": 411177550623644,
+       "time": 1791861958068
+      }
+     ],
+     "request": {
+      "endTime": 1791861959068,
+      "startTime": 1791861957068,
+      "type": "userFillsByTime",
+      "user": "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+     },
+     "response_fills": 2,
+     "response_sha256": "adcab53fd7ff34f11f315249a14e33e5af69d0d632c1c6f6f1188360b54f7ed8",
+     "role": "seller",
+     "user": "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+    }
+   ],
+   "recv_ms": 1791861958338,
+   "session": 1,
+   "tid": 411177550623644,
+   "time": 1791861958068,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "px": "82879.0",
+    "side": "B",
+    "sz": "0.002",
+    "tid": 411177550623644,
+    "time": 1791861958068,
+    "users": [
+     "0xd80adf681abe30a3d644db1daae9abaa2d25a895",
+     "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xa2e7833e0fcbec79a46104467161cc0202380023aacf0b4b46b02e90cecfc664",
+       "px": "82931.0",
+       "side": "B",
+       "sz": "0.00144",
+       "tid": 251303534885182,
+       "time": 1791862009739
+      }
+     ],
+     "request": {
+      "endTime": 1791862010739,
+      "startTime": 1791862008739,
+      "type": "userFillsByTime",
+      "user": "0x8f0795c558b849eaa9014166ca71a5a5327daa8a"
+     },
+     "response_fills": 3,
+     "response_sha256": "7589450fdde07254f72291a3c52818b420211df4bd0dcbe70d591217f8908e14",
+     "role": "buyer",
+     "user": "0x8f0795c558b849eaa9014166ca71a5a5327daa8a"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xa2e7833e0fcbec79a46104467161cc0202380023aacf0b4b46b02e90cecfc664",
+       "px": "82931.0",
+       "side": "A",
+       "sz": "0.00144",
+       "tid": 251303534885182,
+       "time": 1791862009739
+      }
+     ],
+     "request": {
+      "endTime": 1791862010739,
+      "startTime": 1791862008739,
+      "type": "userFillsByTime",
+      "user": "0x0eecd62efb05009e2b72964b4bcdbcf653afd4c5"
+     },
+     "response_fills": 3,
+     "response_sha256": "bfb27a3899633433a22fc165471ec199965be6ee852e2788edb12f6bf663d8b9",
+     "role": "seller",
+     "user": "0x0eecd62efb05009e2b72964b4bcdbcf653afd4c5"
+    }
+   ],
+   "recv_ms": 1791862009954,
+   "session": 1,
+   "tid": 251303534885182,
+   "time": 1791862009739,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xa2e7833e0fcbec79a46104467161cc0202380023aacf0b4b46b02e90cecfc664",
+    "px": "82931.0",
+    "side": "B",
+    "sz": "0.00144",
+    "tid": 251303534885182,
+    "time": 1791862009739,
+    "users": [
+     "0x8f0795c558b849eaa9014166ca71a5a5327daa8a",
+     "0x0eecd62efb05009e2b72964b4bcdbcf653afd4c5"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xfc3a602c0a88cafdfdb4044671650c0202840011a58be9d0a0030b7ec98ca4e8",
+       "px": "82881.0",
+       "side": "B",
+       "sz": "0.00066",
+       "tid": 25372714339689,
+       "time": 1791862068789
+      }
+     ],
+     "request": {
+      "endTime": 1791862069789,
+      "startTime": 1791862067789,
+      "type": "userFillsByTime",
+      "user": "0x307882ff7933336d5f530f7f0e94ac6a067f2b87"
+     },
+     "response_fills": 1,
+     "response_sha256": "d4260f397105bb06d0b76b1138573adb68c41f7c4613f349231d29eead918926",
+     "role": "buyer",
+     "user": "0x307882ff7933336d5f530f7f0e94ac6a067f2b87"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xfc3a602c0a88cafdfdb4044671650c0202840011a58be9d0a0030b7ec98ca4e8",
+       "px": "82881.0",
+       "side": "A",
+       "sz": "0.00066",
+       "tid": 25372714339689,
+       "time": 1791862068789
+      }
+     ],
+     "request": {
+      "endTime": 1791862069789,
+      "startTime": 1791862067789,
+      "type": "userFillsByTime",
+      "user": "0x47472cd62c99b8b5ce7e84e733515133e9aec0bd"
+     },
+     "response_fills": 4,
+     "response_sha256": "cc0f9af010443419e74b6d356bda15b8b9f0d6570f7193cdc5bc4dcac62f8061",
+     "role": "seller",
+     "user": "0x47472cd62c99b8b5ce7e84e733515133e9aec0bd"
+    }
+   ],
+   "recv_ms": 1791862069037,
+   "session": 1,
+   "tid": 25372714339689,
+   "time": 1791862068789,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xfc3a602c0a88cafdfdb4044671650c0202840011a58be9d0a0030b7ec98ca4e8",
+    "px": "82881.0",
+    "side": "A",
+    "sz": "0.00066",
+    "tid": 25372714339689,
+    "time": 1791862068789,
+    "users": [
+     "0x307882ff7933336d5f530f7f0e94ac6a067f2b87",
+     "0x47472cd62c99b8b5ce7e84e733515133e9aec0bd"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x12d25c130bf61a71144c04467168d202025500f8a6f93943b69b0765caf9f45b",
+       "px": "82895.0",
+       "side": "B",
+       "sz": "0.01513",
+       "tid": 647954301657514,
+       "time": 1791862137285
+      }
+     ],
+     "request": {
+      "endTime": 1791862138285,
+      "startTime": 1791862136285,
+      "type": "userFillsByTime",
+      "user": "0x78dce96236804d6958bf3c4598cf5efbc371629c"
+     },
+     "response_fills": 2,
+     "response_sha256": "bcedbcb527b4f4b93c84ce21e243060fbee9242397cad202c9ed1084b61b637a",
+     "role": "buyer",
+     "user": "0x78dce96236804d6958bf3c4598cf5efbc371629c"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x12d25c130bf61a71144c04467168d202025500f8a6f93943b69b0765caf9f45b",
+       "px": "82895.0",
+       "side": "A",
+       "sz": "0.01513",
+       "tid": 647954301657514,
+       "time": 1791862137285
+      }
+     ],
+     "request": {
+      "endTime": 1791862138285,
+      "startTime": 1791862136285,
+      "type": "userFillsByTime",
+      "user": "0xc30b7c783244ceb2d05b7ef4ea4438be6b687182"
+     },
+     "response_fills": 2,
+     "response_sha256": "0859c983e78e37d42b6593e76f7a5517b21ab93c8d73910f1fe8c67d58a8fe52",
+     "role": "seller",
+     "user": "0xc30b7c783244ceb2d05b7ef4ea4438be6b687182"
+    }
+   ],
+   "recv_ms": 1791862137499,
+   "session": 1,
+   "tid": 647954301657514,
+   "time": 1791862137285,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x12d25c130bf61a71144c04467168d202025500f8a6f93943b69b0765caf9f45b",
+    "px": "82895.0",
+    "side": "A",
+    "sz": "0.01513",
+    "tid": 647954301657514,
+    "time": 1791862137285,
+    "users": [
+     "0x78dce96236804d6958bf3c4598cf5efbc371629c",
+     "0xc30b7c783244ceb2d05b7ef4ea4438be6b687182"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xd3bd7d053ab92499d5370446716d4d02027a00ead5bc436b77862857f9bcfe84",
+       "px": "82930.0",
+       "side": "B",
+       "sz": "0.0006",
+       "tid": 752394245965300,
+       "time": 1791862218716
+      }
+     ],
+     "request": {
+      "endTime": 1791862219716,
+      "startTime": 1791862217716,
+      "type": "userFillsByTime",
+      "user": "0xf9109ada2f73c62e9889b45453065f0d99260a2d"
+     },
+     "response_fills": 15,
+     "response_sha256": "3bef1d951b27dd93e3ea980bbef23a9a9a2f4970893587b83b74513f08434ac8",
+     "role": "buyer",
+     "user": "0xf9109ada2f73c62e9889b45453065f0d99260a2d"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xd3bd7d053ab92499d5370446716d4d02027a00ead5bc436b77862857f9bcfe84",
+       "px": "82930.0",
+       "side": "A",
+       "sz": "0.0006",
+       "tid": 752394245965300,
+       "time": 1791862218716
+      }
+     ],
+     "request": {
+      "endTime": 1791862219716,
+      "startTime": 1791862217716,
+      "type": "userFillsByTime",
+      "user": "0xdf954bbe619273a56e0cfa90dad8382195dc7d72"
+     },
+     "response_fills": 1,
+     "response_sha256": "0b056dde8000a9cfe887a824deb825f29fc431c1d1104b812f2082e7fbc2507d",
+     "role": "seller",
+     "user": "0xdf954bbe619273a56e0cfa90dad8382195dc7d72"
+    }
+   ],
+   "recv_ms": 1791862219022,
+   "session": 1,
+   "tid": 752394245965300,
+   "time": 1791862218716,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xd3bd7d053ab92499d5370446716d4d02027a00ead5bc436b77862857f9bcfe84",
+    "px": "82930.0",
+    "side": "A",
+    "sz": "0.0006",
+    "tid": 752394245965300,
+    "time": 1791862218716,
+    "users": [
+     "0xf9109ada2f73c62e9889b45453065f0d99260a2d",
+     "0xdf954bbe619273a56e0cfa90dad8382195dc7d72"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xe03f84271cd69539e1b90446716f39020450000cb7d9b40b84082f79dbda6f24",
+       "px": "82955.0",
+       "side": "B",
+       "sz": "0.5",
+       "tid": 94888288720869,
+       "time": 1791862253318
+      }
+     ],
+     "request": {
+      "endTime": 1791862254318,
+      "startTime": 1791862252318,
+      "type": "userFillsByTime",
+      "user": "0xb14d1598dbfeaec11bae2a382b29adfcab9e8560"
+     },
+     "response_fills": 48,
+     "response_sha256": "6a7c9a39f58391b37a1e7b469f04b81a4890abb46d688ee8b2b707d39541999a",
+     "role": "buyer",
+     "user": "0xb14d1598dbfeaec11bae2a382b29adfcab9e8560"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xe03f84271cd69539e1b90446716f39020450000cb7d9b40b84082f79dbda6f24",
+       "px": "82955.0",
+       "side": "A",
+       "sz": "0.5",
+       "tid": 94888288720869,
+       "time": 1791862253318
+      }
+     ],
+     "request": {
+      "endTime": 1791862254318,
+      "startTime": 1791862252318,
+      "type": "userFillsByTime",
+      "user": "0x3ac9b030594c1ef23a3e8fed9f62356b7bf98bf6"
+     },
+     "response_fills": 1,
+     "response_sha256": "c4ab5b1bd148f3f2256b750df62d3d7e73933e8560620e3cd42ffcaa98957dc5",
+     "role": "seller",
+     "user": "0x3ac9b030594c1ef23a3e8fed9f62356b7bf98bf6"
+    }
+   ],
+   "recv_ms": 1791862253549,
+   "session": 1,
+   "tid": 94888288720869,
+   "time": 1791862253318,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xe03f84271cd69539e1b90446716f39020450000cb7d9b40b84082f79dbda6f24",
+    "px": "82955.0",
+    "side": "B",
+    "sz": "0.5",
+    "tid": 94888288720869,
+    "time": 1791862253318,
+    "users": [
+     "0xb14d1598dbfeaec11bae2a382b29adfcab9e8560",
+     "0x3ac9b030594c1ef23a3e8fed9f62356b7bf98bf6"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x84f2612219d19f60866c0446716f900202ad0007b4d4be3228bb0c74d8d5794b",
+       "px": "82971.0",
+       "side": "B",
+       "sz": "0.56254",
+       "tid": 695877718209995,
+       "time": 1791862259476
+      }
+     ],
+     "request": {
+      "endTime": 1791862260476,
+      "startTime": 1791862258476,
+      "type": "userFillsByTime",
+      "user": "0xb14d1598dbfeaec11bae2a382b29adfcab9e8560"
+     },
+     "response_fills": 31,
+     "response_sha256": "e12e769bf7ca56d2a32521729899ff925fcd3065ee524fb1eabd7008267d63fb",
+     "role": "buyer",
+     "user": "0xb14d1598dbfeaec11bae2a382b29adfcab9e8560"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x84f2612219d19f60866c0446716f900202ad0007b4d4be3228bb0c74d8d5794b",
+       "px": "82971.0",
+       "side": "A",
+       "sz": "0.56254",
+       "tid": 695877718209995,
+       "time": 1791862259476
+      }
+     ],
+     "request": {
+      "endTime": 1791862260476,
+      "startTime": 1791862258476,
+      "type": "userFillsByTime",
+      "user": "0x7fdafde5cfb5465924316eced2d3715494c517d1"
+     },
+     "response_fills": 3,
+     "response_sha256": "ac5bd84c4b55f94c3823d4c0280443e701a0c1fe5a01919abf3d5ee9ff57f22f",
+     "role": "seller",
+     "user": "0x7fdafde5cfb5465924316eced2d3715494c517d1"
+    }
+   ],
+   "recv_ms": 1791862259861,
+   "session": 1,
+   "tid": 695877718209995,
+   "time": 1791862259476,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x84f2612219d19f60866c0446716f900202ad0007b4d4be3228bb0c74d8d5794b",
+    "px": "82971.0",
+    "side": "B",
+    "sz": "0.56254",
+    "tid": 695877718209995,
+    "time": 1791862259476,
+    "users": [
+     "0xb14d1598dbfeaec11bae2a382b29adfcab9e8560",
+     "0x7fdafde5cfb5465924316eced2d3715494c517d1"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xc8d0345568c83680ca49044671709f020ae9003b03cb55526c98dfa827cc106b",
+       "px": "83000.0",
+       "side": "B",
+       "sz": "0.20129",
+       "tid": 937747695755093,
+       "time": 1791862279057
+      }
+     ],
+     "request": {
+      "endTime": 1791862280057,
+      "startTime": 1791862278057,
+      "type": "userFillsByTime",
+      "user": "0xcf3f419d08a5bdc2c6e5fbd9ad70904c5420f95f"
+     },
+     "response_fills": 10,
+     "response_sha256": "ae52af192a20ee3eb440df120b6e673ae18d808f9b8372d033c51e218150c8d4",
+     "role": "buyer",
+     "user": "0xcf3f419d08a5bdc2c6e5fbd9ad70904c5420f95f"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xc8d0345568c83680ca49044671709f020ae9003b03cb55526c98dfa827cc106b",
+       "px": "83000.0",
+       "side": "A",
+       "sz": "0.20129",
+       "tid": 937747695755093,
+       "time": 1791862279057
+      }
+     ],
+     "request": {
+      "endTime": 1791862280057,
+      "startTime": 1791862278057,
+      "type": "userFillsByTime",
+      "user": "0x3ed46593ed1fd21f1ca11dd45541d51076957039"
+     },
+     "response_fills": 24,
+     "response_sha256": "fd9b21451922c0a6d438c5246af132e8e5ce89ad8554fa6c4885cb9cd9cfa9e9",
+     "role": "seller",
+     "user": "0x3ed46593ed1fd21f1ca11dd45541d51076957039"
+    }
+   ],
+   "recv_ms": 1791862279425,
+   "session": 1,
+   "tid": 937747695755093,
+   "time": 1791862279057,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xc8d0345568c83680ca49044671709f020ae9003b03cb55526c98dfa827cc106b",
+    "px": "83000.0",
+    "side": "B",
+    "sz": "0.20129",
+    "tid": 937747695755093,
+    "time": 1791862279057,
+    "users": [
+     "0xcf3f419d08a5bdc2c6e5fbd9ad70904c5420f95f",
+     "0x3ed46593ed1fd21f1ca11dd45541d51076957039"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x5f879f276e794354610104467170e4020ae3000d097c622603504a7a2d7d1d3f",
+       "px": "83027.0",
+       "side": "B",
+       "sz": "0.00029",
+       "tid": 288869684338763,
+       "time": 1791862284089
+      }
+     ],
+     "request": {
+      "endTime": 1791862285089,
+      "startTime": 1791862283089,
+      "type": "userFillsByTime",
+      "user": "0xa0d829e1ddd3fa20d9c31fa97dcb925bb7bf57d9"
+     },
+     "response_fills": 53,
+     "response_sha256": "e38e275aefa884bfbb5fe3f8d38dd2652d11c32cc7136b194daffbf3dfd90629",
+     "role": "buyer",
+     "user": "0xa0d829e1ddd3fa20d9c31fa97dcb925bb7bf57d9"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x5f879f276e794354610104467170e4020ae3000d097c622603504a7a2d7d1d3f",
+       "px": "83027.0",
+       "side": "A",
+       "sz": "0.00029",
+       "tid": 288869684338763,
+       "time": 1791862284089
+      }
+     ],
+     "request": {
+      "endTime": 1791862285089,
+      "startTime": 1791862283089,
+      "type": "userFillsByTime",
+      "user": "0x0ac0029f4e84c608da4d575aef9dc00188014ec3"
+     },
+     "response_fills": 1,
+     "response_sha256": "4d20775d9f37ff9c2bc464380c3eaa1a45cb2a405a7871cb2bfc648028da9508",
+     "role": "seller",
+     "user": "0x0ac0029f4e84c608da4d575aef9dc00188014ec3"
+    }
+   ],
+   "recv_ms": 1791862284443,
+   "session": 1,
+   "tid": 288869684338763,
+   "time": 1791862284089,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x5f879f276e794354610104467170e4020ae3000d097c622603504a7a2d7d1d3f",
+    "px": "83027.0",
+    "side": "B",
+    "sz": "0.00029",
+    "tid": 288869684338763,
+    "time": 1791862284089,
+    "users": [
+     "0xa0d829e1ddd3fa20d9c31fa97dcb925bb7bf57d9",
+     "0x0ac0029f4e84c608da4d575aef9dc00188014ec3"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x6a8a62ef85b051c06c04044671714a0203f900d520b370920e530e4244b42bab",
+       "px": "83027.0",
+       "side": "B",
+       "sz": "0.00192",
+       "tid": 438574049031311,
+       "time": 1791862291870
+      }
+     ],
+     "request": {
+      "endTime": 1791862292870,
+      "startTime": 1791862290870,
+      "type": "userFillsByTime",
+      "user": "0x7f5653ec60fc5d3c1373e423239184c94c5e0989"
+     },
+     "response_fills": 3,
+     "response_sha256": "144680831d98d0585eccfcdd80ccdf876d1106950f6ed83f0cb7fa6400293902",
+     "role": "buyer",
+     "user": "0x7f5653ec60fc5d3c1373e423239184c94c5e0989"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x6a8a62ef85b051c06c04044671714a0203f900d520b370920e530e4244b42bab",
+       "px": "83027.0",
+       "side": "A",
+       "sz": "0.00192",
+       "tid": 438574049031311,
+       "time": 1791862291870
+      }
+     ],
+     "request": {
+      "endTime": 1791862292870,
+      "startTime": 1791862290870,
+      "type": "userFillsByTime",
+      "user": "0x9661390ea53e4cc9b7e02b441897132cbc771cda"
+     },
+     "response_fills": 162,
+     "response_sha256": "4881a9d3cb5bb291fe239e456b3a3f8fa828dd3b8c30c95a5ae12ad7142837f2",
+     "role": "seller",
+     "user": "0x9661390ea53e4cc9b7e02b441897132cbc771cda"
+    }
+   ],
+   "recv_ms": 1791862292201,
+   "session": 1,
+   "tid": 438574049031311,
+   "time": 1791862291870,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x6a8a62ef85b051c06c04044671714a0203f900d520b370920e530e4244b42bab",
+    "px": "83027.0",
+    "side": "A",
+    "sz": "0.00192",
+    "tid": 438574049031311,
+    "time": 1791862291870,
+    "users": [
+     "0x7f5653ec60fc5d3c1373e423239184c94c5e0989",
+     "0x9661390ea53e4cc9b7e02b441897132cbc771cda"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x6a8a62ef85b051c06c04044671714a0203f900d520b370920e530e4244b42bab",
+       "px": "83010.0",
+       "side": "B",
+       "sz": "4.81744",
+       "tid": 169170152627286,
+       "time": 1791862291870
+      }
+     ],
+     "request": {
+      "endTime": 1791862292870,
+      "startTime": 1791862290870,
+      "type": "userFillsByTime",
+      "user": "0xcf3f419d08a5bdc2c6e5fbd9ad70904c5420f95f"
+     },
+     "response_fills": 6,
+     "response_sha256": "8dea44866218d1cb11a76cbb32d9b72321de9c9be06e17f4d62fe086d51c0395",
+     "role": "buyer",
+     "user": "0xcf3f419d08a5bdc2c6e5fbd9ad70904c5420f95f"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x6a8a62ef85b051c06c04044671714a0203f900d520b370920e530e4244b42bab",
+       "px": "83010.0",
+       "side": "A",
+       "sz": "4.81744",
+       "tid": 169170152627286,
+       "time": 1791862291870
+      }
+     ],
+     "request": {
+      "endTime": 1791862292870,
+      "startTime": 1791862290870,
+      "type": "userFillsByTime",
+      "user": "0x9661390ea53e4cc9b7e02b441897132cbc771cda"
+     },
+     "response_fills": 162,
+     "response_sha256": "4881a9d3cb5bb291fe239e456b3a3f8fa828dd3b8c30c95a5ae12ad7142837f2",
+     "role": "seller",
+     "user": "0x9661390ea53e4cc9b7e02b441897132cbc771cda"
+    }
+   ],
+   "recv_ms": 1791862292201,
+   "session": 1,
+   "tid": 169170152627286,
+   "time": 1791862291870,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x6a8a62ef85b051c06c04044671714a0203f900d520b370920e530e4244b42bab",
+    "px": "83010.0",
+    "side": "A",
+    "sz": "4.81744",
+    "tid": 169170152627286,
+    "time": 1791862291870,
+    "users": [
+     "0xcf3f419d08a5bdc2c6e5fbd9ad70904c5420f95f",
+     "0x9661390ea53e4cc9b7e02b441897132cbc771cda"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x5deaf1af73a28e155f64044671721d0205d100950ea5ace701b39d0232a66800",
+       "px": "82981.0",
+       "side": "B",
+       "sz": "0.11353",
+       "tid": 206691775578687,
+       "time": 1791862307038
+      }
+     ],
+     "request": {
+      "endTime": 1791862308038,
+      "startTime": 1791862306038,
+      "type": "userFillsByTime",
+      "user": "0xf9109ada2f73c62e9889b45453065f0d99260a2d"
+     },
+     "response_fills": 3,
+     "response_sha256": "356890edd2113d85d6c23104b18130224c41af5a3562242c8afdde60f9fc8763",
+     "role": "buyer",
+     "user": "0xf9109ada2f73c62e9889b45453065f0d99260a2d"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x5deaf1af73a28e155f64044671721d0205d100950ea5ace701b39d0232a66800",
+       "px": "82981.0",
+       "side": "A",
+       "sz": "0.11353",
+       "tid": 206691775578687,
+       "time": 1791862307038
+      }
+     ],
+     "request": {
+      "endTime": 1791862308038,
+      "startTime": 1791862306038,
+      "type": "userFillsByTime",
+      "user": "0x95be2406d587ba4aa785fb8536cad11992d4cfaa"
+     },
+     "response_fills": 1,
+     "response_sha256": "608324137b1004ddc7b8a8c9bee59b65582c5a6518d03bb91850f4f7c422c539",
+     "role": "seller",
+     "user": "0x95be2406d587ba4aa785fb8536cad11992d4cfaa"
+    }
+   ],
+   "recv_ms": 1791862307327,
+   "session": 1,
+   "tid": 206691775578687,
+   "time": 1791862307038,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x5deaf1af73a28e155f64044671721d0205d100950ea5ace701b39d0232a66800",
+    "px": "82981.0",
+    "side": "A",
+    "sz": "0.11353",
+    "tid": 206691775578687,
+    "time": 1791862307038,
+    "users": [
+     "0xf9109ada2f73c62e9889b45453065f0d99260a2d",
+     "0x95be2406d587ba4aa785fb8536cad11992d4cfaa"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": false,
+    "seller_side_is_A": false,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x6f24a746ef72e536709e0446717342020d1d002c8a76040812ed5299ae76bf21",
+       "px": "83018.0",
+       "side": "B",
+       "sz": "0.21911",
+       "tid": 969175595660511,
+       "time": 1791862327522
+      }
+     ],
+     "request": {
+      "endTime": 1791862328522,
+      "startTime": 1791862326522,
+      "type": "userFillsByTime",
+      "user": "0xf9109ada2f73c62e9889b45453065f0d99260a2d"
+     },
+     "response_fills": 2,
+     "response_sha256": "331553a0316264cfe2b65027f9549895c674c053597bcbfbbc2206a4c76f4692",
+     "role": "buyer",
+     "user": "0xf9109ada2f73c62e9889b45453065f0d99260a2d"
+    },
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862328522,
+      "startTime": 1791862326522,
+      "type": "userFillsByTime",
+      "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "seller",
+     "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    }
+   ],
+   "recv_ms": 1791862327886,
+   "session": 1,
+   "tid": 969175595660511,
+   "time": 1791862327522,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x6f24a746ef72e536709e0446717342020d1d002c8a76040812ed5299ae76bf21",
+    "px": "83018.0",
+    "side": "A",
+    "sz": "0.21911",
+    "tid": 969175595660511,
+    "time": 1791862327522,
+    "users": [
+     "0xf9109ada2f73c62e9889b45453065f0d99260a2d",
+     "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x1fe980172427b1a6216304467174960205fc00fcbf2ad078c3b22b69e32b8b90",
+       "px": "83050.0",
+       "side": "B",
+       "sz": "0.012",
+       "tid": 973510022170408,
+       "time": 1791862353572
+      }
+     ],
+     "request": {
+      "endTime": 1791862354572,
+      "startTime": 1791862352572,
+      "type": "userFillsByTime",
+      "user": "0x04dd54f603b78afcc00200bf2dfd81f0134697d6"
+     },
+     "response_fills": 18,
+     "response_sha256": "6d79166bfe94a670d97eba2d856ea455c70ccb727835852c4fe9e99d8e3f6dac",
+     "role": "buyer",
+     "user": "0x04dd54f603b78afcc00200bf2dfd81f0134697d6"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x1fe980172427b1a6216304467174960205fc00fcbf2ad078c3b22b69e32b8b90",
+       "px": "83050.0",
+       "side": "A",
+       "sz": "0.012",
+       "tid": 973510022170408,
+       "time": 1791862353572
+      }
+     ],
+     "request": {
+      "endTime": 1791862354572,
+      "startTime": 1791862352572,
+      "type": "userFillsByTime",
+      "user": "0x052091f7bc55779d8d83546d8b9bcf9a9956d541"
+     },
+     "response_fills": 1,
+     "response_sha256": "73ddbd958d2110518476a069230a5f2812f07fd3765d4b7455e9918960e55d6b",
+     "role": "seller",
+     "user": "0x052091f7bc55779d8d83546d8b9bcf9a9956d541"
+    }
+   ],
+   "recv_ms": 1791862353882,
+   "session": 1,
+   "tid": 973510022170408,
+   "time": 1791862353572,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x1fe980172427b1a6216304467174960205fc00fcbf2ad078c3b22b69e32b8b90",
+    "px": "83050.0",
+    "side": "B",
+    "sz": "0.012",
+    "tid": 973510022170408,
+    "time": 1791862353572,
+    "users": [
+     "0x04dd54f603b78afcc00200bf2dfd81f0134697d6",
+     "0x052091f7bc55779d8d83546d8b9bcf9a9956d541"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x34d8c992c8ca4638365204467174da021c82007863cd650ad8a174e587ce2022",
+       "px": "83100.0",
+       "side": "B",
+       "sz": "0.006",
+       "tid": 253506929563529,
+       "time": 1791862358284
+      }
+     ],
+     "request": {
+      "endTime": 1791862359284,
+      "startTime": 1791862357284,
+      "type": "userFillsByTime",
+      "user": "0xc236805a19b22e78c0b5dc42ffd88da7ee51d998"
+     },
+     "response_fills": 8,
+     "response_sha256": "9c9c751abf169cea926854bf8fcfa229915fe1d51cdfe5b22638379ccdd06ab9",
+     "role": "buyer",
+     "user": "0xc236805a19b22e78c0b5dc42ffd88da7ee51d998"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x34d8c992c8ca4638365204467174da021c82007863cd650ad8a174e587ce2022",
+       "px": "83100.0",
+       "side": "A",
+       "sz": "0.006",
+       "tid": 253506929563529,
+       "time": 1791862358284
+      }
+     ],
+     "request": {
+      "endTime": 1791862359284,
+      "startTime": 1791862357284,
+      "type": "userFillsByTime",
+      "user": "0x79b1709cd32839cadc63bf6f17b37ac19faeda9d"
+     },
+     "response_fills": 27,
+     "response_sha256": "0d5a886524ec92cfc91027e1ebf8ae9150cdbc5e27740588a86373a8af4ea613",
+     "role": "seller",
+     "user": "0x79b1709cd32839cadc63bf6f17b37ac19faeda9d"
+    }
+   ],
+   "recv_ms": 1791862359016,
+   "session": 1,
+   "tid": 253506929563529,
+   "time": 1791862358284,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x34d8c992c8ca4638365204467174da021c82007863cd650ad8a174e587ce2022",
+    "px": "83100.0",
+    "side": "B",
+    "sz": "0.006",
+    "tid": 253506929563529,
+    "time": 1791862358284,
+    "users": [
+     "0xc236805a19b22e78c0b5dc42ffd88da7ee51d998",
+     "0x79b1709cd32839cadc63bf6f17b37ac19faeda9d"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xfc70b1acc61bd817fdea04467174db0216400102611ef6eaa0395cff851fb202",
+       "px": "83132.0",
+       "side": "B",
+       "sz": "0.00013",
+       "tid": 347721354115909,
+       "time": 1791862358347
+      }
+     ],
+     "request": {
+      "endTime": 1791862359347,
+      "startTime": 1791862357347,
+      "type": "userFillsByTime",
+      "user": "0x823ecdcdfc67ab8885f4d24ba595050611fe76c9"
+     },
+     "response_fills": 83,
+     "response_sha256": "7502b2976c8ae7749d519ccb4023f3aab1e7260a669a300a179f9ccb3cae787d",
+     "role": "buyer",
+     "user": "0x823ecdcdfc67ab8885f4d24ba595050611fe76c9"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xfc70b1acc61bd817fdea04467174db0216400102611ef6eaa0395cff851fb202",
+       "px": "83132.0",
+       "side": "A",
+       "sz": "0.00013",
+       "tid": 347721354115909,
+       "time": 1791862358347
+      }
+     ],
+     "request": {
+      "endTime": 1791862359347,
+      "startTime": 1791862357347,
+      "type": "userFillsByTime",
+      "user": "0xd5fc11a3cc70ec74d44184c98d5cfc59e82e7885"
+     },
+     "response_fills": 4,
+     "response_sha256": "b5e1595b38bf983058c80b75915e53dc223fbf6d01e09db5c34fbccb00bc8949",
+     "role": "seller",
+     "user": "0xd5fc11a3cc70ec74d44184c98d5cfc59e82e7885"
+    }
+   ],
+   "recv_ms": 1791862359080,
+   "session": 1,
+   "tid": 347721354115909,
+   "time": 1791862358347,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xfc70b1acc61bd817fdea04467174db0216400102611ef6eaa0395cff851fb202",
+    "px": "83132.0",
+    "side": "B",
+    "sz": "0.00013",
+    "tid": 347721354115909,
+    "time": 1791862358347,
+    "users": [
+     "0x823ecdcdfc67ab8885f4d24ba595050611fe76c9",
+     "0xd5fc11a3cc70ec74d44184c98d5cfc59e82e7885"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x37b971fea8a73979393304467174dc0211a600e443aa584bdb821d5167ab1363",
+       "px": "83153.0",
+       "side": "B",
+       "sz": "0.00619",
+       "tid": 911797295638174,
+       "time": 1791862358405
+      }
+     ],
+     "request": {
+      "endTime": 1791862359405,
+      "startTime": 1791862357405,
+      "type": "userFillsByTime",
+      "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+     },
+     "response_fills": 72,
+     "response_sha256": "458ae166a64580a5ef459259e930ccd41e42053a857d32af254585236e8fc987",
+     "role": "buyer",
+     "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x37b971fea8a73979393304467174dc0211a600e443aa584bdb821d5167ab1363",
+       "px": "83153.0",
+       "side": "A",
+       "sz": "0.00619",
+       "tid": 911797295638174,
+       "time": 1791862358405
+      }
+     ],
+     "request": {
+      "endTime": 1791862359405,
+      "startTime": 1791862357405,
+      "type": "userFillsByTime",
+      "user": "0xca4903c207a0df58bf37d4bc8bbc5210726f53c8"
+     },
+     "response_fills": 6,
+     "response_sha256": "c1e415e8ff24e501ec1528f4ef91f0c886bfd75c24160a67be90422e3b0bfbe0",
+     "role": "seller",
+     "user": "0xca4903c207a0df58bf37d4bc8bbc5210726f53c8"
+    }
+   ],
+   "recv_ms": 1791862359350,
+   "session": 1,
+   "tid": 911797295638174,
+   "time": 1791862358405,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x37b971fea8a73979393304467174dc0211a600e443aa584bdb821d5167ab1363",
+    "px": "83153.0",
+    "side": "B",
+    "sz": "0.00619",
+    "tid": 911797295638174,
+    "time": 1791862358405,
+    "users": [
+     "0x31dea2516beee92135b96f464eeec3cf292a13f2",
+     "0xca4903c207a0df58bf37d4bc8bbc5210726f53c8"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x3114856c3024c730328e04467174de0215540051cb27e602d4dd30beef28a11a",
+       "px": "83194.0",
+       "side": "B",
+       "sz": "0.026",
+       "tid": 617880165089515,
+       "time": 1791862358544
+      }
+     ],
+     "request": {
+      "endTime": 1791862359544,
+      "startTime": 1791862357544,
+      "type": "userFillsByTime",
+      "user": "0x3faf35a220e0d6a3bc3cce4ca54454aba68cfd6a"
+     },
+     "response_fills": 9,
+     "response_sha256": "061d6998ef2ec1fb04ee44887ed08912fdf9a229b93c4f7f5e071b4bfd11806b",
+     "role": "buyer",
+     "user": "0x3faf35a220e0d6a3bc3cce4ca54454aba68cfd6a"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x3114856c3024c730328e04467174de0215540051cb27e602d4dd30beef28a11a",
+       "px": "83194.0",
+       "side": "A",
+       "sz": "0.026",
+       "tid": 617880165089515,
+       "time": 1791862358544
+      }
+     ],
+     "request": {
+      "endTime": 1791862359544,
+      "startTime": 1791862357544,
+      "type": "userFillsByTime",
+      "user": "0xb43b33c7bda44f86fb615d7620388bd973fa2859"
+     },
+     "response_fills": 18,
+     "response_sha256": "817fa26a0ec4f5933bb1f42f76031b6e5a5209b9e7b7b8f57c75ec40c671b412",
+     "role": "seller",
+     "user": "0xb43b33c7bda44f86fb615d7620388bd973fa2859"
+    }
+   ],
+   "recv_ms": 1791862359382,
+   "session": 1,
+   "tid": 617880165089515,
+   "time": 1791862358544,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x3114856c3024c730328e04467174de0215540051cb27e602d4dd30beef28a11a",
+    "px": "83194.0",
+    "side": "B",
+    "sz": "0.026",
+    "tid": 617880165089515,
+    "time": 1791862358544,
+    "users": [
+     "0x3faf35a220e0d6a3bc3cce4ca54454aba68cfd6a",
+     "0xb43b33c7bda44f86fb615d7620388bd973fa2859"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x345e39d2bf88ebf835d704467174ee020f6a00b85a8c0acad826e5257e8cc5e2",
+       "px": "83220.0",
+       "side": "B",
+       "sz": "0.0257",
+       "tid": 837303626592562,
+       "time": 1791862359683
+      }
+     ],
+     "request": {
+      "endTime": 1791862360683,
+      "startTime": 1791862358683,
+      "type": "userFillsByTime",
+      "user": "0xcf3f419d08a5bdc2c6e5fbd9ad70904c5420f95f"
+     },
+     "response_fills": 21,
+     "response_sha256": "f3d6b3c776f14c7c3812a5daebfb1b4d3b2a204bac7ba6e2723e41686da5126e",
+     "role": "buyer",
+     "user": "0xcf3f419d08a5bdc2c6e5fbd9ad70904c5420f95f"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x345e39d2bf88ebf835d704467174ee020f6a00b85a8c0acad826e5257e8cc5e2",
+       "px": "83220.0",
+       "side": "A",
+       "sz": "0.0257",
+       "tid": 837303626592562,
+       "time": 1791862359683
+      }
+     ],
+     "request": {
+      "endTime": 1791862360683,
+      "startTime": 1791862358683,
+      "type": "userFillsByTime",
+      "user": "0x583bc1459ad20ff59aef8ee40fac9c6246c7803f"
+     },
+     "response_fills": 3,
+     "response_sha256": "23ecba76e8b58276487e4a400c131f8428f83368cd04d0fd6f4e64a9d8673b93",
+     "role": "seller",
+     "user": "0x583bc1459ad20ff59aef8ee40fac9c6246c7803f"
+    }
+   ],
+   "recv_ms": 1791862360493,
+   "session": 1,
+   "tid": 837303626592562,
+   "time": 1791862359683,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x345e39d2bf88ebf835d704467174ee020f6a00b85a8c0acad826e5257e8cc5e2",
+    "px": "83220.0",
+    "side": "B",
+    "sz": "0.0257",
+    "tid": 837303626592562,
+    "time": 1791862359683,
+    "users": [
+     "0xcf3f419d08a5bdc2c6e5fbd9ad70904c5420f95f",
+     "0x583bc1459ad20ff59aef8ee40fac9c6246c7803f"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xc776869dd554a340c8f004467174fe02137f00837057c2126b3f31f094587d2b",
+       "px": "83258.0",
+       "side": "B",
+       "sz": "0.00094",
+       "tid": 1056339928227554,
+       "time": 1791862360817
+      }
+     ],
+     "request": {
+      "endTime": 1791862361817,
+      "startTime": 1791862359817,
+      "type": "userFillsByTime",
+      "user": "0x0eecd62efb05009e2b72964b4bcdbcf653afd4c5"
+     },
+     "response_fills": 11,
+     "response_sha256": "e3e0773bc0ec2db73016821f946296f4e912d6c34728939c44b5f45a3d122d95",
+     "role": "buyer",
+     "user": "0x0eecd62efb05009e2b72964b4bcdbcf653afd4c5"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xc776869dd554a340c8f004467174fe02137f00837057c2126b3f31f094587d2b",
+       "px": "83258.0",
+       "side": "A",
+       "sz": "0.00094",
+       "tid": 1056339928227554,
+       "time": 1791862360817
+      }
+     ],
+     "request": {
+      "endTime": 1791862361817,
+      "startTime": 1791862359817,
+      "type": "userFillsByTime",
+      "user": "0xefc060e330a8172a1ec6dfe69748b4bacfc3bff3"
+     },
+     "response_fills": 9,
+     "response_sha256": "a2d4fa0e0a40aa433b86ad809ea970780507b1a7c28ac8c028371b084c46785e",
+     "role": "seller",
+     "user": "0xefc060e330a8172a1ec6dfe69748b4bacfc3bff3"
+    }
+   ],
+   "recv_ms": 1791862362095,
+   "session": 1,
+   "tid": 1056339928227554,
+   "time": 1791862360817,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xc776869dd554a340c8f004467174fe02137f00837057c2126b3f31f094587d2b",
+    "px": "83258.0",
+    "side": "B",
+    "sz": "0.00094",
+    "tid": 1056339928227554,
+    "time": 1791862360817,
+    "users": [
+     "0x0eecd62efb05009e2b72964b4bcdbcf653afd4c5",
+     "0xefc060e330a8172a1ec6dfe69748b4bacfc3bff3"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+       "px": "83268.0",
+       "side": "B",
+       "sz": "0.00019",
+       "tid": 936072800932262,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0x922948b6d614182fc94ebb5285db2e2cc1ff163e"
+     },
+     "response_fills": 2,
+     "response_sha256": "6d13c3ebea844138588a9e63543241b19739f7f541682b8875a74d9fc448b35f",
+     "role": "buyer",
+     "user": "0x922948b6d614182fc94ebb5285db2e2cc1ff163e"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+       "px": "83268.0",
+       "side": "A",
+       "sz": "0.00019",
+       "tid": 936072800932262,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0xa51b6bbd7f835d7da10eddfdefb91254497bae17"
+     },
+     "response_fills": 108,
+     "response_sha256": "0df78009b1d949c063803b1f7fdb2253f2ae8da4e2dfbd7df253a246485b3f1d",
+     "role": "seller",
+     "user": "0xa51b6bbd7f835d7da10eddfdefb91254497bae17"
+    }
+   ],
+   "recv_ms": 1791862363651,
+   "session": 1,
+   "tid": 936072800932262,
+   "time": 1791862362255,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+    "px": "83268.0",
+    "side": "B",
+    "sz": "0.00019",
+    "tid": 936072800932262,
+    "time": 1791862362255,
+    "users": [
+     "0x922948b6d614182fc94ebb5285db2e2cc1ff163e",
+     "0xa51b6bbd7f835d7da10eddfdefb91254497bae17"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+       "px": "83265.0",
+       "side": "B",
+       "sz": "0.00184",
+       "tid": 487217672627539,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0xfcf104006bfff47695c1dc21dad3e9de1e72098e"
+     },
+     "response_fills": 104,
+     "response_sha256": "50929b1b75cc7aeadfc601121e9e3a640cb53055aa90df864fb825fe41c15508",
+     "role": "buyer",
+     "user": "0xfcf104006bfff47695c1dc21dad3e9de1e72098e"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+       "px": "83265.0",
+       "side": "A",
+       "sz": "0.00184",
+       "tid": 487217672627539,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0xb6e319939f793c36a0360e13b239d31f177f7a21"
+     },
+     "response_fills": 1,
+     "response_sha256": "4948c546b594551f12ab94c37e9028e430d72888a0cd0fdfdc5337441e065d90",
+     "role": "seller",
+     "user": "0xb6e319939f793c36a0360e13b239d31f177f7a21"
+    }
+   ],
+   "recv_ms": 1791862363651,
+   "session": 1,
+   "tid": 487217672627539,
+   "time": 1791862362255,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+    "px": "83265.0",
+    "side": "A",
+    "sz": "0.00184",
+    "tid": 487217672627539,
+    "time": 1791862362255,
+    "users": [
+     "0xfcf104006bfff47695c1dc21dad3e9de1e72098e",
+     "0xb6e319939f793c36a0360e13b239d31f177f7a21"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+       "px": "83268.0",
+       "side": "B",
+       "sz": "0.02433",
+       "tid": 614249109923512,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0xd0dd1876e818e627096b8445ce4e9bc34e968449"
+     },
+     "response_fills": 1,
+     "response_sha256": "505e47708ea6eefbc064618d2c95f17a3ca38046e35b6a4ae68248687ecec28d",
+     "role": "buyer",
+     "user": "0xd0dd1876e818e627096b8445ce4e9bc34e968449"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+       "px": "83268.0",
+       "side": "A",
+       "sz": "0.02433",
+       "tid": 614249109923512,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0x793660578d2628b0ec7e0e2b5c75a4847ae80706"
+     },
+     "response_fills": 34,
+     "response_sha256": "a8dd477616c73c515bcd9807e082e3dd9493ee30d3f432fb60827b345e1bbb3a",
+     "role": "seller",
+     "user": "0x793660578d2628b0ec7e0e2b5c75a4847ae80706"
+    }
+   ],
+   "recv_ms": 1791862363651,
+   "session": 1,
+   "tid": 614249109923512,
+   "time": 1791862362255,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+    "px": "83268.0",
+    "side": "B",
+    "sz": "0.02433",
+    "tid": 614249109923512,
+    "time": 1791862362255,
+    "users": [
+     "0xd0dd1876e818e627096b8445ce4e9bc34e968449",
+     "0x793660578d2628b0ec7e0e2b5c75a4847ae80706"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+       "px": "83268.0",
+       "side": "B",
+       "sz": "0.28823",
+       "tid": 1086086338973423,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0x2989d67b1b983dd44d4527423c21a214b5fbb1bb"
+     },
+     "response_fills": 3,
+     "response_sha256": "756fc9eecfad65688a511d093231dbf47cc2a75f12f3314878a6409e3ffafeb5",
+     "role": "buyer",
+     "user": "0x2989d67b1b983dd44d4527423c21a214b5fbb1bb"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+       "px": "83268.0",
+       "side": "A",
+       "sz": "0.28823",
+       "tid": 1086086338973423,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0x50d59f4c2480e107acf32c0d1e9cbe7579b01480"
+     },
+     "response_fills": 4,
+     "response_sha256": "92ac3c361c8cacdcfcd8ab04faf18056c2d4df98481aec554d39819b454ea50b",
+     "role": "seller",
+     "user": "0x50d59f4c2480e107acf32c0d1e9cbe7579b01480"
+    }
+   ],
+   "recv_ms": 1791862363651,
+   "session": 1,
+   "tid": 1086086338973423,
+   "time": 1791862362255,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+    "px": "83268.0",
+    "side": "B",
+    "sz": "0.28823",
+    "tid": 1086086338973423,
+    "time": 1791862362255,
+    "users": [
+     "0x2989d67b1b983dd44d4527423c21a214b5fbb1bb",
+     "0x50d59f4c2480e107acf32c0d1e9cbe7579b01480"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+       "px": "83274.0",
+       "side": "B",
+       "sz": "0.36026",
+       "tid": 894521392667076,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0xb5a6924d1da4e54705079b9957f6dedee5e62f82"
+     },
+     "response_fills": 60,
+     "response_sha256": "bb982c2674606237f20a81e42b953a1bb7d343253797a8675e7bcadc49406ec2",
+     "role": "buyer",
+     "user": "0xb5a6924d1da4e54705079b9957f6dedee5e62f82"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+       "px": "83274.0",
+       "side": "A",
+       "sz": "0.36026",
+       "tid": 894521392667076,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0x6e6f2ca77afaee5a22dc3cf0f903f39a548a82a6"
+     },
+     "response_fills": 6,
+     "response_sha256": "54ab4332e894c3d9ffdc061fbf70d2d278db819c6e1e5342cc4e1d0f39d40862",
+     "role": "seller",
+     "user": "0x6e6f2ca77afaee5a22dc3cf0f903f39a548a82a6"
+    }
+   ],
+   "recv_ms": 1791862363651,
+   "session": 1,
+   "tid": 894521392667076,
+   "time": 1791862362255,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x58bdee37def818505a3704467175130000f9061d79fb3722fc86998a9dfbf23a",
+    "px": "83274.0",
+    "side": "B",
+    "sz": "0.36026",
+    "tid": 894521392667076,
+    "time": 1791862362255,
+    "users": [
+     "0xb5a6924d1da4e54705079b9957f6dedee5e62f82",
+     "0x6e6f2ca77afaee5a22dc3cf0f903f39a548a82a6"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xe57c40f1e1f2c802e6f50446717513021fb000d77cf5e6d48944ec44a0f6a1ed",
+       "px": "83251.0",
+       "side": "B",
+       "sz": "0.00061",
+       "tid": 747522625782068,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0x48d287ec28d470dcdbf7f7ed034a30a3054a5e64"
+     },
+     "response_fills": 4,
+     "response_sha256": "2b851f473827348d42196c1526d7970fc5b546ba32ef887082a2332b609c910b",
+     "role": "buyer",
+     "user": "0x48d287ec28d470dcdbf7f7ed034a30a3054a5e64"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xe57c40f1e1f2c802e6f50446717513021fb000d77cf5e6d48944ec44a0f6a1ed",
+       "px": "83251.0",
+       "side": "A",
+       "sz": "0.00061",
+       "tid": 747522625782068,
+       "time": 1791862362255
+      }
+     ],
+     "request": {
+      "endTime": 1791862363255,
+      "startTime": 1791862361255,
+      "type": "userFillsByTime",
+      "user": "0x2ca4927174ba283d8a57f60ef3589844035a2930"
+     },
+     "response_fills": 1,
+     "response_sha256": "fc2cf673ba12dc76b179f610c171ee3ea54e55c56119e95e1428658b538faf57",
+     "role": "seller",
+     "user": "0x2ca4927174ba283d8a57f60ef3589844035a2930"
+    }
+   ],
+   "recv_ms": 1791862363651,
+   "session": 1,
+   "tid": 747522625782068,
+   "time": 1791862362255,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xe57c40f1e1f2c802e6f50446717513021fb000d77cf5e6d48944ec44a0f6a1ed",
+    "px": "83251.0",
+    "side": "B",
+    "sz": "0.00061",
+    "tid": 747522625782068,
+    "time": 1791862362255,
+    "users": [
+     "0x48d287ec28d470dcdbf7f7ed034a30a3054a5e64",
+     "0x2ca4927174ba283d8a57f60ef3589844035a2930"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xe3f7e108fbbd2746e5710446717566020ccd00ee96b0461887c08c5bbab10131",
+       "px": "83306.0",
+       "side": "B",
+       "sz": "0.00118",
+       "tid": 660939977752105,
+       "time": 1791862368098
+      }
+     ],
+     "request": {
+      "endTime": 1791862369098,
+      "startTime": 1791862367098,
+      "type": "userFillsByTime",
+      "user": "0xe11b5dcb42f6cf07560159de82a30790d7544a00"
+     },
+     "response_fills": 1,
+     "response_sha256": "d4b8ccb389a24a6fb40c44a1042c2d4e8d2fba269d811a29abcad554d0a9c38e",
+     "role": "buyer",
+     "user": "0xe11b5dcb42f6cf07560159de82a30790d7544a00"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xe3f7e108fbbd2746e5710446717566020ccd00ee96b0461887c08c5bbab10131",
+       "px": "83306.0",
+       "side": "A",
+       "sz": "0.00118",
+       "tid": 660939977752105,
+       "time": 1791862368098
+      }
+     ],
+     "request": {
+      "endTime": 1791862369098,
+      "startTime": 1791862367098,
+      "type": "userFillsByTime",
+      "user": "0xe2990ce029db870c805e90a1a8a1d8a1c52255d6"
+     },
+     "response_fills": 19,
+     "response_sha256": "9966c242cd4d536d4c3eed403d367ce10254ed624761d056864f7a2ac032ab9f",
+     "role": "seller",
+     "user": "0xe2990ce029db870c805e90a1a8a1d8a1c52255d6"
+    }
+   ],
+   "recv_ms": 1791862368634,
+   "session": 1,
+   "tid": 660939977752105,
+   "time": 1791862368098,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xe3f7e108fbbd2746e5710446717566020ccd00ee96b0461887c08c5bbab10131",
+    "px": "83306.0",
+    "side": "B",
+    "sz": "0.00118",
+    "tid": 660939977752105,
+    "time": 1791862368098,
+    "users": [
+     "0xe11b5dcb42f6cf07560159de82a30790d7544a00",
+     "0xe2990ce029db870c805e90a1a8a1d8a1c52255d6"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xdd283d52d75bb049dea104467175800202950038725ecf1b80f0e8a5965f8a34",
+       "px": "83336.0",
+       "side": "B",
+       "sz": "0.00239",
+       "tid": 889429888246788,
+       "time": 1791862369949
+      }
+     ],
+     "request": {
+      "endTime": 1791862370949,
+      "startTime": 1791862368949,
+      "type": "userFillsByTime",
+      "user": "0xfc667adba8d4837586078f4fdcdc29804337ca06"
+     },
+     "response_fills": 11,
+     "response_sha256": "31932428506ea320426b62a06d06b5da6330ab66e0967212f9ad34775b542d10",
+     "role": "buyer",
+     "user": "0xfc667adba8d4837586078f4fdcdc29804337ca06"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xdd283d52d75bb049dea104467175800202950038725ecf1b80f0e8a5965f8a34",
+       "px": "83336.0",
+       "side": "A",
+       "sz": "0.00239",
+       "tid": 889429888246788,
+       "time": 1791862369949
+      }
+     ],
+     "request": {
+      "endTime": 1791862370949,
+      "startTime": 1791862368949,
+      "type": "userFillsByTime",
+      "user": "0xf4827b61bd5879d12c4d0aaa078a96c3a9c3f953"
+     },
+     "response_fills": 2,
+     "response_sha256": "bc6a225231e00c76d495ae66448874f4299913d7e857dba1b80f1622e8a03e8b",
+     "role": "seller",
+     "user": "0xf4827b61bd5879d12c4d0aaa078a96c3a9c3f953"
+    }
+   ],
+   "recv_ms": 1791862370670,
+   "session": 1,
+   "tid": 889429888246788,
+   "time": 1791862369949,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xdd283d52d75bb049dea104467175800202950038725ecf1b80f0e8a5965f8a34",
+    "px": "83336.0",
+    "side": "B",
+    "sz": "0.00239",
+    "tid": 889429888246788,
+    "time": 1791862369949,
+    "users": [
+     "0xfc667adba8d4837586078f4fdcdc29804337ca06",
+     "0xf4827b61bd5879d12c4d0aaa078a96c3a9c3f953"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x4e312d756011fb6c4faa044671758d00006c455afb151a3ef1f9d8c81f15d556",
+       "px": "83328.0",
+       "side": "B",
+       "sz": "0.28831",
+       "tid": 328812800819141,
+       "time": 1791862370901
+      }
+     ],
+     "request": {
+      "endTime": 1791862371901,
+      "startTime": 1791862369901,
+      "type": "userFillsByTime",
+      "user": "0xaf68caebaa151dd592112a07e2344b3950e13561"
+     },
+     "response_fills": 1,
+     "response_sha256": "4c6dab84881c5a49d8a82713ee8f19800a6d548f7df34ba5a0239c903dfe26cc",
+     "role": "buyer",
+     "user": "0xaf68caebaa151dd592112a07e2344b3950e13561"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x4e312d756011fb6c4faa044671758d00006c455afb151a3ef1f9d8c81f15d556",
+       "px": "83328.0",
+       "side": "A",
+       "sz": "0.28831",
+       "tid": 328812800819141,
+       "time": 1791862370901
+      }
+     ],
+     "request": {
+      "endTime": 1791862371901,
+      "startTime": 1791862369901,
+      "type": "userFillsByTime",
+      "user": "0xfe6424ce8683781424b26019d082776558fdecf0"
+     },
+     "response_fills": 3,
+     "response_sha256": "c319fffb01794471761b291bab39d68d82220f9b61fe14625346ac6a87878dcf",
+     "role": "seller",
+     "user": "0xfe6424ce8683781424b26019d082776558fdecf0"
+    }
+   ],
+   "recv_ms": 1791862371419,
+   "session": 1,
+   "tid": 328812800819141,
+   "time": 1791862370901,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x4e312d756011fb6c4faa044671758d00006c455afb151a3ef1f9d8c81f15d556",
+    "px": "83328.0",
+    "side": "A",
+    "sz": "0.28831",
+    "tid": 328812800819141,
+    "time": 1791862370901,
+    "users": [
+     "0xaf68caebaa151dd592112a07e2344b3950e13561",
+     "0xfe6424ce8683781424b26019d082776558fdecf0"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x6bf6fa2d351dd2676d7004467175a102166c0012d010f1390fbfa57ff411ac52",
+       "px": "83341.0",
+       "side": "B",
+       "sz": "0.0022",
+       "tid": 356568189289081,
+       "time": 1791862372267
+      }
+     ],
+     "request": {
+      "endTime": 1791862373267,
+      "startTime": 1791862371267,
+      "type": "userFillsByTime",
+      "user": "0x6f29289232c3f44ab7caf789c137761d81a2604e"
+     },
+     "response_fills": 2,
+     "response_sha256": "2c1ac20f139aebbdc5508b85f05eb011c959f79fb2eab61cbdc82fddd0b0b303",
+     "role": "buyer",
+     "user": "0x6f29289232c3f44ab7caf789c137761d81a2604e"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x6bf6fa2d351dd2676d7004467175a102166c0012d010f1390fbfa57ff411ac52",
+       "px": "83341.0",
+       "side": "A",
+       "sz": "0.0022",
+       "tid": 356568189289081,
+       "time": 1791862372267
+      }
+     ],
+     "request": {
+      "endTime": 1791862373267,
+      "startTime": 1791862371267,
+      "type": "userFillsByTime",
+      "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+     },
+     "response_fills": 4,
+     "response_sha256": "cbc2332af3ae49da1ee06482a75e6bcb7646e64f2e65dd4732a94c9fdb5e25db",
+     "role": "seller",
+     "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+    }
+   ],
+   "recv_ms": 1791862372663,
+   "session": 1,
+   "tid": 356568189289081,
+   "time": 1791862372267,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x6bf6fa2d351dd2676d7004467175a102166c0012d010f1390fbfa57ff411ac52",
+    "px": "83341.0",
+    "side": "B",
+    "sz": "0.0022",
+    "tid": 356568189289081,
+    "time": 1791862372267,
+    "users": [
+     "0x6f29289232c3f44ab7caf789c137761d81a2604e",
+     "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": false,
+    "seller_side_is_A": false,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x2305ef62bad18481247f04467175c8020625004855d4a353c6ce9ab579d55e6b",
+       "px": "83346.0",
+       "side": "B",
+       "sz": "0.21372",
+       "tid": 251680551977555,
+       "time": 1791862374983
+      }
+     ],
+     "request": {
+      "endTime": 1791862375983,
+      "startTime": 1791862373983,
+      "type": "userFillsByTime",
+      "user": "0xa62b923a112d50d03e1e096bbd53422490dac104"
+     },
+     "response_fills": 15,
+     "response_sha256": "47867b72bece4e5ac3a4495349bfd3a7d4c3e4e771adb4618f9db4c812da54af",
+     "role": "buyer",
+     "user": "0xa62b923a112d50d03e1e096bbd53422490dac104"
+    },
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862375983,
+      "startTime": 1791862373983,
+      "type": "userFillsByTime",
+      "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "seller",
+     "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    }
+   ],
+   "recv_ms": 1791862375665,
+   "session": 1,
+   "tid": 251680551977555,
+   "time": 1791862374983,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x2305ef62bad18481247f04467175c8020625004855d4a353c6ce9ab579d55e6b",
+    "px": "83346.0",
+    "side": "A",
+    "sz": "0.21372",
+    "tid": 251680551977555,
+    "time": 1791862374983,
+    "users": [
+     "0xa62b923a112d50d03e1e096bbd53422490dac104",
+     "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x03fb4cf8c724b9b70575044671761302057b00de6227d889a7c3f84b862893a1",
+       "px": "83267.0",
+       "side": "B",
+       "sz": "0.00047",
+       "tid": 375886718093749,
+       "time": 1791862380154
+      }
+     ],
+     "request": {
+      "endTime": 1791862381154,
+      "startTime": 1791862379154,
+      "type": "userFillsByTime",
+      "user": "0x10180c65dd06d3f226e1b2a8488798636e74ed6c"
+     },
+     "response_fills": 3,
+     "response_sha256": "3dcb73210d07e6c2cbe11755f270dc055c57d3f2b555a3d99621965e110ea28e",
+     "role": "buyer",
+     "user": "0x10180c65dd06d3f226e1b2a8488798636e74ed6c"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x03fb4cf8c724b9b70575044671761302057b00de6227d889a7c3f84b862893a1",
+       "px": "83267.0",
+       "side": "A",
+       "sz": "0.00047",
+       "tid": 375886718093749,
+       "time": 1791862380154
+      }
+     ],
+     "request": {
+      "endTime": 1791862381154,
+      "startTime": 1791862379154,
+      "type": "userFillsByTime",
+      "user": "0x67cd5c1c4548c7ec1a20fadefca19ad42e6230da"
+     },
+     "response_fills": 1,
+     "response_sha256": "3422175dc82d56e31ea5d3b7b8513e168902bc79cd6f992d1f0340a60d0ec104",
+     "role": "seller",
+     "user": "0x67cd5c1c4548c7ec1a20fadefca19ad42e6230da"
+    }
+   ],
+   "recv_ms": 1791862380541,
+   "session": 1,
+   "tid": 375886718093749,
+   "time": 1791862380154,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x03fb4cf8c724b9b70575044671761302057b00de6227d889a7c3f84b862893a1",
+    "px": "83267.0",
+    "side": "B",
+    "sz": "0.00047",
+    "tid": 375886718093749,
+    "time": 1791862380154,
+    "users": [
+     "0x10180c65dd06d3f226e1b2a8488798636e74ed6c",
+     "0x67cd5c1c4548c7ec1a20fadefca19ad42e6230da"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xab5b3a33385fea44acd40446717688020ffd0018d35309164f23e585f753c42f",
+       "px": "83274.0",
+       "side": "B",
+       "sz": "0.00117",
+       "tid": 392258791607075,
+       "time": 1791862388857
+      }
+     ],
+     "request": {
+      "endTime": 1791862389857,
+      "startTime": 1791862387857,
+      "type": "userFillsByTime",
+      "user": "0xc8a2af53a3aa16d26586bdc7a96e89eb26c6b606"
+     },
+     "response_fills": 1,
+     "response_sha256": "9d371e5d89aeac1e8afe20618ec074062c955772f698650ac00979186e23326b",
+     "role": "buyer",
+     "user": "0xc8a2af53a3aa16d26586bdc7a96e89eb26c6b606"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xab5b3a33385fea44acd40446717688020ffd0018d35309164f23e585f753c42f",
+       "px": "83274.0",
+       "side": "A",
+       "sz": "0.00117",
+       "tid": 392258791607075,
+       "time": 1791862388857
+      }
+     ],
+     "request": {
+      "endTime": 1791862389857,
+      "startTime": 1791862387857,
+      "type": "userFillsByTime",
+      "user": "0xa51b6bbd7f835d7da10eddfdefb91254497bae17"
+     },
+     "response_fills": 8,
+     "response_sha256": "159f8dcf308b24361081e39d9f2feea820d92c4075a2f651054e6945d6a57f53",
+     "role": "seller",
+     "user": "0xa51b6bbd7f835d7da10eddfdefb91254497bae17"
+    }
+   ],
+   "recv_ms": 1791862389273,
+   "session": 1,
+   "tid": 392258791607075,
+   "time": 1791862388857,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xab5b3a33385fea44acd40446717688020ffd0018d35309164f23e585f753c42f",
+    "px": "83274.0",
+    "side": "B",
+    "sz": "0.00117",
+    "tid": 392258791607075,
+    "time": 1791862388857,
+    "users": [
+     "0xc8a2af53a3aa16d26586bdc7a96e89eb26c6b606",
+     "0xa51b6bbd7f835d7da10eddfdefb91254497bae17"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x59c634b3016f84125b3f04467176f302085f00989c62a2e4fd8ee005c0635dfc",
+       "px": "83212.0",
+       "side": "B",
+       "sz": "0.00014",
+       "tid": 810316508413951,
+       "time": 1791862396310
+      }
+     ],
+     "request": {
+      "endTime": 1791862397310,
+      "startTime": 1791862395310,
+      "type": "userFillsByTime",
+      "user": "0xb787bb4193bebdc02fa7455f2a1da8c4692cb680"
+     },
+     "response_fills": 1,
+     "response_sha256": "735517bbc93ba4a9611216b3f25a10e0ff7c86f96078314702f694754bc42ece",
+     "role": "buyer",
+     "user": "0xb787bb4193bebdc02fa7455f2a1da8c4692cb680"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x59c634b3016f84125b3f04467176f302085f00989c62a2e4fd8ee005c0635dfc",
+       "px": "83212.0",
+       "side": "A",
+       "sz": "0.00014",
+       "tid": 810316508413951,
+       "time": 1791862396310
+      }
+     ],
+     "request": {
+      "endTime": 1791862397310,
+      "startTime": 1791862395310,
+      "type": "userFillsByTime",
+      "user": "0xbb160cb61e694570f9d570f9fcde7c61dd2143ad"
+     },
+     "response_fills": 3,
+     "response_sha256": "9f529657cb7ae9150bc91f82843748360fc5d562cceffad53bcf0e9fae940cda",
+     "role": "seller",
+     "user": "0xbb160cb61e694570f9d570f9fcde7c61dd2143ad"
+    }
+   ],
+   "recv_ms": 1791862396582,
+   "session": 1,
+   "tid": 810316508413951,
+   "time": 1791862396310,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x59c634b3016f84125b3f04467176f302085f00989c62a2e4fd8ee005c0635dfc",
+    "px": "83212.0",
+    "side": "A",
+    "sz": "0.00014",
+    "tid": 810316508413951,
+    "time": 1791862396310,
+    "users": [
+     "0xb787bb4193bebdc02fa7455f2a1da8c4692cb680",
+     "0xbb160cb61e694570f9d570f9fcde7c61dd2143ad"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x8c936aaed8a1bda78e0d044671776f020687009473a4dc79305c160197a59792",
+       "px": "83200.0",
+       "side": "B",
+       "sz": "0.01441",
+       "tid": 11329907018973,
+       "time": 1791862404894
+      }
+     ],
+     "request": {
+      "endTime": 1791862405894,
+      "startTime": 1791862403894,
+      "type": "userFillsByTime",
+      "user": "0x5a461f607721350f3afc4b3eb6af29ec3e484d23"
+     },
+     "response_fills": 1,
+     "response_sha256": "3a496c074f19baf194d3b9035213aacf15a70d59a5e6e62ea15c39972c2669f2",
+     "role": "buyer",
+     "user": "0x5a461f607721350f3afc4b3eb6af29ec3e484d23"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x8c936aaed8a1bda78e0d044671776f020687009473a4dc79305c160197a59792",
+       "px": "83200.0",
+       "side": "A",
+       "sz": "0.01441",
+       "tid": 11329907018973,
+       "time": 1791862404894
+      }
+     ],
+     "request": {
+      "endTime": 1791862405894,
+      "startTime": 1791862403894,
+      "type": "userFillsByTime",
+      "user": "0x468ccf43f6a8e2b7a91696231a71e9a8777ae410"
+     },
+     "response_fills": 22,
+     "response_sha256": "81e0b3c6f45a6d1d3ee60cad6c8da4e6e721f3af19790b4fb64fc44f3d912a20",
+     "role": "seller",
+     "user": "0x468ccf43f6a8e2b7a91696231a71e9a8777ae410"
+    }
+   ],
+   "recv_ms": 1791862405197,
+   "session": 1,
+   "tid": 11329907018973,
+   "time": 1791862404894,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x8c936aaed8a1bda78e0d044671776f020687009473a4dc79305c160197a59792",
+    "px": "83200.0",
+    "side": "A",
+    "sz": "0.01441",
+    "tid": 11329907018973,
+    "time": 1791862404894,
+    "users": [
+     "0x5a461f607721350f3afc4b3eb6af29ec3e484d23",
+     "0x468ccf43f6a8e2b7a91696231a71e9a8777ae410"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xcd0840a0fe3ad33bce8104467177e30208040086993df20d70d0ebf3bd3ead26",
+       "px": "83159.0",
+       "side": "B",
+       "sz": "0.07461",
+       "tid": 1045605723126952,
+       "time": 1791862412964
+      }
+     ],
+     "request": {
+      "endTime": 1791862413964,
+      "startTime": 1791862411964,
+      "type": "userFillsByTime",
+      "user": "0x2cffce91b4e0c81df18726ff66b31b2b1545e1ad"
+     },
+     "response_fills": 1,
+     "response_sha256": "63c255eb1d4bc436ded4791aafbaae2aea373b6eef05486604ed20789fd77efe",
+     "role": "buyer",
+     "user": "0x2cffce91b4e0c81df18726ff66b31b2b1545e1ad"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xcd0840a0fe3ad33bce8104467177e30208040086993df20d70d0ebf3bd3ead26",
+       "px": "83159.0",
+       "side": "A",
+       "sz": "0.07461",
+       "tid": 1045605723126952,
+       "time": 1791862412964
+      }
+     ],
+     "request": {
+      "endTime": 1791862413964,
+      "startTime": 1791862411964,
+      "type": "userFillsByTime",
+      "user": "0xb5a6924d1da4e54705079b9957f6dedee5e62f82"
+     },
+     "response_fills": 5,
+     "response_sha256": "f4d07edb711712c4ea856eb276eefb86003ddaf7b3ac72eefcbd359b754353a0",
+     "role": "seller",
+     "user": "0xb5a6924d1da4e54705079b9957f6dedee5e62f82"
+    }
+   ],
+   "recv_ms": 1791862413355,
+   "session": 1,
+   "tid": 1045605723126952,
+   "time": 1791862412964,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xcd0840a0fe3ad33bce8104467177e30208040086993df20d70d0ebf3bd3ead26",
+    "px": "83159.0",
+    "side": "A",
+    "sz": "0.07461",
+    "tid": 1045605723126952,
+    "time": 1791862412964,
+    "users": [
+     "0x2cffce91b4e0c81df18726ff66b31b2b1545e1ad",
+     "0xb5a6924d1da4e54705079b9957f6dedee5e62f82"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x63dd5e3762e33ee9655704467178780205de001cfde65dbb07a6098a21e718d4",
+       "px": "83223.0",
+       "side": "B",
+       "sz": "0.06005",
+       "tid": 347767965536029,
+       "time": 1791862423369
+      }
+     ],
+     "request": {
+      "endTime": 1791862424369,
+      "startTime": 1791862422369,
+      "type": "userFillsByTime",
+      "user": "0x1ec15e24896f4feb55dd70d22dc3620ae3cc990c"
+     },
+     "response_fills": 1,
+     "response_sha256": "88316e9eb3e1da9c534613d0ad7eedd9cf4e17dd18d92920f53fccbaede838cc",
+     "role": "buyer",
+     "user": "0x1ec15e24896f4feb55dd70d22dc3620ae3cc990c"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x63dd5e3762e33ee9655704467178780205de001cfde65dbb07a6098a21e718d4",
+       "px": "83223.0",
+       "side": "A",
+       "sz": "0.06005",
+       "tid": 347767965536029,
+       "time": 1791862423369
+      }
+     ],
+     "request": {
+      "endTime": 1791862424369,
+      "startTime": 1791862422369,
+      "type": "userFillsByTime",
+      "user": "0x4aa599fc8de37757cb9f098d9f071dea865c94b2"
+     },
+     "response_fills": 3,
+     "response_sha256": "d33a5c8f19b12332acc0d262bfd249e5e4b9b8b1283c9373383575af58f264c0",
+     "role": "seller",
+     "user": "0x4aa599fc8de37757cb9f098d9f071dea865c94b2"
+    }
+   ],
+   "recv_ms": 1791862423709,
+   "session": 1,
+   "tid": 347767965536029,
+   "time": 1791862423369,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0x63dd5e3762e33ee9655704467178780205de001cfde65dbb07a6098a21e718d4",
+    "px": "83223.0",
+    "side": "A",
+    "sz": "0.06005",
+    "tid": 347767965536029,
+    "time": 1791862423369,
+    "users": [
+     "0x1ec15e24896f4feb55dd70d22dc3620ae3cc990c",
+     "0x4aa599fc8de37757cb9f098d9f071dea865c94b2"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": false,
+    "seller_side_is_A": false,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xb4894d6647ae8006b603044671793702040f004be2a19ed85851f8b906a259f1",
+       "px": "83198.0",
+       "side": "B",
+       "sz": "0.04289",
+       "tid": 1032747351060355,
+       "time": 1791862436891
+      }
+     ],
+     "request": {
+      "endTime": 1791862437891,
+      "startTime": 1791862435891,
+      "type": "userFillsByTime",
+      "user": "0xdd7a372377fc633f74ab6e20963803d52f448830"
+     },
+     "response_fills": 26,
+     "response_sha256": "19888901d991ff6fdf3ddf71d9bdc86d563f243e2009a9f32852048abc4dd46b",
+     "role": "buyer",
+     "user": "0xdd7a372377fc633f74ab6e20963803d52f448830"
+    },
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862437891,
+      "startTime": 1791862435891,
+      "type": "userFillsByTime",
+      "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "seller",
+     "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    }
+   ],
+   "recv_ms": 1791862437196,
+   "session": 1,
+   "tid": 1032747351060355,
+   "time": 1791862436891,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xb4894d6647ae8006b603044671793702040f004be2a19ed85851f8b906a259f1",
+    "px": "83198.0",
+    "side": "A",
+    "sz": "0.04289",
+    "tid": 1032747351060355,
+    "time": 1791862436891,
+    "users": [
+     "0xdd7a372377fc633f74ab6e20963803d52f448830",
+     "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xb50a15c3e4bbdebbb6830446717974020d1700a97fbefd8d58d2c116a3bfb8a6",
+       "px": "83218.0",
+       "side": "B",
+       "sz": "0.00067",
+       "tid": 830023331570257,
+       "time": 1791862441273
+      }
+     ],
+     "request": {
+      "endTime": 1791862442273,
+      "startTime": 1791862440273,
+      "type": "userFillsByTime",
+      "user": "0x73007eace6ab017d80e372ec96700b9b088be28d"
+     },
+     "response_fills": 1,
+     "response_sha256": "16ad6e1cb78a19f5db1de553b193f3150a168d3476860b4993d57303be7b27c4",
+     "role": "buyer",
+     "user": "0x73007eace6ab017d80e372ec96700b9b088be28d"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xb50a15c3e4bbdebbb6830446717974020d1700a97fbefd8d58d2c116a3bfb8a6",
+       "px": "83218.0",
+       "side": "A",
+       "sz": "0.00067",
+       "tid": 830023331570257,
+       "time": 1791862441273
+      }
+     ],
+     "request": {
+      "endTime": 1791862442273,
+      "startTime": 1791862440273,
+      "type": "userFillsByTime",
+      "user": "0x0eecd62efb05009e2b72964b4bcdbcf653afd4c5"
+     },
+     "response_fills": 6,
+     "response_sha256": "d93e941e5a04cd3b8840b5bad563dd8f0eb67a222962f7af7aaadf0fb8d07818",
+     "role": "seller",
+     "user": "0x0eecd62efb05009e2b72964b4bcdbcf653afd4c5"
+    }
+   ],
+   "recv_ms": 1791862441596,
+   "session": 1,
+   "tid": 830023331570257,
+   "time": 1791862441273,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xb50a15c3e4bbdebbb6830446717974020d1700a97fbefd8d58d2c116a3bfb8a6",
+    "px": "83218.0",
+    "side": "B",
+    "sz": "0.00067",
+    "tid": 830023331570257,
+    "time": 1791862441273,
+    "users": [
+     "0x73007eace6ab017d80e372ec96700b9b088be28d",
+     "0x0eecd62efb05009e2b72964b4bcdbcf653afd4c5"
+    ]
+   }
+  },
+  {
+   "coin": "BTC",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xe9317bac34127cf4eaab04467179b50204780091cf159bc68cfa26fef31656df",
+       "px": "83289.0",
+       "side": "B",
+       "sz": "0.00048",
+       "tid": 1125601400489183,
+       "time": 1791862445534
+      }
+     ],
+     "request": {
+      "endTime": 1791862446534,
+      "startTime": 1791862444534,
+      "type": "userFillsByTime",
+      "user": "0x03cfefb6d8c04b5aa66acd4497bb548ffe82d52c"
+     },
+     "response_fills": 1,
+     "response_sha256": "374eadca5af4bd1f4bda9542485803f1264015417bf09ceb1674e9c915f6fdff",
+     "role": "buyer",
+     "user": "0x03cfefb6d8c04b5aa66acd4497bb548ffe82d52c"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xe9317bac34127cf4eaab04467179b50204780091cf159bc68cfa26fef31656df",
+       "px": "83289.0",
+       "side": "A",
+       "sz": "0.00048",
+       "tid": 1125601400489183,
+       "time": 1791862445534
+      }
+     ],
+     "request": {
+      "endTime": 1791862446534,
+      "startTime": 1791862444534,
+      "type": "userFillsByTime",
+      "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+     },
+     "response_fills": 1,
+     "response_sha256": "22f02bc71657eae86bac4ebd98f442c4f7eb0603da19f0036bbb4e28d591dbeb",
+     "role": "seller",
+     "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+    }
+   ],
+   "recv_ms": 1791862446358,
+   "session": 1,
+   "tid": 1125601400489183,
+   "time": 1791862445534,
+   "trade": {
+    "coin": "BTC",
+    "hash": "0xe9317bac34127cf4eaab04467179b50204780091cf159bc68cfa26fef31656df",
+    "px": "83289.0",
+    "side": "B",
+    "sz": "0.00048",
+    "tid": 1125601400489183,
+    "time": 1791862445534,
+    "users": [
+     "0x03cfefb6d8c04b5aa66acd4497bb548ffe82d52c",
+     "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": false,
+    "seller_side_is_A": false,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+       "px": "2492.4",
+       "side": "B",
+       "sz": "0.0153",
+       "tid": 680937613700209,
+       "time": 1791861956040
+      }
+     ],
+     "request": {
+      "endTime": 1791861957040,
+      "startTime": 1791861955040,
+      "type": "userFillsByTime",
+      "user": "0xe6c650f79e5668859e6ec53f64a8daa4acaeab81"
+     },
+     "response_fills": 1,
+     "response_sha256": "54f47075bf8c93aacc46cdc90fa0f16a97b7931e68304f6b0f6cd3073f597577",
+     "role": "buyer",
+     "user": "0xe6c650f79e5668859e6ec53f64a8daa4acaeab81"
+    },
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791861957040,
+      "startTime": 1791861955040,
+      "type": "userFillsByTime",
+      "user": "0x940343d6a14f39cdb167dccf986ef33e7b93369e"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "seller",
+     "user": "0x940343d6a14f39cdb167dccf986ef33e7b93369e"
+    }
+   ],
+   "recv_ms": 1791861956298,
+   "session": 1,
+   "tid": 680937613700209,
+   "time": 1791861956040,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "px": "2492.4",
+    "side": "A",
+    "sz": "0.0153",
+    "tid": 680937613700209,
+    "time": 1791861956040,
+    "users": [
+     "0xe6c650f79e5668859e6ec53f64a8daa4acaeab81",
+     "0x940343d6a14f39cdb167dccf986ef33e7b93369e"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": false,
+    "buyer_side_is_B": false,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791861998991,
+      "startTime": 1791861996991,
+      "type": "userFillsByTime",
+      "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "buyer",
+     "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xf8ef169b23bb6af4fa68044671612d02042a0080bebe89c79cb7c1ede2bf44df",
+       "px": "2494.8",
+       "side": "A",
+       "sz": "0.2992",
+       "tid": 119428680101486,
+       "time": 1791861997991
+      }
+     ],
+     "request": {
+      "endTime": 1791861998991,
+      "startTime": 1791861996991,
+      "type": "userFillsByTime",
+      "user": "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+     },
+     "response_fills": 8,
+     "response_sha256": "fd138ae043e491cf13ca6e77c2b1b301f27372175e9829465e393ea593a48bee",
+     "role": "seller",
+     "user": "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+    }
+   ],
+   "recv_ms": 1791861998231,
+   "session": 1,
+   "tid": 119428680101486,
+   "time": 1791861997991,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xf8ef169b23bb6af4fa68044671612d02042a0080bebe89c79cb7c1ede2bf44df",
+    "px": "2494.8",
+    "side": "B",
+    "sz": "0.2992",
+    "tid": 119428680101486,
+    "time": 1791861997991,
+    "users": [
+     "0xf5d81a135f756ca16544e53c20fc20643ec3ad53",
+     "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xf74c6a144ab276d5f8c6044671632a02036900f9e5b595a89b15156709b650c0",
+       "px": "2494.1",
+       "side": "B",
+       "sz": "0.0401",
+       "tid": 771143847751201,
+       "time": 1791862034525
+      }
+     ],
+     "request": {
+      "endTime": 1791862035525,
+      "startTime": 1791862033525,
+      "type": "userFillsByTime",
+      "user": "0xa62b923a112d50d03e1e096bbd53422490dac104"
+     },
+     "response_fills": 2,
+     "response_sha256": "b5ef498446e9719eea350d4d203bb3213dc6c4a3c3b7bab0a4abc1205967b07d",
+     "role": "buyer",
+     "user": "0xa62b923a112d50d03e1e096bbd53422490dac104"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xf74c6a144ab276d5f8c6044671632a02036900f9e5b595a89b15156709b650c0",
+       "px": "2494.1",
+       "side": "A",
+       "sz": "0.0401",
+       "tid": 771143847751201,
+       "time": 1791862034525
+      }
+     ],
+     "request": {
+      "endTime": 1791862035525,
+      "startTime": 1791862033525,
+      "type": "userFillsByTime",
+      "user": "0x22b3fd8129a84ab4ca1c2220309e4fbca0b257a9"
+     },
+     "response_fills": 1,
+     "response_sha256": "1831d4fa9f212d1f8f83c528a866eb1345cc8f70d6c332d29de2fffc1ec050a2",
+     "role": "seller",
+     "user": "0x22b3fd8129a84ab4ca1c2220309e4fbca0b257a9"
+    }
+   ],
+   "recv_ms": 1791862034720,
+   "session": 1,
+   "tid": 771143847751201,
+   "time": 1791862034525,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xf74c6a144ab276d5f8c6044671632a02036900f9e5b595a89b15156709b650c0",
+    "px": "2494.1",
+    "side": "A",
+    "sz": "0.0401",
+    "tid": 771143847751201,
+    "time": 1791862034525,
+    "users": [
+     "0xa62b923a112d50d03e1e096bbd53422490dac104",
+     "0x22b3fd8129a84ab4ca1c2220309e4fbca0b257a9"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": false,
+    "buyer_side_is_B": false,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862081047,
+      "startTime": 1791862079047,
+      "type": "userFillsByTime",
+      "user": "0x688d081f0c3f0c2fa07a0da587916e9edd443d62"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "buyer",
+     "user": "0x688d081f0c3f0c2fa07a0da587916e9edd443d62"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+       "px": "2492.6",
+       "side": "A",
+       "sz": "0.0047",
+       "tid": 348313885344090,
+       "time": 1791862080047
+      }
+     ],
+     "request": {
+      "endTime": 1791862081047,
+      "startTime": 1791862079047,
+      "type": "userFillsByTime",
+      "user": "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+     },
+     "response_fills": 4,
+     "response_sha256": "72b6f0674eda9a02064ab89fbf8196137022f4e0b346c0c4b20094d1d687531b",
+     "role": "seller",
+     "user": "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+    }
+   ],
+   "recv_ms": 1791862080363,
+   "session": 1,
+   "tid": 348313885344090,
+   "time": 1791862080047,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "px": "2492.6",
+    "side": "B",
+    "sz": "0.0047",
+    "tid": 348313885344090,
+    "time": 1791862080047,
+    "users": [
+     "0x688d081f0c3f0c2fa07a0da587916e9edd443d62",
+     "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x37590dfe4df97e5038d20446716cbd02049e00e3e8fc9d22db21b9510cfd583a",
+       "px": "2494.9",
+       "side": "B",
+       "sz": "0.0045",
+       "tid": 529827994908312,
+       "time": 1791862208570
+      }
+     ],
+     "request": {
+      "endTime": 1791862209570,
+      "startTime": 1791862207570,
+      "type": "userFillsByTime",
+      "user": "0x3a140f8456b03f25ace243a211dca7b6c4bdb994"
+     },
+     "response_fills": 1,
+     "response_sha256": "711497e35dc2a4bd969d6925f373ae7bda1690e9e560c27ab7e9c13dce7876a6",
+     "role": "buyer",
+     "user": "0x3a140f8456b03f25ace243a211dca7b6c4bdb994"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x37590dfe4df97e5038d20446716cbd02049e00e3e8fc9d22db21b9510cfd583a",
+       "px": "2494.9",
+       "side": "A",
+       "sz": "0.0045",
+       "tid": 529827994908312,
+       "time": 1791862208570
+      }
+     ],
+     "request": {
+      "endTime": 1791862209570,
+      "startTime": 1791862207570,
+      "type": "userFillsByTime",
+      "user": "0x5483dd0f8b7d2544a6ac14ba8659988178fd9f4a"
+     },
+     "response_fills": 4,
+     "response_sha256": "52b25eb09fd47087a94c7c20a7a22acc78ef31e8e12743020e0c58ad739cee1f",
+     "role": "seller",
+     "user": "0x5483dd0f8b7d2544a6ac14ba8659988178fd9f4a"
+    }
+   ],
+   "recv_ms": 1791862208877,
+   "session": 1,
+   "tid": 529827994908312,
+   "time": 1791862208570,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x37590dfe4df97e5038d20446716cbd02049e00e3e8fc9d22db21b9510cfd583a",
+    "px": "2494.9",
+    "side": "B",
+    "sz": "0.0045",
+    "tid": 529827994908312,
+    "time": 1791862208570,
+    "users": [
+     "0x3a140f8456b03f25ace243a211dca7b6c4bdb994",
+     "0x5483dd0f8b7d2544a6ac14ba8659988178fd9f4a"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": false,
+    "seller_side_is_A": false,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x0f130e2aff2abf6e108c0446716e8502034100109a2dde40b2dbb97dbe2e9958",
+       "px": "2496.0",
+       "side": "B",
+       "sz": "0.4032",
+       "tid": 214298161062689,
+       "time": 1791862241020
+      }
+     ],
+     "request": {
+      "endTime": 1791862242020,
+      "startTime": 1791862240020,
+      "type": "userFillsByTime",
+      "user": "0x7b7f72a28fe109fa703eeed7984f2a8a68fedee2"
+     },
+     "response_fills": 6,
+     "response_sha256": "14a1e96d70458f9f0a21bbbbd7108fa9a4903f7f7f5c133a9e0227560867964f",
+     "role": "buyer",
+     "user": "0x7b7f72a28fe109fa703eeed7984f2a8a68fedee2"
+    },
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862242020,
+      "startTime": 1791862240020,
+      "type": "userFillsByTime",
+      "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "seller",
+     "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    }
+   ],
+   "recv_ms": 1791862241291,
+   "session": 1,
+   "tid": 214298161062689,
+   "time": 1791862241020,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x0f130e2aff2abf6e108c0446716e8502034100109a2dde40b2dbb97dbe2e9958",
+    "px": "2496.0",
+    "side": "B",
+    "sz": "0.4032",
+    "tid": 214298161062689,
+    "time": 1791862241020,
+    "users": [
+     "0x7b7f72a28fe109fa703eeed7984f2a8a68fedee2",
+     "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xfb5d0241acef9b75fcd60446716fa50208dd002747e2ba489f25ad946be37560",
+       "px": "2497.0",
+       "side": "B",
+       "sz": "0.2955",
+       "tid": 110096831140124,
+       "time": 1791862261021
+      }
+     ],
+     "request": {
+      "endTime": 1791862262021,
+      "startTime": 1791862260021,
+      "type": "userFillsByTime",
+      "user": "0xbba9651d001014cb81628a91f824feb32e4a91e5"
+     },
+     "response_fills": 5,
+     "response_sha256": "420f96554971f402420f258e50f9d862664ea977be1beb7c36ee3a736c9b8c75",
+     "role": "buyer",
+     "user": "0xbba9651d001014cb81628a91f824feb32e4a91e5"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xfb5d0241acef9b75fcd60446716fa50208dd002747e2ba489f25ad946be37560",
+       "px": "2497.0",
+       "side": "A",
+       "sz": "0.2955",
+       "tid": 110096831140124,
+       "time": 1791862261021
+      }
+     ],
+     "request": {
+      "endTime": 1791862262021,
+      "startTime": 1791862260021,
+      "type": "userFillsByTime",
+      "user": "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+     },
+     "response_fills": 105,
+     "response_sha256": "440acb1831a2609f6dff8e457a464e242d5fbc48a3db20877c8698bf21f53bd5",
+     "role": "seller",
+     "user": "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+    }
+   ],
+   "recv_ms": 1791862261507,
+   "session": 1,
+   "tid": 110096831140124,
+   "time": 1791862261021,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xfb5d0241acef9b75fcd60446716fa50208dd002747e2ba489f25ad946be37560",
+    "px": "2497.0",
+    "side": "B",
+    "sz": "0.2955",
+    "tid": 110096831140124,
+    "time": 1791862261021,
+    "users": [
+     "0xbba9651d001014cb81628a91f824feb32e4a91e5",
+     "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x2ce1d258fda6a0782e5b0446716fda00001cea3e98a9bf4ad0aa7dabbcaa7a62",
+       "px": "2497.8",
+       "side": "B",
+       "sz": "6.1872",
+       "tid": 1059064010211598,
+       "time": 1791862264733
+      }
+     ],
+     "request": {
+      "endTime": 1791862265733,
+      "startTime": 1791862263733,
+      "type": "userFillsByTime",
+      "user": "0x2afafaf9e8c39c968ff88df7a104dc3b5e2f6e62"
+     },
+     "response_fills": 2,
+     "response_sha256": "1fa80d33797066f52ee6e1a77f2500bda026110b1385dcd3060f00ed121a3aa3",
+     "role": "buyer",
+     "user": "0x2afafaf9e8c39c968ff88df7a104dc3b5e2f6e62"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x2ce1d258fda6a0782e5b0446716fda00001cea3e98a9bf4ad0aa7dabbcaa7a62",
+       "px": "2497.8",
+       "side": "A",
+       "sz": "6.1872",
+       "tid": 1059064010211598,
+       "time": 1791862264733
+      }
+     ],
+     "request": {
+      "endTime": 1791862265733,
+      "startTime": 1791862263733,
+      "type": "userFillsByTime",
+      "user": "0x0a8817c801b0801c2f2acfc8778a7cd807161e07"
+     },
+     "response_fills": 5,
+     "response_sha256": "37f74a4d49dd036de03947fe43e132dd36cdcc0de83aff155e1be4861330f323",
+     "role": "seller",
+     "user": "0x0a8817c801b0801c2f2acfc8778a7cd807161e07"
+    }
+   ],
+   "recv_ms": 1791862265169,
+   "session": 1,
+   "tid": 1059064010211598,
+   "time": 1791862264733,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x2ce1d258fda6a0782e5b0446716fda00001cea3e98a9bf4ad0aa7dabbcaa7a62",
+    "px": "2497.8",
+    "side": "B",
+    "sz": "6.1872",
+    "tid": 1059064010211598,
+    "time": 1791862264733,
+    "users": [
+     "0x2afafaf9e8c39c968ff88df7a104dc3b5e2f6e62",
+     "0x0a8817c801b0801c2f2acfc8778a7cd807161e07"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": false,
+    "seller_side_is_A": false,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xb041ebedaab39b80b1bb044671708602059d00d345b6ba52540a974069b7756b",
+       "px": "2498.4",
+       "side": "B",
+       "sz": "16.0316",
+       "tid": 787395968234278,
+       "time": 1791862277355
+      }
+     ],
+     "request": {
+      "endTime": 1791862278355,
+      "startTime": 1791862276355,
+      "type": "userFillsByTime",
+      "user": "0x69369ad76474577121293fcf015a4c90e49b9417"
+     },
+     "response_fills": 41,
+     "response_sha256": "cb8aa2c49cff0ae90d82ca62b7c15c873add0a669a2b321f0c0d3fdc2173adb4",
+     "role": "buyer",
+     "user": "0x69369ad76474577121293fcf015a4c90e49b9417"
+    },
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862278355,
+      "startTime": 1791862276355,
+      "type": "userFillsByTime",
+      "user": "0xecb63caa47c7c4e77f60f1ce858cf28dc2b82b00"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "seller",
+     "user": "0xecb63caa47c7c4e77f60f1ce858cf28dc2b82b00"
+    }
+   ],
+   "recv_ms": 1791862277626,
+   "session": 1,
+   "tid": 787395968234278,
+   "time": 1791862277355,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xb041ebedaab39b80b1bb044671708602059d00d345b6ba52540a974069b7756b",
+    "px": "2498.4",
+    "side": "B",
+    "sz": "16.0316",
+    "tid": 787395968234278,
+    "time": 1791862277355,
+    "users": [
+     "0x69369ad76474577121293fcf015a4c90e49b9417",
+     "0xecb63caa47c7c4e77f60f1ce858cf28dc2b82b00"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x50008780fe1e211d517a04467170a4020d2d006699113feff3c932d3bd11fb07",
+       "px": "2499.6",
+       "side": "B",
+       "sz": "0.216",
+       "tid": 570895197670003,
+       "time": 1791862279493
+      }
+     ],
+     "request": {
+      "endTime": 1791862280493,
+      "startTime": 1791862278493,
+      "type": "userFillsByTime",
+      "user": "0x24a81ade94952eff40bdb081a230f8fdd4a4313c"
+     },
+     "response_fills": 2,
+     "response_sha256": "986ff69f8f29e87d41cb6bf05a9efecb6ba9c5386b2b9b81e88e348666ab99a4",
+     "role": "buyer",
+     "user": "0x24a81ade94952eff40bdb081a230f8fdd4a4313c"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x50008780fe1e211d517a04467170a4020d2d006699113feff3c932d3bd11fb07",
+       "px": "2499.6",
+       "side": "A",
+       "sz": "0.216",
+       "tid": 570895197670003,
+       "time": 1791862279493
+      }
+     ],
+     "request": {
+      "endTime": 1791862280493,
+      "startTime": 1791862278493,
+      "type": "userFillsByTime",
+      "user": "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+     },
+     "response_fills": 78,
+     "response_sha256": "14c6e02d221a0a0168555d5141de85e2f49a446565d3958cd47d85f886c65764",
+     "role": "seller",
+     "user": "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+    }
+   ],
+   "recv_ms": 1791862280231,
+   "session": 1,
+   "tid": 570895197670003,
+   "time": 1791862279493,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x50008780fe1e211d517a04467170a4020d2d006699113feff3c932d3bd11fb07",
+    "px": "2499.6",
+    "side": "B",
+    "sz": "0.216",
+    "tid": 570895197670003,
+    "time": 1791862279493,
+    "users": [
+     "0x24a81ade94952eff40bdb081a230f8fdd4a4313c",
+     "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x18a1d62634e8aa371a1b04467170e6020558000bcfebc909bc6a8178f3ec8421",
+       "px": "2499.3",
+       "side": "B",
+       "sz": "1.2351",
+       "tid": 50022678283034,
+       "time": 1791862284296
+      }
+     ],
+     "request": {
+      "endTime": 1791862285296,
+      "startTime": 1791862283296,
+      "type": "userFillsByTime",
+      "user": "0xd90647646547bacb7eb3a5af3023767fe4d9ec1c"
+     },
+     "response_fills": 2,
+     "response_sha256": "73e1ca7d9641a8c262b774ac712c75df986da33571cac5d1aa08e76d7572823c",
+     "role": "buyer",
+     "user": "0xd90647646547bacb7eb3a5af3023767fe4d9ec1c"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x18a1d62634e8aa371a1b04467170e6020558000bcfebc909bc6a8178f3ec8421",
+       "px": "2499.3",
+       "side": "A",
+       "sz": "1.2351",
+       "tid": 50022678283034,
+       "time": 1791862284296
+      }
+     ],
+     "request": {
+      "endTime": 1791862285296,
+      "startTime": 1791862283296,
+      "type": "userFillsByTime",
+      "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+     },
+     "response_fills": 9,
+     "response_sha256": "b5695712182a0de887689848a724f4c8a2b9a35caef5af4da1482914a76d1a5f",
+     "role": "seller",
+     "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+    }
+   ],
+   "recv_ms": 1791862284941,
+   "session": 1,
+   "tid": 50022678283034,
+   "time": 1791862284296,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x18a1d62634e8aa371a1b04467170e6020558000bcfebc909bc6a8178f3ec8421",
+    "px": "2499.3",
+    "side": "A",
+    "sz": "1.2351",
+    "tid": 50022678283034,
+    "time": 1791862284296,
+    "users": [
+     "0xd90647646547bacb7eb3a5af3023767fe4d9ec1c",
+     "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xb764d201cd995e01b8de044671716b0214c200e7689c7cd35b2d7d548c9d37ec",
+       "px": "2497.8",
+       "side": "B",
+       "sz": "0.2316",
+       "tid": 198785701934080,
+       "time": 1791862294194
+      }
+     ],
+     "request": {
+      "endTime": 1791862295194,
+      "startTime": 1791862293194,
+      "type": "userFillsByTime",
+      "user": "0xaf08637ef9cb057ec79822d4244068404a80ef9d"
+     },
+     "response_fills": 3,
+     "response_sha256": "d3d764abcf1df396777d587c977338c6d7a9779a8f68f58778d6f36ddd28074c",
+     "role": "buyer",
+     "user": "0xaf08637ef9cb057ec79822d4244068404a80ef9d"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xb764d201cd995e01b8de044671716b0214c200e7689c7cd35b2d7d548c9d37ec",
+       "px": "2497.8",
+       "side": "A",
+       "sz": "0.2316",
+       "tid": 198785701934080,
+       "time": 1791862294194
+      }
+     ],
+     "request": {
+      "endTime": 1791862295194,
+      "startTime": 1791862293194,
+      "type": "userFillsByTime",
+      "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+     },
+     "response_fills": 26,
+     "response_sha256": "91183324fa30850cd41ee0432663c84fe724f883f0c7759356fec15058e13a2c",
+     "role": "seller",
+     "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+    }
+   ],
+   "recv_ms": 1791862294606,
+   "session": 1,
+   "tid": 198785701934080,
+   "time": 1791862294194,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xb764d201cd995e01b8de044671716b0214c200e7689c7cd35b2d7d548c9d37ec",
+    "px": "2497.8",
+    "side": "A",
+    "sz": "0.2316",
+    "tid": 198785701934080,
+    "time": 1791862294194,
+    "users": [
+     "0xaf08637ef9cb057ec79822d4244068404a80ef9d",
+     "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xe2656f5e30ad1221e3df044671728d020bf10043cba030f3862e1ab0efa0ec0c",
+       "px": "2499.9",
+       "side": "B",
+       "sz": "0.361",
+       "tid": 89401620827576,
+       "time": 1791862314743
+      }
+     ],
+     "request": {
+      "endTime": 1791862315743,
+      "startTime": 1791862313743,
+      "type": "userFillsByTime",
+      "user": "0x89bdfd6caab017d28d9296c2513e687db99b3df2"
+     },
+     "response_fills": 1,
+     "response_sha256": "53eab67df23d3fc36e4b869cb9888c9bf6016b904cf6259e93dfaff11e931c33",
+     "role": "buyer",
+     "user": "0x89bdfd6caab017d28d9296c2513e687db99b3df2"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xe2656f5e30ad1221e3df044671728d020bf10043cba030f3862e1ab0efa0ec0c",
+       "px": "2499.9",
+       "side": "A",
+       "sz": "0.361",
+       "tid": 89401620827576,
+       "time": 1791862314743
+      }
+     ],
+     "request": {
+      "endTime": 1791862315743,
+      "startTime": 1791862313743,
+      "type": "userFillsByTime",
+      "user": "0x25773676902085225ae5751075e4161369334897"
+     },
+     "response_fills": 8,
+     "response_sha256": "7ec4c85477e4ec41439d113187b21b5bb02ad8835f3b6ebd3666103200232904",
+     "role": "seller",
+     "user": "0x25773676902085225ae5751075e4161369334897"
+    }
+   ],
+   "recv_ms": 1791862315343,
+   "session": 1,
+   "tid": 89401620827576,
+   "time": 1791862314743,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xe2656f5e30ad1221e3df044671728d020bf10043cba030f3862e1ab0efa0ec0c",
+    "px": "2499.9",
+    "side": "B",
+    "sz": "0.361",
+    "tid": 89401620827576,
+    "time": 1791862314743,
+    "users": [
+     "0x89bdfd6caab017d28d9296c2513e687db99b3df2",
+     "0x25773676902085225ae5751075e4161369334897"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x708e1bf1792639e6720704467172aa020e6800d7142958b81456c744382a13d1",
+       "px": "2500.1",
+       "side": "B",
+       "sz": "0.3999",
+       "tid": 900306972397406,
+       "time": 1791862316782
+      }
+     ],
+     "request": {
+      "endTime": 1791862317782,
+      "startTime": 1791862315782,
+      "type": "userFillsByTime",
+      "user": "0x823ecdcdfc67ab8885f4d24ba595050611fe76c9"
+     },
+     "response_fills": 18,
+     "response_sha256": "56e4abfa89cc03af8d8814c2065449fbb7cf65e3d5c34ee64b96e20c58e0ec9f",
+     "role": "buyer",
+     "user": "0x823ecdcdfc67ab8885f4d24ba595050611fe76c9"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x708e1bf1792639e6720704467172aa020e6800d7142958b81456c744382a13d1",
+       "px": "2500.1",
+       "side": "A",
+       "sz": "0.3999",
+       "tid": 900306972397406,
+       "time": 1791862316782
+      }
+     ],
+     "request": {
+      "endTime": 1791862317782,
+      "startTime": 1791862315782,
+      "type": "userFillsByTime",
+      "user": "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+     },
+     "response_fills": 53,
+     "response_sha256": "fedca1d75897f42d2625d5c02f5d60b08726c97c9db12795c16ec7e24370ae6a",
+     "role": "seller",
+     "user": "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+    }
+   ],
+   "recv_ms": 1791862317238,
+   "session": 1,
+   "tid": 900306972397406,
+   "time": 1791862316782,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x708e1bf1792639e6720704467172aa020e6800d7142958b81456c744382a13d1",
+    "px": "2500.1",
+    "side": "B",
+    "sz": "0.3999",
+    "tid": 900306972397406,
+    "time": 1791862316782,
+    "users": [
+     "0x823ecdcdfc67ab8885f4d24ba595050611fe76c9",
+     "0x4e23288cee4960f9f962195c22948e4bc7ae20c3"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xc87567e35508bfddc9ef04467172b30214e900c8f00bdeaf6c3e1336140c99c8",
+       "px": "2503.1",
+       "side": "B",
+       "sz": "0.143",
+       "tid": 755581947716981,
+       "time": 1791862317475
+      }
+     ],
+     "request": {
+      "endTime": 1791862318475,
+      "startTime": 1791862316475,
+      "type": "userFillsByTime",
+      "user": "0xe4d933fb1e35c6e6a489ccc65561094e39efcb76"
+     },
+     "response_fills": 5,
+     "response_sha256": "35bdd31eea151e555a03c370d4fdd20352f076c79cce132a21a9d4f089c67345",
+     "role": "buyer",
+     "user": "0xe4d933fb1e35c6e6a489ccc65561094e39efcb76"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xc87567e35508bfddc9ef04467172b30214e900c8f00bdeaf6c3e1336140c99c8",
+       "px": "2503.1",
+       "side": "A",
+       "sz": "0.143",
+       "tid": 755581947716981,
+       "time": 1791862317475
+      }
+     ],
+     "request": {
+      "endTime": 1791862318475,
+      "startTime": 1791862316475,
+      "type": "userFillsByTime",
+      "user": "0xe29edc6d7fb705556c5ee7462ed6e9ea6638ef05"
+     },
+     "response_fills": 6,
+     "response_sha256": "2acb2ce9650665668ca9149247fb837dcde8b0d84399a8772dbb2063749a7970",
+     "role": "seller",
+     "user": "0xe29edc6d7fb705556c5ee7462ed6e9ea6638ef05"
+    }
+   ],
+   "recv_ms": 1791862318163,
+   "session": 1,
+   "tid": 755581947716981,
+   "time": 1791862317475,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xc87567e35508bfddc9ef04467172b30214e900c8f00bdeaf6c3e1336140c99c8",
+    "px": "2503.1",
+    "side": "B",
+    "sz": "0.143",
+    "tid": 755581947716981,
+    "time": 1791862317475,
+    "users": [
+     "0xe4d933fb1e35c6e6a489ccc65561094e39efcb76",
+     "0xe29edc6d7fb705556c5ee7462ed6e9ea6638ef05"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xfcc9c6a59171be81fe4304467172b7020a34008b2c74dd54a09271f85075986c",
+       "px": "2504.0",
+       "side": "B",
+       "sz": "1.6163",
+       "tid": 136012542007875,
+       "time": 1791862317737
+      }
+     ],
+     "request": {
+      "endTime": 1791862318737,
+      "startTime": 1791862316737,
+      "type": "userFillsByTime",
+      "user": "0xab112398e16f586bd2be0bbe490b9c08ca08f86e"
+     },
+     "response_fills": 3,
+     "response_sha256": "93e29f57d7b2326bed7364ce744330469db3ae467a43a99342b704d987f6c01a",
+     "role": "buyer",
+     "user": "0xab112398e16f586bd2be0bbe490b9c08ca08f86e"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xfcc9c6a59171be81fe4304467172b7020a34008b2c74dd54a09271f85075986c",
+       "px": "2504.0",
+       "side": "A",
+       "sz": "1.6163",
+       "tid": 136012542007875,
+       "time": 1791862317737
+      }
+     ],
+     "request": {
+      "endTime": 1791862318737,
+      "startTime": 1791862316737,
+      "type": "userFillsByTime",
+      "user": "0x4e28dee6193035725e993860bf8838d4e5326a9c"
+     },
+     "response_fills": 85,
+     "response_sha256": "979213c4730f737c58f77abc6591a09970447890d5c082d9ea907c2722f1e8c5",
+     "role": "seller",
+     "user": "0x4e28dee6193035725e993860bf8838d4e5326a9c"
+    }
+   ],
+   "recv_ms": 1791862318445,
+   "session": 1,
+   "tid": 136012542007875,
+   "time": 1791862317737,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xfcc9c6a59171be81fe4304467172b7020a34008b2c74dd54a09271f85075986c",
+    "px": "2504.0",
+    "side": "B",
+    "sz": "1.6163",
+    "tid": 136012542007875,
+    "time": 1791862317737,
+    "users": [
+     "0xab112398e16f586bd2be0bbe490b9c08ca08f86e",
+     "0x4e28dee6193035725e993860bf8838d4e5326a9c"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x116d76063fb5bf2312e704467172dd020f7a00ebdab8ddf5b5362158feb9990d",
+       "px": "2504.1",
+       "side": "B",
+       "sz": "0.02",
+       "tid": 706621453425395,
+       "time": 1791862320581
+      }
+     ],
+     "request": {
+      "endTime": 1791862321581,
+      "startTime": 1791862319581,
+      "type": "userFillsByTime",
+      "user": "0xe54399c38b91cead48d2a87557445f4f1644f9d5"
+     },
+     "response_fills": 1,
+     "response_sha256": "36f797959759e621ecdbc51b77620b96e9eb7c219d59ccede53bf7783941da75",
+     "role": "buyer",
+     "user": "0xe54399c38b91cead48d2a87557445f4f1644f9d5"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x116d76063fb5bf2312e704467172dd020f7a00ebdab8ddf5b5362158feb9990d",
+       "px": "2504.1",
+       "side": "A",
+       "sz": "0.02",
+       "tid": 706621453425395,
+       "time": 1791862320581
+      }
+     ],
+     "request": {
+      "endTime": 1791862321581,
+      "startTime": 1791862319581,
+      "type": "userFillsByTime",
+      "user": "0x1500d190ab3c5a88d68940a807dae03c91384c93"
+     },
+     "response_fills": 1,
+     "response_sha256": "a42433ae741093b64bebc9e40c47ca40fc30ce185fba3f25282b037de63ea050",
+     "role": "seller",
+     "user": "0x1500d190ab3c5a88d68940a807dae03c91384c93"
+    }
+   ],
+   "recv_ms": 1791862321218,
+   "session": 1,
+   "tid": 706621453425395,
+   "time": 1791862320581,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x116d76063fb5bf2312e704467172dd020f7a00ebdab8ddf5b5362158feb9990d",
+    "px": "2504.1",
+    "side": "A",
+    "sz": "0.02",
+    "tid": 706621453425395,
+    "time": 1791862320581,
+    "users": [
+     "0xe54399c38b91cead48d2a87557445f4f1644f9d5",
+     "0x1500d190ab3c5a88d68940a807dae03c91384c93"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x033099473871db1204aa04467173740207b3002cd374f9e4a6f94499f775b4fc",
+       "px": "2502.4",
+       "side": "B",
+       "sz": "0.0041",
+       "tid": 882569405913815,
+       "time": 1791862331449
+      }
+     ],
+     "request": {
+      "endTime": 1791862332449,
+      "startTime": 1791862330449,
+      "type": "userFillsByTime",
+      "user": "0x53570dce000ccf8ee3fee18c8a3f16bdd00555a8"
+     },
+     "response_fills": 1,
+     "response_sha256": "b021f9c9d91f5976be47ab946eb5aeee5efcd3cb2ea1c98c1eacb2e42c6406e5",
+     "role": "buyer",
+     "user": "0x53570dce000ccf8ee3fee18c8a3f16bdd00555a8"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x033099473871db1204aa04467173740207b3002cd374f9e4a6f94499f775b4fc",
+       "px": "2502.4",
+       "side": "A",
+       "sz": "0.0041",
+       "tid": 882569405913815,
+       "time": 1791862331449
+      }
+     ],
+     "request": {
+      "endTime": 1791862332449,
+      "startTime": 1791862330449,
+      "type": "userFillsByTime",
+      "user": "0x66aec3752ac8c7e817708ea13a40942dd31b0a30"
+     },
+     "response_fills": 4,
+     "response_sha256": "c53e9a62c26012a4da78f730f0f0e23c8333c9e870aadb96f2450b8b59ab7b78",
+     "role": "seller",
+     "user": "0x66aec3752ac8c7e817708ea13a40942dd31b0a30"
+    }
+   ],
+   "recv_ms": 1791862331689,
+   "session": 1,
+   "tid": 882569405913815,
+   "time": 1791862331449,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x033099473871db1204aa04467173740207b3002cd374f9e4a6f94499f775b4fc",
+    "px": "2502.4",
+    "side": "B",
+    "sz": "0.0041",
+    "tid": 882569405913815,
+    "time": 1791862331449,
+    "users": [
+     "0x53570dce000ccf8ee3fee18c8a3f16bdd00555a8",
+     "0x66aec3752ac8c7e817708ea13a40942dd31b0a30"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xfd68bd92658b146efee204467174890213830078008e3341a13168e5248eee59",
+       "px": "2503.5",
+       "side": "B",
+       "sz": "7.5",
+       "tid": 627512026463435,
+       "time": 1791862352622
+      }
+     ],
+     "request": {
+      "endTime": 1791862353622,
+      "startTime": 1791862351622,
+      "type": "userFillsByTime",
+      "user": "0xe54399c38b91cead48d2a87557445f4f1644f9d5"
+     },
+     "response_fills": 1,
+     "response_sha256": "56698d9a09945f1da2508db777b099049ac58e56efa514b8df3449cb1b96ee62",
+     "role": "buyer",
+     "user": "0xe54399c38b91cead48d2a87557445f4f1644f9d5"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xfd68bd92658b146efee204467174890213830078008e3341a13168e5248eee59",
+       "px": "2503.5",
+       "side": "A",
+       "sz": "7.5",
+       "tid": 627512026463435,
+       "time": 1791862352622
+      }
+     ],
+     "request": {
+      "endTime": 1791862353622,
+      "startTime": 1791862351622,
+      "type": "userFillsByTime",
+      "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+     },
+     "response_fills": 7,
+     "response_sha256": "c6f6a13ca0332420e1b1697d6629466e98b4b5e3344aac09c964cb3104c25d39",
+     "role": "seller",
+     "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+    }
+   ],
+   "recv_ms": 1791862353059,
+   "session": 1,
+   "tid": 627512026463435,
+   "time": 1791862352622,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xfd68bd92658b146efee204467174890213830078008e3341a13168e5248eee59",
+    "px": "2503.5",
+    "side": "A",
+    "sz": "7.5",
+    "tid": 627512026463435,
+    "time": 1791862352622,
+    "users": [
+     "0xe54399c38b91cead48d2a87557445f4f1644f9d5",
+     "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": false,
+    "seller_side_is_A": false,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x4ce37ec76c9ba8954e5d04467174d0020a7900ad079ec767f0ac2a1a2b9f827f",
+       "px": "2506.0",
+       "side": "B",
+       "sz": "0.7672",
+       "tid": 641478050079077,
+       "time": 1791862357602
+      }
+     ],
+     "request": {
+      "endTime": 1791862358602,
+      "startTime": 1791862356602,
+      "type": "userFillsByTime",
+      "user": "0x97991003fd631e2923f40cab2a4fdc35e60dc807"
+     },
+     "response_fills": 9,
+     "response_sha256": "7f9d8c53d7f3a17664a4de71e6e06a078c1104795eeb883e8dbe11b56a254cc6",
+     "role": "buyer",
+     "user": "0x97991003fd631e2923f40cab2a4fdc35e60dc807"
+    },
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862358602,
+      "startTime": 1791862356602,
+      "type": "userFillsByTime",
+      "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "seller",
+     "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    }
+   ],
+   "recv_ms": 1791862358030,
+   "session": 1,
+   "tid": 641478050079077,
+   "time": 1791862357602,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x4ce37ec76c9ba8954e5d04467174d0020a7900ad079ec767f0ac2a1a2b9f827f",
+    "px": "2506.0",
+    "side": "A",
+    "sz": "0.7672",
+    "tid": 641478050079077,
+    "time": 1791862357602,
+    "users": [
+     "0x97991003fd631e2923f40cab2a4fdc35e60dc807",
+     "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x37a23b6b7c52c362391b04467174dd0209d400511755e234db6ae6be3b569d4c",
+       "px": "2508.2",
+       "side": "B",
+       "sz": "0.0251",
+       "tid": 388562390535932,
+       "time": 1791862358467
+      }
+     ],
+     "request": {
+      "endTime": 1791862359467,
+      "startTime": 1791862357467,
+      "type": "userFillsByTime",
+      "user": "0x953cb34f310cdef2ec0351e8c20e87bd53bd3bce"
+     },
+     "response_fills": 7,
+     "response_sha256": "873931d0b1a3859627c732b13bfc084bac90f6ac9d8a33e11702823bdb2edeac",
+     "role": "buyer",
+     "user": "0x953cb34f310cdef2ec0351e8c20e87bd53bd3bce"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x37a23b6b7c52c362391b04467174dd0209d400511755e234db6ae6be3b569d4c",
+       "px": "2508.2",
+       "side": "A",
+       "sz": "0.0251",
+       "tid": 388562390535932,
+       "time": 1791862358467
+      }
+     ],
+     "request": {
+      "endTime": 1791862359467,
+      "startTime": 1791862357467,
+      "type": "userFillsByTime",
+      "user": "0x25773676902085225ae5751075e4161369334897"
+     },
+     "response_fills": 19,
+     "response_sha256": "20ba52dafc97795b0ffcf7e5ae65609780981e0bebf4897cf41c55bd8df52d07",
+     "role": "seller",
+     "user": "0x25773676902085225ae5751075e4161369334897"
+    }
+   ],
+   "recv_ms": 1791862359381,
+   "session": 1,
+   "tid": 388562390535932,
+   "time": 1791862358467,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x37a23b6b7c52c362391b04467174dd0209d400511755e234db6ae6be3b569d4c",
+    "px": "2508.2",
+    "side": "B",
+    "sz": "0.0251",
+    "tid": 388562390535932,
+    "time": 1791862358467,
+    "users": [
+     "0x953cb34f310cdef2ec0351e8c20e87bd53bd3bce",
+     "0x25773676902085225ae5751075e4161369334897"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x4f0c2fc16d67d7ea508504467174fb0218f700a7086af6bcf2d4db142c6bb1d4",
+       "px": "2510.0",
+       "side": "B",
+       "sz": "0.0207",
+       "tid": 341718257962267,
+       "time": 1791862360609
+      }
+     ],
+     "request": {
+      "endTime": 1791862361609,
+      "startTime": 1791862359609,
+      "type": "userFillsByTime",
+      "user": "0xd7f1d74f2943d3fc5d06b94761af121c23c10290"
+     },
+     "response_fills": 9,
+     "response_sha256": "d1ade9993096b50fac2fb63c9888e58ff424cc910346134065eeeae957d6f85c",
+     "role": "buyer",
+     "user": "0xd7f1d74f2943d3fc5d06b94761af121c23c10290"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x4f0c2fc16d67d7ea508504467174fb0218f700a7086af6bcf2d4db142c6bb1d4",
+       "px": "2510.0",
+       "side": "A",
+       "sz": "0.0207",
+       "tid": 341718257962267,
+       "time": 1791862360609
+      }
+     ],
+     "request": {
+      "endTime": 1791862361609,
+      "startTime": 1791862359609,
+      "type": "userFillsByTime",
+      "user": "0xaf5fb76d3cb490e64082f53cfe7591f915dd672e"
+     },
+     "response_fills": 2,
+     "response_sha256": "679317b98ef29ba2702e68061dcbf3769fb1c76ba518114615b0f8661e70fe3f",
+     "role": "seller",
+     "user": "0xaf5fb76d3cb490e64082f53cfe7591f915dd672e"
+    }
+   ],
+   "recv_ms": 1791862361702,
+   "session": 1,
+   "tid": 341718257962267,
+   "time": 1791862360609,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x4f0c2fc16d67d7ea508504467174fb0218f700a7086af6bcf2d4db142c6bb1d4",
+    "px": "2510.0",
+    "side": "B",
+    "sz": "0.0207",
+    "tid": 341718257962267,
+    "time": 1791862360609,
+    "users": [
+     "0xd7f1d74f2943d3fc5d06b94761af121c23c10290",
+     "0xaf5fb76d3cb490e64082f53cfe7591f915dd672e"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xdbe7481aa191234fdd61044671751002190900003c9442217faff36d6094fd3a",
+       "px": "2511.0",
+       "side": "B",
+       "sz": "7.5",
+       "tid": 570668289990661,
+       "time": 1791862362044
+      }
+     ],
+     "request": {
+      "endTime": 1791862363044,
+      "startTime": 1791862361044,
+      "type": "userFillsByTime",
+      "user": "0x72d0b1f98fd9cdd4e46976edd86857b0266a62ea"
+     },
+     "response_fills": 27,
+     "response_sha256": "313def7568ace537ae8e0100898b4c9ff5af5073ad42dd269531a6feab95e63e",
+     "role": "buyer",
+     "user": "0x72d0b1f98fd9cdd4e46976edd86857b0266a62ea"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xdbe7481aa191234fdd61044671751002190900003c9442217faff36d6094fd3a",
+       "px": "2511.0",
+       "side": "A",
+       "sz": "7.5",
+       "tid": 570668289990661,
+       "time": 1791862362044
+      }
+     ],
+     "request": {
+      "endTime": 1791862363044,
+      "startTime": 1791862361044,
+      "type": "userFillsByTime",
+      "user": "0xe54399c38b91cead48d2a87557445f4f1644f9d5"
+     },
+     "response_fills": 3,
+     "response_sha256": "c5e1e4851f4b18550862062abb8602559e3d273c1ce9697dc6f17f1494b96695",
+     "role": "seller",
+     "user": "0xe54399c38b91cead48d2a87557445f4f1644f9d5"
+    }
+   ],
+   "recv_ms": 1791862363166,
+   "session": 1,
+   "tid": 570668289990661,
+   "time": 1791862362044,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xdbe7481aa191234fdd61044671751002190900003c9442217faff36d6094fd3a",
+    "px": "2511.0",
+    "side": "B",
+    "sz": "7.5",
+    "tid": 570668289990661,
+    "time": 1791862362044,
+    "users": [
+     "0x72d0b1f98fd9cdd4e46976edd86857b0266a62ea",
+     "0xe54399c38b91cead48d2a87557445f4f1644f9d5"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xe6e9876a74128c29e8630446717516020dd300500f15aafb8ab232bd33166614",
+       "px": "2510.6",
+       "side": "B",
+       "sz": "5.0",
+       "tid": 443004183377052,
+       "time": 1791862362511
+      }
+     ],
+     "request": {
+      "endTime": 1791862363511,
+      "startTime": 1791862361511,
+      "type": "userFillsByTime",
+      "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+     },
+     "response_fills": 18,
+     "response_sha256": "b192ca0c21803f6fe92ecf76ac08b483d770007fb70ad7e4fdf4ddfdef20cea8",
+     "role": "buyer",
+     "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xe6e9876a74128c29e8630446717516020dd300500f15aafb8ab232bd33166614",
+       "px": "2510.6",
+       "side": "A",
+       "sz": "5.0",
+       "tid": 443004183377052,
+       "time": 1791862362511
+      }
+     ],
+     "request": {
+      "endTime": 1791862363511,
+      "startTime": 1791862361511,
+      "type": "userFillsByTime",
+      "user": "0xf8c5362479968e9b9643c9f3b93fbaf3db008acd"
+     },
+     "response_fills": 2,
+     "response_sha256": "42beac9db28e25a2bc6b09878fb03d24e69f936a4605279e982b2c5b331c9c48",
+     "role": "seller",
+     "user": "0xf8c5362479968e9b9643c9f3b93fbaf3db008acd"
+    }
+   ],
+   "recv_ms": 1791862363699,
+   "session": 1,
+   "tid": 443004183377052,
+   "time": 1791862362511,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xe6e9876a74128c29e8630446717516020dd300500f15aafb8ab232bd33166614",
+    "px": "2510.6",
+    "side": "B",
+    "sz": "5.0",
+    "tid": 443004183377052,
+    "time": 1791862362511,
+    "users": [
+     "0x31dea2516beee92135b96f464eeec3cf292a13f2",
+     "0xf8c5362479968e9b9643c9f3b93fbaf3db008acd"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xfc3a29f85510d7e0fdb304467175610209ac00ddf013f6b3a002d54b1414b1cb",
+       "px": "2510.2",
+       "side": "B",
+       "sz": "0.6001",
+       "tid": 594538362275678,
+       "time": 1791862367747
+      }
+     ],
+     "request": {
+      "endTime": 1791862368747,
+      "startTime": 1791862366747,
+      "type": "userFillsByTime",
+      "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+     },
+     "response_fills": 8,
+     "response_sha256": "93e56003ea139545fae6bcc18a43edda7055f663e4f6dea602f574225118c932",
+     "role": "buyer",
+     "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xfc3a29f85510d7e0fdb304467175610209ac00ddf013f6b3a002d54b1414b1cb",
+       "px": "2510.2",
+       "side": "A",
+       "sz": "0.6001",
+       "tid": 594538362275678,
+       "time": 1791862367747
+      }
+     ],
+     "request": {
+      "endTime": 1791862368747,
+      "startTime": 1791862366747,
+      "type": "userFillsByTime",
+      "user": "0x7b7f72a28fe109fa703eeed7984f2a8a68fedee2"
+     },
+     "response_fills": 51,
+     "response_sha256": "74be0b55b72919775e39ee5cea39b04537c803c2a9ab64b1a1a105c9a793c528",
+     "role": "seller",
+     "user": "0x7b7f72a28fe109fa703eeed7984f2a8a68fedee2"
+    }
+   ],
+   "recv_ms": 1791862368140,
+   "session": 1,
+   "tid": 594538362275678,
+   "time": 1791862367747,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xfc3a29f85510d7e0fdb304467175610209ac00ddf013f6b3a002d54b1414b1cb",
+    "px": "2510.2",
+    "side": "B",
+    "sz": "0.6001",
+    "tid": 594538362275678,
+    "time": 1791862367747,
+    "users": [
+     "0x31dea2516beee92135b96f464eeec3cf292a13f2",
+     "0x7b7f72a28fe109fa703eeed7984f2a8a68fedee2"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xd0d2d76d70ef7e54d24c04467175810210d100530be29d26749b82c02fe3583f",
+       "px": "2512.7",
+       "side": "B",
+       "sz": "17.3077",
+       "tid": 608846808362261,
+       "time": 1791862370048
+      }
+     ],
+     "request": {
+      "endTime": 1791862371048,
+      "startTime": 1791862369048,
+      "type": "userFillsByTime",
+      "user": "0x90781f467684a2b89772353888b7141616230a3e"
+     },
+     "response_fills": 3,
+     "response_sha256": "e871f2bedab92e17e445bc877edc64cd8df987160affe760191e764a430efce5",
+     "role": "buyer",
+     "user": "0x90781f467684a2b89772353888b7141616230a3e"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xd0d2d76d70ef7e54d24c04467175810210d100530be29d26749b82c02fe3583f",
+       "px": "2512.7",
+       "side": "A",
+       "sz": "17.3077",
+       "tid": 608846808362261,
+       "time": 1791862370048
+      }
+     ],
+     "request": {
+      "endTime": 1791862371048,
+      "startTime": 1791862369048,
+      "type": "userFillsByTime",
+      "user": "0x66aec3752ac8c7e817708ea13a40942dd31b0a30"
+     },
+     "response_fills": 9,
+     "response_sha256": "24e4f114aedc319c62ee68a84362a2627749b4328a1280b13ac78251906b30c8",
+     "role": "seller",
+     "user": "0x66aec3752ac8c7e817708ea13a40942dd31b0a30"
+    }
+   ],
+   "recv_ms": 1791862370841,
+   "session": 1,
+   "tid": 608846808362261,
+   "time": 1791862370048,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xd0d2d76d70ef7e54d24c04467175810210d100530be29d26749b82c02fe3583f",
+    "px": "2512.7",
+    "side": "B",
+    "sz": "17.3077",
+    "tid": 608846808362261,
+    "time": 1791862370048,
+    "users": [
+     "0x90781f467684a2b89772353888b7141616230a3e",
+     "0x66aec3752ac8c7e817708ea13a40942dd31b0a30"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x196eb62cb5c8959c1ae804467175ba020772001250cbb46ebd37617f74cc6f86",
+       "px": "2511.1",
+       "side": "B",
+       "sz": "0.0047",
+       "tid": 943887537435771,
+       "time": 1791862373976
+      }
+     ],
+     "request": {
+      "endTime": 1791862374976,
+      "startTime": 1791862372976,
+      "type": "userFillsByTime",
+      "user": "0x9f2982a63815631f47b99b4c5ca6118eeeaa97ee"
+     },
+     "response_fills": 1,
+     "response_sha256": "78a2b2b52589d6c1ecf3b17803799c6323cc8add11937a77eaa9371e80d629e4",
+     "role": "buyer",
+     "user": "0x9f2982a63815631f47b99b4c5ca6118eeeaa97ee"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x196eb62cb5c8959c1ae804467175ba020772001250cbb46ebd37617f74cc6f86",
+       "px": "2511.1",
+       "side": "A",
+       "sz": "0.0047",
+       "tid": 943887537435771,
+       "time": 1791862373976
+      }
+     ],
+     "request": {
+      "endTime": 1791862374976,
+      "startTime": 1791862372976,
+      "type": "userFillsByTime",
+      "user": "0x4cf1aa03b2ee27f922c2b089dc9f7d3a2551e717"
+     },
+     "response_fills": 2,
+     "response_sha256": "4589cac633ab38776c2db79007c86b5b5c0562240c0cf2e7ff1b7d79dce7590c",
+     "role": "seller",
+     "user": "0x4cf1aa03b2ee27f922c2b089dc9f7d3a2551e717"
+    }
+   ],
+   "recv_ms": 1791862374238,
+   "session": 1,
+   "tid": 943887537435771,
+   "time": 1791862373976,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x196eb62cb5c8959c1ae804467175ba020772001250cbb46ebd37617f74cc6f86",
+    "px": "2511.1",
+    "side": "B",
+    "sz": "0.0047",
+    "tid": 943887537435771,
+    "time": 1791862373976,
+    "users": [
+     "0x9f2982a63815631f47b99b4c5ca6118eeeaa97ee",
+     "0x4cf1aa03b2ee27f922c2b089dc9f7d3a2551e717"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x4a7210eee6c4cc974beb0446717642021c5a00d481c7eb69ee3abc41a5c8a681",
+       "px": "2509.4",
+       "side": "B",
+       "sz": "0.5717",
+       "tid": 613971736543996,
+       "time": 1791862383607
+      }
+     ],
+     "request": {
+      "endTime": 1791862384607,
+      "startTime": 1791862382607,
+      "type": "userFillsByTime",
+      "user": "0xce75a235d1a055e4b3eb88545f7215c6f963055a"
+     },
+     "response_fills": 2,
+     "response_sha256": "37ea814f98ae50a0bd2f3284ce5e45aebac6d5b47801e1e4c4bd1637c8d7761d",
+     "role": "buyer",
+     "user": "0xce75a235d1a055e4b3eb88545f7215c6f963055a"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x4a7210eee6c4cc974beb0446717642021c5a00d481c7eb69ee3abc41a5c8a681",
+       "px": "2509.4",
+       "side": "A",
+       "sz": "0.5717",
+       "tid": 613971736543996,
+       "time": 1791862383607
+      }
+     ],
+     "request": {
+      "endTime": 1791862384607,
+      "startTime": 1791862382607,
+      "type": "userFillsByTime",
+      "user": "0x9ede7d6c60c40755352f9f84e146eb9f0ee25327"
+     },
+     "response_fills": 3,
+     "response_sha256": "5cf53410064412beb8e0bc50c68f3a11dbccdcfdbb8887c85b4c96dc8b95d027",
+     "role": "seller",
+     "user": "0x9ede7d6c60c40755352f9f84e146eb9f0ee25327"
+    }
+   ],
+   "recv_ms": 1791862383975,
+   "session": 1,
+   "tid": 613971736543996,
+   "time": 1791862383607,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x4a7210eee6c4cc974beb0446717642021c5a00d481c7eb69ee3abc41a5c8a681",
+    "px": "2509.4",
+    "side": "A",
+    "sz": "0.5717",
+    "tid": 613971736543996,
+    "time": 1791862383607,
+    "users": [
+     "0xce75a235d1a055e4b3eb88545f7215c6f963055a",
+     "0x9ede7d6c60c40755352f9f84e146eb9f0ee25327"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x64bb10448c7fdac7663404467176dc0207eb002a2772f9990883bb974b73b4b2",
+       "px": "2506.4",
+       "side": "B",
+       "sz": "8.2706",
+       "tid": 274669569717542,
+       "time": 1791862394689
+      }
+     ],
+     "request": {
+      "endTime": 1791862395689,
+      "startTime": 1791862393689,
+      "type": "userFillsByTime",
+      "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+     },
+     "response_fills": 13,
+     "response_sha256": "a64b1dda7fadff2d62de959f49951d388adbe3abc06b1da674d4134bb5080acd",
+     "role": "buyer",
+     "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x64bb10448c7fdac7663404467176dc0207eb002a2772f9990883bb974b73b4b2",
+       "px": "2506.4",
+       "side": "A",
+       "sz": "8.2706",
+       "tid": 274669569717542,
+       "time": 1791862394689
+      }
+     ],
+     "request": {
+      "endTime": 1791862395689,
+      "startTime": 1791862393689,
+      "type": "userFillsByTime",
+      "user": "0x0622a2198712c9527817493553dca548f42e8088"
+     },
+     "response_fills": 6,
+     "response_sha256": "c17b33011c232a69c5256e6ff73c63ff9140ad78f967eebe21fb8cf577f5fedf",
+     "role": "seller",
+     "user": "0x0622a2198712c9527817493553dca548f42e8088"
+    }
+   ],
+   "recv_ms": 1791862394949,
+   "session": 1,
+   "tid": 274669569717542,
+   "time": 1791862394689,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x64bb10448c7fdac7663404467176dc0207eb002a2772f9990883bb974b73b4b2",
+    "px": "2506.4",
+    "side": "A",
+    "sz": "8.2706",
+    "tid": 274669569717542,
+    "time": 1791862394689,
+    "users": [
+     "0x3bcae23e8c380dab4732e9a159c0456f12d866f3",
+     "0x0622a2198712c9527817493553dca548f42e8088"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": false,
+    "seller_side_is_A": false,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x56b2b8d71eb186b7582c04467177920206a100bcb9b4a589fa7b6429ddb560a1",
+       "px": "2504.8",
+       "side": "B",
+       "sz": "0.0338",
+       "tid": 842917566782172,
+       "time": 1791862407326
+      }
+     ],
+     "request": {
+      "endTime": 1791862408326,
+      "startTime": 1791862406326,
+      "type": "userFillsByTime",
+      "user": "0x3a140f8456b03f25ace243a211dca7b6c4bdb994"
+     },
+     "response_fills": 2,
+     "response_sha256": "4483ce2b89a8b59e319c998c8ac0504a4427990d045c90e7fb93cf48b745a789",
+     "role": "buyer",
+     "user": "0x3a140f8456b03f25ace243a211dca7b6c4bdb994"
+    },
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862408326,
+      "startTime": 1791862406326,
+      "type": "userFillsByTime",
+      "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "seller",
+     "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    }
+   ],
+   "recv_ms": 1791862407620,
+   "session": 1,
+   "tid": 842917566782172,
+   "time": 1791862407326,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x56b2b8d71eb186b7582c04467177920206a100bcb9b4a589fa7b6429ddb560a1",
+    "px": "2504.8",
+    "side": "A",
+    "sz": "0.0338",
+    "tid": 842917566782172,
+    "time": 1791862407326,
+    "users": [
+     "0x3a140f8456b03f25ace243a211dca7b6c4bdb994",
+     "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": false,
+    "buyer_side_is_B": false,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862436481,
+      "startTime": 1791862434481,
+      "type": "userFillsByTime",
+      "user": "0x010461c14e146ac35fe42271bdc1134ee31c703a"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "buyer",
+     "user": "0x010461c14e146ac35fe42271bdc1134ee31c703a"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x59a825aa39ca2ad35b2104467179220202aa008fd4cd49a5fd70d0fcf8ce04bd",
+       "px": "2503.8",
+       "side": "A",
+       "sz": "0.3223",
+       "tid": 671208068605423,
+       "time": 1791862435481
+      }
+     ],
+     "request": {
+      "endTime": 1791862436481,
+      "startTime": 1791862434481,
+      "type": "userFillsByTime",
+      "user": "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+     },
+     "response_fills": 4,
+     "response_sha256": "ce73b7dbf37c3f0ca6c410ea71c1c31f0506f466317282d74b9f89c9a1ddf4ce",
+     "role": "seller",
+     "user": "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+    }
+   ],
+   "recv_ms": 1791862436065,
+   "session": 1,
+   "tid": 671208068605423,
+   "time": 1791862435481,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x59a825aa39ca2ad35b2104467179220202aa008fd4cd49a5fd70d0fcf8ce04bd",
+    "px": "2503.8",
+    "side": "B",
+    "sz": "0.3223",
+    "tid": 671208068605423,
+    "time": 1791862435481,
+    "users": [
+     "0x010461c14e146ac35fe42271bdc1134ee31c703a",
+     "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xc01b5ca836918c59c1950446717bfc020f3d008dd194ab2b63e407faf5956644",
+       "px": "2504.9",
+       "side": "B",
+       "sz": "0.0044",
+       "tid": 401767646342997,
+       "time": 1791862486368
+      }
+     ],
+     "request": {
+      "endTime": 1791862487368,
+      "startTime": 1791862485368,
+      "type": "userFillsByTime",
+      "user": "0xa05fc56ae035e3834bc27c60d253af809534622c"
+     },
+     "response_fills": 2,
+     "response_sha256": "63e676fcaea4f933073ce12c58019716b69fc5bd6c1514087cadbb7fe6896c63",
+     "role": "buyer",
+     "user": "0xa05fc56ae035e3834bc27c60d253af809534622c"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xc01b5ca836918c59c1950446717bfc020f3d008dd194ab2b63e407faf5956644",
+       "px": "2504.9",
+       "side": "A",
+       "sz": "0.0044",
+       "tid": 401767646342997,
+       "time": 1791862486368
+      }
+     ],
+     "request": {
+      "endTime": 1791862487368,
+      "startTime": 1791862485368,
+      "type": "userFillsByTime",
+      "user": "0x926fd181db88181e2658838d9e60e5739e79afe2"
+     },
+     "response_fills": 1,
+     "response_sha256": "d371afd60019a462d879b1ca2f4cb4f927f9169016299d7beb013792a9ed8f41",
+     "role": "seller",
+     "user": "0x926fd181db88181e2658838d9e60e5739e79afe2"
+    }
+   ],
+   "recv_ms": 1791862486661,
+   "session": 1,
+   "tid": 401767646342997,
+   "time": 1791862486368,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xc01b5ca836918c59c1950446717bfc020f3d008dd194ab2b63e407faf5956644",
+    "px": "2504.9",
+    "side": "A",
+    "sz": "0.0044",
+    "tid": 401767646342997,
+    "time": 1791862486368,
+    "users": [
+     "0xa05fc56ae035e3834bc27c60d253af809534622c",
+     "0x926fd181db88181e2658838d9e60e5739e79afe2"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xad1a986fa7206cedae940446717dfd021269005542238bbf50e343c2662446d8",
+       "px": "2509.3",
+       "side": "B",
+       "sz": "13.2786",
+       "tid": 1113030769739606,
+       "time": 1791862522760
+      }
+     ],
+     "request": {
+      "endTime": 1791862523760,
+      "startTime": 1791862521760,
+      "type": "userFillsByTime",
+      "user": "0x351126a070c9cadef8064ddd7b2d289fc33163aa"
+     },
+     "response_fills": 2,
+     "response_sha256": "8622505a48ebf928e57efb93f3fef7978583eb733a672fd40e0633ce83b3a8d5",
+     "role": "buyer",
+     "user": "0x351126a070c9cadef8064ddd7b2d289fc33163aa"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xad1a986fa7206cedae940446717dfd021269005542238bbf50e343c2662446d8",
+       "px": "2509.3",
+       "side": "A",
+       "sz": "13.2786",
+       "tid": 1113030769739606,
+       "time": 1791862522760
+      }
+     ],
+     "request": {
+      "endTime": 1791862523760,
+      "startTime": 1791862521760,
+      "type": "userFillsByTime",
+      "user": "0xf71ab4e4172730ed096b832f37982942935c7215"
+     },
+     "response_fills": 30,
+     "response_sha256": "72be919debe1dc9a24971749abfc8709f3f6dc45854eb0e6c2e31c72b9711ef9",
+     "role": "seller",
+     "user": "0xf71ab4e4172730ed096b832f37982942935c7215"
+    }
+   ],
+   "recv_ms": 1791862523150,
+   "session": 1,
+   "tid": 1113030769739606,
+   "time": 1791862522760,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xad1a986fa7206cedae940446717dfd021269005542238bbf50e343c2662446d8",
+    "px": "2509.3",
+    "side": "A",
+    "sz": "13.2786",
+    "tid": 1113030769739606,
+    "time": 1791862522760,
+    "users": [
+     "0x351126a070c9cadef8064ddd7b2d289fc33163aa",
+     "0xf71ab4e4172730ed096b832f37982942935c7215"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": false,
+    "seller_side_is_A": false,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x0ebec3887e54d83410380446717e90020d35006e1957f706b2876edb3d58b21e",
+       "px": "2511.0",
+       "side": "B",
+       "sz": "1.2451",
+       "tid": 1068891339660484,
+       "time": 1791862532923
+      }
+     ],
+     "request": {
+      "endTime": 1791862533923,
+      "startTime": 1791862531923,
+      "type": "userFillsByTime",
+      "user": "0x2d760d867ebebd7da5b0be18fed71b4bcc9610eb"
+     },
+     "response_fills": 28,
+     "response_sha256": "494e43bad1678359d4e3eca2ac81c3c63713d687633f222ac3afd398610362ab",
+     "role": "buyer",
+     "user": "0x2d760d867ebebd7da5b0be18fed71b4bcc9610eb"
+    },
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862533923,
+      "startTime": 1791862531923,
+      "type": "userFillsByTime",
+      "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "seller",
+     "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    }
+   ],
+   "recv_ms": 1791862533345,
+   "session": 1,
+   "tid": 1068891339660484,
+   "time": 1791862532923,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x0ebec3887e54d83410380446717e90020d35006e1957f706b2876edb3d58b21e",
+    "px": "2511.0",
+    "side": "A",
+    "sz": "1.2451",
+    "tid": 1068891339660484,
+    "time": 1791862532923,
+    "users": [
+     "0x2d760d867ebebd7da5b0be18fed71b4bcc9610eb",
+     "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": false,
+    "buyer_side_is_B": false,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "B",
+    "trade_side": "B"
+   },
+   "fills": [
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862554029,
+      "startTime": 1791862552029,
+      "type": "userFillsByTime",
+      "user": "0x9d003d4ea17b01542128f8aa4df8dbfb9afa764d"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "buyer",
+     "user": "0x9d003d4ea17b01542128f8aa4df8dbfb9afa764d"
+    },
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+       "px": "2508.6",
+       "side": "A",
+       "sz": "0.3333",
+       "tid": 1061584633774382,
+       "time": 1791862553029
+      }
+     ],
+     "request": {
+      "endTime": 1791862554029,
+      "startTime": 1791862552029,
+      "type": "userFillsByTime",
+      "user": "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+     },
+     "response_fills": 1,
+     "response_sha256": "e201657b91862f0e7b253ede5f68cfc0f138696ec9c268bdcd90a619a04a4483",
+     "role": "seller",
+     "user": "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+    }
+   ],
+   "recv_ms": 1791862553363,
+   "session": 1,
+   "tid": 1061584633774382,
+   "time": 1791862553029,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "px": "2508.6",
+    "side": "B",
+    "sz": "0.3333",
+    "tid": 1061584633774382,
+    "time": 1791862553029,
+    "users": [
+     "0x9d003d4ea17b01542128f8aa4df8dbfb9afa764d",
+     "0x654086857e1fad6dcf05cf6695cce51ea3984268"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x1024cc2e06d162be119e04467180c10206480013a1d48190b3ed7780c5d53ca8",
+       "px": "2508.0",
+       "side": "B",
+       "sz": "2.1284",
+       "tid": 519466689213742,
+       "time": 1791862572959
+      }
+     ],
+     "request": {
+      "endTime": 1791862573959,
+      "startTime": 1791862571959,
+      "type": "userFillsByTime",
+      "user": "0x6ba889db7f923622d3548f621ecc2054b80c1817"
+     },
+     "response_fills": 7,
+     "response_sha256": "d9db4a8a4297d39458e5b044614e79cdf16949d8477b9b2bb85bbfbd0bb18067",
+     "role": "buyer",
+     "user": "0x6ba889db7f923622d3548f621ecc2054b80c1817"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x1024cc2e06d162be119e04467180c10206480013a1d48190b3ed7780c5d53ca8",
+       "px": "2508.0",
+       "side": "A",
+       "sz": "2.1284",
+       "tid": 519466689213742,
+       "time": 1791862572959
+      }
+     ],
+     "request": {
+      "endTime": 1791862573959,
+      "startTime": 1791862571959,
+      "type": "userFillsByTime",
+      "user": "0x8a650359f4991b7e55323aaa54d694a17f4d215c"
+     },
+     "response_fills": 14,
+     "response_sha256": "98896590158aed208faea1450671adb9a93755130c364533b968895e9dd380c6",
+     "role": "seller",
+     "user": "0x8a650359f4991b7e55323aaa54d694a17f4d215c"
+    }
+   ],
+   "recv_ms": 1791862573306,
+   "session": 1,
+   "tid": 519466689213742,
+   "time": 1791862572959,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x1024cc2e06d162be119e04467180c10206480013a1d48190b3ed7780c5d53ca8",
+    "px": "2508.0",
+    "side": "A",
+    "sz": "2.1284",
+    "tid": 519466689213742,
+    "time": 1791862572959,
+    "users": [
+     "0x6ba889db7f923622d3548f621ecc2054b80c1817",
+     "0x8a650359f4991b7e55323aaa54d694a17f4d215c"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": false,
+    "seller_side_is_A": false,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xc2f6c3204f12e938c47004467181cb0202ba0005ea16080a66bf6e730e16c323",
+       "px": "2505.1",
+       "side": "B",
+       "sz": "0.4804",
+       "tid": 3208688052501,
+       "time": 1791862591568
+      }
+     ],
+     "request": {
+      "endTime": 1791862592568,
+      "startTime": 1791862590568,
+      "type": "userFillsByTime",
+      "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+     },
+     "response_fills": 6,
+     "response_sha256": "34f8834ef222908b4a8fb946549e83847547294866019a9eb845004ef77a1351",
+     "role": "buyer",
+     "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+    },
+    {
+     "matched": [],
+     "request": {
+      "endTime": 1791862592568,
+      "startTime": 1791862590568,
+      "type": "userFillsByTime",
+      "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+     },
+     "response_fills": 0,
+     "response_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "role": "seller",
+     "user": "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    }
+   ],
+   "recv_ms": 1791862592188,
+   "session": 1,
+   "tid": 3208688052501,
+   "time": 1791862591568,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xc2f6c3204f12e938c47004467181cb0202ba0005ea16080a66bf6e730e16c323",
+    "px": "2505.1",
+    "side": "A",
+    "sz": "0.4804",
+    "tid": 3208688052501,
+    "time": 1791862591568,
+    "users": [
+     "0x3bcae23e8c380dab4732e9a159c0456f12d866f3",
+     "0xf5d81a135f756ca16544e53c20fc20643ec3ad53"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x9f4671d0f371f904a0c0044671840002072700b68e7517d6430f1d23b275d2ef",
+       "px": "2503.7",
+       "side": "B",
+       "sz": "10.521",
+       "tid": 1120951432102623,
+       "time": 1791862631292
+      }
+     ],
+     "request": {
+      "endTime": 1791862632292,
+      "startTime": 1791862630292,
+      "type": "userFillsByTime",
+      "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+     },
+     "response_fills": 9,
+     "response_sha256": "fe1ce447ea23384aea7097ce4ed525f19cf51747649a9a24cfb00a12e51d3e99",
+     "role": "buyer",
+     "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x9f4671d0f371f904a0c0044671840002072700b68e7517d6430f1d23b275d2ef",
+       "px": "2503.7",
+       "side": "A",
+       "sz": "10.521",
+       "tid": 1120951432102623,
+       "time": 1791862631292
+      }
+     ],
+     "request": {
+      "endTime": 1791862632292,
+      "startTime": 1791862630292,
+      "type": "userFillsByTime",
+      "user": "0x0622a2198712c9527817493553dca548f42e8088"
+     },
+     "response_fills": 4,
+     "response_sha256": "1a0ab04f7e35fd68e30eec8d6620e1f2225648c4ccf17e4ebdc4ca714e6abd0e",
+     "role": "seller",
+     "user": "0x0622a2198712c9527817493553dca548f42e8088"
+    }
+   ],
+   "recv_ms": 1791862631513,
+   "session": 1,
+   "tid": 1120951432102623,
+   "time": 1791862631292,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x9f4671d0f371f904a0c0044671840002072700b68e7517d6430f1d23b275d2ef",
+    "px": "2503.7",
+    "side": "A",
+    "sz": "10.521",
+    "tid": 1120951432102623,
+    "time": 1791862631292,
+    "users": [
+     "0x3bcae23e8c380dab4732e9a159c0456f12d866f3",
+     "0x0622a2198712c9527817493553dca548f42e8088"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0xfae90637e0206a2bfc62044671867d0201f9001d7b2388fe9eb1b18a9f244416",
+       "px": "2502.6",
+       "side": "B",
+       "sz": "0.2397",
+       "tid": 236190826122334,
+       "time": 1791862677423
+      }
+     ],
+     "request": {
+      "endTime": 1791862678423,
+      "startTime": 1791862676423,
+      "type": "userFillsByTime",
+      "user": "0xd071d6d6ea52f5aa34b79e47f908ee48c8215837"
+     },
+     "response_fills": 1,
+     "response_sha256": "ccd92f03868606c3a27be216e78456238af15b40b901c77b0a5ae3fd5696d20d",
+     "role": "buyer",
+     "user": "0xd071d6d6ea52f5aa34b79e47f908ee48c8215837"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0xfae90637e0206a2bfc62044671867d0201f9001d7b2388fe9eb1b18a9f244416",
+       "px": "2502.6",
+       "side": "A",
+       "sz": "0.2397",
+       "tid": 236190826122334,
+       "time": 1791862677423
+      }
+     ],
+     "request": {
+      "endTime": 1791862678423,
+      "startTime": 1791862676423,
+      "type": "userFillsByTime",
+      "user": "0x8eff8ff863c1a54ec6697b7ad98fe30aa344bd5e"
+     },
+     "response_fills": 23,
+     "response_sha256": "320732c8fc5cfcc75f0baf3745edd424f063dc38999e1d58bf948e55035f1b77",
+     "role": "seller",
+     "user": "0x8eff8ff863c1a54ec6697b7ad98fe30aa344bd5e"
+    }
+   ],
+   "recv_ms": 1791862677749,
+   "session": 1,
+   "tid": 236190826122334,
+   "time": 1791862677423,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0xfae90637e0206a2bfc62044671867d0201f9001d7b2388fe9eb1b18a9f244416",
+    "px": "2502.6",
+    "side": "A",
+    "sz": "0.2397",
+    "tid": 236190826122334,
+    "time": 1791862677423,
+    "users": [
+     "0xd071d6d6ea52f5aa34b79e47f908ee48c8215837",
+     "0x8eff8ff863c1a54ec6697b7ad98fe30aa344bd5e"
+    ]
+   }
+  },
+  {
+   "coin": "ETH",
+   "facts": {
+    "buyer_fill_found": true,
+    "buyer_side_is_B": true,
+    "fill_matches_trade": true,
+    "seller_fill_found": true,
+    "seller_side_is_A": true,
+    "side_is_taker": true,
+    "taker_side": "A",
+    "trade_side": "A"
+   },
+   "fills": [
+    {
+     "matched": [
+      {
+       "crossed": false,
+       "hash": "0x23ca4eb6df76e20c25440446718920020247009c7a7a00dec792fa099e7abbf6",
+       "px": "2501.7",
+       "side": "B",
+       "sz": "0.92",
+       "tid": 65993272597199,
+       "time": 1791862725426
+      }
+     ],
+     "request": {
+      "endTime": 1791862726426,
+      "startTime": 1791862724426,
+      "type": "userFillsByTime",
+      "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+     },
+     "response_fills": 1,
+     "response_sha256": "8da7781b3c450f7e0081629a826368ad41faf8816aa54bff418f67a772aef5c7",
+     "role": "buyer",
+     "user": "0x3bcae23e8c380dab4732e9a159c0456f12d866f3"
+    },
+    {
+     "matched": [
+      {
+       "crossed": true,
+       "hash": "0x23ca4eb6df76e20c25440446718920020247009c7a7a00dec792fa099e7abbf6",
+       "px": "2501.7",
+       "side": "A",
+       "sz": "0.92",
+       "tid": 65993272597199,
+       "time": 1791862725426
+      }
+     ],
+     "request": {
+      "endTime": 1791862726426,
+      "startTime": 1791862724426,
+      "type": "userFillsByTime",
+      "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+     },
+     "response_fills": 1,
+     "response_sha256": "e2a739ae9434d6b2761af5c81595ade7161055239f33c5c1a0c5712f1e580ecb",
+     "role": "seller",
+     "user": "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+    }
+   ],
+   "recv_ms": 1791862725620,
+   "session": 1,
+   "tid": 65993272597199,
+   "time": 1791862725426,
+   "trade": {
+    "coin": "ETH",
+    "hash": "0x23ca4eb6df76e20c25440446718920020247009c7a7a00dec792fa099e7abbf6",
+    "px": "2501.7",
+    "side": "A",
+    "sz": "0.92",
+    "tid": 65993272597199,
+    "time": 1791862725426,
+    "users": [
+     "0x3bcae23e8c380dab4732e9a159c0456f12d866f3",
+     "0x31dea2516beee92135b96f464eeec3cf292a13f2"
+    ]
+   }
+  }
+ ],
+ "verified": true
+}

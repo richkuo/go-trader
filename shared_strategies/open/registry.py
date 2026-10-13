@@ -2715,7 +2715,7 @@ def hold_strategy(df: pd.DataFrame) -> pd.DataFrame:
         "expected_interval_ms <= 3600000",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_inconclusive",
     edge_ref="backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md",
     short_entries=True,
     param_validator=cvd_param_validator,

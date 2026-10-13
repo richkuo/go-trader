@@ -5,6 +5,7 @@ import hashlib
 import json
 import sys
 import time
+import urllib.error
 import urllib.request
 
 INFO_URL = "https://api.hyperliquid.xyz/info"
@@ -12,11 +13,21 @@ SCHEMA = "cvd_1638_side_evidence/v1"
 EVIDENCE_VERSION = "hyperliquid-trades-side-aggressor/1638-v1"
 
 
-def post(body: dict) -> bytes:
+def post(body: dict, attempts: int = 8) -> bytes:
     req = urllib.request.Request(INFO_URL, data=json.dumps(body).encode("utf-8"),
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read()
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 and exc.code < 500 or attempt == attempts - 1:
+                raise
+        except urllib.error.URLError:
+            if attempt == attempts - 1:
+                raise
+        time.sleep(min(120, 5 * 2 ** attempt))
+    raise RuntimeError("unreachable")
 
 
 def sample_trades(segment_path: str, per_coin: int, stride: int) -> list:
@@ -92,7 +103,7 @@ def main(argv=None) -> int:
     ap.add_argument("--segment", required=True, help="Recorder segment JSONL to sample accepted trades from")
     ap.add_argument("--per-coin", type=int, default=40)
     ap.add_argument("--stride", type=int, default=97)
-    ap.add_argument("--pause", type=float, default=0.4)
+    ap.add_argument("--pause", type=float, default=1.0)
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
     sample = sample_trades(args.segment, args.per_coin, args.stride)
