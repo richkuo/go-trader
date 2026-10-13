@@ -232,6 +232,7 @@ STRATEGY_INPUTS = {
     "calendar_conditioned_entry": _with_declared_cadence,
     "stochastic_momentum_index": _with_declared_cadence,
     "elder_force_pullback": _with_declared_cadence,
+    "true_strength_index": _with_declared_cadence,
 }
 
 _FIXTURE_CACHE = {}

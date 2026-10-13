@@ -20,7 +20,8 @@ from backtester import Backtester, validate_close_capabilities
 from close_registry_loader import evaluate as close_evaluate
 from closed_bar import FRAME_INTERVAL_ATTR, FRAME_TIMESTAMP_KIND_ATTR, declare_frame_cadence
 from eval_windows import expand_sweep
-from optimizer import DEFAULT_PARAM_RANGES
+import optimizer
+from optimizer import DEFAULT_PARAM_RANGES, strategy_warmup_bars
 from parity_diff import ParityConfig, compute_parity_frame, summarize
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
@@ -421,6 +422,34 @@ def test_boundary_parameters_validate_and_decide_at_l_plus_two_rows(params):
     floats = {k: float(v) for k, v in params.items()}
     pd.testing.assert_frame_equal(_apply(df, floats), out)
     assert _need(BOUNDARY) == 199
+
+
+def test_walk_forward_warmup_keeps_the_decision_before_the_first_scored_bar(monkeypatch):
+    grid = optimizer.generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
+    assert strategy_warmup_bars(NAME, grid, DEFAULT_PARAM_RANGES[NAME]) == max(_need(p) for p in grid) == 194
+    ranges = {"period": [18], "signal_period": [9], "recursion_length": [144, 192]}
+    combos = optimizer.generate_param_grid(ranges)
+    warmup = strategy_warmup_bars(NAME, combos, ranges)
+    assert warmup == 194
+    df = _walk(1500, 5, freq="1h")
+    full = {p["recursion_length"]: _apply(df, p)["signal"] for p in combos}
+    b = next(i for i in range(warmup, len(df)) if full[144].iloc[i] != 0 and full[192].iloc[i] == full[144].iloc[i])
+    df = df.iloc[:2 * (b + 1)]
+    first = {}
+    original = optimizer.Backtester.run
+
+    def record(self, signals_df, *args, **kwargs):
+        p = kwargs.get("params") or {}
+        if signals_df.index[0] == df.index[b]:
+            first.setdefault(p["recursion_length"], int(signals_df["signal"].iloc[0]))
+        return original(self, signals_df, *args, **kwargs)
+
+    monkeypatch.setattr(optimizer.Backtester, "run", record)
+    optimizer.walk_forward_optimize(df, NAME, ranges, n_splits=2, timeframe="1h", registry="futures",
+                                    platform="hyperliquid", verbose=False, close_strategies=_close_refs(),
+                                    direction="long")
+    assert first == {144: int(full[144].iloc[b]), 192: int(full[192].iloc[b])}
+    assert 0 not in first.values()
 
 
 def test_timestamp_column_and_native_close_frames_decide_the_same_way():

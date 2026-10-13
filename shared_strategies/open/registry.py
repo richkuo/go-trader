@@ -69,6 +69,7 @@ from mass_index_reversal import mass_index_reversal_core, mir_param_validator
 from calendar_conditioned_entry import calendar_conditioned_entry_core, calendar_param_validator
 from stochastic_momentum_index import smi_param_validator, stochastic_momentum_index_core
 from elder_force_pullback import efp_param_validator, elder_force_pullback_core
+from true_strength_index import true_strength_index_core, tsi_param_validator
 from klinger_divergence import klinger_divergence_core, klinger_param_validator
 
 
@@ -2155,6 +2156,33 @@ def elder_force_pullback_strategy(df: pd.DataFrame, force_period: int = 13, tren
 
 
 @register(
+    "true_strength_index",
+    "RESEARCH, no-edge (#1667) \u2014 True Strength Index (TSI) trend entries: for every endpoint the evaluator reads exactly recursion_length closes and their recursion_length - 1 successive changes; the signed changes and their absolute values are each smoothed by a slow EMA (weight 2 / (slow_period + 1)) and then a fast EMA (weight 2 / (fast_period + 1)), both stages seeded from the first change of that window. TSI is 100 times the double-smoothed signed change divided by the double-smoothed absolute change; the signal line is an EMA (weight 2 / (signal_period + 1)) of TSI, unset until the first finite TSI of the window and seeded with it. The previous endpoint uses its own window, so a decision reads recursion_length + 1 bars (at most 199). Long when TSI minus signal line is strictly positive, was at or below zero on the previous bar, and TSI is strictly positive; short is the exact mirror. Needs declared bar cadence and recursion_length >= 6 * slow_period; bad candles, timestamp defects, cadence gaps, a zero denominator and invalid derived values inside the window hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"slow_period": 25, "fast_period": 13, "signal_period": 7, "recursion_length": 180},
+    platforms=("futures",),
+    constraints=[
+        "slow_period >= 2",
+        "slow_period <= 33",
+        "fast_period >= 2",
+        "fast_period < slow_period",
+        "signal_period >= 2",
+        "signal_period < recursion_length",
+        "recursion_length >= 18",
+        "recursion_length <= 198",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/true_strength_index_1667/REPORT.md",
+    short_entries=True,
+    param_validator=tsi_param_validator,
+)
+def true_strength_index_strategy(df: pd.DataFrame, slow_period: int = 25, fast_period: int = 13,
+                                 signal_period: int = 7, recursion_length: int = 180) -> pd.DataFrame:
+    return true_strength_index_core(df, slow_period=slow_period, fast_period=fast_period,
+                                    signal_period=signal_period, recursion_length=recursion_length)
+
+
+@register(
     "klinger_divergence",
     "RESEARCH, no-edge (#1662) \u2014 Klinger Oscillator divergence entries: every oscillator endpoint t is replayed from exactly replay_bars + 1 trailing closed bars (rows t-replay_bars .. t); the replay seeds trend -1, cm = dm (high - low) and the seed volume force, then trend is +1 when high + low + close exceeds the previous sum (else -1), cm adds dm while the trend repeats and restarts at previous dm + dm on a change, volume force = volume * 2 * (dm / cm - 1) * trend * 100, the oscillator is its fast_period EMA minus its slow_period EMA (both seeded at the seed force) and the signal line is a signal_period EMA of the oscillator (seeded at the seed oscillator). A strict price pivot (left_span/right_span) is usable once its right-side bars close; each newly confirmed low pairs with the nearest earlier confirmed low min_separation..max_separation bars back, and a strictly lower low with a strictly higher oscillator arms a long (the mirror high arms a short). The setup enters once on the first strict oscillator cross of its signal line in its direction on bars confirmation+1 .. confirmation+setup_expiry; a newer same-side pivot replaces it. divergence_test=false is the signal-cross-only ablation. Every decision reads exactly replay_bars + left_span + max_separation + right_span + setup_expiry + 2 bars (at most 200); bad prices or volume, timestamp defects, cadence gaps, zero cm and a check-time frame whose last bar is not the latest closed bar hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {
@@ -2641,6 +2669,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "calendar_conditioned_entry",
         "stochastic_momentum_index",
         "elder_force_pullback",
+        "true_strength_index",
         "klinger_divergence",
         "hold",
     ],
