@@ -68,6 +68,7 @@ from camarilla_pivot_reversal import camarilla_pivot_reversal_core, validate_cam
 from mass_index_reversal import mass_index_reversal_core, mir_param_validator
 from calendar_conditioned_entry import calendar_conditioned_entry_core, calendar_param_validator
 from stochastic_momentum_index import smi_param_validator, stochastic_momentum_index_core
+from elder_force_pullback import efp_param_validator, elder_force_pullback_core
 from true_strength_index import true_strength_index_core, tsi_param_validator
 
 
@@ -2120,6 +2121,40 @@ def calendar_conditioned_entry_strategy(df: pd.DataFrame, training_bars: int = 4
 
 
 @register(
+    "elder_force_pullback",
+    "RESEARCH, no-edge (#1668) \u2014 Elder Force Index pullback: raw force is the close minus the previous close, multiplied by the candle volume (volume_weighting 1) or by one (volume_weighting 0, the ablation). The smoothed force at every bar is one exponential recursion with weight 2 / (force_period + 1) over exactly recursion_length raw-force values ending at that bar, seeded with the oldest of them, so each value reads only the trailing recursion_length + 1 closes. Uptrend: close strictly above the trend_period close SMA and that SMA strictly above its value slope_span bars earlier; downtrend reverses both. Long when the smoothed force crosses strictly from below zero on the preceding candle to above zero on the current candle while the uptrend holds on both candles; short is the mirror in a downtrend. Exact zero never triggers, and both crossing candles need positive supplied volume in both variants. recursion_length must be at least 10 x force_period and at most 197, and a decision needs max(recursion_length + 2, trend_period + slope_span + 1) clean rows (at most 199) with declared bar cadence; bad candles, timestamp defects, cadence gaps and derived overflow hold with a reason. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {
+        "force_period": 13,
+        "trend_period": 50,
+        "slope_span": 5,
+        "recursion_length": 150,
+        "volume_weighting": 1,
+    },
+    platforms=("futures",),
+    constraints=[
+        "force_period >= 2",
+        "trend_period >= 2",
+        "slope_span >= 1",
+        "recursion_length >= 20",
+        "recursion_length <= 197",
+        "volume_weighting >= 0",
+        "volume_weighting <= 1",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/elder_force_pullback_1668/REPORT.md",
+    short_entries=True,
+    param_validator=efp_param_validator,
+)
+def elder_force_pullback_strategy(df: pd.DataFrame, force_period: int = 13, trend_period: int = 50,
+                                  slope_span: int = 5, recursion_length: int = 150,
+                                  volume_weighting: int = 1) -> pd.DataFrame:
+    return elder_force_pullback_core(
+        df, force_period=force_period, trend_period=trend_period, slope_span=slope_span,
+        recursion_length=recursion_length, volume_weighting=volume_weighting)
+
+
+@register(
     "true_strength_index",
     "RESEARCH, no-edge (#1667) \u2014 True Strength Index (TSI) trend entries: for every endpoint the evaluator reads exactly recursion_length closes and their recursion_length - 1 successive changes; the signed changes and their absolute values are each smoothed by a slow EMA (weight 2 / (slow_period + 1)) and then a fast EMA (weight 2 / (fast_period + 1)), both stages seeded from the first change of that window. TSI is 100 times the double-smoothed signed change divided by the double-smoothed absolute change; the signal line is an EMA (weight 2 / (signal_period + 1)) of TSI, unset until the first finite TSI of the window and seeded with it. The previous endpoint uses its own window, so a decision reads recursion_length + 1 bars (at most 199). Long when TSI minus signal line is strictly positive, was at or below zero on the previous bar, and TSI is strictly positive; short is the exact mirror. Needs declared bar cadence and recursion_length >= 6 * slow_period; bad candles, timestamp defects, cadence gaps, a zero denominator and invalid derived values inside the window hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"slow_period": 25, "fast_period": 13, "signal_period": 7, "recursion_length": 180},
@@ -2578,6 +2613,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "mass_index_reversal",
         "calendar_conditioned_entry",
         "stochastic_momentum_index",
+        "elder_force_pullback",
         "true_strength_index",
         "hold",
     ],

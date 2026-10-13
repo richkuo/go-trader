@@ -269,3 +269,19 @@ def test_warmup_seed_high_water_resets_on_reentry():
     assert seed is not None
     assert seed["high_water"] == pytest.approx(100.0), (
         "the closed first trade's 150 HWM must not survive the re-entry")
+
+
+def test_walk_forward_still_seeds_a_long_only_strategy(monkeypatch):
+    seeds = []
+    real_run = Backtester.run
+
+    def run(self, signals, **kw):
+        seeds.append(kw.get("starting_long"))
+        return real_run(self, signals, **kw)
+
+    monkeypatch.setattr(Backtester, "run", run)
+    walk_forward_optimize(
+        _trending_ohlc(n=500), "sma_crossover", {"fast_period": [10, 20], "slow_period": [40, 80]},
+        n_splits=5, train_pct=0.7, initial_capital=1000.0, verbose=False,
+    )
+    assert any(seed is not None for seed in seeds)
