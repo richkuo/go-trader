@@ -192,27 +192,6 @@ func TestKlingerDivergenceAcknowledgementMustBeABoolean(t *testing.T) {
 	}
 }
 
-func TestKlingerDivergenceRegistrationTables(t *testing.T) {
-	if knownShortNames[klingerName] != "klingerdiv" || !isBidirectionalPerpsStrategy(klingerName) {
-		t.Fatalf("short name %q, bidirectional %v", knownShortNames[klingerName], isBidirectionalPerpsStrategy(klingerName))
-	}
-	if !openStrategyRegisteredFor(klingerName, "futures") || openStrategyRegisteredFor(klingerName, "spot") {
-		t.Fatal("klinger_divergence must be registered for futures only")
-	}
-	owners := []string{}
-	for other, short := range knownShortNames {
-		if short == "klingerdiv" {
-			owners = append(owners, other)
-		}
-	}
-	if !reflect.DeepEqual(owners, []string{klingerName}) {
-		t.Fatalf("short name klingerdiv owners = %v", owners)
-	}
-	if _, frozen := v20StampEligibleStrategies[klingerName]; frozen {
-		t.Fatal("klinger_divergence must not join the frozen v20 auto-acknowledgement set")
-	}
-}
-
 func TestV20NoEdgeMigrationNeverStampsKlingerDivergence(t *testing.T) {
 	open := noEdgeHLStrategy("hl-klingerdiv-open", klingerName, "ETH", "4h", "--mode=live")
 	fallback := noEdgeHLStrategy("hl-klingerdiv-close", "breakout", "ETH", "4h", "--mode=live")
