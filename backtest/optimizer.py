@@ -823,6 +823,14 @@ DEFAULT_PARAM_RANGES = {
         "confidence": [0.9],
         "cost_hurdle": [0.002],
     },
+    "stochastic_momentum_index": {
+        "range_period": [8, 10, 14],
+        "smoothing_period": [2, 3, 4],
+        "signal_period": [2, 3, 4],
+        "recursion_length": [48, 60, 80],
+        "oversold": [-50.0, -40.0, -30.0],
+        "overbought": [30.0, 40.0, 50.0],
+    },
     "vortex_trend": {
         "period": [7, 14, 21, 28],
         "min_separation": [0.0, 0.02, 0.05, 0.10],
