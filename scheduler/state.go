@@ -106,6 +106,7 @@ type StrategyState struct {
 	paperFundingCorrupt bool
 
 	EntryGuard        *entryGuardState `json:"-"`
+	Basket            *basketRuntime   `json:"-"`
 	deferTradePersist bool
 	replayCapture     *[]ReplayDecision
 }

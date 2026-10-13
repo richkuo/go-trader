@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -68,6 +69,8 @@ type HyperliquidResult struct {
 	SizedClosePreSend               hlCloseView            `json:"-"`
 	PaperPartialCloseHold           string                 `json:"-"`
 	EntrySubmitGate                 hlEntrySubmitGate      `json:"-"`
+	BasketMember                    bool                   `json:"basket_member,omitempty"`
+	BasketOpenQty                   float64                `json:"-"`
 }
 
 type hlEntryOrderTags struct {
@@ -773,7 +776,10 @@ type hlSizedCloseRequest struct {
 	Size          float64
 	CancelOIDs    []int64
 	CancelMinFill float64
+	ClientOrderID string
 }
+
+var hlClientOrderIDPattern = regexp.MustCompile(`^0x[0-9a-f]{32}$`)
 
 type hlSizedCloser func(req hlSizedCloseRequest) (*HyperliquidCloseResult, error)
 
@@ -794,6 +800,9 @@ func hlSizedCloseRequestError(req hlSizedCloseRequest) string {
 		if oid > 0 && !finitePositive(req.CancelMinFill) {
 			return fmt.Sprintf("sized close %s cancels protection but has no positive fill threshold", req.Symbol)
 		}
+	}
+	if req.ClientOrderID != "" && !hlClientOrderIDPattern.MatchString(req.ClientOrderID) {
+		return fmt.Sprintf("sized close %s client order id %q is not 0x followed by 32 lowercase hex digits", req.Symbol, req.ClientOrderID)
 	}
 	return ""
 }
@@ -829,6 +838,9 @@ func buildHyperliquidSizedCloseArgs(req hlSizedCloseRequest) []string {
 	}
 	if cancel {
 		args = append(args, "--cancel-protection-after-close", fmt.Sprintf("--cancel-min-fill=%s", strconv.FormatFloat(req.CancelMinFill, 'f', -1, 64)))
+	}
+	if req.ClientOrderID != "" {
+		args = append(args, "--cloid="+req.ClientOrderID)
 	}
 	return args
 }

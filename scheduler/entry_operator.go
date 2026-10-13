@@ -311,6 +311,9 @@ func resolveEntryAttemptByOperator(deps entryOperatorDeps, operatorID, strategyI
 	if !ok {
 		return refuse("strategy %s is not configured in this instance.", strategyID)
 	}
+	if isBasketMember(sc) {
+		return refuse("strategy %s is a member of basket %s; the basket coordinator reconciles its entries by client order id.", sc.ID, sc.BasketID)
+	}
 	part := partitionFor(sc)
 	if part.Scope != ScopeLive || !isLiveArgs(sc.Args) {
 		return refuse("strategy %s is not live; paper strategies send no live entries.", sc.ID)

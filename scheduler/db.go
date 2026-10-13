@@ -672,6 +672,9 @@ func (sdb *StateDB) migrateSchema() error {
 	if err := sdb.migrateEntryDecisionSchema(); err != nil {
 		return err
 	}
+	if err := sdb.migrateBasketSchema(); err != nil {
+		return err
+	}
 	return sdb.backfillTradeCloseFlags()
 }
 
@@ -1711,6 +1714,18 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 			return err
 		}
 	}
+	basketFull, basketPartial := basketRuntimesForSave(req.Strategies)
+	basketNowMs := time.Now().UnixMilli()
+	for _, rt := range basketFull {
+		if err := sdb.writeBasketTx(tx, rt, true, basketNowMs); err != nil {
+			return err
+		}
+	}
+	for _, rt := range basketPartial {
+		if err := sdb.writeBasketTx(tx, rt, false, basketNowMs); err != nil {
+			return err
+		}
+	}
 
 	scopeFilter, scopeArgs := scopePlaceholders(req.Scopes)
 	if req.FullFile {
@@ -1818,6 +1833,12 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		s.ClosedOptionPositions = nil
 		s.pendingTradeDiagnostics = nil
 		pruneEntryGuardAfterCommit(s)
+	}
+	for _, rt := range basketFull {
+		markBasketDurable(rt, true)
+	}
+	for _, rt := range basketPartial {
+		markBasketDurable(rt, false)
 	}
 	for _, f := range flushed {
 		f.strat.TradeHistory[f.index].persisted = true

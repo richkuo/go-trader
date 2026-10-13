@@ -20,6 +20,7 @@ _REGISTRY = _load(
 )
 
 SKIP_STRATEGIES = {
+    "basket_scripted_fixture": "basket evaluator: it ranks a symbol-keyed universe and refuses one-symbol evaluation by contract (#1781)",
 }
 
 EXPECTED_ALL_ZERO_SIGNAL = {

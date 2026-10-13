@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 import time
 import traceback
@@ -55,6 +56,11 @@ def main():
         help="with --cancel-protection-after-close, cancel only once the fill reaches this size",
     )
     parser.add_argument(
+        "--cloid",
+        default="",
+        help="sized close client order id (0x + 32 hex digits); the order is reconciled by this id",
+    )
+    parser.add_argument(
         "--probe-only",
         action="store_true",
         help="startup compatibility probe: validate the argv shape and exit 0 without trading",
@@ -75,6 +81,15 @@ def main():
     if args.close_mode:
         run_sized_close(args)
         return
+    if args.cloid:
+        print(json.dumps({
+            "close": None,
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": "--cloid requires --close-mode",
+            "order_outcome": "not_sent",
+        }))
+        sys.exit(1)
 
     cancel_err = ""
     cancel_succeeded = False
@@ -218,6 +233,9 @@ def _finite_positive(value):
 SIZED_CLOSE_MODES = ("reduce_only", "cross")
 
 
+_CLOID_RE = re.compile(r"^0x[0-9a-f]{32}$")
+
+
 def sized_close_args_error(args):
     if args.close_mode not in SIZED_CLOSE_MODES:
         return f"invalid --close-mode {args.close_mode!r}, expected one of {', '.join(SIZED_CLOSE_MODES)}"
@@ -230,6 +248,9 @@ def sized_close_args_error(args):
         return "--close-mode cancels protection only after the fill (--cancel-protection-after-close)"
     if cancel_oids and not _finite_positive(args.cancel_min_fill):
         return "--close-mode with trigger cancels requires --cancel-min-fill > 0"
+    cloid = getattr(args, "cloid", "") or ""
+    if cloid and not _CLOID_RE.match(cloid):
+        return f"--cloid {cloid!r} must be 0x followed by 32 lowercase hex digits"
     return ""
 
 
@@ -307,7 +328,10 @@ def run_sized_close(args):
 
     fills_since_ms = int(time.time() * 1000) - 10_000
     try:
-        result = adapter.market_close_sized(symbol, is_buy, submitted_sz, px, reduce_only=(args.close_mode == "reduce_only"))
+        close_kwargs = {"reduce_only": (args.close_mode == "reduce_only")}
+        if getattr(args, "cloid", ""):
+            close_kwargs["cloid"] = args.cloid
+        result = adapter.market_close_sized(symbol, is_buy, submitted_sz, px, **close_kwargs)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         _emit_error(symbol, str(e), order_outcome="unknown", submitted_sz=submitted_sz)

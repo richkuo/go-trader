@@ -253,6 +253,15 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 
 		req.Strategies[sc.ID] = entry
 	}
+	for _, b := range cfg.Baskets {
+		for _, sc := range basketMemberConfigs(cfg, b) {
+			symbol, timeframe := strategyArgSymbolTimeframe(sc.Args)
+			if symbol == "" || timeframe == "" {
+				continue
+			}
+			req.addKey(feedKeyFor(symbol, timeframe), basketFrameLookback(b.LookbackBars))
+		}
+	}
 	if len(errs) > 0 {
 		sort.Strings(errs)
 		return feedRequirements{}, fmt.Errorf("market_feed=%s rejects this config:\n  %s", cfg.marketFeedMode(), strings.Join(errs, "\n  "))

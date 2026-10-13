@@ -62,7 +62,7 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since,
                 print(f"  Funding: {have}/{len(out)} bars covered (HL hourly, coin={coin})")
     return out
 from htf_filter import get_default_htf, apply_htf_filter
-from registry_loader import load_registry
+from registry_loader import load_registry, refuse_basket_evaluator
 from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
                         FundingIncompleteError, _LABELS_UNSET,
                         STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS,
@@ -1616,6 +1616,7 @@ def run_single_backtest(
         phase="preflight",
     )
     reg = load_registry(registry)
+    refuse_basket_evaluator(reg, strategy_name)
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
     if not strat:
         print(f"Unknown strategy '{strategy_name}' in '{registry}' registry")
@@ -2027,6 +2028,7 @@ def run_walk_forward(
                                     comparison_mode=comparison_mode,
                                     platform=platform, phase="preflight")
     reg = load_registry(registry)
+    refuse_basket_evaluator(reg, strategy_name)
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
     if not strat:
         print(f"Unknown strategy '{strategy_name}' in '{registry}' registry")

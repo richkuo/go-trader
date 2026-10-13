@@ -126,7 +126,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 61
+    assert len(py) == 62
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -249,3 +249,64 @@ def test_go_native_close_names_mirror_python_close_registry():
             f"close strategy {name!r} has default_params {sorted(missing)} missing from "
             "closeStrategyOwnedKeys; legacy migrations would route those params to the open ref")
     assert set(owned) & set(OPEN_REGISTRY.STRATEGIES) == set()
+
+
+def go_basket_rankers():
+    block = _go_block(_go_source("basket_config.go"), "var basketRankerStrategies = map[string]bool{")
+    entries = re.findall(r'^\s*"(\w+)":\s*(true|false),\s*$', block, re.M)
+    assert len(entries) == len([line for line in block.splitlines() if line.strip()]), (
+        "unparsed line in basketRankerStrategies")
+    return {name: True for name, value in entries if value == "true"}
+
+
+def go_basket_ranker_param_keys():
+    block = _go_block(_go_source("basket_config.go"), "var basketRankerParamKeys = map[string][]string{")
+    return {name: set(re.findall(r'"(\w+)"', keys))
+            for name, keys in re.findall(r'^\s*"(\w+)":\s*\{([^}]*)\},\s*$', block, re.M)}
+
+
+def python_basket_rankers():
+    return {name: True for name in OPEN_REGISTRY.basket_rankers()}
+
+
+def test_go_basket_rankers_equal_python_registry():
+    go, py = go_basket_rankers(), python_basket_rankers()
+    assert py == {"basket_scripted_fixture": True}
+    assert mapping_mismatches(go, py) == []
+    for name in py:
+        entry = OPEN_REGISTRY.STRATEGIES[name]
+        assert entry["basket"] == OPEN_REGISTRY.BASKET_CONTRACT
+        assert entry["platforms"] == ("futures",)
+        assert entry["edge_status"] == OPEN_REGISTRY.EDGE_STATUS_NO_EDGE
+
+
+def test_go_basket_ranker_param_keys_equal_python_defaults():
+    go = go_basket_ranker_param_keys()
+    py = {name: set(OPEN_REGISTRY.STRATEGIES[name]["default_params"]) for name in OPEN_REGISTRY.basket_rankers()}
+    assert go == py
+
+
+def test_basket_rankers_stay_out_of_every_single_symbol_registry():
+    for platform in OPEN_REGISTRY.VALID_PLATFORMS:
+        for hidden in (True, False):
+            assert set(OPEN_REGISTRY.build_registry(platform, include_hidden=hidden)).isdisjoint(OPEN_REGISTRY.basket_rankers())
+    entry = OPEN_REGISTRY.STRATEGIES["basket_scripted_fixture"]
+    with pytest.raises(ValueError, match="basket evaluator"):
+        entry["fn"](None)
+    assert callable(OPEN_REGISTRY.get_basket_ranker("basket_scripted_fixture")["basket_fn"])
+    with pytest.raises(ValueError, match="not a registered basket evaluator"):
+        OPEN_REGISTRY.get_basket_ranker("sma_crossover")
+
+
+@pytest.mark.parametrize("kwargs, match", [
+    ({"basket": {"input": "closed_bar_frames"}}, "basket must be exactly"),
+    ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("spot", "futures")}, "platforms"),
+    ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("futures",),
+      "short_entries": True, "default_params": {"allow_short": True}}, "short_entries"),
+])
+def test_register_rejects_malformed_basket_metadata(scratch_registry, kwargs, match):
+    kwargs = {"default_params": {}, "short_entries": False, **kwargs}
+    before = set(scratch_registry.STRATEGIES)
+    with pytest.raises(ValueError, match=match):
+        scratch_registry.register("_scratch_basket", "scratch", **kwargs)(_noop)
+    assert set(scratch_registry.STRATEGIES) == before

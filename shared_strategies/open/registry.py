@@ -69,6 +69,7 @@ from mass_index_reversal import mass_index_reversal_core, mir_param_validator
 from calendar_conditioned_entry import calendar_conditioned_entry_core, calendar_param_validator
 from stochastic_momentum_index import smi_param_validator, stochastic_momentum_index_core
 from elder_force_pullback import efp_param_validator, elder_force_pullback_core
+from basket_scripted_fixture import basket_scripted_fixture_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -88,6 +89,38 @@ VALID_EDGE_SOURCES: Tuple[str, ...] = (
 
 
 SINGLE_VALUE_VALIDATED_STRATEGIES: Tuple[str, ...] = ("aroon_trend", "regression_channel_reversion")
+
+BASKET_CONTRACT: Dict[str, str] = {"input": "closed_bar_frames", "output": "signed_weights"}
+
+
+def basket_rankers() -> frozenset:
+    return frozenset(name for name, entry in STRATEGIES.items() if entry.get("basket"))
+
+
+def get_basket_ranker(name: str) -> Dict[str, Any]:
+    entry = STRATEGIES.get(name)
+    if entry is None or not entry.get("basket"):
+        raise ValueError(f"{name!r} is not a registered basket evaluator; registered: {sorted(basket_rankers())}")
+    return entry
+
+
+def _basket_single_symbol_refusal(name: str):
+    def refuse(*_args, **_kwargs):
+        raise ValueError(
+            f"{name} is a basket evaluator; it ranks a basket universe and cannot run on one symbol")
+    refuse.__name__ = f"{name}_single_symbol_refusal"
+    return refuse
+
+
+def _validate_basket(name: str, basket, platforms: Tuple[str, ...], short_entries: bool) -> None:
+    if basket is None:
+        return
+    if not isinstance(basket, dict) or basket != BASKET_CONTRACT:
+        raise ValueError(f"{name}: basket must be exactly {BASKET_CONTRACT!r}, got {basket!r}")
+    if tuple(platforms) != ("futures",):
+        raise ValueError(f"{name}: a basket evaluator registers for platforms ('futures',) only, got {platforms!r}")
+    if short_entries:
+        raise ValueError(f"{name}: a basket evaluator has no single-symbol entries; declare short_entries=False")
 
 
 def no_edge_strategies() -> frozenset:
@@ -280,11 +313,13 @@ def register(
     *,
     short_entries: bool,
     param_validator=None,
+    basket=None,
 ):
     if name in STRATEGIES:
         raise ValueError(f"Strategy '{name}' is already registered")
     _validate_edge_metadata(name, edge_status, edge_source, edge_ref)
     platforms = tuple(platforms)
+    _validate_basket(name, basket, platforms, short_entries)
     if not platforms:
         raise ValueError(f"{name}: platforms must be non-empty")
     bad = set(platforms) - set(VALID_PLATFORMS)
@@ -319,7 +354,9 @@ def register(
     def decorator(fn):
         wrapped = _validated(name, fn, default_params, constraint_list) if constraint_list else fn
         STRATEGIES[name] = {
-            "fn": wrapped,
+            "fn": _basket_single_symbol_refusal(name) if basket else wrapped,
+            "basket": dict(basket) if basket else None,
+            "basket_fn": fn if basket else None,
             "description": description,
             "default_params": dict(default_params),
             "constraints": constraint_list,
@@ -342,7 +379,7 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
             f"Unknown platform {platform!r}; expected one of {VALID_PLATFORMS}"
         )
     order = PLATFORM_ORDER[platform]
-    tagged = {n for n, e in STRATEGIES.items() if platform in e["platforms"]}
+    tagged = {n for n, e in STRATEGIES.items() if platform in e["platforms"] and not e.get("basket")}
     expected = set(tagged)
     missing_from_order = expected - set(order)
     if missing_from_order:
@@ -2523,6 +2560,21 @@ def regime_adaptive_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 )
 def regime_adaptive_htf_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return regime_adaptive_htf_core(df, **params)
+
+
+@register(
+    "basket_scripted_fixture",
+    "Basket scripted fixture — integration-test basket evaluator that returns operator-scripted signed weights for the coordinator contract; it ranks nothing and has no edge",
+    {"weights": {}, "scores": {}, "hold": "", "sleep_seconds": 0, "raw": None},
+    platforms=("futures",),
+    edge_status="no_edge",
+    edge_source="unvalidated",
+    edge_ref="SKILL.md",
+    short_entries=False,
+    basket=dict(BASKET_CONTRACT),
+)
+def basket_scripted_fixture_strategy(frames, eligibility, **params):
+    return basket_scripted_fixture_core(frames, eligibility, **params)
 
 
 @register(
