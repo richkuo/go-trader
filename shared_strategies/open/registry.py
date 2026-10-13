@@ -65,6 +65,7 @@ from adaptive_moving_average import adaptive_moving_average_core, ama_param_vali
 from schaff_trend_cycle import schaff_trend_cycle_core, stc_param_validator
 from trix_momentum import trix_momentum_core, trix_param_validator
 from camarilla_pivot_reversal import camarilla_pivot_reversal_core, validate_camarilla_param_dict
+from mass_index_reversal import mass_index_reversal_core, mir_param_validator
 from stochastic_momentum_index import smi_param_validator, stochastic_momentum_index_core
 
 
@@ -2035,6 +2036,53 @@ def camarilla_pivot_reversal_strategy(df: pd.DataFrame, expected_interval_ms: in
 
 
 @register(
+    "mass_index_reversal",
+    "RESEARCH, no-edge (#1670) \u2014 Mass Index reversal: for every bar the candle range (high - low) is smoothed by two exponential averages of period ema_period (weight 2 / (period + 1)), both restarted from the range recursion_length bars back and updated exactly recursion_length times, and the Mass Index is the sum of sum_period ratios of the first average to the second. A strict rise through upper_threshold arms a volatility bulge with its direction frozen from the trend slope (close SMA of trend_period minus its value slope_span bars earlier): a rising slope allows a later short, a falling slope a later long, a zero slope arms nothing. The first strict fall below lower_threshold within max_bulge_age bars completes the bulge; on that bar a long needs the close strictly above the previous confirm_lookback highs and a short strictly below their lows, else the bulge is consumed without an entry. A newer rise replaces an older bulge. bulge_filter 0 is the comparison mode that tests the same confirmation on every bar with the side from the current slope. A decision needs max(max_bulge_age + recursion_length + sum_period + 1, max_bulge_age + trend_period + slope_span, confirm_lookback + 1) clean rows (at most 199) with declared bar cadence; bad candles, timestamp defects, cadence gaps and a non-positive second average hold with a reason. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {
+        "ema_period": 9,
+        "sum_period": 25,
+        "upper_threshold": 27.0,
+        "lower_threshold": 26.5,
+        "trend_period": 50,
+        "slope_span": 5,
+        "confirm_lookback": 5,
+        "max_bulge_age": 50,
+        "recursion_length": 72,
+        "bulge_filter": 1,
+    },
+    platforms=("futures",),
+    constraints=[
+        "ema_period >= 2",
+        "sum_period >= 1",
+        "trend_period >= 2",
+        "slope_span >= 1",
+        "confirm_lookback >= 1",
+        "max_bulge_age >= 1",
+        "recursion_length >= 16",
+        "lower_threshold > 0",
+        "lower_threshold < upper_threshold",
+        "bulge_filter >= 0",
+        "bulge_filter <= 1",
+    ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/mass_index_reversal_1670/REPORT.md",
+    short_entries=True,
+    param_validator=mir_param_validator,
+)
+def mass_index_reversal_strategy(df: pd.DataFrame, ema_period: int = 9, sum_period: int = 25,
+                                 upper_threshold: float = 27.0, lower_threshold: float = 26.5,
+                                 trend_period: int = 50, slope_span: int = 5, confirm_lookback: int = 5,
+                                 max_bulge_age: int = 50, recursion_length: int = 72,
+                                 bulge_filter: int = 1) -> pd.DataFrame:
+    return mass_index_reversal_core(
+        df, ema_period=ema_period, sum_period=sum_period, upper_threshold=upper_threshold,
+        lower_threshold=lower_threshold, trend_period=trend_period, slope_span=slope_span,
+        confirm_lookback=confirm_lookback, max_bulge_age=max_bulge_age, recursion_length=recursion_length,
+        bulge_filter=bulge_filter)
+
+
+@register(
     "fisher_reversal",
     "RESEARCH, no-edge (#1646) \u2014 Fisher Transform reversal: the candle midpoint is normalized into [-1, 1] against its inclusive lookback-bar range, smoothed by x = 0.33 * normalized + 0.67 * previous x (clamped 1e-6 inside +/-1) and transformed by F = 0.5 * ln((1 + x) / (1 - x)) + 0.5 * previous F, both recurrences restarted from zero over exactly 64 bars for every timestamp (lookback + 65 bars of history); long when F crosses above its one-bar-lagged trigger after the trigger is below -extreme, short is the mirror above +extreme. Bad, gapped or flat input holds the entry. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"lookback": 9, "extreme": 1.5},
@@ -2463,6 +2511,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "schaff_trend_cycle",
         "trix_momentum",
         "camarilla_pivot_reversal",
+        "mass_index_reversal",
         "stochastic_momentum_index",
         "hold",
     ],

@@ -106,6 +106,7 @@ var knownShortNames = map[string]string{
 	"schaff_trend_cycle":           "stc",
 	"trix_momentum":                "trix",
 	"camarilla_pivot_reversal":     "cpr",
+	"mass_index_reversal":          "massrev",
 	"stochastic_momentum_index":    "smi",
 	"vortex_trend":                 "vortex",
 	"williams_r_reversal":          "wrr",
@@ -169,6 +170,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"schaff_trend_cycle":           {"futures"},
 	"trix_momentum":                {"futures"},
 	"camarilla_pivot_reversal":     {"futures"},
+	"mass_index_reversal":          {"futures"},
 	"stochastic_momentum_index":    {"futures"},
 	"session_breakout":             {"futures"},
 	"sma_crossover":                {"spot", "futures"},
@@ -241,6 +243,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"schaff_trend_cycle":           true,
 	"trix_momentum":                true,
 	"camarilla_pivot_reversal":     true,
+	"mass_index_reversal":          true,
 	"stochastic_momentum_index":    true,
 }
 

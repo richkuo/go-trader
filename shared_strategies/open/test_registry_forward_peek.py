@@ -140,10 +140,27 @@ def _ultimate_oscillator_fixture() -> pd.DataFrame:
     )
 
 
+def _mass_index_reversal_fixture() -> pd.DataFrame:
+    rng = np.random.RandomState(_SEED + 5)
+    n = N_BARS
+    t = np.arange(n)
+    drift = np.where(((t + 8) // 80) % 2 == 0, 0.6, -0.6)
+    close = 200.0 + np.cumsum(drift + rng.randn(n) * 0.3)
+    open_ = np.concatenate([[close[0]], close[:-1]])
+    span = np.abs(rng.randn(n)) * 0.3 + 0.4
+    span = np.where(((t % 80) >= 60) & ((t % 80) < 70), span * 4.0, span)
+    return pd.DataFrame(
+        {"open": open_, "high": np.maximum(open_, close) + span,
+         "low": np.minimum(open_, close) - span, "close": close, "volume": np.full(n, 100.0)},
+        index=pd.date_range("2026-01-01", periods=n, freq="1h"),
+    )
+
+
 STRATEGY_FIXTURES = {
     "range_scalper": _range_scalper_fixture,
     "sweep_squeeze_combo": _sweep_squeeze_combo_fixture,
     "ultimate_oscillator": _ultimate_oscillator_fixture,
+    "mass_index_reversal": _mass_index_reversal_fixture,
 }
 
 
@@ -191,6 +208,7 @@ STRATEGY_INPUTS = {
     "regression_channel_reversion": _with_declared_cadence,
     "trix_momentum": _with_declared_cadence,
     "camarilla_pivot_reversal": _with_declared_cadence,
+    "mass_index_reversal": _with_declared_cadence,
     "stochastic_momentum_index": _with_declared_cadence,
 }
 

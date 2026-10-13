@@ -741,6 +741,18 @@ DEFAULT_PARAM_RANGES = {
         "recursion_length": [120, 144, 192],
     },
     "camarilla_pivot_reversal": {},
+    "mass_index_reversal": {
+        "ema_period": [9],
+        "sum_period": [20, 25, 30],
+        "upper_threshold": [26.75, 27.0, 27.5],
+        "lower_threshold": [26.0, 26.5],
+        "trend_period": [30, 50, 70],
+        "slope_span": [5],
+        "confirm_lookback": [3, 5, 8],
+        "max_bulge_age": [25, 50],
+        "recursion_length": [72],
+        "bulge_filter": [1],
+    },
     "stochastic_momentum_index": {
         "range_period": [8, 10, 14],
         "smoothing_period": [2, 3, 4],
