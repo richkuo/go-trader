@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const basketRankRequestVersion = 1
+const basketRankRequestVersion = 2
 
 const (
 	basketRankStatusTargets = "targets"
@@ -30,20 +30,27 @@ type basketRankMember struct {
 	Timeframe string `json:"timeframe"`
 }
 
+type basketAllocationContext struct {
+	GrossBudgetUSD      float64 `json:"gross_budget_usd"`
+	MaxCoinNotionalUSD  float64 `json:"max_coin_notional_usd"`
+	MaxTransitionNetUSD float64 `json:"max_transition_net_usd"`
+	LookbackBars        int     `json:"lookback_bars"`
+	MinHistoryBars      int     `json:"min_history_bars"`
+}
+
 type basketRankRequest struct {
-	V              int                        `json:"v"`
-	BasketID       string                     `json:"basket_id"`
-	Ranker         string                     `json:"ranker"`
-	Params         map[string]interface{}     `json:"params"`
-	DeadlineMs     int64                      `json:"deadline_ms"`
-	Expected       basketRankExpected         `json:"expected"`
-	Members        []basketRankMember         `json:"members"`
-	LookbackBars   int                        `json:"lookback_bars"`
-	MinHistoryBars int                        `json:"min_history_bars"`
-	MinEligible    int                        `json:"min_eligible"`
-	Listings       map[string]basketListingMs `json:"listings"`
-	Mode           string                     `json:"mode"`
-	Market         *marketPayload             `json:"market"`
+	V                 int                        `json:"v"`
+	BasketID          string                     `json:"basket_id"`
+	Ranker            string                     `json:"ranker"`
+	Params            map[string]interface{}     `json:"params"`
+	DeadlineMs        int64                      `json:"deadline_ms"`
+	Expected          basketRankExpected         `json:"expected"`
+	Members           []basketRankMember         `json:"members"`
+	AllocationContext basketAllocationContext    `json:"allocation_context"`
+	MinEligible       int                        `json:"min_eligible"`
+	Listings          map[string]basketListingMs `json:"listings"`
+	Mode              string                     `json:"mode"`
+	Market            *marketPayload             `json:"market"`
 }
 
 type basketRankEligibility struct {
@@ -127,17 +134,22 @@ var basketRankRunFn basketRankRunner = runBasketRankerProcess
 func basketRankRequestFor(rt *basketRuntime, deadlineMs int64, payload *marketPayload) basketRankRequest {
 	c := rt.Contract
 	req := basketRankRequest{
-		V:              basketRankRequestVersion,
-		BasketID:       c.BasketID,
-		Ranker:         c.Ranker,
-		Params:         c.Params,
-		DeadlineMs:     deadlineMs,
-		LookbackBars:   c.LookbackBars,
-		MinHistoryBars: c.MinHistoryBars,
-		MinEligible:    c.MinEligibleMembers,
-		Listings:       c.Listings,
-		Mode:           edgeGateModePaper,
-		Market:         payload,
+		V:          basketRankRequestVersion,
+		BasketID:   c.BasketID,
+		Ranker:     c.Ranker,
+		Params:     c.Params,
+		DeadlineMs: deadlineMs,
+		AllocationContext: basketAllocationContext{
+			GrossBudgetUSD:      c.GrossBudgetUSD,
+			MaxCoinNotionalUSD:  c.MaxCoinNotionalUSD,
+			MaxTransitionNetUSD: c.MaxTransitionNetUSD,
+			LookbackBars:        c.LookbackBars,
+			MinHistoryBars:      c.MinHistoryBars,
+		},
+		MinEligible: c.MinEligibleMembers,
+		Listings:    c.Listings,
+		Mode:        edgeGateModePaper,
+		Market:      payload,
 	}
 	if req.Params == nil {
 		req.Params = map[string]interface{}{}

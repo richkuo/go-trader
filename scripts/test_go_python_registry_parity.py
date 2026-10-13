@@ -292,7 +292,7 @@ def python_basket_rankers():
 
 def test_go_basket_rankers_equal_python_registry():
     go, py = go_basket_rankers(), python_basket_rankers()
-    assert py == {"basket_scripted_fixture": True}
+    assert py == {"basket_scripted_fixture": True, "cross_sectional_momentum": True}
     assert mapping_mismatches(go, py) == []
     for name in py:
         entry = OPEN_REGISTRY.STRATEGIES[name]
@@ -311,10 +311,16 @@ def test_basket_rankers_stay_out_of_every_single_symbol_registry():
     for platform in OPEN_REGISTRY.VALID_PLATFORMS:
         for hidden in (True, False):
             assert set(OPEN_REGISTRY.build_registry(platform, include_hidden=hidden)).isdisjoint(OPEN_REGISTRY.basket_rankers())
-    entry = OPEN_REGISTRY.STRATEGIES["basket_scripted_fixture"]
-    with pytest.raises(ValueError, match="basket evaluator"):
-        entry["fn"](None)
-    assert callable(OPEN_REGISTRY.get_basket_ranker("basket_scripted_fixture")["basket_fn"])
+    loader = _load("_parity_registry_loader", "backtest", "registry_loader.py")
+    shim = loader.load_registry("futures")
+    for name in sorted(OPEN_REGISTRY.basket_rankers()):
+        entry = OPEN_REGISTRY.STRATEGIES[name]
+        with pytest.raises(ValueError, match="basket evaluator"):
+            entry["fn"](None)
+        assert callable(OPEN_REGISTRY.get_basket_ranker(name)["basket_fn"])
+        assert name not in shim.STRATEGY_REGISTRY
+        with pytest.raises(ValueError, match="single-asset backtest or parity run cannot evaluate it"):
+            loader.refuse_basket_evaluator(shim, name)
     with pytest.raises(ValueError, match="not a registered basket evaluator"):
         OPEN_REGISTRY.get_basket_ranker("sma_crossover")
 
@@ -324,6 +330,9 @@ def test_basket_rankers_stay_out_of_every_single_symbol_registry():
     ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("spot", "futures")}, "platforms"),
     ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("futures",),
       "short_entries": True, "default_params": {"allow_short": True}}, "short_entries"),
+    ({"basket_preflight": lambda params, context: None}, "basket_preflight applies only to a basket evaluator"),
+    ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("futures",),
+      "basket_preflight": "not callable"}, "basket_preflight must be callable"),
 ])
 def test_register_rejects_malformed_basket_metadata(scratch_registry, kwargs, match):
     kwargs = {"default_params": {}, "short_entries": False, **kwargs}

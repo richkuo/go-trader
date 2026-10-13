@@ -28,11 +28,13 @@ const (
 )
 
 var basketRankerStrategies = map[string]bool{
-	"basket_scripted_fixture": true,
+	"basket_scripted_fixture":  true,
+	"cross_sectional_momentum": true,
 }
 
 var basketRankerParamKeys = map[string][]string{
-	"basket_scripted_fixture": {"hold", "raw", "scores", "sleep_seconds", "weights"},
+	"basket_scripted_fixture":  {"hold", "raw", "scores", "sleep_seconds", "weights"},
+	"cross_sectional_momentum": {"quantile", "return_lookback_bars", "volatility_lookback_bars"},
 }
 
 var basketIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)

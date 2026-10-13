@@ -29,6 +29,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"atr_breakout":                 {"fee_audit_m5", noEdgeRefFeeAudit},
 	"awesome_oscillator":           {"study_fail", "backtest/candidates/awesome_oscillator_1660/REPORT.md"},
 	"basket_scripted_fixture":      {"unvalidated", "SKILL.md"},
+	"cross_sectional_momentum":     {"unvalidated", "backtest/candidates/cross_sectional_momentum_1787/SIGNAL_SPEC.md"},
 	"bollinger_bands":              {"fee_audit_m5", noEdgeRefFeeAudit},
 	"calendar_conditioned_entry":   {"study_inconclusive", "backtest/candidates/calendar_conditioned_entry_1653/REPORT.md"},
 	"camarilla_pivot_reversal":     {"study_fail", "backtest/candidates/camarilla_pivot_reversal_1669/REPORT.md"},
