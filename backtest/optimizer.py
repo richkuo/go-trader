@@ -76,25 +76,6 @@ def warmup_exit_long_entry(warmup_with_signal: pd.DataFrame,
     return None
 
 
-def canonical_short_entries(reg, strategy_name: str) -> bool:
-    strategies = getattr(getattr(reg, "_registry", None), "STRATEGIES", None)
-    if not isinstance(strategies, dict):
-        raise ValueError(
-            f"{strategy_name}: the loaded registry exposes no canonical STRATEGIES, so "
-            f"walk-forward cannot read short_entries to decide warm-up seeding")
-    entry = strategies.get(strategy_name)
-    if not isinstance(entry, dict):
-        raise ValueError(
-            f"{strategy_name}: not a canonical registered strategy, so walk-forward "
-            f"cannot read short_entries to decide warm-up seeding")
-    flag = entry.get("short_entries")
-    if not isinstance(flag, bool):
-        raise ValueError(
-            f"{strategy_name}: canonical short_entries must be True or False, got {flag!r}; "
-            f"walk-forward refuses to guess warm-up seeding")
-    return flag
-
-
 def scored_engine_can_open_short(engine: Backtester, scored: pd.DataFrame) -> bool:
     policy = engine.regime_directional_policy
     if policy and any(entry.get("direction") in ("short", "both") for entry in policy.values()):
@@ -108,10 +89,10 @@ def scored_engine_can_open_short(engine: Backtester, scored: pd.DataFrame) -> bo
 
 
 def warmup_long_seed(engine: Backtester, prefix: pd.DataFrame, scored: pd.DataFrame,
-                     short_entries: bool, cache: Optional[dict] = None) -> Optional[dict]:
+                     cache: Optional[dict] = None) -> Optional[dict]:
     if len(prefix) == 0:
         return None
-    if short_entries and scored_engine_can_open_short(engine, scored):
+    if scored_engine_can_open_short(engine, scored):
         return None
     if cache is None:
         return warmup_exit_long_entry(prefix, engine.slippage_pct)
@@ -418,7 +399,6 @@ def walk_forward_optimize(
 
     reg = load_registry(registry)
     apply_strategy = reg.apply_strategy
-    short_entries = canonical_short_entries(reg, strategy_name)
 
     default_params = reg.STRATEGY_REGISTRY[strategy_name]["default_params"] \
         if strategy_name in reg.STRATEGY_REGISTRY else {}
@@ -554,7 +534,7 @@ def walk_forward_optimize(
                     continue
                 try:
                     train_seed = warmup_long_seed(stack_bt, train_prefix, signals_df,
-                                                  short_entries, train_seeds)
+                                                  train_seeds)
                     result = stack_bt.run(signals_df, strategy_name=strategy_name,
                                           symbol=symbol, timeframe=timeframe,
                                           params=params, save=False,
@@ -594,7 +574,7 @@ def walk_forward_optimize(
             test_signals = test_signals_ext.iloc[test_boundary_idx:]
             test_prefix = test_signals_ext.iloc[:test_boundary_idx] if seed_warmup \
                 else test_signals_ext.iloc[:0]
-            test_seed = warmup_long_seed(best_bt, test_prefix, test_signals, short_entries)
+            test_seed = warmup_long_seed(best_bt, test_prefix, test_signals)
             test_result = best_bt.run(test_signals, strategy_name=strategy_name,
                                       symbol=symbol, timeframe=timeframe,
                                       params=best_params, save=False,

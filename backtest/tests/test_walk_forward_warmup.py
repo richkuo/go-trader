@@ -447,10 +447,40 @@ def test_long_only_contract_keeps_the_warmup_seed(monkeypatch, kwargs):
     assert all(c["seed"] is not None for p in ("test_0", "train_1") for c in by_phase[p])
 
 
-def test_short_entries_false_registration_keeps_the_seed_under_both(monkeypatch):
+@pytest.mark.parametrize("kwargs", [
+    {"direction": "both"},
+    {"direction": None},
+], ids=["both", "omitted_fixed_close"])
+def test_short_entries_false_registration_starts_flat_when_the_engine_can_short(monkeypatch, kwargs):
     _register_scripted(monkeypatch, short_entries=False)
-    by_phase = _scripted_walk_forward(monkeypatch, direction="both")
+    by_phase = _scripted_walk_forward(monkeypatch, **kwargs)
+    assert _seeded_phases(by_phase) == []
+
+
+def test_short_entries_false_registration_keeps_the_seed_when_long_only(monkeypatch):
+    _register_scripted(monkeypatch, short_entries=False)
+    by_phase = _scripted_walk_forward(monkeypatch, direction="long")
     assert _seeded_phases(by_phase) == ["test_0", "train_1"]
+
+
+@pytest.mark.parametrize("direction,seeded", [(None, False), ("long", True)],
+                         ids=["omitted_fixed_close", "explicit_long"])
+def test_sma_crossover_follows_the_scored_engine_under_a_fixed_close(monkeypatch, direction, seeded):
+    calls = _capture_runs(monkeypatch)
+    walk_forward_optimize(
+        _trending_ohlc(n=500), "sma_crossover", {"fast_period": [10, 20], "slow_period": [40, 80]},
+        n_splits=5, train_pct=0.7, initial_capital=1000.0, timeframe="1d", registry="futures",
+        platform="hyperliquid", verbose=False, close_strategies=[SCRIPT_TP],
+        stop_loss_atr_mult=SCRIPT_STOP, direction=direction,
+    )
+    assert calls
+    sides = {t["side"] for c in calls for t in c["result"]["trades"]}
+    if seeded:
+        assert any(c["seed"] is not None for c in calls)
+        assert sides == {"long"}
+    else:
+        assert all(c["seed"] is None for c in calls)
+        assert "short" in sides
 
 
 def _policy_engine(monkeypatch, policy, **cert):
@@ -499,22 +529,6 @@ def test_normalized_unsupported_directions_refuse_before_scoring(monkeypatch, kw
     with pytest.raises(ValueError, match="direction='(short|both)'"):
         walk_forward_optimize(_scripted_frame(), SCRIPTED, SCRIPT_GRID, n_splits=2,
                               registry="futures", platform="hyperliquid", verbose=False, **kw)
-    assert calls == []
-
-
-@pytest.mark.parametrize("mutate", ["missing", "non_boolean"])
-def test_unreadable_short_entries_metadata_refuses_before_scoring(monkeypatch, mutate):
-    reg = _register_scripted(monkeypatch)
-    if mutate == "missing":
-        monkeypatch.delitem(reg._registry.STRATEGIES, SCRIPTED)
-    else:
-        monkeypatch.setitem(reg._registry.STRATEGIES, SCRIPTED,
-                            dict(reg._registry.STRATEGIES[SCRIPTED], short_entries="yes"))
-    calls = _capture_runs(monkeypatch)
-    with pytest.raises(ValueError, match="short_entries"):
-        walk_forward_optimize(_scripted_frame(), SCRIPTED, SCRIPT_GRID, n_splits=2,
-                              registry="futures", platform="hyperliquid", verbose=False,
-                              close_strategies=[SCRIPT_TP], direction="both")
     assert calls == []
 
 
