@@ -249,10 +249,15 @@ func (bc *basketCoordinator) processExpiry(rt *basketRuntime, in basketCycleInpu
 		}
 		floor := func(coin string, qty float64) float64 { return bc.lotFloor(coin, qty, marks[coin]) }
 		acted := false
-		var reasons []string
+		var reasons, lotReasons, lotCoins []string
 		for _, c := range basketOrderExpiryReductions(basketExpiryCandidates(ready, exposure), exposure) {
 			tr := basketLegalTranche(exposure, c, bounds, false, floor)
 			if !(tr.Qty > 0) {
+				if lot := bc.lotPeek(c.Coin); !lot.Known {
+					lotCoins = append(lotCoins, c.Coin)
+					lotReasons = append(lotReasons, fmt.Sprintf("%s (%s lot size unavailable: %s)", tr.Detail, c.Coin, lot.Reason))
+					continue
+				}
 				reasons = append(reasons, tr.Detail)
 				continue
 			}
@@ -267,6 +272,16 @@ func (bc *basketCoordinator) processExpiry(rt *basketRuntime, in basketCycleInpu
 		}
 		retry := now.Add(basketExpiryRetryFloor)
 		bc.deferExpiry(rt, readyIDs, retry)
+		if len(reasons) == 0 && len(lotReasons) > 0 {
+			sort.Strings(lotCoins)
+			msg := fmt.Sprintf("the holding-horizon close for %s holds: the full close is outside the basket bounds and no partial tranche can be sized without the venue lot size (%s); the close obligation stays open, increases hold, protection stays active and it retries at %s",
+				strings.Join(readyIDs, ", "), strings.Join(lotReasons, "; "), retry.UTC().Format(time.RFC3339))
+			bc.logf(rt, "%s", msg)
+			bc.lifecycleAlert(rt, readyIDs, nil, "expiry-lots|"+strings.Join(lotCoins, ","), msg, false)
+			bc.persistProgress(rt)
+			return true
+		}
+		reasons = append(reasons, lotReasons...)
 		detail := strings.Join(reasons, "; ")
 		msg := fmt.Sprintf("the holding-horizon close for %s is blocked by the basket bounds (%s); the close obligation stays open, increases hold, protection stays active and no bound is bypassed; it retries at %s",
 			strings.Join(readyIDs, ", "), detail, retry.UTC().Format(time.RFC3339))
@@ -282,6 +297,7 @@ func (bc *basketCoordinator) stepExpiry(in basketCycleInputs) {
 	if !bc.active() {
 		return
 	}
+	bc.ensureMemberLots()
 	bc.mu.Lock()
 	for _, id := range bc.sortedIDs() {
 		bc.stepExpiryRuntime(bc.runtimes[id], in)

@@ -457,19 +457,24 @@ func (bc *basketCoordinator) step(in basketCycleInputs) {
 	if !bc.active() {
 		return
 	}
-	if bc.lots != nil {
-		for _, id := range bc.sortedIDs() {
-			for _, m := range bc.runtimes[id].Contract.Members {
-				bc.lots.Ensure(m.Coin)
-			}
-		}
-	}
+	bc.ensureMemberLots()
 	bc.mu.Lock()
 	for _, id := range bc.sortedIDs() {
 		bc.stepRuntime(bc.runtimes[id], in)
 	}
 	bc.mu.Unlock()
 	bc.flushOutbox()
+}
+
+func (bc *basketCoordinator) ensureMemberLots() {
+	if bc.lots == nil {
+		return
+	}
+	for _, id := range bc.sortedIDs() {
+		for _, m := range bc.runtimes[id].Contract.Members {
+			bc.lots.Ensure(m.Coin)
+		}
+	}
 }
 
 func (bc *basketCoordinator) memberLiveRefusal(rt *basketRuntime) string {
@@ -1017,6 +1022,10 @@ func (bc *basketCoordinator) partitionGate(rt *basketRuntime, sc StrategyConfig,
 		}
 	}
 	return ""
+}
+
+func (bc *basketCoordinator) lotPeek(coin string) hlLotLookup {
+	return bc.lots.Peek(coin)
 }
 
 func (bc *basketCoordinator) lotFloor(coin string, qty float64, mark float64) float64 {

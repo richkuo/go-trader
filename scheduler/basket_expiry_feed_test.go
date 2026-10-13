@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -340,5 +342,131 @@ func TestBasketExpiryEarlyPassClosesOnTheCycleSealWithoutRanking(t *testing.T) {
 		if l, _, _ := env.lifecycleRow(m.ID); l.active() {
 			t.Fatalf("%s lifecycle still active after the early pass: %+v", m.ID, l)
 		}
+	}
+}
+
+func basketTwoLegBoundEnv(t *testing.T) (*basketTestEnv, *scriptedBasketVenue, time.Time) {
+	t.Helper()
+	weights := map[string]float64{"BTC": 0.25, "ETH": -0.25, "SOL": 0, "AVAX": 0}
+	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+		b := basketTestBasket(root)
+		b["holding_horizon_seconds"] = 8 * 3600
+		b["params"] = map[string]interface{}{"weights": map[string]interface{}{"BTC": 0.25, "ETH": -0.25, "SOL": 0, "AVAX": 0}}
+	})
+	venue := newScriptedBasketVenue(false)
+	env := newBasketTestEnv(t, cfg, basketTestRanker(weights, ""), venue.factory())
+	deadline := basketHistoricalDeadline()
+	var firstEntry time.Time
+	for h := 0; h < 6; h++ {
+		candle := deadline.Add(time.Duration(h) * time.Hour)
+		now := candle.Add(time.Minute)
+		env.cycle(now, candle, basketTestSnapshot(candle, 60, basketTestMarks(), 1), true)
+		if firstEntry.IsZero() && env.signedQty("hl-bsk-btc", "BTC") != 0 {
+			firstEntry = now
+		}
+	}
+	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
+		t.Fatalf("the two-leg rebalance did not complete under the $400 net bound: %+v", rb)
+	}
+	return env, venue, firstEntry
+}
+
+func basketColdLotCache(t *testing.T, fail *atomic.Bool, fetches *atomic.Int64) *hlLotMetadataCache {
+	t.Helper()
+	c := newHLLotMetadataCache(nil)
+	c.logf = func(string, ...any) {}
+	var entries []string
+	for _, coin := range []string{"AVAX", "BTC", "DOGE", "ETH", "SOL"} {
+		entries = append(entries, `{"name":"`+coin+`","szDecimals":`+strconv.Itoa(basketTestLots[coin])+`}`)
+	}
+	body := hlMetaBody(entries...)
+	c.fetch = func(context.Context, string) ([]byte, error) {
+		fetches.Add(1)
+		if fail.Load() {
+			return nil, errors.New("meta endpoint unavailable")
+		}
+		return []byte(body), nil
+	}
+	return c
+}
+
+func TestBasketExpiryEarlyPassLoadsLotSizesBeforeSizingATranche(t *testing.T) {
+	env, venue, firstEntry := basketTwoLegBoundEnv(t)
+	mock := env.attachNotifier()
+	var fail atomic.Bool
+	var fetches atomic.Int64
+	env.bc.lots = basketColdLotCache(t, &fail, &fetches)
+	btcQty := env.signedQty("hl-bsk-btc", "BTC")
+	ethQty := env.signedQty("hl-bsk-eth", "ETH")
+	at := firstEntry.Add(8*time.Hour + time.Second)
+	env.bc.stepExpiry(basketCycleInputs{Now: at, Snapshot: basketTestSnapshot(at, 60, basketTestMarks(), 1)})
+	if fetches.Load() == 0 {
+		t.Fatal("the early pass must load the venue lot sizes before it sizes a tranche")
+	}
+	subs := env.expirySubmits(venue)
+	if len(subs) == 0 {
+		t.Fatal("the early pass sent no legal partial tranche on a cold lot cache")
+	}
+	full := map[string]float64{"BTC": math.Abs(btcQty), "ETH": math.Abs(ethQty)}
+	if q := subs[0].RequestedQty; !(q > 0) || q >= full[subs[0].Symbol] {
+		t.Fatalf("the first expiry tranche %+v must be a partial close under the $400 net bound", subs[0])
+	}
+	if n := countDMs(mock, "blocked by the basket bounds"); n != 0 {
+		t.Fatalf("a cold lot cache produced %d false blocked-bound alerts", n)
+	}
+	for _, id := range []string{"hl-bsk-btc", "hl-bsk-eth"} {
+		if l, _, _ := env.lifecycleRow(id); l.alerted("expiry-blocked") {
+			t.Fatalf("%s spent its expiry-blocked alert key on a cold lot cache: %+v", id, l)
+		}
+	}
+}
+
+func TestBasketExpiryEarlyPassHoldsWithoutABoundAlertWhenLotSizesAreUnavailable(t *testing.T) {
+	env, venue, firstEntry := basketTwoLegBoundEnv(t)
+	mock := env.attachNotifier()
+	var fail atomic.Bool
+	var fetches atomic.Int64
+	fail.Store(true)
+	cache := basketColdLotCache(t, &fail, &fetches)
+	env.bc.lots = cache
+	at := firstEntry.Add(8*time.Hour + time.Second)
+	env.bc.stepExpiry(basketCycleInputs{Now: at, Snapshot: basketTestSnapshot(at, 60, basketTestMarks(), 1)})
+	if fetches.Load() == 0 {
+		t.Fatal("the early pass must try to load the venue lot sizes")
+	}
+	if n := len(env.expirySubmits(venue)); n != 0 {
+		t.Fatalf("no partial tranche can be sized without lot sizes, yet %d expiry orders were sent", n)
+	}
+	if n := countDMs(mock, "blocked by the basket bounds"); n != 0 {
+		t.Fatalf("a lot metadata outage produced %d blocked-bound alerts", n)
+	}
+	if n := countDMs(mock, "lot size unavailable"); n != 1 {
+		t.Fatalf("lot outage alerts %d, want exactly one", n)
+	}
+	for _, id := range []string{"hl-bsk-btc", "hl-bsk-eth"} {
+		l, _, _ := env.lifecycleRow(id)
+		if !l.active() || l.alerted("expiry-blocked") || l.RetryAtMs != at.Add(basketExpiryRetryFloor).UnixMilli() {
+			t.Fatalf("%s must keep the obligation and a retry without the bound alert key: %+v", id, l)
+		}
+	}
+	env.bc.stepExpiry(basketCycleInputs{Now: at.Add(61 * time.Second), Snapshot: basketTestSnapshot(at.Add(61*time.Second), 60, basketTestMarks(), 1)})
+	if n := countDMs(mock, "lot size unavailable"); n != 1 {
+		t.Fatalf("the retained lot alert key must suppress a repeat, got %d", n)
+	}
+	fail.Store(false)
+	recovered := at.Add(time.Hour)
+	wall := time.Now().Add(time.Hour)
+	cache.clock = func() time.Time { return wall }
+	for i := 0; i < 10 && !(env.signedQty("hl-bsk-btc", "BTC") == 0 && env.signedQty("hl-bsk-eth", "ETH") == 0); i++ {
+		now := recovered.Add(time.Duration(i) * 2 * time.Minute)
+		env.bc.stepExpiry(basketCycleInputs{Now: now, Snapshot: basketTestSnapshot(now, 60, basketTestMarks(), 1)})
+	}
+	for _, id := range []string{"hl-bsk-btc", "hl-bsk-eth"} {
+		if q := env.signedQty(id, basketMemberCoinByID(id)); q != 0 {
+			t.Fatalf("%s still holds %.10g after the lot sizes recovered", id, q)
+		}
+	}
+	if n := countDMs(mock, "blocked by the basket bounds"); n != 0 {
+		t.Fatalf("the recovered close produced %d blocked-bound alerts", n)
 	}
 }
