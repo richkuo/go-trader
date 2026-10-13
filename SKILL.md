@@ -1406,6 +1406,15 @@ New spot or futures strategy:
    Tests for distinct behavior stay: effective open and close-fallback routing, required admitted argument forms, acknowledgement, batch evidence, parameter preflight, signal values, backtester parity and closed-bar handling.
 8. Run the registry, optimizer and `scripts/test_go_python_registry_parity.py` tests.
 
+New basket evaluator (ranks a basket universe through the Basket Coordinator, never one symbol):
+
+1. Add the implementation and its `@register(...)` in `shared_strategies/open/registry.py` with `basket=dict(BASKET_CONTRACT)`, `platforms=("futures",)` and `short_entries=False` (registration refuses `short_entries=True`; short targets come from negative weights), explicit `constraints`, a `param_validator` and, when the configuration can be invalid for the parameters, a pure `basket_preflight(effective_params, allocation_context)` callback that raises `ValueError` (registration refuses a non-callable callback and any callback on a single-symbol entry).
+   The entry function is `fn(frames, eligibility, allocation_context, **params)`; it returns `{"scores", "weights", "exclusions"}` over exactly the eligible members, or `{"hold": "<reason>"}` alone.
+   It reads no configuration, clock or trading state; budgets and history limits come only from the read-only `allocation_context`, never from `params`.
+2. Add no `PLATFORM_ORDER`, `bidirectionalPerpsStrategies`, `DEFAULT_PARAM_RANGES` or wizard entry; `build_registry` drops basket entries, and single-asset backtests and `parity_diff` refuse them. Never edit the shims.
+3. Mirror it in Go: `basketRankerStrategies` and `basketRankerParamKeys` (parameter keys only, never allocation-context fields) in `scheduler/basket_config.go`, `knownShortNames` and `registeredOpenStrategyPlatforms` in `scheduler/init.go`, and `noEdgeStrategies` in `scheduler/edge_status.go` (`edge_ref` must name a file that exists in the same change).
+4. Update `scripts/test_go_python_registry_parity.py` (basket ranker set, no-edge total), add the name to the forward-peek `SKIP_STRATEGIES` with its basket-only ground, and prove post-deadline invariance through the real runner in a `TestBasketRealRanker*` Go case under the `pyintegration` tag (the CI selection runs that prefix).
+
 For a close evaluator, add an `evaluate(position, market, params)` implementation under `shared_strategies/close/` and register it in `close/registry.py`.
 
 Do not edit `shared_strategies/open/{spot,futures}/strategies.py` — they are thin shims.
@@ -1664,7 +1673,17 @@ The runner checks the snapshot id, generation and decision cutoff, applies the l
 Go validates the echo again, refuses an eligibility record that disagrees with its own reading of the listing evidence, refuses a per-coin weight above the cap or a target net above `max_transition_net_usd`, and freezes signed weights, target notionals and lot-floored quantities from the deadline candle close.
 Any missing, stale, short, malformed or mismatched input, a timeout, a failed process, unreadable or invalid output, or an expired window records a terminal hold for that deadline; existing positions, stops and recovery continue.
 A recorded deadline is never reranked, including after a restart.
-`basket_scripted_fixture` is the only registered evaluator: an integration fixture that returns scripted weights, `no_edge`, absent from every single-symbol registry.
+**Request version 2 and allocation context.** The ranker request is version 2 in Go and Python together; a mixed pair fails closed.
+It carries one `allocation_context` object copied from the saved basket contract for that deadline: `gross_budget_usd`, `max_coin_notional_usd`, `max_transition_net_usd`, `lookback_bars` and `min_history_bars` (the old top-level `lookback_bars` and `min_history_bars` are refused).
+The runner refuses, as invalid with exit 1 and before any evaluator runs, a version 1 request, a missing context, missing or unknown context fields, booleans or non-finite or non-positive numbers, a cap or net bound above gross, `lookback_bars` outside [2, 5000] and `min_history_bars` outside [1, `lookback_bars`]; listing history and closed-bar selection read only the context, and the input fingerprint includes the request version and the whole context.
+Every parsed-request hold or targets result echoes version 2. The coordinator stays the owner of the saved contract and targets; the context is a request-local copy.
+**Order.** After parsing, the runner resolves the registered evaluator, applies paper admission, the unknown-parameter check and `validate_params`, then calls the optional `basket_preflight(effective_params, allocation_context)`, all before the envelope, listing, population and frame checks, so a missing, short or stale frame never hides a configuration error.
+The evaluator receives the frames, the eligibility record, the read-only context (mutation raises and returns invalid) and the effective parameters as separate arguments.
+The Go coordinator can still hold before Python starts when the sealed snapshot cannot supply a member frame.
+**Evaluators.** `basket_scripted_fixture` is an integration fixture that returns scripted weights (no preflight).
+`cross_sectional_momentum` (#1787) ranks the eligible members by trailing closed-bar return, longs the top quantile and shorts the bottom quantile, weights each side by inverse trailing volatility to one half of the gross budget, and caps each coin at `max_coin_notional_usd / gross_budget_usd` with same-side redistribution; it emits weights on a 2^-52 grid with equal side totals, so the target net is exactly 0, and it applies the coordinator's cap, gross and net checks itself.
+An infeasible side under the cap, short history, a non-positive or non-finite price, a non-finite return or zero volatility on any eligible member holds the whole set; its preflight refuses a `lookback_bars` too small for its lookbacks. The frozen definitions are in `backtest/candidates/cross_sectional_momentum_1787/SIGNAL_SPEC.md`.
+Both are `no_edge`, absent from every single-symbol registry, and run only in explicit paper mode.
 
 **Transitions.** Reductions run before increases; a reversal reconciles flat first.
 Each action is checked at both reachable endpoints (no fill and a full fill of its remaining quantity) against the gross budget, the absolute net bound and the per-coin cap, using current sealed marks; a missing mark on a member that holds a position or has a nonzero target holds every elective action, and a flat member with a zero target needs no mark.

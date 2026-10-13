@@ -287,7 +287,7 @@ func basketTestRanker(weights map[string]float64, hold string) basketRankRunner 
 			return nil, nil, err
 		}
 		res := basketRankResult{
-			V: 1, BasketID: req.BasketID, DeadlineMs: req.DeadlineMs,
+			V: basketRankRequestVersion, BasketID: req.BasketID, DeadlineMs: req.DeadlineMs,
 			SnapshotID: req.Expected.SnapshotID, Generation: req.Expected.Generation, CutoffMs: req.Expected.CutoffMs,
 			Eligibility: map[string]basketRankEligibility{},
 			Scores:      map[string]float64{}, Weights: map[string]float64{}, Exclusions: map[string]string{},
@@ -295,7 +295,7 @@ func basketTestRanker(weights map[string]float64, hold string) basketRankRunner 
 		}
 		for _, m := range req.Members {
 			px, _ := basketDeadlineClose(req.Market, basketContractMember{Coin: m.Symbol, Timeframe: m.Timeframe, IntervalMs: 3_600_000}, req.DeadlineMs)
-			res.Eligibility[m.Symbol] = basketRankEligibility{Symbol: m.Symbol, Status: "eligible", ClosedBars: req.LookbackBars, Mark: px}
+			res.Eligibility[m.Symbol] = basketRankEligibility{Symbol: m.Symbol, Status: "eligible", ClosedBars: req.AllocationContext.LookbackBars, Mark: px}
 			res.Weights[m.Symbol] = weights[m.Symbol]
 			res.Scores[m.Symbol] = weights[m.Symbol]
 		}
@@ -447,14 +447,14 @@ func basketListingTestRanker(weights map[string]float64) basketRankRunner {
 			return nil, nil, err
 		}
 		res := basketRankResult{
-			V: 1, BasketID: req.BasketID, DeadlineMs: req.DeadlineMs,
+			V: basketRankRequestVersion, BasketID: req.BasketID, DeadlineMs: req.DeadlineMs,
 			SnapshotID: req.Expected.SnapshotID, Generation: req.Expected.Generation, CutoffMs: req.Expected.CutoffMs,
 			Status:      basketRankStatusTargets,
 			Eligibility: map[string]basketRankEligibility{},
 			Scores:      map[string]float64{}, Weights: map[string]float64{}, Exclusions: map[string]string{},
 			InputFingerprint: "fp-listing-test",
 		}
-		contract := basketContract{Listings: req.Listings, MinHistoryBars: req.MinHistoryBars}
+		contract := basketContract{Listings: req.Listings, MinHistoryBars: req.AllocationContext.MinHistoryBars}
 		for _, m := range req.Members {
 			member := basketContractMember{Coin: m.Symbol, Timeframe: m.Timeframe, IntervalMs: 3_600_000}
 			if why := basketListingExclusion(contract, member, req.DeadlineMs); why != "" {
@@ -467,7 +467,7 @@ func basketListingTestRanker(weights map[string]float64) basketRankRunner {
 				res.Weights, res.Scores = nil, nil
 				break
 			}
-			res.Eligibility[m.Symbol] = basketRankEligibility{Symbol: m.Symbol, Status: "eligible", ClosedBars: req.LookbackBars, Mark: px}
+			res.Eligibility[m.Symbol] = basketRankEligibility{Symbol: m.Symbol, Status: "eligible", ClosedBars: req.AllocationContext.LookbackBars, Mark: px}
 			res.Weights[m.Symbol] = weights[m.Symbol]
 			res.Scores[m.Symbol] = weights[m.Symbol]
 		}
