@@ -2710,14 +2710,14 @@ Every input row and every evaluator value of the selected candidate parameters, 
 - `backtest/eval_windows.py` `b32d5fbca2b241c25e014890347866f4533c0640318e4ddf34485f0b87fb3f9e`
 - `backtest/offline_manifest.py` `09cf40f4847afa0226b54da3ef495059112470f8e9479cf2b66e7c9c274918a8`
 - `backtest/optimizer.py` `2eb6b7fdc379c32060488d0bcc397f680284da3ca2496104812ac80d7c790b8a`
-- `backtest/parity_diff.py` `28b9f1bc415838c24f232febe9ff91903c16c74d163e868a63ac721e9439c549`
-- `shared_scripts/check_hyperliquid.py` `732b4c154ed224144cc2cc9224d5e0e9908a3585605c996ab3650df490405d4d`
+- `backtest/parity_diff.py` `f4bd121ebd767a977c120ff2ce5b5b1742b56764892f706981bc5b2c6978ff64`
+- `shared_scripts/check_hyperliquid.py` `f1b63448c5608a2da6fdc2e4e91b5651e4427f2380dc4279d1c179b1bf69a0d8`
 - `shared_strategies/close/tiered_tp_pct.py` `f6a480628c37f0da329336aa5efaeacd3dced5fe73622ccfc4ee47a16e07daa6`
 - `shared_strategies/open/klinger_divergence.py` `7831b96543838bf743e4f20b5624f403b88cc261f0f0031769b1394eadf09c89`
 - `shared_strategies/open/on_balance_volume.py` `1f4864c9ceedf11d9ffd8079561bb06aabc4a65321267864297bf417d43bed07`
-- `shared_strategies/open/registry.py` `74d79df8cb94f7324ad7cc8eb51dd8fdd9ba86b8dde0d08d798072f62851513e`
+- `shared_strategies/open/registry.py` `656ab19c43e95fffb5781858f4bb4924cc3132b612648bf694d6c3d59099653f`
 - `shared_tools/closed_bar.py` `9df5675bcb3ca29eb51803509744e077b8205a80a73e6ead58aafac277daf3d9`
-- `shared_tools/strategy_composition.py` `acfd77e42b25e42761abb31df031df1794c907e907e496d36742d5361a203214`
+- `shared_tools/strategy_composition.py` `948c61041f4aac88390da2a51aff122a0d743e753294301a4491d3a230d9c739`
 
 ---
 Created with LLM: Opus 5.5 | high | Harness: Claude Code
