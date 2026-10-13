@@ -19,6 +19,7 @@ const (
 	feedSealVersionBase       = 1
 	feedSealVersion           = 2
 	feedSealVersionAccounting = 3
+	feedSealVersionTrades     = 4
 	feedWireMaxRequestBytes   = 4 << 10
 	feedWireMaxHeaderBytes    = 1 << 20
 	feedSealMaxBytes          = 64 << 20
@@ -235,9 +236,71 @@ type feedSealDoc struct {
 	Observations []feedSealObservation `json:"observations,omitempty"`
 
 	AccountingFunding []feedSealAccountingFunding `json:"accounting_funding,omitempty"`
+
+	TradeFlows []feedSealTradeFlow `json:"trade_flows,omitempty"`
 }
 
-func feedSealVersionFor(hasObservations, hasAccounting bool) int {
+type feedSealTradeInterval struct {
+	StartMs     int64  `json:"t"`
+	Buy         string `json:"b"`
+	Sell        string `json:"s"`
+	Trades      int    `json:"n"`
+	Hash        string `json:"h"`
+	Session     uint64 `json:"q"`
+	FinalizedMs int64  `json:"f"`
+	Status      string `json:"st"`
+	Reason      string `json:"why"`
+	InvalidMs   int64  `json:"x"`
+}
+
+type feedSealTradeReadiness struct {
+	Status      string `json:"status"`
+	Detail      string `json:"detail"`
+	Ready       bool   `json:"ready"`
+	Intervals   int    `json:"intervals"`
+	Complete    int    `json:"complete"`
+	CoveredMs   int64  `json:"covered_ms"`
+	CoverFromMs int64  `json:"cover_from_ms"`
+	FrontierMs  int64  `json:"frontier_ms"`
+	OpenGap     bool   `json:"open_gap"`
+	Frames      uint64 `json:"frames"`
+	Received    uint64 `json:"received"`
+	Accepted    uint64 `json:"accepted"`
+	Duplicates  uint64 `json:"duplicates"`
+	Conflicts   uint64 `json:"conflicts"`
+	Late        uint64 `json:"late"`
+	Uncovered   uint64 `json:"uncovered"`
+	Rejected    uint64 `json:"rejected"`
+	Finalized   uint64 `json:"finalized"`
+	Invalid     uint64 `json:"invalid"`
+	LastReject  string `json:"last_reject"`
+}
+
+type feedSealTradeFlow struct {
+	Host           string                   `json:"host"`
+	Namespace      string                   `json:"namespace"`
+	Coin           string                   `json:"coin"`
+	Kind           string                   `json:"kind"`
+	Source         string                   `json:"source"`
+	Units          string                   `json:"units"`
+	TimeBasis      string                   `json:"time_basis"`
+	Identity       string                   `json:"identity"`
+	SideEvidence   string                   `json:"side_evidence"`
+	IntervalMs     int64                    `json:"interval_ms"`
+	ReorderGraceMs int64                    `json:"reorder_grace_ms"`
+	MaxEventGapMs  int64                    `json:"max_event_gap_ms"`
+	DecimalScale   int                      `json:"decimal_scale"`
+	WindowMs       int64                    `json:"window_ms"`
+	CutoffMs       int64                    `json:"cutoff_ms"`
+	Readiness      feedSealTradeReadiness   `json:"readiness"`
+	Intervals      []feedSealTradeInterval  `json:"intervals"`
+	Gaps           []feedSealObservationGap `json:"gaps"`
+}
+
+func feedSealVersionFor(hasObservations, hasAccounting, hasTrades bool) int {
+	if hasTrades {
+		return feedSealVersionTrades
+	}
 	if hasAccounting {
 		return feedSealVersionAccounting
 	}
@@ -248,7 +311,7 @@ func feedSealVersionFor(hasObservations, hasAccounting bool) int {
 }
 
 func feedSealVersionSupported(v int) bool {
-	return v == feedSealVersionBase || v == feedSealVersion || v == feedSealVersionAccounting
+	return v == feedSealVersionBase || v == feedSealVersion || v == feedSealVersionAccounting || v == feedSealVersionTrades
 }
 
 func feedSealEvaluationID(key int64) string {
@@ -400,8 +463,172 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 		doc.Observations = append(doc.Observations, so)
 	}
 	doc.AccountingFunding = sealAccountingFunding(snap.accountingFunding)
-	doc.V = feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0)
+	doc.TradeFlows = sealTradeFlows(snap.tradeFlows)
+	doc.V = feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0)
 	return doc, nil
+}
+
+func sealTradeFlows(flows map[feedObservationKey]*marketSnapshotTradeFlow) []feedSealTradeFlow {
+	keys := make([]feedObservationKey, 0, len(flows))
+	for k, v := range flows {
+		if v != nil {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	sortFeedObservationKeys(keys)
+	out := make([]feedSealTradeFlow, 0, len(keys))
+	for _, k := range keys {
+		f := flows[k]
+		r := f.Readiness
+		st := feedSealTradeFlow{
+			Host: k.Host, Namespace: k.Namespace, Coin: k.Coin, Kind: k.Kind,
+			Source: feedTradeSourceHLWS, Units: feedTradeUnitsBase, TimeBasis: feedTradeTimeBasis, Identity: feedTradeIdentity,
+			SideEvidence: feedTradeSideEvidence, IntervalMs: feedTradeIntervalMs, ReorderGraceMs: feedTradeReorderGraceMs,
+			MaxEventGapMs: feedTradeMaxEventGapMs, DecimalScale: feedTradeDecimalScale, WindowMs: f.WindowMs, CutoffMs: f.CutoffMs,
+			Readiness: feedSealTradeReadiness{
+				Status: r.Status, Detail: r.Detail, Ready: r.Ready, Intervals: r.Intervals, Complete: r.Complete,
+				CoveredMs: r.CoveredMs, CoverFromMs: r.CoverFromMs, FrontierMs: r.FrontierMs, OpenGap: r.OpenGap,
+				Frames: r.Stats.Frames, Received: r.Stats.Received, Accepted: r.Stats.Accepted, Duplicates: r.Stats.Duplicates,
+				Conflicts: r.Stats.Conflicts, Late: r.Stats.Late, Uncovered: r.Stats.Uncovered, Rejected: r.Stats.Rejected,
+				Finalized: r.Stats.Finalized, Invalid: r.Stats.Invalid, LastReject: r.Stats.LastReject,
+			},
+			Intervals: make([]feedSealTradeInterval, 0, len(f.Intervals)),
+			Gaps:      make([]feedSealObservationGap, 0, len(f.Gaps)),
+		}
+		for _, iv := range f.Intervals {
+			st.Intervals = append(st.Intervals, feedSealTradeInterval{
+				StartMs: iv.StartMs, Buy: formatFeedUnits(iv.BuyUnits), Sell: formatFeedUnits(iv.SellUnits), Trades: iv.Trades,
+				Hash: iv.Hash, Session: iv.Session, FinalizedMs: iv.FinalizedMs, Status: iv.Status, Reason: iv.Reason, InvalidMs: iv.InvalidMs,
+			})
+		}
+		for _, g := range f.Gaps {
+			st.Gaps = append(st.Gaps, feedSealObservationGap{StartMs: g.StartMs, EndMs: g.EndMs, DetectedMs: g.DetectedMs, Reason: g.Reason})
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+func validateFeedSealTradeFlows(flows []feedSealTradeFlow) error {
+	var prev *feedObservationKey
+	for i := range flows {
+		f := flows[i]
+		key := feedObservationKey{Host: f.Host, Namespace: f.Namespace, Coin: f.Coin, Kind: f.Kind}
+		if prev != nil && !feedObservationKeyLess(*prev, key) {
+			return fmt.Errorf("seal trade flows are not strictly ordered at %s", key)
+		}
+		prev = &key
+		if f.Kind != feedObservationTradeFlow {
+			return fmt.Errorf("seal trade flow %s has kind %q", key, f.Kind)
+		}
+		if f.Source != feedTradeSourceHLWS || f.Units != feedTradeUnitsBase || f.TimeBasis != feedTradeTimeBasis || f.Identity != feedTradeIdentity ||
+			f.SideEvidence != feedTradeSideEvidence || f.IntervalMs != feedTradeIntervalMs || f.ReorderGraceMs != feedTradeReorderGraceMs ||
+			f.MaxEventGapMs != feedTradeMaxEventGapMs || f.DecimalScale != feedTradeDecimalScale {
+			return fmt.Errorf("seal trade flow %s declares contract source %q units %q time basis %q identity %q side evidence %q interval %d grace %d gap %d scale %d; this consumer accepts only %q %q %q %q %q %d %d %d %d",
+				key, f.Source, f.Units, f.TimeBasis, f.Identity, f.SideEvidence, f.IntervalMs, f.ReorderGraceMs, f.MaxEventGapMs, f.DecimalScale,
+				feedTradeSourceHLWS, feedTradeUnitsBase, feedTradeTimeBasis, feedTradeIdentity, feedTradeSideEvidence,
+				feedTradeIntervalMs, feedTradeReorderGraceMs, feedTradeMaxEventGapMs, feedTradeDecimalScale)
+		}
+		if f.WindowMs <= 0 || f.CutoffMs <= 0 || f.WindowMs > feedTradeMaxWindowMs {
+			return fmt.Errorf("seal trade flow %s has window %d, cutoff %d", key, f.WindowMs, f.CutoffMs)
+		}
+		start := f.CutoffMs - f.WindowMs
+		var lastStart int64
+		for j, iv := range f.Intervals {
+			if iv.StartMs%feedTradeIntervalMs != 0 || iv.StartMs < start || iv.StartMs+feedTradeIntervalMs > f.CutoffMs {
+				return fmt.Errorf("seal trade flow %s interval %d starts at %d outside [%d, %d)", key, j, iv.StartMs, start, f.CutoffMs)
+			}
+			if j > 0 && iv.StartMs <= lastStart {
+				return fmt.Errorf("seal trade flow %s intervals are not strictly ordered at interval %d", key, j)
+			}
+			lastStart = iv.StartMs
+			buy, berr := sealTradeUnits(iv.Buy)
+			sell, serr := sealTradeUnits(iv.Sell)
+			if berr != nil || serr != nil {
+				return fmt.Errorf("seal trade flow %s interval %d volume is not a canonical nonnegative decimal (%v, %v)", key, j, berr, serr)
+			}
+			if _, ok := addFeedUnits(buy, sell); !ok {
+				return fmt.Errorf("seal trade flow %s interval %d volume overflows", key, j)
+			}
+			if iv.Trades < 0 || (iv.Trades == 0 && (buy != 0 || sell != 0)) || (iv.Trades > 0 && buy == 0 && sell == 0) {
+				return fmt.Errorf("seal trade flow %s interval %d tally %d disagrees with its volume", key, j, iv.Trades)
+			}
+			if hb, herr := hex.DecodeString(iv.Hash); herr != nil || len(hb) != sha256.Size {
+				return fmt.Errorf("seal trade flow %s interval %d records hash is malformed", key, j)
+			}
+			if iv.FinalizedMs < iv.StartMs+feedTradeIntervalMs || iv.FinalizedMs > f.CutoffMs {
+				return fmt.Errorf("seal trade flow %s interval %d finalized at %d outside [%d, %d]", key, j, iv.FinalizedMs, iv.StartMs+feedTradeIntervalMs, f.CutoffMs)
+			}
+			switch iv.Status {
+			case feedTradeStatusComplete:
+				if iv.Reason != "" || iv.InvalidMs != 0 {
+					return fmt.Errorf("seal trade flow %s complete interval %d carries an invalidation", key, j)
+				}
+				if iv.FinalizedMs < iv.StartMs+feedTradeIntervalMs+feedTradeReorderGraceMs {
+					return fmt.Errorf("seal trade flow %s complete interval %d finalized before its reorder grace", key, j)
+				}
+			case feedTradeStatusInvalid:
+				if iv.Reason == "" || iv.InvalidMs <= 0 || iv.InvalidMs > f.CutoffMs {
+					return fmt.Errorf("seal trade flow %s invalid interval %d has no dated reason", key, j)
+				}
+			default:
+				return fmt.Errorf("seal trade flow %s interval %d has status %q", key, j, iv.Status)
+			}
+		}
+		for j, g := range f.Gaps {
+			if g.StartMs <= 0 || (g.EndMs != 0 && g.EndMs < g.StartMs) || g.Reason == "" || g.DetectedMs < g.StartMs || g.DetectedMs > f.CutoffMs {
+				return fmt.Errorf("seal trade flow %s gap %d is malformed", key, j)
+			}
+		}
+	}
+	return nil
+}
+
+func sealTradeUnits(text string) (int64, error) {
+	canonical, err := canonicalFeedDecimal(text)
+	if err != nil {
+		return 0, err
+	}
+	if canonical != text {
+		return 0, fmt.Errorf("%q is not canonical (%q)", text, canonical)
+	}
+	return feedDecimalUnits(canonical)
+}
+
+func snapshotTradeFlows(flows []feedSealTradeFlow) map[feedObservationKey]*marketSnapshotTradeFlow {
+	out := make(map[feedObservationKey]*marketSnapshotTradeFlow, len(flows))
+	for _, f := range flows {
+		key := feedObservationKey{Host: f.Host, Namespace: f.Namespace, Coin: f.Coin, Kind: f.Kind}
+		r := f.Readiness
+		entry := &marketSnapshotTradeFlow{
+			Key: key, WindowMs: f.WindowMs, CutoffMs: f.CutoffMs,
+			Intervals: make([]marketSnapshotTradeInterval, 0, len(f.Intervals)),
+			Gaps:      make([]feedObservationGap, 0, len(f.Gaps)),
+			Readiness: feedTradeFlowReadiness{
+				Key: key, Status: r.Status, Detail: r.Detail, Ready: r.Ready, Intervals: r.Intervals, Complete: r.Complete,
+				CoveredMs: r.CoveredMs, WindowMs: f.WindowMs, CoverFromMs: r.CoverFromMs, FrontierMs: r.FrontierMs, OpenGap: r.OpenGap,
+				Stats: feedTradeFlowStats{Frames: r.Frames, Received: r.Received, Accepted: r.Accepted, Duplicates: r.Duplicates,
+					Conflicts: r.Conflicts, Late: r.Late, Uncovered: r.Uncovered, Rejected: r.Rejected, Finalized: r.Finalized,
+					Invalid: r.Invalid, LastReject: r.LastReject},
+			},
+		}
+		for _, iv := range f.Intervals {
+			buy, _ := sealTradeUnits(iv.Buy)
+			sell, _ := sealTradeUnits(iv.Sell)
+			entry.Intervals = append(entry.Intervals, marketSnapshotTradeInterval{
+				StartMs: iv.StartMs, BuyUnits: buy, SellUnits: sell, Trades: iv.Trades, Hash: iv.Hash, Session: iv.Session,
+				FinalizedMs: iv.FinalizedMs, Status: iv.Status, Reason: iv.Reason, InvalidMs: iv.InvalidMs,
+			})
+		}
+		for _, g := range f.Gaps {
+			entry.Gaps = append(entry.Gaps, feedObservationGap{StartMs: g.StartMs, EndMs: g.EndMs, DetectedMs: g.DetectedMs, Reason: g.Reason})
+		}
+		out[key] = entry
+	}
+	return out
 }
 
 func encodeFeedSeal(doc *feedSealDoc) ([]byte, string, error) {
@@ -441,10 +668,10 @@ func decodeFeedSeal(blob []byte, wantKey int64) (*feedSealDoc, error) {
 		return nil, errors.New("seal bytes are not in canonical form")
 	}
 	if !feedSealVersionSupported(doc.V) {
-		return nil, fmt.Errorf("seal version %d, want %d, %d or %d", doc.V, feedSealVersionBase, feedSealVersion, feedSealVersionAccounting)
+		return nil, fmt.Errorf("seal version %d, want %d, %d, %d or %d", doc.V, feedSealVersionBase, feedSealVersion, feedSealVersionAccounting, feedSealVersionTrades)
 	}
-	if want := feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0); doc.V != want {
-		return nil, fmt.Errorf("seal version %d carries %d observations and %d accounting funding entries; that content seals as version %d", doc.V, len(doc.Observations), len(doc.AccountingFunding), want)
+	if want := feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0); doc.V != want {
+		return nil, fmt.Errorf("seal version %d carries %d observations, %d accounting funding entries and %d trade flows; that content seals as version %d", doc.V, len(doc.Observations), len(doc.AccountingFunding), len(doc.TradeFlows), want)
 	}
 	if doc.Key != wantKey {
 		return nil, fmt.Errorf("seal key %d, requested %d", doc.Key, wantKey)
@@ -503,6 +730,9 @@ func validateFeedSealDoc(doc *feedSealDoc) error {
 		}
 	}
 	if err := validateFeedSealObservations(doc.Observations); err != nil {
+		return err
+	}
+	if err := validateFeedSealTradeFlows(doc.TradeFlows); err != nil {
 		return err
 	}
 	return validateFeedSealAccountingFunding(doc.AccountingFunding)
@@ -628,6 +858,7 @@ func (doc *feedSealDoc) snapshot() *marketSnapshot {
 		snap.mids[m.Coin] = feedMid{Px: m.Px, RecvAt: feedMsTime(m.RecvAtMs), Source: m.Source}
 	}
 	snap.accountingFunding = snapshotAccountingFunding(doc.AccountingFunding)
+	snap.tradeFlows = snapshotTradeFlows(doc.TradeFlows)
 	for _, f := range doc.Funding {
 		snap.funding[f.Coin] = feedFunding{
 			Current:    f.Current,

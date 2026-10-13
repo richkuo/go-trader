@@ -10,6 +10,9 @@ import sys
 from typing import Dict, List, Optional
 
 RUN_SCHEMA = "go_trader_observation_run/v1"
+RUN_SCHEMA_V2 = "go_trader_observation_run/v2"
+SEGMENT_SCHEMA_V2 = "go_trader_observation_segment/v2"
+RECORDING_SCHEMA_V2 = "go_trader_observation_recording/v2"
 SEGMENT_SCHEMA = "go_trader_observation_segment/v1"
 RECORDING_SCHEMA = "go_trader_observation_recording/v1"
 SERIES_SCHEMA = "go_trader_observation_series/v1"
@@ -75,6 +78,8 @@ def load_recording(run_dir: str) -> dict:
     run_dir = os.path.abspath(run_dir)
     with open(os.path.join(run_dir, "run.manifest.json")) as fh:
         run = json.load(fh)
+    if run.get("schema") == RUN_SCHEMA_V2:
+        raise RecordingError(f"run manifest schema {RUN_SCHEMA_V2!r} records trade flow; use load_trade_recording")
     if run.get("schema") != RUN_SCHEMA:
         raise RecordingError(f"run manifest schema must be {RUN_SCHEMA!r}")
     if not run.get("closed"):

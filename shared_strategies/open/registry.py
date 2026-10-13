@@ -72,6 +72,11 @@ from elder_force_pullback import efp_param_validator, elder_force_pullback_core
 from true_strength_index import true_strength_index_core, tsi_param_validator
 from basket_scripted_fixture import basket_scripted_fixture_core
 from klinger_divergence import klinger_divergence_core, klinger_param_validator
+from cumulative_volume_delta_divergence import (
+    DEFAULT_PARAMS as DEFAULT_CVD_PARAMS,
+    cumulative_volume_delta_divergence_core,
+    cvd_param_validator,
+)
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -129,6 +134,13 @@ def no_edge_strategies() -> frozenset:
     return frozenset(
         name for name, entry in STRATEGIES.items()
         if entry.get("edge_status") == EDGE_STATUS_NO_EDGE
+    )
+
+
+def production_refused_strategies() -> frozenset:
+    return frozenset(
+        name for name, entry in STRATEGIES.items()
+        if entry.get("production_refused")
     )
 
 
@@ -316,10 +328,15 @@ def register(
     short_entries: bool,
     param_validator=None,
     basket=None,
+    production_refused: bool = False,
 ):
     if name in STRATEGIES:
         raise ValueError(f"Strategy '{name}' is already registered")
     _validate_edge_metadata(name, edge_status, edge_source, edge_ref)
+    if not isinstance(production_refused, bool):
+        raise ValueError(f"{name}: production_refused must be True or False, got {production_refused!r}")
+    if production_refused and edge_status != EDGE_STATUS_NO_EDGE:
+        raise ValueError(f"{name}: production_refused=True requires edge_status={EDGE_STATUS_NO_EDGE!r}")
     platforms = tuple(platforms)
     _validate_basket(name, basket, platforms, short_entries)
     if not platforms:
@@ -369,6 +386,7 @@ def register(
             "edge_ref": edge_ref,
             "short_entries": short_entries,
             "param_validator": param_validator,
+            "production_refused": production_refused,
         }
         return fn
 
@@ -413,6 +431,7 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
             "edge_source": entry.get("edge_source"),
             "edge_ref": entry.get("edge_ref"),
             "param_validator": entry.get("param_validator"),
+            "production_refused": entry.get("production_refused", False),
         }
     return out
 
@@ -2673,6 +2692,39 @@ def hold_strategy(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+@register(
+    "cumulative_volume_delta_divergence",
+    "RESEARCH, production-refused (#1638) \u2014 cumulative volume delta divergence on closed candles: signed executed volume (aggressor buys minus sells, base units) from supplied Hyperliquid trade-flow aggregates (trade_flow_observations) accumulates from each UTC session start (session_hours); strict price pivots (left_span/right_span) become usable only at their confirmation bar; a lower pivot low whose pivot-to-pivot delta change, divided by the observed total volume after the earlier pivot through the later pivot, is strictly above delta_threshold arms a long, and the mirror higher high with a falling delta arms a short; a later close strictly beyond the confirmation bar high (long) or low (short) within setup_expiry bars enters once. Every used bar needs complete, unrevoked trade intervals known by the decision deadline whose total equals the candle volume, else the entry holds with a reason. delta_confirmation=false is the price-only baseline with identical data eligibility. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    dict(DEFAULT_CVD_PARAMS),
+    platforms=("futures",),
+    constraints=[
+        "left_span >= 1",
+        "left_span <= 10",
+        "right_span >= 1",
+        "right_span <= 10",
+        "min_separation >= 1",
+        "max_separation <= 288",
+        "min_separation <= max_separation",
+        "delta_threshold >= 0",
+        "delta_threshold < 1",
+        "setup_expiry >= 1",
+        "setup_expiry <= 96",
+        "session_hours >= 1",
+        "session_hours <= 24",
+        "expected_interval_ms >= 60000",
+        "expected_interval_ms <= 3600000",
+    ],
+    edge_status="no_edge",
+    edge_source="unvalidated",
+    edge_ref="backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md",
+    short_entries=True,
+    param_validator=cvd_param_validator,
+    production_refused=True,
+)
+def cumulative_volume_delta_divergence_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return cumulative_volume_delta_divergence_core(df, **params)
+
+
 PLATFORM_ORDER: Dict[str, List[str]] = {
     "spot": [
         "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
@@ -2723,6 +2775,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "elder_force_pullback",
         "true_strength_index",
         "klinger_divergence",
+        "cumulative_volume_delta_divergence",
         "hold",
     ],
 }

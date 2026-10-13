@@ -125,6 +125,7 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 
 	subscribed := make(map[marketFeedKey]bool)
 	obsSubscribed := make(map[string]bool)
+	tradesSubscribed := make(map[string]bool)
 	midsSubscribed := false
 	syncSubscriptions := func() error {
 		keys, coins, _ := o.Subscriptions()
@@ -167,6 +168,21 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 				return err
 			}
 			obsSubscribed[coin] = true
+		}
+		for _, coin := range o.TradeFlowCoins() {
+			if tradesSubscribed[coin] {
+				continue
+			}
+			if err := writeJSON(map[string]any{
+				"method": "subscribe",
+				"subscription": map[string]any{
+					"type": "trades",
+					"coin": coin,
+				},
+			}); err != nil {
+				return err
+			}
+			tradesSubscribed[coin] = true
 		}
 		return nil
 	}
@@ -221,6 +237,7 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 func (o *marketFeedOwner) handleSocketMessage(payload []byte) {
 	var env feedSocketEnvelope
 	if err := json.Unmarshal(payload, &env); err != nil {
+		o.IngestTradesFrame(nil, o.now(), payload)
 		return
 	}
 	switch env.Channel {
@@ -261,6 +278,17 @@ func (o *marketFeedOwner) handleSocketMessage(payload []byte) {
 			return
 		}
 		o.IngestOpenInterest(coin, value, recvAt, payload, err)
+	case "trades":
+		o.IngestTradesFrame(env.Data, o.now(), payload)
+	case "subscriptionResponse":
+		recvAt := o.now()
+		var ack feedSubscriptionAck
+		if err := json.Unmarshal(env.Data, &ack); err != nil {
+			return
+		}
+		if ack.Method == "subscribe" && ack.Subscription.Type == "trades" && strings.TrimSpace(ack.Subscription.Coin) != "" {
+			o.IngestTradeSubscription(strings.TrimSpace(ack.Subscription.Coin), recvAt, payload)
+		}
 	}
 }
 

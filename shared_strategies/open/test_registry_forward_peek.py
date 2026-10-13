@@ -175,7 +175,14 @@ def _calendar_conditioned_entry_fixture() -> pd.DataFrame:
     )
 
 
+def _cvd_fixture() -> pd.DataFrame:
+    df = _DF[["open", "high", "low", "close", "volume"]].copy()
+    df.index = pd.date_range("2026-01-01", periods=len(df), freq="5min")
+    return df
+
+
 STRATEGY_FIXTURES = {
+    "cumulative_volume_delta_divergence": _cvd_fixture,
     "calendar_conditioned_entry": _calendar_conditioned_entry_fixture,
     "range_scalper": _range_scalper_fixture,
     "sweep_squeeze_combo": _sweep_squeeze_combo_fixture,
@@ -219,7 +226,55 @@ def _with_declared_cadence(fn):
     return wrapped
 
 
+def _trade_flow_from_bars(df: pd.DataFrame):
+    from decimal import Decimal
+    opens = df.index.as_unit("ms").asi8.astype(np.int64)
+    interval = int(opens[1] - opens[0])
+    parts = interval // 60_000
+    intervals = []
+    volumes = []
+    move = (df["close"].to_numpy() - df["open"].to_numpy()) / (df["high"].to_numpy() - df["low"].to_numpy() + 1e-9)
+    wobble = np.sin(df["volume"].to_numpy() * 37.0)
+    for i, open_ms in enumerate(opens):
+        unit = Decimal(int(round(float(df["volume"].iloc[i]) * 1000))) / Decimal(1000) / parts
+        unit = unit.quantize(Decimal("0.00001"))
+        frac = Decimal(str(round(0.5 + 0.3 * float(move[i]) + 0.15 * float(wobble[i]), 4)))
+        bar_total = Decimal(0)
+        for k in range(parts):
+            start = int(open_ms + k * 60_000)
+            buy = (unit * frac).quantize(Decimal("0.00001"))
+            sell = unit - buy
+            bar_total += unit
+            invalid = start + 60_000 + 6_000 + 2 * interval if (start // 60_000) % 211 == 0 else None
+            intervals.append({"start_ms": start, "end_ms": start + 60_000, "buy": _cvd_dec(buy), "sell": _cvd_dec(sell),
+                              "total": _cvd_dec(unit), "trades": 7, "records_hash": "0" * 64, "session": 1,
+                              "finalized_ms": start + 60_000 + 6_000,
+                              "status": "invalid" if invalid is not None else "complete", "invalid_ms": invalid})
+        volumes.append(float(bar_total))
+    payload = {"available": True, "kind": "trade_flow", "coin": "FIX", "source": "hyperliquid_ws_trades",
+               "units": "base", "time_basis": "event_time_receipt_cutoff", "identity": "venue+namespace+coin+tid",
+               "side_evidence": "hyperliquid-trades-side-aggressor/1638-v1", "interval_ms": 60_000,
+               "reorder_grace_ms": 5_000, "max_event_gap_ms": 30_000, "decimal_scale": 8,
+               "bar_interval_ms": interval, "intervals": intervals, "gaps": []}
+    return payload, volumes
+
+
+def _cvd_dec(value) -> str:
+    text = format(value.normalize(), "f")
+    return text if "." not in text else text.rstrip("0").rstrip(".") or "0"
+
+
+def _with_trade_flow(fn):
+    def wrapped(df, **params):
+        out = df.copy()
+        payload, volumes = _trade_flow_from_bars(out)
+        out["volume"] = volumes
+        return fn(out, **params, trade_flow_observations=payload)
+    return wrapped
+
+
 STRATEGY_INPUTS = {
+    "cumulative_volume_delta_divergence": _with_trade_flow,
     "open_interest_breakout": _with_open_interest,
     "ease_of_movement_breakout": _with_declared_cadence,
     "adaptive_moving_average": _with_declared_cadence,

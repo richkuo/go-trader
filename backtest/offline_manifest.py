@@ -25,9 +25,12 @@ if _TOOLS_DIR not in sys.path:
 
 SCHEMA = "offline_candle_manifest/v1"
 SCHEMA_V2 = "offline_candle_manifest/v2"
-SCHEMAS = (SCHEMA, SCHEMA_V2)
+SCHEMA_V3 = "offline_candle_manifest/v3"
+SCHEMAS = (SCHEMA, SCHEMA_V2, SCHEMA_V3)
 DATASET_KEYS_V1 = ("coin", "symbol", "size_decimals", "half_spread_bps", "candles", "funding")
 DATASET_KEYS_V2 = DATASET_KEYS_V1 + ("open_interest",)
+DATASET_KEYS_V3 = DATASET_KEYS_V2 + ("trade_flow",)
+DATASET_KEYS = {SCHEMA: DATASET_KEYS_V1, SCHEMA_V2: DATASET_KEYS_V2, SCHEMA_V3: DATASET_KEYS_V3}
 PROVENANCE_KINDS = ("venue", "proxy")
 HOUR_MS = 3_600_000
 INTERVAL_MS = {
@@ -176,7 +179,7 @@ def load_manifest(path: str, verify: bool = True) -> dict:
     if not isinstance(raw, dict) or raw.get("schema") not in SCHEMAS:
         raise ManifestError(f"{path}: schema must be one of {SCHEMAS}")
     schema = raw["schema"]
-    allowed_dataset_keys = DATASET_KEYS_V2 if schema == SCHEMA_V2 else DATASET_KEYS_V1
+    allowed_dataset_keys = DATASET_KEYS[schema]
     for key in ("study", "venue", "provenance", "interval", "warmup_bars",
                 "windows", "costs", "datasets", "venue_reference"):
         if key not in raw:
@@ -237,8 +240,11 @@ def load_manifest(path: str, verify: bool = True) -> dict:
             raise ManifestError(f"dataset must be an object: {ds!r}")
         unknown = sorted(set(ds) - set(allowed_dataset_keys))
         if unknown:
-            hint = (f"; open_interest needs schema {SCHEMA_V2!r}"
-                    if "open_interest" in unknown and schema != SCHEMA_V2 else "")
+            hint = ""
+            if "open_interest" in unknown:
+                hint = f"; open_interest needs schema {SCHEMA_V2!r} or {SCHEMA_V3!r}"
+            elif "trade_flow" in unknown:
+                hint = f"; trade_flow needs schema {SCHEMA_V3!r}"
             raise ManifestError(f"dataset {ds.get('coin')!r} has unknown keys {unknown}{hint}")
         coin = str(ds.get("coin") or "").strip()
         if not coin:
@@ -266,6 +272,8 @@ def load_manifest(path: str, verify: bool = True) -> dict:
                         if ds.get("funding") else None),
             "open_interest": (_file_ref(base_dir, ds["open_interest"], f"{key}.open_interest", verify)
                               if ds.get("open_interest") else None),
+            "trade_flow": (_file_ref(base_dir, ds["trade_flow"], f"{key}.trade_flow", verify)
+                           if ds.get("trade_flow") else None),
         }
         datasets.append(entry)
 
@@ -439,6 +447,55 @@ def attach_open_interest(manifest: dict, dataset: dict, window: dict):
     from observation_replay import for_bars
     step = manifest["interval_ms"]
     return for_bars(series, step, step), coverage
+
+
+def load_trade_flow(dataset: dict) -> Optional[dict]:
+    if dataset.get("trade_flow") is None:
+        return None
+    from trade_flow_replay import TradeRecordingError, read_trade_series
+    try:
+        series = read_trade_series(dataset["trade_flow"]["abs_path"])
+    except TradeRecordingError as exc:
+        raise ManifestError(f"{dataset['key']}: {exc}")
+    if series.get("coin") != dataset["coin"]:
+        raise ManifestError(f"{dataset['key']}: trade-flow series is for {series.get('coin')!r}")
+    return series
+
+
+def trade_flow_coverage(series: Optional[dict], start_ms: int, end_ms: int) -> dict:
+    if series is None:
+        return {"available": False, "reason": "no trade-flow series is attached to this dataset"}
+    step = int(series["interval_ms"])
+    expected = max(0, (end_ms - start_ms) // step)
+    inside = [iv for iv in series["intervals"] if start_ms <= iv["start_ms"] and iv["end_ms"] <= end_ms]
+    complete = [iv for iv in inside if iv["status"] == "complete" and iv["invalid_ms"] is None]
+    revoked = [iv for iv in inside if iv["status"] == "complete" and iv["invalid_ms"] is not None]
+    reasons: dict = {}
+    for iv in inside:
+        if iv["status"] == "invalid" or iv["invalid_ms"] is not None:
+            reasons[iv["reason"]] = reasons.get(iv["reason"], 0) + 1
+    return {
+        "available": bool(series.get("economic_evidence")) and bool(inside),
+        "economic_evidence": bool(series.get("economic_evidence")),
+        "refusals": list(series.get("refusals") or []),
+        "expected_intervals": int(expected),
+        "recorded_intervals": len(inside),
+        "complete_intervals": len(complete),
+        "revoked_after_finalize": len(revoked),
+        "invalid_reasons": dict(sorted(reasons.items())),
+        "complete_share": round(len(complete) / expected, 6) if expected else None,
+        "intervals_sha256": series["intervals_sha256"],
+        "side_evidence": series["side_evidence"],
+    }
+
+
+def attach_trade_flow(manifest: dict, dataset: dict, window: dict):
+    series = load_trade_flow(dataset)
+    coverage = trade_flow_coverage(series, window["start_ms"], window["end_ms"])
+    if series is None:
+        return None, coverage
+    from trade_flow_replay import payload_from_series
+    return payload_from_series(series, manifest["interval_ms"]), coverage
 
 
 def execution_spec(manifest: dict, dataset: dict, cost_multiplier: float = 1.0) -> dict:
@@ -663,6 +720,7 @@ def verify_report(manifest: dict) -> dict:
         }
         funding = load_funding(ds)
         oi = load_open_interest(ds)
+        flow = load_trade_flow(ds)
         for name, win in manifest["windows"].items():
             _, _, cov = window_frame(manifest, ds, name)
             out["datasets"][ds["key"]]["windows"][name] = {
@@ -672,6 +730,9 @@ def verify_report(manifest: dict) -> dict:
             if ds.get("open_interest") is not None:
                 out["datasets"][ds["key"]]["windows"][name]["open_interest"] = open_interest_coverage(
                     oi, win["start_ms"], win["end_ms"])
+            if ds.get("trade_flow") is not None:
+                out["datasets"][ds["key"]]["windows"][name]["trade_flow"] = trade_flow_coverage(
+                    flow, win["start_ms"], win["end_ms"])
     return out
 
 

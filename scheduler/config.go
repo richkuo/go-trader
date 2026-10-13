@@ -1835,6 +1835,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 
 	errs = append(errs, validateUserDefaults(cfg.UserDefaults)...)
 
+	errs = append(errs, productionRefusedAdmissionErrors(cfg.Strategies)...)
 	errs = append(errs, noEdgeAdmissionErrors(cfg.Strategies)...)
 
 	errs = append(errs, fixedIntervalStrategyErrors(cfg.Strategies)...)

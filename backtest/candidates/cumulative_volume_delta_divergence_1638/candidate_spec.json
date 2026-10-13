@@ -1,0 +1,100 @@
+{
+  "schema": "go_trader_candidate_spec/v1",
+  "issue": 1638,
+  "candidate": "cumulative_volume_delta_divergence",
+  "frozen_at": "2026-10-13T02:30:00Z",
+  "frozen_before_results": "This file was written and committed before any study window was scored and before the recording that feeds the study had closed. No study result influenced any value here.",
+  "signal": {
+    "flow_input": "Per-minute aggregates of Hyperliquid public executed trades (WebSocket trades channel), in base-coin units: buy = sum of sizes whose side is B, sell = sum of sizes whose side is A, total = buy + sell, accepted trade tally, an order-independent records hash (sum of per-trade sha256 mod 2^256) and the time the interval became final. Sizes are exact decimals with at most 8 places; every sum is exact.",
+    "side_meaning": "side B means the buyer (users[0]) was the aggressor (crossed the book as taker) and side A means the seller (users[1]) was. This is checked against independently identified taker fills (public userFillsByTime crossed flag) and retained as side_evidence.json; a payload whose side_evidence is not hyperliquid-trades-side-aggressor/1638-v1 holds every entry (side_unverified).",
+    "bar_delta": "delta(bar) = sum over the bar's minute intervals of (buy - sell); a bar is usable at a decision deadline only if every one of its minute intervals is present, final by that deadline, not revoked by that deadline, and the exact sum of its interval totals equals the candle volume of that bar (float of the exact decimal sum equals the candle float). Missing intervals never count as zero volume.",
+    "session": "UTC sessions of session_hours hours starting at 00:00 UTC. CVD(bar) = sum of delta from the first bar of the session through that bar. A session is usable only when its first bar opens exactly at the session start and every candle from there through the decision bar is present, well formed and spaced exactly expected_interval_ms apart; a mid-session start, candle defect or spacing gap holds the rest of that session.",
+    "pivots": "pivot low at bar p: low[p] < low[k] strictly for every k in [p - left_span, p + right_span], k != p; pivot high mirrors with high. Equal extrema never qualify. The window lies inside the session. A pivot is confirmed and usable only at bar p + right_span.",
+    "pairing": "each newly confirmed pivot pairs with the previous confirmed pivot of the same kind in the session (consecutive pivots, regardless of whether the earlier one armed). The pair needs min_separation <= p2 - p1 <= max_separation.",
+    "long_setup": "low[p2] < low[p1] strictly; every bar from the session start through p2 usable at the confirmation deadline; total = sum of total volume over bars p1+1..p2 > 0; ratio = (CVD(p2) - CVD(p1)) / total; arm when ratio > delta_threshold (strict). Reclaim level = high of the confirmation bar.",
+    "short_setup": "high[p2] > high[p1] strictly, same flow rules, arm when ratio < -delta_threshold (strict). Reclaim level = low of the confirmation bar.",
+    "entry": "on a later closed bar within setup_expiry bars after the confirmation bar (bars c+1 .. c+setup_expiry), close > reclaim for a long or close < reclaim for a short (strict). Each setup enters at most once. The confirmation bar never enters.",
+    "order_per_bar": [
+      "candle defects, closed-bar cutoff, session start and session continuity",
+      "clear setups whose evidence bars (session start through p2) are no longer usable at this deadline (setup_cleared_flow)",
+      "clear setups past expiry (setup_expired)",
+      "reclaim test on surviving setups; a long and a short reclaim on the same bar hold and clear both (opposing_entries)",
+      "pivot confirmation at bar i - right_span, pairing and arming; a newly armed eligible setup replaces an older same-side setup (superseded)"
+    ],
+    "baseline": "delta_confirmation=false runs the identical pivot, pairing, reclaim, expiry and flow-usability rules and only skips the ratio threshold, so both arms score the same complete-data bars",
+    "timing": "a decision at the close D of bar N uses closed candles through bar N and trade intervals final (end + 5000 ms reorder grace, with a later frame for the coin) and unrevoked by D. Because right_span >= 1, every interval the decision needs ends at least one bar before D. The Backtester fills a bar-N signal at the bar N+1 open (time D), which matches the decision time; no later receipt is needed.",
+    "evidence": "every armed and entered row records side, setup id, pivot times and prices, CVD at both pivots, delta change, total volume, ratio, threshold, reclaim level, session start, usable bar count and the sha256 of the exact interval tuples used; every held row records a reason code",
+    "failure_outcome": "any data defect gives signal 0 with a stable reason code (cvd_reason); bad parameters raise"
+  },
+  "parameters": {
+    "signal_seed": {"left_span": 3, "right_span": 3, "min_separation": 3, "max_separation": 36, "delta_threshold": 0.05, "setup_expiry": 6, "session_hours": 4, "expected_interval_ms": 300000, "delta_confirmation": true},
+    "bounds": {
+      "left_span": [1, 10],
+      "right_span": [1, 10],
+      "min_separation": [1, 96],
+      "max_separation": [2, 288],
+      "delta_threshold": "[0, 1)",
+      "setup_expiry": [1, 96],
+      "session_hours": "one of 1, 2, 3, 4, 6, 8, 12, 24",
+      "expected_interval_ms": "multiple of 60000 in [60000, 3600000] that divides the session; left_span + right_span + min_separation + 1 bars must fit one session"
+    },
+    "optimizer_grid": {
+      "left_span": [2, 3, 4],
+      "right_span": [2, 3],
+      "min_separation": [3, 6],
+      "max_separation": [24, 36],
+      "delta_threshold": [0.0, 0.05, 0.10],
+      "setup_expiry": [3, 6, 12],
+      "session_hours": [4],
+      "delta_confirmation": [true]
+    },
+    "trade_contract": {"interval_ms": 60000, "reorder_grace_ms": 5000, "max_event_gap_ms": 30000, "max_future_skew_ms": 5000, "identity": "venue+namespace+coin+tid", "identity_retain_ms": 900000, "decimal_scale": 8},
+    "note": "Seeds are research starting points, not endorsed trading settings. The trade contract is fixed by the feed and is not optimized."
+  },
+  "exit_and_risk": {
+    "close_strategy": {"name": "time_stop", "params": {"max_bars": 12}},
+    "stop_owner": "scalar entry-ATR stop, stop_loss_atr_mult 1.0",
+    "direction": "both",
+    "capital_usd": 1000.0,
+    "sizing": "full capital per position, unlevered (Backtester default). execution_spec models fees, spread, slippage, lot floor and the venue minimum; it does not model leverage, margin or liquidation, and at 1x a liquidation cannot occur",
+    "baselines_use_identical": "close strategy, stop, capital, sizing, costs, bars, windows and flow-usability rules"
+  },
+  "source": {
+    "live": "Hyperliquid WebSocket subscription {type: trades, coin}; each element carries coin, side, px, sz (decimal strings), time (venue milliseconds), hash, tid and users [buyer, seller]. The first frame after a subscription replays recent trades.",
+    "coverage": "coverage starts at the first minute boundary after the subscription acknowledgement; a disconnect, a 30 s frame silence, a malformed frame, a receipt-clock regression, a future-dated trade, a conflicting duplicate tid, an identity-store overflow or a late trade for a final interval invalidates the affected intervals with a detection time. Identical duplicates are idempotent.",
+    "completeness": "a healthy socket is not proof of completeness. The decision rule therefore requires the exact interval total to equal the candle volume of every bar it uses. The study also measures, per minute, whether the recorded total and tally equal the venue 1m candle volume and trade count.",
+    "historical_archive": "Hyperliquid publishes node trade archives only in a requester-pays bucket; AWS access was not available in the build environment, so no archive is used and no unavailable history is replaced with current values"
+  },
+  "data_plan": {
+    "recording": "go-trader record-observations --coins BTC,ETH --kinds trade_flow --segment 1h, run started 2026-10-13T02:05:05Z (run id MacBookPro.hitronhub.home-58026-1791857105025-1791857105), planned to close after 14h05m",
+    "interval": "5m",
+    "coins": ["BTC", "ETH"],
+    "windows": {
+      "train": {"start": "2026-10-13T04:00:00Z", "end": "2026-10-13T12:00:00Z", "role": "selection only (two 4h sessions)"},
+      "test": {"start": "2026-10-13T12:00:00Z", "end": "2026-10-13T16:00:00Z", "role": "held-out, scored once with the frozen selection (one 4h session)"}
+    },
+    "candles_and_funding": "public Hyperliquid candleSnapshot (5m, closed bars only) and fundingHistory through offline_manifest.py acquire, hash-pinned in study_manifest.json (offline_candle_manifest/v3)",
+    "completeness_reference": "public Hyperliquid candleSnapshot 1m candles for the recording span, hash-pinned, used only to measure per-minute completeness",
+    "costs": {"taker_fee_pct": 0.00045, "maker_fee_pct": 0.00015, "slippage_bps": 5.0, "min_notional_usd": 10.0, "min_notional_margin": 0.03, "half_spread_bps": "measured from a pinned public l2Book snapshot per coin", "funding": "booked hourly from the pinned funding series for every arm, never as an entry input; long pays a positive rate and short receives it"}
+  },
+  "selection_rule": "On train only: eligible grid points have every dataset scored and >= 6 train positions; pick max mean DD-adjusted return, then max mean Sharpe, then earliest grid order. No eligible point: the seed is used and the selection outcome is recorded. Parameter stability is reported as the share of grid points with positive train net PnL.",
+  "baselines": {
+    "price_only_same_rules": "cumulative_volume_delta_divergence with the same selected parameters and delta_confirmation=false"
+  },
+  "verdict_criteria": {
+    "inconclusive_if_any": [
+      "side evidence not verified (fewer than 30 trades with an identified taker, or any identified taker disagreeing with the side field)",
+      "the recording is incomplete or damaged (not closed, a dropped record, an incomplete segment, or an independent replay mismatch)",
+      "fewer than 30 candidate positions across coins on test",
+      "any coin's test window has fewer than 80% of its scored bars with usable flow at their own deadline",
+      "candle coverage incomplete on test"
+    ],
+    "pass_if_all": [
+      "candidate test net PnL > 0 at cost x1 and at cost x2",
+      "candidate test mean DD-adjusted return > the price-only baseline at cost x1",
+      "no single coin carries more than 60% of the candidate's absolute test PnL"
+    ],
+    "fail": "data sufficient and any pass check false",
+    "live_status": "production_refused regardless of the verdict; promotion needs a separate reviewed decision"
+  }
+}
