@@ -66,6 +66,7 @@ from schaff_trend_cycle import schaff_trend_cycle_core, stc_param_validator
 from trix_momentum import trix_momentum_core, trix_param_validator
 from camarilla_pivot_reversal import camarilla_pivot_reversal_core, validate_camarilla_param_dict
 from mass_index_reversal import mass_index_reversal_core, mir_param_validator
+from calendar_conditioned_entry import calendar_conditioned_entry_core, calendar_param_validator
 from stochastic_momentum_index import smi_param_validator, stochastic_momentum_index_core
 from klinger_divergence import klinger_divergence_core, klinger_param_validator
 
@@ -2084,6 +2085,41 @@ def mass_index_reversal_strategy(df: pd.DataFrame, ema_period: int = 9, sum_peri
 
 
 @register(
+    "calendar_conditioned_entry",
+    "RESEARCH, no-edge (#1653) \u2014 calendar-conditioned entries: at each scheduled refit (every refit_bars bars on a grid anchored at 1970-01-05T00:00:00Z UTC) a table of UTC weekday/hour cells is fitted from the trailing training_bars bars, using only completed labels whose exit open is present at the refit: label = open(entry + holding_bars) / open(entry) - 1, the same nominal entry and exit opens as time_stop(max_bars=holding_bars). Each cell averages its labels per UTC week, takes a Newey-West standard error over the weekly series (lag ceil(holding_bars x interval / 1 week), at least 1) and a conservative effective sample; the long edge is mean - cost_hurdle, the short edge is -mean - cost_hurdle, and a direction qualifies when its lower bound at a one-sided Bonferroni level (1 - confidence) / 336 is strictly positive with at least min_effective_obs effective weeks. A closed bar enters when the next bar's cell (from expected_interval_ms) qualifies in the last scheduled table; the table stays fixed until the next refit. Missing, duplicate, descending, misaligned or invalid bars inside the required history, or undeclared timing, hold with a reason. Entry-only; pair with time_stop and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {"training_bars": 4368, "holding_bars": 4, "refit_bars": 168, "min_effective_obs": 8, "confidence": 0.9,
+     "cost_hurdle": 0.002, "expected_interval_ms": 3600000},
+    platforms=("futures",),
+    constraints=[
+        "training_bars >= 2",
+        "holding_bars >= 1",
+        "refit_bars >= 1",
+        "min_effective_obs >= 2",
+        "holding_bars < training_bars",
+        "refit_bars <= training_bars",
+        "confidence > 0",
+        "confidence < 1",
+        "cost_hurdle >= 0",
+        "expected_interval_ms >= 60000",
+        "expected_interval_ms <= 86400000",
+    ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/calendar_conditioned_entry_1653/REPORT.md",
+    short_entries=True,
+    param_validator=calendar_param_validator,
+)
+def calendar_conditioned_entry_strategy(df: pd.DataFrame, training_bars: int = 4368, holding_bars: int = 4,
+                                        refit_bars: int = 168, min_effective_obs: int = 8,
+                                        confidence: float = 0.9, cost_hurdle: float = 0.002,
+                                        expected_interval_ms: int = 3600000) -> pd.DataFrame:
+    return calendar_conditioned_entry_core(
+        df, training_bars=training_bars, holding_bars=holding_bars, refit_bars=refit_bars,
+        min_effective_obs=min_effective_obs, confidence=confidence, cost_hurdle=cost_hurdle,
+        expected_interval_ms=expected_interval_ms)
+
+
+@register(
     "klinger_divergence",
     "RESEARCH, no-edge (#1662) \u2014 Klinger Oscillator divergence entries: every oscillator endpoint t is replayed from exactly replay_bars + 1 trailing closed bars (rows t-replay_bars .. t); the replay seeds trend -1, cm = dm (high - low) and the seed volume force, then trend is +1 when high + low + close exceeds the previous sum (else -1), cm adds dm while the trend repeats and restarts at previous dm + dm on a change, volume force = volume * 2 * (dm / cm - 1) * trend * 100, the oscillator is its fast_period EMA minus its slow_period EMA (both seeded at the seed force) and the signal line is a signal_period EMA of the oscillator (seeded at the seed oscillator). A strict price pivot (left_span/right_span) is usable once its right-side bars close; each newly confirmed low pairs with the nearest earlier confirmed low min_separation..max_separation bars back, and a strictly lower low with a strictly higher oscillator arms a long (the mirror high arms a short). The setup enters once on the first strict oscillator cross of its signal line in its direction on bars confirmation+1 .. confirmation+setup_expiry; a newer same-side pivot replaces it. divergence_test=false is the signal-cross-only ablation. Every decision reads exactly replay_bars + left_span + max_separation + right_span + setup_expiry + 2 bars (at most 200); bad prices or volume, timestamp defects, cadence gaps, zero cm and a check-time frame whose last bar is not the latest closed bar hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {
@@ -2567,6 +2603,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "trix_momentum",
         "camarilla_pivot_reversal",
         "mass_index_reversal",
+        "calendar_conditioned_entry",
         "stochastic_momentum_index",
         "klinger_divergence",
         "hold",

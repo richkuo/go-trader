@@ -10,9 +10,10 @@ import (
 const fixedIntervalParam = "expected_interval_ms"
 
 var fixedIntervalStrategyDefaults = map[string]int64{
-	"camarilla_pivot_reversal": 3_600_000,
-	"chande_momentum":          3_600_000,
-	"dual_thrust":              3_600_000,
+	"calendar_conditioned_entry": 3_600_000,
+	"camarilla_pivot_reversal":   3_600_000,
+	"chande_momentum":            3_600_000,
+	"dual_thrust":                3_600_000,
 }
 
 type fixedIntervalUse struct {
@@ -55,7 +56,11 @@ func namedStrategyUses(sc StrategyConfig, match func(string) bool) []fixedInterv
 }
 
 func fixedIntervalParamValue(params map[string]interface{}) (int64, bool, error) {
-	raw, ok := params[fixedIntervalParam]
+	return positiveIntegerParamValue(params, fixedIntervalParam)
+}
+
+func positiveIntegerParamValue(params map[string]interface{}, key string) (int64, bool, error) {
+	raw, ok := params[key]
 	if !ok {
 		return 0, false, nil
 	}

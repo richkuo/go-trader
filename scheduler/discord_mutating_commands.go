@@ -130,6 +130,14 @@ var addStrategyEntryOnlyCandidates = map[string]addStrategyEntryOnlyCandidate{
 		ClosedBarDecisions: true,
 		StopLossATRMult:    1.0,
 	},
+	"calendar_conditioned_entry": {
+		CloseStrategy: "time_stop",
+		CloseParams: func() map[string]interface{} {
+			return map[string]interface{}{"max_bars": 4}
+		},
+		ClosedBarDecisions: true,
+		StopLossATRMult:    3.0,
+	},
 	"stochastic_momentum_index": {
 		CloseStrategy: "tiered_tp_pct",
 		CloseParams: func() map[string]interface{} {

@@ -1,0 +1,45 @@
+{
+  "config_version": 20,
+  "interval_seconds": 14400,
+  "db_file": "calendar_conditioned_entry_1653_paper_4h.db",
+  "strategies": [
+    {
+      "id": "hl-cce-btc-4h",
+      "type": "perps",
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": [
+        "calendar_conditioned_entry",
+        "BTC",
+        "4h",
+        "--mode=paper"
+      ],
+      "open_strategy": {
+        "name": "calendar_conditioned_entry",
+        "params": {
+          "training_bars": 1092,
+          "holding_bars": 1,
+          "refit_bars": 42,
+          "min_effective_obs": 8,
+          "confidence": 0.9,
+          "cost_hurdle": 0.002,
+          "expected_interval_ms": 14400000
+        }
+      },
+      "close_strategy": {
+        "name": "time_stop",
+        "params": {
+          "max_bars": 1
+        }
+      },
+      "stop_loss_atr_mult": 3.0,
+      "direction": "both",
+      "capital": 1000.0,
+      "max_drawdown_pct": 10.0,
+      "leverage": 1.0,
+      "margin_mode": "isolated",
+      "closed_bar_decisions": true,
+      "interval_seconds": 14400
+    }
+  ]
+}

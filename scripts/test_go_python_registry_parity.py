@@ -126,7 +126,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 60
+    assert len(py) == 61
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -159,6 +159,14 @@ def test_go_fixed_interval_defaults_equal_python_registry():
     go, py = go_fixed_interval_defaults(), python_fixed_interval_defaults()
     assert py.get("chande_momentum") == 3_600_000
     assert go == py
+
+
+def test_go_calendar_training_default_equals_python_registry():
+    source = _go_source("calendar_conditioned_entry_config.go")
+    match = re.search(r"^\s*calendarConditionedEntryDefaultTrainingBars\s*=\s*([0-9_]+)\s*$", source, re.M)
+    assert match, "calendarConditionedEntryDefaultTrainingBars not found"
+    py = OPEN_REGISTRY.STRATEGIES["calendar_conditioned_entry"]["default_params"]["training_bars"]
+    assert int(match.group(1).replace("_", "")) == py
 
 
 def test_go_bidirectional_perps_equal_python_short_entries():
