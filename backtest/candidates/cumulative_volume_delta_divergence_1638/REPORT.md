@@ -349,6 +349,6 @@ None.
 - `scheduler/market_feed_ws.go` `4e6c48e37a6deeebf738a9011d7a39a7e8de622d008fd0f7242962e264033235`
 - `shared_strategies/close/time_stop.py` `da47e115c599a162a9091a245ce51dda7566716e3811b106899b2ae446f19305`
 - `shared_strategies/open/cumulative_volume_delta_divergence.py` `3235fdb3a432c55bfb999e5b7f11118c0eab4c5fc32e34f9e2c61c6a8037879a`
-- `shared_strategies/open/registry.py` `38382b22287dab4977a071927d60cbaff10909dc4c9bd61d94fbedd0eb00a60d`
+- `shared_strategies/open/registry.py` `e999f3be38db8c5b06af1c031b14eea3d4cd0f75934c6435572f07c147de5359`
 - `shared_tools/market_payload.py` `f5c3fbc436a55fcbc67f1d66324a64982475e9f234a228c5373e7a8277e7112f`
 - `shared_tools/strategy_composition.py` `a589469d1e0e62ae60d3947b5f30a806d73296dcb54fdbed303618c3bdca6bd7`
