@@ -252,7 +252,7 @@ def _trade_flow_from_bars(df: pd.DataFrame):
                               "status": "invalid" if invalid is not None else "complete", "invalid_ms": invalid})
         volumes.append(float(bar_total))
     payload = {"available": True, "kind": "trade_flow", "coin": "FIX", "source": "hyperliquid_ws_trades",
-               "units": "base", "time_basis": "event_time_receipt_cutoff", "identity": "venue+namespace+coin+tid",
+               "units": "base", "time_basis": "event_time_receipt_cutoff", "identity": "venue+namespace+coin+time+tid",
                "side_evidence": "hyperliquid-trades-side-aggressor/1638-v1", "interval_ms": 60_000,
                "reorder_grace_ms": 5_000, "max_event_gap_ms": 30_000, "decimal_scale": 8,
                "bar_interval_ms": interval, "intervals": intervals, "gaps": []}

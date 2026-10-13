@@ -2,7 +2,7 @@
   "schema": "go_trader_candidate_spec/v1",
   "issue": 1638,
   "candidate": "cumulative_volume_delta_divergence",
-  "frozen_at": "2026-10-13T02:30:00Z",
+  "frozen_at": "2026-10-13T02:30:00Z", "amended_before_scoring": "2026-10-13T02:27:00Z: trade identity and recording run updated as listed in data_plan.recording_restarts",
   "frozen_before_results": "This file was written and committed before any study window was scored and before the recording that feeds the study had closed. No study result influenced any value here.",
   "signal": {
     "flow_input": "Per-minute aggregates of Hyperliquid public executed trades (WebSocket trades channel), in base-coin units: buy = sum of sizes whose side is B, sell = sum of sizes whose side is A, total = buy + sell, accepted trade tally, an order-independent records hash (sum of per-trade sha256 mod 2^256) and the time the interval became final. Sizes are exact decimals with at most 8 places; every sum is exact.",
@@ -48,7 +48,7 @@
       "session_hours": [4],
       "delta_confirmation": [true]
     },
-    "trade_contract": {"interval_ms": 60000, "reorder_grace_ms": 5000, "max_event_gap_ms": 30000, "max_future_skew_ms": 5000, "identity": "venue+namespace+coin+tid", "identity_retain_ms": 900000, "decimal_scale": 8},
+    "trade_contract": {"interval_ms": 60000, "reorder_grace_ms": 5000, "max_event_gap_ms": 30000, "max_future_skew_ms": 5000, "identity": "venue+namespace+coin+time+tid", "identity_retain_ms": 900000, "decimal_scale": 8},
     "note": "Seeds are research starting points, not endorsed trading settings. The trade contract is fixed by the feed and is not optimized."
   },
   "exit_and_risk": {
@@ -61,12 +61,14 @@
   },
   "source": {
     "live": "Hyperliquid WebSocket subscription {type: trades, coin}; each element carries coin, side, px, sz (decimal strings), time (venue milliseconds), hash, tid and users [buyer, seller]. The first frame after a subscription replays recent trades.",
+    "identity": "Hyperliquid WebSocket subscription docs, interface WsTrade: 'tid is 50-bit hash of (buyer_oid, seller_oid). For a globally unique trade id, use (block_time, coin, tid)' and 'users: [string, string] // [buyer, seller]'. The feed keys identity by venue host, perps namespace, coin, block time and tid; the content compared for a conflict is side, px, sz, hash and both users.",
     "coverage": "coverage starts at the first minute boundary after the subscription acknowledgement; a disconnect, a 30 s frame silence, a malformed frame, a receipt-clock regression, a future-dated trade, a conflicting duplicate tid, an identity-store overflow or a late trade for a final interval invalidates the affected intervals with a detection time. Identical duplicates are idempotent.",
     "completeness": "a healthy socket is not proof of completeness. The decision rule therefore requires the exact interval total to equal the candle volume of every bar it uses. The study also measures, per minute, whether the recorded total and tally equal the venue 1m candle volume and trade count.",
     "historical_archive": "Hyperliquid publishes node trade archives only in a requester-pays bucket; AWS access was not available in the build environment, so no archive is used and no unavailable history is replaced with current values"
   },
   "data_plan": {
-    "recording": "go-trader record-observations --coins BTC,ETH --kinds trade_flow --segment 1h, run started 2026-10-13T02:05:05Z (run id MacBookPro.hitronhub.home-58026-1791857105025-1791857105), planned to close after 14h05m",
+    "recording": "go-trader record-observations --coins BTC,ETH --kinds trade_flow --segment 1h, run started 2026-10-13T02:25:55Z (run id MacBookPro.hitronhub.home-93858-1791858355712-1791858355), planned to close after 13h50m",
+    "recording_restarts": "Two earlier runs (started 01:46:54Z and 02:05:05Z) were stopped before any study window began and are not used: the first to add coverage resumption after a frame silence, the second to adopt the venue-documented composite trade identity (block time, coin, tid) in place of tid alone. No result existed at either point.",
     "interval": "5m",
     "coins": ["BTC", "ETH"],
     "windows": {

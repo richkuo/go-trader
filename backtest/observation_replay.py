@@ -22,8 +22,21 @@ ACCEPTED_TIME_BASIS = "receipt"
 OBSERVATION_KIND = "open_interest"
 
 
+TRADE_RECORD_KINDS = ("trades", "sub", "cover", "interval", "invalidate", "tick")
+
+
 class RecordingError(ValueError):
     pass
+
+
+def _v2_open_interest_contract(run_dir: str, run: dict) -> dict:
+    segments = run.get("segments") or []
+    if not segments:
+        return {}
+    blob = _read_segment_bytes(run_dir, segments[0]["file"])
+    header = json.loads(blob.split(b"\n", 1)[0])
+    contract = header.get("open_interest_contract") or {}
+    return {k: contract.get(k) for k in ("units", "time_basis", "cadence_ms")}
 
 
 def sha256_bytes(blob: bytes) -> str:
@@ -78,10 +91,17 @@ def load_recording(run_dir: str) -> dict:
     run_dir = os.path.abspath(run_dir)
     with open(os.path.join(run_dir, "run.manifest.json")) as fh:
         run = json.load(fh)
-    if run.get("schema") == RUN_SCHEMA_V2:
-        raise RecordingError(f"run manifest schema {RUN_SCHEMA_V2!r} records trade flow; use load_trade_recording")
-    if run.get("schema") != RUN_SCHEMA:
-        raise RecordingError(f"run manifest schema must be {RUN_SCHEMA!r}")
+    v2 = run.get("schema") == RUN_SCHEMA_V2
+    if v2:
+        if OBSERVATION_KIND not in (run.get("kinds") or []):
+            raise RecordingError(f"run manifest schema {RUN_SCHEMA_V2!r} did not record {OBSERVATION_KIND}; "
+                                 "use trade_flow_replay.load_trade_recording for trade flow")
+        contract = _v2_open_interest_contract(run_dir, run)
+        run = {**run, "source": run.get("sources", {}).get(OBSERVATION_KIND), **contract}
+    elif run.get("schema") != RUN_SCHEMA:
+        raise RecordingError(f"run manifest schema must be {RUN_SCHEMA!r} or {RUN_SCHEMA_V2!r}")
+    segment_schema = SEGMENT_SCHEMA_V2 if v2 else SEGMENT_SCHEMA
+    recording_schema = RECORDING_SCHEMA_V2 if v2 else RECORDING_SCHEMA
     if not run.get("closed"):
         raise RecordingError("the recording run was not closed; its last segment may be truncated")
     if (run.get("source"), run.get("units"), run.get("time_basis")) != (ACCEPTED_SOURCE, ACCEPTED_UNITS, ACCEPTED_TIME_BASIS):
@@ -101,7 +121,7 @@ def load_recording(run_dir: str) -> dict:
               "started_ms": run.get("started_ms"), "closed_ms": run.get("closed_ms")}
     session = None
     for expected_index, seg in enumerate(segments, start=1):
-        if seg.get("schema") != SEGMENT_SCHEMA or seg.get("index") != expected_index:
+        if seg.get("schema") != segment_schema or seg.get("index") != expected_index:
             raise RecordingError(f"segment manifest {expected_index} is missing or out of order")
         with open(os.path.join(run_dir, seg["file"] + ".manifest.json")) as fh:
             standalone = json.load(fh)
@@ -118,8 +138,10 @@ def load_recording(run_dir: str) -> dict:
             raise RecordingError(f"segment {seg['file']} has no header and end record")
         header = json.loads(lines[0])
         end = json.loads(lines[-1])
-        if header.get("k") != "header" or header.get("schema") != RECORDING_SCHEMA or header.get("run_id") != run.get("run_id"):
+        if header.get("k") != "header" or header.get("schema") != recording_schema or header.get("run_id") != run.get("run_id"):
             raise RecordingError(f"segment {seg['file']} header does not match the run")
+        if v2:
+            header = {**header, **(header.get("open_interest_contract") or {})}
         if header.get("cadence_ms") != cadence or header.get("units") != ACCEPTED_UNITS or header.get("source") != ACCEPTED_SOURCE:
             raise RecordingError(f"segment {seg['file']} header declares a different source, units or cadence")
         if end.get("k") != "end" or end.get("records") != len(lines) - 2:
@@ -141,6 +163,8 @@ def load_recording(run_dir: str) -> dict:
                             st.gaps.append([start, None, "disconnected", max(recv, start)])
                 else:
                     raise RecordingError(f"{seg['file']}:{line_no} has unknown connection state {rec.get('state')!r}")
+                continue
+            if v2 and kind in TRADE_RECORD_KINDS:
                 continue
             if kind == "drop":
                 report["dropped"] += int(rec.get("count") or 0)
@@ -372,20 +396,125 @@ def _cmd_harness(args) -> int:
     return 1 if failures else 0
 
 
+TRADE_INTERVAL_FIELDS = ("start_ms", "end_ms", "buy", "sell", "total", "trades", "records_hash", "session",
+                         "finalized_ms", "status", "reason", "invalid_ms")
+TRADE_DECISION_COLUMNS = ["timestamp", "cvd_reason", "cvd_flow_available", "cvd_setup_id", "cvd_ratio",
+                          "cvd_flow_sha256", "cvd_deadline_ms", "cvd_carried", "signal"]
+
+
+def _cmd_import_trades(args) -> int:
+    from trade_flow_replay import load_trade_recording, write_trade_series
+    loaded = load_trade_recording(args.run_dir)
+    report = loaded["report"]
+    out = {k: report[k] for k in ("run_id", "recorder_version", "frames", "malformed_frames", "dropped",
+                                  "events_compared", "economic_evidence", "refusals", "max_frame_silence_ms")}
+    out["sessions"] = report["sessions"]
+    out["segments"] = report["segments"]
+    out["series"] = {}
+    for coin, series in loaded["series"].items():
+        entry = {"intervals": len(series["intervals"]), "stats": series["stats"], "latency_ms": series["latency_ms"],
+                 "intervals_sha256": series["intervals_sha256"]}
+        if args.out_dir:
+            path = os.path.join(args.out_dir, f"{coin}_trade_flow.json.gz")
+            entry["file"] = path
+            entry["file_sha256"] = write_trade_series(series, path)
+        out["series"][coin] = entry
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0
+
+
+def _trade_decisions(df, flow: dict, params: dict) -> list:
+    _here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, os.path.join(_here, "..", "shared_strategies", "open", "futures"))
+    import strategies as futures_registry
+    out = futures_registry.apply_strategy("cumulative_volume_delta_divergence", df,
+                                          {**params, "trade_flow_observations": flow})
+    return json.loads(out[TRADE_DECISION_COLUMNS].to_json(orient="values", double_precision=15))
+
+
+def _norm_intervals(intervals: list) -> list:
+    return [{k: (iv.get(k) if iv.get(k) is not None or k != "reason" else "") for k in TRADE_INTERVAL_FIELDS}
+            for iv in intervals]
+
+
+def _trade_harness_case(directory: str, harness: dict, case: dict, loaded: dict) -> dict:
+    import pandas as pd
+    _here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, os.path.join(_here, "..", "shared_tools"))
+    from market_payload import market_frame_rows, market_trade_flow, validate_market_payload
+    from trade_flow_replay import payload_from_series
+    with open(os.path.join(directory, case["payload"])) as fh:
+        payload = json.load(fh)
+    validate_market_payload(payload)
+    coin = case["coin"]
+    rows = market_frame_rows(payload, coin, harness["timeframe"])
+    df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df.index = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    live = market_trade_flow(payload, coin)
+    params = harness.get("params") or {}
+    replay = payload_from_series(loaded["series"][coin], live["bar_interval_ms"], live["cutoff_ms"], live["window_ms"])
+    live_a = _trade_decisions(df, live, params)
+    live_b = _trade_decisions(df, market_trade_flow(payload, coin), params)
+    replayed = _trade_decisions(df, replay, params)
+    checks = {
+        "payload_trade_flow_available": bool(live.get("available")),
+        "repeat_evaluation_identical": live_a == live_b,
+        "recording_intervals_match_seal": _norm_intervals(live["intervals"]) == _norm_intervals(replay["intervals"]),
+        "recording_decisions_match_seal": live_a == replayed,
+    }
+    failures = [f"{k}: false" for k, v in checks.items() if not v]
+    reasons = {}
+    for r in live_a:
+        reasons[r[1]] = reasons.get(r[1], 0) + 1
+    return {"payload": case["payload"], "coin": coin, "cutoff_ms": live.get("cutoff_ms"),
+            "intervals": len(live["intervals"]), "invalid_intervals": sum(1 for iv in live["intervals"] if iv["status"] == "invalid"),
+            "checks": checks, "reasons": reasons, "failures": failures}
+
+
+def _cmd_harness_trades(args) -> int:
+    from trade_flow_replay import load_trade_recording
+    with open(os.path.join(args.dir, "harness.json")) as fh:
+        harness = json.load(fh)
+    loaded = load_trade_recording(os.path.join(args.dir, "recording"))
+    oi = load_recording(os.path.join(args.dir, "recording"))
+    results = [_trade_harness_case(args.dir, harness, case, loaded) for case in harness["cases"]]
+    failures = [f"{r['payload']}: {f}" for r in results for f in r["failures"]]
+    for coin, want in (harness.get("expected_rejected") or {}).items():
+        got = loaded["series"][coin]["stats"]["rejected"]
+        if got != want:
+            failures.append(f"{coin} rejected trades {got}, want {want}")
+    if not loaded["report"]["economic_evidence"]:
+        failures.append(f"the harness recording is refused as evidence: {loaded['report']['refusals']}")
+    print(json.dumps({"recording": {k: loaded["report"][k] for k in ("frames", "events_compared", "sessions", "economic_evidence")},
+                      "open_interest_samples": {c: len(s["samples"]) for c, s in oi["series"].items()},
+                      "cases": results, "failures": failures}, indent=2, sort_keys=True, default=str))
+    return 1 if failures else 0
+
+
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Verify and import go-trader observation recordings (#1637)")
+    p = argparse.ArgumentParser(description="Verify and import go-trader observation recordings (#1637, #1638)")
     sub = p.add_subparsers(dest="cmd", required=True)
     imp = sub.add_parser("import", help="Verify a closed recording run and print (or write) its rebuilt series")
     imp.add_argument("--run-dir", required=True)
     imp.add_argument("--out-dir", default="")
     har = sub.add_parser("harness", help="Compare sealed-payload decisions with recording-replay decisions")
     har.add_argument("--dir", required=True)
+    imt = sub.add_parser("import-trades", help="Replay a closed trade-flow recording independently and print (or write) its series")
+    imt.add_argument("--run-dir", required=True)
+    imt.add_argument("--out-dir", default="")
+    hat = sub.add_parser("harness-trades", help="Compare sealed trade-flow payloads and decisions with the recording replay")
+    hat.add_argument("--dir", required=True)
     args = p.parse_args(argv)
+    from trade_flow_replay import TradeRecordingError
     try:
         if args.cmd == "import":
             return _cmd_import(args)
+        if args.cmd == "import-trades":
+            return _cmd_import_trades(args)
+        if args.cmd == "harness-trades":
+            return _cmd_harness_trades(args)
         return _cmd_harness(args)
-    except RecordingError as exc:
+    except (RecordingError, TradeRecordingError) as exc:
         print(f"recording error: {exc}", file=sys.stderr)
         return 1
 

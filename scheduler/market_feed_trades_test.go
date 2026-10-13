@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,8 +91,10 @@ func TestTradeFlowObservationPipeline(t *testing.T) {
 			if coin == "BTC" {
 				v = tfScheduledBarVolume(open, B, tradeEnd)
 			}
+			x := float64(open / tfTestBarMs)
+			c := 100 + 2*math.Sin(x*0.9)
 			out = append(out, hlCandleRaw{OpenMs: open, CloseMs: open + tfTestBarMs - 1, HasClose: true,
-				Open: 100, High: 101, Low: 99, Close: 100.5, Volume: v})
+				Open: c - 0.1, High: c + 0.5 + 0.3*math.Cos(x*1.7), Low: c - 0.5 - 0.3*math.Sin(x*1.3), Close: c, Volume: v})
 		}
 		return out, nil
 	})

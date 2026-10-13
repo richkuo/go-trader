@@ -13,7 +13,7 @@ TRADE_FLOW_CONTRACT = {
     "source": "hyperliquid_ws_trades",
     "units": "base",
     "time_basis": "event_time_receipt_cutoff",
-    "identity": "venue+namespace+coin+tid",
+    "identity": "venue+namespace+coin+time+tid",
     "interval_ms": 60_000,
     "reorder_grace_ms": 5_000,
     "max_event_gap_ms": 30_000,
@@ -260,7 +260,12 @@ def _open_times_ms(df: pd.DataFrame, interval: int):
         raw[missing] = np.nan
     else:
         return None
-    if df.attrs.get(TIMESTAMP_KIND_ATTR) == NATIVE_CLOSE_KIND:
+    kind = df.attrs.get(TIMESTAMP_KIND_ATTR)
+    if kind is None:
+        finite = raw[np.isfinite(raw)]
+        if len(finite) and bool((np.mod(finite, interval) == interval - 1).all()):
+            kind = NATIVE_CLOSE_KIND
+    if kind == NATIVE_CLOSE_KIND:
         raw = raw - interval + 1
     return raw
 

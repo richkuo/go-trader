@@ -16,7 +16,7 @@ CONTRACT = {
     "source": "hyperliquid_ws_trades",
     "units": "base",
     "time_basis": "event_time_receipt_cutoff",
-    "identity": "venue+namespace+coin+tid",
+    "identity": "venue+namespace+coin+time+tid",
     "side_evidence": "hyperliquid-trades-side-aggressor/1638-v1",
     "interval_ms": 60_000,
     "reorder_grace_ms": 5_000,
@@ -326,14 +326,14 @@ class _Flow:
         ident_floor = now_ms - CONTRACT["identity_retain_ms"]
         n = 0
         while n < len(self.ident_order):
-            tid = self.ident_order[n]
-            ident = self.idents.get(tid)
+            ik = self.ident_order[n]
+            ident = self.idents.get(ik)
             if ident is not None and ident[2] >= ident_floor and len(self.idents) <= CONTRACT["identity_cap"]:
                 break
             if ident is not None:
                 if len(self.idents) > CONTRACT["identity_cap"] and ident[1] + CONTRACT["interval_ms"] > self.ident_floor:
                     self.ident_floor = ident[1] + CONTRACT["interval_ms"]
-                del self.idents[tid]
+                del self.idents[ik]
             n += 1
         if n:
             self.ident_order = self.ident_order[n:]
@@ -356,7 +356,8 @@ class _Flow:
         start = interval_start(t["time"])
         out = {"tid": t["tid"], "o": "", "i": start}
         digest = trade_digest(t)
-        prior = self.idents.get(t["tid"])
+        ik = (t["time"], t["tid"])
+        prior = self.idents.get(ik)
         if prior is not None:
             if prior[0] == digest:
                 self.stats["duplicates"] += 1
@@ -364,7 +365,7 @@ class _Flow:
                 return out
             self.stats["conflicts"] += 1
             out["o"] = "conflict"
-            out["why"] = "same tid with different content"
+            out["why"] = "same time and tid with different content"
             for st in (prior[1], start):
                 iv = self.intervals.get(st)
                 if iv is not None:
@@ -381,8 +382,8 @@ class _Flow:
             out["why"] = "future_event"
             self.invalidate_open(recv_ms, "future_event")
             return out
-        self.idents[t["tid"]] = (digest, start, recv_ms)
-        self.ident_order.append(t["tid"])
+        self.idents[ik] = (digest, start, recv_ms)
+        self.ident_order.append(ik)
         if len(self.idents) > CONTRACT["identity_cap"]:
             self.invalidate_open(recv_ms, "identity_overflow")
         existing = self.intervals.get(start)
@@ -550,6 +551,8 @@ def load_trade_recording(run_dir: str) -> dict:
                         last_frame_by_coin[c] = recv
             elif kind in ("interval", "invalidate", "cover"):
                 go_events.append(_canon_event(rec))
+                continue
+            elif kind == "obs":
                 continue
             else:
                 raise TradeRecordingError(f"{seg['file']}:{line_no} has unknown record kind {kind!r}")

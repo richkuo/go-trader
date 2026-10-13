@@ -19,7 +19,7 @@ const (
 	feedTradeSourceHLWS      = "hyperliquid_ws_trades"
 	feedTradeUnitsBase       = "base"
 	feedTradeTimeBasis       = "event_time_receipt_cutoff"
-	feedTradeIdentity        = "venue+namespace+coin+tid"
+	feedTradeIdentity        = "venue+namespace+coin+time+tid"
 	feedTradeSideEvidence    = "hyperliquid-trades-side-aggressor/1638-v1"
 	feedTradeIntervalMs      = int64(60_000)
 	feedTradeReorderGraceMs  = int64(5_000)
@@ -283,6 +283,11 @@ func (iv *feedTradeInterval) invalidate(atMs int64, reason string) bool {
 	return true
 }
 
+type feedTradeIdentKey struct {
+	TimeMs int64
+	Tid    uint64
+}
+
 type feedTradeIdent struct {
 	Digest  [32]byte
 	StartMs int64
@@ -317,12 +322,12 @@ type feedTradeFlowState struct {
 	Resumable    bool
 	Stats        feedTradeFlowStats
 
-	idents     map[uint64]feedTradeIdent
-	identOrder []uint64
+	idents     map[feedTradeIdentKey]feedTradeIdent
+	identOrder []feedTradeIdentKey
 }
 
 func newFeedTradeFlowState(key feedObservationKey, windowMs int64) *feedTradeFlowState {
-	return &feedTradeFlowState{Key: key, WindowMs: windowMs, idents: make(map[uint64]feedTradeIdent)}
+	return &feedTradeFlowState{Key: key, WindowMs: windowMs, idents: make(map[feedTradeIdentKey]feedTradeIdent)}
 }
 
 func (s *feedTradeFlowState) raiseWindow(windowMs int64) {
@@ -496,8 +501,8 @@ func (s *feedTradeFlowState) trim(nowMs int64) {
 	identFloor := nowMs - feedTradeIdentityRetain
 	n := 0
 	for n < len(s.identOrder) {
-		tid := s.identOrder[n]
-		id, ok := s.idents[tid]
+		ik := s.identOrder[n]
+		id, ok := s.idents[ik]
 		if ok && id.RecvMs >= identFloor && len(s.idents) <= feedTradeIdentityCap {
 			break
 		}
@@ -505,12 +510,12 @@ func (s *feedTradeFlowState) trim(nowMs int64) {
 			if len(s.idents) > feedTradeIdentityCap && id.StartMs+feedTradeIntervalMs > s.IdentFloorMs {
 				s.IdentFloorMs = id.StartMs + feedTradeIntervalMs
 			}
-			delete(s.idents, tid)
+			delete(s.idents, ik)
 		}
 		n++
 	}
 	if n > 0 {
-		s.identOrder = append([]uint64(nil), s.identOrder[n:]...)
+		s.identOrder = append([]feedTradeIdentKey(nil), s.identOrder[n:]...)
 	}
 }
 
@@ -543,7 +548,8 @@ func (s *feedTradeFlowState) ingestTrade(t feedTrade, recvMs int64, ev *feedTrad
 	start := feedTradeIntervalStart(t.TimeMs)
 	out := feedTradeOutcome{Tid: t.Tid, Interval: start}
 	digest := t.digest()
-	if prior, ok := s.idents[t.Tid]; ok {
+	ik := feedTradeIdentKey{TimeMs: t.TimeMs, Tid: t.Tid}
+	if prior, ok := s.idents[ik]; ok {
 		if prior.Digest == digest {
 			s.Stats.Duplicates++
 			out.Outcome = feedTradeOutcomeDuplicate
@@ -551,7 +557,7 @@ func (s *feedTradeFlowState) ingestTrade(t feedTrade, recvMs int64, ev *feedTrad
 		}
 		s.Stats.Conflicts++
 		out.Outcome = feedTradeOutcomeConflict
-		out.Reason = "same tid with different content"
+		out.Reason = "same time and tid with different content"
 		for _, st := range []int64{prior.StartMs, start} {
 			if iv := s.interval(st); iv != nil {
 				if iv.invalidate(recvMs, "conflicting_duplicate") && iv.Status != feedTradeStatusOpen {
@@ -572,8 +578,8 @@ func (s *feedTradeFlowState) ingestTrade(t feedTrade, recvMs int64, ev *feedTrad
 		s.invalidateOpen(recvMs, "future_event")
 		return out
 	}
-	s.idents[t.Tid] = feedTradeIdent{Digest: digest, StartMs: start, RecvMs: recvMs}
-	s.identOrder = append(s.identOrder, t.Tid)
+	s.idents[ik] = feedTradeIdent{Digest: digest, StartMs: start, RecvMs: recvMs}
+	s.identOrder = append(s.identOrder, ik)
 	if len(s.idents) > feedTradeIdentityCap {
 		s.invalidateOpen(recvMs, feedTradeGapIdentity)
 	}
