@@ -101,6 +101,17 @@ parity configurations use closed decisions only.
 - Numerical tolerances: independent scalar reference abs 1e-12 + rel 1e-12; zero crossings and trend tests use
   no epsilon; finite-versus-unrestricted sensitivity tolerance 1e-8 on the normalized difference.
 
+## Outcome (added after scoring)
+
+`REPORT.md` holds the generated result: **fail**, registry evidence source `study_fail`. Every coverage and sample
+gate passed (87 independent held-out positions for the selected candidate, both directions present). The candidate's
+held-out net PnL is negative at base cost (-108.00 USD) and at doubled spread and slippage (-332.80 USD), so the
+frozen pass rule fails. Its mean Sharpe and drawdown-adjusted return are above the volume ablation, `momentum_pro`
+and `elder_ray_pullback`, but every comparator also lost money in the same window. Training selection did not
+carry over: the Spearman rank correlation of train and held-out Sharpe over the 54 variants is -0.536, while 36 of
+the 54 variants were net positive in the held-out window. These observations are descriptive and do not change the
+verdict. Results are retrospective on reused data; no result approves live use.
+
 ## Commands
 
 ```

@@ -2140,7 +2140,7 @@ def calendar_conditioned_entry_strategy(df: pd.DataFrame, training_bars: int = 4
         "volume_weighting <= 1",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_fail",
     edge_ref="backtest/candidates/elder_force_pullback_1668/REPORT.md",
     short_entries=True,
     param_validator=efp_param_validator,

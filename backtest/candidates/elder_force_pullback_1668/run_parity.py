@@ -248,38 +248,39 @@ def _merge_reasons(total: dict, add: dict) -> None:
         total[k] = total.get(k, 0) + v
 
 
-def run_independent(manifest: dict, apply, bars: int) -> dict:
+def _frozen_unit(apply, manifest: dict, key: str, bars: int) -> list:
     cells = []
-    for key in DATASETS:
-        df = frozen_frame(manifest, key, bars)
-        for params in grid_sets() + domain_endpoints():
-            ends = range(1, len(df) + 1)
-            cell = independent_check(apply, df, params, ends)
-            cell.update(reference_check(apply, df, params))
-            cells.append(dict(cell, dataset=key, params=params))
-    boundary = []
-    for label, df in boundary_frames().items():
-        totals = {"frame": label, "combinations": 0, "comparisons": 0, "mismatches": 0, "reference_mismatches": 0,
-                  "entry_long": 0, "entry_short": 0, "reasons": {}}
-        first = None
-        for params in [dict(DEFAULTS), dict(DEFAULTS, volume_weighting=0)] + domain_endpoints():
-            span = need(params)
-            ends = list(range(1, len(df) + 1, BOUNDARY_SPAN_STRIDE)) + [len(df)]
-            prefix_ends = {span - 1, span, (span + len(df)) // 2, len(df)}
-            cell = independent_check(apply, df, params, ends, prefix_ends=prefix_ends)
-            if label in ("rising_pullbacks", "falling_rallies", "constant_closes", "zero_volume_every_ninth",
-                         "random_walk_both_sides"):
-                totals["reference_mismatches"] += reference_check(apply, df, params)["reference_mismatches"]
-            totals["combinations"] += 1
-            for k in ("comparisons", "mismatches", "entry_long", "entry_short"):
-                totals[k] += cell[k]
-            _merge_reasons(totals["reasons"], cell["reasons"])
-            if first is None and cell.get("first_mismatch"):
-                first = dict(cell["first_mismatch"], params=params)
-        if first is not None:
-            totals["first_mismatch"] = first
-        boundary.append(totals)
-    return {"frozen_cells": cells, "boundary_frames": boundary}
+    df = frozen_frame(manifest, key, bars)
+    for params in grid_sets() + domain_endpoints():
+        ends = range(1, len(df) + 1)
+        cell = independent_check(apply, df, params, ends)
+        cell.update(reference_check(apply, df, params))
+        cells.append(dict(cell, dataset=key, params=params))
+    return cells
+
+
+def _boundary_unit(apply, label: str) -> dict:
+    df = boundary_frames()[label]
+    totals = {"frame": label, "combinations": 0, "comparisons": 0, "mismatches": 0, "reference_mismatches": 0,
+              "entry_long": 0, "entry_short": 0, "reasons": {}}
+    first = None
+    for params in [dict(DEFAULTS), dict(DEFAULTS, volume_weighting=0)] + domain_endpoints():
+        span = need(params)
+        ends = list(range(1, len(df) + 1, BOUNDARY_SPAN_STRIDE)) + [len(df)]
+        prefix_ends = {span - 1, span, (span + len(df)) // 2, len(df)}
+        cell = independent_check(apply, df, params, ends, prefix_ends=prefix_ends)
+        if label in ("rising_pullbacks", "falling_rallies", "constant_closes", "zero_volume_every_ninth",
+                     "random_walk_both_sides"):
+            totals["reference_mismatches"] += reference_check(apply, df, params)["reference_mismatches"]
+        totals["combinations"] += 1
+        for k in ("comparisons", "mismatches", "entry_long", "entry_short"):
+            totals[k] += cell[k]
+        _merge_reasons(totals["reasons"], cell["reasons"])
+        if first is None and cell.get("first_mismatch"):
+            first = dict(cell["first_mismatch"], params=params)
+    if first is not None:
+        totals["first_mismatch"] = first
+    return totals
 
 
 def parity_config(params: dict, mode: str, coin: str, batched: bool) -> ParityConfig:
@@ -313,19 +314,58 @@ def runner_cell(frame) -> dict:
     return out
 
 
-def run_runner(manifest: dict, bars: int, batched: bool) -> dict:
+def _runner_unit(manifest: dict, key: str, bars: int, batched: bool) -> list:
     cells = []
-    for key in DATASETS:
-        coin = key.split()[0]
-        df = frozen_frame(manifest, key, bars)
-        for params in runner_sets():
-            for mode in MODES:
-                for window in (LIVE_WINDOW, None):
-                    frame = compute_parity_frame(df, cfg=parity_config(params, mode, coin, batched),
-                                                 window=window, stride=1)
-                    cells.append(dict(runner_cell(frame), dataset=key, params=params, mode=mode,
-                                      window=window if window is not None else 0))
-    return {"cells": cells}
+    coin = key.split()[0]
+    df = frozen_frame(manifest, key, bars)
+    for params in runner_sets():
+        for mode in MODES:
+            for window in (LIVE_WINDOW, None):
+                frame = compute_parity_frame(df, cfg=parity_config(params, mode, coin, batched),
+                                             window=window, stride=1)
+                cells.append(dict(runner_cell(frame), dataset=key, params=params, mode=mode,
+                                  window=window if window is not None else 0))
+    return cells
+
+
+_WORKER = {}
+
+
+def _unit(kind: str, key: str, bars: int, batched: bool):
+    if not _WORKER:
+        from registry_loader import load_registry
+        reg = load_registry("futures")
+        _WORKER["manifest"] = om.load_manifest(MANIFEST)
+        _WORKER["apply"] = lambda df, params: reg.apply_strategy(NAME, df, params)
+    if kind == "frozen":
+        out = _frozen_unit(_WORKER["apply"], _WORKER["manifest"], key, bars)
+    elif kind == "boundary":
+        out = _boundary_unit(_WORKER["apply"], key)
+    else:
+        out = _runner_unit(_WORKER["manifest"], key, bars, batched)
+    print(f"{kind} {key}: done", file=sys.stderr, flush=True)
+    return out
+
+
+def run_units(bars: int, batched: bool, workers: int) -> dict:
+    from concurrent.futures import ProcessPoolExecutor
+    units = ([("frozen", k) for k in DATASETS] + [("boundary", k) for k in boundary_frames()]
+             + [("runner", k) for k in DATASETS])
+    if workers <= 1:
+        outs = [_unit(kind, key, bars, batched) for kind, key in units]
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_unit, kind, key, bars, batched) for kind, key in units]
+            outs = [f.result() for f in futures]
+    frozen, boundary, runner = [], [], []
+    for (kind, _), out in zip(units, outs):
+        if kind == "frozen":
+            frozen.extend(out)
+        elif kind == "boundary":
+            boundary.append(out)
+        else:
+            runner.extend(out)
+    return {"independent": {"frozen_cells": frozen, "boundary_frames": boundary}, "runner": {"cells": runner}}
 
 
 def problems_of(result: dict, batched: bool) -> list:
@@ -372,10 +412,7 @@ def problems_of(result: dict, batched: bool) -> list:
     return problems
 
 
-def run(bars: int, batched: bool) -> dict:
-    from registry_loader import load_registry
-    manifest = om.load_manifest(MANIFEST)
-    reg = load_registry("futures")
+def run(bars: int, batched: bool, workers: int = 1) -> dict:
     result = {
         "strategy": NAME,
         "registry": "futures",
@@ -397,9 +434,8 @@ def run(bars: int, batched: bool) -> dict:
             "backtest/parity_diff.py", "backtest/candidates/elder_force_pullback_1668/run_parity.py")},
         "parameter_sets": {"grid_and_endpoints": len(grid_sets()) + len(domain_endpoints()),
                            "runner": len(runner_sets())},
-        "independent": run_independent(manifest, lambda df, params: reg.apply_strategy(NAME, df, params), bars),
-        "runner": run_runner(manifest, bars, batched),
     }
+    result.update(run_units(bars, batched, workers))
     result["problems"] = problems_of(result, batched)
     result["clean"] = not result["problems"]
     return result
@@ -411,10 +447,11 @@ def main(argv=None) -> int:
                    help="Also compare the explicit-paper batch slot with the solo evaluator in the runner")
     p.add_argument("--bars", type=int, default=320)
     p.add_argument("--json", default=None, dest="json_out")
+    p.add_argument("--workers", type=int, default=1, help="Process count; results do not depend on it")
     args = p.parse_args(argv)
     if args.bars < LIVE_WINDOW + 1:
         p.error(f"--bars must be at least {LIVE_WINDOW + 1}")
-    result = run(args.bars, args.batched)
+    result = run(args.bars, args.batched, args.workers)
     out = args.json_out or os.path.join(_HERE, "parity_results_batched.json" if args.batched
                                         else "parity_results.json")
     with open(out, "w") as fh:
