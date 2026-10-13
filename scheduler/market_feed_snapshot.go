@@ -67,6 +67,7 @@ type marketPayload struct {
 	Mids             map[string]marketMidPayload         `json:"mids,omitempty"`
 	Funding          map[string]marketFundingPayload     `json:"funding,omitempty"`
 	Observations     map[string]marketObservationPayload `json:"observations,omitempty"`
+	TradeFlows       map[string]marketTradeFlowPayload   `json:"trade_flows,omitempty"`
 	FeedComplete     bool                                `json:"feed_complete"`
 	DecisionCutoffMs int64                               `json:"decision_cutoff_ms,omitempty"`
 }
@@ -93,6 +94,7 @@ type marketSnapshot struct {
 	mids         map[string]feedMid
 	funding      map[string]feedFunding
 	observations map[feedObservationKey]*marketSnapshotObservation
+	tradeFlows   map[feedObservationKey]*marketSnapshotTradeFlow
 
 	accountingFunding map[string]feedAccountingFunding
 }
@@ -233,6 +235,7 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 		mids:             make(map[string]feedMid, len(reqs.Coins)),
 		funding:          make(map[string]feedFunding),
 		observations:     make(map[feedObservationKey]*marketSnapshotObservation, len(reqs.Observations)),
+		tradeFlows:       make(map[feedObservationKey]*marketSnapshotTradeFlow),
 	}
 	connected := o.connectedForReadinessLocked(now)
 	for _, cr := range reqs.Keys {
@@ -263,7 +266,14 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 			snap.funding[coin] = cp
 		}
 	}
+	o.tickTradeFlowsLocked(now.UTC().UnixMilli())
 	for key, window := range reqs.Observations {
+		if key.Kind == feedObservationTradeFlow {
+			if st := o.tradeFlows[key]; st != nil {
+				snap.tradeFlows[key] = freezeTradeFlow(st, window, cutoff.UTC().UnixMilli(), now.UTC().UnixMilli())
+			}
+			continue
+		}
 		st := o.observations[key]
 		if st == nil {
 			continue

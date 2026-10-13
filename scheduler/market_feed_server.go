@@ -528,7 +528,7 @@ func (s *feedSealer) sealBytes(key int64) []byte {
 }
 
 func (s *feedSealer) coverageSealVersionLocked() int {
-	return feedSealVersionFor(len(s.coverage.Observations) > 0, len(s.coverage.AccountingCoins) > 0)
+	return feedSealVersionFor(s.coverage.hasObservationKind(feedObservationOpenInterest), len(s.coverage.AccountingCoins) > 0, s.coverage.hasObservationKind(feedObservationTradeFlow))
 }
 
 func (s *feedSealer) coverageSealVersion() int {
@@ -586,7 +586,7 @@ func (s *feedSealer) describe() *feedDescribe {
 	for _, key := range s.coverage.observationKeys() {
 		d.Observations = append(d.Observations, feedDescribeObservation{
 			Host: key.Host, Namespace: key.Namespace, Coin: key.Coin, Kind: key.Kind,
-			Source: feedObservationSourceHLWS, WindowMs: s.coverage.Observations[key],
+			Source: feedObservationSourceFor(key.Kind), WindowMs: s.coverage.Observations[key],
 		})
 	}
 	if len(s.coverage.AccountingCoins) > 0 {
@@ -750,7 +750,7 @@ func (srv *feedUnixServer) handle(conn net.Conn) {
 			Instance:       srv.sealer.instance,
 			Source:         srv.sealer.source,
 			Generation:     srv.sealer.owner.Generation(),
-			SealVersion:    feedSealVersionFor(len(d.Observations) > 0, len(d.AccountingFunding) > 0),
+			SealVersion:    feedSealVersionFor(describeHasObservationKind(d, feedObservationOpenInterest), len(d.AccountingFunding) > 0, describeHasObservationKind(d, feedObservationTradeFlow)),
 			PayloadVersion: marketSnapshotVersion,
 			Describe:       d,
 		}

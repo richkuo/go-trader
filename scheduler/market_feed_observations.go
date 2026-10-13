@@ -390,6 +390,7 @@ func (o *marketFeedOwner) markObservationsDisconnectedLocked(atMs int64) {
 	for _, st := range o.observations {
 		st.markDisconnected(atMs)
 	}
+	o.markTradeFlowsDisconnectedLocked(atMs)
 }
 
 func (o *marketFeedOwner) ObservationCoins() []string {
@@ -423,6 +424,14 @@ func (o *marketFeedOwner) ObservationReadiness() []feedObservationReadiness {
 
 func (o *marketFeedOwner) applyObservationNeedsLocked(needs map[feedObservationKey]int64) {
 	for key, window := range needs {
+		if key.Kind == feedObservationTradeFlow {
+			if st := o.tradeFlows[key]; st != nil {
+				st.raiseWindow(window)
+				continue
+			}
+			o.tradeFlows[key] = newFeedTradeFlowState(key, window)
+			continue
+		}
 		if st := o.observations[key]; st != nil {
 			st.raiseWindow(window)
 			continue
@@ -435,6 +444,11 @@ func (o *marketFeedOwner) dropUnneededObservationsLocked(needs map[feedObservati
 	for key := range o.observations {
 		if _, ok := needs[key]; !ok {
 			delete(o.observations, key)
+		}
+	}
+	for key := range o.tradeFlows {
+		if _, ok := needs[key]; !ok {
+			delete(o.tradeFlows, key)
 		}
 	}
 }
@@ -595,9 +609,16 @@ func attachObservationPayloads(payload *marketPayload, s *marketSnapshot, needs 
 	if payload == nil || len(needs) == 0 {
 		return
 	}
+	attachTradeFlowPayloads(payload, s, needs, barIntervalMs)
 	keys := make([]feedObservationKey, 0, len(needs))
 	for k := range needs {
+		if k.Kind == feedObservationTradeFlow {
+			continue
+		}
 		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return
 	}
 	sortFeedObservationKeys(keys)
 	payload.Observations = make(map[string]marketObservationPayload, len(keys))

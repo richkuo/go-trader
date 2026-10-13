@@ -27,6 +27,8 @@ FUNDING_COLUMN_STRATEGIES = {"funding_skew", "delta_neutral_funding"}
 
 OBSERVATION_INPUT_STRATEGIES = {"open_interest_breakout"}
 
+TRADE_FLOW_INPUT_STRATEGIES = {"cumulative_volume_delta_divergence"}
+
 FUNDING_ACCRUAL_STRATEGIES = {"delta_neutral_funding"}
 
 
@@ -1594,6 +1596,9 @@ def run_single_backtest(
         if strategy_name in OBSERVATION_INPUT_STRATEGIES and manifest_dataset_entry.get("open_interest") is None:
             raise SystemExit(f"--manifest: {strategy_name} reads open interest as an entry input; dataset "
                              f"{manifest_dataset} attaches no open_interest series (schema {om.SCHEMA_V2})")
+        if strategy_name in TRADE_FLOW_INPUT_STRATEGIES and manifest_dataset_entry.get("trade_flow") is None:
+            raise SystemExit(f"--manifest: {strategy_name} reads recorded trade flow as an entry input; dataset "
+                             f"{manifest_dataset} attaches no trade_flow series (schema {om.SCHEMA_V3})")
         if manifest_window not in manifest["windows"]:
             raise SystemExit(f"manifest error: unknown window {manifest_window!r}; "
                              f"known: {sorted(manifest['windows'])}")
@@ -1604,6 +1609,9 @@ def run_single_backtest(
     elif strategy_name in OBSERVATION_INPUT_STRATEGIES:
         raise SystemExit(f"{strategy_name} reads recorded open interest; run it only with --manifest "
                          f"(schema {'offline_candle_manifest/v2'}) on a dataset that attaches an open_interest series")
+    elif strategy_name in TRADE_FLOW_INPUT_STRATEGIES:
+        raise SystemExit(f"{strategy_name} reads recorded trade flow; run it only with --manifest "
+                         f"(schema {'offline_candle_manifest/v3'}) on a dataset that attaches a trade_flow series")
     elif manifest_dataset or manifest_window:
         raise SystemExit("--manifest-dataset and --manifest-window need --manifest")
     elif cost_multiplier != 1.0:
@@ -1649,6 +1657,11 @@ def run_single_backtest(
                     manifest, manifest_dataset_entry, window_spec)
                 observation_params = {"open_interest_observations": oi_obs}
                 print(f"  Open-interest coverage: {oi_cov}")
+            if strategy_name in TRADE_FLOW_INPUT_STRATEGIES:
+                flow_obs, flow_cov = om.attach_trade_flow(
+                    manifest, manifest_dataset_entry, window_spec)
+                observation_params = {"trade_flow_observations": flow_obs}
+                print(f"  Trade-flow coverage: {flow_cov}")
         except om.ManifestError as exc:
             raise SystemExit(f"manifest error: {exc}")
         execution_spec = om.execution_spec(manifest, manifest_dataset_entry, cost_multiplier)
@@ -2319,6 +2332,10 @@ def _main():
             sys.exit(1)
         if args.strategy in OBSERVATION_INPUT_STRATEGIES:
             print(f"--mode {args.mode} cannot run {args.strategy}: it reads recorded open interest, "
+                  "which only --mode single --manifest (or eval_windows.py --manifest) attaches")
+            sys.exit(1)
+        if args.strategy in TRADE_FLOW_INPUT_STRATEGIES:
+            print(f"--mode {args.mode} cannot run {args.strategy}: it reads recorded trade flow, "
                   "which only --mode single --manifest (or eval_windows.py --manifest) attaches")
             sys.exit(1)
 

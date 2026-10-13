@@ -86,6 +86,8 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"vortex_trend":                 {"study_fail", "backtest/candidates/vortex_trend_1647/REPORT.md"},
 	"vwap_reversion":               {"fee_audit_m5", noEdgeRefFeeAudit},
 	"williams_r_reversal":          {"study_fail", "backtest/candidates/williams_r_reversal_1650/REPORT.md"},
+
+	"cumulative_volume_delta_divergence": {"study_inconclusive", "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md"},
 }
 
 func noEdgeEvidenceFor(name string) (noEdgeEvidence, bool) {

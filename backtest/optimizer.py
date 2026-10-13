@@ -861,6 +861,16 @@ DEFAULT_PARAM_RANGES = {
         "recursion_length": [120, 144, 192],
     },
     "camarilla_pivot_reversal": {},
+    "cumulative_volume_delta_divergence": {
+        "left_span": [2, 3, 4],
+        "right_span": [2, 3],
+        "min_separation": [3, 6],
+        "max_separation": [24, 36],
+        "delta_threshold": [0.0, 0.05, 0.10],
+        "setup_expiry": [3, 6, 12],
+        "session_hours": [4],
+        "delta_confirmation": [True],
+    },
     "mass_index_reversal": {
         "ema_period": [9],
         "sum_period": [20, 25, 30],

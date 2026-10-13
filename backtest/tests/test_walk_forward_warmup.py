@@ -532,7 +532,7 @@ def test_normalized_unsupported_directions_refuse_before_scoring(monkeypatch, kw
     assert calls == []
 
 
-def _random_walk_1h(n=1200, seed=3):
+def _random_walk(timeframe="1h", n=1200, seed=3):
     from closed_bar import declare_frame_cadence
     rng = np.random.default_rng(seed)
     close = 100 * np.exp(np.cumsum(rng.normal(0.0, 0.02, n)))
@@ -541,8 +541,8 @@ def _random_walk_1h(n=1200, seed=3):
         "open": open_, "high": np.maximum(open_, close) * (1 + rng.uniform(0.001, 0.01, n)),
         "low": np.minimum(open_, close) * (1 - rng.uniform(0.001, 0.01, n)), "close": close,
         "volume": rng.uniform(100, 1000, n),
-    }, index=pd.date_range("2026-01-01", periods=n, freq="1h"))
-    return declare_frame_cadence(df, "1h", "open")
+    }, index=pd.date_range("2026-01-01", periods=n, freq={"1h": "1h", "5m": "5min"}[timeframe]))
+    return declare_frame_cadence(df, timeframe, "open")
 
 
 def _singleton_grid(reg, name):
@@ -553,24 +553,33 @@ def _singleton_grid(reg, name):
     return {k: [v[0]] for k, v in ranges.items()}
 
 
+def _singleton_grid_values(reg, name):
+    return {k: v[0] for k, v in _singleton_grid(reg, name).items()}
+
+
 def test_every_registered_short_entry_strategy_follows_the_engine_contract(monkeypatch):
     from optimizer import DEFAULT_PARAM_RANGES
     from registry_loader import load_registry
     reg = load_registry("futures")
+    from run_backtest import TRADE_FLOW_INPUT_STRATEGIES
     names = sorted(n for n in reg._registry.short_entry_strategies() if n in reg.STRATEGY_REGISTRY)
     assert set(names) <= set(DEFAULT_PARAM_RANGES)
+    for name in sorted(TRADE_FLOW_INPUT_STRATEGIES):
+        with pytest.raises(ValueError, match="cannot fit one"):
+            reg.validate_params(name, {**_singleton_grid_values(reg, name), "expected_interval_ms": 3_600_000})
     assert DEFAULT_PARAM_RANGES["camarilla_pivot_reversal"] == {}
     representatives = {"stochastic_momentum_index", "mass_index_reversal", "camarilla_pivot_reversal",
                        "trix_momentum", "elder_ray_pullback", "schaff_trend_cycle"}
     assert representatives <= set(names)
-    df = _random_walk_1h()
+    frames = {"1h": _random_walk("1h"), "5m": _random_walk("5m")}
     seeded_long = set()
     shorts_seen = set()
     calls = _capture_runs(monkeypatch)
     for direction in ("both", "long"):
         for name in names:
             calls.clear()
-            walk_forward_optimize(df, name, _singleton_grid(reg, name), n_splits=2, timeframe="1h",
+            timeframe = "5m" if name in TRADE_FLOW_INPUT_STRATEGIES else "1h"
+            walk_forward_optimize(frames[timeframe], name, _singleton_grid(reg, name), n_splits=2, timeframe=timeframe,
                                   registry="futures", platform="hyperliquid", verbose=False,
                                   close_strategies=[SCRIPT_TP], stop_loss_atr_mult=SCRIPT_STOP,
                                   direction=direction)

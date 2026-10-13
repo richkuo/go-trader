@@ -296,7 +296,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     import pandas as pd
     from data_fetcher import load_cached_data
     from backtester import Backtester, validate_close_capabilities
-    from run_backtest import (FUNDING_COLUMN_STRATEGIES, OBSERVATION_INPUT_STRATEGIES,
+    from run_backtest import (FUNDING_COLUMN_STRATEGIES, OBSERVATION_INPUT_STRATEGIES, TRADE_FLOW_INPUT_STRATEGIES,
                               _attach_funding_if_needed, _build_profile_label_series)
 
     validate_close_capabilities(close_refs=close_strategies,
@@ -327,6 +327,10 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         raise ValueError(
             f"{name} reads recorded open interest as an entry input; only the --manifest path "
             "(schema offline_candle_manifest/v2 with an open_interest series) can run it")
+    if manifest_ctx is None and name in TRADE_FLOW_INPUT_STRATEGIES:
+        raise ValueError(
+            f"{name} reads recorded trade flow as an entry input; only the --manifest path "
+            "(schema offline_candle_manifest/v3 with a trade_flow series) can run it")
     if manifest_ctx is not None:
         import offline_manifest as om
         if name in FUNDING_COLUMN_STRATEGIES:
@@ -353,6 +357,14 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                     f"{dataset['key']} attaches no open_interest series")
             oi_obs, oi_cov = om.attach_open_interest(manifest, dataset, manifest_window)
             observation_params = {"open_interest_observations": oi_obs}
+        flow_cov = None
+        if name in TRADE_FLOW_INPUT_STRATEGIES:
+            if dataset.get("trade_flow") is None:
+                raise ValueError(
+                    f"{name} reads trade flow as an entry input; manifest dataset "
+                    f"{dataset['key']} attaches no trade_flow series")
+            flow_obs, flow_cov = om.attach_trade_flow(manifest, dataset, manifest_window)
+            observation_params = {"trade_flow_observations": flow_obs}
         spec = om.execution_spec(manifest, dataset,
                                  manifest_ctx.get("cost_multiplier", 1.0))
         if close_strategies:
@@ -371,6 +383,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             "funding_coverage": funding_cov,
             "open_interest_coverage": oi_cov,
             "open_interest_sha256": (dataset.get("open_interest") or {}).get("sha256"),
+            "trade_flow_coverage": flow_cov,
+            "trade_flow_sha256": (dataset.get("trade_flow") or {}).get("sha256"),
             "cost_multiplier": manifest_ctx.get("cost_multiplier", 1.0),
             "cost_model": "execution_spec" if execution_spec else "legacy_flat",
             "execution_spec": spec,

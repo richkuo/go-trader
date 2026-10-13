@@ -445,6 +445,7 @@ func degradedSharedSnapshot(key int64, now time.Time) *marketSnapshot {
 		mids:              map[string]feedMid{},
 		funding:           map[string]feedFunding{},
 		observations:      map[feedObservationKey]*marketSnapshotObservation{},
+		tradeFlows:        map[feedObservationKey]*marketSnapshotTradeFlow{},
 	}
 }
 
@@ -481,6 +482,16 @@ func applySealCoverage(snap *marketSnapshot, reqs cycleMarketRequirements) []str
 	}
 	sortFeedObservationKeys(obsKeys)
 	for _, k := range obsKeys {
+		if k.Kind == feedObservationTradeFlow {
+			flow, ok := snap.tradeFlows[k]
+			switch {
+			case !ok || flow == nil:
+				gaps = append(gaps, fmt.Sprintf("%s is not in the seal", k.PayloadID()))
+			case flow.WindowMs < reqs.Observations[k]:
+				gaps = append(gaps, fmt.Sprintf("%s window %dms is below the %dms this consumer needs", k.PayloadID(), flow.WindowMs, reqs.Observations[k]))
+			}
+			continue
+		}
 		entry, ok := snap.observations[k]
 		switch {
 		case !ok || entry == nil:
@@ -565,6 +576,9 @@ func sharedFeedCompatibilityLines(prefix string, descs []feedEndpointDescription
 		}
 		obsServed := make(map[feedObservationKey]int64, len(desc.Observations))
 		for _, ob := range desc.Observations {
+			if ob.Source != feedObservationSourceFor(ob.Kind) {
+				continue
+			}
 			obsServed[feedObservationKey{Host: ob.Host, Namespace: ob.Namespace, Coin: ob.Coin, Kind: ob.Kind}] = ob.WindowMs
 		}
 		for _, k := range req.observationKeys() {

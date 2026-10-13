@@ -14,6 +14,8 @@ var fixedIntervalStrategyDefaults = map[string]int64{
 	"camarilla_pivot_reversal":   3_600_000,
 	"chande_momentum":            3_600_000,
 	"dual_thrust":                3_600_000,
+
+	"cumulative_volume_delta_divergence": 300_000,
 }
 
 type fixedIntervalUse struct {
