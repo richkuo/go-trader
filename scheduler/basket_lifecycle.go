@@ -357,7 +357,7 @@ func (sdb *StateDB) reconcileStoredBasketLifecycleTx(tx *sql.Tx, sid string, s *
 			}
 			continue
 		}
-		next := basketLifecycleFromBook(st.l, s, member.Coin, contract.horizonMs(), 0)
+		next := basketLifecycleFromBook(st.l, s, member.Coin, 0, 0)
 		if next.sameAs(st.l) {
 			continue
 		}

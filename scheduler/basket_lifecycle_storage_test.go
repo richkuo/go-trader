@@ -459,3 +459,107 @@ func TestBasketLifecycleOwnershipInspectionAndRefusals(t *testing.T) {
 		t.Fatalf("a suppression deadline alone is not recovery evidence: %v", err)
 	}
 }
+
+func TestBasketLifecycleRuntimeFreeSavesNeverStartALifecycle(t *testing.T) {
+	env, expiry := basketExpiredEnv(t)
+	cfg := env.cfg
+	rows := func(read func(string) (basketLifecycle, float64, bool)) map[string]basketLifecycle {
+		t.Helper()
+		out := map[string]basketLifecycle{}
+		for _, m := range basketTestMembers {
+			l, _, ok := read(m.ID)
+			if !ok {
+				t.Fatalf("%s has no stored lifecycle row", m.ID)
+			}
+			out[m.ID] = l
+		}
+		return out
+	}
+	before := rows(env.lifecycleRow)
+	for id, l := range before {
+		if !l.active() {
+			t.Fatalf("%s must hold an active lifecycle before the runtime-free saves: %+v", id, l)
+		}
+	}
+	fresh, _, err := LoadStateWithStore(cfg, env.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range basketTestMembers {
+		s := fresh.Strategies[m.ID]
+		if s == nil || s.Basket != nil || s.Positions[m.Coin] == nil {
+			t.Fatalf("want a pointer-free book that holds %s: %+v", m.Coin, s)
+		}
+		if err := env.store.SaveStrategyBook(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saveAll := func(store *StateStore, state *AppState) {
+		t.Helper()
+		for p, err := range store.SaveAll(state) {
+			if err != nil {
+				t.Fatalf("SaveAll %s: %v", partitionLabel(p), err)
+			}
+		}
+	}
+	saveAll(env.store, fresh)
+	if after := rows(env.lifecycleRow); !reflect.DeepEqual(after, before) {
+		t.Fatalf("a runtime-free save of an unchanged open position changed the lifecycle:\nbefore %+v\nafter  %+v", before, after)
+	}
+
+	env.bc.stepExpiry(basketCycleInputs{Now: expiry.Add(time.Minute), Snapshot: basketTestSnapshot(expiry.Add(time.Minute), 60, basketTestMarks(), 5)})
+	if !env.allFlat() {
+		t.Fatal("the expiry pass must flatten every member before the basket is removed")
+	}
+	settled := rows(env.lifecycleRow)
+	env.store.Close()
+
+	removed := loadBasketTestConfig(t, func(root map[string]interface{}) {
+		root["db_file"] = cfg.DBFile
+		delete(root, "baskets")
+		for _, raw := range root["strategies"].([]interface{}) {
+			sc := raw.(map[string]interface{})
+			delete(sc, "basket_id")
+			delete(sc, "closed_bar_decisions")
+			args := sc["args"].([]interface{})
+			sc["args"] = []interface{}{"rsi", args[1], "1h", "--mode=paper"}
+		}
+	})
+	store := openSourceStore(t, removed)
+	reload := func() (*AppState, error) {
+		t.Helper()
+		loaded, _, err := LoadStateWithStore(removed, store)
+		if err != nil {
+			return nil, err
+		}
+		_, err = store.LoadBaskets(loaded, removed)
+		return loaded, err
+	}
+	state, err := reload()
+	if err != nil {
+		t.Fatalf("a flat, resolved removed basket must load: %v", err)
+	}
+	btc := state.Strategies["hl-bsk-btc"]
+	if btc == nil || btc.Basket != nil || btc.Positions["BTC"] != nil {
+		t.Fatalf("want an ordinary flat hl-bsk-btc book with no basket runtime: %+v", btc)
+	}
+	btc.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.01, InitialQuantity: 0.01, AvgCost: 60000, Side: "long", Multiplier: 1, Leverage: 1, OwnerStrategyID: "hl-bsk-btc", OpenedAt: expiry.Add(2 * time.Hour)}
+	saveAll(store, state)
+	sid, err := store.primary().toStorageID("hl-bsk-btc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := store.primary().db.QueryRow(`SELECT `+basketMemberStateBaseColumns+`, `+basketMemberStateLifecycleSelect+` FROM basket_member_state WHERE basket_id = 'xs-test' AND strategy_id = ?`, sid)
+	_, _, _, l, err := scanBasketMemberState(row.Scan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.active() || !reflect.DeepEqual(l, settled["hl-bsk-btc"]) {
+		t.Fatalf("a runtime-free save started a lifecycle for the removed basket: %+v, want the settled row %+v", l, settled["hl-bsk-btc"])
+	}
+	store.Close()
+	store = openSourceStore(t, removed)
+	if _, err := reload(); err != nil {
+		t.Fatalf("the next startup must not refuse the removed basket: %v", err)
+	}
+}
