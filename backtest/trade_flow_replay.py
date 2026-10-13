@@ -290,12 +290,15 @@ class _Flow:
         ev.append({"k": "cover", "coin": self.coin, "kind": KIND, "state": "start", "reason": reason,
                    "from_ms": self.cover_from, "recv_ms": recv_ms, "session": self.session})
 
+    def stop_on_silence(self, now_ms: int, ev: list) -> bool:
+        if self.cover_from == 0 or self.last_frame <= 0 or now_ms - self.last_frame <= CONTRACT["max_event_gap_ms"]:
+            return False
+        self.stop(now_ms, "silence", ev)
+        self.resumable = True
+        return True
+
     def advance(self, now_ms: int, ev: list):
-        if self.cover_from == 0:
-            return
-        if self.last_frame > 0 and now_ms - self.last_frame > CONTRACT["max_event_gap_ms"]:
-            self.stop(now_ms, "silence", ev)
-            self.resumable = True
+        if self.cover_from == 0 or self.stop_on_silence(now_ms, ev):
             return
         for _ in range(MAX_INTERVALS):
             end = self.frontier + CONTRACT["interval_ms"]
@@ -597,6 +600,10 @@ def _replay_frame(flows: Dict[str, _Flow], coins: list, rec: dict, recv: int, re
             fl.stats["rejected"] += 1
             fl.invalidate_open(recv, "malformed")
     else:
+        for c in frame_coins:
+            fl = flows.get(c)
+            if fl is not None:
+                fl.stop_on_silence(recv, ev)
         for p in parsed:
             fl = flows.get(p["coin"])
             if fl is None:

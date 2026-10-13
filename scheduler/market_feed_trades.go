@@ -447,13 +447,17 @@ func (s *feedTradeFlowState) beginCoverage(recvMs int64, reason string, ev *feed
 	ev.add("cover", map[string]any{"coin": s.Key.Coin, "kind": feedObservationTradeFlow, "state": "start", "reason": reason, "from_ms": s.CoverFromMs, "recv_ms": recvMs, "session": s.Session})
 }
 
-func (s *feedTradeFlowState) advance(nowMs int64, ev *feedTradeEvents) {
-	if s.CoverFromMs == 0 {
-		return
+func (s *feedTradeFlowState) stopOnSilence(nowMs int64, ev *feedTradeEvents) bool {
+	if s.CoverFromMs == 0 || s.LastFrameMs <= 0 || nowMs-s.LastFrameMs <= feedTradeMaxEventGapMs {
+		return false
 	}
-	if s.LastFrameMs > 0 && nowMs-s.LastFrameMs > feedTradeMaxEventGapMs {
-		s.stopCoverage(nowMs, feedTradeGapSilence, ev)
-		s.Resumable = true
+	s.stopCoverage(nowMs, feedTradeGapSilence, ev)
+	s.Resumable = true
+	return true
+}
+
+func (s *feedTradeFlowState) advance(nowMs int64, ev *feedTradeEvents) {
+	if s.CoverFromMs == 0 || s.stopOnSilence(nowMs, ev) {
 		return
 	}
 	for steps := 0; steps < feedTradeMaxIntervals; steps++ {
@@ -733,6 +737,16 @@ func (o *marketFeedOwner) IngestTradesFrame(data json.RawMessage, recvAt time.Ti
 		}
 		o.logf("[feed] rejected a trades frame: %s", reason)
 	default:
+		frameCoins := make([]string, 0, len(coins))
+		for c := range coins {
+			frameCoins = append(frameCoins, c)
+		}
+		sort.Strings(frameCoins)
+		for _, c := range frameCoins {
+			if st := o.tradeFlows[tradeFlowKeyFor(c)]; st != nil {
+				st.stopOnSilence(recvMs, &ev)
+			}
+		}
 		for _, p := range parsed {
 			st := o.tradeFlows[tradeFlowKeyFor(p.Trade.Coin)]
 			if st == nil {
@@ -757,11 +771,6 @@ func (o *marketFeedOwner) IngestTradesFrame(data json.RawMessage, recvAt time.Ti
 			}
 			outcomes = append(outcomes, st.ingestTrade(p.Trade, recvMs, &ev))
 		}
-		frameCoins := make([]string, 0, len(coins))
-		for c := range coins {
-			frameCoins = append(frameCoins, c)
-		}
-		sort.Strings(frameCoins)
 		for _, c := range frameCoins {
 			if st := o.tradeFlows[tradeFlowKeyFor(c)]; st != nil {
 				st.Stats.Frames++

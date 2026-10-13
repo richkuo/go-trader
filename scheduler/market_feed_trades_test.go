@@ -243,7 +243,15 @@ func TestTradeFlowObservationPipeline(t *testing.T) {
 		for off := int64(5_000); off < 60_000; off += 10_000 {
 			e := start + off
 			recv := e + 300
-			if k == 50 && off > 15_000 {
+			if (k == 50 || k == 62) && off > 15_000 {
+				continue
+			}
+			if k == 66 && off >= 25_000 && off <= 45_000 {
+				if off == 45_000 {
+					sendFrame("BTC", start+48_300, tfScheduledTrade("BTC", start+48_000).wire())
+					clockMs.Store(start + 50_300)
+					owner.AdvanceTradeFlows(clock())
+				}
 				continue
 			}
 			if k == 58 && off == 25_000 && !reconnected {
@@ -371,6 +379,11 @@ func TestTradeFlowObservationPipeline(t *testing.T) {
 	expect(57, feedTradeStatusInvalid, "late_event")
 	expect(58, feedTradeStatusInvalid, feedTradeGapDisconnected)
 	expect(59, feedTradeStatusComplete, "")
+	expect(62, feedTradeStatusInvalid, feedTradeGapSilence)
+	expect(63, feedTradeStatusInvalid, feedTradeGapSilence)
+	expect(64, feedTradeStatusComplete, "")
+	expect(66, feedTradeStatusInvalid, feedTradeGapSilence)
+	expect(67, feedTradeStatusComplete, "")
 	if st.Stats.Conflicts != 1 || st.Stats.Rejected != 3 || st.Stats.Late < 2 {
 		t.Fatalf("outcome counters %+v", st.Stats)
 	}
