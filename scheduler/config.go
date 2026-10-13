@@ -1281,6 +1281,10 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 
 	applyUserCloseDefaultRegimeATRs(&cfg)
 
+	if errs := productionRefusedAdmissionErrors(cfg.Strategies); len(errs) > 0 {
+		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
+	}
+
 	if err := validateMarketFeedConfig(&cfg); err != nil {
 		return nil, err
 	}

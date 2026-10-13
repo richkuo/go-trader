@@ -559,8 +559,8 @@ func validateFeedSealTradeFlows(flows []feedSealTradeFlow) error {
 			if hb, herr := hex.DecodeString(iv.Hash); herr != nil || len(hb) != sha256.Size {
 				return fmt.Errorf("seal trade flow %s interval %d records hash is malformed", key, j)
 			}
-			if iv.FinalizedMs < iv.StartMs+feedTradeIntervalMs || iv.FinalizedMs > f.CutoffMs {
-				return fmt.Errorf("seal trade flow %s interval %d finalized at %d outside [%d, %d]", key, j, iv.FinalizedMs, iv.StartMs+feedTradeIntervalMs, f.CutoffMs)
+			if iv.FinalizedMs < iv.StartMs || iv.FinalizedMs > f.CutoffMs {
+				return fmt.Errorf("seal trade flow %s interval %d finalized at %d outside [%d, %d]", key, j, iv.FinalizedMs, iv.StartMs, f.CutoffMs)
 			}
 			switch iv.Status {
 			case feedTradeStatusComplete:

@@ -225,8 +225,8 @@ def parse_trade_flow(obs) -> TradeFlow:
             return TradeFlow("unsupported_trade_flow", f"interval {i} volumes are not canonical decimals with buy + sell = total")
         if (trades == 0) != (total == 0):
             return TradeFlow("unsupported_trade_flow", f"interval {i} tally {trades} disagrees with its volume {total}")
-        if finalized < end:
-            return TradeFlow("unsupported_trade_flow", f"interval {i} finalized at {finalized} before its end {end}")
+        if finalized < start:
+            return TradeFlow("unsupported_trade_flow", f"interval {i} finalized at {finalized} before its start {start}")
         if status == "complete":
             if finalized < end + grace:
                 return TradeFlow("unsupported_trade_flow", f"interval {i} completed before its reorder grace")

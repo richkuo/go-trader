@@ -24,7 +24,7 @@ const (
 	feedEstimateCoinBytes = 256
 
 	feedEstimateObservationBytes   = 96
-	feedEstimateTradeIntervalBytes = 224
+	feedEstimateTradeIntervalBytes = 256
 
 	feedEstimateAccountingRecordBytes = 64
 )
