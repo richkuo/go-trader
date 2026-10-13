@@ -278,6 +278,17 @@ def pooled_entry(df, **params):
     return out
 
 
+RANDOMIZED_SEED_DEPARTURE = (
+    "Departure from the frozen protocol: the randomized control that produced every published randomized number "
+    "seeds numpy default_rng([1653, seed, refit_boundary_ms // 1000, salt]), where salt = round(open of the "
+    "block's first valid decision row x 1e6) mod 2^32 (`randomized_entry` in `run_study.py`). The locked "
+    "`protocol.json` text above omits the salt; the protocol file is left unchanged, so its lock still holds. "
+    "With the salt, blocks of different markets that share a refit boundary and a row count get different "
+    "permutations. The verdict does not depend on it: both groups stop at the independent-cluster sample floor "
+    "before any randomized comparison can decide."
+)
+
+
 def randomized_entry(df, random_seed: int = 0, **params):
     import numpy as np
     import calendar_conditioned_entry as cce
@@ -1303,6 +1314,8 @@ def render() -> None:
              f"— {b['randomized']['definition']}. {b['randomized']['comparison'][0].upper()}"
              f"{b['randomized']['comparison'][1:]}. {b['registration'][0].upper()}{b['registration'][1:]} (removed "
              f"after the run: {fmt(res.get('baselines_removed'))}).")
+    L.append("")
+    L.append(RANDOMIZED_SEED_DEPARTURE)
     L.append("")
     w = proto["warmup"]
     L.append(f"Warm-up: {w['rule']}. {w['policy'][0].upper()}{w['policy'][1:]}. {w['refusal'][0].upper()}"
