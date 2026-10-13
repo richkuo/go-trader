@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,21 @@ func TestBasketConfigLoadAcceptsValidAndRefusesNamedCases(t *testing.T) {
 			sc["close_strategy"] = map[string]interface{}{"name": "basket_scripted_fixture"}
 			return sc
 		}()), "close-fallback strategy \"basket_scripted_fixture\" is a basket evaluator"},
+		{"momentum ranker as open strategy", addStrategy(func() map[string]interface{} {
+			sc := plain("hl-open-doge", "rsi", "DOGE")
+			sc["open_strategy"] = map[string]interface{}{"name": "cross_sectional_momentum"}
+			return sc
+		}()), "open strategy \"cross_sectional_momentum\" is a basket evaluator"},
+		{"momentum ranker as positional", addStrategy(plain("hl-pos-doge", "cross_sectional_momentum", "DOGE")), "positional strategy \"cross_sectional_momentum\" is a basket evaluator"},
+		{"momentum ranker as close fallback", addStrategy(func() map[string]interface{} {
+			sc := plain("hl-close-doge", "rsi", "DOGE")
+			sc["close_strategy"] = map[string]interface{}{"name": "cross_sectional_momentum"}
+			return sc
+		}()), "close-fallback strategy \"cross_sectional_momentum\" is a basket evaluator"},
+		{"momentum ranker param outside its declared keys", basket(func(b map[string]interface{}) {
+			b["ranker"] = "cross_sectional_momentum"
+			b["params"] = map[string]interface{}{"gross_budget_usd": 4000}
+		}), "unknown field \"gross_budget_usd\" in params for ranker cross_sectional_momentum"},
 		{"no closed-bar identity", member("hl-bsk-btc", func(sc map[string]interface{}) { delete(sc, "closed_bar_decisions") }), "requires \"closed_bar_decisions\": true"},
 		{"gross budget", basket(func(b map[string]interface{}) { b["gross_budget_usd"] = 0 }), "gross_budget_usd must be a finite positive number"},
 		{"net above gross", basket(func(b map[string]interface{}) { b["max_transition_net_usd"] = 5000 }), "max_transition_net_usd 5000 exceeds gross_budget_usd"},
@@ -730,6 +746,10 @@ func TestBasketHoldsWholeTargetSetOnDegradedInputs(t *testing.T) {
 			out, _, err := basketTestRanker(basketTestWeights, "")(ctx, in, d)
 			return []byte(strings.Replace(string(out), `"generation":1`, `"generation":2`, 1)), nil, err
 		}, "belongs to snapshot"},
+		{"version 1 runner result", func() *marketSnapshot { return basketTestSnapshot(deadline, 60, basketTestMarks(), 1) }, func(ctx context.Context, in []byte, d time.Duration) ([]byte, []byte, error) {
+			out, _, err := basketTestRanker(basketTestWeights, "")(ctx, in, d)
+			return []byte(strings.Replace(string(out), `"v":2`, `"v":1`, 1)), nil, err
+		}, "the ranker result names basket"},
 		{"cap infeasible", func() *marketSnapshot { return basketTestSnapshot(deadline, 60, basketTestMarks(), 1) }, basketTestRanker(map[string]float64{"BTC": 0.5, "ETH": 0.0, "SOL": -0.25, "AVAX": -0.25}, ""), "per-coin cap"},
 		{"empty short side", func() *marketSnapshot { return basketTestSnapshot(deadline, 60, basketTestMarks(), 1) }, basketTestRanker(map[string]float64{"BTC": 0.25, "ETH": 0.25}, ""), "short side is empty"},
 		{"weights above one", func() *marketSnapshot { return basketTestSnapshot(deadline, 60, basketTestMarks(), 1) }, basketTestRanker(map[string]float64{"BTC": 0.3, "ETH": 0.3, "SOL": -0.3, "AVAX": -0.3}, ""), "above 1"},
@@ -868,7 +888,27 @@ func (v crashAfterSubmitVenue) Submit(a *basketAction) (basketVenueOutcome, erro
 }
 
 func TestBasketLiveRefusalHoldsAtDispatchAndOperatorRoutes(t *testing.T) {
-	cfg := loadBasketTestConfig(t, nil)
+	rankers := make([]string, 0, len(basketRankerStrategies))
+	for name := range basketRankerStrategies {
+		rankers = append(rankers, name)
+	}
+	sort.Strings(rankers)
+	for _, ranker := range rankers {
+		t.Run(ranker, func(t *testing.T) { basketLiveRefusalCase(t, ranker) })
+	}
+}
+
+func basketLiveRefusalCase(t *testing.T, ranker string) {
+	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+		b := basketTestBasket(root)
+		b["ranker"] = ranker
+		if ranker != "basket_scripted_fixture" {
+			delete(b, "params")
+		}
+	})
+	if cfg.Baskets[0].Ranker != ranker {
+		t.Fatalf("setup: the basket ranks with %q, want %q", cfg.Baskets[0].Ranker, ranker)
+	}
 	venue := newScriptedBasketVenue(false)
 	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), func(sc StrategyConfig) (basketVenue, error) { return venue, nil })
 	for _, ack := range []bool{false, true} {
@@ -889,8 +929,8 @@ func TestBasketLiveRefusalHoldsAtDispatchAndOperatorRoutes(t *testing.T) {
 			t.Fatalf("allow_no_edge=%v: the production venue factory must refuse a live member, got %v", ack, err)
 		}
 	}
-	if _, _, err := buildAddStrategyEntry("basket_scripted_fixture", "hyperliquid", "BTC"); err == nil {
-		t.Fatal("the operator add route must refuse a basket evaluator")
+	if _, _, err := buildAddStrategyEntry(ranker, "hyperliquid", "BTC"); err == nil {
+		t.Fatalf("the operator add route must refuse the basket evaluator %s", ranker)
 	}
 	ss := NewStatusServer(env.state, env.mu, "", cfg.Strategies, env.store)
 	if reason := ss.paperToLiveBlockedReason("hl-bsk-eth", false); !strings.Contains(reason, "live basket dispatch is refused") {

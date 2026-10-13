@@ -1,9 +1,9 @@
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 
 def basket_scripted_fixture_core(frames: Dict[str, Any], eligibility: Dict[str, Any],
-                                 weights: Optional[dict] = None, scores: Optional[dict] = None,
+                                 allocation_context: Mapping[str, Any], weights: Optional[dict] = None, scores: Optional[dict] = None,
                                  hold: str = "", sleep_seconds: float = 0, raw: Any = None) -> Any:
     if sleep_seconds:
         time.sleep(float(sleep_seconds))

@@ -71,6 +71,12 @@ from stochastic_momentum_index import smi_param_validator, stochastic_momentum_i
 from elder_force_pullback import efp_param_validator, elder_force_pullback_core
 from true_strength_index import true_strength_index_core, tsi_param_validator
 from basket_scripted_fixture import basket_scripted_fixture_core
+from cross_sectional_momentum import (
+    XSMOM_DEFAULT_PARAMS,
+    cross_sectional_momentum_core,
+    xsmom_basket_preflight,
+    xsmom_param_validator,
+)
 from klinger_divergence import klinger_divergence_core, klinger_param_validator
 
 
@@ -316,6 +322,7 @@ def register(
     short_entries: bool,
     param_validator=None,
     basket=None,
+    basket_preflight=None,
 ):
     if name in STRATEGIES:
         raise ValueError(f"Strategy '{name}' is already registered")
@@ -339,6 +346,10 @@ def register(
     _validate_short_entries(name, short_entries, default_params, platforms, variants)
     if param_validator is not None and not callable(param_validator):
         raise ValueError(f"{name}: param_validator must be callable, got {param_validator!r}")
+    if basket_preflight is not None and basket is None:
+        raise ValueError(f"{name}: basket_preflight applies only to a basket evaluator")
+    if basket_preflight is not None and not callable(basket_preflight):
+        raise ValueError(f"{name}: basket_preflight must be callable, got {basket_preflight!r}")
 
     constraint_list = tuple(constraints or ())
     known_params = set(default_params)
@@ -359,6 +370,7 @@ def register(
             "fn": _basket_single_symbol_refusal(name) if basket else wrapped,
             "basket": dict(basket) if basket else None,
             "basket_fn": fn if basket else None,
+            "basket_preflight": basket_preflight,
             "description": description,
             "default_params": dict(default_params),
             "constraints": constraint_list,
@@ -2656,8 +2668,33 @@ def regime_adaptive_htf_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     short_entries=False,
     basket=dict(BASKET_CONTRACT),
 )
-def basket_scripted_fixture_strategy(frames, eligibility, **params):
-    return basket_scripted_fixture_core(frames, eligibility, **params)
+def basket_scripted_fixture_strategy(frames, eligibility, allocation_context, **params):
+    return basket_scripted_fixture_core(frames, eligibility, allocation_context, **params)
+
+
+@register(
+    "cross_sectional_momentum",
+    "Cross-sectional momentum — basket evaluator that ranks the eligible members by trailing closed-bar return, "
+    "longs the top quantile and shorts the bottom quantile with inverse-volatility weights capped per coin; "
+    "unvalidated research candidate, no edge evidence",
+    dict(XSMOM_DEFAULT_PARAMS),
+    platforms=("futures",),
+    constraints=[
+        "return_lookback_bars >= 1",
+        "volatility_lookback_bars >= 2",
+        "quantile > 0",
+        "quantile < 0.5",
+    ],
+    edge_status="no_edge",
+    edge_source="unvalidated",
+    edge_ref="backtest/candidates/cross_sectional_momentum_1787/SIGNAL_SPEC.md",
+    short_entries=False,
+    param_validator=xsmom_param_validator,
+    basket=dict(BASKET_CONTRACT),
+    basket_preflight=xsmom_basket_preflight,
+)
+def cross_sectional_momentum_strategy(frames, eligibility, allocation_context, **params):
+    return cross_sectional_momentum_core(frames, eligibility, allocation_context, **params)
 
 
 @register(

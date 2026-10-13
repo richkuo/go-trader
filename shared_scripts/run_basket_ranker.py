@@ -7,6 +7,7 @@ import math
 import os
 import sys
 import traceback
+from types import MappingProxyType
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 for _p in (os.path.join(_ROOT, "shared_tools"), os.path.join(_ROOT, "shared_strategies", "open")):
@@ -22,7 +23,11 @@ from market_payload import (
     validate_market_payload,
 )
 
-REQUEST_VERSION = 1
+REQUEST_VERSION = 2
+MAX_LOOKBACK_BARS = 5000
+ALLOCATION_CONTEXT_KEYS = frozenset({
+    "gross_budget_usd", "max_coin_notional_usd", "max_transition_net_usd", "lookback_bars", "min_history_bars",
+})
 OUTPUT_KEYS = {"hold", "scores", "weights", "exclusions"}
 WEIGHT_SUM_TOLERANCE = 1e-9
 
@@ -58,6 +63,35 @@ def _int_field(req, key, minimum=None):
     return value
 
 
+def parse_allocation_context(raw):
+    if not isinstance(raw, dict):
+        raise RankerInvalid("request field 'allocation_context' must be an object")
+    keys = set(raw)
+    missing = sorted(ALLOCATION_CONTEXT_KEYS - keys)
+    unknown = sorted(keys - ALLOCATION_CONTEXT_KEYS)
+    if missing or unknown:
+        raise RankerInvalid(f"allocation_context has missing fields {missing} and unknown fields {unknown}")
+    ctx = {}
+    for key in ("gross_budget_usd", "max_coin_notional_usd", "max_transition_net_usd"):
+        value = raw[key]
+        if not _finite_number(value) or float(value) <= 0:
+            raise RankerInvalid(f"allocation_context.{key} must be a finite positive number, got {value!r}")
+        ctx[key] = float(value)
+    for key in ("max_coin_notional_usd", "max_transition_net_usd"):
+        if ctx[key] > ctx["gross_budget_usd"]:
+            raise RankerInvalid(
+                f"allocation_context.{key} {ctx[key]!r} exceeds gross_budget_usd {ctx['gross_budget_usd']!r}")
+    lookback = raw["lookback_bars"]
+    if isinstance(lookback, bool) or not isinstance(lookback, int) or not 2 <= lookback <= MAX_LOOKBACK_BARS:
+        raise RankerInvalid(f"allocation_context.lookback_bars must be an integer in [2, {MAX_LOOKBACK_BARS}], got {lookback!r}")
+    min_history = raw["min_history_bars"]
+    if isinstance(min_history, bool) or not isinstance(min_history, int) or not 1 <= min_history <= lookback:
+        raise RankerInvalid(f"allocation_context.min_history_bars must be an integer in [1, lookback_bars], got {min_history!r}")
+    ctx["lookback_bars"] = lookback
+    ctx["min_history_bars"] = min_history
+    return MappingProxyType(ctx)
+
+
 def parse_request(raw):
     try:
         req = json.loads(raw)
@@ -67,12 +101,13 @@ def parse_request(raw):
         raise RankerInvalid("request must be a JSON object")
     if req.get("v") != REQUEST_VERSION:
         raise RankerInvalid(f"request version {req.get('v')!r} is not {REQUEST_VERSION}")
+    legacy = sorted(k for k in ("lookback_bars", "min_history_bars") if k in req)
+    if legacy:
+        raise RankerInvalid(f"request fields {legacy} moved into allocation_context in request version {REQUEST_VERSION}")
     for key in ("basket_id", "ranker"):
         if not isinstance(req.get(key), str) or not req[key].strip():
             raise RankerInvalid(f"request field {key!r} must be a non-empty string")
     _int_field(req, "deadline_ms", 1)
-    _int_field(req, "lookback_bars", 2)
-    _int_field(req, "min_history_bars", 1)
     _int_field(req, "min_eligible", 1)
     if not isinstance(req.get("params"), dict):
         raise RankerInvalid("request field 'params' must be an object")
@@ -93,7 +128,7 @@ def parse_request(raw):
         raise RankerInvalid("request field 'listings' must be an object")
     if not isinstance(req.get("market"), dict):
         raise RankerInvalid("request field 'market' must be an object")
-    return req
+    return req, parse_allocation_context(req.get("allocation_context"))
 
 
 def check_envelope(req):
@@ -115,7 +150,7 @@ def check_envelope(req):
     return cutoff
 
 
-def member_evidence(req, member, cutoff):
+def member_evidence(req, ctx, member, cutoff):
     market = req["market"]
     sym = member["symbol"]
     tf = member["timeframe"]
@@ -141,9 +176,9 @@ def member_evidence(req, member, cutoff):
     if delisted and delisted <= deadline:
         return {**listing, "status": "excluded", "reason": "delisted at or before the deadline"}, None
     bars_since_listing = (deadline - listed) // interval
-    if bars_since_listing < req["min_history_bars"]:
+    if bars_since_listing < ctx["min_history_bars"]:
         return {**listing, "status": "excluded",
-                "reason": f"listed {bars_since_listing} bars before the deadline, needs {req['min_history_bars']}"}, None
+                "reason": f"listed {bars_since_listing} bars before the deadline, needs {ctx['min_history_bars']}"}, None
     try:
         frame = market_frame(market, sym, tf, MarketPayloadError)
     except MarketPayloadError as e:
@@ -154,7 +189,7 @@ def member_evidence(req, member, cutoff):
         rows, timing = market_frame_rows_with_timing(market, sym, tf, MarketPayloadError)
         timings = sealed_frame_timings(rows, timing, tf)
         selection = select_closed(rows, timings, timeframe=tf, cutoff_ms=cutoff, rule=RULE_HYPERLIQUID_NATIVE,
-                                  keep=req["lookback_bars"], min_rows=1)
+                                  keep=ctx["lookback_bars"], min_rows=1)
     except (MarketPayloadError, ClosedBarHold, ValueError, TypeError) as e:
         raise RankerHold(f"{sym}: {getattr(e, 'reason', e)}")
     if selection.boundary_ms != deadline:
@@ -162,7 +197,7 @@ def member_evidence(req, member, cutoff):
     for i in range(1, len(selection.timings)):
         if selection.timings[i].open_ms - selection.timings[i - 1].open_ms != interval:
             raise RankerHold(f"{sym}: the closed history has a gap before the bar opened {selection.timings[i].open_ms}")
-    needed = min(req["lookback_bars"], bars_since_listing)
+    needed = min(ctx["lookback_bars"], bars_since_listing)
     if len(selection.rows) < needed:
         raise RankerHold(f"{sym}: the sealed frame carries {len(selection.rows)} closed bars, needs {needed}")
     record = {
@@ -229,22 +264,51 @@ def validate_output(result, eligible):
     return scores, weights, {sym: str(r) for sym, r in exclusions.items()}
 
 
-def input_fingerprint(req, evidence):
+def input_fingerprint(req, ctx, evidence):
     blob = json.dumps({
+        "v": REQUEST_VERSION,
         "basket_id": req["basket_id"],
         "ranker": req["ranker"],
         "params": req["params"],
         "deadline_ms": req["deadline_ms"],
         "expected": req["expected"],
-        "lookback_bars": req["lookback_bars"],
+        "allocation_context": dict(ctx),
         "listings": req["listings"],
         "evidence": evidence,
     }, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def admit_ranker(req, ctx):
+    registry = _load_registry()
+    try:
+        entry = registry.get_basket_ranker(req["ranker"])
+    except ValueError as e:
+        raise RankerInvalid(str(e))
+    if entry.get("edge_status") == registry.EDGE_STATUS_NO_EDGE and req.get("mode") != "paper":
+        raise RankerInvalid(
+            f"basket evaluator {req['ranker']!r} is edge_status=no_edge (source {entry.get('edge_source')}, "
+            f"evidence {entry.get('edge_ref')}); it runs only in explicit paper mode")
+    defaults = dict(entry["default_params"])
+    unknown = sorted(set(req["params"]) - set(defaults))
+    if unknown:
+        raise RankerInvalid(f"unknown ranker params {unknown}")
+    effective = {**defaults, **req["params"]}
+    try:
+        registry.validate_params(req["ranker"], req["params"])
+    except (TypeError, ValueError) as e:
+        raise RankerInvalid(f"invalid ranker params: {e}")
+    preflight = entry.get("basket_preflight")
+    if preflight is not None:
+        try:
+            preflight(MappingProxyType(dict(effective)), ctx)
+        except (TypeError, ValueError) as e:
+            raise RankerInvalid(f"the basket configuration cannot run {req['ranker']}: {e}")
+    return entry, effective
+
+
 def run(raw):
-    req = parse_request(raw)
+    req, ctx = parse_request(raw)
     out = {
         "v": REQUEST_VERSION,
         "basket_id": req["basket_id"],
@@ -260,41 +324,31 @@ def run(raw):
         "exclusions": {},
         "input_fingerprint": "",
     }
+    entry, effective = admit_ranker(req, ctx)
     evidence = {}
     try:
         cutoff = check_envelope(req)
         selections = {}
         for member in sorted(req["members"], key=lambda m: m["symbol"]):
-            record, selection = member_evidence(req, member, cutoff)
+            record, selection = member_evidence(req, ctx, member, cutoff)
             evidence[member["symbol"]] = record
             if selection is not None:
                 selections[member["symbol"]] = selection
         out["eligibility"] = evidence
-        out["input_fingerprint"] = input_fingerprint(req, evidence)
+        out["input_fingerprint"] = input_fingerprint(req, ctx, evidence)
         eligible = sorted(selections)
         if len(eligible) < req["min_eligible"]:
             raise RankerHold(f"the eligible population {len(eligible)} is below the minimum {req['min_eligible']}")
-        registry = _load_registry()
-        entry = registry.get_basket_ranker(req["ranker"])
-        if entry.get("edge_status") == registry.EDGE_STATUS_NO_EDGE and req.get("mode") != "paper":
-            raise RankerInvalid(
-                f"basket evaluator {req['ranker']!r} is edge_status=no_edge (source {entry.get('edge_source')}, "
-                f"evidence {entry.get('edge_ref')}); it runs only in explicit paper mode")
-        defaults = dict(entry["default_params"])
-        unknown = sorted(set(req["params"]) - set(defaults))
-        if unknown:
-            raise RankerInvalid(f"unknown ranker params {unknown}")
-        registry.validate_params(req["ranker"], req["params"])
         frames = {sym: _frame(selections[sym].rows) for sym in eligible}
         eligibility = {sym: dict(evidence[sym]) for sym in evidence}
-        result = entry["basket_fn"](frames, eligibility, **{**defaults, **req["params"]})
+        result = entry["basket_fn"](frames, eligibility, ctx, **effective)
         scores, weights, exclusions = validate_output(result, eligible)
         out.update({"status": "targets", "scores": scores, "weights": weights, "exclusions": exclusions})
         return out, 0
     except RankerHold as e:
         out["eligibility"] = evidence
         if not out["input_fingerprint"] and evidence:
-            out["input_fingerprint"] = input_fingerprint(req, evidence)
+            out["input_fingerprint"] = input_fingerprint(req, ctx, evidence)
         out["status"] = "hold"
         out["hold_reason"] = str(e)
         return out, 0
