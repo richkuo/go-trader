@@ -25,6 +25,8 @@ const (
 	basketMaxRankerTimeoutSeconds = 600
 	basketMaxLookbackBars         = 5000
 	basketMinMembers              = 2
+
+	basketMaxHoldingHorizonSeconds = 2_147_483_647
 )
 
 var basketRankerStrategies = map[string]bool{
@@ -63,6 +65,7 @@ type BasketConfig struct {
 	MaxTransitionNetUSD      float64                `json:"max_transition_net_usd"`
 	MaxCoinNotionalUSD       float64                `json:"max_coin_notional_usd"`
 	MinEligibleMembers       int                    `json:"min_eligible_members"`
+	HoldingHorizonSeconds    int64                  `json:"holding_horizon_seconds,omitempty"`
 	Eligibility              *BasketEligibility     `json:"eligibility"`
 }
 
@@ -93,6 +96,7 @@ type basketContract struct {
 	MaxTransitionNetUSD      float64                    `json:"max_transition_net_usd"`
 	MaxCoinNotionalUSD       float64                    `json:"max_coin_notional_usd"`
 	MinEligibleMembers       int                        `json:"min_eligible_members"`
+	HoldingHorizonSeconds    int64                      `json:"holding_horizon_seconds,omitempty"`
 	EligibilitySource        string                     `json:"eligibility_source"`
 	EligibilityVersion       string                     `json:"eligibility_version"`
 	MinHistoryBars           int                        `json:"min_history_bars"`
@@ -216,6 +220,7 @@ func buildBasketContract(cfg *Config, b BasketConfig) (basketContract, error) {
 		MaxTransitionNetUSD:      b.MaxTransitionNetUSD,
 		MaxCoinNotionalUSD:       b.MaxCoinNotionalUSD,
 		MinEligibleMembers:       b.MinEligibleMembers,
+		HoldingHorizonSeconds:    b.HoldingHorizonSeconds,
 		Listings:                 map[string]basketListingMs{},
 	}
 	if len(members) > 0 {
@@ -460,6 +465,9 @@ func basketConfigErrors(cfg *Config) []string {
 		if b.MinEligibleMembers < basketMinMembers || b.MinEligibleMembers > len(b.Members) {
 			add("min_eligible_members must be in [%d, %d], got %d", basketMinMembers, len(b.Members), b.MinEligibleMembers)
 		}
+		if b.HoldingHorizonSeconds < 0 || b.HoldingHorizonSeconds > basketMaxHoldingHorizonSeconds {
+			add("holding_horizon_seconds must be an integer in [0, %d] (0 or absent turns expiry off), got %d", basketMaxHoldingHorizonSeconds, b.HoldingHorizonSeconds)
+		}
 		if !cfg.marketFeedDeadlineScheduled() {
 			add("needs market_feed %q or %q: the rest feed has no sealed deadline snapshot (got %q)", marketFeedWebsocket, marketFeedShared, cfg.marketFeedMode())
 		}
@@ -610,6 +618,65 @@ func dedupeSortedStrings(in []string) []string {
 	return out
 }
 
+func (c basketContract) horizonMs() int64 {
+	if c.HoldingHorizonSeconds <= 0 || c.HoldingHorizonSeconds > basketMaxHoldingHorizonSeconds {
+		return 0
+	}
+	return c.HoldingHorizonSeconds * 1000
+}
+
+func validateBasketRawFields(rawData []byte) []string {
+	var envelope struct {
+		Baskets []map[string]json.RawMessage `json:"baskets"`
+	}
+	if err := json.Unmarshal(rawData, &envelope); err != nil {
+		return nil
+	}
+	var errs []string
+	for i, b := range envelope.Baskets {
+		prefix := fmt.Sprintf("baskets[%d]", i)
+		if raw, ok := b["id"]; ok {
+			var id string
+			if json.Unmarshal(raw, &id) == nil && id != "" {
+				prefix = fmt.Sprintf("baskets[%s]", id)
+			}
+		}
+		raw, ok := b["holding_horizon_seconds"]
+		if !ok {
+			continue
+		}
+		if why := basketHorizonRawError(raw); why != "" {
+			errs = append(errs, fmt.Sprintf("%s: holding_horizon_seconds %s", prefix, why))
+		}
+	}
+	return errs
+}
+
+func basketHorizonRawError(raw json.RawMessage) string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return "must be an integer number of seconds, got null"
+	}
+	dec := json.NewDecoder(strings.NewReader(text))
+	dec.UseNumber()
+	var v interface{}
+	if err := dec.Decode(&v); err != nil {
+		return fmt.Sprintf("is unreadable: %v", err)
+	}
+	n, ok := v.(json.Number)
+	if !ok {
+		return fmt.Sprintf("must be an integer number of seconds, got %s", text)
+	}
+	i, err := n.Int64()
+	if err != nil {
+		return fmt.Sprintf("must be an integer number of seconds in [0, %d], got %s", basketMaxHoldingHorizonSeconds, text)
+	}
+	if i < 0 || i > basketMaxHoldingHorizonSeconds {
+		return fmt.Sprintf("must be in [0, %d] (0 or absent turns expiry off), got %d", basketMaxHoldingHorizonSeconds, i)
+	}
+	return ""
+}
+
 func knownBasketConfigKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(BasketConfig{}))
 }
@@ -684,7 +751,7 @@ func validateBasketJSONKeys(rawData []byte) []string {
 func basketReloadErrors(cfg, next *Config) []string {
 	var errs []string
 	if !reflect.DeepEqual(cfg.Baskets, next.Baskets) {
-		errs = append(errs, "baskets changed (membership, ranker, schedule, evaluation window, ranker timeout and budgets are restart-required)")
+		errs = append(errs, "baskets changed (membership, ranker, schedule, evaluation window, ranker timeout, budgets and holding_horizon_seconds are restart-required)")
 	}
 	nextByID := strategyConfigByID(next.Strategies)
 	for _, sc := range cfg.Strategies {

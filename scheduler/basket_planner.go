@@ -238,6 +238,38 @@ func basketNetRelief(c basketCandidate, net float64) bool {
 	return false
 }
 
+func basketExpiryCandidates(members []basketContractMember, e basketExposure) []basketCandidate {
+	var out []basketCandidate
+	for _, m := range members {
+		q := e.Qty[m.Coin]
+		if q == 0 {
+			continue
+		}
+		c := basketCandidate{StrategyID: m.StrategyID, Coin: m.Coin, Direction: basketDirectionReduce, FullQty: math.Abs(q), CurrentQty: q, TargetQty: 0}
+		if q > 0 {
+			c.PositionSide, c.OrderSide = entrySideLong, "sell"
+		} else {
+			c.PositionSide, c.OrderSide = entrySideShort, "buy"
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func basketOrderExpiryReductions(cs []basketCandidate, exposure basketExposure) []basketCandidate {
+	out := append([]basketCandidate(nil), cs...)
+	net := exposure.net()
+	sort.SliceStable(out, func(i, j int) bool {
+		ri := basketNetRelief(out[i], net)
+		rj := basketNetRelief(out[j], net)
+		if ri != rj {
+			return ri
+		}
+		return out[i].StrategyID < out[j].StrategyID
+	})
+	return out
+}
+
 type basketTranche struct {
 	Qty    float64
 	Detail string

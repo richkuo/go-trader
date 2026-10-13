@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"time"
 )
 
 const (
@@ -51,11 +50,11 @@ func (basketPaperVenue) NewClientOrderID() (string, error) {
 }
 
 func (basketPaperVenue) Submit(a *basketAction) (basketVenueOutcome, error) {
-	return basketVenueOutcome{Outcome: basketVenueFilled, FilledQty: a.RequestedQty, ObservedAtMs: time.Now().UnixMilli()}, nil
+	return basketVenueOutcome{Outcome: basketVenueFilled, FilledQty: a.RequestedQty, ObservedAtMs: a.UpdatedAtMs}, nil
 }
 
 func (basketPaperVenue) Query(a *basketAction) (basketVenueOutcome, error) {
-	return basketVenueOutcome{Outcome: basketVenueRejected, Detail: "the paper fill was not committed before the restart, so nothing was booked", ObservedAtMs: time.Now().UnixMilli()}, nil
+	return basketVenueOutcome{Outcome: basketVenueRejected, Detail: "the paper fill was not committed before the restart, so nothing was booked"}, nil
 }
 
 var basketVenueFor = func(sc StrategyConfig) (basketVenue, error) {

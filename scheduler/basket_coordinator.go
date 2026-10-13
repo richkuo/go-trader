@@ -31,6 +31,8 @@ type basketCycleInputs struct {
 	ScopeRisk   map[RiskPartition]*scopeCycleRisk
 	SaveBlocked bool
 	Once        bool
+
+	MarksRetryAt time.Time
 }
 
 type basketCoordinator struct {
@@ -121,24 +123,7 @@ func (bc *basketCoordinator) alert(rt *basketRuntime, rb *basketRebalance, key, 
 		}
 		bc.critical[rt.Contract.BasketID+"|"+key] = true
 	}
-	label := "WARN"
-	if critical {
-		label = "CRITICAL"
-	}
-	text := fmt.Sprintf("[%s] basket %s (%s): %s", label, rt.Contract.BasketID, partitionLabel(rt.Partition), msg)
-	fmt.Println(text)
-	if bc.notifier == nil {
-		return
-	}
-	notifier, partition := bc.notifier, rt.Partition
-	bc.outbox = append(bc.outbox, func() {
-		if notifier.HasOwner() {
-			notifier.SendOwnerDM(text)
-		}
-		if critical && notifier.HasBackends() {
-			notifier.SendToPartitionChannels(partition, text)
-		}
-	})
+	bc.emit(rt, msg, critical)
 }
 
 func (bc *basketCoordinator) unlocked(fn func()) {
@@ -348,6 +333,9 @@ func (bc *basketCoordinator) wakeDelay(now time.Time) time.Duration {
 		if rt.rank != nil {
 			consider(time.Second)
 		}
+		if d := bc.expiryWakeLocked(rt, now); d >= 0 {
+			consider(d)
+		}
 	}
 	return best
 }
@@ -501,6 +489,9 @@ func (bc *basketCoordinator) memberLiveRefusal(rt *basketRuntime) string {
 }
 
 func (bc *basketCoordinator) stepRuntime(rt *basketRuntime, in basketCycleInputs) {
+	rt.clock = in.Now
+	rt.expiryHold, rt.expiryOpen = "", nil
+	_, suppressionChanged := bc.advanceExpirySuppression(rt, in.Now)
 	held := func() { rt.wakeRetryAt = in.Now.Add(basketHeldWakeRetry) }
 	if msg := bc.memberLiveRefusal(rt); msg != "" {
 		bc.alert(rt, nil, "live-refused", msg+"; no basket action is dispatched", true)
@@ -517,6 +508,10 @@ func (bc *basketCoordinator) stepRuntime(rt *basketRuntime, in basketCycleInputs
 		held()
 		return
 	}
+	if suppressionChanged && !bc.persistProgress(rt) {
+		held()
+		return
+	}
 	if a := rt.pendingAction(); a != nil {
 		if !bc.reconcileAction(rt, a, in) {
 			held()
@@ -525,6 +520,10 @@ func (bc *basketCoordinator) stepRuntime(rt *basketRuntime, in basketCycleInputs
 	}
 	rt.wakeRetryAt = time.Time{}
 	bc.detectExceptions(rt, in)
+	if !bc.processExpiry(rt, in) {
+		held()
+		return
+	}
 	bc.collectRank(rt, in)
 	bc.maybeStartDeadline(rt, in)
 	if in.Once && rt.rank != nil {
@@ -1071,12 +1070,18 @@ func (bc *basketCoordinator) execute(rt *basketRuntime, in basketCycleInputs) {
 		recoveryOnly = true
 	}
 	var targets *basketTargets
+	var suppressed []string
 	if !recoveryOnly {
 		var err error
 		targets, err = rb.Targets()
 		if err != nil || targets == nil {
 			bc.alert(rt, rb, "targets-unreadable", fmt.Sprintf("deadline %s targets are unreadable (%v); no elective action runs", formatClosedBarMs(rb.DeadlineMs), err), true)
 			return
+		}
+		targets, suppressed = bc.effectiveTargets(rt, rb, targets)
+		if len(suppressed) > 0 {
+			detail := fmt.Sprintf("%s reached the holding horizon; the effective target is zero through this deadline, and the frozen targets stay unchanged", strings.Join(suppressed, ", "))
+			bc.noteDeviation(rt, rb, "expiry_suppressed", detail, in.Now)
 		}
 	}
 	bounds := basketBoundsFor(rt.Contract)
@@ -1102,6 +1107,15 @@ func (bc *basketCoordinator) execute(rt *basketRuntime, in basketCycleInputs) {
 		if rb.IncreasesFrozen || recoveryOnly {
 			ceil := func(coin string, qty float64) float64 { return bc.lotCeil(coin, qty) }
 			reductions = append(reductions, basketNetRecoveryCandidates(exposure, bounds, rt.Contract.Members, reductions, ceil)...)
+		}
+		if len(rt.expiryOpen) > 0 {
+			kept := reductions[:0]
+			for _, c := range reductions {
+				if !rt.expiryOpen[c.StrategyID] {
+					kept = append(kept, c)
+				}
+			}
+			reductions = kept
 		}
 		if recoveryOnly && len(reductions) == 0 {
 			rb.Outcome.RecoveryOpen = false
@@ -1134,6 +1148,10 @@ func (bc *basketCoordinator) execute(rt *basketRuntime, in basketCycleInputs) {
 			return
 		}
 		if recoveryOnly {
+			return
+		}
+		if rt.expiryHold != "" {
+			bc.logf(rt, "increases hold: %s; protection stays active", rt.expiryHold)
 			return
 		}
 		if len(increases) == 0 {
@@ -1386,15 +1404,14 @@ func (bc *basketCoordinator) runAction(rt *basketRuntime, rb *basketRebalance, c
 	if rb.Status == basketRebalanceFrozen {
 		rb.Status = basketRebalanceExecuting
 	}
-	rt.Actions[a.ActionID] = a
 	if err := bc.store.ReserveBasketAction(rt, a); err != nil {
-		delete(rt.Actions, a.ActionID)
 		bc.logf(rt, "%s %s %.10g held: the action could not be reserved before sending: %v", sc.ID, c.Direction, qty, err)
 		if intent != nil {
-			bc.releaseIntent(rt, sc, s, intent, entryIntentReserved, "the basket action reservation failed")
+			bc.releaseIntent(rt, sc, s, intent, entryIntentReserved, "the basket action reservation failed", now)
 		}
 		return false
 	}
+	rt.Actions[a.ActionID] = a
 	a.Status = basketActionSubmitting
 	a.UpdatedAtMs = now.UnixMilli()
 	if !bc.persistProgress(rt) {
@@ -1402,16 +1419,16 @@ func (bc *basketCoordinator) runAction(rt *basketRuntime, rb *basketRebalance, c
 		a.HoldReason = "the submission could not be recorded, so nothing was sent"
 		bc.persistProgress(rt)
 		if intent != nil {
-			bc.releaseIntent(rt, sc, s, intent, entryIntentReserved, a.HoldReason)
+			bc.releaseIntent(rt, sc, s, intent, entryIntentReserved, a.HoldReason, now)
 		}
 		return false
 	}
 	if intent != nil {
-		if err := bc.markIntentSubmitting(sc, s, intent, a); err != nil {
+		if err := bc.markIntentSubmitting(sc, s, intent, a, now); err != nil {
 			a.Status = basketActionNoFill
 			a.HoldReason = "the entry intent submission could not be recorded, so nothing was sent: " + err.Error()
 			bc.persistProgress(rt)
-			bc.releaseIntent(rt, sc, s, intent, entryIntentReserved, a.HoldReason)
+			bc.releaseIntent(rt, sc, s, intent, entryIntentReserved, a.HoldReason, now)
 			return false
 		}
 	}
@@ -1420,7 +1437,7 @@ func (bc *basketCoordinator) runAction(rt *basketRuntime, rb *basketRebalance, c
 	submitted := *a
 	bc.unlocked(func() { outcome, err = venue.Submit(&submitted) })
 	if err != nil {
-		outcome = basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "transport failure: " + err.Error(), ObservedAtMs: time.Now().UnixMilli()}
+		outcome = basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "transport failure: " + err.Error()}
 	}
 	return bc.applyOutcome(rt, rb, a, outcome, obs, in, false)
 }
@@ -1467,20 +1484,20 @@ func (bc *basketCoordinator) reserveIncreaseIntent(rt *basketRuntime, sc Strateg
 	return in, nil
 }
 
-func (bc *basketCoordinator) markIntentSubmitting(sc StrategyConfig, s *StrategyState, in *entryIntent, a *basketAction) error {
+func (bc *basketCoordinator) markIntentSubmitting(sc StrategyConfig, s *StrategyState, in *entryIntent, a *basketAction, now time.Time) error {
 	next := *in
 	if err := bc.store.TransitionEntryIntent(sc.ID, &next, []string{entryIntentReserved}, entryIntentSubmitting); err != nil {
 		return err
 	}
 	in.Status = entryIntentSubmitting
 	in.durableStatus = entryIntentSubmitting
-	in.UpdatedAtMs = time.Now().UnixMilli()
+	in.UpdatedAtMs = now.UnixMilli()
 	return nil
 }
 
-func (bc *basketCoordinator) releaseIntent(rt *basketRuntime, sc StrategyConfig, s *StrategyState, in *entryIntent, from, reason string) {
+func (bc *basketCoordinator) releaseIntent(rt *basketRuntime, sc StrategyConfig, s *StrategyState, in *entryIntent, from, reason string, now time.Time) {
 	next := *in
-	next.EvidenceJSON = marshalEntryJSON(entryIntentEvidence{Outcome: "no_fill", Detail: reason, ObservedAtMs: time.Now().UnixMilli()})
+	next.EvidenceJSON = marshalEntryJSON(entryIntentEvidence{Outcome: "no_fill", Detail: reason, ObservedAtMs: now.UnixMilli()})
 	if err := bc.store.TransitionEntryIntent(sc.ID, &next, []string{from, entryIntentSubmitting}, entryIntentNoFill); err != nil {
 		bc.logf(rt, "entry %s could not be released (%v); it stays unresolved", in.IntentID, err)
 		return
@@ -1501,11 +1518,14 @@ func (bc *basketCoordinator) applyOutcome(rt *basketRuntime, rb *basketRebalance
 	sc := bc.members[a.StrategyID]
 	s := bc.state.Strategies[a.StrategyID]
 	intent := bc.intentFor(s, a)
+	now := in.Now
+	if outcome.ObservedAtMs == 0 {
+		outcome.ObservedAtMs = now.UnixMilli()
+	}
 	evidence := marshalEntryJSON(outcome)
 	if outcome.VenueOrderID != "" {
 		a.VenueOrderID = outcome.VenueOrderID
 	}
-	now := in.Now
 	switch outcome.Outcome {
 	case basketVenueFilled, basketVenuePartial:
 		if !finitePositive(outcome.FilledQty) || outcome.FilledQty > a.RequestedQty*(1+1e-9)+1e-12 {
@@ -1513,7 +1533,7 @@ func (bc *basketCoordinator) applyOutcome(rt *basketRuntime, rb *basketRebalance
 			a.HoldReason = fmt.Sprintf("the venue reported %v filled of %v requested; the fill cannot be booked", outcome.FilledQty, a.RequestedQty)
 			a.EvidenceJSON = evidence
 			bc.persistProgress(rt)
-			bc.alert(rt, rb, "inconsistent|"+a.ActionID, fmt.Sprintf("%s action %s: %s", a.StrategyID, a.ActionID, a.HoldReason), true)
+			bc.actionAlert(rt, rb, a, "inconsistent|"+a.ActionID, fmt.Sprintf("%s action %s: %s", a.StrategyID, a.ActionID, a.HoldReason), true)
 			return false
 		}
 		a.Status = basketActionSettling
@@ -1536,7 +1556,11 @@ func (bc *basketCoordinator) applyOutcome(rt *basketRuntime, rb *basketRebalance
 			if a.Direction == basketDirectionIncrease {
 				detail += "; the decision candle is consumed, and the underfill waits for a later eligible decision"
 			}
-			bc.noteDeviation(rt, rb, "partial_fill", detail, now)
+			if a.expiry() {
+				bc.logf(rt, "holding-horizon close %s: %s; the remainder takes a new attempt", a.ActionID, detail)
+			} else if rb != nil {
+				bc.noteDeviation(rt, rb, "partial_fill", detail, now)
+			}
 		}
 		return true
 	case basketVenueRejected:
@@ -1545,18 +1569,27 @@ func (bc *basketCoordinator) applyOutcome(rt *basketRuntime, rb *basketRebalance
 		a.EvidenceJSON = evidence
 		a.UpdatedAtMs = now.UnixMilli()
 		if intent != nil {
-			bc.releaseIntent(rt, sc, s, intent, entryIntentSubmitting, "venue rejected: "+outcome.Detail)
+			bc.releaseIntent(rt, sc, s, intent, entryIntentSubmitting, "venue rejected: "+outcome.Detail, now)
 		}
-		if recovered && a.Provider == "paper" {
+		switch {
+		case a.expiry():
+			if recovered && a.Provider == "paper" {
+				bc.logf(rt, "holding-horizon close %s: %s; a new attempt follows", a.ActionID, outcome.Detail)
+			} else {
+				bc.expiryFailed(rt, a, now, "rejected: "+outcome.Detail)
+			}
+		case recovered && a.Provider == "paper":
 			bc.logf(rt, "action %s: %s", a.ActionID, outcome.Detail)
-		} else {
+		case rb != nil:
 			rb.IncreasesFrozen = true
 			if rb.Outcome.FreezeReason == "" {
 				rb.Outcome.FreezeReason = fmt.Sprintf("the %s %s leg for %s was rejected (%s)", a.Direction, a.OrderSide, a.StrategyID, outcome.Detail)
 			}
 			bc.alert(rt, rb, "rejected|"+a.ActionID, rb.Outcome.FreezeReason+"; further increases are blocked and reduce-only recovery starts", false)
 		}
-		rb.UpdatedAtMs = now.UnixMilli()
+		if rb != nil {
+			rb.UpdatedAtMs = now.UnixMilli()
+		}
 		return bc.persistProgress(rt)
 	default:
 		a.Status = basketActionUnresolved
@@ -1567,7 +1600,7 @@ func (bc *basketCoordinator) applyOutcome(rt *basketRuntime, rb *basketRebalance
 			intent.HoldReason = a.HoldReason
 		}
 		bc.persistProgress(rt)
-		bc.alert(rt, rb, "unknown|"+a.ActionID, fmt.Sprintf("%s action %s (client %s): %s; new risk holds until it reconciles", a.StrategyID, a.ActionID, a.ClientOrderID, a.HoldReason), false)
+		bc.actionAlert(rt, rb, a, "unknown|"+a.ActionID, fmt.Sprintf("%s action %s (client %s): %s; new risk holds until it reconciles", a.StrategyID, a.ActionID, a.ClientOrderID, a.HoldReason), false)
 		return false
 	}
 }
@@ -1593,14 +1626,19 @@ func (bc *basketCoordinator) settleAction(rt *basketRuntime, rb *basketRebalance
 	}
 	var booked basketBooking
 	from := len(s.TradeHistory)
-	if a.Direction == basketDirectionIncrease {
-		if obs.Fields.ClosedBar == nil || obs.Indicators == nil {
-			obs = basketActionObservation(a)
+	prevDefer := s.deferTradePersist
+	s.deferTradePersist = true
+	withStrategyBookClock(s, now, func() {
+		if a.Direction == basketDirectionIncrease {
+			if obs.Fields.ClosedBar == nil || obs.Indicators == nil {
+				obs = basketActionObservation(a)
+			}
+			booked = bookBasketPaperIncrease(sc, s, bc.cfg, a.Symbol, a.PositionSide, remaining, a.MarkPx, obs, logger)
+		} else {
+			booked = bookBasketPaperReduction(sc, s, a.Symbol, remaining, a.MarkPx, logger)
 		}
-		booked = bookBasketPaperIncrease(sc, s, bc.cfg, a.Symbol, a.PositionSide, remaining, a.MarkPx, obs, logger)
-	} else {
-		booked = bookBasketPaperReduction(sc, s, a.Symbol, remaining, a.MarkPx, logger)
-	}
+	})
+	s.deferTradePersist = prevDefer
 	if !(booked.Qty > 0) {
 		reason := booked.Hold
 		if reason == "" {
@@ -1610,9 +1648,13 @@ func (bc *basketCoordinator) settleAction(rt *basketRuntime, rb *basketRebalance
 			a.Status = basketActionNoFill
 			a.HoldReason = "paper booking held: " + reason
 			bc.logf(rt, "action %s: %s", a.ActionID, a.HoldReason)
-			rb.IncreasesFrozen = true
-			if rb.Outcome.FreezeReason == "" {
-				rb.Outcome.FreezeReason = fmt.Sprintf("the %s leg for %s could not be booked (%s)", a.Direction, a.StrategyID, reason)
+			if a.expiry() {
+				bc.expiryFailed(rt, a, now, a.HoldReason)
+			} else if rb != nil {
+				rb.IncreasesFrozen = true
+				if rb.Outcome.FreezeReason == "" {
+					rb.Outcome.FreezeReason = fmt.Sprintf("the %s leg for %s could not be booked (%s)", a.Direction, a.StrategyID, reason)
+				}
 			}
 			bc.persistProgress(rt)
 			return false
@@ -1620,7 +1662,7 @@ func (bc *basketCoordinator) settleAction(rt *basketRuntime, rb *basketRebalance
 		a.Status = basketActionUnresolved
 		a.HoldReason = "a confirmed venue fill could not be booked: " + reason
 		bc.persistProgress(rt)
-		bc.alert(rt, rb, "unbooked|"+a.ActionID, fmt.Sprintf("%s action %s: %s", a.StrategyID, a.ActionID, a.HoldReason), true)
+		bc.actionAlert(rt, rb, a, "unbooked|"+a.ActionID, fmt.Sprintf("%s action %s: %s", a.StrategyID, a.ActionID, a.HoldReason), true)
 		return false
 	}
 	a.AppliedQty += booked.Qty
@@ -1642,6 +1684,12 @@ func (bc *basketCoordinator) settleAction(rt *basketRuntime, rb *basketRebalance
 		key := entryDecisionKey{Symbol: a.Symbol, IntervalMs: obs.Fields.ClosedBar.IntervalMs, Side: a.PositionSide}
 		markEntryConsumedLocked(s.EntryGuard, key, a.DecisionBarOpenMs, now)
 	}
+	if a.expiry() {
+		if l := rt.Lifecycle[a.StrategyID]; l.active() && l.PositionID == a.LifecyclePositionID {
+			l.Failures, l.RetryAtMs = 0, 0
+			rt.Lifecycle[a.StrategyID] = l
+		}
+	}
 	if in := bc.intentFor(s, a); in != nil {
 		in.Status = entryIntentCommitted
 		in.ConfirmedQty = a.ConfirmedQty
@@ -1656,7 +1704,9 @@ func (bc *basketCoordinator) settleAction(rt *basketRuntime, rb *basketRebalance
 		in.EvidenceJSON = a.EvidenceJSON
 		in.UpdatedAtMs = now.UnixMilli()
 	}
-	rb.UpdatedAtMs = now.UnixMilli()
+	if rb != nil {
+		rb.UpdatedAtMs = now.UnixMilli()
+	}
 	newTrades := append([]Trade(nil), s.TradeHistory[from:]...)
 	err := bc.store.SavePartition(bc.state, rt.Partition)
 	if err != nil {
@@ -1673,14 +1723,17 @@ func (bc *basketCoordinator) settleAction(rt *basketRuntime, rb *basketRebalance
 }
 
 func (bc *basketCoordinator) reconcileAction(rt *basketRuntime, a *basketAction, in basketCycleInputs) bool {
-	rb := rt.Rebalances[a.DeadlineMs]
-	if rb == nil {
-		rb = &basketRebalance{Partition: rt.Partition, BasketID: rt.Contract.BasketID, DeadlineMs: a.DeadlineMs, Status: basketRebalanceExecuting}
-		rt.Rebalances[a.DeadlineMs] = rb
+	var rb *basketRebalance
+	if !a.expiry() {
+		rb = rt.Rebalances[a.DeadlineMs]
+		if rb == nil {
+			rb = &basketRebalance{Partition: rt.Partition, BasketID: rt.Contract.BasketID, DeadlineMs: a.DeadlineMs, Status: basketRebalanceExecuting}
+			rt.Rebalances[a.DeadlineMs] = rb
+		}
 	}
 	sc, ok := bc.members[a.StrategyID]
 	if !ok {
-		bc.alert(rt, rb, "orphan|"+a.ActionID, fmt.Sprintf("action %s names %s, which has no configuration; it stays unresolved", a.ActionID, a.StrategyID), true)
+		bc.actionAlert(rt, rb, a, "orphan|"+a.ActionID, fmt.Sprintf("action %s names %s, which has no configuration; it stays unresolved", a.ActionID, a.StrategyID), true)
 		return false
 	}
 	switch a.Status {
@@ -1691,7 +1744,7 @@ func (bc *basketCoordinator) reconcileAction(rt *basketRuntime, a *basketAction,
 		s := bc.state.Strategies[a.StrategyID]
 		intent := bc.intentFor(s, a)
 		if intent != nil {
-			bc.releaseIntent(rt, sc, s, intent, entryIntentReserved, a.HoldReason)
+			bc.releaseIntent(rt, sc, s, intent, entryIntentReserved, a.HoldReason, in.Now)
 		}
 		bc.logf(rt, "action %s: %s", a.ActionID, a.HoldReason)
 		return bc.persistProgress(rt)
@@ -1700,7 +1753,7 @@ func (bc *basketCoordinator) reconcileAction(rt *basketRuntime, a *basketAction,
 	}
 	venue, err := bc.venueFor(sc)
 	if err != nil {
-		bc.alert(rt, rb, "venue|"+err.Error(), err.Error(), true)
+		bc.actionAlert(rt, rb, a, "venue|"+err.Error(), err.Error(), true)
 		return false
 	}
 	var outcome basketVenueOutcome
@@ -1734,7 +1787,16 @@ func basketStartupLines(runtimes map[string]*basketRuntime) []string {
 			line += fmt.Sprintf("; last deadline %s is %s", formatClosedBarMs(rb.DeadlineMs), rb.Status)
 		}
 		if a := rt.pendingAction(); a != nil {
-			line += fmt.Sprintf("; PENDING action %s (%s %s %s)", a.ActionID, a.StrategyID, a.Direction, a.Status)
+			line += fmt.Sprintf("; PENDING %s action %s (%s %s %s)", a.purpose(), a.ActionID, a.StrategyID, a.Direction, a.Status)
+		}
+		if rt.Contract.HoldingHorizonSeconds > 0 {
+			open := 0
+			for _, l := range rt.Lifecycle {
+				if l.active() {
+					open++
+				}
+			}
+			line += fmt.Sprintf("; holding horizon %ds, %d open lifecycle(s)", rt.Contract.HoldingHorizonSeconds, open)
 		}
 		out = append(out, line)
 	}

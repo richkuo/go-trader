@@ -227,7 +227,23 @@ type basketAction struct {
 	CreatedAtMs       int64
 	UpdatedAtMs       int64
 
+	Purpose             string
+	LifecyclePositionID string
+	ExpiryMs            int64
+	LifecycleAttempt    int
+
 	durableStatus string
+}
+
+func (a *basketAction) expiry() bool {
+	return a != nil && a.Purpose == basketPurposeExpiry
+}
+
+func (a *basketAction) purpose() string {
+	if a == nil || a.Purpose == "" {
+		return basketPurposeRebalance
+	}
+	return a.Purpose
 }
 
 func (a *basketAction) signedDelta() float64 {
@@ -254,12 +270,23 @@ type basketRuntime struct {
 	Rebalances    map[int64]*basketRebalance
 	Actions       map[string]*basketAction
 	Expected      map[string]float64
+	Lifecycle     map[string]basketLifecycle
 
 	expectedDurable map[string]float64
 	needsDurable    bool
 	rank            *basketRankJob
 	observations    map[string]basketMemberObservation
 	wakeRetryAt     time.Time
+	clock           time.Time
+	expiryHold      string
+	expiryOpen      map[string]bool
+}
+
+func (rt *basketRuntime) auditNowMs() int64 {
+	if rt != nil && !rt.clock.IsZero() {
+		return rt.clock.UnixMilli()
+	}
+	return time.Now().UnixMilli()
 }
 
 func newBasketRuntime(cfg BasketConfig, contract basketContract, p RiskPartition) *basketRuntime {
@@ -270,6 +297,7 @@ func newBasketRuntime(cfg BasketConfig, contract basketContract, p RiskPartition
 		Rebalances:      make(map[int64]*basketRebalance),
 		Actions:         make(map[string]*basketAction),
 		Expected:        make(map[string]float64),
+		Lifecycle:       make(map[string]basketLifecycle),
 		expectedDurable: make(map[string]float64),
 		observations:    make(map[string]basketMemberObservation),
 	}
@@ -351,6 +379,11 @@ func (rt *basketRuntime) memberIDs() []string {
 func (rt *basketRuntime) unresolvedRecovery() bool {
 	if rt.pendingAction() != nil {
 		return true
+	}
+	for _, l := range rt.Lifecycle {
+		if l.active() {
+			return true
+		}
 	}
 	for _, rb := range rt.Rebalances {
 		if !basketRebalanceTerminal(rb.Status) {
@@ -477,6 +510,12 @@ const basketActionColumns = `action_id, scope, source, basket_id, deadline_ms, s
     order_side, position_side, status, requested_qty, pre_qty, pre_notional_usd, mark_px, protection_json,
     provider, account_key, client_order_id, venue_order_id, entry_intent_id, decision_bar_open_ms,
     confirmed_qty, confirmed_avg_px, confirmed_fee, applied_qty, applied_fee, evidence_json, hold_reason,
+    created_at_ms, updated_at_ms, purpose, lifecycle_position_id, expiry_ms, lifecycle_attempt`
+
+const basketActionBaseSelect = `action_id, scope, source, basket_id, deadline_ms, strategy_id, symbol, direction, seq,
+    order_side, position_side, status, requested_qty, pre_qty, pre_notional_usd, mark_px, protection_json,
+    provider, account_key, client_order_id, venue_order_id, entry_intent_id, decision_bar_open_ms,
+    confirmed_qty, confirmed_avg_px, confirmed_fee, applied_qty, applied_fee, evidence_json, hold_reason,
     created_at_ms, updated_at_ms`
 
 const basketStatusRankSQL = `CASE %s WHEN 'reserved' THEN 0 WHEN 'ranking' THEN 1 WHEN 'targets_frozen' THEN 2 WHEN 'executing' THEN 3 ELSE 4 END`
@@ -487,7 +526,7 @@ func (sdb *StateDB) migrateBasketSchema() error {
 	if _, err := sdb.db.Exec(basketSchemaDDL); err != nil {
 		return fmt.Errorf("create basket tables: %w", err)
 	}
-	return nil
+	return sdb.migrateBasketLifecycleColumns()
 }
 
 func validBasketPartition(p RiskPartition) error {
@@ -554,7 +593,7 @@ func upsertBasketActionRow(exec sqlExecer, sid string, a *basketAction) error {
 	rankNew := fmt.Sprintf(basketActionRankSQL, "excluded.status")
 	rankOld := fmt.Sprintf(basketActionRankSQL, "status")
 	_, err := exec.Exec(`INSERT INTO basket_member_actions (`+basketActionColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(action_id) DO UPDATE SET
 		    status = excluded.status,
 		    venue_order_id = CASE WHEN excluded.venue_order_id != '' THEN excluded.venue_order_id ELSE venue_order_id END,
@@ -573,7 +612,7 @@ func upsertBasketActionRow(exec sqlExecer, sid string, a *basketAction) error {
 		a.OrderSide, a.PositionSide, a.Status, a.RequestedQty, a.PreQty, a.PreNotionalUSD, a.MarkPx, a.ProtectionJSON,
 		a.Provider, a.AccountKey, a.ClientOrderID, a.VenueOrderID, a.EntryIntentID, a.DecisionBarOpenMs,
 		a.ConfirmedQty, a.ConfirmedAvgPx, a.ConfirmedFee, a.AppliedQty, a.AppliedFee, a.EvidenceJSON, a.HoldReason,
-		a.CreatedAtMs, a.UpdatedAtMs)
+		a.CreatedAtMs, a.UpdatedAtMs, a.purpose(), a.LifecyclePositionID, a.ExpiryMs, a.LifecycleAttempt)
 	if err != nil {
 		return fmt.Errorf("upsert basket action %s: %w", a.ActionID, err)
 	}
@@ -608,70 +647,96 @@ func (sdb *StateDB) checkBasketOwnership(rt *basketRuntime) (map[string]string, 
 	return sids, nil
 }
 
-func (sdb *StateDB) writeBasketTx(tx *sql.Tx, rt *basketRuntime, withBooks bool, nowMs int64) error {
+func (rt *basketRuntime) savesAllMembers(books map[string]*StrategyState) bool {
+	for _, m := range rt.Contract.Members {
+		if books[m.StrategyID] == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (sdb *StateDB) writeBasketTx(tx *sql.Tx, rt *basketRuntime, books map[string]*StrategyState, nowMs int64) (map[string]basketLifecycle, error) {
 	if rt == nil {
-		return nil
+		return nil, nil
 	}
 	sids, err := sdb.checkBasketOwnership(rt)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	full := rt.savesAllMembers(books)
 	if err := upsertBasketContractRow(tx, rt, nowMs); err != nil {
-		return err
+		return nil, err
 	}
 	for _, d := range rt.sortedDeadlines() {
 		rb := rt.Rebalances[d]
 		status := rb.Status
-		if !withBooks && status == basketRebalanceCompleted {
+		if !full && status == basketRebalanceCompleted {
 			status = basketRebalanceExecuting
 		}
 		if err := upsertBasketRebalanceRow(tx, rb, status); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	for _, id := range rt.sortedActionIDs() {
 		a := rt.Actions[id]
-		if !withBooks && !basketActionBookIndependent(a.Status) && a.durableStatus != a.Status {
+		if books[a.StrategyID] == nil && !basketActionBookIndependent(a.Status) && a.durableStatus != a.Status {
 			continue
 		}
 		if err := upsertBasketActionRow(tx, sids[a.StrategyID], a); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	if withBooks {
-		for _, id := range rt.memberIDs() {
-			if _, err := tx.Exec(`INSERT INTO basket_member_state (scope, source, basket_id, strategy_id, expected_qty, updated_at_ms)
-				VALUES (?, ?, ?, ?, ?, ?)
-				ON CONFLICT(scope, source, basket_id, strategy_id) DO UPDATE SET
-				    expected_qty = excluded.expected_qty,
-				    updated_at_ms = MAX(updated_at_ms, excluded.updated_at_ms)`,
-				string(rt.Partition.Scope), rt.Partition.Source, rt.Contract.BasketID, sids[id], rt.Expected[id], nowMs); err != nil {
-				return fmt.Errorf("upsert basket %s member state %s: %w", rt.Contract.BasketID, id, err)
+	k := basketKey{Partition: rt.Partition, BasketID: rt.Contract.BasketID}
+	next := make(map[string]basketLifecycle, len(books))
+	for _, m := range rt.Contract.Members {
+		id := m.StrategyID
+		book := books[id]
+		if book == nil {
+			if err := writeBasketMemberProgressTx(tx, k, sids[id], rt.Lifecycle[id], nowMs); err != nil {
+				return nil, err
 			}
+			continue
 		}
+		stored, _, err := readBasketMemberStateTx(tx, k, sids[id])
+		if err != nil {
+			return nil, err
+		}
+		l := basketLifecycleFromBook(mergeBasketLifecycle(stored, rt.Lifecycle[id]), book, m.Coin, rt.Contract.horizonMs(), 0)
+		if err := writeBasketMemberBookTx(tx, k, sids[id], rt.Expected[id], l, nowMs); err != nil {
+			return nil, err
+		}
+		next[id] = l
 	}
-	return nil
+	return next, nil
 }
 
-func markBasketDurable(rt *basketRuntime, withBooks bool) {
+func markBasketDurable(rt *basketRuntime, books map[string]*StrategyState, next map[string]basketLifecycle) {
 	if rt == nil {
 		return
 	}
+	full := rt.savesAllMembers(books)
 	for _, rb := range rt.Rebalances {
-		if withBooks || rb.Status != basketRebalanceCompleted {
+		if full || rb.Status != basketRebalanceCompleted {
 			rb.durableStatus = rb.Status
 		}
 	}
 	for _, a := range rt.Actions {
-		if withBooks || basketActionBookIndependent(a.Status) {
+		if books[a.StrategyID] != nil || basketActionBookIndependent(a.Status) {
 			a.durableStatus = a.Status
 		}
 	}
-	if withBooks {
-		rt.expectedDurable = make(map[string]float64, len(rt.Expected))
-		for id, q := range rt.Expected {
+	for id := range books {
+		if q, ok := rt.Expected[id]; ok {
 			rt.expectedDurable[id] = q
+		} else {
+			delete(rt.expectedDurable, id)
 		}
+	}
+	for id, l := range next {
+		rt.Lifecycle[id] = l
+	}
+	if full {
 		rt.needsDurable = false
 	}
 	rt.prune()
@@ -689,7 +754,7 @@ func (sdb *StateDB) persistBasketProgress(rt *basketRuntime) error {
 		return fmt.Errorf("begin basket progress: %w", err)
 	}
 	defer tx.Rollback()
-	if err := sdb.writeBasketTx(tx, rt, false, time.Now().UnixMilli()); err != nil {
+	if _, err := sdb.writeBasketTx(tx, rt, nil, rt.auditNowMs()); err != nil {
 		return err
 	}
 	if storeCommitHook != nil {
@@ -700,7 +765,7 @@ func (sdb *StateDB) persistBasketProgress(rt *basketRuntime) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	markBasketDurable(rt, false)
+	markBasketDurable(rt, nil, nil)
 	return nil
 }
 
@@ -727,7 +792,7 @@ func (sdb *StateDB) reserveBasketRebalanceRow(rt *basketRuntime, rb *basketRebal
 	if existing > 0 {
 		return errBasketDeadlineTaken
 	}
-	if err := upsertBasketContractRow(tx, rt, time.Now().UnixMilli()); err != nil {
+	if err := upsertBasketContractRow(tx, rt, rt.auditNowMs()); err != nil {
 		return err
 	}
 	if err := upsertBasketRebalanceRow(tx, rb, rb.Status); err != nil {
@@ -776,6 +841,21 @@ func (sdb *StateDB) reserveBasketActionRow(rt *basketRuntime, a *basketAction) e
 	if pending > 0 {
 		return fmt.Errorf("basket %s already has an unresolved member action", a.BasketID)
 	}
+	seq, err := nextBasketActionSeqTx(tx, a, sid)
+	if err != nil {
+		return err
+	}
+	a.Seq = seq
+	if a.expiry() {
+		if a.Direction != basketDirectionReduce || a.LifecyclePositionID == "" || a.ExpiryMs <= 0 || a.LifecycleAttempt < 1 {
+			return fmt.Errorf("basket expiry action %s has no lifecycle identity", a.ActionID)
+		}
+		if err := sdb.reserveBasketExpiryAttemptTx(tx, a, sid, rt.auditNowMs()); err != nil {
+			return err
+		}
+	} else {
+		a.ActionID = basketActionID(a.Partition, a.BasketID, a.DeadlineMs, a.StrategyID, a.Direction, a.Seq)
+	}
 	var dup int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM basket_member_actions WHERE action_id = ? OR (provider = ? AND account_key = ? AND client_order_id = ?)`,
 		a.ActionID, a.Provider, a.AccountKey, a.ClientOrderID).Scan(&dup); err != nil {
@@ -789,7 +869,7 @@ func (sdb *StateDB) reserveBasketActionRow(rt *basketRuntime, a *basketAction) e
 	}
 	for _, d := range rt.sortedDeadlines() {
 		rb := rt.Rebalances[d]
-		if rb.DeadlineMs != a.DeadlineMs {
+		if rb.DeadlineMs != a.DeadlineMs || a.expiry() {
 			continue
 		}
 		status := rb.Status
@@ -822,6 +902,7 @@ type basketFileRecords struct {
 	Rebalances map[basketKey][]*basketRebalance
 	Actions    map[basketKey][]*basketAction
 	Expected   map[basketKey]map[string]float64
+	Lifecycle  map[basketKey]map[string]basketLifecycle
 	Unmapped   []string
 }
 
@@ -857,7 +938,7 @@ func scanBasketAction(scan func(dest ...interface{}) error) (*basketAction, stri
 		&a.OrderSide, &a.PositionSide, &a.Status, &a.RequestedQty, &a.PreQty, &a.PreNotionalUSD, &a.MarkPx, &a.ProtectionJSON,
 		&a.Provider, &a.AccountKey, &a.ClientOrderID, &a.VenueOrderID, &a.EntryIntentID, &a.DecisionBarOpenMs,
 		&a.ConfirmedQty, &a.ConfirmedAvgPx, &a.ConfirmedFee, &a.AppliedQty, &a.AppliedFee, &a.EvidenceJSON, &a.HoldReason,
-		&a.CreatedAtMs, &a.UpdatedAtMs); err != nil {
+		&a.CreatedAtMs, &a.UpdatedAtMs, &a.Purpose, &a.LifecyclePositionID, &a.ExpiryMs, &a.LifecycleAttempt); err != nil {
 		return nil, "", err
 	}
 	a.Partition = RiskPartition{Scope: PortfolioScope(scope), Source: source}
@@ -871,10 +952,19 @@ func (sdb *StateDB) loadBasketRecords() (*basketFileRecords, error) {
 		Rebalances: make(map[basketKey][]*basketRebalance),
 		Actions:    make(map[basketKey][]*basketAction),
 		Expected:   make(map[basketKey]map[string]float64),
+		Lifecycle:  make(map[basketKey]map[string]basketLifecycle),
 	}
 	exists, err := tableExists(sdb, "basket_contracts")
 	if err != nil || !exists {
 		return out, err
+	}
+	actionProj, err := sdb.basketProjection("basket_member_actions", basketActionLifecycleColumns)
+	if err != nil {
+		return nil, err
+	}
+	stateProj, err := sdb.basketProjection("basket_member_state", basketMemberStateLifecycleColumns)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := sdb.db.Query(`SELECT scope, source, basket_id, contract_json FROM basket_contracts ORDER BY scope, source, basket_id`)
 	if err != nil {
@@ -935,7 +1025,7 @@ func (sdb *StateDB) loadBasketRecords() (*basketFileRecords, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	rows, err = sdb.db.Query(`SELECT ` + basketActionColumns + ` FROM basket_member_actions ORDER BY created_at_ms, action_id`)
+	rows, err = sdb.db.Query(`SELECT ` + basketActionBaseSelect + `, ` + actionProj + ` FROM basket_member_actions ORDER BY created_at_ms, action_id`)
 	if err != nil {
 		return nil, fmt.Errorf("read basket actions in the %s state file: %w", sdb.storageRoleOf(), err)
 	}
@@ -963,29 +1053,32 @@ func (sdb *StateDB) loadBasketRecords() (*basketFileRecords, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	rows, err = sdb.db.Query(`SELECT scope, source, basket_id, strategy_id, expected_qty FROM basket_member_state ORDER BY scope, source, basket_id, strategy_id`)
+	rows, err = sdb.db.Query(`SELECT ` + basketMemberStateBaseColumns + `, ` + stateProj + ` FROM basket_member_state ORDER BY scope, source, basket_id, strategy_id`)
 	if err != nil {
 		return nil, fmt.Errorf("read basket member state in the %s state file: %w", sdb.storageRoleOf(), err)
 	}
 	for rows.Next() {
-		var scope, source, id, sid string
-		var q float64
-		if err := rows.Scan(&scope, &source, &id, &sid, &q); err != nil {
+		k, sid, q, l, err := scanBasketMemberState(rows.Scan)
+		if err != nil {
 			rows.Close()
 			return nil, err
 		}
-		k := basketKey{Partition: RiskPartition{Scope: PortfolioScope(scope), Source: source}, BasketID: id}
 		procID, mapped := sdb.mapStoredStrategyID(sid)
 		if !mapped {
 			if q != 0 {
-				out.Unmapped = append(out.Unmapped, fmt.Sprintf("basket %s expected position %.10g for stored strategy %q", id, q, sid))
+				out.Unmapped = append(out.Unmapped, fmt.Sprintf("basket %s expected position %.10g for stored strategy %q", k.BasketID, q, sid))
+			}
+			if l.active() {
+				out.Unmapped = append(out.Unmapped, fmt.Sprintf("basket %s holding-horizon lifecycle for position %s of stored strategy %q", k.BasketID, l.PositionID, sid))
 			}
 			continue
 		}
 		if out.Expected[k] == nil {
 			out.Expected[k] = make(map[string]float64)
+			out.Lifecycle[k] = make(map[string]basketLifecycle)
 		}
 		out.Expected[k][procID] = q
+		out.Lifecycle[k][procID] = l
 	}
 	rows.Close()
 	return out, rows.Err()
@@ -1011,6 +1104,9 @@ func (r *basketFileRecords) pendingFor(k basketKey) []string {
 	for _, id := range ids {
 		if q := r.Expected[k][id]; q != 0 {
 			out = append(out, fmt.Sprintf("member %s holds an expected %.10g", id, q))
+		}
+		if l := r.Lifecycle[k][id]; l.active() {
+			out = append(out, fmt.Sprintf("member %s holds an unresolved holding-horizon expiry for position %s (expires %s)", id, l.PositionID, formatClosedBarMs(l.ExpiryMs)))
 		}
 	}
 	return out
@@ -1107,6 +1203,9 @@ func (st *StateStore) LoadBaskets(state *AppState, cfg *Config) (map[string]*bas
 				rt.Expected[id] = q
 				rt.expectedDurable[id] = q
 			}
+			for id, l := range r.Lifecycle[k] {
+				rt.Lifecycle[id] = l
+			}
 		}
 		if _, err := db.checkBasketOwnership(rt); err != nil {
 			return nil, err
@@ -1165,34 +1264,31 @@ func (st *StateStore) PersistBasketProgress(rt *basketRuntime) error {
 	return db.persistBasketProgress(rt)
 }
 
-func basketRuntimesForSave(strategies []*StrategyState) ([]*basketRuntime, []*basketRuntime) {
-	present := make(map[string]bool, len(strategies))
-	seen := make(map[*basketRuntime]bool)
-	var rts []*basketRuntime
+type basketSave struct {
+	rt    *basketRuntime
+	books map[string]*StrategyState
+	next  map[string]basketLifecycle
+}
+
+func basketSavesFor(strategies []*StrategyState) []*basketSave {
+	byRT := make(map[*basketRuntime]*basketSave)
+	var out []*basketSave
 	for _, s := range strategies {
-		present[s.ID] = true
-		if s.Basket != nil && !seen[s.Basket] {
-			seen[s.Basket] = true
-			rts = append(rts, s.Basket)
+		if s == nil || s.Basket == nil {
+			continue
+		}
+		bs := byRT[s.Basket]
+		if bs == nil {
+			bs = &basketSave{rt: s.Basket, books: make(map[string]*StrategyState)}
+			byRT[s.Basket] = bs
+			out = append(out, bs)
+		}
+		if _, member := s.Basket.Contract.member(s.ID); member {
+			bs.books[s.ID] = s
 		}
 	}
-	sort.Slice(rts, func(i, j int) bool { return rts[i].Contract.BasketID < rts[j].Contract.BasketID })
-	var full, partial []*basketRuntime
-	for _, rt := range rts {
-		all := true
-		for _, id := range rt.memberIDs() {
-			if !present[id] {
-				all = false
-				break
-			}
-		}
-		if all {
-			full = append(full, rt)
-		} else {
-			partial = append(partial, rt)
-		}
-	}
-	return full, partial
+	sort.Slice(out, func(i, j int) bool { return out[i].rt.Contract.BasketID < out[j].rt.Contract.BasketID })
+	return out
 }
 
 func basketQtyEqual(a, b float64) bool {
@@ -1235,7 +1331,11 @@ func inspectBasketRows(db *StateDB, fi *storageFileInspection, ident storageIden
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	rows, err = db.db.Query(`SELECT ` + basketActionColumns + ` FROM basket_member_actions WHERE status IN ('reserved','submitting','unresolved','settling') ORDER BY created_at_ms, action_id`)
+	actionProj, err := db.basketProjection("basket_member_actions", basketActionLifecycleColumns)
+	if err != nil {
+		return nil, err
+	}
+	rows, err = db.db.Query(`SELECT ` + basketActionBaseSelect + `, ` + actionProj + ` FROM basket_member_actions WHERE status IN ('reserved','submitting','unresolved','settling') ORDER BY created_at_ms, action_id`)
 	if err != nil {
 		return nil, fmt.Errorf("read basket actions in the %s state file: %w", fi.Role, err)
 	}
@@ -1254,8 +1354,15 @@ func inspectBasketRows(db *StateDB, fi *storageFileInspection, ident storageIden
 		if !ownedScopes[a.Partition.Scope] || (len(ownedParts) > 0 && !ownedParts[a.Partition.String()]) {
 			rejections = append(rejections, fmt.Sprintf("%s state file: basket action %s belongs to the %s partition but the file owns %s", fi.Role, a.ActionID, partitionLabel(a.Partition), strings.Join(fi.PartitionsOwned, ", ")))
 		}
-		fi.BasketPending = append(fi.BasketPending, fmt.Sprintf("%s action %s: %s %s %s %.10g (%s, client %s)", a.BasketID, a.ActionID, owner, a.Direction, a.OrderSide, a.RequestedQty, a.Status, a.ClientOrderID))
+		fi.BasketPending = append(fi.BasketPending, fmt.Sprintf("%s action %s: %s %s %s %s %.10g (%s, client %s)", a.BasketID, a.ActionID, a.purpose(), owner, a.Direction, a.OrderSide, a.RequestedQty, a.Status, a.ClientOrderID))
 	}
 	rows.Close()
-	return rejections, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	lifecycleRejections, err := inspectBasketLifecycleRows(db, fi, ident, ownedScopes, ownedParts)
+	if err != nil {
+		return nil, err
+	}
+	return append(rejections, lifecycleRejections...), nil
 }
