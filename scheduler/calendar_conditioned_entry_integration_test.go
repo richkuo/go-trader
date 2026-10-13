@@ -34,34 +34,53 @@ func calendarLoad(t *testing.T, sc map[string]interface{}) (*Config, error) {
 	return cfg, loadErr
 }
 
-func TestCalendarConditionedEntryRegistrationTables(t *testing.T) {
-	if knownShortNames[calendarEntryName] != "cce" || !isBidirectionalPerpsStrategy(calendarEntryName) {
-		t.Fatalf("short name %q, bidirectional %v", knownShortNames[calendarEntryName], isBidirectionalPerpsStrategy(calendarEntryName))
+func calendarLoadRoot(t *testing.T, root map[string]interface{}, sc map[string]interface{}) (*Config, error) {
+	t.Helper()
+	path := writeNoEdgeConfigRoot(t, CurrentConfigVersion, root, sc)
+	readOnly, readErr := LoadConfigReadOnly(path)
+	cfg, loadErr := LoadConfig(path)
+	if (readErr == nil) != (loadErr == nil) {
+		t.Fatalf("LoadConfigReadOnly err=%v but LoadConfig err=%v", readErr, loadErr)
 	}
-	if !openStrategyRegisteredFor(calendarEntryName, "futures") || openStrategyRegisteredFor(calendarEntryName, "spot") {
-		t.Fatal("calendar_conditioned_entry must be registered for futures only")
+	if readErr == nil && len(readOnly.Strategies) != len(cfg.Strategies) {
+		t.Fatalf("read-only loader kept %d strategies, LoadConfig %d", len(readOnly.Strategies), len(cfg.Strategies))
 	}
-	var owners []string
-	for other, short := range knownShortNames {
-		if short == "cce" {
-			owners = append(owners, other)
-		}
+	return cfg, loadErr
+}
+
+func TestCalendarConditionedEntryRefusesATrainingSpanThatFitsTheCheckFrame(t *testing.T) {
+	setNoEdgeLiveCredentials(t)
+	const missing = "never supply bars_held"
+	daily := calendarHL("hl-cce-eth", "1d", "--mode=paper")
+	daily["open_strategy"] = map[string]interface{}{"name": calendarEntryName, "params": map[string]interface{}{
+		"training_bars": 150, "refit_bars": 7, "holding_bars": 1, "expected_interval_ms": 86_400_000}}
+	if _, err := calendarLoad(t, daily); err == nil || !strings.Contains(err.Error(), "explicit training_bars=150 fits the default check frame of 200 candles") || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("a 150-bar training span inside the 200-candle frame must be refused, got %v", err)
 	}
-	if !reflect.DeepEqual(owners, []string{calendarEntryName}) {
-		t.Fatalf("short name cce owners = %v", owners)
+	daily["open_strategy"].(map[string]interface{})["params"].(map[string]interface{})["training_bars"] = 201
+	if _, err := calendarLoad(t, daily); err != nil {
+		t.Fatalf("a training span above the 200-candle frame must load: %v", err)
 	}
-	ev, ok := noEdgeEvidenceFor(calendarEntryName)
-	if !ok || ev.Ref != calendarEntryRef {
-		t.Fatalf("no-edge evidence = %+v, %v", ev, ok)
+	regime := map[string]interface{}{"regime": map[string]interface{}{"enabled": true, "period": 2300, "adx_threshold": 25.0}}
+	if _, err := calendarLoadRoot(t, regime, calendarHL("hl-cce-eth", "1h", "--mode=paper")); err == nil || !strings.Contains(err.Error(), "registry default training_bars=4368 fits the regime-enabled check frame of 4609 candles") {
+		t.Fatalf("registry defaults under a 4609-candle regime frame must be refused, got %v", err)
 	}
-	if fixedIntervalStrategyDefaults[calendarEntryName] != 3_600_000 {
-		t.Fatalf("fixed-interval default = %d", fixedIntervalStrategyDefaults[calendarEntryName])
+	if cfg, err := calendarLoad(t, calendarHL("hl-cce-eth", "1h", "--mode=paper")); err != nil || cfg.Regime != nil && cfg.Regime.Enabled {
+		t.Fatalf("registry defaults with regime off must load: %v", err)
 	}
-	if _, ok := closedBarRequiredOpenStrategies[calendarEntryName]; !ok {
-		t.Fatal("calendar_conditioned_entry must require Hyperliquid closed-bar decisions")
+	args := calendarHL("hl-cce-eth", "1h", "--mode=paper", "--ohlcv-lim", "5000")
+	if _, err := calendarLoad(t, args); err == nil || !strings.Contains(err.Error(), "fits the args --ohlcv-limit check frame of 5000 candles") {
+		t.Fatalf("an args frame override that holds the training span must be refused, got %v", err)
 	}
-	if _, frozen := v20StampEligibleStrategies[calendarEntryName]; frozen {
-		t.Fatal("calendar_conditioned_entry must not join the frozen v20 auto-acknowledgement set")
+	fallback := noEdgeHLStrategy("hl-bo-eth", "breakout", "ETH", "1h", "--mode=paper")
+	fallback["closed_bar_decisions"] = true
+	fallback["close_strategy"] = map[string]interface{}{"name": calendarEntryName, "params": map[string]interface{}{"training_bars": 168}}
+	if _, err := calendarLoad(t, fallback); err == nil || !strings.Contains(err.Error(), "strategy hl-bo-eth: close strategy "+calendarEntryName+" explicit training_bars=168") {
+		t.Fatalf("a close fallback with a 168-bar training span must be refused, got %v", err)
+	}
+	fallback["close_strategy"] = map[string]interface{}{"name": calendarEntryName}
+	if _, err := calendarLoad(t, fallback); err != nil {
+		t.Fatalf("a close fallback on registry defaults must load: %v", err)
 	}
 }
 

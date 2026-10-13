@@ -56,7 +56,11 @@ func namedStrategyUses(sc StrategyConfig, match func(string) bool) []fixedInterv
 }
 
 func fixedIntervalParamValue(params map[string]interface{}) (int64, bool, error) {
-	raw, ok := params[fixedIntervalParam]
+	return positiveIntegerParamValue(params, fixedIntervalParam)
+}
+
+func positiveIntegerParamValue(params map[string]interface{}, key string) (int64, bool, error) {
+	raw, ok := params[key]
 	if !ok {
 		return 0, false, nil
 	}

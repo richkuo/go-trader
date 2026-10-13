@@ -100,6 +100,46 @@ def strategy_warmup_bars(strategy_name: str, param_grid: List[dict], param_range
         return max(required_history_bars(p) for p in param_grid)
     return max_indicator_lookback(param_ranges)
 
+HORIZON_BOUND_TIME_STOP_PARAMS = {"calendar_conditioned_entry": "holding_bars"}
+
+
+def strategy_horizon(strategy_name: str, params: dict, default_params: dict):
+    key = HORIZON_BOUND_TIME_STOP_PARAMS.get(strategy_name)
+    if key is None:
+        return None
+    return int(params.get(key, default_params.get(key)))
+
+
+def bind_time_stop_horizons(strategy_name: str, stacks: List[dict], param_grid: List[dict],
+                            default_params: dict) -> List[tuple]:
+    if strategy_name not in HORIZON_BOUND_TIME_STOP_PARAMS:
+        return [(stack, None) for stack in stacks]
+    horizons = sorted({strategy_horizon(strategy_name, p, default_params) for p in param_grid})
+    out = []
+    seen = set()
+    for stack in stacks:
+        refs = stack.get("close_strategies") or []
+        if not any(ref.get("name") == "time_stop" for ref in refs):
+            out.append((stack, None))
+            continue
+        for horizon in horizons:
+            bound = dict(stack)
+            bound["close_strategies"] = [
+                {**ref, "params": {**(ref.get("params") or {}), "max_bars": horizon}}
+                if ref.get("name") == "time_stop" else ref
+                for ref in refs
+            ]
+            key = json.dumps({k: bound.get(k) for k in ("close_strategies", "stop_loss_atr_mult",
+                                                         "trailing_stop_atr_mult")},
+                             sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            bound["label"] = close_stack_label(bound)
+            out.append((bound, horizon))
+    return out
+
+
 _CLOSE_STACK_SPEC_KEYS = {"close", "stop_loss_atr_mult", "trailing_stop_atr_mult"}
 
 
@@ -319,6 +359,9 @@ def walk_forward_optimize(
         }
         fixed["label"] = close_stack_label(fixed)
         stacks = [fixed]
+    bound_stacks = bind_time_stop_horizons(strategy_name, stacks, param_grid, default_params)
+    stacks = [stack for stack, _ in bound_stacks]
+    stack_horizons = [horizon for _, horizon in bound_stacks]
     if direction == "both" and any(
         not stack.get("close_strategies") for stack in stacks
     ):
@@ -366,8 +409,10 @@ def walk_forward_optimize(
         print(f"  Data: {len(df)} candles | Splits: {n_splits} | Train: {train_pct:.0%}")
         print(f"  Parameter combinations: {len(param_grid)}")
         if len(stack_bts) > 1 or close_stack_grid:
+            joint = sum(1 for p in param_grid for h in stack_horizons
+                        if h is None or strategy_horizon(strategy_name, p, default_params) == h)
             print(f"  Close stacks: {len(stack_bts)} "
-                  f"(joint grid: {len(param_grid) * len(stack_bts)} combos)")
+                  f"(joint grid: {joint} combos)")
         print(f"  Warmup bars per fold: {warmup}")
         print(f"  Optimizing: {optimize_metric}")
 
@@ -427,7 +472,10 @@ def walk_forward_optimize(
                 continue
             signals_ext = rejoin_funding_columns(signals_ext, train_ext_df)
             signals_df = signals_ext.iloc[train_boundary_idx:]
-            for stack, stack_bt in stack_bts:
+            horizon = strategy_horizon(strategy_name, params, default_params)
+            for (stack, stack_bt), stack_horizon in zip(stack_bts, stack_horizons):
+                if stack_horizon is not None and stack_horizon != horizon:
+                    continue
                 try:
                     result = stack_bt.run(signals_df, strategy_name=strategy_name,
                                           symbol=symbol, timeframe=timeframe,

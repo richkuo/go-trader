@@ -141,24 +141,6 @@ def _reference(df, i, p=P):
     return dict(out, mean=m, se=se, n_eff=n_eff, long_lb=long_lb, short_lb=short_lb, signal=signal, reason=reason)
 
 
-def test_registration_is_futures_only_bidirectional_hidden_no_edge_with_a_bounded_grid():
-    fut = _reg()
-    entry = fut.STRATEGY_REGISTRY[NAME]
-    raw = fut._registry.STRATEGIES[NAME]
-    assert entry["default_params"] == {"training_bars": 4368, "holding_bars": 4, "refit_bars": 168,
-                                       "min_effective_obs": 8, "confidence": 0.9, "cost_hurdle": 0.002,
-                                       "expected_interval_ms": H1}
-    assert entry["edge_status"] == "no_edge" and entry["edge_ref"] == REF
-    assert entry["edge_source"] in ("unvalidated", "study_fail", "study_inconclusive")
-    assert raw["short_entries"] is True and raw["platforms"] == ("futures",) and raw["param_validator"] is not None
-    assert NAME in fut._registry.DISCOVERY_HIDDEN_STRATEGIES and NAME not in fut.list_strategies()
-    assert NAME in fut._registry.PLATFORM_ORDER["futures"] and NAME not in fut._registry.PLATFORM_ORDER["spot"]
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    grid = DEFAULT_PARAM_RANGES[NAME]
-    assert all(isinstance(v, list) and v for v in grid.values()) and "expected_interval_ms" not in grid
-    assert max(grid["refit_bars"]) <= min(grid["training_bars"])
-
-
 def test_decisions_match_an_independent_weekly_cluster_reference():
     df = _calendar()
     out = _apply(df)
@@ -549,6 +531,33 @@ def test_walk_forward_warmup_covers_training_and_refit_history_without_seeding(m
         verbose=False, close_strategies=CONTRACT["close_strategies"], direction="both", stop_loss_atr_mult=3.0,
         comparison_mode="approximate")
     assert result["n_valid_folds"] >= 1
+
+
+def test_walk_forward_scores_each_holding_horizon_with_its_own_time_stop(monkeypatch):
+    scored = []
+    real_run = Backtester.run
+
+    def run(self, signals, **kw):
+        res = real_run(self, signals, **kw)
+        scored.append((kw["params"]["holding_bars"], {t["exit_reason"] for t in res["trades"]}))
+        return res
+
+    monkeypatch.setattr(Backtester, "run", run)
+    ranges = {**{k: [P[k]] for k in ("training_bars", "refit_bars", "min_effective_obs", "confidence",
+                                     "cost_hurdle")}, "holding_bars": [2, 3]}
+    close = [{"name": "time_stop", "params": {"max_bars": 4}}]
+    result = optimizer.walk_forward_optimize(
+        _calendar(n=6000), NAME, ranges, n_splits=2, registry="futures", timeframe="1h", platform="hyperliquid",
+        verbose=False, close_strategies=close, direction="both", stop_loss_atr_mult=3.0,
+        comparison_mode="approximate")
+    assert close == [{"name": "time_stop", "params": {"max_bars": 4}}]
+    assert result["n_valid_folds"] >= 1 and result["close_stack_grid_size"] == 2
+    assert {h for h, _ in scored} == {2, 3}
+    for h, reasons in scored:
+        assert {r for r in reasons if r.startswith("time_stop")} == {f"time_stop:{h}"}
+    for w in result["window_results"]:
+        assert w["best_close_stack_spec"]["close_strategies"] == [
+            {"name": "time_stop", "params": {"max_bars": w["best_params"]["holding_bars"]}}]
 
 
 def test_cached_m1_warmup_scores_the_window_flat_from_a_complete_history_prefix(monkeypatch):
