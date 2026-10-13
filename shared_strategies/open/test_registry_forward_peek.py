@@ -230,6 +230,7 @@ STRATEGY_INPUTS = {
     "mass_index_reversal": _with_declared_cadence,
     "calendar_conditioned_entry": _with_declared_cadence,
     "stochastic_momentum_index": _with_declared_cadence,
+    "true_strength_index": _with_declared_cadence,
 }
 
 _FIXTURE_CACHE = {}

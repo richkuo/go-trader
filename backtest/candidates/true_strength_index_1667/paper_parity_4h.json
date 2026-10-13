@@ -1,0 +1,59 @@
+{
+  "config_version": 20,
+  "interval_seconds": 14400,
+  "db_file": "true_strength_index_1667_paper_4h.db",
+  "strategies": [
+    {
+      "id": "hl-tsi-btc-4h",
+      "type": "perps",
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": [
+        "true_strength_index",
+        "BTC",
+        "4h",
+        "--mode=paper"
+      ],
+      "open_strategy": {
+        "name": "true_strength_index",
+        "params": {
+          "slow_period": 25,
+          "fast_period": 13,
+          "signal_period": 7,
+          "recursion_length": 180
+        }
+      },
+      "close_strategy": {
+        "name": "tiered_tp_pct",
+        "params": {
+          "tp_tiers": [
+            {
+              "profit_pct": 0.01,
+              "close_fraction": 0.25
+            },
+            {
+              "profit_pct": 0.02,
+              "close_fraction": 0.5
+            },
+            {
+              "profit_pct": 0.03,
+              "close_fraction": 0.75
+            },
+            {
+              "profit_pct": 0.04,
+              "close_fraction": 1.0
+            }
+          ]
+        }
+      },
+      "stop_loss_atr_mult": 1.0,
+      "direction": "both",
+      "closed_bar_decisions": true,
+      "capital": 1000.0,
+      "max_drawdown_pct": 10.0,
+      "leverage": 1.0,
+      "margin_mode": "isolated",
+      "interval_seconds": 14400
+    }
+  ]
+}

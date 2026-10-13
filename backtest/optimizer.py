@@ -831,6 +831,12 @@ DEFAULT_PARAM_RANGES = {
         "oversold": [-50.0, -40.0, -30.0],
         "overbought": [30.0, 40.0, 50.0],
     },
+    "true_strength_index": {
+        "slow_period": [20, 25, 30],
+        "fast_period": [8, 13, 18],
+        "signal_period": [5, 7, 9],
+        "recursion_length": [180, 198],
+    },
     "vortex_trend": {
         "period": [7, 14, 21, 28],
         "min_separation": [0.0, 0.02, 0.05, 0.10],
