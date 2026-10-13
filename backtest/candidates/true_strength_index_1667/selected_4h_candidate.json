@@ -1,0 +1,37 @@
+{
+  "close_strategies": [
+    {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {
+            "close_fraction": 0.25,
+            "profit_pct": 0.01
+          },
+          {
+            "close_fraction": 0.5,
+            "profit_pct": 0.02
+          },
+          {
+            "close_fraction": 0.75,
+            "profit_pct": 0.03
+          },
+          {
+            "close_fraction": 1.0,
+            "profit_pct": 0.04
+          }
+        ]
+      }
+    }
+  ],
+  "direction": "both",
+  "name": "true_strength_index",
+  "params": {
+    "fast_period": 8,
+    "recursion_length": 180,
+    "signal_period": 9,
+    "slow_period": 30
+  },
+  "stop_loss_atr_mult": 1.0,
+  "type": "perps"
+}
