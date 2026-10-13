@@ -831,6 +831,13 @@ DEFAULT_PARAM_RANGES = {
         "oversold": [-50.0, -40.0, -30.0],
         "overbought": [30.0, 40.0, 50.0],
     },
+    "elder_force_pullback": {
+        "force_period": [8, 13],
+        "trend_period": [30, 50, 80],
+        "slope_span": [3, 5, 10],
+        "recursion_length": [150, 180, 197],
+        "volume_weighting": [1],
+    },
     "vortex_trend": {
         "period": [7, 14, 21, 28],
         "min_separation": [0.0, 0.02, 0.05, 0.10],

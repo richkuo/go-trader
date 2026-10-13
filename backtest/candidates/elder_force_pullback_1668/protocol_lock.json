@@ -1,0 +1,5 @@
+{
+ "candidate_seed_sha256": "291c95645365b691ee9ff0996e0132653708e1020ff2b5bf17abe4e12b44a09c",
+ "manifest_sha256": "e136f01e4cec15469972e7377252f7b1319924169e939dd9aa60c20a05a64962",
+ "statement": "recorded before any window was scored; run refuses when either digest differs"
+}

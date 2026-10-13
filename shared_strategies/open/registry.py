@@ -68,6 +68,7 @@ from camarilla_pivot_reversal import camarilla_pivot_reversal_core, validate_cam
 from mass_index_reversal import mass_index_reversal_core, mir_param_validator
 from calendar_conditioned_entry import calendar_conditioned_entry_core, calendar_param_validator
 from stochastic_momentum_index import smi_param_validator, stochastic_momentum_index_core
+from elder_force_pullback import efp_param_validator, elder_force_pullback_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -2119,6 +2120,40 @@ def calendar_conditioned_entry_strategy(df: pd.DataFrame, training_bars: int = 4
 
 
 @register(
+    "elder_force_pullback",
+    "RESEARCH, no-edge (#1668) \u2014 Elder Force Index pullback: raw force is the close minus the previous close, multiplied by the candle volume (volume_weighting 1) or by one (volume_weighting 0, the ablation). The smoothed force at every bar is one exponential recursion with weight 2 / (force_period + 1) over exactly recursion_length raw-force values ending at that bar, seeded with the oldest of them, so each value reads only the trailing recursion_length + 1 closes. Uptrend: close strictly above the trend_period close SMA and that SMA strictly above its value slope_span bars earlier; downtrend reverses both. Long when the smoothed force crosses strictly from below zero on the preceding candle to above zero on the current candle while the uptrend holds on both candles; short is the mirror in a downtrend. Exact zero never triggers, and both crossing candles need positive supplied volume in both variants. recursion_length must be at least 10 x force_period and at most 197, and a decision needs max(recursion_length + 2, trend_period + slope_span + 1) clean rows (at most 199) with declared bar cadence; bad candles, timestamp defects, cadence gaps and derived overflow hold with a reason. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {
+        "force_period": 13,
+        "trend_period": 50,
+        "slope_span": 5,
+        "recursion_length": 150,
+        "volume_weighting": 1,
+    },
+    platforms=("futures",),
+    constraints=[
+        "force_period >= 2",
+        "trend_period >= 2",
+        "slope_span >= 1",
+        "recursion_length >= 20",
+        "recursion_length <= 197",
+        "volume_weighting >= 0",
+        "volume_weighting <= 1",
+    ],
+    edge_status="no_edge",
+    edge_source="unvalidated",
+    edge_ref="backtest/candidates/elder_force_pullback_1668/REPORT.md",
+    short_entries=True,
+    param_validator=efp_param_validator,
+)
+def elder_force_pullback_strategy(df: pd.DataFrame, force_period: int = 13, trend_period: int = 50,
+                                  slope_span: int = 5, recursion_length: int = 150,
+                                  volume_weighting: int = 1) -> pd.DataFrame:
+    return elder_force_pullback_core(
+        df, force_period=force_period, trend_period=trend_period, slope_span=slope_span,
+        recursion_length=recursion_length, volume_weighting=volume_weighting)
+
+
+@register(
     "fisher_reversal",
     "RESEARCH, no-edge (#1646) \u2014 Fisher Transform reversal: the candle midpoint is normalized into [-1, 1] against its inclusive lookback-bar range, smoothed by x = 0.33 * normalized + 0.67 * previous x (clamped 1e-6 inside +/-1) and transformed by F = 0.5 * ln((1 + x) / (1 - x)) + 0.5 * previous F, both recurrences restarted from zero over exactly 64 bars for every timestamp (lookback + 65 bars of history); long when F crosses above its one-bar-lagged trigger after the trigger is below -extreme, short is the mirror above +extreme. Bad, gapped or flat input holds the entry. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"lookback": 9, "extreme": 1.5},
@@ -2550,6 +2585,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "mass_index_reversal",
         "calendar_conditioned_entry",
         "stochastic_momentum_index",
+        "elder_force_pullback",
         "hold",
     ],
 }
