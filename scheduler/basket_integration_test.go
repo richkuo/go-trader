@@ -1171,3 +1171,30 @@ func TestBasketSaveBlockedDeadlineWakesAtTheRetryCadence(t *testing.T) {
 		t.Fatalf("after saves recover inside the window the deadline must rank, got %+v", rb)
 	}
 }
+
+func TestBasketFailedReservationWakesAtTheRetryCadence(t *testing.T) {
+	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+		basketTestBasket(root)["max_transition_net_usd"] = 1100
+	})
+	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), nil)
+	deadline := basketTestDeadline()
+	snap := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+	prev := storeCommitHook
+	storeCommitHook = func(storageRole) error { return errors.New("injected commit failure") }
+	t.Cleanup(func() { storeCommitHook = prev })
+	env.cycle(deadline.Add(5*time.Second), deadline, snap, false)
+	storeCommitHook = prev
+	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb != nil {
+		t.Fatalf("a failed reservation must leave no deadline record, got %+v", rb)
+	}
+	if _, ok := env.bc.dueDeadlines(deadline.Add(6 * time.Second))["xs-test"]; !ok {
+		t.Fatal("the deadline must stay due after a failed reservation")
+	}
+	if d := env.bc.wakeDelay(deadline.Add(6 * time.Second)); d < 30*time.Second {
+		t.Fatalf("a failed reservation must not force a fast wake, got %s", d)
+	}
+	env.cycle(deadline.Add(5*time.Second+basketHeldWakeRetry), deadline, snap, true)
+	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
+		t.Fatalf("after the file recovers inside the window the deadline must rank, got %+v", rb)
+	}
+}

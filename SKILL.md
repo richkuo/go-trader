@@ -1681,7 +1681,7 @@ A live-shaped transport (used only by controlled integration tests) also reserve
 An unknown outcome leaves the action unresolved and holds every other elective order until a query by client order id resolves it; a rejected leg freezes increases and starts reduce-only recovery.
 A stop, take-profit, kill switch, liquidation or operator close that changes a member book is recorded as a protective exception (never a bounded success): increases freeze, the breach is recorded and alerted, and reduce-only recovery restores the net bound.
 The coordinator step holds the state lock `mu` for every read and write of its runtime records and every basket row write, so a full save from another goroutine never sees them change; it releases `mu` only around the shared-feed snapshot fetch, the `--once` ranker wait and each venue submit or query, and it sends alerts and trade alerts after it unlocks.
-A due deadline that a save failure, a settlement that is not durable yet or an unresolved action keeps from reserving retries once a minute, never every second.
+A due deadline that a save failure, a failed reservation write, a settlement that is not durable yet or an unresolved action keeps from reserving retries once a minute, never every second.
 At startup the coordinator refuses a changed contract while a rebalance or member position is open, refuses a removed basket that still holds recovery evidence, and resolves an interrupted deadline as a hold.
 
 ## Closed-Bar Decisions

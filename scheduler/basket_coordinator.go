@@ -608,6 +608,7 @@ func (bc *basketCoordinator) maybeStartDeadline(rt *basketRuntime, in basketCycl
 			return
 		}
 		bc.logf(rt, "could not reserve deadline %s: %v; retrying within the evaluation window", formatClosedBarMs(dMs), err)
+		rt.wakeRetryAt = now.Add(basketHeldWakeRetry)
 		return
 	}
 	rt.Rebalances[dMs] = rb
