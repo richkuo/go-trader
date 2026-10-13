@@ -12,7 +12,8 @@ import pandas as pd
 
 from registry_loader import load_registry
 from backtester import (STOP_OWNERS_NEEDING_ATR, Backtester, CloseCapabilityError,
-                        aggregate_close_validations, charge_funding_rejected)
+                        _close_fraction_columns, aggregate_close_validations,
+                        charge_funding_rejected)
 from atr import ensure_atr_indicator
 
 _SHARED_TOOLS = os.path.join(os.path.dirname(__file__), "..", "shared_tools")
@@ -73,6 +74,50 @@ def warmup_exit_long_entry(warmup_with_signal: pd.DataFrame,
                 seed["entry_atr"] = atr_val
         return seed
     return None
+
+
+def canonical_short_entries(reg, strategy_name: str) -> bool:
+    strategies = getattr(getattr(reg, "_registry", None), "STRATEGIES", None)
+    if not isinstance(strategies, dict):
+        raise ValueError(
+            f"{strategy_name}: the loaded registry exposes no canonical STRATEGIES, so "
+            f"walk-forward cannot read short_entries to decide warm-up seeding")
+    entry = strategies.get(strategy_name)
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f"{strategy_name}: not a canonical registered strategy, so walk-forward "
+            f"cannot read short_entries to decide warm-up seeding")
+    flag = entry.get("short_entries")
+    if not isinstance(flag, bool):
+        raise ValueError(
+            f"{strategy_name}: canonical short_entries must be True or False, got {flag!r}; "
+            f"walk-forward refuses to guess warm-up seeding")
+    return flag
+
+
+def scored_engine_can_open_short(engine: Backtester, scored: pd.DataFrame) -> bool:
+    policy = engine.regime_directional_policy
+    if policy and any(entry.get("direction") in ("short", "both") for entry in policy.values()):
+        return True
+    has_actions = "open_action" in scored.columns
+    if not (has_actions or _close_fraction_columns(scored) or engine.close_strategies):
+        return engine.direction == "short"
+    if has_actions and policy is None:
+        return True
+    return engine.direction != "long"
+
+
+def warmup_long_seed(engine: Backtester, prefix: pd.DataFrame, scored: pd.DataFrame,
+                     short_entries: bool, cache: Optional[dict] = None) -> Optional[dict]:
+    if len(prefix) == 0:
+        return None
+    if short_entries and scored_engine_can_open_short(engine, scored):
+        return None
+    if cache is None:
+        return warmup_exit_long_entry(prefix, engine.slippage_pct)
+    if engine.slippage_pct not in cache:
+        cache[engine.slippage_pct] = warmup_exit_long_entry(prefix, engine.slippage_pct)
+    return cache[engine.slippage_pct]
 
 
 def max_indicator_lookback(param_ranges: Dict[str, list]) -> int:
@@ -361,7 +406,8 @@ def walk_forward_optimize(
         feature_labels = feature_label_kwargs(regime_label_plan)
         if regime_windows_spec is None:
             regime_windows_spec = regime_label_plan.get("windows_spec")
-    if direction == "short":
+    normalized_direction = str(direction).strip().lower() if direction else None
+    if normalized_direction == "short":
         raise ValueError(
             "direction='short' is not supported by walk-forward optimization "
             "yet — the warmup seeder (warmup_exit_long_entry) is long-only "
@@ -372,6 +418,7 @@ def walk_forward_optimize(
 
     reg = load_registry(registry)
     apply_strategy = reg.apply_strategy
+    short_entries = canonical_short_entries(reg, strategy_name)
 
     default_params = reg.STRATEGY_REGISTRY[strategy_name]["default_params"] \
         if strategy_name in reg.STRATEGY_REGISTRY else {}
@@ -393,7 +440,7 @@ def walk_forward_optimize(
     bound_stacks = bind_time_stop_horizons(strategy_name, stacks, param_grid, default_params)
     stacks = [stack for stack, _ in bound_stacks]
     stack_horizons = [horizon for _, horizon in bound_stacks]
-    if direction == "both" and any(
+    if normalized_direction == "both" and any(
         not stack.get("close_strategies") for stack in stacks
     ):
         raise ValueError(
@@ -419,7 +466,6 @@ def walk_forward_optimize(
         ))
         for stack in stacks
     ]
-    bt = stack_bts[0][1]
     stack_validations = [
         {"label": stack["label"], "close_validation": stack_bt._close_validation.to_dict()}
         for stack, stack_bt in stack_bts
@@ -491,10 +537,8 @@ def walk_forward_optimize(
                     signals_ext = overlay_regime_columns(train_ext_df, signals_ext)
                 if uses_exits:
                     signals_ext = ensure_atr_indicator(signals_ext)
-                signals_df = signals_ext.iloc[train_boundary_idx:]
-                train_seed = warmup_exit_long_entry(
-                    signals_ext.iloc[:train_boundary_idx], bt.slippage_pct,
-                ) if train_boundary_idx and seed_warmup else None
+                train_prefix = signals_ext.iloc[:train_boundary_idx] if seed_warmup \
+                    else signals_ext.iloc[:0]
             except CloseCapabilityError:
                 raise
             except _EXPECTED_FOLD_ERRORS as e:
@@ -504,10 +548,13 @@ def walk_forward_optimize(
             signals_ext = rejoin_funding_columns(signals_ext, train_ext_df)
             signals_df = signals_ext.iloc[train_boundary_idx:]
             horizon = strategy_horizon(strategy_name, params, default_params)
+            train_seeds = {}
             for (stack, stack_bt), stack_horizon in zip(stack_bts, stack_horizons):
                 if stack_horizon is not None and stack_horizon != horizon:
                     continue
                 try:
+                    train_seed = warmup_long_seed(stack_bt, train_prefix, signals_df,
+                                                  short_entries, train_seeds)
                     result = stack_bt.run(signals_df, strategy_name=strategy_name,
                                           symbol=symbol, timeframe=timeframe,
                                           params=params, save=False,
@@ -545,9 +592,9 @@ def walk_forward_optimize(
                 test_signals_ext = ensure_atr_indicator(test_signals_ext)
             test_signals_ext = rejoin_funding_columns(test_signals_ext, test_ext_df)
             test_signals = test_signals_ext.iloc[test_boundary_idx:]
-            test_seed = warmup_exit_long_entry(
-                test_signals_ext.iloc[:test_boundary_idx], bt.slippage_pct,
-            ) if test_boundary_idx and seed_warmup else None
+            test_prefix = test_signals_ext.iloc[:test_boundary_idx] if seed_warmup \
+                else test_signals_ext.iloc[:0]
+            test_seed = warmup_long_seed(best_bt, test_prefix, test_signals, short_entries)
             test_result = best_bt.run(test_signals, strategy_name=strategy_name,
                                       symbol=symbol, timeframe=timeframe,
                                       params=best_params, save=False,
