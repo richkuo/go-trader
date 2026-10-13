@@ -2709,13 +2709,13 @@ Every input row and every evaluator value of the selected candidate parameters, 
 - `backtest/candidates/klinger_divergence_1662/run_study.py` `ff480675ddf7cf5a27242dba724bf3a9f43fecbbcc2d8912947df13dd247c824`
 - `backtest/eval_windows.py` `b32d5fbca2b241c25e014890347866f4533c0640318e4ddf34485f0b87fb3f9e`
 - `backtest/offline_manifest.py` `09cf40f4847afa0226b54da3ef495059112470f8e9479cf2b66e7c9c274918a8`
-- `backtest/optimizer.py` `28c72e08fed9711e6e41f0c45d7965c039922ef5ae387a47028fb2bad6e79af4`
+- `backtest/optimizer.py` `b7a47e6312d92d8bfb5f1070de497f385aa746db9817c43fb6bd59588c77664d`
 - `backtest/parity_diff.py` `28b9f1bc415838c24f232febe9ff91903c16c74d163e868a63ac721e9439c549`
-- `shared_scripts/check_hyperliquid.py` `dd8635a80478a6c4e16eb757d8c556ff5e9105b28df58baae4217bcd3ba15747`
+- `shared_scripts/check_hyperliquid.py` `eb65939755a56d3790351cfaee783ff19c1a8e1cfa3cf718afe28527d5af3669`
 - `shared_strategies/close/tiered_tp_pct.py` `f6a480628c37f0da329336aa5efaeacd3dced5fe73622ccfc4ee47a16e07daa6`
 - `shared_strategies/open/klinger_divergence.py` `7831b96543838bf743e4f20b5624f403b88cc261f0f0031769b1394eadf09c89`
 - `shared_strategies/open/on_balance_volume.py` `1f4864c9ceedf11d9ffd8079561bb06aabc4a65321267864297bf417d43bed07`
-- `shared_strategies/open/registry.py` `cfc901ecbcb11c7a390bc7276af864a6647f464c23b37dd4990339363cdacd7b`
+- `shared_strategies/open/registry.py` `b8968c1b7b7748569ef0a678f1d12804af4aced446c1399571f118f985be39a2`
 - `shared_tools/closed_bar.py` `9df5675bcb3ca29eb51803509744e077b8205a80a73e6ead58aafac277daf3d9`
 - `shared_tools/strategy_composition.py` `acfd77e42b25e42761abb31df031df1794c907e907e496d36742d5361a203214`
 
