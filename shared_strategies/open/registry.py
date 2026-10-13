@@ -2135,7 +2135,7 @@ def calendar_conditioned_entry_strategy(df: pd.DataFrame, training_bars: int = 4
         "recursion_length <= 198",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_fail",
     edge_ref="backtest/candidates/true_strength_index_1667/REPORT.md",
     short_entries=True,
     param_validator=tsi_param_validator,
