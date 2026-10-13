@@ -1023,11 +1023,36 @@ func TestBasketUnpricedHeldMemberHoldsAndAlerts(t *testing.T) {
 func TestBasketRankerEligibilityMustMatchTheDeclaredListing(t *testing.T) {
 	deadline := basketTestDeadline()
 	cfg := basketDelistedSOLConfig(t, deadline)
-	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), nil)
+	venue := newScriptedBasketVenue(false)
+	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), venue.factory())
 	env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
 	rb := env.rt().Rebalances[deadline.UnixMilli()]
-	if rb == nil || rb.Status != basketRebalanceHeld || !strings.Contains(rb.HoldReason, "declared listing evidence") {
+	if rb == nil || rb.Status != basketRebalanceHeld {
 		t.Fatalf("a ranker that reports a declared-delisted member as eligible must hold the deadline, got %+v", rb)
+	}
+	if rb.TargetsJSON != "" {
+		t.Fatalf("a refused eligibility record must freeze no targets, got %s", rb.TargetsJSON)
+	}
+	if len(venue.submits) != 0 {
+		t.Fatalf("no member order may be sent after the refusal: %+v", venue.submits)
+	}
+	for _, m := range basketTestMembers {
+		if q := env.signedQty(m.ID, m.Coin); q != 0 {
+			t.Fatalf("%s traded %.10g after the refusal", m.ID, q)
+		}
+	}
+	if n := env.dbCount(`SELECT COUNT(*) FROM basket_rebalances WHERE status = 'held' AND targets_json = ''`); n != 1 {
+		t.Fatalf("held rows without targets %d, want 1", n)
+	}
+	if n := env.dbCount(`SELECT COUNT(*) FROM basket_member_actions`); n != 0 {
+		t.Fatalf("member actions %d, want 0", n)
+	}
+	env.cycle(deadline.Add(2*time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
+	if len(venue.submits) != 0 || env.rt().Rebalances[deadline.UnixMilli()].Status != basketRebalanceHeld {
+		t.Fatal("the held deadline must never be reranked or traded on a later cycle")
+	}
+	if !strings.Contains(rb.HoldReason, "declared listing evidence") {
+		t.Fatalf("the hold must name the listing disagreement, got %q", rb.HoldReason)
 	}
 }
 
