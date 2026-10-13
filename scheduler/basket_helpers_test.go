@@ -439,3 +439,45 @@ func basketReachableWithin(t *testing.T, label string, before basketExposure, a 
 		}
 	}
 }
+
+func basketListingTestRanker(weights map[string]float64) basketRankRunner {
+	return func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
+		var req basketRankRequest
+		if err := json.Unmarshal(stdin, &req); err != nil {
+			return nil, nil, err
+		}
+		res := basketRankResult{
+			V: 1, BasketID: req.BasketID, DeadlineMs: req.DeadlineMs,
+			SnapshotID: req.Expected.SnapshotID, Generation: req.Expected.Generation, CutoffMs: req.Expected.CutoffMs,
+			Status:      basketRankStatusTargets,
+			Eligibility: map[string]basketRankEligibility{},
+			Scores:      map[string]float64{}, Weights: map[string]float64{}, Exclusions: map[string]string{},
+			InputFingerprint: "fp-listing-test",
+		}
+		contract := basketContract{Listings: req.Listings, MinHistoryBars: req.MinHistoryBars}
+		for _, m := range req.Members {
+			member := basketContractMember{Coin: m.Symbol, Timeframe: m.Timeframe, IntervalMs: 3_600_000}
+			if why := basketListingExclusion(contract, member, req.DeadlineMs); why != "" {
+				res.Eligibility[m.Symbol] = basketRankEligibility{Symbol: m.Symbol, Status: "excluded", Reason: why}
+				continue
+			}
+			px, why := basketDeadlineClose(req.Market, member, req.DeadlineMs)
+			if why != "" {
+				res.Status, res.HoldReason = basketRankStatusHold, why
+				res.Weights, res.Scores = nil, nil
+				break
+			}
+			res.Eligibility[m.Symbol] = basketRankEligibility{Symbol: m.Symbol, Status: "eligible", ClosedBars: req.LookbackBars, Mark: px}
+			res.Weights[m.Symbol] = weights[m.Symbol]
+			res.Scores[m.Symbol] = weights[m.Symbol]
+		}
+		out, err := json.Marshal(res)
+		return out, nil, err
+	}
+}
+
+func basketMarksWithout(coin string) map[string]float64 {
+	out := basketTestMarks()
+	delete(out, coin)
+	return out
+}

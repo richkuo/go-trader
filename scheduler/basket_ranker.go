@@ -247,6 +247,12 @@ func validateBasketRankResult(rt *basketRuntime, job *basketRankJob, res *basket
 	if len(res.Eligibility) != len(coins) {
 		return "", fmt.Errorf("the ranker eligibility record covers %d of %d members", len(res.Eligibility), len(coins))
 	}
+	for _, m := range rt.Contract.Members {
+		declared := basketListingExclusion(rt.Contract, m, job.DeadlineMs)
+		if ev := res.Eligibility[m.Coin]; (declared != "") != (ev.Status == "excluded") {
+			return "", fmt.Errorf("the ranker reported %s as %s, but the declared listing evidence at the deadline says %q", m.Coin, ev.Status, declared)
+		}
+	}
 	if len(eligible) < rt.Contract.MinEligibleMembers {
 		return fmt.Sprintf("the eligible population %d is below the minimum %d", len(eligible), rt.Contract.MinEligibleMembers), nil
 	}
@@ -404,12 +410,32 @@ func basketRankEvidenceJSON(res *basketRankResult) string {
 	return string(b)
 }
 
-func basketPayloadSpecs(rt *basketRuntime) ([]marketPayloadFrameSpec, []string) {
+func basketListingExclusion(c basketContract, m basketContractMember, deadlineMs int64) string {
+	fact, ok := c.Listings[m.Coin]
+	if !ok || fact.KnownAtMs > deadlineMs || m.IntervalMs <= 0 {
+		return ""
+	}
+	if fact.ListedAtMs > deadlineMs {
+		return "not listed at the deadline"
+	}
+	if fact.DelistedAtMs != 0 && fact.DelistedAtMs <= deadlineMs {
+		return "delisted at or before the deadline"
+	}
+	if bars := (deadlineMs - fact.ListedAtMs) / m.IntervalMs; bars < int64(c.MinHistoryBars) {
+		return fmt.Sprintf("listed %d bars before the deadline, needs %d", bars, c.MinHistoryBars)
+	}
+	return ""
+}
+
+func basketPayloadSpecs(rt *basketRuntime, deadlineMs int64) ([]marketPayloadFrameSpec, []string) {
 	specs := make([]marketPayloadFrameSpec, 0, len(rt.Contract.Members))
 	coins := make([]string, 0, len(rt.Contract.Members))
 	for _, m := range rt.Contract.Members {
-		specs = append(specs, marketPayloadFrameSpec{Key: feedKeyFor(m.Coin, m.Timeframe), Required: basketFrameLookback(rt.Contract.LookbackBars), Timing: true})
 		coins = append(coins, m.Coin)
+		if basketListingExclusion(rt.Contract, m, deadlineMs) != "" {
+			continue
+		}
+		specs = append(specs, marketPayloadFrameSpec{Key: feedKeyFor(m.Coin, m.Timeframe), Required: basketFrameLookback(rt.Contract.LookbackBars), Timing: true})
 	}
 	sort.Strings(coins)
 	return specs, coins

@@ -124,6 +124,26 @@ def member_evidence(req, member, cutoff):
         interval = interval_ms_for(tf)
     except ClosedBarHold as e:
         raise RankerHold(f"{sym}: {e.reason}")
+    fact = req["listings"].get(sym)
+    if not isinstance(fact, dict):
+        raise RankerHold(f"{sym}: no listing evidence is declared")
+    try:
+        listed = int(fact["listed_at_ms"])
+        known = int(fact["known_at_ms"])
+        delisted = int(fact.get("delisted_at_ms") or 0)
+    except (KeyError, TypeError, ValueError):
+        raise RankerHold(f"{sym}: the listing evidence is unreadable")
+    if known > deadline:
+        raise RankerHold(f"{sym}: the listing evidence was not known at the deadline")
+    listing = {"symbol": sym, "listed_at_ms": listed, "known_at_ms": known}
+    if listed > deadline:
+        return {**listing, "status": "excluded", "reason": "not listed at the deadline"}, None
+    if delisted and delisted <= deadline:
+        return {**listing, "status": "excluded", "reason": "delisted at or before the deadline"}, None
+    bars_since_listing = (deadline - listed) // interval
+    if bars_since_listing < req["min_history_bars"]:
+        return {**listing, "status": "excluded",
+                "reason": f"listed {bars_since_listing} bars before the deadline, needs {req['min_history_bars']}"}, None
     try:
         frame = market_frame(market, sym, tf, MarketPayloadError)
     except MarketPayloadError as e:
@@ -142,39 +162,17 @@ def member_evidence(req, member, cutoff):
     for i in range(1, len(selection.timings)):
         if selection.timings[i].open_ms - selection.timings[i - 1].open_ms != interval:
             raise RankerHold(f"{sym}: the closed history has a gap before the bar opened {selection.timings[i].open_ms}")
-    mark = float(selection.rows[-1][4])
-    fact = req["listings"].get(sym)
-    if not isinstance(fact, dict):
-        raise RankerHold(f"{sym}: no listing evidence is declared")
-    try:
-        listed = int(fact["listed_at_ms"])
-        known = int(fact["known_at_ms"])
-        delisted = int(fact.get("delisted_at_ms") or 0)
-    except (KeyError, TypeError, ValueError):
-        raise RankerHold(f"{sym}: the listing evidence is unreadable")
-    if known > deadline:
-        raise RankerHold(f"{sym}: the listing evidence was not known at the deadline")
+    needed = min(req["lookback_bars"], bars_since_listing)
+    if len(selection.rows) < needed:
+        raise RankerHold(f"{sym}: the sealed frame carries {len(selection.rows)} closed bars, needs {needed}")
     record = {
-        "symbol": sym,
+        **listing,
         "closed_bars": len(selection.rows),
         "boundary_ms": int(selection.boundary_ms),
         "bar_open_ms": int(selection.bar_open_ms),
         "input_sha256": selection.input_sha256,
-        "mark": mark,
-        "listed_at_ms": listed,
-        "known_at_ms": known,
+        "mark": float(selection.rows[-1][4]),
     }
-    if listed > deadline:
-        return {**record, "status": "excluded", "reason": "not listed at the deadline"}, None
-    if delisted and delisted <= deadline:
-        return {**record, "status": "excluded", "reason": "delisted at or before the deadline"}, None
-    bars_since_listing = (deadline - listed) // interval
-    if bars_since_listing < req["min_history_bars"]:
-        return {**record, "status": "excluded",
-                "reason": f"listed {bars_since_listing} bars before the deadline, needs {req['min_history_bars']}"}, None
-    needed = min(req["lookback_bars"], bars_since_listing)
-    if len(selection.rows) < needed:
-        raise RankerHold(f"{sym}: the sealed frame carries {len(selection.rows)} closed bars, needs {needed}")
     return {**record, "status": "eligible", "reason": ""}, selection
 
 

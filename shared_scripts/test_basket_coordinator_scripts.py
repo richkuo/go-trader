@@ -149,6 +149,36 @@ def test_ranker_records_known_ineligibility_as_an_exclusion():
     assert set(out["weights"]) == {"BTC", "ETH"}
 
 
+@pytest.mark.parametrize("listing, reason", [
+    ({"listed_at_ms": 1, "known_at_ms": 1, "delisted_at_ms": DEADLINE - H}, "delisted at or before the deadline"),
+    ({"listed_at_ms": DEADLINE + H, "known_at_ms": DEADLINE - H}, "not listed at the deadline"),
+    ({"listed_at_ms": DEADLINE - 5 * H, "known_at_ms": DEADLINE - 5 * H}, "listed 5 bars before the deadline, needs 24"),
+])
+def test_listing_excluded_member_needs_no_frame_or_mark(listing, reason):
+    listings = {**_request()["listings"], "SOL": listing}
+    market = _market(coins=("AVAX", "BTC", "ETH"))
+    weights = {"BTC": 0.25, "ETH": -0.15, "AVAX": -0.1}
+    code, out = _rank(_request(listings=listings, market=market, params={"weights": weights}))
+    assert code == 0, out
+    assert out["status"] == "targets", out
+    assert out["eligibility"]["SOL"]["status"] == "excluded"
+    assert out["eligibility"]["SOL"]["reason"] == reason
+    assert "closed_bars" not in out["eligibility"]["SOL"]
+    assert set(out["weights"]) == {"AVAX", "BTC", "ETH"}
+    for sym in ("AVAX", "BTC", "ETH"):
+        assert out["eligibility"][sym]["status"] == "eligible"
+
+
+def test_listing_excluded_member_ignores_a_malformed_frame():
+    listings = {**_request()["listings"], "SOL": {"listed_at_ms": 1, "known_at_ms": 1, "delisted_at_ms": DEADLINE - H}}
+    market = _market()
+    market["frames"]["SOL|1h"]["stale"] = True
+    code, out = _rank(_request(listings=listings, market=market, params={"weights": {"BTC": 0.25, "ETH": -0.15, "AVAX": -0.1}}))
+    assert code == 0, out
+    assert out["status"] == "targets", out
+    assert out["eligibility"]["SOL"]["status"] == "excluded"
+
+
 @pytest.mark.parametrize("raw, reason", [
     ({"scores": {"BTC": 1}, "weights": {"BTC": 0.5}}, "covers"),
     ({"scores": {s: 1 for s in MARKS}, "weights": {**WEIGHTS, "DOGE": 0.1}}, "covers"),

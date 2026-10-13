@@ -907,3 +907,155 @@ func TestBasketLiveRefusalHoldsAtDispatchAndOperatorRoutes(t *testing.T) {
 		t.Fatalf("resolve-entry must refuse a basket member, got %q", out.Message)
 	}
 }
+
+func basketDelistedSOLConfig(t *testing.T, deadline time.Time) *Config {
+	t.Helper()
+	delisted := deadline.Add(-time.Hour).UTC().Format(time.RFC3339)
+	return loadBasketTestConfig(t, func(root map[string]interface{}) {
+		b := basketTestBasket(root)
+		b["max_transition_net_usd"] = 1100
+		b["eligibility"].(map[string]interface{})["listings"].(map[string]interface{})["SOL"] = map[string]interface{}{
+			"listed_at": "2020-01-01T00:00:00Z", "known_at": delisted, "delisted_at": delisted,
+		}
+	})
+}
+
+var basketNoSOLWeights = map[string]float64{"BTC": 0.25, "ETH": 0.25, "AVAX": -0.25}
+
+func TestBasketListingExcludedMemberNeedsNoFrameOrMark(t *testing.T) {
+	deadline := basketTestDeadline()
+	cfg := basketDelistedSOLConfig(t, deadline)
+	venue := newScriptedBasketVenue(false)
+	env := newBasketTestEnv(t, cfg, basketListingTestRanker(basketNoSOLWeights), venue.factory())
+	rt := env.rt()
+	sol, _ := rt.Contract.memberByCoin("SOL")
+	if why := basketListingExclusion(rt.Contract, sol, deadline.UnixMilli()); why != "delisted at or before the deadline" {
+		t.Fatalf("the declared delisting must exclude SOL at the deadline, got %q", why)
+	}
+	reqs := env.bc.cycleRequirements(map[string]time.Time{"xs-test": deadline}, feedRequirements{})
+	for _, k := range reqs.Keys {
+		if k.Key.Symbol == "SOL" {
+			t.Fatalf("the cycle requirements still request the excluded SOL frame: %+v", reqs.Keys)
+		}
+	}
+	snap := basketTestSnapshot(deadline, 60, basketMarksWithout("SOL"), 1)
+	env.cycle(deadline.Add(time.Minute), deadline, snap, true)
+	rb := rt.Rebalances[deadline.UnixMilli()]
+	if rb == nil || rb.Status != basketRebalanceCompleted {
+		t.Fatalf("a delisted, flat SOL with no frame and no mark must not block the rebalance: %+v", rb)
+	}
+	targets, err := rb.Targets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := targets.Members["hl-bsk-sol"].Excluded; got != "delisted at or before the deadline" {
+		t.Fatalf("the SOL exclusion reason is %q", got)
+	}
+	for _, m := range basketTestMembers {
+		got := env.signedQty(m.ID, m.Coin)
+		if m.Coin == "SOL" {
+			if got != 0 {
+				t.Fatalf("the excluded SOL member traded %.10g", got)
+			}
+			continue
+		}
+		if got == 0 || !basketQtyEqual(got, targets.Members[m.ID].TargetQty) {
+			t.Fatalf("%s holds %.10g, target %.10g", m.ID, got, targets.Members[m.ID].TargetQty)
+		}
+	}
+
+	env.mu.Lock()
+	if !recordPerpsStopLossClose(env.state.Strategies["hl-bsk-avax"], "AVAX", 31.5, "stop_loss", &StrategyLogger{stratID: "hl-bsk-avax", writer: os.Stdout}) {
+		env.mu.Unlock()
+		t.Fatal("could not record the protective AVAX stop close")
+	}
+	env.mu.Unlock()
+	submits := len(venue.submits)
+	env.cycle(deadline.Add(2*time.Minute), deadline, snap, true)
+	if len(rb.Outcome.Exceptions) != 1 || !strings.Contains(rb.Outcome.Exceptions[0].Breach, "net") {
+		t.Fatalf("closing the AVAX short breaches the $1100 net bound, and the breach must be known without a SOL mark: %+v", rb.Outcome.Exceptions)
+	}
+	reductions := 0
+	for _, a := range venue.submits[submits:] {
+		if a.Direction != basketDirectionReduce || a.Symbol == "SOL" {
+			t.Fatalf("reduce-only recovery may only reduce the priced members, got %+v", a)
+		}
+		reductions++
+	}
+	if reductions == 0 {
+		t.Fatal("reduce-only recovery sent no reduction while SOL was flat and unpriced")
+	}
+	exp := basketExposure{Qty: map[string]float64{}, Mark: basketMarksWithout("SOL")}
+	for _, m := range basketTestMembers {
+		exp.Qty[m.Coin] = env.signedQty(m.ID, m.Coin)
+	}
+	if v := exp.reading().violations(basketBoundsFor(rt.Contract)); len(v) > 0 {
+		t.Fatalf("reduce-only recovery left a breach: %v", v)
+	}
+	if rb.Outcome.RecoveryOpen {
+		t.Fatal("recovery should close once the net bound holds")
+	}
+}
+
+func TestBasketUnpricedHeldMemberHoldsAndAlerts(t *testing.T) {
+	deadline := basketTestDeadline()
+	cfg := basketDelistedSOLConfig(t, deadline)
+	venue := newScriptedBasketVenue(false)
+	env := newBasketTestEnv(t, cfg, basketListingTestRanker(basketNoSOLWeights), venue.factory())
+	env.mu.Lock()
+	env.state.Strategies["hl-bsk-sol"].Positions["SOL"] = &Position{Symbol: "SOL", Quantity: 2, AvgCost: 150, Side: "long", Multiplier: 1}
+	env.mu.Unlock()
+	env.rt().Expected["hl-bsk-sol"] = 2
+	env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketMarksWithout("SOL"), 1), true)
+	rb := env.rt().Rebalances[deadline.UnixMilli()]
+	if rb == nil || rb.Status != basketRebalanceFrozen {
+		t.Fatalf("the deadline must still rank and freeze, got %+v", rb)
+	}
+	if len(venue.submits) != 0 {
+		t.Fatalf("no elective order may run while a held member has no mark: %+v", venue.submits)
+	}
+	if !rb.Outcome.alerted("unpriced-held|hl-bsk-sol") {
+		t.Fatal("a held position in a delisted coin with no mark must raise the CRITICAL alert")
+	}
+}
+
+func TestBasketRankerEligibilityMustMatchTheDeclaredListing(t *testing.T) {
+	deadline := basketTestDeadline()
+	cfg := basketDelistedSOLConfig(t, deadline)
+	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), nil)
+	env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
+	rb := env.rt().Rebalances[deadline.UnixMilli()]
+	if rb == nil || rb.Status != basketRebalanceHeld || !strings.Contains(rb.HoldReason, "declared listing evidence") {
+		t.Fatalf("a ranker that reports a declared-delisted member as eligible must hold the deadline, got %+v", rb)
+	}
+}
+
+func TestBasketDeadlineWaitsForASealAfterTheBoundary(t *testing.T) {
+	cfg := loadBasketTestConfig(t, func(root map[string]interface{}) {
+		basketTestBasket(root)["max_transition_net_usd"] = 1100
+	})
+	env := newBasketTestEnv(t, cfg, basketTestRanker(basketTestWeights, ""), newScriptedBasketVenue(false).factory())
+	deadline := basketTestDeadline()
+	early := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+	early.SealedAt, early.Deadline = deadline.Add(-2*time.Second), time.Time{}
+	env.cycle(deadline.Add(3*time.Second), deadline, early, false)
+	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb != nil {
+		t.Fatalf("a snapshot sealed before the deadline must reserve nothing, got %+v", rb)
+	}
+	if n := env.dbCount(`SELECT COUNT(*) FROM basket_rebalances`); n != 0 {
+		t.Fatalf("rows reserved %d, want 0", n)
+	}
+	env.cycle(deadline.Add(time.Minute), deadline, basketTestSnapshot(deadline, 60, basketTestMarks(), 1), true)
+	if rb := env.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceCompleted {
+		t.Fatalf("the next cycle inside the window must rank the deadline, got %+v", rb)
+	}
+
+	cfg2 := loadBasketTestConfig(t, nil)
+	env2 := newBasketTestEnv(t, cfg2, basketTestRanker(basketTestWeights, ""), nil)
+	onTime := basketTestSnapshot(deadline, 60, basketTestMarks(), 1)
+	onTime.SealedAt, onTime.Deadline = deadline.Add(time.Second), time.Time{}
+	env2.cycle(deadline.Add(time.Second), deadline, onTime, false)
+	if rb := env2.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status == basketRebalanceHeld || rb.TargetsJSON == "" {
+		t.Fatalf("a cycle that starts after the boundary must rank the deadline in that cycle, got %+v", rb)
+	}
+}

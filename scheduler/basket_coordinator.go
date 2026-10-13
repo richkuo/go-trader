@@ -327,11 +327,14 @@ func (bc *basketCoordinator) cycleRequirements(due map[string]time.Time, req fee
 	for _, id := range ids {
 		rt := bc.runtimes[id]
 		for _, m := range rt.Contract.Members {
+			coins[m.Coin] = true
+			if basketListingExclusion(rt.Contract, m, due[id].UnixMilli()) != "" {
+				continue
+			}
 			k := feedKeyFor(m.Coin, m.Timeframe)
 			if l := basketFrameLookback(rt.Contract.LookbackBars); l > need[k] {
 				need[k] = l
 			}
-			coins[m.Coin] = true
 		}
 	}
 	for k, l := range need {
@@ -519,6 +522,16 @@ func (bc *basketCoordinator) maybeStartDeadline(rt *basketRuntime, in basketCycl
 	if now.After(windowEnd) {
 		hold = fmt.Sprintf("the evaluation window closed at %s before the coordinator ran", windowEnd.UTC().Format(time.RFC3339))
 	}
+	var snap *marketSnapshot
+	if hold == "" && in.SnapshotFor != nil {
+		snap = in.SnapshotFor(rt, d)
+		if snap != nil {
+			if cutoff := snap.decisionCutoff(); cutoff.Before(d) {
+				bc.logf(rt, "deadline %s: the cycle snapshot's decision cutoff %s is before the deadline; nothing is reserved, and a later cycle in the evaluation window ranks it", formatClosedBarMs(dMs), cutoff.Format(time.RFC3339))
+				return
+			}
+		}
+	}
 	if prev != nil && !basketRebalanceTerminal(prev.Status) {
 		if rt.pendingAction() != nil {
 			hold = "the previous rebalance still has an unresolved member action"
@@ -560,15 +573,11 @@ func (bc *basketCoordinator) maybeStartDeadline(rt *basketRuntime, in basketCycl
 		bc.logf(rt, "deadline %s held: %s; existing positions, stops and recovery continue", formatClosedBarMs(dMs), reason)
 		bc.persistProgress(rt)
 	}
-	var snap *marketSnapshot
-	if in.SnapshotFor != nil {
-		snap = in.SnapshotFor(rt, d)
-	}
 	if snap == nil {
 		holdNow("no sealed market snapshot exists for the rebalance deadline")
 		return
 	}
-	specs, coins := basketPayloadSpecs(rt)
+	specs, coins := basketPayloadSpecs(rt, dMs)
 	payload, err := marketPayloadFor(snap, specs, coins)
 	if err != nil {
 		holdNow("the sealed snapshot cannot supply every member frame: " + err.Error())
@@ -677,6 +686,45 @@ func (bc *basketCoordinator) marks(rt *basketRuntime, in basketCycleInputs) (map
 	return out, missing
 }
 
+func basketUnpricedHeld(e basketExposure, missing []string) []string {
+	var out []string
+	for _, coin := range missing {
+		if e.Qty[coin] != 0 {
+			out = append(out, coin)
+		}
+	}
+	return out
+}
+
+func (bc *basketCoordinator) unpricedMembers(rt *basketRuntime, rb *basketRebalance, targets *basketTargets, e basketExposure, missing []string, now time.Time) []string {
+	absent := make(map[string]bool, len(missing))
+	for _, coin := range missing {
+		absent[coin] = true
+	}
+	var out []string
+	for _, m := range rt.Contract.Members {
+		if !absent[m.Coin] {
+			continue
+		}
+		held := e.Qty[m.Coin] != 0
+		wanted := false
+		if targets != nil {
+			wanted = targets.Members[m.StrategyID].TargetQty != 0
+		}
+		if !held && !wanted {
+			continue
+		}
+		out = append(out, m.Coin)
+		if held {
+			if why := basketListingExclusion(rt.Contract, m, now.UnixMilli()); why != "" {
+				bc.alert(rt, rb, "unpriced-held|"+m.StrategyID, fmt.Sprintf("%s holds %.10g %s, but the declared listing evidence excludes the coin (%s) and no sealed mark exists; the basket cannot value it, so elective and recovery actions hold until an operator closes it", m.StrategyID, e.Qty[m.Coin], m.Coin, why), true)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (bc *basketCoordinator) exposureLocked(rt *basketRuntime, marks map[string]float64) basketExposure {
 	e := basketExposure{Qty: make(map[string]float64, len(rt.Contract.Members)), Mark: marks}
 	for _, m := range rt.Contract.Members {
@@ -694,8 +742,9 @@ func (bc *basketCoordinator) detectExceptions(rt *basketRuntime, in basketCycleI
 		growthOrFlip  bool
 	}
 	var diffs []diff
-	marks, _ := bc.marks(rt, in)
+	marks, missing := bc.marks(rt, in)
 	exposure := bc.exposureLocked(rt, marks)
+	unpriced := basketUnpricedHeld(exposure, missing)
 	for _, m := range rt.Contract.Members {
 		actual := exposure.Qty[m.Coin]
 		exp := rt.Expected[m.StrategyID]
@@ -712,12 +761,12 @@ func (bc *basketCoordinator) detectExceptions(rt *basketRuntime, in basketCycleI
 			d.cause = "the position grew or flipped outside the basket coordinator"
 			d.growthOrFlip = true
 		}
-		if len(marks) == len(rt.Contract.Members) {
+		if len(unpriced) == 0 {
 			if v := exposure.reading().violations(basketBoundsFor(rt.Contract)); len(v) > 0 {
 				d.breach = strings.Join(v, "; ")
 			}
 		} else {
-			d.breach = "unknown: no valid sealed mark for every member"
+			d.breach = "unknown: no valid sealed mark for " + strings.Join(unpriced, ", ")
 		}
 		diffs = append(diffs, d)
 	}
@@ -988,17 +1037,17 @@ func (bc *basketCoordinator) execute(rt *basketRuntime, in basketCycleInputs) {
 			return
 		}
 		marks, missing := bc.marks(rt, in)
-		if len(missing) > 0 {
-			bc.logf(rt, "no valid sealed mark for %s; elective actions hold this cycle", strings.Join(missing, ", "))
+		bc.mu.RLock()
+		exposure := bc.exposureLocked(rt, marks)
+		bc.mu.RUnlock()
+		if unpriced := bc.unpricedMembers(rt, rb, targets, exposure, missing, in.Now); len(unpriced) > 0 {
+			bc.logf(rt, "no valid sealed mark for %s; elective actions hold this cycle", strings.Join(unpriced, ", "))
 			return
 		}
 		if bc.state.partitionLatched(rt.Partition) {
 			bc.logf(rt, "the %s kill switch is latched; the kill switch owns flattening, so no elective basket action runs", partitionLabel(rt.Partition))
 			return
 		}
-		bc.mu.RLock()
-		exposure := bc.exposureLocked(rt, marks)
-		bc.mu.RUnlock()
 		dust := func(coin string) float64 { return bc.dustQty(coin, marks[coin]) }
 		var reductions, increases []basketCandidate
 		if !recoveryOnly {
