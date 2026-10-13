@@ -65,6 +65,8 @@ from adaptive_moving_average import adaptive_moving_average_core, ama_param_vali
 from schaff_trend_cycle import schaff_trend_cycle_core, stc_param_validator
 from trix_momentum import trix_momentum_core, trix_param_validator
 from camarilla_pivot_reversal import camarilla_pivot_reversal_core, validate_camarilla_param_dict
+from mass_index_reversal import mass_index_reversal_core, mir_param_validator
+from stochastic_momentum_index import smi_param_validator, stochastic_momentum_index_core
 from klinger_divergence import klinger_divergence_core, klinger_param_validator
 
 
@@ -1981,6 +1983,41 @@ def trix_momentum_strategy(df: pd.DataFrame, period: int = 18, signal_period: in
 
 
 @register(
+    "stochastic_momentum_index",
+    "RESEARCH, no-edge (#1663) \u2014 Stochastic Momentum Index pullback entries: for each bar the highest high and lowest low of the range_period bars ending there give the range (difference) and the relative value (close minus their midpoint). For every endpoint t all five recursions restart at bar t - recursion_length: the relative value and the range are each smoothed twice by an exponential average of smoothing_period (weight 2 / (period + 1)), both stages seeded with that bar's own relative value or range; the oscillator is 200 x smoothed relative / smoothed range, and its signal line is an exponential average of signal_period seeded with the seed-bar oscillator; exactly recursion_length updates run through t. Endpoint t - 1 is replayed independently from its own seed. Long when the oscillator rises from at or below oversold to strictly above it and oscillator minus signal line rises from at or below zero to strictly above zero on the same bar; short is the mirror at overbought. Needs recursion_length + range_period + 1 valid consecutive closed bars (recursion_length at least 8 x the larger smoothing or signal period, recursion_length + range_period at most 198) and declared bar cadence; any bad candle, timestamp defect, cadence gap or non-positive smoothed range holds, and a check-time frame whose last bar is not the latest closed bar holds. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {
+        "range_period": 10,
+        "smoothing_period": 3,
+        "signal_period": 3,
+        "recursion_length": 60,
+        "oversold": -40.0,
+        "overbought": 40.0,
+    },
+    platforms=("futures",),
+    constraints=[
+        "range_period >= 1",
+        "smoothing_period >= 1",
+        "signal_period >= 1",
+        "recursion_length >= 8",
+        "oversold > -100",
+        "overbought < 100",
+        "oversold < overbought",
+    ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/stochastic_momentum_index_1663/REPORT.md",
+    short_entries=True,
+    param_validator=smi_param_validator,
+)
+def stochastic_momentum_index_strategy(df: pd.DataFrame, range_period: int = 10, smoothing_period: int = 3,
+                                       signal_period: int = 3, recursion_length: int = 60,
+                                       oversold: float = -40.0, overbought: float = 40.0) -> pd.DataFrame:
+    return stochastic_momentum_index_core(
+        df, range_period=range_period, smoothing_period=smoothing_period, signal_period=signal_period,
+        recursion_length=recursion_length, oversold=oversold, overbought=overbought)
+
+
+@register(
     "camarilla_pivot_reversal",
     "RESEARCH, no-edge (#1669) \u2014 Camarilla pivot reversal: the previous complete UTC day (00:00 to 24:00) gives high H, low L and final close C, frozen for the current UTC day as S3 = C - 1.1 x (H - L) / 4, R3 = C + 1.1 x (H - L) / 4, S4 = C - 1.1 x (H - L) / 2 and R4 = C + 1.1 x (H - L) / 2. Long when the preceding closed candle closes at or below S3 and the current closed candle closes strictly above S3 and strictly below R3 with both lows strictly above S4; short when the preceding candle closes at or above R3 and the current candle closes strictly below R3 and strictly above S3 with both highs strictly below R4. Both candles are consecutive bars of the current UTC day; a jump across the opposite level holds. Every bar of the prior day must be present, on the expected_interval_ms grid (15m, 30m, 1h, 2h, 4h, 8h or 12h) and well formed, and the frame must declare its bar interval and timestamp kind, else the entry holds with a reason; levels never carry over a missing day. A check-time frame whose last bar is not the latest closed bar holds. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"expected_interval_ms": 3600000},
@@ -1997,6 +2034,53 @@ def trix_momentum_strategy(df: pd.DataFrame, period: int = 18, signal_period: in
 )
 def camarilla_pivot_reversal_strategy(df: pd.DataFrame, expected_interval_ms: int = 3600000) -> pd.DataFrame:
     return camarilla_pivot_reversal_core(df, expected_interval_ms=expected_interval_ms)
+
+
+@register(
+    "mass_index_reversal",
+    "RESEARCH, no-edge (#1670) \u2014 Mass Index reversal: for every bar the candle range (high - low) is smoothed by two exponential averages of period ema_period (weight 2 / (period + 1)), both restarted from the range recursion_length bars back and updated exactly recursion_length times, and the Mass Index is the sum of sum_period ratios of the first average to the second. A strict rise through upper_threshold arms a volatility bulge with its direction frozen from the trend slope (close SMA of trend_period minus its value slope_span bars earlier): a rising slope allows a later short, a falling slope a later long, a zero slope arms nothing. The first strict fall below lower_threshold within max_bulge_age bars completes the bulge; on that bar a long needs the close strictly above the previous confirm_lookback highs and a short strictly below their lows, else the bulge is consumed without an entry. A newer rise replaces an older bulge. bulge_filter 0 is the comparison mode that tests the same confirmation on every bar with the side from the current slope. A decision needs max(max_bulge_age + recursion_length + sum_period + 1, max_bulge_age + trend_period + slope_span, confirm_lookback + 1) clean rows (at most 199) with declared bar cadence; bad candles, timestamp defects, cadence gaps and a non-positive second average hold with a reason. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
+    {
+        "ema_period": 9,
+        "sum_period": 25,
+        "upper_threshold": 27.0,
+        "lower_threshold": 26.5,
+        "trend_period": 50,
+        "slope_span": 5,
+        "confirm_lookback": 5,
+        "max_bulge_age": 50,
+        "recursion_length": 72,
+        "bulge_filter": 1,
+    },
+    platforms=("futures",),
+    constraints=[
+        "ema_period >= 2",
+        "sum_period >= 1",
+        "trend_period >= 2",
+        "slope_span >= 1",
+        "confirm_lookback >= 1",
+        "max_bulge_age >= 1",
+        "recursion_length >= 16",
+        "lower_threshold > 0",
+        "lower_threshold < upper_threshold",
+        "bulge_filter >= 0",
+        "bulge_filter <= 1",
+    ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/mass_index_reversal_1670/REPORT.md",
+    short_entries=True,
+    param_validator=mir_param_validator,
+)
+def mass_index_reversal_strategy(df: pd.DataFrame, ema_period: int = 9, sum_period: int = 25,
+                                 upper_threshold: float = 27.0, lower_threshold: float = 26.5,
+                                 trend_period: int = 50, slope_span: int = 5, confirm_lookback: int = 5,
+                                 max_bulge_age: int = 50, recursion_length: int = 72,
+                                 bulge_filter: int = 1) -> pd.DataFrame:
+    return mass_index_reversal_core(
+        df, ema_period=ema_period, sum_period=sum_period, upper_threshold=upper_threshold,
+        lower_threshold=lower_threshold, trend_period=trend_period, slope_span=slope_span,
+        confirm_lookback=confirm_lookback, max_bulge_age=max_bulge_age, recursion_length=recursion_length,
+        bulge_filter=bulge_filter)
 
 
 @register(
@@ -2482,6 +2566,8 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "schaff_trend_cycle",
         "trix_momentum",
         "camarilla_pivot_reversal",
+        "mass_index_reversal",
+        "stochastic_momentum_index",
         "klinger_divergence",
         "hold",
     ],
