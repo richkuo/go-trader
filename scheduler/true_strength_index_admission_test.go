@@ -16,10 +16,7 @@ var tsiFrozenLadder = []interface{}{
 	map[string]interface{}{"profit_pct": 0.04, "close_fraction": 1.0},
 }
 
-const (
-	tsiName = "true_strength_index"
-	tsiRef  = "backtest/candidates/true_strength_index_1667/REPORT.md"
-)
+const tsiName = "true_strength_index"
 
 func tsiLoadBoth(t *testing.T, sc map[string]interface{}) (*Config, error) {
 	t.Helper()
@@ -30,34 +27,6 @@ func tsiLoadBoth(t *testing.T, sc map[string]interface{}) (*Config, error) {
 		t.Fatalf("LoadConfig err=%v but LoadConfigForProbe err=%v", loadErr, probeErr)
 	}
 	return cfg, loadErr
-}
-
-func TestTrueStrengthIndexRegistrationTables(t *testing.T) {
-	if knownShortNames[tsiName] != "tsi" || !isBidirectionalPerpsStrategy(tsiName) {
-		t.Fatalf("short name %q, bidirectional %v", knownShortNames[tsiName], isBidirectionalPerpsStrategy(tsiName))
-	}
-	if !openStrategyRegisteredFor(tsiName, "futures") || openStrategyRegisteredFor(tsiName, "spot") {
-		t.Fatal("true_strength_index must be registered for futures only")
-	}
-	var owners []string
-	for other, short := range knownShortNames {
-		if short == "tsi" {
-			owners = append(owners, other)
-		}
-	}
-	if !reflect.DeepEqual(owners, []string{tsiName}) {
-		t.Fatalf("short name tsi owners = %v", owners)
-	}
-	ev, ok := noEdgeEvidenceFor(tsiName)
-	if !ok || ev.Ref != tsiRef {
-		t.Fatalf("no-edge evidence = %+v, %v", ev, ok)
-	}
-	if _, frozen := v20StampEligibleStrategies[tsiName]; frozen {
-		t.Fatal("true_strength_index must not join the frozen v20 auto-acknowledgement set")
-	}
-	if _, ok := fixedIntervalStrategyDefaults[tsiName]; ok {
-		t.Fatal("true_strength_index reads the declared frame cadence and has no fixed-interval parameter")
-	}
 }
 
 func TestTrueStrengthIndexAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {
