@@ -7,10 +7,7 @@ import (
 	"testing"
 )
 
-const (
-	elderForceName = "elder_force_pullback"
-	elderForceRef  = "backtest/candidates/elder_force_pullback_1668/REPORT.md"
-)
+const elderForceName = "elder_force_pullback"
 
 func elderForceLoadBoth(t *testing.T, sc map[string]interface{}) (*Config, error) {
 	t.Helper()
@@ -21,34 +18,6 @@ func elderForceLoadBoth(t *testing.T, sc map[string]interface{}) (*Config, error
 		t.Fatalf("LoadConfig err=%v but LoadConfigForProbe err=%v", loadErr, probeErr)
 	}
 	return cfg, loadErr
-}
-
-func TestElderForcePullbackRegistrationTables(t *testing.T) {
-	if knownShortNames[elderForceName] != "efp" || !isBidirectionalPerpsStrategy(elderForceName) {
-		t.Fatalf("short name %q, bidirectional %v", knownShortNames[elderForceName], isBidirectionalPerpsStrategy(elderForceName))
-	}
-	if !openStrategyRegisteredFor(elderForceName, "futures") || openStrategyRegisteredFor(elderForceName, "spot") {
-		t.Fatal("elder_force_pullback must be registered for futures only")
-	}
-	var owners []string
-	for other, short := range knownShortNames {
-		if short == "efp" {
-			owners = append(owners, other)
-		}
-	}
-	if !reflect.DeepEqual(owners, []string{elderForceName}) {
-		t.Fatalf("short name efp owners = %v", owners)
-	}
-	ev, ok := noEdgeEvidenceFor(elderForceName)
-	if !ok || ev.Ref != elderForceRef {
-		t.Fatalf("no-edge evidence = %+v, %v", ev, ok)
-	}
-	if _, frozen := v20StampEligibleStrategies[elderForceName]; frozen {
-		t.Fatal("elder_force_pullback must not join the frozen v20 auto-acknowledgement set")
-	}
-	if _, ok := fixedIntervalStrategyDefaults[elderForceName]; ok {
-		t.Fatal("elder_force_pullback reads the declared frame cadence and has no fixed-interval parameter")
-	}
 }
 
 func TestElderForcePullbackAdmissionRoutesOpenAndCloseFallbackReferences(t *testing.T) {

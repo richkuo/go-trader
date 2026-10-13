@@ -26,7 +26,8 @@ from closed_bar import (
     TIMESTAMP_KIND_OPEN,
     declare_frame_cadence,
 )
-from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid
+import optimizer
+from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid, strategy_warmup_bars, warmup_exit_long_entry
 from parity_diff import ParityConfig, compute_parity_frame, summarize
 from registry_loader import load_registry
 from strategy_composition import (
@@ -592,6 +593,98 @@ def test_decision_parity_with_the_close_and_stop_owner(window, batched):
     if batched:
         assert result["batch_mismatches"] == 0
     assert (frame["live_open_action"] == "long").any() and (frame["live_open_action"] == "short").any()
+
+
+WF_SPLITS = 4
+WF_RANGES = {"force_period": [13], "trend_period": [50], "slope_span": [5], "recursion_length": [150, 197],
+             "volume_weighting": [1]}
+
+
+def _walk_forward_capture(monkeypatch, df):
+    runs = []
+    real_run = Backtester.run
+
+    def run(self, signals, **kw):
+        runs.append({"signals": signals.copy(), "params": dict(kw["params"]), "seed": kw.get("starting_long")})
+        return real_run(self, signals, **kw)
+
+    def no_seed(*_a, **_k):
+        raise AssertionError("the walk-forward warmup seeder ran for elder_force_pullback")
+
+    monkeypatch.setattr(Backtester, "run", run)
+    monkeypatch.setattr(optimizer, "warmup_exit_long_entry", no_seed)
+    result = optimizer.walk_forward_optimize(
+        df, NAME, WF_RANGES, n_splits=WF_SPLITS, registry="futures", timeframe="1h", platform="hyperliquid",
+        verbose=False, close_strategies=CLOSE, direction="both", stop_loss_atr_mult=1.0,
+        comparison_mode="approximate")
+    monkeypatch.undo()
+    return result, runs
+
+
+def _same_column(a, b):
+    return list(a.index) == list(b.index) and [repr(v) for v in a] == [repr(v) for v in b]
+
+
+def _fold_geometry(df, fold):
+    window = len(df) // WF_SPLITS
+    start = fold * window
+    end = min(start + window, len(df)) if fold < WF_SPLITS - 1 else len(df)
+    return start, start + int((end - start) * 0.7)
+
+
+def _train_run(runs, df, bar, recursion_length):
+    return next(r for r in runs if r["signals"].index[0] == df.index[bar]
+                and r["params"]["recursion_length"] == recursion_length)
+
+
+def test_walk_forward_warmup_covers_the_largest_required_history_of_the_grid():
+    grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
+    assert max(p["recursion_length"] for p in grid) == 197
+    assert strategy_warmup_bars(NAME, grid, DEFAULT_PARAM_RANGES[NAME]) == 199
+    assert strategy_warmup_bars(NAME, generate_param_grid(dict(WF_RANGES, recursion_length=[150])),
+                                dict(WF_RANGES, recursion_length=[150])) == NEED
+
+
+def test_walk_forward_scores_the_first_bar_of_a_later_fold_with_full_history(monkeypatch):
+    df = _walk(2400, seed=0).iloc[111:]
+    start, boundary = _fold_geometry(df, 1)
+    deep = dict(SEED, recursion_length=197)
+    full_deep = _reg().apply_strategy(NAME, df, deep)
+    assert int(full_deep["signal"].iloc[start - 1]) == 1
+    short = _reg().apply_strategy(NAME, df.iloc[start - 197:start], deep)
+    assert short["efp_reason"].iloc[-1] == "insufficient_history"
+    result, runs = _walk_forward_capture(monkeypatch, df)
+    assert result["n_valid_folds"] >= 2
+    first = _train_run(runs, df, start - 1, 197)["signals"]
+    assert int(first["signal"].iloc[0]) == 1 and first["efp_reason"].iloc[0] != "insufficient_history"
+    shallow = _train_run(runs, df, start - 1, 150)["signals"]
+    full_shallow = _apply(df).iloc[start - 1:boundary]
+    old_prefix = _apply(df.iloc[start - 197:boundary]).iloc[196:]
+    for col in ("signal", "efp_reason", "efp_force"):
+        assert _same_column(shallow[col], full_shallow[col]), col
+        assert _same_column(shallow[col], old_prefix[col]), col
+    _, first_boundary = _fold_geometry(df, 0)
+    fold0 = _train_run(runs, df, 0, 150)["signals"]
+    assert len(fold0) == first_boundary
+    for col in ("signal", "efp_reason"):
+        assert _same_column(fold0[col], _apply(df.iloc[:first_boundary])[col]), col
+
+
+@pytest.mark.parametrize("trim,case", [(111, "long_reaches_the_last_tier"), (250, "long_then_short")])
+def test_walk_forward_folds_start_flat_whatever_the_prefix_left_open(monkeypatch, trim, case):
+    df = _walk(2400, seed=0).iloc[trim:]
+    start, _ = _fold_geometry(df, 1)
+    warmup = strategy_warmup_bars(NAME, generate_param_grid(WF_RANGES), WF_RANGES)
+    prefix = _apply(df.iloc[start - warmup:start]).iloc[:warmup - 1]
+    if case == "long_reaches_the_last_tier":
+        seeded = warmup_exit_long_entry(prefix, 0.0)
+        assert seeded is not None
+        assert prefix.loc[seeded["entry_date"]:, "close"].max() >= seeded["entry_price"] * (1 + TIERS[-1]["profit_pct"])
+    else:
+        assert [int(v) for v in prefix["signal"] if v != 0][-2:] == [1, -1]
+    _, runs = _walk_forward_capture(monkeypatch, df)
+    assert all(r["seed"] is None for r in runs)
+    assert _train_run(runs, df, start - 1, 150)["seed"] is None
 
 
 def _load(name):
