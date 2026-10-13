@@ -207,6 +207,22 @@ def test_ranker_refuses_unknown_params_and_live_mode():
     assert code == 1 and "not a registered basket evaluator" in out["error"]
 
 
+def test_momentum_preflight_refuses_a_short_lookback_before_member_data():
+    def momentum(lookback):
+        market = _market()
+        market["frames"].pop("SOL|1h")
+        return _request(ranker="cross_sectional_momentum", params={}, market=market,
+                        allocation_context={**CONTEXT, "lookback_bars": lookback, "min_history_bars": 24})
+    code, held = _rank(momentum(48))
+    assert code == 0 and held["status"] == "hold" and held["v"] == 2, held
+    assert "no frame for SOL|1h" in held["hold_reason"], held["hold_reason"]
+    code, out = _rank(momentum(24))
+    assert code == 1, out
+    assert out["status"] == "invalid", out
+    assert "lookback_bars 24 cannot supply" in out["error"], out["error"]
+    assert "the ranker needs 25 closed bars" in out["error"], out["error"]
+
+
 def _without(key):
     req = _request()
     req.pop(key)

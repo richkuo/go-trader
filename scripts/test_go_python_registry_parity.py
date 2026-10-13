@@ -304,15 +304,6 @@ def test_basket_rankers_stay_out_of_every_single_symbol_registry():
         OPEN_REGISTRY.get_basket_ranker("sma_crossover")
 
 
-def test_basket_preflight_is_registered_only_where_declared():
-    assert OPEN_REGISTRY.STRATEGIES["basket_scripted_fixture"]["basket_preflight"] is None
-    entry = OPEN_REGISTRY.STRATEGIES["cross_sectional_momentum"]
-    assert callable(entry["basket_preflight"]) and callable(entry["param_validator"])
-    assert entry["basket_preflight"] is not entry["param_validator"]
-    assert entry["short_entries"] is False
-    assert all(e.get("basket_preflight") is None for e in OPEN_REGISTRY.STRATEGIES.values() if not e.get("basket"))
-
-
 @pytest.mark.parametrize("kwargs, match", [
     ({"basket": {"input": "closed_bar_frames"}}, "basket must be exactly"),
     ({"basket": {"input": "closed_bar_frames", "output": "signed_weights"}, "platforms": ("spot", "futures")}, "platforms"),
