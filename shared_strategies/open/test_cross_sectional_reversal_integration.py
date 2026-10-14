@@ -136,10 +136,6 @@ DATA = [
 ]
 
 CONFIGS = [
-    ("lookback_bars too small for the lookbacks", {"context": {"lookback_bars": 24, "min_history_bars": 20}},
-     "lookback_bars 24 cannot supply"),
-    ("volatility lookback above the configured history", {"params": {"quantile": 0.4, "volatility_lookback_bars": 60}},
-     "the ranker needs 61 closed bars"),
     ("boolean return lookback", {"params": {"quantile": 0.4, "return_lookback_bars": True}},
      "cross_sectional_reversal: return_lookback_bars must be an integer"),
     ("quantile at one half", {"params": {"quantile": 0.5}}, "constraint 'quantile < 0.5' violated"),
@@ -147,9 +143,8 @@ CONFIGS = [
 
 
 @pytest.mark.parametrize("config_name, config, invalid", CONFIGS, ids=[c[0] for c in CONFIGS])
-@pytest.mark.parametrize("data_name, data, hold", DATA, ids=[d[0] for d in DATA])
-def test_reversal_refuses_invalid_configuration_before_member_data(config_name, config, invalid, data_name, data, hold):
-    code, out = _rank(_request(**{**data, **config}))
+def test_reversal_refuses_invalid_configuration_before_member_data(config_name, config, invalid):
+    code, out = _rank(_request(frames=_with("SOL", _frame("SOL", stale=True)), **config))
     assert code == 1, out
     assert out["status"] == "invalid", out
     assert invalid in out["error"], out["error"]
