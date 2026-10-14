@@ -502,12 +502,12 @@ func (sdb *StateDB) basketReplaySubmitBounds(runID string) (map[string]basketRep
 
 func (sdb *StateDB) countBasketReplayVenueEvents(runID string, step int, kind string) (int, error) {
 	var n int
-	err := sdb.db.QueryRow(`SELECT COUNT(*) FROM basket_replay_venue_events WHERE run_id = ? AND step_index = ? AND kind = ?`, runID, step, kind).Scan(&n)
+	err := sdb.db.QueryRow(`SELECT COUNT(*) FROM basket_replay_venue_events WHERE run_id = ? AND step_index = ? AND kind = ? AND script_index >= 0`, runID, step, kind).Scan(&n)
 	return n, err
 }
 
 func (sdb *StateDB) basketReplayVenueEvents(runID, cloid string) ([]basketReplayVenueEvent, error) {
-	rows, err := sdb.db.Query(`SELECT client_order_id, action_id, kind, step_index, script_index, outcome_json FROM basket_replay_venue_events WHERE run_id = ? AND client_order_id = ? ORDER BY event_id`, runID, cloid)
+	rows, err := sdb.db.Query(`SELECT client_order_id, action_id, kind, step_index, script_index, outcome_json FROM basket_replay_venue_events WHERE run_id = ? AND client_order_id = ? AND script_index >= 0 ORDER BY event_id`, runID, cloid)
 	if err != nil {
 		return nil, err
 	}
@@ -525,6 +525,96 @@ func (sdb *StateDB) basketReplayVenueEvents(runID, cloid string) ([]basketReplay
 		out = append(out, ev)
 	}
 	return out, rows.Err()
+}
+
+type basketReplayVenueEventRecord struct {
+	EventID       int64              `json:"event_id"`
+	StepIndex     int                `json:"step_index"`
+	Kind          string             `json:"kind"`
+	Scripted      bool               `json:"scripted"`
+	ScriptIndex   int                `json:"script_index"`
+	ClientOrderID string             `json:"client_order_id"`
+	ActionID      string             `json:"action_id"`
+	At            string             `json:"at"`
+	Outcome       basketVenueOutcome `json:"outcome"`
+}
+
+func (sdb *StateDB) basketReplayVenueEventLog(runID string) ([]basketReplayVenueEventRecord, error) {
+	rows, err := sdb.db.Query(`SELECT event_id, step_index, kind, script_index, client_order_id, action_id, at_ms, outcome_json FROM basket_replay_venue_events WHERE run_id = ? ORDER BY event_id`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []basketReplayVenueEventRecord
+	for rows.Next() {
+		var ev basketReplayVenueEventRecord
+		var atMs int64
+		var blob string
+		if err := rows.Scan(&ev.EventID, &ev.StepIndex, &ev.Kind, &ev.ScriptIndex, &ev.ClientOrderID, &ev.ActionID, &atMs, &blob); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(blob), &ev.Outcome); err != nil {
+			return nil, fmt.Errorf("replay venue evidence event %d is unreadable: %w", ev.EventID, err)
+		}
+		ev.Scripted = ev.ScriptIndex >= 0
+		ev.At = time.UnixMilli(atMs).UTC().Format(time.RFC3339Nano)
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+func (sdb *StateDB) basketReplayTouchedRows(atMs int64) (map[basketKey]map[int64]*basketRebalance, map[basketKey]map[string]*basketAction, error) {
+	rebalances := make(map[basketKey]map[int64]*basketRebalance)
+	actions := make(map[basketKey]map[string]*basketAction)
+	if ok, err := tableExists(sdb, "basket_rebalances"); err != nil || !ok {
+		return rebalances, actions, err
+	}
+	rows, err := sdb.db.Query(`SELECT `+basketRebalanceColumns+` FROM basket_rebalances WHERE created_at_ms = ? OR updated_at_ms = ? ORDER BY scope, source, basket_id, deadline_ms`, atMs, atMs)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rows.Next() {
+		rb, err := scanBasketRebalance(rows.Scan)
+		if err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		k := basketKey{Partition: rb.Partition, BasketID: rb.BasketID}
+		if rebalances[k] == nil {
+			rebalances[k] = make(map[int64]*basketRebalance)
+		}
+		rebalances[k][rb.DeadlineMs] = rb
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	proj, err := sdb.basketProjection("basket_member_actions", basketActionLifecycleColumns)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err = sdb.db.Query(`SELECT `+basketActionBaseSelect+`, `+proj+` FROM basket_member_actions WHERE created_at_ms = ? OR updated_at_ms = ? ORDER BY action_id`, atMs, atMs)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		a, sid, err := scanBasketAction(rows.Scan)
+		if err != nil {
+			return nil, nil, err
+		}
+		id, ok := sdb.mapStoredStrategyID(sid)
+		if !ok {
+			return nil, nil, fmt.Errorf("basket action %s names stored strategy %q, which the run does not configure", a.ActionID, sid)
+		}
+		a.StrategyID = id
+		k := basketKey{Partition: a.Partition, BasketID: a.BasketID}
+		if actions[k] == nil {
+			actions[k] = make(map[string]*basketAction)
+		}
+		actions[k][a.ActionID] = a
+	}
+	return rebalances, actions, rows.Err()
 }
 
 func (sdb *StateDB) basketReplayActionCount() (int, error) {

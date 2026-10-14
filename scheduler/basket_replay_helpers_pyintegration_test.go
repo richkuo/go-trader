@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"sync"
 	"testing"
@@ -55,6 +56,9 @@ type replayScenario struct {
 	DupSteps      []int
 	Params        map[string]interface{}
 	Horizon       int64
+	Ranker        string
+	CoinCap       float64
+	SkipSteps     []int
 }
 
 func defaultReplayMemberConfig() map[string]interface{} {
@@ -93,6 +97,19 @@ func (sc replayScenario) spec(t *testing.T, fx replayFixture, stateDir, mode str
 			st.Venue, st.Queries, st.SaveFailure = ex.Venue, ex.Queries, ex.SaveFailure
 		}
 		steps = append(steps, st)
+	}
+	if len(sc.SkipSteps) > 0 {
+		skip := map[int]bool{}
+		for _, i := range sc.SkipSteps {
+			skip[i] = true
+		}
+		kept := steps[:0:0]
+		for i, st := range steps {
+			if !skip[i] {
+				kept = append(kept, st)
+			}
+		}
+		steps = kept
 	}
 	for k := len(sc.DupSteps) - 1; k >= 0; k-- {
 		i := sc.DupSteps[k]
@@ -152,13 +169,21 @@ func (sc replayScenario) spec(t *testing.T, fx replayFixture, stateDir, mode str
 	if runID == "" {
 		runID = "replay-test"
 	}
+	ranker := sc.Ranker
+	if ranker == "" {
+		ranker = "basket_scripted_fixture"
+	}
+	coinCap := sc.CoinCap
+	if coinCap == 0 {
+		coinCap = 1200
+	}
 	return &basketReplaySpec{
 		Protocol: basketReplayProtocolName, Version: basketReplayProtocolVersion, Mode: mode,
 		Run: basketReplayRunSpec{RunID: runID, StateDir: stateDir, Source: map[string]string{"frames": "scheduler/testdata/basket_replay_recorded_frames.json"}},
 		Basket: BasketConfig{
-			ID: "xs-replay", Ranker: "basket_scripted_fixture", Params: params, Members: ids,
+			ID: "xs-replay", Ranker: ranker, Params: params, Members: ids,
 			RebalanceIntervalSeconds: rebalance, EvaluationWindowSeconds: 3600, RankerTimeoutSeconds: 60, LookbackBars: 48,
-			GrossBudgetUSD: 3000, MaxTransitionNetUSD: net, MaxCoinNotionalUSD: 1200, MinEligibleMembers: 2, HoldingHorizonSeconds: sc.Horizon,
+			GrossBudgetUSD: 3000, MaxTransitionNetUSD: net, MaxCoinNotionalUSD: coinCap, MinEligibleMembers: 2, HoldingHorizonSeconds: sc.Horizon,
 			Eligibility: &BasketEligibility{Source: "fixture listing ledger", Version: "2026-10-14", MinHistoryBars: 24, Listings: listings},
 		},
 		Members: members, PortfolioRisk: sc.PortfolioRisk, TargetInput: target, CostPolicy: sc.CostPolicy,
@@ -270,6 +295,15 @@ type replayReference struct {
 	lots    *hlLotMetadataCache
 	marks   map[string]float64
 	bounds  map[string]basketReplayBoundRecord
+	calls   []replayVenueCall
+}
+
+type replayVenueCall struct {
+	Kind    string
+	AtMs    int64
+	Action  basketAction
+	Outcome basketVenueOutcome
+	Err     error
 }
 
 type refBoundsVenue struct {
@@ -281,7 +315,15 @@ func (v refBoundsVenue) Submit(a *basketAction) (basketVenueOutcome, error) {
 	if b := basketReplayActionBounds(v.ref.mu, v.ref.bc, v.ref.state, v.ref.marks, a); b != nil {
 		v.ref.bounds[a.ActionID] = *b
 	}
-	return v.scriptedBasketVenue.Submit(a)
+	out, err := v.scriptedBasketVenue.Submit(a)
+	v.ref.calls = append(v.ref.calls, replayVenueCall{Kind: "submit", AtMs: tradingNow().UnixMilli(), Action: *a, Outcome: out, Err: err})
+	return out, err
+}
+
+func (v refBoundsVenue) Query(a *basketAction) (basketVenueOutcome, error) {
+	out, err := v.scriptedBasketVenue.Query(a)
+	v.ref.calls = append(v.ref.calls, replayVenueCall{Kind: "query", AtMs: tradingNow().UnixMilli(), Action: *a, Outcome: out, Err: err})
+	return out, err
 }
 
 func newReplayReference(t *testing.T, spec *basketReplaySpec, cost fillCostPolicy) *replayReference {
@@ -593,7 +635,11 @@ func (ref *replayReference) step(i int) {
 			rec.SaveErrors = append(rec.SaveErrors, fmt.Sprintf("%s: %v", partitionLabel(out.part), out.err))
 		}
 	}
-	buildBasketReplayStepRecord(&rec, at, basketReplayRecordInput{BC: ref.bc, State: state, Mu: mu, Bounds: ref.bounds, Partition: partitionFor(ref.members[0]), ScopeRisk: scopeRisk, Prices: prices, Marks: step.Marks})
+	db, err := store.dbForStrategy(ref.members[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildBasketReplayStepRecord(&rec, at, basketReplayRecordInput{DB: db, BC: ref.bc, State: state, Mu: mu, Bounds: ref.bounds, Partition: partitionFor(ref.members[0]), ScopeRisk: scopeRisk, Prices: prices, Marks: step.Marks})
 	ref.records = append(ref.records, rec)
 }
 
@@ -606,7 +652,7 @@ func (ref *replayReference) trades() []basketReplayTradeRecord {
 		}
 		for i := len(rows) - 1; i >= 0; i-- {
 			tr := rows[i]
-			out = append(out, basketReplayTradeRecord{StrategyID: sc.ID, Timestamp: tr.Timestamp.UTC().Format(time.RFC3339Nano), Symbol: tr.Symbol, Side: tr.Side,
+			out = append(out, basketReplayTradeRecord{StrategyID: sc.ID, Timestamp: tr.Timestamp.UTC().Format(time.RFC3339Nano), Symbol: tr.Symbol, PositionID: tr.PositionID, Side: tr.Side,
 				Quantity: tr.Quantity, Price: tr.Price, Value: tr.Value, TradeType: tr.TradeType, ExchangeOrderID: tr.ExchangeOrderID, ExchangeFee: tr.ExchangeFee,
 				IsClose: tr.IsClose, RealizedPnL: tr.RealizedPnL, CostModelVersion: tr.CostModelVersion, CostPolicyID: tr.CostPolicyID})
 		}
@@ -630,7 +676,9 @@ type replayMemberView struct {
 	Consumed, Observed, FundingThrough, OpenedAt int64
 	LifeEntry, LifeExpiry, Suppress              int64
 	LifeState                                    string
-	LifeAttempt                                  int
+	LifeAttempt, LifeFailures                    int
+	LifeRetry                                    int64
+	LifeAlerts                                   []string
 }
 
 type replayStepView struct {
@@ -645,11 +693,12 @@ type replayStepView struct {
 	KillSwitchAt  string
 	DailyLossHeld bool
 	PendingAction string
+	NeedsDurable  bool
 }
 
 func replayView(rec basketReplayStepRecord) replayStepView {
 	v := replayStepView{At: rec.At, SaveBlocked: rec.SaveBlocked, SaveErrors: len(rec.SaveErrors), Funding: rec.FundingBooked, KillSwitch: rec.Partition.KillSwitchActive,
-		KillSwitchAt: rec.Partition.KillSwitchAt, DailyLossHeld: rec.Partition.DailyLossHeld, PendingAction: rec.PendingAction}
+		KillSwitchAt: rec.Partition.KillSwitchAt, DailyLossHeld: rec.Partition.DailyLossHeld, PendingAction: rec.PendingAction, NeedsDurable: rec.NeedsDurable}
 	for _, rb := range rec.Rebalances {
 		rb.InputFP = ""
 		v.Rebalances = append(v.Rebalances, rb)
@@ -683,7 +732,8 @@ func replayView(rec basketReplayStepRecord) replayStepView {
 		v.Members = append(v.Members, replayMemberView{ID: m.StrategyID, DailyDate: m.DailyPnLDate, CBUntil: m.CircuitBreakerUntil, Cash: m.Cash, Qty: m.Qty, AvgCost: m.AvgCost,
 			StopPx: m.StopLossTriggerPx, Expected: m.ExpectedQty, Daily: m.DailyPnL, CL: m.ConsecutiveLosses, CB: m.CircuitBreaker, Consumed: m.ConsumedThroughMs,
 			Observed: m.LatestObservedMs, FundingThrough: m.FundingSettledMs, OpenedAt: m.OpenedAtMs, LifeEntry: m.LifecycleEntryMs, LifeExpiry: m.LifecycleExpiryMs,
-			Suppress: m.SuppressThroughMs, LifeState: m.LifecycleState, LifeAttempt: m.LifecycleAttempt})
+			Suppress: m.SuppressThroughMs, LifeState: m.LifecycleState, LifeAttempt: m.LifecycleAttempt, LifeFailures: m.LifecycleFailures, LifeRetry: m.LifecycleRetryAtMs,
+			LifeAlerts: replayPositionNonceFree(m.LifecycleAlerts)})
 	}
 	if pa := v.PendingAction; pa != "" {
 		v.PendingAction = pa
@@ -691,10 +741,25 @@ func replayView(rec basketReplayStepRecord) replayStepView {
 	return v
 }
 
+var replayExpiryActionID = regexp.MustCompile(`be-[0-9a-f]{24}`)
+
+var replayPositionNonce = regexp.MustCompile(`([A-Za-z0-9_-]+:[A-Za-z0-9]+:[0-9]+):[0-9]+`)
+
+func replayPositionNonceFree(list []string) []string {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, s := range list {
+		out = append(out, replayPositionNonce.ReplaceAllString(s, "$1"))
+	}
+	return out
+}
+
 func replayTradeView(trades []basketReplayTradeRecord) []basketReplayTradeRecord {
 	out := make([]basketReplayTradeRecord, 0, len(trades))
 	for _, tr := range trades {
-		tr.PositionID, tr.Details = "", ""
+		tr.PositionID, tr.Details = replayPositionNonce.ReplaceAllString(tr.PositionID, "$1"), ""
 		out = append(out, tr)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -711,10 +776,13 @@ func requireReplayParity(t *testing.T, label string, a, b []basketReplayStepReco
 	if len(a) != len(b) {
 		t.Fatalf("%s: %d steps against %d", label, len(a), len(b))
 	}
+	ma, mb := &replayIdentityMap{tag: "expiry-action-"}, &replayIdentityMap{tag: "expiry-action-"}
 	for i := range a {
 		va, vb := replayView(a[i]), replayView(b[i])
 		ja, _ := json.MarshalIndent(va, "", " ")
 		jb, _ := json.MarshalIndent(vb, "", " ")
+		ja = replayExpiryActionID.ReplaceAllFunc(ja, func(id []byte) []byte { return []byte(ma.of(string(id))) })
+		jb = replayExpiryActionID.ReplaceAllFunc(jb, func(id []byte) []byte { return []byte(mb.of(string(id))) })
 		if !bytes.Equal(ja, jb) {
 			t.Fatalf("%s: step %d differs\nfirst:\n%s\nsecond:\n%s", label, i, ja, jb)
 		}
@@ -724,6 +792,112 @@ func requireReplayParity(t *testing.T, label string, a, b []basketReplayStepReco
 	if !bytes.Equal(xa, xb) {
 		t.Fatalf("%s: booked trades differ\nfirst:\n%s\nsecond:\n%s", label, xa, xb)
 	}
+}
+
+type replayCallView struct {
+	Kind, At, Member, Coin, Side, Purpose, Direction, Outcome, Action, Client string
+	Requested, Confirmed                                                      float64
+	Attempt                                                                   int
+}
+
+type replayIdentityMap struct {
+	ids  map[string]string
+	next int
+	tag  string
+}
+
+func (m *replayIdentityMap) of(id string) string {
+	if id == "" {
+		return ""
+	}
+	if m.ids == nil {
+		m.ids = map[string]string{}
+	}
+	if v, ok := m.ids[id]; ok {
+		return v
+	}
+	m.next++
+	v := fmt.Sprintf("%s%d", m.tag, m.next)
+	m.ids[id] = v
+	return v
+}
+
+func replayActionsByID(out basketReplayOutput) map[string]basketReplayActionRecord {
+	byID := map[string]basketReplayActionRecord{}
+	for _, st := range out.Steps {
+		for _, a := range st.Actions {
+			byID[a.ActionID] = a
+		}
+	}
+	return byID
+}
+
+func replayAdapterCalls(t *testing.T, out basketReplayOutput) []replayCallView {
+	t.Helper()
+	byID := replayActionsByID(out)
+	actions, clients := &replayIdentityMap{tag: "a"}, &replayIdentityMap{tag: "c"}
+	var views []replayCallView
+	for _, ev := range out.VenueEvents {
+		a, ok := byID[ev.ActionID]
+		if !ok {
+			t.Fatalf("venue event %d names action %s, which no step record carries", ev.EventID, ev.ActionID)
+		}
+		outcome := ev.Outcome.Outcome
+		if ev.Kind == "submit" && ev.Outcome.Detail == "the request never reached the scripted venue" {
+			outcome = "transport_error"
+		}
+		views = append(views, replayCallView{Kind: ev.Kind, At: ev.At, Member: a.StrategyID, Coin: a.Symbol, Side: a.OrderSide, Purpose: a.Purpose, Direction: a.Direction,
+			Outcome: outcome, Action: actions.of(ev.ActionID), Client: clients.of(ev.ClientOrderID), Requested: a.RequestedQty, Confirmed: ev.Outcome.FilledQty, Attempt: a.Attempt})
+	}
+	return views
+}
+
+func replayReferenceCalls(calls []replayVenueCall) []replayCallView {
+	actions, clients := &replayIdentityMap{tag: "a"}, &replayIdentityMap{tag: "c"}
+	var views []replayCallView
+	for _, c := range calls {
+		outcome := c.Outcome.Outcome
+		if c.Err != nil {
+			outcome = "transport_error"
+		}
+		a := c.Action
+		views = append(views, replayCallView{Kind: c.Kind, At: time.UnixMilli(c.AtMs).UTC().Format(time.RFC3339Nano), Member: a.StrategyID, Coin: a.Symbol, Side: a.OrderSide,
+			Purpose: a.purpose(), Direction: a.Direction, Outcome: outcome, Action: actions.of(a.ActionID), Client: clients.of(a.ClientOrderID), Requested: a.RequestedQty,
+			Confirmed: c.Outcome.FilledQty, Attempt: a.LifecycleAttempt})
+	}
+	return views
+}
+
+func compareReplayCalls(ref, got []replayCallView) error {
+	n := len(ref)
+	if len(got) > n {
+		n = len(got)
+	}
+	for i := 0; i < n; i++ {
+		var a, b replayCallView
+		if i < len(ref) {
+			a = ref[i]
+		}
+		if i < len(got) {
+			b = got[i]
+		}
+		if a != b {
+			return fmt.Errorf("venue call %d differs (%d reference calls, %d adapter calls)\nreference: %+v\nadapter:   %+v", i, len(ref), len(got), a, b)
+		}
+	}
+	return nil
+}
+
+func requireReplayCallParity(t *testing.T, label string, ref *replayReference, out basketReplayOutput) []replayCallView {
+	t.Helper()
+	got := replayAdapterCalls(t, out)
+	if len(got) == 0 {
+		t.Fatalf("%s: the adapter recorded no venue call", label)
+	}
+	if err := compareReplayCalls(replayReferenceCalls(ref.calls), got); err != nil {
+		t.Fatalf("%s: chronological venue calls differ: %v", label, err)
+	}
+	return got
 }
 
 func requireOneBookingPerFill(t *testing.T, out basketReplayOutput) {

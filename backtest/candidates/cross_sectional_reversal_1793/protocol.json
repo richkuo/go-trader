@@ -1,0 +1,211 @@
+{
+  "study": "cross_sectional_reversal_1790",
+  "issue": 1790,
+  "candidate": "cross_sectional_reversal",
+  "status": "frozen before any replay ran; run_study.py lock pins this file, the signal specification and data_reference.json, and run refuses a changed lock",
+  "signal_spec": {
+    "path": "backtest/candidates/cross_sectional_reversal_1793/SIGNAL_SPEC.md",
+    "sha256": "8f94f5aca998fee3930326cbc0089065e632c379ee4d77b6e0ca985b140b8f00"
+  },
+  "prerequisites": {
+    "commits": {
+      "1791 (PR 1800) offline basket replay, controlled adapter, cost path, baseline target input": "62618cbcbf229aee739b54e07c9ac40182c9d42c",
+      "1793 (PR 1802) reversal ranker, frozen signal specification": "26711d46963926bff8aac01b65e56a415473d5b6",
+      "1794 (PR 1797) basket holding-horizon lifecycle": "63d12919cdcfca5b90eb898a477b595830f8ae87",
+      "1792 (PR 1805) momentum study, frozen inputs, trade export paging": "70b9725dff59e3a4f18d89002d2327528bb51bf1"
+    },
+    "files": [
+      "backtest/basket_replay.py",
+      "backtest/candidates/cross_sectional_momentum_1787/data/data_manifest.json",
+      "scheduler/basket_config.go",
+      "scheduler/basket_coordinator.go",
+      "scheduler/basket_expiry.go",
+      "scheduler/basket_lifecycle.go",
+      "scheduler/basket_planner.go",
+      "scheduler/basket_ranker.go",
+      "scheduler/basket_replay.go",
+      "scheduler/basket_replay_cmd.go",
+      "scheduler/basket_replay_spec.go",
+      "scheduler/basket_replay_storage.go",
+      "scheduler/basket_replay_targets.go",
+      "scheduler/fill_cost_policy.go",
+      "shared_scripts/run_basket_ranker.py",
+      "shared_strategies/open/basket_allocation.py",
+      "shared_strategies/open/cross_sectional_momentum.py",
+      "shared_strategies/open/cross_sectional_reversal.py",
+      "shared_strategies/open/mean_reversion_pro.py",
+      "shared_strategies/open/registry.py"
+    ],
+    "contracts": {
+      "replay_plan": ["go-trader.basket-replay-plan", 1],
+      "replay_result": ["go-trader.basket-replay-result", 1],
+      "adapter_protocol": ["go-trader.basket-replay", 1],
+      "ranker_request_version": 2,
+      "baseline_target_input": "scheduler/basket_replay_spec.go declares target_input mode \"baseline\" beside \"ranker\"",
+      "cost_policy": "scheduler/fill_cost_policy.go accepts only fill_role taker_all and spread inside_slippage",
+      "holding_horizon": "scheduler/basket_config.go declares the basket lifecycle field holding_horizon_seconds"
+    }
+  },
+  "require_clean_source": true,
+  "data": {
+    "reference_dir": "backtest/candidates/cross_sectional_momentum_1787/data",
+    "reference_manifest_sha256": "83f51647c2e898e9a0eef3eaffcc583889a0a97de7f9b0dc98c2e75b7571ab58",
+    "reference_study": "cross_sectional_momentum_1792",
+    "reuse": "Inputs are reused by reference: the #1792 frozen Hyperliquid daily candles, hourly funding and lot metadata in backtest/candidates/cross_sectional_momentum_1787/data, read in place. data_reference.json pins the referenced data manifest and every file by sha256; run verifies every hash and the full candle, funding and lot coverage of both windows before any replay, and refuses any change. No data is copied or fetched.",
+    "venue": "hyperliquid",
+    "timeframe": "1d",
+    "candles": "Hyperliquid perpetual daily candles (candleSnapshot) through platforms/hyperliquid/adapter.py get_ohlcv_candles, frozen by #1792; venue prices, not a proxy; a bar is kept only from the first daily bar with at least one trade",
+    "funding": "Hyperliquid hourly funding history through shared_tools/funding_fetcher.py load_cached_funding, frozen by #1792; signed rates, never filled; an observed zero rate is a valid rate",
+    "lot_metadata": "Hyperliquid perpetual szDecimals through platforms/hyperliquid/adapter.py lot_size_decimals, read once at the #1792 preparation",
+    "funding_start": "2024-01-25T00:00:00Z",
+    "pinned_end": "2026-10-02T00:00:00Z"
+  },
+  "universe": {
+    "candidates": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "ARB", "OP", "LTC", "BNB", "XRP", "ATOM", "APT", "SUI", "MATIC", "POL", "INJ", "BCH", "DOT", "ADA", "TRX", "NEAR"],
+    "rule": "the #1792 dated universe rule, applied again by this study to the referenced listing evidence: a named candidate is a member when its first Hyperliquid daily bar with at least one trade opens at or before listing_cutoff, every daily bar from that bar to pinned_end exists with at least one trade (no gap), and the venue meta lists it as not delisted at preparation; run refuses a member list that differs from the referenced manifest",
+    "listing_cutoff": "2023-07-01T00:00:00Z",
+    "listing_evidence": "listed_at and known_at are the open time of the member's first daily bar with at least one trade",
+    "survivorship": "the candidate list and the not-delisted test use preparation-time knowledge, so a coin that was delisted before pinned_end (MATIC) cannot be a member; this biases every arm toward surviving coins and is reported as a limit"
+  },
+  "windows": {
+    "train": ["2024-08-22T00:00:00Z", "2025-06-06T00:00:00Z"],
+    "held_out": ["2025-06-05T00:00:00Z", "2026-10-02T00:00:00Z"],
+    "note": "the #1792 windows: both start and end their last step on a weekly rebalance deadline (Thursday 00:00 UTC); the training window's last step and the held-out window's first step are the same instant, and no held-out return enters training or selection"
+  },
+  "window_disclosure": "Previously inspected windows: these are the #1792 windows, and the #1792 report (backtest/candidates/cross_sectional_momentum_1787/REPORT.md) already published held-out results of cross_sectional_momentum, equal-weight, momentum and vol_momentum arms over the same coins and dates before this protocol was written. The reversal ranker sorts the same scores and takes the opposite tails, so this study's held-out comparison is a retrospective held-out comparison on inspected dates, not new unseen evidence. No reversal replay of any window ran before the lock.",
+  "history_bars": 210,
+  "basket": {
+    "id": "xsrev-study",
+    "rebalance_interval_seconds": 604800,
+    "evaluation_window_seconds": 3600,
+    "ranker_timeout_seconds": 120,
+    "lookback_bars": 60,
+    "gross_budget_usd": 10000,
+    "max_coin_notional_usd": 2500,
+    "max_transition_net_usd": 2500,
+    "min_eligible_members": 8,
+    "min_history_bars": 30,
+    "eligibility_source": "frozen Hyperliquid daily candles referenced from cross_sectional_momentum_1787/data (first traded bar)",
+    "eligibility_version": "1790-1"
+  },
+  "holding_horizon": "the basket lifecycle field holding_horizon_seconds is part of the grid; every held-out arm (candidate, stress and both baselines) uses the horizon selected on training. Go owns the lifecycle: the first confirmed entry fixes the expiry at entry plus the horizon, expiry closes run before any rank, and the reopen suppression covers the recorded deadline, so only a later deadline can reopen a member. Every grid horizon is shorter than the weekly rebalance interval, so each arm holds a deadline's targets for at most the horizon and is flat until the next deadline",
+  "member_config": {
+    "capital": 3000,
+    "leverage": 1,
+    "max_drawdown_pct": 90,
+    "stop_loss_pct": 30,
+    "close_strategy": {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {"profit_pct": 5.0, "close_fraction": 1.0}
+        ]
+      }
+    }
+  },
+  "member_close_policy": "every arm uses the same member close policy as #1792: a fixed 30 percent catastrophic stop (stop_loss_pct) and a 500 percent take-profit tier (profit_pct 5.0 as a fraction) that is not expected to fire; exits otherwise come from coordinator targets and the holding-horizon expiry",
+  "portfolio_risk": {
+    "max_drawdown_pct": 25
+  },
+  "costs": {
+    "primary": {"taker_fee_pct": 0.00045, "slippage_pct": 0.0005, "fill_role": "taker_all", "spread": "inside_slippage"},
+    "stress": {"taker_fee_pct": 0.0009, "slippage_pct": 0.001, "fill_role": "taker_all", "spread": "inside_slippage"},
+    "note": "rates are fractions per fill; primary equals the frozen paper model (Hyperliquid base taker fee and paper slippage), stress doubles both; every fill books as a taker fill, the #1791 cost path models no separate spread, so spread sits inside slippage"
+  },
+  "grid": {
+    "return_lookback_bars": [7, 14, 28],
+    "quantile": [0.2, 0.3],
+    "volatility_lookback_bars": [28],
+    "holding_horizon_seconds": [86400, 172800, 345600]
+  },
+  "venue_script": {},
+  "venue_script_note": "scripted venue outcomes by step time for every replay; empty in this study, so every order fills in full at the step mark plus slippage; integration fixtures use it to inject a save failure",
+  "selection": {
+    "window": "train",
+    "eligible": "a variant whose training replay is complete and passes every validity gate",
+    "objective": "highest mean weekly after-cost cluster return on the gross budget over the training clusters",
+    "tie_break": ["smaller return_lookback_bars", "smaller quantile", "smaller volatility_lookback_bars", "smaller holding_horizon_seconds"],
+    "no_eligible_variant": "inconclusive diagnostic, no held-out replay"
+  },
+  "baselines": {
+    "cross_sectional_momentum": {
+      "kind": "basket_evaluator",
+      "strategy": "cross_sectional_momentum",
+      "matched_params": ["return_lookback_bars", "volatility_lookback_bars", "quantile"],
+      "rule": "the registered #1787 basket evaluator called by the study on the same closed-bar input the runner gives the candidate: for every member, the last lookback_bars (60) closed daily bars ending with the bar that closes at the deadline, the frozen allocation context of this basket, and the training-selected return lookback, volatility lookback and quantile of the candidate; its exact weights become frozen baseline weights for that deadline.",
+      "zero_signal": "a member the evaluator gives weight 0 has target 0",
+      "holds": "an evaluator hold, an empty long or short side, or any member without a gap-free closed prefix ending at the deadline omits that deadline's weights, so the adapter holds the whole set for it"
+    },
+    "mean_reversion_pro": {
+      "kind": "single_member_signal",
+      "strategy": "mean_reversion_pro",
+      "params": {
+        "lookback": 30, "entry_std": 2.0,
+        "adx_period": 14, "adx_max": 25.0,
+        "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0,
+        "confirm_window": 3,
+        "touch_entry": 0, "turn_entry": 0
+      },
+      "input_prefix_bars": 200,
+      "indicator_columns": ["z_score", "adx", "rsi"],
+      "rule": "the registered single-member evaluator with its frozen registered parameters, run separately for every eligible member on the last 200 closed daily bars ending with the bar that closes at the deadline; only the entry signal of that last bar is read: target weight = signal / N for N eligible members (+1 long entry, -1 short entry). The signal is never read as a position: Python keeps no state between deadlines, a zero signal sets a zero target, and unused allocation is never renormalized.",
+      "zero_signal": "signal 0 sets target 0, so the member is flat at that deadline",
+      "frequency_note": "only an entry signal on the deadline bar itself counts; an entry signal on any other daily bar of the week leaves the member flat at that deadline, so this arm can be flat at most or all deadlines; the study reports how many deadlines carry a nonzero target",
+      "holds": "a member with fewer than 200 gap-free closed bars ending at the deadline, a non-finite z_score, adx or rsi on the deadline bar, or a signal other than -1, 0 or 1 omits that deadline's weights, so the adapter holds the whole set for it"
+    },
+    "common": "every arm runs through the same replay with the same members, member capital, member close policy, costs, gross budget, per-coin cap, net bound (max_transition_net_usd 2500, never relaxed), decision deadlines, windows and the training-selected holding horizon; only target_input differs (baselines use the #1791 baseline target-input path). Python produces frozen deadline weights only; Go applies listing eligibility, the gross, net and per-coin checks (a weight set outside them holds the whole set), position lifetime, expiry, action ordering and recovery. A flat member keeps its own cash, which never moves to another member. The study checks that the adapter froze exactly the converted weights at every deadline it did not hold."
+  },
+  "accounting": {
+    "tolerance_usd": 0.01,
+    "rules": [
+      "A run is valid only when the replay driver and the adapter report status complete with complete coverage (candles, marks, funding and settlement) and exit code 0, the adapter steps equal the window steps, the exported funding rows equal the rows the steps booked, no step records a state save failure (a failure that a later durable save recovered still refuses the run), no step was save-blocked, the applied cost policy equals the frozen one, every fill sits on the frozen lot grid, every funding row has the sign its quantity and rate imply, and equity reconciles with the booked close results, funding, fees and the endpoint book within tolerance_usd.",
+      "An invalid or incomplete run is recorded as an unscored diagnostic; an exit code of 0 alone is never evidence of validity."
+    ]
+  },
+  "statistics": {
+    "cluster": "one rebalance period: from the equity after the step at one weekly deadline to the equity after the step at the next deadline; the first cluster starts from the summed member capital before the first step, so the first build cost is included; all member legs of a period belong to one cluster, and individual member fills never count as independent samples",
+    "return": "cluster equity change divided by gross_budget_usd",
+    "paired_excess": "candidate cluster return minus the baseline cluster return for the same period",
+    "inference": "mean with a Newey-West (Bartlett kernel) long-run variance at lag_weeks; effective clusters n_eff = n * sample variance / long-run variance, capped at n; corrected one-sided lower bound = mean - z * se with z at alpha / family_size",
+    "lag_weeks": 4,
+    "lag_reason": "the longest return or volatility lookback is 28 daily bars (4 weeks), so overlapping lookbacks can link up to 4 adjacent clusters",
+    "alpha_one_sided": 0.05,
+    "family_size": 72,
+    "family_reason": "18 tried variants (3 return lookbacks x 2 quantiles x 1 volatility lookback x 3 holding horizons) x 4 tested hypotheses (candidate net return, excess over each of 2 baselines, stressed net return); Bonferroni per-test level alpha / 72",
+    "min_clusters": 52,
+    "min_effective_clusters": 52,
+    "sufficiency_reason": "52 weekly clusters is one year of rebalance clusters; each tested series must reach it in count and in n_eff and have a defined long-run variance, else the study is an unscored diagnostic"
+  },
+  "stability": {
+    "rule": "frozen before selection: every one-axis neighbor of the selected variant in the grid (the adjacent return lookback, the other quantile, the adjacent holding horizons) must be a valid training run with a positive mean weekly training return; a valid neighbor at or below zero makes the condition false, and a missing or invalid neighbor leaves it unknown"
+  },
+  "concentration": {
+    "max_largest_member_share": 0.5,
+    "rule": "the largest single member share of the summed positive member PnL of the held-out candidate must be at most 0.5"
+  },
+  "verdict_rules": {
+    "accounting": "every held-out replay (candidate at primary and stressed cost, both baselines) must be complete and pass every validity gate; otherwise the study is inconclusive with scored=false and no valid economic result",
+    "sufficiency": "every tested series reaches min_clusters and min_effective_clusters and has a defined long-run variance; otherwise inconclusive with scored=false",
+    "conditions": {
+      "net_positive": "true when the corrected one-sided lower bound of the candidate mean weekly return is above 0; false when the mean is at or below 0; else unknown",
+      "beats_cross_sectional_momentum": "the same rule on the paired excess over cross_sectional_momentum",
+      "beats_mean_reversion_pro": "the same rule on the paired excess over mean_reversion_pro",
+      "stress_net_positive": "the same rule on the candidate weekly returns at stressed cost",
+      "stable": "the stability rule",
+      "not_concentrated": "the concentration rule"
+    },
+    "pass": "accounting valid, sufficient, every condition true",
+    "fail": "accounting valid, sufficient, and any of net_positive, the two beats conditions or stress_net_positive false",
+    "inconclusive": "any other outcome; with valid and sufficient evidence this means every required mean is positive but a corrected lower bound, stability or concentration is unresolved or false",
+    "metadata": "fail records edge_source study_fail and inconclusive records study_inconclusive, both with edge_ref REPORT.md; a pass keeps edge_source unvalidated and edge_status no_edge until a separate promotion change; live basket use stays refused for every outcome; the driver never edits registry metadata, live defaults or deployed configuration"
+  },
+  "limits": [
+    "Execution surfaces not modeled: maker fills, a separate spread (spread sits inside slippage), order-book depth and market impact, intrabar execution, venue outages and partial venue fills (every scripted fill is a full taker fill at the step mark plus slippage), and historical changes of szDecimals or minimum order size (lot metadata is read once at preparation).",
+    "Proxy-price basis: marks are the open of the daily Hyperliquid bar at each step; the venue's mark and oracle prices, which drive funding and liquidation, can differ from candle prices. Funding is charged from the venue's hourly rates at the sampled step mark.",
+    "Members hold separate paper cash; idle cash earns nothing. Returns are stated on the gross budget, and the summed member capital is larger than the gross budget.",
+    "The candidate's target net weight is exactly 0, but a dollar-neutral basket is not beta neutral, and transitions pass through states bounded by the net allowance. The mean_reversion_pro baseline can be directional within the same net bound.",
+    "The universe is a fixed set of surviving large coins chosen by a frozen rule; the result does not cover delisted coins, new listings or a larger universe.",
+    "The windows were inspected by #1792 before this protocol; the held-out comparison is retrospective.",
+    "A study pass would grant no live admission; the basket live refusal stays in force for every outcome."
+  ]
+}

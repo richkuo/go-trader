@@ -1,0 +1,196 @@
+{
+  "files": {
+    "APT_1d_candles.csv.gz": {
+      "coin": "APT",
+      "kind": "candles",
+      "sha256": "b71f02ac675fb771a769348a3fc77d15c4287b4f220c5916df33e0547cdd021b"
+    },
+    "APT_funding.csv.gz": {
+      "coin": "APT",
+      "kind": "funding",
+      "sha256": "d0f12b90058cc89f1495249484c6c11391104f89e05cc963ac2570e8603463ae"
+    },
+    "ARB_1d_candles.csv.gz": {
+      "coin": "ARB",
+      "kind": "candles",
+      "sha256": "e931c1de589b7fc3ddfb35f3d9110c66023efe29e08151876a03ec318204b530"
+    },
+    "ARB_funding.csv.gz": {
+      "coin": "ARB",
+      "kind": "funding",
+      "sha256": "277fd4450beb728d9f8101ea697a84978fa38b26e20c2eee01d007fddd23208d"
+    },
+    "ATOM_1d_candles.csv.gz": {
+      "coin": "ATOM",
+      "kind": "candles",
+      "sha256": "31fc9d4007365834e9ea85cf45b1ce3224a068c5d0fce0f096fec939dbd7dd16"
+    },
+    "ATOM_funding.csv.gz": {
+      "coin": "ATOM",
+      "kind": "funding",
+      "sha256": "9f149db701b71617a8a80fa2203a2d31d6f7fc58a8c18268f7c82c7652e0c12e"
+    },
+    "AVAX_1d_candles.csv.gz": {
+      "coin": "AVAX",
+      "kind": "candles",
+      "sha256": "e50f96631cb23ed87f8c7d140b78f9cbd288810d90f31f3652c6b11b1fefe716"
+    },
+    "AVAX_funding.csv.gz": {
+      "coin": "AVAX",
+      "kind": "funding",
+      "sha256": "bfe2caf5d0651d97b77b9d0a2fce7d2119678f40513c42c316430954dd59cf7c"
+    },
+    "BCH_1d_candles.csv.gz": {
+      "coin": "BCH",
+      "kind": "candles",
+      "sha256": "6cb48ce6ef54b308fffdce15b8f7b7a6cffd181e8a043a810d063640b77e5bfc"
+    },
+    "BCH_funding.csv.gz": {
+      "coin": "BCH",
+      "kind": "funding",
+      "sha256": "0af0e8a2fde41f9a6e05fd23b4bddd3121e1d38350330a42d294ad439f14a079"
+    },
+    "BNB_1d_candles.csv.gz": {
+      "coin": "BNB",
+      "kind": "candles",
+      "sha256": "a87c6cf77b7b7709f7bd8f53098c049df41cb45dfaa45b88796f56d320b89190"
+    },
+    "BNB_funding.csv.gz": {
+      "coin": "BNB",
+      "kind": "funding",
+      "sha256": "6410bda0f20591339b448245aca9592ea224901579e6855f02ae14711e2956cc"
+    },
+    "BTC_1d_candles.csv.gz": {
+      "coin": "BTC",
+      "kind": "candles",
+      "sha256": "b6ee004a5c5ef63bd74f9d21b265f2eeaddd0dd2cffe01f16b188cdd677350bd"
+    },
+    "BTC_funding.csv.gz": {
+      "coin": "BTC",
+      "kind": "funding",
+      "sha256": "881258f1baa4f26ad04a9c15430f7b8913d3dd8d9eef1fff2969a3bbc842fbef"
+    },
+    "DOGE_1d_candles.csv.gz": {
+      "coin": "DOGE",
+      "kind": "candles",
+      "sha256": "d5dd39380467b2c01e7efde62359736b7a48caa8a4431b73ca625f8e19c96aaf"
+    },
+    "DOGE_funding.csv.gz": {
+      "coin": "DOGE",
+      "kind": "funding",
+      "sha256": "f10231fc4e314097466b06e05112e1a35e88bc7e00144ffdf3fbf39c159e5a54"
+    },
+    "ETH_1d_candles.csv.gz": {
+      "coin": "ETH",
+      "kind": "candles",
+      "sha256": "f13e5e90ae5b2dd83bba6d2589f2783ec4f6f0ce9911f252ebf503da6b81cdd9"
+    },
+    "ETH_funding.csv.gz": {
+      "coin": "ETH",
+      "kind": "funding",
+      "sha256": "2dfd44fbfd8801c2c3864304e602e42b8a1ec75d2c8589bcde04adc235ec23bf"
+    },
+    "INJ_1d_candles.csv.gz": {
+      "coin": "INJ",
+      "kind": "candles",
+      "sha256": "9799996aa428a3d3ee6018e2150f98866a20aac6106e7d7eb3db07ba112f79f5"
+    },
+    "INJ_funding.csv.gz": {
+      "coin": "INJ",
+      "kind": "funding",
+      "sha256": "b04a1a3fcb3e184388fb2b2b55b11646b467f337112dbe0b8bca67e97deeb148"
+    },
+    "LINK_1d_candles.csv.gz": {
+      "coin": "LINK",
+      "kind": "candles",
+      "sha256": "3401762bb2ad5c83f48c92586dc4263f717b08429a03104020102949e5466c8f"
+    },
+    "LINK_funding.csv.gz": {
+      "coin": "LINK",
+      "kind": "funding",
+      "sha256": "34091ea054b4099eb3f26bbc7a62e7deabf556a7e9c5d587e69cc025f703054c"
+    },
+    "LTC_1d_candles.csv.gz": {
+      "coin": "LTC",
+      "kind": "candles",
+      "sha256": "80edc4bba94b01c7d0089d39d9f199aae32b42c47f0396c49489bc6cba4a7e6d"
+    },
+    "LTC_funding.csv.gz": {
+      "coin": "LTC",
+      "kind": "funding",
+      "sha256": "93d07901f25a62ea4583ed58757150ac1f334e3556522e20c7f7a77a169e1c0a"
+    },
+    "OP_1d_candles.csv.gz": {
+      "coin": "OP",
+      "kind": "candles",
+      "sha256": "358bc2f7fa05a93b5e054e6d9667563e23602b41928854fe7989a7a1e7e81491"
+    },
+    "OP_funding.csv.gz": {
+      "coin": "OP",
+      "kind": "funding",
+      "sha256": "e92ce869f5546cf54a5972c70238e2c6d1b05a206ec0eaa33970455ca7501fc5"
+    },
+    "SOL_1d_candles.csv.gz": {
+      "coin": "SOL",
+      "kind": "candles",
+      "sha256": "7473c38679aefc16a30d0b1134ed8f87a42cff2e217b895a73f589e8c212eb6d"
+    },
+    "SOL_funding.csv.gz": {
+      "coin": "SOL",
+      "kind": "funding",
+      "sha256": "9fb679dff5f7bc1f3e341364225c4317cfeccf15d5c69630dfa23602596ee65c"
+    },
+    "SUI_1d_candles.csv.gz": {
+      "coin": "SUI",
+      "kind": "candles",
+      "sha256": "feff021502cdab0e78b55bc407cba1c0fef387df2502a679df37b5a3c3b92c55"
+    },
+    "SUI_funding.csv.gz": {
+      "coin": "SUI",
+      "kind": "funding",
+      "sha256": "397cc7fdbd0b581a9d773c8bc55a33c2a22d20297fc3ef3c12bd426f22e75ddf"
+    },
+    "XRP_1d_candles.csv.gz": {
+      "coin": "XRP",
+      "kind": "candles",
+      "sha256": "89957e96ffa98ee84da2cc78aee5564e37fab9f32e7c95d7492216af0d3c028b"
+    },
+    "XRP_funding.csv.gz": {
+      "coin": "XRP",
+      "kind": "funding",
+      "sha256": "36b33051697a8b71b4085171045b01845afca55db234802f5b8534d140f75125"
+    }
+  },
+  "lot_metadata": {
+    "path": "lot_metadata.json",
+    "sha256": "51d60891081fd31299681aa40c04cd299cb5048ca5a85895f5f327435628ea72"
+  },
+  "note": "this study copies no data; it reads the referenced frozen files in place and refuses any hash change",
+  "reference_dir": "backtest/candidates/cross_sectional_momentum_1787/data",
+  "schema": "go-trader.xsrev-basket-study-data-reference",
+  "source_manifest": {
+    "path": "data_manifest.json",
+    "sha256": "83f51647c2e898e9a0eef3eaffcc583889a0a97de7f9b0dc98c2e75b7571ab58"
+  },
+  "source_study": "cross_sectional_momentum_1792",
+  "study": "cross_sectional_reversal_1790",
+  "universe_members": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "DOGE",
+    "AVAX",
+    "LINK",
+    "ARB",
+    "OP",
+    "LTC",
+    "BNB",
+    "XRP",
+    "ATOM",
+    "APT",
+    "SUI",
+    "INJ",
+    "BCH"
+  ],
+  "version": 1
+}

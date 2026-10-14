@@ -823,18 +823,18 @@ func (v *basketReplayVenue) Query(a *basketAction) (basketVenueOutcome, error) {
 	}
 	nowMs := tradingNow().UnixMilli()
 	if len(events) == 0 {
-		return basketVenueOutcome{Outcome: basketVenueRejected, Detail: "the scripted venue never received this client order id, so nothing filled", ObservedAtMs: nowMs}, nil
+		return v.observeQuery(a, basketVenueOutcome{Outcome: basketVenueRejected, Detail: "the scripted venue never received this client order id, so nothing filled", ObservedAtMs: nowMs}, nowMs)
 	}
 	last := events[len(events)-1].Outcome
 	if last.Outcome != basketVenueUnknown {
-		return last, nil
+		return v.observeQuery(a, last, nowMs)
 	}
 	idx, err := r.file.countBasketReplayVenueEvents(r.spec.Run.RunID, v.step, "query")
 	if err != nil {
 		return basketVenueOutcome{}, err
 	}
 	if idx >= len(v.script.Queries) {
-		return basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "the scripted venue has not resolved the order yet", ObservedAtMs: nowMs}, nil
+		return v.observeQuery(a, basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "the scripted venue has not resolved the order yet", ObservedAtMs: nowMs}, nowMs)
 	}
 	scripted := v.script.Queries[idx]
 	out := basketVenueOutcome{ObservedAtMs: nowMs, VenueOrderID: last.VenueOrderID}
@@ -858,6 +858,13 @@ func (v *basketReplayVenue) Query(a *basketAction) (basketVenueOutcome, error) {
 	}
 	if err := r.file.insertBasketReplayVenueEvent(r.spec.Run.RunID, basketReplayVenueEvent{ClientOrderID: a.ClientOrderID, ActionID: a.ActionID, Kind: "query", StepIndex: v.step, ScriptIndex: idx, Outcome: out}, nowMs); err != nil {
 		return basketVenueOutcome{}, err
+	}
+	return out, nil
+}
+
+func (v *basketReplayVenue) observeQuery(a *basketAction, out basketVenueOutcome, nowMs int64) (basketVenueOutcome, error) {
+	if err := v.r.file.insertBasketReplayVenueEvent(v.r.spec.Run.RunID, basketReplayVenueEvent{ClientOrderID: a.ClientOrderID, ActionID: a.ActionID, Kind: "query", StepIndex: v.step, ScriptIndex: -1, Outcome: out}, nowMs); err != nil {
+		return basketVenueOutcome{}, fmt.Errorf("the replay venue could not record the query: %w", err)
 	}
 	return out, nil
 }
@@ -920,36 +927,39 @@ type basketReplayActionRecord struct {
 }
 
 type basketReplayMemberRecord struct {
-	StrategyID          string  `json:"strategy_id"`
-	Coin                string  `json:"coin"`
-	Cash                float64 `json:"cash"`
-	InitialCapital      float64 `json:"initial_capital"`
-	Value               float64 `json:"value"`
-	Qty                 float64 `json:"signed_qty"`
-	AvgCost             float64 `json:"avg_cost,omitempty"`
-	EntryATR            float64 `json:"entry_atr,omitempty"`
-	StopLossTriggerPx   float64 `json:"stop_loss_trigger_px,omitempty"`
-	StopLossHighWaterPx float64 `json:"stop_loss_high_water_px,omitempty"`
-	OpenedAtMs          int64   `json:"opened_at_ms,omitempty"`
-	ExpectedQty         float64 `json:"expected_qty"`
-	DailyPnL            float64 `json:"daily_pnl"`
-	DailyPnLDate        string  `json:"daily_pnl_date,omitempty"`
-	ConsecutiveLosses   int     `json:"consecutive_losses"`
-	CircuitBreaker      bool    `json:"circuit_breaker"`
-	CircuitBreakerUntil string  `json:"circuit_breaker_until,omitempty"`
-	PeakValue           float64 `json:"peak_value"`
-	DrawdownPct         float64 `json:"drawdown_pct"`
-	ConsumedThroughMs   int64   `json:"entry_consumed_through_ms,omitempty"`
-	LatestObservedMs    int64   `json:"entry_latest_observed_ms,omitempty"`
-	FundingSettledMs    int64   `json:"funding_settled_through_ms,omitempty"`
-	FundingHeld         int     `json:"funding_held,omitempty"`
-	FundingGaps         int     `json:"funding_open_gaps,omitempty"`
-	Trades              int     `json:"trade_rows"`
-	LifecycleEntryMs    int64   `json:"lifecycle_entry_ms,omitempty"`
-	LifecycleExpiryMs   int64   `json:"lifecycle_expiry_ms,omitempty"`
-	LifecycleState      string  `json:"lifecycle_state,omitempty"`
-	LifecycleAttempt    int     `json:"lifecycle_attempt,omitempty"`
-	SuppressThroughMs   int64   `json:"reopen_suppressed_through_ms,omitempty"`
+	StrategyID          string   `json:"strategy_id"`
+	Coin                string   `json:"coin"`
+	Cash                float64  `json:"cash"`
+	InitialCapital      float64  `json:"initial_capital"`
+	Value               float64  `json:"value"`
+	Qty                 float64  `json:"signed_qty"`
+	AvgCost             float64  `json:"avg_cost,omitempty"`
+	EntryATR            float64  `json:"entry_atr,omitempty"`
+	StopLossTriggerPx   float64  `json:"stop_loss_trigger_px,omitempty"`
+	StopLossHighWaterPx float64  `json:"stop_loss_high_water_px,omitempty"`
+	OpenedAtMs          int64    `json:"opened_at_ms,omitempty"`
+	ExpectedQty         float64  `json:"expected_qty"`
+	DailyPnL            float64  `json:"daily_pnl"`
+	DailyPnLDate        string   `json:"daily_pnl_date,omitempty"`
+	ConsecutiveLosses   int      `json:"consecutive_losses"`
+	CircuitBreaker      bool     `json:"circuit_breaker"`
+	CircuitBreakerUntil string   `json:"circuit_breaker_until,omitempty"`
+	PeakValue           float64  `json:"peak_value"`
+	DrawdownPct         float64  `json:"drawdown_pct"`
+	ConsumedThroughMs   int64    `json:"entry_consumed_through_ms,omitempty"`
+	LatestObservedMs    int64    `json:"entry_latest_observed_ms,omitempty"`
+	FundingSettledMs    int64    `json:"funding_settled_through_ms,omitempty"`
+	FundingHeld         int      `json:"funding_held,omitempty"`
+	FundingGaps         int      `json:"funding_open_gaps,omitempty"`
+	Trades              int      `json:"trade_rows"`
+	LifecycleEntryMs    int64    `json:"lifecycle_entry_ms,omitempty"`
+	LifecycleExpiryMs   int64    `json:"lifecycle_expiry_ms,omitempty"`
+	LifecycleState      string   `json:"lifecycle_state,omitempty"`
+	LifecycleAttempt    int      `json:"lifecycle_attempt,omitempty"`
+	SuppressThroughMs   int64    `json:"reopen_suppressed_through_ms,omitempty"`
+	LifecycleFailures   int      `json:"lifecycle_failures,omitempty"`
+	LifecycleRetryAtMs  int64    `json:"lifecycle_retry_at_ms,omitempty"`
+	LifecycleAlerts     []string `json:"lifecycle_alerts,omitempty"`
 }
 
 type basketReplayPartitionRecord struct {
@@ -998,6 +1008,7 @@ func formatOptionalTime(t time.Time) string {
 }
 
 type basketReplayRecordInput struct {
+	DB        *StateDB
 	BC        *basketCoordinator
 	State     *AppState
 	Mu        *sync.RWMutex
@@ -1009,7 +1020,7 @@ type basketReplayRecordInput struct {
 }
 
 func (r *basketReplayRuntime) fillRecord(rec *basketReplayStepRecord, at time.Time, step basketReplayStep, scopeRisk map[RiskPartition]*scopeCycleRisk, prices map[string]float64) {
-	lines := buildBasketReplayStepRecord(rec, at, basketReplayRecordInput{BC: r.bc, State: r.state, Mu: r.mu, Bounds: r.venue.bounds, Partition: r.partition, ScopeRisk: scopeRisk, Prices: prices, Marks: step.Marks})
+	lines := buildBasketReplayStepRecord(rec, at, basketReplayRecordInput{DB: r.file, BC: r.bc, State: r.state, Mu: r.mu, Bounds: r.venue.bounds, Partition: r.partition, ScopeRisk: scopeRisk, Prices: prices, Marks: step.Marks})
 	r.mu.RLock()
 	for key, ready := range r.lastSnapshotKeys(at) {
 		if !ready {
@@ -1027,6 +1038,14 @@ func buildBasketReplayStepRecord(rec *basketReplayStepRecord, at time.Time, in b
 	var coverage []string
 	atMs := at.UnixMilli()
 	ids := in.BC.sortedIDs()
+	var storedRebalances map[basketKey]map[int64]*basketRebalance
+	var storedActions map[basketKey]map[string]*basketAction
+	if in.DB != nil {
+		var err error
+		if storedRebalances, storedActions, err = in.DB.basketReplayTouchedRows(atMs); err != nil {
+			coverage = append(coverage, fmt.Sprintf("step %d: the basket rows saved at this step are unreadable: %v", rec.Index, err))
+		}
+	}
 	marks := make(map[string]float64)
 	for k, v := range in.Prices {
 		marks[k] = v
@@ -1034,8 +1053,21 @@ func buildBasketReplayStepRecord(rec *basketReplayStepRecord, at time.Time, in b
 	var equity float64
 	for _, id := range ids {
 		rt := in.BC.runtimes[id]
-		for _, d := range rt.sortedDeadlines() {
-			rb := rt.Rebalances[d]
+		key := basketKey{Partition: rt.Partition, BasketID: rt.Contract.BasketID}
+		rebalances := make(map[int64]*basketRebalance, len(rt.Rebalances))
+		for d, rb := range storedRebalances[key] {
+			rebalances[d] = rb
+		}
+		for d, rb := range rt.Rebalances {
+			rebalances[d] = rb
+		}
+		deadlines := make([]int64, 0, len(rebalances))
+		for d := range rebalances {
+			deadlines = append(deadlines, d)
+		}
+		sort.Slice(deadlines, func(i, j int) bool { return deadlines[i] < deadlines[j] })
+		for _, d := range deadlines {
+			rb := rebalances[d]
 			if rb.UpdatedAtMs != atMs && rb.CreatedAtMs != atMs {
 				continue
 			}
@@ -1046,8 +1078,29 @@ func buildBasketReplayStepRecord(rec *basketReplayStepRecord, at time.Time, in b
 			}
 			rec.Rebalances = append(rec.Rebalances, rr)
 		}
-		for _, aid := range rt.sortedActionIDs() {
-			a := rt.Actions[aid]
+		actions := make(map[string]*basketAction, len(rt.Actions))
+		for aid, a := range storedActions[key] {
+			actions[aid] = a
+		}
+		for aid, a := range rt.Actions {
+			actions[aid] = a
+		}
+		actionIDs := make([]string, 0, len(actions))
+		for aid := range actions {
+			actionIDs = append(actionIDs, aid)
+		}
+		sort.Slice(actionIDs, func(i, j int) bool {
+			a, b := actions[actionIDs[i]], actions[actionIDs[j]]
+			if a.DeadlineMs != b.DeadlineMs {
+				return a.DeadlineMs < b.DeadlineMs
+			}
+			if a.CreatedAtMs != b.CreatedAtMs {
+				return a.CreatedAtMs < b.CreatedAtMs
+			}
+			return actionIDs[i] < actionIDs[j]
+		})
+		for _, aid := range actionIDs {
+			a := actions[aid]
 			if a.UpdatedAtMs != atMs && a.CreatedAtMs != atMs {
 				continue
 			}
@@ -1073,6 +1126,7 @@ func buildBasketReplayStepRecord(rec *basketReplayStepRecord, at time.Time, in b
 			mr := basketReplayMemberRecord{StrategyID: m.StrategyID, Coin: m.Coin, ExpectedQty: rt.Expected[m.StrategyID], Qty: q}
 			if l, ok := rt.Lifecycle[m.StrategyID]; ok {
 				mr.LifecycleEntryMs, mr.LifecycleExpiryMs, mr.LifecycleState, mr.LifecycleAttempt, mr.SuppressThroughMs = l.EntryMs, l.ExpiryMs, l.State, l.Attempt, l.SuppressThroughMs
+				mr.LifecycleFailures, mr.LifecycleRetryAtMs, mr.LifecycleAlerts = l.Failures, l.RetryAtMs, append([]string(nil), l.Alerts...)
 			}
 			if s != nil {
 				mr.Cash, mr.InitialCapital = s.Cash, s.InitialCapital
@@ -1265,21 +1319,22 @@ type basketReplayCoverage struct {
 }
 
 type basketReplayOutput struct {
-	Protocol     string                    `json:"protocol"`
-	Version      int                       `json:"version"`
-	Status       string                    `json:"status"`
-	Refusal      *basketReplayRefusal      `json:"refusal,omitempty"`
-	Error        string                    `json:"error,omitempty"`
-	Run          *basketReplayRunInfo      `json:"run,omitempty"`
-	CapitalModel string                    `json:"capital_model,omitempty"`
-	ClockModel   string                    `json:"clock_model,omitempty"`
-	EventOrder   string                    `json:"event_order,omitempty"`
-	TargetInput  string                    `json:"target_input,omitempty"`
-	Cost         *basketReplayCostInfo     `json:"cost,omitempty"`
-	Steps        []basketReplayStepRecord  `json:"steps,omitempty"`
-	Trades       []basketReplayTradeRecord `json:"trades,omitempty"`
-	Coverage     *basketReplayCoverage     `json:"coverage,omitempty"`
-	LotFetches   int                       `json:"lot_metadata_fetch_refusals"`
+	Protocol     string                         `json:"protocol"`
+	Version      int                            `json:"version"`
+	Status       string                         `json:"status"`
+	Refusal      *basketReplayRefusal           `json:"refusal,omitempty"`
+	Error        string                         `json:"error,omitempty"`
+	Run          *basketReplayRunInfo           `json:"run,omitempty"`
+	CapitalModel string                         `json:"capital_model,omitempty"`
+	ClockModel   string                         `json:"clock_model,omitempty"`
+	EventOrder   string                         `json:"event_order,omitempty"`
+	TargetInput  string                         `json:"target_input,omitempty"`
+	Cost         *basketReplayCostInfo          `json:"cost,omitempty"`
+	Steps        []basketReplayStepRecord       `json:"steps,omitempty"`
+	Trades       []basketReplayTradeRecord      `json:"trades,omitempty"`
+	VenueEvents  []basketReplayVenueEventRecord `json:"venue_events,omitempty"`
+	Coverage     *basketReplayCoverage          `json:"coverage,omitempty"`
+	LotFetches   int                            `json:"lot_metadata_fetch_refusals"`
 }
 
 const (
@@ -1311,6 +1366,11 @@ func (r *basketReplayRuntime) output() (basketReplayOutput, error) {
 		return out, err
 	}
 	out.Trades = trades
+	events, err := r.file.basketReplayVenueEventLog(r.spec.Run.RunID)
+	if err != nil {
+		return out, err
+	}
+	out.VenueEvents = events
 	out.LotFetches = storedLots + r.lots.fetchRefusals()
 	seen := map[string]bool{}
 	var gaps []string

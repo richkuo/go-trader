@@ -1,0 +1,8 @@
+{
+  "data_reference_sha256": "0b297db96ef3c8875af889b8802e6154d4ad57b606b732fbed69af002f976271",
+  "locked_at_utc": "2026-10-14T06:27:39Z",
+  "protocol_sha256": "c633271e43cc805558a89898a3fab341e1c94c239669b39082d60f93803884eb",
+  "schema": "go-trader.xsrev-basket-study-lock",
+  "signal_spec_sha256": "8f94f5aca998fee3930326cbc0089065e632c379ee4d77b6e0ca985b140b8f00",
+  "version": 1
+}
