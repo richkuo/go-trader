@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -294,6 +295,38 @@ func TestBasketOfflineRankClockHoldsLateCancelledAndTimedOutResults(t *testing.T
 			if q := env.signedQty(m.ID, m.Coin); q != 0 {
 				t.Fatalf("%s traded %.10g after a refused ranker result", m.ID, q)
 			}
+		}
+	}
+}
+
+func TestBasketReplayTradeExportReadsEveryStoredRow(t *testing.T) {
+	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.db.Exec("INSERT INTO strategies (id, type, platform, cash, initial_capital) VALUES ('m1', 'perps', 'hyperliquid', 1000, 1000)"); err != nil {
+		t.Fatal(err)
+	}
+	const rows = 3*basketReplayTradePage + 7
+	start := time.Date(2025, 9, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < rows; i++ {
+		if _, err := db.db.Exec(`INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, realized_pnl, cost_model_version)
+			VALUES ('m1', ?, 'BTC', 'funding', 0, 0, 0, ?, ?, ?, ?, 1)`, formatTime(start.Add(time.Duration(i)*time.Hour)), TradeTypeFunding, fmt.Sprintf("row %d", i), fmt.Sprintf("f-%d", i), float64(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &basketReplayRuntime{store: singleFileStore(db), members: []StrategyConfig{{ID: "m1"}}}
+	out, err := r.storedTrades()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != rows {
+		t.Fatalf("the replay output must carry every booked trade, got %d of %d", len(out), rows)
+	}
+	for i, tr := range out {
+		if tr.Details != fmt.Sprintf("row %d", i) {
+			t.Fatalf("trade %d is %q: the export must keep booking order", i, tr.Details)
 		}
 	}
 }

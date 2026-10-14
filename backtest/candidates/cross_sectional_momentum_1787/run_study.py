@@ -721,7 +721,8 @@ def run_replay(binary, plan_path, work, run_id, timeout):
                                                       "refusal": {"reason": "driver_wrote_no_record",
                                                                   "detail": [proc.stderr[-2000:]]}}
     return {"driver_exit_code": proc.returncode, "record": rec, "seconds": round(time.time() - t0, 1),
-            "result_path": out, "log_path": log}
+            "result_path": out, "log_path": log, "result_sha256": sha256_file(out) if os.path.isfile(out) else None,
+            "log_sha256": sha256_file(log) if os.path.isfile(log) else None}
 
 
 def hac(xs, lag):
@@ -750,7 +751,8 @@ def summarize(proto, run, rep, members):
            "params": run["params"], "cost": proto["costs"][run["cost"]], "replay_status": rec.get("status"),
            "replay_scored": bool(rec.get("scored")), "replay_promotion_eligible": bool(rec.get("promotion_eligible")),
            "adapter_exit_code": rec.get("adapter_exit_code"), "driver_exit_code": rep["driver_exit_code"],
-           "seconds": rep["seconds"], "complete": False}
+           "seconds": rep["seconds"], "raw_result_sha256": rep.get("result_sha256"),
+           "adapter_log_sha256": rep.get("log_sha256"), "complete": False}
     ao = rec.get("adapter_output") or {}
     if ao.get("coverage") is not None:
         out["coverage"] = {"complete": ao["coverage"].get("complete"), "gaps": (ao["coverage"].get("gaps") or [])[:50],
@@ -772,6 +774,12 @@ def summarize(proto, run, rep, members):
     got = [utc_ms(s["at"]) for s in steps]
     if got != expected:
         out["accounting_problem"] = "the adapter steps do not match the window steps"
+        return out
+    booked = sum(int(s.get("funding_rows_booked") or 0) for s in steps)
+    exported = sum(1 for t in (ao.get("trades") or []) if t.get("trade_type") == "funding")
+    if booked != exported:
+        out["accounting_problem"] = (f"the adapter output carries {exported} funding rows while its steps booked "
+                                     f"{booked}; the trade export is incomplete")
         return out
     out["complete"] = True
     first = steps[0]

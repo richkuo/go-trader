@@ -13,7 +13,7 @@ artifact is for.
 | `data/` | Frozen Hyperliquid daily candles, hourly funding and lot metadata, with `data_manifest.json` (hashes, listing evidence, coverage, venue-absent hours, excluded candidates). |
 | `run_study.py` | `prepare` (network, writes `data/`), `lock`, `run` (offline, writes `results.json`, `study_manifest.json`, `plans/`, `raw/`), `render` (writes `REPORT.md`). |
 | `plans/` | Portable `go-trader.basket-replay-plan` v1 files of every replay (the state directory is a placeholder; `run` writes a materialized copy into its work directory). |
-| `raw/` | Gzipped `go-trader.basket-replay-result` v1 records of every replay, as `backtest/basket_replay.py` wrote them. |
+| `raw/` | Local only (git-ignored, about 2 MB per replay): gzipped `go-trader.basket-replay-result` v1 records as `backtest/basket_replay.py` wrote them. `results.json` pins the sha256 of every raw record and adapter log; a rerun of `run` regenerates them. |
 | `results.json`, `study_manifest.json` | Study output: per-run summaries, every tried variant, baseline targets, coverage, source and binary pins, and the study verdict. |
 
 How it runs: `run` checks the lock, the prerequisite commits, files and contracts (replay plan and result versions,
@@ -27,3 +27,13 @@ sample stays an unscored study diagnostic.
 
 All commands are research-only and suggest-only. Nothing here edits registry metadata, live defaults, deployed
 configuration or acknowledgements, and live basket use stays refused.
+
+## Attempts
+
+- Attempt 1 (stopped, discarded): the first `run` used a binary whose `basket-replay` trade export returned only the
+  newest 500 stored rows per member (the storage read caps one page at 500), so the output trades, fees and funding
+  rows were incomplete although equity was right. It was stopped after two training replays, before any held-out
+  replay ran; its outputs were not used for selection or reporting. The adapter now pages through every stored row,
+  and the study refuses a replay whose exported funding rows differ from the rows its steps booked. The protocol and
+  lock did not change.
+- Attempt 2: the recorded run in `results.json`.

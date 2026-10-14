@@ -1147,6 +1147,8 @@ func (r *basketReplayRuntime) lastSnapshotKeys(at time.Time) map[marketFeedKey]b
 	return out
 }
 
+const basketReplayTradePage = 500
+
 type basketReplayTradeRecord struct {
 	StrategyID       string  `json:"strategy_id"`
 	Timestamp        string  `json:"timestamp"`
@@ -1169,9 +1171,19 @@ type basketReplayTradeRecord struct {
 func (r *basketReplayRuntime) storedTrades() ([]basketReplayTradeRecord, error) {
 	var out []basketReplayTradeRecord
 	for _, sc := range r.members {
-		rows, _, err := r.store.QueryTradeHistory(sc.ID, "", time.Time{}, time.Time{}, 1_000_000, 0)
-		if err != nil {
-			return nil, err
+		var rows []Trade
+		for {
+			page, total, err := r.store.QueryTradeHistory(sc.ID, "", time.Time{}, time.Time{}, basketReplayTradePage, len(rows))
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, page...)
+			if len(rows) >= total || len(page) == 0 {
+				if len(rows) != total {
+					return nil, fmt.Errorf("strategy %s: read %d of %d stored trade rows", sc.ID, len(rows), total)
+				}
+				break
+			}
 		}
 		for i := len(rows) - 1; i >= 0; i-- {
 			t := rows[i]
