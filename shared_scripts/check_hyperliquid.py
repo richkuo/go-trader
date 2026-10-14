@@ -65,6 +65,7 @@ from market_payload import (
     validate_market_payload,
 )
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+from lead_lag_inputs import LEAD_LAG_STRATEGY, coin_of, prepare_sealed_inputs, support_bars, unavailable
 
 
 def _make_dataframe(candles):
@@ -524,6 +525,23 @@ def _shared_trade_flow(shared, symbol):
     return market_trade_flow(market, symbol, MarketPayloadError)
 
 
+def _shared_lead_lag_inputs(shared, symbol, get_strategy, params=None):
+    market = shared.get("market")
+    if market is None:
+        return None, unavailable(
+            "leader_unavailable", "bitcoin_lead_lag reads BTC leader rows only from the sealed market feed payload; "
+                                  "this check has none and never fetches them", follower=coin_of(symbol))
+    merged = {**get_strategy(LEAD_LAG_STRATEGY)["default_params"], **(params or {})}
+    need = support_bars(merged["lag_bars"], merged["horizon_bars"], merged["training_bars"])
+    rows, timings, context = prepare_sealed_inputs(market, symbol, shared["timeframe"], need)
+    if rows is None:
+        return None, context
+    frame = _frame_with_cadence(rows, shared["timeframe"], timings)
+    frame.attrs[FRAME_DECISION_TIME_ATTR] = {"cutoff_ms": int(context["cutoff_ms"]),
+                                             "boundary_ms": int(context["boundary_ms"])}
+    return frame, context
+
+
 def _shared_htf_frame(shared, sym, tf, limit):
     cache = shared["htf_cache"]
     key = (sym, tf, limit)
@@ -934,6 +952,11 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             decision_df.attrs[FRAME_DECISION_TIME_ATTR] = {
                 "cutoff_ms": int(selection.cutoff_ms), "boundary_ms": int(selection.boundary_ms)}
             strategy_params = decision_params
+            if funding_aware_name == LEAD_LAG_STRATEGY:
+                lead_df, strategy_params["leader_context"] = _shared_lead_lag_inputs(
+                    shared, symbol, deps.get_strategy, strategy_params_override)
+                if lead_df is not None:
+                    decision_df = lead_df
     else:
         strategy_params = {}
         if strategy_name == "delta_neutral_funding":
@@ -946,6 +969,11 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             strategy_params["open_interest_observations"] = _shared_open_interest(shared, symbol)
         if funding_aware_name == TRADE_FLOW_STRATEGY:
             strategy_params["trade_flow_observations"] = _shared_trade_flow(shared, symbol)
+        if funding_aware_name == LEAD_LAG_STRATEGY:
+            lead_df, strategy_params["leader_context"] = _shared_lead_lag_inputs(
+                shared, symbol, deps.get_strategy, strategy_params_override)
+            if lead_df is not None:
+                decision_df = lead_df
         strategy_params["regime"] = strategy_regime
     if strategy_params_override:
         merged = {**strategy_params_override, **strategy_params}

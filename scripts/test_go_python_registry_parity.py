@@ -152,8 +152,12 @@ def test_metadata_parity_detects_a_removed_name_or_changed_field(side):
 def go_production_refused():
     source = _go_source("production_refusal.go")
     block = _go_block(source, "var productionRefusedStrategies = map[string]string{")
-    consts = {"cumulativeVolumeDeltaStrategyName": _go_string_consts(_go_source("market_feed_trades.go"))[
-        "cumulativeVolumeDeltaStrategyName"]}
+    consts = {
+        "cumulativeVolumeDeltaStrategyName": _go_string_consts(_go_source("market_feed_trades.go"))[
+            "cumulativeVolumeDeltaStrategyName"],
+        "bitcoinLeadLagStrategyName": _go_string_consts(_go_source("bitcoin_lead_lag_feed.go"))[
+            "bitcoinLeadLagStrategyName"],
+    }
     out = {}
     for key, ref in re.findall(r'^\s*(\w+|"\w+"):\s*"([^"]*)",\s*$', block, re.M):
         out[key.strip('"') if key.startswith('"') else consts[key]] = ref
@@ -164,7 +168,8 @@ def go_production_refused():
 def test_go_production_refusal_equals_python_registry():
     go = go_production_refused()
     py = {name: OPEN_REGISTRY.STRATEGIES[name]["edge_ref"] for name in OPEN_REGISTRY.production_refused_strategies()}
-    assert py == {"cumulative_volume_delta_divergence": "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md"}
+    assert py == {"cumulative_volume_delta_divergence": "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md",
+                  "bitcoin_lead_lag": "backtest/candidates/bitcoin_lead_lag_1640/REPORT.md"}
     assert go == py
     for name in py:
         assert OPEN_REGISTRY.STRATEGIES[name]["edge_status"] == OPEN_REGISTRY.EDGE_STATUS_NO_EDGE
@@ -190,10 +195,19 @@ def test_go_calendar_training_default_equals_python_registry():
     assert int(match.group(1).replace("_", "")) == py
 
 
+def refused_in_both_languages():
+    return set(go_production_refused()) & set(OPEN_REGISTRY.production_refused_strategies())
+
+
+def unpromoted_absence(problems, names):
+    return [p for p in problems if not any(p == f"{n}: in Python, missing from Go" for n in names)]
+
+
 def test_go_bidirectional_perps_equal_python_short_entries():
     go, py = go_bidirectional_perps(), python_short_entries()
     assert py
-    assert mapping_mismatches(go, py) == []
+    assert unpromoted_absence(mapping_mismatches(go, py), refused_in_both_languages()) == []
+    assert "bitcoin_lead_lag" in py and "bitcoin_lead_lag" not in go
 
 
 @pytest.mark.parametrize("side", ["go", "python"])
@@ -203,7 +217,7 @@ def test_short_entry_parity_detects_a_removed_name(side):
     removed = copy.deepcopy(target)
     removed.pop("awesome_oscillator")
     pair = (removed, py) if side == "go" else (go, removed)
-    assert mapping_mismatches(*pair) == [
+    assert unpromoted_absence(mapping_mismatches(*pair), refused_in_both_languages()) == [
         "awesome_oscillator: in Python, missing from Go" if side == "go"
         else "awesome_oscillator: in Go, missing from Python"
     ]
@@ -256,7 +270,8 @@ def test_go_registered_platforms_equal_python_registry():
 
 def test_every_registered_open_strategy_has_a_unique_short_name():
     short = go_short_names()
-    assert set(OPEN_REGISTRY.STRATEGIES) - set(short) == set()
+    assert set(OPEN_REGISTRY.STRATEGIES) - set(short) <= refused_in_both_languages()
+    assert "bitcoin_lead_lag" not in short and "cumulative_volume_delta_divergence" in short
     values = list(short.values())
     assert len(values) == len(set(values))
 

@@ -16,6 +16,7 @@ var fixedIntervalStrategyDefaults = map[string]int64{
 	"dual_thrust":                3_600_000,
 
 	"cumulative_volume_delta_divergence": 300_000,
+	"bitcoin_lead_lag":                   3_600_000,
 }
 
 type fixedIntervalUse struct {

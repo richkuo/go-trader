@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 SCRIPTS = os.path.join(REPO, "shared_scripts")
 CREDENTIAL_PREFIXES = ("HYPERLIQUID", "OKX", "ROBINHOOD", "TOPSTEP", "PROJECTX")
@@ -47,15 +49,28 @@ def _market():
             "trade_flows": {"BTC|trade_flow": flow}, "feed_complete": True}
 
 
-def _assert_refused(proc, role):
+def _refused_names():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_refused_registry", os.path.join(REPO, "shared_strategies", "open", "registry.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return sorted(mod.production_refused_strategies())
+
+
+REFUSED_NAMES = _refused_names()
+
+
+def _assert_refused(proc, role, name=NAME):
     assert proc.returncode == 1, proc.stderr[-2000:]
     payload = _payload(proc)
     assert payload["signal"] == 0
-    assert f"{role} strategy '{NAME}' {REFUSED}" in payload["error"], payload["error"]
+    assert f"{role} strategy '{name}' {REFUSED}" in payload["error"], payload["error"]
     assert "Fetching" not in proc.stderr
 
 
-def test_every_solo_check_refuses_the_candidate_in_any_mode_and_reference():
+@pytest.mark.parametrize("name", REFUSED_NAMES)
+def test_every_solo_check_refuses_the_candidate_in_any_mode_and_reference(name):
+    NAME = name
     envelope = {"v": 2, "market": _market()}
     cases = [
         ([NAME, "BTC", "5m", "--mode=paper", "--market-stdin"], "open"),
@@ -70,13 +85,15 @@ def test_every_solo_check_refuses_the_candidate_in_any_mode_and_reference():
           "--strategy-refs", json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})], "close"),
     ]
     for argv, role in cases:
-        _assert_refused(_run("check_hyperliquid.py", argv, envelope), role)
+        _assert_refused(_run("check_hyperliquid.py", argv, envelope), role, NAME)
     proc = _run("check_okx.py", [NAME, "BTC", "5m", "--inst-type=swap", "--mode=paper"])
     assert proc.returncode == 1 and REFUSED in _payload(proc)["error"], proc.stdout[-2000:] + proc.stderr[-2000:]
     assert "Fetching" not in proc.stderr
 
 
-def test_batch_slots_refuse_the_candidate_and_keep_their_peers():
+@pytest.mark.parametrize("name", REFUSED_NAMES)
+def test_batch_slots_refuse_the_candidate_and_keep_their_peers(name):
+    NAME = name
     slots = [
         {"id": "paper", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"]},
         {"id": "acked", "strategy": NAME, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},
