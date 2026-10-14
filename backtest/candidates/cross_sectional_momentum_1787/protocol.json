@@ -1,0 +1,162 @@
+{
+  "study": "cross_sectional_momentum_1792",
+  "issue": 1792,
+  "candidate": "cross_sectional_momentum",
+  "status": "frozen before any replay ran; run_study.py lock pins this file, the signal specification and the data manifest, and run refuses a changed lock",
+  "signal_spec": {
+    "path": "backtest/candidates/cross_sectional_momentum_1787/SIGNAL_SPEC.md",
+    "sha256": "6abed03a93a5a56b54a85d5126037cfdec23862e4a01a179622951ede12d1726"
+  },
+  "prerequisites": {
+    "commits": {
+      "1787 (PR 1798) momentum ranker, allocation context, frozen signal specification": "bf1943fa69d5eada0700d635f85651bcd14148ac",
+      "1791 (PR 1800) offline basket replay, controlled adapter, cost path, baseline target input": "62618cbcbf229aee739b54e07c9ac40182c9d42c"
+    },
+    "files": [
+      "backtest/basket_replay.py",
+      "scheduler/basket_replay.go",
+      "scheduler/basket_replay_cmd.go",
+      "scheduler/basket_replay_spec.go",
+      "scheduler/basket_replay_storage.go",
+      "scheduler/basket_replay_targets.go",
+      "scheduler/fill_cost_policy.go",
+      "shared_scripts/run_basket_ranker.py",
+      "shared_strategies/open/basket_allocation.py",
+      "shared_strategies/open/cross_sectional_momentum.py",
+      "shared_strategies/open/registry.py",
+      "shared_strategies/open/vol_momentum.py"
+    ],
+    "contracts": {
+      "replay_plan": ["go-trader.basket-replay-plan", 1],
+      "replay_result": ["go-trader.basket-replay-result", 1],
+      "adapter_protocol": ["go-trader.basket-replay", 1],
+      "ranker_request_version": 2,
+      "baseline_target_input": "scheduler/basket_replay_spec.go declares target_input mode \"baseline\" beside \"ranker\"",
+      "cost_policy": "scheduler/fill_cost_policy.go accepts only fill_role taker_all and spread inside_slippage"
+    }
+  },
+  "require_clean_source": true,
+  "data": {
+    "venue": "hyperliquid",
+    "timeframe": "1d",
+    "candles": "Hyperliquid perpetual daily candles (candleSnapshot) through platforms/hyperliquid/adapter.py get_ohlcv_candles; venue prices, not a proxy; a bar is kept only from the first daily bar with at least one trade",
+    "funding": "Hyperliquid hourly funding history through shared_tools/funding_fetcher.py load_cached_funding with an isolated cache database; signed rates, never filled",
+    "lot_metadata": "Hyperliquid perpetual szDecimals through platforms/hyperliquid/adapter.py lot_size_decimals, read once at preparation",
+    "delisting": "the venue meta (info type meta, isDelisted) read once at preparation",
+    "funding_start": "2024-01-25T00:00:00Z",
+    "pinned_end": "2026-10-02T00:00:00Z"
+  },
+  "universe": {
+    "candidates": ["BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "ARB", "OP", "LTC", "BNB", "XRP", "ATOM", "APT", "SUI", "MATIC", "POL", "INJ", "BCH", "DOT", "ADA", "TRX", "NEAR"],
+    "rule": "a named candidate is a member when its first Hyperliquid daily bar with at least one trade opens at or before listing_cutoff, every daily bar from that bar to pinned_end exists with at least one trade (no gap), and the venue meta lists it as not delisted at preparation; the list was written from general large-capitalization knowledge before any return was read",
+    "listing_cutoff": "2023-07-01T00:00:00Z",
+    "listing_evidence": "listed_at and known_at are the open time of the member's first daily bar with at least one trade",
+    "survivorship": "the candidate list and the not-delisted test use preparation-time knowledge, so a coin that was delisted before pinned_end (MATIC) cannot be a member; this biases every arm toward surviving coins and is reported as a limit"
+  },
+  "windows": {
+    "train": ["2024-08-22T00:00:00Z", "2025-06-06T00:00:00Z"],
+    "held_out": ["2025-06-05T00:00:00Z", "2026-10-02T00:00:00Z"],
+    "note": "both windows start and end their last step on a weekly rebalance deadline (Thursday 00:00 UTC); the training window's last step and the held-out window's first step are the same instant, and no held-out return enters training"
+  },
+  "amendment": "Preparation (before the lock and before any replay or return was read) found one venue-absent Hyperliquid funding hour, 2024-08-15T13:00Z, for every member. A venue-absent hour inside a window leaves the replay incomplete and is never replaced with zero, so the training start moved from 2024-02-01 to the first weekly deadline after it, 2024-08-22; the held-out window is unchanged.",
+  "history_bars": 210,
+  "basket": {
+    "id": "xsmom-study",
+    "rebalance_interval_seconds": 604800,
+    "evaluation_window_seconds": 3600,
+    "ranker_timeout_seconds": 120,
+    "lookback_bars": 60,
+    "gross_budget_usd": 10000,
+    "max_coin_notional_usd": 2500,
+    "max_transition_net_usd": 2500,
+    "min_eligible_members": 8,
+    "min_history_bars": 30,
+    "eligibility_source": "frozen Hyperliquid daily candles in data/ (first traded bar)",
+    "eligibility_version": "1792-1"
+  },
+  "member_config": {
+    "capital": 3000,
+    "leverage": 1,
+    "max_drawdown_pct": 90,
+    "stop_loss_pct": 30,
+    "close_strategy": {
+      "name": "tiered_tp_pct",
+      "params": {
+        "tp_tiers": [
+          {"profit_pct": 5.0, "close_fraction": 1.0}
+        ]
+      }
+    }
+  },
+  "member_close_policy": "every arm uses the same member close policy: a fixed 30 percent catastrophic stop (stop_loss_pct) and a 500 percent take-profit tier (profit_pct 5.0 as a fraction) that is not expected to fire; exits otherwise come only from coordinator targets. Without an explicit stop the default ATR stop (1.0 x daily ATR) would close most legs between rebalances",
+  "portfolio_risk": {
+    "max_drawdown_pct": 25
+  },
+  "costs": {
+    "primary": {"taker_fee_pct": 0.00045, "slippage_pct": 0.0005, "fill_role": "taker_all", "spread": "inside_slippage"},
+    "stress": {"taker_fee_pct": 0.0009, "slippage_pct": 0.001, "fill_role": "taker_all", "spread": "inside_slippage"},
+    "note": "rates are fractions per fill; primary equals the frozen paper model (Hyperliquid base taker fee and paper slippage), stress doubles both; every fill books as a taker fill and spread sits inside slippage"
+  },
+  "grid": {
+    "return_lookback_bars": [7, 14, 28],
+    "quantile": [0.2, 0.3],
+    "volatility_lookback_bars": [28]
+  },
+  "selection": {
+    "window": "train",
+    "eligible": "a variant whose training replay status is complete",
+    "objective": "highest mean weekly after-cost return on the gross budget over the training clusters",
+    "tie_break": ["smaller return_lookback_bars", "smaller quantile"],
+    "no_eligible_variant": "inconclusive diagnostic, no held-out replay"
+  },
+  "baselines": {
+    "equal_weight_hold": {
+      "kind": "equal_weight",
+      "rule": "weight 1/N long on every member at every weekly deadline, so the coordinator restores equal weights each week",
+      "net_allowance_usd": 10000
+    },
+    "momentum": {
+      "kind": "single_asset",
+      "strategy": "momentum",
+      "rule": "registered futures defaults; walk the closed-bar signals from the first frozen bar to the deadline bar: signal 1 enters long, signal -1 exits a long (the strategy registers short_entries=False, so -1 never opens a short); weight = position / N",
+      "net_allowance_usd": 10000
+    },
+    "vol_momentum": {
+      "kind": "single_asset",
+      "strategy": "vol_momentum",
+      "rule": "registered futures defaults (allow_short true); weight = signed position column at the deadline bar / N",
+      "net_allowance_usd": 10000
+    },
+    "common": "every baseline runs through the same replay with the same members, member capital, close policy, costs, gross budget, per-coin cap, decision deadlines and windows; only target_input (baseline weights) and the net allowance differ. Targets use closed bars that close at or before the deadline; a flat member keeps its cash, which is never moved to another member"
+  },
+  "statistics": {
+    "cluster": "one rebalance period: from the equity after the step at one weekly deadline to the equity after the step at the next deadline; the first cluster starts from the summed member capital before the first step, so the first build cost is included; all member legs in a period belong to one cluster",
+    "return": "cluster equity change divided by gross_budget_usd",
+    "paired_excess": "candidate cluster return minus the baseline cluster return for the same period",
+    "inference": "mean with a Newey-West (Bartlett kernel) long-run variance at lag_weeks; effective clusters n_eff = n * sample variance / long-run variance, capped at n",
+    "lag_weeks": 4,
+    "lag_reason": "the longest return or volatility lookback is 28 daily bars (4 weeks), so overlapping holdings can link up to 4 adjacent clusters",
+    "alpha_one_sided": 0.05,
+    "family_size": 24,
+    "family_reason": "6 tried variants x 4 tested hypotheses (net return and excess over each of 3 baselines); Bonferroni per-test level alpha / 24",
+    "min_clusters": 52,
+    "min_effective_clusters": 52,
+    "sufficiency_reason": "52 weekly clusters is one year of rebalance clusters; each tested series must reach it in count and in n_eff, else the study is an unscored diagnostic"
+  },
+  "verdict_rules": {
+    "accounting": "every held-out replay (candidate at primary and stressed cost, three baselines) must have replay status complete; otherwise the study is inconclusive with scored=false and no valid economic result",
+    "sufficiency": "every tested series reaches min_clusters and min_effective_clusters and has a defined long-run variance; otherwise inconclusive with scored=false",
+    "conditions": {
+      "net_positive": "true when the corrected one-sided lower bound of the candidate mean weekly return is above 0; false when the mean is at or below 0; else unknown",
+      "beats_equal_weight_hold": "the same rule on the paired excess over equal_weight_hold",
+      "beats_momentum": "the same rule on the paired excess over momentum",
+      "beats_vol_momentum": "the same rule on the paired excess over vol_momentum",
+      "stress_net_positive": "true when the candidate held-out total return at stressed cost is above 0, else false",
+      "not_concentrated": "true when the largest single member share of the summed positive member PnL is at most 0.5, else false"
+    },
+    "pass": "accounting complete, sufficient, every condition true",
+    "fail": "accounting complete, sufficient, and any of net_positive, the three beats conditions or stress_net_positive false",
+    "inconclusive": "any other outcome",
+    "metadata": "fail records edge_source study_fail and inconclusive records study_inconclusive, both with edge_ref REPORT.md; a pass keeps edge_source unvalidated and edge_status no_edge until a separate promotion change; live basket use stays refused for every outcome; the driver never edits registry metadata, live defaults or deployed configuration"
+  }
+}

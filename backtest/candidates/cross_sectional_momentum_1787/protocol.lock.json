@@ -1,0 +1,8 @@
+{
+  "data_manifest_sha256": "83f51647c2e898e9a0eef3eaffcc583889a0a97de7f9b0dc98c2e75b7571ab58",
+  "locked_at_utc": "2026-10-14T01:59:23Z",
+  "protocol_sha256": "7cd77c3ccf19fb7e2b2e02611ed9c5c3c068d01c89714dcdf1629eb5bd45f931",
+  "schema": "go-trader.xsmom-basket-study-lock",
+  "signal_spec_sha256": "6abed03a93a5a56b54a85d5126037cfdec23862e4a01a179622951ede12d1726",
+  "version": 1
+}
