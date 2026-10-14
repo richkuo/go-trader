@@ -1,0 +1,100 @@
+{
+  "schema": "go_trader_candidate_spec/v1",
+  "issue": 1665,
+  "name": "volume_profile_reclaim",
+  "registry": "futures",
+  "strategy_type": "perps",
+  "frozen_at": "2026-10-14T07:00:00Z",
+  "frozen_before_results": "This file was written and committed before any study window was scored and before any candle or funding series used by the study was acquired. No study result influenced any value here.",
+  "signal": {
+    "profile_input": "The exact executed-trade volume profile of the previous complete UTC session (00:00 to 24:00 UTC): base-asset traded size summed per canonical Hyperliquid price over every validated accepted trade (identity venue+namespace+coin+time+tid; identical duplicates add nothing). The feed owner (Go) and the independent recording replay (Python) build the same immutable artifact: sorted price-size pairs, exact trade and volume totals, an order-independent trade hash, first and last event times, availability time and a canonical sha256.",
+    "completeness": "A session is final only when all 1440 of its minutes finalize complete through the existing trade coverage contract (receipt-time coverage from the minute after the subscription acknowledgement, 5000 ms reorder grace after each minute end and a later frame). An invalid minute (disconnect, 30 s frame silence, malformed frame, receipt-clock regression, future-dated trade, identity overflow), a minute finalized twice, a conflicting duplicate, a new trade for an already finalized minute, checked overflow, more than 16384 distinct prices, a price over 24 characters, zero volume or a single price make the session unavailable. Missing minutes never count as zero volume. A restart or a mid-session start waits for the next complete session.",
+    "freeze_and_invalidation": "A final artifact's numbers never change. A later revocation (a new or conflicting trade for one of its minutes) records an invalidation time; decisions with a deadline at or after that time hold, earlier decisions are unchanged.",
+    "bins": "profile_bins equal-width bins over [session low, session high] of the artifact prices. A price p is in bin floor((p - low) * profile_bins / (high - low)); the session high is in the last bin; bins are half-open elsewhere. All arithmetic is exact rational arithmetic on the decimal prices and the 8-decimal base-size units.",
+    "point_of_control": "the bin with the most volume; the lowest such bin on a tie",
+    "value_area": "start at the point of control and add the adjacent bin with more volume, the lower side on a tie, until the included volume is at least value_area_fraction of the session volume (exact rational comparison, value_area_fraction taken from its shortest decimal representation). The value-area low is the lower edge of the lowest included bin and the value-area high is the upper edge of the highest included bin.",
+    "entry": "evaluated once per closed candle. Long: the previous closed candle closed strictly below the value-area low and the current closed candle closes strictly inside (value-area low, value-area high). Short: the mirror from strictly above the value-area high. A close on a boundary is not inside; a close beyond the opposite boundary is not a reclaim. Both candles must be consecutive (spacing exactly expected_interval_ms), well formed and in the same current UTC session, and both decision deadlines (candle close times) must see the same artifact: available at or before the previous candle's deadline and not revoked at or before the current candle's deadline. The first candle of each session, a candle gap and a profile that became available between the two deadlines reset the comparison.",
+    "ablation": "session_bounds=true replaces the value-area bounds with the artifact session low and high; it uses the same data eligibility, fraction validator and entry rule and is not a separate strategy",
+    "timing": "a signal decided at the close D of bar N fills at the open of bar N+1 (time D) in the Backtester; live checks read closed bars only, the decision cutoff comes from the sealed payload and a forming bar carries the last closed decision for at most one interval",
+    "evidence": "every row records the decision deadline, session, prior profile session, artifact sha256, trade hash, availability and invalidation times, value-area low and high and point-of-control bin edges as exact fractions, bin width, bin count, total, value-area and point-of-control volume, the compared candle open and both closes and a reason code; entry rows also record the per-bin volumes",
+    "failure_outcome": "any data or profile defect gives signal 0 with a stable reason (vpr_reason); bad parameters raise; a consumer that supplies no profile input at all raises before scoring"
+  },
+  "parameters": {
+    "seed": {"profile_bins": 64, "value_area_fraction": 0.70, "session_bounds": false, "expected_interval_ms": 900000},
+    "bounds": {
+      "profile_bins": "integer in [2, 512]; the upper bound keeps per-session evaluation work finite",
+      "value_area_fraction": "finite, strictly between 0 and 1",
+      "session_bounds": "boolean",
+      "expected_interval_ms": "one of 300000, 900000, 1800000, 3600000 (Hyperliquid candle intervals that divide the UTC day); the study uses 900000 (15m)"
+    },
+    "optimizer_grid": {"profile_bins": [32, 64, 128], "value_area_fraction": [0.6, 0.7, 0.8], "session_bounds": [false]},
+    "note": "Seeds are research starting points, not endorsed trading settings. The session boundary (00:00 UTC), the trade contract and the capacity limits are fixed by the feed and are not optimized."
+  },
+  "capacity": {
+    "per_session": "at most 16384 distinct prices, at most 24 characters per canonical price; a size is at most 20 characters because the exact per-price sum fits a signed 64-bit 8-decimal accumulator; one pair serializes to at most len(price) + len(size) + 8 bytes; the pair bytes are capped at 1048576 (the entry and field limits already bound them at 851968)",
+    "owner_memory": "per profile coin at most three session accumulators (the previous-but-one session during the first hour of a session, the previous session while it finalizes, the current session), each at most 16384 map entries; an over-limit session frees its map at once",
+    "seal": "a seal carries one session per profile coin, two during the first hour after 00:00 UTC (the longest supported bar interval), so every consumer finds the session its last closed bar needs; the estimate counts 2 x (1048576 + 4096) + 1024 bytes per coin; at most 16 profile coins per consumer union, so profiles take at most 33,701,888 estimated bytes of the 67,108,864-byte seal cap and the existing estimate check covers every other section",
+    "payload": "a single or batch check payload carries one coin's profile (its signal coin), at most 2 sessions, about 1.7 MB at the limits, inside the 8,388,608-byte payload cap with the candle frames; the Go capacity test measures the encoded seal and both payloads at the limits",
+    "failure": "a profile over a limit is unavailable with a small diagnostic; it is never truncated or approximated and it never rejects the candle payload"
+  },
+  "exit_and_risk": {
+    "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [{"atr_multiple": 2.0, "close_fraction": 1.0}]}},
+    "stop_owner": "scalar entry-ATR stop, stop_loss_atr_mult 1.0",
+    "direction": "both",
+    "regime_policy": "none (no regime gate, no higher-timeframe filter)",
+    "comparison_mode": "strict",
+    "capital": "one shared pool of $2000 with a fixed $1000 allocation per coin (BTC, ETH); each coin runs through the real engine with only its allocation and no cross-coin borrowing; the combined result sums the synchronized marked equity of both coins",
+    "sizing": "full allocation per position, unlevered (Backtester default); execution_spec models fees, spread, slippage, lot floor and the venue minimum; leverage, margin and liquidation are not modeled and cannot trigger at 1x",
+    "baselines_use_identical": "close strategy, stop, capital allocation, sizing, costs, funding, bars, windows and eligible sessions"
+  },
+  "arms": {
+    "candidate": "volume_profile_reclaim with the train-selected profile_bins and value_area_fraction",
+    "session_bounds_ablation": "volume_profile_reclaim with session_bounds=true and the candidate's selected values",
+    "anchored_vwap_reversion": "registry default parameters, frozen",
+    "mean_reversion_pro": "registry default parameters, frozen"
+  },
+  "data_plan": {
+    "primary": {
+      "label": "exact executed-trade profiles",
+      "recording": "the committed Hyperliquid trades recording backtest/candidates/cumulative_volume_delta_divergence_1638/data/recording (run MacBookPro.hitronhub.home-93858-1791858355712-1791858355, 2026-10-13 02:25:55Z to 16:15:55Z, BTC and ETH), replayed independently by backtest/volume_profile_replay.py into hash-pinned profile series",
+      "known_limits": "the run starts after 00:00 UTC and the venue closed the socket about every three hours (CVD study report), so it cannot contain a complete UTC session; no external complete archive is available in the build environment (Hyperliquid node trade archives are in a requester-pays bucket and no AWS access exists here). The study measures coverage and does not shorten the session or relax completeness.",
+      "manifest": "backtest/candidates/volume_profile_reclaim_1665_exact_manifest.json (offline_candle_manifest/v5) with Hyperliquid 15m candles, funding and the profile series",
+      "windows": {
+        "train": {"start": "2026-10-13T00:00:00Z", "end": "2026-10-14T00:00:00Z", "role": "selection only; its decisions need the 2026-10-12 session profile"},
+        "test": {"start": "2026-10-14T00:00:00Z", "end": "2026-10-14T06:00:00Z", "role": "held-out, scored once; its decisions need the 2026-10-13 session profile"}
+      }
+    },
+    "proxy_sensitivity": {
+      "label": "PROXY: candle-distributed volume, not executed-trade volume",
+      "method": "for each UTC session, each Hyperliquid 15m candle's full volume is assigned to its typical price (high + low + close) / 3 rounded to 5 significant digits (the venue price precision), source candle_typical_price_proxy/1665; available at the session end plus the 5000 ms grace",
+      "unmodeled": "intra-candle price distribution, executed-trade identity, duplicates and revocations, socket coverage and late events; the proxy can never pass the study",
+      "manifest": "backtest/candidates/volume_profile_reclaim_1665_proxy_manifest.json (offline_candle_manifest/v5)",
+      "windows": {
+        "train": {"start": "2026-08-26T00:00:00Z", "end": "2026-09-30T00:00:00Z", "role": "selection only"},
+        "test": {"start": "2026-09-30T00:00:00Z", "end": "2026-10-14T00:00:00Z", "role": "held-out, scored once with the frozen selection"}
+      }
+    },
+    "candles_and_funding": "public Hyperliquid candleSnapshot 15m (closed bars only) and fundingHistory through offline_manifest.py acquire, start 2026-08-24T00:00:00Z, end 2026-10-14T06:00:00Z, hash-pinned; the exact manifest reuses the same files",
+    "interval": "15m",
+    "warmup_bars": 96,
+    "coins": ["BTC", "ETH"],
+    "costs": {"taker_fee_pct": 0.00045, "maker_fee_pct": 0.00015, "slippage_bps": 5.0, "min_notional_usd": 10.0, "min_notional_margin": 0.03, "half_spread_bps": "measured from a pinned public l2Book snapshot per coin", "stress": "cost multiplier 2 on spread and slippage", "funding": "--funding charge on every leg; an incomplete funding series blocks a complete economic result"}
+  },
+  "selection_rule": "On the train window only, per data set (primary, proxy): each candidate grid point runs both coins; eligible points have both coins scored, complete funding, no liquidation and at least 10 combined positions; pick the maximum combined DD-adjusted return (pool return divided by pool max drawdown), then the earliest grid order. No eligible point: the seed is scored and the outcome is recorded. Parameter stability is the share of grid points with positive combined train net PnL.",
+  "verdict_criteria": {
+    "inconclusive_if_any": [
+      "the primary data set has fewer than 20 eligible complete prior sessions across coins in the test window",
+      "the primary recording is incomplete or damaged (not closed, a dropped record, an incomplete segment, or an independent replay mismatch)",
+      "fewer than 30 candidate positions across coins in the primary test window",
+      "any primary leg has incomplete funding or candle coverage"
+    ],
+    "pass_if_all": [
+      "candidate primary test pool net PnL > 0 at cost x1 and at cost x2",
+      "candidate primary test pool DD-adjusted return above the session-bounds ablation, anchored_vwap_reversion and mean_reversion_pro at cost x1",
+      "no single coin carries more than 60% of the candidate's absolute primary test PnL"
+    ],
+    "fail": "data sufficient and any pass check false",
+    "proxy": "reported separately as a labelled sensitivity; it never changes the verdict",
+    "live_status": "production_refused regardless of the verdict; promotion needs a separate reviewed decision; the earlier CUT label for the volume-profile/liquidity family in the candidate report stays until reviewed evidence supports a change"
+  }
+}
