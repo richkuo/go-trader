@@ -444,6 +444,7 @@ type Trade struct {
 	PnLGross         bool   `json:"pnl_gross,omitempty"`
 	FeeSource        string `json:"fee_source,omitempty"`
 	CostModelVersion int    `json:"cost_model_version,omitempty"`
+	CostPolicyID     string `json:"cost_policy_id,omitempty"`
 
 	Regime               string `json:"regime,omitempty"`
 	RegimeDivergenceNote string `json:"-"`
@@ -480,7 +481,7 @@ var tradePositionNonce uint64
 
 func newTradePositionID(strategyID, symbol string, openedAt time.Time) string {
 	if openedAt.IsZero() {
-		openedAt = time.Now().UTC()
+		openedAt = tradingNow().UTC()
 	}
 	nonce := atomic.AddUint64(&tradePositionNonce, 1)
 	return fmt.Sprintf("%s:%s:%d:%d", strategyID, symbol, openedAt.UnixNano(), nonce)
@@ -1449,7 +1450,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			grossPnL := pnl + fee
 			s.Cash += closeQty*pos.AvgCost - totalCost
 			maybeClearCashReconcileRequired(s)
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			details := fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee)
 			if partialClose {
@@ -1526,7 +1527,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		cashBefore := s.Cash
 		overBudget := liveBuy && spotLiveBuyExceedsCash(cashBefore, totalDebit)
 		s.Cash -= totalDebit
-		now := time.Now().UTC()
+		now := tradingNow().UTC()
 		positionID := newTradePositionID(s.ID, symbol, now)
 		s.Positions[symbol] = &Position{
 			Symbol:          symbol,
@@ -1596,7 +1597,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			grossPnL := pnl + fee
 			s.Cash += netProceeds
 			maybeClearCashReconcileRequired(s)
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			details := fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee)
 			if partialClose {
@@ -1710,7 +1711,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			details := fmt.Sprintf("Close short %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee)
 			if partialClose {
@@ -1788,7 +1789,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			fillMetadataUsed = true
 		}
 		s.Cash -= fee
-		now := time.Now().UTC()
+		now := tradingNow().UTC()
 		positionID := newTradePositionID(s.ID, symbol, now)
 		s.Positions[symbol] = &Position{
 			Symbol:          symbol,
@@ -1855,7 +1856,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			details := fmt.Sprintf("Close long %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee)
 			if partialClose {
@@ -1934,7 +1935,7 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 				fillMetadataUsed = true
 			}
 			s.Cash -= fee
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			positionID := newTradePositionID(s.ID, symbol, now)
 			s.Positions[symbol] = &Position{
 				Symbol:          symbol,

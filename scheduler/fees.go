@@ -24,10 +24,11 @@ const (
 )
 
 func ApplyAdverseSlippage(price float64, isBuy bool) float64 {
+	slip := activeFillCostPolicy().SlippagePct
 	if isBuy {
-		return price * (1 + SlippagePct)
+		return price * (1 + slip)
 	}
-	return price * (1 - SlippagePct)
+	return price * (1 - slip)
 }
 
 func CalculateSpotFee(value float64) float64 {
@@ -35,7 +36,7 @@ func CalculateSpotFee(value float64) float64 {
 }
 
 func CalculateHyperliquidFee(notionalUSD float64) float64 {
-	return notionalUSD * HyperliquidTakerFeePct
+	return notionalUSD * activeFillCostPolicy().TakerFeePct
 }
 
 func CalculatePlatformSpotFee(platform string, value float64) float64 {

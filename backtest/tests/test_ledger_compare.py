@@ -2642,3 +2642,23 @@ def test_live_resting_rule_source_is_the_comparison_input(tmp_path):
     _edit_strategy(fx, "comparison_input.json", lambda st: st.update(resting_tp_trade_through=True))
     rc, rep = _run(fx, tmp_path, name="live-flag.json")
     assert rc == 1 and "resting_rule_live_flag" in _refusal_codes(rep)
+
+
+def test_paper_replay_cost_model_rows_refuse_instead_of_default_costs(tmp_path):
+    fx = _copy(tmp_path)
+    doc = _load(fx / "export_paper.json")
+    stamped = 0
+    for ev in doc["events"]:
+        if ev["event_kind"]["value"] in ("non_close", "scale_in", "close"):
+            ev["cost_model_version"].update(value=1001, raw_value=1001, status="available", reason=None)
+            stamped += 1
+    assert stamped > 0
+    _dump(fx / "export_paper.json", doc)
+    _rebind(fx)
+    for mode in ("strict", "approximate"):
+        rc, rep = _run(fx, tmp_path, export="export_paper.json", mode=mode, name=f"replay-{mode}.json")
+        reasons = {r["reason"] for r in rep["eligibility"]["refusals"]}
+        assert rc == 1 and rep["simulation"]["status"] == "not_run"
+        assert "paper_cost_model_replay_unsupported" in reasons
+        assert "paper_cost_model_unknown" not in reasons
+        assert rep["simulation"].get("cost_model") is None

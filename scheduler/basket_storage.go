@@ -286,7 +286,7 @@ func (rt *basketRuntime) auditNowMs() int64 {
 	if rt != nil && !rt.clock.IsZero() {
 		return rt.clock.UnixMilli()
 	}
-	return time.Now().UnixMilli()
+	return tradingNow().UnixMilli()
 }
 
 func newBasketRuntime(cfg BasketConfig, contract basketContract, p RiskPartition) *basketRuntime {

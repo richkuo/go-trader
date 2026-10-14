@@ -500,7 +500,7 @@ func ResetPortfolioKillSwitchManual(prs *PortfolioRiskState) float64 {
 
 func addKillSwitchEvent(prs *PortfolioRiskState, eventType, source string, drawdownPct, portfolioValue, peakValue float64, details string) {
 	prs.Events = append(prs.Events, KillSwitchEvent{
-		Timestamp:      time.Now().UTC(),
+		Timestamp:      tradingNow().UTC(),
 		Type:           eventType,
 		Source:         source,
 		DrawdownPct:    drawdownPct,
@@ -575,7 +575,7 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 
 	equityLatchDeferred := false
 	if equityGuardArmed && !equityTrusted && cfg.MaxDrawdownPct > 0 && equityDD > cfg.MaxDrawdownPct {
-		now := time.Now().UTC()
+		now := tradingNow().UTC()
 		if prs.UntrustedOverLimitSince.IsZero() {
 			prs.UntrustedOverLimitSince = now
 			addKillSwitchEvent(prs, "latch_deferred", "equity", equityDD, totalValue, prs.PeakValue,
@@ -589,7 +589,7 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 
 	if (equityGuardArmed && !equityLatchDeferred && equityDD > cfg.MaxDrawdownPct) || (!equityGuardArmed && marginDD > cfg.MaxDrawdownPct) {
 		prs.KillSwitchActive = true
-		prs.KillSwitchAt = time.Now().UTC()
+		prs.KillSwitchAt = tradingNow().UTC()
 		prs.WarningSent = false
 		prs.WarnBandEnteredAt = time.Time{}
 		prs.LastWarningEquityDDPct = 0
@@ -630,7 +630,7 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 		warnDrawdownPct := cfg.MaxDrawdownPct * cfg.WarnThresholdPct / 100
 		equityWarn, marginWarn := portfolioWarnBandSignals(cfg, prs, equityAvailable)
 		if equityWarn || marginWarn {
-			now := time.Now().UTC()
+			now := tradingNow().UTC()
 			if !prs.WarningSent {
 				prs.WarnBandEnteredAt = now
 				prs.WarningEquityDeltaPct = 0
@@ -1046,7 +1046,7 @@ func setOKXCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *P
 }
 
 func rolloverDailyPnL(r *RiskState) {
-	today := time.Now().UTC().Format("2006-01-02")
+	today := tradingNow().UTC().Format("2006-01-02")
 	if r.DailyPnLDate != today {
 		r.DailyPnL = 0
 		r.DailyPnLDate = today
@@ -1084,7 +1084,7 @@ func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[str
 	for symbol, pos := range s.Positions {
 		closeVirtualPositionAtMark(s, sc, symbol, pos, prices, logger)
 	}
-	now := time.Now().UTC()
+	now := tradingNow().UTC()
 
 	for id, pos := range s.OptionPositions {
 		var pnl, closePrice float64
@@ -1133,7 +1133,7 @@ func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol str
 }
 
 func closeVirtualPositionAtMarkInner(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {
-	now := time.Now().UTC()
+	now := tradingNow().UTC()
 	price, ok := prices[symbol]
 	if !ok {
 		price = pos.AvgCost
@@ -1272,7 +1272,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		return true, ""
 	}
 	r := &s.RiskState
-	now := time.Now().UTC()
+	now := tradingNow().UTC()
 
 	rolloverDailyPnL(r)
 

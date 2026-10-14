@@ -45,6 +45,8 @@ type storageFileInspection struct {
 	EntryHeld        []string             `json:"unresolved_entry_intents"`
 	BasketRebalances int                  `json:"basket_rebalance_rows"`
 	BasketPending    []string             `json:"pending_basket_recovery"`
+	ReplayRuns       []string             `json:"basket_replay_runs,omitempty"`
+	FillCostPolicies []string             `json:"fill_cost_policies,omitempty"`
 }
 
 type storageInspection struct {
@@ -253,6 +255,12 @@ func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storag
 	}
 	rejections = append(rejections, basketRejections...)
 
+	replayRejections, err := inspectBasketReplayRows(db, fi)
+	if err != nil {
+		return nil, err
+	}
+	rejections = append(rejections, replayRejections...)
+
 	if fi.LegacyUnscoped && layout.Split && fi.Role == storageRolePrimary && !hasLive {
 		rejections = append(rejections,
 			fmt.Sprintf("%s state file: an unscoped legacy portfolio_risk row cannot be placed — the split layout has no live strategy, so the row's historic mode is unknown; resolve it by hand", fi.Role))
@@ -357,6 +365,12 @@ func formatStorageInspection(si storageInspection) string {
 		fmt.Fprintf(&b, "  basket rebalance records: %d\n", fi.BasketRebalances)
 		for _, line := range fi.BasketPending {
 			fmt.Fprintf(&b, "    PENDING BASKET RECOVERY %s\n", line)
+		}
+		for _, line := range fi.ReplayRuns {
+			fmt.Fprintf(&b, "  OFFLINE BASKET REPLAY RUN %s\n", line)
+		}
+		for _, line := range fi.FillCostPolicies {
+			fmt.Fprintf(&b, "  fill cost policy evidence: %s\n", line)
 		}
 	}
 	if len(si.Rejections) == 0 {

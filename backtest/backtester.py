@@ -1580,6 +1580,8 @@ PAPER_FILL_COST_MODELS = {
         "stop_slippage": True, "price_reproducible": True},
 }
 
+REPLAY_FILL_COST_MODEL_VERSIONS = frozenset({1001})
+
 EXECUTION_SPEC_KEYS = (
     "taker_fee_pct",
     "maker_fee_pct",

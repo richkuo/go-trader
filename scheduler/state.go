@@ -32,7 +32,9 @@ func RecordTrade(s *StrategyState, trade Trade) {
 		}
 	}
 	if trade.CostModelVersion == 0 {
-		trade.CostModelVersion = FillCostModelVersion
+		policy := activeFillCostPolicy()
+		trade.CostModelVersion = policy.ModelVersion
+		trade.CostPolicyID = policy.PolicyID
 	}
 	s.TradeHistory = append(s.TradeHistory, trade)
 	if tradeRecorder == nil || s.deferTradePersist {
@@ -116,7 +118,7 @@ func strategyBookNow(s *StrategyState) time.Time {
 	if s != nil && !s.bookClock.IsZero() {
 		return s.bookClock.UTC()
 	}
-	return time.Now().UTC()
+	return tradingNow().UTC()
 }
 
 func withStrategyBookClock(s *StrategyState, now time.Time, fn func()) {

@@ -46,6 +46,7 @@ var agentInfoCommands = []agentCommand{
 	{Name: "version", Summary: "Print the binary version; --json adds the source commit embedded at build time.", Usage: "go-trader version [--json]", Flags: []string{"--json"}},
 	{Name: "supervise", Summary: "Container image only: start one scheduler daemon, forward SIGTERM/SIGINT/SIGHUP to it, and pass its exit status through; on exit 78, 79 or 80 log one CRITICAL line and hold (unhealthy, no restart) until terminated.", Usage: "go-trader supervise [daemon flags]"},
 	{Name: "healthcheck", Summary: "Query the daemon health endpoint; exit 0 only on an HTTP 2xx reply (container healthcheck).", Usage: "go-trader healthcheck [--url <url>] [--timeout <d>]", Flags: []string{"--url", "--timeout"}},
+	{Name: "basket-replay", Summary: "Research-only offline basket replay (#1791): runs the real paper basket coordinator, member management and accounting owners on a simulated clock from one versioned step script, in a temporary state directory it creates (new) or created earlier (resume). Builds its own paper config, refuses live members, deployed paths and foreign state, fetches nothing, sends no live order, and writes protocol JSON to stdout with logs on stderr.", Usage: "go-trader basket-replay --spec <step-script.json|-> [--max-steps <n>] [--fault exit-after-submit:<n>]", Flags: []string{"--spec", "--max-steps", "--fault"}},
 }
 
 type agentEnvVar struct {

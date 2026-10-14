@@ -11,7 +11,7 @@ import (
 
 const paperFundingStateVersion = 1
 
-var paperFundingClock = func() time.Time { return time.Now().UTC() }
+var paperFundingClock = func() time.Time { return tradingNow().UTC() }
 
 func paperFundingNowMs() int64 {
 	return paperFundingClock().UTC().UnixMilli()

@@ -506,7 +506,7 @@ func finishEntryBookingLocked(store *StateStore, s *StrategyState, adm entryAdmi
 		releaseLiveEntryAttempt(in)
 		return
 	}
-	settleClosedBarEntryLocked(s, adm, fromIdx, time.Now())
+	settleClosedBarEntryLocked(s, adm, fromIdx, tradingNow())
 }
 
 func finishFailedLiveEntry(store *StateStore, sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, in *entryIntent, submitted bool, outcome, detail string, notifier *MultiNotifier, logger *StrategyLogger) {

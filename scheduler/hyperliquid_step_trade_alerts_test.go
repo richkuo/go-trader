@@ -28,6 +28,22 @@ func hlStepMainFunc(t *testing.T) (*token.FileSet, *ast.FuncDecl) {
 	return nil, nil
 }
 
+func hlStepPerpsStepFunc(t *testing.T) (*token.FileSet, *ast.FuncDecl) {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "hl_perps_step.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse hl_perps_step.go: %v", err)
+	}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "runHyperliquidPerpsStep" {
+			return fset, fn
+		}
+	}
+	t.Fatal("func runHyperliquidPerpsStep not found in hl_perps_step.go")
+	return nil, nil
+}
+
 func hlStepCallName(call *ast.CallExpr) string {
 	switch fn := call.Fun.(type) {
 	case *ast.Ident:
@@ -79,7 +95,7 @@ func hlStepHyperliquidBranch(t *testing.T, fn *ast.FuncDecl) *ast.IfStmt {
 		return true
 	})
 	if branch == nil {
-		t.Fatal("the runHyperliquidCheck branch was not found in func main")
+		t.Fatalf("the runHyperliquidCheck branch was not found in func %s", fn.Name.Name)
 	}
 	return branch
 }
@@ -107,7 +123,11 @@ func hlStepManualClause(t *testing.T, fn *ast.FuncDecl) *ast.CaseClause {
 }
 
 func TestHyperliquidStepAlertOrchestrationContract(t *testing.T) {
-	_, fn := hlStepMainFunc(t)
+	_, mainFn := hlStepMainFunc(t)
+	if got := len(hlStepCalls(mainFn, "runHyperliquidPerpsStep")); got != 1 {
+		t.Fatalf("func main must route the Hyperliquid perps step through runHyperliquidPerpsStep once, got %d calls", got)
+	}
+	_, fn := hlStepPerpsStepFunc(t)
 	branch := hlStepHyperliquidBranch(t, fn)
 	body := branch.Body
 
@@ -199,7 +219,7 @@ func TestHyperliquidStepAlertOrchestrationContract(t *testing.T) {
 
 	guarded := 0
 	var stack []ast.Node
-	ast.Inspect(fn, func(n ast.Node) bool {
+	ast.Inspect(mainFn, func(n ast.Node) bool {
 		if n == nil {
 			stack = stack[:len(stack)-1]
 			return true
@@ -237,7 +257,7 @@ func TestHyperliquidStepAlertOrchestrationContract(t *testing.T) {
 		t.Errorf("per-strategy tail-count consumers = %d, want 1", guarded)
 	}
 
-	manual := hlStepManualClause(t, fn)
+	manual := hlStepManualClause(t, mainFn)
 	if got := len(hlStepCalls(manual, "runManualTrailingStopUpdate")); got != 1 {
 		t.Errorf("manual case calls runManualTrailingStopUpdate %d times, want 1", got)
 	}
