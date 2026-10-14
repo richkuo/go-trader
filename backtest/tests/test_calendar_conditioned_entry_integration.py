@@ -520,10 +520,14 @@ def test_walk_forward_warmup_covers_training_and_refit_history_without_seeding(m
         assert str(ext[col].iloc[-1]) == str(full[col].iloc[b]), col
     assert _apply(df.iloc[b - need + 2:b + 1])["cce_reason"].iloc[-1] == "insufficient_history"
 
-    def no_seed(*_a, **_k):
-        raise AssertionError("the walk-forward warmup seeder ran for an entry-only candidate")
+    real_run = Backtester.run
 
-    monkeypatch.setattr(optimizer, "warmup_exit_long_entry", no_seed)
+    def unseeded_run(self, signals, **kw):
+        if kw.get("warmup_prefix") is not None or kw.get("starting_long") is not None:
+            raise AssertionError("the walk-forward warmup seeder ran for an entry-only candidate")
+        return real_run(self, signals, **kw)
+
+    monkeypatch.setattr(Backtester, "run", unseeded_run)
     small = {k: [P[k]] for k in ("training_bars", "holding_bars", "refit_bars", "min_effective_obs", "confidence",
                                  "cost_hurdle")}
     result = optimizer.walk_forward_optimize(

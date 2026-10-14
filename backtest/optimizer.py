@@ -88,17 +88,20 @@ def scored_engine_can_open_short(engine: Backtester, scored: pd.DataFrame) -> bo
     return engine.direction != "long"
 
 
-def warmup_long_seed(engine: Backtester, prefix: pd.DataFrame, scored: pd.DataFrame,
-                     cache: Optional[dict] = None) -> Optional[dict]:
+def warmup_handoff_prefix(engine: Backtester, prefix: pd.DataFrame,
+                          scored: pd.DataFrame) -> Optional[pd.DataFrame]:
     if len(prefix) == 0:
         return None
     if scored_engine_can_open_short(engine, scored):
         return None
-    if cache is None:
-        return warmup_exit_long_entry(prefix, engine.slippage_pct)
-    if engine.slippage_pct not in cache:
-        cache[engine.slippage_pct] = warmup_exit_long_entry(prefix, engine.slippage_pct)
-    return cache[engine.slippage_pct]
+    return prefix
+
+
+def _candidate_tie_key(params: dict, stack: dict) -> Tuple[str, str]:
+    spec = {k: stack.get(k) for k in
+            ("close_strategies", "stop_loss_atr_mult", "trailing_stop_atr_mult")}
+    return (json.dumps(params, sort_keys=True, default=str),
+            json.dumps(spec, sort_keys=True, default=str))
 
 
 def max_indicator_lookback(param_ranges: Dict[str, list]) -> int:
@@ -391,8 +394,9 @@ def walk_forward_optimize(
     if normalized_direction == "short":
         raise ValueError(
             "direction='short' is not supported by walk-forward optimization "
-            "yet — the warmup seeder (warmup_exit_long_entry) is long-only "
-            "and would carry a phantom long position into the short run. "
+            "yet — the warmup seeder (the engine prefix handoff) passes no "
+            "prefix to an engine that can open a short, so every fold would "
+            "start flat and drop a short the prefix still holds. "
             "Measure the short leg with run_backtest.py --mode single "
             "--direction short or eval_windows.py --direction short."
         )
@@ -505,6 +509,7 @@ def walk_forward_optimize(
         train_boundary_idx = max(train_trim - 1, 0)
 
         best_metric = -np.inf
+        best_key = None
         best_params = None
         best_stack = None
         best_bt = None
@@ -517,8 +522,6 @@ def walk_forward_optimize(
                     signals_ext = overlay_regime_columns(train_ext_df, signals_ext)
                 if uses_exits:
                     signals_ext = ensure_atr_indicator(signals_ext)
-                train_prefix = signals_ext.iloc[:train_boundary_idx] if seed_warmup \
-                    else signals_ext.iloc[:0]
             except CloseCapabilityError:
                 raise
             except _EXPECTED_FOLD_ERRORS as e:
@@ -527,25 +530,29 @@ def walk_forward_optimize(
                 continue
             signals_ext = rejoin_funding_columns(signals_ext, train_ext_df)
             signals_df = signals_ext.iloc[train_boundary_idx:]
+            train_prefix = signals_ext.iloc[:train_boundary_idx] if seed_warmup \
+                else signals_ext.iloc[:0]
             horizon = strategy_horizon(strategy_name, params, default_params)
-            train_seeds = {}
             for (stack, stack_bt), stack_horizon in zip(stack_bts, stack_horizons):
                 if stack_horizon is not None and stack_horizon != horizon:
                     continue
                 try:
-                    train_seed = warmup_long_seed(stack_bt, train_prefix, signals_df,
-                                                  train_seeds)
+                    train_prefix_run = warmup_handoff_prefix(stack_bt, train_prefix, signals_df)
                     result = stack_bt.run(signals_df, strategy_name=strategy_name,
                                           symbol=symbol, timeframe=timeframe,
                                           params=params, save=False,
-                                          starting_long=train_seed)
+                                          warmup_prefix=train_prefix_run)
                     if charge_funding_rejected(result):
                         funding_skipped_candidates += 1
                         fold_funding_rejects += 1
                         continue
                     metric_val = _result_metric(result, optimize_metric)
-                    if metric_val > best_metric:
+                    candidate_key = _candidate_tie_key(params, stack)
+                    if metric_val > best_metric or (
+                            metric_val == best_metric and best_key is not None
+                            and candidate_key < best_key):
                         best_metric = metric_val
+                        best_key = candidate_key
                         best_params = params
                         best_stack = stack
                         best_bt = stack_bt
@@ -574,11 +581,11 @@ def walk_forward_optimize(
             test_signals = test_signals_ext.iloc[test_boundary_idx:]
             test_prefix = test_signals_ext.iloc[:test_boundary_idx] if seed_warmup \
                 else test_signals_ext.iloc[:0]
-            test_seed = warmup_long_seed(best_bt, test_prefix, test_signals)
+            test_prefix_run = warmup_handoff_prefix(best_bt, test_prefix, test_signals)
             test_result = best_bt.run(test_signals, strategy_name=strategy_name,
                                       symbol=symbol, timeframe=timeframe,
                                       params=best_params, save=False,
-                                      starting_long=test_seed)
+                                      warmup_prefix=test_prefix_run)
             if charge_funding_rejected(test_result):
                 funding_skipped_folds += 1
                 continue
