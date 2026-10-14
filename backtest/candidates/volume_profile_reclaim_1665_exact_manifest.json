@@ -1,0 +1,106 @@
+{
+  "schema": "offline_candle_manifest/v5",
+  "study": "volume_profile_reclaim_1665",
+  "venue": "hyperliquid",
+  "provenance": {
+    "kind": "venue",
+    "label": "Hyperliquid mainnet perpetual 15m candles from the public info API (candleSnapshot, closed bars only); the attached volume_profile series are exact executed-trade profiles replayed from the committed public trades WebSocket recording of issue 1638"
+  },
+  "interval": "15m",
+  "warmup_bars": 96,
+  "windows": {
+    "train": {
+      "start": "2026-10-13T00:00:00Z",
+      "end": "2026-10-14T00:00:00Z",
+      "role": "selection only; its decisions need the 2026-10-12 session profile"
+    },
+    "test": {
+      "start": "2026-10-14T00:00:00Z",
+      "end": "2026-10-14T06:00:00Z",
+      "role": "held-out, scored once; its decisions need the 2026-10-13 session profile"
+    }
+  },
+  "acquisition": {
+    "source": "POST https://api.hyperliquid.xyz/info candleSnapshot + fundingHistory (shared_tools/funding_fetcher.py), meta and l2Book",
+    "start": "2026-08-24T00:00:00Z",
+    "end": "2026-10-14T06:00:00Z"
+  },
+  "costs": {
+    "taker_fee_pct": 0.00045,
+    "maker_fee_pct": 0.00015,
+    "slippage_bps": 5.0,
+    "min_notional_usd": 10.0,
+    "min_notional_margin": 0.03
+  },
+  "venue_reference": {
+    "meta": {
+      "path": "volume_profile_reclaim_1665/data/venue/venue_meta.json",
+      "sha256": "458d89887417a477a93db9c93607de5f64b8813d88013e0f4883fc06d6c35249"
+    },
+    "l2_snapshot": {
+      "path": "volume_profile_reclaim_1665/data/venue/venue_l2_snapshot.json",
+      "sha256": "e0e790a2db8510e4687f89297b4fbb334c334a0d7b4022d51b042a4625888e2d"
+    },
+    "documents": [
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps base-tier taker and maker fee",
+        "quote": "Perps fee tiers Base rate Diamond Platinum Gold Silver Bronze Wood Tier 14d weighted volume ($) Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker 0 0.045% 0.015%",
+        "quote_sha256": "8cca42ca08eea9e26b2affe200d4d958dda0d5e0310ba162a8e1f5c9554f3bd9"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/error-responses",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps minimum order value",
+        "quote": "Order MinTradeNtl Order must have minimum value of $10.",
+        "quote_sha256": "28b93383786330e253affaed0d14b98ff3f683d9a66f0111d346f94650a2850d"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "lot size from meta szDecimals",
+        "quote": "Sizes are rounded to the szDecimals of that asset. For example, if szDecimals = 3 then 1.001 is a valid size but 1.0001 is not. szDecimals for an asset is found in the meta response to the info endpoint",
+        "quote_sha256": "9ae73e64e273ae0d0d329a2cd68cdf562ee50b583d581876b5a83bd5309dbc5f"
+      }
+    ]
+  },
+  "datasets": [
+    {
+      "coin": "BTC",
+      "symbol": "BTC/USDT",
+      "size_decimals": 5,
+      "half_spread_bps": 0.0599,
+      "candles": {
+        "path": "volume_profile_reclaim_1665/data/venue/BTC_15m_candles.csv.gz",
+        "sha256": "581bc8bc0e1a8c20aae28a848df20a14d9d94b10cc2a93cdaa5979bb61f76669"
+      },
+      "funding": {
+        "path": "volume_profile_reclaim_1665/data/venue/BTC_funding.csv.gz",
+        "sha256": "e7b226ea4e2dc9f6efab1a1377267662966b31fbc8affb4649c795e5457053fd"
+      },
+      "volume_profile": {
+        "path": "volume_profile_reclaim_1665/data/profile/BTC_volume_profile.json.gz",
+        "sha256": "e683666552aa978dff530e7d905bf938e30b4e233dd838418ae143b26c301939"
+      }
+    },
+    {
+      "coin": "ETH",
+      "symbol": "ETH/USDT",
+      "size_decimals": 4,
+      "half_spread_bps": 0.1996,
+      "candles": {
+        "path": "volume_profile_reclaim_1665/data/venue/ETH_15m_candles.csv.gz",
+        "sha256": "ee0a851ba83b6a0c39057af30faff29b19ffc5c19854fc4f87560f45b50650c8"
+      },
+      "funding": {
+        "path": "volume_profile_reclaim_1665/data/venue/ETH_funding.csv.gz",
+        "sha256": "60d35903cd32cf2c7fe145be048232b7e9988c910960e179870d5e8a1eed495d"
+      },
+      "volume_profile": {
+        "path": "volume_profile_reclaim_1665/data/profile/ETH_volume_profile.json.gz",
+        "sha256": "059b95b423349df3898a3939e6505d352056eeec0d42de6e791fa880ddd4687d"
+      }
+    }
+  ]
+}

@@ -15,6 +15,7 @@ from trade_flow_replay import TradeRecordingError, load_trade_recording, sha256_
 from volume_profile_inputs import (  # noqa: E402
     CONTRACT,
     INT64_MAX,
+    SOURCES,
     KIND,
     MINUTES,
     SESSION_MS,
@@ -33,6 +34,7 @@ from volume_profile_inputs import (  # noqa: E402
 )
 
 SERIES_SCHEMA = "go_trader_volume_profile_series/v1"
+VOLUME_PROFILE_INPUT_STRATEGIES = frozenset({"volume_profile_reclaim"})
 PAYLOAD_KEYS = ("schema", "source", "units", "identity", "time_basis", "session_ms", "interval_ms", "reorder_grace_ms",
                 "decimal_scale", "max_entries", "max_price_chars", "max_pair_bytes")
 HASH_MOD = 1 << 256
@@ -41,6 +43,13 @@ MAX_REASON_CHARS = 240
 DAY_ACCUMULATING = "accumulating"
 DAY_FINAL = "final"
 DAY_UNAVAILABLE = "unavailable"
+
+
+def refuse_volume_profile_strategy(name: str, consumer: str) -> None:
+    if str(name or "").strip() in VOLUME_PROFILE_INPUT_STRATEGIES:
+        raise ValueError(f"{name} reads executed-trade volume profiles, which {consumer} does not prepare; run it only "
+                         "through run_backtest.py --mode single --manifest or eval_windows.py --manifest with a "
+                         "volume_profile series")
 
 
 def _bounded(text: str) -> str:
@@ -266,6 +275,10 @@ def read_profile_series(path: str) -> dict:
     if series.get("kind") != KIND:
         raise TradeRecordingError(f"{path}: kind must be {KIND!r}")
     for key in PAYLOAD_KEYS:
+        if key == "source":
+            if series.get(key) not in SOURCES:
+                raise TradeRecordingError(f"{path}: source {series.get(key)!r} is not one of {SOURCES}")
+            continue
         if series.get(key) != CONTRACT[key]:
             raise TradeRecordingError(f"{path}: {key} {series.get(key)!r} is not the frozen contract value {CONTRACT[key]!r}")
     if series.get("sessions_sha256") != sessions_sha256(series.get("sessions") or []):

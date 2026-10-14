@@ -27,13 +27,15 @@ SCHEMA = "offline_candle_manifest/v1"
 SCHEMA_V2 = "offline_candle_manifest/v2"
 SCHEMA_V3 = "offline_candle_manifest/v3"
 SCHEMA_V4 = "offline_candle_manifest/v4"
-SCHEMAS = (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4)
+SCHEMA_V5 = "offline_candle_manifest/v5"
+SCHEMAS = (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5)
 DATASET_KEYS_V1 = ("coin", "symbol", "size_decimals", "half_spread_bps", "candles", "funding")
 DATASET_KEYS_V2 = DATASET_KEYS_V1 + ("open_interest",)
 DATASET_KEYS_V3 = DATASET_KEYS_V2 + ("trade_flow",)
 DATASET_KEYS_V4 = DATASET_KEYS_V3 + ("macro_calendar", "macro_quotes")
+DATASET_KEYS_V5 = DATASET_KEYS_V4 + ("volume_profile",)
 DATASET_KEYS = {SCHEMA: DATASET_KEYS_V1, SCHEMA_V2: DATASET_KEYS_V2, SCHEMA_V3: DATASET_KEYS_V3,
-                SCHEMA_V4: DATASET_KEYS_V4}
+                SCHEMA_V4: DATASET_KEYS_V4, SCHEMA_V5: DATASET_KEYS_V5}
 PROVENANCE_KINDS = ("venue", "proxy")
 HOUR_MS = 3_600_000
 INTERVAL_MS = {
@@ -247,9 +249,11 @@ def load_manifest(path: str, verify: bool = True) -> dict:
             if "open_interest" in unknown:
                 hint = f"; open_interest needs schema {SCHEMA_V2!r} or {SCHEMA_V3!r}"
             elif "trade_flow" in unknown:
-                hint = f"; trade_flow needs schema {SCHEMA_V3!r} or {SCHEMA_V4!r}"
+                hint = f"; trade_flow needs schema {SCHEMA_V3!r}, {SCHEMA_V4!r} or {SCHEMA_V5!r}"
             elif "macro_calendar" in unknown or "macro_quotes" in unknown:
-                hint = f"; macro_calendar and macro_quotes need schema {SCHEMA_V4!r}"
+                hint = f"; macro_calendar and macro_quotes need schema {SCHEMA_V4!r} or {SCHEMA_V5!r}"
+            elif "volume_profile" in unknown:
+                hint = f"; volume_profile needs schema {SCHEMA_V5!r}"
             raise ManifestError(f"dataset {ds.get('coin')!r} has unknown keys {unknown}{hint}")
         coin = str(ds.get("coin") or "").strip()
         if not coin:
@@ -283,6 +287,8 @@ def load_manifest(path: str, verify: bool = True) -> dict:
                                if ds.get("macro_calendar") else None),
             "macro_quotes": (_file_ref(base_dir, ds["macro_quotes"], f"{key}.macro_quotes", verify)
                              if ds.get("macro_quotes") else None),
+            "volume_profile": (_file_ref(base_dir, ds["volume_profile"], f"{key}.volume_profile", verify)
+                               if ds.get("volume_profile") else None),
         }
         if entry["macro_quotes"] is not None and entry["macro_calendar"] is None:
             raise ManifestError(f"{key}: macro_quotes needs a macro_calendar in the same dataset")
@@ -507,6 +513,56 @@ def attach_trade_flow(manifest: dict, dataset: dict, window: dict):
         return None, coverage
     from trade_flow_replay import payload_from_series
     return payload_from_series(series, manifest["interval_ms"]), coverage
+
+
+def load_volume_profile(dataset: dict) -> Optional[dict]:
+    if dataset.get("volume_profile") is None:
+        return None
+    from trade_flow_replay import TradeRecordingError
+    from volume_profile_replay import read_profile_series
+    try:
+        series = read_profile_series(dataset["volume_profile"]["abs_path"])
+    except TradeRecordingError as exc:
+        raise ManifestError(f"{dataset['key']}: {exc}")
+    if series.get("coin") != dataset["coin"]:
+        raise ManifestError(f"{dataset['key']}: volume-profile series is for {series.get('coin')!r}")
+    return series
+
+
+def volume_profile_coverage(series: Optional[dict], start_ms: int, end_ms: int) -> dict:
+    if series is None:
+        return {"available": False, "reason": "no volume-profile series is attached to this dataset"}
+    from volume_profile_inputs import SESSION_MS, session_start
+    first = session_start(start_ms)
+    needed = list(range(first - SESSION_MS, end_ms - SESSION_MS, SESSION_MS))
+    by_start = {s["session_start_ms"]: s for s in series["sessions"]}
+    usable = [s for s in needed if by_start.get(s, {}).get("status") == "final"]
+    revoked = [s for s in usable if by_start[s].get("invalid_ms")]
+    missing = {}
+    for s in needed:
+        rec = by_start.get(s)
+        code = "no_recording" if rec is None else (rec["reason_code"] if rec["status"] != "final" else "")
+        if code:
+            missing[code] = missing.get(code, 0) + 1
+    return {
+        "available": bool(series.get("economic_evidence")) and bool(usable),
+        "economic_evidence": bool(series.get("economic_evidence")),
+        "refusals": list(series.get("refusals") or []),
+        "needed_prior_sessions": len(needed),
+        "complete_prior_sessions": len(usable),
+        "revoked_prior_sessions": len(revoked),
+        "unusable_reasons": dict(sorted(missing.items())),
+        "sessions_sha256": series["sessions_sha256"],
+    }
+
+
+def attach_volume_profile(manifest: dict, dataset: dict, window: dict):
+    series = load_volume_profile(dataset)
+    coverage = volume_profile_coverage(series, window["start_ms"], window["end_ms"])
+    if series is None:
+        return None, coverage
+    from volume_profile_replay import payload_from_profile_series
+    return payload_from_profile_series(series, manifest["interval_ms"]), coverage
 
 
 def attach_macro_events(manifest: dict, dataset: dict, window: dict, params: Optional[dict] = None):

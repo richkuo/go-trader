@@ -35,11 +35,11 @@
   "venue_reference": {
     "meta": {
       "path": "volume_profile_reclaim_1665/data/venue/venue_meta.json",
-      "sha256": ""
+      "sha256": "458d89887417a477a93db9c93607de5f64b8813d88013e0f4883fc06d6c35249"
     },
     "l2_snapshot": {
       "path": "volume_profile_reclaim_1665/data/venue/venue_l2_snapshot.json",
-      "sha256": ""
+      "sha256": "e0e790a2db8510e4687f89297b4fbb334c334a0d7b4022d51b042a4625888e2d"
     },
     "documents": [
       {
@@ -70,28 +70,36 @@
       "coin": "BTC",
       "symbol": "BTC/USDT",
       "size_decimals": 5,
-      "half_spread_bps": 0.0,
+      "half_spread_bps": 0.0599,
       "candles": {
         "path": "volume_profile_reclaim_1665/data/venue/BTC_15m_candles.csv.gz",
-        "sha256": ""
+        "sha256": "581bc8bc0e1a8c20aae28a848df20a14d9d94b10cc2a93cdaa5979bb61f76669"
       },
       "funding": {
         "path": "volume_profile_reclaim_1665/data/venue/BTC_funding.csv.gz",
-        "sha256": ""
+        "sha256": "e7b226ea4e2dc9f6efab1a1377267662966b31fbc8affb4649c795e5457053fd"
+      },
+      "volume_profile": {
+        "path": "volume_profile_reclaim_1665/data/proxy/BTC_proxy_profile.json.gz",
+        "sha256": "d140023daf983fbda6def22649856771f5d4ba12bd3c554df20274932dd0bc99"
       }
     },
     {
       "coin": "ETH",
       "symbol": "ETH/USDT",
       "size_decimals": 4,
-      "half_spread_bps": 0.0,
+      "half_spread_bps": 0.1996,
       "candles": {
         "path": "volume_profile_reclaim_1665/data/venue/ETH_15m_candles.csv.gz",
-        "sha256": ""
+        "sha256": "ee0a851ba83b6a0c39057af30faff29b19ffc5c19854fc4f87560f45b50650c8"
       },
       "funding": {
         "path": "volume_profile_reclaim_1665/data/venue/ETH_funding.csv.gz",
-        "sha256": ""
+        "sha256": "60d35903cd32cf2c7fe145be048232b7e9988c910960e179870d5e8a1eed495d"
+      },
+      "volume_profile": {
+        "path": "volume_profile_reclaim_1665/data/proxy/ETH_proxy_profile.json.gz",
+        "sha256": "b5099065603f3355dcb0f20222032c8dd8b0920d5cde5cd6bb1dc4b7ffbc8fdf"
       }
     }
   ]

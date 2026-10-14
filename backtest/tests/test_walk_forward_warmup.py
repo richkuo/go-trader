@@ -742,6 +742,13 @@ def test_every_registered_short_entry_strategy_follows_the_engine_contract(monke
                                   registry="futures", platform="hyperliquid", verbose=False,
                                   close_strategies=[SCRIPT_TP], stop_loss_atr_mult=SCRIPT_STOP, direction="both")
     names = [n for n in names if n not in LEADER_INPUT_STRATEGIES]
+    from run_backtest import VOLUME_PROFILE_INPUT_STRATEGIES
+    for name in sorted(VOLUME_PROFILE_INPUT_STRATEGIES):
+        with pytest.raises(ValueError, match="executed-trade volume profiles"):
+            walk_forward_optimize(_random_walk("1h"), name, _singleton_grid(reg, name), n_splits=2, timeframe="1h",
+                                  registry="futures", platform="hyperliquid", verbose=False,
+                                  close_strategies=[SCRIPT_TP], stop_loss_atr_mult=SCRIPT_STOP, direction="both")
+    names = [n for n in names if n not in VOLUME_PROFILE_INPUT_STRATEGIES]
     for name in sorted(TRADE_FLOW_INPUT_STRATEGIES):
         with pytest.raises(ValueError, match="cannot fit one"):
             reg.validate_params(name, {**_singleton_grid_values(reg, name), "expected_interval_ms": 3_600_000})

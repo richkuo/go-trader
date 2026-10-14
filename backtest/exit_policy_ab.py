@@ -458,7 +458,9 @@ def candidate_is_replayable(close_refs: Optional[Sequence[dict]],
 def _prepare_signals(reg, open_name: str, params: Optional[dict], df):
     from atr import ensure_atr_indicator
     from lead_lag_history import refuse_leader_input_strategy
+    from volume_profile_replay import refuse_volume_profile_strategy
     refuse_leader_input_strategy(open_name, "the exit-policy A/B harness")
+    refuse_volume_profile_strategy(open_name, "the exit-policy A/B harness")
     df_signals = reg.apply_strategy(open_name, df, params)
     df_signals = ensure_atr_indicator(df_signals)
     return df_signals

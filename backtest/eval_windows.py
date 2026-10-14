@@ -297,8 +297,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     from data_fetcher import load_cached_data
     from backtester import Backtester, validate_close_capabilities
     from run_backtest import (FUNDING_COLUMN_STRATEGIES, MACRO_EVENT_INPUT_STRATEGIES, OBSERVATION_INPUT_STRATEGIES,
-                              TRADE_FLOW_INPUT_STRATEGIES, _attach_funding_if_needed, _build_profile_label_series,
-                              attach_macro_event_inputs)
+                              TRADE_FLOW_INPUT_STRATEGIES, VOLUME_PROFILE_INPUT_STRATEGIES, _attach_funding_if_needed,
+                              _build_profile_label_series, attach_macro_event_inputs)
 
     validate_close_capabilities(close_refs=close_strategies,
                                 comparison_mode=comparison_mode,
@@ -332,6 +332,12 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         raise ValueError(
             f"{name} reads recorded trade flow as an entry input; only the --manifest path "
             "(schema offline_candle_manifest/v3 with a trade_flow series) can run it")
+    if manifest_ctx is None and name in VOLUME_PROFILE_INPUT_STRATEGIES:
+        raise ValueError(
+            f"{name} reads executed-trade volume profiles as an entry input; only the --manifest path "
+            "(schema offline_candle_manifest/v5 with a volume_profile series) can run it")
+    if name in VOLUME_PROFILE_INPUT_STRATEGIES and profile_allocation:
+        raise ValueError(f"{name}: profile_allocation does not attach the volume-profile series")
     from lead_lag_history import (LEADER_INPUT_STRATEGIES, cached_leader_params,
                                   manifest_leader_params)
     leader_info = None
@@ -371,6 +377,14 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                     f"{dataset['key']} attaches no trade_flow series")
             flow_obs, flow_cov = om.attach_trade_flow(manifest, dataset, manifest_window)
             observation_params = {"trade_flow_observations": flow_obs}
+        profile_cov = None
+        if name in VOLUME_PROFILE_INPUT_STRATEGIES:
+            if dataset.get("volume_profile") is None:
+                raise ValueError(
+                    f"{name} reads executed-trade volume profiles as an entry input; manifest dataset "
+                    f"{dataset['key']} attaches no volume_profile series")
+            profile_obs, profile_cov = om.attach_volume_profile(manifest, dataset, manifest_window)
+            observation_params = {"volume_profile_observations": profile_obs}
         macro_cov = None
         if name in MACRO_EVENT_INPUT_STRATEGIES:
             observation_params, macro_cov = attach_macro_event_inputs(params, symbol, manifest, dataset,
@@ -398,6 +412,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             "open_interest_sha256": (dataset.get("open_interest") or {}).get("sha256"),
             "trade_flow_coverage": flow_cov,
             "trade_flow_sha256": (dataset.get("trade_flow") or {}).get("sha256"),
+            "volume_profile_coverage": profile_cov,
+            "volume_profile_sha256": (dataset.get("volume_profile") or {}).get("sha256"),
             "macro_event_coverage": macro_cov,
             "leader": leader_info,
             "cost_multiplier": manifest_ctx.get("cost_multiplier", 1.0),

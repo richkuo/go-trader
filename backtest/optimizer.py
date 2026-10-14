@@ -402,7 +402,9 @@ def walk_forward_optimize(
         )
 
     from lead_lag_history import refuse_leader_input_strategy
+    from volume_profile_replay import refuse_volume_profile_strategy
     refuse_leader_input_strategy(strategy_name, "walk-forward optimization")
+    refuse_volume_profile_strategy(strategy_name, "walk-forward optimization")
     reg = load_registry(registry)
     apply_strategy = reg.apply_strategy
 
@@ -885,6 +887,11 @@ DEFAULT_PARAM_RANGES = {
         "setup_expiry": [3, 6, 12],
         "session_hours": [4],
         "delta_confirmation": [True],
+    },
+    "volume_profile_reclaim": {
+        "profile_bins": [32, 64, 128],
+        "value_area_fraction": [0.6, 0.7, 0.8],
+        "session_bounds": [False],
     },
     "bitcoin_lead_lag": {
         "lag_bars": [1, 2],

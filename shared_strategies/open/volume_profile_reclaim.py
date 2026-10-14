@@ -62,7 +62,7 @@ REASON_CODES = {
     "profile_changed": 26,
 }
 
-TEXT_COLUMNS = ("vpr_side", "vpr_profile_sha256", "vpr_trades_hash", "vpr_profile_status", "vpr_val", "vpr_vah",
+TEXT_COLUMNS = ("vpr_side", "vpr_profile_source", "vpr_profile_sha256", "vpr_trades_hash", "vpr_profile_status", "vpr_val", "vpr_vah",
                 "vpr_poc_low", "vpr_poc_high", "vpr_bin_width", "vpr_profile_low", "vpr_profile_high", "vpr_bins_json",
                 "vpr_params")
 NUMBER_COLUMNS = ("vpr_session_ms", "vpr_profile_session_ms", "vpr_available_ms", "vpr_invalid_ms", "vpr_bins",
@@ -80,6 +80,10 @@ def _int_param(name, value, lo, hi):
     if as_int < lo or as_int > hi:
         raise ValueError(f"{STRATEGY}: {name} must be in [{lo}, {hi}], got {value!r}")
     return as_int
+
+
+class VolumeProfileInputMissing(ValueError):
+    pass
 
 
 def validate_vpr_params(profile_bins, value_area_fraction, session_bounds, expected_interval_ms) -> dict:
@@ -194,6 +198,10 @@ def volume_profile_reclaim_core(
     volume_profile_observations=None,
 ) -> pd.DataFrame:
     p = validate_vpr_params(profile_bins, value_area_fraction, session_bounds, expected_interval_ms)
+    if volume_profile_observations is None:
+        raise VolumeProfileInputMissing(
+            f"{STRATEGY} reads a supplied executed-trade volume profile (volume_profile_observations); a candle-only "
+            "run cannot score it, so this consumer is refused")
     result = df.copy()
     n = len(result)
     for col in ("open", "high", "low", "close"):
@@ -281,6 +289,7 @@ def volume_profile_reclaim_core(
                 reason[k] = "profile_unavailable"
                 ev["vpr_profile_status"][k] = f"{entry['code']}: {entry['reason']}"
             continue
+        ev["vpr_profile_source"][k] = profile.source
         ev["vpr_profile_sha256"][k] = art["sha256"]
         ev["vpr_trades_hash"][k] = art["trades_hash"]
         ev["vpr_available_ms"][k] = float(art["available_ms"])

@@ -31,6 +31,8 @@ TRADE_FLOW_INPUT_STRATEGIES = {"cumulative_volume_delta_divergence"}
 
 MACRO_EVENT_INPUT_STRATEGIES = {"macro_event_breakout"}
 
+VOLUME_PROFILE_INPUT_STRATEGIES = {"volume_profile_reclaim"}
+
 
 def attach_macro_event_inputs(params: dict, symbol: str, manifest=None, dataset=None, window=None):
     import macro_event_inputs as mi
@@ -1618,6 +1620,9 @@ def run_single_backtest(
         if strategy_name in TRADE_FLOW_INPUT_STRATEGIES and manifest_dataset_entry.get("trade_flow") is None:
             raise SystemExit(f"--manifest: {strategy_name} reads recorded trade flow as an entry input; dataset "
                              f"{manifest_dataset} attaches no trade_flow series (schema {om.SCHEMA_V3})")
+        if strategy_name in VOLUME_PROFILE_INPUT_STRATEGIES and manifest_dataset_entry.get("volume_profile") is None:
+            raise SystemExit(f"--manifest: {strategy_name} reads executed-trade volume profiles as an entry input; dataset "
+                             f"{manifest_dataset} attaches no volume_profile series (schema {om.SCHEMA_V5})")
         if manifest_window not in manifest["windows"]:
             raise SystemExit(f"manifest error: unknown window {manifest_window!r}; "
                              f"known: {sorted(manifest['windows'])}")
@@ -1631,6 +1636,9 @@ def run_single_backtest(
     elif strategy_name in TRADE_FLOW_INPUT_STRATEGIES:
         raise SystemExit(f"{strategy_name} reads recorded trade flow; run it only with --manifest "
                          f"(schema {'offline_candle_manifest/v3'}) on a dataset that attaches a trade_flow series")
+    elif strategy_name in VOLUME_PROFILE_INPUT_STRATEGIES:
+        raise SystemExit(f"{strategy_name} reads executed-trade volume profiles; run it only with --manifest "
+                         f"(schema {'offline_candle_manifest/v5'}) on a dataset that attaches a volume_profile series")
     elif manifest_dataset or manifest_window:
         raise SystemExit("--manifest-dataset and --manifest-window need --manifest")
     elif cost_multiplier != 1.0:
@@ -1681,6 +1689,11 @@ def run_single_backtest(
                     manifest, manifest_dataset_entry, window_spec)
                 observation_params = {"trade_flow_observations": flow_obs}
                 print(f"  Trade-flow coverage: {flow_cov}")
+            if strategy_name in VOLUME_PROFILE_INPUT_STRATEGIES:
+                profile_obs, profile_cov = om.attach_volume_profile(
+                    manifest, manifest_dataset_entry, window_spec)
+                observation_params = {"volume_profile_observations": profile_obs}
+                print(f"  Volume-profile coverage: {profile_cov}")
             if strategy_name in MACRO_EVENT_INPUT_STRATEGIES:
                 observation_params, macro_cov = attach_macro_event_inputs(
                     strat_params, symbol, manifest, manifest_dataset_entry, window_spec)
@@ -2084,6 +2097,9 @@ def run_walk_forward(
     reg = load_registry(registry)
     refuse_basket_evaluator(reg, strategy_name)
     refuse_leader_input_strategy(strategy_name, "walk-forward optimization")
+    if strategy_name in VOLUME_PROFILE_INPUT_STRATEGIES:
+        from volume_profile_replay import refuse_volume_profile_strategy
+        refuse_volume_profile_strategy(strategy_name, "walk-forward optimization")
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
     if not strat:
         print(f"Unknown strategy '{strategy_name}' in '{registry}' registry")
@@ -2387,6 +2403,10 @@ def _main():
         if args.strategy in LEADER_INPUT_STRATEGIES:
             print(f"--mode {args.mode} cannot run {args.strategy}: it reads a pinned BTC leader series, "
                   "which only --mode single (or eval_windows.py) attaches")
+            sys.exit(1)
+        if args.strategy in VOLUME_PROFILE_INPUT_STRATEGIES:
+            print(f"--mode {args.mode} cannot run {args.strategy}: it reads executed-trade volume profiles, "
+                  "which only --mode single --manifest (or eval_windows.py --manifest) attaches")
             sys.exit(1)
 
     close_refs = None

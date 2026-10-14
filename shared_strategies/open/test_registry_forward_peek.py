@@ -183,7 +183,14 @@ def _cvd_fixture() -> pd.DataFrame:
     return df
 
 
+def _vpr_fixture() -> pd.DataFrame:
+    df = _DF[["open", "high", "low", "close", "volume"]].copy()
+    df.index = pd.date_range("2026-01-01", periods=len(df), freq="15min")
+    return df
+
+
 STRATEGY_FIXTURES = {
+    "volume_profile_reclaim": _vpr_fixture,
     "cumulative_volume_delta_divergence": _cvd_fixture,
     "calendar_conditioned_entry": _calendar_conditioned_entry_fixture,
     "range_scalper": _range_scalper_fixture,
@@ -326,7 +333,55 @@ def _with_leader(fn):
     return wrapped
 
 
+def _volume_profile_from_bars(df: pd.DataFrame) -> dict:
+    import sys
+    tools = os.path.abspath(os.path.join(_HERE, "..", "..", "shared_tools"))
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import volume_profile_inputs as vpi
+    opens = df.index.as_unit("ms").asi8.astype(np.int64)
+    step = int(opens[1] - opens[0])
+    by_session = {}
+    for i, open_ms in enumerate(opens):
+        start = vpi.session_start(int(open_ms))
+        px = f"{round(float(df['close'].iloc[i]) * 2) / 2:.1f}".rstrip("0").rstrip(".")
+        units = int(round(float(df["volume"].iloc[i]) * 1000)) * 100_000
+        book = by_session.setdefault(start, {"prices": {}, "first": int(open_ms), "last": int(open_ms) + step - 1, "trades": 0})
+        book["prices"][px] = book["prices"].get(px, 0) + units
+        book["last"] = int(open_ms) + step - 1
+        book["trades"] += 3
+    sessions = []
+    for start in sorted(by_session):
+        book = by_session[start]
+        prices = sorted(book["prices"].items(), key=lambda kv: float(kv[0]))
+        if len(prices) < 2:
+            continue
+        art = {"session_start_ms": start, "session_end_ms": start + vpi.SESSION_MS, "trades": max(book["trades"], len(prices)),
+               "volume": vpi.format_units(sum(u for _, u in prices)), "trades_hash": "0" * 64,
+               "first_event_ms": book["first"], "last_event_ms": book["last"], "complete_minutes": vpi.MINUTES,
+               "available_ms": start + vpi.SESSION_MS + 7_000 + (start // vpi.SESSION_MS % 3) * step,
+               "prices": [[px, vpi.format_units(u)] for px, u in prices]}
+        art["sha256"] = vpi.artifact_sha256("FIX", art)
+        invalid = art["available_ms"] + 9 * step if (start // vpi.SESSION_MS) % 4 == 3 else None
+        sessions.append({"session_start_ms": start, "status": "invalidated" if invalid else "available",
+                         "reason_code": "late_event" if invalid else "", "reason": "fixture" if invalid else "",
+                         "invalid_ms": invalid, "artifact": art})
+    return {"available": True, "kind": "volume_profile", "coin": "FIX", **vpi.CONTRACT, "window_ms": vpi.WINDOW_MS,
+            "bar_interval_ms": step, "snapshot_id": "", "sessions": sessions}
+
+
+def _with_volume_profile(fn):
+    def wrapped(df, **params):
+        out = df.copy()
+        step_ms = int((out.index[1] - out.index[0]) / pd.Timedelta(milliseconds=1))
+        out.attrs["bar_interval_ms"] = step_ms
+        out.attrs["bar_timestamp_kind"] = "open"
+        return fn(out, **params, volume_profile_observations=_volume_profile_from_bars(out))
+    return wrapped
+
+
 STRATEGY_INPUTS = {
+    "volume_profile_reclaim": _with_volume_profile,
     "macro_event_breakout": _with_macro_events,
     "bitcoin_lead_lag": _with_leader,
     "cumulative_volume_delta_divergence": _with_trade_flow,

@@ -126,7 +126,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 69
+    assert len(py) == 70
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -157,6 +157,8 @@ def go_production_refused():
             "cumulativeVolumeDeltaStrategyName"],
         "bitcoinLeadLagStrategyName": _go_string_consts(_go_source("bitcoin_lead_lag_feed.go"))[
             "bitcoinLeadLagStrategyName"],
+        "volumeProfileReclaimStrategyName": _go_string_consts(_go_source("market_feed_profile.go"))[
+            "volumeProfileReclaimStrategyName"],
     }
     out = {}
     for key, ref in re.findall(r'^\s*(\w+|"\w+"):\s*"([^"]*)",\s*$', block, re.M):
@@ -172,6 +174,7 @@ def test_go_production_refusal_equals_python_registry():
         "cumulative_volume_delta_divergence": "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md",
         "bitcoin_lead_lag": "backtest/candidates/bitcoin_lead_lag_1640/REPORT.md",
         "macro_event_breakout": "backtest/candidates/macro_event_breakout_1654/REPORT.md",
+        "volume_profile_reclaim": "backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
     }
     assert go == py
     for name in py:
@@ -211,6 +214,7 @@ def test_go_bidirectional_perps_equal_python_short_entries():
     assert py
     assert unpromoted_absence(mapping_mismatches(go, py), refused_in_both_languages()) == []
     assert "bitcoin_lead_lag" in py and "bitcoin_lead_lag" not in go
+    assert "volume_profile_reclaim" in py and "volume_profile_reclaim" not in go
 
 
 @pytest.mark.parametrize("side", ["go", "python"])
@@ -275,6 +279,7 @@ def test_every_registered_open_strategy_has_a_unique_short_name():
     short = go_short_names()
     assert set(OPEN_REGISTRY.STRATEGIES) - set(short) <= refused_in_both_languages()
     assert "bitcoin_lead_lag" not in short and "cumulative_volume_delta_divergence" in short
+    assert "volume_profile_reclaim" not in short
     values = list(short.values())
     assert len(values) == len(set(values))
 

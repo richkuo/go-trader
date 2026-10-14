@@ -18,6 +18,8 @@ CONTRACT = {
     "max_price_chars": 24,
     "max_pair_bytes": 1 << 20,
 }
+PROXY_SOURCE = "candle_typical_price_proxy/1665"
+SOURCES = (CONTRACT["source"], PROXY_SOURCE)
 SESSION_MS = CONTRACT["session_ms"]
 MINUTES = SESSION_MS // CONTRACT["interval_ms"]
 WINDOW_MS = 2 * SESSION_MS
@@ -186,6 +188,7 @@ class ProfileInput:
         self.coin = ""
         self.cutoff = None
         self.bar_interval = None
+        self.source = ""
         self.sessions = {}
 
     def lookup(self, start: int):
@@ -202,7 +205,7 @@ def parse_profile_input(obs) -> ProfileInput:
     if obs.get("kind") != KIND:
         return ProfileInput("unsupported_profile", f"kind {obs.get('kind')!r} is not {KIND!r}")
     for key, want in CONTRACT.items():
-        if key == "interval_ms":
+        if key in ("interval_ms", "source"):
             continue
         if obs.get(key) != want:
             return ProfileInput("unsupported_profile", f"{key} {obs.get(key)!r} is not the frozen contract value {want!r}")
@@ -211,8 +214,11 @@ def parse_profile_input(obs) -> ProfileInput:
     coin = obs.get("coin")
     if not isinstance(coin, str) or not coin:
         return ProfileInput("unsupported_profile", "the volume profile input names no coin")
+    if obs.get("source") not in SOURCES:
+        return ProfileInput("unsupported_profile", f"source {obs.get('source')!r} is not one of {SOURCES}")
     out = ProfileInput()
     out.coin = coin
+    out.source = obs["source"]
     if obs.get("cutoff_ms") is not None:
         out.cutoff = _int(obs.get("cutoff_ms"))
         if out.cutoff is None or out.cutoff <= 0:

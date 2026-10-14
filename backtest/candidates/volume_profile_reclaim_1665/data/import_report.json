@@ -1,0 +1,82 @@
+{
+  "exact": {
+    "BTC": {
+      "coin": "BTC",
+      "complete_sessions": 0,
+      "economic_evidence": true,
+      "invalidated_sessions": 0,
+      "sessions_seen": 1,
+      "sessions_sha256": "b9ef462f52ce9b20e9e8d1c02de8d4cc275886b7cedb66550a94d68564873f94",
+      "unavailable": [
+        {
+          "complete_minutes": 825,
+          "reason": "minute 1791868680000 is invalid: disconnected",
+          "reason_code": "minute_invalid",
+          "session_start_ms": 1791849600000
+        }
+      ]
+    },
+    "ETH": {
+      "coin": "ETH",
+      "complete_sessions": 0,
+      "economic_evidence": true,
+      "invalidated_sessions": 0,
+      "sessions_seen": 1,
+      "sessions_sha256": "b9ef462f52ce9b20e9e8d1c02de8d4cc275886b7cedb66550a94d68564873f94",
+      "unavailable": [
+        {
+          "complete_minutes": 825,
+          "reason": "minute 1791868680000 is invalid: disconnected",
+          "reason_code": "minute_invalid",
+          "session_start_ms": 1791849600000
+        }
+      ]
+    }
+  },
+  "proxy": {
+    "BTC": {
+      "coin": "BTC",
+      "complete_sessions": 51,
+      "economic_evidence": true,
+      "invalidated_sessions": 0,
+      "sessions_seen": 52,
+      "sessions_sha256": "74ba14accf2c8874b53ec2d84f97dd90467431fadf20a18cf66b6bbe0fae2cf7",
+      "unavailable": [
+        {
+          "complete_minutes": 0,
+          "reason": "24 of 96 candles",
+          "reason_code": "proxy_incomplete_candles",
+          "session_start_ms": 1791936000000
+        }
+      ]
+    },
+    "ETH": {
+      "coin": "ETH",
+      "complete_sessions": 51,
+      "economic_evidence": true,
+      "invalidated_sessions": 0,
+      "sessions_seen": 52,
+      "sessions_sha256": "a243656b5cebc216a9ed62b660379246a69d96c97c3c9f51e2cb14fae871cd29",
+      "unavailable": [
+        {
+          "complete_minutes": 0,
+          "reason": "24 of 96 candles",
+          "reason_code": "proxy_incomplete_candles",
+          "session_start_ms": 1791936000000
+        }
+      ]
+    }
+  },
+  "recording": {
+    "closed_ms": 1791908155749,
+    "dropped": 0,
+    "economic_evidence": true,
+    "events_compared": 1682,
+    "frames": 97552,
+    "malformed_frames": 0,
+    "recorder_version": "cvd1638-rec-b494faddfd5c",
+    "refusals": [],
+    "run_id": "MacBookPro.hitronhub.home-93858-1791858355712-1791858355",
+    "started_ms": 1791858355712
+  }
+}
