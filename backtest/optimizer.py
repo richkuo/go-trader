@@ -394,8 +394,9 @@ def walk_forward_optimize(
     if normalized_direction == "short":
         raise ValueError(
             "direction='short' is not supported by walk-forward optimization "
-            "yet — the warmup seeder (the engine prefix handoff) is long-only "
-            "and would drop a short the prefix still holds. "
+            "yet — the warmup seeder (the engine prefix handoff) passes no "
+            "prefix to an engine that can open a short, so every fold would "
+            "start flat and drop a short the prefix still holds. "
             "Measure the short leg with run_backtest.py --mode single "
             "--direction short or eval_windows.py --direction short."
         )
