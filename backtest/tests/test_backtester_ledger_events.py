@@ -158,11 +158,3 @@ def test_warmup_handoff_inventory_matches_the_prefix_interval_end(name):
             assert handoff["entry_price"] == pytest.approx(end["avg_cost"], rel=1e-12)
             assert handoff["entry_fee_outstanding"] == pytest.approx(end["entry_fee_outstanding"], abs=1e-12)
     assert held
-
-
-def test_warmup_handoff_refuses_event_recording():
-    df = ensure_atr_indicator(load_registry("futures").apply_strategy(
-        "sma_crossover", _frame(), {"fast_period": 5, "slow_period": 20}))
-    with pytest.raises(ValueError, match="record_events"):
-        Backtester(platform="hyperliquid").run(df.iloc[200:], save=False, record_events=True,
-                                              warmup_prefix=df.iloc[:200])

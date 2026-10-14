@@ -1998,9 +1998,12 @@ class WarmupHandoff:
     prefix_trades: int
     prefix_funding_pnl: float
     funding_unpriced_held_hours: int
+    unscaled_usd_settings: Tuple[str, ...]
 
     def to_dict(self) -> dict:
-        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+        out = {name: getattr(self, name) for name in self.__dataclass_fields__}
+        out["unscaled_usd_settings"] = list(self.unscaled_usd_settings)
+        return out
 
 
 LEDGER_EVENTS_SCHEMA = "go-trader.backtester-ledger-events"
@@ -3805,6 +3808,19 @@ class Backtester:
                 )
             factor = self.initial_capital / equity_before
             open_side = None if position == 0 else ("long" if position > 0 else "short")
+            unscaled_usd = []
+            if factor != 1.0:
+                sizing = self._perps_sizing
+                if sizing is not None and sizing.get("margin_per_trade_usd") is not None:
+                    unscaled_usd.append("perps_sizing.margin_per_trade_usd")
+                if (sizing is not None and sizing["budget_source"] == "shared_wallet_pool"
+                        and sizing.get("pool_available_margin") is not None):
+                    unscaled_usd.append("perps_sizing.pool_available_margin")
+                for key in ("add_notional_usd", "max_added_notional_usd"):
+                    if float(self._scale_in_cfg.get(key, 0) or 0) > 0:
+                        unscaled_usd.append(f"scale_in.{key}")
+                if self._liquidation_model == "venue_isolated" and self._venue_margin is not None:
+                    unscaled_usd.append("venue_margin.tiers")
             due_action = None
             if "_open_action" in df.columns:
                 due_action = str(df["_open_action"].iloc[i])
@@ -3850,6 +3866,7 @@ class Backtester:
                 prefix_trades=len(trades),
                 prefix_funding_pnl=float(total_funding_pnl),
                 funding_unpriced_held_hours=int(funding_unpriced_held_hours),
+                unscaled_usd_settings=tuple(sorted(unscaled_usd)),
             )
             cash *= factor
             position *= factor

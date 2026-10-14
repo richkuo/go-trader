@@ -1149,3 +1149,40 @@ def test_warmup_handoff_refuses_inputs_it_cannot_convert():
     unpriced.loc[unpriced.index[-1], "close"] = float("nan")
     with pytest.raises(ValueError, match="last prefix close"):
         Backtester().run(scored, save=False, warmup_prefix=unpriced)
+
+
+def test_warmup_handoff_marks_absolute_usd_settings_it_does_not_scale():
+    margin_kw = dict(_HANDOFF_CASES["perps_sizing"][0], initial_capital=200.0)
+    margin_kw["perps_sizing"] = dict(margin_kw["perps_sizing"], margin_per_trade_usd=50.0)
+    df = _handoff_walk(seed=3)
+    k = 166
+    resumed = Backtester(**margin_kw).run(df.iloc[k:], save=False, warmup_prefix=df.iloc[:k])
+    handoff = resumed["warmup_handoff"]
+    assert handoff["side"] == "long" and handoff["capital_factor"] < 0.93
+    assert handoff["unscaled_usd_settings"] == ["perps_sizing.margin_per_trade_usd"]
+    fresh = [t for t in resumed["trades"] if pd.Timestamp(t["entry_date"]) > df.index[k]]
+    assert fresh and fresh[0]["shares"] * fresh[0]["entry_price"] == pytest.approx(150.0)
+    pool_kw = dict(margin_kw, perps_sizing=dict(margin_kw["perps_sizing"], budget_source="shared_wallet_pool",
+                                                pool_available_margin=500.0))
+    pooled = Backtester(**pool_kw).run(df.iloc[k:], save=False, warmup_prefix=df.iloc[:k])
+    assert pooled["warmup_handoff"]["unscaled_usd_settings"] == [
+        "perps_sizing.margin_per_trade_usd", "perps_sizing.pool_available_margin"]
+
+    walk = _handoff_walk()
+    signal = [0] * len(walk)
+    for bar in [20] + list(range(30, 300, 10)):
+        signal[bar] = 1
+    walk = walk.assign(signal=signal)
+    cap_kw = dict(allow_scale_in=True, scale_in={"max_adds": 10, "max_added_notional_usd": 3000.0})
+    k = 45
+    whole = Backtester(**cap_kw).run(walk, save=False)
+    capped = Backtester(**cap_kw).run(walk.iloc[k:], save=False, warmup_prefix=walk.iloc[:k])
+    handoff = capped["warmup_handoff"]
+    assert handoff["side"] == "long" and handoff["scale_in_count"] == 2 and handoff["capital_factor"] > 1.0
+    assert whole["scale_in_adds"] == 3 and capped["scale_in_adds"] == 0
+    assert handoff["unscaled_usd_settings"] == ["scale_in.max_added_notional_usd"]
+
+    for kw, frame in ((margin_kw, df), (cap_kw, walk)):
+        flat = Backtester(**kw).run(frame.iloc[15:], save=False, warmup_prefix=frame.iloc[:15])
+        assert flat["warmup_handoff"]["capital_factor"] == 1.0
+        assert flat["warmup_handoff"]["unscaled_usd_settings"] == []
