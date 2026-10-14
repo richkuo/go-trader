@@ -1708,6 +1708,7 @@
         "sum_rate": 0.029087798500000005
        },
        "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -1824,6 +1825,7 @@
         "sum_rate": 0.03275113970000001
        },
        "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -1997,6 +1999,7 @@
         "sum_rate": 0.029087798500000005
        },
        "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -2113,6 +2116,7 @@
         "sum_rate": 0.03275113970000001
        },
        "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -2375,6 +2379,7 @@
         "sum_rate": 0.029087798500000005
        },
        "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -2534,6 +2539,7 @@
         "sum_rate": 0.03275113970000001
        },
        "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -2848,6 +2854,7 @@
         "sum_rate": 0.029087798500000005
        },
        "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -3007,6 +3014,7 @@
         "sum_rate": 0.03275113970000001
        },
        "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -3326,6 +3334,7 @@
         "sum_rate": 0.029087798500000005
        },
        "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -3470,6 +3479,7 @@
         "sum_rate": 0.03275113970000001
        },
        "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -3765,6 +3775,7 @@
         "sum_rate": 0.029087798500000005
        },
        "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -3909,6 +3920,7 @@
         "sum_rate": 0.03275113970000001
        },
        "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "leader": null,
        "macro_event_coverage": {
         "calendar": {
          "calendar_covers_window": true,
@@ -4637,19 +4649,19 @@
    }
   ]
  },
- "source_commit": "1901965871f50b8ec80d765ba949c6131952d5ba",
+ "source_commit": "e2710a7ab648275e409e398e9242095e8ee0fb67",
  "sources_sha256": {
   "backtest/backtester.py": "a401bb093bcb479491ee670d4e4ce2be87d970d157b3541973a9ce3c0510433e",
   "backtest/candidates/macro_event_breakout_1654/calendar_sources.py": "7868e31a1bfd6ac22c92138cebfd3a73315be10228deb18188922540607e342e",
   "backtest/candidates/macro_event_breakout_1654/candidate_spec.json": "7bb2f693c28f8bc12c772362789c7665916766b869a000f686a698f6a1d56328",
   "backtest/candidates/macro_event_breakout_1654/run_study.py": "da382be7e16da2a4df96c0b67781ffde91b8c6bab2ca4fa796fb417708c6a430",
-  "backtest/eval_windows.py": "d2bae19aab97fa1c0ff79fbf6f6e5063845f1f471bd467a37848069720676a8b",
+  "backtest/eval_windows.py": "3c84ecc4ce1112eac125f7073e59f1addb369e0348fb8f89aec34a6b30e083e4",
   "backtest/offline_manifest.py": "746dc8fc452dd7997f90aa74c9d64f42f54cb43a86cc8d2a1fdfdefbde65c099",
-  "backtest/optimizer.py": "d5ba96bd0c40bda85f0d47f3e59f0b02ddbc266c269d54c99568eb74d0984f9e",
-  "backtest/run_backtest.py": "a231bf4b400573361e3c991b86d98f5643910e31d03cf5d4aab4c503c048a92d",
+  "backtest/optimizer.py": "2d02f283f249e559402dc69281fc3b378829004bd0f2cf985e567d55b355bb4e",
+  "backtest/run_backtest.py": "d15afe673febcc727947de284bc3f5be3dbf88a741aff42169d6eb9e847cb8f3",
   "shared_strategies/close/time_stop.py": "da47e115c599a162a9091a245ce51dda7566716e3811b106899b2ae446f19305",
   "shared_strategies/open/macro_event_breakout.py": "15531bc7af9f6803d2fa7ec0d5e7d54b7160a03e5f5296fade269a8e9575554b",
-  "shared_strategies/open/registry.py": "c6ec68d057db3829109365c26a9bbc1b7547885bae7dc35383b72ab8f13f7435",
+  "shared_strategies/open/registry.py": "edd9ef667a1301c7b90ec793dd1f94fba3047d763d59b3243672e3d40913c85c",
   "shared_tools/macro_event_inputs.py": "66a0b30ba7e0883f0fd024ce1a61f8f013585e9cba1a814bcb09d6a33d21ad5c"
  },
  "stability_exploratory": [
