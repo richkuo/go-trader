@@ -13,7 +13,7 @@ artifact is for.
 | `data/` | Frozen Hyperliquid daily candles, hourly funding and lot metadata, with `data_manifest.json` (hashes, listing evidence, coverage, venue-absent hours, excluded candidates). |
 | `run_study.py` | `prepare` (network, writes `data/`), `lock`, `run` (offline, writes `results.json`, `study_manifest.json`, `plans/`, `raw/`), `render` (writes `REPORT.md`). |
 | `plans/` | Portable `go-trader.basket-replay-plan` v1 files of every replay (the state directory is a placeholder; `run` writes a materialized copy into its work directory). |
-| `raw/` | Local only (git-ignored, about 2 MB per replay): gzipped `go-trader.basket-replay-result` v1 records as `backtest/basket_replay.py` wrote them. `results.json` pins the sha256 of every raw record and adapter log; a rerun of `run` regenerates them. |
+| `raw/` | Local only (git-ignored; 0.6 to 6.6 MB per replay, 26 MB for the recorded run): gzipped `go-trader.basket-replay-result` v1 records as `backtest/basket_replay.py` wrote them. `results.json` pins the sha256 of every raw record and adapter log; a rerun of `run` regenerates them. |
 | `results.json`, `study_manifest.json` | Study output: per-run summaries, every tried variant, baseline targets, coverage, source and binary pins, and the study verdict. |
 
 How it runs: `run` checks the lock, the prerequisite commits, files and contracts (replay plan and result versions,

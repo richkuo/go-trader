@@ -1,0 +1,62 @@
+{
+  "binary_sha256": "d2859e459bf3d6e2c1cef40b2d42b182981d19b8cf41786bc70ebc314c4a361b",
+  "data_manifest_sha256": "83f51647c2e898e9a0eef3eaffcc583889a0a97de7f9b0dc98c2e75b7571ab58",
+  "plans": {
+    "heldout-baseline-equal-weight-hold": "7a6963b9017f642be2cf4c883318934ec11b394be4c248829ea092823fba7482",
+    "heldout-baseline-momentum": "ba24045e9530c8dd2048c247008c47be5a613a8fc60b26b405355e11d57286a7",
+    "heldout-baseline-vol-momentum": "376fb4db90369758248043fdae23ea858ab105a57b47ae7c453a09a20262171f",
+    "heldout-candidate": "ce2bbb9950da6cc5c1886c40e838e2014a579eb4c9ef9c3b0391b8e8988aee44",
+    "heldout-candidate-stress": "cbd965a271029a122d677bd064eae13e9d67810c187434f7fa0150fff19fadca",
+    "train-r14-q0p2-v28": "2ae72561f26dac9ad419ea661b41d4f3bcfce3f27c2dd802f2a84bbbd9e3cd92",
+    "train-r14-q0p3-v28": "399223f6c4476414f5c2f5f23f45c8973952beb88378b10b6de8e24ad5d3c011",
+    "train-r28-q0p2-v28": "59350ab9691e85cf6b2985e2e9bf5d59d8f63f154332c042c313104bdce553e1",
+    "train-r28-q0p3-v28": "c07c390eeb88a913ca1019011ca0f6c62668188d1163e968c49c14b4dea0dffc",
+    "train-r7-q0p2-v28": "fd350014050a0c66fd3454857846a3eed6060a39ef2bb366b6ffdaddf3ebf884",
+    "train-r7-q0p3-v28": "663c4135d182bac7744dbe6ae1f6940425df2ec090d3505e6f2b6b5ce93b9942"
+  },
+  "protocol_sha256": "7cd77c3ccf19fb7e2b2e02611ed9c5c3c068d01c89714dcdf1629eb5bd45f931",
+  "raw": [
+    "heldout-baseline-equal-weight-hold.json.gz",
+    "heldout-baseline-momentum.json.gz",
+    "heldout-baseline-vol-momentum.json.gz",
+    "heldout-candidate-stress.json.gz",
+    "heldout-candidate.json.gz",
+    "train-r14-q0p2-v28.json.gz",
+    "train-r14-q0p3-v28.json.gz",
+    "train-r28-q0p2-v28.json.gz",
+    "train-r28-q0p3-v28.json.gz",
+    "train-r7-q0p2-v28.json.gz",
+    "train-r7-q0p3-v28.json.gz"
+  ],
+  "results": "results.json",
+  "results_sha256": "a299158ebcf124c5eb39f9d10e0b42332e5d01d51f37bba29250b0bca717ec4c",
+  "signal_spec_sha256": "6abed03a93a5a56b54a85d5126037cfdec23862e4a01a179622951ede12d1726",
+  "source": {
+    "commit": "1b11cf550d0abaeeca1bd7883fd978d92b8a4185",
+    "dirty": false,
+    "dirty_paths": []
+  },
+  "source_hashes": {
+    "backtest/basket_replay.py": "d2ef65cd337d3f7213ede16b90a866be085012d67887426bab0f376131579a50",
+    "backtest/candidates/cross_sectional_momentum_1787/SIGNAL_SPEC.md": "6abed03a93a5a56b54a85d5126037cfdec23862e4a01a179622951ede12d1726",
+    "backtest/candidates/cross_sectional_momentum_1787/run_study.py": "08ac93f7803724039aee5c558602e62fa5259003c935dd74da7c93bbd13d06b3",
+    "scheduler/basket_replay.go": "111f550d57304b4f9cab57b7a7bde75912031ff3b820727c3fd97deff64b11fe",
+    "scheduler/basket_replay_cmd.go": "32df7f8b46b9a7f7c9302ed5ddcec17ddcdb9488c6220ceacebca0571c396152",
+    "scheduler/basket_replay_spec.go": "880a52fdf9dc85162b4a009e9d0b2babd9a573c35c04bf62249edf2f638c7aea",
+    "scheduler/basket_replay_storage.go": "96c86052662c660d7803a0f9c5f394fd501c0489f022f41b6651999f517de999",
+    "scheduler/basket_replay_targets.go": "571ac83090acf56fef8a96a3db2f57327a1ee6934e9b62448cb9fe7d290a9269",
+    "scheduler/fill_cost_policy.go": "9dd41a530cff596f5a691add9232b30f1a9a658b3c2349cf2e72a7ea621e0f88",
+    "shared_scripts/run_basket_ranker.py": "aaffa07cb44a72f43bae2f874e00a1c6bbd648d5679ac29b457fd9cc964e8112",
+    "shared_strategies/open/basket_allocation.py": "b9e06593c8ec60f003bbac6268ba250a2f55e6afa47e6530a637de90b0cf5209",
+    "shared_strategies/open/cross_sectional_momentum.py": "e02a3388cd02b91fdd1ea7be5c1a4ee6e1a9068f5fa9aa4a9d7d3ffbd781bbf6",
+    "shared_strategies/open/registry.py": "e22aac03ee4e09a3f4f59821cc84c6b643767c0c02a3594d2ee14c686f29adcb",
+    "shared_strategies/open/vol_momentum.py": "168a06d80aa712fb51c0aff2cd495bff1c8ea6d2ad051d30aa604ed2da9c7fd9"
+  },
+  "study": "cross_sectional_momentum_1792",
+  "tools": {
+    "go": "go version go1.27.2 darwin/arm64",
+    "go_trader": "dev",
+    "python": "3.12.9",
+    "uv": "uv 0.9.5 (d5f39331a 2025-10-21)"
+  }
+}

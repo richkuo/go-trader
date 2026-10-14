@@ -1,0 +1,1916 @@
+{
+  "basket": {
+    "eligibility": {
+      "listings": {
+        "APT": {
+          "known_at": "2023-06-30T00:00:00Z",
+          "listed_at": "2023-06-30T00:00:00Z"
+        },
+        "ARB": {
+          "known_at": "2023-03-23T00:00:00Z",
+          "listed_at": "2023-03-23T00:00:00Z"
+        },
+        "ATOM": {
+          "known_at": "2023-02-26T00:00:00Z",
+          "listed_at": "2023-02-26T00:00:00Z"
+        },
+        "AVAX": {
+          "known_at": "2023-03-05T00:00:00Z",
+          "listed_at": "2023-03-05T00:00:00Z"
+        },
+        "BCH": {
+          "known_at": "2023-06-30T00:00:00Z",
+          "listed_at": "2023-06-30T00:00:00Z"
+        },
+        "BNB": {
+          "known_at": "2023-03-05T00:00:00Z",
+          "listed_at": "2023-03-05T00:00:00Z"
+        },
+        "BTC": {
+          "known_at": "2023-02-26T00:00:00Z",
+          "listed_at": "2023-02-26T00:00:00Z"
+        },
+        "DOGE": {
+          "known_at": "2023-04-03T00:00:00Z",
+          "listed_at": "2023-04-03T00:00:00Z"
+        },
+        "ETH": {
+          "known_at": "2023-02-26T00:00:00Z",
+          "listed_at": "2023-02-26T00:00:00Z"
+        },
+        "INJ": {
+          "known_at": "2023-04-27T00:00:00Z",
+          "listed_at": "2023-04-27T00:00:00Z"
+        },
+        "LINK": {
+          "known_at": "2023-05-18T00:00:00Z",
+          "listed_at": "2023-05-18T00:00:00Z"
+        },
+        "LTC": {
+          "known_at": "2023-03-18T00:00:00Z",
+          "listed_at": "2023-03-18T00:00:00Z"
+        },
+        "OP": {
+          "known_at": "2023-03-05T00:00:00Z",
+          "listed_at": "2023-03-05T00:00:00Z"
+        },
+        "SOL": {
+          "known_at": "2023-03-04T00:00:00Z",
+          "listed_at": "2023-03-04T00:00:00Z"
+        },
+        "SUI": {
+          "known_at": "2023-05-03T00:00:00Z",
+          "listed_at": "2023-05-03T00:00:00Z"
+        },
+        "XRP": {
+          "known_at": "2023-06-17T00:00:00Z",
+          "listed_at": "2023-06-17T00:00:00Z"
+        }
+      },
+      "min_history_bars": 30,
+      "source": "frozen Hyperliquid daily candles in data/ (first traded bar)",
+      "version": "1792-1"
+    },
+    "evaluation_window_seconds": 3600,
+    "gross_budget_usd": 10000,
+    "id": "xsmom-study",
+    "lookback_bars": 60,
+    "max_coin_notional_usd": 2500,
+    "max_transition_net_usd": 10000,
+    "members": [
+      "xs-btc",
+      "xs-eth",
+      "xs-sol",
+      "xs-doge",
+      "xs-avax",
+      "xs-link",
+      "xs-arb",
+      "xs-op",
+      "xs-ltc",
+      "xs-bnb",
+      "xs-xrp",
+      "xs-atom",
+      "xs-apt",
+      "xs-sui",
+      "xs-inj",
+      "xs-bch"
+    ],
+    "min_eligible_members": 8,
+    "params": {},
+    "ranker": "cross_sectional_momentum",
+    "ranker_timeout_seconds": 120,
+    "rebalance_interval_seconds": 604800
+  },
+  "cost_policy": {
+    "fill_role": "taker_all",
+    "slippage_pct": 0.0005,
+    "spread": "inside_slippage",
+    "taker_fee_pct": 0.00045
+  },
+  "frames": {
+    "APT|1d": {
+      "path": "data/APT_1d_candles.csv.gz",
+      "sha256": "b71f02ac675fb771a769348a3fc77d15c4287b4f220c5916df33e0547cdd021b"
+    },
+    "ARB|1d": {
+      "path": "data/ARB_1d_candles.csv.gz",
+      "sha256": "e931c1de589b7fc3ddfb35f3d9110c66023efe29e08151876a03ec318204b530"
+    },
+    "ATOM|1d": {
+      "path": "data/ATOM_1d_candles.csv.gz",
+      "sha256": "31fc9d4007365834e9ea85cf45b1ce3224a068c5d0fce0f096fec939dbd7dd16"
+    },
+    "AVAX|1d": {
+      "path": "data/AVAX_1d_candles.csv.gz",
+      "sha256": "e50f96631cb23ed87f8c7d140b78f9cbd288810d90f31f3652c6b11b1fefe716"
+    },
+    "BCH|1d": {
+      "path": "data/BCH_1d_candles.csv.gz",
+      "sha256": "6cb48ce6ef54b308fffdce15b8f7b7a6cffd181e8a043a810d063640b77e5bfc"
+    },
+    "BNB|1d": {
+      "path": "data/BNB_1d_candles.csv.gz",
+      "sha256": "a87c6cf77b7b7709f7bd8f53098c049df41cb45dfaa45b88796f56d320b89190"
+    },
+    "BTC|1d": {
+      "path": "data/BTC_1d_candles.csv.gz",
+      "sha256": "b6ee004a5c5ef63bd74f9d21b265f2eeaddd0dd2cffe01f16b188cdd677350bd"
+    },
+    "DOGE|1d": {
+      "path": "data/DOGE_1d_candles.csv.gz",
+      "sha256": "d5dd39380467b2c01e7efde62359736b7a48caa8a4431b73ca625f8e19c96aaf"
+    },
+    "ETH|1d": {
+      "path": "data/ETH_1d_candles.csv.gz",
+      "sha256": "f13e5e90ae5b2dd83bba6d2589f2783ec4f6f0ce9911f252ebf503da6b81cdd9"
+    },
+    "INJ|1d": {
+      "path": "data/INJ_1d_candles.csv.gz",
+      "sha256": "9799996aa428a3d3ee6018e2150f98866a20aac6106e7d7eb3db07ba112f79f5"
+    },
+    "LINK|1d": {
+      "path": "data/LINK_1d_candles.csv.gz",
+      "sha256": "3401762bb2ad5c83f48c92586dc4263f717b08429a03104020102949e5466c8f"
+    },
+    "LTC|1d": {
+      "path": "data/LTC_1d_candles.csv.gz",
+      "sha256": "80edc4bba94b01c7d0089d39d9f199aae32b42c47f0396c49489bc6cba4a7e6d"
+    },
+    "OP|1d": {
+      "path": "data/OP_1d_candles.csv.gz",
+      "sha256": "358bc2f7fa05a93b5e054e6d9667563e23602b41928854fe7989a7a1e7e81491"
+    },
+    "SOL|1d": {
+      "path": "data/SOL_1d_candles.csv.gz",
+      "sha256": "7473c38679aefc16a30d0b1134ed8f87a42cff2e217b895a73f589e8c212eb6d"
+    },
+    "SUI|1d": {
+      "path": "data/SUI_1d_candles.csv.gz",
+      "sha256": "feff021502cdab0e78b55bc407cba1c0fef387df2502a679df37b5a3c3b92c55"
+    },
+    "XRP|1d": {
+      "path": "data/XRP_1d_candles.csv.gz",
+      "sha256": "89957e96ffa98ee84da2cc78aee5564e37fab9f32e7c95d7492216af0d3c028b"
+    }
+  },
+  "funding": {
+    "APT": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/APT_funding.csv.gz",
+      "sha256": "d0f12b90058cc89f1495249484c6c11391104f89e05cc963ac2570e8603463ae"
+    },
+    "ARB": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/ARB_funding.csv.gz",
+      "sha256": "277fd4450beb728d9f8101ea697a84978fa38b26e20c2eee01d007fddd23208d"
+    },
+    "ATOM": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/ATOM_funding.csv.gz",
+      "sha256": "9f149db701b71617a8a80fa2203a2d31d6f7fc58a8c18268f7c82c7652e0c12e"
+    },
+    "AVAX": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/AVAX_funding.csv.gz",
+      "sha256": "bfe2caf5d0651d97b77b9d0a2fce7d2119678f40513c42c316430954dd59cf7c"
+    },
+    "BCH": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/BCH_funding.csv.gz",
+      "sha256": "0af0e8a2fde41f9a6e05fd23b4bddd3121e1d38350330a42d294ad439f14a079"
+    },
+    "BNB": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/BNB_funding.csv.gz",
+      "sha256": "6410bda0f20591339b448245aca9592ea224901579e6855f02ae14711e2956cc"
+    },
+    "BTC": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/BTC_funding.csv.gz",
+      "sha256": "881258f1baa4f26ad04a9c15430f7b8913d3dd8d9eef1fff2969a3bbc842fbef"
+    },
+    "DOGE": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/DOGE_funding.csv.gz",
+      "sha256": "f10231fc4e314097466b06e05112e1a35e88bc7e00144ffdf3fbf39c159e5a54"
+    },
+    "ETH": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/ETH_funding.csv.gz",
+      "sha256": "2dfd44fbfd8801c2c3864304e602e42b8a1ec75d2c8589bcde04adc235ec23bf"
+    },
+    "INJ": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/INJ_funding.csv.gz",
+      "sha256": "b04a1a3fcb3e184388fb2b2b55b11646b467f337112dbe0b8bca67e97deeb148"
+    },
+    "LINK": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/LINK_funding.csv.gz",
+      "sha256": "34091ea054b4099eb3f26bbc7a62e7deabf556a7e9c5d587e69cc025f703054c"
+    },
+    "LTC": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/LTC_funding.csv.gz",
+      "sha256": "93d07901f25a62ea4583ed58757150ac1f334e3556522e20c7f7a77a169e1c0a"
+    },
+    "OP": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/OP_funding.csv.gz",
+      "sha256": "e92ce869f5546cf54a5972c70238e2c6d1b05a206ec0eaa33970455ca7501fc5"
+    },
+    "SOL": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/SOL_funding.csv.gz",
+      "sha256": "9fb679dff5f7bc1f3e341364225c4317cfeccf15d5c69630dfa23602596ee65c"
+    },
+    "SUI": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/SUI_funding.csv.gz",
+      "sha256": "397cc7fdbd0b581a9d773c8bc55a33c2a22d20297fc3ef3c12bd426f22e75ddf"
+    },
+    "XRP": {
+      "from": "2025-06-05T00:00:00Z",
+      "path": "data/XRP_funding.csv.gz",
+      "sha256": "36b33051697a8b71b4085171045b01845afca55db234802f5b8534d140f75125"
+    }
+  },
+  "history_bars": 210,
+  "lot_metadata": {
+    "APT": 2,
+    "ARB": 1,
+    "ATOM": 2,
+    "AVAX": 2,
+    "BCH": 3,
+    "BNB": 3,
+    "BTC": 5,
+    "DOGE": 0,
+    "ETH": 4,
+    "INJ": 1,
+    "LINK": 1,
+    "LTC": 2,
+    "OP": 1,
+    "SOL": 2,
+    "SUI": 1,
+    "XRP": 0
+  },
+  "members": [
+    {
+      "coin": "BTC",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-btc",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "ETH",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-eth",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "SOL",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-sol",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "DOGE",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-doge",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "AVAX",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-avax",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "LINK",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-link",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "ARB",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-arb",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "OP",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-op",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "LTC",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-ltc",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "BNB",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-bnb",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "XRP",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-xrp",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "ATOM",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-atom",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "APT",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-apt",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "SUI",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-sui",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "INJ",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-inj",
+      "timeframe": "1d"
+    },
+    {
+      "coin": "BCH",
+      "config": {
+        "capital": 3000,
+        "close_strategy": {
+          "name": "tiered_tp_pct",
+          "params": {
+            "tp_tiers": [
+              {
+                "close_fraction": 1.0,
+                "profit_pct": 5.0
+              }
+            ]
+          }
+        },
+        "leverage": 1,
+        "max_drawdown_pct": 90,
+        "stop_loss_pct": 30
+      },
+      "id": "xs-bch",
+      "timeframe": "1d"
+    }
+  ],
+  "plan": "go-trader.basket-replay-plan",
+  "portfolio_risk": {
+    "max_drawdown_pct": 25
+  },
+  "run_id": "heldout-baseline-momentum",
+  "source": {
+    "candles": "Hyperliquid perpetual daily candles (candleSnapshot) through platforms/hyperliquid/adapter.py get_ohlcv_candles; venue prices, not a proxy; a bar is kept only from the first daily bar with at least one trade",
+    "data_manifest_sha256": "83f51647c2e898e9a0eef3eaffcc583889a0a97de7f9b0dc98c2e75b7571ab58",
+    "funding": "Hyperliquid hourly funding history through shared_tools/funding_fetcher.py load_cached_funding with an isolated cache database; signed rates, never filled",
+    "lot_metadata": "Hyperliquid perpetual szDecimals through platforms/hyperliquid/adapter.py lot_size_decimals, read once at preparation",
+    "protocol_sha256": "7cd77c3ccf19fb7e2b2e02611ed9c5c3c068d01c89714dcdf1629eb5bd45f931",
+    "study": "cross_sectional_momentum_1792"
+  },
+  "state_dir": "<work>/state/heldout-baseline-momentum",
+  "target_input": {
+    "mode": "baseline",
+    "weights": {
+      "2025-06-05T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-06-12T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-06-19T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-06-26T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-07-03T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0625,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0625,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0625,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-07-10T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2025-07-17T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2025-07-24T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2025-07-31T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0,
+        "XRP": 0.0625
+      },
+      "2025-08-07T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0625,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-08-14T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2025-08-21T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0
+      },
+      "2025-08-28T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0625,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0625,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-09-04T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-09-11T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0,
+        "DOGE": 0.0625,
+        "ETH": 0.0,
+        "INJ": 0.0625,
+        "LINK": 0.0,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2025-09-18T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2025-09-25T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0625,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-10-02T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-10-09T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2025-10-16T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-10-23T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-10-30T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0625,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0625
+      },
+      "2025-11-06T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-11-13T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0625,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-11-20T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0,
+        "ATOM": 0.0625,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-11-27T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-12-04T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0,
+        "LINK": 0.0625,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2025-12-11T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0625,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0,
+        "LINK": 0.0625,
+        "LTC": 0.0,
+        "OP": 0.0625,
+        "SOL": 0.0,
+        "SUI": 0.0625,
+        "XRP": 0.0
+      },
+      "2025-12-18T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2025-12-25T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-01-01T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-01-08T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-01-15T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-01-22T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-01-29T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-02-05T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-02-12T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-02-19T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0625,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-02-26T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-03-05T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0625,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0,
+        "SOL": 0.0625,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-03-12T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0625,
+        "ATOM": 0.0,
+        "AVAX": 0.0625,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0,
+        "LINK": 0.0625,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0
+      },
+      "2026-03-19T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-03-26T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-04-02T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-04-09T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0625,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0625,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-04-16T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-04-23T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-04-30T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0,
+        "XRP": 0.0625
+      },
+      "2026-05-07T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0,
+        "ATOM": 0.0625,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0,
+        "SUI": 0.0625,
+        "XRP": 0.0
+      },
+      "2026-05-14T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-05-21T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0625,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0625,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0625,
+        "XRP": 0.0
+      },
+      "2026-05-28T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0625,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0625,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-06-04T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0625,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-06-11T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-06-18T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0625,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-06-25T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0625,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0625,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-07-02T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0625,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-07-09T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0
+      },
+      "2026-07-16T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-07-23T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0625,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0625,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-07-30T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0,
+        "BTC": 0.0625,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-08-06T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-08-13T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0,
+        "ATOM": 0.0625,
+        "AVAX": 0.0,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0,
+        "INJ": 0.0,
+        "LINK": 0.0625,
+        "LTC": 0.0,
+        "OP": 0.0,
+        "SOL": 0.0625,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-08-20T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0,
+        "SOL": 0.0625,
+        "SUI": 0.0,
+        "XRP": 0.0625
+      },
+      "2026-08-27T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-09-03T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-09-10T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0
+      },
+      "2026-09-17T00:00:00Z": {
+        "APT": 0.0,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0,
+        "BNB": 0.0625,
+        "BTC": 0.0,
+        "DOGE": 0.0,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0,
+        "LTC": 0.0625,
+        "OP": 0.0,
+        "SOL": 0.0,
+        "SUI": 0.0,
+        "XRP": 0.0
+      },
+      "2026-09-24T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      },
+      "2026-10-01T00:00:00Z": {
+        "APT": 0.0625,
+        "ARB": 0.0625,
+        "ATOM": 0.0625,
+        "AVAX": 0.0625,
+        "BCH": 0.0625,
+        "BNB": 0.0625,
+        "BTC": 0.0625,
+        "DOGE": 0.0625,
+        "ETH": 0.0625,
+        "INJ": 0.0625,
+        "LINK": 0.0625,
+        "LTC": 0.0625,
+        "OP": 0.0625,
+        "SOL": 0.0625,
+        "SUI": 0.0625,
+        "XRP": 0.0625
+      }
+    }
+  },
+  "version": 1,
+  "window": {
+    "end": "2026-10-02T00:00:00Z",
+    "start": "2025-06-05T00:00:00Z",
+    "step_seconds": 86400
+  }
+}
