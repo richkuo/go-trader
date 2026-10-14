@@ -86,6 +86,9 @@ type feedStrategyRequirement struct {
 	ObsWindowMs    int64
 	TradeFlow      bool
 	TradeWindowMs  int64
+	Leader         marketFeedKey
+	HasLeader      bool
+	LeaderLookback int
 	ClosedBar      bool
 	Timed          bool
 
@@ -241,6 +244,21 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 			Coin:           symbol,
 			ClosedBar:      sc.ClosedBarDecisions,
 			Timed:          needsTimedSignalFrame(sc),
+		}
+		if feedStrategyUsesLeaderFrame(sc) {
+			rows, lerr := bitcoinLeadLagFrameRows(sc)
+			if lerr != nil {
+				errs = append(errs, fmt.Sprintf("strategy[%s] %s: %v", sc.ID, bitcoinLeadLagStrategyName, lerr))
+				continue
+			}
+			entry.Leader = feedKeyFor(bitcoinLeadLagLeaderCoin, timeframe)
+			entry.HasLeader = true
+			entry.LeaderLookback = rows
+			entry.Timed = true
+			if rows > entry.SignalLookback {
+				entry.SignalLookback = rows
+			}
+			req.addKey(entry.Leader, entry.LeaderLookback)
 		}
 		req.addKey(entry.Signal, entry.SignalLookback)
 

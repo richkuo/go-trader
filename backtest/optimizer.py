@@ -401,6 +401,8 @@ def walk_forward_optimize(
             "--direction short or eval_windows.py --direction short."
         )
 
+    from lead_lag_history import refuse_leader_input_strategy
+    refuse_leader_input_strategy(strategy_name, "walk-forward optimization")
     reg = load_registry(registry)
     apply_strategy = reg.apply_strategy
 
@@ -883,6 +885,16 @@ DEFAULT_PARAM_RANGES = {
         "setup_expiry": [3, 6, 12],
         "session_hours": [4],
         "delta_confirmation": [True],
+    },
+    "bitcoin_lead_lag": {
+        "lag_bars": [1, 2],
+        "horizon_bars": [2, 4, 8],
+        "training_bars": [240, 480],
+        "impulse_z": [1.5, 2.0, 2.5],
+        "min_r2": [0.0, 0.01],
+        "min_edge_bps": [0.0, 10.0],
+        "cost_bps": [20.0],
+        "signal_mode": ["lead_lag"],
     },
     "mass_index_reversal": {
         "ema_period": [9],

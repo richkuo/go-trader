@@ -88,6 +88,11 @@ from macro_event_breakout import (
     macro_event_breakout_core,
     macro_param_validator,
 )
+from bitcoin_lead_lag import (
+    DEFAULT_PARAMS as DEFAULT_LEAD_LAG_PARAMS,
+    bitcoin_lead_lag_core,
+    lead_lag_param_validator,
+)
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -2802,6 +2807,42 @@ def macro_event_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return macro_event_breakout_core(df, **params)
 
 
+@register(
+    "bitcoin_lead_lag",
+    "RESEARCH, production-refused, frozen study FAIL (#1640: net negative on the 1h held-out window at base and stress cost) \u2014 Bitcoin lead-lag entries on closed bars: the BTC perpetual on the follower's own timeframe is the leader; a trailing intercept-and-slope regression of the follower's log return over horizon_bars, starting lag_bars after a BTC bar, on that BTC bar's log return is refitted at every decision from training_bars past pairs whose forecast window closed at or before the decision. A BTC return at least impulse_z standard deviations of the training BTC returns is an impulse event; at the first decision in its forecast window where the slope and both training-half slopes are positive, R-squared is at least min_r2 and the signed forecast minus the follower move already completed exceeds cost_bps + min_edge_bps, it enters once in the impulse direction (mirrored shorts); later decisions, restarts and stop-outs never re-enter from the same impulse. Leader rows come only from a supplied leader_context (same sealed deadline and closed-bar cutoff, or a pinned historical series); missing, stale, duplicate, reordered or unmatched leader data holds the entry with a reason. signal_mode follower_momentum and btc_trend_filter are the frozen study baselines. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    dict(DEFAULT_LEAD_LAG_PARAMS),
+    platforms=("futures",),
+    constraints=[
+        "lag_bars >= 1",
+        "lag_bars <= 6",
+        "horizon_bars >= 1",
+        "horizon_bars <= 12",
+        "training_bars >= 48",
+        "training_bars <= 720",
+        "impulse_z >= 0.5",
+        "impulse_z <= 6",
+        "min_r2 >= 0",
+        "min_r2 < 1",
+        "min_edge_bps >= 0",
+        "min_edge_bps <= 500",
+        "cost_bps >= 0",
+        "cost_bps <= 500",
+        "max_data_age_ms >= 60000",
+        "max_data_age_ms <= 86400000",
+        "expected_interval_ms >= 900000",
+        "expected_interval_ms <= 14400000",
+    ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/bitcoin_lead_lag_1640/REPORT.md",
+    short_entries=True,
+    param_validator=lead_lag_param_validator,
+    production_refused=True,
+)
+def bitcoin_lead_lag_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return bitcoin_lead_lag_core(df, **params)
+
+
 PLATFORM_ORDER: Dict[str, List[str]] = {
     "spot": [
         "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
@@ -2854,6 +2895,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "klinger_divergence",
         "cumulative_volume_delta_divergence",
         "macro_event_breakout",
+        "bitcoin_lead_lag",
         "hold",
     ],
 }

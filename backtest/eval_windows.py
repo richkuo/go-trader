@@ -332,6 +332,11 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         raise ValueError(
             f"{name} reads recorded trade flow as an entry input; only the --manifest path "
             "(schema offline_candle_manifest/v3 with a trade_flow series) can run it")
+    from lead_lag_history import (LEADER_INPUT_STRATEGIES, cached_leader_params,
+                                  manifest_leader_params)
+    leader_info = None
+    if name in LEADER_INPUT_STRATEGIES and profile_allocation:
+        raise ValueError(f"{name}: profile_allocation does not attach the BTC leader series")
     if manifest_ctx is not None:
         import offline_manifest as om
         if name in FUNDING_COLUMN_STRATEGIES:
@@ -370,6 +375,9 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         if name in MACRO_EVENT_INPUT_STRATEGIES:
             observation_params, macro_cov = attach_macro_event_inputs(params, symbol, manifest, dataset,
                                                                       manifest_window)
+        if name in LEADER_INPUT_STRATEGIES:
+            observation_params, leader_info = manifest_leader_params(
+                manifest, manifest_ctx["window"], df, symbol)
         spec = om.execution_spec(manifest, dataset,
                                  manifest_ctx.get("cost_multiplier", 1.0))
         if close_strategies:
@@ -391,6 +399,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             "trade_flow_coverage": flow_cov,
             "trade_flow_sha256": (dataset.get("trade_flow") or {}).get("sha256"),
             "macro_event_coverage": macro_cov,
+            "leader": leader_info,
             "cost_multiplier": manifest_ctx.get("cost_multiplier", 1.0),
             "cost_model": "execution_spec" if execution_spec else "legacy_flat",
             "execution_spec": spec,
@@ -427,6 +436,10 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
 
     if strategy_df is None:
         strategy_df = df
+    if manifest_ctx is None and name in LEADER_INPUT_STRATEGIES:
+        observation_params, leader_info = cached_leader_params(
+            strategy_df, symbol, timeframe, load_start, window[1],
+            exchange_id or "binanceus")
     strat_params = params if params is not None else strat["default_params"]
 
     if profile_allocation:
@@ -539,6 +552,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         span_days = None
     leg["span_days"] = round(span_days, 4) if span_days else span_days
     leg["close_validation"] = results.get("close_validation")
+    if leader_info is not None:
+        leg["leader"] = leader_info
     if keep_trades:
         leg["trade_samples"] = trade_samples_from_results(results)
     if keep_positions:

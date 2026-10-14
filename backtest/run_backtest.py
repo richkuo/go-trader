@@ -80,6 +80,8 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since,
     return out
 from htf_filter import get_default_htf, apply_htf_filter
 from registry_loader import load_registry, refuse_basket_evaluator
+from lead_lag_history import (LEADER_INPUT_STRATEGIES, LeaderDataUnavailable, cached_leader_params,
+                              manifest_leader_params, refuse_leader_input_strategy)
 from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
                         FundingIncompleteError, _LABELS_UNSET,
                         STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS,
@@ -1601,6 +1603,8 @@ def run_single_backtest(
         ]
         if unsupported:
             raise SystemExit(f"--manifest does not support: {', '.join(unsupported)}")
+        if strategy_name in LEADER_INPUT_STRATEGIES and profile_allocation:
+            raise SystemExit(f"{strategy_name}: profile allocation does not attach the BTC leader series")
         if not manifest_dataset or not manifest_window:
             raise SystemExit("--manifest needs --manifest-dataset and --manifest-window")
         try:
@@ -1681,6 +1685,10 @@ def run_single_backtest(
                 observation_params, macro_cov = attach_macro_event_inputs(
                     strat_params, symbol, manifest, manifest_dataset_entry, window_spec)
                 print(f"  Macro-event coverage: {macro_cov}")
+            if strategy_name in LEADER_INPUT_STRATEGIES:
+                observation_params, leader_info = manifest_leader_params(
+                    manifest, manifest_window, df, symbol)
+                print(f"  Leader input: {json.dumps(leader_info, sort_keys=True, default=str)}")
         except om.ManifestError as exc:
             raise SystemExit(f"manifest error: {exc}")
         execution_spec = om.execution_spec(manifest, manifest_dataset_entry, cost_multiplier)
@@ -1706,6 +1714,14 @@ def run_single_backtest(
             except ValueError as exc:
                 raise SystemExit(str(exc))
             print(f"  Macro-event inputs: {macro_info}")
+        if strategy_name in LEADER_INPUT_STRATEGIES:
+            if profile_allocation:
+                raise SystemExit(f"{strategy_name}: profile allocation does not attach the BTC leader series")
+            try:
+                observation_params, leader_info = cached_leader_params(df, symbol, timeframe, since)
+            except LeaderDataUnavailable as exc:
+                raise SystemExit(f"{strategy_name}: {exc}")
+            print(f"  Leader input: {json.dumps(leader_info, sort_keys=True, default=str)}")
 
     print(f"  Data: {len(df)} candles from {df.index[0]} to {df.index[-1]}")
 
@@ -2067,6 +2083,7 @@ def run_walk_forward(
                                     platform=platform, phase="preflight")
     reg = load_registry(registry)
     refuse_basket_evaluator(reg, strategy_name)
+    refuse_leader_input_strategy(strategy_name, "walk-forward optimization")
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
     if not strat:
         print(f"Unknown strategy '{strategy_name}' in '{registry}' registry")
@@ -2366,6 +2383,10 @@ def _main():
         if args.strategy in MACRO_EVENT_INPUT_STRATEGIES:
             print(f"--mode {args.mode} cannot run {args.strategy}: it reads point-in-time calendar and quote "
                   "artifacts, which only --mode single (cached or --manifest) and eval_windows.py attach")
+            sys.exit(1)
+        if args.strategy in LEADER_INPUT_STRATEGIES:
+            print(f"--mode {args.mode} cannot run {args.strategy}: it reads a pinned BTC leader series, "
+                  "which only --mode single (or eval_windows.py) attaches")
             sys.exit(1)
 
     close_refs = None

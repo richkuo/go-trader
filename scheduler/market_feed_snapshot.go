@@ -140,6 +140,9 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 		if entry.HasRegime {
 			raise(entry.Regime, entry.RegimeLookback)
 		}
+		if entry.HasLeader {
+			raise(entry.Leader, entry.LeaderLookback)
+		}
 		if entry.FundingScalar || entry.FundingRecords {
 			f := funding[entry.Coin]
 			f.Scalar = f.Scalar || entry.FundingScalar
