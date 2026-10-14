@@ -1,0 +1,96 @@
+{
+  "schema": "go_trader_candidate_spec/v1",
+  "issue": 1639,
+  "candidate": "perpetual_premium_reversion",
+  "frozen_before_results": "This file is committed before the study recording closes and before any study window is scored. No study result influenced any value here. data_plan.recording is filled in when the recording starts; that entry records provenance only.",
+  "signal": {
+    "inputs": "Synchronized quote/oracle samples from the existing Hyperliquid feed owner (observation kind perp_premium, contract perp-premium-quote-oracle/1639-v1). The owner keeps per coin the latest accepted bbo quote (bid and ask price, size and order count, venue time, receipt time, socket session, local sequence) and the latest accepted activeAssetCtx context (oraclePx, markPx, nullable midPx, receipt time, session, sequence).",
+    "sample_grid": "one sample every 60000 ms at grid time T (a multiple of 60000 ms UTC). A sample holds the latest quote and the latest context whose receipt time is at or before T. Receipt times are taken under the feed lock, so a sample depends only on records received at or before T; it becomes final when the owner first processes a frame or tick after T. No interpolation, no gap filling, no current value for a past grid time.",
+    "sample_status": "sampled (both components present), missing (no quote, no context, one-sided book or disconnected) or invalid (a malformed frame, crossed book, conflicting duplicate, out-of-order or future-dated bbo, or a receipt-clock regression inside the sample interval). A conflicting duplicate also revokes earlier samples that used that venue time, dated by its detection time; a sample counts at a decision time D only if its revocation time is null or after D.",
+    "oracle_time": "the activeAssetCtx frame carries no source event time. oracle_event_ms stays null. Oracle freshness is the age since the observed context receipt (max_oracle_age_ms). Any requested guarantee about the underlying oracle update age (max_oracle_source_age_ms, require_oracle_event_time) is refused by the parameter validator.",
+    "premium": "premium = mid / oracle - 1 with mid = (bid + ask) / 2 from the same sample's quote and oracle from the same sample's context, computed in 40-digit decimal arithmetic and then converted to float",
+    "sample_validity_at_decision": [
+      "status sampled and not revoked at or before the decision time D",
+      "T - quote venue time <= max_quote_age_ms and T - quote receipt <= max_quote_age_ms",
+      "T - context receipt <= max_oracle_age_ms",
+      "|quote receipt - context receipt| <= max_skew_ms",
+      "quote session == context session",
+      "(ask - bid) / mid * 10000 <= max_spread_bps",
+      "|premium| <= max_abs_premium",
+      "|mid / mark - 1| <= max_mark_dislocation"
+    ],
+    "decision": "At the close D of a bar (D on the 60 s grid), the current sample is T0 = D. All lookback_samples + 1 samples T0 - k * 60000 for k = 0..lookback_samples must exist, be valid at D and share one session, else the entry holds with a reason. mean and population deviation (divide by lookback_samples) come from the lookback_samples samples strictly before T0. Holds when the variance is at or below variance_floor. Let d_j = premium(T0 - j * 60000) - mean for j = 0..turn_span. Short when premium(T0 - turn_span * 60000) > 0, premium(T0) > 0, d_turn_span / std > entry_z (strict), d_(j-1) < d_j for every step (strict) and d_0 > 0 (still above the mean). Long mirrors every sign and inequality.",
+    "evidence": "every evaluated row records the current sample time, bid, ask, mid, oracle, mark, spread, quote venue and receipt times, context receipt, session, current and extreme premium, mean, deviation, both z-scores, the side and the sha256 of the accepted window records; every held row records a stable reason code",
+    "live_carry": "a live frame that ends with the forming bar carries the last closed bar's decision onto that row when the payload cutoff is within one bar of that bar's close",
+    "failure_outcome": "any data defect gives signal 0 with a reason (ppr_reason); bad parameters raise"
+  },
+  "parameters": {
+    "signal_seed": {"lookback_samples": 30, "entry_z": 2.0, "turn_span": 1, "variance_floor": 1e-10, "max_spread_bps": 5.0, "max_quote_age_ms": 5000, "max_oracle_age_ms": 5000, "max_skew_ms": 3000, "max_abs_premium": 0.01, "max_mark_dislocation": 0.005, "expected_interval_ms": 60000},
+    "units": {"premium": "fraction (1e-4 = 1 bp)", "variance_floor": "premium squared", "spread": "basis points of mid", "ages_and_skew": "milliseconds", "dislocation": "fraction"},
+    "bounds": {
+      "lookback_samples": [10, 720],
+      "entry_z": "(0, 10]",
+      "turn_span": "[1, 5] and below lookback_samples",
+      "variance_floor": "(0, 1e-4]",
+      "max_spread_bps": "(0, 1000]",
+      "max_quote_age_ms": [100, 60000],
+      "max_oracle_age_ms": [100, 60000],
+      "max_skew_ms": [0, 60000],
+      "max_abs_premium": "(0, 0.5]",
+      "max_mark_dislocation": "(0, 0.5]",
+      "expected_interval_ms": "multiple of 60000 in [60000, 3600000]"
+    },
+    "comparisons": "ages, skew, spread, premium and mark dislocation bounds are inclusive (a value equal to the bound passes); the variance must be strictly above its floor; the extreme z-score must be strictly beyond entry_z; every turn step must be a strict reduction",
+    "optimizer_grid": {"lookback_samples": [30, 60], "entry_z": [1.5, 2.0, 2.5], "turn_span": [1, 2]},
+    "note": "Seeds are research starting points, not endorsed trading settings. The sample grid, contract and data-quality bounds are fixed before the study and are not optimized."
+  },
+  "exit_and_risk": {
+    "close_strategy": {"name": "time_stop", "params": {"max_bars": 30}},
+    "holding_horizon": "30 one-minute bars",
+    "time_stop_contract": "time_stop needs simulator bars_held context; strict live close parity is not claimed and the study runs comparison_mode approximate",
+    "stop_owner": "scalar entry-ATR stop, stop_loss_atr_mult 1.0, ATR from candles closed before the decision",
+    "direction": "both",
+    "capital_usd": 1000.0,
+    "sizing": "full capital per position, unlevered; execution_spec models fees, spread, slippage, lot floor and the venue minimum; at 1x a liquidation cannot occur",
+    "baselines_use_identical": "close strategy, stop, capital, sizing, costs, candles, bar timestamps and windows"
+  },
+  "execution_models": {
+    "candle_m1": "eval_windows.evaluate_window on the frozen manifest (offline_candle_manifest/v6, 1m bars); a bar-N signal fills at the bar N+1 open; costs from the manifest execution spec (taker fee, measured half spread, slippage, lot floor, venue minimum); funding charged as a cost for every arm. This model does not prove fills at recorded bid/ask.",
+    "event_replay": "candidate-local event_replay.py on the raw recorded bbo stream: an entry decided at bar close D fills at the first accepted bbo received at or after D + 1000 ms modeled latency, buys at the ask and sells at the bid, size floored to the venue lot (BTC 5, ETH 4 size decimals) and limited to the displayed size at that quote (any remainder fills on later quotes, each displayed quantity used once per arm), refused below the 10 USD venue minimum. Exits: time_stop at the close of the 30th held bar, or the ATR stop when a later bbo bid (long) or ask (short) crosses the stop, each filled at the first bbo at or after that time plus latency at the touch. Taker fee 0.045% per fill; no extra half-spread charge because the touch already holds the spread. Funding: each hourly settlement while open charges notional at the settlement-time mid times the pinned rate (long pays a positive rate). No maker fill is assumed.",
+    "cost_stress": {"x1": "taker 0.045%, latency 1000 ms", "x2": "taker 0.090% and 1 bp extra adverse slippage per fill, latency 2000 ms"}
+  },
+  "source": {
+    "live": "Hyperliquid WebSocket subscriptions {type: bbo, coin} (timed best bid and offer) and {type: activeAssetCtx, coin} (perpetual asset context with oraclePx, markPx and nullable midPx). The official Python SDK types (hyperliquid-python-sdk 2fdb18f, hyperliquid/utils/types.py) declare BboData with a time field and an asset context with no time field.",
+    "historical_archive": "no public archive with the same cadence, receipt times and alignment was established; the study uses only the live recording and reports missing coverage as inconclusive. An hourly venue premium field is not this signal and is not used."
+  },
+  "data_plan": {
+    "recording": "pending",
+    "interval": "1m",
+    "coins": ["BTC", "ETH"],
+    "windows": "fixed from the recording span when the recording starts: train = the first whole hours after a one-hour warm-up, test = the remaining whole hours; train selects, test is scored once with the frozen selection",
+    "candles_and_funding": "public Hyperliquid candleSnapshot (1m, closed bars only) and fundingHistory through offline_manifest.py acquire, hash-pinned in study_manifest.json (offline_candle_manifest/v6)",
+    "costs": {"taker_fee_pct": 0.00045, "maker_fee_pct": 0.00015, "slippage_bps": 1.0, "min_notional_usd": 10.0, "min_notional_margin": 0.03, "half_spread_bps": "measured median half spread of accepted recorded quotes per coin in the train window"}
+  },
+  "selection_rule": "On train only, candle model at cost x1: eligible grid points have every dataset scored and at least 10 train positions; pick max mean DD-adjusted return, then max mean Sharpe, then earliest grid order. No eligible point: the seed is used and the outcome is recorded. Parameter stability is the share of grid points with positive train net PnL.",
+  "baselines": {
+    "mean_reversion_pro": "price mean reversion with its registered default parameters",
+    "funding_skew": "funding_skew with funding_window 360 one-minute bars and its other registered defaults, reading the pinned funding series as a frozen entry input (manifest funding_entry_input, rate aligned backward to each bar open); funding is still charged once as a cost",
+    "eligibility": "every arm is scored on the identical bars. The report also gives each baseline with its entries masked to bars where the candidate's premium inputs were valid, and the share of bars each arm could decide (baseline warm-up uses pre-window candles and funding, the candidate cannot)"
+  },
+  "verdict_criteria": {
+    "inconclusive_if_any": [
+      "the recording is incomplete or damaged (not closed, a dropped record, an incomplete segment, or an independent replay mismatch)",
+      "fewer than 30 candidate positions across coins on test in the event replay",
+      "any coin's test window has fewer than 70% of its bars with valid premium inputs at their own decision time",
+      "candle coverage incomplete on test"
+    ],
+    "pass_if_all": [
+      "event-replay candidate test net PnL > 0 at cost x1 and at cost x2",
+      "candle-model candidate test net PnL > 0 at cost x1",
+      "candidate test mean DD-adjusted return (candle model, cost x1) > each baseline, masked and unmasked",
+      "no single coin carries more than 60% of the candidate's absolute event-replay test PnL"
+    ],
+    "fail": "data sufficient and any pass check false",
+    "live_status": "production_refused regardless of the verdict; promotion needs a separate reviewed decision"
+  }
+}
