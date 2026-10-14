@@ -4649,7 +4649,7 @@
    }
   ]
  },
- "source_commit": "e2710a7ab648275e409e398e9242095e8ee0fb67",
+ "source_commit": "cf34f36acb869fc765a0f615b4bb84ff57c6e4b8",
  "sources_sha256": {
   "backtest/backtester.py": "a401bb093bcb479491ee670d4e4ce2be87d970d157b3541973a9ce3c0510433e",
   "backtest/candidates/macro_event_breakout_1654/calendar_sources.py": "7868e31a1bfd6ac22c92138cebfd3a73315be10228deb18188922540607e342e",
@@ -4661,7 +4661,7 @@
   "backtest/run_backtest.py": "d15afe673febcc727947de284bc3f5be3dbf88a741aff42169d6eb9e847cb8f3",
   "shared_strategies/close/time_stop.py": "da47e115c599a162a9091a245ce51dda7566716e3811b106899b2ae446f19305",
   "shared_strategies/open/macro_event_breakout.py": "15531bc7af9f6803d2fa7ec0d5e7d54b7160a03e5f5296fade269a8e9575554b",
-  "shared_strategies/open/registry.py": "edd9ef667a1301c7b90ec793dd1f94fba3047d763d59b3243672e3d40913c85c",
+  "shared_strategies/open/registry.py": "942a158252ce7a70b8b93d5c9b156a9f0c2a97fc97142d8310f094c9cd7f9890",
   "shared_tools/macro_event_inputs.py": "66a0b30ba7e0883f0fd024ce1a61f8f013585e9cba1a814bcb09d6a33d21ad5c"
  },
  "stability_exploratory": [
