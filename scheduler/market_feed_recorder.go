@@ -27,6 +27,9 @@ const (
 	observationRecordingSchemaV2 = "go_trader_observation_recording/v2"
 	observationSegmentSchemaV2   = "go_trader_observation_segment/v2"
 	observationRunSchemaV2       = "go_trader_observation_run/v2"
+	observationRecordingSchemaV3 = "go_trader_observation_recording/v3"
+	observationSegmentSchemaV3   = "go_trader_observation_segment/v3"
+	observationRunSchemaV3       = "go_trader_observation_run/v3"
 	observationRecorderQueue     = 65536
 	observationFlushEvery        = time.Second
 	observationDefaultSegment    = time.Hour
@@ -111,6 +114,9 @@ type observationSegmentManifest struct {
 	TradeFrames  int      `json:"trade_frames,omitempty"`
 	TradeRecords int      `json:"trade_records,omitempty"`
 	Intervals    int      `json:"intervals,omitempty"`
+	QuoteFrames  int      `json:"quote_frames,omitempty"`
+	CtxFrames    int      `json:"context_frames,omitempty"`
+	PremiumRows  int      `json:"premium_samples,omitempty"`
 }
 
 type observationTradeContract struct {
@@ -137,26 +143,45 @@ func currentTradeContract() observationTradeContract {
 	}
 }
 
+type observationPremiumContract struct {
+	Source          string `json:"source"`
+	Contract        string `json:"contract"`
+	TimeBasis       string `json:"time_basis"`
+	OracleTimeBasis string `json:"oracle_time_basis"`
+	SampleMs        int64  `json:"sample_ms"`
+	MaxFutureSkewMs int64  `json:"max_future_skew_ms"`
+	StaleAfterMs    int64  `json:"stale_after_ms"`
+}
+
+func currentPremiumContract() observationPremiumContract {
+	return observationPremiumContract{
+		Source: feedPremiumSourceHLWS, Contract: feedPremiumContract, TimeBasis: feedPremiumTimeBasis,
+		OracleTimeBasis: feedPremiumOracleTimeBasis, SampleMs: feedPremiumSampleMs,
+		MaxFutureSkewMs: feedPremiumMaxFutureSkewMs, StaleAfterMs: feedPremiumStaleAfterMs,
+	}
+}
+
 type observationRunManifestV2 struct {
-	Schema        string                       `json:"schema"`
-	RunID         string                       `json:"run_id"`
-	Kinds         []string                     `json:"kinds"`
-	Sources       map[string]string            `json:"sources"`
-	TradeContract *observationTradeContract    `json:"trade_contract,omitempty"`
-	Host          string                       `json:"host"`
-	WSURL         string                       `json:"ws_url"`
-	Coins         []string                     `json:"coins"`
-	StartedMs     int64                        `json:"started_ms"`
-	ClosedMs      int64                        `json:"closed_ms,omitempty"`
-	Closed        bool                         `json:"closed"`
-	DroppedTotal  uint64                       `json:"dropped_total"`
-	RecorderVers  string                       `json:"recorder_version"`
-	Segments      []observationSegmentManifest `json:"segments"`
+	Schema          string                       `json:"schema"`
+	RunID           string                       `json:"run_id"`
+	Kinds           []string                     `json:"kinds"`
+	Sources         map[string]string            `json:"sources"`
+	TradeContract   *observationTradeContract    `json:"trade_contract,omitempty"`
+	PremiumContract *observationPremiumContract  `json:"premium_contract,omitempty"`
+	Host            string                       `json:"host"`
+	WSURL           string                       `json:"ws_url"`
+	Coins           []string                     `json:"coins"`
+	StartedMs       int64                        `json:"started_ms"`
+	ClosedMs        int64                        `json:"closed_ms,omitempty"`
+	Closed          bool                         `json:"closed"`
+	DroppedTotal    uint64                       `json:"dropped_total"`
+	RecorderVers    string                       `json:"recorder_version"`
+	Segments        []observationSegmentManifest `json:"segments"`
 }
 
 func recorderKindsHaveTrades(kinds []string) bool {
 	for _, k := range kinds {
-		if k == feedObservationTradeFlow {
+		if k == feedObservationTradeFlow || k == feedObservationPerpPremium {
 			return true
 		}
 	}
@@ -195,6 +220,9 @@ type observationSegment struct {
 	frames   int
 	trades   int
 	ivs      int
+	quotes   int
+	ctxs     int
+	prows    int
 	rejected int
 	dropped  uint64
 	first    int64
@@ -392,6 +420,19 @@ func (r *observationRecorder) handle(rec observationRecord) {
 	if rec.Kind == "interval" {
 		seg.ivs++
 	}
+	switch rec.Kind {
+	case "bbo":
+		seg.quotes++
+	case "pctx":
+		seg.ctxs++
+	case "psample":
+		seg.prows++
+	}
+	if rec.Kind == "bbo" || rec.Kind == "pctx" || rec.Kind == "pbad" {
+		if o, _ := rec.Extra["o"].(string); o == feedPremiumOutcomeRejected {
+			seg.rejected++
+		}
+	}
 	if seg.first == 0 || rec.RecvMs < seg.first {
 		seg.first = rec.RecvMs
 	}
@@ -439,6 +480,17 @@ func (r *observationRecorder) openSegment(atMs int64) error {
 	}
 	seg.buf = bufio.NewWriter(io.MultiWriter(f, h))
 	r.segment = seg
+	if r.v3() {
+		r.writeLine(seg, map[string]any{
+			"k": "header", "schema": observationRecordingSchemaV3, "run_id": r.meta.RunID, "index": seg.index,
+			"recv_ms": atMs, "kinds": r.meta.Kinds, "sources": r.sources(), "trade_contract": currentTradeContract(),
+			"premium_contract": currentPremiumContract(),
+			"open_interest_contract": map[string]any{"source": feedObservationSourceHLWS, "units": feedObservationUnitsBase,
+				"time_basis": feedObservationTimeReceipt, "cadence_ms": feedObservationCadenceMs},
+			"host": hlMainnetURL, "ws_url": r.meta.WSURL, "coins": r.meta.Coins, "recorder_version": Version,
+		})
+		return r.writeError
+	}
 	if r.v2() {
 		r.writeLine(seg, map[string]any{
 			"k": "header", "schema": observationRecordingSchemaV2, "run_id": r.meta.RunID, "index": seg.index,
@@ -504,7 +556,9 @@ func (r *observationRecorder) closeSegment(reason string) {
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i] < sessions[j] })
 	schema := observationSegmentSchema
-	if r.v2() {
+	if r.v3() {
+		schema = observationSegmentSchemaV3
+	} else if r.v2() {
 		schema = observationSegmentSchemaV2
 	}
 	m := observationSegmentManifest{
@@ -530,6 +584,9 @@ func (r *observationRecorder) closeSegment(reason string) {
 		TradeFrames:  seg.frames,
 		TradeRecords: seg.trades,
 		Intervals:    seg.ivs,
+		QuoteFrames:  seg.quotes,
+		CtxFrames:    seg.ctxs,
+		PremiumRows:  seg.prows,
 	}
 	if err := writeJSONAtomic(filepath.Join(r.dir, seg.name+".manifest.json"), m); err != nil {
 		r.fail(err)
@@ -544,6 +601,10 @@ func (r *observationRecorder) closeSegment(reason string) {
 
 func (r *observationRecorder) v2() bool {
 	return recorderKindsHaveTrades(r.meta.Kinds)
+}
+
+func (r *observationRecorder) v3() bool {
+	return recorderKindsInclude(r.meta.Kinds, feedObservationPerpPremium)
 }
 
 func (r *observationRecorder) sources() map[string]string {
@@ -564,6 +625,11 @@ func (r *observationRecorder) writeRunManifest() error {
 		TradeContract: &contract, Host: r.manifest.Host, WSURL: r.manifest.WSURL, Coins: r.manifest.Coins,
 		StartedMs: r.manifest.StartedMs, ClosedMs: r.manifest.ClosedMs, Closed: r.manifest.Closed,
 		DroppedTotal: r.manifest.DroppedTotal, RecorderVers: r.manifest.RecorderVers, Segments: r.manifest.Segments,
+	}
+	if r.v3() {
+		m.Schema = observationRunSchemaV3
+		pc := currentPremiumContract()
+		m.PremiumContract = &pc
 	}
 	return writeJSONAtomic(filepath.Join(r.dir, "run.manifest.json"), m)
 }
@@ -635,8 +701,8 @@ func parseRecorderKinds(raw string) ([]string, error) {
 		if k == "" {
 			continue
 		}
-		if k != feedObservationOpenInterest && k != feedObservationTradeFlow {
-			return nil, fmt.Errorf("kind %q is not %q or %q", k, feedObservationOpenInterest, feedObservationTradeFlow)
+		if k != feedObservationOpenInterest && k != feedObservationTradeFlow && k != feedObservationPerpPremium {
+			return nil, fmt.Errorf("kind %q is not %q, %q or %q", k, feedObservationOpenInterest, feedObservationTradeFlow, feedObservationPerpPremium)
 		}
 		if seen[k] {
 			return nil, fmt.Errorf("kind %q is listed twice", k)
@@ -663,7 +729,7 @@ func recorderKindsInclude(kinds []string, kind string) bool {
 func runRecordObservations(args []string) int {
 	fs := flag.NewFlagSet("record-observations", flag.ContinueOnError)
 	coinsFlag := fs.String("coins", "", "Comma-separated Hyperliquid perpetual coins to record (e.g. BTC,ETH)")
-	kindsFlag := fs.String("kinds", feedObservationOpenInterest, "Comma-separated observation kinds to record: open_interest, trade_flow")
+	kindsFlag := fs.String("kinds", feedObservationOpenInterest, "Comma-separated observation kinds to record: open_interest, trade_flow, perp_premium")
 	outDir := fs.String("out-dir", "", "Empty directory for the research recording (never a state or config directory)")
 	duration := fs.Duration("duration", 0, "Stop after this long (0 = until SIGINT or SIGTERM)")
 	segment := fs.Duration("segment", observationDefaultSegment, "Rotate to a new hashed segment after this long")
@@ -701,13 +767,23 @@ func runRecordObservations(args []string) int {
 		fmt.Fprintf(os.Stderr, "record-observations: %v\n", err)
 		return 1
 	}
-	fmt.Printf("[recorder] run=%s coins=%s kinds=%s out=%s ws=%s source=%s units=%s time_basis=%s cadence_ms=%d segment=%s duration=%s\n",
-		runID, strings.Join(coins, ","), strings.Join(kinds, ","), *outDir, hlFeedWebsocketURL(), feedObservationSourceHLWS, feedObservationUnitsBase,
-		feedObservationTimeReceipt, feedObservationCadenceMs, *segment, *duration)
+	if recorderKindsInclude(kinds, feedObservationOpenInterest) || !recorderKindsInclude(kinds, feedObservationPerpPremium) {
+		fmt.Printf("[recorder] run=%s coins=%s kinds=%s out=%s ws=%s source=%s units=%s time_basis=%s cadence_ms=%d segment=%s duration=%s\n",
+			runID, strings.Join(coins, ","), strings.Join(kinds, ","), *outDir, hlFeedWebsocketURL(), feedObservationSourceHLWS, feedObservationUnitsBase,
+			feedObservationTimeReceipt, feedObservationCadenceMs, *segment, *duration)
+	} else {
+		fmt.Printf("[recorder] run=%s coins=%s kinds=%s out=%s ws=%s segment=%s duration=%s\n",
+			runID, strings.Join(coins, ","), strings.Join(kinds, ","), *outDir, hlFeedWebsocketURL(), *segment, *duration)
+	}
 	if recorderKindsInclude(kinds, feedObservationTradeFlow) {
 		c := currentTradeContract()
 		fmt.Printf("[recorder] trade_flow source=%s identity=%s side_evidence=%s interval_ms=%d reorder_grace_ms=%d max_event_gap_ms=%d decimal_scale=%d\n",
 			c.Source, c.Identity, c.SideEvidence, c.IntervalMs, c.ReorderGraceMs, c.MaxEventGapMs, c.DecimalScale)
+	}
+	if recorderKindsInclude(kinds, feedObservationPerpPremium) {
+		c := currentPremiumContract()
+		fmt.Printf("[recorder] perp_premium source=%s contract=%s time_basis=%s oracle_time_basis=%s sample_ms=%d max_future_skew_ms=%d\n",
+			c.Source, c.Contract, c.TimeBasis, c.OracleTimeBasis, c.SampleMs, c.MaxFutureSkewMs)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -736,6 +812,9 @@ func runRecordObservations(args []string) int {
 	if recorderKindsInclude(kinds, feedObservationTradeFlow) {
 		owner.trackTradeFlows(coins, observationRecorderWindow.Milliseconds())
 	}
+	if recorderKindsInclude(kinds, feedObservationPerpPremium) {
+		owner.trackPremiums(coins, observationRecorderWindow.Milliseconds())
+	}
 	owner.attachRecorder(rec)
 	recCtx, stopRec := context.WithCancel(context.Background())
 	go rec.run(recCtx)
@@ -755,11 +834,18 @@ loop:
 			break loop
 		case <-advance.C:
 			owner.AdvanceTradeFlows(time.Now().UTC())
+			owner.AdvancePremiums(time.Now().UTC())
 		case <-ticker.C:
 			for _, rd := range owner.TradeFlowReadiness() {
 				fmt.Printf("[recorder] %s status=%s frames=%d received=%d accepted=%d duplicates=%d conflicts=%d late=%d uncovered=%d rejected=%d finalized=%d invalid=%d covered_ms=%d detail=%q\n",
 					rd.Key.PayloadID(), rd.Status, rd.Stats.Frames, rd.Stats.Received, rd.Stats.Accepted, rd.Stats.Duplicates, rd.Stats.Conflicts,
 					rd.Stats.Late, rd.Stats.Uncovered, rd.Stats.Rejected, rd.Stats.Finalized, rd.Stats.Invalid, rd.CoveredMs, rd.Detail)
+			}
+			for _, rd := range owner.PremiumReadiness() {
+				fmt.Printf("[recorder] %s status=%s samples=%d sampled_run=%d quote_frames=%d quote_accepted=%d one_sided=%d duplicates=%d conflicts=%d out_of_order=%d ctx_frames=%d ctx_accepted=%d rejected=%d finalized=%d sampled=%d missing=%d invalid=%d covered_ms=%d detail=%q\n",
+					rd.Key.PayloadID(), rd.Status, rd.Samples, rd.SampledRun, rd.Stats.QuoteFrames, rd.Stats.QuoteAccepted, rd.Stats.QuoteOneSided,
+					rd.Stats.QuoteDuplicates, rd.Stats.QuoteConflicts, rd.Stats.QuoteOutOfOrder, rd.Stats.CtxFrames, rd.Stats.CtxAccepted,
+					rd.Stats.Rejected, rd.Stats.Finalized, rd.Stats.Sampled, rd.Stats.Missing, rd.Stats.Invalid, rd.CoveredMs, rd.Detail)
 			}
 			for _, rd := range owner.ObservationReadiness() {
 				fmt.Printf("[recorder] %s status=%s samples=%d received=%d accepted=%d refreshed=%d rejected=%d covered_ms=%d detail=%q\n",

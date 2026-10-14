@@ -878,6 +878,11 @@ DEFAULT_PARAM_RANGES = {
         "confirm_bars": [1, 2],
         "cooldown_bars": [24],
     },
+    "perpetual_premium_reversion": {
+        "lookback_samples": [30, 60],
+        "entry_z": [1.5, 2.0, 2.5],
+        "turn_span": [1, 2],
+    },
     "cumulative_volume_delta_divergence": {
         "left_span": [2, 3, 4],
         "right_span": [2, 3],

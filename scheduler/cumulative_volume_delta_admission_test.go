@@ -61,6 +61,7 @@ func TestCumulativeVolumeDeltaIsRefusedInEveryModeAndReference(t *testing.T) {
 		bitcoinLeadLagStrategyName:        {"hl-btclag-eth", "ETH", "1h"},
 		macroEventBreakoutStrategyName:    {"hl-macrobrk-btc", "BTC", "1h"},
 		volumeProfileReclaimStrategyName:  {"hl-vpreclaim-btc", "BTC", "15m"},
+		perpetualPremiumStrategyName:      {"hl-ppr-btc", "BTC", "1m"},
 	}
 	for _, name := range refused {
 		fx, ok := fixtures[name]

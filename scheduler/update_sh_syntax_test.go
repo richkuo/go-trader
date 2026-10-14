@@ -64,6 +64,10 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		ciStep: true,
 		marker: "PASS: volume-profile replay harness (sealed profile sessions, hand-calculated value areas and decisions match the independent recording replay; tampered, truncated, contradicted and unclosed recordings refused)",
 	},
+	"test_premium_replay.sh": {
+		ciStep: true,
+		marker: "PASS: premium replay harness (sealed quote/oracle payloads and decisions match the independent recording replay; tampered, truncated and contradicted recordings refused)",
+	},
 	"test_ledger_export.sh": {
 		ciStep:     true,
 		marker:     "PASS: ledger capture and export (active-WAL capture without source effects, version 2 export contract, every refusal leaves inputs unchanged)",

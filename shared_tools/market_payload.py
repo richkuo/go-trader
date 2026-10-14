@@ -1,4 +1,6 @@
 MARKET_PAYLOAD_VERSION = 2
+MARKET_PAYLOAD_VERSION_PREMIUM = 3
+SUPPORTED_MARKET_PAYLOAD_VERSIONS = (MARKET_PAYLOAD_VERSION, MARKET_PAYLOAD_VERSION_PREMIUM)
 
 
 class MarketPayloadError(Exception):
@@ -17,8 +19,12 @@ def validate_market_payload(market, error_cls=None) -> dict:
     if not isinstance(market, dict):
         _fail(error_cls, "market payload is missing or is not a JSON object")
     version = market.get("version")
-    if int(version or 0) != MARKET_PAYLOAD_VERSION:
+    if int(version or 0) not in SUPPORTED_MARKET_PAYLOAD_VERSIONS:
         _fail(error_cls, f"unsupported market payload version {version!r}")
+    has_premium = market.get("perp_premiums") is not None
+    if has_premium != (int(version) == MARKET_PAYLOAD_VERSION_PREMIUM):
+        _fail(error_cls, f"market payload version {version} {'carries' if has_premium else 'lacks'} perp_premiums; "
+                         f"version {MARKET_PAYLOAD_VERSION_PREMIUM} is exactly the payload that carries premium records")
     if not market.get("snapshot_id"):
         _fail(error_cls, "market payload has no snapshot_id")
     if not isinstance(market.get("frames"), dict):
@@ -207,4 +213,22 @@ def market_macro_quotes(market, coin: str, quote_sha256: str, error_cls=None) ->
         return {"kind": "macro_quotes", "available": False, "coin": coin, "quote_sha256": quote_sha256,
                 "reason": f"market payload macro_quotes entry {key} is labelled "
                           f"{entry.get('kind')!r}/{entry.get('coin')!r}/{entry.get('quote_sha256')!r}"}
+    return dict(entry)
+
+
+def market_premium(market, coin: str, error_cls=None) -> dict:
+    payload = validate_market_payload(market, error_cls)
+    key = f"{coin}|perp_premium"
+    section = payload.get("perp_premiums")
+    if not isinstance(section, dict) or key not in section:
+        return {"available": False, "kind": "perp_premium", "coin": coin,
+                "reason": f"market payload carries no {key} records"}
+    entry = section[key]
+    if not isinstance(entry, dict):
+        return {"available": False, "kind": "perp_premium", "coin": coin,
+                "reason": f"market payload {key} records are not an object"}
+    if entry.get("kind") != "perp_premium" or entry.get("coin") != coin:
+        return {"available": False, "kind": "perp_premium", "coin": coin,
+                "reason": f"market payload {key} records are labelled "
+                          f"{entry.get('coin')!r}|{entry.get('kind')!r}"}
     return dict(entry)

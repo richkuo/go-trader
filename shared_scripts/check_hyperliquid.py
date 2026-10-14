@@ -61,6 +61,7 @@ from market_payload import (
     market_funding_scalar,
     market_mid,
     market_observation,
+    market_premium,
     market_macro_events,
     market_macro_quotes,
     market_trade_flow,
@@ -540,6 +541,18 @@ def _shared_volume_profile(shared, symbol):
     return market_volume_profile(market, symbol, MarketPayloadError)
 
 
+PREMIUM_STRATEGY = "perpetual_premium_reversion"
+
+
+def _shared_premium(shared, symbol):
+    market = shared.get("market")
+    if market is None:
+        return {"available": False, "kind": "perp_premium", "coin": symbol,
+                "reason": "perpetual_premium_reversion reads quote and oracle samples only from the sealed market "
+                          "feed payload; this check has none and never fetches them"}
+    return market_premium(market, symbol, MarketPayloadError)
+
+
 MACRO_EVENT_STRATEGY = "macro_event_breakout"
 
 
@@ -964,6 +977,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
                 decision_params.update(_shared_macro_inputs(shared, symbol, strategy_params_override))
             if funding_aware_name == VOLUME_PROFILE_STRATEGY:
                 decision_params["volume_profile_observations"] = _shared_volume_profile(shared, symbol)
+            if funding_aware_name == PREMIUM_STRATEGY:
+                decision_params["premium_observations"] = _shared_premium(shared, symbol)
         if not hold:
             regime_view = _shared_decision_regime(shared, selection)
             hold = regime_view["hold"]
@@ -1007,6 +1022,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             strategy_params["trade_flow_observations"] = _shared_trade_flow(shared, symbol)
         if funding_aware_name == VOLUME_PROFILE_STRATEGY:
             strategy_params["volume_profile_observations"] = _shared_volume_profile(shared, symbol)
+        if funding_aware_name == PREMIUM_STRATEGY:
+            strategy_params["premium_observations"] = _shared_premium(shared, symbol)
         if funding_aware_name == MACRO_EVENT_STRATEGY:
             strategy_params.update(_shared_macro_inputs(shared, symbol, strategy_params_override))
         if funding_aware_name == LEAD_LAG_STRATEGY:

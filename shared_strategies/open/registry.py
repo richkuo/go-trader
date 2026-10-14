@@ -94,6 +94,11 @@ from macro_event_breakout import (
     macro_event_breakout_core,
     macro_param_validator,
 )
+from perpetual_premium_reversion import (
+    DEFAULT_PARAMS as DEFAULT_PREMIUM_PARAMS,
+    perpetual_premium_reversion_core,
+    premium_param_validator,
+)
 from bitcoin_lead_lag import (
     DEFAULT_PARAMS as DEFAULT_LEAD_LAG_PARAMS,
     bitcoin_lead_lag_core,
@@ -2903,6 +2908,47 @@ def volume_profile_reclaim_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return volume_profile_reclaim_core(df, **params)
 
 
+@register(
+    "perpetual_premium_reversion",
+    "RESEARCH, production-refused (#1639) \u2014 perpetual premium mean reversion on closed bars: premium is the executable bid/ask midpoint divided by the time-aligned oracle price minus one, from supplied synchronized Hyperliquid quote/oracle samples on a fixed 60 s grid (premium_observations; each sample holds the latest bbo and asset context received at or before its grid time). At each bar close the mean and population deviation come from the lookback_samples samples strictly before the current sample; a positive premium whose z-score turn_span samples earlier was strictly above entry_z and whose distance to that mean then fell strictly at every step while staying above it enters short, and the negative mirror enters long. Every sample in the window must be sampled, unrevoked by the decision time, in one socket session, with quote age, observed oracle receipt age and quote/context skew within bounds, spread at most max_spread_bps and premium and mark dislocation within bounds; the variance must be strictly above variance_floor, else the entry holds with a reason. Oracle freshness is receipt age only; the venue context has no source time. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    dict(DEFAULT_PREMIUM_PARAMS),
+    platforms=("futures",),
+    constraints=[
+        "lookback_samples >= 10",
+        "lookback_samples <= 720",
+        "entry_z > 0",
+        "entry_z <= 10",
+        "turn_span >= 1",
+        "turn_span <= 5",
+        "turn_span < lookback_samples",
+        "variance_floor > 0",
+        "variance_floor <= 0.0001",
+        "max_spread_bps > 0",
+        "max_spread_bps <= 1000",
+        "max_quote_age_ms >= 100",
+        "max_quote_age_ms <= 60000",
+        "max_oracle_age_ms >= 100",
+        "max_oracle_age_ms <= 60000",
+        "max_skew_ms >= 0",
+        "max_skew_ms <= 60000",
+        "max_abs_premium > 0",
+        "max_abs_premium <= 0.5",
+        "max_mark_dislocation > 0",
+        "max_mark_dislocation <= 0.5",
+        "expected_interval_ms >= 60000",
+        "expected_interval_ms <= 3600000",
+    ],
+    edge_status="no_edge",
+    edge_source="unvalidated",
+    edge_ref="backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
+    short_entries=True,
+    param_validator=premium_param_validator,
+    production_refused=True,
+)
+def perpetual_premium_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return perpetual_premium_reversion_core(df, **params)
+
+
 PLATFORM_ORDER: Dict[str, List[str]] = {
     "spot": [
         "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
@@ -2957,6 +3003,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "macro_event_breakout",
         "bitcoin_lead_lag",
         "volume_profile_reclaim",
+        "perpetual_premium_reversion",
         "hold",
     ],
 }

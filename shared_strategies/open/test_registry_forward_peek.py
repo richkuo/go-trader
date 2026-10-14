@@ -189,8 +189,15 @@ def _vpr_fixture() -> pd.DataFrame:
     return df
 
 
+def _premium_fixture() -> pd.DataFrame:
+    df = _DF[["open", "high", "low", "close", "volume"]].copy()
+    df.index = pd.date_range("2026-01-01", periods=len(df), freq="1min")
+    return df
+
+
 STRATEGY_FIXTURES = {
     "volume_profile_reclaim": _vpr_fixture,
+    "perpetual_premium_reversion": _premium_fixture,
     "cumulative_volume_delta_divergence": _cvd_fixture,
     "calendar_conditioned_entry": _calendar_conditioned_entry_fixture,
     "range_scalper": _range_scalper_fixture,
@@ -279,6 +286,44 @@ def _with_trade_flow(fn):
         payload, volumes = _trade_flow_from_bars(out)
         out["volume"] = volumes
         return fn(out, **params, trade_flow_observations=payload)
+    return wrapped
+
+
+def _premium_dec(value: float) -> str:
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _premium_from_bars(df: pd.DataFrame) -> dict:
+    opens = df.index.as_unit("ms").asi8.astype(np.int64)
+    interval = int(opens[1] - opens[0])
+    closes = df["close"].to_numpy()
+    samples = []
+    for i, open_ms in enumerate(opens):
+        t = int(open_ms + interval)
+        p = 0.0002 * np.sin(i * 0.3)
+        if i % 47 == 0:
+            p = 0.0015 if (i // 47) % 2 == 0 else -0.0015
+        elif i % 47 == 1:
+            p = 0.001 if ((i - 1) // 47) % 2 == 0 else -0.001
+        mid = float(closes[i])
+        half = mid * 0.00005
+        samples.append({
+            "t": t, "status": "sampled", "finalized_ms": t + 1, "invalid_ms": None,
+            "quote": {"bid": _premium_dec(mid - half), "bid_sz": "1", "bid_n": 1, "ask": _premium_dec(mid + half),
+                      "ask_sz": "1", "ask_n": 1, "event_ms": t - 1_200, "recv_ms": t - 1_000, "session": 1, "seq": i + 1},
+            "context": {"oracle": _premium_dec(mid / (1.0 + p)), "mark": _premium_dec(mid), "mid": None,
+                        "oracle_event_ms": None, "recv_ms": t - 2_000, "session": 1, "seq": i + 1},
+        })
+    return {"available": True, "kind": "perp_premium", "coin": "FIX", "source": "hyperliquid_ws_activeAssetCtx+bbo",
+            "contract": "perp-premium-quote-oracle/1639-v1", "time_basis": "receipt_cutoff_latest_component",
+            "oracle_time_basis": "receipt_only_no_source_time", "sample_ms": 60_000, "max_future_skew_ms": 5_000,
+            "bar_interval_ms": interval, "samples": samples, "gaps": []}
+
+
+def _with_premium(fn):
+    def wrapped(df, **params):
+        return fn(df, **params, premium_observations=_premium_from_bars(df))
     return wrapped
 
 
@@ -382,6 +427,7 @@ def _with_volume_profile(fn):
 
 STRATEGY_INPUTS = {
     "volume_profile_reclaim": _with_volume_profile,
+    "perpetual_premium_reversion": _with_premium,
     "macro_event_breakout": _with_macro_events,
     "bitcoin_lead_lag": _with_leader,
     "cumulative_volume_delta_divergence": _with_trade_flow,

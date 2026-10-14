@@ -62,8 +62,11 @@ func tradeFlowKeyFor(coin string) feedObservationKey {
 }
 
 func feedObservationSourceFor(kind string) string {
-	if kind == feedObservationTradeFlow || kind == feedObservationVolumeProfile {
+	switch kind {
+	case feedObservationTradeFlow, feedObservationVolumeProfile:
 		return feedTradeSourceHLWS
+	case feedObservationPerpPremium:
+		return feedPremiumSourceHLWS
 	}
 	return feedObservationSourceHLWS
 }

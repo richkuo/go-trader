@@ -25,6 +25,7 @@ const (
 
 	feedEstimateObservationBytes   = 96
 	feedEstimateTradeIntervalBytes = 256
+	feedEstimatePremiumSampleBytes = 512
 
 	feedEstimateAccountingRecordBytes = 64
 )
@@ -413,6 +414,10 @@ func estimateFeedSealBytes(union feedRequirements) int {
 		}
 		if key.Kind == feedObservationTradeFlow {
 			total += feedEstimateKeyBytes + int(window/feedTradeIntervalMs+2)*feedEstimateTradeIntervalBytes
+			continue
+		}
+		if key.Kind == feedObservationPerpPremium {
+			total += feedEstimateKeyBytes + int(window/feedPremiumSampleMs+2)*feedEstimatePremiumSampleBytes
 			continue
 		}
 		total += feedEstimateKeyBytes + int(window/feedObservationCadenceMs+2)*feedEstimateObservationBytes
@@ -969,10 +974,12 @@ func dropUncollectableObservations(source string, consumers []feedConsumer) []fe
 			entry.TradeFlow = false
 			entry.TradeWindowMs = 0
 			entry.VolumeProfile = false
+			entry.Premium = false
+			entry.PremiumWindow = 0
 			req.Strategies[id] = entry
 		}
 		c.Req = req
-		c.Notice = fmt.Sprintf("feed.source=%q cannot collect observations %s; only feed.source=%q subscribes to the venue open-interest and trade streams, so this feed serves the consumer's candle, mid and funding keys without them and its observation strategies hold entries",
+		c.Notice = fmt.Sprintf("feed.source=%q cannot collect observations %s; only feed.source=%q subscribes to the venue open-interest, trade and quote/oracle streams, so this feed serves the consumer's candle, mid and funding keys without them and its observation strategies hold entries",
 			source, strings.Join(names, ", "), feedSourceWebsocket)
 	}
 	return consumers

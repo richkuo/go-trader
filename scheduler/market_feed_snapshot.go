@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	marketSnapshotVersion = 2
-	marketPayloadMaxBytes = 8 << 20
+	marketSnapshotVersion       = 2
+	marketPayloadVersionPremium = 3
+	marketPayloadMaxBytes       = 8 << 20
 )
 
 type marketFrame struct {
@@ -69,6 +70,7 @@ type marketPayload struct {
 	Observations     map[string]marketObservationPayload   `json:"observations,omitempty"`
 	TradeFlows       map[string]marketTradeFlowPayload     `json:"trade_flows,omitempty"`
 	VolumeProfiles   map[string]marketVolumeProfilePayload `json:"volume_profiles,omitempty"`
+	Premiums         map[string]marketPremiumPayload       `json:"perp_premiums,omitempty"`
 	MacroEvents      map[string]marketMacroEventsPayload   `json:"macro_events,omitempty"`
 	MacroQuotes      map[string]marketMacroQuotesPayload   `json:"macro_quotes,omitempty"`
 	FeedComplete     bool                                  `json:"feed_complete"`
@@ -99,6 +101,7 @@ type marketSnapshot struct {
 	observations map[feedObservationKey]*marketSnapshotObservation
 	tradeFlows   map[feedObservationKey]*marketSnapshotTradeFlow
 	profiles     map[feedObservationKey]*marketSnapshotProfile
+	premiums     map[feedObservationKey]*marketSnapshotPremium
 	macro        map[feedMacroKey]*marketSnapshotMacro
 
 	accountingFunding map[string]feedAccountingFunding
@@ -252,6 +255,7 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 		observations:     make(map[feedObservationKey]*marketSnapshotObservation, len(reqs.Observations)),
 		tradeFlows:       make(map[feedObservationKey]*marketSnapshotTradeFlow),
 		profiles:         make(map[feedObservationKey]*marketSnapshotProfile),
+		premiums:         make(map[feedObservationKey]*marketSnapshotPremium),
 		macro:            make(map[feedMacroKey]*marketSnapshotMacro, len(reqs.Macro)),
 	}
 	connected := o.connectedForReadinessLocked(now)
@@ -284,7 +288,14 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 		}
 	}
 	o.tickTradeFlowsLocked(now.UTC().UnixMilli())
+	o.tickPremiumsLocked(now.UTC().UnixMilli())
 	for key, window := range reqs.Observations {
+		if key.Kind == feedObservationPerpPremium {
+			if st := o.premiums[key]; st != nil {
+				snap.premiums[key] = freezePremium(st, window, cutoff.UTC().UnixMilli(), now.UTC().UnixMilli())
+			}
+			continue
+		}
 		if key.Kind == feedObservationTradeFlow {
 			if st := o.tradeFlows[key]; st != nil {
 				snap.tradeFlows[key] = freezeTradeFlow(st, window, cutoff.UTC().UnixMilli(), now.UTC().UnixMilli())

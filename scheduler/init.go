@@ -211,6 +211,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"macro_event_breakout":               {"futures"},
 	"bitcoin_lead_lag":                   {"futures"},
 	"volume_profile_reclaim":             {"futures"},
+	"perpetual_premium_reversion":        {"futures"},
 }
 
 func openStrategyRegisteredFor(name, registryPlatform string) bool {

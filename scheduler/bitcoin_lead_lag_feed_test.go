@@ -518,6 +518,7 @@ func TestBitcoinLeadLagRegistrationTables(t *testing.T) {
 		macroEventBreakoutStrategyName:    "backtest/candidates/macro_event_breakout_1654/REPORT.md",
 		volumeProfileReclaimStrategyName:  "backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
 		name:                              ref,
+		perpetualPremiumStrategyName:      "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
 	}
 	if !reflect.DeepEqual(productionRefusedStrategies, want) {
 		t.Fatalf("production-refused table = %v", productionRefusedStrategies)

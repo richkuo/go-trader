@@ -205,7 +205,7 @@ func (c *sharedFeedClient) roundTrip(ctx context.Context, socket string, req fee
 	if head.V != feedWireVersion || !feedSealVersionSupported(head.SealVersion) || head.PayloadVersion != marketSnapshotVersion {
 		return h, nil, &feedEndpointError{Kind: feedErrIncompatible, Detail: fmt.Sprintf(
 			"feed speaks wire v%d, seal v%d, payload v%d; this consumer needs wire v%d, seal v%d through v%d, payload v%d",
-			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersionBase, feedSealVersionProfile, marketSnapshotVersion)}
+			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersionBase, feedSealVersionPremium, marketSnapshotVersion)}
 	}
 	if err := decodeFeedStrict(blob, &h); err != nil {
 		return h, nil, &feedEndpointError{Kind: feedErrMalformed, Detail: fmt.Sprintf("reply header: %v", err)}
@@ -447,6 +447,7 @@ func degradedSharedSnapshot(key int64, now time.Time) *marketSnapshot {
 		observations:      map[feedObservationKey]*marketSnapshotObservation{},
 		tradeFlows:        map[feedObservationKey]*marketSnapshotTradeFlow{},
 		profiles:          map[feedObservationKey]*marketSnapshotProfile{},
+		premiums:          map[feedObservationKey]*marketSnapshotPremium{},
 		macro:             map[feedMacroKey]*marketSnapshotMacro{},
 	}
 }
@@ -484,6 +485,16 @@ func applySealCoverage(snap *marketSnapshot, reqs cycleMarketRequirements) []str
 	}
 	sortFeedObservationKeys(obsKeys)
 	for _, k := range obsKeys {
+		if k.Kind == feedObservationPerpPremium {
+			entry, ok := snap.premiums[k]
+			switch {
+			case !ok || entry == nil:
+				gaps = append(gaps, fmt.Sprintf("%s is not in the seal", k.PayloadID()))
+			case entry.WindowMs < reqs.Observations[k]:
+				gaps = append(gaps, fmt.Sprintf("%s window %dms is below the %dms this consumer needs", k.PayloadID(), entry.WindowMs, reqs.Observations[k]))
+			}
+			continue
+		}
 		if k.Kind == feedObservationTradeFlow {
 			flow, ok := snap.tradeFlows[k]
 			switch {

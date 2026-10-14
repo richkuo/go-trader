@@ -87,6 +87,8 @@ type feedStrategyRequirement struct {
 	TradeFlow      bool
 	TradeWindowMs  int64
 	VolumeProfile  bool
+	Premium        bool
+	PremiumWindow  int64
 	Leader         marketFeedKey
 	HasLeader      bool
 	LeaderLookback int
@@ -104,7 +106,7 @@ type feedStrategyRequirement struct {
 }
 
 func (e feedStrategyRequirement) observationNeeds() map[feedObservationKey]int64 {
-	if !e.OpenInterest && !e.TradeFlow && !e.VolumeProfile {
+	if !e.OpenInterest && !e.TradeFlow && !e.VolumeProfile && !e.Premium {
 		return nil
 	}
 	out := make(map[feedObservationKey]int64, 3)
@@ -116,6 +118,9 @@ func (e feedStrategyRequirement) observationNeeds() map[feedObservationKey]int64
 	}
 	if e.VolumeProfile {
 		out[volumeProfileKeyFor(e.Coin)] = feedProfileWindowMs
+	}
+	if e.Premium {
+		out[premiumKeyFor(e.Coin)] = e.PremiumWindow
 	}
 	return out
 }
@@ -325,6 +330,17 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 				req.addObservation(tradeFlowKeyFor(symbol), window)
 			}
 		}
+		if feedStrategyUsesPremium(sc) {
+			intervalMs, _ := hlCandleIntervalMs(timeframe)
+			window, werr := perpetualPremiumWindowMs(sc, intervalMs)
+			if werr != nil {
+				errs = append(errs, fmt.Sprintf("strategy[%s] %s: %v", sc.ID, perpetualPremiumStrategyName, werr))
+			} else {
+				entry.Premium = true
+				entry.PremiumWindow = window
+				req.addObservation(premiumKeyFor(symbol), window)
+			}
+		}
 		if feedStrategyUsesMacroEvents(sc) {
 			deriveMacroRequirement(sc, symbol, &entry, &req)
 		}
@@ -376,6 +392,10 @@ func validateMarketFeedConfig(cfg *Config) error {
 		if ids := tradeFlowStrategyIDs(cfg); len(ids) > 0 {
 			return fmt.Errorf("market_feed=%q cannot supply trade-flow observations for %s (strategies %s); use market_feed %q or %q",
 				marketFeedREST, cumulativeVolumeDeltaStrategyName, strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
+		}
+		if ids := premiumStrategyIDs(cfg); len(ids) > 0 {
+			return fmt.Errorf("market_feed=%q cannot supply synchronized quote and oracle records for %s (strategies %s); its transport samples only at deadlines and cannot meet the frozen 60 s premium sample contract; use market_feed %q or %q",
+				marketFeedREST, perpetualPremiumStrategyName, strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
 		}
 		if ids := macroStrategyIDs(cfg); len(ids) > 0 {
 			return fmt.Errorf("market_feed=%q cannot supply sealed calendar and quote records for %s (strategies %s); use market_feed %q or %q",
@@ -557,6 +577,17 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 		o.funding[coin] = entry
 		o.feedMu.Unlock()
 	}
+}
+
+func premiumStrategyIDs(cfg *Config) []string {
+	var ids []string
+	for _, sc := range cfg.Strategies {
+		if feedScopedStrategy(sc) && feedStrategyUsesPremium(sc) {
+			ids = append(ids, sc.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func tradeFlowStrategyIDs(cfg *Config) []string {

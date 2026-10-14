@@ -297,8 +297,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     from data_fetcher import load_cached_data
     from backtester import Backtester, validate_close_capabilities
     from run_backtest import (FUNDING_COLUMN_STRATEGIES, MACRO_EVENT_INPUT_STRATEGIES, OBSERVATION_INPUT_STRATEGIES,
-                              TRADE_FLOW_INPUT_STRATEGIES, VOLUME_PROFILE_INPUT_STRATEGIES, _attach_funding_if_needed,
-                              _build_profile_label_series, attach_macro_event_inputs)
+                              PREMIUM_INPUT_STRATEGIES, TRADE_FLOW_INPUT_STRATEGIES, VOLUME_PROFILE_INPUT_STRATEGIES,
+                              _attach_funding_if_needed, _build_profile_label_series, attach_macro_event_inputs)
 
     validate_close_capabilities(close_refs=close_strategies,
                                 comparison_mode=comparison_mode,
@@ -338,6 +338,10 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             "(schema offline_candle_manifest/v5 with a volume_profile series) can run it")
     if name in VOLUME_PROFILE_INPUT_STRATEGIES and profile_allocation:
         raise ValueError(f"{name}: profile_allocation does not attach the volume-profile series")
+    if manifest_ctx is None and name in PREMIUM_INPUT_STRATEGIES:
+        raise ValueError(
+            f"{name} reads recorded quote/oracle premium samples as an entry input; only the --manifest path "
+            "(schema offline_candle_manifest/v6 with a perp_premium series) can run it")
     from lead_lag_history import (LEADER_INPUT_STRATEGIES, cached_leader_params,
                                   manifest_leader_params)
     leader_info = None
@@ -345,10 +349,13 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         raise ValueError(f"{name}: profile_allocation does not attach the BTC leader series")
     if manifest_ctx is not None:
         import offline_manifest as om
-        if name in FUNDING_COLUMN_STRATEGIES:
+        manifest = manifest_ctx["manifest"]
+        funding_entry = name in FUNDING_COLUMN_STRATEGIES
+        if funding_entry and not (name in om.FUNDING_ENTRY_INPUT_STRATEGIES and manifest.get("funding_entry_input")):
             raise ValueError(
-                f"{name} reads funding as an entry input; the frozen manifest path "
-                "attaches funding only as a cost")
+                f"{name} reads funding as an entry input; this frozen manifest attaches funding "
+                "only as a cost (only funding_skew on a schema v6 manifest declaring funding_entry_input reads "
+                "the pinned funding series as an entry input)")
         if profile_allocation:
             raise ValueError("profile_allocation is not supported on the manifest path")
         if exchange_id is not None:
@@ -356,11 +363,21 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         if commission_pct is not None or slippage_pct is not None:
             raise ValueError("the manifest owns fees and slippage; do not also pass "
                              "commission_pct or slippage_pct")
-        manifest = manifest_ctx["manifest"]
         dataset = om.dataset_by_key(manifest, dataset_key(symbol, timeframe))
         df, manifest_window, candle_cov = om.window_frame(
             manifest, dataset, manifest_ctx["window"])
         df, funding_cov = om.attach_funding_cost(df, dataset, manifest_window)
+        funding_entry_cov = None
+        if funding_entry:
+            df, funding_entry_cov = om.attach_funding_entry_input(df, dataset, manifest_window)
+        premium_cov = None
+        if name in PREMIUM_INPUT_STRATEGIES:
+            if dataset.get("perp_premium") is None:
+                raise ValueError(
+                    f"{name} reads quote/oracle premium samples as an entry input; manifest dataset "
+                    f"{dataset['key']} attaches no perp_premium series")
+            prem_obs, premium_cov = om.attach_perp_premium(manifest, dataset, manifest_window)
+            observation_params = {"premium_observations": prem_obs}
         oi_cov = None
         if name in OBSERVATION_INPUT_STRATEGIES:
             if dataset.get("open_interest") is None:
@@ -414,6 +431,9 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             "trade_flow_sha256": (dataset.get("trade_flow") or {}).get("sha256"),
             "volume_profile_coverage": profile_cov,
             "volume_profile_sha256": (dataset.get("volume_profile") or {}).get("sha256"),
+            "funding_entry_coverage": funding_entry_cov,
+            "perp_premium_coverage": premium_cov,
+            "perp_premium_sha256": (dataset.get("perp_premium") or {}).get("sha256"),
             "macro_event_coverage": macro_cov,
             "leader": leader_info,
             "cost_multiplier": manifest_ctx.get("cost_multiplier", 1.0),

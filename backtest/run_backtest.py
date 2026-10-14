@@ -32,6 +32,7 @@ TRADE_FLOW_INPUT_STRATEGIES = {"cumulative_volume_delta_divergence"}
 MACRO_EVENT_INPUT_STRATEGIES = {"macro_event_breakout"}
 
 VOLUME_PROFILE_INPUT_STRATEGIES = {"volume_profile_reclaim"}
+PREMIUM_INPUT_STRATEGIES = {"perpetual_premium_reversion"}
 
 
 def attach_macro_event_inputs(params: dict, symbol: str, manifest=None, dataset=None, window=None):
@@ -1597,7 +1598,8 @@ def run_single_backtest(
                 ("--htf-filter", htf_filter),
                 ("a regime timeframe override", bool(regime_timeframe)),
                 ("profile allocation", bool(profile_allocation)),
-                ("funding-input strategies", strategy_name in FUNDING_COLUMN_STRATEGIES),
+                ("funding-input strategies other than the frozen funding_skew entry input",
+                 strategy_name in FUNDING_COLUMN_STRATEGIES and strategy_name not in om.FUNDING_ENTRY_INPUT_STRATEGIES),
                 ("scale-in", allow_scale_in),
                 ("no close strategy (the execution spec needs the open/close engine)",
                  not close_strategies),
@@ -1623,6 +1625,12 @@ def run_single_backtest(
         if strategy_name in VOLUME_PROFILE_INPUT_STRATEGIES and manifest_dataset_entry.get("volume_profile") is None:
             raise SystemExit(f"--manifest: {strategy_name} reads executed-trade volume profiles as an entry input; dataset "
                              f"{manifest_dataset} attaches no volume_profile series (schema {om.SCHEMA_V5})")
+        if strategy_name in PREMIUM_INPUT_STRATEGIES and manifest_dataset_entry.get("perp_premium") is None:
+            raise SystemExit(f"--manifest: {strategy_name} reads recorded quote/oracle premium samples as an entry input; "
+                             f"dataset {manifest_dataset} attaches no perp_premium series (schema {om.SCHEMA_V6})")
+        if strategy_name in FUNDING_COLUMN_STRATEGIES and not manifest.get("funding_entry_input"):
+            raise SystemExit(f"--manifest: {strategy_name} reads funding as an entry input; this manifest attaches funding "
+                             f"only as a cost (declare funding_entry_input: true in schema {om.SCHEMA_V6})")
         if manifest_window not in manifest["windows"]:
             raise SystemExit(f"manifest error: unknown window {manifest_window!r}; "
                              f"known: {sorted(manifest['windows'])}")
@@ -1639,6 +1647,9 @@ def run_single_backtest(
     elif strategy_name in VOLUME_PROFILE_INPUT_STRATEGIES:
         raise SystemExit(f"{strategy_name} reads executed-trade volume profiles; run it only with --manifest "
                          f"(schema {'offline_candle_manifest/v5'}) on a dataset that attaches a volume_profile series")
+    elif strategy_name in PREMIUM_INPUT_STRATEGIES:
+        raise SystemExit(f"{strategy_name} reads recorded quote/oracle premium samples; run it only with --manifest "
+                         f"(schema {'offline_candle_manifest/v6'}) on a dataset that attaches a perp_premium series")
     elif manifest_dataset or manifest_window:
         raise SystemExit("--manifest-dataset and --manifest-window need --manifest")
     elif cost_multiplier != 1.0:
@@ -1679,6 +1690,14 @@ def run_single_backtest(
                 manifest, manifest_dataset_entry, manifest_window)
             df, funding_cov = om.attach_funding_cost(
                 df, manifest_dataset_entry, window_spec)
+            if strategy_name in FUNDING_COLUMN_STRATEGIES:
+                df, entry_cov = om.attach_funding_entry_input(df, manifest_dataset_entry, window_spec)
+                print(f"  Funding entry input: {entry_cov}")
+            if strategy_name in PREMIUM_INPUT_STRATEGIES:
+                prem_obs, prem_cov = om.attach_perp_premium(
+                    manifest, manifest_dataset_entry, window_spec)
+                observation_params = {"premium_observations": prem_obs}
+                print(f"  Premium coverage: {prem_cov}")
             if strategy_name in OBSERVATION_INPUT_STRATEGIES:
                 oi_obs, oi_cov = om.attach_open_interest(
                     manifest, manifest_dataset_entry, window_spec)
@@ -2394,6 +2413,10 @@ def _main():
             sys.exit(1)
         if args.strategy in TRADE_FLOW_INPUT_STRATEGIES:
             print(f"--mode {args.mode} cannot run {args.strategy}: it reads recorded trade flow, "
+                  "which only --mode single --manifest (or eval_windows.py --manifest) attaches")
+            sys.exit(1)
+        if args.strategy in PREMIUM_INPUT_STRATEGIES:
+            print(f"--mode {args.mode} cannot run {args.strategy}: it reads recorded quote/oracle premium samples, "
                   "which only --mode single --manifest (or eval_windows.py --manifest) attaches")
             sys.exit(1)
         if args.strategy in MACRO_EVENT_INPUT_STRATEGIES:

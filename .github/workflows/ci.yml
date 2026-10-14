@@ -231,6 +231,12 @@ jobs:
             --marker 'PASS: volume-profile replay harness (sealed profile sessions, hand-calculated value areas and decisions match the independent recording replay; tampered, truncated, contradicted and unclosed recordings refused)' \
             -- bash scripts/test_volume_profile_replay.sh
 
+      - name: Premium replay suite
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'PASS: premium replay harness (sealed quote/oracle payloads and decisions match the independent recording replay; tampered, truncated and contradicted recordings refused)' \
+            -- bash scripts/test_premium_replay.sh
+
       - name: Allow unprivileged user namespaces for the ledger capture worker
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 

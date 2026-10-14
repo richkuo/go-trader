@@ -126,7 +126,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 70
+    assert len(py) == 71
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -175,6 +175,7 @@ def test_go_production_refusal_equals_python_registry():
         "bitcoin_lead_lag": "backtest/candidates/bitcoin_lead_lag_1640/REPORT.md",
         "macro_event_breakout": "backtest/candidates/macro_event_breakout_1654/REPORT.md",
         "volume_profile_reclaim": "backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
+        "perpetual_premium_reversion": "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
     }
     assert go == py
     for name in py:

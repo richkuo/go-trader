@@ -28,17 +28,21 @@ SCHEMA_V2 = "offline_candle_manifest/v2"
 SCHEMA_V3 = "offline_candle_manifest/v3"
 SCHEMA_V4 = "offline_candle_manifest/v4"
 SCHEMA_V5 = "offline_candle_manifest/v5"
-SCHEMAS = (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5)
+SCHEMA_V6 = "offline_candle_manifest/v6"
+SCHEMAS = (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6)
 DATASET_KEYS_V1 = ("coin", "symbol", "size_decimals", "half_spread_bps", "candles", "funding")
 DATASET_KEYS_V2 = DATASET_KEYS_V1 + ("open_interest",)
 DATASET_KEYS_V3 = DATASET_KEYS_V2 + ("trade_flow",)
 DATASET_KEYS_V4 = DATASET_KEYS_V3 + ("macro_calendar", "macro_quotes")
 DATASET_KEYS_V5 = DATASET_KEYS_V4 + ("volume_profile",)
+DATASET_KEYS_V6 = DATASET_KEYS_V5 + ("perp_premium",)
 DATASET_KEYS = {SCHEMA: DATASET_KEYS_V1, SCHEMA_V2: DATASET_KEYS_V2, SCHEMA_V3: DATASET_KEYS_V3,
-                SCHEMA_V4: DATASET_KEYS_V4, SCHEMA_V5: DATASET_KEYS_V5}
+                SCHEMA_V4: DATASET_KEYS_V4, SCHEMA_V5: DATASET_KEYS_V5, SCHEMA_V6: DATASET_KEYS_V6}
+FUNDING_ENTRY_INPUT_STRATEGIES = frozenset({"funding_skew"})
 PROVENANCE_KINDS = ("venue", "proxy")
 HOUR_MS = 3_600_000
 INTERVAL_MS = {
+    "1m": 60_000,
     "5m": 300_000,
     "15m": 900_000,
     "30m": 1_800_000,
@@ -249,11 +253,13 @@ def load_manifest(path: str, verify: bool = True) -> dict:
             if "open_interest" in unknown:
                 hint = f"; open_interest needs schema {SCHEMA_V2!r} or {SCHEMA_V3!r}"
             elif "trade_flow" in unknown:
-                hint = f"; trade_flow needs schema {SCHEMA_V3!r}, {SCHEMA_V4!r} or {SCHEMA_V5!r}"
+                hint = f"; trade_flow needs schema {SCHEMA_V3!r}, {SCHEMA_V4!r}, {SCHEMA_V5!r} or {SCHEMA_V6!r}"
             elif "macro_calendar" in unknown or "macro_quotes" in unknown:
-                hint = f"; macro_calendar and macro_quotes need schema {SCHEMA_V4!r} or {SCHEMA_V5!r}"
+                hint = f"; macro_calendar and macro_quotes need schema {SCHEMA_V4!r}, {SCHEMA_V5!r} or {SCHEMA_V6!r}"
             elif "volume_profile" in unknown:
-                hint = f"; volume_profile needs schema {SCHEMA_V5!r}"
+                hint = f"; volume_profile needs schema {SCHEMA_V5!r} or {SCHEMA_V6!r}"
+            elif "perp_premium" in unknown:
+                hint = f"; perp_premium needs schema {SCHEMA_V6!r}"
             raise ManifestError(f"dataset {ds.get('coin')!r} has unknown keys {unknown}{hint}")
         coin = str(ds.get("coin") or "").strip()
         if not coin:
@@ -289,15 +295,23 @@ def load_manifest(path: str, verify: bool = True) -> dict:
                              if ds.get("macro_quotes") else None),
             "volume_profile": (_file_ref(base_dir, ds["volume_profile"], f"{key}.volume_profile", verify)
                                if ds.get("volume_profile") else None),
+            "perp_premium": (_file_ref(base_dir, ds["perp_premium"], f"{key}.perp_premium", verify)
+                             if ds.get("perp_premium") else None),
         }
         if entry["macro_quotes"] is not None and entry["macro_calendar"] is None:
             raise ManifestError(f"{key}: macro_quotes needs a macro_calendar in the same dataset")
         datasets.append(entry)
 
+    funding_entry_input = raw.get("funding_entry_input", False)
+    if "funding_entry_input" in raw and schema != SCHEMA_V6:
+        raise ManifestError(f"funding_entry_input needs schema {SCHEMA_V6!r}")
+    if not isinstance(funding_entry_input, bool):
+        raise ManifestError(f"funding_entry_input must be true or false, got {funding_entry_input!r}")
     return {
         "path": path,
         "base_dir": base_dir,
         "schema": schema,
+        "funding_entry_input": funding_entry_input,
         "study": raw["study"],
         "venue": raw["venue"],
         "provenance": dict(prov),
@@ -565,6 +579,39 @@ def attach_volume_profile(manifest: dict, dataset: dict, window: dict):
     return payload_from_profile_series(series, manifest["interval_ms"]), coverage
 
 
+def load_perp_premium(dataset: dict) -> Optional[dict]:
+    if dataset.get("perp_premium") is None:
+        return None
+    from premium_replay import PremiumRecordingError, read_premium_series
+    try:
+        series = read_premium_series(dataset["perp_premium"]["abs_path"])
+    except PremiumRecordingError as exc:
+        raise ManifestError(f"{dataset['key']}: {exc}")
+    if series.get("coin") != dataset["coin"]:
+        raise ManifestError(f"{dataset['key']}: premium series is for {series.get('coin')!r}")
+    return series
+
+
+def attach_perp_premium(manifest: dict, dataset: dict, window: dict):
+    from premium_replay import coverage_report, payload_from_series
+    series = load_perp_premium(dataset)
+    if series is None:
+        return None, coverage_report(None, window["start_ms"], window["end_ms"])
+    return payload_from_series(series, manifest["interval_ms"]), coverage_report(series, window["start_ms"], window["end_ms"])
+
+
+def attach_funding_entry_input(frame: pd.DataFrame, dataset: dict, window: dict):
+    from funding_fetcher import attach_funding_column
+    funding = load_funding(dataset)
+    coverage = funding_coverage(funding, window["start_ms"], window["end_ms"])
+    if funding is None or funding.empty:
+        raise ManifestError(f"{dataset['key']}: the funding entry input needs a pinned funding series")
+    shaped = pd.DataFrame({"timestamp": funding["timestamp"], "rate": funding["rate"]})
+    out = attach_funding_column(frame, shaped)
+    coverage["entry_alignment"] = "backward_asof_bar_open"
+    return out, coverage
+
+
 def attach_macro_events(manifest: dict, dataset: dict, window: dict, params: Optional[dict] = None):
     import macro_event_inputs as mi
     params = params or {}
@@ -821,6 +868,7 @@ def verify_report(manifest: dict) -> dict:
         funding = load_funding(ds)
         oi = load_open_interest(ds)
         flow = load_trade_flow(ds)
+        premium = load_perp_premium(ds)
         for name, win in manifest["windows"].items():
             _, _, cov = window_frame(manifest, ds, name)
             out["datasets"][ds["key"]]["windows"][name] = {
@@ -836,6 +884,10 @@ def verify_report(manifest: dict) -> dict:
             if ds.get("macro_calendar") is not None:
                 _, macro_cov = attach_macro_events(manifest, ds, win)
                 out["datasets"][ds["key"]]["windows"][name]["macro_events"] = macro_cov
+            if ds.get("perp_premium") is not None:
+                from premium_replay import coverage_report as premium_coverage
+                out["datasets"][ds["key"]]["windows"][name]["perp_premium"] = premium_coverage(
+                    premium, win["start_ms"], win["end_ms"])
     return out
 
 
