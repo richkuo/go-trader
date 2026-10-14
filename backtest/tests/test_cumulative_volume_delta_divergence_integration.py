@@ -112,7 +112,7 @@ def test_registration_is_futures_only_bidirectional_hidden_production_refused_wi
     assert NAME not in spot.STRATEGY_REGISTRY
     registry = reg._registry
     assert registry.STRATEGIES[NAME]["short_entries"] is True
-    assert registry.production_refused_strategies() == frozenset({NAME})
+    assert registry.production_refused_strategies() == frozenset({NAME, "bitcoin_lead_lag"})
     grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
     assert len(grid) == 216
     for params in grid:
@@ -372,7 +372,9 @@ def test_simulator_fills_next_open_and_closes_by_time_stop_or_the_atr_stop_while
     assert len(res2["trades"]) < len(trades)
 
 
-def test_production_admission_refuses_every_reference_and_keeps_existing_candidates():
+@pytest.mark.parametrize("refused", sorted(load_registry("futures")._registry.production_refused_strategies()))
+def test_production_admission_refuses_every_reference_and_keeps_existing_candidates(refused):
+    NAME = refused
     reg = _reg()
     from close_registry_loader import get_strategy as get_close
     cases = [

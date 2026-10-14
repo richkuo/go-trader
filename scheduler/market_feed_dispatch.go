@@ -86,7 +86,23 @@ func (c *marketFeedContext) frameSpecs(sc StrategyConfig) ([]marketPayloadFrameS
 	if entry.HasRegime {
 		specs = append(specs, marketPayloadFrameSpec{Key: entry.Regime, Required: entry.RegimeLookback, Timing: entry.ClosedBar})
 	}
+	if entry.HasLeader {
+		specs = mergeLeaderFrameSpec(specs, entry.Leader, entry.LeaderLookback)
+	}
 	return specs, entry.Coin, true
+}
+
+func mergeLeaderFrameSpec(specs []marketPayloadFrameSpec, key marketFeedKey, required int) []marketPayloadFrameSpec {
+	for i := range specs {
+		if specs[i].Key == key {
+			if required > specs[i].Required {
+				specs[i].Required = required
+			}
+			specs[i].Timing = true
+			return specs
+		}
+	}
+	return append(specs, marketPayloadFrameSpec{Key: key, Required: required, Timing: true})
 }
 
 func (c *marketFeedContext) singleCheckPayload(sc StrategyConfig) ([]byte, error) {
@@ -120,6 +136,7 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 		specs = append(specs, marketPayloadFrameSpec{Key: fk})
 	}
 	signalKey := feedKeyFor(key.Symbol, key.Timeframe)
+	leaderTimed := make(map[marketFeedKey]bool)
 	anyClosedBar := false
 	anyTimed := false
 	for _, sc := range members {
@@ -149,6 +166,12 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 		if entry.HasRegime {
 			raise(entry.Regime, entry.RegimeLookback)
 		}
+		if entry.HasLeader {
+			raise(entry.Signal, entry.SignalLookback)
+			raise(entry.Leader, entry.LeaderLookback)
+			leaderTimed[entry.Signal] = true
+			leaderTimed[entry.Leader] = true
+		}
 		if held, why := c.Snapshot.fundingHold(entry.Coin, entry.FundingScalar, entry.FundingRecords); held {
 			return nil, fmt.Errorf("strategy %s: %s", sc.ID, why)
 		}
@@ -160,7 +183,7 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 	}
 	for i := range specs {
 		specs[i].Required = seen[specs[i].Key]
-		specs[i].Timing = anyClosedBar || (anyTimed && specs[i].Key == signalKey)
+		specs[i].Timing = anyClosedBar || (anyTimed && specs[i].Key == signalKey) || leaderTimed[specs[i].Key]
 	}
 	payload, err := marketPayloadFor(c.Snapshot, specs, []string{key.Symbol})
 	if err != nil {
@@ -219,6 +242,9 @@ func (c *marketFeedContext) holdFor(sc StrategyConfig) feedHold {
 	if entry.HasHTF && c.Snapshot.keyFailed(entry.HTF) {
 		return feedHold{Held: true, Key: entry.HTF, Reason: fmt.Sprintf("no ready higher-timeframe frame for %s", entry.HTF.PayloadID())}
 	}
+	if entry.HasLeader && c.Snapshot.keyFailed(entry.Leader) {
+		return feedHold{Held: true, Key: entry.Leader, Reason: fmt.Sprintf("no ready leader frame for %s", entry.Leader.PayloadID())}
+	}
 	if held, why := c.Snapshot.fundingHold(entry.Coin, entry.FundingScalar, entry.FundingRecords); held {
 		return feedHold{Held: true, Key: entry.Signal, Reason: why}
 	}
@@ -240,6 +266,9 @@ func (c *marketFeedContext) clearDegradedFor(notifier *MultiNotifier, id string)
 	clearMarketFeedDegraded(notifier, entry.Signal)
 	if entry.HasHTF {
 		clearMarketFeedDegraded(notifier, entry.HTF)
+	}
+	if entry.HasLeader && entry.Leader != entry.Signal {
+		clearMarketFeedDegraded(notifier, entry.Leader)
 	}
 }
 

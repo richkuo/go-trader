@@ -29,7 +29,7 @@ func TestCumulativeVolumeDeltaRegistrationTables(t *testing.T) {
 	if ev, ok := noEdgeEvidenceFor(name); !ok || ev.Ref != cvdReportRef {
 		t.Fatalf("no-edge evidence = %+v, %v", ev, ok)
 	}
-	if productionRefusedStrategies[name] != cvdReportRef || len(productionRefusedStrategies) != 1 {
+	if productionRefusedStrategies[name] != cvdReportRef {
 		t.Fatalf("production-refused table = %v", productionRefusedStrategies)
 	}
 	if _, frozen := v20StampEligibleStrategies[name]; frozen {
@@ -51,12 +51,30 @@ func cvdLoadAll(t *testing.T, sc map[string]interface{}) []error {
 
 func TestCumulativeVolumeDeltaIsRefusedInEveryModeAndReference(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
-	name := cumulativeVolumeDeltaStrategyName
+	refused := make([]string, 0, len(productionRefusedStrategies))
+	for name := range productionRefusedStrategies {
+		refused = append(refused, name)
+	}
+	sort.Strings(refused)
+	fixtures := map[string]struct{ id, coin, tf string }{
+		cumulativeVolumeDeltaStrategyName: {"hl-cvddiv-btc", "BTC", "5m"},
+		bitcoinLeadLagStrategyName:        {"hl-btclag-eth", "ETH", "1h"},
+	}
+	for _, name := range refused {
+		fx, ok := fixtures[name]
+		if !ok {
+			t.Fatalf("production-refused %s has no admission fixture", name)
+		}
+		t.Run(name, func(t *testing.T) { productionRefusedEveryModeAndReference(t, name, fx.id, fx.coin, fx.tf) })
+	}
+}
+
+func productionRefusedEveryModeAndReference(t *testing.T, name, id, coin, tf string) {
 	positional := func(args ...string) map[string]interface{} {
-		return noEdgeHLStrategy("hl-cvddiv-btc", append([]string{name, "BTC", "5m"}, args...)...)
+		return noEdgeHLStrategy(id, append([]string{name, coin, tf}, args...)...)
 	}
 	effective := func(args ...string) map[string]interface{} {
-		sc := noEdgeHLStrategy("hl-bo-btc", append([]string{"breakout", "BTC", "5m"}, args...)...)
+		sc := noEdgeHLStrategy("hl-bo-btc", append([]string{"breakout", "BTC", tf}, args...)...)
 		sc["open_strategy"] = map[string]interface{}{"name": name}
 		return sc
 	}
@@ -66,7 +84,7 @@ func TestCumulativeVolumeDeltaIsRefusedInEveryModeAndReference(t *testing.T) {
 		return sc
 	}
 	fallback := func(args ...string) map[string]interface{} {
-		sc := noEdgeHLStrategy("hl-bo-btc", append([]string{"breakout", "BTC", "5m"}, args...)...)
+		sc := noEdgeHLStrategy("hl-bo-btc", append([]string{"breakout", "BTC", tf}, args...)...)
 		sc["close_strategy"] = map[string]interface{}{"name": name}
 		return sc
 	}

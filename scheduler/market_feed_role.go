@@ -332,6 +332,9 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 		}
 		for _, entry := range c.Req.Strategies {
 			union.SignalKeys[entry.Signal] = true
+			if entry.HasLeader {
+				union.SignalKeys[entry.Leader] = true
+			}
 		}
 		for _, coin := range c.Req.MidCoins {
 			coins[coin] = true

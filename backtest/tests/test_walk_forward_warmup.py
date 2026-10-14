@@ -561,9 +561,15 @@ def test_every_registered_short_entry_strategy_follows_the_engine_contract(monke
     from optimizer import DEFAULT_PARAM_RANGES
     from registry_loader import load_registry
     reg = load_registry("futures")
-    from run_backtest import TRADE_FLOW_INPUT_STRATEGIES
+    from run_backtest import LEADER_INPUT_STRATEGIES, TRADE_FLOW_INPUT_STRATEGIES
     names = sorted(n for n in reg._registry.short_entry_strategies() if n in reg.STRATEGY_REGISTRY)
     assert set(names) <= set(DEFAULT_PARAM_RANGES)
+    for name in sorted(LEADER_INPUT_STRATEGIES):
+        with pytest.raises(ValueError, match="pinned BTC leader series"):
+            walk_forward_optimize(_random_walk("1h"), name, _singleton_grid(reg, name), n_splits=2, timeframe="1h",
+                                  registry="futures", platform="hyperliquid", verbose=False,
+                                  close_strategies=[SCRIPT_TP], stop_loss_atr_mult=SCRIPT_STOP, direction="both")
+    names = [n for n in names if n not in LEADER_INPUT_STRATEGIES]
     for name in sorted(TRADE_FLOW_INPUT_STRATEGIES):
         with pytest.raises(ValueError, match="cannot fit one"):
             reg.validate_params(name, {**_singleton_grid_values(reg, name), "expected_interval_ms": 3_600_000})

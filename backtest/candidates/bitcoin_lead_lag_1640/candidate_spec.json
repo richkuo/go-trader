@@ -1,0 +1,131 @@
+{
+  "issue": 1640,
+  "strategy": "bitcoin_lead_lag",
+  "registry": "futures",
+  "tracking_group": "hyperliquid-strategy-candidates-2026-10-02",
+  "frozen": "This specification, run_study.py and both manifests were committed before any held-out (test) window was scored. While timing and testing the harness, two train-window legs (one 1h and one 4h seed point under the frozen close contract) and one 4h train-window decision-parity run were executed; no protocol value was changed after them.",
+  "availability": {
+    "edge_status": "no_edge",
+    "production_refused": true,
+    "rule": "every production check refuses the candidate whatever the verdict; a pass keeps edge_source unvalidated, a fail records study_fail and an inconclusive result study_inconclusive, identically in shared_strategies/open/registry.py and scheduler/edge_status.go",
+    "proposed_promotion": {
+      "short_name": "btclag",
+      "direction": "both",
+      "rest_mode": "a promotion must add a load-time refusal under market_feed=rest, because leader rows come only from the sealed payload",
+      "note": "recorded for a later reviewed promotion change; this change edits no scheduler short-name or bidirectional map"
+    }
+  },
+  "signal": {
+    "units": "natural-log close-to-close returns; thresholds in basis points of log return (1 bp = 0.0001)",
+    "leader": "the BTC perpetual on the follower's own timeframe",
+    "follower": "the strategy's own traded symbol (args[1]); a BTC follower holds every entry (follower_is_leader)",
+    "supported_timeframes": ["15m", "1h", "4h"],
+    "alignment": "leader and follower bars are matched by exact opening time (closing boundary = opening + interval); a follower bar without a matched leader bar is invalid; no forward fill",
+    "returns": "rL[k] = ln(BTC close[k] / BTC close[k-1]) and rF[k] = ln(follower close[k] / follower close[k-1]) exist only when rows k-1 and k are valid and exactly one interval apart",
+    "target": "for leader bar j, y[j] = ln(follower close[j + lag + horizon - 1]) - ln(follower close[j + lag - 1]) (forecast start s = j + lag - 1, end e = j + lag + horizon - 1)",
+    "training": "decision d fits OLS y = a + b x on the training_bars pairs j' = d - lag - horizon - training + 2 .. d - lag - horizon + 1 (every label's end e <= d, so it completed before the decision); the fit needs rows d - lag - horizon - training + 1 .. d contiguous and valid",
+    "fit_quality": "R2 = Sxy^2 / (Sxx Syy) (0 when Syy = 0); stability: the OLS slopes of the first and second training halves (training_bars / 2 pairs each, training_bars even); an undefined slope (Sxx = 0) makes the fit invalid",
+    "impulse": "leader bar j is an impulse when |rL[j]| >= impulse_z * sigma, sigma = population standard deviation of the training x values of fit(j) (sigma > 0); direction = sign(rL[j])",
+    "event_identity": "BTC:<timeframe>:<opening ms of bar j>:<up|down>:<signal_mode>",
+    "active_window": "decisions j .. e - 1 (expiry at the forecast endpoint e)",
+    "qualification": "at decision d in the active window: slope b > 0, both half slopes > 0, R2 >= min_r2 (inclusive), direction * (a + b rL[j]) > 0 (strict), completed = ln(follower close[d] / follower close[s]) when d > s else 0, remaining_bps = 10000 * (forecast - completed), and direction * remaining_bps > cost_bps + min_edge_bps (strict)",
+    "first_decision": "an event emits only at its first qualifying decision, reconstructed from each earlier decision's own fit; later decisions report event_consumed whatever the position, a stop-out or a restart",
+    "emission": "decision i emits only when rows i - S + 1 .. i are contiguous and valid, S = training_bars + 2 lag_bars + 2 horizon_bars - 2 (every active event, its own fit and every earlier decision fit lie inside); simultaneous first decisions of opposite events hold (conflicting_events) and consume both; same-direction overlaps emit once, naming the latest impulse",
+    "sealed_freshness": "only on a sealed_closed context, last row only: the row boundary must equal the sealed boundary; 0 <= cutoff - boundary <= max_data_age_ms; leader and follower last_recv_at_ms must exist, be <= sealed_at_ms and be within max_data_age_ms of it",
+    "baselines": {
+      "follower_momentum": "same data eligibility, support and training window; event when |rF[j]| >= impulse_z * population std of the training rF values; enters at decision j only, in the move direction",
+      "btc_trend_filter": "follower_momentum entries admitted only when the unlagged BTC log return sum over bars j - horizon + 1 .. j has the same sign"
+    },
+    "evidence_columns": "bll_* columns on every row; entry rows add the event id, impulse return, sigma and z, coefficients, R2, half slopes, training bounds, forecast, completed move, remaining bps, threshold, support bounds and the support sha256 of (opening ms, follower close, leader close)"
+  },
+  "parameters": {
+    "lag_bars": {"type": "int", "min": 1, "max": 6, "default": 1},
+    "horizon_bars": {"type": "int", "min": 1, "max": 12, "default": 4},
+    "training_bars": {"type": "int", "min": 48, "max": 720, "even": true, "default": 240},
+    "impulse_z": {"type": "float", "min": 0.5, "max": 6.0, "default": 2.0},
+    "min_r2": {"type": "float", "min": 0.0, "max_exclusive": 1.0, "default": 0.01},
+    "min_edge_bps": {"type": "float", "min": 0.0, "max": 500.0, "default": 5.0},
+    "cost_bps": {"type": "float", "min": 0.0, "max": 500.0, "default": 20.0},
+    "max_data_age_ms": {"type": "int", "min": 60000, "max": 86400000, "default": 300000},
+    "expected_interval_ms": {"type": "int", "values": [900000, 3600000, 14400000], "default": 3600000, "binding": "bound to the timeframe by bind_fixed_interval_params"},
+    "signal_mode": {"type": "enum", "values": ["lead_lag", "follower_momentum", "btc_trend_filter"], "default": "lead_lag"}
+  },
+  "studies": {
+    "primary_1h": {
+      "role": "primary verdict",
+      "manifest": "backtest/candidates/bitcoin_lead_lag_1640_manifest_1h.json",
+      "timeframe": "1h",
+      "price_model": "proxy: Binance US spot candles as a Hyperliquid perpetual price proxy; venue execution spec and venue funding",
+      "grid": {
+        "lag_bars": [1, 2],
+        "horizon_bars": [2, 4, 8],
+        "training_bars": [240, 480],
+        "impulse_z": [1.5, 2.0, 2.5],
+        "min_r2": [0.0, 0.01],
+        "min_edge_bps": [0.0, 10.0]
+      }
+    },
+    "secondary_4h": {
+      "role": "venue-price confirmation",
+      "manifest": "backtest/candidates/bitcoin_lead_lag_1640_manifest_4h.json",
+      "timeframe": "4h",
+      "price_model": "venue: Hyperliquid perpetual candles, venue execution spec and venue funding",
+      "grid": {
+        "lag_bars": [1, 2],
+        "horizon_bars": [1, 2, 3],
+        "training_bars": [120, 240],
+        "impulse_z": [1.5, 2.0, 2.5],
+        "min_r2": [0.0, 0.01],
+        "min_edge_bps": [0.0, 10.0]
+      }
+    }
+  },
+  "fixed_params": {"cost_bps": 20.0, "max_data_age_ms": 300000},
+  "followers": ["ETH", "SOL"],
+  "windows": {"selection": "train", "held_out": "test"},
+  "arms": {
+    "candidate": {"signal_mode": "lead_lag"},
+    "follower_momentum": {"signal_mode": "follower_momentum"},
+    "btc_trend_filter": {"signal_mode": "btc_trend_filter"}
+  },
+  "baseline_dedupe": "the two baselines ignore min_r2 and min_edge_bps; their grid points are deduplicated on (lag_bars, horizon_bars, training_bars, impulse_z) keeping the earliest grid order",
+  "contract": {
+    "direction": "both",
+    "close_strategies": [{"name": "tiered_tp_atr", "params": {"tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 1.0}]}}],
+    "stop_loss_atr_mult": 1.0,
+    "capital": 1000.0,
+    "comparison_mode": "strict (default)",
+    "fills": "a bar N decision fills at the bar N + 1 open (Backtester); no higher-timeframe series is used"
+  },
+  "costs": {
+    "base_cost_multiplier": 1.0,
+    "stress_cost_multiplier": 2.0,
+    "stress": "doubles half spread and slippage; fees unchanged",
+    "funding": "every leg charges the manifest's hourly Hyperliquid funding through funding_fetcher.attach_funding_accrual_column, the accrual behind --funding charge; incomplete coverage makes the result inconclusive",
+    "limitations": "1h prices are a Binance US spot proxy; spread comes from one stored L2 snapshot; slippage is a fixed 5 bps; lot flooring and the $10 minimum come from the manifest execution spec"
+  },
+  "latency_bars": [0, 1, 2],
+  "latency_model": "an extra k-bar delay shifts each candidate entry signal k rows later before the Backtester, so the fill is the bar N + 1 + k open",
+  "selection": {
+    "window": "train",
+    "eligible": "every follower leg scored, no liquidation, no incomplete funding, and at least 20 positions summed over the followers",
+    "order": "max mean Sharpe over the followers, then max mean net return, then earliest grid order",
+    "per_arm": true
+  },
+  "gates": {
+    "coverage_max_missing_fraction": 0.005,
+    "min_heldout_clusters": 30,
+    "max_drawdown_pct": 25.0
+  },
+  "verdict": {
+    "inconclusive": "a window or dataset coverage gate fails, any compared held-out leg has incomplete funding, the candidate has no eligible train selection, the held-out candidate has fewer than 30 independent position clusters (overlapping position intervals merged across followers) or lacks long or short positions, the decision parity fails, or the secondary study is inconclusive while the primary would pass",
+    "pass": "primary held-out candidate: mean net return > 0 at base and at stress cost; mean net return strictly above each baseline arm at base cost; worst follower max drawdown <= 25%; and the secondary held-out candidate mean net return > 0 at base cost",
+    "fail": "a complete study that misses a pass condition",
+    "reported_only": "M1 incumbent bars and score_candidate verdict, turnover, concentration, parameter stability (train neighbors and train/test rank correlation over the full grid), latency decay and every grid variant on the held-out window"
+  },
+  "parity": {
+    "sample_every_rows": 50,
+    "entry_rows": "all",
+    "checks": "full-series decisions equal bounded-tail (S rows) decisions and sealed-payload decisions (prepare_sealed_inputs + evaluate_open_close) at every sampled held-out row; event ids of emitted entries are unique"
+  }
+}

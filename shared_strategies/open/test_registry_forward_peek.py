@@ -274,7 +274,28 @@ def _with_trade_flow(fn):
     return wrapped
 
 
+def _with_leader(fn):
+    def wrapped(df, **params):
+        import sys
+        tools = os.path.abspath(os.path.join(_HERE, "..", "..", "shared_tools"))
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        from lead_lag_inputs import prepare_historical_inputs
+        out = df.copy()
+        step_ms = int((out.index[1] - out.index[0]) / pd.Timedelta(milliseconds=1))
+        out.attrs["bar_interval_ms"] = step_ms
+        out.attrs["bar_timestamp_kind"] = "open"
+        leader = out[["open", "high", "low", "close", "volume"]].copy()
+        leader["close"] = out["close"] * (1.0 + 0.002 * np.sin(out["volume"].to_numpy()))
+        leader.attrs = dict(out.attrs)
+        timeframe = {3_600_000: "1h", 900_000: "15m", 14_400_000: "4h"}[step_ms]
+        ctx = prepare_historical_inputs(out, leader, "FIX/USDT", timeframe)
+        return fn(out, **params, leader_context=ctx)
+    return wrapped
+
+
 STRATEGY_INPUTS = {
+    "bitcoin_lead_lag": _with_leader,
     "cumulative_volume_delta_divergence": _with_trade_flow,
     "open_interest_breakout": _with_open_interest,
     "ease_of_movement_breakout": _with_declared_cadence,

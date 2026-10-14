@@ -205,6 +205,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"williams_r_reversal":          {"futures"},
 
 	"cumulative_volume_delta_divergence": {"futures"},
+	"bitcoin_lead_lag":                   {"futures"},
 }
 
 func openStrategyRegisteredFor(name, registryPlatform string) bool {
