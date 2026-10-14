@@ -22,6 +22,7 @@ _REGISTRY = _load(
 SKIP_STRATEGIES = {
     "basket_scripted_fixture": "basket evaluator: it ranks a symbol-keyed universe and refuses one-symbol evaluation by contract (#1781)",
     "cross_sectional_momentum": "basket evaluator: it ranks a symbol-keyed universe and refuses one-symbol evaluation by contract (#1781); its post-deadline invariance runs through the real basket runner (#1787)",
+    "cross_sectional_reversal": "basket evaluator: it ranks a symbol-keyed universe and refuses one-symbol evaluation by contract (#1781); its post-deadline invariance runs through the real basket runner (#1793)",
 }
 
 EXPECTED_ALL_ZERO_SIGNAL = {
