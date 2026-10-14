@@ -37,3 +37,19 @@ configuration or acknowledgements, and live basket use stays refused.
   and the study refuses a replay whose exported funding rows differ from the rows its steps booked. The protocol and
   lock did not change.
 - Attempt 2: the recorded run in `results.json`.
+
+## Source pin and later main changes
+
+The recorded run used commit `1b11cf55` (base `7e879656` plus the first two study commits; `results.json`
+`source_hashes` pins every prerequisite file by sha256). Before the pull request opened, the branch was rebased onto a
+later main, so that commit is not in the merged history. The rebase changed these pinned paths:
+
+- `shared_strategies/open/cross_sectional_momentum.py` and `basket_allocation.py` (#1793): the return, volatility,
+  validation and preflight helpers moved into `basket_allocation.py` behind wrappers with the same names. Checked
+  after the rebase: `cross_sectional_momentum_core` from the old and the new source gives byte-identical output on
+  every training and held-out deadline of this study for every grid variant (672 evaluations on the frozen
+  candles), and all 117 recorded rebalance targets of the held-out candidate replay equal the new source's weights.
+- `shared_strategies/open/registry.py` (#1793, #1640, #1654): new registrations only; this study's entry changes
+  only its `edge_source` and `edge_ref`.
+- `scheduler/basket_replay.go` (#1654): the adapter also refuses macro calendar inputs, which this study never uses.
+- `shared_scripts/check_hyperliquid.py` (#1654): macro inputs for `macro_event_breakout` only.
