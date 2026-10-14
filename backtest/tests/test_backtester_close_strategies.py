@@ -990,3 +990,162 @@ def test_hyperliquid_backtest_resting_rule_runs_match_the_parity_fixture(run):
 def test_hyperliquid_backtest_resting_rule_refusals_match_the_parity_fixture(case):
     with pytest.raises(ValueError, match=case["match"]):
         Backtester(**_fill_rule_run_kwargs(**case["kwargs"]))
+
+
+def _handoff_walk(n=360, seed=5):
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    close = 100 * np.exp(np.cumsum(rng.normal(0.001, 0.02, n)))
+    open_ = np.concatenate([[100.0], close[:-1]])
+    idx = pd.date_range("2025-01-01", periods=n, freq="D")
+    df = pd.DataFrame({"open": open_, "high": np.maximum(open_, close) * 1.01,
+                       "low": np.minimum(open_, close) * 0.99, "close": close,
+                       "volume": 1000.0}, index=idx)
+    signal = np.zeros(n, dtype=int)
+    signal[list(range(20, n, 45))] = 1
+    signal[list(range(55, n, 90))] = -1
+    df["signal"] = signal
+    from atr import ensure_atr_indicator
+    return ensure_atr_indicator(df)
+
+
+_HANDOFF_TP = {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+    {"atr_multiple": 1.0, "close_fraction": 0.5}, {"atr_multiple": 4.0, "close_fraction": 1.0}]}}
+_HANDOFF_CASES = {
+    "partial_tp": (dict(close_strategies=[_HANDOFF_TP], stop_loss_atr_mult=3.0, direction="long"),
+                   lambda h: h["remaining_fraction"] is not None and h["remaining_fraction"] < 0.99),
+    "trailing_stop": (dict(trailing_stop_atr_mult=2.0),
+                      lambda h: h["stop_trigger"] > 0 and h["high_water"] > h["entry_price"]),
+    "stop_after_tier": (dict(close_strategies=[{"name": "tiered_tp_atr", "params": dict(
+        _HANDOFF_TP["params"], sl_after="breakeven")}], stop_loss_atr_mult=3.0, direction="long"),
+                        lambda h: h["tiers_processed"] >= 1 and h["stop_trigger"] >= h["entry_price"]),
+    "time_stop": (dict(close_strategies=[{"name": "time_stop", "params": {"max_bars": 30}}],
+                       direction="long", comparison_mode="approximate"),
+                  lambda h: h["bars_held"] >= 5),
+    "plain": (dict(), lambda h: h["bars_held"] >= 5),
+    "scale_in": (dict(allow_scale_in=True, scale_in={"max_adds": 2}),
+                 lambda h: h["scale_in_count"] >= 1),
+    "perps_sizing": (dict(platform="hyperliquid", strategy_type="perps", close_strategies=[_HANDOFF_TP],
+                          stop_loss_atr_mult=3.0, direction="long",
+                          perps_sizing={"exchange_leverage": 3, "sizing_leverage": 2.0,
+                                        "margin_mode": "isolated", "budget_source": "strategy_cash"}),
+                     lambda h: h["remaining_fraction"] is not None and h["remaining_fraction"] < 0.99),
+}
+
+
+def _handoff_split(df, kwargs, wanted):
+    for k in range(40, len(df) - 40):
+        handoff = Backtester(**kwargs).run(df.iloc[k:], save=False,
+                                           warmup_prefix=df.iloc[:k])["warmup_handoff"]
+        if handoff["side"] == "long" and wanted(handoff):
+            return k, handoff
+    raise AssertionError("no split leaves the stated position open")
+
+
+@pytest.mark.parametrize("case", sorted(_HANDOFF_CASES))
+def test_warmup_handoff_resumes_the_uninterrupted_engine_state(case):
+    kwargs, wanted = _HANDOFF_CASES[case]
+    df = _handoff_walk()
+    k, handoff = _handoff_split(df, kwargs, wanted)
+    whole = Backtester(**kwargs).run(df, save=False)
+    resumed = Backtester(**kwargs).run(df.iloc[k:], save=False, warmup_prefix=df.iloc[:k])
+    prefix_only = Backtester(**kwargs).run(df.iloc[:k], save=False)
+    held = prefix_only["trades"][-1]
+    assert held["exit_reason"] == "end_of_data"
+    assert handoff["entry_date"] == held["entry_date"]
+    assert handoff["bars_held"] == held["bars_held"]
+    assert handoff["entry_atr"] == pytest.approx(held["entry_atr"], abs=1e-6)
+    assert handoff["position_qty"] == pytest.approx(held["shares"])
+    assert handoff["mark_price"] == df["close"].iloc[k - 1]
+    factor = handoff["capital_factor"]
+    assert factor == pytest.approx(1000.0 / handoff["prefix_equity"])
+    boundary = df.index[k]
+    later = [t for t in whole["trades"] if pd.Timestamp(t["exit_date"]) >= boundary]
+    assert [(t["exit_date"], t["exit_reason"]) for t in resumed["trades"]] == [
+        (t["exit_date"], t["exit_reason"]) for t in later]
+    for got, want in zip(resumed["trades"], later):
+        assert got["exit_price"] == pytest.approx(want["exit_price"], rel=1e-12)
+        assert got["shares"] == pytest.approx(want["shares"] * factor, rel=1e-9)
+    first = resumed["trades"][0]
+    assert first["entry_date"] == handoff["entry_date"]
+    assert first["entry_price"] == handoff["mark_price"]
+    assert first["entry_fee"] == 0.0
+    assert resumed["final_capital"] == pytest.approx(whole["final_capital"] * factor, abs=0.02)
+    assert resumed["start_date"] == str(boundary)
+
+
+def test_warmup_handoff_keeps_prefix_results_out_of_scored_metrics():
+    df = _handoff_walk()
+    k = 140
+    prefix = df.iloc[:k].copy()
+    prefix["funding_accrual"] = 1e-4
+    scored = df.iloc[k:].copy()
+    mark = float(prefix["close"].iloc[-1])
+    for col in ("open", "high", "low", "close"):
+        scored[col] = mark
+    scored["signal"] = 0
+    scored["atr"] = float(prefix["atr"].iloc[-1])
+    scored["funding_accrual"] = 0.0
+    kwargs = dict(trailing_stop_atr_mult=50.0, commission_pct=0.001, slippage_pct=0.0)
+    result = Backtester(**kwargs).run(scored, save=False, warmup_prefix=prefix)
+    handoff = result["warmup_handoff"]
+    assert handoff["side"] == "long" and handoff["prefix_trades"] >= 1
+    assert handoff["prefix_funding_pnl"] != 0.0
+    assert result["total_funding_pnl"] == 0.0
+    assert [t["exit_reason"] for t in result["trades"]] == ["end_of_data"]
+    trade = result["trades"][0]
+    assert trade["entry_fee"] == 0.0
+    assert trade["pnl"] == pytest.approx(-trade["exit_fee"], abs=0.01)
+    assert result["final_capital"] == pytest.approx(1000.0 - trade["exit_fee"], abs=0.01)
+
+
+def test_warmup_handoff_boundary_decisions_fill_once():
+    df = _handoff_walk()
+    entry_bar = 20
+    plain = Backtester().run(df.iloc[entry_bar + 1:], save=False, warmup_prefix=df.iloc[:entry_bar + 1])
+    assert plain["warmup_handoff"]["side"] is None and plain["warmup_handoff"]["due_signal"] == 1
+    assert plain["trades"][0]["entry_date"] == str(df.index[entry_bar + 1])
+    assert Backtester().run(df, save=False)["trades"][0]["entry_date"] == str(df.index[entry_bar + 1])
+    boundary_row = Backtester().run(df.iloc[entry_bar:], save=False, warmup_prefix=df.iloc[:entry_bar])
+    assert boundary_row["warmup_handoff"]["due_signal"] == 0
+    assert boundary_row["trades"][0]["entry_date"] == str(df.index[entry_bar + 1])
+
+    for kwargs, key, reason in [
+        (_HANDOFF_CASES["partial_tp"][0], "pending_close_fraction", "tiered_tp_atr"),
+        (dict(stop_loss_atr_mult=1.0, intrabar_resolution="bar_close"),
+         "pending_signal_stop_close", "signal_sl"),
+    ]:
+        whole = Backtester(**kwargs).run(df, save=False)
+        exits = [t for t in whole["trades"] if t["exit_reason"].startswith(reason)
+                 and pd.Timestamp(t["exit_date"]) > df.index[40]]
+        k = [str(ts) for ts in df.index].index(exits[0]["exit_date"])
+        resumed = Backtester(**kwargs).run(df.iloc[k:], save=False, warmup_prefix=df.iloc[:k])
+        handoff = resumed["warmup_handoff"]
+        assert handoff[key], (key, handoff)
+        booked = [t for t in resumed["trades"] if t["exit_date"] == str(df.index[k])]
+        assert [t["exit_reason"] for t in booked] == [exits[0]["exit_reason"]]
+        later = df.copy()
+        later.loc[later.index[k + 1]:, ["open", "high", "low", "close"]] *= 1.3
+        assert Backtester(**kwargs).run(later.iloc[k:], save=False,
+                                        warmup_prefix=later.iloc[:k])["warmup_handoff"] == handoff
+
+
+def test_warmup_handoff_refuses_inputs_it_cannot_convert():
+    df = _handoff_walk()
+    prefix, scored = df.iloc[:100], df.iloc[100:]
+    bad_cases = [
+        (dict(warmup_prefix=prefix, starting_long={"entry_price": 100.0}), "mutually exclusive"),
+        (dict(warmup_prefix=prefix, record_events=True), "record_events"),
+        (dict(warmup_prefix=df.iloc[:101]), "strictly before"),
+        (dict(warmup_prefix=prefix.drop(columns=["atr"])), "columns"),
+        (dict(warmup_prefix=prefix.iloc[:0]), "non-empty"),
+    ]
+    for kw, match in bad_cases:
+        with pytest.raises(ValueError, match=match):
+            Backtester().run(scored, save=False, **kw)
+    held = Backtester().run(df.iloc[:30], save=False)
+    assert held["trades"][-1]["exit_reason"] == "end_of_data"
+    unpriced = prefix.copy()
+    unpriced.loc[unpriced.index[-1], "close"] = float("nan")
+    with pytest.raises(ValueError, match="last prefix close"):
+        Backtester().run(scored, save=False, warmup_prefix=unpriced)

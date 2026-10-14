@@ -1957,6 +1957,50 @@ class _HoldTracker:
         return (e - self.low) / e, (e - self.high) / e, self.low_bar, self.high_bar
 
 
+@dataclass(frozen=True)
+class WarmupHandoff:
+    boundary_bar: str
+    first_scored_bar: str
+    prefix_bars: int
+    mark_price: float
+    prefix_cash: float
+    prefix_equity: float
+    capital_factor: float
+    side: Optional[str]
+    position_qty: float
+    initial_quantity: float
+    remaining_fraction: Optional[float]
+    entry_price: Optional[float]
+    trade_entry_price: Optional[float]
+    entry_date: Optional[str]
+    entry_atr: float
+    risk_anchor_price: float
+    scale_in_count: int
+    stop_trigger: float
+    stop_armed: bool
+    high_water: float
+    tiers_processed: int
+    post_tp_trail_mult: Optional[float]
+    bars_held: int
+    position_regime: str
+    stamp_gate: str
+    stamp_directional: str
+    stamp_atr: str
+    entry_fee_outstanding: float
+    pending_close_fraction: float
+    pending_close_reason: str
+    pending_signal_stop_close: bool
+    due_signal: int
+    due_open_action: Optional[str]
+    due_close_fraction: float
+    prefix_trades: int
+    prefix_funding_pnl: float
+    funding_unpriced_held_hours: int
+
+    def to_dict(self) -> dict:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+
 LEDGER_EVENTS_SCHEMA = "go-trader.backtester-ledger-events"
 LEDGER_EVENTS_SCHEMA_VERSION = 3
 HL_LIQUIDATION_STOP_BUFFER_PCT = 0.5
@@ -2108,7 +2152,12 @@ def charge_funding_rejected(result: dict) -> bool:
         unpriced = int(result.get("funding_unpriced_held_hours") or 0)
     except (TypeError, ValueError):
         unpriced = 0
-    return unpriced > 0
+    handoff = result.get("warmup_handoff") or {}
+    try:
+        prefix_unpriced = int(handoff.get("funding_unpriced_held_hours") or 0)
+    except (TypeError, ValueError):
+        prefix_unpriced = 0
+    return unpriced > 0 or prefix_unpriced > 0
 
 
 def _move_trade_funding(src: "Trade", dst: "Trade", qty: float) -> None:
@@ -2918,14 +2967,48 @@ class Backtester:
             df["_close_fraction"] = _max_close_fraction_series(df).shift(1).fillna(0.0)
         df["_profile_label"] = df["_profile_label"].shift(1).fillna("")
 
+    @staticmethod
+    def _join_warmup_prefix(prefix, scored: pd.DataFrame, starting_long,
+                            record_events: bool) -> pd.DataFrame:
+        if starting_long:
+            raise ValueError(
+                "warmup_prefix and starting_long are mutually exclusive: the "
+                "prefix replay derives the starting position from the engine"
+            )
+        if record_events:
+            raise ValueError(
+                "record_events cannot be combined with warmup_prefix: the "
+                "ledger has no event for a capital-converted handoff position"
+            )
+        if not isinstance(prefix, pd.DataFrame) or len(prefix) == 0:
+            raise ValueError("warmup_prefix must be a non-empty DataFrame")
+        if len(scored) == 0:
+            raise ValueError("warmup_prefix needs at least one scored bar")
+        if set(prefix.columns) != set(scored.columns) or prefix.columns.has_duplicates:
+            raise ValueError(
+                "warmup_prefix columns must match the scored frame's columns"
+            )
+        joined_index = prefix.index.append(scored.index)
+        if not joined_index.is_unique or not joined_index.is_monotonic_increasing:
+            raise ValueError(
+                "warmup_prefix must end strictly before the first scored bar "
+                "with a unique, increasing index"
+            )
+        return pd.concat([prefix[list(scored.columns)], scored])
+
     def run(self, df: pd.DataFrame, strategy_name: str = "Unknown",
             symbol: str = "BTC/USDT", timeframe: str = "1d",
             params: Optional[dict] = None, save: bool = True,
             starting_long: Optional[dict] = None,
             indicator_frame: Optional[pd.DataFrame] = None,
             record_events: bool = False,
-            stop_observer: Optional[Callable[[dict], None]] = None) -> dict:
+            stop_observer: Optional[Callable[[dict], None]] = None,
+            warmup_prefix: Optional[pd.DataFrame] = None) -> dict:
         self._stop_observer = stop_observer
+        handoff_at = 0
+        if warmup_prefix is not None:
+            df = self._join_warmup_prefix(warmup_prefix, df, starting_long, record_events)
+            handoff_at = len(warmup_prefix)
         uses_open_close = (
             "open_action" in df.columns
             or bool(_close_fraction_columns(df))
@@ -2966,6 +3049,11 @@ class Backtester:
                 raise ValueError(
                     "execution_spec cannot seed starting_long: the seeded "
                     "quantity was never lot-floored or minimum-checked"
+                )
+            if handoff_at:
+                raise ValueError(
+                    "execution_spec cannot take a warmup_prefix handoff: the "
+                    "capital conversion rescales a lot-floored quantity"
                 )
         plain_short = (not uses_open_close) and self.direction == "short"
         if plain_short and starting_long:
@@ -3492,7 +3580,9 @@ class Backtester:
             scale_in_adds_total += 1
             scale_in_added_notional_total += notional
             if current_trade is not None:
-                current_trade.entry_price = avg_cost
+                current_trade.entry_price = (
+                    old_qty * current_trade.entry_price + add_qty * eff
+                ) / new_qty
                 current_trade.shares += add_qty
                 current_trade.scale_in_adds = scale.scale_in_count
             hold.entry_fee += commission
@@ -3683,7 +3773,120 @@ class Backtester:
                 )
             return sl_after_moved
 
+        handoff = None
+
+        def _take_warmup_handoff(i: int) -> WarmupHandoff:
+            nonlocal cash, position, initial_quantity, total_funding_pnl
+            nonlocal funding_unpriced_held_hours
+            nonlocal stop_warmup_skipped_entries, risk_skipped_entries
+            nonlocal scale_in_adds_total, scale_in_added_notional_total
+            mark = float(df["close"].iloc[i - 1])
+            equity_before = cash + position * mark if position != 0 else cash
+            if position != 0 and not (math.isfinite(mark) and mark > 0):
+                raise ValueError(
+                    f"warmup handoff at {df.index[i - 1]}: the last prefix close "
+                    f"{mark!r} cannot value the open position"
+                )
+            if not (math.isfinite(equity_before) and equity_before > 0):
+                raise ValueError(
+                    f"warmup handoff at {df.index[i - 1]}: prefix equity "
+                    f"{equity_before!r} is not finite and positive, so it cannot "
+                    "be converted to the scored initial capital"
+                )
+            if position != 0 and not (
+                current_trade is not None
+                and abs(abs(current_trade.shares) - abs(position)) <= 1e-9 * max(1.0, abs(position))
+            ):
+                raise ValueError(
+                    f"warmup handoff at {df.index[i - 1]}: the open position has "
+                    "no consistent trade record"
+                )
+            factor = self.initial_capital / equity_before
+            open_side = None if position == 0 else ("long" if position > 0 else "short")
+            due_action = None
+            if "_open_action" in df.columns:
+                due_action = str(df["_open_action"].iloc[i])
+            due_close = float(df["_close_fraction"].iloc[i]) if "_close_fraction" in df.columns else 0.0
+            snapshot = WarmupHandoff(
+                boundary_bar=str(df.index[i - 1]),
+                first_scored_bar=str(df.index[i]),
+                prefix_bars=i,
+                mark_price=mark,
+                prefix_cash=float(cash),
+                prefix_equity=float(equity_before),
+                capital_factor=float(factor),
+                side=open_side,
+                position_qty=float(position),
+                initial_quantity=float(initial_quantity) if open_side else 0.0,
+                remaining_fraction=(
+                    abs(position) / initial_quantity
+                    if open_side and initial_quantity > 0 else None
+                ),
+                entry_price=float(avg_cost) if open_side else None,
+                trade_entry_price=float(current_trade.entry_price) if open_side else None,
+                entry_date=str(current_trade.entry_date) if open_side else None,
+                entry_atr=float(entry_atr_value) if open_side else 0.0,
+                risk_anchor_price=float(scale.risk_anchor_price) if open_side else 0.0,
+                scale_in_count=int(scale.scale_in_count) if open_side else 0,
+                stop_trigger=float(sl_trigger_px) if open_side else 0.0,
+                stop_armed=bool(sl_pierce_armed) if open_side else False,
+                high_water=float(sl_high_water_px) if open_side else 0.0,
+                tiers_processed=int(sl_tiers_processed) if open_side else 0,
+                post_tp_trail_mult=post_tp_trail_mult if open_side else None,
+                bars_held=int(hold.bars) if open_side else 0,
+                position_regime=str(self._run_position_regime or "") if open_side else "",
+                stamp_gate=str(self._stamp_gate or "") if open_side else "",
+                stamp_directional=str(self._stamp_directional or "") if open_side else "",
+                stamp_atr=str(self._stamp_atr or "") if open_side else "",
+                entry_fee_outstanding=float(hold.entry_fee - hold.entry_fee_netted) if open_side else 0.0,
+                pending_close_fraction=float(pending_close_fraction),
+                pending_close_reason=str(pending_close_reason or ""),
+                pending_signal_stop_close=bool(pending_signal_sl_close),
+                due_signal=int(df["signal"].iloc[i]),
+                due_open_action=due_action,
+                due_close_fraction=due_close,
+                prefix_trades=len(trades),
+                prefix_funding_pnl=float(total_funding_pnl),
+                funding_unpriced_held_hours=int(funding_unpriced_held_hours),
+            )
+            cash *= factor
+            position *= factor
+            initial_quantity *= factor
+            scale.base_open_notional *= factor
+            scale.added_notional_usd *= factor
+            if self._perps_sizing is not None:
+                self._sizing_cash *= factor
+                self._used_margin *= factor
+                self._sized_qty *= factor
+            for key in ("entries_capped", "entries_skipped_below_min",
+                        "adds_beyond_strategy_margin", "clamp_count",
+                        "liquidation_count", "tier_refusals"):
+                self._margin_stats[key] = 0
+            self._margin_stats["max_used_margin"] = self._used_margin
+            if open_side:
+                current_trade.shares *= factor
+                current_trade.entry_price = mark
+                current_trade.funding_pnl = 0.0
+                hold.entry_price = mark
+                hold.high = mark
+                hold.low = mark
+                hold.high_bar = hold.bars
+                hold.low_bar = hold.bars
+            hold.entry_fee = 0.0
+            hold.entry_fee_netted = 0.0
+            trades.clear()
+            equity_curve.clear()
+            total_funding_pnl = 0.0
+            funding_unpriced_held_hours = 0
+            stop_warmup_skipped_entries = 0
+            risk_skipped_entries = 0
+            scale_in_adds_total = 0
+            scale_in_added_notional_total = 0.0
+            return snapshot
+
         for i, (idx, row) in enumerate(df.iterrows()):
+            if handoff_at and i == handoff_at:
+                handoff = _take_warmup_handoff(i)
             decision_idx = df.index[i - 1] if i > 0 else None
             fill_price = row["open"] if has_open else row["close"]
             mark_price = row["close"]
@@ -4835,6 +5038,8 @@ class Backtester:
 
         final_equity = cash
         equity_df = pd.DataFrame(equity_curve).set_index("date")
+        if handoff_at:
+            df = df.iloc[handoff_at:]
 
         metrics = self._calculate_metrics(equity_df, trades, df, timeframe)
         open_ref = dict(self.open_strategy) if self.open_strategy else {}
@@ -4878,6 +5083,8 @@ class Backtester:
             metrics["stop_warmup_skipped_entries"] = stop_warmup_skipped_entries
         if stop_seed_dropped:
             metrics["stop_seed_dropped"] = True
+        if handoff is not None:
+            metrics["warmup_handoff"] = handoff.to_dict()
         if risk_mode:
             metrics["risk_per_trade_pct"] = self.risk_per_trade_pct
             metrics["risk_sizing_skipped_entries"] = risk_skipped_entries
