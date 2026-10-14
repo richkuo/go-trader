@@ -1,6 +1,6 @@
 # macro_event_breakout study (#1654)
 
-Verdict: **INCONCLUSIVE**. Reasons: candidate_full quote coverage 0.0 is below 0.9: no historical bid/ask record backs the spread gate; at most 3 independent official events produced an entry in held_out, below 30. Live status: production_refused regardless of the verdict; promotion needs a separate reviewed decision.
+Verdict: **INCONCLUSIVE**. Reasons: candidate_full quote coverage 0.0 is below 0.9: no historical bid/ask record backs the spread gate; candidate_full entered on 0 independent official events in held_out, below 30 (the ungated price_only_event diagnostic entered on 3). Live status: production_refused regardless of the verdict; promotion needs a separate reviewed decision.
 
 ## Plain simple English
 
@@ -8,7 +8,7 @@ The strategy enters after a scheduled US rate statement when price breaks the ra
 
 ## Inputs
 
-- Protocol sha256 `a33c975d8014c5da5aa383dde84fa51cfd6a50c0fa222a0139426c7778837969`; source commit `caa401dc8eb7256235802926dcd284a079b947f7`.
+- Protocol sha256 `a33c975d8014c5da5aa383dde84fa51cfd6a50c0fa222a0139426c7778837969`; source commit `1901965871f50b8ec80d765ba949c6131952d5ba`.
 - Official calendar `backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json` sha256 `f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85` (33 records).
 - Matched control calendar `backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json` sha256 `7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933` (34 records; research controls, not official releases).
 - Quotes: none. No historical Hyperliquid bid/ask archive with per-decision receipt times was available. The l2Book snapshot in the venue manifest is a cost assumption only.

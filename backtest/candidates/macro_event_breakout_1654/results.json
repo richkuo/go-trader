@@ -4637,16 +4637,16 @@
    }
   ]
  },
- "source_commit": "caa401dc8eb7256235802926dcd284a079b947f7",
+ "source_commit": "1901965871f50b8ec80d765ba949c6131952d5ba",
  "sources_sha256": {
-  "backtest/backtester.py": "5eb522bcc62094c25ae0b1c644f2e2fb301c8a65c09f5f29d823cd7876edad02",
+  "backtest/backtester.py": "a401bb093bcb479491ee670d4e4ce2be87d970d157b3541973a9ce3c0510433e",
   "backtest/candidates/macro_event_breakout_1654/calendar_sources.py": "7868e31a1bfd6ac22c92138cebfd3a73315be10228deb18188922540607e342e",
   "backtest/candidates/macro_event_breakout_1654/candidate_spec.json": "7bb2f693c28f8bc12c772362789c7665916766b869a000f686a698f6a1d56328",
-  "backtest/candidates/macro_event_breakout_1654/run_study.py": "680890bf85781f42f8df4b4e2e0a8bb663f643002812690359a24b7a97769841",
+  "backtest/candidates/macro_event_breakout_1654/run_study.py": "da382be7e16da2a4df96c0b67781ffde91b8c6bab2ca4fa796fb417708c6a430",
   "backtest/eval_windows.py": "d2bae19aab97fa1c0ff79fbf6f6e5063845f1f471bd467a37848069720676a8b",
   "backtest/offline_manifest.py": "746dc8fc452dd7997f90aa74c9d64f42f54cb43a86cc8d2a1fdfdefbde65c099",
-  "backtest/optimizer.py": "6b66da174477443ac470825145aef5b0e48425a2410226bb733a9241723f2783",
-  "backtest/run_backtest.py": "10ca64d39ead8b1ae809a068fbca5f9486fbb2ff560847be8d40124eaf41d2b0",
+  "backtest/optimizer.py": "d5ba96bd0c40bda85f0d47f3e59f0b02ddbc266c269d54c99568eb74d0984f9e",
+  "backtest/run_backtest.py": "a231bf4b400573361e3c991b86d98f5643910e31d03cf5d4aab4c503c048a92d",
   "shared_strategies/close/time_stop.py": "da47e115c599a162a9091a245ce51dda7566716e3811b106899b2ae446f19305",
   "shared_strategies/open/macro_event_breakout.py": "15531bc7af9f6803d2fa7ec0d5e7d54b7160a03e5f5296fade269a8e9575554b",
   "shared_strategies/open/registry.py": "c6ec68d057db3829109365c26a9bbc1b7547885bae7dc35383b72ab8f13f7435",
@@ -5330,7 +5330,7 @@
   "live_status": "production_refused regardless of the verdict; promotion needs a separate reviewed decision",
   "reasons": [
    "candidate_full quote coverage 0.0 is below 0.9: no historical bid/ask record backs the spread gate",
-   "at most 3 independent official events produced an entry in held_out, below 30"
+   "candidate_full entered on 0 independent official events in held_out, below 30 (the ungated price_only_event diagnostic entered on 3)"
   ],
   "verdict": "inconclusive"
  }
