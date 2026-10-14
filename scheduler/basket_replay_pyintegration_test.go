@@ -965,6 +965,24 @@ func TestBasketReplayDriverRecordsScoredAndRefusedRuns(t *testing.T) {
 	if curve, _ := rec["equity_curve"].([]interface{}); len(curve) != 6 {
 		t.Fatalf("the scored record must carry one equity point per step, got %d", len(curve))
 	}
+	partialAtStart := false
+	if out, ok := rec["adapter_output"].(map[string]interface{}); ok {
+		if steps, ok := out["steps"].([]interface{}); ok && len(steps) > 0 {
+			first, _ := steps[0].(map[string]interface{})
+			actions, _ := first["actions"].([]interface{})
+			for _, a := range actions {
+				am, _ := a.(map[string]interface{})
+				req, _ := am["requested_qty"].(float64)
+				conf, _ := am["confirmed_qty"].(float64)
+				if conf > 0 && conf < req {
+					partialAtStart = true
+				}
+			}
+		}
+	}
+	if !partialAtStart {
+		t.Fatal("the venue_script entry at window.start must apply its partial fill to step 0")
+	}
 	kept, _ := os.ReadFile(filepath.Join(work, "scored.json"))
 	if code, _ := run(write("plan.json", plan), filepath.Join(work, "scored.json")); code != 2 {
 		t.Fatalf("an existing result record must refuse the run, exit %d", code)
@@ -1016,6 +1034,33 @@ func TestBasketReplayDriverRecordsScoredAndRefusedRuns(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(work, "tampered-state")); err == nil {
 		t.Fatal("a refused plan created replay state")
+	}
+	for _, tc := range []struct{ name, at string }{{"between-steps", "2025-09-12T00:30:00Z"}, {"window-end", "2025-09-12T06:00:00Z"}} {
+		off := map[string]interface{}{}
+		for k, v := range plan {
+			off[k] = v
+		}
+		stateDir := filepath.Join(work, "script-"+tc.name)
+		off["state_dir"] = stateDir
+		off["venue_script"] = map[string]interface{}{tc.at: map[string]interface{}{"save_failure": true}}
+		code, rec = run(write("script-"+tc.name+".json", off), filepath.Join(work, "script-"+tc.name+".out"))
+		refusal, _ := rec["refusal"].(map[string]interface{})
+		if code != 3 || rec["scored"] != false || rec["status"] != "refused" || refusal["reason"] != "plan_refused" {
+			t.Fatalf("a venue_script key %s that matches no step must refuse the plan: exit %d %v %v", tc.at, code, rec["status"], rec["refusal"])
+		}
+		if _, err := os.Lstat(stateDir); err == nil {
+			t.Fatalf("a refused plan with venue_script key %s created replay state", tc.at)
+		}
+	}
+	dupPath := filepath.Join(work, "dup.json")
+	planBlob, _ := json.Marshal(plan)
+	dupBlob := append([]byte(`{"run_id": "driver-dup", `), planBlob[1:]...)
+	if err := os.WriteFile(dupPath, dupBlob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, rec = run(dupPath, filepath.Join(work, "dup.out"))
+	if refusal, _ := rec["refusal"].(map[string]interface{}); code != 3 || rec["status"] != "refused" || refusal["reason"] != "plan_refused" {
+		t.Fatalf("a plan that names one key twice must refuse: exit %d %v %v", code, rec["status"], rec["refusal"])
 	}
 }
 

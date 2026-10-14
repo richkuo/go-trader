@@ -92,9 +92,18 @@ def _read_csv(path):
         return list(csv.DictReader(fh))
 
 
+def _unique_pairs(pairs):
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise ReplayPlanError(f"plan names the key {key!r} twice in one object")
+        out[key] = value
+    return out
+
+
 def load_plan(path):
     with open(path) as fh:
-        plan = json.load(fh)
+        plan = json.load(fh, object_pairs_hook=_unique_pairs)
     _strict_keys(plan, PLAN_KEYS, "plan")
     if plan.get("plan") != PLAN_SCHEMA or plan.get("version") != PLAN_VERSION:
         raise ReplayPlanError(f"plan is {plan.get('plan')!r} version {plan.get('version')!r}; this driver reads "
@@ -168,6 +177,12 @@ def build_spec(plan, base, mode):
         recs.sort(key=lambda r: r[0])
         funding[coin] = {"from_ms": lo, "to_ms": recs[-1][0] if recs else 0, "records": recs}
     script = plan.get("venue_script") or {}
+    step_times = {_iso(t) for t in range(start, end, step_ms)}
+    unmatched = sorted(at for at in script if at not in step_times)
+    if unmatched:
+        raise ReplayPlanError(f"venue_script keys {unmatched} are not step times of the window "
+                              f"[{win['start']}, {win['end']}) every {int(win['step_seconds'])}s; "
+                              f"a scripted outcome must apply to exactly one step")
     steps = []
     for t in range(start, end, step_ms):
         marks = {}
