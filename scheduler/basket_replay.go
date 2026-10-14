@@ -17,7 +17,7 @@ import (
 const (
 	basketReplayClockOwner  = "basket-replay"
 	basketReplayCapitalNote = "per-member paper cash: each member books its own positive capital and its own margin gate; the basket shares one gross budget, one net bound and one per-coin cap, and reports one aggregate equity line; there is no pooled cash or margin"
-	basketReplayClockNote   = "every trade, position, funding, risk, decision, action and lifecycle time is the simulated step time; the storage audit columns basket_contracts.updated_at_ms, basket_member_state.updated_at_ms, entry intent updated_at and basket_replay_runs.created_at_ms keep the system clock and no trading or funding decision reads them"
+	basketReplayClockNote   = "every trade, position, funding, risk, decision, action, holding-horizon expiry, lifecycle, suppression and basket row time is the simulated step time; the storage audit columns entry intent updated_at and basket_replay_runs.created_at_ms keep the system clock and no trading or funding decision reads them"
 	basketReplayEventOrder  = "per step: funding accounting, partition risk measurement and kill switch, per-member circuit breaker check and management (stops, native closes, trailing stops, ratchet, protection) on sealed closed bars, then the basket coordinator (reconciliation, exceptions, ranking, frozen-target execution), then one state save; bar fixtures resolve intrabar stop and take-profit races with ohlc_walk before they become steps"
 )
 
@@ -909,6 +909,9 @@ type basketReplayActionRecord struct {
 	UpdatedAtMs    int64                    `json:"updated_at_ms"`
 	PreQty         float64                  `json:"pre_qty"`
 	PreNotionalUSD float64                  `json:"pre_notional_usd"`
+	Purpose        string                   `json:"purpose,omitempty"`
+	ExpiryMs       int64                    `json:"expiry_ms,omitempty"`
+	Attempt        int                      `json:"lifecycle_attempt,omitempty"`
 }
 
 type basketReplayMemberRecord struct {
@@ -937,6 +940,11 @@ type basketReplayMemberRecord struct {
 	FundingHeld         int     `json:"funding_held,omitempty"`
 	FundingGaps         int     `json:"funding_open_gaps,omitempty"`
 	Trades              int     `json:"trade_rows"`
+	LifecycleEntryMs    int64   `json:"lifecycle_entry_ms,omitempty"`
+	LifecycleExpiryMs   int64   `json:"lifecycle_expiry_ms,omitempty"`
+	LifecycleState      string  `json:"lifecycle_state,omitempty"`
+	LifecycleAttempt    int     `json:"lifecycle_attempt,omitempty"`
+	SuppressThroughMs   int64   `json:"reopen_suppressed_through_ms,omitempty"`
 }
 
 type basketReplayPartitionRecord struct {
@@ -1040,7 +1048,8 @@ func buildBasketReplayStepRecord(rec *basketReplayStepRecord, at time.Time, in b
 			}
 			ar := basketReplayActionRecord{ActionID: a.ActionID, DeadlineMs: a.DeadlineMs, StrategyID: a.StrategyID, Symbol: a.Symbol, Direction: a.Direction, Seq: a.Seq, OrderSide: a.OrderSide,
 				Status: a.Status, RequestedQty: a.RequestedQty, ConfirmedQty: a.ConfirmedQty, AppliedQty: a.AppliedQty, AppliedFee: a.AppliedFee, MarkPx: a.MarkPx, ClientOrderID: a.ClientOrderID,
-				HoldReason: a.HoldReason, CreatedAtMs: a.CreatedAtMs, UpdatedAtMs: a.UpdatedAtMs, PreQty: a.PreQty, PreNotionalUSD: a.PreNotionalUSD}
+				HoldReason: a.HoldReason, CreatedAtMs: a.CreatedAtMs, UpdatedAtMs: a.UpdatedAtMs, PreQty: a.PreQty, PreNotionalUSD: a.PreNotionalUSD,
+				Purpose: a.purpose(), ExpiryMs: a.ExpiryMs, Attempt: a.LifecycleAttempt}
 			if b, ok := in.Bounds[a.ActionID]; ok {
 				bb := b
 				ar.Bounds = &bb
@@ -1057,6 +1066,9 @@ func buildBasketReplayStepRecord(rec *basketReplayStepRecord, at time.Time, in b
 			q := basketPositionSigned(s, m.Coin)
 			e.Qty[m.Coin] = q
 			mr := basketReplayMemberRecord{StrategyID: m.StrategyID, Coin: m.Coin, ExpectedQty: rt.Expected[m.StrategyID], Qty: q}
+			if l, ok := rt.Lifecycle[m.StrategyID]; ok {
+				mr.LifecycleEntryMs, mr.LifecycleExpiryMs, mr.LifecycleState, mr.LifecycleAttempt, mr.SuppressThroughMs = l.EntryMs, l.ExpiryMs, l.State, l.Attempt, l.SuppressThroughMs
+			}
 			if s != nil {
 				mr.Cash, mr.InitialCapital = s.Cash, s.InitialCapital
 				mr.Value = PortfolioValue(s, marks)

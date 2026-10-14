@@ -54,6 +54,7 @@ type replayScenario struct {
 	DropMarks     map[int][]string
 	DupSteps      []int
 	Params        map[string]interface{}
+	Horizon       int64
 }
 
 func defaultReplayMemberConfig() map[string]interface{} {
@@ -157,7 +158,7 @@ func (sc replayScenario) spec(t *testing.T, fx replayFixture, stateDir, mode str
 		Basket: BasketConfig{
 			ID: "xs-replay", Ranker: "basket_scripted_fixture", Params: params, Members: ids,
 			RebalanceIntervalSeconds: rebalance, EvaluationWindowSeconds: 3600, RankerTimeoutSeconds: 60, LookbackBars: 48,
-			GrossBudgetUSD: 3000, MaxTransitionNetUSD: net, MaxCoinNotionalUSD: 1200, MinEligibleMembers: 2,
+			GrossBudgetUSD: 3000, MaxTransitionNetUSD: net, MaxCoinNotionalUSD: 1200, MinEligibleMembers: 2, HoldingHorizonSeconds: sc.Horizon,
 			Eligibility: &BasketEligibility{Source: "fixture listing ledger", Version: "2026-10-14", MinHistoryBars: 24, Listings: listings},
 		},
 		Members: members, PortfolioRisk: sc.PortfolioRisk, TargetInput: target, CostPolicy: sc.CostPolicy,
@@ -614,10 +615,11 @@ func (ref *replayReference) trades() []basketReplayTradeRecord {
 }
 
 type replayActionView struct {
-	ActionID, StrategyID, Direction, OrderSide, Status, HoldReason string
-	Seq                                                            int
-	Requested, Confirmed, Applied, Fee, Mark                       float64
-	Bounds                                                         *basketReplayBoundRecord
+	ActionID, StrategyID, Direction, OrderSide, Status, HoldReason, Purpose string
+	Seq, Attempt                                                            int
+	ExpiryMs                                                                int64
+	Requested, Confirmed, Applied, Fee, Mark                                float64
+	Bounds                                                                  *basketReplayBoundRecord
 }
 
 type replayMemberView struct {
@@ -626,6 +628,9 @@ type replayMemberView struct {
 	CL                                           int
 	CB                                           bool
 	Consumed, Observed, FundingThrough, OpenedAt int64
+	LifeEntry, LifeExpiry, Suppress              int64
+	LifeState                                    string
+	LifeAttempt                                  int
 }
 
 type replayStepView struct {
@@ -650,13 +655,35 @@ func replayView(rec basketReplayStepRecord) replayStepView {
 		v.Rebalances = append(v.Rebalances, rb)
 	}
 	for _, a := range rec.Actions {
-		v.Actions = append(v.Actions, replayActionView{ActionID: a.ActionID, StrategyID: a.StrategyID, Direction: a.Direction, OrderSide: a.OrderSide, Status: a.Status,
-			HoldReason: a.HoldReason, Seq: a.Seq, Requested: a.RequestedQty, Confirmed: a.ConfirmedQty, Applied: a.AppliedQty, Fee: a.AppliedFee, Mark: a.MarkPx, Bounds: a.Bounds})
+		id := a.ActionID
+		if a.Purpose == basketPurposeExpiry {
+			id = ""
+		}
+		v.Actions = append(v.Actions, replayActionView{ActionID: id, StrategyID: a.StrategyID, Direction: a.Direction, OrderSide: a.OrderSide, Status: a.Status,
+			HoldReason: a.HoldReason, Purpose: a.Purpose, Seq: a.Seq, Attempt: a.Attempt, ExpiryMs: a.ExpiryMs, Requested: a.RequestedQty, Confirmed: a.ConfirmedQty,
+			Applied: a.AppliedQty, Fee: a.AppliedFee, Mark: a.MarkPx, Bounds: a.Bounds})
 	}
+	sort.SliceStable(v.Actions, func(i, j int) bool {
+		x, y := v.Actions[i], v.Actions[j]
+		if x.Purpose != y.Purpose {
+			return x.Purpose < y.Purpose
+		}
+		if x.StrategyID != y.StrategyID {
+			return x.StrategyID < y.StrategyID
+		}
+		if x.ActionID != y.ActionID {
+			return x.ActionID < y.ActionID
+		}
+		if x.Attempt != y.Attempt {
+			return x.Attempt < y.Attempt
+		}
+		return x.Seq < y.Seq
+	})
 	for _, m := range rec.Members {
 		v.Members = append(v.Members, replayMemberView{ID: m.StrategyID, DailyDate: m.DailyPnLDate, CBUntil: m.CircuitBreakerUntil, Cash: m.Cash, Qty: m.Qty, AvgCost: m.AvgCost,
 			StopPx: m.StopLossTriggerPx, Expected: m.ExpectedQty, Daily: m.DailyPnL, CL: m.ConsecutiveLosses, CB: m.CircuitBreaker, Consumed: m.ConsumedThroughMs,
-			Observed: m.LatestObservedMs, FundingThrough: m.FundingSettledMs, OpenedAt: m.OpenedAtMs})
+			Observed: m.LatestObservedMs, FundingThrough: m.FundingSettledMs, OpenedAt: m.OpenedAtMs, LifeEntry: m.LifecycleEntryMs, LifeExpiry: m.LifecycleExpiryMs,
+			Suppress: m.SuppressThroughMs, LifeState: m.LifecycleState, LifeAttempt: m.LifecycleAttempt})
 	}
 	if pa := v.PendingAction; pa != "" {
 		v.PendingAction = pa

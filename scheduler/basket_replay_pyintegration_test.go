@@ -124,6 +124,75 @@ func TestBasketReplayParityWithThePaperCoordinator(t *testing.T) {
 	}
 }
 
+func TestBasketReplayHoldingHorizonExpiryMatchesThePaperCoordinator(t *testing.T) {
+	root := basketPyRoot(t)
+	fx := loadReplayFixture(t)
+	const horizon = int64(7200)
+	sc := replayScenario{RunID: "expiry", FirstBar: 264, Steps: 6, Horizon: horizon}
+	full := runReplayAdapter(t, root, sc.spec(t, fx, filepath.Join(realTempDir(t), "full"), basketReplayModeNew))
+	if full.Code != 0 || full.Out.Status != basketReplayStatusComplete {
+		t.Fatalf("exit %d status %s %+v %s", full.Code, full.Out.Status, full.Out.Coverage, tail(full.Stderr, 4000))
+	}
+	rebalanceMs := int64(14400_000)
+	fired := 0
+	for k, st := range full.Out.Steps {
+		at, _ := time.Parse(time.RFC3339Nano, st.At)
+		for _, a := range st.Actions {
+			if a.Purpose != basketPurposeExpiry || a.Status != basketActionCommitted {
+				continue
+			}
+			fired++
+			if at.UnixMilli()%rebalanceMs == 0 {
+				t.Fatalf("expiry %s fired at the rank deadline %s; the case needs a step between deadlines", a.ActionID, st.At)
+			}
+			var entry int64
+			if k > 0 {
+				for _, m := range full.Out.Steps[k-1].Members {
+					if m.StrategyID == a.StrategyID {
+						entry = m.LifecycleEntryMs
+					}
+				}
+			}
+			for _, m := range st.Members {
+				if m.StrategyID == a.StrategyID && m.Qty != 0 {
+					t.Fatalf("%s still holds %.10g after its holding-horizon close", m.StrategyID, m.Qty)
+				}
+			}
+			if a.ExpiryMs != entry+horizon*1000 || a.ExpiryMs > at.UnixMilli() || at.UnixMilli()-a.ExpiryMs >= 3_600_000 {
+				t.Fatalf("expiry %s at %s: expiry time %d, entry %d, horizon %ds; it must close at the first step at or after entry plus the horizon on the simulated clock", a.ActionID, st.At, a.ExpiryMs, entry, horizon)
+			}
+			booked := false
+			for _, tr := range full.Out.Trades {
+				ts, _ := time.Parse(time.RFC3339Nano, tr.Timestamp)
+				if tr.StrategyID == a.StrategyID && tr.IsClose && ts.Equal(at) {
+					booked = true
+				}
+			}
+			if !booked {
+				t.Fatalf("the holding-horizon close of %s booked no closing trade at the simulated step time %s", a.StrategyID, st.At)
+			}
+		}
+	}
+	if fired == 0 {
+		t.Fatal("no holding-horizon close fired between rank deadlines")
+	}
+
+	t.Chdir(root)
+	ref := newReplayReference(t, sc.spec(t, fx, filepath.Join(realTempDir(t), "ref"), basketReplayModeNew), full.Out.Cost.Applied)
+	for i := range ref.spec.Steps {
+		ref.step(i)
+	}
+	requireReplayParity(t, "holding-horizon paper coordinator against the adapter", ref.records, full.Out.Steps, ref.trades(), full.Out.Trades)
+
+	dir := filepath.Join(realTempDir(t), "resume")
+	a := runReplayAdapter(t, root, sc.spec(t, fx, dir, basketReplayModeNew), "--max-steps", "1")
+	b := runReplayAdapter(t, root, sc.spec(t, fx, dir, basketReplayModeResume))
+	if a.Code != 0 || b.Code != 0 || b.Out.Status != basketReplayStatusComplete {
+		t.Fatalf("expiry stop and resume: exits %d %d status %s %s", a.Code, b.Code, b.Out.Status, tail(b.Stderr, 4000))
+	}
+	requireReplayParity(t, "holding-horizon stop and resume", full.Out.Steps, b.Out.Steps, full.Out.Trades, b.Out.Trades)
+}
+
 func TestBasketReplayRestartMatchesAnUninterruptedRun(t *testing.T) {
 	root := basketPyRoot(t)
 	fx := loadReplayFixture(t)
