@@ -1,0 +1,5337 @@
+{
+ "costs": {
+  "half_spread_bps": {
+   "BTC": 0.06,
+   "ETH": 0.1997
+  },
+  "venue_costs": {
+   "maker_fee_pct": 0.00015,
+   "min_notional_margin": 0.03,
+   "min_notional_usd": 10.0,
+   "slippage_bps": 5.0,
+   "taker_fee_pct": 0.00045
+  }
+ },
+ "detail": {
+  "held_out": {
+   "candidate_full": {
+    "arm": "candidate_full",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [],
+      "event_window_decisions": 36,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-01-28",
+       "us_fomc_rate_statement/2026-03-18",
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": 0.0,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "inside_range": 27,
+       "quotes_unavailable": 9
+      }
+     },
+     "ETH/USDT": {
+      "entries": [],
+      "event_window_decisions": 36,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-01-28",
+       "us_fomc_rate_statement/2026-03-18",
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": 0.0,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "inside_range": 25,
+       "quotes_unavailable": 11
+      }
+     }
+    },
+    "data": "proxy",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 0,
+      "ddadj": 0.0,
+      "fees_usd": 0,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 6551,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.0,
+      "largest_position_share": null,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": null,
+      "max_dd_pct": 0.0,
+      "net_pnl_usd": 0.0,
+      "positions": 0,
+      "positions_detail": [],
+      "return_pct": 0.0,
+      "sharpe": 0.0,
+      "short_positions": 0,
+      "trades": 0,
+      "turnover": 0.0
+     },
+     "ETH/USDT": {
+      "bars_in_market": 0,
+      "ddadj": 0.0,
+      "fees_usd": 0,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 6551,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.0,
+      "largest_position_share": null,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": null,
+      "max_dd_pct": 0.0,
+      "net_pnl_usd": 0.0,
+      "positions": 0,
+      "positions_detail": [],
+      "return_pct": 0.0,
+      "sharpe": 0.0,
+      "short_positions": 0,
+      "trades": 0,
+      "turnover": 0.0
+     }
+    },
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json",
+     "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": true
+    },
+    "window": "held_out"
+   },
+   "price_only_control": {
+    "arm": "price_only_control",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1785956400000,
+        "bid": "",
+        "close": 64855.82,
+        "event_id": "research_control_us_fomc_rate_statement/2026-08-05",
+        "event_record_sha256": "35fecf198d0dd69632167a6ce6d792ecab38beae542daf60dfbb3e84d37ea0e4",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785952800000,
+        "range_high": 64778.3,
+        "range_low": 63906.74,
+        "range_start_ms": 1785909600000,
+        "release_ms": 1785952800000,
+        "side": "long"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1788991200000,
+        "bid": "",
+        "close": 77920.18,
+        "event_id": "research_control_us_fomc_rate_statement/2026-09-09",
+        "event_record_sha256": "b8ab40c18bc7da1df0cc13243eee738991639e661278aea66c410a560d54c282",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1788976800000,
+        "range_high": 79741.66,
+        "range_low": 78105.79,
+        "range_start_ms": 1788933600000,
+        "release_ms": 1788976800000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 72,
+      "events_seen": [
+       "research_control_us_fomc_rate_statement/2026-01-21",
+       "research_control_us_fomc_rate_statement/2026-02-04",
+       "research_control_us_fomc_rate_statement/2026-03-11",
+       "research_control_us_fomc_rate_statement/2026-03-25",
+       "research_control_us_fomc_rate_statement/2026-04-22",
+       "research_control_us_fomc_rate_statement/2026-05-06",
+       "research_control_us_fomc_rate_statement/2026-06-10",
+       "research_control_us_fomc_rate_statement/2026-06-24",
+       "research_control_us_fomc_rate_statement/2026-07-22",
+       "research_control_us_fomc_rate_statement/2026-08-05",
+       "research_control_us_fomc_rate_statement/2026-09-09",
+       "research_control_us_fomc_rate_statement/2026-09-23"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_long": 1,
+       "entry_short": 1,
+       "event_consumed": 1,
+       "inside_range": 69
+      }
+     },
+     "ETH/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1769022000000,
+        "bid": "",
+        "close": 3057.02,
+        "event_id": "research_control_us_fomc_rate_statement/2026-01-21",
+        "event_record_sha256": "6158a43e300b0e97c45d2afdd1ba0f36274018298e8eac9a8e7e04c6053ed6de",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1769022000000,
+        "range_high": 3025.96,
+        "range_low": 2866.78,
+        "range_start_ms": 1768978800000,
+        "release_ms": 1769022000000,
+        "side": "long"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1776898800000,
+        "bid": "",
+        "close": 2374.23,
+        "event_id": "research_control_us_fomc_rate_statement/2026-04-22",
+        "event_record_sha256": "cf02d4ba9e653a5e82844ce2c905940e4905941c74ac42d3ff547f86aefef61d",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1776880800000,
+        "range_high": 2423.28,
+        "range_low": 2383.98,
+        "range_start_ms": 1776837600000,
+        "release_ms": 1776880800000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1785960000000,
+        "bid": "",
+        "close": 1917.49,
+        "event_id": "research_control_us_fomc_rate_statement/2026-08-05",
+        "event_record_sha256": "35fecf198d0dd69632167a6ce6d792ecab38beae542daf60dfbb3e84d37ea0e4",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785952800000,
+        "range_high": 1917.38,
+        "range_low": 1856.01,
+        "range_start_ms": 1785909600000,
+        "release_ms": 1785952800000,
+        "side": "long"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1788980400000,
+        "bid": "",
+        "close": 2464.43,
+        "event_id": "research_control_us_fomc_rate_statement/2026-09-09",
+        "event_record_sha256": "b8ab40c18bc7da1df0cc13243eee738991639e661278aea66c410a560d54c282",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1788976800000,
+        "range_high": 2523.01,
+        "range_low": 2472.61,
+        "range_start_ms": 1788933600000,
+        "release_ms": 1788976800000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 72,
+      "events_seen": [
+       "research_control_us_fomc_rate_statement/2026-01-21",
+       "research_control_us_fomc_rate_statement/2026-02-04",
+       "research_control_us_fomc_rate_statement/2026-03-11",
+       "research_control_us_fomc_rate_statement/2026-03-25",
+       "research_control_us_fomc_rate_statement/2026-04-22",
+       "research_control_us_fomc_rate_statement/2026-05-06",
+       "research_control_us_fomc_rate_statement/2026-06-10",
+       "research_control_us_fomc_rate_statement/2026-06-24",
+       "research_control_us_fomc_rate_statement/2026-07-22",
+       "research_control_us_fomc_rate_statement/2026-08-05",
+       "research_control_us_fomc_rate_statement/2026-09-09",
+       "research_control_us_fomc_rate_statement/2026-09-23"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_long": 2,
+       "entry_short": 2,
+       "event_consumed": 6,
+       "inside_range": 62
+      }
+     }
+    },
+    "data": "proxy",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 6,
+      "ddadj": -1.0,
+      "fees_usd": 1.796119,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 6551,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": -0.0189,
+      "largest_position_share": 0.597784,
+      "liquidated": false,
+      "long_positions": 1,
+      "manifest": null,
+      "max_dd_pct": -1.27,
+      "net_pnl_usd": -12.67,
+      "positions": 2,
+      "positions_detail": [
+       {
+        "entry": "2026-08-05 20:00:00",
+        "exit": "2026-08-05 22:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -5.095631,
+        "side": "long"
+       },
+       {
+        "entry": "2026-09-09 23:00:00",
+        "exit": "2026-09-10 01:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -7.573253,
+        "side": "short"
+       }
+      ],
+      "return_pct": -1.27,
+      "sharpe": -2.122,
+      "short_positions": 1,
+      "trades": 2,
+      "turnover": 3.990477
+     },
+     "ETH/USDT": {
+      "bars_in_market": 27,
+      "ddadj": -0.691,
+      "fees_usd": 3.561531,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 6551,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": -0.0758,
+      "largest_position_share": 0.340352,
+      "liquidated": false,
+      "long_positions": 2,
+      "manifest": null,
+      "max_dd_pct": -2.36,
+      "net_pnl_usd": -16.34,
+      "positions": 4,
+      "positions_detail": [
+       {
+        "entry": "2026-01-21 20:00:00",
+        "exit": "2026-01-21 20:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -16.92,
+        "side": "long"
+       },
+       {
+        "entry": "2026-04-23 00:00:00",
+        "exit": "2026-04-23 12:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 16.683743,
+        "side": "short"
+       },
+       {
+        "entry": "2026-08-05 21:00:00",
+        "exit": "2026-08-05 23:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -7.854851,
+        "side": "long"
+       },
+       {
+        "entry": "2026-09-09 20:00:00",
+        "exit": "2026-09-10 06:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -8.254665,
+        "side": "short"
+       }
+      ],
+      "return_pct": -1.63,
+      "sharpe": -0.719,
+      "short_positions": 2,
+      "trades": 4,
+      "turnover": 7.912725
+     }
+    },
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json",
+     "calendar_sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "research_control_us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": false
+    },
+    "window": "held_out"
+   },
+   "price_only_event": {
+    "arm": "price_only_event",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1777485600000,
+        "bid": "",
+        "close": 75507.54,
+        "event_id": "us_fomc_rate_statement/2026-04-29",
+        "event_record_sha256": "6a1816a5b09f5eb95f86a21585c69f6fcccfbbd98d2f95ee892370bdc7d7a2f0",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1777485600000,
+        "range_high": 77857.1,
+        "range_low": 75710.25,
+        "range_start_ms": 1777442400000,
+        "release_ms": 1777485600000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1781722800000,
+        "bid": "",
+        "close": 64303.29,
+        "event_id": "us_fomc_rate_statement/2026-06-17",
+        "event_record_sha256": "952d4b6f9dbf85d01eaab36136ad75990eaf11fce727a57f29ab0fd306f94927",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1781719200000,
+        "range_high": 66437.5,
+        "range_low": 64557.89,
+        "range_start_ms": 1781676000000,
+        "release_ms": 1781719200000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1785351600000,
+        "bid": "",
+        "close": 63598.99,
+        "event_id": "us_fomc_rate_statement/2026-07-29",
+        "event_record_sha256": "2990ed228102dde27b99ca41fe5d40e063eff80604cc80b2eff916497a4873c6",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785348000000,
+        "range_high": 64733.89,
+        "range_low": 63679.0,
+        "range_start_ms": 1785304800000,
+        "release_ms": 1785348000000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 36,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-01-28",
+       "us_fomc_rate_statement/2026-03-18",
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_short": 3,
+       "event_consumed": 6,
+       "inside_range": 27
+      }
+     },
+     "ETH/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1777485600000,
+        "bid": "",
+        "close": 2239.94,
+        "event_id": "us_fomc_rate_statement/2026-04-29",
+        "event_record_sha256": "6a1816a5b09f5eb95f86a21585c69f6fcccfbbd98d2f95ee892370bdc7d7a2f0",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1777485600000,
+        "range_high": 2345.35,
+        "range_low": 2263.62,
+        "range_start_ms": 1777442400000,
+        "release_ms": 1777485600000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1781722800000,
+        "bid": "",
+        "close": 1734.99,
+        "event_id": "us_fomc_rate_statement/2026-06-17",
+        "event_record_sha256": "952d4b6f9dbf85d01eaab36136ad75990eaf11fce727a57f29ab0fd306f94927",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1781719200000,
+        "range_high": 1796.68,
+        "range_low": 1742.27,
+        "range_start_ms": 1781676000000,
+        "release_ms": 1781719200000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1785351600000,
+        "bid": "",
+        "close": 1887.52,
+        "event_id": "us_fomc_rate_statement/2026-07-29",
+        "event_record_sha256": "2990ed228102dde27b99ca41fe5d40e063eff80604cc80b2eff916497a4873c6",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785348000000,
+        "range_high": 1925.09,
+        "range_low": 1888.47,
+        "range_start_ms": 1785304800000,
+        "release_ms": 1785348000000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 36,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-01-28",
+       "us_fomc_rate_statement/2026-03-18",
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_short": 3,
+       "event_consumed": 8,
+       "inside_range": 25
+      }
+     }
+    },
+    "data": "proxy",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 18,
+      "ddadj": -1.0,
+      "fees_usd": 2.689676,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 6551,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": -0.0149,
+      "largest_position_share": 0.411074,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": null,
+      "max_dd_pct": -2.05,
+      "net_pnl_usd": -20.54,
+      "positions": 3,
+      "positions_detail": [
+       {
+        "entry": "2026-04-29 19:00:00",
+        "exit": "2026-04-29 21:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -7.618334,
+        "side": "short"
+       },
+       {
+        "entry": "2026-06-17 20:00:00",
+        "exit": "2026-06-18 08:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": -4.475201,
+        "side": "short"
+       },
+       {
+        "entry": "2026-07-29 20:00:00",
+        "exit": "2026-07-29 22:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -8.441363,
+        "side": "short"
+       }
+      ],
+      "return_pct": -2.05,
+      "sharpe": -1.782,
+      "short_positions": 3,
+      "trades": 3,
+      "turnover": 5.975716
+     },
+     "ETH/USDT": {
+      "bars_in_market": 11,
+      "ddadj": -0.954,
+      "fees_usd": 2.683062,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 6551,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.0278,
+      "largest_position_share": 0.408466,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": null,
+      "max_dd_pct": -3.47,
+      "net_pnl_usd": -33.15,
+      "positions": 3,
+      "positions_detail": [
+       {
+        "entry": "2026-04-29 19:00:00",
+        "exit": "2026-04-29 21:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -9.928949,
+        "side": "short"
+       },
+       {
+        "entry": "2026-06-17 20:00:00",
+        "exit": "2026-06-18 00:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -13.541534,
+        "side": "short"
+       },
+       {
+        "entry": "2026-07-29 20:00:00",
+        "exit": "2026-07-29 22:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -9.681719,
+        "side": "short"
+       }
+      ],
+      "return_pct": -3.31,
+      "sharpe": -3.057,
+      "short_positions": 3,
+      "trades": 3,
+      "turnover": 5.961025
+     }
+    },
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json",
+     "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": false
+    },
+    "window": "held_out"
+   }
+  },
+  "train": {
+   "candidate_full": {
+    "arm": "candidate_full",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [],
+      "event_window_decisions": 48,
+      "events_seen": [
+       "us_fomc_rate_statement/2025-01-29",
+       "us_fomc_rate_statement/2025-03-19",
+       "us_fomc_rate_statement/2025-05-07",
+       "us_fomc_rate_statement/2025-06-18",
+       "us_fomc_rate_statement/2025-07-30",
+       "us_fomc_rate_statement/2025-09-17",
+       "us_fomc_rate_statement/2025-10-29",
+       "us_fomc_rate_statement/2025-12-10"
+      ],
+      "quote_coverage": 0.0,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "inside_range": 25,
+       "quotes_unavailable": 23
+      }
+     },
+     "ETH/USDT": {
+      "entries": [],
+      "event_window_decisions": 48,
+      "events_seen": [
+       "us_fomc_rate_statement/2025-01-29",
+       "us_fomc_rate_statement/2025-03-19",
+       "us_fomc_rate_statement/2025-05-07",
+       "us_fomc_rate_statement/2025-06-18",
+       "us_fomc_rate_statement/2025-07-30",
+       "us_fomc_rate_statement/2025-09-17",
+       "us_fomc_rate_statement/2025-10-29",
+       "us_fomc_rate_statement/2025-12-10"
+      ],
+      "quote_coverage": 0.0,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "inside_range": 40,
+       "quotes_unavailable": 8
+      }
+     }
+    },
+    "data": "proxy",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 0,
+      "ddadj": 0.0,
+      "fees_usd": 0,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 8759,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.0,
+      "largest_position_share": null,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": null,
+      "max_dd_pct": 0.0,
+      "net_pnl_usd": 0.0,
+      "positions": 0,
+      "positions_detail": [],
+      "return_pct": 0.0,
+      "sharpe": 0.0,
+      "short_positions": 0,
+      "trades": 0,
+      "turnover": 0.0
+     },
+     "ETH/USDT": {
+      "bars_in_market": 0,
+      "ddadj": 0.0,
+      "fees_usd": 0,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 8759,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.0,
+      "largest_position_share": null,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": null,
+      "max_dd_pct": 0.0,
+      "net_pnl_usd": 0.0,
+      "positions": 0,
+      "positions_detail": [],
+      "return_pct": 0.0,
+      "sharpe": 0.0,
+      "short_positions": 0,
+      "trades": 0,
+      "turnover": 0.0
+     }
+    },
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json",
+     "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": true
+    },
+    "window": "train"
+   },
+   "price_only_control": {
+    "arm": "price_only_control",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1737590400000,
+        "bid": "",
+        "close": 103109.14,
+        "event_id": "research_control_us_fomc_rate_statement/2025-01-22",
+        "event_record_sha256": "b0ab8441a83bca45287b39ac6a4d99cd2e90abb8ed0d3a62b43fbd6ae64ab96a",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1737572400000,
+        "range_high": 105574.4,
+        "range_low": 103388.0,
+        "range_start_ms": 1737529200000,
+        "release_ms": 1737572400000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1743012000000,
+        "bid": "",
+        "close": 86177.15,
+        "event_id": "research_control_us_fomc_rate_statement/2025-03-26",
+        "event_record_sha256": "79d58ca7cd272f196e3e081032ab122730d5ece54b3e11f4399f0366f25e2f44",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1743012000000,
+        "range_high": 88206.13,
+        "range_low": 86427.63,
+        "range_start_ms": 1742968800000,
+        "release_ms": 1743012000000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1749664800000,
+        "bid": "",
+        "close": 108820.0,
+        "event_id": "research_control_us_fomc_rate_statement/2025-06-11",
+        "event_record_sha256": "8a1801a902eadc77e8834ad22b73239f5aa0bbefdba30456a8863c32ecfa2761",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1749664800000,
+        "range_high": 110342.38,
+        "range_low": 109028.84,
+        "range_start_ms": 1749621600000,
+        "release_ms": 1749664800000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1764795600000,
+        "bid": "",
+        "close": 93670.69,
+        "event_id": "research_control_us_fomc_rate_statement/2025-12-03",
+        "event_record_sha256": "ca053962ea8b3af29d09d21ef9d1c65c64670c8d9b0d8b0271937c04edeafe39",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1764788400000,
+        "range_high": 93599.65,
+        "range_low": 91748.29,
+        "range_start_ms": 1764745200000,
+        "release_ms": 1764788400000,
+        "side": "long"
+       }
+      ],
+      "event_window_decisions": 96,
+      "events_seen": [
+       "research_control_us_fomc_rate_statement/2025-01-22",
+       "research_control_us_fomc_rate_statement/2025-02-05",
+       "research_control_us_fomc_rate_statement/2025-03-12",
+       "research_control_us_fomc_rate_statement/2025-03-26",
+       "research_control_us_fomc_rate_statement/2025-04-30",
+       "research_control_us_fomc_rate_statement/2025-05-14",
+       "research_control_us_fomc_rate_statement/2025-06-11",
+       "research_control_us_fomc_rate_statement/2025-06-25",
+       "research_control_us_fomc_rate_statement/2025-07-23",
+       "research_control_us_fomc_rate_statement/2025-08-06",
+       "research_control_us_fomc_rate_statement/2025-09-10",
+       "research_control_us_fomc_rate_statement/2025-09-24",
+       "research_control_us_fomc_rate_statement/2025-10-22",
+       "research_control_us_fomc_rate_statement/2025-11-05",
+       "research_control_us_fomc_rate_statement/2025-12-03",
+       "research_control_us_fomc_rate_statement/2025-12-17"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_long": 1,
+       "entry_short": 3,
+       "event_consumed": 7,
+       "inside_range": 85
+      }
+     },
+     "ETH/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1737586800000,
+        "bid": "",
+        "close": 3240.0,
+        "event_id": "research_control_us_fomc_rate_statement/2025-01-22",
+        "event_record_sha256": "b0ab8441a83bca45287b39ac6a4d99cd2e90abb8ed0d3a62b43fbd6ae64ab96a",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1737572400000,
+        "range_high": 3330.47,
+        "range_low": 3243.68,
+        "range_start_ms": 1737529200000,
+        "release_ms": 1737572400000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1743012000000,
+        "bid": "",
+        "close": 1993.31,
+        "event_id": "research_control_us_fomc_rate_statement/2025-03-26",
+        "event_record_sha256": "79d58ca7cd272f196e3e081032ab122730d5ece54b3e11f4399f0366f25e2f44",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1743012000000,
+        "range_high": 2074.03,
+        "range_low": 2003.46,
+        "range_start_ms": 1742968800000,
+        "release_ms": 1743012000000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1749679200000,
+        "bid": "",
+        "close": 2754.8,
+        "event_id": "research_control_us_fomc_rate_statement/2025-06-11",
+        "event_record_sha256": "8a1801a902eadc77e8834ad22b73239f5aa0bbefdba30456a8863c32ecfa2761",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1749664800000,
+        "range_high": 2877.16,
+        "range_low": 2756.05,
+        "range_start_ms": 1749621600000,
+        "release_ms": 1749664800000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1754506800000,
+        "bid": "",
+        "close": 3682.0,
+        "event_id": "research_control_us_fomc_rate_statement/2025-08-06",
+        "event_record_sha256": "6fd6bcd5738af8bd2316c906b949ca4c49bb0d6fef4441d064192fcc841f5e4d",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1754503200000,
+        "range_high": 3681.12,
+        "range_low": 3577.03,
+        "range_start_ms": 1754460000000,
+        "release_ms": 1754503200000,
+        "side": "long"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1758747600000,
+        "bid": "",
+        "close": 4135.29,
+        "event_id": "research_control_us_fomc_rate_statement/2025-09-24",
+        "event_record_sha256": "caa715fbe539951734987e7e1022566cbc8d2b3fa18cf378c0296c9a29399ea2",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1758736800000,
+        "range_high": 4201.16,
+        "range_low": 4150.0,
+        "range_start_ms": 1758693600000,
+        "release_ms": 1758736800000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1761163200000,
+        "bid": "",
+        "close": 3774.67,
+        "event_id": "research_control_us_fomc_rate_statement/2025-10-22",
+        "event_record_sha256": "ca0623ad5baa54c74348ba0b1253662e8c91a0df50c7bbb0722fadac09750ec3",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1761156000000,
+        "range_high": 3875.4,
+        "range_low": 3777.63,
+        "range_start_ms": 1761112800000,
+        "release_ms": 1761156000000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1764795600000,
+        "bid": "",
+        "close": 3167.09,
+        "event_id": "research_control_us_fomc_rate_statement/2025-12-03",
+        "event_record_sha256": "ca053962ea8b3af29d09d21ef9d1c65c64670c8d9b0d8b0271937c04edeafe39",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1764788400000,
+        "range_high": 3143.34,
+        "range_low": 3033.44,
+        "range_start_ms": 1764745200000,
+        "release_ms": 1764788400000,
+        "side": "long"
+       }
+      ],
+      "event_window_decisions": 96,
+      "events_seen": [
+       "research_control_us_fomc_rate_statement/2025-01-22",
+       "research_control_us_fomc_rate_statement/2025-02-05",
+       "research_control_us_fomc_rate_statement/2025-03-12",
+       "research_control_us_fomc_rate_statement/2025-03-26",
+       "research_control_us_fomc_rate_statement/2025-04-30",
+       "research_control_us_fomc_rate_statement/2025-05-14",
+       "research_control_us_fomc_rate_statement/2025-06-11",
+       "research_control_us_fomc_rate_statement/2025-06-25",
+       "research_control_us_fomc_rate_statement/2025-07-23",
+       "research_control_us_fomc_rate_statement/2025-08-06",
+       "research_control_us_fomc_rate_statement/2025-09-10",
+       "research_control_us_fomc_rate_statement/2025-09-24",
+       "research_control_us_fomc_rate_statement/2025-10-22",
+       "research_control_us_fomc_rate_statement/2025-11-05",
+       "research_control_us_fomc_rate_statement/2025-12-03",
+       "research_control_us_fomc_rate_statement/2025-12-17"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_long": 2,
+       "entry_short": 5,
+       "event_consumed": 10,
+       "inside_range": 79
+      }
+     }
+    },
+    "data": "proxy",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 29,
+      "ddadj": 0.175,
+      "fees_usd": 3.6144,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 8759,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.2834,
+      "largest_position_share": 0.331053,
+      "liquidated": false,
+      "long_positions": 1,
+      "manifest": null,
+      "max_dd_pct": -1.37,
+      "net_pnl_usd": 2.4,
+      "positions": 4,
+      "positions_detail": [
+       {
+        "entry": "2025-01-23 01:00:00",
+        "exit": "2025-01-23 13:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 11.668655,
+        "side": "short"
+       },
+       {
+        "entry": "2025-03-26 19:00:00",
+        "exit": "2025-03-26 20:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -6.891701,
+        "side": "short"
+       },
+       {
+        "entry": "2025-06-11 19:00:00",
+        "exit": "2025-06-12 07:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 7.151579,
+        "side": "short"
+       },
+       {
+        "entry": "2025-12-03 22:00:00",
+        "exit": "2025-12-04 00:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -9.535154,
+        "side": "long"
+       }
+      ],
+      "return_pct": 0.24,
+      "sharpe": 0.122,
+      "short_positions": 3,
+      "trades": 4,
+      "turnover": 8.030188
+     },
+     "ETH/USDT": {
+      "bars_in_market": 56,
+      "ddadj": 0.893,
+      "fees_usd": 6.31695,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 8759,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.2521,
+      "largest_position_share": 0.382859,
+      "liquidated": false,
+      "long_positions": 2,
+      "manifest": null,
+      "max_dd_pct": -2.33,
+      "net_pnl_usd": 20.78,
+      "positions": 7,
+      "positions_detail": [
+       {
+        "entry": "2025-01-23 00:00:00",
+        "exit": "2025-01-23 12:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 7.519914,
+        "side": "short"
+       },
+       {
+        "entry": "2025-03-26 19:00:00",
+        "exit": "2025-03-26 20:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -7.890626,
+        "side": "short"
+       },
+       {
+        "entry": "2025-06-11 23:00:00",
+        "exit": "2025-06-12 11:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 0.499086,
+        "side": "short"
+       },
+       {
+        "entry": "2025-08-06 20:00:00",
+        "exit": "2025-08-06 21:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -9.022446,
+        "side": "long"
+       },
+       {
+        "entry": "2025-09-24 22:00:00",
+        "exit": "2025-09-25 10:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 30.65594,
+        "side": "short"
+       },
+       {
+        "entry": "2025-10-22 21:00:00",
+        "exit": "2025-10-23 00:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -12.731437,
+        "side": "short"
+       },
+       {
+        "entry": "2025-12-03 22:00:00",
+        "exit": "2025-12-04 10:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 11.751648,
+        "side": "long"
+       }
+      ],
+      "return_pct": 2.08,
+      "sharpe": 0.496,
+      "short_positions": 5,
+      "trades": 7,
+      "turnover": 14.034503
+     }
+    },
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json",
+     "calendar_sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "research_control_us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": false
+    },
+    "window": "train"
+   },
+   "price_only_event": {
+    "arm": "price_only_event",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1738177200000,
+        "bid": "",
+        "close": 103779.03,
+        "event_id": "us_fomc_rate_statement/2025-01-29",
+        "event_record_sha256": "b75ef26d9017c3f6195472455b56fe27ffec4bbbc9af8cb47690b5034467e3fa",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1738177200000,
+        "range_high": 102980.57,
+        "range_low": 101619.2,
+        "range_start_ms": 1738134000000,
+        "release_ms": 1738177200000,
+        "side": "long"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1742407200000,
+        "bid": "",
+        "close": 85638.3,
+        "event_id": "us_fomc_rate_statement/2025-03-19",
+        "event_record_sha256": "58504b29e9174937e10b774f2b46a7094ff5234c780a8b7e44f903410f15a841",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1742407200000,
+        "range_high": 84999.99,
+        "range_low": 83071.64,
+        "range_start_ms": 1742364000000,
+        "release_ms": 1742407200000,
+        "side": "long"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1746644400000,
+        "bid": "",
+        "close": 96197.12,
+        "event_id": "us_fomc_rate_statement/2025-05-07",
+        "event_record_sha256": "51a02811194c659bd016e6c086bf32fbabe46e97f9e956aa51c482e8be8b07fd",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1746640800000,
+        "range_high": 97427.44,
+        "range_low": 96209.36,
+        "range_start_ms": 1746597600000,
+        "release_ms": 1746640800000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1750269600000,
+        "bid": "",
+        "close": 103651.43,
+        "event_id": "us_fomc_rate_statement/2025-06-18",
+        "event_record_sha256": "6d22230b64c1133bb76ddc85792bed8503260839588bce79351e063c350867cd",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1750269600000,
+        "range_high": 105470.21,
+        "range_low": 103681.53,
+        "range_start_ms": 1750226400000,
+        "release_ms": 1750269600000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1753898400000,
+        "bid": "",
+        "close": 116598.32,
+        "event_id": "us_fomc_rate_statement/2025-07-30",
+        "event_record_sha256": "b7de56427b28bc8bd0225cf31d600f22c8b7bd75b76fb142a6174afcf7b803ae",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1753898400000,
+        "range_high": 118667.71,
+        "range_low": 117439.91,
+        "range_start_ms": 1753855200000,
+        "release_ms": 1753898400000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1758132000000,
+        "bid": "",
+        "close": 115152.94,
+        "event_id": "us_fomc_rate_statement/2025-09-17",
+        "event_record_sha256": "d3ae4cb3da0616289df7f6507041392d753841600341899f2fa9aa1f7bd90790",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1758132000000,
+        "range_high": 117278.52,
+        "range_low": 115477.6,
+        "range_start_ms": 1758088800000,
+        "release_ms": 1758132000000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1761760800000,
+        "bid": "",
+        "close": 110755.1,
+        "event_id": "us_fomc_rate_statement/2025-10-29",
+        "event_record_sha256": "6fa3a48dff513b2c2efd8a8042e4ddb2cbf239af98806cfade15e0ba1134a77e",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1761760800000,
+        "range_high": 113616.07,
+        "range_low": 111025.72,
+        "range_start_ms": 1761717600000,
+        "release_ms": 1761760800000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1765411200000,
+        "bid": "",
+        "close": 91567.47,
+        "event_id": "us_fomc_rate_statement/2025-12-10",
+        "event_record_sha256": "e8c64fd8b35c22ed787048836ebe8a5da0ebe2655df0fdab03f2c27bd5916465",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1765393200000,
+        "range_high": 93213.63,
+        "range_low": 91599.99,
+        "range_start_ms": 1765350000000,
+        "release_ms": 1765393200000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 48,
+      "events_seen": [
+       "us_fomc_rate_statement/2025-01-29",
+       "us_fomc_rate_statement/2025-03-19",
+       "us_fomc_rate_statement/2025-05-07",
+       "us_fomc_rate_statement/2025-06-18",
+       "us_fomc_rate_statement/2025-07-30",
+       "us_fomc_rate_statement/2025-09-17",
+       "us_fomc_rate_statement/2025-10-29",
+       "us_fomc_rate_statement/2025-12-10"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_long": 2,
+       "entry_short": 6,
+       "event_consumed": 15,
+       "inside_range": 25
+      }
+     },
+     "ETH/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1753898400000,
+        "bid": "",
+        "close": 3737.55,
+        "event_id": "us_fomc_rate_statement/2025-07-30",
+        "event_record_sha256": "b7de56427b28bc8bd0225cf31d600f22c8b7bd75b76fb142a6174afcf7b803ae",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1753898400000,
+        "range_high": 3831.19,
+        "range_low": 3747.0,
+        "range_start_ms": 1753855200000,
+        "release_ms": 1753898400000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1758132000000,
+        "bid": "",
+        "close": 4436.17,
+        "event_id": "us_fomc_rate_statement/2025-09-17",
+        "event_record_sha256": "d3ae4cb3da0616289df7f6507041392d753841600341899f2fa9aa1f7bd90790",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1758132000000,
+        "range_high": 4549.15,
+        "range_low": 4446.61,
+        "range_start_ms": 1758088800000,
+        "release_ms": 1758132000000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1761760800000,
+        "bid": "",
+        "close": 3919.13,
+        "event_id": "us_fomc_rate_statement/2025-10-29",
+        "event_record_sha256": "6fa3a48dff513b2c2efd8a8042e4ddb2cbf239af98806cfade15e0ba1134a77e",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1761760800000,
+        "range_high": 4035.24,
+        "range_low": 3930.95,
+        "range_start_ms": 1761717600000,
+        "release_ms": 1761760800000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1765411200000,
+        "bid": "",
+        "close": 3264.13,
+        "event_id": "us_fomc_rate_statement/2025-12-10",
+        "event_record_sha256": "e8c64fd8b35c22ed787048836ebe8a5da0ebe2655df0fdab03f2c27bd5916465",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1765393200000,
+        "range_high": 3428.71,
+        "range_low": 3297.42,
+        "range_start_ms": 1765350000000,
+        "release_ms": 1765393200000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 48,
+      "events_seen": [
+       "us_fomc_rate_statement/2025-01-29",
+       "us_fomc_rate_statement/2025-03-19",
+       "us_fomc_rate_statement/2025-05-07",
+       "us_fomc_rate_statement/2025-06-18",
+       "us_fomc_rate_statement/2025-07-30",
+       "us_fomc_rate_statement/2025-09-17",
+       "us_fomc_rate_statement/2025-10-29",
+       "us_fomc_rate_statement/2025-12-10"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_short": 4,
+       "event_consumed": 4,
+       "inside_range": 40
+      }
+     }
+    },
+    "data": "proxy",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 32,
+      "ddadj": -0.286,
+      "fees_usd": 7.167408,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 8759,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.037,
+      "largest_position_share": 0.211104,
+      "liquidated": false,
+      "long_positions": 2,
+      "manifest": null,
+      "max_dd_pct": -4.37,
+      "net_pnl_usd": -12.49,
+      "positions": 8,
+      "positions_detail": [
+       {
+        "entry": "2025-01-29 20:00:00",
+        "exit": "2025-01-30 08:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 14.307019,
+        "side": "long"
+       },
+       {
+        "entry": "2025-03-19 19:00:00",
+        "exit": "2025-03-19 19:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -8.0,
+        "side": "long"
+       },
+       {
+        "entry": "2025-05-07 20:00:00",
+        "exit": "2025-05-07 20:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -5.93,
+        "side": "short"
+       },
+       {
+        "entry": "2025-06-18 19:00:00",
+        "exit": "2025-06-18 19:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -6.9,
+        "side": "short"
+       },
+       {
+        "entry": "2025-07-30 19:00:00",
+        "exit": "2025-07-30 19:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -6.12,
+        "side": "short"
+       },
+       {
+        "entry": "2025-09-17 19:00:00",
+        "exit": "2025-09-17 19:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -7.0,
+        "side": "short"
+       },
+       {
+        "entry": "2025-10-29 19:00:00",
+        "exit": "2025-10-29 21:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -7.855393,
+        "side": "short"
+       },
+       {
+        "entry": "2025-12-11 01:00:00",
+        "exit": "2025-12-11 13:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 15.015336,
+        "side": "short"
+       }
+      ],
+      "return_pct": -1.25,
+      "sharpe": -0.436,
+      "short_positions": 6,
+      "trades": 8,
+      "turnover": 15.923993
+     },
+     "ETH/USDT": {
+      "bars_in_market": 26,
+      "ddadj": 0.004,
+      "fees_usd": 3.551376,
+      "funding": {
+       "complete": true,
+       "error": null,
+       "expected_hours": 8759,
+       "missing_hours": 0,
+       "mode": "charge",
+       "unpriced_held_hours": 0
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.279,
+      "largest_position_share": 0.48442,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": null,
+      "max_dd_pct": -2.73,
+      "net_pnl_usd": 0.11,
+      "positions": 4,
+      "positions_detail": [
+       {
+        "entry": "2025-07-30 19:00:00",
+        "exit": "2025-07-30 19:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -11.13,
+        "side": "short"
+       },
+       {
+        "entry": "2025-09-17 19:00:00",
+        "exit": "2025-09-17 19:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -9.38,
+        "side": "short"
+       },
+       {
+        "entry": "2025-10-29 19:00:00",
+        "exit": "2025-10-30 07:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 0.695332,
+        "side": "short"
+       },
+       {
+        "entry": "2025-12-11 01:00:00",
+        "exit": "2025-12-11 13:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 19.923715,
+        "side": "short"
+       }
+      ],
+      "return_pct": 0.01,
+      "sharpe": 0.021,
+      "short_positions": 4,
+      "trades": 4,
+      "turnover": 7.890171
+     }
+    },
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json",
+     "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": false
+    },
+    "window": "train"
+   }
+  },
+  "venue": {
+   "candidate_full@base": {
+    "arm": "candidate_full",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [],
+      "event_window_decisions": 24,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": 0.0,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "inside_range": 14,
+       "quotes_unavailable": 10
+      }
+     },
+     "ETH/USDT": {
+      "entries": [],
+      "event_window_decisions": 24,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": 0.0,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "inside_range": 14,
+       "quotes_unavailable": 10
+      }
+     }
+    },
+    "cost_multiplier": 1.0,
+    "data": "venue",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 0,
+      "ddadj": 0.0,
+      "fees_usd": 0,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.0,
+      "largest_position_share": null,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "fbef9302542d4ecd5d10ebf7fabbb2aab92cd935617a380ab7ea345cdc2b9556",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 1.0,
+       "dataset": "BTC 1h",
+       "execution_spec": {
+        "half_spread_pct": 6e-06,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 5,
+        "slippage_pct": 0.0005,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.029087798500000005
+       },
+       "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 4,
+         "event_type": "us_fomc_rate_statement",
+         "events": 4,
+         "rows": [
+          {
+           "event_id": "us_fomc_rate_statement/2026-04-29",
+           "release_ms": 1777485600000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-06-17",
+           "release_ms": 1781719200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-07-29",
+           "release_ms": 1785348000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-09-16",
+           "release_ms": 1789581600000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 4
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "official",
+        "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": 0.0,
+      "net_pnl_usd": 0.0,
+      "positions": 0,
+      "positions_detail": [],
+      "return_pct": 0.0,
+      "sharpe": 0.0,
+      "short_positions": 0,
+      "trades": 0,
+      "turnover": 0.0
+     },
+     "ETH/USDT": {
+      "bars_in_market": 0,
+      "ddadj": 0.0,
+      "fees_usd": 0,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.0,
+      "largest_position_share": null,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "6453e3adf1595857bd15f59db91cfb95d54064f5173bfe12ae38123ff01b58e7",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 1.0,
+       "dataset": "ETH 1h",
+       "execution_spec": {
+        "half_spread_pct": 1.997e-05,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 4,
+        "slippage_pct": 0.0005,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.03275113970000001
+       },
+       "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 4,
+         "event_type": "us_fomc_rate_statement",
+         "events": 4,
+         "rows": [
+          {
+           "event_id": "us_fomc_rate_statement/2026-04-29",
+           "release_ms": 1777485600000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-06-17",
+           "release_ms": 1781719200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-07-29",
+           "release_ms": 1785348000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-09-16",
+           "release_ms": 1789581600000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 4
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "official",
+        "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": 0.0,
+      "net_pnl_usd": 0.0,
+      "positions": 0,
+      "positions_detail": [],
+      "return_pct": 0.0,
+      "sharpe": 0.0,
+      "short_positions": 0,
+      "trades": 0,
+      "turnover": 0.0
+     }
+    },
+    "manifest": "backtest/candidates/macro_event_breakout_1654_venue_manifest.json",
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json",
+     "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": true
+    },
+    "window": "venue_held_out"
+   },
+   "candidate_full@stress": {
+    "arm": "candidate_full",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [],
+      "event_window_decisions": 24,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": 0.0,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "inside_range": 14,
+       "quotes_unavailable": 10
+      }
+     },
+     "ETH/USDT": {
+      "entries": [],
+      "event_window_decisions": 24,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": 0.0,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "inside_range": 14,
+       "quotes_unavailable": 10
+      }
+     }
+    },
+    "cost_multiplier": 2.0,
+    "data": "venue",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 0,
+      "ddadj": 0.0,
+      "fees_usd": 0,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.0,
+      "largest_position_share": null,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "fbef9302542d4ecd5d10ebf7fabbb2aab92cd935617a380ab7ea345cdc2b9556",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 2.0,
+       "dataset": "BTC 1h",
+       "execution_spec": {
+        "half_spread_pct": 1.2e-05,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 5,
+        "slippage_pct": 0.001,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.029087798500000005
+       },
+       "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 4,
+         "event_type": "us_fomc_rate_statement",
+         "events": 4,
+         "rows": [
+          {
+           "event_id": "us_fomc_rate_statement/2026-04-29",
+           "release_ms": 1777485600000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-06-17",
+           "release_ms": 1781719200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-07-29",
+           "release_ms": 1785348000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-09-16",
+           "release_ms": 1789581600000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 4
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "official",
+        "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": 0.0,
+      "net_pnl_usd": 0.0,
+      "positions": 0,
+      "positions_detail": [],
+      "return_pct": 0.0,
+      "sharpe": 0.0,
+      "short_positions": 0,
+      "trades": 0,
+      "turnover": 0.0
+     },
+     "ETH/USDT": {
+      "bars_in_market": 0,
+      "ddadj": 0.0,
+      "fees_usd": 0,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.0,
+      "largest_position_share": null,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "6453e3adf1595857bd15f59db91cfb95d54064f5173bfe12ae38123ff01b58e7",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 2.0,
+       "dataset": "ETH 1h",
+       "execution_spec": {
+        "half_spread_pct": 3.994e-05,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 4,
+        "slippage_pct": 0.001,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.03275113970000001
+       },
+       "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 4,
+         "event_type": "us_fomc_rate_statement",
+         "events": 4,
+         "rows": [
+          {
+           "event_id": "us_fomc_rate_statement/2026-04-29",
+           "release_ms": 1777485600000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-06-17",
+           "release_ms": 1781719200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-07-29",
+           "release_ms": 1785348000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-09-16",
+           "release_ms": 1789581600000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 4
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "official",
+        "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": 0.0,
+      "net_pnl_usd": 0.0,
+      "positions": 0,
+      "positions_detail": [],
+      "return_pct": 0.0,
+      "sharpe": 0.0,
+      "short_positions": 0,
+      "trades": 0,
+      "turnover": 0.0
+     }
+    },
+    "manifest": "backtest/candidates/macro_event_breakout_1654_venue_manifest.json",
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json",
+     "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": true
+    },
+    "window": "venue_held_out"
+   },
+   "price_only_control@base": {
+    "arm": "price_only_control",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1785952800000,
+        "bid": "",
+        "close": 64766.0,
+        "event_id": "research_control_us_fomc_rate_statement/2026-08-05",
+        "event_record_sha256": "35fecf198d0dd69632167a6ce6d792ecab38beae542daf60dfbb3e84d37ea0e4",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785952800000,
+        "range_high": 64755.0,
+        "range_low": 63850.0,
+        "range_start_ms": 1785909600000,
+        "release_ms": 1785952800000,
+        "side": "long"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1788991200000,
+        "bid": "",
+        "close": 77881.0,
+        "event_id": "research_control_us_fomc_rate_statement/2026-09-09",
+        "event_record_sha256": "b8ab40c18bc7da1df0cc13243eee738991639e661278aea66c410a560d54c282",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1788976800000,
+        "range_high": 79730.0,
+        "range_low": 78044.0,
+        "range_start_ms": 1788933600000,
+        "release_ms": 1788976800000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 48,
+      "events_seen": [
+       "research_control_us_fomc_rate_statement/2026-04-22",
+       "research_control_us_fomc_rate_statement/2026-05-06",
+       "research_control_us_fomc_rate_statement/2026-06-10",
+       "research_control_us_fomc_rate_statement/2026-06-24",
+       "research_control_us_fomc_rate_statement/2026-07-22",
+       "research_control_us_fomc_rate_statement/2026-08-05",
+       "research_control_us_fomc_rate_statement/2026-09-09",
+       "research_control_us_fomc_rate_statement/2026-09-23"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_long": 1,
+       "entry_short": 1,
+       "event_consumed": 2,
+       "inside_range": 44
+      }
+     },
+     "ETH/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1776898800000,
+        "bid": "",
+        "close": 2372.7,
+        "event_id": "research_control_us_fomc_rate_statement/2026-04-22",
+        "event_record_sha256": "cf02d4ba9e653a5e82844ce2c905940e4905941c74ac42d3ff547f86aefef61d",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1776880800000,
+        "range_high": 2422.2,
+        "range_low": 2381.6,
+        "range_start_ms": 1776837600000,
+        "release_ms": 1776880800000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1785952800000,
+        "bid": "",
+        "close": 1917.7,
+        "event_id": "research_control_us_fomc_rate_statement/2026-08-05",
+        "event_record_sha256": "35fecf198d0dd69632167a6ce6d792ecab38beae542daf60dfbb3e84d37ea0e4",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785952800000,
+        "range_high": 1917.2,
+        "range_low": 1854.7,
+        "range_start_ms": 1785909600000,
+        "release_ms": 1785952800000,
+        "side": "long"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1788980400000,
+        "bid": "",
+        "close": 2464.1,
+        "event_id": "research_control_us_fomc_rate_statement/2026-09-09",
+        "event_record_sha256": "b8ab40c18bc7da1df0cc13243eee738991639e661278aea66c410a560d54c282",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1788976800000,
+        "range_high": 2523.0,
+        "range_low": 2470.1,
+        "range_start_ms": 1788933600000,
+        "release_ms": 1788976800000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 48,
+      "events_seen": [
+       "research_control_us_fomc_rate_statement/2026-04-22",
+       "research_control_us_fomc_rate_statement/2026-05-06",
+       "research_control_us_fomc_rate_statement/2026-06-10",
+       "research_control_us_fomc_rate_statement/2026-06-24",
+       "research_control_us_fomc_rate_statement/2026-07-22",
+       "research_control_us_fomc_rate_statement/2026-08-05",
+       "research_control_us_fomc_rate_statement/2026-09-09",
+       "research_control_us_fomc_rate_statement/2026-09-23"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_long": 1,
+       "entry_short": 2,
+       "event_consumed": 3,
+       "inside_range": 42
+      }
+     }
+    },
+    "cost_multiplier": 1.0,
+    "data": "venue",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 10,
+      "ddadj": -1.0,
+      "fees_usd": 1.794363,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": -0.0234,
+      "largest_position_share": 0.591957,
+      "liquidated": false,
+      "long_positions": 1,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "fbef9302542d4ecd5d10ebf7fabbb2aab92cd935617a380ab7ea345cdc2b9556",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 1.0,
+       "dataset": "BTC 1h",
+       "execution_spec": {
+        "half_spread_pct": 6e-06,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 5,
+        "slippage_pct": 0.0005,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.029087798500000005
+       },
+       "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 8,
+         "event_type": "research_control_us_fomc_rate_statement",
+         "events": 8,
+         "rows": [
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-04-22",
+           "release_ms": 1776880800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-05-06",
+           "release_ms": 1778090400000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-06-10",
+           "release_ms": 1781114400000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-06-24",
+           "release_ms": 1782324000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-07-22",
+           "release_ms": 1784743200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-08-05",
+           "release_ms": 1785952800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-09-09",
+           "release_ms": 1788976800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-09-23",
+           "release_ms": 1790186400000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 8
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "research_control",
+        "calendar_sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only; matched non-event control calendar (research controls, not official releases)"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": -1.38,
+      "net_pnl_usd": -13.77,
+      "positions": 2,
+      "positions_detail": [
+       {
+        "entry": "2026-08-05 19:00:00",
+        "exit": "2026-08-06 01:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -5.620134,
+        "side": "long"
+       },
+       {
+        "entry": "2026-09-09 23:00:00",
+        "exit": "2026-09-10 01:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -8.153244,
+        "side": "short"
+       }
+      ],
+      "return_pct": -1.38,
+      "sharpe": -2.748,
+      "short_positions": 1,
+      "trades": 2,
+      "turnover": 3.987473
+     },
+     "ETH/USDT": {
+      "bars_in_market": 27,
+      "ddadj": -0.033,
+      "fees_usd": 2.713677,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": -0.1149,
+      "largest_position_share": 0.489028,
+      "liquidated": false,
+      "long_positions": 1,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "6453e3adf1595857bd15f59db91cfb95d54064f5173bfe12ae38123ff01b58e7",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 1.0,
+       "dataset": "ETH 1h",
+       "execution_spec": {
+        "half_spread_pct": 1.997e-05,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 4,
+        "slippage_pct": 0.0005,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.03275113970000001
+       },
+       "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 8,
+         "event_type": "research_control_us_fomc_rate_statement",
+         "events": 8,
+         "rows": [
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-04-22",
+           "release_ms": 1776880800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-05-06",
+           "release_ms": 1778090400000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-06-10",
+           "release_ms": 1781114400000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-06-24",
+           "release_ms": 1782324000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-07-22",
+           "release_ms": 1784743200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-08-05",
+           "release_ms": 1785952800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-09-09",
+           "release_ms": 1788976800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-09-23",
+           "release_ms": 1790186400000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 8
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "research_control",
+        "calendar_sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only; matched non-event control calendar (research controls, not official releases)"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": -2.44,
+      "net_pnl_usd": -0.75,
+      "positions": 3,
+      "positions_detail": [
+       {
+        "entry": "2026-04-23 00:00:00",
+        "exit": "2026-04-23 12:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 16.822976,
+        "side": "short"
+       },
+       {
+        "entry": "2026-08-05 19:00:00",
+        "exit": "2026-08-05 23:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -8.3204,
+        "side": "long"
+       },
+       {
+        "entry": "2026-09-09 20:00:00",
+        "exit": "2026-09-10 05:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -9.25744,
+        "side": "short"
+       }
+      ],
+      "return_pct": -0.08,
+      "sharpe": -0.042,
+      "short_positions": 2,
+      "trades": 3,
+      "turnover": 6.030393
+     }
+    },
+    "manifest": "backtest/candidates/macro_event_breakout_1654_venue_control_manifest.json",
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json",
+     "calendar_sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "research_control_us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": false
+    },
+    "window": "venue_held_out"
+   },
+   "price_only_control@stress": {
+    "arm": "price_only_control",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1785952800000,
+        "bid": "",
+        "close": 64766.0,
+        "event_id": "research_control_us_fomc_rate_statement/2026-08-05",
+        "event_record_sha256": "35fecf198d0dd69632167a6ce6d792ecab38beae542daf60dfbb3e84d37ea0e4",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785952800000,
+        "range_high": 64755.0,
+        "range_low": 63850.0,
+        "range_start_ms": 1785909600000,
+        "release_ms": 1785952800000,
+        "side": "long"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1788991200000,
+        "bid": "",
+        "close": 77881.0,
+        "event_id": "research_control_us_fomc_rate_statement/2026-09-09",
+        "event_record_sha256": "b8ab40c18bc7da1df0cc13243eee738991639e661278aea66c410a560d54c282",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1788976800000,
+        "range_high": 79730.0,
+        "range_low": 78044.0,
+        "range_start_ms": 1788933600000,
+        "release_ms": 1788976800000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 48,
+      "events_seen": [
+       "research_control_us_fomc_rate_statement/2026-04-22",
+       "research_control_us_fomc_rate_statement/2026-05-06",
+       "research_control_us_fomc_rate_statement/2026-06-10",
+       "research_control_us_fomc_rate_statement/2026-06-24",
+       "research_control_us_fomc_rate_statement/2026-07-22",
+       "research_control_us_fomc_rate_statement/2026-08-05",
+       "research_control_us_fomc_rate_statement/2026-09-09",
+       "research_control_us_fomc_rate_statement/2026-09-23"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_long": 1,
+       "entry_short": 1,
+       "event_consumed": 2,
+       "inside_range": 44
+      }
+     },
+     "ETH/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1776898800000,
+        "bid": "",
+        "close": 2372.7,
+        "event_id": "research_control_us_fomc_rate_statement/2026-04-22",
+        "event_record_sha256": "cf02d4ba9e653a5e82844ce2c905940e4905941c74ac42d3ff547f86aefef61d",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1776880800000,
+        "range_high": 2422.2,
+        "range_low": 2381.6,
+        "range_start_ms": 1776837600000,
+        "release_ms": 1776880800000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1785952800000,
+        "bid": "",
+        "close": 1917.7,
+        "event_id": "research_control_us_fomc_rate_statement/2026-08-05",
+        "event_record_sha256": "35fecf198d0dd69632167a6ce6d792ecab38beae542daf60dfbb3e84d37ea0e4",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785952800000,
+        "range_high": 1917.2,
+        "range_low": 1854.7,
+        "range_start_ms": 1785909600000,
+        "release_ms": 1785952800000,
+        "side": "long"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1788980400000,
+        "bid": "",
+        "close": 2464.1,
+        "event_id": "research_control_us_fomc_rate_statement/2026-09-09",
+        "event_record_sha256": "b8ab40c18bc7da1df0cc13243eee738991639e661278aea66c410a560d54c282",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json\",\"calendar_sha256\":\"7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"research_control_us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1788976800000,
+        "range_high": 2523.0,
+        "range_low": 2470.1,
+        "range_start_ms": 1788933600000,
+        "release_ms": 1788976800000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 48,
+      "events_seen": [
+       "research_control_us_fomc_rate_statement/2026-04-22",
+       "research_control_us_fomc_rate_statement/2026-05-06",
+       "research_control_us_fomc_rate_statement/2026-06-10",
+       "research_control_us_fomc_rate_statement/2026-06-24",
+       "research_control_us_fomc_rate_statement/2026-07-22",
+       "research_control_us_fomc_rate_statement/2026-08-05",
+       "research_control_us_fomc_rate_statement/2026-09-09",
+       "research_control_us_fomc_rate_statement/2026-09-23"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_long": 1,
+       "entry_short": 2,
+       "event_consumed": 3,
+       "inside_range": 42
+      }
+     }
+    },
+    "cost_multiplier": 2.0,
+    "data": "venue",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 7,
+      "ddadj": -1.0,
+      "fees_usd": 1.793783,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": -0.0226,
+      "largest_position_share": 0.585859,
+      "liquidated": false,
+      "long_positions": 1,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "fbef9302542d4ecd5d10ebf7fabbb2aab92cd935617a380ab7ea345cdc2b9556",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 2.0,
+       "dataset": "BTC 1h",
+       "execution_spec": {
+        "half_spread_pct": 1.2e-05,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 5,
+        "slippage_pct": 0.001,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.029087798500000005
+       },
+       "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 8,
+         "event_type": "research_control_us_fomc_rate_statement",
+         "events": 8,
+         "rows": [
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-04-22",
+           "release_ms": 1776880800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-05-06",
+           "release_ms": 1778090400000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-06-10",
+           "release_ms": 1781114400000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-06-24",
+           "release_ms": 1782324000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-07-22",
+           "release_ms": 1784743200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-08-05",
+           "release_ms": 1785952800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-09-09",
+           "release_ms": 1788976800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-09-23",
+           "release_ms": 1790186400000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 8
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "research_control",
+        "calendar_sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only; matched non-event control calendar (research controls, not official releases)"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": -1.48,
+      "net_pnl_usd": -14.78,
+      "positions": 2,
+      "positions_detail": [
+       {
+        "entry": "2026-08-05 19:00:00",
+        "exit": "2026-08-05 23:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -6.122073,
+        "side": "long"
+       },
+       {
+        "entry": "2026-09-09 23:00:00",
+        "exit": "2026-09-10 00:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -8.660497,
+        "side": "short"
+       }
+      ],
+      "return_pct": -1.48,
+      "sharpe": -2.956,
+      "short_positions": 1,
+      "trades": 2,
+      "turnover": 3.986186
+     },
+     "ETH/USDT": {
+      "bars_in_market": 26,
+      "ddadj": -0.108,
+      "fees_usd": 2.712043,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": -0.1022,
+      "largest_position_share": 0.45928,
+      "liquidated": false,
+      "long_positions": 1,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "6453e3adf1595857bd15f59db91cfb95d54064f5173bfe12ae38123ff01b58e7",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 2.0,
+       "dataset": "ETH 1h",
+       "execution_spec": {
+        "half_spread_pct": 3.994e-05,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 4,
+        "slippage_pct": 0.001,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.03275113970000001
+       },
+       "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 8,
+         "event_type": "research_control_us_fomc_rate_statement",
+         "events": 8,
+         "rows": [
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-04-22",
+           "release_ms": 1776880800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-05-06",
+           "release_ms": 1778090400000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-06-10",
+           "release_ms": 1781114400000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-06-24",
+           "release_ms": 1782324000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-07-22",
+           "release_ms": 1784743200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-08-05",
+           "release_ms": 1785952800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-09-09",
+           "release_ms": 1788976800000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "research_control_us_fomc_rate_statement/2026-09-23",
+           "release_ms": 1790186400000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 8
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "research_control",
+        "calendar_sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only; matched non-event control calendar (research controls, not official releases)"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": -2.59,
+      "net_pnl_usd": -2.79,
+      "positions": 3,
+      "positions_detail": [
+       {
+        "entry": "2026-04-23 00:00:00",
+        "exit": "2026-04-23 12:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": 15.802942,
+        "side": "short"
+       },
+       {
+        "entry": "2026-08-05 19:00:00",
+        "exit": "2026-08-05 22:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -8.827709,
+        "side": "long"
+       },
+       {
+        "entry": "2026-09-09 20:00:00",
+        "exit": "2026-09-10 05:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -9.777423,
+        "side": "short"
+       }
+      ],
+      "return_pct": -0.28,
+      "sharpe": -0.194,
+      "short_positions": 2,
+      "trades": 3,
+      "turnover": 6.026766
+     }
+    },
+    "manifest": "backtest/candidates/macro_event_breakout_1654_venue_control_manifest.json",
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json",
+     "calendar_sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "research_control_us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": false
+    },
+    "window": "venue_held_out"
+   },
+   "price_only_event@base": {
+    "arm": "price_only_event",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1777485600000,
+        "bid": "",
+        "close": 75477.0,
+        "event_id": "us_fomc_rate_statement/2026-04-29",
+        "event_record_sha256": "6a1816a5b09f5eb95f86a21585c69f6fcccfbbd98d2f95ee892370bdc7d7a2f0",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1777485600000,
+        "range_high": 77866.0,
+        "range_low": 75648.0,
+        "range_start_ms": 1777442400000,
+        "release_ms": 1777485600000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1781722800000,
+        "bid": "",
+        "close": 64287.0,
+        "event_id": "us_fomc_rate_statement/2026-06-17",
+        "event_record_sha256": "952d4b6f9dbf85d01eaab36136ad75990eaf11fce727a57f29ab0fd306f94927",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1781719200000,
+        "range_high": 66429.0,
+        "range_low": 64518.0,
+        "range_start_ms": 1781676000000,
+        "release_ms": 1781719200000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1785351600000,
+        "bid": "",
+        "close": 63563.0,
+        "event_id": "us_fomc_rate_statement/2026-07-29",
+        "event_record_sha256": "2990ed228102dde27b99ca41fe5d40e063eff80604cc80b2eff916497a4873c6",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785348000000,
+        "range_high": 64696.0,
+        "range_low": 63581.0,
+        "range_start_ms": 1785304800000,
+        "release_ms": 1785348000000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 24,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_short": 3,
+       "event_consumed": 7,
+       "inside_range": 14
+      }
+     },
+     "ETH/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1777485600000,
+        "bid": "",
+        "close": 2238.8,
+        "event_id": "us_fomc_rate_statement/2026-04-29",
+        "event_record_sha256": "6a1816a5b09f5eb95f86a21585c69f6fcccfbbd98d2f95ee892370bdc7d7a2f0",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1777485600000,
+        "range_high": 2345.5,
+        "range_low": 2262.1,
+        "range_start_ms": 1777442400000,
+        "release_ms": 1777485600000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1781722800000,
+        "bid": "",
+        "close": 1734.3,
+        "event_id": "us_fomc_rate_statement/2026-06-17",
+        "event_record_sha256": "952d4b6f9dbf85d01eaab36136ad75990eaf11fce727a57f29ab0fd306f94927",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1781719200000,
+        "range_high": 1796.8,
+        "range_low": 1740.9,
+        "range_start_ms": 1781676000000,
+        "release_ms": 1781719200000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1785355200000,
+        "bid": "",
+        "close": 1883.4,
+        "event_id": "us_fomc_rate_statement/2026-07-29",
+        "event_record_sha256": "2990ed228102dde27b99ca41fe5d40e063eff80604cc80b2eff916497a4873c6",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785348000000,
+        "range_high": 1924.8,
+        "range_low": 1886.0,
+        "range_start_ms": 1785304800000,
+        "release_ms": 1785348000000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 24,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_short": 3,
+       "event_consumed": 7,
+       "inside_range": 14
+      }
+     }
+    },
+    "cost_multiplier": 1.0,
+    "data": "venue",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 18,
+      "ddadj": -1.0,
+      "fees_usd": 2.686675,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": -0.0148,
+      "largest_position_share": 0.403626,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "fbef9302542d4ecd5d10ebf7fabbb2aab92cd935617a380ab7ea345cdc2b9556",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 1.0,
+       "dataset": "BTC 1h",
+       "execution_spec": {
+        "half_spread_pct": 6e-06,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 5,
+        "slippage_pct": 0.0005,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.029087798500000005
+       },
+       "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 4,
+         "event_type": "us_fomc_rate_statement",
+         "events": 4,
+         "rows": [
+          {
+           "event_id": "us_fomc_rate_statement/2026-04-29",
+           "release_ms": 1777485600000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-06-17",
+           "release_ms": 1781719200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-07-29",
+           "release_ms": 1785348000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-09-16",
+           "release_ms": 1789581600000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 4
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "official",
+        "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": -2.19,
+      "net_pnl_usd": -21.9,
+      "positions": 3,
+      "positions_detail": [
+       {
+        "entry": "2026-04-29 19:00:00",
+        "exit": "2026-04-29 21:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -8.198354,
+        "side": "short"
+       },
+       {
+        "entry": "2026-06-17 20:00:00",
+        "exit": "2026-06-18 08:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": -4.865132,
+        "side": "short"
+       },
+       {
+        "entry": "2026-07-29 20:00:00",
+        "exit": "2026-07-29 22:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -8.841364,
+        "side": "short"
+       }
+      ],
+      "return_pct": -2.19,
+      "sharpe": -2.127,
+      "short_positions": 3,
+      "trades": 3,
+      "turnover": 5.97039
+     },
+     "ETH/USDT": {
+      "bars_in_market": 10,
+      "ddadj": -0.931,
+      "fees_usd": 2.681047,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.0238,
+      "largest_position_share": 0.402984,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "6453e3adf1595857bd15f59db91cfb95d54064f5173bfe12ae38123ff01b58e7",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 1.0,
+       "dataset": "ETH 1h",
+       "execution_spec": {
+        "half_spread_pct": 1.997e-05,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 4,
+        "slippage_pct": 0.0005,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.03275113970000001
+       },
+       "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 4,
+         "event_type": "us_fomc_rate_statement",
+         "events": 4,
+         "rows": [
+          {
+           "event_id": "us_fomc_rate_statement/2026-04-29",
+           "release_ms": 1777485600000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-06-17",
+           "release_ms": 1781719200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-07-29",
+           "release_ms": 1785348000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-09-16",
+           "release_ms": 1789581600000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 4
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "official",
+        "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": -3.78,
+      "net_pnl_usd": -35.22,
+      "positions": 3,
+      "positions_detail": [
+       {
+        "entry": "2026-04-29 19:00:00",
+        "exit": "2026-04-29 21:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -10.728949,
+        "side": "short"
+       },
+       {
+        "entry": "2026-06-17 20:00:00",
+        "exit": "2026-06-18 00:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -14.191561,
+        "side": "short"
+       },
+       {
+        "entry": "2026-07-29 21:00:00",
+        "exit": "2026-07-29 22:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -10.295647,
+        "side": "short"
+       }
+      ],
+      "return_pct": -3.52,
+      "sharpe": -2.996,
+      "short_positions": 3,
+      "trades": 3,
+      "turnover": 5.957883
+     }
+    },
+    "manifest": "backtest/candidates/macro_event_breakout_1654_venue_manifest.json",
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json",
+     "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": false
+    },
+    "window": "venue_held_out"
+   },
+   "price_only_event@stress": {
+    "arm": "price_only_event",
+    "audit": {
+     "BTC/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1777485600000,
+        "bid": "",
+        "close": 75477.0,
+        "event_id": "us_fomc_rate_statement/2026-04-29",
+        "event_record_sha256": "6a1816a5b09f5eb95f86a21585c69f6fcccfbbd98d2f95ee892370bdc7d7a2f0",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1777485600000,
+        "range_high": 77866.0,
+        "range_low": 75648.0,
+        "range_start_ms": 1777442400000,
+        "release_ms": 1777485600000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1781722800000,
+        "bid": "",
+        "close": 64287.0,
+        "event_id": "us_fomc_rate_statement/2026-06-17",
+        "event_record_sha256": "952d4b6f9dbf85d01eaab36136ad75990eaf11fce727a57f29ab0fd306f94927",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1781719200000,
+        "range_high": 66429.0,
+        "range_low": 64518.0,
+        "range_start_ms": 1781676000000,
+        "release_ms": 1781719200000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1785351600000,
+        "bid": "",
+        "close": 63563.0,
+        "event_id": "us_fomc_rate_statement/2026-07-29",
+        "event_record_sha256": "2990ed228102dde27b99ca41fe5d40e063eff80604cc80b2eff916497a4873c6",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785348000000,
+        "range_high": 64696.0,
+        "range_low": 63581.0,
+        "range_start_ms": 1785304800000,
+        "release_ms": 1785348000000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 24,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_short": 3,
+       "event_consumed": 7,
+       "inside_range": 14
+      }
+     },
+     "ETH/USDT": {
+      "entries": [
+       {
+        "ask": "",
+        "bar_ms": 1777485600000,
+        "bid": "",
+        "close": 2238.8,
+        "event_id": "us_fomc_rate_statement/2026-04-29",
+        "event_record_sha256": "6a1816a5b09f5eb95f86a21585c69f6fcccfbbd98d2f95ee892370bdc7d7a2f0",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1777485600000,
+        "range_high": 2345.5,
+        "range_low": 2262.1,
+        "range_start_ms": 1777442400000,
+        "release_ms": 1777485600000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1781722800000,
+        "bid": "",
+        "close": 1734.3,
+        "event_id": "us_fomc_rate_statement/2026-06-17",
+        "event_record_sha256": "952d4b6f9dbf85d01eaab36136ad75990eaf11fce727a57f29ab0fd306f94927",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1781719200000,
+        "range_high": 1796.8,
+        "range_low": 1740.9,
+        "range_start_ms": 1781676000000,
+        "release_ms": 1781719200000,
+        "side": "short"
+       },
+       {
+        "ask": "",
+        "bar_ms": 1785355200000,
+        "bid": "",
+        "close": 1883.4,
+        "event_id": "us_fomc_rate_statement/2026-07-29",
+        "event_record_sha256": "2990ed228102dde27b99ca41fe5d40e063eff80604cc80b2eff916497a4873c6",
+        "params": "{\"calendar_path\":\"backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json\",\"calendar_sha256\":\"f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85\",\"confirm_bars\":1,\"cooldown_bars\":24,\"event_type\":\"us_fomc_rate_statement\",\"expected_interval_ms\":3600000,\"holding_bars\":12,\"max_quote_age_ms\":60000,\"max_spread_frac\":0.0005,\"post_window_bars\":6,\"quote_path\":\"\",\"quote_sha256\":\"\",\"range_bars\":12,\"spread_gate\":false}",
+        "range_end_ms": 1785348000000,
+        "range_high": 1924.8,
+        "range_low": 1886.0,
+        "range_start_ms": 1785304800000,
+        "release_ms": 1785348000000,
+        "side": "short"
+       }
+      ],
+      "event_window_decisions": 24,
+      "events_seen": [
+       "us_fomc_rate_statement/2026-04-29",
+       "us_fomc_rate_statement/2026-06-17",
+       "us_fomc_rate_statement/2026-07-29",
+       "us_fomc_rate_statement/2026-09-16"
+      ],
+      "quote_coverage": null,
+      "quote_usable_decisions": 0,
+      "reasons": {
+       "entry_short": 3,
+       "event_consumed": 7,
+       "inside_range": 14
+      }
+     }
+    },
+    "cost_multiplier": 2.0,
+    "data": "venue",
+    "legs": {
+     "BTC/USDT": {
+      "bars_in_market": 18,
+      "ddadj": -1.0,
+      "fees_usd": 2.686334,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": -0.0148,
+      "largest_position_share": 0.39061,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "fbef9302542d4ecd5d10ebf7fabbb2aab92cd935617a380ab7ea345cdc2b9556",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 2.0,
+       "dataset": "BTC 1h",
+       "execution_spec": {
+        "half_spread_pct": 1.2e-05,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 5,
+        "slippage_pct": 0.001,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.029087798500000005
+       },
+       "funding_sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 4,
+         "event_type": "us_fomc_rate_statement",
+         "events": 4,
+         "rows": [
+          {
+           "event_id": "us_fomc_rate_statement/2026-04-29",
+           "release_ms": 1777485600000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-06-17",
+           "release_ms": 1781719200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-07-29",
+           "release_ms": 1785348000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-09-16",
+           "release_ms": 1789581600000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 4
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "official",
+        "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": -2.39,
+      "net_pnl_usd": -23.92,
+      "positions": 3,
+      "positions_detail": [
+       {
+        "entry": "2026-04-29 19:00:00",
+        "exit": "2026-04-29 21:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -8.708338,
+        "side": "short"
+       },
+       {
+        "entry": "2026-06-17 20:00:00",
+        "exit": "2026-06-18 08:00:00",
+        "exit_reasons": [
+         "time_stop:12"
+        ],
+        "net_pnl": -5.865132,
+        "side": "short"
+       },
+       {
+        "entry": "2026-07-29 20:00:00",
+        "exit": "2026-07-29 22:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -9.341363,
+        "side": "short"
+       }
+      ],
+      "return_pct": -2.39,
+      "sharpe": -2.259,
+      "short_positions": 3,
+      "trades": 3,
+      "turnover": 5.969631
+     },
+     "ETH/USDT": {
+      "bars_in_market": 10,
+      "ddadj": -0.936,
+      "fees_usd": 2.680255,
+      "funding": {
+       "complete": null,
+       "error": null,
+       "expected_hours": null,
+       "missing_hours": null,
+       "mode": null,
+       "unpriced_held_hours": null
+      },
+      "funding_incomplete": false,
+      "funding_pnl_usd": 0.0238,
+      "largest_position_share": 0.40003,
+      "liquidated": false,
+      "long_positions": 0,
+      "manifest": {
+       "candle_coverage": {
+        "complete": true,
+        "expected_bars": 4392,
+        "first_bar": "2026-04-01 00:00:00",
+        "last_bar": "2026-09-30 23:00:00",
+        "max_gap_bars": 0,
+        "missing_bars": 0,
+        "present_bars": 4392,
+        "warmup_bars": 48,
+        "warmup_missing_bars": 0
+       },
+       "candles_sha256": "6453e3adf1595857bd15f59db91cfb95d54064f5173bfe12ae38123ff01b58e7",
+       "cost_model": "execution_spec",
+       "cost_multiplier": 2.0,
+       "dataset": "ETH 1h",
+       "execution_spec": {
+        "half_spread_pct": 3.994e-05,
+        "maker_fee_pct": 0.00015,
+        "min_notional_margin": 0.03,
+        "min_notional_usd": 10.0,
+        "size_decimals": 4,
+        "slippage_pct": 0.001,
+        "taker_fee_pct": 0.00045
+       },
+       "funding_coverage": {
+        "available": true,
+        "complete": true,
+        "expected_hours": 4392,
+        "max_gap_hours": 0,
+        "missing_hours": 0,
+        "present_hours": 4392,
+        "sum_rate": 0.03275113970000001
+       },
+       "funding_sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+       "macro_event_coverage": {
+        "calendar": {
+         "calendar_covers_window": true,
+         "eligible_events": 4,
+         "event_type": "us_fomc_rate_statement",
+         "events": 4,
+         "rows": [
+          {
+           "event_id": "us_fomc_rate_statement/2026-04-29",
+           "release_ms": 1777485600000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-06-17",
+           "release_ms": 1781719200000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-07-29",
+           "release_ms": 1785348000000,
+           "revisions": 1,
+           "state": "eligible"
+          },
+          {
+           "event_id": "us_fomc_rate_statement/2026-09-16",
+           "release_ms": 1789581600000,
+           "revisions": 1,
+           "state": "eligible"
+          }
+         ],
+         "states": {
+          "eligible": 4
+         },
+         "window": [
+          1775001600000,
+          1790812800000
+         ]
+        },
+        "calendar_kind": "official",
+        "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+        "quote_records": 0,
+        "quote_sha256": null
+       },
+       "open_interest_coverage": null,
+       "open_interest_sha256": null,
+       "provenance": {
+        "kind": "venue",
+        "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only"
+       },
+       "trade_flow_coverage": null,
+       "trade_flow_sha256": null
+      },
+      "max_dd_pct": -3.93,
+      "net_pnl_usd": -36.77,
+      "positions": 3,
+      "positions_detail": [
+       {
+        "entry": "2026-04-29 19:00:00",
+        "exit": "2026-04-29 21:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -11.258948,
+        "side": "short"
+       },
+       {
+        "entry": "2026-06-17 20:00:00",
+        "exit": "2026-06-18 00:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -14.711561,
+        "side": "short"
+       },
+       {
+        "entry": "2026-07-29 21:00:00",
+        "exit": "2026-07-29 22:00:00",
+        "exit_reasons": [
+         "sl"
+        ],
+        "net_pnl": -10.805644,
+        "side": "short"
+       }
+      ],
+      "return_pct": -3.68,
+      "sharpe": -3.026,
+      "short_positions": 3,
+      "trades": 3,
+      "turnover": 5.95612
+     }
+    },
+    "manifest": "backtest/candidates/macro_event_breakout_1654_venue_manifest.json",
+    "params": {
+     "calendar_path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json",
+     "calendar_sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "event_type": "us_fomc_rate_statement",
+     "expected_interval_ms": 3600000,
+     "holding_bars": 12,
+     "max_quote_age_ms": 60000,
+     "max_spread_frac": 0.0005,
+     "post_window_bars": 6,
+     "range_bars": 12,
+     "spread_gate": false
+    },
+    "window": "venue_held_out"
+   }
+  }
+ },
+ "held_out": {
+  "candidate_full": {
+   "datasets": 2,
+   "event_window_decisions": 72,
+   "events_with_entries": [],
+   "fees_usd": 0,
+   "funding_complete": true,
+   "funding_pnl_usd": 0.0,
+   "independent_events_with_entries": 0,
+   "largest_position_share": 0,
+   "liquidated": false,
+   "long_positions": 0,
+   "mean_ddadj": 0.0,
+   "mean_return_pct": 0.0,
+   "mean_sharpe": 0.0,
+   "net_pnl_usd": 0.0,
+   "positions": 0,
+   "quote_coverage": 0.0,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 0,
+   "turnover": 0,
+   "worst_max_dd_pct": 0.0
+  },
+  "price_only_control": {
+   "datasets": 2,
+   "event_window_decisions": 144,
+   "events_with_entries": [
+    "research_control_us_fomc_rate_statement/2026-01-21",
+    "research_control_us_fomc_rate_statement/2026-04-22",
+    "research_control_us_fomc_rate_statement/2026-08-05",
+    "research_control_us_fomc_rate_statement/2026-09-09"
+   ],
+   "fees_usd": 5.35765,
+   "funding_complete": true,
+   "funding_pnl_usd": -0.0947,
+   "independent_events_with_entries": 4,
+   "largest_position_share": 0.597784,
+   "liquidated": false,
+   "long_positions": 3,
+   "mean_ddadj": -0.8455,
+   "mean_return_pct": -1.45,
+   "mean_sharpe": -1.4205,
+   "net_pnl_usd": -29.01,
+   "positions": 6,
+   "quote_coverage": null,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 3,
+   "turnover": 11.903202,
+   "worst_max_dd_pct": -2.36
+  },
+  "price_only_event": {
+   "datasets": 2,
+   "event_window_decisions": 72,
+   "events_with_entries": [
+    "us_fomc_rate_statement/2026-04-29",
+    "us_fomc_rate_statement/2026-06-17",
+    "us_fomc_rate_statement/2026-07-29"
+   ],
+   "fees_usd": 5.372738,
+   "funding_complete": true,
+   "funding_pnl_usd": 0.0129,
+   "independent_events_with_entries": 3,
+   "largest_position_share": 0.411074,
+   "liquidated": false,
+   "long_positions": 0,
+   "mean_ddadj": -0.977,
+   "mean_return_pct": -2.68,
+   "mean_sharpe": -2.4195,
+   "net_pnl_usd": -53.69,
+   "positions": 6,
+   "quote_coverage": null,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 6,
+   "turnover": 11.936741,
+   "worst_max_dd_pct": -3.47
+  }
+ },
+ "inputs": {
+  "calendars": {
+   "control": {
+    "path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json",
+    "records": 34,
+    "sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933"
+   },
+   "official": {
+    "path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json",
+    "records": 33,
+    "sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85"
+   }
+  },
+  "proxy": {
+   "BTC_1h_candles.csv.gz": "d107c60f72363372d03273ba6439ca42a0d867a9089c5de171e9306af3ba2d17",
+   "BTC_funding.csv.gz": "520fd979d5594b4c2fb950cd52aa327749a124d9971a59ec3419752dd24a27f8",
+   "ETH_1h_candles.csv.gz": "59d08735aecb22b63bab8189c7c32b11101e80da42b2ec724f39e308548b7913",
+   "ETH_funding.csv.gz": "4b7694d8fc26cb7245ffa882cbdcb2d571d17f3a9f1abd6832fb0deed4985b41"
+  },
+  "venue": {
+   "backtest/candidates/macro_event_breakout_1654_venue_control_manifest.json": {
+    "datasets": {
+     "BTC 1h": {
+      "candles": "fbef9302542d4ecd5d10ebf7fabbb2aab92cd935617a380ab7ea345cdc2b9556",
+      "funding": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+      "macro_calendar": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933"
+     },
+     "ETH 1h": {
+      "candles": "6453e3adf1595857bd15f59db91cfb95d54064f5173bfe12ae38123ff01b58e7",
+      "funding": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+      "macro_calendar": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933"
+     }
+    },
+    "sha256": "4d1e84998df4d57e55df65ea324146a4c4d1dfe65f032e194c025b59bc1eb503"
+   },
+   "backtest/candidates/macro_event_breakout_1654_venue_manifest.json": {
+    "datasets": {
+     "BTC 1h": {
+      "candles": "fbef9302542d4ecd5d10ebf7fabbb2aab92cd935617a380ab7ea345cdc2b9556",
+      "funding": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5",
+      "macro_calendar": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85"
+     },
+     "ETH 1h": {
+      "candles": "6453e3adf1595857bd15f59db91cfb95d54064f5173bfe12ae38123ff01b58e7",
+      "funding": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812",
+      "macro_calendar": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85"
+     }
+    },
+    "sha256": "459eee090c6bac3ff024cb80ebd2a83464b6886e3d77416dc1b671477e34c7be"
+   }
+  }
+ },
+ "invocation": "uv run --no-sync python backtest/candidates/macro_event_breakout_1654/run_study.py run",
+ "protocol_sha256": "a33c975d8014c5da5aa383dde84fa51cfd6a50c0fa222a0139426c7778837969",
+ "selection": {
+  "rule": {
+   "applies_to": "candidate_full and price_only_control use the same selected parameters with only spread_gate or the calendar changed",
+   "arm": "price_only_event",
+   "data": "proxy",
+   "eligible": "both datasets scored, funding complete, no liquidation",
+   "order": [
+    "max mean return_pct",
+    "max mean ddadj",
+    "earliest grid order"
+   ],
+   "window": "train"
+  },
+  "selected": {
+   "confirm_bars": 1,
+   "cooldown_bars": 24,
+   "post_window_bars": 6,
+   "range_bars": 12
+  },
+  "train_variants": [
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 48,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-05-07",
+      "us_fomc_rate_statement/2025-06-18",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-09-17",
+      "us_fomc_rate_statement/2025-10-29",
+      "us_fomc_rate_statement/2025-12-10"
+     ],
+     "fees_usd": 11.589127,
+     "funding_complete": true,
+     "funding_pnl_usd": -0.1227,
+     "independent_events_with_entries": 8,
+     "largest_position_share": 0.348007,
+     "liquidated": false,
+     "long_positions": 5,
+     "mean_ddadj": -0.7575,
+     "mean_return_pct": -3.535,
+     "mean_sharpe": -1.392,
+     "net_pnl_usd": -70.65,
+     "positions": 13,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 8,
+     "turnover": 25.747828,
+     "worst_max_dd_pct": -5.13
+    },
+    "base": {
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "post_window_bars": 3,
+     "range_bars": 3
+    }
+   },
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 48,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-10-29"
+     ],
+     "fees_usd": 6.245761,
+     "funding_complete": true,
+     "funding_pnl_usd": -0.0599,
+     "independent_events_with_entries": 4,
+     "largest_position_share": 0.362928,
+     "liquidated": false,
+     "long_positions": 3,
+     "mean_ddadj": -0.878,
+     "mean_return_pct": -2.935,
+     "mean_sharpe": -1.4215,
+     "net_pnl_usd": -58.72,
+     "positions": 7,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 4,
+     "turnover": 13.87635,
+     "worst_max_dd_pct": -3.7
+    },
+    "base": {
+     "confirm_bars": 2,
+     "cooldown_bars": 24,
+     "post_window_bars": 3,
+     "range_bars": 3
+    }
+   },
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 96,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-05-07",
+      "us_fomc_rate_statement/2025-06-18",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-09-17",
+      "us_fomc_rate_statement/2025-10-29",
+      "us_fomc_rate_statement/2025-12-10"
+     ],
+     "fees_usd": 12.447872,
+     "funding_complete": true,
+     "funding_pnl_usd": 0.0187,
+     "independent_events_with_entries": 8,
+     "largest_position_share": 0.347345,
+     "liquidated": false,
+     "long_positions": 5,
+     "mean_ddadj": -0.5285,
+     "mean_return_pct": -2.555,
+     "mean_sharpe": -1.0405,
+     "net_pnl_usd": -51.05,
+     "positions": 14,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 9,
+     "turnover": 27.655716,
+     "worst_max_dd_pct": -5.13
+    },
+    "base": {
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "post_window_bars": 6,
+     "range_bars": 3
+    }
+   },
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 96,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-05-07",
+      "us_fomc_rate_statement/2025-06-18",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-09-17",
+      "us_fomc_rate_statement/2025-10-29"
+     ],
+     "fees_usd": 9.864092,
+     "funding_complete": true,
+     "funding_pnl_usd": -0.6413,
+     "independent_events_with_entries": 7,
+     "largest_position_share": 0.472556,
+     "liquidated": false,
+     "long_positions": 7,
+     "mean_ddadj": -0.398,
+     "mean_return_pct": -1.93,
+     "mean_sharpe": -0.7405,
+     "net_pnl_usd": -38.51,
+     "positions": 11,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 4,
+     "turnover": 21.91528,
+     "worst_max_dd_pct": -4.16
+    },
+    "base": {
+     "confirm_bars": 2,
+     "cooldown_bars": 24,
+     "post_window_bars": 6,
+     "range_bars": 3
+    }
+   },
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 48,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-05-07",
+      "us_fomc_rate_statement/2025-06-18",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-09-17",
+      "us_fomc_rate_statement/2025-10-29",
+      "us_fomc_rate_statement/2025-12-10"
+     ],
+     "fees_usd": 10.710257,
+     "funding_complete": true,
+     "funding_pnl_usd": 0.0079,
+     "independent_events_with_entries": 8,
+     "largest_position_share": 0.379762,
+     "liquidated": false,
+     "long_positions": 4,
+     "mean_ddadj": -0.751,
+     "mean_return_pct": -3.38,
+     "mean_sharpe": -1.378,
+     "net_pnl_usd": -67.56,
+     "positions": 12,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 8,
+     "turnover": 23.795225,
+     "worst_max_dd_pct": -5.13
+    },
+    "base": {
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "post_window_bars": 3,
+     "range_bars": 6
+    }
+   },
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 48,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-10-29"
+     ],
+     "fees_usd": 5.3639,
+     "funding_complete": true,
+     "funding_pnl_usd": -0.0969,
+     "independent_events_with_entries": 4,
+     "largest_position_share": 0.533897,
+     "liquidated": false,
+     "long_positions": 3,
+     "mean_ddadj": -0.878,
+     "mean_return_pct": -2.345,
+     "mean_sharpe": -1.288,
+     "net_pnl_usd": -46.86,
+     "positions": 6,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 3,
+     "turnover": 11.917099,
+     "worst_max_dd_pct": -2.87
+    },
+    "base": {
+     "confirm_bars": 2,
+     "cooldown_bars": 24,
+     "post_window_bars": 3,
+     "range_bars": 6
+    }
+   },
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 96,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-05-07",
+      "us_fomc_rate_statement/2025-06-18",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-09-17",
+      "us_fomc_rate_statement/2025-10-29",
+      "us_fomc_rate_statement/2025-12-10"
+     ],
+     "fees_usd": 11.571751,
+     "funding_complete": true,
+     "funding_pnl_usd": 0.1498,
+     "independent_events_with_entries": 8,
+     "largest_position_share": 0.368112,
+     "liquidated": false,
+     "long_positions": 4,
+     "mean_ddadj": -0.503,
+     "mean_return_pct": -2.395,
+     "mean_sharpe": -1.008,
+     "net_pnl_usd": -47.9,
+     "positions": 13,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 9,
+     "turnover": 25.709222,
+     "worst_max_dd_pct": -5.13
+    },
+    "base": {
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "post_window_bars": 6,
+     "range_bars": 6
+    }
+   },
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 96,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-09-17",
+      "us_fomc_rate_statement/2025-10-29"
+     ],
+     "fees_usd": 6.246051,
+     "funding_complete": true,
+     "funding_pnl_usd": -0.2449,
+     "independent_events_with_entries": 5,
+     "largest_position_share": 0.45467,
+     "liquidated": false,
+     "long_positions": 4,
+     "mean_ddadj": -0.878,
+     "mean_return_pct": -2.565,
+     "mean_sharpe": -1.219,
+     "net_pnl_usd": -51.25,
+     "positions": 7,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 3,
+     "turnover": 13.876993,
+     "worst_max_dd_pct": -2.96
+    },
+    "base": {
+     "confirm_bars": 2,
+     "cooldown_bars": 24,
+     "post_window_bars": 6,
+     "range_bars": 6
+    }
+   },
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 48,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-05-07",
+      "us_fomc_rate_statement/2025-06-18",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-09-17",
+      "us_fomc_rate_statement/2025-10-29"
+     ],
+     "fees_usd": 8.978144,
+     "funding_complete": true,
+     "funding_pnl_usd": 0.0469,
+     "independent_events_with_entries": 7,
+     "largest_position_share": 0.524868,
+     "liquidated": false,
+     "long_positions": 2,
+     "mean_ddadj": -0.677,
+     "mean_return_pct": -2.365,
+     "mean_sharpe": -1.061,
+     "net_pnl_usd": -47.31,
+     "positions": 10,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 8,
+     "turnover": 19.946953,
+     "worst_max_dd_pct": -4.37
+    },
+    "base": {
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "post_window_bars": 3,
+     "range_bars": 12
+    }
+   },
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 48,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-10-29"
+     ],
+     "fees_usd": 4.481897,
+     "funding_complete": true,
+     "funding_pnl_usd": -0.0719,
+     "independent_events_with_entries": 4,
+     "largest_position_share": 1.0,
+     "liquidated": false,
+     "long_positions": 2,
+     "mean_ddadj": -0.878,
+     "mean_return_pct": -1.68,
+     "mean_sharpe": -1.1835,
+     "net_pnl_usd": -33.58,
+     "positions": 5,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 3,
+     "turnover": 9.957536,
+     "worst_max_dd_pct": -2.87
+    },
+    "base": {
+     "confirm_bars": 2,
+     "cooldown_bars": 24,
+     "post_window_bars": 3,
+     "range_bars": 12
+    }
+   },
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 96,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-05-07",
+      "us_fomc_rate_statement/2025-06-18",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-09-17",
+      "us_fomc_rate_statement/2025-10-29",
+      "us_fomc_rate_statement/2025-12-10"
+     ],
+     "fees_usd": 10.718784,
+     "funding_complete": true,
+     "funding_pnl_usd": 0.316,
+     "independent_events_with_entries": 8,
+     "largest_position_share": 0.48442,
+     "liquidated": false,
+     "long_positions": 2,
+     "mean_ddadj": -0.141,
+     "mean_return_pct": -0.62,
+     "mean_sharpe": -0.2075,
+     "net_pnl_usd": -12.38,
+     "positions": 12,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 10,
+     "turnover": 23.814164,
+     "worst_max_dd_pct": -4.37
+    },
+    "base": {
+     "confirm_bars": 1,
+     "cooldown_bars": 24,
+     "post_window_bars": 6,
+     "range_bars": 12
+    }
+   },
+   {
+    "aggregate": {
+     "datasets": 2,
+     "event_window_decisions": 96,
+     "events_with_entries": [
+      "us_fomc_rate_statement/2025-01-29",
+      "us_fomc_rate_statement/2025-03-19",
+      "us_fomc_rate_statement/2025-07-30",
+      "us_fomc_rate_statement/2025-09-17",
+      "us_fomc_rate_statement/2025-10-29"
+     ],
+     "fees_usd": 5.376066,
+     "funding_complete": true,
+     "funding_pnl_usd": -0.222,
+     "independent_events_with_entries": 5,
+     "largest_position_share": 0.724728,
+     "liquidated": false,
+     "long_positions": 3,
+     "mean_ddadj": -0.7595,
+     "mean_return_pct": -1.905,
+     "mean_sharpe": -1.0195,
+     "net_pnl_usd": -38.03,
+     "positions": 6,
+     "quote_coverage": null,
+     "quote_usable_decisions": 0,
+     "scored": 2,
+     "short_positions": 3,
+     "turnover": 11.944131,
+     "worst_max_dd_pct": -2.87
+    },
+    "base": {
+     "confirm_bars": 2,
+     "cooldown_bars": 24,
+     "post_window_bars": 6,
+     "range_bars": 12
+    }
+   }
+  ]
+ },
+ "source_commit": "caa401dc8eb7256235802926dcd284a079b947f7",
+ "sources_sha256": {
+  "backtest/backtester.py": "5eb522bcc62094c25ae0b1c644f2e2fb301c8a65c09f5f29d823cd7876edad02",
+  "backtest/candidates/macro_event_breakout_1654/calendar_sources.py": "7868e31a1bfd6ac22c92138cebfd3a73315be10228deb18188922540607e342e",
+  "backtest/candidates/macro_event_breakout_1654/candidate_spec.json": "7bb2f693c28f8bc12c772362789c7665916766b869a000f686a698f6a1d56328",
+  "backtest/candidates/macro_event_breakout_1654/run_study.py": "680890bf85781f42f8df4b4e2e0a8bb663f643002812690359a24b7a97769841",
+  "backtest/eval_windows.py": "d2bae19aab97fa1c0ff79fbf6f6e5063845f1f471bd467a37848069720676a8b",
+  "backtest/offline_manifest.py": "746dc8fc452dd7997f90aa74c9d64f42f54cb43a86cc8d2a1fdfdefbde65c099",
+  "backtest/optimizer.py": "6b66da174477443ac470825145aef5b0e48425a2410226bb733a9241723f2783",
+  "backtest/run_backtest.py": "10ca64d39ead8b1ae809a068fbca5f9486fbb2ff560847be8d40124eaf41d2b0",
+  "shared_strategies/close/time_stop.py": "da47e115c599a162a9091a245ce51dda7566716e3811b106899b2ae446f19305",
+  "shared_strategies/open/macro_event_breakout.py": "15531bc7af9f6803d2fa7ec0d5e7d54b7160a03e5f5296fade269a8e9575554b",
+  "shared_strategies/open/registry.py": "c6ec68d057db3829109365c26a9bbc1b7547885bae7dc35383b72ab8f13f7435",
+  "shared_tools/macro_event_inputs.py": "66a0b30ba7e0883f0fd024ce1a61f8f013585e9cba1a814bcb09d6a33d21ad5c"
+ },
+ "stability_exploratory": [
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 36,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-01-28",
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29",
+     "us_fomc_rate_statement/2026-09-16"
+    ],
+    "fees_usd": 8.035226,
+    "funding_complete": true,
+    "funding_pnl_usd": 0.1051,
+    "independent_events_with_entries": 5,
+    "largest_position_share": 0.326517,
+    "liquidated": false,
+    "long_positions": 4,
+    "mean_ddadj": -0.782,
+    "mean_return_pct": -2.935,
+    "mean_sharpe": -2.1775,
+    "net_pnl_usd": -58.71,
+    "positions": 9,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 5,
+    "turnover": 17.852038,
+    "worst_max_dd_pct": -4.15
+   },
+   "base": {
+    "confirm_bars": 1,
+    "cooldown_bars": 24,
+    "post_window_bars": 3,
+    "range_bars": 3
+   }
+  },
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 36,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29",
+     "us_fomc_rate_statement/2026-09-16"
+    ],
+    "fees_usd": 7.138433,
+    "funding_complete": true,
+    "funding_pnl_usd": 0.0847,
+    "independent_events_with_entries": 4,
+    "largest_position_share": 0.340473,
+    "liquidated": false,
+    "long_positions": 2,
+    "mean_ddadj": -0.998,
+    "mean_return_pct": -2.73,
+    "mean_sharpe": -1.5735,
+    "net_pnl_usd": -54.67,
+    "positions": 8,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 6,
+    "turnover": 15.859616,
+    "worst_max_dd_pct": -3.01
+   },
+   "base": {
+    "confirm_bars": 2,
+    "cooldown_bars": 24,
+    "post_window_bars": 3,
+    "range_bars": 3
+   }
+  },
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 72,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-01-28",
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29",
+     "us_fomc_rate_statement/2026-09-16"
+    ],
+    "fees_usd": 8.035226,
+    "funding_complete": true,
+    "funding_pnl_usd": 0.1051,
+    "independent_events_with_entries": 5,
+    "largest_position_share": 0.326517,
+    "liquidated": false,
+    "long_positions": 4,
+    "mean_ddadj": -0.782,
+    "mean_return_pct": -2.935,
+    "mean_sharpe": -2.1775,
+    "net_pnl_usd": -58.71,
+    "positions": 9,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 5,
+    "turnover": 17.852038,
+    "worst_max_dd_pct": -4.15
+   },
+   "base": {
+    "confirm_bars": 1,
+    "cooldown_bars": 24,
+    "post_window_bars": 6,
+    "range_bars": 3
+   }
+  },
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 72,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-01-28",
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29",
+     "us_fomc_rate_statement/2026-09-16"
+    ],
+    "fees_usd": 8.06829,
+    "funding_complete": true,
+    "funding_pnl_usd": 0.1998,
+    "independent_events_with_entries": 5,
+    "largest_position_share": 0.335448,
+    "liquidated": false,
+    "long_positions": 2,
+    "mean_ddadj": -0.756,
+    "mean_return_pct": -2.255,
+    "mean_sharpe": -1.126,
+    "net_pnl_usd": -45.17,
+    "positions": 9,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 7,
+    "turnover": 17.925497,
+    "worst_max_dd_pct": -3.01
+   },
+   "base": {
+    "confirm_bars": 2,
+    "cooldown_bars": 24,
+    "post_window_bars": 6,
+    "range_bars": 3
+   }
+  },
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 36,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29"
+    ],
+    "fees_usd": 5.365321,
+    "funding_complete": true,
+    "funding_pnl_usd": 0.0146,
+    "independent_events_with_entries": 3,
+    "largest_position_share": 0.42277,
+    "liquidated": false,
+    "long_positions": 1,
+    "mean_ddadj": -1.0,
+    "mean_return_pct": -2.625,
+    "mean_sharpe": -2.345,
+    "net_pnl_usd": -52.57,
+    "positions": 6,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 5,
+    "turnover": 11.920258,
+    "worst_max_dd_pct": -3.2
+   },
+   "base": {
+    "confirm_bars": 1,
+    "cooldown_bars": 24,
+    "post_window_bars": 3,
+    "range_bars": 6
+   }
+  },
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 36,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29"
+    ],
+    "fees_usd": 4.489582,
+    "funding_complete": true,
+    "funding_pnl_usd": -0.0233,
+    "independent_events_with_entries": 3,
+    "largest_position_share": 0.508812,
+    "liquidated": false,
+    "long_positions": 0,
+    "mean_ddadj": -0.942,
+    "mean_return_pct": -1.855,
+    "mean_sharpe": -1.3755,
+    "net_pnl_usd": -37.04,
+    "positions": 5,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 5,
+    "turnover": 9.974608,
+    "worst_max_dd_pct": -2.25
+   },
+   "base": {
+    "confirm_bars": 2,
+    "cooldown_bars": 24,
+    "post_window_bars": 3,
+    "range_bars": 6
+   }
+  },
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 72,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29"
+    ],
+    "fees_usd": 5.365321,
+    "funding_complete": true,
+    "funding_pnl_usd": 0.0146,
+    "independent_events_with_entries": 3,
+    "largest_position_share": 0.42277,
+    "liquidated": false,
+    "long_positions": 1,
+    "mean_ddadj": -1.0,
+    "mean_return_pct": -2.625,
+    "mean_sharpe": -2.345,
+    "net_pnl_usd": -52.57,
+    "positions": 6,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 5,
+    "turnover": 11.920258,
+    "worst_max_dd_pct": -3.2
+   },
+   "base": {
+    "confirm_bars": 1,
+    "cooldown_bars": 24,
+    "post_window_bars": 6,
+    "range_bars": 6
+   }
+  },
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 72,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29"
+    ],
+    "fees_usd": 5.373819,
+    "funding_complete": true,
+    "funding_pnl_usd": 0.0017,
+    "independent_events_with_entries": 3,
+    "largest_position_share": 0.486264,
+    "liquidated": false,
+    "long_positions": 0,
+    "mean_ddadj": -0.9635,
+    "mean_return_pct": -2.515,
+    "mean_sharpe": -1.709,
+    "net_pnl_usd": -50.29,
+    "positions": 6,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 6,
+    "turnover": 11.93914,
+    "worst_max_dd_pct": -3.57
+   },
+   "base": {
+    "confirm_bars": 2,
+    "cooldown_bars": 24,
+    "post_window_bars": 6,
+    "range_bars": 6
+   }
+  },
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 36,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29"
+    ],
+    "fees_usd": 5.372738,
+    "funding_complete": true,
+    "funding_pnl_usd": 0.0129,
+    "independent_events_with_entries": 3,
+    "largest_position_share": 0.411074,
+    "liquidated": false,
+    "long_positions": 0,
+    "mean_ddadj": -0.977,
+    "mean_return_pct": -2.68,
+    "mean_sharpe": -2.4195,
+    "net_pnl_usd": -53.69,
+    "positions": 6,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 6,
+    "turnover": 11.936741,
+    "worst_max_dd_pct": -3.47
+   },
+   "base": {
+    "confirm_bars": 1,
+    "cooldown_bars": 24,
+    "post_window_bars": 3,
+    "range_bars": 12
+   }
+  },
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 36,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29"
+    ],
+    "fees_usd": 4.489582,
+    "funding_complete": true,
+    "funding_pnl_usd": -0.0233,
+    "independent_events_with_entries": 3,
+    "largest_position_share": 0.508812,
+    "liquidated": false,
+    "long_positions": 0,
+    "mean_ddadj": -0.942,
+    "mean_return_pct": -1.855,
+    "mean_sharpe": -1.3755,
+    "net_pnl_usd": -37.04,
+    "positions": 5,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 5,
+    "turnover": 9.974608,
+    "worst_max_dd_pct": -2.25
+   },
+   "base": {
+    "confirm_bars": 2,
+    "cooldown_bars": 24,
+    "post_window_bars": 3,
+    "range_bars": 12
+   }
+  },
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 72,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29"
+    ],
+    "fees_usd": 5.372738,
+    "funding_complete": true,
+    "funding_pnl_usd": 0.0129,
+    "independent_events_with_entries": 3,
+    "largest_position_share": 0.411074,
+    "liquidated": false,
+    "long_positions": 0,
+    "mean_ddadj": -0.977,
+    "mean_return_pct": -2.68,
+    "mean_sharpe": -2.4195,
+    "net_pnl_usd": -53.69,
+    "positions": 6,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 6,
+    "turnover": 11.936741,
+    "worst_max_dd_pct": -3.47
+   },
+   "base": {
+    "confirm_bars": 1,
+    "cooldown_bars": 24,
+    "post_window_bars": 6,
+    "range_bars": 12
+   }
+  },
+  {
+   "aggregate": {
+    "datasets": 2,
+    "event_window_decisions": 72,
+    "events_with_entries": [
+     "us_fomc_rate_statement/2026-04-29",
+     "us_fomc_rate_statement/2026-06-17",
+     "us_fomc_rate_statement/2026-07-29"
+    ],
+    "fees_usd": 5.373819,
+    "funding_complete": true,
+    "funding_pnl_usd": 0.0017,
+    "independent_events_with_entries": 3,
+    "largest_position_share": 0.486264,
+    "liquidated": false,
+    "long_positions": 0,
+    "mean_ddadj": -0.9635,
+    "mean_return_pct": -2.515,
+    "mean_sharpe": -1.709,
+    "net_pnl_usd": -50.29,
+    "positions": 6,
+    "quote_coverage": null,
+    "quote_usable_decisions": 0,
+    "scored": 2,
+    "short_positions": 6,
+    "turnover": 11.93914,
+    "worst_max_dd_pct": -3.57
+   },
+   "base": {
+    "confirm_bars": 2,
+    "cooldown_bars": 24,
+    "post_window_bars": 6,
+    "range_bars": 12
+   }
+  }
+ ],
+ "study": "macro_event_breakout_1654",
+ "train": {
+  "candidate_full": {
+   "datasets": 2,
+   "event_window_decisions": 96,
+   "events_with_entries": [],
+   "fees_usd": 0,
+   "funding_complete": true,
+   "funding_pnl_usd": 0.0,
+   "independent_events_with_entries": 0,
+   "largest_position_share": 0,
+   "liquidated": false,
+   "long_positions": 0,
+   "mean_ddadj": 0.0,
+   "mean_return_pct": 0.0,
+   "mean_sharpe": 0.0,
+   "net_pnl_usd": 0.0,
+   "positions": 0,
+   "quote_coverage": 0.0,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 0,
+   "turnover": 0,
+   "worst_max_dd_pct": 0.0
+  },
+  "price_only_control": {
+   "datasets": 2,
+   "event_window_decisions": 192,
+   "events_with_entries": [
+    "research_control_us_fomc_rate_statement/2025-01-22",
+    "research_control_us_fomc_rate_statement/2025-03-26",
+    "research_control_us_fomc_rate_statement/2025-06-11",
+    "research_control_us_fomc_rate_statement/2025-08-06",
+    "research_control_us_fomc_rate_statement/2025-09-24",
+    "research_control_us_fomc_rate_statement/2025-10-22",
+    "research_control_us_fomc_rate_statement/2025-12-03"
+   ],
+   "fees_usd": 9.93135,
+   "funding_complete": true,
+   "funding_pnl_usd": 0.5355,
+   "independent_events_with_entries": 7,
+   "largest_position_share": 0.382859,
+   "liquidated": false,
+   "long_positions": 3,
+   "mean_ddadj": 0.534,
+   "mean_return_pct": 1.16,
+   "mean_sharpe": 0.309,
+   "net_pnl_usd": 23.18,
+   "positions": 11,
+   "quote_coverage": null,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 8,
+   "turnover": 22.064691,
+   "worst_max_dd_pct": -2.33
+  },
+  "price_only_event": {
+   "datasets": 2,
+   "event_window_decisions": 96,
+   "events_with_entries": [
+    "us_fomc_rate_statement/2025-01-29",
+    "us_fomc_rate_statement/2025-03-19",
+    "us_fomc_rate_statement/2025-05-07",
+    "us_fomc_rate_statement/2025-06-18",
+    "us_fomc_rate_statement/2025-07-30",
+    "us_fomc_rate_statement/2025-09-17",
+    "us_fomc_rate_statement/2025-10-29",
+    "us_fomc_rate_statement/2025-12-10"
+   ],
+   "fees_usd": 10.718784,
+   "funding_complete": true,
+   "funding_pnl_usd": 0.316,
+   "independent_events_with_entries": 8,
+   "largest_position_share": 0.48442,
+   "liquidated": false,
+   "long_positions": 2,
+   "mean_ddadj": -0.141,
+   "mean_return_pct": -0.62,
+   "mean_sharpe": -0.2075,
+   "net_pnl_usd": -12.38,
+   "positions": 12,
+   "quote_coverage": null,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 10,
+   "turnover": 23.814164,
+   "worst_max_dd_pct": -4.37
+  }
+ },
+ "venue": {
+  "candidate_full@base": {
+   "datasets": 2,
+   "event_window_decisions": 48,
+   "events_with_entries": [],
+   "fees_usd": 0,
+   "funding_complete": true,
+   "funding_pnl_usd": 0.0,
+   "independent_events_with_entries": 0,
+   "largest_position_share": 0,
+   "liquidated": false,
+   "long_positions": 0,
+   "mean_ddadj": 0.0,
+   "mean_return_pct": 0.0,
+   "mean_sharpe": 0.0,
+   "net_pnl_usd": 0.0,
+   "positions": 0,
+   "quote_coverage": 0.0,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 0,
+   "turnover": 0,
+   "worst_max_dd_pct": 0.0
+  },
+  "candidate_full@stress": {
+   "datasets": 2,
+   "event_window_decisions": 48,
+   "events_with_entries": [],
+   "fees_usd": 0,
+   "funding_complete": true,
+   "funding_pnl_usd": 0.0,
+   "independent_events_with_entries": 0,
+   "largest_position_share": 0,
+   "liquidated": false,
+   "long_positions": 0,
+   "mean_ddadj": 0.0,
+   "mean_return_pct": 0.0,
+   "mean_sharpe": 0.0,
+   "net_pnl_usd": 0.0,
+   "positions": 0,
+   "quote_coverage": 0.0,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 0,
+   "turnover": 0,
+   "worst_max_dd_pct": 0.0
+  },
+  "price_only_control@base": {
+   "datasets": 2,
+   "event_window_decisions": 96,
+   "events_with_entries": [
+    "research_control_us_fomc_rate_statement/2026-04-22",
+    "research_control_us_fomc_rate_statement/2026-08-05",
+    "research_control_us_fomc_rate_statement/2026-09-09"
+   ],
+   "fees_usd": 4.50804,
+   "funding_complete": true,
+   "funding_pnl_usd": -0.1383,
+   "independent_events_with_entries": 3,
+   "largest_position_share": 0.591957,
+   "liquidated": false,
+   "long_positions": 2,
+   "mean_ddadj": -0.5165,
+   "mean_return_pct": -0.73,
+   "mean_sharpe": -1.395,
+   "net_pnl_usd": -14.52,
+   "positions": 5,
+   "quote_coverage": null,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 3,
+   "turnover": 10.017866,
+   "worst_max_dd_pct": -2.44
+  },
+  "price_only_control@stress": {
+   "datasets": 2,
+   "event_window_decisions": 96,
+   "events_with_entries": [
+    "research_control_us_fomc_rate_statement/2026-04-22",
+    "research_control_us_fomc_rate_statement/2026-08-05",
+    "research_control_us_fomc_rate_statement/2026-09-09"
+   ],
+   "fees_usd": 4.505826,
+   "funding_complete": true,
+   "funding_pnl_usd": -0.1248,
+   "independent_events_with_entries": 3,
+   "largest_position_share": 0.585859,
+   "liquidated": false,
+   "long_positions": 2,
+   "mean_ddadj": -0.554,
+   "mean_return_pct": -0.88,
+   "mean_sharpe": -1.575,
+   "net_pnl_usd": -17.57,
+   "positions": 5,
+   "quote_coverage": null,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 3,
+   "turnover": 10.012952,
+   "worst_max_dd_pct": -2.59
+  },
+  "price_only_event@base": {
+   "datasets": 2,
+   "event_window_decisions": 48,
+   "events_with_entries": [
+    "us_fomc_rate_statement/2026-04-29",
+    "us_fomc_rate_statement/2026-06-17",
+    "us_fomc_rate_statement/2026-07-29"
+   ],
+   "fees_usd": 5.367722,
+   "funding_complete": true,
+   "funding_pnl_usd": 0.009,
+   "independent_events_with_entries": 3,
+   "largest_position_share": 0.403626,
+   "liquidated": false,
+   "long_positions": 0,
+   "mean_ddadj": -0.9655,
+   "mean_return_pct": -2.855,
+   "mean_sharpe": -2.5615,
+   "net_pnl_usd": -57.12,
+   "positions": 6,
+   "quote_coverage": null,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 6,
+   "turnover": 11.928273,
+   "worst_max_dd_pct": -3.78
+  },
+  "price_only_event@stress": {
+   "datasets": 2,
+   "event_window_decisions": 48,
+   "events_with_entries": [
+    "us_fomc_rate_statement/2026-04-29",
+    "us_fomc_rate_statement/2026-06-17",
+    "us_fomc_rate_statement/2026-07-29"
+   ],
+   "fees_usd": 5.366589,
+   "funding_complete": true,
+   "funding_pnl_usd": 0.009,
+   "independent_events_with_entries": 3,
+   "largest_position_share": 0.40003,
+   "liquidated": false,
+   "long_positions": 0,
+   "mean_ddadj": -0.968,
+   "mean_return_pct": -3.035,
+   "mean_sharpe": -2.6425,
+   "net_pnl_usd": -60.69,
+   "positions": 6,
+   "quote_coverage": null,
+   "quote_usable_decisions": 0,
+   "scored": 2,
+   "short_positions": 6,
+   "turnover": 11.925751,
+   "worst_max_dd_pct": -3.93
+  }
+ },
+ "verdict": {
+  "live_status": "production_refused regardless of the verdict; promotion needs a separate reviewed decision",
+  "reasons": [
+   "candidate_full quote coverage 0.0 is below 0.9: no historical bid/ask record backs the spread gate",
+   "at most 3 independent official events produced an entry in held_out, below 30"
+  ],
+  "verdict": "inconclusive"
+ }
+}
