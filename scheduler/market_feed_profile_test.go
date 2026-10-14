@@ -827,3 +827,38 @@ func TestVolumeProfileCapacityAtLimitsAndEntryOnlyIsolation(t *testing.T) {
 		}
 	}
 }
+
+func TestVolumeProfileAttachedToAnActiveTradeStreamWaitsForAFullSession(t *testing.T) {
+	D0 := int64(1_790_000_000_000) / vpTestDayMs * vpTestDayMs
+	D1, D2 := D0+vpTestDayMs, D0+2*vpTestDayMs
+	var clockMs atomic.Int64
+	clockMs.Store(D0 - 180_000)
+	owner := newMarketFeedOwner(func() time.Time { return time.UnixMilli(clockMs.Load()).UTC() }, t.Logf)
+	owner.feedMu.Lock()
+	owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000})
+	owner.feedMu.Unlock()
+	owner.SetConnected(true)
+	owner.IngestTradeSubscription("BTC", time.UnixMilli(D0-180_000), []byte("{}"))
+	tid := uint64(1)
+	attached := false
+	for recv := D0 - 170_000; recv <= D2+30_000; recv += 20_000 {
+		px := "100"
+		if tid%2 == 0 {
+			px = "101"
+		}
+		vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", px, "0.01"))
+		tid++
+		if !attached && recv >= D0+30_000 {
+			owner.feedMu.Lock()
+			owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000, volumeProfileKeyFor("BTC"): feedProfileWindowMs})
+			owner.feedMu.Unlock()
+			attached = true
+		}
+	}
+	if s := vpSession(owner, "BTC", D1+2*3_600_000); s.Status != feedProfileStatusUnavailable || s.Code != feedProfileCodeAttached {
+		t.Fatalf("a profile attached after trades of its first minute were accepted must not seal that session: %+v", s)
+	}
+	if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
+		t.Fatalf("the next full session after the attach must become available: %+v", s)
+	}
+}

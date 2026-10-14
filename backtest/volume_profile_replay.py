@@ -117,7 +117,7 @@ class ProfileReplay:
         px = t["px"]
         if len(px) > CONTRACT["max_price_chars"]:
             self._unavailable(d, recv_ms, "price_field_length",
-                              f"trade {t['tid']} price {px[:CONTRACT['max_price_chars']]!r} is longer than {CONTRACT['max_price_chars']} characters")
+                              f"trade {t['tid']} price {px[:CONTRACT['max_price_chars']]} is longer than {CONTRACT['max_price_chars']} characters")
             return
         prior = d.prices.get(px)
         if prior is None and len(d.prices) >= CONTRACT["max_entries"]:

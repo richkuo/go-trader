@@ -44,6 +44,7 @@ const (
 	feedProfileCodeZeroVolume    = "zero_volume"
 	feedProfileCodeZeroRange     = "zero_price_range"
 	feedProfileCodeSealMalformed = "seal_malformed"
+	feedProfileCodeAttached      = "profile_attached_mid_session"
 
 	feedProfileDayAccumulating = "accumulating"
 	feedProfileDayFinal        = "final"
@@ -212,9 +213,10 @@ type feedProfileStats struct {
 }
 
 type feedProfileState struct {
-	Key   feedObservationKey
-	Days  map[int64]*feedProfileDay
-	Stats feedProfileStats
+	Key         feedObservationKey
+	Days        map[int64]*feedProfileDay
+	Stats       feedProfileStats
+	NotBeforeMs int64
 }
 
 func newFeedProfileState(key feedObservationKey) *feedProfileState {
@@ -253,7 +255,7 @@ func (p *feedProfileState) addTrade(t feedTrade, digest [32]byte, startMs, recvM
 	}
 	p.Stats.Accepted++
 	if len(t.Px) > feedProfileMaxPriceChars {
-		p.markUnavailable(d, recvMs, feedProfileCodeFieldLength, fmt.Sprintf("trade %d price %q is longer than %d characters", t.Tid, t.Px[:feedProfileMaxPriceChars], feedProfileMaxPriceChars))
+		p.markUnavailable(d, recvMs, feedProfileCodeFieldLength, fmt.Sprintf("trade %d price %s is longer than %d characters", t.Tid, t.Px[:feedProfileMaxPriceChars], feedProfileMaxPriceChars))
 		return
 	}
 	prior, exists := d.prices[t.Px]
@@ -293,6 +295,10 @@ func (p *feedProfileState) finalizeMinute(iv *feedTradeInterval, nowMs int64) {
 		return
 	}
 	d.seen[idx] = true
+	if iv.StartMs < p.NotBeforeMs {
+		p.markUnavailable(d, nowMs, feedProfileCodeAttached, fmt.Sprintf("minute %d began before the profile was attached to an active trade stream", iv.StartMs))
+		return
+	}
 	if iv.Status != feedTradeStatusComplete || iv.InvalidMs != 0 {
 		p.markUnavailable(d, nowMs, feedProfileCodeMinute, fmt.Sprintf("minute %d is invalid: %s", iv.StartMs, iv.Reason))
 		return
@@ -443,6 +449,9 @@ func (o *marketFeedOwner) applyProfileNeedLocked(key feedObservationKey) {
 	}
 	if st.profile == nil {
 		st.profile = newFeedProfileState(volumeProfileKeyFor(key.Coin))
+		if st.CoverFromMs != 0 || len(st.Intervals) > 0 {
+			st.profile.NotBeforeMs = feedTradeIntervalStart(o.now().UTC().UnixMilli()) + feedTradeIntervalMs
+		}
 	}
 }
 
@@ -501,7 +510,7 @@ func freezeVolumeProfile(p *feedProfileState, key feedObservationKey, windowMs, 
 		out.Sessions = append(out.Sessions, sess)
 	}
 	if p != nil {
-		out.Readiness = volumeProfileReadiness(p, nowMs)
+		out.Readiness = volumeProfileReadiness(p, cutoffMs)
 	} else {
 		last := out.Sessions[len(out.Sessions)-1]
 		out.Readiness = feedProfileReadiness{Key: key, Status: last.Status, Code: last.Code, Detail: last.Reason, SessionStartMs: last.SessionStartMs}
