@@ -450,7 +450,13 @@ func (o *marketFeedOwner) applyProfileNeedLocked(key feedObservationKey) {
 	if st.profile == nil {
 		st.profile = newFeedProfileState(volumeProfileKeyFor(key.Coin))
 		if st.CoverFromMs != 0 || len(st.Intervals) > 0 {
-			st.profile.NotBeforeMs = feedTradeIntervalStart(o.now().UTC().UnixMilli()) + feedTradeIntervalMs
+			notBefore := feedTradeIntervalStart(o.now().UTC().UnixMilli()) + feedTradeIntervalMs
+			for _, iv := range st.Intervals {
+				if next := iv.StartMs + feedTradeIntervalMs; next > notBefore {
+					notBefore = next
+				}
+			}
+			st.profile.NotBeforeMs = notBefore
 		}
 	}
 }

@@ -862,3 +862,109 @@ func TestVolumeProfileAttachedToAnActiveTradeStreamWaitsForAFullSession(t *testi
 		t.Fatalf("the next full session after the attach must become available: %+v", s)
 	}
 }
+
+func TestVolumeProfileAttachedBeforeAFutureSkewedMinuteWaitsForTheNextSession(t *testing.T) {
+	D0 := int64(1_790_000_000_000) / vpTestDayMs * vpTestDayMs
+	D1, D2 := D0+vpTestDayMs, D0+2*vpTestDayMs
+	var clockMs atomic.Int64
+	clockMs.Store(D0 - 180_000)
+	owner := newMarketFeedOwner(func() time.Time { return time.UnixMilli(clockMs.Load()).UTC() }, t.Logf)
+	owner.feedMu.Lock()
+	owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000})
+	owner.feedMu.Unlock()
+	owner.SetConnected(true)
+	owner.IngestTradeSubscription("BTC", time.UnixMilli(D0-180_000), []byte("{}"))
+	tid := uint64(1)
+	for recv := D0 - 170_000; recv < D0-200; recv += 20_000 {
+		vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", "100", "0.01"))
+		tid++
+	}
+	vpIngest(owner, &clockMs, D0-200, vpTrade("BTC", tid, D0+300, "A", "101", "0.01"))
+	tid++
+	clockMs.Store(D0 - 100)
+	owner.feedMu.Lock()
+	owner.applyObservationNeedsLocked(map[feedObservationKey]int64{tradeFlowKeyFor("BTC"): 2 * 3_600_000, volumeProfileKeyFor("BTC"): feedProfileWindowMs})
+	notBefore := owner.profileStateLocked("BTC").NotBeforeMs
+	owner.feedMu.Unlock()
+	if notBefore != D0+feedTradeIntervalMs {
+		t.Fatalf("a profile attached while minute %d already holds an accepted trade must start after it, got NotBeforeMs %d", D0, notBefore)
+	}
+	for recv := D0 + 10_000; recv <= D2+30_000; recv += 20_000 {
+		px := "100"
+		if tid%2 == 0 {
+			px = "101"
+		}
+		vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", px, "0.01"))
+		tid++
+	}
+	if s := vpSession(owner, "BTC", D1+3_600_000); s.Status != feedProfileStatusUnavailable || s.Code != feedProfileCodeAttached {
+		t.Fatalf("a session whose first minute held a trade accepted before the attach must stay unavailable: %+v", s)
+	}
+	if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
+		t.Fatalf("the next full session after the attach must become available: %+v", s)
+	}
+}
+
+func TestVolumeProfileAttachedToAFreshTradeStateSealsTheFirstCoveredSession(t *testing.T) {
+	D0 := int64(1_790_000_000_000) / vpTestDayMs * vpTestDayMs
+	D1 := D0 + vpTestDayMs
+	var clockMs atomic.Int64
+	clockMs.Store(D0 - 180_000)
+	owner := vpFeedOwner(t, &clockMs, "BTC")
+	owner.feedMu.Lock()
+	notBefore := owner.profileStateLocked("BTC").NotBeforeMs
+	owner.feedMu.Unlock()
+	if notBefore != 0 {
+		t.Fatalf("a profile attached to a trade state with no coverage and no intervals must keep NotBeforeMs 0, got %d", notBefore)
+	}
+	owner.IngestTradeSubscription("BTC", time.UnixMilli(D0-180_000), []byte("{}"))
+	tid := uint64(1)
+	for recv := D0 - 170_000; recv <= D1+30_000; recv += 20_000 {
+		px := "100"
+		if tid%2 == 0 {
+			px = "101"
+		}
+		vpIngest(owner, &clockMs, recv, vpTrade("BTC", tid, recv-300, "B", px, "0.01"))
+		tid++
+	}
+	if s := vpSession(owner, "BTC", D1+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
+		t.Fatalf("the first fully covered session of a fresh profile must become available: %+v", s)
+	}
+}
+
+func TestVolumeProfileSealEstimateCountsEachObservationKindOnce(t *testing.T) {
+	var strategies []StrategyConfig
+	for i := 0; i < feedProfileMaxCoins; i++ {
+		strategies = append(strategies, vpTestStrategy(fmt.Sprintf("vp-%d", i), fmt.Sprintf("C%02d", i)))
+	}
+	req, err := deriveFeedRequirements(&Config{Strategies: strategies})
+	if err != nil {
+		t.Fatal(err)
+	}
+	union := unionFeedRequirements([]feedConsumer{{Path: "vp", Loaded: true, Req: req}})
+	profileKeys := 0
+	without := union
+	without.Observations = map[feedObservationKey]int64{}
+	for k, w := range union.Observations {
+		if k.Kind == feedObservationVolumeProfile {
+			profileKeys++
+			continue
+		}
+		without.Observations[k] = w
+	}
+	if profileKeys != feedProfileMaxCoins {
+		t.Fatalf("the union holds %d profile keys, want %d", profileKeys, feedProfileMaxCoins)
+	}
+	if got, want := estimateFeedSealBytes(union), estimateFeedSealBytes(without)+estimateVolumeProfileSealBytes(union); got != want {
+		t.Fatalf("a %d-coin profile union estimates %d bytes, want the non-profile estimate plus the profile budget, %d", feedProfileMaxCoins, got, want)
+	}
+	t.Logf("a %d-coin profile union estimates %d bytes", feedProfileMaxCoins, estimateFeedSealBytes(union))
+
+	oiWindow, flowWindow := int64(6*3_600_000), int64(2*3_600_000)
+	mixed := feedRequirements{Observations: map[feedObservationKey]int64{openInterestKeyFor("BTC"): oiWindow, tradeFlowKeyFor("ETH"): flowWindow}}
+	want := 4096 + feedEstimateKeyBytes + int(oiWindow/feedObservationCadenceMs+2)*feedEstimateObservationBytes +
+		feedEstimateKeyBytes + int(flowWindow/feedTradeIntervalMs+2)*feedEstimateTradeIntervalBytes
+	if got := estimateFeedSealBytes(mixed); got != want {
+		t.Fatalf("an open-interest plus trade-flow union estimates %d bytes, want %d", got, want)
+	}
+}

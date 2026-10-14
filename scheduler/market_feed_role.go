@@ -408,6 +408,9 @@ func estimateFeedSealBytes(union feedRequirements) int {
 		total += 7 * 24 * 64
 	}
 	for key, window := range union.Observations {
+		if key.Kind == feedObservationVolumeProfile {
+			continue
+		}
 		if key.Kind == feedObservationTradeFlow {
 			total += feedEstimateKeyBytes + int(window/feedTradeIntervalMs+2)*feedEstimateTradeIntervalBytes
 			continue
