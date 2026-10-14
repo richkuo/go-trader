@@ -605,14 +605,12 @@ def _walk_forward_capture(monkeypatch, df):
     real_run = Backtester.run
 
     def run(self, signals, **kw):
+        if kw.get("warmup_prefix") is not None:
+            raise AssertionError("the walk-forward warmup seeder ran for elder_force_pullback")
         runs.append({"signals": signals.copy(), "params": dict(kw["params"]), "seed": kw.get("starting_long")})
         return real_run(self, signals, **kw)
 
-    def no_seed(*_a, **_k):
-        raise AssertionError("the walk-forward warmup seeder ran for elder_force_pullback")
-
     monkeypatch.setattr(Backtester, "run", run)
-    monkeypatch.setattr(optimizer, "warmup_exit_long_entry", no_seed)
     result = optimizer.walk_forward_optimize(
         df, NAME, WF_RANGES, n_splits=WF_SPLITS, registry="futures", timeframe="1h", platform="hyperliquid",
         verbose=False, close_strategies=CLOSE, direction="both", stop_loss_atr_mult=1.0,

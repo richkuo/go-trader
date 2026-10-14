@@ -129,3 +129,32 @@ def test_scale_in_and_partial_closes_allocate_each_entry_fee_once():
         for a in adds:
             assert a["qty_after"] == pytest.approx(a["qty_before"] + (a["quantity"] if a["side"] == "long" else -a["quantity"]))
             assert a["timing"] == "bar_open_fill" and a["decision_timestamp"] < a["bar_timestamp"]
+
+
+HANDOFF_CASES = sorted(n for n, (kw, run_kw, _, _) in CASES.items()
+                       if "execution_spec" not in kw and not run_kw)
+
+
+@pytest.mark.parametrize("name", HANDOFF_CASES)
+def test_warmup_handoff_inventory_matches_the_prefix_interval_end(name):
+    kwargs, _, strat, params = CASES[name]
+    df = ensure_atr_indicator(load_registry("futures").apply_strategy(strat, _frame(), params))
+    held = 0
+    for k in range(120, 600, 37):
+        prefix_only = Backtester(initial_capital=1000.0, platform="hyperliquid", **kwargs).run(
+            df.iloc[:k], save=False, record_events=True)
+        end = prefix_only["ledger_events"]["interval_end"]
+        resume = Backtester(initial_capital=1000.0, platform="hyperliquid", **kwargs)
+        if end["cash"] + end["position_qty"] * df["close"].iloc[k - 1] <= 0:
+            with pytest.raises(ValueError, match="not finite and positive"):
+                resume.run(df.iloc[k:], save=False, warmup_prefix=df.iloc[:k])
+            continue
+        handoff = resume.run(df.iloc[k:], save=False, warmup_prefix=df.iloc[:k])["warmup_handoff"]
+        assert handoff["prefix_cash"] == pytest.approx(end["cash"], rel=1e-12, abs=1e-9)
+        assert handoff["position_qty"] == pytest.approx(end["position_qty"], rel=1e-12, abs=1e-12)
+        assert handoff["side"] == end["side"]
+        if end["side"]:
+            held += 1
+            assert handoff["entry_price"] == pytest.approx(end["avg_cost"], rel=1e-12)
+            assert handoff["entry_fee_outstanding"] == pytest.approx(end["entry_fee_outstanding"], abs=1e-12)
+    assert held

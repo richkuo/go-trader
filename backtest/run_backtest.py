@@ -2512,8 +2512,9 @@ def _main():
         sys.exit(1)
     if args.direction == "short" and args.mode == "optimize":
         print("--direction short is not supported in optimize mode (the "
-              "walk-forward warmup seeder is long-only and would carry a "
-              "phantom long into the short run); use --mode single "
+              "walk-forward warmup seeder passes no prefix to an engine that "
+              "can open a short, so every fold would start flat and drop a "
+              "short the prefix still holds); use --mode single "
               "--direction short or eval_windows.py --direction short")
         sys.exit(1)
     if args.direction:
