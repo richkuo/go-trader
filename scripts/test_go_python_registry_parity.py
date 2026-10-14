@@ -126,7 +126,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 66
+    assert len(py) == 67
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -292,7 +292,7 @@ def python_basket_rankers():
 
 def test_go_basket_rankers_equal_python_registry():
     go, py = go_basket_rankers(), python_basket_rankers()
-    assert py == {"basket_scripted_fixture": True, "cross_sectional_momentum": True}
+    assert py == {"basket_scripted_fixture": True, "cross_sectional_momentum": True, "cross_sectional_reversal": True}
     assert mapping_mismatches(go, py) == []
     for name in py:
         entry = OPEN_REGISTRY.STRATEGIES[name]

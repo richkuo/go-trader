@@ -379,6 +379,7 @@ def test_member_check_closes_from_its_native_close_strategy():
      "Unknown strategy"),
     (["basket_scripted_fixture", "BTC", "1h", "--mode=paper", "--market-stdin"], "Unknown strategy"),
     (["cross_sectional_momentum", "BTC", "1h", "--mode=paper", "--market-stdin"], "Unknown strategy"),
+    (["cross_sectional_reversal", "BTC", "1h", "--mode=paper", "--market-stdin"], "Unknown strategy"),
 ])
 def test_member_and_single_symbol_paths_refuse_before_evaluation(argv, reason):
     proc = _run(CHECK_HL, argv, _member_payload())

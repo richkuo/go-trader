@@ -1,6 +1,6 @@
 import math
 from fractions import Fraction
-from typing import Dict, List, Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 
 SIDE_WEIGHT = 0.5
 SIDE_TOLERANCE = 1e-9
@@ -8,6 +8,11 @@ COORDINATOR_RELATIVE_TOLERANCE = 1e-9
 WEIGHT_GRID_BITS = 52
 WEIGHT_GRID_SCALE = float(2 ** WEIGHT_GRID_BITS)
 WEIGHT_GRID_UNIT = 2.0 ** -WEIGHT_GRID_BITS
+LONG_TAIL_TOP = "top"
+LONG_TAIL_BOTTOM = "bottom"
+LONG_TAILS = (LONG_TAIL_TOP, LONG_TAIL_BOTTOM)
+RETURN_RANK_MAX_LOOKBACK = 4999
+RETURN_RANK_PRICE_COLUMNS = ("open", "high", "low", "close")
 
 
 class BasketAllocationHold(Exception):
@@ -144,8 +149,11 @@ def check_coordinator_bounds(weights: Mapping[str, float], ctx: Mapping[str, flo
 
 
 def allocate_long_short(scores: Mapping[str, float], vols: Mapping[str, float], quantile: float,
-                        ctx: Mapping[str, float]) -> Dict[str, float]:
-    longs, shorts = select_tails(scores, quantile)
+                        ctx: Mapping[str, float], *, long_tail: str = LONG_TAIL_TOP) -> Dict[str, float]:
+    if long_tail not in LONG_TAILS:
+        raise ValueError(f"long_tail must be one of {LONG_TAILS!r}, got {long_tail!r}")
+    first, last = select_tails(scores, quantile)
+    longs, shorts = (first, last) if long_tail == LONG_TAIL_TOP else (last, first)
     cap_fraction = cap_fraction_for(ctx)
     long_weights = capped_side_weights(inverse_volatility_ratios({s: vols[s] for s in longs}), cap_fraction, "long")
     short_weights = capped_side_weights(inverse_volatility_ratios({s: vols[s] for s in shorts}), cap_fraction, "short")
@@ -154,3 +162,80 @@ def allocate_long_short(scores: Mapping[str, float], vols: Mapping[str, float], 
     weights.update(signed)
     check_coordinator_bounds(weights, ctx)
     return weights
+
+
+def _strict_int(name: str, params: Mapping[str, Any], key: str, low: int, high: int) -> int:
+    value = params.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name}: {key} must be an integer, got {value!r}")
+    if not low <= value <= high:
+        raise ValueError(f"{name}: {key} must be in [{low}, {high}], got {value}")
+    return value
+
+
+def validate_return_rank_params(name: str, params: Mapping[str, Any]) -> None:
+    _strict_int(name, params, "return_lookback_bars", 1, RETURN_RANK_MAX_LOOKBACK)
+    _strict_int(name, params, "volatility_lookback_bars", 2, RETURN_RANK_MAX_LOOKBACK)
+    q = params.get("quantile")
+    if isinstance(q, bool) or not isinstance(q, (int, float)) or not math.isfinite(float(q)):
+        raise ValueError(f"{name}: quantile must be a finite number, got {q!r}")
+    if not 0 < float(q) < 0.5:
+        raise ValueError(f"{name}: quantile must be above 0 and below 0.5, got {q!r}")
+
+
+def return_rank_required_closes(params: Mapping[str, Any]) -> int:
+    return max(int(params["return_lookback_bars"]), int(params["volatility_lookback_bars"])) + 1
+
+
+def return_rank_preflight(name: str, params: Mapping[str, Any], allocation_context: Mapping[str, Any]) -> None:
+    validate_return_rank_params(name, params)
+    need = return_rank_required_closes(params)
+    lookback = allocation_context["lookback_bars"]
+    if lookback < need:
+        raise ValueError(
+            f"lookback_bars {lookback} cannot supply return_lookback_bars {params['return_lookback_bars']} and "
+            f"volatility_lookback_bars {params['volatility_lookback_bars']}: the ranker needs {need} closed bars")
+
+
+def trailing_return_and_volatility(name: str, sym: str, frame, return_bars: int, vol_bars: int,
+                                   need: int) -> Tuple[float, float]:
+    prices = frame[list(RETURN_RANK_PRICE_COLUMNS)].to_numpy(dtype=float)
+    if len(prices) < need:
+        raise BasketAllocationHold(f"{sym}: the frame carries {len(prices)} closed bars, {name} needs {need}")
+    for row in prices:
+        for px in row:
+            if not math.isfinite(px):
+                raise BasketAllocationHold(f"{sym}: the frame carries a non-finite price")
+            if px <= 0:
+                raise BasketAllocationHold(f"{sym}: the frame carries a non-positive price")
+    closes = [float(c) for c in prices[:, 3]]
+    score = closes[-1] / closes[-1 - return_bars] - 1.0
+    if not math.isfinite(score):
+        raise BasketAllocationHold(f"{sym}: the trailing return is not finite")
+    logs = [math.log(c) for c in closes[-vol_bars - 1:]]
+    returns = [logs[i] - logs[i - 1] for i in range(1, len(logs))]
+    mean = math.fsum(returns) / vol_bars
+    variance = math.fsum((r - mean) ** 2 for r in returns) / vol_bars
+    vol = math.sqrt(variance)
+    if not math.isfinite(vol) or vol <= 0:
+        raise BasketAllocationHold(f"{sym}: the trailing volatility {vol!r} is zero or not finite")
+    return score, vol
+
+
+def trailing_return_rank_targets(name: str, frames: Mapping[str, Any], allocation_context: Mapping[str, Any],
+                                 return_lookback_bars: int, volatility_lookback_bars: int, quantile: float,
+                                 long_tail: str) -> Dict[str, Any]:
+    params = {"return_lookback_bars": return_lookback_bars, "volatility_lookback_bars": volatility_lookback_bars,
+              "quantile": quantile}
+    validate_return_rank_params(name, params)
+    need = return_rank_required_closes(params)
+    try:
+        scores: Dict[str, float] = {}
+        vols: Dict[str, float] = {}
+        for sym in sorted(frames):
+            scores[sym], vols[sym] = trailing_return_and_volatility(name, sym, frames[sym], return_lookback_bars,
+                                                                    volatility_lookback_bars, need)
+        weights = allocate_long_short(scores, vols, quantile, allocation_context, long_tail=long_tail)
+    except BasketAllocationHold as e:
+        return {"hold": str(e)}
+    return {"scores": scores, "weights": weights, "exclusions": {}}

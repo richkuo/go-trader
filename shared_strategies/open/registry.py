@@ -77,6 +77,12 @@ from cross_sectional_momentum import (
     xsmom_basket_preflight,
     xsmom_param_validator,
 )
+from cross_sectional_reversal import (
+    XSREV_DEFAULT_PARAMS,
+    cross_sectional_reversal_core,
+    xsrev_basket_preflight,
+    xsrev_param_validator,
+)
 from klinger_divergence import klinger_divergence_core, klinger_param_validator
 from cumulative_volume_delta_divergence import (
     DEFAULT_PARAMS as DEFAULT_CVD_PARAMS,
@@ -2714,6 +2720,31 @@ def basket_scripted_fixture_strategy(frames, eligibility, allocation_context, **
 )
 def cross_sectional_momentum_strategy(frames, eligibility, allocation_context, **params):
     return cross_sectional_momentum_core(frames, eligibility, allocation_context, **params)
+
+
+@register(
+    "cross_sectional_reversal",
+    "Cross-sectional reversal — basket evaluator that ranks the eligible members by trailing closed-bar return, "
+    "longs the bottom quantile and shorts the top quantile with inverse-volatility weights capped per coin; "
+    "unvalidated research candidate, no edge evidence",
+    dict(XSREV_DEFAULT_PARAMS),
+    platforms=("futures",),
+    constraints=[
+        "return_lookback_bars >= 1",
+        "volatility_lookback_bars >= 2",
+        "quantile > 0",
+        "quantile < 0.5",
+    ],
+    edge_status="no_edge",
+    edge_source="unvalidated",
+    edge_ref="backtest/candidates/cross_sectional_reversal_1793/SIGNAL_SPEC.md",
+    short_entries=False,
+    param_validator=xsrev_param_validator,
+    basket=dict(BASKET_CONTRACT),
+    basket_preflight=xsrev_basket_preflight,
+)
+def cross_sectional_reversal_strategy(frames, eligibility, allocation_context, **params):
+    return cross_sectional_reversal_core(frames, eligibility, allocation_context, **params)
 
 
 @register(

@@ -84,6 +84,21 @@ func TestBasketConfigLoadAcceptsValidAndRefusesNamedCases(t *testing.T) {
 			b["ranker"] = "cross_sectional_momentum"
 			b["params"] = map[string]interface{}{"gross_budget_usd": 4000}
 		}), "unknown field \"gross_budget_usd\" in params for ranker cross_sectional_momentum"},
+		{"reversal ranker as open strategy", addStrategy(func() map[string]interface{} {
+			sc := plain("hl-open-doge", "rsi", "DOGE")
+			sc["open_strategy"] = map[string]interface{}{"name": "cross_sectional_reversal"}
+			return sc
+		}()), "open strategy \"cross_sectional_reversal\" is a basket evaluator"},
+		{"reversal ranker as positional", addStrategy(plain("hl-pos-doge", "cross_sectional_reversal", "DOGE")), "positional strategy \"cross_sectional_reversal\" is a basket evaluator"},
+		{"reversal ranker as close fallback", addStrategy(func() map[string]interface{} {
+			sc := plain("hl-close-doge", "rsi", "DOGE")
+			sc["close_strategy"] = map[string]interface{}{"name": "cross_sectional_reversal"}
+			return sc
+		}()), "close-fallback strategy \"cross_sectional_reversal\" is a basket evaluator"},
+		{"reversal ranker param outside its declared keys", basket(func(b map[string]interface{}) {
+			b["ranker"] = "cross_sectional_reversal"
+			b["params"] = map[string]interface{}{"max_coin_notional_usd": 1200}
+		}), "unknown field \"max_coin_notional_usd\" in params for ranker cross_sectional_reversal"},
 		{"no closed-bar identity", member("hl-bsk-btc", func(sc map[string]interface{}) { delete(sc, "closed_bar_decisions") }), "requires \"closed_bar_decisions\": true"},
 		{"gross budget", basket(func(b map[string]interface{}) { b["gross_budget_usd"] = 0 }), "gross_budget_usd must be a finite positive number"},
 		{"net above gross", basket(func(b map[string]interface{}) { b["max_transition_net_usd"] = 5000 }), "max_transition_net_usd 5000 exceeds gross_budget_usd"},
