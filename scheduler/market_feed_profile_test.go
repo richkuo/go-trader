@@ -621,6 +621,21 @@ func TestVolumeProfileRestartWarmupAndLimits(t *testing.T) {
 	if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact == nil || s.Artifact.Trades != 4320 {
 		t.Fatalf("the first complete session after a restart must become available, got %+v", s)
 	}
+	frozen := vpSession(owner, "BTC", D2+3_600_000).Artifact
+	lateRecv := D2 + 3_600_000 + 20_000
+	vpIngest(owner, &clockMs, lateRecv, vpTrade("BTC", 99_000_001, D1+5*3_600_000+1_000, "A", "100", "7"), vpTrade("BTC", tid, lateRecv-300, "B", "101", "0.01"))
+	owner.feedMu.Lock()
+	evicted := owner.tradeFlows[tradeFlowKeyFor("BTC")].interval(D1+5*3_600_000) == nil
+	owner.feedMu.Unlock()
+	if !evicted {
+		t.Fatal("the profile-only trade state must have evicted the minute 20 hours back")
+	}
+	if s := vpSession(owner, "BTC", D2+3_600_000+3_600_000); s.Status != feedProfileStatusInvalidated || s.Code != feedProfileCodeLate || s.InvalidMs != lateRecv {
+		t.Fatalf("a new trade for a finalized minute whose interval and identity were evicted must still revoke the session: %+v", s)
+	}
+	if s := vpSession(owner, "BTC", D2+3_600_000); s.Status != feedProfileStatusAvailable || s.Artifact != frozen || s.Artifact.Units != frozen.Units {
+		t.Fatalf("a revocation after the cutoff must leave the earlier view and the frozen numbers unchanged: %+v", s)
+	}
 
 	for name, tc := range map[string]struct {
 		trade func(i int) map[string]any
@@ -765,6 +780,8 @@ func TestVolumeProfileCapacityAtLimitsAndEntryOnlyIsolation(t *testing.T) {
 	if len(bj) > marketPayloadMaxBytes {
 		t.Fatalf("a maximum batch payload is %d bytes (cap %d)", len(bj), marketPayloadMaxBytes)
 	}
+	t.Logf("capacity at the limits: %d-coin two-session seal %d bytes (estimate %d, cap %d); single payload %d bytes, batch payload %d bytes (cap %d)",
+		feedProfileMaxCoins, len(blob), est, feedSealMaxBytes, len(sj), len(bj), marketPayloadMaxBytes)
 
 	for name, mutate := range map[string]func(*marketSnapshot){
 		"missing":   func(s *marketSnapshot) { delete(s.profiles, volumeProfileKeyFor("C00")) },

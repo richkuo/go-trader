@@ -2881,7 +2881,7 @@ def bitcoin_lead_lag_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "volume_profile_reclaim",
-    "RESEARCH, production-refused (#1665) \u2014 volume-profile value-area reclaim on closed candles: the exact executed-trade profile of the previous complete UTC day (base-asset size per canonical price from supplied Hyperliquid trades, volume_profile_observations) is frozen for the whole following day; equal-width bins over that session's price range (profile_bins, the session maximum in the last bin, half-open elsewhere) pick the point of control (lower bin on a tie) and expand to the adjacent bin with more volume (lower side on a tie) until value_area_fraction of session volume is included. A long needs the previous closed candle of the same session to close below the value-area low and the current consecutive closed candle to close strictly inside the value area; a short is the mirror from above the value-area high. Both decision deadlines must see the same complete, unrevoked profile; boundary touches, opposite-boundary overshoots, the first candle of a session, gaps and a missing, pending, revoked or malformed profile hold the entry with a reason. session_bounds=true is the ablation that uses the session low and high instead of the value area. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    "RESEARCH, production-refused, frozen study INCONCLUSIVE (#1665: the only executed-trade recording holds no complete UTC session) \u2014 volume-profile value-area reclaim on closed candles: the exact executed-trade profile of the previous complete UTC day (base-asset size per canonical price from supplied Hyperliquid trades, volume_profile_observations) is frozen for the whole following day; equal-width bins over that session's price range (profile_bins, the session maximum in the last bin, half-open elsewhere) pick the point of control (lower bin on a tie) and expand to the adjacent bin with more volume (lower side on a tie) until value_area_fraction of session volume is included. A long needs the previous closed candle of the same session to close below the value-area low and the current consecutive closed candle to close strictly inside the value area; a short is the mirror from above the value-area high. Both decision deadlines must see the same complete, unrevoked profile; boundary touches, opposite-boundary overshoots, the first candle of a session, gaps and a missing, pending, revoked or malformed profile hold the entry with a reason. session_bounds=true is the ablation that uses the session low and high instead of the value area. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
     dict(DEFAULT_VPR_PARAMS),
     platforms=("futures",),
     constraints=[
@@ -2893,7 +2893,7 @@ def bitcoin_lead_lag_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "expected_interval_ms <= 3600000",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_inconclusive",
     edge_ref="backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
     short_entries=True,
     param_validator=vpr_param_validator,

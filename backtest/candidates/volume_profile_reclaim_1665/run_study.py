@@ -488,6 +488,8 @@ def render(res: dict) -> str:
     for name in STUDY_ORDER:
         st = res["studies"][name]
         lines.append(f"- {name}: manifest `{st['manifest']}` sha256 `{st['manifest_sha256']}`; {st['label']}")
+        for wname, w in st["windows"].items():
+            lines.append(f"  - window `{wname}` [{w['start']}, {w['end']}): {w['role']}")
         for coin, ds in sorted(st["datasets"].items()):
             lines.append(f"  - {coin} 15m: candles `{ds['candles_sha256'][:16]}`, funding `{ds['funding_sha256'][:16]}`, "
                          f"volume profile `{ds['volume_profile_sha256'][:16]}`, half spread {ds['half_spread_bps']} bps")
@@ -522,19 +524,39 @@ def render(res: dict) -> str:
                 pl = r["pool"]
                 lines.append(f"| `{json.dumps(r['base'], sort_keys=True)}` | {_fmt(pl['net_pnl_usd'], 2)} | {_fmt(pl['return_pct'])} | "
                              f"{_fmt(pl['max_dd_pct'])} | {_fmt(pl['ddadj'])} | {pl['positions']} |")
-        lines += ["", "| Arm | Cost | Scored | Pool net PnL $ | Return % | Max DD % | DD-adjusted | Positions (L/S) | Fees $ | Funding $ | Turnover | Largest coin share |",
-                  "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        lines += ["", "| Arm | Cost | Scored | Pool net PnL $ | Return % | Max DD % | DD-adjusted | Positions (L/S) | Fees $ | Funding $ | Funding complete | Turnover | Largest coin share |",
+                  "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for arm in ARM_ORDER:
             for cost in COST_ORDER:
                 h = st["held_out"][f"{arm}@{cost}"]
                 if not h.get("scored"):
-                    lines.append(f"| {arm} | {cost} | no: {h['reason']} | | | | | | | | | |")
+                    lines.append(f"| {arm} | {cost} | no: {h['reason']} | | | | | | | | | | |")
                     continue
                 pl = h["pool"]
                 lines.append(f"| {arm} | {cost} | yes | {_fmt(pl['net_pnl_usd'], 2)} | {_fmt(pl['return_pct'])} | {_fmt(pl['max_dd_pct'])} | "
                              f"{_fmt(pl['ddadj'])} | {pl['positions']} ({pl['long_positions']}/{pl['short_positions']}) | "
-                             f"{_fmt(pl['fees_usd'], 2)} | {_fmt(pl['funding_pnl_usd'], 2)} | {_fmt(pl['turnover'], 2)} | "
+                             f"{_fmt(pl['fees_usd'], 2)} | {_fmt(pl['funding_pnl_usd'], 2)} | {'yes' if pl['funding_complete'] else 'no'} | "
+                             f"{_fmt(pl['turnover'], 2)} | "
                              f"{_fmt(pl['largest_coin_share'])} |")
+    lines += ["", "## Per-coin held-out legs", "",
+              "| Data | Arm | Cost | Coin | Net PnL $ | Return % | Max DD % | Positions (L/S) |", "|---|---|---|---|---|---|---|---|"]
+    for name in STUDY_ORDER:
+        for arm in ARM_ORDER:
+            for cost in COST_ORDER:
+                h = res["studies"][name]["held_out"][f"{arm}@{cost}"]
+                if not h.get("scored"):
+                    continue
+                for coin in COINS:
+                    leg = h["legs"][coin]
+                    lines.append(f"| {name} | {arm} | {cost} | {coin} | {_fmt(leg['net_pnl_usd'], 2)} | {_fmt(leg['return_pct'])} | "
+                                 f"{_fmt(leg['max_dd_pct'])} | {leg['positions']} ({leg['long_positions']}/{leg['short_positions']}) |")
+    lines += ["", "## Evidence kinds", "",
+              "- Economic evidence: only the primary data set can supply it, and it holds no complete UTC session, so the result is inconclusive "
+              "and no arm is scored on it. The proxy rows are a sensitivity on candle-distributed volume and are not economic evidence for "
+              "the executed-trade signal.",
+              "- Fixture evidence (not economic): `scripts/test_volume_profile_replay.sh` drives hand-calculated trades through the real feed "
+              "owner, recorder, sealer, shared socket and client and checks the sealed sessions, value areas and decisions against the "
+              "independent Python replay; `backtest/tests/test_volume_profile_reclaim_integration.py` covers the evaluator rules."]
     lines += ["", "## Protocol", "",
               f"- Every arm: direction `both`, close `tiered_tp_atr` (one tier, 2.0 ATR, full close), entry-ATR stop 1.0, strict close comparison, "
               f"next-open fills, funding charged on every leg, one ${POOL_USD:.0f} pool with ${ALLOCATION_USD:.0f} per coin and no cross-coin borrowing; "
