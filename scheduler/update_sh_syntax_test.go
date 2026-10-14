@@ -50,6 +50,10 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		ciStep: true,
 		marker: "PASS: trade-flow replay harness (sealed trade-flow payloads and decisions match the independent recording replay; tampered, truncated and contradicted recordings refused)",
 	},
+	"test_macro_event_replay.sh": {
+		ciStep: true,
+		marker: "PASS: macro-event replay harness (Python-imported artifacts sealed by the Go owner give equal websocket, shared and offline decisions; altered artifact bytes refused)",
+	},
 	"test_ledger_export.sh": {
 		ciStep:     true,
 		marker:     "PASS: ledger capture and export (active-WAL capture without source effects, version 2 export contract, every refusal leaves inputs unchanged)",

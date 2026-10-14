@@ -106,6 +106,7 @@ func macroQuoteKeyFor(coin, sha string) feedMacroKey {
 
 type feedMacroNeed struct {
 	Path     string
+	Paths    []string
 	WindowMs int64
 	Err      string
 }
@@ -240,11 +241,19 @@ func (r *feedRequirements) addMacro(key feedMacroKey, path string, windowMs int6
 	}
 	need, ok := r.Macro[key]
 	if !ok {
-		r.Macro[key] = feedMacroNeed{Path: path, WindowMs: windowMs}
+		r.Macro[key] = feedMacroNeed{Path: path, Paths: []string{path}, WindowMs: windowMs}
 		return
 	}
 	if path < need.Path {
 		need.Path = path
+	}
+	seen := false
+	for _, p := range need.Paths {
+		seen = seen || p == path
+	}
+	if !seen {
+		need.Paths = append(need.Paths, path)
+		sort.Strings(need.Paths)
 	}
 	if windowMs > need.WindowMs {
 		need.WindowMs = windowMs
@@ -269,9 +278,11 @@ func deriveMacroRequirement(sc StrategyConfig, symbol string, entry *feedStrateg
 		return
 	}
 	entry.MacroCalendar = macroCalendarKeyFor(p.CalendarSHA)
+	entry.MacroCalendarPath = p.CalendarPath
 	req.addMacro(entry.MacroCalendar, p.CalendarPath, 0)
 	if p.QuotePath != "" {
 		entry.MacroHasQuotes = true
+		entry.MacroQuotePath = p.QuotePath
 		entry.MacroQuotes = macroQuoteKeyFor(symbol, p.QuoteSHA)
 		entry.MacroQuoteWindowMs = p.quoteWindowMs()
 		req.addMacro(entry.MacroQuotes, p.QuotePath, entry.MacroQuoteWindowMs)
@@ -283,39 +294,79 @@ func resolveMacroPathConflicts(req *feedRequirements) {
 		return
 	}
 	digests := make(map[string]map[string]bool)
-	for key, need := range req.Macro {
-		if digests[need.Path] == nil {
-			digests[need.Path] = make(map[string]bool)
+	note := func(path, sha string) {
+		if digests[path] == nil {
+			digests[path] = make(map[string]bool)
 		}
-		digests[need.Path][key.SHA256] = true
+		digests[path][sha] = true
 	}
-	bad := make(map[feedMacroKey]string)
 	for key, need := range req.Macro {
-		if len(digests[need.Path]) > 1 {
-			shas := make([]string, 0, len(digests[need.Path]))
-			for s := range digests[need.Path] {
-				shas = append(shas, s)
+		for _, p := range need.Paths {
+			note(p, key.SHA256)
+		}
+	}
+	conflict := func(path string) string {
+		if len(digests[path]) < 2 {
+			return ""
+		}
+		shas := make([]string, 0, len(digests[path]))
+		for s := range digests[path] {
+			shas = append(shas, s)
+		}
+		sort.Strings(shas)
+		return fmt.Sprintf("artifact path %s is pinned to %d different digests (%s); one file has one content", path, len(shas), strings.Join(shas, ", "))
+	}
+	for key, need := range req.Macro {
+		var valid []string
+		why := ""
+		for _, p := range need.Paths {
+			if c := conflict(p); c != "" {
+				why = c
+				continue
 			}
-			sort.Strings(shas)
-			bad[key] = fmt.Sprintf("artifact path %s is pinned to %d different digests (%s); one file has one content", need.Path, len(shas), strings.Join(shas, ", "))
+			valid = append(valid, p)
 		}
-	}
-	for key, why := range bad {
-		need := req.Macro[key]
-		need.Err = why
+		if len(valid) == 0 {
+			need.Err = why
+		} else {
+			need.Path = valid[0]
+		}
 		req.Macro[key] = need
 	}
 	for id, entry := range req.Strategies {
 		if !entry.MacroEvents || entry.MacroErr != "" {
 			continue
 		}
-		for key := range entry.macroNeeds() {
-			if why, ok := bad[key]; ok {
-				entry.MacroErr = why
+		for _, p := range []string{entry.MacroCalendarPath, entry.MacroQuotePath} {
+			if c := conflict(p); p != "" && c != "" {
+				entry.MacroErr = c
 			}
 		}
 		req.Strategies[id] = entry
 	}
+}
+
+func pruneUnusedMacro(req *feedRequirements) {
+	rebuilt := feedRequirements{Macro: make(map[feedMacroKey]feedMacroNeed)}
+	for _, entry := range req.Strategies {
+		if !entry.MacroEvents || entry.MacroErr != "" {
+			continue
+		}
+		rebuilt.addMacro(entry.MacroCalendar, entry.MacroCalendarPath, 0)
+		if entry.MacroHasQuotes {
+			rebuilt.addMacro(entry.MacroQuotes, entry.MacroQuotePath, entry.MacroQuoteWindowMs)
+		}
+	}
+	req.Macro = rebuilt.Macro
+}
+
+func sortedStrategyRequirementIDs(req feedRequirements) []string {
+	ids := make([]string, 0, len(req.Strategies))
+	for id := range req.Strategies {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func macroStrategyIDs(cfg *Config) []string {

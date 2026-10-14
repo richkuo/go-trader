@@ -155,11 +155,11 @@ def local_to_utc_ms(local: str, tz_name: str) -> int:
     except ValueError as exc:
         raise MacroInputError(f"scheduled_local {local!r} is not a valid time: {exc}")
     early, late = naive.replace(tzinfo=zone, fold=0), naive.replace(tzinfo=zone, fold=1)
-    if early.utcoffset() != late.utcoffset():
-        raise MacroInputError(f"scheduled_local {local!r} is ambiguous in {tz_name}")
     back = early.astimezone(_dt.timezone.utc).astimezone(zone).replace(tzinfo=None)
     if back != naive:
         raise MacroInputError(f"scheduled_local {local!r} does not exist in {tz_name}")
+    if early.utcoffset() != late.utcoffset():
+        raise MacroInputError(f"scheduled_local {local!r} is ambiguous in {tz_name}")
     return int(early.astimezone(_dt.timezone.utc).timestamp() * 1000)
 
 

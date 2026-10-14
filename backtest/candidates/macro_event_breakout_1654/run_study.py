@@ -187,7 +187,8 @@ def candidate(arm: str, base: dict) -> dict:
     if close[0]["name"] != "time_stop" or close[0]["params"]["max_bars"] != params["holding_bars"]:
         raise SystemExit("the time_stop max_bars must equal holding_bars")
     return {"name": SPEC["name"], "type": SPEC["strategy_type"], "params": params, "direction": SPEC["direction"],
-            "close_strategies": close, "stop_loss_atr_mult": SPEC["stop_loss_atr_mult"]}
+            "close_strategies": close, "stop_loss_atr_mult": SPEC["stop_loss_atr_mult"],
+            "comparison_mode": SPEC["comparison_mode"]}
 
 
 def decision_audit(frame, params: dict, coin: str, manifest=None, dataset=None, window=None) -> dict:
@@ -204,7 +205,8 @@ def decision_audit(frame, params: dict, coin: str, manifest=None, dataset=None, 
     return {
         "event_window_decisions": int(len(window_rows)),
         "quote_usable_decisions": quote_ok,
-        "quote_coverage": round(quote_ok / len(window_rows), 6) if len(window_rows) else None,
+        "quote_coverage": (round(quote_ok / len(window_rows), 6) if len(window_rows) else None)
+        if params["spread_gate"] else None,
         "reasons": {k: int(v) for k, v in sorted(reasons.items())},
         "events_seen": sorted(set(relevant["meb_event_id"])),
         "entries": [{"bar_ms": int(r.meb_deadline_ms - params["expected_interval_ms"]), "side": r.meb_side,
@@ -298,7 +300,7 @@ class Runner:
         for ds in manifest["datasets"]:
             self.capture.results.clear()
             ctx = {"manifest": manifest, "window": wname, "cost_multiplier": cost}
-            leg = ew.run_candidate_leg(self.reg, cand, ds["symbol"], manifest["interval"], (None, None),
+            leg = ew.run_candidate_leg(self.reg, cand, ds["coin"], manifest["interval"], (None, None),
                                        capital=self.capital, manifest_ctx=ctx)
             legs[ds["symbol"]] = leg_summary(leg, self.capture.take(), self.capital)
             frame, win, _ = om.window_frame(manifest, ds, wname)
@@ -307,6 +309,12 @@ class Runner:
             audits[ds["symbol"]] = audit
         return {"arm": arm, "data": "venue", "window": wname, "cost_multiplier": cost, "manifest": rel,
                 "params": cand["params"], "legs": legs, "audit": audits}
+
+
+def venue_costs() -> dict:
+    with open(os.path.join(REPO, SPEC["venue"]["manifests"][0])) as fh:
+        raw = json.load(fh)
+    return {"venue_costs": raw["costs"], "half_spread_bps": {d["coin"]: d["half_spread_bps"] for d in raw["datasets"]}}
 
 
 def mean(values):
@@ -319,6 +327,7 @@ def aggregate(run: dict) -> dict:
     events = sorted({e["event_id"] for a in run["audit"].values() for e in a["entries"]})
     decisions = sum(a["event_window_decisions"] for a in run["audit"].values())
     usable = sum(a["quote_usable_decisions"] for a in run["audit"].values())
+    gated = bool(run["params"]["spread_gate"])
     return {
         "datasets": len(run["legs"]), "scored": len(legs),
         "mean_return_pct": mean(l["return_pct"] for l in legs), "mean_sharpe": mean(l["sharpe"] for l in legs),
@@ -334,7 +343,8 @@ def aggregate(run: dict) -> dict:
         "liquidated": any(l["liquidated"] for l in legs),
         "independent_events_with_entries": len(events), "events_with_entries": events,
         "event_window_decisions": decisions, "quote_usable_decisions": usable,
-        "quote_coverage": round(usable / decisions, 6) if decisions else None,
+        "quote_coverage": (round(usable / decisions, 6) if decisions else None) if gated else None,
+        "largest_position_share": max((l["largest_position_share"] or 0 for l in legs), default=None),
     }
 
 
@@ -407,6 +417,7 @@ def run(skip_stability: bool) -> dict:
         "source_commit": git_head(),
         "sources_sha256": {p: sha256_file(os.path.join(REPO, p)) for p in SOURCE_FILES},
         "inputs": inputs,
+        "costs": venue_costs(),
         "invocation": "uv run --no-sync python backtest/candidates/macro_event_breakout_1654/run_study.py run",
         "selection": {"rule": SPEC["selection"], "selected": base,
                       "train_variants": [{"base": r["base"], "aggregate": r["aggregate"]} for r in train]},
@@ -441,8 +452,8 @@ def render() -> str:
     lines = [
         "# macro_event_breakout study (#1654)",
         "",
-        f"Verdict: **{r['verdict']['verdict'].upper()}**. " + " ".join(r["verdict"]["reasons"]) + " "
-        + r["verdict"]["live_status"] + ".",
+        f"Verdict: **{r['verdict']['verdict'].upper()}**. Reasons: " + "; ".join(r["verdict"]["reasons"])
+        + ". Live status: " + r["verdict"]["live_status"] + ".",
         "",
         "## Plain simple English",
         "",
@@ -482,13 +493,16 @@ def render() -> str:
                          ("Venue window 2026-04-01 to 2026-10-01 (Hyperliquid, manifest costs)", r["venue"])):
         lines += ["", f"## {title}", "",
                   "| arm | mean return % | mean Sharpe | worst max DD % | net PnL $ | positions (L/S) | fees $ | "
-                  "funding $ | turnover | events with entries | quote coverage | funding complete |",
-                  "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+                  "funding $ | turnover | largest position share | events with entries | quote coverage | "
+                  "funding complete |",
+                  "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for arm, a in block.items():
             lines.append(f"| {arm} | {fmt(a['mean_return_pct'])} | {fmt(a['mean_sharpe'])} | {fmt(a['worst_max_dd_pct'])} "
                          f"| {fmt(a['net_pnl_usd'], 2)} | {a['positions']} ({a['long_positions']}/{a['short_positions']}) "
                          f"| {fmt(a['fees_usd'], 2)} | {fmt(a['funding_pnl_usd'], 2)} | {fmt(a['turnover'])} "
-                         f"| {a['independent_events_with_entries']} | {fmt(a['quote_coverage'])} | {a['funding_complete']} |")
+                         f"| {fmt(a['largest_position_share'])} | {a['independent_events_with_entries']} "
+                         f"| {fmt(a['quote_coverage']) if a['quote_coverage'] is not None else 'gate off'} "
+                         f"| {a['funding_complete']} |")
     if r["stability_exploratory"]:
         lines += ["", "## Parameter stability (exploratory, held-out, price_only_event, after the freeze)", "",
                   "| variant | mean return % | positions |", "|---|---|---|"]
@@ -496,6 +510,16 @@ def render() -> str:
             lines.append(f"| `{json.dumps(v['base'], sort_keys=True)}` | {fmt(v['aggregate']['mean_return_pct'])} "
                          f"| {v['aggregate']['positions']} |")
     lines += [
+        "",
+        "## Costs and their provenance",
+        "",
+        f"- Venue leg: `{r['costs']['venue_costs']}` from the manifest, half spread per coin "
+        f"`{r['costs']['half_spread_bps']}` bps from one l2Book snapshot, szDecimals lot flooring from the pinned "
+        "meta, hourly Hyperliquid funding; stress doubles half spread and slippage, fees unchanged.",
+        "- Proxy leg: the cached-path platform fee model for Hyperliquid perps and hourly Hyperliquid funding "
+        "(`--funding charge`); no spread, lot or minimum-size model.",
+        "- Unmodeled: per-decision spread (no quotes), queue position, partial fills, latency after the bar close, "
+        "and event-time liquidity changes beyond the stress multiplier.",
         "",
         "## Limits and unmodeled costs",
         "",

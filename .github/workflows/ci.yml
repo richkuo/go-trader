@@ -150,6 +150,12 @@ jobs:
             --marker 'PASS: trade-flow replay harness (sealed trade-flow payloads and decisions match the independent recording replay; tampered, truncated and contradicted recordings refused)' \
             -- bash scripts/test_trade_flow_replay.sh
 
+      - name: Macro-event replay suite
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'PASS: macro-event replay harness (Python-imported artifacts sealed by the Go owner give equal websocket, shared and offline decisions; altered artifact bytes refused)' \
+            -- bash scripts/test_macro_event_replay.sh
+
       - name: Allow unprivileged user namespaces for the ledger capture worker
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 

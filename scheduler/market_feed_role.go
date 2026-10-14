@@ -352,7 +352,9 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 			if need.Err != "" {
 				continue
 			}
-			union.addMacro(key, need.Path, need.WindowMs)
+			for _, path := range need.Paths {
+				union.addMacro(key, path, need.WindowMs)
+			}
 		}
 	}
 	resolveMacroPathConflicts(&union)

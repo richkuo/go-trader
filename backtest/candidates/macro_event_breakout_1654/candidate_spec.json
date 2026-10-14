@@ -1,4 +1,11 @@
 {
+  "amendments": [
+    {
+      "before_scoring": true,
+      "change": "comparison_mode approximate",
+      "reason": "the first run stopped at the close-capability preflight before any window was scored: time_stop needs bars_held, which no live close context supplies, so a strict comparison refuses it; the research simulator supplies bars_held, and the issue requires time_stop as the close owner"
+    }
+  ],
   "arms": {
     "candidate_full": {
       "calendar": "official",
@@ -52,6 +59,7 @@
       }
     }
   ],
+  "comparison_mode": "approximate",
   "control_event_type": "research_control_us_fomc_rate_statement",
   "direction": "both",
   "event_type": "us_fomc_rate_statement",

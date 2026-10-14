@@ -294,6 +294,11 @@ func basketReplayConfigRefusal(cfg *Config, stateDir string) error {
 		for kind := range kinds {
 			errs = append(errs, fmt.Sprintf("the configuration needs %s observations, which the replay does not freeze (it builds no sealed feed snapshot of any version)", kind))
 		}
+		for _, id := range sortedStrategyRequirementIDs(req) {
+			if req.Strategies[id].MacroEvents {
+				errs = append(errs, fmt.Sprintf("strategy %s needs macro calendar and quote records, which the replay does not freeze", id))
+			}
+		}
 	}
 	if len(errs) > 0 {
 		sort.Strings(errs)

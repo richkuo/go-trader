@@ -91,8 +91,10 @@ type feedStrategyRequirement struct {
 
 	MacroEvents        bool
 	MacroCalendar      feedMacroKey
+	MacroCalendarPath  string
 	MacroHasQuotes     bool
 	MacroQuotes        feedMacroKey
+	MacroQuotePath     string
 	MacroQuoteWindowMs int64
 	MacroErr           string
 }
@@ -321,6 +323,7 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 		return feedRequirements{}, fmt.Errorf("market_feed=%s rejects this config:\n  %s", cfg.marketFeedMode(), strings.Join(errs, "\n  "))
 	}
 	resolveMacroPathConflicts(&req)
+	pruneUnusedMacro(&req)
 	hlCoins, _ := collectPerpsMarkSymbols(cfg.Strategies)
 	req.MidCoins = hlCoins
 	req.AccountingCoins = paperFundingAccountingCoins(cfg.Strategies)
