@@ -491,8 +491,141 @@ def _cmd_harness_trades(args) -> int:
     return 1 if failures else 0
 
 
+PROFILE_DECISION_COLUMNS = ["timestamp", "vpr_reason", "vpr_profile_sha256", "vpr_val", "vpr_vah", "vpr_deadline_ms",
+                            "vpr_carried", "signal"]
+PROFILE_SESSION_FIELDS = ("session_start_ms", "status", "reason_code", "invalid_ms", "artifact")
+
+
+def _cmd_import_profiles(args) -> int:
+    from volume_profile_replay import coverage_report, load_profile_recording, write_profile_series
+    loaded = load_profile_recording(args.run_dir)
+    report = loaded["report"]
+    out = {k: report[k] for k in ("run_id", "recorder_version", "frames", "malformed_frames", "dropped",
+                                  "events_compared", "economic_evidence", "refusals")}
+    out["series"] = {}
+    for coin, series in loaded["series"].items():
+        entry = {"coverage": coverage_report(series), "stats": series["stats"]}
+        if args.out_dir:
+            path = os.path.join(args.out_dir, f"{coin}_volume_profile.json.gz")
+            entry["file"] = path
+            entry["file_sha256"] = write_profile_series(series, path)
+        out["series"][coin] = entry
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0
+
+
+def _profile_frame(payload: dict, coin: str, timeframe: str, cutoff_ms: int):
+    import pandas as pd
+    from market_payload import market_frame_rows
+    rows = market_frame_rows(payload, coin, timeframe)
+    df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df.index = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    df.attrs["decision_time"] = {"cutoff_ms": int(cutoff_ms)}
+    return df
+
+
+def _profile_decisions(df, profile: dict, params: dict):
+    _here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, os.path.join(_here, "..", "shared_strategies", "open", "futures"))
+    import strategies as futures_registry
+    out = futures_registry.apply_strategy("volume_profile_reclaim", df, {**params, "volume_profile_observations": profile})
+    return out, json.loads(out[PROFILE_DECISION_COLUMNS].to_json(orient="values", double_precision=15))
+
+
+def _last_closed(out):
+    closed = out[out["vpr_reason"] != "bar_not_closed"]
+    return closed.iloc[-1]
+
+
+def _norm_sessions(sessions: list) -> list:
+    return [{k: s.get(k) for k in PROFILE_SESSION_FIELDS} for s in sessions]
+
+
+def _profile_expectation(harness: dict, coin: str, key: int) -> str:
+    keys = harness["keys"]
+    if key == keys["key0"]:
+        return "profile_unavailable"
+    if coin == "ETH":
+        return "outside_value_area" if key == keys["key3"] else "profile_unavailable"
+    return {keys["key0"]: "profile_pending", keys["key1"]: "entry_long", keys["key2"]: "profile_invalidated",
+            keys["key3"]: "profile_unavailable"}[key]
+
+
+def _profile_harness_case(directory: str, harness: dict, case: dict, loaded: dict) -> dict:
+    from fractions import Fraction
+    _here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, os.path.join(_here, "..", "shared_tools"))
+    from market_payload import market_volume_profile, validate_market_payload
+    from volume_profile_inputs import value_area
+    from volume_profile_replay import payload_from_profile_series
+    with open(os.path.join(directory, case["payload"])) as fh:
+        payload = json.load(fh)
+    validate_market_payload(payload)
+    coin = case["coin"]
+    live = market_volume_profile(payload, coin)
+    cutoff = int(live["cutoff_ms"])
+    key = cutoff // 1000
+    series = loaded["series"][coin]
+    replay = payload_from_profile_series(series, live["bar_interval_ms"], cutoff)
+    full = payload_from_profile_series(series, live["bar_interval_ms"])
+    params = harness.get("params") or {}
+    df = _profile_frame(payload, coin, harness["timeframe"], cutoff)
+    live_out, live_a = _profile_decisions(df, live, params)
+    _, live_b = _profile_decisions(df, market_volume_profile(payload, coin), params)
+    replay_out, replayed = _profile_decisions(df, replay, params)
+    full_out, full_rows = _profile_decisions(df, full, params)
+    last_live, last_full = _last_closed(live_out), _last_closed(full_out)
+    sealed = {float(s["session_start_ms"]) for s in live["sessions"]}
+    want = _profile_expectation(harness, coin, key)
+    checks = {
+        "payload_profile_available": bool(live.get("available")),
+        "repeat_evaluation_identical": live_a == live_b,
+        "recording_sessions_match_seal": _norm_sessions(live["sessions"]) == _norm_sessions(replay["sessions"]),
+        "recording_decisions_match_seal": live_a == replayed,
+        "full_series_signals_match_seal": [r[-1] for r, prior in zip(live_a, live_out["vpr_profile_session_ms"]) if prior in sealed]
+                                          == [r[-1] for r, prior in zip(full_rows, live_out["vpr_profile_session_ms"]) if prior in sealed],
+        "full_series_last_decision_matches": [last_live[c] for c in PROFILE_DECISION_COLUMNS] == [last_full[c] for c in PROFILE_DECISION_COLUMNS]
+                                             or (last_live["vpr_reason"] in ("profile_pending", "profile_unavailable")
+                                                 and last_full["vpr_reason"] in ("profile_pending", "profile_unavailable")
+                                                 and int(last_live["signal"]) == int(last_full["signal"]) == 0),
+        "expected_last_reason": last_live["vpr_reason"] == want,
+    }
+    hand = harness.get("hand") or {}
+    if coin == "BTC" and key == harness["keys"]["key1"]:
+        art = live["sessions"][0]["artifact"]
+        base = value_area(art, 4, Fraction(str(params["value_area_fraction"])), False)
+        wide = value_area(art, 4, Fraction(str(hand["wide_fraction"])), False)
+        bounds = value_area(art, 4, Fraction(str(params["value_area_fraction"])), True)
+        checks["hand_value_area"] = (str(base["val"]), str(base["vah"]), str(base["poc_low"]), str(base["poc_high"])) == (
+            hand["val"], hand["vah"], hand["poc_low"], hand["poc_high"])
+        checks["hand_lower_side_tie"] = (str(wide["val"]), str(wide["vah"])) == (hand["wide_val"], hand["wide_vah"])
+        checks["hand_session_bounds"] = (str(bounds["val"]), str(bounds["vah"])) == (hand["bounds_val"], hand["bounds_vah"])
+        checks["hand_total_volume"] = base["total"] == round(hand["total_volume"] * 10 ** 8)
+        checks["hand_entry_long"] = int(last_live["signal"]) == 1 and last_live["vpr_val"] == hand["val"]
+    failures = [f"{k}: false" for k, v in checks.items() if not v]
+    return {"payload": case["payload"], "coin": coin, "cutoff_ms": cutoff, "last_reason": last_live["vpr_reason"],
+            "statuses": [s["status"] for s in live["sessions"]], "checks": checks, "failures": failures}
+
+
+def _cmd_harness_profiles(args) -> int:
+    from volume_profile_replay import load_profile_recording
+    with open(os.path.join(args.dir, "harness.json")) as fh:
+        harness = json.load(fh)
+    loaded = load_profile_recording(os.path.join(args.dir, "recording"))
+    results = [_profile_harness_case(args.dir, harness, case, loaded) for case in sorted(harness["cases"], key=lambda c: c["payload"])]
+    failures = [f"{r['payload']}: {f}" for r in results for f in r["failures"]]
+    if not loaded["report"]["economic_evidence"]:
+        failures.append(f"the harness recording is refused as evidence: {loaded['report']['refusals']}")
+    if len(results) != 8:
+        failures.append(f"the harness holds {len(results)} cases, want 8")
+    print(json.dumps({"recording": {k: loaded["report"][k] for k in ("frames", "events_compared", "economic_evidence")},
+                      "complete_sessions": {c: s["complete_sessions"] for c, s in loaded["series"].items()},
+                      "cases": results, "failures": failures}, indent=2, sort_keys=True, default=str))
+    return 1 if failures else 0
+
+
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Verify and import go-trader observation recordings (#1637, #1638)")
+    p = argparse.ArgumentParser(description="Verify and import go-trader observation recordings (#1637, #1638, #1665)")
     sub = p.add_subparsers(dest="cmd", required=True)
     imp = sub.add_parser("import", help="Verify a closed recording run and print (or write) its rebuilt series")
     imp.add_argument("--run-dir", required=True)
@@ -504,6 +637,11 @@ def main(argv=None) -> int:
     imt.add_argument("--out-dir", default="")
     hat = sub.add_parser("harness-trades", help="Compare sealed trade-flow payloads and decisions with the recording replay")
     hat.add_argument("--dir", required=True)
+    imp2 = sub.add_parser("import-profiles", help="Rebuild daily executed-trade volume profiles from a closed trade recording")
+    imp2.add_argument("--run-dir", required=True)
+    imp2.add_argument("--out-dir", default="")
+    hap = sub.add_parser("harness-profiles", help="Compare sealed volume-profile payloads and decisions with the recording replay")
+    hap.add_argument("--dir", required=True)
     args = p.parse_args(argv)
     from trade_flow_replay import TradeRecordingError
     try:
@@ -513,6 +651,10 @@ def main(argv=None) -> int:
             return _cmd_import_trades(args)
         if args.cmd == "harness-trades":
             return _cmd_harness_trades(args)
+        if args.cmd == "import-profiles":
+            return _cmd_import_profiles(args)
+        if args.cmd == "harness-profiles":
+            return _cmd_harness_profiles(args)
         return _cmd_harness(args)
     except (RecordingError, TradeRecordingError) as exc:
         print(f"recording error: {exc}", file=sys.stderr)

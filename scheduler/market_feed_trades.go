@@ -62,7 +62,7 @@ func tradeFlowKeyFor(coin string) feedObservationKey {
 }
 
 func feedObservationSourceFor(kind string) string {
-	if kind == feedObservationTradeFlow {
+	if kind == feedObservationTradeFlow || kind == feedObservationVolumeProfile {
 		return feedTradeSourceHLWS
 	}
 	return feedObservationSourceHLWS
@@ -322,6 +322,9 @@ type feedTradeFlowState struct {
 	Resumable    bool
 	Stats        feedTradeFlowStats
 
+	internal bool
+	profile  *feedProfileState
+
 	idents     map[feedTradeIdentKey]feedTradeIdent
 	identOrder []feedTradeIdentKey
 }
@@ -412,6 +415,9 @@ func (s *feedTradeFlowState) stopCoverage(atMs int64, reason string, ev *feedTra
 		s.Stats.Finalized++
 		s.Stats.Invalid++
 		ev.add("interval", intervalEventFields(s, iv))
+		if s.profile != nil {
+			s.profile.finalizeMinute(iv, atMs)
+		}
 	}
 	start := s.LastFrameMs
 	if start == 0 || start > atMs {
@@ -476,6 +482,9 @@ func (s *feedTradeFlowState) advance(nowMs int64, ev *feedTradeEvents) {
 		iv.Session = s.Session
 		s.Stats.Finalized++
 		ev.add("interval", intervalEventFields(s, iv))
+		if s.profile != nil {
+			s.profile.finalizeMinute(iv, nowMs)
+		}
 		s.FrontierMs = end
 	}
 	s.trim(nowMs)
@@ -521,6 +530,9 @@ func (s *feedTradeFlowState) trim(nowMs int64) {
 	if n > 0 {
 		s.identOrder = append([]feedTradeIdentKey(nil), s.identOrder[n:]...)
 	}
+	if s.profile != nil {
+		s.profile.trim(nowMs)
+	}
 }
 
 func (s *feedTradeFlowState) invalidateOpen(atMs int64, reason string) {
@@ -563,6 +575,9 @@ func (s *feedTradeFlowState) ingestTrade(t feedTrade, recvMs int64, ev *feedTrad
 		out.Outcome = feedTradeOutcomeConflict
 		out.Reason = "same time and tid with different content"
 		for _, st := range []int64{prior.StartMs, start} {
+			if s.profile != nil {
+				s.profile.invalidateMinute(st, recvMs, feedProfileCodeConflict)
+			}
 			if iv := s.interval(st); iv != nil {
 				if iv.invalidate(recvMs, "conflicting_duplicate") && iv.Status != feedTradeStatusOpen {
 					s.Stats.Invalid++
@@ -586,6 +601,9 @@ func (s *feedTradeFlowState) ingestTrade(t feedTrade, recvMs int64, ev *feedTrad
 	s.identOrder = append(s.identOrder, ik)
 	if len(s.idents) > feedTradeIdentityCap {
 		s.invalidateOpen(recvMs, feedTradeGapIdentity)
+	}
+	if s.profile != nil {
+		s.profile.observeNewTrade(start, recvMs)
 	}
 	if prior := s.interval(start); prior != nil && prior.Status != feedTradeStatusOpen {
 		s.Stats.Late++
@@ -624,6 +642,9 @@ func (s *feedTradeFlowState) ingestTrade(t feedTrade, recvMs int64, ev *feedTrad
 	}
 	iv.LastRecvMs = recvMs
 	s.Stats.Accepted++
+	if s.profile != nil {
+		s.profile.addTrade(t, digest, start, recvMs)
+	}
 	out.Outcome = feedTradeOutcomeAccepted
 	return out
 }
@@ -881,6 +902,9 @@ func (o *marketFeedOwner) TradeFlowReadiness() []feedTradeFlowReadiness {
 	nowMs := o.now().UnixMilli()
 	out := make([]feedTradeFlowReadiness, 0, len(o.tradeFlows))
 	for _, k := range sortedTradeFlowKeys(o.tradeFlows) {
+		if o.tradeFlows[k].internal {
+			continue
+		}
 		out = append(out, tradeFlowReadiness(o.tradeFlows[k], nowMs))
 	}
 	return out

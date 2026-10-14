@@ -418,6 +418,7 @@ func estimateFeedSealBytes(union feedRequirements) int {
 		total += feedEstimateCoinBytes + int(feedAccountingWindow/time.Hour+1)*feedEstimateAccountingRecordBytes
 	}
 	total += estimateMacroSealBytes(union)
+	total += estimateVolumeProfileSealBytes(union)
 	return total
 }
 
@@ -566,6 +567,13 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	}
 	union := unionFeedRequirements(consumers)
 	cadences := unionFeedCadences(consumers)
+	if perr := volumeProfileUnionError(union); perr != nil {
+		msg := fmt.Sprintf("the consumer union is refused: %v", perr)
+		fmt.Fprintf(os.Stderr, "[feed] CRITICAL: %s (exit %d)\n", msg, ExitProbeFailure)
+		sendStartupRefusalDM(notifier, "Feed startup", msg)
+		cleanupNotifier()
+		os.Exit(ExitProbeFailure)
+	}
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		msg := fmt.Sprintf("the consumer union (%d keys) needs about %d bytes per seal, over the %d-byte transport cap", len(union.Order), est, feedSealMaxBytes)
 		fmt.Fprintf(os.Stderr, "[feed] CRITICAL: %s (exit %d)\n", msg, ExitProbeFailure)
@@ -770,6 +778,10 @@ func (rt *feedRuntime) reload() {
 		fmt.Fprintf(os.Stderr, "[reload] ERROR: reload rejected; keeping the previous feed generation: %s\n", strings.Join(macroErrs, "; "))
 		return
 	}
+	if perr := volumeProfileUnionError(union); perr != nil {
+		fmt.Fprintf(os.Stderr, "[reload] ERROR: reload rejected; keeping the previous feed generation: %v\n", perr)
+		return
+	}
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		fmt.Fprintf(os.Stderr, "[reload] ERROR: the new union needs about %d bytes per seal, over the %d-byte cap; keeping the previous feed generation\n", est, feedSealMaxBytes)
 		return
@@ -911,6 +923,10 @@ func runFeedProbe(configPath string) int {
 		return ExitProbeFailure
 	}
 	union := unionFeedRequirements(consumers)
+	if perr := volumeProfileUnionError(union); perr != nil {
+		fmt.Fprintf(os.Stderr, "probe: %v\n", perr)
+		return ExitProbeFailure
+	}
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		fmt.Fprintf(os.Stderr, "probe: the consumer union needs about %d bytes per seal, over the %d-byte cap\n", est, feedSealMaxBytes)
 		return ExitProbeFailure
@@ -949,6 +965,7 @@ func dropUncollectableObservations(source string, consumers []feedConsumer) []fe
 			entry.ObsWindowMs = 0
 			entry.TradeFlow = false
 			entry.TradeWindowMs = 0
+			entry.VolumeProfile = false
 			req.Strategies[id] = entry
 		}
 		c.Req = req

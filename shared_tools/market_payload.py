@@ -1,4 +1,4 @@
-MARKET_PAYLOAD_VERSION = 1
+MARKET_PAYLOAD_VERSION = 2
 
 
 class MarketPayloadError(Exception):
@@ -153,6 +153,24 @@ def market_trade_flow(market, coin: str, error_cls=None) -> dict:
     if entry.get("kind") != "trade_flow" or entry.get("coin") != coin:
         return {"available": False, "kind": "trade_flow", "coin": coin,
                 "reason": f"market payload {key} aggregates are labelled "
+                          f"{entry.get('coin')!r}|{entry.get('kind')!r}"}
+    return dict(entry)
+
+
+def market_volume_profile(market, coin: str, error_cls=None) -> dict:
+    payload = validate_market_payload(market, error_cls)
+    key = f"{coin}|volume_profile"
+    profiles = payload.get("volume_profiles")
+    if not isinstance(profiles, dict) or key not in profiles:
+        return {"available": False, "kind": "volume_profile", "coin": coin,
+                "reason": f"market payload carries no {key} entry"}
+    entry = profiles[key]
+    if not isinstance(entry, dict):
+        return {"available": False, "kind": "volume_profile", "coin": coin,
+                "reason": f"market payload {key} entry is not an object"}
+    if entry.get("kind") != "volume_profile" or entry.get("coin") != coin:
+        return {"available": False, "kind": "volume_profile", "coin": coin,
+                "reason": f"market payload {key} entry is labelled "
                           f"{entry.get('coin')!r}|{entry.get('kind')!r}"}
     return dict(entry)
 

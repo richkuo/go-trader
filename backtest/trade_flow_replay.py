@@ -218,6 +218,7 @@ class _Flow:
                                      "uncovered", "rejected", "finalized", "invalid")}
         self.history: Dict[int, _Interval] = {}
         self.latency: List[int] = []
+        self.profile = None
 
     def sorted_intervals(self):
         return [self.intervals[k] for k in sorted(self.intervals)]
@@ -261,6 +262,8 @@ class _Flow:
             self.stats["invalid"] += 1
             self.history[iv.start] = iv
             ev.append(self.event_interval(iv))
+            if self.profile is not None:
+                self.profile.finalize_minute(iv, at_ms)
         gap_start = self.last_frame
         if gap_start == 0 or gap_start > at_ms:
             gap_start = at_ms
@@ -315,6 +318,8 @@ class _Flow:
             self.stats["finalized"] += 1
             self.history[iv.start] = iv
             ev.append(self.event_interval(iv))
+            if self.profile is not None:
+                self.profile.finalize_minute(iv, now_ms)
             self.frontier = end
         self.trim(now_ms)
 
@@ -340,6 +345,8 @@ class _Flow:
             n += 1
         if n:
             self.ident_order = self.ident_order[n:]
+        if self.profile is not None:
+            self.profile.trim(now_ms)
 
     def invalidate_open(self, at_ms: int, reason: str):
         if self.cover_from == 0:
@@ -370,6 +377,8 @@ class _Flow:
             out["o"] = "conflict"
             out["why"] = "same time and tid with different content"
             for st in (prior[1], start):
+                if self.profile is not None:
+                    self.profile.invalidate_minute(st, recv_ms, "conflicting_duplicate")
                 iv = self.intervals.get(st)
                 if iv is not None:
                     if iv.invalidate(recv_ms, "conflicting_duplicate") and iv.status != "open":
@@ -389,6 +398,8 @@ class _Flow:
         self.ident_order.append(ik)
         if len(self.idents) > CONTRACT["identity_cap"]:
             self.invalidate_open(recv_ms, "identity_overflow")
+        if self.profile is not None:
+            self.profile.observe_new_trade(start, recv_ms)
         existing = self.intervals.get(start)
         if existing is not None and existing.status != "open":
             self.stats["late"] += 1
@@ -423,6 +434,8 @@ class _Flow:
         iv.last = recv_ms
         self.stats["accepted"] += 1
         self.latency.append(recv_ms - t["time"])
+        if self.profile is not None:
+            self.profile.add_trade(t, digest, start, recv_ms)
         out["o"] = "accepted"
         return out
 
@@ -451,7 +464,7 @@ def _canon_event(e: dict) -> str:
     return json.dumps({k: v for k, v in e.items() if k != "session"}, sort_keys=True, separators=(",", ":"))
 
 
-def load_trade_recording(run_dir: str) -> dict:
+def load_trade_recording(run_dir: str, attach=None) -> dict:
     run_dir = os.path.abspath(run_dir)
     with open(os.path.join(run_dir, "run.manifest.json")) as fh:
         run = json.load(fh)
@@ -471,6 +484,8 @@ def load_trade_recording(run_dir: str) -> dict:
     if not segments:
         raise TradeRecordingError("the run has no closed segment")
     flows = {c: _Flow(c, RECORDER_WINDOW_MS) for c in coins}
+    if attach is not None:
+        attach(flows)
     report = {"run_id": run.get("run_id"), "recorder_version": run.get("recorder_version"), "coins": coins,
               "started_ms": run.get("started_ms"), "closed_ms": run.get("closed_ms"), "closed": bool(run.get("closed")),
               "dropped": 0, "segments": [], "sessions": set(), "frames": 0, "malformed_frames": 0,

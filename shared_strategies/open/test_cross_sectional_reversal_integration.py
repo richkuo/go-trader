@@ -60,7 +60,7 @@ def _request(ranker="cross_sectional_reversal", params=None, context=None, frame
              min_eligible=4):
     frames = {f"{c}|1h": _frame(c) for c in MARKS} if frames is None else frames
     market = {
-        "version": 1, "snapshot_id": "test/1", "generation": 7, "sealed_at_ms": DEADLINE + 30_000,
+        "version": 2, "snapshot_id": "test/1", "generation": 7, "sealed_at_ms": DEADLINE + 30_000,
         "frames": frames,
         "mids": {c: {"px": MARKS[c], "recv_at_ms": DEADLINE + 30_000, "source": "test", "age_ms": 0,
                      "stale": False, "confirmed": True} for c in MARKS},

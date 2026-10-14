@@ -425,11 +425,16 @@ func (o *marketFeedOwner) ObservationReadiness() []feedObservationReadiness {
 func (o *marketFeedOwner) applyObservationNeedsLocked(needs map[feedObservationKey]int64) {
 	for key, window := range needs {
 		if key.Kind == feedObservationTradeFlow {
-			if st := o.tradeFlows[key]; st != nil {
-				st.raiseWindow(window)
-				continue
-			}
-			o.tradeFlows[key] = newFeedTradeFlowState(key, window)
+			o.applyTradeFlowNeedLocked(key, window)
+		}
+	}
+	for key := range needs {
+		if key.Kind == feedObservationVolumeProfile {
+			o.applyProfileNeedLocked(key)
+		}
+	}
+	for key, window := range needs {
+		if key.Kind == feedObservationTradeFlow || key.Kind == feedObservationVolumeProfile {
 			continue
 		}
 		if st := o.observations[key]; st != nil {
@@ -446,11 +451,7 @@ func (o *marketFeedOwner) dropUnneededObservationsLocked(needs map[feedObservati
 			delete(o.observations, key)
 		}
 	}
-	for key := range o.tradeFlows {
-		if _, ok := needs[key]; !ok {
-			delete(o.tradeFlows, key)
-		}
-	}
+	o.dropUnneededTradeStatesLocked(needs)
 }
 
 type marketSnapshotObservation struct {
@@ -610,9 +611,10 @@ func attachObservationPayloads(payload *marketPayload, s *marketSnapshot, needs 
 		return
 	}
 	attachTradeFlowPayloads(payload, s, needs, barIntervalMs)
+	attachVolumeProfilePayloads(payload, s, needs, barIntervalMs)
 	keys := make([]feedObservationKey, 0, len(needs))
 	for k := range needs {
-		if k.Kind == feedObservationTradeFlow {
+		if k.Kind == feedObservationTradeFlow || k.Kind == feedObservationVolumeProfile {
 			continue
 		}
 		keys = append(keys, k)

@@ -64,6 +64,7 @@ from market_payload import (
     market_macro_events,
     market_macro_quotes,
     market_trade_flow,
+    market_volume_profile,
     validate_market_payload,
 )
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
@@ -527,6 +528,18 @@ def _shared_trade_flow(shared, symbol):
     return market_trade_flow(market, symbol, MarketPayloadError)
 
 
+VOLUME_PROFILE_STRATEGY = "volume_profile_reclaim"
+
+
+def _shared_volume_profile(shared, symbol):
+    market = shared.get("market")
+    if market is None:
+        return {"available": False, "kind": "volume_profile", "coin": symbol,
+                "reason": "volume_profile_reclaim reads executed-trade volume profiles only from the sealed market "
+                          "feed payload; this check has none and never fetches trades or reads profile files"}
+    return market_volume_profile(market, symbol, MarketPayloadError)
+
+
 MACRO_EVENT_STRATEGY = "macro_event_breakout"
 
 
@@ -949,6 +962,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
                     decision_params["funding_records"] = funding["records"]
             if funding_aware_name == MACRO_EVENT_STRATEGY:
                 decision_params.update(_shared_macro_inputs(shared, symbol, strategy_params_override))
+            if funding_aware_name == VOLUME_PROFILE_STRATEGY:
+                decision_params["volume_profile_observations"] = _shared_volume_profile(shared, symbol)
         if not hold:
             regime_view = _shared_decision_regime(shared, selection)
             hold = regime_view["hold"]
@@ -990,6 +1005,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             strategy_params["open_interest_observations"] = _shared_open_interest(shared, symbol)
         if funding_aware_name == TRADE_FLOW_STRATEGY:
             strategy_params["trade_flow_observations"] = _shared_trade_flow(shared, symbol)
+        if funding_aware_name == VOLUME_PROFILE_STRATEGY:
+            strategy_params["volume_profile_observations"] = _shared_volume_profile(shared, symbol)
         if funding_aware_name == MACRO_EVENT_STRATEGY:
             strategy_params.update(_shared_macro_inputs(shared, symbol, strategy_params_override))
         if funding_aware_name == LEAD_LAG_STRATEGY:

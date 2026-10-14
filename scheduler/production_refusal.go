@@ -9,6 +9,7 @@ var productionRefusedStrategies = map[string]string{
 	cumulativeVolumeDeltaStrategyName: "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md",
 	"macro_event_breakout":            "backtest/candidates/macro_event_breakout_1654/REPORT.md",
 	bitcoinLeadLagStrategyName:        "backtest/candidates/bitcoin_lead_lag_1640/REPORT.md",
+	volumeProfileReclaimStrategyName:  "backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
 }
 
 func productionRefusedReferences(sc StrategyConfig) []edgeReference {

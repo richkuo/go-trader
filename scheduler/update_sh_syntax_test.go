@@ -54,6 +54,10 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		ciStep: true,
 		marker: "PASS: macro-event replay harness (Python-imported artifacts sealed by the Go owner give equal websocket, shared and offline decisions; altered artifact bytes refused)",
 	},
+	"test_volume_profile_replay.sh": {
+		ciStep: true,
+		marker: "PASS: volume-profile replay harness (sealed profile sessions, hand-calculated value areas and decisions match the independent recording replay; tampered, truncated, contradicted and unclosed recordings refused)",
+	},
 	"test_ledger_export.sh": {
 		ciStep:     true,
 		marker:     "PASS: ledger capture and export (active-WAL capture without source effects, version 2 export contract, every refusal leaves inputs unchanged)",

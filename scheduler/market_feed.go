@@ -875,6 +875,10 @@ type marketFeedHealthObs struct {
 	Conflicts         uint64 `json:"conflicts,omitempty"`
 	Late              uint64 `json:"late,omitempty"`
 	Invalid           uint64 `json:"invalid_intervals,omitempty"`
+
+	ProfileSessionMs    int64  `json:"profile_session_ms,omitempty"`
+	ProfilesFinal       uint64 `json:"profiles_final,omitempty"`
+	ProfilesUnavailable uint64 `json:"profiles_unavailable,omitempty"`
 }
 
 type marketFeedHealthMid struct {
@@ -890,6 +894,7 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 	readiness := o.Readiness()
 	obsReadiness := o.ObservationReadiness()
 	tradeReadiness := o.TradeFlowReadiness()
+	profileReadiness := o.VolumeProfileReadiness()
 	o.feedMu.Lock()
 	now := o.now()
 	health := marketFeedHealth{
@@ -942,6 +947,17 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 			LastReject: r.Stats.LastReject, Detail: r.Detail,
 			CompleteIntervals: r.Complete, FrontierMs: r.FrontierMs, Duplicates: r.Stats.Duplicates,
 			Conflicts: r.Stats.Conflicts, Late: r.Stats.Late, Invalid: r.Stats.Invalid,
+		})
+	}
+	for _, r := range profileReadiness {
+		detail := r.Detail
+		if r.Code != "" {
+			detail = r.Code + ": " + detail
+		}
+		health.Observations = append(health.Observations, marketFeedHealthObs{
+			Key: r.Key.PayloadID(), Status: r.Status, Ready: r.Ready, WindowMs: feedProfileWindowMs, Detail: detail,
+			Received: r.Stats.Accepted, ProfileSessionMs: r.SessionStartMs, ProfilesFinal: r.Stats.Finalized,
+			ProfilesUnavailable: r.Stats.Unavailable, Invalid: r.Stats.Invalidated,
 		})
 	}
 	sort.SliceStable(health.Observations, func(i, j int) bool { return health.Observations[i].Key < health.Observations[j].Key })

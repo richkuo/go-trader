@@ -18,6 +18,7 @@ var fixedIntervalStrategyDefaults = map[string]int64{
 	"cumulative_volume_delta_divergence": 300_000,
 	"macro_event_breakout":               3_600_000,
 	"bitcoin_lead_lag":                   3_600_000,
+	"volume_profile_reclaim":             900_000,
 }
 
 type fixedIntervalUse struct {

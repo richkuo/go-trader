@@ -42,7 +42,7 @@ def _envelope(frames, mid=25_000.0):
     return {
         "v": 2,
         "market": {
-            "version": 1,
+            "version": 2,
             "snapshot_id": "300s/1700000000",
             "generation": 4,
             "sealed_at_ms": 1_700_000_000_000,

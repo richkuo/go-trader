@@ -86,6 +86,7 @@ type feedStrategyRequirement struct {
 	ObsWindowMs    int64
 	TradeFlow      bool
 	TradeWindowMs  int64
+	VolumeProfile  bool
 	Leader         marketFeedKey
 	HasLeader      bool
 	LeaderLookback int
@@ -103,15 +104,18 @@ type feedStrategyRequirement struct {
 }
 
 func (e feedStrategyRequirement) observationNeeds() map[feedObservationKey]int64 {
-	if !e.OpenInterest && !e.TradeFlow {
+	if !e.OpenInterest && !e.TradeFlow && !e.VolumeProfile {
 		return nil
 	}
-	out := make(map[feedObservationKey]int64, 2)
+	out := make(map[feedObservationKey]int64, 3)
 	if e.OpenInterest {
 		out[openInterestKeyFor(e.Coin)] = e.ObsWindowMs
 	}
 	if e.TradeFlow {
 		out[tradeFlowKeyFor(e.Coin)] = e.TradeWindowMs
+	}
+	if e.VolumeProfile {
+		out[volumeProfileKeyFor(e.Coin)] = feedProfileWindowMs
 	}
 	return out
 }
@@ -324,6 +328,10 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 		if feedStrategyUsesMacroEvents(sc) {
 			deriveMacroRequirement(sc, symbol, &entry, &req)
 		}
+		if feedStrategyUsesVolumeProfile(sc) {
+			entry.VolumeProfile = true
+			req.addObservation(volumeProfileKeyFor(symbol), feedProfileWindowMs)
+		}
 
 		req.Strategies[sc.ID] = entry
 	}
@@ -335,6 +343,9 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 			}
 			req.addKey(feedKeyFor(symbol, timeframe), basketFrameLookback(b.LookbackBars))
 		}
+	}
+	if err := volumeProfileUnionError(req); err != nil {
+		errs = append(errs, err.Error())
 	}
 	if len(errs) > 0 {
 		sort.Strings(errs)
@@ -369,6 +380,10 @@ func validateMarketFeedConfig(cfg *Config) error {
 		if ids := macroStrategyIDs(cfg); len(ids) > 0 {
 			return fmt.Errorf("market_feed=%q cannot supply sealed calendar and quote records for %s (strategies %s); use market_feed %q or %q",
 				marketFeedREST, macroEventBreakoutStrategyName, strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
+		}
+		if ids := volumeProfileStrategyIDs(cfg); len(ids) > 0 {
+			return fmt.Errorf("market_feed=%q cannot supply executed-trade volume profiles for %s (strategies %s); use market_feed %q or %q",
+				marketFeedREST, volumeProfileReclaimStrategyName, strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
 		}
 		return nil
 	case marketFeedWebsocket:

@@ -654,7 +654,7 @@ def _hl_frame(bars, timing=True):
 
 
 def _market(bars, cutoff_ms=None, mid=None, timing=True):
-    market = {"version": 1, "snapshot_id": "3600s/1", "generation": 1, "sealed_at_ms": cutoff_ms or bars[-1]["T"],
+    market = {"version": 2, "snapshot_id": "3600s/1", "generation": 1, "sealed_at_ms": cutoff_ms or bars[-1]["T"],
               "frames": {"BTC|1h": _hl_frame(bars, timing=timing)}, "feed_complete": True}
     if cutoff_ms is not None:
         market["decision_cutoff_ms"] = cutoff_ms

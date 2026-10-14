@@ -365,7 +365,7 @@ def test_production_hyperliquid_paths_admit_explicit_paper_and_refuse_unacknowle
     df, value = _market(120, seed=3)
     rows = _hl_candles(df)
     obs = observations(df, value, bar_endpoint_offset_ms=1, cutoff_ms=int(df["timestamp"].iloc[-1]) + HOUR)
-    market = {"version": 1, "snapshot_id": "feed/1", "frames": {"BTC|1h": {"ready": True, "rows": rows}},
+    market = {"version": 2, "snapshot_id": "feed/1", "frames": {"BTC|1h": {"ready": True, "rows": rows}},
               "observations": {"BTC|open_interest": dict(obs, coin="BTC")}}
     shared = _CHECK_HL.build_shared_signal_state("BTC", "1h", market=market)
     for slot in ({"id": "solo", "strategy": NAME},
@@ -389,7 +389,7 @@ def test_production_hyperliquid_paths_admit_explicit_paper_and_refuse_unacknowle
 
 
 def test_payload_observation_lookup_never_invents_data():
-    market = {"version": 1, "snapshot_id": "x", "frames": {}}
+    market = {"version": 2, "snapshot_id": "x", "frames": {}}
     missing = _PAYLOAD.market_observation(market, "BTC", "open_interest")
     assert missing["available"] is False and "carries no BTC|open_interest" in missing["reason"]
     mislabeled = dict(market, observations={"BTC|open_interest": {"coin": "ETH", "kind": "open_interest",

@@ -205,7 +205,7 @@ func (c *sharedFeedClient) roundTrip(ctx context.Context, socket string, req fee
 	if head.V != feedWireVersion || !feedSealVersionSupported(head.SealVersion) || head.PayloadVersion != marketSnapshotVersion {
 		return h, nil, &feedEndpointError{Kind: feedErrIncompatible, Detail: fmt.Sprintf(
 			"feed speaks wire v%d, seal v%d, payload v%d; this consumer needs wire v%d, seal v%d through v%d, payload v%d",
-			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersionBase, feedSealVersionMacro, marketSnapshotVersion)}
+			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersionBase, feedSealVersionProfile, marketSnapshotVersion)}
 	}
 	if err := decodeFeedStrict(blob, &h); err != nil {
 		return h, nil, &feedEndpointError{Kind: feedErrMalformed, Detail: fmt.Sprintf("reply header: %v", err)}
@@ -446,6 +446,7 @@ func degradedSharedSnapshot(key int64, now time.Time) *marketSnapshot {
 		funding:           map[string]feedFunding{},
 		observations:      map[feedObservationKey]*marketSnapshotObservation{},
 		tradeFlows:        map[feedObservationKey]*marketSnapshotTradeFlow{},
+		profiles:          map[feedObservationKey]*marketSnapshotProfile{},
 		macro:             map[feedMacroKey]*marketSnapshotMacro{},
 	}
 }
@@ -490,6 +491,16 @@ func applySealCoverage(snap *marketSnapshot, reqs cycleMarketRequirements) []str
 				gaps = append(gaps, fmt.Sprintf("%s is not in the seal", k.PayloadID()))
 			case flow.WindowMs < reqs.Observations[k]:
 				gaps = append(gaps, fmt.Sprintf("%s window %dms is below the %dms this consumer needs", k.PayloadID(), flow.WindowMs, reqs.Observations[k]))
+			}
+			continue
+		}
+		if k.Kind == feedObservationVolumeProfile {
+			prof, ok := snap.profiles[k]
+			switch {
+			case !ok || prof == nil:
+				gaps = append(gaps, fmt.Sprintf("%s is not in the seal", k.PayloadID()))
+			case prof.WindowMs < reqs.Observations[k]:
+				gaps = append(gaps, fmt.Sprintf("%s window %dms is below the %dms this consumer needs", k.PayloadID(), prof.WindowMs, reqs.Observations[k]))
 			}
 			continue
 		}

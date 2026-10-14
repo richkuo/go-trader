@@ -516,6 +516,7 @@ func TestBitcoinLeadLagRegistrationTables(t *testing.T) {
 	want := map[string]string{
 		cumulativeVolumeDeltaStrategyName: "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md",
 		macroEventBreakoutStrategyName:    "backtest/candidates/macro_event_breakout_1654/REPORT.md",
+		volumeProfileReclaimStrategyName:  "backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
 		name:                              ref,
 	}
 	if !reflect.DeepEqual(productionRefusedStrategies, want) {

@@ -67,7 +67,7 @@ def _candles(n=220, start_ms=1_700_000_000_000, step_ms=14_400_000):
 
 def _market(rows, mid):
     return {
-        "version": 1,
+        "version": 2,
         "snapshot_id": "14400s/1",
         "generation": 1,
         "sealed_at_ms": rows[-1][0],

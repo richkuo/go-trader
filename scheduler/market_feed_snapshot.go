@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	marketSnapshotVersion = 1
+	marketSnapshotVersion = 2
 	marketPayloadMaxBytes = 8 << 20
 )
 
@@ -59,19 +59,20 @@ type marketFundingPayload struct {
 }
 
 type marketPayload struct {
-	Version          int                                 `json:"version"`
-	SnapshotID       string                              `json:"snapshot_id"`
-	Generation       uint64                              `json:"generation"`
-	SealedAtMs       int64                               `json:"sealed_at_ms"`
-	Frames           map[string]marketFrame              `json:"frames"`
-	Mids             map[string]marketMidPayload         `json:"mids,omitempty"`
-	Funding          map[string]marketFundingPayload     `json:"funding,omitempty"`
-	Observations     map[string]marketObservationPayload `json:"observations,omitempty"`
-	TradeFlows       map[string]marketTradeFlowPayload   `json:"trade_flows,omitempty"`
-	MacroEvents      map[string]marketMacroEventsPayload `json:"macro_events,omitempty"`
-	MacroQuotes      map[string]marketMacroQuotesPayload `json:"macro_quotes,omitempty"`
-	FeedComplete     bool                                `json:"feed_complete"`
-	DecisionCutoffMs int64                               `json:"decision_cutoff_ms,omitempty"`
+	Version          int                                   `json:"version"`
+	SnapshotID       string                                `json:"snapshot_id"`
+	Generation       uint64                                `json:"generation"`
+	SealedAtMs       int64                                 `json:"sealed_at_ms"`
+	Frames           map[string]marketFrame                `json:"frames"`
+	Mids             map[string]marketMidPayload           `json:"mids,omitempty"`
+	Funding          map[string]marketFundingPayload       `json:"funding,omitempty"`
+	Observations     map[string]marketObservationPayload   `json:"observations,omitempty"`
+	TradeFlows       map[string]marketTradeFlowPayload     `json:"trade_flows,omitempty"`
+	VolumeProfiles   map[string]marketVolumeProfilePayload `json:"volume_profiles,omitempty"`
+	MacroEvents      map[string]marketMacroEventsPayload   `json:"macro_events,omitempty"`
+	MacroQuotes      map[string]marketMacroQuotesPayload   `json:"macro_quotes,omitempty"`
+	FeedComplete     bool                                  `json:"feed_complete"`
+	DecisionCutoffMs int64                                 `json:"decision_cutoff_ms,omitempty"`
 }
 
 type marketSnapshotKey struct {
@@ -97,6 +98,7 @@ type marketSnapshot struct {
 	funding      map[string]feedFunding
 	observations map[feedObservationKey]*marketSnapshotObservation
 	tradeFlows   map[feedObservationKey]*marketSnapshotTradeFlow
+	profiles     map[feedObservationKey]*marketSnapshotProfile
 	macro        map[feedMacroKey]*marketSnapshotMacro
 
 	accountingFunding map[string]feedAccountingFunding
@@ -249,6 +251,7 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 		funding:          make(map[string]feedFunding),
 		observations:     make(map[feedObservationKey]*marketSnapshotObservation, len(reqs.Observations)),
 		tradeFlows:       make(map[feedObservationKey]*marketSnapshotTradeFlow),
+		profiles:         make(map[feedObservationKey]*marketSnapshotProfile),
 		macro:            make(map[feedMacroKey]*marketSnapshotMacro, len(reqs.Macro)),
 	}
 	connected := o.connectedForReadinessLocked(now)
@@ -286,6 +289,10 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 			if st := o.tradeFlows[key]; st != nil {
 				snap.tradeFlows[key] = freezeTradeFlow(st, window, cutoff.UTC().UnixMilli(), now.UTC().UnixMilli())
 			}
+			continue
+		}
+		if key.Kind == feedObservationVolumeProfile {
+			snap.profiles[key] = freezeVolumeProfile(o.profileStateLocked(key.Coin), key, window, cutoff.UTC().UnixMilli(), now.UTC().UnixMilli())
 			continue
 		}
 		st := o.observations[key]
