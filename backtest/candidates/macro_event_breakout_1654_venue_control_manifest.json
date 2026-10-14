@@ -1,0 +1,101 @@
+{
+  "schema": "offline_candle_manifest/v4",
+  "study": "macro_event_breakout_1654_control",
+  "venue": "hyperliquid",
+  "provenance": {
+    "kind": "venue",
+    "label": "Hyperliquid mainnet perpetual 1h candles from the public info API (candleSnapshot, the most recent 5000 bars at acquisition); closed bars only; matched non-event control calendar (research controls, not official releases)"
+  },
+  "interval": "1h",
+  "warmup_bars": 48,
+  "windows": {
+    "venue_held_out": {
+      "start": "2026-04-01",
+      "end": "2026-10-01",
+      "role": "held-out venue window: scored once with the parameters frozen on the proxy training window; the venue keeps only the most recent 5000 hourly candles, so no earlier venue window exists"
+    }
+  },
+  "acquisition": {
+    "source": "POST https://api.hyperliquid.xyz/info candleSnapshot + fundingHistory (shared_tools/funding_fetcher.py), meta and l2Book",
+    "start": "2026-03-25",
+    "end": "2026-10-14"
+  },
+  "costs": {
+    "taker_fee_pct": 0.00045,
+    "maker_fee_pct": 0.00015,
+    "slippage_bps": 5.0,
+    "min_notional_usd": 10.0,
+    "min_notional_margin": 0.03
+  },
+  "venue_reference": {
+    "meta": {
+      "path": "macro_event_breakout_1654/data/venue/venue_meta.json",
+      "sha256": "458d89887417a477a93db9c93607de5f64b8813d88013e0f4883fc06d6c35249"
+    },
+    "l2_snapshot": {
+      "path": "macro_event_breakout_1654/data/venue/venue_l2_snapshot.json",
+      "sha256": "e8f6555b8b8dcf88efc62634089e7add35bc20ebfcb435826f9c5b8f0c38ac65"
+    },
+    "documents": [
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps base-tier taker and maker fee",
+        "quote": "Perps fee tiers Base rate Diamond Platinum Gold Silver Bronze Wood Tier 14d weighted volume ($) Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker 0 0.045% 0.015%",
+        "quote_sha256": "8cca42ca08eea9e26b2affe200d4d958dda0d5e0310ba162a8e1f5c9554f3bd9"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/error-responses",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps minimum order value",
+        "quote": "Order MinTradeNtl Order must have minimum value of $10.",
+        "quote_sha256": "28b93383786330e253affaed0d14b98ff3f683d9a66f0111d346f94650a2850d"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "lot size from meta szDecimals",
+        "quote": "Sizes are rounded to the szDecimals of that asset. For example, if szDecimals = 3 then 1.001 is a valid size but 1.0001 is not. szDecimals for an asset is found in the meta response to the info endpoint",
+        "quote_sha256": "9ae73e64e273ae0d0d329a2cd68cdf562ee50b583d581876b5a83bd5309dbc5f"
+      }
+    ]
+  },
+  "datasets": [
+    {
+      "coin": "BTC",
+      "symbol": "BTC/USDT",
+      "size_decimals": 5,
+      "half_spread_bps": 0.06,
+      "candles": {
+        "path": "macro_event_breakout_1654/data/venue/BTC_1h_candles.csv.gz",
+        "sha256": "fbef9302542d4ecd5d10ebf7fabbb2aab92cd935617a380ab7ea345cdc2b9556"
+      },
+      "funding": {
+        "path": "macro_event_breakout_1654/data/venue/BTC_funding.csv.gz",
+        "sha256": "09dedc09244faae8d41f20e882408dc1a8db58dc21b3d16ae15cdfdb0d7719e5"
+      },
+      "macro_calendar": {
+        "path": "macro_event_breakout_1654/data/calendar/fomc_matched_control.json",
+        "sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933"
+      }
+    },
+    {
+      "coin": "ETH",
+      "symbol": "ETH/USDT",
+      "size_decimals": 4,
+      "half_spread_bps": 0.1997,
+      "candles": {
+        "path": "macro_event_breakout_1654/data/venue/ETH_1h_candles.csv.gz",
+        "sha256": "6453e3adf1595857bd15f59db91cfb95d54064f5173bfe12ae38123ff01b58e7"
+      },
+      "funding": {
+        "path": "macro_event_breakout_1654/data/venue/ETH_funding.csv.gz",
+        "sha256": "73c87f5b3c46cc0fc9a14bfd984b4c0e5200035b53477660745ce43494b43812"
+      },
+      "macro_calendar": {
+        "path": "macro_event_breakout_1654/data/calendar/fomc_matched_control.json",
+        "sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933"
+      }
+    }
+  ]
+}

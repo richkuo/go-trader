@@ -496,6 +496,9 @@ type marketFeedOwner struct {
 	accountingFunding map[string]*feedAccountingFunding
 	recorder          *observationRecorder
 
+	macro      map[feedMacroKey]*feedMacroPrepared
+	macroNeeds map[feedMacroKey]feedMacroNeed
+
 	gen        uint64
 	subVersion uint64
 	applySeq   uint64
@@ -543,6 +546,8 @@ func newMarketFeedOwner(clock func() time.Time, logf func(string, ...any)) *mark
 
 		accountingCoins:   make(map[string]bool),
 		accountingFunding: make(map[string]*feedAccountingFunding),
+		macro:             make(map[feedMacroKey]*feedMacroPrepared),
+		macroNeeds:        make(map[feedMacroKey]feedMacroNeed),
 		corrOffsets:       append([]time.Duration(nil), feedCorrectionOffsets...),
 		alerts:            make(chan feedAlert, feedAlertChannelDepth),
 		clock:             clock,

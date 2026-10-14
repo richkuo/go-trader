@@ -1,0 +1,51 @@
+{
+ "calendar_page_check": {
+  "extra": [],
+  "listed_statements": 56,
+  "moved": [],
+  "unscheduled_entries": [
+   "2025-08-22"
+  ],
+  "years_checked": [
+   2023,
+   2026
+  ],
+  "years_on_page": [
+   2021,
+   2022,
+   2023,
+   2024,
+   2025,
+   2026,
+   2027
+  ]
+ },
+ "control": {
+  "path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json",
+  "records": 34,
+  "sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933",
+  "skipped_near_official": [],
+  "stats": {
+   "conflicting_versions": 0,
+   "identical_duplicates": 0,
+   "input_rows": 34
+  }
+ },
+ "official": {
+  "eligible_records": 17,
+  "path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json",
+  "records": 33,
+  "sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+  "stats": {
+   "conflicting_versions": 0,
+   "identical_duplicates": 2,
+   "input_rows": 35
+  },
+  "unknown_publication_records": 16
+ },
+ "published_ms": {
+  "fed_tentative_schedule_2023": 1656093600000,
+  "fed_tentative_schedule_2024": 1687534200000,
+  "fed_tentative_schedule_2025_2026": 1723224600000
+ }
+}

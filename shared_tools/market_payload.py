@@ -155,3 +155,38 @@ def market_trade_flow(market, coin: str, error_cls=None) -> dict:
                 "reason": f"market payload {key} aggregates are labelled "
                           f"{entry.get('coin')!r}|{entry.get('kind')!r}"}
     return dict(entry)
+
+
+def market_macro_events(market, calendar_sha256: str, error_cls=None) -> dict:
+    payload = validate_market_payload(market, error_cls)
+    section = payload.get("macro_events")
+    if not isinstance(section, dict) or calendar_sha256 not in section:
+        return {"kind": "macro_calendar", "available": False, "calendar_sha256": calendar_sha256,
+                "reason": f"market payload carries no macro_events entry for calendar {calendar_sha256 or '(none)'}"}
+    entry = section[calendar_sha256]
+    if not isinstance(entry, dict):
+        return {"kind": "macro_calendar", "available": False, "calendar_sha256": calendar_sha256,
+                "reason": f"market payload macro_events entry {calendar_sha256} is not an object"}
+    if entry.get("kind") != "macro_calendar" or entry.get("calendar_sha256") != calendar_sha256:
+        return {"kind": "macro_calendar", "available": False, "calendar_sha256": calendar_sha256,
+                "reason": f"market payload macro_events entry {calendar_sha256} is labelled "
+                          f"{entry.get('kind')!r}/{entry.get('calendar_sha256')!r}"}
+    return dict(entry)
+
+
+def market_macro_quotes(market, coin: str, quote_sha256: str, error_cls=None) -> dict:
+    payload = validate_market_payload(market, error_cls)
+    key = f"{coin}|{quote_sha256}"
+    section = payload.get("macro_quotes")
+    if not isinstance(section, dict) or key not in section:
+        return {"kind": "macro_quotes", "available": False, "coin": coin, "quote_sha256": quote_sha256,
+                "reason": f"market payload carries no macro_quotes entry for {key}"}
+    entry = section[key]
+    if not isinstance(entry, dict):
+        return {"kind": "macro_quotes", "available": False, "coin": coin, "quote_sha256": quote_sha256,
+                "reason": f"market payload macro_quotes entry {key} is not an object"}
+    if entry.get("kind") != "macro_quotes" or entry.get("coin") != coin or entry.get("quote_sha256") != quote_sha256:
+        return {"kind": "macro_quotes", "available": False, "coin": coin, "quote_sha256": quote_sha256,
+                "reason": f"market payload macro_quotes entry {key} is labelled "
+                          f"{entry.get('kind')!r}/{entry.get('coin')!r}/{entry.get('quote_sha256')!r}"}
+    return dict(entry)

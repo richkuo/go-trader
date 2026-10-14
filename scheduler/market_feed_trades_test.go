@@ -498,7 +498,7 @@ func TestTradeFlowObservationPipeline(t *testing.T) {
 	for _, tc := range []struct {
 		sealVersion int
 		compatible  bool
-	}{{feedSealVersionBase, true}, {feedSealVersionTrades, true}, {feedSealVersionTrades + 1, false}} {
+	}{{feedSealVersionBase, true}, {feedSealVersionTrades, true}, {feedSealVersionMacro, true}, {feedSealVersionMacro + 1, false}} {
 		peer := oiTestOldPeer(t, sockDir, tc.sealVersion)
 		_, _, err := client.roundTrip(ctx, peer, feedWireRequest{V: feedWireVersion, Op: feedWireOpDescribe})
 		if tc.compatible != (err == nil) {

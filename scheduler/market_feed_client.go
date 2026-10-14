@@ -204,8 +204,8 @@ func (c *sharedFeedClient) roundTrip(ctx context.Context, socket string, req fee
 	}
 	if head.V != feedWireVersion || !feedSealVersionSupported(head.SealVersion) || head.PayloadVersion != marketSnapshotVersion {
 		return h, nil, &feedEndpointError{Kind: feedErrIncompatible, Detail: fmt.Sprintf(
-			"feed speaks wire v%d, seal v%d, payload v%d; this consumer needs wire v%d, seal v%d, v%d or v%d, payload v%d",
-			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersionBase, feedSealVersion, feedSealVersionAccounting, marketSnapshotVersion)}
+			"feed speaks wire v%d, seal v%d, payload v%d; this consumer needs wire v%d, seal v%d through v%d, payload v%d",
+			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersionBase, feedSealVersionMacro, marketSnapshotVersion)}
 	}
 	if err := decodeFeedStrict(blob, &h); err != nil {
 		return h, nil, &feedEndpointError{Kind: feedErrMalformed, Detail: fmt.Sprintf("reply header: %v", err)}
@@ -446,6 +446,7 @@ func degradedSharedSnapshot(key int64, now time.Time) *marketSnapshot {
 		funding:           map[string]feedFunding{},
 		observations:      map[feedObservationKey]*marketSnapshotObservation{},
 		tradeFlows:        map[feedObservationKey]*marketSnapshotTradeFlow{},
+		macro:             map[feedMacroKey]*marketSnapshotMacro{},
 	}
 }
 
@@ -505,6 +506,7 @@ func applySealCoverage(snap *marketSnapshot, reqs cycleMarketRequirements) []str
 			gaps = append(gaps, fmt.Sprintf("accounting funding for %s is not in the seal", coin))
 		}
 	}
+	gaps = append(gaps, applyMacroSealCoverage(snap, reqs)...)
 	return gaps
 }
 
@@ -591,6 +593,7 @@ func sharedFeedCompatibilityLines(prefix string, descs []feedEndpointDescription
 				gaps = append(gaps, fmt.Sprintf("%s window %dms < %dms", k.PayloadID(), got, need))
 			}
 		}
+		gaps = append(gaps, macroCoverageGaps(req, desc.Macro)...)
 		accountingServed := make(map[string]bool, len(desc.AccountingFunding))
 		for _, coin := range desc.AccountingFunding {
 			accountingServed[coin] = true

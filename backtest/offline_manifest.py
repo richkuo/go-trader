@@ -26,11 +26,14 @@ if _TOOLS_DIR not in sys.path:
 SCHEMA = "offline_candle_manifest/v1"
 SCHEMA_V2 = "offline_candle_manifest/v2"
 SCHEMA_V3 = "offline_candle_manifest/v3"
-SCHEMAS = (SCHEMA, SCHEMA_V2, SCHEMA_V3)
+SCHEMA_V4 = "offline_candle_manifest/v4"
+SCHEMAS = (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4)
 DATASET_KEYS_V1 = ("coin", "symbol", "size_decimals", "half_spread_bps", "candles", "funding")
 DATASET_KEYS_V2 = DATASET_KEYS_V1 + ("open_interest",)
 DATASET_KEYS_V3 = DATASET_KEYS_V2 + ("trade_flow",)
-DATASET_KEYS = {SCHEMA: DATASET_KEYS_V1, SCHEMA_V2: DATASET_KEYS_V2, SCHEMA_V3: DATASET_KEYS_V3}
+DATASET_KEYS_V4 = DATASET_KEYS_V3 + ("macro_calendar", "macro_quotes")
+DATASET_KEYS = {SCHEMA: DATASET_KEYS_V1, SCHEMA_V2: DATASET_KEYS_V2, SCHEMA_V3: DATASET_KEYS_V3,
+                SCHEMA_V4: DATASET_KEYS_V4}
 PROVENANCE_KINDS = ("venue", "proxy")
 HOUR_MS = 3_600_000
 INTERVAL_MS = {
@@ -244,7 +247,9 @@ def load_manifest(path: str, verify: bool = True) -> dict:
             if "open_interest" in unknown:
                 hint = f"; open_interest needs schema {SCHEMA_V2!r} or {SCHEMA_V3!r}"
             elif "trade_flow" in unknown:
-                hint = f"; trade_flow needs schema {SCHEMA_V3!r}"
+                hint = f"; trade_flow needs schema {SCHEMA_V3!r} or {SCHEMA_V4!r}"
+            elif "macro_calendar" in unknown or "macro_quotes" in unknown:
+                hint = f"; macro_calendar and macro_quotes need schema {SCHEMA_V4!r}"
             raise ManifestError(f"dataset {ds.get('coin')!r} has unknown keys {unknown}{hint}")
         coin = str(ds.get("coin") or "").strip()
         if not coin:
@@ -274,7 +279,13 @@ def load_manifest(path: str, verify: bool = True) -> dict:
                               if ds.get("open_interest") else None),
             "trade_flow": (_file_ref(base_dir, ds["trade_flow"], f"{key}.trade_flow", verify)
                            if ds.get("trade_flow") else None),
+            "macro_calendar": (_file_ref(base_dir, ds["macro_calendar"], f"{key}.macro_calendar", verify)
+                               if ds.get("macro_calendar") else None),
+            "macro_quotes": (_file_ref(base_dir, ds["macro_quotes"], f"{key}.macro_quotes", verify)
+                             if ds.get("macro_quotes") else None),
         }
+        if entry["macro_quotes"] is not None and entry["macro_calendar"] is None:
+            raise ManifestError(f"{key}: macro_quotes needs a macro_calendar in the same dataset")
         datasets.append(entry)
 
     return {
@@ -496,6 +507,39 @@ def attach_trade_flow(manifest: dict, dataset: dict, window: dict):
         return None, coverage
     from trade_flow_replay import payload_from_series
     return payload_from_series(series, manifest["interval_ms"]), coverage
+
+
+def attach_macro_events(manifest: dict, dataset: dict, window: dict, params: Optional[dict] = None):
+    import macro_event_inputs as mi
+    params = params or {}
+    cal_ref, quote_ref = dataset.get("macro_calendar"), dataset.get("macro_quotes")
+    if cal_ref is None:
+        raise ManifestError(f"{dataset['key']}: macro_event_breakout needs a macro_calendar series "
+                            f"(schema {SCHEMA_V4})")
+    for label, ref, key in (("calendar", cal_ref, "calendar_sha256"), ("quotes", quote_ref, "quote_sha256")):
+        pinned = str(params.get(key) or "")
+        if pinned and (ref is None or ref["sha256"] != pinned):
+            raise ManifestError(f"{dataset['key']}: the strategy pins {label} {pinned}, the manifest attaches "
+                                f"{(ref or {}).get('sha256')}")
+    try:
+        cal_doc, cal_sha = mi.load_calendar_artifact(cal_ref["abs_path"], cal_ref["sha256"])
+        events = mi.calendar_payload(cal_doc, cal_sha)
+        coverage = {"calendar_sha256": cal_sha, "calendar_kind": cal_doc["kind"],
+                    "calendar": mi.calendar_coverage(cal_doc, params.get("event_type") or mi.EVENT_TYPE_FOMC,
+                                                     window["start_ms"], window["end_ms"])}
+        if quote_ref is not None:
+            quote_doc, quote_sha = mi.load_quote_artifact(quote_ref["abs_path"], quote_ref["sha256"], dataset["coin"])
+            quotes = mi.quote_payload(quote_doc, quote_sha)
+            coverage["quote_sha256"] = quote_sha
+            coverage["quote_records"] = len(quote_doc["records"])
+        else:
+            quotes = mi.unavailable_quotes("the manifest dataset attaches no macro_quotes series; no historical "
+                                           "bid/ask record backs the spread gate", dataset["coin"])
+            coverage["quote_sha256"] = None
+            coverage["quote_records"] = 0
+    except mi.MacroInputError as exc:
+        raise ManifestError(f"{dataset['key']}: {exc}")
+    return {"event_records": events, "spread_records": quotes}, coverage
 
 
 def execution_spec(manifest: dict, dataset: dict, cost_multiplier: float = 1.0) -> dict:
@@ -733,6 +777,9 @@ def verify_report(manifest: dict) -> dict:
             if ds.get("trade_flow") is not None:
                 out["datasets"][ds["key"]]["windows"][name]["trade_flow"] = trade_flow_coverage(
                     flow, win["start_ms"], win["end_ms"])
+            if ds.get("macro_calendar") is not None:
+                _, macro_cov = attach_macro_events(manifest, ds, win)
+                out["datasets"][ds["key"]]["windows"][name]["macro_events"] = macro_cov
     return out
 
 

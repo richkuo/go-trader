@@ -126,7 +126,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 66
+    assert len(py) == 67
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -164,7 +164,10 @@ def go_production_refused():
 def test_go_production_refusal_equals_python_registry():
     go = go_production_refused()
     py = {name: OPEN_REGISTRY.STRATEGIES[name]["edge_ref"] for name in OPEN_REGISTRY.production_refused_strategies()}
-    assert py == {"cumulative_volume_delta_divergence": "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md"}
+    assert py == {
+        "cumulative_volume_delta_divergence": "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md",
+        "macro_event_breakout": "backtest/candidates/macro_event_breakout_1654/REPORT.md",
+    }
     assert go == py
     for name in py:
         assert OPEN_REGISTRY.STRATEGIES[name]["edge_status"] == OPEN_REGISTRY.EDGE_STATUS_NO_EDGE

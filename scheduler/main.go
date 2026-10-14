@@ -3609,7 +3609,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		entry, _ := feed.entryFor(sc.ID)
 		degradedReason := ""
 		degradedKey := entry.Signal
-		if hold := feed.holdFor(*sc); hold.Held {
+		if hold := feed.holdFor(*sc); hold.Held && !hold.EntryOnly {
 			degradedReason, degradedKey = hold.Reason, hold.Key
 		} else if sym := hyperliquidSymbol(sc.Args); feed.sharedMarkMissing(prices, sym) {
 			degradedReason = fmt.Sprintf("no verified mark for %s: the sealed mid is older than %s and the REST mark fallback returned none", sym, feedMidStaleAfter)

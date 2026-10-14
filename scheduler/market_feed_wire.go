@@ -20,6 +20,7 @@ const (
 	feedSealVersion           = 2
 	feedSealVersionAccounting = 3
 	feedSealVersionTrades     = 4
+	feedSealVersionMacro      = 5
 	feedWireMaxRequestBytes   = 4 << 10
 	feedWireMaxHeaderBytes    = 1 << 20
 	feedSealMaxBytes          = 64 << 20
@@ -103,6 +104,7 @@ type feedDescribe struct {
 	MidCoins           []string                  `json:"mid_coins"`
 	Funding            []feedDescribeFunding     `json:"funding"`
 	Observations       []feedDescribeObservation `json:"observations,omitempty"`
+	Macro              []feedDescribeMacro       `json:"macro,omitempty"`
 	AccountingFunding  []string                  `json:"accounting_funding,omitempty"`
 	AccountingWindowMs int64                     `json:"accounting_window_ms,omitempty"`
 	LastSealKey        int64                     `json:"last_seal_key,omitempty"`
@@ -238,6 +240,9 @@ type feedSealDoc struct {
 	AccountingFunding []feedSealAccountingFunding `json:"accounting_funding,omitempty"`
 
 	TradeFlows []feedSealTradeFlow `json:"trade_flows,omitempty"`
+
+	MacroCalendars []feedSealMacroCalendar `json:"macro_calendars,omitempty"`
+	MacroQuotes    []feedSealMacroQuotes   `json:"macro_quotes,omitempty"`
 }
 
 type feedSealTradeInterval struct {
@@ -297,7 +302,10 @@ type feedSealTradeFlow struct {
 	Gaps           []feedSealObservationGap `json:"gaps"`
 }
 
-func feedSealVersionFor(hasObservations, hasAccounting, hasTrades bool) int {
+func feedSealVersionFor(hasObservations, hasAccounting, hasTrades, hasMacro bool) int {
+	if hasMacro {
+		return feedSealVersionMacro
+	}
 	if hasTrades {
 		return feedSealVersionTrades
 	}
@@ -311,7 +319,11 @@ func feedSealVersionFor(hasObservations, hasAccounting, hasTrades bool) int {
 }
 
 func feedSealVersionSupported(v int) bool {
-	return v == feedSealVersionBase || v == feedSealVersion || v == feedSealVersionAccounting || v == feedSealVersionTrades
+	return v == feedSealVersionBase || v == feedSealVersion || v == feedSealVersionAccounting || v == feedSealVersionTrades || v == feedSealVersionMacro
+}
+
+func (doc *feedSealDoc) hasMacro() bool {
+	return len(doc.MacroCalendars) > 0 || len(doc.MacroQuotes) > 0
 }
 
 func feedSealEvaluationID(key int64) string {
@@ -464,7 +476,8 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 	}
 	doc.AccountingFunding = sealAccountingFunding(snap.accountingFunding)
 	doc.TradeFlows = sealTradeFlows(snap.tradeFlows)
-	doc.V = feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0)
+	doc.MacroCalendars, doc.MacroQuotes = sealMacro(snap.macro)
+	doc.V = feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0, doc.hasMacro())
 	return doc, nil
 }
 
@@ -668,10 +681,10 @@ func decodeFeedSeal(blob []byte, wantKey int64) (*feedSealDoc, error) {
 		return nil, errors.New("seal bytes are not in canonical form")
 	}
 	if !feedSealVersionSupported(doc.V) {
-		return nil, fmt.Errorf("seal version %d, want %d, %d, %d or %d", doc.V, feedSealVersionBase, feedSealVersion, feedSealVersionAccounting, feedSealVersionTrades)
+		return nil, fmt.Errorf("seal version %d, want %d, %d, %d, %d or %d", doc.V, feedSealVersionBase, feedSealVersion, feedSealVersionAccounting, feedSealVersionTrades, feedSealVersionMacro)
 	}
-	if want := feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0); doc.V != want {
-		return nil, fmt.Errorf("seal version %d carries %d observations, %d accounting funding entries and %d trade flows; that content seals as version %d", doc.V, len(doc.Observations), len(doc.AccountingFunding), len(doc.TradeFlows), want)
+	if want := feedSealVersionFor(len(doc.Observations) > 0, len(doc.AccountingFunding) > 0, len(doc.TradeFlows) > 0, doc.hasMacro()); doc.V != want {
+		return nil, fmt.Errorf("seal version %d carries %d observations, %d accounting funding entries, %d trade flows and %d macro inputs; that content seals as version %d", doc.V, len(doc.Observations), len(doc.AccountingFunding), len(doc.TradeFlows), len(doc.MacroCalendars)+len(doc.MacroQuotes), want)
 	}
 	if doc.Key != wantKey {
 		return nil, fmt.Errorf("seal key %d, requested %d", doc.Key, wantKey)
@@ -733,6 +746,9 @@ func validateFeedSealDoc(doc *feedSealDoc) error {
 		return err
 	}
 	if err := validateFeedSealTradeFlows(doc.TradeFlows); err != nil {
+		return err
+	}
+	if err := validateFeedSealMacro(doc.MacroCalendars, doc.MacroQuotes); err != nil {
 		return err
 	}
 	return validateFeedSealAccountingFunding(doc.AccountingFunding)
@@ -859,6 +875,7 @@ func (doc *feedSealDoc) snapshot() *marketSnapshot {
 	}
 	snap.accountingFunding = snapshotAccountingFunding(doc.AccountingFunding)
 	snap.tradeFlows = snapshotTradeFlows(doc.TradeFlows)
+	snap.macro = snapshotMacro(doc.MacroCalendars, doc.MacroQuotes)
 	for _, f := range doc.Funding {
 		snap.funding[f.Coin] = feedFunding{
 			Current:    f.Current,

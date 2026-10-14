@@ -274,7 +274,39 @@ def _with_trade_flow(fn):
     return wrapped
 
 
+def _macro_inputs_from_bars(df: pd.DataFrame):
+    import macro_event_inputs as mi
+    opens = df.index.as_unit("ms").asi8.astype(np.int64)
+    step = int(opens[1] - opens[0])
+    first, last = int(opens[0]), int(opens[-1]) + step
+    source = {"source_id": "forward_peek_fixture", "publisher": "fixture", "url": "fixture:forward-peek",
+              "retrieved_ms": first, "sha256": "0" * 64, "published_ms": None, "note": "synthetic fixture"}
+    rows = []
+    for k, open_ms in enumerate(opens[60::40]):
+        stamp = pd.Timestamp(int(open_ms), unit="ms")
+        rows.append({"event_id": f"fixture/{stamp:%Y-%m-%d}-{k}", "event_type": mi.EVENT_TYPE_FOMC, "revision": 1,
+                     "status": "scheduled", "scheduled_local": stamp.strftime("%Y-%m-%dT%H:%M:%S"),
+                     "source_timezone": "UTC", "known_ms": first, "publication_evidence": "fixture",
+                     "source_id": "forward_peek_fixture"})
+    cal, _ = mi.import_calendar(rows, [source], [{"event_type": mi.EVENT_TYPE_FOMC, "start_ms": first - 400 * step,
+                                                  "end_ms": last + step}], "fixture", [mi.EVENT_TYPE_FOMC])
+    qsource = {k: v for k, v in source.items() if k != "published_ms"}
+    quotes = [{"event_ms": int(o) + step - 2_000, "recv_ms": int(o) + step - 1_000,
+               "bid": f"{float(df['close'].iloc[i]):.4f}", "ask": f"{float(df['close'].iloc[i]) * 1.0001:.4f}",
+               "source_id": "forward_peek_fixture"} for i, o in enumerate(opens)]
+    qdoc, _ = mi.import_quotes(quotes, [qsource], "FIX", "fixture")
+    return mi.calendar_payload(cal, "1" * 64), mi.quote_payload(qdoc, "2" * 64)
+
+
+def _with_macro_events(fn):
+    def wrapped(df, **params):
+        events, quotes = _macro_inputs_from_bars(df)
+        return fn(df, **params, event_records=events, spread_records=quotes)
+    return wrapped
+
+
 STRATEGY_INPUTS = {
+    "macro_event_breakout": _with_macro_events,
     "cumulative_volume_delta_divergence": _with_trade_flow,
     "open_interest_breakout": _with_open_interest,
     "ease_of_movement_breakout": _with_declared_cadence,

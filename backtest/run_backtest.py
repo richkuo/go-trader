@@ -29,6 +29,21 @@ OBSERVATION_INPUT_STRATEGIES = {"open_interest_breakout"}
 
 TRADE_FLOW_INPUT_STRATEGIES = {"cumulative_volume_delta_divergence"}
 
+MACRO_EVENT_INPUT_STRATEGIES = {"macro_event_breakout"}
+
+
+def attach_macro_event_inputs(params: dict, symbol: str, manifest=None, dataset=None, window=None):
+    import macro_event_inputs as mi
+    if manifest is not None:
+        import offline_manifest as om
+        return om.attach_macro_events(manifest, dataset, window, params)
+    coin = str(symbol or "").split("/")[0]
+    try:
+        events, quotes, info = mi.research_inputs(params or {}, coin)
+    except mi.MacroInputError as exc:
+        raise ValueError(f"macro_event_breakout input rejected: {exc}")
+    return {"event_records": events, "spread_records": quotes}, info
+
 FUNDING_ACCRUAL_STRATEGIES = {"delta_neutral_funding"}
 
 
@@ -1662,6 +1677,10 @@ def run_single_backtest(
                     manifest, manifest_dataset_entry, window_spec)
                 observation_params = {"trade_flow_observations": flow_obs}
                 print(f"  Trade-flow coverage: {flow_cov}")
+            if strategy_name in MACRO_EVENT_INPUT_STRATEGIES:
+                observation_params, macro_cov = attach_macro_event_inputs(
+                    strat_params, symbol, manifest, manifest_dataset_entry, window_spec)
+                print(f"  Macro-event coverage: {macro_cov}")
         except om.ManifestError as exc:
             raise SystemExit(f"manifest error: {exc}")
         execution_spec = om.execution_spec(manifest, manifest_dataset_entry, cost_multiplier)
@@ -1681,6 +1700,12 @@ def run_single_backtest(
             platform=platform, strategy_type=strategy_type,
             mode=funding_mode, timeframe=timeframe,
         )
+        if strategy_name in MACRO_EVENT_INPUT_STRATEGIES:
+            try:
+                observation_params, macro_info = attach_macro_event_inputs(strat_params, symbol)
+            except ValueError as exc:
+                raise SystemExit(str(exc))
+            print(f"  Macro-event inputs: {macro_info}")
 
     print(f"  Data: {len(df)} candles from {df.index[0]} to {df.index[-1]}")
 
@@ -2337,6 +2362,10 @@ def _main():
         if args.strategy in TRADE_FLOW_INPUT_STRATEGIES:
             print(f"--mode {args.mode} cannot run {args.strategy}: it reads recorded trade flow, "
                   "which only --mode single --manifest (or eval_windows.py --manifest) attaches")
+            sys.exit(1)
+        if args.strategy in MACRO_EVENT_INPUT_STRATEGIES:
+            print(f"--mode {args.mode} cannot run {args.strategy}: it reads point-in-time calendar and quote "
+                  "artifacts, which only --mode single (cached or --manifest) and eval_windows.py attach")
             sys.exit(1)
 
     close_refs = None

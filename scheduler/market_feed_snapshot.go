@@ -68,6 +68,8 @@ type marketPayload struct {
 	Funding          map[string]marketFundingPayload     `json:"funding,omitempty"`
 	Observations     map[string]marketObservationPayload `json:"observations,omitempty"`
 	TradeFlows       map[string]marketTradeFlowPayload   `json:"trade_flows,omitempty"`
+	MacroEvents      map[string]marketMacroEventsPayload `json:"macro_events,omitempty"`
+	MacroQuotes      map[string]marketMacroQuotesPayload `json:"macro_quotes,omitempty"`
 	FeedComplete     bool                                `json:"feed_complete"`
 	DecisionCutoffMs int64                               `json:"decision_cutoff_ms,omitempty"`
 }
@@ -95,6 +97,7 @@ type marketSnapshot struct {
 	funding      map[string]feedFunding
 	observations map[feedObservationKey]*marketSnapshotObservation
 	tradeFlows   map[feedObservationKey]*marketSnapshotTradeFlow
+	macro        map[feedMacroKey]*marketSnapshotMacro
 
 	accountingFunding map[string]feedAccountingFunding
 }
@@ -110,6 +113,7 @@ type cycleMarketRequirements struct {
 	Funding         map[string]feedFundingNeed
 	Observations    map[feedObservationKey]int64
 	AccountingCoins []string
+	Macro           map[feedMacroKey]int64
 }
 
 func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMarketRequirements {
@@ -117,6 +121,7 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 	coins := make(map[string]bool)
 	funding := make(map[string]feedFundingNeed)
 	observations := make(map[feedObservationKey]int64)
+	macro := make(map[feedMacroKey]int64)
 	raise := func(key marketFeedKey, required int) {
 		if existing, ok := need[key]; !ok || required > existing {
 			need[key] = required
@@ -146,11 +151,16 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 				observations[key] = window
 			}
 		}
+		for key, window := range entry.macroNeeds() {
+			if existing, ok := macro[key]; !ok || window > existing {
+				macro[key] = window
+			}
+		}
 	}
 	for _, coin := range req.MidCoins {
 		coins[coin] = true
 	}
-	out := cycleMarketRequirements{Funding: funding, Observations: observations}
+	out := cycleMarketRequirements{Funding: funding, Observations: observations, Macro: macro}
 	out.AccountingCoins = append(out.AccountingCoins, req.AccountingCoins...)
 	for key, required := range need {
 		out.Keys = append(out.Keys, cycleMarketRequirement{Key: key, Required: required})
@@ -236,6 +246,7 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 		funding:          make(map[string]feedFunding),
 		observations:     make(map[feedObservationKey]*marketSnapshotObservation, len(reqs.Observations)),
 		tradeFlows:       make(map[feedObservationKey]*marketSnapshotTradeFlow),
+		macro:            make(map[feedMacroKey]*marketSnapshotMacro, len(reqs.Macro)),
 	}
 	connected := o.connectedForReadinessLocked(now)
 	for _, cr := range reqs.Keys {
@@ -279,6 +290,9 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 			continue
 		}
 		snap.observations[key] = freezeObservation(st, window, cutoff.UTC().UnixMilli(), now.UTC().UnixMilli())
+	}
+	for key, window := range reqs.Macro {
+		snap.macro[key] = freezeMacroLocked(o.macro[key], key, window, cutoff.UTC().UnixMilli())
 	}
 	o.freezeAccountingFundingLocked(snap, reqs.AccountingCoins)
 	return snap

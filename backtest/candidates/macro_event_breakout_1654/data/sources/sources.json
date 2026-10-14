@@ -1,0 +1,37 @@
+{
+ "fed_fomc_calendar_page": {
+  "bytes": 165751,
+  "file": "fed_fomc_calendar_page.htm.gz",
+  "retrieved_ms": 1791940378806,
+  "sha256": "0cfc82c8459eb7643853df58937d9d22e9dcce5907b8f8691ff66ec9f494a3af",
+  "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+ },
+ "fed_press_release_index": {
+  "bytes": 999922,
+  "file": "fed_press_release_index.json.gz",
+  "retrieved_ms": 1791940379207,
+  "sha256": "23eec2e9adb789f5d1426fdd28d1f1c6b0dc92e3c8e044306bc7c571f00189e5",
+  "url": "https://www.federalreserve.gov/json/ne-press.json"
+ },
+ "fed_tentative_schedule_2023": {
+  "bytes": 80645,
+  "file": "fed_tentative_schedule_2023.htm.gz",
+  "retrieved_ms": 1791940379563,
+  "sha256": "271e5fdd03f00c7822191f54350412f88c9b30d30a41ec7754f38d3d94b4f034",
+  "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20220624a.htm"
+ },
+ "fed_tentative_schedule_2024": {
+  "bytes": 80601,
+  "file": "fed_tentative_schedule_2024.htm.gz",
+  "retrieved_ms": 1791940379887,
+  "sha256": "539eb89f331de3ce7bf060dad84f5dc2a0e6d0f5b86dd81dd1432f01f9e68cf2",
+  "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20230623a.htm"
+ },
+ "fed_tentative_schedule_2025_2026": {
+  "bytes": 81588,
+  "file": "fed_tentative_schedule_2025_2026.htm.gz",
+  "retrieved_ms": 1791940380238,
+  "sha256": "8aa85dba5dab5a57267d21848f5a9810f3f2a86f42a639669c8515a7f99fb80f",
+  "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20240809a.htm"
+ }
+}

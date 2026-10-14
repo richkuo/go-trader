@@ -1,0 +1,150 @@
+{
+  "arms": {
+    "candidate_full": {
+      "calendar": "official",
+      "role": "the full signal contract; needs quotes",
+      "spread_gate": true
+    },
+    "price_only_control": {
+      "calendar": "control",
+      "role": "matched non-event baseline for price_only_event",
+      "spread_gate": false
+    },
+    "price_only_event": {
+      "calendar": "official",
+      "role": "diagnostic: identical calendar eligibility, exits, sizing and costs, without the spread gate; never a pass",
+      "spread_gate": false
+    }
+  },
+  "calendar": {
+    "control": {
+      "path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_matched_control.json",
+      "records": 34,
+      "sha256": "7f491d22eade82314fef779433687c34d7fad079f606476ef7f5a3d73748a933",
+      "skipped_near_official": [],
+      "stats": {
+        "conflicting_versions": 0,
+        "identical_duplicates": 0,
+        "input_rows": 34
+      }
+    },
+    "coverage": "[2025-01-01, 2027-01-01) UTC for regularly scheduled statements; unscheduled notation votes are not scheduled releases and are excluded",
+    "official": {
+      "eligible_records": 17,
+      "path": "backtest/candidates/macro_event_breakout_1654/data/calendar/fomc_calendar.json",
+      "records": 33,
+      "sha256": "f5703dccc6ccc184b47303a32326ea5f4dba44930ed11fe82e3a877f624a0f85",
+      "stats": {
+        "conflicting_versions": 0,
+        "identical_duplicates": 2,
+        "input_rows": 35
+      },
+      "unknown_publication_records": 16
+    },
+    "publication_rule": "a record is eligible only with known_ms from an official release that names the date and the statement time before the release; the 2023 and 2024 tentative schedules name dates only, so their records carry known_ms null and are never eligible"
+  },
+  "capital_usd": 1000.0,
+  "close_strategies": [
+    {
+      "name": "time_stop",
+      "params": {
+        "max_bars": 12
+      }
+    }
+  ],
+  "control_event_type": "research_control_us_fomc_rate_statement",
+  "direction": "both",
+  "event_type": "us_fomc_rate_statement",
+  "grid_source": "backtest/optimizer.py DEFAULT_PARAM_RANGES['macro_event_breakout']",
+  "holding_rule": "time_stop max_bars must equal params.holding_bars; run_study.py refuses any arm that breaks it",
+  "interval": "1h",
+  "issue": 1654,
+  "matched_control": {
+    "label": "research controls, never official releases",
+    "rule": "for each eligible official statement, a research control at the same weekday and 2 p.m. ET local time 7 days before and 7 days after, skipped within 3 days of any official statement; each control inherits its source event's publication time"
+  },
+  "min_independent_events": 30,
+  "min_quote_coverage": 0.9,
+  "name": "macro_event_breakout",
+  "params": {
+    "confirm_bars": 1,
+    "cooldown_bars": 24,
+    "event_type": "us_fomc_rate_statement",
+    "expected_interval_ms": 3600000,
+    "holding_bars": 12,
+    "max_quote_age_ms": 60000,
+    "max_spread_frac": 0.0005,
+    "post_window_bars": 6,
+    "range_bars": 6,
+    "spread_gate": true
+  },
+  "proxy": {
+    "costs": "eval_windows platform fees for hyperliquid perps (the cached-path cost model)",
+    "files_from": "backtest/candidates/chande_momentum_1661/data",
+    "funding_mode": "charge",
+    "kind": "proxy",
+    "label": "Binance US spot 1h candles (BTC/USDT, ETH/USDT), a price proxy for Hyperliquid perpetuals",
+    "manifest": "backtest/candidates/chande_momentum_1661/study_manifest.json",
+    "sha256": {
+      "BTC_1h_candles.csv.gz": "d107c60f72363372d03273ba6439ca42a0d867a9089c5de171e9306af3ba2d17",
+      "BTC_funding.csv.gz": "520fd979d5594b4c2fb950cd52aa327749a124d9971a59ec3419752dd24a27f8",
+      "ETH_1h_candles.csv.gz": "59d08735aecb22b63bab8189c7c32b11101e80da42b2ec724f39e308548b7913",
+      "ETH_funding.csv.gz": "4b7694d8fc26cb7245ffa882cbdcb2d571d17f3a9f1abd6832fb0deed4985b41"
+    },
+    "symbols": [
+      "BTC/USDT",
+      "ETH/USDT"
+    ]
+  },
+  "quotes": {
+    "artifact": null,
+    "reason": "no historical Hyperliquid bid/ask archive with per-decision receipt times was available to this study; the current l2Book snapshot is a cost assumption only and never feeds the spread gate"
+  },
+  "registry": "futures",
+  "selection": {
+    "applies_to": "candidate_full and price_only_control use the same selected parameters with only spread_gate or the calendar changed",
+    "arm": "price_only_event",
+    "data": "proxy",
+    "eligible": "both datasets scored, funding complete, no liquidation",
+    "order": [
+      "max mean return_pct",
+      "max mean ddadj",
+      "earliest grid order"
+    ],
+    "window": "train"
+  },
+  "status": "frozen before any study window was scored",
+  "stop_loss_atr_mult": 1.0,
+  "strategy_type": "perps",
+  "tracking_group": "hyperliquid-strategy-candidates-2026-10-02",
+  "venue": {
+    "cost_runs": {
+      "base": 1.0,
+      "stress": 2.0
+    },
+    "costs": "manifest execution specification: taker and maker fee, half spread from one l2Book snapshot (a cost assumption), slippage, szDecimals lot flooring, $10 minimum notional, hourly funding",
+    "kind": "venue",
+    "manifests": [
+      "backtest/candidates/macro_event_breakout_1654_venue_manifest.json",
+      "backtest/candidates/macro_event_breakout_1654_venue_control_manifest.json"
+    ],
+    "window": "venue_held_out"
+  },
+  "verdict": {
+    "fail": "complete coverage and samples, and a pass condition is missed",
+    "inconclusive": "any missing point-in-time input (quotes, calendar publication), fewer than 30 independent events, a funding gap, or a missing selection",
+    "live_status": "production_refused regardless of the verdict; promotion needs a separate reviewed decision",
+    "pass": "needs every one: quote coverage of at least 0.9 of event-window decisions for candidate_full; at least 30 independent official events with a position in held_out; complete funding; candidate_full net positive at base and stress cost on the venue leg and on the proxy leg; candidate_full beats price_only_control on mean net return with a worst drawdown no larger"
+  },
+  "warmup_bars": 48,
+  "windows": {
+    "held_out": [
+      "2026-01-01",
+      "2026-10-01"
+    ],
+    "train": [
+      "2025-01-01",
+      "2026-01-01"
+    ]
+  }
+}

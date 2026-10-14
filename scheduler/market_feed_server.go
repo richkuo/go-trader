@@ -528,7 +528,7 @@ func (s *feedSealer) sealBytes(key int64) []byte {
 }
 
 func (s *feedSealer) coverageSealVersionLocked() int {
-	return feedSealVersionFor(s.coverage.hasObservationKind(feedObservationOpenInterest), len(s.coverage.AccountingCoins) > 0, s.coverage.hasObservationKind(feedObservationTradeFlow))
+	return feedSealVersionFor(s.coverage.hasObservationKind(feedObservationOpenInterest), len(s.coverage.AccountingCoins) > 0, s.coverage.hasObservationKind(feedObservationTradeFlow), len(s.coverage.Macro) > 0)
 }
 
 func (s *feedSealer) coverageSealVersion() int {
@@ -589,6 +589,7 @@ func (s *feedSealer) describe() *feedDescribe {
 			Source: feedObservationSourceFor(key.Kind), WindowMs: s.coverage.Observations[key],
 		})
 	}
+	d.Macro = describeMacro(s.coverage)
 	if len(s.coverage.AccountingCoins) > 0 {
 		d.AccountingFunding = append([]string(nil), s.coverage.AccountingCoins...)
 		d.AccountingWindowMs = feedAccountingWindow.Milliseconds()
@@ -637,9 +638,13 @@ func fullCycleRequirements(req feedRequirements) cycleMarketRequirements {
 	out := cycleMarketRequirements{
 		Funding:      make(map[string]feedFundingNeed, len(req.Funding)),
 		Observations: make(map[feedObservationKey]int64, len(req.Observations)),
+		Macro:        make(map[feedMacroKey]int64, len(req.Macro)),
 	}
 	for key, window := range req.Observations {
 		out.Observations[key] = window
+	}
+	for key, need := range req.Macro {
+		out.Macro[key] = need.WindowMs
 	}
 	for _, key := range req.Order {
 		out.Keys = append(out.Keys, cycleMarketRequirement{Key: key, Required: req.Keys[key]})
@@ -750,7 +755,7 @@ func (srv *feedUnixServer) handle(conn net.Conn) {
 			Instance:       srv.sealer.instance,
 			Source:         srv.sealer.source,
 			Generation:     srv.sealer.owner.Generation(),
-			SealVersion:    feedSealVersionFor(describeHasObservationKind(d, feedObservationOpenInterest), len(d.AccountingFunding) > 0, describeHasObservationKind(d, feedObservationTradeFlow)),
+			SealVersion:    feedSealVersionFor(describeHasObservationKind(d, feedObservationOpenInterest), len(d.AccountingFunding) > 0, describeHasObservationKind(d, feedObservationTradeFlow), len(d.Macro) > 0),
 			PayloadVersion: marketSnapshotVersion,
 			Describe:       d,
 		}

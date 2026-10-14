@@ -29,7 +29,7 @@ func TestCumulativeVolumeDeltaRegistrationTables(t *testing.T) {
 	if ev, ok := noEdgeEvidenceFor(name); !ok || ev.Ref != cvdReportRef {
 		t.Fatalf("no-edge evidence = %+v, %v", ev, ok)
 	}
-	if productionRefusedStrategies[name] != cvdReportRef || len(productionRefusedStrategies) != 1 {
+	if productionRefusedStrategies[name] != cvdReportRef {
 		t.Fatalf("production-refused table = %v", productionRefusedStrategies)
 	}
 	if _, frozen := v20StampEligibleStrategies[name]; frozen {

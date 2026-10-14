@@ -112,7 +112,7 @@ def test_registration_is_futures_only_bidirectional_hidden_production_refused_wi
     assert NAME not in spot.STRATEGY_REGISTRY
     registry = reg._registry
     assert registry.STRATEGIES[NAME]["short_entries"] is True
-    assert registry.production_refused_strategies() == frozenset({NAME})
+    assert NAME in registry.production_refused_strategies()
     grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
     assert len(grid) == 216
     for params in grid:

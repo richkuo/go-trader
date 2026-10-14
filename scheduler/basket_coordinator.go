@@ -386,7 +386,7 @@ func mergeCycleRequirements(a, b cycleMarketRequirements) cycleMarketRequirement
 			need[cr.Key] = cr.Required
 		}
 	}
-	out := cycleMarketRequirements{Funding: make(map[string]feedFundingNeed), Observations: make(map[feedObservationKey]int64)}
+	out := cycleMarketRequirements{Funding: make(map[string]feedFundingNeed), Observations: make(map[feedObservationKey]int64), Macro: make(map[feedMacroKey]int64)}
 	for k, l := range need {
 		out.Keys = append(out.Keys, cycleMarketRequirement{Key: k, Required: l})
 	}
@@ -409,6 +409,11 @@ func mergeCycleRequirements(a, b cycleMarketRequirements) cycleMarketRequirement
 		for k, w := range src.Observations {
 			if w > out.Observations[k] {
 				out.Observations[k] = w
+			}
+		}
+		for k, w := range src.Macro {
+			if existing, ok := out.Macro[k]; !ok || w > existing {
+				out.Macro[k] = w
 			}
 		}
 	}

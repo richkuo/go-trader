@@ -172,7 +172,7 @@ func restingTPTradeThroughStateReloadErrors(sc, ns StrategyConfig, open bool) []
 }
 
 func needsTimedSignalFrame(sc StrategyConfig) bool {
-	return sc.ClosedBarDecisions || sc.RestingTPTradeThrough
+	return sc.ClosedBarDecisions || sc.RestingTPTradeThrough || feedStrategyUsesMacroEvents(sc)
 }
 
 func restingTPPaperStopOwnerActive(sc StrategyConfig, pos *Position) bool {

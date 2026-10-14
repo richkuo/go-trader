@@ -861,6 +861,12 @@ DEFAULT_PARAM_RANGES = {
         "recursion_length": [120, 144, 192],
     },
     "camarilla_pivot_reversal": {},
+    "macro_event_breakout": {
+        "range_bars": [3, 6, 12],
+        "post_window_bars": [3, 6],
+        "confirm_bars": [1, 2],
+        "cooldown_bars": [24],
+    },
     "cumulative_volume_delta_divergence": {
         "left_span": [2, 3, 4],
         "right_span": [2, 3],

@@ -445,6 +445,7 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	errs = append(errs, paperSourceReloadErrors(cfg, next)...)
 	errs = append(errs, basketReloadErrors(cfg, next)...)
 	errs = append(errs, storageIdentityReloadErrors(cfg, next)...)
+	errs = append(errs, macroIdentityReloadErrors(cfg, next)...)
 	if cfg.marketFeedMode() != next.marketFeedMode() {
 		errs = append(errs, fmt.Sprintf("market_feed changed (%q -> %q; restart required)", cfg.marketFeedMode(), next.marketFeedMode()))
 	}
