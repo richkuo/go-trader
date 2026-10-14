@@ -488,7 +488,8 @@ def render(res: dict) -> str:
     for name in STUDY_ORDER:
         st = res["studies"][name]
         lines.append(f"- {name}: manifest `{st['manifest']}` sha256 `{st['manifest_sha256']}`; {st['label']}")
-        for wname, w in st["windows"].items():
+        for wname in ("train", "test"):
+            w = st["windows"][wname]
             lines.append(f"  - window `{wname}` [{w['start']}, {w['end']}): {w['role']}")
         for coin, ds in sorted(st["datasets"].items()):
             lines.append(f"  - {coin} 15m: candles `{ds['candles_sha256'][:16]}`, funding `{ds['funding_sha256'][:16]}`, "
