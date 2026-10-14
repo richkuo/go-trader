@@ -43,6 +43,7 @@ sha256, spread fraction) and the effective parameters (`meb_*` columns).
 | `data/venue/` | Hyperliquid 1h candles, funding, meta and one l2Book snapshot for the v4 venue manifests in `backtest/candidates/`. |
 | `run_study.py` | `run` (offline, no network, no orders), `render`, `verify`, `protocol-hash`. |
 | `results.json`, `REPORT.md` | Full outputs and the rendered report. |
+| `discovery_{before,after}_{spot,futures}.json` | `--list-json` output of the spot and futures shims before and after registration; each pair is byte-identical. |
 
 Proxy candles and funding are the hash-pinned files in `backtest/candidates/chande_momentum_1661/data`, referenced in
 place. No historical quote artifact exists for these windows.
