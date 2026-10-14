@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -274,19 +276,13 @@ def test_warmup_seed_high_water_resets_on_reentry():
 
 
 def test_walk_forward_still_seeds_a_long_only_strategy(monkeypatch):
-    seeds = []
-    real_run = Backtester.run
-
-    def run(self, signals, **kw):
-        seeds.append(kw.get("starting_long"))
-        return real_run(self, signals, **kw)
-
-    monkeypatch.setattr(Backtester, "run", run)
+    calls = _capture_runs(monkeypatch)
     walk_forward_optimize(
         _trending_ohlc(n=500), "sma_crossover", {"fast_period": [10, 20], "slow_period": [40, 80]},
         n_splits=5, train_pct=0.7, initial_capital=1000.0, verbose=False,
     )
-    assert any(seed is not None for seed in seeds)
+    assert all(c["starting_long"] is None for c in calls)
+    assert any(c["seed"] is not None for c in calls)
 
 
 SCRIPTED = "wf_scripted_entry_1785"
@@ -355,7 +351,11 @@ def _capture_runs(monkeypatch):
 
     def run(self, signals, **kw):
         result = real_run(self, signals, **kw)
-        calls.append({"start": signals.index[0], "seed": kw.get("starting_long"),
+        handoff = result.get("warmup_handoff")
+        calls.append({"start": signals.index[0], "engine": self,
+                      "seed": handoff if handoff and handoff["side"] else None,
+                      "handoff": handoff, "prefix": kw.get("warmup_prefix"),
+                      "starting_long": kw.get("starting_long"),
                       "signals": signals, "result": result})
         return result
 
@@ -405,10 +405,21 @@ def test_prefix_fixtures_hold_their_stated_engine_state(monkeypatch):
     assert warmup_exit_long_entry(tp_prefix, 0.0) is not None
     assert warmup_exit_long_entry(stop_prefix, 0.0) is not None
     assert warmup_exit_long_entry(flip_prefix, 0.0) is None
+    long_engine = dict(engine, direction="long")
+    for prefix, reason in ((tp_prefix, "tiered_tp_atr:4"), (stop_prefix, "sl")):
+        trades = Backtester(**long_engine).run(prefix, save=False)["trades"]
+        assert [(t["side"], t["exit_reason"]) for t in trades] == [("long", reason)]
 
 
 def _seeded_phases(by_phase):
     return sorted(p for p, calls in by_phase.items() if any(c["seed"] is not None for c in calls))
+
+
+def _replayed_phases(by_phase):
+    return sorted(p for p, calls in by_phase.items() if any(c["prefix"] is not None for c in calls))
+
+
+REPLAYED = ["test_0", "test_1", "train_1"]
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -421,6 +432,7 @@ def test_short_capable_contract_starts_every_scored_run_flat(monkeypatch, kwargs
     _register_scripted(monkeypatch)
     by_phase = _scripted_walk_forward(monkeypatch, **kwargs)
     assert _seeded_phases(by_phase) == []
+    assert _replayed_phases(by_phase) == []
     df = _scripted_frame()
     for phase, bar in SCORED_STARTS.items():
         for call in by_phase[phase]:
@@ -437,14 +449,45 @@ def test_short_capable_contract_starts_every_scored_run_flat(monkeypatch, kwargs
 @pytest.mark.parametrize("kwargs", [
     {"direction": "long"},
     {"direction": " LONG "},
-    {"close_strategies": None},
     {"close_stack_grid": SCRIPT_GRID_STACKS},
-], ids=["explicit_long", "normalized_long", "plain_long_only", "grid_default_long"])
-def test_long_only_contract_keeps_the_warmup_seed(monkeypatch, kwargs):
+], ids=["explicit_long", "normalized_long", "grid_default_long"])
+def test_long_only_contract_seeds_nothing_the_engine_closed_in_the_prefix(monkeypatch, kwargs):
     _register_scripted(monkeypatch)
     by_phase = _scripted_walk_forward(monkeypatch, **kwargs)
+    assert _replayed_phases(by_phase) == REPLAYED
+    assert _seeded_phases(by_phase) == []
+    df = _scripted_frame()
+    for phase, bar in SCORED_STARTS.items():
+        for call in by_phase[phase]:
+            assert call["starting_long"] is None
+            if phase == "train_0":
+                assert call["prefix"] is None
+                continue
+            assert call["handoff"]["side"] is None
+            assert call["handoff"]["prefix_trades"] >= 1
+            prefix = call["prefix"]
+            assert prefix.index[-1] == df.index[bar - 1] and len(prefix) == 59
+            np.testing.assert_array_equal(prefix["funding_accrual"].to_numpy(),
+                                          df["funding_accrual"].loc[prefix.index].to_numpy())
+            assert int(call["signals"]["signal"].iloc[0]) == 1
+            assert call["result"]["trades"][0]["entry_date"] == str(df.index[bar + 1])
+
+
+def test_plain_long_only_path_keeps_the_seed_it_still_holds(monkeypatch):
+    reg = _register_scripted(monkeypatch)
+    by_phase = _scripted_walk_forward(monkeypatch, close_strategies=None)
+    assert _replayed_phases(by_phase) == REPLAYED
     assert _seeded_phases(by_phase) == ["test_0", "train_1"]
-    assert all(c["seed"] is not None for p in ("test_0", "train_1") for c in by_phase[p])
+    df = _scripted_frame()
+    for phase, entry_bar in (("test_0", 101), ("train_1", 161)):
+        for call in by_phase[phase]:
+            seed = call["seed"]
+            assert seed["entry_date"] == str(df.index[entry_bar])
+            assert seed["entry_price"] == pytest.approx(
+                df["open"].iloc[entry_bar] * (1 + call["engine"].slippage_pct))
+            assert seed["bars_held"] == SCORED_STARTS[phase] - entry_bar
+            assert call["result"]["trades"][0]["entry_price"] == df["close"].iloc[SCORED_STARTS[phase] - 1]
+    assert warmup_exit_long_entry(_prefix_signals(reg, TP_PREFIX), 0.0)["entry_date"] == df.index[101]
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -457,10 +500,138 @@ def test_short_entries_false_registration_starts_flat_when_the_engine_can_short(
     assert _seeded_phases(by_phase) == []
 
 
-def test_short_entries_false_registration_keeps_the_seed_when_long_only(monkeypatch):
+FAR_TIERS = [{"atr_multiple": 40.0, "close_fraction": 1.0}]
+FAR_TP = {"name": "tiered_tp_atr", "params": {"tp_tiers": [FAR_TIERS]}}
+FAR_CLOSE = [{"name": "tiered_tp_atr", "params": {"tp_tiers": FAR_TIERS}}]
+
+
+def _stack_stop(call):
+    return call["engine"].stop_loss_atr_mult
+
+
+def test_long_grid_candidate_seeds_the_long_its_engine_still_holds(monkeypatch):
+    reg = _register_scripted(monkeypatch)
+    grid = generate_close_stack_grid([{"close": FAR_TP, "trailing_stop_atr_mult": [8.0]}])
+    by_phase = _scripted_walk_forward(monkeypatch, close_stack_grid=grid)
+    assert _seeded_phases(by_phase) == REPLAYED
+    df = _scripted_frame()
+    for phase, prefix_span in sorted(PREFIX_OF.items()):
+        (call,) = by_phase[phase]
+        engine = Backtester(platform="hyperliquid", direction="long",
+                            close_strategies=FAR_CLOSE, trailing_stop_atr_mult=8.0)
+        held = engine.run(_prefix_signals(reg, prefix_span), save=False)["trades"][-1]
+        seed = call["seed"]
+        assert held["exit_reason"] == "end_of_data"
+        assert seed["entry_date"] == held["entry_date"]
+        assert seed["entry_atr"] == pytest.approx(held["entry_atr"], abs=1e-6)
+        assert seed["entry_price"] == pytest.approx(held["entry_price"])
+        boundary = df.index[SCORED_STARTS[phase] - 1]
+        assert seed["high_water"] == pytest.approx(max(seed["entry_price"],
+                                                       df.loc[seed["entry_date"]:boundary, "close"].max()))
+        assert 0 < seed["stop_trigger"] < seed["high_water"] and seed["stop_armed"]
+
+
+def test_engine_entry_gates_decide_whether_a_prefix_long_exists(monkeypatch):
+    reg = _register_scripted(monkeypatch)
+    by_phase = _scripted_walk_forward(monkeypatch, close_strategies=None, regime_enabled=True,
+                                      allowed_regimes=["trending_up"])
+    assert _replayed_phases(by_phase) == REPLAYED
+    assert _seeded_phases(by_phase) == []
+    assert warmup_exit_long_entry(_prefix_signals(reg, TP_PREFIX), 0.0) is not None
+
+
+def test_each_close_stack_replays_its_own_prefix_state(monkeypatch):
+    _register_scripted(monkeypatch)
+    specs = [{"close": FAR_TP, "stop_loss_atr_mult": [1.5, 30.0]}]
+    runs = []
+    for stacks in (generate_close_stack_grid(specs), list(reversed(generate_close_stack_grid(specs)))):
+        by_phase = _scripted_walk_forward(monkeypatch, close_stack_grid=stacks)
+        monkeypatch.undo()
+        _register_scripted(monkeypatch)
+        train = {_stack_stop(c): c["handoff"] for c in by_phase["train_1"]}
+        assert sorted(train) == [1.5, 30.0]
+        assert train[1.5]["side"] is None and train[1.5]["prefix_trades"] == 1
+        assert train[30.0]["side"] == "long"
+        for phase in ("test_0", "test_1"):
+            (call,) = by_phase[phase]
+            replay = Backtester(platform="hyperliquid", direction="long",
+                                close_strategies=FAR_CLOSE,
+                                stop_loss_atr_mult=_stack_stop(call)).run(
+                call["signals"], save=False, warmup_prefix=call["prefix"])
+            assert replay["warmup_handoff"] == call["handoff"]
+        runs.append({p: [(_stack_stop(c), c["handoff"], c["result"]["final_capital"]) for c in
+                         sorted(calls, key=_stack_stop)] for p, calls in by_phase.items()})
+    assert runs[0] == runs[1]
+
+
+def test_a_failed_prefix_replay_skips_the_run_without_a_substitute_seed(monkeypatch):
+    import optimizer
+    _register_scripted(monkeypatch)
+    real_run = Backtester.run
+    scored = []
+
+    def run(self, signals, **kw):
+        if kw.get("warmup_prefix") is not None:
+            raise ValueError("prefix replay failed")
+        scored.append(kw.get("starting_long"))
+        return real_run(self, signals, **kw)
+
+    def no_seed(*_a, **_k):
+        raise AssertionError("the signal-only seeder substituted for a failed replay")
+
+    monkeypatch.setattr(Backtester, "run", run)
+    monkeypatch.setattr(optimizer, "warmup_exit_long_entry", no_seed)
+    result = walk_forward_optimize(_scripted_frame(), SCRIPTED, SCRIPT_GRID, n_splits=2, train_pct=0.7,
+                                   timeframe="1d", registry="futures", platform="hyperliquid",
+                                   verbose=False, close_strategies=None)
+    assert result["n_valid_folds"] == 0 and result["funding_skipped_folds"] == 0
+    assert scored == [None]
+
+
+def test_unpriced_prefix_funding_rejects_the_candidate_and_the_fold(monkeypatch):
+    _register_scripted(monkeypatch)
+    real_run = Backtester.run
+    results = []
+
+    block = json.dumps({"mode": "charge", "available": True, "complete": False, "coverage": None,
+                        "source": "cache", "sha256": None, "row_count": 0, "first": None, "last": None})
+
+    def run(self, signals, **kw):
+        prefix = kw.get("warmup_prefix")
+        if prefix is not None:
+            kw["warmup_prefix"] = prefix.assign(funding_missing_hours=1, funding_block_json=block)
+        result = real_run(self, signals.assign(funding_block_json=block), **kw)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(Backtester, "run", run)
+    result = walk_forward_optimize(_scripted_frame(), SCRIPTED, SCRIPT_GRID, n_splits=2, train_pct=0.7,
+                                   timeframe="1d", registry="futures", platform="hyperliquid",
+                                   verbose=False, close_strategies=None)
+    assert result["error"] == "No valid optimization windows: incomplete funding"
+    assert result["funding_skipped_folds"] == 2 and result["funding_skipped_candidates"] == 1
+    rejected = [r for r in results if r.get("warmup_handoff")]
+    assert len(rejected) == 2
+    for r in rejected:
+        assert r["funding_unpriced_held_hours"] == 0
+        assert r["warmup_handoff"]["funding_unpriced_held_hours"] > 0
+
+
+def test_entry_only_strategies_stay_unseeded_on_a_long_only_engine(monkeypatch):
+    import optimizer
+    assert optimizer.UNSEEDED_ENTRY_ONLY_STRATEGIES == {"calendar_conditioned_entry", "elder_force_pullback"}
+    _register_scripted(monkeypatch)
+    monkeypatch.setattr(optimizer, "UNSEEDED_ENTRY_ONLY_STRATEGIES", frozenset({SCRIPTED}))
+    by_phase = _scripted_walk_forward(monkeypatch, close_strategies=None)
+    assert _replayed_phases(by_phase) == []
+    assert all(c["starting_long"] is None for calls in by_phase.values() for c in calls)
+
+
+def test_short_entries_false_registration_replays_the_prefix_when_long_only(monkeypatch):
     _register_scripted(monkeypatch, short_entries=False)
     by_phase = _scripted_walk_forward(monkeypatch, direction="long")
-    assert _seeded_phases(by_phase) == ["test_0", "train_1"]
+    assert _replayed_phases(by_phase) == REPLAYED
+    assert _seeded_phases(by_phase) == []
 
 
 @pytest.mark.parametrize("direction,seeded", [(None, False), ("long", True)],
@@ -476,10 +647,10 @@ def test_sma_crossover_follows_the_scored_engine_under_a_fixed_close(monkeypatch
     assert calls
     sides = {t["side"] for c in calls for t in c["result"]["trades"]}
     if seeded:
-        assert any(c["seed"] is not None for c in calls)
+        assert any(c["prefix"] is not None for c in calls)
         assert sides == {"long"}
     else:
-        assert all(c["seed"] is None for c in calls)
+        assert all(c["prefix"] is None and c["seed"] is None for c in calls)
         assert "short" in sides
 
 
@@ -493,24 +664,25 @@ def _policy_engine(monkeypatch, policy, **cert):
     monkeypatch.setattr(optimizer, "Backtester", PolicyEngine)
 
 
-@pytest.mark.parametrize("policy,cert,kwargs,seeded", [
+@pytest.mark.parametrize("policy,cert,kwargs,replayed,seeded", [
     ({"trending_down": {"direction": "short"}}, {"regime_directional_certified": True},
-     {"close_strategies": None}, []),
+     {"close_strategies": None}, [], []),
     ({"trending_down": {"direction": "both"}}, {"regime_directional_certified": True},
-     {"direction": "long"}, []),
+     {"direction": "long"}, [], []),
     ({"trending_down": {"direction": "short"}},
      {"regime_directional_certified_states": {"trending_down": "short"}},
-     {"direction": "long"}, []),
+     {"direction": "long"}, [], []),
     ({"trending_down": {"direction": "short"}}, {"regime_directional_certified": False},
-     {"close_strategies": None}, ["test_0", "train_1"]),
+     {"close_strategies": None}, REPLAYED, ["test_0", "train_1"]),
     ({"trending_down": {"direction": "long"}}, {"regime_directional_certified": True},
-     {"direction": "long"}, ["test_0", "train_1"]),
+     {"direction": "long"}, REPLAYED, []),
 ], ids=["plain_short_override", "long_base_both_override", "state_certified_short",
         "uncertified_dropped", "long_override"])
-def test_certified_regime_policy_decides_the_seed(monkeypatch, policy, cert, kwargs, seeded):
+def test_certified_regime_policy_decides_the_seed(monkeypatch, policy, cert, kwargs, replayed, seeded):
     _register_scripted(monkeypatch)
     _policy_engine(monkeypatch, policy, **cert)
     by_phase = _scripted_walk_forward(monkeypatch, regime_enabled=True, **kwargs)
+    assert _replayed_phases(by_phase) == replayed
     assert _seeded_phases(by_phase) == seeded
 
 
@@ -591,7 +763,7 @@ def test_every_registered_short_entry_strategy_follows_the_engine_contract(monke
                                   direction=direction)
             assert calls, name
             if direction == "both":
-                assert all(c["seed"] is None for c in calls), name
+                assert all(c["prefix"] is None and c["seed"] is None for c in calls), name
                 if any((c["signals"]["signal"] == -1).any() for c in calls):
                     shorts_seen.add(name)
             elif any(c["seed"] is not None for c in calls):
