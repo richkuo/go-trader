@@ -191,6 +191,15 @@ def candidate(arm: str, base: dict) -> dict:
             "comparison_mode": SPEC["comparison_mode"]}
 
 
+def quote_ready_count(window_rows, spread_records, params: dict, coin: str) -> int:
+    from macro_event_inputs import parse_spread_records
+    view = parse_spread_records(spread_records, coin)
+    if view.error:
+        return 0
+    return sum(1 for d in window_rows["meb_deadline_ms"]
+               if view.select(int(d), params["max_quote_age_ms"])[0] == "ok")
+
+
 def decision_audit(frame, params: dict, coin: str, manifest=None, dataset=None, window=None) -> dict:
     from registry_loader import load_registry
     from run_backtest import attach_macro_event_inputs
@@ -200,7 +209,7 @@ def decision_audit(frame, params: dict, coin: str, manifest=None, dataset=None, 
     relevant = out[out["meb_event_id"] != ""]
     reasons = relevant["meb_reason"].value_counts().to_dict()
     window_rows = relevant[~relevant["meb_reason"].isin(("event_not_known_before_release", "calendar_not_covered"))]
-    quote_ok = int(window_rows["meb_spread_frac"].notna().sum()) if params["spread_gate"] else 0
+    quote_ok = quote_ready_count(window_rows, inputs["spread_records"], params, coin) if params["spread_gate"] else 0
     entries = out[out["signal"] != 0]
     return {
         "event_window_decisions": int(len(window_rows)),
@@ -366,18 +375,35 @@ def verdict(held: dict, venue: dict) -> dict:
         reasons.append(f"candidate_full quote coverage {full['quote_coverage']} is below "
                        f"{SPEC['min_quote_coverage']}: no historical bid/ask record backs the spread gate")
     diag = held["price_only_event"]["aggregate"]
-    n = max(full["independent_events_with_entries"], diag["independent_events_with_entries"])
+    n = full["independent_events_with_entries"]
     if n < SPEC["min_independent_events"]:
-        reasons.append(f"at most {n} independent official events produced an entry in held_out, below "
-                       f"{SPEC['min_independent_events']}")
+        reasons.append(f"candidate_full entered on {n} independent official events in held_out, below "
+                       f"{SPEC['min_independent_events']} (the ungated price_only_event diagnostic entered on "
+                       f"{diag['independent_events_with_entries']})")
     for name, block in list(held.items()) + [("venue:" + k, v) for k, v in venue.items()]:
         if not block["aggregate"]["funding_complete"]:
             reasons.append(f"{name} has a funding gap")
     if reasons:
         return {"verdict": "inconclusive", "reasons": reasons}
-    passed = (full["mean_return_pct"] > 0 and venue["candidate_full@stress"]["aggregate"]["mean_return_pct"] > 0
-              and full["mean_return_pct"] > held["price_only_control"]["aggregate"]["mean_return_pct"])
-    return {"verdict": "pass" if passed else "fail", "reasons": []}
+    control = held["price_only_control"]["aggregate"]
+
+    def above(a, b):
+        return a is not None and b is not None and a > b
+
+    checks = [
+        ("candidate_full proxy mean return is not positive", above(full["mean_return_pct"], 0)),
+        ("candidate_full venue mean return at base cost is not positive",
+         above(venue["candidate_full@base"]["aggregate"]["mean_return_pct"], 0)),
+        ("candidate_full venue mean return at stress cost is not positive",
+         above(venue["candidate_full@stress"]["aggregate"]["mean_return_pct"], 0)),
+        ("candidate_full does not beat price_only_control on mean return",
+         above(full["mean_return_pct"], control["mean_return_pct"])),
+        ("candidate_full worst drawdown is larger than price_only_control",
+         full["worst_max_dd_pct"] is not None and control["worst_max_dd_pct"] is not None
+         and full["worst_max_dd_pct"] >= control["worst_max_dd_pct"]),
+    ]
+    missed = [name for name, ok in checks if not ok]
+    return {"verdict": "fail" if missed else "pass", "reasons": missed}
 
 
 def run(skip_stability: bool) -> dict:
