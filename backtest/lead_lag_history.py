@@ -2,6 +2,7 @@ import os
 import sys
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -10,7 +11,7 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 from closed_bar import TIMESTAMP_KIND_OPEN, declare_frame_cadence
-from lead_lag_inputs import LEADER_COIN, coin_of, prepare_historical_inputs
+from lead_lag_inputs import LEADER_COIN, coin_of, frame_open_ms, prepare_historical_inputs
 
 LEADER_INPUT_STRATEGIES = frozenset({"bitcoin_lead_lag"})
 CONTEXT_PARAM = "leader_context"
@@ -88,7 +89,25 @@ def cached_leader_params(follower_df: pd.DataFrame, follower_symbol: str, timefr
               "timeframe": timeframe, "start": str(start), "end": str(end),
               "first_bar": str(frame.index[0]), "last_bar": str(frame.index[-1]), "rows": int(len(frame))}
     ctx = leader_context(follower_df, frame, follower_symbol, timeframe, source)
+    require_full_leader_coverage(ctx, follower_df, source)
     return {CONTEXT_PARAM: ctx}, leader_summary(ctx)
+
+
+def require_full_leader_coverage(ctx: dict, follower_df: pd.DataFrame, source: dict) -> None:
+    if not ctx.get("available"):
+        return
+    cov = ctx["coverage"]
+    missing = int(cov["follower_rows"]) - int(cov["leader_rows_matched"])
+    if missing <= 0:
+        return
+    fopen = frame_open_ms(follower_df, int(ctx["interval_ms"]))
+    absent = fopen[~np.isin(fopen, np.asarray(ctx["leader_open_ms"], dtype=np.int64))]
+    first = pd.Timestamp(int(absent.min()), unit="ms")
+    last = pd.Timestamp(int(absent.max()), unit="ms")
+    raise LeaderDataUnavailable(
+        f"the candle cache {source['exchange']} {source['symbol']} {source['timeframe']} leader series has no "
+        f"usable row for {missing} of {int(cov['follower_rows'])} follower bars (first {first}, last {last}); "
+        "acquire them explicitly before the run (this path never fetches or substitutes current data)")
 
 
 def leader_summary(ctx: dict) -> dict:

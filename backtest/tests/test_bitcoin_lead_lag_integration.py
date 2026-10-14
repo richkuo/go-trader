@@ -317,6 +317,13 @@ def test_cached_and_manifest_attachment_and_unsupported_paths(monkeypatch):
     full = _run(follower, _ctx(follower, leader))
     via = _reg().apply_strategy(NAME, follower, {**SEED, **params})
     assert via["signal"].tolist() == full["signal"].tolist()
+    frames["BTC/USDT"] = leader.iloc[:-30]
+    with pytest.raises(LeaderDataUnavailable, match="no usable row for 30 of 400 follower bars"):
+        cached_leader_params(follower, "ETH/USDT", "1h", follower.index[0])
+    shared_gap = follower.drop(follower.index[200:209])
+    frames["BTC/USDT"] = leader.drop(leader.index[200:209])
+    params, info = cached_leader_params(shared_gap, "ETH/USDT", "1h", follower.index[0])
+    assert info["coverage"]["leader_rows_matched"] == len(shared_gap)
     frames["BTC/USDT"] = leader.iloc[:0]
     with pytest.raises(LeaderDataUnavailable):
         cached_leader_params(follower, "ETH/USDT", "1h", follower.index[0])
