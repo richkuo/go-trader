@@ -549,7 +549,7 @@ def bitcoin_lead_lag_core(
             cols["bll_forecast"][i] = info["forecast"]
             cols["bll_completed"][i] = info["completed"]
             cols["bll_remaining_bps"][i] = info["remaining_bps"]
-            cols["bll_forecast_start_ms"][i] = opens[j + L - 1]
+            cols["bll_forecast_start_ms"][i] = opens[j] + (L - 1) * interval
             cols["bll_forecast_end_ms"][i] = opens[j] + (L + H - 1) * interval
         if fd is not None:
             cols["bll_slope"][i] = fd["slope"]

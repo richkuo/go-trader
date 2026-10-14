@@ -608,10 +608,12 @@ def render(result: dict) -> str:
         "## Inputs",
         "",
     ]
-    for study, m in result["manifests"].items():
+    for study in SPEC["studies"]:
+        m = result["manifests"][study]
         lines.append(f"- `{study}`: `{m['path']}` ({m['provenance']['kind']}: {m['provenance']['label']}); interval "
                      f"{m['interval']}, warm-up {m['warmup_bars']} bars, windows "
-                     + ", ".join(f"{k} [{v['start']}, {v['end']})" for k, v in m["windows"].items())
+                     + ", ".join(f"{k} [{v['start']}, {v['end']})"
+                                 for k, v in sorted(m["windows"].items(), key=lambda kv: kv[1]["start"]))
                      + f"; costs {json.dumps(m['costs'], sort_keys=True)}.")
         for key, d in sorted(m["datasets"].items()):
             lines.append(f"  - {key}: candles `{d['candles_sha256']}`, funding `{d['funding_sha256']}`, "
@@ -624,7 +626,8 @@ def render(result: dict) -> str:
               "come from the manifest execution spec. Funding is the stored Hyperliquid hourly series charged as a cost. "
               "Fills happen at the next bar open; latency rows delay the fill by whole bars. The windows were used by "
               "earlier studies, so this is retrospective evidence.", ""]
-    for study, block in result["studies"].items():
+    for study in SPEC["studies"]:
+        block = result["studies"][study]
         lines += [f"## {study}", "", f"Study verdict: **{block['verdict']['verdict']}**.", ""]
         for r in block["verdict"]["inconclusive"]:
             lines.append(f"- inconclusive: {r}")
@@ -641,7 +644,8 @@ def render(result: dict) -> str:
                          f"{c['funding']['missing_hours']} |")
         lines += ["", "### Selections (train)", "", "| arm | selected params | mean Sharpe | mean net % | positions | eligible grid points |",
                   "|---|---|---|---|---|---|"]
-        for arm, data in block["arms"].items():
+        for arm in SPEC["arms"]:
+            data = block["arms"][arm]
             st = data["selected_train"]
             n_ok = sum(1 for r in data["train_grid"] if eligible(r))
             lines.append(f"| {arm} | {json.dumps(data['selected'], sort_keys=True) if data['selected'] else '-'} | "
@@ -650,7 +654,8 @@ def render(result: dict) -> str:
         lines += ["", "### Held-out (test)", "",
                   "| arm | cost | mean net % | mean Sharpe | worst DD % | positions | long/short | clusters | turnover (ETH, SOL) | funding USD (ETH, SOL) |",
                   "|---|---|---|---|---|---|---|---|---|---|"]
-        for arm, data in block["arms"].items():
+        for arm in SPEC["arms"]:
+            data = block["arms"][arm]
             for key, label in (("held_out_base", "base"), ("held_out_stress", "stress x2")):
                 h = data.get(key)
                 if h is None:
@@ -666,7 +671,8 @@ def render(result: dict) -> str:
         if cand.get("held_out_base"):
             hb = cand["held_out_base"]
             lines += ["", "Per follower (candidate, base cost):", ""]
-            for f, leg in hb["legs"].items():
+            for f in SPEC["followers"]:
+                leg = hb["legs"][f]
                 lines.append(f"- {f}: net {_f(leg['return_pct'])}%, Sharpe {_f(leg['sharpe'], 3)}, max DD "
                              f"{_f(leg['max_dd_pct'])}%, positions {leg['positions']} ({leg['long_positions']} long, "
                              f"{leg['short_positions']} short), fees ${_f(leg['fees_usd'])}, funding "
@@ -677,7 +683,8 @@ def render(result: dict) -> str:
             lines += ["", f"Concentration: {json.dumps(hb.get('concentration'), sort_keys=True)}", ""]
             lines += ["Latency decay (candidate, base cost):", "", "| extra bars | mean net % | mean Sharpe | positions |",
                       "|---|---|---|---|"]
-            for d, row in block.get("latency", {}).items():
+            for d in (str(x) for x in SPEC["latency_bars"]):
+                row = block["latency"][d]
                 lines.append(f"| {d} | {_f(row['mean_return_pct'])} | {_f(row['mean_sharpe'], 3)} | {row['positions']} |")
             nb = cand["neighbors"]
             lines += ["", f"Parameter stability: {nb['positive_return']} of {nb['neighbors']} one-step train neighbors "
@@ -687,7 +694,8 @@ def render(result: dict) -> str:
                       "of grid points are net positive on the held-out window.", ""]
             par = block["parity"]
             lines += [f"Decision parity on the held-out window: {'clean' if par['clean'] else 'FAILED'}."]
-            for f, row in par["followers"].items():
+            for f in SPEC["followers"]:
+                row = par["followers"][f]
                 lines.append(f"- {f}: {row['sampled_rows']} sampled rows ({row['entry_rows']} entries), "
                              f"{row['sealed_checked']} sealed-payload composer checks, tail mismatches "
                              f"{len(row['tail_mismatches'])}, sealed mismatches {len(row['sealed_mismatches'])}, "
@@ -730,8 +738,10 @@ def main(argv=None) -> int:
     with open(RESULTS_PATH, "w") as fh:
         json.dump(result, fh, indent=1, sort_keys=True)
         fh.write("\n")
+    with open(RESULTS_PATH) as fh:
+        stored = json.load(fh)
     with open(REPORT_PATH, "w") as fh:
-        fh.write(render(result))
+        fh.write(render(stored))
     print(json.dumps(result["verdict"], sort_keys=True))
     return 0
 

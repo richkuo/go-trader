@@ -2769,7 +2769,7 @@ def cumulative_volume_delta_divergence_strategy(df: pd.DataFrame, **params) -> p
 
 @register(
     "bitcoin_lead_lag",
-    "RESEARCH, production-refused (#1640) \u2014 Bitcoin lead-lag entries on closed bars: the BTC perpetual on the follower's own timeframe is the leader; a trailing intercept-and-slope regression of the follower's log return over horizon_bars, starting lag_bars after a BTC bar, on that BTC bar's log return is refitted at every decision from training_bars past pairs whose forecast window closed at or before the decision. A BTC return at least impulse_z standard deviations of the training BTC returns is an impulse event; at the first decision in its forecast window where the slope and both training-half slopes are positive, R-squared is at least min_r2 and the signed forecast minus the follower move already completed exceeds cost_bps + min_edge_bps, it enters once in the impulse direction (mirrored shorts); later decisions, restarts and stop-outs never re-enter from the same impulse. Leader rows come only from a supplied leader_context (same sealed deadline and closed-bar cutoff, or a pinned historical series); missing, stale, duplicate, reordered or unmatched leader data holds the entry with a reason. signal_mode follower_momentum and btc_trend_filter are the frozen study baselines. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    "RESEARCH, production-refused, frozen study FAIL (#1640: net negative on the 1h held-out window at base and stress cost) \u2014 Bitcoin lead-lag entries on closed bars: the BTC perpetual on the follower's own timeframe is the leader; a trailing intercept-and-slope regression of the follower's log return over horizon_bars, starting lag_bars after a BTC bar, on that BTC bar's log return is refitted at every decision from training_bars past pairs whose forecast window closed at or before the decision. A BTC return at least impulse_z standard deviations of the training BTC returns is an impulse event; at the first decision in its forecast window where the slope and both training-half slopes are positive, R-squared is at least min_r2 and the signed forecast minus the follower move already completed exceeds cost_bps + min_edge_bps, it enters once in the impulse direction (mirrored shorts); later decisions, restarts and stop-outs never re-enter from the same impulse. Leader rows come only from a supplied leader_context (same sealed deadline and closed-bar cutoff, or a pinned historical series); missing, stale, duplicate, reordered or unmatched leader data holds the entry with a reason. signal_mode follower_momentum and btc_trend_filter are the frozen study baselines. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
     dict(DEFAULT_LEAD_LAG_PARAMS),
     platforms=("futures",),
     constraints=[
@@ -2793,7 +2793,7 @@ def cumulative_volume_delta_divergence_strategy(df: pd.DataFrame, **params) -> p
         "expected_interval_ms <= 14400000",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_fail",
     edge_ref="backtest/candidates/bitcoin_lead_lag_1640/REPORT.md",
     short_entries=True,
     param_validator=lead_lag_param_validator,

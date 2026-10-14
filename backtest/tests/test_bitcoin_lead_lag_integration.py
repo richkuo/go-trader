@@ -118,6 +118,15 @@ def test_every_prefix_tail_and_future_perturbation_keep_earlier_decisions():
         if i % 37 == 0:
             short = _run(follower.iloc[i - S + 2:i + 1], ctx)
             assert short["bll_reason"].iloc[-1] == "insufficient_history"
+    lagged = {"lag_bars": 3, "horizon_bars": 2}
+    s3 = support_bars(3, 2, 48)
+    full3 = _run(follower, ctx, **lagged)
+    fired = full3[full3["signal"] != 0]
+    assert (fired["bll_forecast_start_ms"] > fired["bll_decision_open_ms"]).any()
+    for i in range(s3, len(follower)):
+        tail = _run(follower.iloc[i - s3 + 1:i + 1], ctx, **lagged)
+        assert tail[cols + ["bll_forecast_start_ms"]].iloc[-1].fillna(-1).tolist() == \
+            full3[cols + ["bll_forecast_start_ms"]].iloc[i].fillna(-1).tolist(), i
     cut = 170
     pf, pl = follower.copy(), leader.copy()
     pf.iloc[cut:, pf.columns.get_loc("close")] *= 1.3
