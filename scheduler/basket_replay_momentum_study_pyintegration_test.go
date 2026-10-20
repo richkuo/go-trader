@@ -306,33 +306,46 @@ func TestBasketReplayMomentumStudyCompleteReplayStaysAnUnscoredDiagnostic(t *tes
 		t.Fatalf("the fixture study needs two training runs and a held-out run, got %v %v", trainIDs, heldIDs)
 	}
 	manifestPath := filepath.Join(s.dir, "study_manifest.json")
-	manifestState := func() string {
-		if _, err := os.Stat(manifestPath); errors.Is(err, os.ErrNotExist) {
-			return "absent"
+	requireNoManifest := func(label string) {
+		if _, err := os.Stat(manifestPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s: a run with --out must write no study_manifest.json: %v", label, err)
 		}
-		return fileSHA256(t, manifestPath)
 	}
-	manifestBefore := manifestState()
-	changePlan := func(id string) {
-		p := filepath.Join(plansDir, id+".json")
-		plan := readStudyProtocol(t, p)
+	requireNoManifest("second")
+	changedPlan := func(id string) []byte {
+		plan := readStudyProtocol(t, filepath.Join(plansDir, id+".json"))
 		plan["history_bars"] = plan["history_bars"].(float64) + 1
-		writeStudyJSON(t, p, plan)
+		out, _ := json.MarshalIndent(plan, "", "  ")
+		return out
 	}
-	refusedRun := func(label, changed string) (map[string]interface{}, string) {
-		work := filepath.Join(base, "work-"+label)
-		code, refused, text := s.run(filepath.Join(base, label+".json"), work)
+	changePlan := func(id string) {
+		if err := os.WriteFile(filepath.Join(plansDir, id+".json"), changedPlan(id), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	differs := func(id string) string { return "plans/" + id + ".json differs from the plan this run replays" }
+	missing := func(id string) string { return "plans/" + id + ".json is missing" }
+	requireRefusal := func(label string, code int, refused map[string]interface{}, text string, want ...string) {
 		ref, _ := refused["refusal"].(map[string]interface{})
-		detail, _ := ref["detail"].([]interface{})
-		if code != 3 || refused["verdict"] != "refused" || refused["scored"] != false || ref["reason"] != "plan_file_mismatch" || len(detail) != 1 || !strings.Contains(fmt.Sprint(detail[0]), "plans/"+changed+".json") {
-			t.Fatalf("%s: a changed plan file %s must refuse the study, got exit %d %v %v\n%s", label, changed, code, refused["verdict"], refused["refusal"], tail(text, 2000))
+		list, _ := ref["detail"].([]interface{})
+		detail := []string{}
+		for _, d := range list {
+			detail = append(detail, fmt.Sprint(d))
+		}
+		sort.Strings(detail)
+		sort.Strings(want)
+		if code != 3 || refused["verdict"] != "refused" || refused["scored"] != false || ref["reason"] != "plan_file_mismatch" || !reflect.DeepEqual(detail, want) {
+			t.Fatalf("%s: a changed or missing plan file must refuse the study with %v, got exit %d %v %v\n%s", label, want, code, refused["verdict"], refused["refusal"], tail(text, 2000))
 		}
 		if _, ok := refused["study_verdict"]; ok {
 			t.Fatalf("%s: a plan file refusal must write no success result: %v", label, refused["study_verdict"])
 		}
-		if got := manifestState(); got != manifestBefore {
-			t.Fatalf("%s: a plan file refusal must leave study_manifest.json unchanged: %s -> %s", label, manifestBefore, got)
-		}
+	}
+	refusedRun := func(label string, want ...string) (map[string]interface{}, string) {
+		work := filepath.Join(base, "work-"+label)
+		code, refused, text := s.run(filepath.Join(base, label+".json"), work)
+		requireRefusal(label, code, refused, text, want...)
+		requireNoManifest(label)
 		return refused, work
 	}
 	attemptIDs := func(rec map[string]interface{}) []string {
@@ -354,7 +367,7 @@ func TestBasketReplayMomentumStudyCompleteReplayStaysAnUnscoredDiagnostic(t *tes
 	}
 
 	changePlan(trainIDs[0])
-	refused, work := refusedRun("stale-first-train", trainIDs[0])
+	refused, work := refusedRun("stale-first-train", differs(trainIDs[0]))
 	requireNoReplay("stale-first-train", refused, work)
 	restorePlans()
 
@@ -363,7 +376,7 @@ func TestBasketReplayMomentumStudyCompleteReplayStaysAnUnscoredDiagnostic(t *tes
 		t.Fatal(err)
 	}
 	changePlan(trainIDs[len(trainIDs)-1])
-	refused, work = refusedRun("stale-later-train", trainIDs[len(trainIDs)-1])
+	refused, work = refusedRun("stale-later-train", differs(trainIDs[len(trainIDs)-1]))
 	requireNoReplay("stale-later-train", refused, work)
 	if _, err := os.Stat(deleted); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the batch check must refuse before it writes any plan, but %s exists again: %v", deleted, err)
@@ -371,11 +384,58 @@ func TestBasketReplayMomentumStudyCompleteReplayStaysAnUnscoredDiagnostic(t *tes
 	restorePlans()
 
 	changePlan(heldIDs[0])
-	refused, _ = refusedRun("stale-heldout", heldIDs[0])
+	refused, _ = refusedRun("stale-heldout", differs(heldIDs[0]))
 	if got := attemptIDs(refused); !reflect.DeepEqual(got, trainIDs) {
 		t.Fatalf("a changed held-out plan must refuse after the training replays and before any held-out replay, got attempts %v want %v", got, trainIDs)
 	}
 	restorePlans()
+
+	allIDs := append(append([]string{}, trainIDs...), heldIDs...)
+	sort.Strings(allIDs)
+	quote := func(p string) string { return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'" }
+	resultsPath := filepath.Join(s.dir, "results.json")
+	sentinel := []byte("{\"sentinel\": \"an earlier study_manifest.json\"}\n")
+	midRunRefusal := func(label, action string, want ...string) {
+		work := filepath.Join(base, "work-"+label)
+		wrapper := filepath.Join(base, "wrap-"+label+".sh")
+		script := "#!/bin/sh\nfor f in " + quote(filepath.Join(work, "plans")) + "/heldout-*.json; do\n  if [ -e \"$f\" ]; then " + action + "; fi\n  break\ndone\nexec " + quote(s.bin) + " \"$@\"\n"
+		if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(manifestPath, sentinel, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		code, text := s.cli("run", "--binary", wrapper, "--work-dir", work, "--jobs", "4", "--timeout", "900")
+		blob, err := os.ReadFile(resultsPath)
+		if err != nil {
+			t.Fatalf("%s: the study wrote no result record at the default output (exit %d): %v\n%s", label, code, err, tail(text, 4000))
+		}
+		var refused map[string]interface{}
+		if err := json.Unmarshal(blob, &refused); err != nil {
+			t.Fatal(err)
+		}
+		requireRefusal(label, code, refused, text, want...)
+		if got := attemptIDs(refused); !reflect.DeepEqual(got, allIDs) {
+			t.Fatalf("%s: the final plan check runs after every replay, got attempts %v want %v", label, got, allIDs)
+		}
+		if after, err := os.ReadFile(manifestPath); err != nil || !bytes.Equal(after, sentinel) {
+			t.Fatalf("%s: a refusal on the default output path must leave study_manifest.json unchanged, got %q %v", label, after, err)
+		}
+		for _, p := range []string{resultsPath, manifestPath} {
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+		}
+		restorePlans()
+	}
+
+	midRunRefusal("midrun-missing-train", "rm -f "+quote(filepath.Join(plansDir, trainIDs[0]+".json")), missing(trainIDs[0]))
+
+	changedHeld := filepath.Join(base, "changed-"+heldIDs[0]+".json")
+	if err := os.WriteFile(changedHeld, changedPlan(heldIDs[0]), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	midRunRefusal("midrun-changed-heldout", "cp "+quote(changedHeld)+" "+quote(filepath.Join(plansDir, heldIDs[0]+".json")), differs(heldIDs[0]))
 }
 
 func TestBasketReplayMomentumStudyRefusesChangedInputsBeforeAnyReplay(t *testing.T) {
