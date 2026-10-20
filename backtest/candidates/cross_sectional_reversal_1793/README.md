@@ -69,3 +69,14 @@ property of the frozen conversion, reported as is.
   records; it changes no order, booking or equity. Nothing from attempt 1 was read for selection or reporting, and the
   protocol, data reference and lock did not change.
 - Attempt 2: the recorded run in `results.json`.
+
+## Source pin and later main changes
+
+The recorded run used commit `18705654` (base `70b9725d` plus the first study commit; `results.json` `source_hashes`
+pins every prerequisite file by sha256). Before the pull request opened, the branch was rebased onto main `902ef897`
+(#1665), so that commit is not in the merged history. Among the pinned paths, the rebase changed only
+`shared_strategies/open/registry.py` (a new `volume_profile_reclaim` registration); outside them it raised the market
+payload version to 2 with an additive volume-profile section (`shared_tools/market_payload.py`, the Go feed wire and
+snapshot code). Checked after the rebase: the held-out candidate plan replayed with a binary built from the rebased
+branch gives the same 484 step records, the same 10719 trade rows (position ids compared without their process nonce),
+the same 831 venue events, the same run fingerprints and the same final basket equity as the recorded raw record.
