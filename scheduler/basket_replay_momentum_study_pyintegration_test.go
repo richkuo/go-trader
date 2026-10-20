@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -705,6 +706,46 @@ func TestBasketReplayReversalStudyCompleteReplayStaysAnUnscoredDiagnostic(t *tes
 	}
 	if !reflect.DeepEqual(studyVerdict(rec), studyVerdict(again)) || !reflect.DeepEqual(rec["selected"], again["selected"]) || !reflect.DeepEqual(rec["baseline_targets"], again["baseline_targets"]) {
 		t.Fatal("the frozen study verdict, training selection or baseline conversion does not reproduce")
+	}
+
+	pinned := readStudyProtocol(t, filepath.Join(s.dir, "study_manifest.json"))["plans"].(map[string]interface{})
+	for label, out := range map[string]map[string]interface{}{"first": rec, "second": again} {
+		ran := 0
+		for _, key := range []string{"training", "held_out"} {
+			for id, r := range studyRuns(out, key) {
+				ran++
+				onDisk := fileSHA256(t, filepath.Join(s.dir, "plans", id+".json"))
+				if pinned[id] != r["portable_plan_sha256"] || onDisk != r["portable_plan_sha256"] {
+					t.Fatalf("%s run %s: the plan file %s and the manifest pin %v must equal the replayed plan %v", label, id, onDisk, pinned[id], r["portable_plan_sha256"])
+				}
+			}
+		}
+		if ran != len(pinned) {
+			t.Fatalf("%s run: the manifest pins %d plans for %d replays", label, len(pinned), ran)
+		}
+	}
+
+	var staleID string
+	for id := range train {
+		if staleID == "" || id < staleID {
+			staleID = id
+		}
+	}
+	stalePath := filepath.Join(s.dir, "plans", staleID+".json")
+	stale := readStudyProtocol(t, stalePath)
+	stale["history_bars"] = stale["history_bars"].(float64) + 1
+	writeStudyJSON(t, stalePath, stale)
+	work := filepath.Join(base, "work-stale")
+	code, refused, text := s.run(filepath.Join(base, "stale.json"), work)
+	ref, _ := refused["refusal"].(map[string]interface{})
+	if code != 3 || refused["verdict"] != "refused" || refused["scored"] != false || ref["reason"] != "plan_file_mismatch" || !strings.Contains(fmt.Sprint(ref["detail"]), staleID) {
+		t.Fatalf("a stale plan file left by an earlier attempt must refuse the study, got exit %d %v %v\n%s", code, refused["verdict"], refused["refusal"], tail(text, 2000))
+	}
+	if attempts, _ := refused["attempts"].([]interface{}); len(attempts) != 0 {
+		t.Fatalf("a stale plan file must refuse before any replay, got attempts %v", attempts)
+	}
+	if left, err := os.ReadDir(filepath.Join(work, "results")); err != nil || len(left) != 0 {
+		t.Fatalf("a stale plan file must refuse before any replay writes a result: %v %v", left, err)
 	}
 }
 

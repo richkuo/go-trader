@@ -80,3 +80,10 @@ payload version to 2 with an additive volume-profile section (`shared_tools/mark
 snapshot code). Checked after the rebase: the held-out candidate plan replayed with a binary built from the rebased
 branch gives the same 484 step records, the same 10719 trade rows (position ids compared without their process nonce),
 the same 831 venue events, the same run fingerprints and the same final basket equity as the recorded raw record.
+
+After the recorded run, pull request review changed `run_study.py` (a pinned path) to refuse a run before its replays
+when an existing `plans/` file differs from the plan that run builds, and to refuse before it writes the result when a
+plan file is missing or changed at the end. The change adds checks only and builds no different plan, replay, selection
+or verdict, so the current driver's sha256 differs from its `source_hashes` pin. Checked after the change: the current
+driver rebuilds all 22 plans from the frozen inputs with the same bytes as the committed `plans/` files, and those files
+equal both the `study_manifest.json` `plans` pins and every `portable_plan_sha256` in `results.json`.
