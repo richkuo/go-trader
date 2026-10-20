@@ -62,7 +62,7 @@ Guardrails only; mechanism: SKILL.md, docs/POST_UPDATE_HISTORY.md. CI fails at 1
 - `SendToPartitionChannels`: live=`SendToAllChannels`; paper=own roster (`resolveTradeChannel`, rebuilt on `ReloadConfig`), never suffix scan, `SendToAllChannels` only if empty.
 
 ## PRs/issues
-- Never bare `#N` in lists; PR verification follows `## Summary`. Commit/PR/issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`. PR/commit format: `scripts/check_pr_metadata.py`.
+- Never bare `#N` in lists; PR verification follows `## Summary`. Commit/PR/issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
 - Long-lived PR: diff `origin/main..HEAD` for reverts.
 - Reviews follow `.github/prompts/pr-review-format-local.md`, never gate on CI; findings restate as invariant, list breaking states (inverse, compound).
 - `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork=review); no-execution in agent; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`.
