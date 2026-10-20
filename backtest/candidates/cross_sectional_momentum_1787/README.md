@@ -53,3 +53,12 @@ later main, so that commit is not in the merged history. The rebase changed thes
   only its `edge_source` and `edge_ref`.
 - `scheduler/basket_replay.go` (#1654): the adapter also refuses macro calendar inputs, which this study never uses.
 - `shared_scripts/check_hyperliquid.py` (#1654): macro inputs for `macro_event_breakout` only.
+
+After the recorded run, issue 1810 changed `run_study.py` (a pinned path) to refuse a batch before its replays when an
+existing `plans/` file differs from the plan that batch builds, and to refuse before it writes the result when a plan
+file is missing or changed at the end. Each refusal records `plan_file_mismatch` at the selected output path. The
+change adds checks only and builds no different plan, replay, selection or verdict, so the current driver's sha256
+differs from its `source_hashes` pin. Checked after the change, with no replay: the current driver rebuilds all 11
+plans from the frozen inputs (the 6 training specs, and the 5 held-out specs from the recorded `selected_params` and
+the recorded baseline positions divided by the member count) with the same bytes as the committed `plans/` files, and
+those files equal both the `study_manifest.json` `plans` pins and every `portable_plan_sha256` in `results.json`.

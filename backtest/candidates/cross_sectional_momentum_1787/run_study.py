@@ -972,6 +972,21 @@ def execute(binary, study, work, jobs, timeout, plans, runs, final_marks):
         return list(pool.map(go, runs))
 
 
+def check_plan_files(plans_dir, plans, require=False):
+    problems = []
+    for run_id, plan in sorted(plans.items()):
+        path = os.path.join(plans_dir, run_id + ".json")
+        if not os.path.exists(path):
+            if require:
+                problems.append(f"plans/{run_id}.json is missing")
+        else:
+            with open(path, "rb") as fh:
+                if fh.read() != dump_json(plan).encode():
+                    problems.append(f"plans/{run_id}.json differs from the plan this run replays")
+    if problems:
+        raise StudyRefusal("plans", "plan_file_mismatch", problems)
+
+
 def cmd_run(study, binary, work, jobs, timeout, out_path, keep_raw):
     out_path = out_path or study.results_path
     if os.path.exists(out_path):
@@ -1015,20 +1030,31 @@ def cmd_run(study, binary, work, jobs, timeout, out_path, keep_raw):
     attempts, portable = [], {}
 
     def prepare_runs(runs, weights_by):
+        plans = {run["run_id"]: portable_plan(study, proto, dm, lock, members, lots, run, weights_by.get(run["target"]))
+                 for run in runs}
+        check_plan_files(study.plans_dir, plans)
         paths = {}
-        for run in runs:
-            plan = portable_plan(study, proto, dm, lock, members, lots, run, weights_by.get(run["target"]))
-            portable[run["run_id"]] = plan
-            ppath = os.path.join(study.plans_dir, run["run_id"] + ".json")
+        for run_id, plan in plans.items():
+            portable[run_id] = plan
+            ppath = os.path.join(study.plans_dir, run_id + ".json")
             if not os.path.exists(ppath):
                 with open(ppath, "w") as fh:
                     fh.write(dump_json(plan))
-            paths[run["run_id"]] = materialize(study, plan, work)
+            paths[run_id] = materialize(study, plan, work)
         return paths
+
+    def refuse(exc):
+        write_new(out_path, refusal_record(proto_name, exc, {"attempts": attempts}))
+        print(f"study refused: {exc}", file=sys.stderr)
+        return 3
 
     train_runs = run_specs(proto)
     train_out = []
-    for run, rep in execute(binary, study, work, jobs, timeout, prepare_runs(train_runs, {}), train_runs, final_marks):
+    try:
+        train_paths = prepare_runs(train_runs, {})
+    except StudyRefusal as exc:
+        return refuse(exc)
+    for run, rep in execute(binary, study, work, jobs, timeout, train_paths, train_runs, final_marks):
         s = summarize(proto, run, rep, members)
         s["plan_sha256"] = sha256_file(os.path.join(work, "plans", run["run_id"] + ".json"))
         s["portable_plan_sha256"] = sha256_bytes(dump_json(portable[run["run_id"]]).encode())
@@ -1054,8 +1080,11 @@ def cmd_run(study, binary, work, jobs, timeout, out_path, keep_raw):
             weights_meta[name] = dict(meta, policy=proto["baselines"][name], bound_problems=bounds,
                                       net_allowance_usd=proto["baselines"][name]["net_allowance_usd"])
         held_runs = run_specs(proto, selected)
-        for run, rep in execute(binary, study, work, jobs, timeout, prepare_runs(held_runs, weights_by), held_runs,
-                                final_marks):
+        try:
+            held_paths = prepare_runs(held_runs, weights_by)
+        except StudyRefusal as exc:
+            return refuse(exc)
+        for run, rep in execute(binary, study, work, jobs, timeout, held_paths, held_runs, final_marks):
             s = summarize(proto, run, rep, members)
             s["plan_sha256"] = sha256_file(os.path.join(work, "plans", run["run_id"] + ".json"))
             s["portable_plan_sha256"] = sha256_bytes(dump_json(portable[run["run_id"]]).encode())
@@ -1075,6 +1104,10 @@ def cmd_run(study, binary, work, jobs, timeout, out_path, keep_raw):
         "study_verdict": verdict_rec, "live_use": "refused",
         "invocation": {"argv": sys.argv, "jobs": jobs, "timeout": timeout},
     }
+    try:
+        check_plan_files(study.plans_dir, portable, require=True)
+    except StudyRefusal as exc:
+        return refuse(exc)
     write_new(out_path, result)
     manifest = {"study": proto["study"], "results": os.path.basename(out_path),
                 "results_sha256": sha256_file(out_path), "protocol_sha256": lock["protocol_sha256"],
