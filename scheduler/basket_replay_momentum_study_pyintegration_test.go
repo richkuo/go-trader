@@ -272,6 +272,110 @@ func TestBasketReplayMomentumStudyCompleteReplayStaysAnUnscoredDiagnostic(t *tes
 	if !reflect.DeepEqual(studyVerdict(rec), studyVerdict(again)) || !reflect.DeepEqual(rec["selected_params"], again["selected_params"]) {
 		t.Fatal("the frozen study verdict or training selection does not reproduce")
 	}
+
+	plansDir := filepath.Join(s.dir, "plans")
+	entries, err := os.ReadDir(plansDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := map[string][]byte{}
+	for _, e := range entries {
+		blob, err := os.ReadFile(filepath.Join(plansDir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved[e.Name()] = blob
+	}
+	restorePlans := func() {
+		for name, blob := range saved {
+			if err := os.WriteFile(filepath.Join(plansDir, name), blob, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	sortedRunIDs := func(key string) []string {
+		ids := []string{}
+		for id := range studyRuns(again, key) {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		return ids
+	}
+	trainIDs, heldIDs := sortedRunIDs("training"), sortedRunIDs("held_out")
+	if len(trainIDs) < 2 || len(heldIDs) == 0 {
+		t.Fatalf("the fixture study needs two training runs and a held-out run, got %v %v", trainIDs, heldIDs)
+	}
+	manifestPath := filepath.Join(s.dir, "study_manifest.json")
+	manifestState := func() string {
+		if _, err := os.Stat(manifestPath); errors.Is(err, os.ErrNotExist) {
+			return "absent"
+		}
+		return fileSHA256(t, manifestPath)
+	}
+	manifestBefore := manifestState()
+	changePlan := func(id string) {
+		p := filepath.Join(plansDir, id+".json")
+		plan := readStudyProtocol(t, p)
+		plan["history_bars"] = plan["history_bars"].(float64) + 1
+		writeStudyJSON(t, p, plan)
+	}
+	refusedRun := func(label, changed string) (map[string]interface{}, string) {
+		work := filepath.Join(base, "work-"+label)
+		code, refused, text := s.run(filepath.Join(base, label+".json"), work)
+		ref, _ := refused["refusal"].(map[string]interface{})
+		detail, _ := ref["detail"].([]interface{})
+		if code != 3 || refused["verdict"] != "refused" || refused["scored"] != false || ref["reason"] != "plan_file_mismatch" || len(detail) != 1 || !strings.Contains(fmt.Sprint(detail[0]), "plans/"+changed+".json") {
+			t.Fatalf("%s: a changed plan file %s must refuse the study, got exit %d %v %v\n%s", label, changed, code, refused["verdict"], refused["refusal"], tail(text, 2000))
+		}
+		if _, ok := refused["study_verdict"]; ok {
+			t.Fatalf("%s: a plan file refusal must write no success result: %v", label, refused["study_verdict"])
+		}
+		if got := manifestState(); got != manifestBefore {
+			t.Fatalf("%s: a plan file refusal must leave study_manifest.json unchanged: %s -> %s", label, manifestBefore, got)
+		}
+		return refused, work
+	}
+	attemptIDs := func(rec map[string]interface{}) []string {
+		ids := []string{}
+		list, _ := rec["attempts"].([]interface{})
+		for _, a := range list {
+			ids = append(ids, a.(map[string]interface{})["run_id"].(string))
+		}
+		sort.Strings(ids)
+		return ids
+	}
+	requireNoReplay := func(label string, rec map[string]interface{}, work string) {
+		if ids := attemptIDs(rec); len(ids) != 0 {
+			t.Fatalf("%s: a changed training plan must refuse before any replay, got attempts %v", label, ids)
+		}
+		if left, err := os.ReadDir(filepath.Join(work, "results")); err != nil || len(left) != 0 {
+			t.Fatalf("%s: a changed training plan must refuse before any replay writes a result: %v %v", label, left, err)
+		}
+	}
+
+	changePlan(trainIDs[0])
+	refused, work := refusedRun("stale-first-train", trainIDs[0])
+	requireNoReplay("stale-first-train", refused, work)
+	restorePlans()
+
+	deleted := filepath.Join(plansDir, trainIDs[0]+".json")
+	if err := os.Remove(deleted); err != nil {
+		t.Fatal(err)
+	}
+	changePlan(trainIDs[len(trainIDs)-1])
+	refused, work = refusedRun("stale-later-train", trainIDs[len(trainIDs)-1])
+	requireNoReplay("stale-later-train", refused, work)
+	if _, err := os.Stat(deleted); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the batch check must refuse before it writes any plan, but %s exists again: %v", deleted, err)
+	}
+	restorePlans()
+
+	changePlan(heldIDs[0])
+	refused, _ = refusedRun("stale-heldout", heldIDs[0])
+	if got := attemptIDs(refused); !reflect.DeepEqual(got, trainIDs) {
+		t.Fatalf("a changed held-out plan must refuse after the training replays and before any held-out replay, got attempts %v want %v", got, trainIDs)
+	}
+	restorePlans()
 }
 
 func TestBasketReplayMomentumStudyRefusesChangedInputsBeforeAnyReplay(t *testing.T) {
