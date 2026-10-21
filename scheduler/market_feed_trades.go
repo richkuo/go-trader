@@ -65,6 +65,9 @@ func feedObservationSourceFor(kind string) string {
 	if kind == feedObservationTradeFlow || kind == feedObservationVolumeProfile {
 		return feedTradeSourceHLWS
 	}
+	if kind == feedObservationL2Book {
+		return feedBookSource
+	}
 	return feedObservationSourceHLWS
 }
 

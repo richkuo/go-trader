@@ -55,7 +55,7 @@ def _frame(coin, bars=60, deadline=DEADLINE, forming=True):
 
 def _market(coins=tuple(MARKS), cutoff=DEADLINE):
     return {
-        "version": 2, "snapshot_id": "test/1", "generation": 7, "sealed_at_ms": cutoff + 30_000,
+        "version": 3, "snapshot_id": "test/1", "generation": 7, "sealed_at_ms": cutoff + 30_000,
         "frames": {f"{c}|1h": _frame(c) for c in coins},
         "mids": {c: {"px": MARKS[c], "recv_at_ms": cutoff + 30_000, "source": "test", "age_ms": 0,
                      "stale": False, "confirmed": True} for c in coins},

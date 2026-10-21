@@ -118,6 +118,7 @@ func (c *marketFeedContext) singleCheckPayload(sc StrategyConfig) ([]byte, error
 	signalIntervalMs, _ := hlCandleIntervalMs(entry.Signal.Timeframe)
 	attachObservationPayloads(payload, c.Snapshot, entry.observationNeeds(), signalIntervalMs)
 	attachMacroPayloads(payload, c.Snapshot, entry.macroNeeds())
+	attachL2BookPayloads(payload, c.Snapshot, entry.bookNeeds(), feedBookSingleReserveBytes)
 	c.logSharedPayload("single", sc.ID, specs, []string{coin}, payload)
 	return marketStdinJSON(payload)
 }
@@ -126,6 +127,7 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 	seen := make(map[marketFeedKey]int)
 	obsNeeds := make(map[feedObservationKey]int64)
 	macroNeeds := make(map[feedMacroKey]int64)
+	bookNeeds := make(map[feedObservationKey]feedBookNeed)
 	var specs []marketPayloadFrameSpec
 	raise := func(fk marketFeedKey, required int) {
 		if existing, ok := seen[fk]; ok {
@@ -187,6 +189,9 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 				macroNeeds[key] = window
 			}
 		}
+		for key, need := range entry.bookNeeds() {
+			addBookNeed(bookNeeds, key, need, nil)
+		}
 	}
 	for i := range specs {
 		specs[i].Required = seen[specs[i].Key]
@@ -199,6 +204,7 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 	batchIntervalMs, _ := hlCandleIntervalMs(key.Timeframe)
 	attachObservationPayloads(payload, c.Snapshot, obsNeeds, batchIntervalMs)
 	attachMacroPayloads(payload, c.Snapshot, macroNeeds)
+	attachL2BookPayloads(payload, c.Snapshot, bookNeeds, feedBookBatchReserveBytes)
 	c.logSharedPayload("batch", key.String(), specs, []string{key.Symbol}, payload)
 	return payload, nil
 }
@@ -258,6 +264,9 @@ func (c *marketFeedContext) holdFor(sc StrategyConfig) feedHold {
 		return feedHold{Held: true, Key: entry.Signal, Reason: why}
 	}
 	if held, why := c.Snapshot.macroHold(entry); held {
+		return feedHold{Held: true, EntryOnly: true, Key: entry.Signal, Reason: why}
+	}
+	if held, why := c.Snapshot.bookHold(entry); held {
 		return feedHold{Held: true, EntryOnly: true, Key: entry.Signal, Reason: why}
 	}
 	return feedHold{}

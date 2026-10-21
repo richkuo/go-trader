@@ -94,7 +94,7 @@ def _frame(bars, *, timing=True, interval_ms=H):
 
 
 def _market(bars, *, cutoff_ms=None, timing=True, mid=0.0):
-    market = {"version": 2, "snapshot_id": "test/1", "generation": 1,
+    market = {"version": 3, "snapshot_id": "test/1", "generation": 1,
               "sealed_at_ms": cutoff_ms or T0, "frames": {"BTC|1h": _frame(bars, timing=timing)},
               "feed_complete": True}
     if cutoff_ms is not None:

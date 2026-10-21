@@ -13,6 +13,9 @@ RUN_SCHEMA = "go_trader_observation_run/v1"
 RUN_SCHEMA_V2 = "go_trader_observation_run/v2"
 SEGMENT_SCHEMA_V2 = "go_trader_observation_segment/v2"
 RECORDING_SCHEMA_V2 = "go_trader_observation_recording/v2"
+RUN_SCHEMA_V3 = "go_trader_observation_run/v3"
+SEGMENT_SCHEMA_V3 = "go_trader_observation_segment/v3"
+RECORDING_SCHEMA_V3 = "go_trader_observation_recording/v3"
 SEGMENT_SCHEMA = "go_trader_observation_segment/v1"
 RECORDING_SCHEMA = "go_trader_observation_recording/v1"
 SERIES_SCHEMA = "go_trader_observation_series/v1"
@@ -23,6 +26,7 @@ OBSERVATION_KIND = "open_interest"
 
 
 TRADE_RECORD_KINDS = ("trades", "sub", "cover", "interval", "invalidate", "tick")
+BOOK_RECORD_KINDS = ("book", "book_sub", "book_marker", "book_need", "book_release")
 
 
 class RecordingError(ValueError):
@@ -91,17 +95,18 @@ def load_recording(run_dir: str) -> dict:
     run_dir = os.path.abspath(run_dir)
     with open(os.path.join(run_dir, "run.manifest.json")) as fh:
         run = json.load(fh)
-    v2 = run.get("schema") == RUN_SCHEMA_V2
+    v3 = run.get("schema") == RUN_SCHEMA_V3
+    v2 = run.get("schema") == RUN_SCHEMA_V2 or v3
     if v2:
         if OBSERVATION_KIND not in (run.get("kinds") or []):
-            raise RecordingError(f"run manifest schema {RUN_SCHEMA_V2!r} did not record {OBSERVATION_KIND}; "
-                                 "use trade_flow_replay.load_trade_recording for trade flow")
+            raise RecordingError(f"run manifest schema {run.get('schema')!r} did not record {OBSERVATION_KIND}; "
+                                 "use trade_flow_replay.load_trade_recording for trade flow or book_replay.load_book_recording for l2_book")
         contract = _v2_open_interest_contract(run_dir, run)
         run = {**run, "source": run.get("sources", {}).get(OBSERVATION_KIND), **contract}
     elif run.get("schema") != RUN_SCHEMA:
-        raise RecordingError(f"run manifest schema must be {RUN_SCHEMA!r} or {RUN_SCHEMA_V2!r}")
-    segment_schema = SEGMENT_SCHEMA_V2 if v2 else SEGMENT_SCHEMA
-    recording_schema = RECORDING_SCHEMA_V2 if v2 else RECORDING_SCHEMA
+        raise RecordingError(f"run manifest schema must be {RUN_SCHEMA!r}, {RUN_SCHEMA_V2!r} or {RUN_SCHEMA_V3!r}")
+    segment_schema = SEGMENT_SCHEMA_V3 if v3 else (SEGMENT_SCHEMA_V2 if v2 else SEGMENT_SCHEMA)
+    recording_schema = RECORDING_SCHEMA_V3 if v3 else (RECORDING_SCHEMA_V2 if v2 else RECORDING_SCHEMA)
     if not run.get("closed"):
         raise RecordingError("the recording run was not closed; its last segment may be truncated")
     if (run.get("source"), run.get("units"), run.get("time_basis")) != (ACCEPTED_SOURCE, ACCEPTED_UNITS, ACCEPTED_TIME_BASIS):
@@ -165,6 +170,8 @@ def load_recording(run_dir: str) -> dict:
                     raise RecordingError(f"{seg['file']}:{line_no} has unknown connection state {rec.get('state')!r}")
                 continue
             if v2 and kind in TRADE_RECORD_KINDS:
+                continue
+            if v3 and kind in BOOK_RECORD_KINDS:
                 continue
             if kind == "drop":
                 report["dropped"] += int(rec.get("count") or 0)
@@ -491,6 +498,81 @@ def _cmd_harness_trades(args) -> int:
     return 1 if failures else 0
 
 
+def _cmd_import_books(args) -> int:
+    from book_replay import load_book_recording, write_book_series
+    loaded = load_book_recording(args.run_dir)
+    report = loaded["report"]
+    out = {k: report[k] for k in ("run_id", "recorder_version", "frames", "malformed_frames", "markers_compared", "dropped",
+                                  "mismatch_count", "economic_evidence", "refusals", "sessions", "segments")}
+    out["series"] = {}
+    for coin, series in loaded["series"].items():
+        entry = {"observations": len(series["observations"]), "markers": len(series["markers"]), "stats": series["stats"],
+                 "latency_ms": series["latency_ms"], "max_accept_gap_ms": series["max_accept_gap_ms"],
+                 "series_sha256": series["series_sha256"]}
+        if args.out_dir:
+            path = os.path.join(args.out_dir, f"{coin}_l2_book.json.gz")
+            entry["file"] = path
+            entry["file_sha256"] = write_book_series(series, path)
+        out["series"][coin] = entry
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0
+
+
+def _book_harness_case(directory: str, case: dict, loaded: dict) -> dict:
+    _here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, os.path.join(_here, "..", "shared_tools"))
+    from market_payload import market_l2_book, validate_market_payload
+    from book_replay import book_identity, comparable_payload, payload_from_series
+    with open(os.path.join(directory, case["payload"])) as fh:
+        payload = json.load(fh)
+    validate_market_payload(payload)
+    coin = case["coin"]
+    live = market_l2_book(payload, coin)
+    again = market_l2_book(payload, coin)
+    replay = payload_from_series(loaded["series"][coin], live.get("cutoff_ms"), case["need"], case["as_of_ms"],
+                                 payload.get("snapshot_id", ""))
+    full_identities = [r for r in live.get("observations") or [] if r["bid_depth"] == len(r["bids"]) and r["ask_depth"] == len(r["asks"])]
+    checks = {
+        "payload_book_available": bool(live.get("available")),
+        "payload_need_matches_case": [live.get(k) for k in ("window_ms", "capacity", "depth")] == [case["need"][k] for k in ("window_ms", "capacity", "depth")],
+        "prefix_complete_matches_case": live.get("prefix_complete") is case["prefix_complete"],
+        "repeat_read_identical": live == again,
+        "recording_matches_seal": comparable_payload(live) == comparable_payload(replay),
+        "full_depth_identities_recompute": all(
+            book_identity(coin, r["event_ms"], r["bids"], r["asks"]) == r["identity"] for r in full_identities),
+    }
+    failures = [f"{k}: false" for k, v in checks.items() if not v]
+    if not checks["recording_matches_seal"]:
+        a, b = comparable_payload(live), comparable_payload(replay)
+        failures.append("first differing fields: " + ", ".join(k for k in a if a[k] != b[k]))
+    return {"payload": case["payload"], "coin": coin, "cutoff_ms": live.get("cutoff_ms"),
+            "observations": len(live.get("observations") or []), "markers": [m["reason"] for m in live.get("markers") or []],
+            "prefix_complete": live.get("prefix_complete"), "retained_from_ms": live.get("retained_from_ms"),
+            "checks": checks, "failures": failures}
+
+
+def _cmd_harness_books(args) -> int:
+    from book_replay import load_book_recording
+    with open(os.path.join(args.dir, "harness.json")) as fh:
+        harness = json.load(fh)
+    loaded = load_book_recording(os.path.join(args.dir, "recording"))
+    results = [_book_harness_case(args.dir, case, loaded) for case in sorted(harness["cases"], key=lambda c: c["payload"])]
+    failures = [f"{r['payload']}: {f}" for r in results for f in r["failures"]]
+    for coin, want in sorted((harness.get("expected_stats") or {}).items()):
+        got = loaded["series"][coin]["stats"]
+        if got != want:
+            failures.append(f"{coin} replayed stats {got}, the owner reported {want}")
+    if not loaded["report"]["economic_evidence"]:
+        failures.append(f"the harness recording is refused as evidence: {loaded['report']['refusals']}")
+    if len(results) != 4:
+        failures.append(f"the harness holds {len(results)} cases, want 4")
+    print(json.dumps({"recording": {k: loaded["report"][k] for k in ("frames", "malformed_frames", "markers_compared",
+                                                                       "mismatch_count", "economic_evidence")},
+                      "stats": {c: s["stats"] for c, s in loaded["series"].items()},
+                      "cases": results, "failures": failures}, indent=2, sort_keys=True, default=str))
+    return 1 if failures else 0
+
+
 PROFILE_DECISION_COLUMNS = ["timestamp", "vpr_reason", "vpr_profile_sha256", "vpr_val", "vpr_vah", "vpr_deadline_ms",
                             "vpr_carried", "signal"]
 PROFILE_SESSION_FIELDS = ("session_start_ms", "status", "reason_code", "invalid_ms", "artifact")
@@ -625,7 +707,7 @@ def _cmd_harness_profiles(args) -> int:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Verify and import go-trader observation recordings (#1637, #1638, #1665)")
+    p = argparse.ArgumentParser(description="Verify and import go-trader observation recordings (#1635, #1637, #1638, #1665)")
     sub = p.add_subparsers(dest="cmd", required=True)
     imp = sub.add_parser("import", help="Verify a closed recording run and print (or write) its rebuilt series")
     imp.add_argument("--run-dir", required=True)
@@ -642,8 +724,14 @@ def main(argv=None) -> int:
     imp2.add_argument("--out-dir", default="")
     hap = sub.add_parser("harness-profiles", help="Compare sealed volume-profile payloads and decisions with the recording replay")
     hap.add_argument("--dir", required=True)
+    imb = sub.add_parser("import-books", help="Replay a closed l2_book recording independently and print (or write) its series")
+    imb.add_argument("--run-dir", required=True)
+    imb.add_argument("--out-dir", default="")
+    hab = sub.add_parser("harness-books", help="Compare sealed l2_book payloads with the independent recording replay")
+    hab.add_argument("--dir", required=True)
     args = p.parse_args(argv)
     from trade_flow_replay import TradeRecordingError
+    from book_replay import BookRecordingError
     try:
         if args.cmd == "import":
             return _cmd_import(args)
@@ -655,8 +743,12 @@ def main(argv=None) -> int:
             return _cmd_import_profiles(args)
         if args.cmd == "harness-profiles":
             return _cmd_harness_profiles(args)
+        if args.cmd == "import-books":
+            return _cmd_import_books(args)
+        if args.cmd == "harness-books":
+            return _cmd_harness_books(args)
         return _cmd_harness(args)
-    except (RecordingError, TradeRecordingError) as exc:
+    except (RecordingError, TradeRecordingError, BookRecordingError) as exc:
         print(f"recording error: {exc}", file=sys.stderr)
         return 1
 

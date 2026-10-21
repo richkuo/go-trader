@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -126,6 +127,7 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 	subscribed := make(map[marketFeedKey]bool)
 	obsSubscribed := make(map[string]bool)
 	tradesSubscribed := make(map[string]bool)
+	booksSubscribed := make(map[string]bool)
 	midsSubscribed := false
 	syncSubscriptions := func() error {
 		keys, coins, _ := o.Subscriptions()
@@ -184,6 +186,36 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 			}
 			tradesSubscribed[coin] = true
 		}
+		wantBooks := make(map[string]bool)
+		for _, coin := range o.BookCoins() {
+			wantBooks[coin] = true
+			if booksSubscribed[coin] {
+				continue
+			}
+			if err := writeJSON(map[string]any{
+				"method":       "subscribe",
+				"subscription": map[string]any{"type": "l2Book", "coin": coin, "fast": false},
+			}); err != nil {
+				return err
+			}
+			booksSubscribed[coin] = true
+		}
+		stale := make([]string, 0)
+		for coin := range booksSubscribed {
+			if !wantBooks[coin] {
+				stale = append(stale, coin)
+			}
+		}
+		sort.Strings(stale)
+		for _, coin := range stale {
+			if err := writeJSON(map[string]any{
+				"method":       "unsubscribe",
+				"subscription": map[string]any{"type": "l2Book", "coin": coin, "fast": false},
+			}); err != nil {
+				return err
+			}
+			delete(booksSubscribed, coin)
+		}
 		return nil
 	}
 
@@ -191,16 +223,31 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 		return fmt.Errorf("subscribe: %w", err)
 	}
 
+	o.feedMu.Lock()
+	bookTick, socketPing := o.bookTick, o.socketPing
+	o.feedMu.Unlock()
 	o.SetConnected(true)
 	defer o.SetConnected(false)
 	go o.repairAfterConnect(sessionCtx)
+	go func() {
+		ticker := time.NewTicker(bookTick)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-sessionCtx.Done():
+				return
+			case <-ticker.C:
+				o.TickBooks(o.now())
+			}
+		}
+	}()
 
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(feedSocketReadDeadline))
 	})
 
 	go func() {
-		ticker := time.NewTicker(feedSocketPingEvery)
+		ticker := time.NewTicker(socketPing)
 		defer ticker.Stop()
 		for {
 			select {
@@ -237,7 +284,9 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 func (o *marketFeedOwner) handleSocketMessage(payload []byte) {
 	var env feedSocketEnvelope
 	if err := json.Unmarshal(payload, &env); err != nil {
-		o.IngestTradesFrame(nil, o.now(), payload)
+		recvAt := o.now()
+		o.IngestTradesFrame(nil, recvAt, payload)
+		o.IngestMalformedBookEnvelope(recvAt, payload)
 		return
 	}
 	switch env.Channel {
@@ -280,6 +329,8 @@ func (o *marketFeedOwner) handleSocketMessage(payload []byte) {
 		o.IngestOpenInterest(coin, value, recvAt, payload, err)
 	case "trades":
 		o.IngestTradesFrame(env.Data, o.now(), payload)
+	case "l2Book":
+		o.IngestBookFrame(env.Data, o.now(), payload)
 	case "subscriptionResponse":
 		recvAt := o.now()
 		var ack feedSubscriptionAck
@@ -288,6 +339,12 @@ func (o *marketFeedOwner) handleSocketMessage(payload []byte) {
 		}
 		if ack.Method == "subscribe" && ack.Subscription.Type == "trades" && strings.TrimSpace(ack.Subscription.Coin) != "" {
 			o.IngestTradeSubscription(strings.TrimSpace(ack.Subscription.Coin), recvAt, payload)
+		}
+		if ack.Method == "subscribe" && ack.Subscription.Type == "l2Book" && ack.Subscription.Coin != "" {
+			var bookAck feedBookSubscriptionAck
+			if err := json.Unmarshal(env.Data, &bookAck); err == nil {
+				o.IngestBookSubscription(ack.Subscription.Coin, recvAt, payload, bookAck.Subscription)
+			}
 		}
 	}
 }

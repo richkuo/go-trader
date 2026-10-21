@@ -326,7 +326,7 @@ def _sealed_payload(frame: pd.DataFrame, leader: pd.DataFrame, follower: str, ti
                 "timing": {"rule": "hyperliquid_native_close", "interval_ms": interval, "bars": timing}}
     boundary = int(frame.index[i].value // 1_000_000) + interval
     cutoff = boundary + 1_000
-    return {"version": 2, "snapshot_id": f"parity/{boundary}", "generation": 1, "sealed_at_ms": cutoff,
+    return {"version": 3, "snapshot_id": f"parity/{boundary}", "generation": 1, "sealed_at_ms": cutoff,
             "decision_cutoff_ms": cutoff, "feed_complete": True,
             "frames": {f"{follower}|{timeframe}": build(frame, follower), f"BTC|{timeframe}": build(leader, "BTC")}}
 

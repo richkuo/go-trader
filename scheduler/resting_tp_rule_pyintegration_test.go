@@ -71,7 +71,7 @@ func restingTPPyMarket(bars [][6]float64, closedThrough int) map[string]any {
 	last := len(frame) - 1
 	cutoff := restingTPPyOpenMs(last) + restingTPPyHourMs/2
 	return map[string]any{
-		"version": 2, "snapshot_id": "resting/1", "generation": 1, "sealed_at_ms": cutoff, "decision_cutoff_ms": cutoff,
+		"version": 3, "snapshot_id": "resting/1", "generation": 1, "sealed_at_ms": cutoff, "decision_cutoff_ms": cutoff,
 		"feed_complete": true,
 		"frames": map[string]any{"BTC|1h": map[string]any{
 			"rows": rows, "required": len(rows), "bars": len(rows), "coverage_short": false,

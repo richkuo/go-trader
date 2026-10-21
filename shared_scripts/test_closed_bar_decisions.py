@@ -53,7 +53,7 @@ def _hl_frame(bars, *, timing=True, interval_ms=H):
 
 
 def _market(frames, *, cutoff_ms=None, mid=0.0):
-    market = {"version": 2, "snapshot_id": "test/1", "generation": 1,
+    market = {"version": 3, "snapshot_id": "test/1", "generation": 1,
               "sealed_at_ms": cutoff_ms or T0, "frames": frames, "feed_complete": True}
     if cutoff_ms is not None:
         market["decision_cutoff_ms"] = cutoff_ms

@@ -31,7 +31,7 @@ def _market():
         px = 100.0 + (i % 13) * 0.4
         rows.append([T0 + i * STEP + STEP - 1, px, px + 1.0, px - 1.0, px + 0.2, 10.0])
     unavailable = {"kind": "macro_calendar", "available": False, "reason": "fixture", "calendar_sha256": "1" * 64}
-    return {"version": 2, "snapshot_id": "3600s/1", "generation": 1, "sealed_at_ms": rows[-1][0],
+    return {"version": 3, "snapshot_id": "3600s/1", "generation": 1, "sealed_at_ms": rows[-1][0],
             "frames": {"BTC|1h": {"rows": rows, "required": 200, "bars": len(rows), "coverage_short": False,
                                   "first_open_ms": T0, "last_open_ms": rows[-1][0] - STEP + 1,
                                   "last_close_ms": rows[-1][0], "last_recv_at_ms": rows[-1][0], "source": "ws",

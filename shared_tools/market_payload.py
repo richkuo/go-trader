@@ -1,4 +1,4 @@
-MARKET_PAYLOAD_VERSION = 2
+MARKET_PAYLOAD_VERSION = 3
 
 
 class MarketPayloadError(Exception):
@@ -172,6 +172,45 @@ def market_volume_profile(market, coin: str, error_cls=None) -> dict:
         return {"available": False, "kind": "volume_profile", "coin": coin,
                 "reason": f"market payload {key} entry is labelled "
                           f"{entry.get('coin')!r}|{entry.get('kind')!r}"}
+    return dict(entry)
+
+
+L2_BOOK_CONTRACT = {
+    "source": "hyperliquid_ws_l2Book",
+    "contract": "hyperliquid-l2book-native-slow/1635-v1",
+    "time_semantics": "source_event_ms+first_receipt_ms/1635-v1",
+    "identity_semantics": "sha256-lp(host,namespace,coin,event_ms,levels)/1635-v1",
+    "max_future_skew_ms": 250,
+    "max_lag_ms": 5000,
+    "max_gap_ms": 10000,
+}
+
+
+def market_l2_book(market, coin: str, error_cls=None) -> dict:
+    payload = validate_market_payload(market, error_cls)
+    key = f"{coin}|l2_book"
+    refused = payload.get("l2_books_refused")
+    if refused:
+        return {"available": False, "kind": "l2_book", "coin": coin, "reason": str(refused)}
+    books = payload.get("l2_books")
+    if not isinstance(books, dict) or key not in books:
+        return {"available": False, "kind": "l2_book", "coin": coin,
+                "reason": f"market payload carries no {key} records"}
+    entry = books[key]
+    if not isinstance(entry, dict):
+        return {"available": False, "kind": "l2_book", "coin": coin,
+                "reason": f"market payload {key} records are not an object"}
+    if entry.get("kind") != "l2_book" or entry.get("coin") != coin:
+        return {"available": False, "kind": "l2_book", "coin": coin,
+                "reason": f"market payload {key} records are labelled "
+                          f"{entry.get('coin')!r}|{entry.get('kind')!r}"}
+    drift = sorted(k for k, v in L2_BOOK_CONTRACT.items() if entry.get(k) != v)
+    if drift:
+        return {"available": False, "kind": "l2_book", "coin": coin,
+                "reason": f"market payload {key} declares {', '.join(drift)} outside the accepted l2_book contract"}
+    if not isinstance(entry.get("observations"), list) or not isinstance(entry.get("markers"), list):
+        return {"available": False, "kind": "l2_book", "coin": coin,
+                "reason": f"market payload {key} carries no observation and marker lists"}
     return dict(entry)
 
 

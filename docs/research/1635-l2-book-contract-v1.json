@@ -1,0 +1,20 @@
+{
+  "source": "hyperliquid_ws_l2Book",
+  "contract": "hyperliquid-l2book-native-slow/1635-v1",
+  "time_semantics": "source_event_ms+first_receipt_ms/1635-v1",
+  "identity_semantics": "sha256-lp(host,namespace,coin,event_ms,levels)/1635-v1",
+  "identity_tag": "go-trader-l2book-identity/v1",
+  "max_levels": 20,
+  "max_observations": 4096,
+  "max_window_ms": 900000,
+  "max_markers": 64,
+  "max_future_skew_ms": 250,
+  "max_lag_ms": 5000,
+  "max_gap_ms": 10000,
+  "max_frame_bytes": 16384,
+  "decimal_max_len": 32,
+  "decimal_max_frac": 18,
+  "max_orders": 4294967295,
+  "retain_slack_ms": 60000,
+  "subscription": "{\"type\":\"l2Book\",\"coin\":\"<coin>\",\"fast\":false}"
+}

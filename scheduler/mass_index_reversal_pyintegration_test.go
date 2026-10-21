@@ -37,7 +37,7 @@ func massIndexMarket(lastClosed int) map[string]any {
 	lastOpen := t0 + int64(end-1)*hour
 	cutoff := lastOpen + hour/2
 	return map[string]any{
-		"version": 2, "snapshot_id": "massrev/1", "generation": 1, "sealed_at_ms": cutoff, "decision_cutoff_ms": cutoff,
+		"version": 3, "snapshot_id": "massrev/1", "generation": 1, "sealed_at_ms": cutoff, "decision_cutoff_ms": cutoff,
 		"feed_complete": true,
 		"frames": map[string]any{"BTC|1h": map[string]any{
 			"rows": rows, "required": len(rows), "bars": len(rows), "coverage_short": false,

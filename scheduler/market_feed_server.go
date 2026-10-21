@@ -528,7 +528,7 @@ func (s *feedSealer) sealBytes(key int64) []byte {
 }
 
 func (s *feedSealer) coverageSealVersionLocked() int {
-	return feedSealVersionFor(s.coverage.hasObservationKind(feedObservationOpenInterest), len(s.coverage.AccountingCoins) > 0, s.coverage.hasObservationKind(feedObservationTradeFlow), len(s.coverage.Macro) > 0, s.coverage.hasObservationKind(feedObservationVolumeProfile))
+	return feedSealVersionFor(s.coverage.hasObservationKind(feedObservationOpenInterest), len(s.coverage.AccountingCoins) > 0, s.coverage.hasObservationKind(feedObservationTradeFlow), len(s.coverage.Macro) > 0, s.coverage.hasObservationKind(feedObservationVolumeProfile), len(s.coverage.Books) > 0)
 }
 
 func (s *feedSealer) coverageSealVersion() int {
@@ -590,6 +590,7 @@ func (s *feedSealer) describe() *feedDescribe {
 		})
 	}
 	d.Macro = describeMacro(s.coverage)
+	d.Books = describeBooks(s.coverage.Books)
 	if len(s.coverage.AccountingCoins) > 0 {
 		d.AccountingFunding = append([]string(nil), s.coverage.AccountingCoins...)
 		d.AccountingWindowMs = feedAccountingWindow.Milliseconds()
@@ -639,9 +640,13 @@ func fullCycleRequirements(req feedRequirements) cycleMarketRequirements {
 		Funding:      make(map[string]feedFundingNeed, len(req.Funding)),
 		Observations: make(map[feedObservationKey]int64, len(req.Observations)),
 		Macro:        make(map[feedMacroKey]int64, len(req.Macro)),
+		Books:        make(map[feedObservationKey]feedBookNeed, len(req.Books)),
 	}
 	for key, window := range req.Observations {
 		out.Observations[key] = window
+	}
+	for key, need := range req.Books {
+		out.Books[key] = need
 	}
 	for key, need := range req.Macro {
 		out.Macro[key] = need.WindowMs
@@ -755,7 +760,7 @@ func (srv *feedUnixServer) handle(conn net.Conn) {
 			Instance:       srv.sealer.instance,
 			Source:         srv.sealer.source,
 			Generation:     srv.sealer.owner.Generation(),
-			SealVersion:    feedSealVersionFor(describeHasObservationKind(d, feedObservationOpenInterest), len(d.AccountingFunding) > 0, describeHasObservationKind(d, feedObservationTradeFlow), len(d.Macro) > 0, describeHasObservationKind(d, feedObservationVolumeProfile)),
+			SealVersion:    feedSealVersionFor(describeHasObservationKind(d, feedObservationOpenInterest), len(d.AccountingFunding) > 0, describeHasObservationKind(d, feedObservationTradeFlow), len(d.Macro) > 0, describeHasObservationKind(d, feedObservationVolumeProfile), len(d.Books) > 0),
 			PayloadVersion: marketSnapshotVersion,
 			Describe:       d,
 		}

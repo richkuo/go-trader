@@ -291,6 +291,9 @@ func basketReplayConfigRefusal(cfg *Config, stateDir string) error {
 		for k := range req.Observations {
 			kinds[k.Kind] = true
 		}
+		for k := range req.Books {
+			kinds[k.Kind] = true
+		}
 		for kind := range kinds {
 			errs = append(errs, fmt.Sprintf("the configuration needs %s observations, which the replay does not freeze (it builds no sealed feed snapshot of any version)", kind))
 		}

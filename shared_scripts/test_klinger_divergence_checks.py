@@ -105,7 +105,7 @@ def _frame(bars, step, *, timing=True):
 
 
 def _market(frames, *, cutoff_ms, mid):
-    return {"version": 2, "snapshot_id": "test/1", "generation": 1, "sealed_at_ms": cutoff_ms,
+    return {"version": 3, "snapshot_id": "test/1", "generation": 1, "sealed_at_ms": cutoff_ms,
             "decision_cutoff_ms": cutoff_ms, "frames": frames, "feed_complete": True,
             "mids": {"BTC": {"px": mid, "recv_at_ms": cutoff_ms, "source": "ws", "age_ms": 0,
                              "stale": False, "confirmed": True}}}

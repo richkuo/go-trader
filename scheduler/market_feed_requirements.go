@@ -87,6 +87,7 @@ type feedStrategyRequirement struct {
 	TradeFlow      bool
 	TradeWindowMs  int64
 	VolumeProfile  bool
+	Book           *feedBookNeed
 	Leader         marketFeedKey
 	HasLeader      bool
 	LeaderLookback int
@@ -133,6 +134,23 @@ type feedRequirements struct {
 	AccountingCoins []string
 
 	Macro map[feedMacroKey]feedMacroNeed
+
+	Books         map[feedObservationKey]feedBookNeed
+	BookConflicts []string
+}
+
+func (r *feedRequirements) addBook(key feedObservationKey, need feedBookNeed) {
+	if r.Books == nil {
+		r.Books = make(map[feedObservationKey]feedBookNeed)
+	}
+	addBookNeed(r.Books, key, need, &r.BookConflicts)
+}
+
+func (e feedStrategyRequirement) bookNeeds() map[feedObservationKey]feedBookNeed {
+	if e.Book == nil {
+		return nil
+	}
+	return map[feedObservationKey]feedBookNeed{l2BookKeyFor(e.Coin): *e.Book}
 }
 
 func (r *feedRequirements) addObservation(key feedObservationKey, windowMs int64) {
@@ -213,6 +231,7 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 		Observations: make(map[feedObservationKey]int64),
 		Strategies:   make(map[string]feedStrategyRequirement),
 		Macro:        make(map[feedMacroKey]feedMacroNeed),
+		Books:        make(map[feedObservationKey]feedBookNeed),
 	}
 	if cfg == nil {
 		req.finalize()
@@ -332,6 +351,14 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 			entry.VolumeProfile = true
 			req.addObservation(volumeProfileKeyFor(symbol), feedProfileWindowMs)
 		}
+		intervalMs, _ := hlCandleIntervalMs(timeframe)
+		if need, ok, berr := feedStrategyBookNeed(sc, intervalMs); berr != nil {
+			errs = append(errs, fmt.Sprintf("strategy[%s] l2_book: %v", sc.ID, berr))
+		} else if ok {
+			n := need
+			entry.Book = &n
+			req.addBook(l2BookKeyFor(symbol), need)
+		}
 
 		req.Strategies[sc.ID] = entry
 	}
@@ -345,6 +372,9 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 		}
 	}
 	if err := volumeProfileUnionError(req); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := bookUnionError(req); err != nil {
 		errs = append(errs, err.Error())
 	}
 	if len(errs) > 0 {
@@ -380,6 +410,10 @@ func validateMarketFeedConfig(cfg *Config) error {
 		if ids := macroStrategyIDs(cfg); len(ids) > 0 {
 			return fmt.Errorf("market_feed=%q cannot supply sealed calendar and quote records for %s (strategies %s); use market_feed %q or %q",
 				marketFeedREST, macroEventBreakoutStrategyName, strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
+		}
+		if ids := bookStrategyIDs(cfg); len(ids) > 0 {
+			return fmt.Errorf("market_feed=%q cannot supply sealed l2_book observations (strategies %s); use market_feed %q or %q",
+				marketFeedREST, strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
 		}
 		if ids := volumeProfileStrategyIDs(cfg); len(ids) > 0 {
 			return fmt.Errorf("market_feed=%q cannot supply executed-trade volume profiles for %s (strategies %s); use market_feed %q or %q",
@@ -428,6 +462,7 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 		o.fundingNeeds[coin] = need
 	}
 	o.applyObservationNeedsLocked(req.Observations)
+	o.applyBookNeedsLocked(req.Books)
 	o.applyAccountingCoinsLocked(req.AccountingCoins)
 	o.subVersion++
 	o.applySeq++
@@ -484,6 +519,7 @@ func (o *marketFeedOwner) publishGeneration(req feedRequirements, token uint64, 
 		}
 	}
 	o.dropUnneededObservationsLocked(req.Observations)
+	o.dropUnneededBooksLocked(req.Books)
 	o.published = make(map[marketFeedKey]bool, len(req.Order))
 	for _, key := range req.Order {
 		o.published[key] = true

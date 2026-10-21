@@ -27,6 +27,9 @@ const (
 	observationRecordingSchemaV2 = "go_trader_observation_recording/v2"
 	observationSegmentSchemaV2   = "go_trader_observation_segment/v2"
 	observationRunSchemaV2       = "go_trader_observation_run/v2"
+	observationRecordingSchemaV3 = "go_trader_observation_recording/v3"
+	observationSegmentSchemaV3   = "go_trader_observation_segment/v3"
+	observationRunSchemaV3       = "go_trader_observation_run/v3"
 	observationRecorderQueue     = 65536
 	observationFlushEvery        = time.Second
 	observationDefaultSegment    = time.Hour
@@ -111,6 +114,8 @@ type observationSegmentManifest struct {
 	TradeFrames  int      `json:"trade_frames,omitempty"`
 	TradeRecords int      `json:"trade_records,omitempty"`
 	Intervals    int      `json:"intervals,omitempty"`
+	BookFrames   int      `json:"book_frames,omitempty"`
+	BookMarkers  int      `json:"book_markers,omitempty"`
 }
 
 type observationTradeContract struct {
@@ -137,12 +142,47 @@ func currentTradeContract() observationTradeContract {
 	}
 }
 
+type observationBookContract struct {
+	Source            string `json:"source"`
+	Contract          string `json:"contract"`
+	TimeSemantics     string `json:"time_semantics"`
+	IdentitySemantics string `json:"identity_semantics"`
+	IdentityTag       string `json:"identity_tag"`
+	MaxLevels         int    `json:"max_levels"`
+	MaxObservations   int    `json:"max_observations"`
+	MaxWindowMs       int64  `json:"max_window_ms"`
+	MaxMarkers        int    `json:"max_markers"`
+	MaxFutureSkewMs   int64  `json:"max_future_skew_ms"`
+	MaxLagMs          int64  `json:"max_lag_ms"`
+	MaxGapMs          int64  `json:"max_gap_ms"`
+	MaxFrameBytes     int    `json:"max_frame_bytes"`
+	DecimalMaxLen     int    `json:"decimal_max_len"`
+	DecimalMaxFrac    int    `json:"decimal_max_frac"`
+	MaxOrders         uint64 `json:"max_orders"`
+	RetainSlackMs     int64  `json:"retain_slack_ms"`
+	Subscription      string `json:"subscription"`
+}
+
+func currentBookContract() observationBookContract {
+	return observationBookContract{Source: feedBookSource, Contract: feedBookContract, TimeSemantics: feedBookTimeSemantics,
+		IdentitySemantics: feedBookIdentitySemantics, IdentityTag: feedBookIdentityTag, MaxLevels: feedBookMaxLevels,
+		MaxObservations: feedBookMaxObservations, MaxWindowMs: feedBookMaxWindowMs, MaxMarkers: feedBookMaxMarkers,
+		MaxFutureSkewMs: feedBookMaxFutureSkewMs, MaxLagMs: feedBookMaxLagMs, MaxGapMs: feedBookMaxGapMs, MaxFrameBytes: feedBookMaxFrameBytes,
+		DecimalMaxLen: feedBookDecimalMaxLen, DecimalMaxFrac: feedBookDecimalMaxFrac, MaxOrders: feedBookMaxOrders,
+		RetainSlackMs: feedBookRetainSlackMs, Subscription: `{"type":"l2Book","coin":"<coin>","fast":false}`}
+}
+
+func recorderBookNeed() feedBookNeed {
+	return contractBookNeed(feedBookMaxWindowMs, feedBookMaxObservations, feedBookMaxLevels)
+}
+
 type observationRunManifestV2 struct {
 	Schema        string                       `json:"schema"`
 	RunID         string                       `json:"run_id"`
 	Kinds         []string                     `json:"kinds"`
 	Sources       map[string]string            `json:"sources"`
 	TradeContract *observationTradeContract    `json:"trade_contract,omitempty"`
+	BookContract  *observationBookContract     `json:"book_contract,omitempty"`
 	Host          string                       `json:"host"`
 	WSURL         string                       `json:"ws_url"`
 	Coins         []string                     `json:"coins"`
@@ -152,6 +192,15 @@ type observationRunManifestV2 struct {
 	DroppedTotal  uint64                       `json:"dropped_total"`
 	RecorderVers  string                       `json:"recorder_version"`
 	Segments      []observationSegmentManifest `json:"segments"`
+}
+
+func recorderKindsHaveBooks(kinds []string) bool {
+	for _, k := range kinds {
+		if k == feedObservationL2Book {
+			return true
+		}
+	}
+	return false
 }
 
 func recorderKindsHaveTrades(kinds []string) bool {
@@ -195,6 +244,8 @@ type observationSegment struct {
 	frames   int
 	trades   int
 	ivs      int
+	books    int
+	markers  int
 	rejected int
 	dropped  uint64
 	first    int64
@@ -392,6 +443,15 @@ func (r *observationRecorder) handle(rec observationRecord) {
 	if rec.Kind == "interval" {
 		seg.ivs++
 	}
+	if rec.Kind == "book" {
+		seg.books++
+		if oc, _ := rec.Extra["outcome"].(string); oc == feedBookOutcomeRejected {
+			seg.rejected++
+		}
+	}
+	if rec.Kind == "book_marker" {
+		seg.markers++
+	}
 	if seg.first == 0 || rec.RecvMs < seg.first {
 		seg.first = rec.RecvMs
 	}
@@ -439,6 +499,17 @@ func (r *observationRecorder) openSegment(atMs int64) error {
 	}
 	seg.buf = bufio.NewWriter(io.MultiWriter(f, h))
 	r.segment = seg
+	if r.v3() {
+		r.writeLine(seg, map[string]any{
+			"k": "header", "schema": observationRecordingSchemaV3, "run_id": r.meta.RunID, "index": seg.index,
+			"recv_ms": atMs, "kinds": r.meta.Kinds, "sources": r.sources(), "trade_contract": currentTradeContract(),
+			"book_contract": currentBookContract(),
+			"open_interest_contract": map[string]any{"source": feedObservationSourceHLWS, "units": feedObservationUnitsBase,
+				"time_basis": feedObservationTimeReceipt, "cadence_ms": feedObservationCadenceMs},
+			"host": hlMainnetURL, "ws_url": r.meta.WSURL, "coins": r.meta.Coins, "recorder_version": Version,
+		})
+		return r.writeError
+	}
 	if r.v2() {
 		r.writeLine(seg, map[string]any{
 			"k": "header", "schema": observationRecordingSchemaV2, "run_id": r.meta.RunID, "index": seg.index,
@@ -507,6 +578,9 @@ func (r *observationRecorder) closeSegment(reason string) {
 	if r.v2() {
 		schema = observationSegmentSchemaV2
 	}
+	if r.v3() {
+		schema = observationSegmentSchemaV3
+	}
 	m := observationSegmentManifest{
 		Schema:       schema,
 		RunID:        r.meta.RunID,
@@ -530,6 +604,8 @@ func (r *observationRecorder) closeSegment(reason string) {
 		TradeFrames:  seg.frames,
 		TradeRecords: seg.trades,
 		Intervals:    seg.ivs,
+		BookFrames:   seg.books,
+		BookMarkers:  seg.markers,
 	}
 	if err := writeJSONAtomic(filepath.Join(r.dir, seg.name+".manifest.json"), m); err != nil {
 		r.fail(err)
@@ -543,7 +619,11 @@ func (r *observationRecorder) closeSegment(reason string) {
 }
 
 func (r *observationRecorder) v2() bool {
-	return recorderKindsHaveTrades(r.meta.Kinds)
+	return recorderKindsHaveTrades(r.meta.Kinds) && !r.v3()
+}
+
+func (r *observationRecorder) v3() bool {
+	return recorderKindsHaveBooks(r.meta.Kinds)
 }
 
 func (r *observationRecorder) sources() map[string]string {
@@ -555,7 +635,7 @@ func (r *observationRecorder) sources() map[string]string {
 }
 
 func (r *observationRecorder) writeRunManifest() error {
-	if !r.v2() {
+	if !r.v2() && !r.v3() {
 		return writeJSONAtomic(filepath.Join(r.dir, "run.manifest.json"), r.manifest)
 	}
 	contract := currentTradeContract()
@@ -564,6 +644,10 @@ func (r *observationRecorder) writeRunManifest() error {
 		TradeContract: &contract, Host: r.manifest.Host, WSURL: r.manifest.WSURL, Coins: r.manifest.Coins,
 		StartedMs: r.manifest.StartedMs, ClosedMs: r.manifest.ClosedMs, Closed: r.manifest.Closed,
 		DroppedTotal: r.manifest.DroppedTotal, RecorderVers: r.manifest.RecorderVers, Segments: r.manifest.Segments,
+	}
+	if r.v3() {
+		book := currentBookContract()
+		m.Schema, m.BookContract = observationRunSchemaV3, &book
 	}
 	return writeJSONAtomic(filepath.Join(r.dir, "run.manifest.json"), m)
 }
@@ -635,8 +719,8 @@ func parseRecorderKinds(raw string) ([]string, error) {
 		if k == "" {
 			continue
 		}
-		if k != feedObservationOpenInterest && k != feedObservationTradeFlow {
-			return nil, fmt.Errorf("kind %q is not %q or %q", k, feedObservationOpenInterest, feedObservationTradeFlow)
+		if k != feedObservationOpenInterest && k != feedObservationTradeFlow && k != feedObservationL2Book {
+			return nil, fmt.Errorf("kind %q is not %q, %q or %q", k, feedObservationOpenInterest, feedObservationTradeFlow, feedObservationL2Book)
 		}
 		if seen[k] {
 			return nil, fmt.Errorf("kind %q is listed twice", k)
@@ -663,7 +747,7 @@ func recorderKindsInclude(kinds []string, kind string) bool {
 func runRecordObservations(args []string) int {
 	fs := flag.NewFlagSet("record-observations", flag.ContinueOnError)
 	coinsFlag := fs.String("coins", "", "Comma-separated Hyperliquid perpetual coins to record (e.g. BTC,ETH)")
-	kindsFlag := fs.String("kinds", feedObservationOpenInterest, "Comma-separated observation kinds to record: open_interest, trade_flow")
+	kindsFlag := fs.String("kinds", feedObservationOpenInterest, "Comma-separated observation kinds to record: open_interest, trade_flow, l2_book")
 	outDir := fs.String("out-dir", "", "Empty directory for the research recording (never a state or config directory)")
 	duration := fs.Duration("duration", 0, "Stop after this long (0 = until SIGINT or SIGTERM)")
 	segment := fs.Duration("segment", observationDefaultSegment, "Rotate to a new hashed segment after this long")
@@ -704,6 +788,11 @@ func runRecordObservations(args []string) int {
 	fmt.Printf("[recorder] run=%s coins=%s kinds=%s out=%s ws=%s source=%s units=%s time_basis=%s cadence_ms=%d segment=%s duration=%s\n",
 		runID, strings.Join(coins, ","), strings.Join(kinds, ","), *outDir, hlFeedWebsocketURL(), feedObservationSourceHLWS, feedObservationUnitsBase,
 		feedObservationTimeReceipt, feedObservationCadenceMs, *segment, *duration)
+	if recorderKindsInclude(kinds, feedObservationL2Book) {
+		c := currentBookContract()
+		fmt.Printf("[recorder] l2_book source=%s contract=%s subscription=%s max_levels=%d max_future_skew_ms=%d max_lag_ms=%d max_gap_ms=%d\n",
+			c.Source, c.Contract, c.Subscription, c.MaxLevels, c.MaxFutureSkewMs, c.MaxLagMs, c.MaxGapMs)
+	}
 	if recorderKindsInclude(kinds, feedObservationTradeFlow) {
 		c := currentTradeContract()
 		fmt.Printf("[recorder] trade_flow source=%s identity=%s side_evidence=%s interval_ms=%d reorder_grace_ms=%d max_event_gap_ms=%d decimal_scale=%d\n",
@@ -737,6 +826,9 @@ func runRecordObservations(args []string) int {
 		owner.trackTradeFlows(coins, observationRecorderWindow.Milliseconds())
 	}
 	owner.attachRecorder(rec)
+	if recorderKindsInclude(kinds, feedObservationL2Book) {
+		owner.trackBooks(coins, recorderBookNeed())
+	}
 	recCtx, stopRec := context.WithCancel(context.Background())
 	go rec.run(recCtx)
 	ownerDone := make(chan struct{})
@@ -756,6 +848,11 @@ loop:
 		case <-advance.C:
 			owner.AdvanceTradeFlows(time.Now().UTC())
 		case <-ticker.C:
+			for _, rd := range owner.BookReadiness() {
+				fmt.Printf("[recorder] %s status=%s observations=%d markers=%d frames=%d accepted=%d duplicates=%d conflicts=%d out_of_order=%d rejected=%d uncovered=%d evicted=%d covered_ms=%d detail=%q\n",
+					rd.Key.PayloadID(), rd.Status, rd.Observations, rd.Markers, rd.Stats.Frames, rd.Stats.Accepted, rd.Stats.Duplicates,
+					rd.Stats.Conflicts, rd.Stats.OutOfOrder, rd.Stats.Rejected, rd.Stats.Uncovered, rd.Stats.Evicted, rd.CoveredMs, rd.Detail)
+			}
 			for _, rd := range owner.TradeFlowReadiness() {
 				fmt.Printf("[recorder] %s status=%s frames=%d received=%d accepted=%d duplicates=%d conflicts=%d late=%d uncovered=%d rejected=%d finalized=%d invalid=%d covered_ms=%d detail=%q\n",
 					rd.Key.PayloadID(), rd.Status, rd.Stats.Frames, rd.Stats.Received, rd.Stats.Accepted, rd.Stats.Duplicates, rd.Stats.Conflicts,

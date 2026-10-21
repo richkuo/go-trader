@@ -476,7 +476,7 @@ def _market_payload(symbol="BTC", timeframe="1h", rows=None, htf_rows=None,
                     funding=None, mid=25_000.0):
     rows = rows if rows is not None else _candles()
     payload = {
-        "version": 2,
+        "version": 3,
         "snapshot_id": "300s/1700000000",
         "generation": 4,
         "sealed_at_ms": 1_700_000_000_000,
@@ -573,13 +573,13 @@ def test_market_payload_missing_funding_is_an_explicit_error(mod):
 def test_market_payload_defects_fail_the_shared_state(mod):
     adapter = FakeAdapter()
     defects = {
-        "missing frame": {"version": 2, "snapshot_id": "x", "frames": {}},
-        "unready frame": {"version": 2, "snapshot_id": "x",
+        "missing frame": {"version": 3, "snapshot_id": "x", "frames": {}},
+        "unready frame": {"version": 3, "snapshot_id": "x",
                           "frames": {"BTC|1h": _market_frame(_candles(), ready=False)}},
         "wrong version": {"version": 99, "snapshot_id": "x",
                           "frames": {"BTC|1h": _market_frame(_candles())}},
-        "no snapshot id": {"version": 2, "frames": {"BTC|1h": _market_frame(_candles())}},
-        "malformed row": {"version": 2, "snapshot_id": "x",
+        "no snapshot id": {"version": 3, "frames": {"BTC|1h": _market_frame(_candles())}},
+        "malformed row": {"version": 3, "snapshot_id": "x",
                           "frames": {"BTC|1h": _market_frame([[1, 2, 3]])}},
         "not an object": "nope",
     }

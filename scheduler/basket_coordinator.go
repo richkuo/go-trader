@@ -386,7 +386,8 @@ func mergeCycleRequirements(a, b cycleMarketRequirements) cycleMarketRequirement
 			need[cr.Key] = cr.Required
 		}
 	}
-	out := cycleMarketRequirements{Funding: make(map[string]feedFundingNeed), Observations: make(map[feedObservationKey]int64), Macro: make(map[feedMacroKey]int64)}
+	out := cycleMarketRequirements{Funding: make(map[string]feedFundingNeed), Observations: make(map[feedObservationKey]int64), Macro: make(map[feedMacroKey]int64),
+		Books: make(map[feedObservationKey]feedBookNeed)}
 	for k, l := range need {
 		out.Keys = append(out.Keys, cycleMarketRequirement{Key: k, Required: l})
 	}
@@ -415,6 +416,9 @@ func mergeCycleRequirements(a, b cycleMarketRequirements) cycleMarketRequirement
 			if existing, ok := out.Macro[k]; !ok || w > existing {
 				out.Macro[k] = w
 			}
+		}
+		for _, k := range sortedBookNeedKeys(src.Books) {
+			addBookNeed(out.Books, k, src.Books[k], nil)
 		}
 	}
 	acct := make(map[string]bool)

@@ -490,6 +490,11 @@ type marketFeedOwner struct {
 	fundingNeeds map[string]feedFundingNeed
 	observations map[feedObservationKey]*feedObservationState
 	tradeFlows   map[feedObservationKey]*feedTradeFlowState
+	books        map[feedObservationKey]*feedBookState
+	bookSeq      uint64
+	bookInstance string
+	bookTick     time.Duration
+	socketPing   time.Duration
 	obsSession   uint64
 
 	accountingCoins   map[string]bool
@@ -543,6 +548,10 @@ func newMarketFeedOwner(clock func() time.Time, logf func(string, ...any)) *mark
 		fundingNeeds: make(map[string]feedFundingNeed),
 		observations: make(map[feedObservationKey]*feedObservationState),
 		tradeFlows:   make(map[feedObservationKey]*feedTradeFlowState),
+		books:        make(map[feedObservationKey]*feedBookState),
+		bookInstance: boundedBookInstance(newFeedInstanceID(clock().UTC())),
+		bookTick:     feedBookTickEvery,
+		socketPing:   feedSocketPingEvery,
 
 		accountingCoins:   make(map[string]bool),
 		accountingFunding: make(map[string]*feedAccountingFunding),
@@ -958,6 +967,14 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 			Key: r.Key.PayloadID(), Status: r.Status, Ready: r.Ready, WindowMs: feedProfileWindowMs, Detail: detail,
 			Received: r.Stats.Accepted, ProfileSessionMs: r.SessionStartMs, ProfilesFinal: r.Stats.Finalized,
 			ProfilesUnavailable: r.Stats.Unavailable, Invalid: r.Stats.Invalidated,
+		})
+	}
+	for _, r := range o.BookReadiness() {
+		health.Observations = append(health.Observations, marketFeedHealthObs{
+			Key: r.Key.PayloadID(), Status: r.Status, Ready: r.Ready, Samples: r.Observations,
+			CoveredMs: r.CoveredMs, WindowMs: r.WindowMs, LastRecvMs: r.LastRecvMs,
+			Received: r.Stats.Frames, Rejected: r.Stats.Rejected, LastReject: r.Stats.LastReject, Detail: r.Detail,
+			Duplicates: r.Stats.Duplicates, Conflicts: r.Stats.Conflicts, Late: r.Stats.OutOfOrder,
 		})
 	}
 	sort.SliceStable(health.Observations, func(i, j int) bool { return health.Observations[i].Key < health.Observations[j].Key })

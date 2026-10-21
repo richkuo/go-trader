@@ -170,7 +170,7 @@ def _sealed(follower, leader, i, *, rows=S, cutoff_delay=1_000, recv=None, mutat
                 "timing": {"rule": "hyperliquid_native_close", "interval_ms": HOUR, "bars": timing}}
     boundary = int(follower["timestamp"].iloc[i]) + HOUR
     cutoff = boundary + cutoff_delay
-    market = {"version": 2, "snapshot_id": f"t/{boundary}", "generation": 1, "sealed_at_ms": cutoff,
+    market = {"version": 3, "snapshot_id": f"t/{boundary}", "generation": 1, "sealed_at_ms": cutoff,
               "decision_cutoff_ms": cutoff, "feed_complete": True,
               "frames": {"ETH|1h": build(follower), "BTC|1h": build(leader)}}
     if mutate:

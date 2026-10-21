@@ -391,6 +391,7 @@ func (o *marketFeedOwner) markObservationsDisconnectedLocked(atMs int64) {
 		st.markDisconnected(atMs)
 	}
 	o.markTradeFlowsDisconnectedLocked(atMs)
+	o.markBooksDisconnectedLocked(atMs)
 }
 
 func (o *marketFeedOwner) ObservationCoins() []string {
