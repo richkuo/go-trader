@@ -4484,7 +4484,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 var robinhoodExecuteFn = RunRobinhoodExecute
 var okxExecuteFn = RunOKXExecute
 
-func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMutex, sc StrategyConfig, s *StrategyState, result *RobinhoodResult, signalStr string, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*robinhoodOrderAttempt, bool) {
+func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMutex, sc StrategyConfig, s *StrategyState, result *RobinhoodResult, signalStr string, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, hurst HurstGateDecision, cfgs []StrategyConfig, notifier *MultiNotifier, logger *StrategyLogger) (*robinhoodOrderAttempt, bool) {
 	if reason := SpotOrderSkipReason(result.Signal, posSide); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -4492,6 +4492,7 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 	isBuy := result.Signal == 1
 	var amountUSD float64
 	var quantity float64
+	var sellArgs RobinhoodSellArgs
 	side := "buy"
 
 	if isBuy {
@@ -4511,9 +4512,13 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 			return nil, false
 		}
 		quantity = posQty
+		sellArgs.CloseKind = robinhoodCloseKindWhole
 		if result.CloseFraction > 0 && result.CloseFraction < 1 {
 			quantity = posQty * result.CloseFraction
+			sellArgs.CloseKind = robinhoodCloseKindPartial
 		}
+		owners := robinhoodLiveOwnersForCoin(result.Symbol, cfgs)
+		sellArgs.SoleOwner = len(owners) == 1 && owners[0].ID == sc.ID
 	}
 	direction := directionOpen
 	if side == "sell" {
@@ -4565,6 +4570,8 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 		PrevPositionID: prevPositionID,
 		PrevPosSide:    posSide,
 		PrevPosQty:     prevQty,
+		CloseKind:      sellArgs.CloseKind,
+		SoleOwner:      sellArgs.SoleOwner,
 		Result:         frozen,
 		Hurst:          hurst,
 		Script:         sc.Script,
@@ -4576,16 +4583,44 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 		return nil, false
 	}
 
-	logger.Info("Placing live %s %s amount_usd=%.2f qty=%.6f (attempt %s, ref_id %s)", side, result.Symbol, amountUSD, quantity, a.AttemptID, a.RefID)
+	if side == "sell" {
+		logger.Info("Placing live sell %s asking qty=%.10g close=%s sole_owner=%v (attempt %s, ref_id %s)", result.Symbol, quantity, sellArgs.CloseKind, sellArgs.SoleOwner, a.AttemptID, a.RefID)
+	} else {
+		logger.Info("Placing live %s %s amount_usd=%.2f (attempt %s, ref_id %s)", side, result.Symbol, amountUSD, a.AttemptID, a.RefID)
+	}
 
-	execResult, stderr, runErr := robinhoodExecuteFn(sc.Script, result.Symbol, side, amountUSD, quantity, a.RefID)
+	execResult, stderr, runErr := robinhoodExecuteFn(sc.Script, result.Symbol, side, amountUSD, quantity, a.RefID, sellArgs)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
-	class, detail := classifyRobinhoodOrderOutcome(execResult, runErr, a, quantity)
+	class, detail := classifyRobinhoodOrderOutcome(execResult, runErr, a, 0)
+	recordRes := execResult
+	var sizing *RobinhoodSellSizing
+	if side == "sell" {
+		var sizeErr error
+		if execResult == nil {
+			sizeErr = fmt.Errorf("the order script gave no result")
+		} else {
+			sizing, sizeErr = checkRobinhoodSellSizing(execResult.Sizing, req, execResult)
+		}
+		if sizeErr != nil {
+			sizing = nil
+			if class == robinhoodOrderConfirmed {
+				class, detail = robinhoodOrderUnknown, "the sell result has no valid sent_quantity: "+sizeErr.Error()
+			}
+			if execResult != nil && execResult.RequestedQuantity != 0 {
+				cp := *execResult
+				cp.RequestedQuantity = 0
+				recordRes = &cp
+			}
+		}
+	}
 	mu.Lock()
-	recordErr := recordRobinhoodOrderOutcomeLocked(store, s, a, execResult, class, detail, time.Now())
+	recordErr := recordRobinhoodOrderOutcomeLocked(store, s, a, recordRes, class, detail, sizing, time.Now())
 	mu.Unlock()
+	if sizing != nil {
+		logRobinhoodSellSizing(logger, result.Symbol, a.AttemptID, sizing)
+	}
 	switch class {
 	case robinhoodOrderConfirmed:
 		if recordErr != nil {
@@ -4613,8 +4648,27 @@ func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMut
 	return nil, false
 }
 
+func logRobinhoodSellSizing(logger *StrategyLogger, coin, attemptID string, sz *RobinhoodSellSizing) {
+	if logger == nil || sz == nil {
+		return
+	}
+	switch {
+	case sz.Swept:
+		logger.Warn("Robinhood sell %s swept sub-minimum dust: requested %.10g, available %.10g, sent %.10g (attempt %s) (#1819)", coin, sz.AskedQuantity, sz.AccountAvailable, sz.SentQuantity, attemptID)
+	case sz.Capped:
+		logger.Warn("Robinhood sell %s capped: requested %.10g, available %.10g, sent %.10g (attempt %s) (#1819)", coin, sz.AskedQuantity, sz.AccountAvailable, sz.SentQuantity, attemptID)
+	}
+	if !sz.Swept && sz.CloseKind == robinhoodCloseKindWhole && sz.AccountAvailable-sz.SentQuantity >= sz.MinOrderSize*(1-robinhoodQtyTolerance) && sz.AccountAvailable-sz.SentQuantity > 0 {
+		logger.Warn("Robinhood sell %s whole close leaves %.10g on the account for a peer or the operator: requested %.10g, available %.10g, sent %.10g (attempt %s) (#1819)", coin, sz.AccountAvailable-sz.SentQuantity, sz.AskedQuantity, sz.AccountAvailable, sz.SentQuantity, attemptID)
+	}
+}
+
 func executeRobinhoodLiveSignal(store *StateStore, state *AppState, mu *sync.RWMutex, sc StrategyConfig, s *StrategyState, stratDB *StateDB, result *RobinhoodResult, signalStr string, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, hurst HurstGateDecision, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
-	attempt, ok := runRobinhoodExecuteOrder(store, state, mu, sc, s, result, signalStr, price, cash, cashReconcileRequired, posQty, posSide, hurst, notifier, logger)
+	var cfgs []StrategyConfig
+	if cfg != nil {
+		cfgs = cfg.Strategies
+	}
+	attempt, ok := runRobinhoodExecuteOrder(store, state, mu, sc, s, result, signalStr, price, cash, cashReconcileRequired, posQty, posSide, hurst, cfgs, notifier, logger)
 	if !ok {
 		return 0, ""
 	}
@@ -4628,6 +4682,9 @@ func executeRobinhoodLiveSignal(store *StateStore, state *AppState, mu *sync.RWM
 	mu.Unlock()
 	if settled.Hold != "" {
 		notifyRobinhoodOrderHold(notifier, sc.ID, attempt, settled.Hold, time.Now())
+	}
+	if settled.Shortfall != "" {
+		notifyRobinhoodBookShortfall(notifier, attempt.AttemptID, settled.Shortfall)
 	}
 	if settled.CashAlert != "" {
 		notifySpotLiveCashOverBudget(notifier, settled.CashAlert)
@@ -4662,7 +4719,11 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	exec, err := ExecuteSpotSignalWithFillFeeSizedDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, hurst.OpenSizeMult(), logger)
+	var soldQty float64
+	if robinhoodIsLive(sc.Args) && result.Signal == -1 && !(result.CloseFraction > 0 && result.CloseFraction < 1) {
+		soldQty = fillQty
+	}
+	exec, err := ExecuteSpotSignalWithFillFeeSoldDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, hurst.OpenSizeMult(), soldQty, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, "", ""

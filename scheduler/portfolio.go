@@ -1371,7 +1371,7 @@ func perpsSizingLabel(sizing PerpsSizing) string {
 }
 
 func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (int, error) {
-	out, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, 1.0, logger, func(trade Trade) {
+	out, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, 1.0, 0, logger, func(trade Trade) {
 		RecordTrade(s, trade)
 	})
 	return out.TradesExecuted, err
@@ -1382,8 +1382,12 @@ func ExecuteSpotSignalWithFillFeeDeferredOpen(s *StrategyState, signal int, symb
 }
 
 func ExecuteSpotSignalWithFillFeeSizedDeferredOpen(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, openSizeMult float64, logger *StrategyLogger) (SignalExecutionResult, error) {
+	return ExecuteSpotSignalWithFillFeeSoldDeferredOpen(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, openSizeMult, 0, logger)
+}
+
+func ExecuteSpotSignalWithFillFeeSoldDeferredOpen(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, openSizeMult float64, soldQty float64, logger *StrategyLogger) (SignalExecutionResult, error) {
 	var result SignalExecutionResult
-	out, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, openSizeMult, logger, func(trade Trade) {
+	out, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, openSizeMult, soldQty, logger, func(trade Trade) {
 		t := trade
 		result.OpenTrade = &t
 	})
@@ -1406,7 +1410,7 @@ type spotSignalExecOutcome struct {
 	CashOverBudgetAlert   string
 }
 
-func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, openSizeMult float64, logger *StrategyLogger, recordOpen func(Trade)) (spotSignalExecOutcome, error) {
+func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, openSizeMult float64, soldQty float64, logger *StrategyLogger, recordOpen func(Trade)) (spotSignalExecOutcome, error) {
 	if signal == 0 {
 		return spotSignalExecOutcome{}, nil
 	}
@@ -1586,7 +1590,11 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			} else {
 				execPrice = ApplyAdverseSlippage(price, false)
 			}
-			saleValue := closeQty * execPrice
+			saleQty := closeQty
+			if !partialClose && soldQty > 0 {
+				saleQty = soldQty
+			}
+			saleValue := saleQty * execPrice
 			useFillMetadata := fillQty > 0 && !fillMetadataUsed
 			fee := executionFee(CalculatePlatformSpotFee(feePlatform, saleValue), fillFee, useFillMetadata)
 			if useFillMetadata {
@@ -1602,6 +1610,8 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			details := fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee)
 			if partialClose {
 				details = fmt.Sprintf("Partial-close long %.6f, PnL: $%.2f (fee $%.2f)", closeQty, pnl, fee)
+			} else if saleQty != closeQty {
+				details = fmt.Sprintf("Close long: sold %.10g of a %.10g book, PnL: $%.2f (fee $%.2f)", saleQty, closeQty, pnl, fee)
 			}
 			trade := Trade{
 				Timestamp:       now,
@@ -1609,7 +1619,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 				Symbol:          symbol,
 				PositionID:      positionID,
 				Side:            "sell",
-				Quantity:        closeQty,
+				Quantity:        saleQty,
 				Price:           execPrice,
 				Value:           netProceeds,
 				TradeType:       "spot",
@@ -1634,7 +1644,11 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			} else {
 				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 				delete(s.Positions, symbol)
-				logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, execPrice, fee, pnl)
+				if saleQty != closeQty {
+					logger.Info("SELL %s: sold %.10g of a %.10g book @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, saleQty, closeQty, execPrice, fee, pnl)
+				} else {
+					logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, execPrice, fee, pnl)
+				}
 			}
 			tradesExecuted++
 		} else {

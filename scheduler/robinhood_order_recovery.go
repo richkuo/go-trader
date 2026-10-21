@@ -45,7 +45,7 @@ func robinhoodResolveRequestFor(a *robinhoodOrderAttempt, orderID string, cancel
 		Side:              a.Side,
 		RefID:             a.RefID,
 		OrderID:           orderID,
-		RequestedQuantity: robinhoodRequestedQty(a, nil),
+		RequestedQuantity: robinhoodVenueOrderQty(a),
 		SubmittedAfterMs:  a.CreatedAtMs,
 		SubmittedBeforeMs: a.CreatedAtMs + budget + robinhoodSubmitWindowMargin.Milliseconds(),
 		ExpectedAccountID: a.VenueAccountID,
@@ -94,7 +94,7 @@ func resolveOneRobinhoodAttempt(d robinhoodEmergencyDeps, strategyID, attemptID,
 		d.mu.Unlock()
 		return robinhoodResolveVerdict{Unresolved: current.unresolved(), Reason: "the attempt changed during resolution"}
 	}
-	recordErr := recordRobinhoodOrderOutcomeLocked(d.store, s, current, res, class, detail, time.Now())
+	recordErr := recordRobinhoodOrderOutcomeLocked(d.store, s, current, res, class, detail, nil, time.Now())
 	var after robinhoodOrderAttempt
 	after = *current
 	d.mu.Unlock()
@@ -135,7 +135,12 @@ func settleRobinhoodAttempts(d robinhoodEmergencyDeps, cfg *Config, logMgr *LogM
 		attempt    robinhoodOrderAttempt
 		reason     string
 	}
+	type shortfallAlert struct {
+		attemptID string
+		msg       string
+	}
 	var holds []holdAlert
+	var shortfalls []shortfallAlert
 	var out []robinhoodRecoveredTrades
 	d.mu.Lock()
 	for _, a := range robinhoodUnresolvedAttemptsLocked(d.state) {
@@ -161,6 +166,9 @@ func settleRobinhoodAttempts(d robinhoodEmergencyDeps, cfg *Config, logMgr *LogM
 		if res.Hold != "" {
 			holds = append(holds, holdAlert{strategyID: sc.ID, attempt: *a, reason: res.Hold})
 		}
+		if res.Shortfall != "" {
+			shortfalls = append(shortfalls, shortfallAlert{attemptID: a.AttemptID, msg: res.Shortfall})
+		}
 		if res.Settled && res.Trades > 0 {
 			out = append(out, robinhoodRecoveredTrades{sc: sc, state: s, trades: res.Trades})
 		}
@@ -179,6 +187,9 @@ func settleRobinhoodAttempts(d robinhoodEmergencyDeps, cfg *Config, logMgr *LogM
 	for _, h := range holds {
 		a := h.attempt
 		notifyRobinhoodOrderHold(d.notifier, h.strategyID, &a, h.reason, time.Now())
+	}
+	for _, sf := range shortfalls {
+		notifyRobinhoodBookShortfall(d.notifier, sf.attemptID, sf.msg)
 	}
 	return out
 }
@@ -405,10 +416,12 @@ func prepareRobinhoodAttestedRelease(d robinhoodEmergencyDeps, lookup func(id st
 	}
 	req := robinhoodResolveRequestFor(&checked, "", false)
 	size := "an unknown quantity"
-	if q := robinhoodRequestedQty(&checked, nil); q > 0 {
+	if q := robinhoodVenueOrderQty(&checked); q > 0 {
 		size = fmt.Sprintf("%.10g %s", q, checked.Symbol)
 	} else if fr, err := parseRobinhoodOrderRequest(&checked); err == nil && fr.AmountUSD > 0 {
 		size = fmt.Sprintf("$%.2f of %s", fr.AmountUSD, checked.Symbol)
+	} else if err == nil && fr.Version == robinhoodSizedSellRequestVersion && fr.Quantity > 0 {
+		size = fmt.Sprintf("asked %.10g %s, sent quantity unknown", fr.Quantity, checked.Symbol)
 	}
 	prompt := fmt.Sprintf("Release Robinhood attempt %s of %s as NO FILL on your word?\n"+
 		"Order: %s %s (%s origin), ref_id %s, no venue order id.\n"+
@@ -452,7 +465,8 @@ func releaseRobinhoodAttemptByAttestation(d robinhoodEmergencyDeps, operatorID, 
 	ev := robinhoodOrderEvidenceRecord{
 		Outcome:           robinhoodOutcomeOperatorAttested,
 		Detail:            fmt.Sprintf("operator %s attested that the Robinhood order history shows no %s %s order for ref_id %s in the submit window %s to %s", operatorID, current.Side, current.Symbol, current.RefID, time.UnixMilli(req.SubmittedAfterMs).UTC().Format(time.RFC3339), time.UnixMilli(req.SubmittedBeforeMs).UTC().Format(time.RFC3339)),
-		RequestedQuantity: robinhoodRequestedQty(current, nil),
+		RequestedQuantity: robinhoodVenueOrderQty(current),
+		Sizing:            robinhoodEvidenceSizing(current),
 		ObservedAtMs:      now.UnixMilli(),
 		Operator: &robinhoodOperatorAttestation{
 			OperatorID:      operatorID,

@@ -267,7 +267,7 @@ func newRobinhoodEmergencyCloser(d robinhoodEmergencyDeps, origin string) Robinh
 		}
 		if res != nil && res.OrderOutcome == robinhoodOutcomeAlreadyFlat && res.Close != nil && res.Close.AlreadyFlat && rawErr == nil {
 			d.mu.Lock()
-			recordErr := recordRobinhoodOrderOutcomeLocked(d.store, s, a, &RobinhoodExecuteResult{OrderOutcome: robinhoodOutcomeAlreadyFlat}, robinhoodOrderNoFill, "already flat; no order was sent", time.Now())
+			recordErr := recordRobinhoodOrderOutcomeLocked(d.store, s, a, &RobinhoodExecuteResult{OrderOutcome: robinhoodOutcomeAlreadyFlat}, robinhoodOrderNoFill, "already flat; no order was sent", nil, time.Now())
 			d.mu.Unlock()
 			if recordErr != nil {
 				notifyRobinhoodOrderHold(d.notifier, s.ID, a, fmt.Sprintf("the already-flat result could not be saved (%v)", recordErr), time.Now())
@@ -285,7 +285,7 @@ func newRobinhoodEmergencyCloser(d robinhoodEmergencyDeps, origin string) Robinh
 			detail = err.Error()
 		}
 		d.mu.Lock()
-		recordErr := recordRobinhoodOrderOutcomeLocked(d.store, s, a, orderRes, class, detail, time.Now())
+		recordErr := recordRobinhoodOrderOutcomeLocked(d.store, s, a, orderRes, class, detail, nil, time.Now())
 		d.mu.Unlock()
 		switch class {
 		case robinhoodOrderConfirmed:

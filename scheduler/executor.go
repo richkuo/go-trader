@@ -1259,17 +1259,43 @@ type RobinhoodOrderCancel struct {
 	Detail       string `json:"detail,omitempty"`
 }
 
+type RobinhoodSellSizing struct {
+	AskedQuantity     float64 `json:"asked_quantity"`
+	AccountAvailable  float64 `json:"account_available"`
+	SentQuantity      float64 `json:"sent_quantity"`
+	MinOrderSize      float64 `json:"min_order_size"`
+	QuantityIncrement float64 `json:"quantity_increment"`
+	MaxOrderSize      float64 `json:"max_order_size,omitempty"`
+	CloseKind         string  `json:"close_kind"`
+	SoleOwner         bool    `json:"sole_owner"`
+	Swept             bool    `json:"swept"`
+	Capped            bool    `json:"capped"`
+	AccountShort      bool    `json:"account_short"`
+	ResidueQuantity   float64 `json:"residue_quantity"`
+}
+
 type RobinhoodExecuteResult struct {
 	Execution         *RobinhoodExecution    `json:"execution"`
 	OrderOutcome      string                 `json:"order_outcome,omitempty"`
 	Order             RobinhoodOrderEvidence `json:"order"`
 	RefID             string                 `json:"ref_id,omitempty"`
 	RequestedQuantity float64                `json:"requested_quantity,omitempty"`
+	Sizing            *RobinhoodSellSizing   `json:"sizing,omitempty"`
 	AccountID         string                 `json:"account_id,omitempty"`
 	Cancel            RobinhoodOrderCancel   `json:"cancel"`
 	Platform          string                 `json:"platform"`
 	Timestamp         string                 `json:"timestamp"`
 	Error             string                 `json:"error,omitempty"`
+}
+
+const (
+	robinhoodCloseKindWhole   = "whole"
+	robinhoodCloseKindPartial = "partial"
+)
+
+type RobinhoodSellArgs struct {
+	CloseKind string
+	SoleOwner bool
 }
 
 func RunRobinhoodCheck(script string, args []string) (*RobinhoodResult, string, error) {
@@ -1325,7 +1351,7 @@ func parseRobinhoodOrderOutput(stdout []byte, stderrStr string, runErr error) (*
 	return &result, stderrStr, nil
 }
 
-func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float64, refID string) (*RobinhoodExecuteResult, string, error) {
+func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float64, refID string, sell RobinhoodSellArgs) (*RobinhoodExecuteResult, string, error) {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -1338,6 +1364,14 @@ func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float6
 		args = append(args, fmt.Sprintf("--amount_usd=%s", strconv.FormatFloat(amountUSD, 'f', -1, 64)))
 	} else {
 		args = append(args, fmt.Sprintf("--quantity=%s", strconv.FormatFloat(quantity, 'f', -1, 64)))
+		closeKind := robinhoodCloseKindPartial
+		if sell.CloseKind == robinhoodCloseKindWhole {
+			closeKind = robinhoodCloseKindWhole
+		}
+		args = append(args, "--close-kind="+closeKind)
+		if sell.SoleOwner {
+			args = append(args, "--sole-owner")
+		}
 	}
 	stdout, stderr, runErr := runPythonSideEffectWithTimeout(script, args, robinhoodOrderScriptTimeout)
 	return parseRobinhoodOrderOutput(stdout, string(stderr), runErr)

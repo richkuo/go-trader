@@ -69,7 +69,7 @@ func TestRobinhoodScriptStdoutParsesInGo(t *testing.T) {
 			}
 
 			robinhoodStdoutFreshHome(t)
-			execResult, stderr, err := RunRobinhoodExecute(checkScript, "BTC", "buy", 10, 0, "11111111-1111-4111-8111-111111111111")
+			execResult, stderr, err := RunRobinhoodExecute(checkScript, "BTC", "buy", 10, 0, "11111111-1111-4111-8111-111111111111", RobinhoodSellArgs{})
 			if execResult == nil || err == nil || execResult.OrderOutcome != robinhoodOutcomeNotSent {
 				t.Errorf("RunRobinhoodExecute (%s): an order whose venue reads fail must parse as not_sent: result=%+v err=%v stderr:\n%s", mode, execResult, err, stderr)
 			}
@@ -193,7 +193,7 @@ func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
 			store, state := robinhoodStdoutStore(t, liveStrategies)
 			var mu sync.RWMutex
 			s := state.Strategies[sc.ID]
-			if er, ok := runRobinhoodExecuteOrder(store, state, &mu, sc, s, &RobinhoodResult{Symbol: "BTC", Signal: 1}, "BUY", 100, 50, false, 0, "", HurstGateDecision{}, nil, logger); ok || er != nil {
+			if er, ok := runRobinhoodExecuteOrder(store, state, &mu, sc, s, &RobinhoodResult{Symbol: "BTC", Signal: 1}, "BUY", 100, 50, false, 0, "", HurstGateDecision{}, liveStrategies, nil, logger); ok || er != nil {
 				t.Errorf("%s buy: got ok=%v result=%+v, want the live-execute-failed path", mode, ok, er)
 			}
 			if robinhoodStdoutTradeRows(t, store) != 0 || len(s.Positions) != 0 || s.Cash != 50 {
@@ -215,7 +215,7 @@ func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
 		store, state := robinhoodStdoutStore(t, liveStrategies)
 		var mu sync.RWMutex
 		s := state.Strategies[sc.ID]
-		er, ok := runRobinhoodExecuteOrder(store, state, &mu, sc, s, &RobinhoodResult{Symbol: "BTC", Signal: 1}, "BUY", 100, 50, false, 0, "", HurstGateDecision{}, nil, logger)
+		er, ok := runRobinhoodExecuteOrder(store, state, &mu, sc, s, &RobinhoodResult{Symbol: "BTC", Signal: 1}, "BUY", 100, 50, false, 0, "", HurstGateDecision{}, liveStrategies, nil, logger)
 		if ok || er != nil {
 			t.Fatalf("accepted buy with no confirmed fill: got ok=%v result=%+v, want an unresolved hold", ok, er)
 		}
@@ -269,7 +269,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 
 			for _, side := range []string{"buy", "sell"} {
 				robinhoodStdoutFreshHome(t)
-				execResult, stderr, err := RunRobinhoodExecute(checkScript, "BTC", side, 10, 0.1, "11111111-1111-4111-8111-111111111111")
+				execResult, stderr, err := RunRobinhoodExecute(checkScript, "BTC", side, 10, 0.1, "11111111-1111-4111-8111-111111111111", RobinhoodSellArgs{})
 				keep(stderr)
 				if err == nil || execResult == nil || !strings.HasPrefix(execResult.Error, loginFailed) || execResult.OrderOutcome != "not_sent" || (execResult.Execution != nil && execResult.Execution.Fill != nil) {
 					t.Errorf("execute %s: got result=%+v err=%v, want an %q envelope, a script error, order_outcome not_sent and no fill", side, execResult, err, loginFailed)
@@ -281,7 +281,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 			var buyMu sync.RWMutex
 			buyS := buyState.Strategies[sc.ID]
 			buyCash := buyS.Cash
-			if er, ok := runRobinhoodExecuteOrder(buyStore, buyState, &buyMu, sc, buyS, &RobinhoodResult{Symbol: "BTC", Signal: 1}, "BUY", 100, 50, false, 0, "", HurstGateDecision{}, nil, logger); ok || er != nil {
+			if er, ok := runRobinhoodExecuteOrder(buyStore, buyState, &buyMu, sc, buyS, &RobinhoodResult{Symbol: "BTC", Signal: 1}, "BUY", 100, 50, false, 0, "", HurstGateDecision{}, liveStrategies, nil, logger); ok || er != nil {
 				t.Errorf("execute order buy: got ok=%v result=%+v, want the live-execute-failed path", ok, er)
 			}
 			if robinhoodStdoutTradeRows(t, buyStore) != 0 || len(buyS.Positions) != 0 || buyS.Cash != buyCash {
@@ -291,7 +291,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 			sellStore, sellState := robinhoodStdoutStore(t, liveStrategies)
 			var sellMu sync.RWMutex
 			sellS := sellState.Strategies[sc.ID]
-			if er, ok := runRobinhoodExecuteOrder(sellStore, sellState, &sellMu, sc, sellS, &RobinhoodResult{Symbol: "BTC", Signal: -1}, "SELL", 100, 0, false, 0.1, "long", HurstGateDecision{}, nil, logger); ok || er != nil {
+			if er, ok := runRobinhoodExecuteOrder(sellStore, sellState, &sellMu, sc, sellS, &RobinhoodResult{Symbol: "BTC", Signal: -1}, "SELL", 100, 0, false, 0.1, "long", HurstGateDecision{}, liveStrategies, nil, logger); ok || er != nil {
 				t.Errorf("execute order sell: got ok=%v result=%+v, want the live-execute-failed path", ok, er)
 			}
 			if robinhoodStdoutTradeRows(t, sellStore) != 0 {

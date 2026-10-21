@@ -268,15 +268,20 @@ func TestRunRobinhoodExecuteOrder_CashReconcileGate(t *testing.T) {
 	t.Setenv("ROBINHOOD_USERNAME", "cash-gate-user")
 
 	var calls []string
-	robinhoodExecuteFn = func(script, symbol, side string, amountUSD, quantity float64, refID string) (*RobinhoodExecuteResult, string, error) {
+	robinhoodExecuteFn = func(script, symbol, side string, amountUSD, quantity float64, refID string, sell RobinhoodSellArgs) (*RobinhoodExecuteResult, string, error) {
 		calls = append(calls, side)
-		return &RobinhoodExecuteResult{
+		res := &RobinhoodExecuteResult{
 			Execution:         &RobinhoodExecution{Action: side, Symbol: symbol, Fill: &RobinhoodFill{AvgPx: 100, Quantity: 0.1, OID: "rh-order-" + side}},
 			OrderOutcome:      "filled",
 			Order:             RobinhoodOrderEvidence{ID: "rh-order-" + side, RefID: refID, State: "filled"},
 			RefID:             refID,
 			RequestedQuantity: 0.1,
-		}, "", nil
+		}
+		if side == "sell" {
+			res.RequestedQuantity = quantity
+			res.Sizing = &RobinhoodSellSizing{AskedQuantity: quantity, AccountAvailable: quantity, SentQuantity: quantity, QuantityIncrement: 1e-8, CloseKind: sell.CloseKind, SoleOwner: sell.SoleOwner}
+		}
+		return res, "", nil
 	}
 	logger := &StrategyLogger{stratID: "rh-btc", writer: io.Discard}
 	sc := StrategyConfig{ID: "rh-btc", Type: "spot", Platform: "robinhood", Script: "check_robinhood.py", Args: []string{"momentum", "BTC", "1h", "--mode=live"}}
@@ -289,7 +294,7 @@ func TestRunRobinhoodExecuteOrder_CashReconcileGate(t *testing.T) {
 			t.Fatalf("load guards: %v", err)
 		}
 		var mu sync.RWMutex
-		return runRobinhoodExecuteOrder(store, state, &mu, sc, state.Strategies[sc.ID], result, "", 100, cash, latched, posQty, posSide, HurstGateDecision{}, nil, logger)
+		return runRobinhoodExecuteOrder(store, state, &mu, sc, state.Strategies[sc.ID], result, "", 100, cash, latched, posQty, posSide, HurstGateDecision{}, cfg.Strategies, nil, logger)
 	}
 
 	calls = nil

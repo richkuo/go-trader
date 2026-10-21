@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
+from decimal import Context, Decimal, DivisionByZero, Inexact, InvalidOperation, Overflow, localcontext
 from typing import Tuple
 from urllib.parse import urlsplit
 
@@ -51,6 +52,14 @@ _ORDER_PAGE_CAP = 20
 _SEND_ATTEMPTS = 3
 _QTY_TOLERANCE = 1e-9
 _SETTLE_WINDOW_MS = 10 * 60 * 1000
+
+_DECIMAL_MIN_EXPONENT = -30
+_DECIMAL_MAX_ADJUSTED = 15
+_SIZING_PRECISION = 100
+_FLOOR_QUOTIENT_CAP = Decimal(10) ** 36
+CLOSE_KIND_WHOLE = "whole"
+CLOSE_KIND_PARTIAL = "partial"
+CLOSE_KINDS = (CLOSE_KIND_WHOLE, CLOSE_KIND_PARTIAL)
 
 _FILLED_STATES = frozenset({"filled"})
 _CANCELED_STATES = frozenset({"canceled", "cancelled"})
@@ -101,6 +110,10 @@ class _OrderPrepError(RuntimeError):
 
 
 class _OrderEvidenceError(RuntimeError):
+    pass
+
+
+class _SellSizingRefusal(_OrderPrepError):
     pass
 
 
@@ -285,6 +298,138 @@ def _parse_decimal(value):
     return number
 
 
+def _parse_exact_decimal(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        number = Decimal(value)
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        number = Decimal(repr(value))
+    elif isinstance(value, str):
+        text = value.strip()
+        if not _DECIMAL_TEXT.fullmatch(text):
+            return None
+        try:
+            number = Decimal(text)
+        except InvalidOperation:
+            return None
+    else:
+        return None
+    if not number.is_finite():
+        return None
+    digits = len(number.as_tuple().digits)
+    try:
+        number = number.normalize(Context(prec=max(digits, 1), traps=[InvalidOperation, Inexact, Overflow]))
+    except (InvalidOperation, Inexact, Overflow):
+        return None
+    if number == 0:
+        return Decimal(0)
+    if number.as_tuple().exponent < _DECIMAL_MIN_EXPONENT or number.adjusted() > _DECIMAL_MAX_ADJUSTED:
+        return None
+    return number
+
+
+def _pair_quantity_rules(row, symbol):
+    want = symbol.strip().upper()
+    if not isinstance(row, dict):
+        raise _OrderPrepError(f"currency pairs: the {want} pair row is not an object")
+    rules = {}
+    for key, name, required in (
+        ("min_order_size", "min", True),
+        ("min_order_quantity_increment", "increment", True),
+        ("max_order_size", "max", False),
+    ):
+        raw = row.get(key)
+        if raw is None:
+            if required:
+                raise _OrderPrepError(f"currency pairs: the {want} pair has no {key}")
+            rules[name] = None
+            continue
+        value = _parse_exact_decimal(raw)
+        if value is None:
+            raise _OrderPrepError(f"currency pairs: the {want} pair {key} {raw!r} is not a bounded finite decimal")
+        if name == "min" and value < 0:
+            raise _OrderPrepError(f"currency pairs: the {want} pair {key} {raw!r} is negative")
+        if name in ("increment", "max") and value <= 0:
+            raise _OrderPrepError(f"currency pairs: the {want} pair {key} {raw!r} is not positive")
+        rules[name] = value
+    return rules
+
+
+def _decimal_text(value):
+    return "none" if value is None else format(value, "f")
+
+
+def plan_sized_sell(asked, available, rules, close_kind, sole_owner):
+    if close_kind not in CLOSE_KINDS:
+        raise _SellSizingRefusal(f"close kind {close_kind!r} is not whole or partial")
+    if not isinstance(asked, Decimal) or not asked.is_finite() or asked <= 0:
+        raise _SellSizingRefusal(f"requested quantity {asked!r} is not a finite positive decimal")
+    if not isinstance(available, Decimal) or not available.is_finite() or available < 0:
+        raise _SellSizingRefusal(f"available quantity {available!r} is not a finite non-negative decimal")
+    minimum = rules.get("min")
+    increment = rules.get("increment")
+    maximum = rules.get("max")
+    if not isinstance(minimum, Decimal) or minimum < 0 or not isinstance(increment, Decimal) or increment <= 0:
+        raise _SellSizingRefusal("the pair quantity rules are missing or invalid")
+    sole_owner = sole_owner is True
+
+    def refuse(reason, sent=None):
+        raise _SellSizingRefusal(
+            f"sell refused before sending: {reason} (requested R={_decimal_text(asked)}, "
+            f"available A={_decimal_text(available)}, min_order_size M={_decimal_text(minimum)}, "
+            f"increment I={_decimal_text(increment)}, max_order_size={_decimal_text(maximum)}, "
+            f"computed S={_decimal_text(sent)})"
+        )
+
+    try:
+        with localcontext() as ctx:
+            ctx.prec = _SIZING_PRECISION
+            ctx.traps[InvalidOperation] = True
+            ctx.traps[DivisionByZero] = True
+            ctx.traps[Overflow] = True
+            ctx.traps[Inexact] = False
+            sweep_room = available - asked
+            sweep = close_kind == CLOSE_KIND_WHOLE and sole_owner and sweep_room > 0 and sweep_room < minimum
+            target = available if sweep else min(asked, available)
+            if target <= 0:
+                refuse("the account has no sellable quantity", target)
+            ctx.traps[Inexact] = True
+            quotient = target // increment
+            if quotient > _FLOOR_QUOTIENT_CAP:
+                refuse("the quantity is too many increments to floor exactly", target)
+            sent = quotient * increment
+            ctx.traps[Inexact] = False
+            residue = available - sent
+    except (InvalidOperation, DivisionByZero, Overflow, Inexact) as e:
+        refuse(f"exact decimal sizing failed ({type(e).__name__})")
+    if sent <= 0:
+        refuse("the quantity floors to zero at the pair increment", sent)
+    if sent < minimum:
+        refuse("the quantity is below the venue minimum", sent)
+    if maximum is not None and sent > maximum:
+        refuse("the quantity is above the venue maximum", sent)
+    wire = float(sent)
+    if not math.isfinite(wire) or Decimal(repr(wire)) != sent:
+        refuse("the floored quantity has no exact JSON number form", sent)
+    return {
+        "asked_quantity": float(asked),
+        "account_available": float(available),
+        "sent_quantity": wire,
+        "min_order_size": float(minimum),
+        "quantity_increment": float(increment),
+        "max_order_size": None if maximum is None else float(maximum),
+        "close_kind": close_kind,
+        "sole_owner": sole_owner,
+        "swept": bool(sweep and sent > asked),
+        "capped": sent != asked,
+        "account_short": available < asked,
+        "residue_quantity": float(residue),
+    }
+
+
 def _holding_avg_price(row, quantity):
     cost_bases = row.get("cost_bases")
     if not isinstance(cost_bases, list) or not cost_bases:
@@ -322,6 +467,9 @@ def _parse_holding_row(row, page, index):
         "symbol": code.strip().upper(),
         "quantity": quantity,
         "avg_price": _holding_avg_price(row, quantity),
+        "quantity_raw": row["quantity"],
+        "quantity_available_raw": row.get("quantity_available"),
+        "has_quantity_available": "quantity_available" in row,
     }
 
 
@@ -930,6 +1078,9 @@ class RobinhoodExchangeAdapter:
             url = next_url
 
     def _currency_pair_id(self, session, urls, symbol, deadline):
+        return self._currency_pair_row(session, urls, symbol, deadline)[0]
+
+    def _currency_pair_row(self, session, urls, symbol, deadline):
         want = symbol.strip().upper()
         matches = []
         for _, rows, _ in self._read_pages(session, urls.crypto_currency_pairs_url(), deadline, "currency pairs"):
@@ -953,7 +1104,34 @@ class RobinhoodExchangeAdapter:
         pair_id = matches[0].get("id")
         if not isinstance(pair_id, str) or not pair_id.strip():
             raise _OrderPrepError(f"currency pairs: the {want} pair has no id")
-        return pair_id.strip()
+        return pair_id.strip(), matches[0]
+
+    def _sellable_quantity(self, symbol, deadline):
+        want = symbol.strip().upper()
+        try:
+            rows = self._read_crypto_holdings(deadline)
+        except _HoldingsReadError as e:
+            raise _OrderPrepError(f"{_HOLDINGS_ERROR_PREFIX} {e}") from e
+        except Exception as e:
+            raise _OrderPrepError(f"{_HOLDINGS_ERROR_PREFIX} unexpected {type(e).__name__}") from e
+        held = [row for row in rows if row.get("symbol") == want]
+        if not held:
+            return Decimal(0)
+        row = held[0]
+        if not row.get("has_quantity_available"):
+            raise _OrderPrepError(f"{_HOLDINGS_ERROR_PREFIX} the {want} holding has no quantity_available")
+        raw_available = row.get("quantity_available_raw")
+        available = _parse_exact_decimal(raw_available)
+        if available is None:
+            raise _OrderPrepError(f"{_HOLDINGS_ERROR_PREFIX} the {want} quantity_available {raw_available!r} is not a bounded finite decimal")
+        if available < 0:
+            raise _OrderPrepError(f"{_HOLDINGS_ERROR_PREFIX} the {want} quantity_available {raw_available!r} is negative")
+        quantity = _parse_exact_decimal(row.get("quantity_raw"))
+        if quantity is None:
+            raise _OrderPrepError(f"{_HOLDINGS_ERROR_PREFIX} the {want} quantity {row.get('quantity_raw')!r} is not a bounded finite decimal")
+        if available > quantity:
+            raise _OrderPrepError(f"{_HOLDINGS_ERROR_PREFIX} the {want} quantity_available {raw_available!r} is above the quantity {row.get('quantity_raw')!r}")
+        return available
 
     def _crypto_account_id(self, session, urls, deadline, expected_account_id):
         body = self._read_json_dict(session, urls.crypto_account_url(), deadline, "crypto account")
@@ -1088,10 +1266,18 @@ class RobinhoodExchangeAdapter:
             "post_attempts": 0,
         }
 
-    def place_market_order(self, symbol, side, *, ref_id, deadline, quantity=None, amount_usd=None, expected_account_id=None):
+    def place_market_order(self, symbol, side, *, ref_id, deadline, quantity=None, amount_usd=None, expected_account_id=None, sell_policy=None):
         side = (side or "").strip().lower()
         if side not in ("buy", "sell"):
             raise ValueError(f"side must be buy or sell, got {side!r}")
+        if sell_policy is not None:
+            if side != "sell":
+                raise ValueError("a sell policy applies only to a sell")
+            asked = sell_policy.get("asked") if isinstance(sell_policy, dict) else None
+            if not isinstance(asked, Decimal) or not asked.is_finite() or asked <= 0:
+                raise ValueError(f"sell policy ask {asked!r} is not a finite positive decimal")
+            if sell_policy.get("close_kind") not in CLOSE_KINDS:
+                raise ValueError(f"sell policy close kind {sell_policy.get('close_kind')!r} is not whole or partial")
         try:
             ref_id = str(uuid.UUID(str(ref_id)))
         except ValueError:
@@ -1105,7 +1291,7 @@ class RobinhoodExchangeAdapter:
         result["_send_started"] = False
         try:
             with _watchdog(deadline - time.monotonic() - 0.25, "Robinhood order"):
-                self._place(symbol, side, ref_id, deadline, size, expected_account_id, result)
+                self._place(symbol, side, ref_id, deadline, size, expected_account_id, result, sell_policy)
         except _BudgetExpired as e:
             if result["_send_started"]:
                 self._finish_clean(result, OUTCOME_UNKNOWN, f"{e}; the order was sent and its outcome is unknown")
@@ -1127,18 +1313,30 @@ class RobinhoodExchangeAdapter:
         result.pop("fill", None)
         return result
 
-    def _place(self, symbol, side, ref_id, deadline, size, expected_account_id, result):
+    def _place(self, symbol, side, ref_id, deadline, size, expected_account_id, result, sell_policy=None):
         import requests
 
         session, urls = self._logged_in_session(_OrderPrepError)
-        pair_id = self._currency_pair_id(session, urls, symbol, deadline)
+        pair_id, pair_row = self._currency_pair_row(session, urls, symbol, deadline)
         result["currency_pair_id"] = pair_id
         account_id = self._crypto_account_id(session, urls, deadline, expected_account_id)
         result["account_id"] = account_id
         with robinhood_library() as rh:
             round_price = rh.helper.round_price
         price = round_price(self._quote_price(session, urls, pair_id, side, deadline))
-        if side == "sell":
+        sizing = None
+        if sell_policy is not None:
+            rules = _pair_quantity_rules(pair_row, symbol)
+            available = self._sellable_quantity(symbol, deadline)
+            sizing = plan_sized_sell(sell_policy["asked"], available, rules,
+                                     sell_policy["close_kind"], sell_policy.get("sole_owner") is True)
+            remaining = deadline - time.monotonic()
+            reserve = min(_CANCEL_RESERVE_S, max(remaining, 0.0) * _CANCEL_RESERVE_SHARE)
+            if remaining - reserve < _POLL_INTERVAL_START_S:
+                raise _OrderPrepError(f"too little of the time budget is left after the account reads ({remaining:.2f}s); no order was sent")
+            result["sizing"] = sizing
+            order_quantity = sizing["sent_quantity"]
+        elif side == "sell":
             order_quantity = size
         else:
             order_quantity = round_price(size / price)

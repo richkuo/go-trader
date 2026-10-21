@@ -311,7 +311,8 @@ func (e *rhLiveEnv) failedAlerts() int {
 func rhPrepRoutes() rhRoutes {
 	return rhRoutes{
 		"GET " + rhTestPairs: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{
-			map[string]interface{}{"id": "pair-btc", "asset_currency": map[string]interface{}{"code": "BTC"}, "quote_currency": map[string]interface{}{"code": "USD"}},
+			map[string]interface{}{"id": "pair-btc", "asset_currency": map[string]interface{}{"code": "BTC"}, "quote_currency": map[string]interface{}{"code": "USD"},
+				"min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20"},
 		}}}},
 		"GET " + rhTestAccounts: {{"status": 200, "json": map[string]interface{}{"next": nil, "results": []interface{}{map[string]interface{}{"id": rhTestAccount}}}}},
 		"GET " + rhTestQuote:    {{"status": 200, "json": map[string]interface{}{"ask_price": "100.00", "bid_price": "99.00"}}},
@@ -343,6 +344,16 @@ func rhHoldings(rows ...interface{}) rhRoute {
 
 func rhHeld(coin, qty string) map[string]interface{} {
 	return map[string]interface{}{"currency": map[string]interface{}{"code": coin}, "quantity": qty}
+}
+
+func rhAvailable(coin, qty, available string) map[string]interface{} {
+	row := rhHeld(coin, qty)
+	row["quantity_available"] = available
+	return row
+}
+
+func rhSellHolding(qty, available string) rhRoutes {
+	return rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", qty, available))}}
 }
 
 func rhWith(base rhRoutes, extra rhRoutes) rhRoutes {
@@ -404,7 +415,7 @@ func TestRobinhoodLiveOrderBuyBooksTheConfirmedVenueFill(t *testing.T) {
 func TestRobinhoodLiveOrderFullCloseSellWithPartialFillKeepsTheRemainder(t *testing.T) {
 	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 	e.setPosition("rh-btc", "BTC", 0.5, 90)
-	e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+	e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{
 		"POST " + rhTestOrders:             {rhAccepted("sell")},
 		"GET " + rhOrderURL(rhTestOrderID): {rhOrder("confirmed", "sell", "0", nil), rhOrder("canceled", "sell", "0.2", "99")},
 	}))
@@ -428,7 +439,7 @@ func TestRobinhoodLiveOrderFullCloseSellWithPartialFillKeepsTheRemainder(t *test
 func TestRobinhoodLiveOrderRequestedPartialCloseBooksTheFilledHalf(t *testing.T) {
 	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 	e.setPosition("rh-btc", "BTC", 0.5, 90)
-	e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{
+	e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{
 		"POST " + rhTestOrders:             {rhAccepted("sell")},
 		"GET " + rhOrderURL(rhTestOrderID): {rhOrder("filled", "sell", "0.25", "99")},
 	}))
@@ -1042,7 +1053,7 @@ func TestRobinhoodLiveOrderCircuitBreakerKeepsExposureUntilVerifiedFlat(t *testi
 	t.Run("cooldown_and_reset_do_not_release_a_hold", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 		e.setPosition("rh-btc", "BTC", 0.5, 90)
-		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"POST " + rhTestOrders: {{"status": 503, "json": map[string]interface{}{"detail": "unavailable"}}}}))
+		e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{"POST " + rhTestOrders: {{"status": 503, "json": map[string]interface{}{"detail": "unavailable"}}}}))
 		e.signal("rh-btc", -1, 0, 99)
 		if row := e.onlyAttempt(); row.Status != robinhoodAttemptUnknown {
 			t.Fatalf("seed = %+v", row)
@@ -1055,7 +1066,7 @@ func TestRobinhoodLiveOrderCircuitBreakerKeepsExposureUntilVerifiedFlat(t *testi
 		CheckRisk(&sc, s, s.Cash+45, map[string]float64{"BTC": 90}, nil, nil)
 		ResetPortfolioKillSwitchManual(e.state.partitionRisk(livePartition))
 		e.mu.Unlock()
-		e.setRoutes(rhWith(rhPrepRoutes(), rhRoutes{"POST " + rhTestOrders: {rhAccepted("sell")}}))
+		e.setRoutes(rhWith(rhWith(rhPrepRoutes(), rhSellHolding("0.5", "0.5")), rhRoutes{"POST " + rhTestOrders: {rhAccepted("sell")}}))
 		e.signal("rh-btc", -1, 0, 99)
 		if posts := e.orderPosts(); len(posts) != 0 {
 			t.Fatalf("cooldown and reset must not release the hold, sent %d order(s)", len(posts))
@@ -1272,6 +1283,7 @@ func TestRobinhoodLiveOrderProbeArgvsParse(t *testing.T) {
 		argv   []string
 	}{
 		{robinhoodResolveScript, robinhoodExecuteProbeArgv},
+		{robinhoodResolveScript, robinhoodExecuteSellProbeArgv},
 		{robinhoodResolveScript, robinhoodResolveProbeArgv},
 		{robinhoodLiveCloseScript, robinhoodCloseProbeArgv},
 	} {
@@ -1281,6 +1293,15 @@ func TestRobinhoodLiveOrderProbeArgvsParse(t *testing.T) {
 	}
 	if err := probeOneCheckScript(robinhoodLiveCloseScript, []string{"--symbol=BTC", "--unknown-flag", "--probe-only"}); err == nil {
 		t.Error("an unknown close argv must fail the probe")
+	}
+	bogus := append([]string{}, robinhoodExecuteSellProbeArgv...)
+	for i, arg := range bogus {
+		if arg == "--close-kind=whole" {
+			bogus[i] = "--close-kind=bogus"
+		}
+	}
+	if err := probeOneCheckScript(robinhoodResolveScript, bogus); err == nil {
+		t.Error("a sell argv with an unknown close kind must fail the probe")
 	}
 }
 
@@ -1448,7 +1469,7 @@ func (e *rhLiveEnv) seedHeldSettlingBuy(id string) {
 	}
 	res := &RobinhoodExecuteResult{OrderOutcome: "filled", RefID: a.RefID, Order: RobinhoodOrderEvidence{ID: "ord-" + id}, Execution: &RobinhoodExecution{Fill: &RobinhoodFill{AvgPx: 100, Quantity: 1, OID: "ord-" + id}}}
 	e.mu.Lock()
-	if err := recordRobinhoodOrderOutcomeLocked(e.store, s, a, res, robinhoodOrderConfirmed, "", time.Now()); err != nil {
+	if err := recordRobinhoodOrderOutcomeLocked(e.store, s, a, res, robinhoodOrderConfirmed, "", nil, time.Now()); err != nil {
 		e.t.Fatal(err)
 	}
 	e.mu.Unlock()

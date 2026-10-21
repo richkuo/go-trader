@@ -48,6 +48,8 @@ const (
 
 const robinhoodOrderRequestVersion = 1
 
+const robinhoodSizedSellRequestVersion = 2
+
 const robinhoodQtyTolerance = 1e-9
 
 const robinhoodHoldReminderInterval = time.Hour
@@ -155,6 +157,8 @@ type robinhoodOrderRequest struct {
 	PrevPositionID string            `json:"prev_position_id,omitempty"`
 	PrevPosSide    string            `json:"prev_pos_side,omitempty"`
 	PrevPosQty     float64           `json:"prev_pos_qty,omitempty"`
+	CloseKind      string            `json:"close_kind,omitempty"`
+	SoleOwner      bool              `json:"sole_owner,omitempty"`
 	Result         json.RawMessage   `json:"result,omitempty"`
 	Hurst          HurstGateDecision `json:"hurst"`
 	Peers          []string          `json:"peers,omitempty"`
@@ -169,6 +173,7 @@ type robinhoodOrderEvidenceRecord struct {
 	Order             RobinhoodOrderEvidence        `json:"order"`
 	Cancel            RobinhoodOrderCancel          `json:"cancel"`
 	RequestedQuantity float64                       `json:"requested_quantity,omitempty"`
+	Sizing            *RobinhoodSellSizing          `json:"sizing,omitempty"`
 	AccountID         string                        `json:"account_id,omitempty"`
 	ObservedAtMs      int64                         `json:"observed_at_ms"`
 	Operator          *robinhoodOperatorAttestation `json:"operator,omitempty"`
@@ -198,10 +203,104 @@ func parseRobinhoodOrderRequest(a *robinhoodOrderAttempt) (robinhoodOrderRequest
 	if err := json.Unmarshal([]byte(a.RequestJSON), &req); err != nil {
 		return req, fmt.Errorf("frozen request is unreadable: %w", err)
 	}
-	if req.Version != robinhoodOrderRequestVersion {
-		return req, fmt.Errorf("frozen request version %d is not %d", req.Version, robinhoodOrderRequestVersion)
+	switch req.Version {
+	case robinhoodOrderRequestVersion:
+	case robinhoodSizedSellRequestVersion:
+		if req.Side != "sell" || req.Origin != robinhoodOriginSignal || (a.Side != "" && a.Side != req.Side) || (a.Origin != "" && a.Origin != req.Origin) {
+			return req, fmt.Errorf("frozen request version %d is for a signal sell, not %s %s", req.Version, req.Origin, req.Side)
+		}
+		if req.CloseKind != robinhoodCloseKindWhole && req.CloseKind != robinhoodCloseKindPartial {
+			return req, fmt.Errorf("frozen request version %d has close kind %q, not whole or partial", req.Version, req.CloseKind)
+		}
+	default:
+		return req, fmt.Errorf("frozen request version %d is not %d or %d", req.Version, robinhoodOrderRequestVersion, robinhoodSizedSellRequestVersion)
 	}
 	return req, nil
+}
+
+func robinhoodIsSizedSell(a *robinhoodOrderAttempt) bool {
+	req, err := parseRobinhoodOrderRequest(a)
+	return err == nil && req.Version == robinhoodSizedSellRequestVersion
+}
+
+func robinhoodQtyClose(a, b float64) bool {
+	return math.Abs(a-b) <= robinhoodQtyTolerance*math.Max(math.Max(math.Abs(a), math.Abs(b)), 1e-18)
+}
+
+func robinhoodFinite(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
+func checkRobinhoodSellSizing(sz *RobinhoodSellSizing, req robinhoodOrderRequest, res *RobinhoodExecuteResult) (*RobinhoodSellSizing, error) {
+	if sz == nil {
+		return nil, fmt.Errorf("the sell result has no sizing echo")
+	}
+	for _, v := range []float64{sz.AskedQuantity, sz.AccountAvailable, sz.SentQuantity, sz.MinOrderSize, sz.QuantityIncrement, sz.MaxOrderSize, sz.ResidueQuantity} {
+		if !robinhoodFinite(v) {
+			return nil, fmt.Errorf("the sizing echo holds a non-finite number")
+		}
+	}
+	r, a, sent, m, inc, x := req.Quantity, sz.AccountAvailable, sz.SentQuantity, sz.MinOrderSize, sz.QuantityIncrement, sz.MaxOrderSize
+	tol := robinhoodQtyTolerance
+	switch {
+	case !(r > 0) || !robinhoodFinite(r):
+		return nil, fmt.Errorf("the frozen ask %v is not a finite positive quantity", r)
+	case !(sz.AskedQuantity > 0) || !robinhoodQtyClose(sz.AskedQuantity, r):
+		return nil, fmt.Errorf("the sizing asked %.10g, the frozen request %.10g", sz.AskedQuantity, r)
+	case sz.CloseKind != req.CloseKind:
+		return nil, fmt.Errorf("the sizing close kind %q differs from the frozen %q", sz.CloseKind, req.CloseKind)
+	case sz.SoleOwner != req.SoleOwner:
+		return nil, fmt.Errorf("the sizing sole-owner flag %v differs from the frozen %v", sz.SoleOwner, req.SoleOwner)
+	case a < 0 || !(sent > 0) || m < 0 || !(inc > 0) || x < 0:
+		return nil, fmt.Errorf("the sizing has an out-of-range value (available %.10g, sent %.10g, min %.10g, increment %.10g, max %.10g)", a, sent, m, inc, x)
+	case sent > a*(1+tol):
+		return nil, fmt.Errorf("the sent %.10g is above the available %.10g", sent, a)
+	case sent < m*(1-tol):
+		return nil, fmt.Errorf("the sent %.10g is below the venue minimum %.10g", sent, m)
+	case x > 0 && sent > x*(1+tol):
+		return nil, fmt.Errorf("the sent %.10g is above the venue maximum %.10g", sent, x)
+	}
+	if sz.Swept {
+		if !req.SoleOwner || req.CloseKind != robinhoodCloseKindWhole || !(sent > r) || !(sent-r < m+tol*sent) {
+			return nil, fmt.Errorf("the sizing reports a sweep of %.10g over the ask %.10g that the sole-owner whole-close rule (minimum %.10g) does not allow", sent, r, m)
+		}
+	} else if sent > r*(1+tol) {
+		return nil, fmt.Errorf("the sent %.10g is above the ask %.10g without a sweep", sent, r)
+	}
+	if res != nil {
+		if !robinhoodQtyClose(res.RequestedQuantity, sent) {
+			return nil, fmt.Errorf("the result's requested_quantity %.10g differs from the sent %.10g", res.RequestedQuantity, sent)
+		}
+		if raw := strings.TrimSpace(res.Order.Quantity); raw != "" {
+			q, err := strconv.ParseFloat(raw, 64)
+			if err != nil || !robinhoodFinite(q) || !robinhoodQtyClose(q, sent) {
+				return nil, fmt.Errorf("the venue order quantity %q differs from the sent %.10g", raw, sent)
+			}
+		}
+	}
+	out := *sz
+	out.Capped = !robinhoodQtyClose(sent, r)
+	out.AccountShort = a < r*(1-tol)
+	return &out, nil
+}
+
+func robinhoodEvidenceRecordOf(a *robinhoodOrderAttempt) (robinhoodOrderEvidenceRecord, bool) {
+	var ev robinhoodOrderEvidenceRecord
+	if a == nil || strings.TrimSpace(a.EvidenceJSON) == "" {
+		return ev, false
+	}
+	if json.Unmarshal([]byte(a.EvidenceJSON), &ev) != nil {
+		return robinhoodOrderEvidenceRecord{}, false
+	}
+	return ev, true
+}
+
+func robinhoodEvidenceSizing(a *robinhoodOrderAttempt) *RobinhoodSellSizing {
+	ev, ok := robinhoodEvidenceRecordOf(a)
+	if !ok {
+		return nil
+	}
+	return ev.Sizing
 }
 
 func sanitizeHurstForJSON(d HurstGateDecision) HurstGateDecision {
@@ -383,6 +482,7 @@ func classifyRobinhoodOrderOutcome(res *RobinhoodExecuteResult, runErr error, a 
 			return robinhoodOrderUnknown, "the venue account differs from the attempt's account"
 		}
 	}
+	sizedSell := robinhoodIsSizedSell(a)
 	detail := strings.TrimSpace(res.Error)
 	switch res.OrderOutcome {
 	case robinhoodOutcomeFilled, robinhoodOutcomePartiallyFilled:
@@ -405,6 +505,14 @@ func classifyRobinhoodOrderOutcome(res *RobinhoodExecuteResult, runErr error, a 
 		}
 		if a != nil && a.VenueOrderID != "" && fill.OID != a.VenueOrderID {
 			return robinhoodOrderUnknown, fmt.Sprintf("the fill order id %q differs from the recorded %q", fill.OID, a.VenueOrderID)
+		}
+		if sizedSell {
+			if raw := strings.TrimSpace(res.Order.Quantity); raw != "" {
+				q, err := strconv.ParseFloat(raw, 64)
+				if err == nil && robinhoodFinite(q) && q > 0 && fill.Quantity > q*(1+robinhoodQtyTolerance) {
+					return robinhoodOrderUnknown, fmt.Sprintf("the fill of %.10g is above the venue order quantity %q", fill.Quantity, raw)
+				}
+			}
 		}
 		return robinhoodOrderConfirmed, ""
 	case robinhoodOutcomeRejected, robinhoodOutcomeNotSent, robinhoodOutcomeNoFill, robinhoodOutcomeNotFound:
@@ -446,18 +554,25 @@ func classifyRobinhoodOrderOutcome(res *RobinhoodExecuteResult, runErr error, a 
 	return robinhoodOrderUnknown, fmt.Sprintf("unlisted order_outcome %q", res.OrderOutcome)
 }
 
-func robinhoodRequestedQty(a *robinhoodOrderAttempt, res *RobinhoodExecuteResult) float64 {
-	if res != nil && res.RequestedQuantity > 0 {
-		return res.RequestedQuantity
-	}
+func robinhoodVenueOrderQty(a *robinhoodOrderAttempt) float64 {
 	if a == nil {
 		return 0
 	}
-	var ev robinhoodOrderEvidenceRecord
-	if a.EvidenceJSON != "" && json.Unmarshal([]byte(a.EvidenceJSON), &ev) == nil && ev.RequestedQuantity > 0 {
+	ev, _ := robinhoodEvidenceRecordOf(a)
+	req, err := parseRobinhoodOrderRequest(a)
+	if err == nil && req.Version == robinhoodSizedSellRequestVersion {
+		if ev.Sizing != nil && ev.Sizing.SentQuantity > 0 && robinhoodFinite(ev.Sizing.SentQuantity) {
+			return ev.Sizing.SentQuantity
+		}
+		if ev.RequestedQuantity > 0 && robinhoodFinite(ev.RequestedQuantity) {
+			return ev.RequestedQuantity
+		}
+		return 0
+	}
+	if ev.RequestedQuantity > 0 {
 		return ev.RequestedQuantity
 	}
-	if req, err := parseRobinhoodOrderRequest(a); err == nil && a.Side == "sell" && req.Quantity > 0 {
+	if err == nil && a.Side == "sell" && req.Quantity > 0 {
 		return req.Quantity
 	}
 	return 0
@@ -483,6 +598,9 @@ func reserveRobinhoodAttempt(store *StateStore, state *AppState, s *StrategyStat
 		return nil, fmt.Errorf("generate ref_id: %w", err)
 	}
 	req.Version = robinhoodOrderRequestVersion
+	if origin == robinhoodOriginSignal && side == "sell" {
+		req.Version = robinhoodSizedSellRequestVersion
+	}
 	req.Origin = origin
 	req.Side = side
 	req.Hurst = sanitizeHurstForJSON(req.Hurst)
@@ -524,8 +642,8 @@ func reserveRobinhoodAttempt(store *StateStore, state *AppState, s *StrategyStat
 	return a, nil
 }
 
-func robinhoodEvidenceFor(res *RobinhoodExecuteResult, class robinhoodOrderClass, detail string, now time.Time) string {
-	ev := robinhoodOrderEvidenceRecord{Outcome: class.String(), Detail: detail, ObservedAtMs: now.UnixMilli()}
+func robinhoodEvidenceFor(res *RobinhoodExecuteResult, class robinhoodOrderClass, detail string, sizing *RobinhoodSellSizing, now time.Time) string {
+	ev := robinhoodOrderEvidenceRecord{Outcome: class.String(), Detail: detail, Sizing: sizing, ObservedAtMs: now.UnixMilli()}
 	if res != nil {
 		if res.OrderOutcome != "" {
 			ev.Outcome = res.OrderOutcome
@@ -540,7 +658,7 @@ func robinhoodEvidenceFor(res *RobinhoodExecuteResult, class robinhoodOrderClass
 	return marshalRobinhoodJSON(ev)
 }
 
-func recordRobinhoodOrderOutcomeLocked(store *StateStore, s *StrategyState, a *robinhoodOrderAttempt, res *RobinhoodExecuteResult, class robinhoodOrderClass, detail string, now time.Time) error {
+func recordRobinhoodOrderOutcomeLocked(store *StateStore, s *StrategyState, a *robinhoodOrderAttempt, res *RobinhoodExecuteResult, class robinhoodOrderClass, detail string, sizing *RobinhoodSellSizing, now time.Time) error {
 	if store == nil || s == nil || a == nil {
 		return fmt.Errorf("attempt, strategy or store unavailable")
 	}
@@ -549,7 +667,10 @@ func recordRobinhoodOrderOutcomeLocked(store *StateStore, s *StrategyState, a *r
 		return err
 	}
 	next := *a
-	next.EvidenceJSON = robinhoodEvidenceFor(res, class, detail, now)
+	if prior := robinhoodEvidenceSizing(a); prior != nil {
+		sizing = prior
+	}
+	next.EvidenceJSON = robinhoodEvidenceFor(res, class, detail, sizing, now)
 	if res != nil {
 		if res.Order.ID != "" {
 			next.VenueOrderID = res.Order.ID
@@ -658,6 +779,73 @@ func robinhoodTradeHasOrderID(s *StrategyState, oid string) bool {
 	return false
 }
 
+type robinhoodSellBooking struct {
+	CloseFraction float64
+	Shortfall     bool
+	ResidueClosed bool
+}
+
+func robinhoodSignalSellBooking(bookQty, filled float64, req robinhoodOrderRequest, sz *RobinhoodSellSizing) (robinhoodSellBooking, string) {
+	var out robinhoodSellBooking
+	tol := robinhoodQtyTolerance
+	if !(bookQty > 0) {
+		return out, "the book holds no long quantity to close"
+	}
+	if sz == nil {
+		frac, ok := robinhoodSellCloseFraction(bookQty, filled, 0)
+		if !ok {
+			return out, fmt.Sprintf("the confirmed sell of %.10g is above the book quantity %.10g; inconsistent", filled, bookQty)
+		}
+		out.CloseFraction = frac
+		return out, ""
+	}
+	if filled > sz.SentQuantity*(1+tol) {
+		return out, fmt.Sprintf("the confirmed sell of %.10g is above the sent quantity %.10g; inconsistent", filled, sz.SentQuantity)
+	}
+	if filled > bookQty*(1+tol) {
+		if sz.Swept {
+			return out, ""
+		}
+		return out, fmt.Sprintf("the confirmed sell of %.10g is above the book quantity %.10g without a dust sweep; inconsistent", filled, bookQty)
+	}
+	if filled >= bookQty*(1-tol) {
+		return out, ""
+	}
+	if sz.CloseKind == robinhoodCloseKindWhole && sz.AccountAvailable >= req.Quantity*(1-tol) && filled >= sz.SentQuantity*(1-tol) && bookQty-filled < sz.QuantityIncrement {
+		out.ResidueClosed = true
+		return out, ""
+	}
+	out.CloseFraction = filled / bookQty
+	out.Shortfall = sz.AccountAvailable < sz.AskedQuantity*(1-tol)
+	return out, ""
+}
+
+var robinhoodShortfallAlerts sync.Map
+
+func formatRobinhoodBookShortfall(strategyID string, a *robinhoodOrderAttempt, sz *RobinhoodSellSizing, filled, kept float64, lagging bool) string {
+	msg := fmt.Sprintf("**ROBINHOOD BOOK SHORTFALL** [%s] sell %s attempt %s: asked %.10g, the account could sell %.10g, sent %.10g, filled %.10g. The book keeps %.10g %s that the account may not hold; later sells of %s are capped at the account quantity, and the kept part is not written off automatically.",
+		strategyID, a.Symbol, a.AttemptID, sz.AskedQuantity, sz.AccountAvailable, sz.SentQuantity, filled, kept, a.Symbol, a.Symbol)
+	if lagging {
+		msg += fmt.Sprintf(" The position opened within %s, so the holdings read may lag the opening buy.", robinhoodHoldingsLagWindow)
+	}
+	return msg
+}
+
+func notifyRobinhoodBookShortfall(notifier *MultiNotifier, attemptID, msg string) {
+	if attemptID == "" || msg == "" {
+		return
+	}
+	fmt.Printf("[WARN] %s\n", msg)
+	if _, seen := robinhoodShortfallAlerts.LoadOrStore(attemptID, true); seen {
+		return
+	}
+	if notifier == nil || !notifier.HasBackends() {
+		return
+	}
+	notifier.SendToAllChannels(msg)
+	notifier.SendOwnerDM(msg)
+}
+
 func robinhoodSellCloseFraction(bookQty, filled, requested float64) (float64, bool) {
 	if !(bookQty > 0) {
 		return 0, false
@@ -677,6 +865,7 @@ type robinhoodSettlement struct {
 	CashAlert string
 	Settled   bool
 	Hold      string
+	Shortfall string
 }
 
 func settleRobinhoodSignalAttemptLocked(store *StateStore, sc StrategyConfig, s *StrategyState, db *StateDB, a *robinhoodOrderAttempt, duplicate bool, cfg *Config, logger *StrategyLogger) robinhoodSettlement {
@@ -708,21 +897,40 @@ func settleRobinhoodSignalAttemptLocked(store *StateStore, sc StrategyConfig, s 
 		return hold("the frozen signal result is unreadable")
 	}
 	fill := &RobinhoodFill{AvgPx: a.ConfirmedAvgPx, Quantity: a.ConfirmedQty, Fee: a.ConfirmedFee, OID: a.VenueOrderID}
-	if err := confirmRobinhoodFill(fill, robinhoodRequestedQty(a, nil)); err != nil {
+	if err := confirmRobinhoodFill(fill, robinhoodVenueOrderQty(a)); err != nil {
 		return hold(err.Error())
 	}
 	if why := robinhoodSnapshotStale(s, a, req); why != "" {
 		return hold("the book changed since the order was sent: " + why)
 	}
 	result.Symbol = a.Symbol
+	shortfall := ""
 	switch a.Side {
 	case "sell":
 		result.Signal = -1
-		frac, ok := robinhoodSellCloseFraction(s.Positions[a.Symbol].Quantity, fill.Quantity, req.Quantity)
-		if !ok {
-			return hold(fmt.Sprintf("the confirmed sell of %.10g is above the book quantity %.10g; inconsistent", fill.Quantity, s.Positions[a.Symbol].Quantity))
+		pos := s.Positions[a.Symbol]
+		var sizing *RobinhoodSellSizing
+		if req.Version == robinhoodSizedSellRequestVersion {
+			if saved := robinhoodEvidenceSizing(a); saved != nil {
+				checked, err := checkRobinhoodSellSizing(saved, req, nil)
+				if err != nil {
+					return hold("the saved sell sizing is invalid: " + err.Error())
+				}
+				sizing = checked
+			}
 		}
-		result.CloseFraction = frac
+		booking, why := robinhoodSignalSellBooking(pos.Quantity, fill.Quantity, req, sizing)
+		if why != "" {
+			return hold(why)
+		}
+		result.CloseFraction = booking.CloseFraction
+		if booking.ResidueClosed && logger != nil {
+			logger.Warn("Robinhood attempt %s closes a book residue of %.10g %s below one increment %.10g at zero proceeds (#1819)", a.AttemptID, pos.Quantity-fill.Quantity, a.Symbol, sizing.QuantityIncrement)
+		}
+		if booking.Shortfall {
+			lagging := !pos.OpenedAt.IsZero() && time.Since(pos.OpenedAt) < robinhoodHoldingsLagWindow
+			shortfall = formatRobinhoodBookShortfall(s.ID, a, sizing, fill.Quantity, pos.Quantity-fill.Quantity, lagging)
+		}
 	case "buy":
 		result.Signal = 1
 		result.CloseFraction = 0
@@ -761,6 +969,7 @@ func settleRobinhoodSignalAttemptLocked(store *StateStore, sc StrategyConfig, s 
 	out.Detail = detail
 	out.CashAlert = cashAlert
 	out.Settled = true
+	out.Shortfall = shortfall
 	if store != nil {
 		if err := store.SaveStrategyBook(s); err != nil && logger != nil {
 			logger.Error("CRITICAL: Robinhood attempt %s booked in memory but the settlement save failed: %v — the book, trades and attempt retry with the next save (#1815)", a.AttemptID, err)
