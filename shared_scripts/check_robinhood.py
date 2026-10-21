@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator, latest_atr
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
+from robinhood_order_response import robinhood_order_response_error
 from stdout_contract import json_stdout
 
 
@@ -302,6 +303,17 @@ def run_execute(symbol, side, amount_usd, quantity, mode):
                 result = adapter.market_buy(symbol, amount_usd)
             else:
                 result = adapter.market_sell(symbol, quantity)
+
+            order_error = robinhood_order_response_error(result)
+            if order_error:
+                print(f"[robinhood] {order_error}", file=sys.stderr)
+                emit({
+                    "execution": None,
+                    "platform": "robinhood",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": order_error,
+                })
+                sys.exit(1)
 
             fill = {}
             try:

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "platforms", "robinhood"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
+from robinhood_order_response import robinhood_order_response_error
 from stdout_contract import json_stdout
 
 
@@ -72,6 +73,11 @@ def main():
 
         if not result:
             _emit_error(emit, args.symbol, "empty order response from robin_stocks sell submit")
+            return
+
+        order_error = robinhood_order_response_error(result)
+        if order_error:
+            _emit_error(emit, args.symbol, order_error)
             return
 
         fill = {}

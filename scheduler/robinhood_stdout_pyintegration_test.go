@@ -3,7 +3,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +77,8 @@ func TestRobinhoodScriptStdoutParsesInGo(t *testing.T) {
 			closeResult, stderr, closeErr := RunRobinhoodClose(robinhoodLiveCloseScript, "BTC")
 			if closeResult == nil {
 				t.Errorf("RunRobinhoodClose (%s): stdout did not parse: err=%v stderr:\n%s", mode, closeErr, stderr)
+			} else if closeErr == nil || closeResult.Error == "" || (closeResult.Close != nil && closeResult.Close.AlreadyFlat) {
+				t.Errorf("RunRobinhoodClose (%s): a close whose position read failed must report an error, got err=%v result=%+v", mode, closeErr, closeResult)
 			}
 			robinhoodStdoutRequireStubbedLogin(t, "RunRobinhoodClose", mode, stderr)
 
@@ -82,6 +86,8 @@ func TestRobinhoodScriptStdoutParsesInGo(t *testing.T) {
 			positions, stderr, posErr := RunRobinhoodFetchPositions(robinhoodFetchPositionsScript)
 			if positions == nil {
 				t.Errorf("RunRobinhoodFetchPositions (%s): stdout did not parse: err=%v stderr:\n%s", mode, posErr, stderr)
+			} else if posErr == nil || positions.Error == "" {
+				t.Errorf("RunRobinhoodFetchPositions (%s): a failed position read must report an error, got err=%v result=%+v", mode, posErr, positions)
 			}
 			robinhoodStdoutRequireStubbedLogin(t, "RunRobinhoodFetchPositions", mode, stderr)
 
@@ -117,4 +123,71 @@ func TestRobinhoodScriptStdoutParsesInGo(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
+	root := robinhoodStdoutPyRoot(t)
+	t.Chdir(root)
+	logger := &StrategyLogger{stratID: "rh-stdout", writer: io.Discard}
+	sc := StrategyConfig{ID: "rh-stdout", Type: "spot", Platform: "robinhood", Script: "shared_scripts/check_robinhood.py", Args: []string{"momentum_pro", "BTC", "1h", "--mode=live"}}
+	liveStrategies := []StrategyConfig{
+		sc,
+		{ID: "rh-stdout-eth", Type: "spot", Platform: "robinhood", Args: []string{"momentum_pro", "ETH", "1h", "--mode=live"}},
+	}
+
+	for _, mode := range []string{"login_ok", "login_rejected", "transport_error"} {
+		t.Run("close_read_fails_"+mode, func(t *testing.T) {
+			robinhoodStdoutOfflineEnv(t, root, mode)
+			robinhoodStdoutFreshHome(t)
+			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, liveStrategies, defaultRobinhoodLiveCloser)
+			if report.Errors["BTC"] == nil || report.ConfirmedFlat() || len(report.AlreadyFlat) != 0 || len(report.ClosedCoins) != 0 {
+				t.Fatalf("%s: close with a failed position read must land in Errors, got %+v", mode, report)
+			}
+		})
+	}
+
+	t.Run("close_no_holding_is_flat", func(t *testing.T) {
+		robinhoodStdoutOfflineEnv(t, root, "order_accepted")
+		robinhoodStdoutFreshHome(t)
+		report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "ETH", Size: 0.5}}, liveStrategies, defaultRobinhoodLiveCloser)
+		if len(report.Errors) != 0 || len(report.AlreadyFlat) != 1 || report.AlreadyFlat[0] != "ETH" || !report.ConfirmedFlat() {
+			t.Fatalf("close after a successful read with no ETH row must be already flat, got %+v", report)
+		}
+	})
+
+	for _, mode := range []string{"order_rejected", "order_unknown"} {
+		t.Run("execute_fails_"+mode, func(t *testing.T) {
+			robinhoodStdoutOfflineEnv(t, root, mode)
+			robinhoodStdoutFreshHome(t)
+			if er, ok := runRobinhoodExecuteOrder(sc, &RobinhoodResult{Symbol: "BTC", Signal: 1}, 100, 50, false, 0, "", HurstGateDecision{}, nil, logger); ok || er != nil {
+				t.Errorf("%s buy: got ok=%v result=%+v, want the live-execute-failed path", mode, ok, er)
+			}
+			robinhoodStdoutFreshHome(t)
+			if er, ok := runRobinhoodExecuteOrder(sc, &RobinhoodResult{Symbol: "BTC", Signal: -1}, 100, 0, false, 0.1, "long", HurstGateDecision{}, nil, logger); ok || er != nil {
+				t.Errorf("%s sell: got ok=%v result=%+v, want the live-execute-failed path", mode, ok, er)
+			}
+			robinhoodStdoutFreshHome(t)
+			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, liveStrategies, defaultRobinhoodLiveCloser)
+			if report.Errors["BTC"] == nil || report.ConfirmedFlat() || len(report.ClosedCoins) != 0 {
+				t.Errorf("%s close: a refused or unknown sell must land in Errors, got %+v", mode, report)
+			}
+		})
+	}
+
+	t.Run("execute_accepted", func(t *testing.T) {
+		robinhoodStdoutOfflineEnv(t, root, "order_accepted")
+		robinhoodStdoutFreshHome(t)
+		er, ok := runRobinhoodExecuteOrder(sc, &RobinhoodResult{Symbol: "BTC", Signal: 1}, 100, 50, false, 0, "", HurstGateDecision{}, nil, logger)
+		if !ok || er == nil || er.Error != "" || er.Execution == nil {
+			t.Fatalf("accepted buy: got ok=%v result=%+v, want a successful execution", ok, er)
+		}
+		if er.Execution.Fill != nil && er.Execution.Fill.AvgPx > 0 {
+			t.Fatalf("accepted buy with average_price null must carry no venue fill, got %+v", er.Execution.Fill)
+		}
+		robinhoodStdoutFreshHome(t)
+		report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, liveStrategies, defaultRobinhoodLiveCloser)
+		if len(report.Errors) != 0 || len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "BTC" {
+			t.Fatalf("accepted close: got %+v, want BTC closed", report)
+		}
+	})
 }

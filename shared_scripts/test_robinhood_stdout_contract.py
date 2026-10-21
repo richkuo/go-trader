@@ -25,6 +25,28 @@ CASES = [
     ("candles_live", "fetch_candles.py", ["--platform", "robinhood", "--type", "spot", "--symbol", "BTC", "--timeframe", "1h", "--limit", "50", "--mode", "live"], None, False, False),
 ]
 
+READS_FAIL_CLOSED = ("close", "positions")
+
+EXECUTE_BUY = ["check_robinhood.py", "--execute", "--symbol=BTC", "--side=buy", "--amount_usd=10", "--mode=live"]
+EXECUTE_SELL = ["check_robinhood.py", "--execute", "--symbol=BTC", "--side=sell", "--quantity=0.1", "--mode=live"]
+CLOSE_BTC = ["close_robinhood_position.py", "--symbol=BTC", "--mode=live"]
+CLOSE_ETH = ["close_robinhood_position.py", "--symbol=ETH", "--mode=live"]
+REFUSED = "Robinhood refused the order"
+UNKNOWN = "the order outcome is unknown"
+
+ORDER_CASES = [
+    ("buy_refused", EXECUTE_BUY, "order_rejected", 1, REFUSED),
+    ("sell_refused", EXECUTE_SELL, "order_rejected", 1, REFUSED),
+    ("close_refused", CLOSE_BTC, "order_rejected", 1, REFUSED),
+    ("buy_unknown", EXECUTE_BUY, "order_unknown", 1, UNKNOWN),
+    ("sell_unknown", EXECUTE_SELL, "order_unknown", 1, UNKNOWN),
+    ("close_unknown", CLOSE_BTC, "order_unknown", 1, "empty order response"),
+    ("buy_accepted", EXECUTE_BUY, "order_accepted", 0, None),
+    ("sell_accepted", EXECUTE_SELL, "order_accepted", 0, None),
+    ("close_accepted", CLOSE_BTC, "order_accepted", 0, None),
+    ("close_no_holding", CLOSE_ETH, "order_accepted", 0, None),
+]
+
 PARAMS = [
     pytest.param(case, mode, id=f"{case[0]}-{mode}")
     for case in CASES
@@ -34,6 +56,10 @@ PARAMS = [
 
 def _refuse_constant(name):
     raise ValueError(f"non-finite JSON constant {name} on stdout")
+
+
+def _refuse_constant_doc(stdout):
+    return json.loads(stdout, parse_constant=_refuse_constant)
 
 
 def _offline_env(home, mode, noise):
@@ -83,3 +109,41 @@ def test_robinhood_script_writes_one_json_document(case, mode, tmp_path):
         assert ("503 Server Error" in proc.stderr) is call_after_login, detail
     if script_guard:
         assert NOISE_MARKER in proc.stderr, detail
+    if _case_id in READS_FAIL_CLOSED:
+        assert proc.returncode == 1, detail
+        assert doc.get("error"), detail
+        assert not (doc.get("close") or {}).get("already_flat"), detail
+
+
+@pytest.mark.parametrize("label,argv,mode,want_exit,want_error", ORDER_CASES, ids=[c[0] for c in ORDER_CASES])
+def test_robinhood_order_response_decides_exit(label, argv, mode, want_exit, want_error, tmp_path):
+    script, *args = argv
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / script), *args],
+        cwd=str(REPO_ROOT),
+        env=_offline_env(tmp_path, mode, True),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        stdin=subprocess.DEVNULL,
+    )
+    detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+
+    doc = _refuse_constant_doc(proc.stdout)
+    assert isinstance(doc, dict), detail
+    assert f"robinhood offline stub active: {mode}" in proc.stderr, detail
+    assert "Starting login process..." in proc.stderr, detail
+    assert NOISE_MARKER in proc.stderr, detail
+    assert proc.returncode == want_exit, detail
+    if want_error is None:
+        assert "error" not in doc, detail
+    else:
+        assert want_error in (doc.get("error") or ""), detail
+        assert not doc.get("execution"), detail
+    if label == "close_accepted":
+        assert doc["close"]["fill"].get("oid") == "offline-order-1", detail
+        assert not doc["close"].get("already_flat"), detail
+    if label == "close_no_holding":
+        assert doc["close"].get("already_flat") is True, detail
+    if label in ("buy_accepted", "sell_accepted"):
+        assert doc["execution"]["fill"] == {}, detail
