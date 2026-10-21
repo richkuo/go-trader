@@ -1436,7 +1436,7 @@ Gather first: platform name and ID prefix; products (spot, perps, futures, optio
 1. `platforms/<name>/__init__.py`
 2. `platforms/<name>/adapter.py` — exactly one class whose name ends in `ExchangeAdapter`; check scripts load the file through `importlib` and pick the class by `endswith("ExchangeAdapter")`
 3. Implement public adapter methods only; check scripts must never touch private attributes
-4. `shared_scripts/check_<name>.py`, only if an existing entry script does not fit
+4. `shared_scripts/check_<name>.py`, only if an existing entry script does not fit. Go parses stdout as exactly one JSON document, so a venue SDK that prints must run inside an adapter guard that sends its output to stderr (Robinhood: `robinhood_library()` in `platforms/robinhood/adapter.py`), and each entry script writes its one JSON result through `json_stdout()` from `shared_tools/stdout_contract.py`
 5. ID-prefix inference in `scheduler/config.go`
 6. Fee dispatch in `scheduler/fees.go`
 7. Executor wiring, only if a new live execution path is needed

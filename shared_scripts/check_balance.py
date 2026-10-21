@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
-import json
 import os
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
+
+from stdout_contract import json_stdout
 
 
 def fetch_okx_balance():
@@ -42,9 +45,6 @@ def fetch_okx_balance():
 
 
 def fetch_robinhood_balance():
-    import robin_stocks.robinhood as rh
-    import pyotp
-
     username = os.environ.get("ROBINHOOD_USERNAME", "")
     password = os.environ.get("ROBINHOOD_PASSWORD", "")
     totp_secret = os.environ.get("ROBINHOOD_TOTP_SECRET", "")
@@ -52,16 +52,21 @@ def fetch_robinhood_balance():
     if not (username and password and totp_secret):
         raise ValueError("ROBINHOOD_USERNAME, ROBINHOOD_PASSWORD, and ROBINHOOD_TOTP_SECRET env vars required")
 
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "platforms", "robinhood"))
+    from adapter import robinhood_library
+    import pyotp
+
     totp = pyotp.TOTP(totp_secret).now()
-    rh.login(username, password, mfa_code=totp)
-    try:
-        profile = rh.profiles.load_account_profile()
-        buying_power = float(profile.get("crypto_buying_power", 0))
-        if buying_power > 0:
-            return buying_power
-        return float(profile.get("portfolio_cash", 0))
-    finally:
-        rh.logout()
+    with robinhood_library() as rh:
+        rh.login(username, password, mfa_code=totp)
+        try:
+            profile = rh.profiles.load_account_profile()
+            buying_power = float(profile.get("crypto_buying_power", 0))
+            if buying_power > 0:
+                return buying_power
+            return float(profile.get("portfolio_cash", 0))
+        finally:
+            rh.logout()
 
 
 PLATFORM_FETCHERS = {
@@ -71,26 +76,27 @@ PLATFORM_FETCHERS = {
 
 
 def main():
-    platform = None
-    for arg in sys.argv[1:]:
-        if arg.startswith("--platform="):
-            platform = arg.split("=", 1)[1]
+    with json_stdout() as emit:
+        platform = None
+        for arg in sys.argv[1:]:
+            if arg.startswith("--platform="):
+                platform = arg.split("=", 1)[1]
 
-    if not platform:
-        print(json.dumps({"balance": 0, "error": "usage: check_balance.py --platform=<name>"}))
-        sys.exit(1)
+        if not platform:
+            emit({"balance": 0, "error": "usage: check_balance.py --platform=<name>"})
+            sys.exit(1)
 
-    fetcher = PLATFORM_FETCHERS.get(platform)
-    if not fetcher:
-        print(json.dumps({"balance": 0, "error": f"unsupported platform: {platform}"}))
-        sys.exit(1)
+        fetcher = PLATFORM_FETCHERS.get(platform)
+        if not fetcher:
+            emit({"balance": 0, "error": f"unsupported platform: {platform}"})
+            sys.exit(1)
 
-    try:
-        balance = fetcher()
-        print(json.dumps({"balance": balance}))
-    except Exception as e:
-        print(json.dumps({"balance": 0, "error": str(e)}))
-        sys.exit(1)
+        try:
+            balance = fetcher()
+            emit({"balance": balance})
+        except Exception as e:
+            emit({"balance": 0, "error": str(e)})
+            sys.exit(1)
 
 
 if __name__ == "__main__":
