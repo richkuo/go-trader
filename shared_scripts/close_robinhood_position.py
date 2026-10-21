@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 import sys
 import traceback
@@ -33,17 +34,26 @@ def main():
             _emit_error(args.symbol, "Robinhood adapter not live — set ROBINHOOD_USERNAME / ROBINHOOD_PASSWORD / ROBINHOOD_TOTP_SECRET")
             return
 
-        positions = adapter.get_crypto_positions()
+        positions = adapter.get_crypto_positions_strict()
+        if not isinstance(positions, list):
+            raise RuntimeError(f"Robinhood holdings read returned {type(positions).__name__}, expected list")
         qty = 0.0
-        for pos in positions or []:
-            if (pos.get("symbol") or "").upper() == args.symbol.upper():
+        for pos in positions:
+            if not isinstance(pos, dict):
+                raise RuntimeError("Robinhood holdings read returned a non-object row")
+            if (pos.get("symbol") or "").strip().upper() == args.symbol.strip().upper():
+                raw_qty = pos.get("quantity")
+                if isinstance(raw_qty, bool):
+                    raise RuntimeError(f"Robinhood holding for {args.symbol} has a malformed quantity")
                 try:
-                    qty = float(pos.get("quantity") or 0)
-                except (TypeError, ValueError):
-                    qty = 0.0
+                    qty = float(raw_qty)
+                except (TypeError, ValueError) as e:
+                    raise RuntimeError(f"Robinhood holding for {args.symbol} has a malformed quantity") from e
+                if not math.isfinite(qty) or qty < 0:
+                    raise RuntimeError(f"Robinhood holding for {args.symbol} has a non-finite or negative quantity")
                 break
 
-        if qty <= 0:
+        if qty == 0:
             _emit_success(args.symbol, fill={}, already_flat=True)
             return
 

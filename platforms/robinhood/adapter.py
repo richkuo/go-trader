@@ -2,8 +2,11 @@
 import os
 import sys
 import math
+import re
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Tuple
+from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
@@ -25,6 +28,76 @@ STRIKE_INTERVALS = [
     (500, 5),
     (float('inf'), 10),
 ]
+
+_HOLDINGS_ERROR_PREFIX = "Robinhood holdings read failed:"
+_HOLDINGS_CONNECT_TIMEOUT_S = 5.0
+_HOLDINGS_READ_TIMEOUT_S = 10.0
+_HOLDINGS_TOTAL_DEADLINE_S = 15.0
+_HOLDINGS_PAGE_CAP = 50
+
+
+class _HoldingsReadError(RuntimeError):
+    pass
+
+
+_DECIMAL_TEXT = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+
+
+def _parse_decimal(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not _DECIMAL_TEXT.fullmatch(text):
+            return None
+        number = float(text)
+    else:
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _holding_avg_price(row, quantity):
+    cost_bases = row.get("cost_bases")
+    if not isinstance(cost_bases, list) or not cost_bases:
+        return 0.0
+    first = cost_bases[0]
+    if not isinstance(first, dict):
+        return 0.0
+    basis = _parse_decimal(first.get("direct_cost_basis"))
+    if basis is None or basis < 0:
+        return 0.0
+    avg_price = basis / quantity
+    if not math.isfinite(avg_price):
+        return 0.0
+    return avg_price
+
+
+def _parse_holding_row(row, page, index):
+    where = f"page {page} row {index}"
+    if not isinstance(row, dict):
+        raise _HoldingsReadError(f"{where}: row is not an object")
+    if "quantity" not in row:
+        raise _HoldingsReadError(f"{where}: quantity is missing")
+    quantity = _parse_decimal(row["quantity"])
+    if quantity is None:
+        raise _HoldingsReadError(f"{where}: quantity is not a finite number")
+    if quantity < 0:
+        raise _HoldingsReadError(f"{where}: quantity is negative")
+    if quantity == 0:
+        return None
+    currency = row.get("currency")
+    code = currency.get("code") if isinstance(currency, dict) else None
+    if not isinstance(code, str) or not code.strip():
+        raise _HoldingsReadError(f"{where}: held row has no currency code")
+    return {
+        "symbol": code.strip().upper(),
+        "quantity": quantity,
+        "avg_price": _holding_avg_price(row, quantity),
+    }
 
 
 def _get_strike_interval(price: float) -> float:
@@ -305,34 +378,87 @@ class RobinhoodExchangeAdapter:
         result = rh.orders.order_sell_crypto_by_quantity(symbol, quantity)
         return result or {}
 
-    def get_crypto_positions(self) -> list:
-        if not self._logged_in:
-            return []
-        try:
-            return self.get_crypto_positions_strict()
-        except Exception as e:
-            print(f"[robinhood] get_crypto_positions error: {e}", file=sys.stderr)
-            return []
-
     def get_crypto_positions_strict(self) -> list:
+        try:
+            return self._read_crypto_holdings()
+        except _HoldingsReadError as e:
+            raise RuntimeError(f"{_HOLDINGS_ERROR_PREFIX} {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"{_HOLDINGS_ERROR_PREFIX} unexpected {type(e).__name__}") from e
+
+    def _read_crypto_holdings(self) -> list:
         if not self._logged_in:
-            raise RuntimeError(
+            raise _HoldingsReadError(
                 "Robinhood adapter not logged in — cannot fetch crypto positions"
             )
-        import robin_stocks.robinhood as rh
-        positions = rh.crypto.get_crypto_positions()
+        import requests
+        import robin_stocks.robinhood.helper as rh_helper
+        import robin_stocks.robinhood.urls as rh_urls
+
+        if rh_helper.LOGGED_IN is not True:
+            raise _HoldingsReadError("robin_stocks session not logged in")
+        session = rh_helper.SESSION
+        authorization = session.headers.get("Authorization")
+        if not isinstance(authorization, str) or not authorization.strip():
+            raise _HoldingsReadError("robin_stocks session has no Authorization header")
+
+        first_url = rh_urls.crypto_holdings_url()
+        holdings_host = urlsplit(first_url).netloc
+        deadline = time.monotonic() + _HOLDINGS_TOTAL_DEADLINE_S
+        requested = set()
         result = []
-        for pos in positions:
-            qty = float(pos.get("quantity", 0) or 0)
-            if qty <= 0:
-                continue
-            currency = pos.get("currency", {})
-            symbol = currency.get("code", "")
-            cost_basis = float(pos.get("cost_bases", [{}])[0].get("direct_cost_basis", 0) or 0)
-            avg_price = cost_basis / qty if qty > 0 else 0
-            result.append({
-                "symbol": symbol,
-                "quantity": qty,
-                "avg_price": avg_price,
-            })
+        seen_symbols = set()
+        url = first_url
+        page = 0
+        while url:
+            page += 1
+            if page > _HOLDINGS_PAGE_CAP:
+                raise _HoldingsReadError(f"more than {_HOLDINGS_PAGE_CAP} holdings pages")
+            if url in requested:
+                raise _HoldingsReadError(f"page {page}: repeated next link")
+            requested.add(url)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _HoldingsReadError(f"page {page}: read deadline of {_HOLDINGS_TOTAL_DEADLINE_S}s exceeded")
+            timeout = (
+                min(_HOLDINGS_CONNECT_TIMEOUT_S, remaining),
+                min(_HOLDINGS_READ_TIMEOUT_S, remaining),
+            )
+            try:
+                res = session.get(url, timeout=timeout, allow_redirects=False)
+            except requests.exceptions.RequestException as e:
+                raise _HoldingsReadError(f"page {page}: request failed ({type(e).__name__})") from e
+            if res.status_code != 200:
+                raise _HoldingsReadError(f"page {page}: HTTP status {res.status_code}")
+            try:
+                body = res.json()
+            except ValueError as e:
+                raise _HoldingsReadError(f"page {page}: response is not valid JSON") from e
+            if not isinstance(body, dict):
+                raise _HoldingsReadError(f"page {page}: response is not a JSON object")
+            rows = body.get("results")
+            if not isinstance(rows, list):
+                raise _HoldingsReadError(f"page {page}: response has no results list")
+            if "next" not in body:
+                raise _HoldingsReadError(f"page {page}: response has no next key")
+            next_url = body["next"]
+            if next_url is None or next_url == "":
+                next_url = None
+            elif not isinstance(next_url, str):
+                raise _HoldingsReadError(f"page {page}: next link is not a string")
+            else:
+                parts = urlsplit(next_url)
+                if parts.scheme != "https" or parts.netloc != holdings_host:
+                    raise _HoldingsReadError(f"page {page}: next link is not https on {holdings_host}")
+            for index, row in enumerate(rows):
+                parsed = _parse_holding_row(row, page, index)
+                if parsed is None:
+                    continue
+                if parsed["symbol"] in seen_symbols:
+                    raise _HoldingsReadError(
+                        f"page {page} row {index}: duplicate holding for {parsed['symbol']}"
+                    )
+                seen_symbols.add(parsed["symbol"])
+                result.append(parsed)
+            url = next_url
         return result
