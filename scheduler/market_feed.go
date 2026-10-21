@@ -492,6 +492,7 @@ type marketFeedOwner struct {
 	tradeFlows   map[feedObservationKey]*feedTradeFlowState
 	books        map[feedObservationKey]*feedBookState
 	bookSeq      uint64
+	bookStates   uint64
 	bookInstance string
 	bookTick     time.Duration
 	socketPing   time.Duration

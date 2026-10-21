@@ -462,6 +462,13 @@ func TestL2BookObservationPipeline(t *testing.T) {
 		t.Fatalf("a timer tick past the gap bound must write one dated silence marker: %+v", ms[len(ms)-1])
 	}
 	owner.TickBooks(clock())
+	earlier := l2TestBook("BTC", B+110_999-300, tag)
+	earlier["data"].(map[string]any)["levels"].([]any)[0].([]map[string]any)[1]["sz"] = " 2.5"
+	send("BTC", B+110_999, earlier)
+	if ms := markers(btcKey); len(ms) < 2 || ms[len(ms)-2].Reason != feedBookMarkerSilence || ms[len(ms)-1].Reason != feedBookMarkerInvalid ||
+		ms[len(ms)-1].AtMs != B+111_000 || ms[len(ms)-1].Seq <= ms[len(ms)-2].Seq {
+		t.Fatalf("an invalid frame received before the timer silence must take the silence marker's time: %+v", ms[len(ms)-2:])
+	}
 	clockMs.Store(B + 115_000)
 	sessions := fs.sessionCount()
 	fs.dropConnections()
@@ -487,7 +494,7 @@ func TestL2BookObservationPipeline(t *testing.T) {
 		reasons[m.Reason]++
 	}
 	for reason, want := range map[string]int{feedBookMarkerEpoch: 0, feedBookMarkerSubscribed: 1, feedBookMarkerDisconnected: 1,
-		feedBookMarkerConflict: 1, feedBookMarkerOutOfOrder: 1, feedBookMarkerInvalid: 7, feedBookMarkerSilence: 3} {
+		feedBookMarkerConflict: 1, feedBookMarkerOutOfOrder: 1, feedBookMarkerInvalid: 8, feedBookMarkerSilence: 3} {
 		if reasons[reason] != want {
 			t.Fatalf("BTC marker %s: %d, want %d (%v)", reason, reasons[reason], want, reasons)
 		}
@@ -539,6 +546,25 @@ func TestL2BookObservationPipeline(t *testing.T) {
 		mutate(cp)
 		if blob, _, err := encodeFeedSeal(cp); err == nil {
 			if _, err := decodeFeedSeal(blob, key1); err == nil {
+				t.Fatalf("a tampered book seal (%s) decoded", name)
+			}
+		}
+	}
+	sealed2 := append([]byte(nil), sealer.sealBytes(key2)...)
+	for name, mutate := range map[string]func(*feedSealL2Book){
+		"repeated marker seq":   func(b *feedSealL2Book) { b.Markers[1].Seq = b.Markers[0].Seq },
+		"decreasing marker seq": func(b *feedSealL2Book) { b.Markers[0].Seq, b.Markers[1].Seq = b.Markers[1].Seq, b.Markers[0].Seq },
+		"decreasing marker time": func(b *feedSealL2Book) {
+			b.Markers[1].AtMs = b.Markers[0].AtMs - 1
+		},
+	} {
+		cp, err := decodeFeedSeal(sealed2, key2)
+		if err != nil || len(cp.L2Books[0].Markers) < 2 {
+			t.Fatalf("seal 2 must decode with at least two BTC markers: %v", err)
+		}
+		mutate(&cp.L2Books[0])
+		if blob, _, err := encodeFeedSeal(cp); err == nil {
+			if _, err := decodeFeedSeal(blob, key2); err == nil {
 				t.Fatalf("a tampered book seal (%s) decoded", name)
 			}
 		}
@@ -613,8 +639,8 @@ func TestL2BookObservationPipeline(t *testing.T) {
 	}
 	feed1, rep1 := fetch(key1)
 	feed2, _ := fetch(key2)
-	if len(rep1.Gaps) != 1 || !strings.Contains(rep1.Gaps[0], "ETH|l2_book history is complete only from") {
-		t.Fatalf("the ETH capacity of 8 must leave its 120 s window uninitialized in the actual seal: %v", rep1.Gaps)
+	if len(rep1.Gaps) != 0 || strings.Contains(strings.Join(rep1.Alerts, " "), "COVERAGE GAP") {
+		t.Fatalf("an incomplete ETH prefix is an entry hold and no seal coverage gap: %v %v", rep1.Gaps, rep1.Alerts)
 	}
 	if hold := feed1.holdFor(btc); hold.Held {
 		t.Fatalf("BTC with a complete sealed book was held: %+v", hold)
@@ -625,6 +651,18 @@ func TestL2BookObservationPipeline(t *testing.T) {
 	payload1 := l2DecodeEnvelope(t, mustSinglePayload(t, feed1, btc))
 	payload2 := l2DecodeEnvelope(t, mustSinglePayload(t, feed2, btc))
 	ethPayload := l2DecodeEnvelope(t, mustSinglePayload(t, feed2, eth))
+	widePayload := l2DecodeEnvelope(t, mustSinglePayload(t, feed2, btcWide))
+	wide := widePayload.L2Books["BTC|l2_book"]
+	ordered := false
+	for i := 1; i < len(wide.Markers); i++ {
+		a, b := wide.Markers[i-1], wide.Markers[i]
+		if a.Reason == feedBookMarkerSilence && b.Reason == feedBookMarkerInvalid && a.AtMs == B+111_000 && b.AtMs == B+111_000 && b.Seq > a.Seq {
+			ordered = true
+		}
+	}
+	if !wide.Available || !wide.PrefixComplete || !ordered {
+		t.Fatalf("the 90 s BTC payload must carry the silence marker and the later-sequenced invalid-frame marker at one time: %+v", wide.Markers)
+	}
 	if payload1.Version != marketSnapshotVersion {
 		t.Fatalf("payload version %d, want %d", payload1.Version, marketSnapshotVersion)
 	}
@@ -649,6 +687,23 @@ func TestL2BookObservationPipeline(t *testing.T) {
 	}
 	if bb := batch.L2Books["BTC|l2_book"]; !bb.Available || bb.WindowMs != 90_000 || bb.Depth != 10 || len(bb.Observations) < len(b1.Observations) {
 		t.Fatalf("the batch payload must carry the members' merged need: %+v", bb.WindowMs)
+	}
+	deep := cycleRequirementsForDue([]StrategyConfig{btc, btcWide, eth}, req)
+	deep.Books[btcKey] = contractBookNeed(90_000, 256, 15)
+	var deepGaps []string
+	for i, key := range []int64{key1, key2} {
+		_, rep := client.Fetch(ctx, key, deep)
+		alerts := strings.Join(rep.Alerts, " ")
+		if len(rep.Gaps) != 1 || !strings.Contains(rep.Gaps[0], "seal depth 10 is below the 15 levels") {
+			t.Fatalf("a seal shallower than the need is one coverage gap at key %d: %v", key, rep.Gaps)
+		}
+		deepGaps = append(deepGaps, rep.Gaps[0])
+		if (i == 0) != strings.Contains(alerts, "COVERAGE GAP") {
+			t.Fatalf("a depth shortfall alerts once and not again at the next deadline (key %d): %v", key, rep.Alerts)
+		}
+	}
+	if deepGaps[0] != deepGaps[1] {
+		t.Fatalf("a depth shortfall gap must keep one text across deadlines: %q vs %q", deepGaps[0], deepGaps[1])
 	}
 
 	restart := newMarketFeedOwner(clock, t.Logf)
@@ -706,9 +761,10 @@ func TestL2BookObservationPipeline(t *testing.T) {
 			{"payload": "payload_2.json", "coin": "BTC", "as_of_ms": B + 180_500, "need": bn(*req.Strategies["l2-btc"].Book), "prefix_complete": true},
 			{"payload": "payload_eth.json", "coin": "ETH", "as_of_ms": B + 180_500, "need": bn(*req.Strategies["l2-eth"].Book), "prefix_complete": false},
 			{"payload": "payload_batch.json", "coin": "BTC", "as_of_ms": B + 60_500, "need": bn(req.Books[btcKey]), "prefix_complete": true},
+			{"payload": "payload_wide.json", "coin": "BTC", "as_of_ms": B + 180_500, "need": bn(*req.Strategies["l2-btc-wide"].Book), "prefix_complete": true},
 		}
 		l2WriteHarness(t, out, recDir, map[string]*marketPayload{"payload_1.json": payload1, "payload_2.json": payload2,
-			"payload_eth.json": ethPayload, "payload_batch.json": batch}, cases, finalStats)
+			"payload_eth.json": ethPayload, "payload_batch.json": batch, "payload_wide.json": widePayload}, cases, finalStats)
 	}
 }
 
@@ -1055,5 +1111,161 @@ func TestL2BookMixedRecordingKeepsEveryImporter(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+func TestL2BookHoldFollowsEachNeedAndWarmupIsNoCoverageGap(t *testing.T) {
+	l2RegisterFixture(t)
+	T0 := (time.Now().UTC().UnixMilli()/3_600_000)*3_600_000 - 2*3_600_000
+	var clockMs atomic.Int64
+	clockMs.Store(T0)
+	clock := func() time.Time { return time.UnixMilli(clockMs.Load()).UTC() }
+	small := l2TestStrategyConfig("l2-small", "BTC", map[string]interface{}{"window_ms": float64(60_000), "capacity": float64(8), "depth": float64(5)})
+	large := l2TestStrategyConfig("l2-large", "BTC", map[string]interface{}{"window_ms": float64(60_000), "capacity": float64(200), "depth": float64(5)})
+	req, err := deriveFeedRequirements(&Config{Strategies: []StrategyConfig{small, large}})
+	if err != nil {
+		t.Fatalf("derive requirements: %v", err)
+	}
+	key := l2BookKeyFor("BTC")
+	if n := req.Books[key]; n.Capacity != 200 || n.WindowMs != 60_000 {
+		t.Fatalf("the union need must take the larger capacity: %+v", n)
+	}
+	owner := newMarketFeedOwner(clock, t.Logf)
+	owner.feedMu.Lock()
+	owner.applyBookNeedsLocked(req.Books)
+	owner.feedMu.Unlock()
+	owner.SetConnected(true)
+	ackRaw, _ := json.Marshal(l2TestAck("BTC", nil))
+	owner.IngestBookSubscription("BTC", time.UnixMilli(T0+1_000), ackRaw, map[string]json.RawMessage{
+		"type": json.RawMessage(`"l2Book"`), "coin": json.RawMessage(`"BTC"`), "nSigFigs": json.RawMessage(`null`),
+		"mantissa": json.RawMessage(`null`), "fast": json.RawMessage(`false`)})
+	tag := 0
+	frame := func(recvMs int64, mutate func(map[string]any)) {
+		msg := l2TestBook("BTC", recvMs-300, tag)
+		tag++
+		if mutate != nil {
+			mutate(msg)
+		}
+		raw, _ := json.Marshal(msg)
+		data, _ := json.Marshal(msg["data"])
+		clockMs.Store(recvMs)
+		owner.IngestBookFrame(data, time.UnixMilli(recvMs), raw)
+	}
+	reqs := cycleRequirementsForDue([]StrategyConfig{small, large}, req)
+	check := func(label string, cutoffMs int64, wantSmall, wantLarge bool) {
+		t.Helper()
+		clockMs.Store(cutoffMs)
+		snap := freezeMarketSnapshot(owner, reqs, label, time.UnixMilli(cutoffMs), time.UnixMilli(cutoffMs))
+		if gaps := applyBookSealCoverage(snap, reqs); len(gaps) != 0 {
+			t.Fatalf("%s: an incomplete book prefix is an entry hold and no coverage gap: %v", label, gaps)
+		}
+		for _, tc := range []struct {
+			sc   StrategyConfig
+			want bool
+		}{{small, wantSmall}, {large, wantLarge}} {
+			entry := req.Strategies[tc.sc.ID]
+			held, why := snap.bookHold(entry)
+			section := snap.l2BookPayload(key, *entry.Book)
+			if held != tc.want || !section.Available || held == section.PrefixComplete {
+				t.Fatalf("%s: %s held=%v (%s), want %v; its payload prefix_complete=%v must be the inverse", label, tc.sc.ID, held, why, tc.want, section.PrefixComplete)
+			}
+		}
+	}
+	for at := T0 + 3_000; at <= T0+18_000; at += 3_000 {
+		frame(at, nil)
+	}
+	check("warm-up 1", T0+20_000, true, true)
+	for at := T0 + 21_000; at <= T0+39_000; at += 3_000 {
+		frame(at, nil)
+	}
+	check("warm-up 2", T0+40_000, true, true)
+	for at := T0 + 42_000; at <= T0+99_000; at += 3_000 {
+		frame(at, nil)
+	}
+	snap := freezeMarketSnapshot(owner, reqs, "count", time.UnixMilli(T0+100_000), time.UnixMilli(T0+100_000))
+	if n := snap.books[key].windowCount(60_000); n != 20 {
+		t.Fatalf("the window must hold 20 observations, got %d", n)
+	}
+	check("union capacity 200 with 20 observations", T0+100_000, true, false)
+	for i := 0; i < feedBookMaxMarkers+1; i++ {
+		frame(T0+100_100+int64(i)*10, func(m map[string]any) {
+			m["data"].(map[string]any)["levels"].([]any)[0].([]map[string]any)[1]["sz"] = " 1.5"
+		})
+	}
+	owner.feedMu.Lock()
+	ms := append([]feedBookMarker(nil), owner.books[key].Markers...)
+	owner.feedMu.Unlock()
+	coalesced := false
+	for _, m := range ms {
+		coalesced = coalesced || m.Reason == feedBookMarkerEvidenceLoss
+	}
+	if !coalesced {
+		t.Fatalf("a marker storm must coalesce into evidence_loss: %d markers", len(ms))
+	}
+	check("evidence loss mid-run", T0+102_000, true, true)
+}
+
+func TestL2BookResubscribesAStateReplacedBetweenSyncs(t *testing.T) {
+	B := (time.Now().UTC().UnixMilli()/3_600_000)*3_600_000 - 2*3_600_000
+	var clockMs atomic.Int64
+	clockMs.Store(B)
+	clock := func() time.Time { return time.UnixMilli(clockMs.Load()).UTC() }
+	fs := newFeedSocketServer(t)
+	hlFeedWebsocketURLOverride = fs.url()
+	defer func() { hlFeedWebsocketURLOverride = "" }()
+	owner := newMarketFeedOwner(clock, t.Logf)
+	owner.bookTick = l2TestTickPeriod
+	owner.socketPing = 50 * time.Millisecond
+	need := contractBookNeed(60_000, 256, 5)
+	btcKey, ethKey := l2BookKeyFor("BTC"), l2BookKeyFor("ETH")
+	owner.trackBooks([]string{"BTC", "ETH"}, need)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go owner.Run(ctx)
+	waitFor(t, "connected", owner.Connected)
+	count := func(list []string, coin string) int {
+		return strings.Count(strings.Join(list, " "), `{"coin":"`+coin+`","fast":false,"type":"l2Book"}`)
+	}
+	covered := func(key feedObservationKey) bool {
+		owner.feedMu.Lock()
+		defer owner.feedMu.Unlock()
+		st := owner.books[key]
+		return st != nil && st.Covered
+	}
+	waitFor(t, "first subscriptions", func() bool { return count(fs.subscriptions(), "BTC") == 1 && count(fs.subscriptions(), "ETH") == 1 })
+	clockMs.Store(B + 1_000)
+	fs.broadcast(t, l2TestAck("BTC", nil))
+	fs.broadcast(t, l2TestAck("ETH", nil))
+	waitFor(t, "first acknowledgements", func() bool { return covered(btcKey) && covered(ethKey) })
+	time.Sleep(300 * time.Millisecond)
+	if s, u := fs.subscriptions(), fs.unsubscriptions(); count(s, "BTC") != 1 || count(s, "ETH") != 1 || len(u) != 0 {
+		t.Fatalf("an unchanged book state must send no new subscribe across syncs: subs %v unsubs %v", s, u)
+	}
+
+	owner.feedMu.Lock()
+	oldID := owner.books[btcKey].StateID
+	owner.dropUnneededBooksLocked(map[feedObservationKey]feedBookNeed{ethKey: need})
+	owner.applyBookNeedsLocked(map[feedObservationKey]feedBookNeed{btcKey: need, ethKey: need})
+	owner.subVersion++
+	newID := owner.books[btcKey].StateID
+	owner.feedMu.Unlock()
+	if newID == oldID || covered(btcKey) {
+		t.Fatalf("a re-tracked BTC book must be a new, uncovered state: %d -> %d", oldID, newID)
+	}
+	waitFor(t, "BTC unsubscribe and subscribe again", func() bool {
+		return count(fs.unsubscriptions(), "BTC") == 1 && count(fs.subscriptions(), "BTC") == 2
+	})
+	clockMs.Store(B + 2_000)
+	fs.broadcast(t, l2TestAck("BTC", nil))
+	waitFor(t, "the replaced BTC state covered", func() bool { return covered(btcKey) })
+
+	owner.feedMu.Lock()
+	owner.dropUnneededBooksLocked(map[feedObservationKey]feedBookNeed{btcKey: need})
+	owner.subVersion++
+	owner.feedMu.Unlock()
+	waitFor(t, "ETH unsubscribe", func() bool { return count(fs.unsubscriptions(), "ETH") == 1 })
+	time.Sleep(300 * time.Millisecond)
+	if s, u := fs.subscriptions(), fs.unsubscriptions(); count(u, "ETH") != 1 || count(s, "ETH") != 1 || count(s, "BTC") != 2 || count(u, "BTC") != 1 {
+		t.Fatalf("a drop alone must send exactly one unsubscribe and no subscribe: subs %v unsubs %v", s, u)
 	}
 }

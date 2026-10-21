@@ -449,7 +449,14 @@ class _Owner:
     def sorted_coins(self) -> list:
         return sorted(self.books, key=lambda c: c.encode("utf-8"))
 
+    @staticmethod
+    def marker_time(st: _BookState, at_ms: int) -> int:
+        if st.markers and st.markers[-1]["at_ms"] > at_ms:
+            return st.markers[-1]["at_ms"]
+        return at_ms
+
     def add_marker(self, st: _BookState, at_ms: int, reason: str, detail: str) -> None:
+        at_ms = self.marker_time(st, at_ms)
         m = {"seq": self.next_seq(), "at_ms": at_ms, "reason": reason, "session": st.session,
              "detail": bounded_reason(detail), "evicted_ms": None}
         st.markers.append(m)
@@ -622,9 +629,12 @@ class _Owner:
     def tick(self, coin: str, now_ms: int) -> bool:
         st = self.books.get(coin)
         gap = CONTRACT["max_gap_ms"]
-        if st is None or not st.covered or st.silence_marked or st.last_accept == 0 or now_ms - st.last_accept <= gap:
+        if st is None:
             return False
-        self.add_marker(st, now_ms, "silence", f"no accepted book for {now_ms - st.last_accept}ms, over {gap}ms")
+        at = self.marker_time(st, now_ms)
+        if not st.covered or st.silence_marked or st.last_accept == 0 or at - st.last_accept <= gap:
+            return False
+        self.add_marker(st, at, "silence", f"no accepted book for {at - st.last_accept}ms, over {gap}ms")
         st.silence_marked = True
         return True
 

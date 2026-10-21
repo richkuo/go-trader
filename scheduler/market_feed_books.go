@@ -519,6 +519,7 @@ type feedBookState struct {
 	RetainedFromMs int64
 	DepthFromMs    int64
 	StartedMs      int64
+	StateID        uint64
 	Stats          feedBookStats
 }
 
@@ -556,7 +557,15 @@ func (o *marketFeedOwner) nextBookSeq() uint64 {
 	return o.bookSeq
 }
 
+func (s *feedBookState) markerTime(atMs int64) int64 {
+	if n := len(s.Markers); n > 0 && s.Markers[n-1].AtMs > atMs {
+		return s.Markers[n-1].AtMs
+	}
+	return atMs
+}
+
 func (o *marketFeedOwner) addBookMarkerLocked(st *feedBookState, atMs int64, reason, detail string, ev *feedBookEvents) {
+	atMs = st.markerTime(atMs)
 	m := feedBookMarker{Seq: o.nextBookSeq(), AtMs: atMs, Reason: reason, Session: st.Session, Detail: boundedReason(detail)}
 	st.Markers = append(st.Markers, m)
 	st.Stats.Markers++
@@ -723,6 +732,16 @@ func sortedBookKeys(m map[feedObservationKey]*feedBookState) []feedObservationKe
 	return keys
 }
 
+func (o *marketFeedOwner) BookSubscriptionStates() map[string]uint64 {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	out := make(map[string]uint64, len(o.books))
+	for k, st := range o.books {
+		out[k.Coin] = st.StateID
+	}
+	return out
+}
+
 func (o *marketFeedOwner) BookCoins() []string {
 	o.feedMu.Lock()
 	defer o.feedMu.Unlock()
@@ -884,10 +903,11 @@ func (o *marketFeedOwner) tickBooksLocked(nowMs int64) {
 	var ev feedBookEvents
 	for _, k := range sortedBookKeys(o.books) {
 		st := o.books[k]
-		if !st.Covered || st.SilenceMarked || st.LastAcceptMs == 0 || nowMs-st.LastAcceptMs <= feedBookMaxGapMs {
+		at := st.markerTime(nowMs)
+		if !st.Covered || st.SilenceMarked || st.LastAcceptMs == 0 || at-st.LastAcceptMs <= feedBookMaxGapMs {
 			continue
 		}
-		o.addBookMarkerLocked(st, nowMs, feedBookMarkerSilence, fmt.Sprintf("no accepted book for %dms, over %dms", nowMs-st.LastAcceptMs, feedBookMaxGapMs), &ev)
+		o.addBookMarkerLocked(st, at, feedBookMarkerSilence, fmt.Sprintf("no accepted book for %dms, over %dms", at-st.LastAcceptMs, feedBookMaxGapMs), &ev)
 		st.SilenceMarked = true
 	}
 	o.emitBookEventsLocked(ev)
@@ -906,7 +926,8 @@ func (o *marketFeedOwner) applyBookNeedsLocked(needs map[feedObservationKey]feed
 		need := needs[k]
 		st := o.books[k]
 		if st == nil {
-			st = &feedBookState{Key: k, Need: need, RetainedFromMs: nowMs, DepthFromMs: nowMs, StartedMs: nowMs}
+			o.bookStates++
+			st = &feedBookState{Key: k, Need: need, RetainedFromMs: nowMs, DepthFromMs: nowMs, StartedMs: nowMs, StateID: o.bookStates}
 			o.books[k] = st
 			o.addBookMarkerLocked(st, nowMs, feedBookMarkerEpoch, "owner "+o.bookInstance, &ev)
 			if o.recorder != nil {
@@ -1058,6 +1079,27 @@ func (s *marketSnapshotBook) prefixComplete(windowMs int64) bool {
 	return s.CoverageFromMs <= s.CutoffMs-windowMs
 }
 
+func (s *marketSnapshotBook) windowCount(windowMs int64) int {
+	start := s.CutoffMs - windowMs
+	count := 0
+	for _, b := range s.Obs {
+		if b.RecvMs >= start {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *marketSnapshotBook) needPrefixGap(need feedBookNeed) string {
+	if !s.prefixComplete(need.WindowMs) {
+		return fmt.Sprintf("%s history is complete only from %d, after the window start %d", s.Key.PayloadID(), s.CoverageFromMs, s.CutoffMs-need.WindowMs)
+	}
+	if count := s.windowCount(need.WindowMs); count > need.Capacity {
+		return fmt.Sprintf("%s window holds %d observations, over this need's capacity %d, so its cut prefix is incomplete", s.Key.PayloadID(), count, need.Capacity)
+	}
+	return ""
+}
+
 type marketBookRecord struct {
 	Seq      uint64          `json:"seq"`
 	EventMs  int64           `json:"event_ms"`
@@ -1147,18 +1189,10 @@ func (s *marketSnapshot) l2BookPayload(key feedObservationKey, need feedBookNeed
 	}
 	start := entry.CutoffMs - need.WindowMs
 	out.RetainedFromMs = entry.CoverageFromMs
-	out.PrefixComplete = entry.prefixComplete(need.WindowMs)
-	count := 0
-	for _, b := range entry.Obs {
-		if b.RecvMs < start {
-			continue
-		}
-		count++
-	}
+	out.PrefixComplete = entry.needPrefixGap(need) == ""
 	skip := 0
-	if count > need.Capacity {
+	if count := entry.windowCount(need.WindowMs); count > need.Capacity {
 		skip = count - need.Capacity
-		out.PrefixComplete = false
 	}
 	for _, b := range entry.Obs {
 		if b.RecvMs < start {
@@ -1250,8 +1284,8 @@ func (s *marketSnapshot) bookHold(entry feedStrategyRequirement) (bool, string) 
 	if why != "" {
 		return true, why
 	}
-	if !e.prefixComplete(entry.Book.WindowMs) {
-		return true, fmt.Sprintf("%s history is complete only from %d, after the window start %d", e.Key.PayloadID(), e.CoverageFromMs, e.CutoffMs-entry.Book.WindowMs)
+	if gap := e.needPrefixGap(*entry.Book); gap != "" {
+		return true, gap
 	}
 	return false, ""
 }
@@ -1534,13 +1568,8 @@ func applyBookSealCoverage(snap *marketSnapshot, reqs cycleMarketRequirements) [
 	var gaps []string
 	for _, k := range sortedBookNeedKeys(reqs.Books) {
 		need := reqs.Books[k]
-		e, why := snap.bookEntry(k, need)
-		if why != "" {
+		if _, why := snap.bookEntry(k, need); why != "" {
 			gaps = append(gaps, why)
-			continue
-		}
-		if !e.prefixComplete(need.WindowMs) {
-			gaps = append(gaps, fmt.Sprintf("%s history is complete only from %d, after the window start %d", k.PayloadID(), e.CoverageFromMs, e.CutoffMs-need.WindowMs))
 		}
 	}
 	return gaps

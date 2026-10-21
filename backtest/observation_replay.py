@@ -564,8 +564,8 @@ def _cmd_harness_books(args) -> int:
             failures.append(f"{coin} replayed stats {got}, the owner reported {want}")
     if not loaded["report"]["economic_evidence"]:
         failures.append(f"the harness recording is refused as evidence: {loaded['report']['refusals']}")
-    if len(results) != 4:
-        failures.append(f"the harness holds {len(results)} cases, want 4")
+    if len(results) != 5:
+        failures.append(f"the harness holds {len(results)} cases, want 5")
     print(json.dumps({"recording": {k: loaded["report"][k] for k in ("frames", "malformed_frames", "markers_compared",
                                                                        "mismatch_count", "economic_evidence")},
                       "stats": {c: s["stats"] for c, s in loaded["series"].items()},

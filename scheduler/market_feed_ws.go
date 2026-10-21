@@ -127,7 +127,7 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 	subscribed := make(map[marketFeedKey]bool)
 	obsSubscribed := make(map[string]bool)
 	tradesSubscribed := make(map[string]bool)
-	booksSubscribed := make(map[string]bool)
+	booksSubscribed := make(map[string]uint64)
 	midsSubscribed := false
 	syncSubscriptions := func() error {
 		keys, coins, _ := o.Subscriptions()
@@ -186,11 +186,26 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 			}
 			tradesSubscribed[coin] = true
 		}
-		wantBooks := make(map[string]bool)
-		for _, coin := range o.BookCoins() {
-			wantBooks[coin] = true
-			if booksSubscribed[coin] {
+		wantBooks := o.BookSubscriptionStates()
+		bookCoins := make([]string, 0, len(wantBooks))
+		for coin := range wantBooks {
+			bookCoins = append(bookCoins, coin)
+		}
+		sort.Strings(bookCoins)
+		for _, coin := range bookCoins {
+			stateID := wantBooks[coin]
+			prior, ok := booksSubscribed[coin]
+			if ok && prior == stateID {
 				continue
+			}
+			if ok {
+				if err := writeJSON(map[string]any{
+					"method":       "unsubscribe",
+					"subscription": map[string]any{"type": "l2Book", "coin": coin, "fast": false},
+				}); err != nil {
+					return err
+				}
+				delete(booksSubscribed, coin)
 			}
 			if err := writeJSON(map[string]any{
 				"method":       "subscribe",
@@ -198,11 +213,11 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 			}); err != nil {
 				return err
 			}
-			booksSubscribed[coin] = true
+			booksSubscribed[coin] = stateID
 		}
 		stale := make([]string, 0)
 		for coin := range booksSubscribed {
-			if !wantBooks[coin] {
+			if _, ok := wantBooks[coin]; !ok {
 				stale = append(stale, coin)
 			}
 		}
