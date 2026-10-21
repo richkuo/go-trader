@@ -985,6 +985,60 @@ func TestRobinhoodLiveOrderCircuitBreakerKeepsExposureUntilVerifiedFlat(t *testi
 			t.Fatal("pending close must be kept with no post-close fetcher")
 		}
 	})
+	t.Run("fresh_buy_flat_read_keeps_the_book_without_a_pending_close", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setPosition("rh-btc", "BTC", 0.5, 90)
+		e.latchCB("rh-btc")
+		flat := rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}
+		e.runCB(e.phasedFetcher(flat, flat))
+		s := e.state.Strategies["rh-btc"]
+		if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
+			t.Fatalf("position = %+v, want the fresh long kept while the read may lag the buy", pos)
+		}
+		if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil {
+			t.Fatalf("pending = %+v, want none from a flat read", p)
+		}
+		if posts := e.orderPosts(); len(posts) != 0 {
+			t.Fatalf("a lagging flat read must send no order, sent %d", len(posts))
+		}
+		if dbt := e.dbTrades("rh-btc"); len(dbt) != 0 {
+			t.Fatalf("db trades = %+v, want none", dbt)
+		}
+		e.mu.Lock()
+		s.Positions["BTC"].OpenedAt = time.Now().Add(-time.Hour)
+		e.mu.Unlock()
+		e.runCB(e.phasedFetcher(flat, flat))
+		if pos := s.Positions["BTC"]; pos != nil {
+			t.Fatalf("position = %+v, want an old long on a verified flat account closed", pos)
+		}
+	})
+	t.Run("fresh_buy_flat_read_keeps_the_pending_close", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setPosition("rh-btc", "BTC", 0.5, 90)
+		e.latchCB("rh-btc")
+		e.mu.Lock()
+		s := e.state.Strategies["rh-btc"]
+		s.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.5}}})
+		e.mu.Unlock()
+		flat := rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}
+		e.runCB(e.phasedFetcher(flat, flat))
+		if s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
+			t.Fatal("pending close must be kept while the flat read may lag a fresh buy")
+		}
+		if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
+			t.Fatalf("position = %+v, want the fresh long kept", pos)
+		}
+		if posts := e.orderPosts(); len(posts) != 0 {
+			t.Fatalf("a lagging flat read must send no order, sent %d", len(posts))
+		}
+		e.mu.Lock()
+		s.Positions["BTC"].OpenedAt = time.Now().Add(-time.Hour)
+		e.mu.Unlock()
+		e.runCB(e.phasedFetcher(flat, flat))
+		if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil || s.Positions["BTC"] != nil {
+			t.Fatalf("pending=%+v position=%+v, want an old long on a verified flat account cleared", p, s.Positions["BTC"])
+		}
+	})
 	t.Run("cooldown_and_reset_do_not_release_a_hold", func(t *testing.T) {
 		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
 		e.setPosition("rh-btc", "BTC", 0.5, 90)
@@ -1051,6 +1105,108 @@ func TestRobinhoodLiveOrderOperatorResolutionNeedsVenueEvidence(t *testing.T) {
 	}
 	if dbt := e.dbTrades("rh-btc"); len(dbt) != 1 || dbt[0].Price != 100.5 {
 		t.Fatalf("db trades = %+v", dbt)
+	}
+}
+
+const rhOrderPageCap = 20
+
+func rhOrderPages(n int) rhRoutes {
+	out := rhRoutes{}
+	for i := 0; i < n; i++ {
+		url := rhTestOrders
+		if i > 0 {
+			url = fmt.Sprintf("%s?cursor=%d", rhTestOrders, i)
+		}
+		out["GET "+url] = []rhRoute{{"status": 200, "json": map[string]interface{}{"next": fmt.Sprintf("%s?cursor=%d", rhTestOrders, i+1), "results": []interface{}{}}}}
+	}
+	return out
+}
+
+func TestRobinhoodLiveOrderOperatorAttestedReleaseOfAnUnsentOrder(t *testing.T) {
+	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+	row := e.seedHeldBuy()
+	lookup := func(id string) (StrategyConfig, bool) {
+		for _, sc := range e.cfg.Strategies {
+			if sc.ID == id {
+				return sc, true
+			}
+		}
+		return StrategyConfig{}, false
+	}
+	e.setRoutes(rhPrepRoutes())
+	if checked, msg := prepareRobinhoodAttestedRelease(e.deps(), lookup, "rh-btc", row.ID, time.Now()); checked != nil || !strings.Contains(msg, "settle window") {
+		t.Fatalf("inside the settle window: checked=%v msg=%q, want a refusal", checked, msg)
+	}
+	if reqs := e.requests(); len(reqs) != 0 {
+		t.Fatalf("a refusal inside the settle window must make no venue call, got %+v", reqs)
+	}
+
+	old := time.Now().Add(-40 * time.Minute).UnixMilli()
+	if _, err := e.store.primary().db.Exec(`UPDATE robinhood_order_attempts SET created_at_ms = ? WHERE attempt_id = ?`, old, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.reopen()
+	e.setRoutes(rhWith(rhPrepRoutes(), rhOrderPages(rhOrderPageCap+1)))
+	recoverRobinhoodOrders(e.cfg, e.state, e.store, &e.mu, e.notifier, nil, time.Now())
+	if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown || !strings.Contains(got.HoldReason, "pages") {
+		t.Fatalf("an order list past the page cap must keep the hold, got %+v", got)
+	}
+
+	e.setRoutes(rhWith(rhPrepRoutes(), rhOrderPages(rhOrderPageCap+1)))
+	checked, prompt := prepareRobinhoodAttestedRelease(e.deps(), lookup, "rh-btc", row.ID, time.Now())
+	if checked == nil {
+		t.Fatalf("an unsent attempt past its settle window must reach the confirm prompt, got %q", prompt)
+	}
+	for _, want := range []string{row.ID, "buy", "BTC", row.RefID, "Submit window", "no venue order id", "pages"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt %q lacks %q", prompt, want)
+		}
+	}
+	if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
+		t.Fatalf("the prompt must not release the attempt, got %+v", got)
+	}
+
+	e.mu.Lock()
+	_, live := robinhoodAttemptByID(e.state, "rh-btc", row.ID)
+	live.VenueOrderID = "ord-late"
+	e.mu.Unlock()
+	if msg := releaseRobinhoodAttemptByAttestation(e.deps(), "owner-1", "rh-btc", row.ID, *checked, time.Now()); !strings.Contains(msg, "changed while you were confirming") {
+		t.Fatalf("a venue order found during the confirm must refuse the release, got %q", msg)
+	}
+	if got := e.onlyAttempt(); got.Status != robinhoodAttemptUnknown {
+		t.Fatalf("a refused release must keep the hold, got %+v", got)
+	}
+	e.mu.Lock()
+	live.VenueOrderID = ""
+	e.mu.Unlock()
+
+	if msg := releaseRobinhoodAttemptByAttestation(e.deps(), "owner-1", "rh-btc", row.ID, *checked, time.Now()); !strings.Contains(msg, "released as no_fill on your attestation") {
+		t.Fatalf("the confirmed release must succeed, got %q", msg)
+	}
+	got := e.onlyAttempt()
+	if got.Status != robinhoodAttemptNoFill || got.AppliedQty != 0 || got.SettlementSeq != 0 {
+		t.Fatalf("attempt = %+v, want no_fill with nothing applied", got)
+	}
+	var evJSON string
+	if err := e.store.primary().db.QueryRow(`SELECT evidence_json FROM robinhood_order_attempts WHERE attempt_id = ?`, row.ID).Scan(&evJSON); err != nil {
+		t.Fatal(err)
+	}
+	var ev robinhoodOrderEvidenceRecord
+	if err := json.Unmarshal([]byte(evJSON), &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.Outcome != robinhoodOutcomeOperatorAttested || ev.Operator == nil || ev.Operator.OperatorID != "owner-1" || ev.Operator.PriorStatus != robinhoodAttemptUnknown || len(ev.Operator.PriorEvidence) == 0 {
+		t.Fatalf("evidence = %s, want the operator attestation with the prior evidence", evJSON)
+	}
+	if s := e.state.Strategies["rh-btc"]; s.Cash != 1000 || len(s.Positions) != 0 || len(e.dbTrades("rh-btc")) != 0 {
+		t.Fatalf("an attested release must book nothing: cash=%v positions=%v", s.Cash, s.Positions)
+	}
+	if msg := releaseRobinhoodAttemptByAttestation(e.deps(), "owner-1", "rh-btc", row.ID, *checked, time.Now()); !strings.Contains(msg, "changed while you were confirming") {
+		t.Fatalf("a second release must be refused, got %q", msg)
+	}
+	e.reopen()
+	if held := robinhoodOrderStartupLines(e.state); len(held) != 0 {
+		t.Fatalf("restart must not reload the released attempt, got %v", held)
 	}
 }
 

@@ -33,16 +33,17 @@ const (
 )
 
 const (
-	robinhoodOutcomeFilled          = "filled"
-	robinhoodOutcomePartiallyFilled = "partially_filled"
-	robinhoodOutcomeNoFill          = "no_fill"
-	robinhoodOutcomeRejected        = "rejected"
-	robinhoodOutcomeNotSent         = "not_sent"
-	robinhoodOutcomeNotFound        = "not_found"
-	robinhoodOutcomeOpen            = "open"
-	robinhoodOutcomeUnknown         = "unknown"
-	robinhoodOutcomeInconsistent    = "inconsistent"
-	robinhoodOutcomeAlreadyFlat     = "already_flat"
+	robinhoodOutcomeFilled           = "filled"
+	robinhoodOutcomePartiallyFilled  = "partially_filled"
+	robinhoodOutcomeNoFill           = "no_fill"
+	robinhoodOutcomeRejected         = "rejected"
+	robinhoodOutcomeNotSent          = "not_sent"
+	robinhoodOutcomeNotFound         = "not_found"
+	robinhoodOutcomeOpen             = "open"
+	robinhoodOutcomeUnknown          = "unknown"
+	robinhoodOutcomeInconsistent     = "inconsistent"
+	robinhoodOutcomeAlreadyFlat      = "already_flat"
+	robinhoodOutcomeOperatorAttested = "operator_attested_no_order"
 )
 
 const robinhoodOrderRequestVersion = 1
@@ -163,13 +164,22 @@ type robinhoodOrderRequest struct {
 }
 
 type robinhoodOrderEvidenceRecord struct {
-	Outcome           string                 `json:"outcome"`
-	Detail            string                 `json:"detail,omitempty"`
-	Order             RobinhoodOrderEvidence `json:"order"`
-	Cancel            RobinhoodOrderCancel   `json:"cancel"`
-	RequestedQuantity float64                `json:"requested_quantity,omitempty"`
-	AccountID         string                 `json:"account_id,omitempty"`
-	ObservedAtMs      int64                  `json:"observed_at_ms"`
+	Outcome           string                        `json:"outcome"`
+	Detail            string                        `json:"detail,omitempty"`
+	Order             RobinhoodOrderEvidence        `json:"order"`
+	Cancel            RobinhoodOrderCancel          `json:"cancel"`
+	RequestedQuantity float64                       `json:"requested_quantity,omitempty"`
+	AccountID         string                        `json:"account_id,omitempty"`
+	ObservedAtMs      int64                         `json:"observed_at_ms"`
+	Operator          *robinhoodOperatorAttestation `json:"operator,omitempty"`
+}
+
+type robinhoodOperatorAttestation struct {
+	OperatorID      string          `json:"operator_id"`
+	Command         string          `json:"command"`
+	PriorStatus     string          `json:"prior_status"`
+	PriorHoldReason string          `json:"prior_hold_reason,omitempty"`
+	PriorEvidence   json.RawMessage `json:"prior_evidence,omitempty"`
 }
 
 func marshalRobinhoodJSON(v interface{}) string {
@@ -424,6 +434,11 @@ func classifyRobinhoodOrderOutcome(res *RobinhoodExecuteResult, runErr error, a 
 			detail = "the venue evidence is inconsistent"
 		}
 		return robinhoodOrderInconsistent, detail
+	case robinhoodOutcomeUnknown:
+		if detail == "" {
+			detail = "the order outcome is unknown"
+		}
+		return robinhoodOrderUnknown, detail
 	}
 	if res.OrderOutcome == "" {
 		return robinhoodOrderUnknown, fmt.Sprintf("the result has no order_outcome (exit %v, error %q)", runErr, res.Error)
@@ -587,8 +602,8 @@ func formatRobinhoodOrderHoldAlert(strategyID string, a *robinhoodOrderAttempt, 
 	if a.VenueOrderID != "" {
 		order = a.VenueOrderID
 	}
-	return fmt.Sprintf("**ROBINHOOD ORDER UNRESOLVED** [%s] %s %s attempt %s (origin %s, ref_id %s, venue order %s): %s. No Robinhood order for %s is sent until this order is resolved; recovery retries every cycle, or run /%sresolve-robinhood-order %s %s with the venue order id.",
-		strategyID, a.Side, a.Symbol, a.AttemptID, a.Origin, a.RefID, order, reason, a.Symbol, commandPrefix, strategyID, a.AttemptID)
+	return fmt.Sprintf("**ROBINHOOD ORDER UNRESOLVED** [%s] %s %s attempt %s (origin %s, ref_id %s, venue order %s): %s. No Robinhood order for %s is sent until this order is resolved; recovery retries every cycle, or run /%sresolve-robinhood-order %s %s with the venue order id; when the order history shows no order for this attempt, add release:%s.",
+		strategyID, a.Side, a.Symbol, a.AttemptID, a.Origin, a.RefID, order, reason, a.Symbol, commandPrefix, strategyID, a.AttemptID, robinhoodAttestReleaseChoice)
 }
 
 func notifyRobinhoodOrderHold(notifier *MultiNotifier, strategyID string, a *robinhoodOrderAttempt, reason string, now time.Time) {

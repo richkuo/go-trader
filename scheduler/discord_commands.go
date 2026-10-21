@@ -467,10 +467,13 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the attempt", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "attempt", Description: "Attempt id (ei-...) from the LIVE ENTRY alert or the startup log", Required: true},
 		}},
-		{Name: commandPrefix + "resolve-robinhood-order", Description: "Re-check a held Robinhood order; settle or release only on venue evidence (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+		{Name: commandPrefix + "resolve-robinhood-order", Description: "Re-check a held Robinhood order; settle or release on venue evidence (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the attempt", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "attempt", Description: "Attempt id (rh-...) from the ROBINHOOD ORDER UNRESOLVED alert or the startup log", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "order", Description: "Robinhood order id to look up, when the alert shows none"},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "release", Description: "Release an attempt with no venue order id after you check the order history (DM confirm)", Choices: []*discordgo.ApplicationCommandOptionChoice{
+				{Name: robinhoodAttestReleaseChoice, Value: robinhoodAttestReleaseChoice},
+			}},
 		}},
 	}
 }

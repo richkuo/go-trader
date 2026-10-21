@@ -1,14 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
 const robinhoodSubmitWindowMargin = 15 * time.Second
+
+const robinhoodSettleWindow = 10 * time.Minute
+
+const robinhoodAttestReleaseChoice = "attest-no-order"
 
 type robinhoodResolveVerdict struct {
 	Unresolved bool
@@ -291,34 +297,12 @@ func resolveRobinhoodAttemptByOperator(d robinhoodEmergencyDeps, lookup func(id 
 	if orderID != "" && !robinhoodVenueOrderIDPattern.MatchString(orderID) {
 		return fmt.Sprintf("refused: %q is not a Robinhood order id", orderID)
 	}
-	sc, ok := lookup(strategyID)
-	if !ok {
-		return fmt.Sprintf("refused: strategy %q is not configured", strategyID)
-	}
-	if !isRobinhoodLiveSpot(sc) {
-		return fmt.Sprintf("refused: strategy %q is not a live Robinhood spot strategy", strategyID)
-	}
-	d.mu.RLock()
-	_, a := robinhoodAttemptByID(d.state, strategyID, attemptID)
-	var snap robinhoodOrderAttempt
-	if a != nil {
-		snap = *a
-	}
-	d.mu.RUnlock()
-	if a == nil {
-		return fmt.Sprintf("refused: strategy %s holds no unresolved Robinhood attempt %s", strategyID, attemptID)
-	}
-	if !snap.unresolved() {
-		return fmt.Sprintf("refused: attempt %s is already %s", attemptID, snap.Status)
-	}
-	if snap.Status == robinhoodAttemptSettling {
-		return fmt.Sprintf("attempt %s already holds a confirmed fill of %.10g %s at $%.6f; it settles with the next cycle", attemptID, snap.ConfirmedQty, snap.Symbol, snap.ConfirmedAvgPx)
+	snap, refusal := robinhoodOperatorHeldAttempt(d, lookup, strategyID, attemptID)
+	if refusal != "" {
+		return refusal
 	}
 	if orderID != "" && snap.VenueOrderID != "" && orderID != snap.VenueOrderID {
 		return fmt.Sprintf("refused: attempt %s is bound to venue order %s, not %s", attemptID, snap.VenueOrderID, orderID)
-	}
-	if accountKey := robinhoodAccountKey(); accountKey == "" || accountKey != snap.AccountKey {
-		return fmt.Sprintf("refused: attempt %s was sent from another Robinhood account; no venue call was made", attemptID)
 	}
 	if release, ok := tryLockRobinhoodCoin(snap.AccountKey, snap.Symbol); !ok {
 		return fmt.Sprintf("refused: another resolution of %s is in progress; try again shortly", snap.Symbol)
@@ -340,6 +324,170 @@ func resolveRobinhoodAttemptByOperator(d robinhoodEmergencyDeps, lookup func(id 
 		return fmt.Sprintf("attempt %s confirmed: %.10g %s filled at $%.6f (order %s). It settles to the book with the next cycle.", attemptID, final.ConfirmedQty, final.Symbol, final.ConfirmedAvgPx, final.VenueOrderID)
 	}
 	return fmt.Sprintf("attempt %s still held (%s): %s", attemptID, final.Status, verdict.Reason)
+}
+
+func robinhoodOperatorHeldAttempt(d robinhoodEmergencyDeps, lookup func(id string) (StrategyConfig, bool), strategyID, attemptID string) (robinhoodOrderAttempt, string) {
+	var snap robinhoodOrderAttempt
+	sc, ok := lookup(strategyID)
+	if !ok {
+		return snap, fmt.Sprintf("refused: strategy %q is not configured", strategyID)
+	}
+	if !isRobinhoodLiveSpot(sc) {
+		return snap, fmt.Sprintf("refused: strategy %q is not a live Robinhood spot strategy", strategyID)
+	}
+	d.mu.RLock()
+	_, a := robinhoodAttemptByID(d.state, strategyID, attemptID)
+	if a != nil {
+		snap = *a
+	}
+	d.mu.RUnlock()
+	if a == nil {
+		return snap, fmt.Sprintf("refused: strategy %s holds no unresolved Robinhood attempt %s", strategyID, attemptID)
+	}
+	if !snap.unresolved() {
+		return snap, fmt.Sprintf("refused: attempt %s is already %s", attemptID, snap.Status)
+	}
+	if snap.Status == robinhoodAttemptSettling {
+		return snap, fmt.Sprintf("attempt %s already holds a confirmed fill of %.10g %s at $%.6f; it settles with the next cycle", attemptID, snap.ConfirmedQty, snap.Symbol, snap.ConfirmedAvgPx)
+	}
+	if accountKey := robinhoodAccountKey(); accountKey == "" || accountKey != snap.AccountKey {
+		return snap, fmt.Sprintf("refused: attempt %s was sent from another Robinhood account; no venue call was made", attemptID)
+	}
+	return snap, ""
+}
+
+func robinhoodAttestableStatus(a *robinhoodOrderAttempt) bool {
+	return a != nil && a.VenueOrderID == "" && (a.Status == robinhoodAttemptSubmitting || a.Status == robinhoodAttemptUnknown)
+}
+
+func robinhoodAttestationEarliest(a *robinhoodOrderAttempt) time.Time {
+	req := robinhoodResolveRequestFor(a, "", false)
+	return time.UnixMilli(req.SubmittedBeforeMs).Add(robinhoodSettleWindow)
+}
+
+func prepareRobinhoodAttestedRelease(d robinhoodEmergencyDeps, lookup func(id string) (StrategyConfig, bool), strategyID, attemptID string, now time.Time) (*robinhoodOrderAttempt, string) {
+	if lookup == nil || d.store == nil || d.state == nil || d.mu == nil {
+		return nil, "status server not ready"
+	}
+	if !robinhoodAttemptIDPattern.MatchString(attemptID) {
+		return nil, fmt.Sprintf("refused: %q is not a Robinhood attempt id (rh- followed by 24 hex characters)", attemptID)
+	}
+	snap, refusal := robinhoodOperatorHeldAttempt(d, lookup, strategyID, attemptID)
+	if refusal != "" {
+		return nil, refusal
+	}
+	if !robinhoodAttestableStatus(&snap) {
+		return nil, fmt.Sprintf("refused: attempt %s is %s and bound to venue order %q; an attested release applies only to an attempt with no venue order id. Run the command with the order id instead.", attemptID, snap.Status, snap.VenueOrderID)
+	}
+	if earliest := robinhoodAttestationEarliest(&snap); now.Before(earliest) {
+		return nil, fmt.Sprintf("refused: the settle window of attempt %s has not passed; an attested release is possible after %s", attemptID, earliest.UTC().Format(time.RFC3339))
+	}
+	if release, ok := tryLockRobinhoodCoin(snap.AccountKey, snap.Symbol); !ok {
+		return nil, fmt.Sprintf("refused: another resolution of %s is in progress; try again shortly", snap.Symbol)
+	} else {
+		release()
+	}
+	verdict := resolveOneRobinhoodAttempt(d, strategyID, attemptID, "", false, now)
+	d.mu.RLock()
+	_, after := robinhoodAttemptByID(d.state, strategyID, attemptID)
+	var checked robinhoodOrderAttempt
+	if after != nil {
+		checked = *after
+	}
+	d.mu.RUnlock()
+	switch {
+	case after == nil || !checked.unresolved():
+		return nil, fmt.Sprintf("attempt %s released on venue evidence: the venue shows no fill (%s). No attestation is needed.", attemptID, snap.Symbol)
+	case checked.Status == robinhoodAttemptSettling:
+		return nil, fmt.Sprintf("attempt %s confirmed on venue evidence: %.10g %s filled at $%.6f (order %s). It settles to the book with the next cycle; no attestation is needed.", attemptID, checked.ConfirmedQty, checked.Symbol, checked.ConfirmedAvgPx, checked.VenueOrderID)
+	case !robinhoodAttestableStatus(&checked):
+		return nil, fmt.Sprintf("refused: the venue check bound attempt %s to order %q (%s): %s. Run the command with that order id instead.", attemptID, checked.VenueOrderID, checked.Status, verdict.Reason)
+	}
+	req := robinhoodResolveRequestFor(&checked, "", false)
+	size := "an unknown quantity"
+	if q := robinhoodRequestedQty(&checked, nil); q > 0 {
+		size = fmt.Sprintf("%.10g %s", q, checked.Symbol)
+	} else if fr, err := parseRobinhoodOrderRequest(&checked); err == nil && fr.AmountUSD > 0 {
+		size = fmt.Sprintf("$%.2f of %s", fr.AmountUSD, checked.Symbol)
+	}
+	prompt := fmt.Sprintf("Release Robinhood attempt %s of %s as NO FILL on your word?\n"+
+		"Order: %s %s (%s origin), ref_id %s, no venue order id.\n"+
+		"Submit window: %s to %s.\n"+
+		"Venue check now: %s.\n"+
+		"Confirm only after the Robinhood order history shows no %s %s order in that window and the %s holdings show no change from it. "+
+		"The program cannot prove this itself. If an order for this attempt exists, the book will not include it, and a new %s order may be sent.",
+		attemptID, strategyID, checked.Side, size, checked.Origin, checked.RefID,
+		time.UnixMilli(req.SubmittedAfterMs).UTC().Format(time.RFC3339), time.UnixMilli(req.SubmittedBeforeMs).UTC().Format(time.RFC3339),
+		verdict.Reason, checked.Side, checked.Symbol, checked.Symbol, checked.Symbol)
+	return &checked, prompt
+}
+
+func releaseRobinhoodAttemptByAttestation(d robinhoodEmergencyDeps, operatorID, strategyID, attemptID string, checked robinhoodOrderAttempt, now time.Time) string {
+	if d.store == nil || d.state == nil || d.mu == nil {
+		return "status server not ready"
+	}
+	if strings.TrimSpace(operatorID) == "" {
+		return "refused: the operator is unknown; the attempt stays held"
+	}
+	if accountKey := robinhoodAccountKey(); accountKey == "" || accountKey != checked.AccountKey {
+		return fmt.Sprintf("refused: attempt %s was sent from another Robinhood account; the attempt stays held", attemptID)
+	}
+	release, ok := tryLockRobinhoodCoin(checked.AccountKey, checked.Symbol)
+	if !ok {
+		return fmt.Sprintf("refused: another resolution of %s is in progress; the attempt stays held. Try again shortly.", checked.Symbol)
+	}
+	defer release()
+	var prior json.RawMessage
+	if strings.TrimSpace(checked.EvidenceJSON) != "" && json.Valid([]byte(checked.EvidenceJSON)) {
+		prior = json.RawMessage(checked.EvidenceJSON)
+	}
+	req := robinhoodResolveRequestFor(&checked, "", false)
+	d.mu.Lock()
+	s, current := robinhoodAttemptByID(d.state, strategyID, attemptID)
+	if s == nil || current == nil || !robinhoodAttestableStatus(current) || current.RefID != checked.RefID ||
+		current.AccountKey != checked.AccountKey || current.Symbol != checked.Symbol || current.Side != checked.Side {
+		d.mu.Unlock()
+		return fmt.Sprintf("refused: attempt %s changed while you were confirming; nothing was released. Run the command again.", attemptID)
+	}
+	ev := robinhoodOrderEvidenceRecord{
+		Outcome:           robinhoodOutcomeOperatorAttested,
+		Detail:            fmt.Sprintf("operator %s attested that the Robinhood order history shows no %s %s order for ref_id %s in the submit window %s to %s", operatorID, current.Side, current.Symbol, current.RefID, time.UnixMilli(req.SubmittedAfterMs).UTC().Format(time.RFC3339), time.UnixMilli(req.SubmittedBeforeMs).UTC().Format(time.RFC3339)),
+		RequestedQuantity: robinhoodRequestedQty(current, nil),
+		ObservedAtMs:      now.UnixMilli(),
+		Operator: &robinhoodOperatorAttestation{
+			OperatorID:      operatorID,
+			Command:         robinhoodOperatorCommandName,
+			PriorStatus:     current.Status,
+			PriorHoldReason: current.HoldReason,
+			PriorEvidence:   prior,
+		},
+	}
+	evJSON := marshalRobinhoodJSON(ev)
+	if evJSON == "" {
+		d.mu.Unlock()
+		return "refused: the release evidence could not be encoded; the attempt stays held"
+	}
+	db, err := d.store.dbForStrategy(strategyID)
+	if err != nil {
+		d.mu.Unlock()
+		return fmt.Sprintf("refused: the owning state file is unavailable: %v. The attempt stays held.", err)
+	}
+	next := *current
+	next.EvidenceJSON = evJSON
+	next.HoldReason = ""
+	if err := db.transitionRobinhoodAttempt(&next, []string{robinhoodAttemptSubmitting, robinhoodAttemptUnknown}, robinhoodAttemptNoFill); err != nil {
+		d.mu.Unlock()
+		return fmt.Sprintf("refused: saving the release failed: %v. The attempt stays held and a retry is safe.", err)
+	}
+	next.Status = robinhoodAttemptNoFill
+	next.durableStatus = robinhoodAttemptNoFill
+	next.UpdatedAtMs = now.UnixMilli()
+	*current = next
+	delete(s.RobinhoodOrders.Attempts, attemptID)
+	d.mu.Unlock()
+	robinhoodHoldAlerts.Delete(attemptID)
+	fmt.Printf("[CRITICAL] rh-resolve: attempt %s %s %s (ref_id %s) released as no_fill on the attestation of operator %s; no venue evidence proves it\n", attemptID, checked.Side, checked.Symbol, checked.RefID, operatorID)
+	return fmt.Sprintf("attempt %s released as no_fill on your attestation. The attestation is saved with the attempt. New Robinhood orders for %s may be sent again. If an order for this attempt appears later, the book does not include it: reconcile %s by hand.", attemptID, checked.Symbol, checked.Symbol)
 }
 
 func robinhoodFreshLongsReader(d robinhoodEmergencyDeps) func() map[string]float64 {
