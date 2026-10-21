@@ -67,3 +67,16 @@ makes no network request. The freezing steps that produced the inputs were
 - The recording covers one span of market conditions; a short recording gives
   few independent positions, and the frozen sample floor then makes the
   verdict inconclusive.
+
+## Deviations from the frozen specification
+
+- Recording length. `candidate_spec.json` `data_plan.planned_length` freezes
+  "20 hours; the recording may be stopped early, at 12 hours or more". The
+  recording ran from 2026-10-21 03:25:15.334Z to 14:15:40.519Z (run manifest
+  `started_ms` 1792553115334, `closed_ms` 1792592140519), which is 10.84 h.
+  This is 1.16 h below the 12 h early-stop floor. The stop came before any
+  scoring, because the windows are derived from the close time. The frozen
+  window rule ran unchanged on the recorded start and close times: warm-up
+  04:00 to 05:00, train 05:00 to 10:00, test 10:00 to 14:00. The specification
+  file and its hash are unchanged. `REPORT.md` and `results.json` are as
+  scored, and they do not repeat this note.
