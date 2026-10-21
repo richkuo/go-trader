@@ -768,7 +768,7 @@ func robinhoodLiveOwnersForCoin(coin string, cfgs []StrategyConfig) []StrategyCo
 	return out
 }
 
-func settleRobinhoodEmergencyAttemptsLocked(state *AppState, cfgs []StrategyConfig, duplicates map[string]bool, logger func(string)) []string {
+func settleRobinhoodEmergencyAttemptsLocked(state *AppState, cfgs []StrategyConfig, checks robinhoodBookingCheck, logger func(string)) []string {
 	var settledIDs []string
 	if state == nil {
 		return nil
@@ -792,7 +792,11 @@ func settleRobinhoodEmergencyAttemptsLocked(state *AppState, cfgs []StrategyConf
 			logf("[CRITICAL] rh-settle: attempt %s holds: %v", a.AttemptID, err)
 			continue
 		}
-		dup := duplicates[a.VenueOrderID]
+		if err := checks.Unreadable[a.VenueOrderID]; err != nil {
+			logf("[CRITICAL] rh-settle: attempt %s waits: the duplicate-booking check failed (%v); it retries next cycle", a.AttemptID, err)
+			continue
+		}
+		dup := checks.Booked[a.VenueOrderID]
 		type share struct {
 			sc  StrategyConfig
 			s   *StrategyState
@@ -868,16 +872,34 @@ func settleRobinhoodEmergencyAttemptsLocked(state *AppState, cfgs []StrategyConf
 		a.SettlementSeq = 1
 		a.UpdatedAtMs = time.Now().UnixMilli()
 		a.multiBook = len(booked) > 1 || (len(booked) == 1 && !booked[a.StrategyID])
+		if a.multiBook {
+			for _, b := range books {
+				if booked[b.sc.ID] {
+					b.s.robinhoodPartitionSavePending = true
+				}
+			}
+		}
 		settledIDs = append(settledIDs, a.AttemptID)
 		logf("[CRITICAL] rh-settle: attempt %s (%s) applied the venue sell of %.10g %s at $%.6f (order %s) to %d book(s)", a.AttemptID, a.Origin, a.AppliedQty, a.Symbol, fill.AvgPx, a.VenueOrderID, len(booked))
 	}
 	return settledIDs
 }
 
-func robinhoodDuplicateOrderIDs(store *StateStore, state *AppState, mu *sync.RWMutex) map[string]bool {
-	out := map[string]bool{}
+type robinhoodBookingCheck struct {
+	Booked     map[string]bool
+	Unreadable map[string]error
+}
+
+func robinhoodDuplicateOrderIDs(store *StateStore, state *AppState, mu *sync.RWMutex, cfgs []StrategyConfig) robinhoodBookingCheck {
+	out := robinhoodBookingCheck{Booked: map[string]bool{}, Unreadable: map[string]error{}}
 	if store == nil || state == nil {
 		return out
+	}
+	live := map[string]bool{}
+	for _, sc := range cfgs {
+		if isRobinhoodLiveSpot(sc) {
+			live[sc.ID] = true
+		}
 	}
 	type probe struct{ strategyID, oid string }
 	var probes []probe
@@ -886,11 +908,16 @@ func robinhoodDuplicateOrderIDs(store *StateStore, state *AppState, mu *sync.RWM
 		if a.Status != robinhoodAttemptSettling || a.VenueOrderID == "" {
 			continue
 		}
+		seen := map[string]bool{}
 		ids := []string{a.StrategyID}
 		if req, err := parseRobinhoodOrderRequest(a); err == nil {
 			ids = append(ids, req.Peers...)
 		}
 		for _, id := range ids {
+			if seen[id] || !live[id] {
+				continue
+			}
+			seen[id] = true
 			probes = append(probes, probe{strategyID: id, oid: a.VenueOrderID})
 		}
 	}
@@ -898,12 +925,12 @@ func robinhoodDuplicateOrderIDs(store *StateStore, state *AppState, mu *sync.RWM
 	for _, p := range probes {
 		found, err := store.HasTradeWithExchangeOrderID(p.strategyID, p.oid)
 		if err != nil {
-			fmt.Printf("[CRITICAL] rh-settle: duplicate check for order %s failed: %v — holding\n", p.oid, err)
-			out[p.oid] = true
+			fmt.Printf("[CRITICAL] rh-settle: duplicate check for order %s (%s) failed: %v — settlement retries next cycle\n", p.oid, p.strategyID, err)
+			out.Unreadable[p.oid] = err
 			continue
 		}
 		if found {
-			out[p.oid] = true
+			out.Booked[p.oid] = true
 		}
 	}
 	return out

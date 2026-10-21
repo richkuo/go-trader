@@ -649,6 +649,20 @@ def test_resolve_reports_not_found_only_after_the_settle_window(tmp_path):
     assert payload["order_outcome"] == "unknown"
 
 
+def test_resolve_reads_past_older_rows_to_a_later_page(tmp_path):
+    now_ms = int(time.time() * 1000)
+    old_ms = now_ms - 60 * 60 * 1000
+    other = "22222222-2222-4222-8222-222222222222"
+    routes = dict(PREP)
+    routes["GET " + ORDERS] = [_page([_list_row("ord-x", old_ms, ref_id=other), _list_row("ord-y", old_ms - 1000, ref_id=other)], ORDERS + "?cursor=2")]
+    routes["GET " + ORDERS + "?cursor=2"] = [_page([_list_row(ORDER_ID, now_ms - 40000)])]
+    routes["GET " + ORDER] = [_order("filled", "0.1", "100")]
+    code, payload, made = _run(tmp_path, EXECUTE, _resolve(), routes)
+    assert code == 0, payload
+    assert payload["order_outcome"] == "filled"
+    assert _count(made, ORDERS + "?cursor=2") == 1
+
+
 def test_resolve_page_cap_is_unknown(tmp_path):
     routes = dict(PREP)
     for i in range(1, 22):

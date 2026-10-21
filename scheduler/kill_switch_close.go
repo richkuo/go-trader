@@ -44,6 +44,7 @@ type KillSwitchCloseInputs struct {
 	RHCloser            RobinhoodLiveCloser
 	RHFetcher           RobinhoodPositionsFetcher
 	RHResolveUnresolved func() map[string]error
+	RHFreshLongs        func() map[string]float64
 
 	TSLiveAll []StrategyConfig
 	TSCloser  TopStepLiveCloser
@@ -438,6 +439,10 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 		if in.RHResolveUnresolved != nil {
 			rhUnresolved = in.RHResolveUnresolved()
 		}
+		var rhFreshLongs map[string]float64
+		if in.RHFreshLongs != nil {
+			rhFreshLongs = in.RHFreshLongs()
+		}
 		rhPositions, err := in.RHFetcher()
 		if err != nil {
 			plan.LogLines = append(plan.LogLines,
@@ -445,7 +450,7 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 			plan.OnChainConfirmedFlat = false
 		} else {
 			ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.RHCloseTimeout))
-			plan.RHCloseReport = forceCloseRobinhoodLive(ctx, rhPositions, in.RHLiveCrypto, in.RHCloser, in.RHFetcher, rhUnresolved)
+			plan.RHCloseReport = forceCloseRobinhoodLive(ctx, rhPositions, in.RHLiveCrypto, in.RHCloser, in.RHFetcher, rhUnresolved, rhFreshLongs)
 			cancel()
 			if !plan.RHCloseReport.ConfirmedFlat() {
 				plan.OnChainConfirmedFlat = false

@@ -1004,10 +1004,7 @@ class RobinhoodExchangeAdapter:
         by_ref = []
         by_fields = []
         complete = False
-        previous_created = None
-        ordered = True
         window_rows_complete = True
-        saw_older = False
         try:
             for _, rows, next_url in self._read_pages(session, urls.crypto_orders_url(), deadline, "crypto orders"):
                 for row in rows:
@@ -1016,14 +1013,7 @@ class RobinhoodExchangeAdapter:
                         continue
                     created = _parse_created_at_ms(row.get("created_at"))
                     if created is None:
-                        ordered = False
                         window_rows_complete = False
-                    else:
-                        if previous_created is not None and created > previous_created:
-                            ordered = False
-                        previous_created = created
-                        if created < window_start:
-                            saw_older = True
                     if row.get("ref_id") == ref_id:
                         by_ref.append(row)
                         continue
@@ -1047,9 +1037,6 @@ class RobinhoodExchangeAdapter:
                         by_fields.append(row)
                 if next_url is None:
                     complete = True
-                elif ordered and saw_older:
-                    complete = True
-                if complete:
                     break
         except _OrderPrepError as e:
             return self._finish_clean(result, OUTCOME_UNKNOWN, f"order list read failed: {e}")
@@ -1067,7 +1054,7 @@ class RobinhoodExchangeAdapter:
             return self._resolve_found(session, urls, found_id, ref_id, side, deadline, requested_quantity, account_id, cancel_open, body, result)
         current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
         if not complete:
-            return self._finish_clean(result, OUTCOME_UNKNOWN, "no matching order on the pages read, and the order list was not read to the settle window")
+            return self._finish_clean(result, OUTCOME_UNKNOWN, "no matching order on the pages read, and the order list was not read to its end")
         if not window_rows_complete:
             return self._finish_clean(result, OUTCOME_UNKNOWN, "no matching order, but some order rows in the settle window are unreadable")
         if current_ms < submitted_before_ms + _SETTLE_WINDOW_MS:

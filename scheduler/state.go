@@ -107,12 +107,13 @@ type StrategyState struct {
 	paperFundingRaw     string
 	paperFundingCorrupt bool
 
-	EntryGuard        *entryGuardState     `json:"-"`
-	RobinhoodOrders   *robinhoodOrderGuard `json:"-"`
-	Basket            *basketRuntime       `json:"-"`
-	deferTradePersist bool
-	replayCapture     *[]ReplayDecision
-	bookClock         time.Time
+	EntryGuard                    *entryGuardState     `json:"-"`
+	RobinhoodOrders               *robinhoodOrderGuard `json:"-"`
+	Basket                        *basketRuntime       `json:"-"`
+	deferTradePersist             bool
+	robinhoodPartitionSavePending bool
+	replayCapture                 *[]ReplayDecision
+	bookClock                     time.Time
 }
 
 func strategyBookNow(s *StrategyState) time.Time {

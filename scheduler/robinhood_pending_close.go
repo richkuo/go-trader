@@ -77,6 +77,9 @@ func runPendingRobinhoodCircuitCloses(
 	if deps.resolve != nil {
 		unresolved = deps.resolve()
 	}
+	mu.RLock()
+	freshLongs := robinhoodFreshLongsLocked(state, strategies, time.Now())
+	mu.RUnlock()
 
 	if !positionsFetched && fetcher != nil {
 		pos, err := fetcher()
@@ -115,6 +118,10 @@ func runPendingRobinhoodCircuitCloses(
 			}
 			qty := robinhoodOnAccountSize(coin, positions)
 			if qty <= 0 {
+				if lag := robinhoodFlatReadLags(coin, qty, freshLongs); lag != nil {
+					fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s: %v — book kept\n", sc.ID, coin, lag)
+					continue
+				}
 				if _, held := unresolved[coin]; !held {
 					if pos := ss.Positions[coin]; pos != nil && len(rhLiveStrategiesForCoin(coin, rhLiveAll)) == 1 {
 						fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s is flat on a fresh holdings read with no unresolved order; closing the book's %.8f as verified flat\n", sc.ID, coin, pos.Quantity)
@@ -201,6 +208,11 @@ func runPendingRobinhoodCircuitCloses(
 			}
 			onAccount := robinhoodOnAccountSize(c.Symbol, positions)
 			if onAccount <= 0 {
+				if lag := robinhoodFlatReadLags(c.Symbol, onAccount, freshLongs); lag != nil {
+					fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s: %v — pending close kept\n", j.stratID, c.Symbol, lag)
+					allOK = false
+					continue
+				}
 				candidates = append(candidates, c.Symbol)
 				continue
 			}

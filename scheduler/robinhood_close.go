@@ -65,7 +65,42 @@ func (r RobinhoodLiveCloseReport) SortedErrorCoins() []string {
 	return coins
 }
 
-func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition, rhLiveCrypto []StrategyConfig, closer RobinhoodLiveCloser, fetcher RobinhoodPositionsFetcher, unresolved map[string]error) RobinhoodLiveCloseReport {
+const robinhoodHoldingsLagWindow = 10 * time.Minute
+
+func robinhoodFreshLongsLocked(state *AppState, cfgs []StrategyConfig, now time.Time) map[string]float64 {
+	out := map[string]float64{}
+	if state == nil {
+		return out
+	}
+	for _, sc := range cfgs {
+		if !isRobinhoodLiveSpot(sc) {
+			continue
+		}
+		s := state.Strategies[sc.ID]
+		if s == nil {
+			continue
+		}
+		coin := robinhoodSymbol(sc.Args)
+		pos := s.Positions[coin]
+		if pos == nil || pos.Side != "long" || !(pos.Quantity > 0) || pos.OpenedAt.IsZero() {
+			continue
+		}
+		if now.Sub(pos.OpenedAt) < robinhoodHoldingsLagWindow {
+			out[coin] += pos.Quantity
+		}
+	}
+	return out
+}
+
+func robinhoodFlatReadLags(coin string, readQty float64, freshLongs map[string]float64) error {
+	fresh := freshLongs[coin]
+	if fresh > 0 && readQty < fresh*(1-robinhoodQtyTolerance) {
+		return fmt.Errorf("the holdings read shows %.10g, below the %.10g bought within the last %s; the read may lag the fill, so flat is not confirmed", readQty, fresh, robinhoodHoldingsLagWindow)
+	}
+	return nil
+}
+
+func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition, rhLiveCrypto []StrategyConfig, closer RobinhoodLiveCloser, fetcher RobinhoodPositionsFetcher, unresolved map[string]error, freshLongs map[string]float64) RobinhoodLiveCloseReport {
 	report := RobinhoodLiveCloseReport{Errors: make(map[string]error), Fills: make(map[string]RobinhoodCloseFill)}
 
 	tradedCoins := make(map[string]bool)
@@ -109,6 +144,10 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 			continue
 		}
 		if size <= 0 {
+			if err := robinhoodFlatReadLags(coin, size, freshLongs); err != nil {
+				report.Errors[coin] = err
+				continue
+			}
 			flatCandidates = append(flatCandidates, coin)
 			continue
 		}
@@ -129,6 +168,10 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 			continue
 		}
 		if result != nil && result.Close != nil && result.Close.AlreadyFlat {
+			if err := robinhoodFlatReadLags(coin, 0, freshLongs); err != nil {
+				report.Errors[coin] = err
+				continue
+			}
 			flatCandidates = append(flatCandidates, coin)
 			continue
 		}

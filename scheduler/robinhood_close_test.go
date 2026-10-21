@@ -16,7 +16,7 @@ func TestForceCloseRobinhoodLive_CloseErrorLatches(t *testing.T) {
 		return nil, fmt.Errorf("robin_stocks 503")
 	}
 
-	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, closer, nil, nil)
+	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, closer, nil, nil, nil)
 
 	if report.ConfirmedFlat() {
 		t.Fatal("expected NOT ConfirmedFlat on close error")
@@ -42,7 +42,7 @@ func TestForceCloseRobinhoodLive_NegativeSizeNotTraded(t *testing.T) {
 	}
 
 	flat := func() ([]RobinhoodPosition, error) { return nil, nil }
-	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, closer, flat, nil)
+	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, closer, flat, nil, nil)
 
 	if len(calls) != 0 {
 		t.Errorf("negative-size position must NOT trigger close, got calls=%v", calls)

@@ -119,14 +119,19 @@ func settleRobinhoodAttempts(d robinhoodEmergencyDeps, cfg *Config, logMgr *LogM
 	if d.store == nil || d.state == nil {
 		return nil
 	}
-	dups := robinhoodDuplicateOrderIDs(d.store, d.state, d.mu)
+	checks := robinhoodDuplicateOrderIDs(d.store, d.state, d.mu, d.cfgs)
 	byID := make(map[string]StrategyConfig, len(d.cfgs))
 	for _, sc := range d.cfgs {
 		byID[sc.ID] = sc
 	}
+	type holdAlert struct {
+		strategyID string
+		attempt    robinhoodOrderAttempt
+		reason     string
+	}
+	var holds []holdAlert
 	var out []robinhoodRecoveredTrades
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	for _, a := range robinhoodUnresolvedAttemptsLocked(d.state) {
 		if a.Origin != robinhoodOriginSignal || a.Status != robinhoodAttemptSettling || cfg == nil {
 			continue
@@ -141,25 +146,33 @@ func settleRobinhoodAttempts(d robinhoodEmergencyDeps, cfg *Config, logMgr *LogM
 			fmt.Printf("[CRITICAL] rh-settle: attempt %s: %v\n", a.AttemptID, err)
 			continue
 		}
+		if err := checks.Unreadable[a.VenueOrderID]; err != nil {
+			continue
+		}
 		logger := entryRecoveryLogger(logMgr, sc.ID)
-		res := settleRobinhoodSignalAttemptLocked(d.store, sc, s, db, a, dups[a.VenueOrderID], cfg, logger)
+		res := settleRobinhoodSignalAttemptLocked(d.store, sc, s, db, a, checks.Booked[a.VenueOrderID], cfg, logger)
 		logger.Close()
 		if res.Hold != "" {
-			notifyRobinhoodOrderHold(d.notifier, sc.ID, a, res.Hold, time.Now())
+			holds = append(holds, holdAlert{strategyID: sc.ID, attempt: *a, reason: res.Hold})
 		}
 		if res.Settled && res.Trades > 0 {
 			out = append(out, robinhoodRecoveredTrades{sc: sc, state: s, trades: res.Trades})
 		}
 	}
-	if settled := settleRobinhoodEmergencyAttemptsLocked(d.state, d.cfgs, dups, nil); len(settled) > 0 {
+	if settled := settleRobinhoodEmergencyAttemptsLocked(d.state, d.cfgs, checks, nil); len(settled) > 0 {
 		if err := d.store.SavePartition(d.state, livePartition); err != nil {
-			fmt.Printf("[CRITICAL] rh-settle: emergency settlement of %v booked in memory but the live save failed: %v — it retries with the next save\n", settled, err)
+			fmt.Printf("[CRITICAL] rh-settle: emergency settlement of %v booked in memory but the live save failed: %v — it retries with the next full save\n", settled, err)
 		}
 	}
 	for _, a := range robinhoodUnresolvedAttemptsLocked(d.state) {
 		if a.Status == robinhoodAttemptSettling && a.HoldReason != "" && a.Origin != robinhoodOriginSignal {
-			notifyRobinhoodOrderHold(d.notifier, a.StrategyID, a, a.HoldReason, time.Now())
+			holds = append(holds, holdAlert{strategyID: a.StrategyID, attempt: *a, reason: a.HoldReason})
 		}
+	}
+	d.mu.Unlock()
+	for _, h := range holds {
+		a := h.attempt
+		notifyRobinhoodOrderHold(d.notifier, h.strategyID, &a, h.reason, time.Now())
 	}
 	return out
 }
@@ -327,4 +340,12 @@ func resolveRobinhoodAttemptByOperator(d robinhoodEmergencyDeps, lookup func(id 
 		return fmt.Sprintf("attempt %s confirmed: %.10g %s filled at $%.6f (order %s). It settles to the book with the next cycle.", attemptID, final.ConfirmedQty, final.Symbol, final.ConfirmedAvgPx, final.VenueOrderID)
 	}
 	return fmt.Sprintf("attempt %s still held (%s): %s", attemptID, final.Status, verdict.Reason)
+}
+
+func robinhoodFreshLongsReader(d robinhoodEmergencyDeps) func() map[string]float64 {
+	return func() map[string]float64 {
+		d.mu.RLock()
+		defer d.mu.RUnlock()
+		return robinhoodFreshLongsLocked(d.state, d.cfgs, time.Now())
+	}
 }

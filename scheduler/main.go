@@ -1589,6 +1589,7 @@ func main() {
 					RHCloser:            newRobinhoodEmergencyCloser(rhEmergencyDeps, robinhoodOriginKillSwitch),
 					RHFetcher:           defaultRobinhoodPositionsFetcher,
 					RHResolveUnresolved: robinhoodEmergencyResolver(rhEmergencyDeps, cfg, logMgr),
+					RHFreshLongs:        robinhoodFreshLongsReader(rhEmergencyDeps),
 					TSLiveAll:           tsLiveAll,
 					TSCloser:            defaultTopStepLiveCloser,
 					TSFetcher:           defaultTopStepPositionsFetcher,

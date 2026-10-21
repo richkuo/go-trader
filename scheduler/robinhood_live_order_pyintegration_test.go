@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -725,6 +726,7 @@ func (e *rhLiveEnv) killSwitchInputs(phases ...rhRoutes) KillSwitchCloseInputs {
 		RHCloser:            newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginKillSwitch),
 		RHFetcher:           fetcher,
 		RHResolveUnresolved: robinhoodEmergencyResolver(e.deps(), e.cfg, nil),
+		RHFreshLongs:        robinhoodFreshLongsReader(e.deps()),
 		PortfolioReason:     "drawdown",
 		CloseTimeout:        2 * time.Minute,
 	}
@@ -1123,5 +1125,218 @@ func TestRobinhoodLiveOrderProbeArgvsParse(t *testing.T) {
 	}
 	if err := probeOneCheckScript(robinhoodLiveCloseScript, []string{"--symbol=BTC", "--unknown-flag", "--probe-only"}); err == nil {
 		t.Error("an unknown close argv must fail the probe")
+	}
+}
+
+func (e *rhLiveEnv) seedSharedSettlingClose() rhAttemptRow {
+	e.t.Helper()
+	e.setPosition("rh-a", "BTC", 0.1, 90)
+	e.setPosition("rh-b", "BTC", 0.3, 90)
+	e.setRoutes(rhWith(rhSellFilled("0.4", "98"), rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhHeld("BTC", "0.4"))}}))
+	if _, err := newRobinhoodEmergencyCloser(e.deps(), robinhoodOriginKillSwitch)("BTC"); err != nil {
+		e.t.Fatalf("seed close: %v", err)
+	}
+	row := e.onlyAttempt()
+	if row.Status != robinhoodAttemptSettling || row.StrategyID != "rh-a" {
+		e.t.Fatalf("seed attempt = %+v, want settling and bound to rh-a", row)
+	}
+	return row
+}
+
+func TestRobinhoodLiveOrderRemovedPeerDoesNotBlockSettlement(t *testing.T) {
+	for _, layout := range []string{"split", "single"} {
+		t.Run(layout, func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
+			if layout == "split" {
+				e.store.Close()
+				e.cfg.PaperDBFile = filepath.Join(e.dir, "paper.db")
+				e.cfg.Strategies = append(e.cfg.Strategies, StrategyConfig{ID: "rh-paper", Type: "spot", Platform: "robinhood", Args: []string{"momentum_pro", "BTC", "1h", "--mode=paper"}, Capital: 100})
+				e.open()
+			}
+			e.seedSharedSettlingClose()
+			e.store.Close()
+			var kept []StrategyConfig
+			for _, sc := range e.cfg.Strategies {
+				if sc.ID != "rh-b" {
+					kept = append(kept, sc)
+				}
+			}
+			e.cfg.Strategies = kept
+			e.open()
+			settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+			row := e.onlyAttempt()
+			if row.Status != robinhoodAttemptSettled || row.SettlementSeq != 1 || math.Abs(row.AppliedQty-0.1) > 1e-12 {
+				t.Fatalf("attempt = %+v, want settled with rh-a's 0.1 share", row)
+			}
+			if dbt := e.dbTrades("rh-a"); len(dbt) != 1 || math.Abs(dbt[0].Quantity-0.1) > 1e-12 || dbt[0].Price != 98 {
+				t.Fatalf("rh-a trades = %+v, want one 0.1 sell at the venue price", dbt)
+			}
+		})
+	}
+}
+
+func TestRobinhoodLiveOrderUnreadableDuplicateCheckRetriesNextCycle(t *testing.T) {
+	e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
+	e.seedSharedSettlingClose()
+	db := e.store.primary().db
+	if _, err := db.Exec(`ALTER TABLE trades RENAME TO trades_hidden`); err != nil {
+		t.Fatal(err)
+	}
+	settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+	if _, err := db.Exec(`ALTER TABLE trades_hidden RENAME TO trades`); err != nil {
+		t.Fatal(err)
+	}
+	if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettling || row.HoldReason != "" {
+		t.Fatalf("attempt = %+v, want still settling with no booked-duplicate hold", row)
+	}
+	for _, id := range []string{"rh-a", "rh-b"} {
+		if len(e.state.Strategies[id].TradeHistory) != 0 || len(e.dbTrades(id)) != 0 {
+			t.Fatalf("%s booked during an unreadable duplicate check", id)
+		}
+	}
+	settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+	if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettled {
+		t.Fatalf("attempt = %+v, want settled on the next pass", row)
+	}
+	if a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b"); len(a) != 1 || len(b) != 1 {
+		t.Fatalf("trades a=%+v b=%+v, want one each", a, b)
+	}
+}
+
+func TestRobinhoodLiveOrderSharedSettlementCommitsOnlyWithItsSettledMark(t *testing.T) {
+	for _, bookSaved := range []string{"rh-b", "rh-a"} {
+		t.Run(bookSaved, func(t *testing.T) {
+			e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000))
+			e.seedSharedSettlingClose()
+			storeCommitHook = func(storageRole) error { return fmt.Errorf("injected partition save failure") }
+			settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+			storeCommitHook = nil
+			e.mu.Lock()
+			err := e.store.SaveStrategyBook(e.state.Strategies[bookSaved])
+			e.mu.Unlock()
+			if err == nil {
+				t.Fatalf("a per-book save of %s must not commit a shared settlement without its settled mark", bookSaved)
+			}
+			if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettling {
+				t.Fatalf("durable attempt = %+v, want settling", row)
+			}
+			if a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b"); len(a) != 0 || len(b) != 0 {
+				t.Fatalf("trades committed without the settled mark: a=%+v b=%+v", a, b)
+			}
+			e.reopen()
+			settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+			if row := e.onlyAttempt(); row.Status != robinhoodAttemptSettled || row.HoldReason != "" {
+				t.Fatalf("attempt = %+v, want settled after the restart", row)
+			}
+			a, b := e.dbTrades("rh-a"), e.dbTrades("rh-b")
+			if len(a) != 1 || len(b) != 1 || math.Abs(a[0].Quantity-0.1) > 1e-12 || math.Abs(b[0].Quantity-0.3) > 1e-12 {
+				t.Fatalf("trades a=%+v b=%+v, want each share booked once", a, b)
+			}
+			e.mu.Lock()
+			err = e.store.SaveStrategyBook(e.state.Strategies[bookSaved])
+			e.mu.Unlock()
+			if err != nil {
+				t.Fatalf("per-book saves must work again after the partition save: %v", err)
+			}
+		})
+	}
+}
+
+func TestRobinhoodLiveOrderFlatReadAfterAFreshBuyDoesNotConfirmFlat(t *testing.T) {
+	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+	e.setPosition("rh-btc", "BTC", 0.5, 90)
+	flat := rhRoutes{"GET " + rhTestHoldings: {rhHoldings()}}
+	plan := planKillSwitchClose(e.killSwitchInputs(flat, flat))
+	if plan.OnChainConfirmedFlat || plan.RHCloseReport.Errors["BTC"] == nil || len(plan.RHCloseReport.AlreadyFlat) != 0 {
+		t.Fatalf("report = %+v, want BTC unconfirmed while the read lags a fresh buy", plan.RHCloseReport)
+	}
+	e.applyKillSwitch(plan, map[string]float64{"BTC": 50})
+	if pos := e.state.Strategies["rh-btc"].Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
+		t.Fatalf("position = %+v, want the fresh long kept", pos)
+	}
+	e.mu.Lock()
+	e.state.Strategies["rh-btc"].Positions["BTC"].OpenedAt = time.Now().Add(-time.Hour)
+	e.mu.Unlock()
+	plan = planKillSwitchClose(e.killSwitchInputs(flat, flat))
+	if !plan.OnChainConfirmedFlat || len(plan.RHCloseReport.AlreadyFlat) != 1 {
+		t.Fatalf("report = %+v, want an old long on a flat account confirmed flat", plan.RHCloseReport)
+	}
+}
+
+type blockingNotifier struct {
+	release chan struct{}
+	mu      sync.Mutex
+	dms     []string
+}
+
+func (b *blockingNotifier) SendMessage(channelID, content string) error { return nil }
+func (b *blockingNotifier) SendDM(userID, content string) error {
+	<-b.release
+	b.mu.Lock()
+	b.dms = append(b.dms, content)
+	b.mu.Unlock()
+	return nil
+}
+func (b *blockingNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {
+	return "", nil
+}
+func (b *blockingNotifier) Close() {}
+
+func (e *rhLiveEnv) seedHeldSettlingBuy(id string) {
+	e.t.Helper()
+	s := e.state.Strategies[id]
+	sc := e.sc(id)
+	a, err := reserveRobinhoodAttempt(e.store, e.state, s, &e.mu, robinhoodSymbol(sc.Args), robinhoodOriginSignal, "buy", robinhoodOrderRequest{Signal: 1, Result: json.RawMessage(`{"symbol":"` + robinhoodSymbol(sc.Args) + `","signal":1}`)}, time.Now())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	res := &RobinhoodExecuteResult{OrderOutcome: "filled", RefID: a.RefID, Order: RobinhoodOrderEvidence{ID: "ord-" + id}, Execution: &RobinhoodExecution{Fill: &RobinhoodFill{AvgPx: 100, Quantity: 1, OID: "ord-" + id}}}
+	e.mu.Lock()
+	if err := recordRobinhoodOrderOutcomeLocked(e.store, s, a, res, robinhoodOrderConfirmed, "", time.Now()); err != nil {
+		e.t.Fatal(err)
+	}
+	e.mu.Unlock()
+	e.setPosition(id, robinhoodSymbol(sc.Args), 2, 90)
+}
+
+func TestRobinhoodLiveOrderHoldAlertsSendOutsideTheStateLock(t *testing.T) {
+	eth := rhLiveSpot("rh-eth", "ETH", 1000)
+	e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000), eth)
+	e.seedHeldSettlingBuy("rh-btc")
+	e.seedHeldSettlingBuy("rh-eth")
+	bn := &blockingNotifier{release: make(chan struct{})}
+	e.notifier = NewMultiNotifier(notifierBackend{notifier: bn, ownerID: "owner"})
+	done := make(chan struct{})
+	go func() {
+		settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+		close(done)
+	}()
+	time.Sleep(500 * time.Millisecond)
+	locked := make(chan struct{})
+	go func() {
+		e.mu.RLock()
+		e.mu.RUnlock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a blocked notifier must not hold the state lock")
+	}
+	close(bn.release)
+	<-done
+	settleRobinhoodAttempts(e.deps(), e.cfg, nil)
+	bn.mu.Lock()
+	defer bn.mu.Unlock()
+	count := map[string]int{}
+	for _, d := range bn.dms {
+		for _, coin := range []string{" buy BTC ", " buy ETH "} {
+			if strings.Contains(d, "ROBINHOOD ORDER UNRESOLVED") && strings.Contains(d, coin) {
+				count[coin]++
+			}
+		}
+	}
+	if count[" buy BTC "] != 1 || count[" buy ETH "] != 1 {
+		t.Fatalf("hold DMs = %v (%q), want one per attempt across two passes", count, bn.dms)
 	}
 }

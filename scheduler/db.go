@@ -1853,6 +1853,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		s.pendingTradeDiagnostics = nil
 		pruneEntryGuardAfterCommit(s)
 		pruneRobinhoodOrderGuardAfterCommit(s, true)
+		s.robinhoodPartitionSavePending = false
 	}
 	for _, bs := range basketSaves {
 		markBasketDurable(bs.rt, bs.books, bs.next)

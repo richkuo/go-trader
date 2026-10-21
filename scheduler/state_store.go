@@ -353,6 +353,9 @@ func (st *StateStore) saveStrategyBookQueueing(s *StrategyState, queue *PendingM
 	if st == nil || s == nil {
 		return fmt.Errorf("state store unavailable")
 	}
+	if s.robinhoodPartitionSavePending {
+		return fmt.Errorf("strategy %s holds a shared Robinhood settlement that commits only with a full live partition save", s.ID)
+	}
 	db, err := st.dbForStrategy(s.ID)
 	if err != nil {
 		return err

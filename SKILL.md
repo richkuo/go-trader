@@ -470,6 +470,8 @@ When in doubt, treat a commit as a runtime default and prompt. Per-release narra
   Only a confirmed fill (finite price and quantity above 0, an order id) changes the book, at the venue price and quantity, once; a partial sell keeps the unsold remainder.
   A missing, unknown, still-open or contradictory result books nothing and holds the coin: no Robinhood order for that coin is sent until recovery (every cycle) or `/resolve-robinhood-order` resolves it, with a **ROBINHOOD ORDER UNRESOLVED** CRITICAL DM.
   Circuit-breaker activation no longer clears a live Robinhood book at the mark; the circuit-breaker and kill-switch closes count a coin as closed only after a fresh strict holdings read shows it flat, and close any leftover book quantity with a `*_verified_flat` row.
+  A flat read within 10 minutes of the buy that opened a live Robinhood long does not confirm flat, because the holdings read can lag the fill; the close retries next cycle.
+  A fill split across strategies that share a coin commits only with a full live partition save, so a per-strategy save cannot store part of it.
   Startup exits 80 when an unresolved attempt belongs to no configured live Robinhood spot strategy; `storage-inspect` lists every unresolved attempt.
   The Python order argv changed (`--ref-id`, `--budget-ms`), so deploy only with `bash scripts/update.sh --restart`.
   After an update, tell operators with live Robinhood strategies, run `./go-trader storage-inspect`, and name each unresolved attempt.

@@ -170,7 +170,7 @@ func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
 		t.Run("close_read_fails_"+mode, func(t *testing.T) {
 			robinhoodStdoutOfflineEnv(t, root, mode)
 			robinhoodStdoutFreshHome(t)
-			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, liveStrategies, robinhoodStdoutCloser, defaultRobinhoodPositionsFetcher, nil)
+			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, liveStrategies, robinhoodStdoutCloser, defaultRobinhoodPositionsFetcher, nil, nil)
 			if report.Errors["BTC"] == nil || report.ConfirmedFlat() || len(report.AlreadyFlat) != 0 || len(report.ClosedCoins) != 0 {
 				t.Fatalf("%s: close with a failed position read must land in Errors, got %+v", mode, report)
 			}
@@ -180,7 +180,7 @@ func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
 	t.Run("close_no_holding_is_flat", func(t *testing.T) {
 		robinhoodStdoutOfflineEnv(t, root, "order_accepted")
 		robinhoodStdoutFreshHome(t)
-		report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "ETH", Size: 0.5}}, []StrategyConfig{ethSC}, robinhoodStdoutCloser, defaultRobinhoodPositionsFetcher, nil)
+		report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "ETH", Size: 0.5}}, []StrategyConfig{ethSC}, robinhoodStdoutCloser, defaultRobinhoodPositionsFetcher, nil, nil)
 		if len(report.Errors) != 0 || len(report.AlreadyFlat) != 1 || report.AlreadyFlat[0] != "ETH" || !report.ConfirmedFlat() {
 			t.Fatalf("close after a successful read with no ETH row must be already flat, got %+v", report)
 		}
@@ -202,7 +202,7 @@ func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
 			robinhoodStdoutFreshHome(t)
 			store2, state2 := robinhoodStdoutStore(t, liveStrategies)
 			deps := robinhoodEmergencyDeps{store: store2, state: state2, mu: &mu, cfgs: liveStrategies}
-			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, []StrategyConfig{sc}, newRobinhoodEmergencyCloser(deps, robinhoodOriginKillSwitch), defaultRobinhoodPositionsFetcher, nil)
+			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, []StrategyConfig{sc}, newRobinhoodEmergencyCloser(deps, robinhoodOriginKillSwitch), defaultRobinhoodPositionsFetcher, nil, nil)
 			if report.Errors["BTC"] == nil || report.ConfirmedFlat() || len(report.ClosedCoins) != 0 {
 				t.Errorf("%s close: a refused or unknown sell must land in Errors, got %+v", mode, report)
 			}
@@ -229,7 +229,7 @@ func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
 		robinhoodStdoutFreshHome(t)
 		store2, state2 := robinhoodStdoutStore(t, liveStrategies)
 		deps := robinhoodEmergencyDeps{store: store2, state: state2, mu: &mu, cfgs: liveStrategies}
-		report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, []StrategyConfig{sc}, newRobinhoodEmergencyCloser(deps, robinhoodOriginKillSwitch), defaultRobinhoodPositionsFetcher, nil)
+		report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, []StrategyConfig{sc}, newRobinhoodEmergencyCloser(deps, robinhoodOriginKillSwitch), defaultRobinhoodPositionsFetcher, nil, nil)
 		if report.Errors["BTC"] == nil || len(report.ClosedCoins) != 0 || report.ConfirmedFlat() {
 			t.Fatalf("accepted close with no confirmed fill: got %+v, want BTC in Errors", report)
 		}
