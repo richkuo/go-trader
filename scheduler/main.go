@@ -409,6 +409,16 @@ func main() {
 		for _, line := range entryGuardStartupLines(state) {
 			fmt.Println(line)
 		}
+		if err := store.LoadRobinhoodOrderGuards(state, cfg.Strategies); err != nil {
+			msg := fmt.Sprintf("Robinhood order attempts: %v", err)
+			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: refusing to start: %s (exit %d)\n", msg, ExitStorageOwnership)
+			sendStartupRefusalDM(notifier, "Storage layout", fmt.Sprintf("%s (exit %d)", msg, ExitStorageOwnership))
+			cleanupNotifier()
+			os.Exit(ExitStorageOwnership)
+		}
+		for _, line := range robinhoodOrderStartupLines(state) {
+			fmt.Println(line)
+		}
 	}
 
 	var basketCoord *basketCoordinator
@@ -918,6 +928,7 @@ func main() {
 		}
 
 		recoverEntryIntents(cfg, state, store, &mu, notifier, logMgr, time.Now())
+		recoverRobinhoodOrders(cfg, state, store, &mu, notifier, logMgr, time.Now())
 
 		resolveCapitalPct(cfg.Strategies)
 
@@ -1511,6 +1522,7 @@ func main() {
 
 			var plan KillSwitchClosePlan
 			var hlVirtualQty hlVirtualQuantitySnapshot
+			rhEmergencyDeps := robinhoodEmergencyDeps{store: store, state: state, mu: &mu, cfgs: cfg.Strategies, notifier: notifier}
 			if liveKillSwitchFired {
 				mu.RLock()
 				hlSLOIDs := collectHLKillSwitchStopOIDs(state.Strategies, hlKillSwitchAll)
@@ -1574,8 +1586,9 @@ func main() {
 					OKXFetcher:          defaultOKXPositionsFetcher,
 					RHLiveCrypto:        rhLiveCrypto,
 					RHLiveOptions:       rhLiveOptions,
-					RHCloser:            defaultRobinhoodLiveCloser,
+					RHCloser:            newRobinhoodEmergencyCloser(rhEmergencyDeps, robinhoodOriginKillSwitch),
 					RHFetcher:           defaultRobinhoodPositionsFetcher,
+					RHResolveUnresolved: robinhoodEmergencyResolver(rhEmergencyDeps, cfg, logMgr),
 					TSLiveAll:           tsLiveAll,
 					TSCloser:            defaultTopStepLiveCloser,
 					TSFetcher:           defaultTopStepPositionsFetcher,
@@ -1586,6 +1599,18 @@ func main() {
 				plan = planKillSwitchClose(inputs)
 				for _, line := range plan.LogLines {
 					fmt.Println(line)
+				}
+				if len(rhLiveCrypto) > 0 {
+					sendRobinhoodRecoveredTradeAlerts(rhEmergencyDeps, cfg, settleRobinhoodAttempts(rhEmergencyDeps, cfg, logMgr))
+					mu.RLock()
+					demoted := demoteRobinhoodUnresolvedCoins(&plan, state)
+					mu.RUnlock()
+					for _, coin := range demoted {
+						fmt.Printf("[CRITICAL] rh-close: %s stays unconfirmed: a Robinhood order attempt for it is still unresolved after settlement (kill switch will retry next cycle)\n", coin)
+					}
+					if len(demoted) > 0 {
+						plan.DiscordMessage = formatKillSwitchMessage(hlAddr, plan, liveReason)
+					}
 				}
 			}
 
@@ -1883,10 +1908,15 @@ func main() {
 						nil,
 						false,
 						defaultRobinhoodPositionsFetcher,
-						defaultRobinhoodLiveCloser,
+						newRobinhoodEmergencyCloser(rhEmergencyDeps, robinhoodOriginCircuitBreaker),
 						notifier.SendOwnerDM,
 						150*time.Second,
 						&mu,
+						robinhoodCircuitCloseDeps{
+							store:   store,
+							prices:  prices,
+							resolve: robinhoodEmergencyResolver(rhEmergencyDeps, cfg, logMgr),
+						},
 					)
 				}
 				drainOperatorRequiredPendingCloses(state, notifier, &mu)
@@ -2341,19 +2371,12 @@ func main() {
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							mu.Unlock()
-							var execResult *RobinhoodExecuteResult
-							liveExecFailed := false
 							if robinhoodIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runRobinhoodExecuteOrder(sc, result, price, rhCash, rhCashReconcile, rhPosQty, rhPosSide, hurstDecision, notifier, logger); ok2 {
-									execResult = er
-								} else {
-									liveExecFailed = true
-								}
-							}
-							if !liveExecFailed {
+								trades, detail = executeRobinhoodLiveSignal(store, state, &mu, sc, stratState, stratDB, result, signalStr, price, rhCash, rhCashReconcile, rhPosQty, rhPosSide, hurstDecision, cfg, notifier, logger)
+							} else {
 								var cashAlert string
 								mu.Lock()
-								trades, detail, cashAlert = executeRobinhoodResult(sc, stratState, stratDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
+								trades, detail, cashAlert = executeRobinhoodResult(sc, stratState, stratDB, result, nil, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 								mu.Unlock()
 								if cashAlert != "" {
 									notifySpotLiveCashOverBudget(notifier, cashAlert)
@@ -4460,7 +4483,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 var robinhoodExecuteFn = RunRobinhoodExecute
 var okxExecuteFn = RunOKXExecute
 
-func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
+func runRobinhoodExecuteOrder(store *StateStore, state *AppState, mu *sync.RWMutex, sc StrategyConfig, s *StrategyState, result *RobinhoodResult, signalStr string, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*robinhoodOrderAttempt, bool) {
 	if reason := SpotOrderSkipReason(result.Signal, posSide); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -4491,32 +4514,141 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 			quantity = posQty * result.CloseFraction
 		}
 	}
-
-	logger.Info("Placing live %s %s amount_usd=%.2f qty=%.6f", side, result.Symbol, amountUSD, quantity)
-
-	execResult, stderr, err := robinhoodExecuteFn(sc.Script, result.Symbol, side, amountUSD, quantity)
-	if stderr != "" {
-		logger.Info("execute stderr: %s", stderr)
-	}
 	direction := directionOpen
 	if side == "sell" {
 		direction = directionClose
 	}
+
+	accountKey := robinhoodAccountKey()
+	if accountKey == "" {
+		logger.Error("Live %s %s held: ROBINHOOD_USERNAME is not set, so the order cannot be bound to an account (#1815)", side, result.Symbol)
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, "ROBINHOOD_USERNAME is not set; no order was sent")
+		return nil, false
+	}
+	release, locked := tryLockRobinhoodCoin(accountKey, result.Symbol)
+	if !locked {
+		logger.Warn("Live %s %s held: another Robinhood order for this coin is being resolved (#1815)", side, result.Symbol)
+		return nil, false
+	}
+	defer release()
+
+	now := time.Now()
+	mu.RLock()
+	prev := robinhoodUnresolvedForCoinLocked(state, accountKey, result.Symbol)
+	var prevPositionID string
+	var prevQty float64
+	if pos := s.Positions[result.Symbol]; pos != nil {
+		prevPositionID = pos.TradePositionID
+		prevQty = pos.Quantity
+	}
+	mu.RUnlock()
+	if prev != nil {
+		logger.Error("CRITICAL: live %s %s held: Robinhood attempt %s is unresolved (#1815)", side, result.Symbol, prev.AttemptID)
+		notifyRobinhoodOrderHold(notifier, prev.StrategyID, prev, fmt.Sprintf("a new %s from %s was refused while this attempt is unresolved", side, sc.ID), now)
+		return nil, false
+	}
+
+	frozen, err := json.Marshal(result)
 	if err != nil {
-		logger.Error("Live execute failed: %v", err)
-		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, err.Error())
+		logger.Error("Live %s %s held: the signal could not be frozen: %v (#1815)", side, result.Symbol, err)
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, "the signal could not be saved; no order was sent")
 		return nil, false
 	}
-	if execResult.Error != "" {
-		logger.Error("Live execute returned error: %s", execResult.Error)
-		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, execResult.Error)
+	req := robinhoodOrderRequest{
+		Signal:         result.Signal,
+		SignalStr:      signalStr,
+		CloseFraction:  result.CloseFraction,
+		AmountUSD:      amountUSD,
+		Quantity:       quantity,
+		Price:          price,
+		PrevPositionID: prevPositionID,
+		PrevPosSide:    posSide,
+		PrevPosQty:     prevQty,
+		Result:         frozen,
+		Hurst:          hurst,
+		Script:         sc.Script,
+	}
+	a, err := reserveRobinhoodAttempt(store, state, s, mu, result.Symbol, robinhoodOriginSignal, side, req, now)
+	if err != nil {
+		logger.Error("Live %s %s held: the attempt could not be saved before sending, so nothing was sent: %v (#1815)", side, result.Symbol, err)
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, fmt.Sprintf("the attempt could not be saved before sending; no order was sent: %v", err))
 		return nil, false
 	}
-	clearLiveExecThrottle(sc, direction, result.Symbol)
-	return execResult, true
+
+	logger.Info("Placing live %s %s amount_usd=%.2f qty=%.6f (attempt %s, ref_id %s)", side, result.Symbol, amountUSD, quantity, a.AttemptID, a.RefID)
+
+	execResult, stderr, runErr := robinhoodExecuteFn(sc.Script, result.Symbol, side, amountUSD, quantity, a.RefID)
+	if stderr != "" {
+		logger.Info("execute stderr: %s", stderr)
+	}
+	class, detail := classifyRobinhoodOrderOutcome(execResult, runErr, a, quantity)
+	mu.Lock()
+	recordErr := recordRobinhoodOrderOutcomeLocked(store, s, a, execResult, class, detail, time.Now())
+	mu.Unlock()
+	switch class {
+	case robinhoodOrderConfirmed:
+		if recordErr != nil {
+			logger.Error("CRITICAL: Robinhood attempt %s filled but the fill could not be saved: %v — the attempt holds the coin and recovery resolves it (#1815)", a.AttemptID, recordErr)
+			notifyRobinhoodOrderHold(notifier, sc.ID, a, fmt.Sprintf("the confirmed fill could not be saved (%v)", recordErr), time.Now())
+			return nil, false
+		}
+		clearLiveExecThrottle(sc, direction, result.Symbol)
+		return a, true
+	case robinhoodOrderNoFill:
+		logger.Error("Live %s %s: Robinhood attempt %s ended with no fill: %s", side, result.Symbol, a.AttemptID, detail)
+		if recordErr != nil {
+			logger.Error("CRITICAL: Robinhood attempt %s: the no-fill result could not be saved: %v — the coin stays held (#1815)", a.AttemptID, recordErr)
+			notifyRobinhoodOrderHold(notifier, sc.ID, a, fmt.Sprintf("the no-fill result could not be saved (%v)", recordErr), time.Now())
+			return nil, false
+		}
+		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, detail)
+		return nil, false
+	}
+	if recordErr != nil {
+		logger.Error("CRITICAL: Robinhood attempt %s: saving the %s evidence failed: %v (the submitting record already holds the coin) (#1815)", a.AttemptID, class, recordErr)
+	}
+	logger.Error("CRITICAL: live %s %s unresolved (%s): %s (#1815)", side, result.Symbol, class, detail)
+	notifyRobinhoodOrderHold(notifier, sc.ID, a, detail, time.Now())
+	return nil, false
+}
+
+func executeRobinhoodLiveSignal(store *StateStore, state *AppState, mu *sync.RWMutex, sc StrategyConfig, s *StrategyState, stratDB *StateDB, result *RobinhoodResult, signalStr string, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, hurst HurstGateDecision, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
+	attempt, ok := runRobinhoodExecuteOrder(store, state, mu, sc, s, result, signalStr, price, cash, cashReconcileRequired, posQty, posSide, hurst, notifier, logger)
+	if !ok {
+		return 0, ""
+	}
+	dup, dupErr := store.HasTradeWithExchangeOrderID(sc.ID, attempt.VenueOrderID)
+	if dupErr != nil {
+		logger.Error("CRITICAL: Robinhood attempt %s: the duplicate-booking check failed: %v — settlement waits for recovery (#1815)", attempt.AttemptID, dupErr)
+		return 0, ""
+	}
+	mu.Lock()
+	settled := settleRobinhoodSignalAttemptLocked(store, sc, s, stratDB, attempt, dup, cfg, logger)
+	mu.Unlock()
+	if settled.Hold != "" {
+		notifyRobinhoodOrderHold(notifier, sc.ID, attempt, settled.Hold, time.Now())
+	}
+	if settled.CashAlert != "" {
+		notifySpotLiveCashOverBudget(notifier, settled.CashAlert)
+		mu.RLock()
+		ids, _ := collectCashReconcileRequiredSnapshots(state)
+		mu.RUnlock()
+		globalSpotCashReconcileReminder.MarkNotified(strings.Join(ids, ","), time.Now().UTC())
+	}
+	return settled.Trades, settled.Detail
 }
 
 func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
+	if robinhoodIsLive(sc.Args) && result.Signal != 0 {
+		var fill *RobinhoodFill
+		if execResult != nil && execResult.Execution != nil {
+			fill = execResult.Execution.Fill
+		}
+		if err := confirmRobinhoodFill(fill, 0); err != nil {
+			logger.Error("CRITICAL: live Robinhood %s %s refused at booking: %v — nothing booked (#1815)", signalStr, result.Symbol, err)
+			return 0, "", ""
+		}
+	}
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64

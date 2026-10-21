@@ -43,6 +43,8 @@ type storageFileInspection struct {
 	EntryDecisions   int                  `json:"entry_decision_rows"`
 	EntryUnmapped    int                  `json:"entry_unmapped_rows"`
 	EntryHeld        []string             `json:"unresolved_entry_intents"`
+	RobinhoodRows    int                  `json:"robinhood_order_attempt_rows"`
+	RobinhoodHeld    []string             `json:"unresolved_robinhood_order_attempts"`
 	BasketRebalances int                  `json:"basket_rebalance_rows"`
 	BasketPending    []string             `json:"pending_basket_recovery"`
 	ReplayRuns       []string             `json:"basket_replay_runs,omitempty"`
@@ -65,6 +67,14 @@ func inspectStorageOwnership(layout storageLayout, ident storageIdentityMap, cfg
 func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap, cfg *Config, requireIdle bool, open func(string) (*StateDB, error)) (storageInspection, error) {
 	out := storageInspection{Split: layout.Split, Layout: layout.describe()}
 	hasLive := cfg != nil && HasLiveStrategy(cfg.Strategies)
+	liveRH := map[string]bool{}
+	if cfg != nil {
+		for _, sc := range cfg.Strategies {
+			if isRobinhoodLiveSpot(sc) {
+				liveRH[sc.ID] = true
+			}
+		}
+	}
 
 	for _, spec := range layout.Files {
 		fi := storageFileInspection{
@@ -94,7 +104,7 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 		if err != nil {
 			return storageInspection{}, fmt.Errorf("read-only open of the %s state file %q: %w", spec.Role, spec.Path, err)
 		}
-		rejections, err := inspectOneStorageFile(db, &fi, layout, ident, hasLive)
+		rejections, err := inspectOneStorageFile(db, &fi, layout, ident, hasLive, liveRH)
 		db.Close()
 		if err != nil {
 			return storageInspection{}, err
@@ -106,7 +116,7 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 	return out, nil
 }
 
-func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storageLayout, ident storageIdentityMap, hasLive bool) ([]string, error) {
+func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storageLayout, ident storageIdentityMap, hasLive bool, liveRH map[string]bool) ([]string, error) {
 	var rejections []string
 	owned := make(map[PortfolioScope]bool, len(fi.ScopesOwned))
 	for _, scope := range fi.ScopesOwned {
@@ -249,6 +259,12 @@ func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storag
 	}
 	rejections = append(rejections, entryRejections...)
 
+	rhRejections, err := inspectRobinhoodOrderRows(db, fi, ident, owned, liveRH)
+	if err != nil {
+		return nil, err
+	}
+	rejections = append(rejections, rhRejections...)
+
 	basketRejections, err := inspectBasketRows(db, fi, ident)
 	if err != nil {
 		return nil, err
@@ -362,6 +378,10 @@ func formatStorageInspection(si storageInspection) string {
 		for _, line := range fi.EntryHeld {
 			fmt.Fprintf(&b, "    UNRESOLVED ENTRY %s\n", line)
 		}
+		fmt.Fprintf(&b, "  robinhood order attempts: %d\n", fi.RobinhoodRows)
+		for _, line := range fi.RobinhoodHeld {
+			fmt.Fprintf(&b, "    UNRESOLVED ROBINHOOD ORDER %s\n", line)
+		}
 		fmt.Fprintf(&b, "  basket rebalance records: %d\n", fi.BasketRebalances)
 		for _, line := range fi.BasketPending {
 			fmt.Fprintf(&b, "    PENDING BASKET RECOVERY %s\n", line)
@@ -458,6 +478,37 @@ func inspectEntryDecisionRows(db *StateDB, fi *storageFileInspection, layout sto
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, fmt.Errorf("iterate entry intents in the %s state file: %w", fi.Role, err)
+		}
+	}
+	return rejections, nil
+}
+
+func inspectRobinhoodOrderRows(db *StateDB, fi *storageFileInspection, ident storageIdentityMap, owned map[PortfolioScope]bool, liveRH map[string]bool) ([]string, error) {
+	ok, err := tableExists(db, "robinhood_order_attempts")
+	if err != nil || !ok {
+		return nil, err
+	}
+	if err := db.db.QueryRow("SELECT COUNT(*) FROM robinhood_order_attempts").Scan(&fi.RobinhoodRows); err != nil {
+		return nil, fmt.Errorf("count robinhood order attempts in the %s state file: %w", fi.Role, err)
+	}
+	attempts, sids, err := db.loadUnresolvedRobinhoodAttempts()
+	if err != nil {
+		return nil, err
+	}
+	var rejections []string
+	for i, a := range attempts {
+		owner := sids[i]
+		procID, mapped := ident.processFor(fi.Role, sids[i])
+		if mapped {
+			owner = procID
+		}
+		fi.RobinhoodHeld = append(fi.RobinhoodHeld, owner+": "+robinhoodAttemptSummary(a))
+		if !owned[ScopeLive] {
+			rejections = append(rejections, fmt.Sprintf("%s state file: unresolved Robinhood order attempt %s is held here but the file does not own the live partition; resolve the venue order and move it by hand", fi.Role, a.AttemptID))
+			continue
+		}
+		if !mapped || !liveRH[procID] {
+			rejections = append(rejections, fmt.Sprintf("%s state file: unresolved Robinhood order attempt %s (%s %s) belongs to stored strategy %q, which is not a configured live Robinhood spot strategy; restore the strategy or resolve the venue order by hand", fi.Role, a.AttemptID, a.Side, a.Symbol, sids[i]))
 		}
 	}
 	return rejections, nil

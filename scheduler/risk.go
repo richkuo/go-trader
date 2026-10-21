@@ -943,6 +943,9 @@ func hyperliquidCircuitBreakerHasSharedCoin(sc *StrategyConfig, assist *Platform
 }
 
 func shouldForceCloseAllPositionsOnCircuitBreaker(sc *StrategyConfig, assist *PlatformRiskAssist) bool {
+	if sc != nil && isRobinhoodLiveSpot(*sc) {
+		return false
+	}
 	return !hyperliquidCircuitBreakerHasSharedCoin(sc, assist)
 }
 
@@ -1054,9 +1057,40 @@ func rolloverDailyPnL(r *RiskState) {
 }
 
 func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, hlFills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, hlVirtualQty hlVirtualQuantitySnapshot, logger *StrategyLogger) {
+	if isRobinhoodLiveSpot(sc) {
+		closeRobinhoodBookVerifiedFlat(s, sc, prices, nil, robinhoodVerifiedFlatKillSwitch, logger)
+		return
+	}
 	applyHyperliquidKillSwitchCloseFill(s, sc, hlFills, hlLiveAll, hlVirtualQty)
 	applyHyperliquidKillSwitchHedgeFill(s, sc, hlFills)
 	forceCloseAllPositions(s, &sc, prices, logger)
+}
+
+const (
+	robinhoodVerifiedFlatKillSwitch     = "kill_switch_verified_flat"
+	robinhoodVerifiedFlatCircuitBreaker = "circuit_breaker_verified_flat"
+)
+
+func closeRobinhoodBookVerifiedFlat(s *StrategyState, sc StrategyConfig, prices map[string]float64, coins map[string]bool, reason string, logger *StrategyLogger) {
+	if s == nil {
+		return
+	}
+	var syms []string
+	for sym := range s.Positions {
+		if coins == nil || coins[sym] {
+			syms = append(syms, sym)
+		}
+	}
+	sort.Strings(syms)
+	for _, sym := range syms {
+		closeVirtualPositionVerifiedFlat(s, &sc, sym, s.Positions[sym], prices, reason, logger)
+	}
+}
+
+func closeVirtualPositionVerifiedFlat(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, reason string, logger *StrategyLogger) {
+	mutatePaperPerpsBook(s, symbol, func() {
+		closeVirtualPositionInner(s, sc, symbol, pos, prices, reason, true, logger)
+	})
 }
 
 func classifyPositionTradeType(s *StrategyState, pos *Position) string {
@@ -1133,6 +1167,10 @@ func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol str
 }
 
 func closeVirtualPositionAtMarkInner(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {
+	closeVirtualPositionInner(s, sc, symbol, pos, prices, "circuit_breaker", false, logger)
+}
+
+func closeVirtualPositionInner(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, reason string, verifiedFlat bool, logger *StrategyLogger) {
 	now := tradingNow().UTC()
 	price, ok := prices[symbol]
 	if !ok {
@@ -1140,10 +1178,9 @@ func closeVirtualPositionAtMarkInner(s *StrategyState, sc *StrategyConfig, symbo
 	}
 	var pnl, value float64
 	tradeType := classifyPositionTradeType(s, pos)
-	reason := "circuit_breaker"
 	details := ""
 	if closePositionIsCorrupt(pos) {
-		reason = "circuit_breaker_corrupt"
+		reason = reason + "_corrupt"
 		details = fmt.Sprintf("Circuit breaker close %s (corrupt qty=%.6f avg_cost=%.4f) — zero PnL booked", pos.Side, pos.Quantity, pos.AvgCost)
 		if logger != nil {
 			logger.Warn("Circuit breaker: corrupt %s position %s (qty=%.6f avg_cost=%.4f) — booking zero realized PnL, not qty*(price-avgCost)", pos.Side, symbol, pos.Quantity, pos.AvgCost)
@@ -1165,6 +1202,12 @@ func closeVirtualPositionAtMarkInner(s *StrategyState, sc *StrategyConfig, symbo
 		pnl = pos.Quantity * (pos.AvgCost - price)
 		s.Cash += pos.Quantity*pos.AvgCost - pos.Quantity*price
 		value = pos.Quantity * price
+	}
+	if details == "" && verifiedFlat {
+		details = fmt.Sprintf("Verified flat by a fresh Robinhood holdings read; no venue fill (%s) %s, PnL: $%.2f (model-only reconciliation adjustment)", reason, pos.Side, pnl)
+		if sc != nil && isLiveArgs(sc.Args) {
+			queueModelOnlyCloseAlert(s.ID, symbol, pos.Quantity)
+		}
 	}
 	if details == "" {
 		details = fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f (model-only reconciliation adjustment; no exchange fill)", pos.Side, pnl)
@@ -1208,6 +1251,10 @@ func closeVirtualPositionAtMarkInner(s *StrategyState, sc *StrategyConfig, symbo
 func forceCloseSettledPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, settled map[string]map[string]bool, logger *StrategyLogger) {
 	coins := settled[sc.Platform]
 	if len(coins) == 0 || s == nil {
+		return
+	}
+	if isRobinhoodLiveSpot(sc) {
+		closeRobinhoodBookVerifiedFlat(s, sc, prices, coins, robinhoodVerifiedFlatKillSwitch, logger)
 		return
 	}
 	var syms []string

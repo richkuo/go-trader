@@ -1239,11 +1239,37 @@ type RobinhoodExecution struct {
 	Fill      *RobinhoodFill `json:"fill,omitempty"`
 }
 
+type RobinhoodOrderEvidence struct {
+	ID                 string `json:"id,omitempty"`
+	RefID              string `json:"ref_id,omitempty"`
+	State              string `json:"state,omitempty"`
+	Side               string `json:"side,omitempty"`
+	CurrencyPairID     string `json:"currency_pair_id,omitempty"`
+	AccountID          string `json:"account_id,omitempty"`
+	Quantity           string `json:"quantity,omitempty"`
+	Price              string `json:"price,omitempty"`
+	CumulativeQuantity string `json:"cumulative_quantity,omitempty"`
+	AveragePrice       string `json:"average_price,omitempty"`
+	CreatedAt          string `json:"created_at,omitempty"`
+}
+
+type RobinhoodOrderCancel struct {
+	Requested    bool   `json:"requested"`
+	Acknowledged bool   `json:"acknowledged"`
+	Detail       string `json:"detail,omitempty"`
+}
+
 type RobinhoodExecuteResult struct {
-	Execution *RobinhoodExecution `json:"execution"`
-	Platform  string              `json:"platform"`
-	Timestamp string              `json:"timestamp"`
-	Error     string              `json:"error,omitempty"`
+	Execution         *RobinhoodExecution    `json:"execution"`
+	OrderOutcome      string                 `json:"order_outcome,omitempty"`
+	Order             RobinhoodOrderEvidence `json:"order"`
+	RefID             string                 `json:"ref_id,omitempty"`
+	RequestedQuantity float64                `json:"requested_quantity,omitempty"`
+	AccountID         string                 `json:"account_id,omitempty"`
+	Cancel            RobinhoodOrderCancel   `json:"cancel"`
+	Platform          string                 `json:"platform"`
+	Timestamp         string                 `json:"timestamp"`
+	Error             string                 `json:"error,omitempty"`
 }
 
 func RunRobinhoodCheck(script string, args []string) (*RobinhoodResult, string, error) {
@@ -1264,33 +1290,104 @@ func RunRobinhoodCheck(script string, args []string) (*RobinhoodResult, string, 
 	return &result, stderrStr, nil
 }
 
-func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float64) (*RobinhoodExecuteResult, string, error) {
+var robinhoodOrderScriptTimeout = 60 * time.Second
+
+const robinhoodOrderScriptMargin = 10 * time.Second
+
+const robinhoodOrderBudgetMinMs = 2000
+
+func robinhoodOrderBudgetMs() int64 {
+	ms := int64((robinhoodOrderScriptTimeout - robinhoodOrderScriptMargin) / time.Millisecond)
+	if ms < robinhoodOrderBudgetMinMs {
+		ms = robinhoodOrderBudgetMinMs
+	}
+	return ms
+}
+
+func runPythonSideEffectWithTimeout(script string, args []string, timeout time.Duration) ([]byte, []byte, error) {
+	sideEffectWG.Add(1)
+	defer sideEffectWG.Done()
+	return runPythonWithTimeout(shutdownSideEffectCtx, script, args, nil, timeout)
+}
+
+func parseRobinhoodOrderOutput(stdout []byte, stderrStr string, runErr error) (*RobinhoodExecuteResult, string, error) {
+	var result RobinhoodExecuteResult
+	parseErr := json.Unmarshal(stdout, &result)
+	var timeoutErr *pythonScriptTimeoutError
+	switch {
+	case errors.As(runErr, &timeoutErr):
+		return nil, stderrStr, fmt.Errorf("order script killed: %w (stderr: %s)", runErr, stderrStr)
+	case parseErr != nil:
+		return nil, stderrStr, fmt.Errorf("parse order output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	case runErr != nil:
+		return &result, stderrStr, fmt.Errorf("order script exit: %w (error: %s)", runErr, result.Error)
+	}
+	return &result, stderrStr, nil
+}
+
+func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float64, refID string) (*RobinhoodExecuteResult, string, error) {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
 		fmt.Sprintf("--side=%s", side),
 		"--mode=live",
+		"--ref-id=" + refID,
+		fmt.Sprintf("--budget-ms=%d", robinhoodOrderBudgetMs()),
 	}
 	if side == "buy" {
-		args = append(args, fmt.Sprintf("--amount_usd=%g", amountUSD))
+		args = append(args, fmt.Sprintf("--amount_usd=%s", strconv.FormatFloat(amountUSD, 'f', -1, 64)))
 	} else {
-		args = append(args, fmt.Sprintf("--quantity=%g", quantity))
+		args = append(args, fmt.Sprintf("--quantity=%s", strconv.FormatFloat(quantity, 'f', -1, 64)))
 	}
-	stdout, stderr, err := runPythonSideEffect(script, args)
-	stderrStr := string(stderr)
-	if err != nil {
-		var result RobinhoodExecuteResult
-		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
-			return &result, stderrStr, nil
-		}
-		return nil, stderrStr, fmt.Errorf("execute error: %w (stderr: %s)", err, stderrStr)
-	}
+	stdout, stderr, runErr := runPythonSideEffectWithTimeout(script, args, robinhoodOrderScriptTimeout)
+	return parseRobinhoodOrderOutput(stdout, string(stderr), runErr)
+}
 
-	var result RobinhoodExecuteResult
-	if err := json.Unmarshal(stdout, &result); err != nil {
-		return nil, stderrStr, fmt.Errorf("parse execute output: %w (stdout: %s)", err, string(stdout))
+type RobinhoodResolveRequest struct {
+	Symbol            string
+	Side              string
+	RefID             string
+	OrderID           string
+	RequestedQuantity float64
+	SubmittedAfterMs  int64
+	SubmittedBeforeMs int64
+	ExpectedAccountID string
+	CancelOpen        bool
+	VerifyFields      bool
+}
+
+func robinhoodResolveArgs(req RobinhoodResolveRequest) []string {
+	args := []string{
+		"--resolve-order",
+		"--symbol=" + req.Symbol,
+		"--side=" + req.Side,
+		"--ref-id=" + req.RefID,
+		fmt.Sprintf("--budget-ms=%d", robinhoodOrderBudgetMs()),
+		fmt.Sprintf("--submitted-after-ms=%d", req.SubmittedAfterMs),
+		fmt.Sprintf("--submitted-before-ms=%d", req.SubmittedBeforeMs),
+		"--mode=live",
 	}
-	return &result, stderrStr, nil
+	if req.OrderID != "" {
+		args = append(args, "--order-id="+req.OrderID)
+	}
+	if req.RequestedQuantity > 0 && !math.IsInf(req.RequestedQuantity, 0) {
+		args = append(args, "--requested-quantity="+strconv.FormatFloat(req.RequestedQuantity, 'f', -1, 64))
+	}
+	if req.ExpectedAccountID != "" {
+		args = append(args, "--expected-account-id="+req.ExpectedAccountID)
+	}
+	if req.CancelOpen {
+		args = append(args, "--cancel-open")
+	}
+	if req.VerifyFields {
+		args = append(args, "--verify-order-fields")
+	}
+	return args
+}
+
+func RunRobinhoodResolveOrder(script string, req RobinhoodResolveRequest) (*RobinhoodExecuteResult, string, error) {
+	stdout, stderr, runErr := runPythonSideEffectWithTimeout(script, robinhoodResolveArgs(req), robinhoodOrderScriptTimeout)
+	return parseRobinhoodOrderOutput(stdout, string(stderr), runErr)
 }
 
 type OKXResult struct {
@@ -1580,35 +1677,56 @@ type RobinhoodCloseFill struct {
 	AvgPx   float64 `json:"avg_px,omitempty"`
 	TotalSz float64 `json:"total_sz,omitempty"`
 	OID     string  `json:"oid,omitempty"`
+	Fee     float64 `json:"fee,omitempty"`
 }
 
 type RobinhoodClose struct {
 	Symbol      string              `json:"symbol"`
+	HeldQty     float64             `json:"held_qty,omitempty"`
 	Fill        *RobinhoodCloseFill `json:"fill,omitempty"`
 	AlreadyFlat bool                `json:"already_flat,omitempty"`
 }
 
 type RobinhoodCloseResult struct {
-	Close     *RobinhoodClose `json:"close"`
-	Platform  string          `json:"platform"`
-	Timestamp string          `json:"timestamp"`
-	Error     string          `json:"error,omitempty"`
+	Close             *RobinhoodClose        `json:"close"`
+	OrderOutcome      string                 `json:"order_outcome,omitempty"`
+	Order             RobinhoodOrderEvidence `json:"order"`
+	RefID             string                 `json:"ref_id,omitempty"`
+	RequestedQuantity float64                `json:"requested_quantity,omitempty"`
+	AccountID         string                 `json:"account_id,omitempty"`
+	Cancel            RobinhoodOrderCancel   `json:"cancel"`
+	Platform          string                 `json:"platform"`
+	Timestamp         string                 `json:"timestamp"`
+	Error             string                 `json:"error,omitempty"`
+	RunErr            error                  `json:"-"`
 }
 
-func RunRobinhoodClose(script, symbol string) (*RobinhoodCloseResult, string, error) {
+func RunRobinhoodClose(script, symbol, refID string) (*RobinhoodCloseResult, string, error) {
 	args := []string{
 		fmt.Sprintf("--symbol=%s", symbol),
 		"--mode=live",
+		fmt.Sprintf("--budget-ms=%d", robinhoodOrderBudgetMs()),
 	}
-	stdout, stderr, runErr := runPythonSideEffect(script, args)
-	return parseRobinhoodCloseOutput(stdout, string(stderr), runErr)
+	if refID != "" {
+		args = append(args, "--ref-id="+refID)
+	}
+	stdout, stderr, runErr := runPythonSideEffectWithTimeout(script, args, robinhoodOrderScriptTimeout)
+	result, stderrStr, err := parseRobinhoodCloseOutput(stdout, string(stderr), runErr)
+	if result != nil {
+		result.RunErr = runErr
+	}
+	return result, stderrStr, err
 }
 
 func parseRobinhoodCloseOutput(stdout []byte, stderrStr string, runErr error) (*RobinhoodCloseResult, string, error) {
 	var result RobinhoodCloseResult
 	parseErr := json.Unmarshal(stdout, &result)
+	var timeoutErr *pythonScriptTimeoutError
 
 	switch {
+	case errors.As(runErr, &timeoutErr):
+		return nil, stderrStr, fmt.Errorf("close script killed: %w (stderr: %s)", runErr, stderrStr)
+
 	case runErr == nil && parseErr == nil && result.Error == "":
 		return &result, stderrStr, nil
 
@@ -1624,6 +1742,30 @@ func parseRobinhoodCloseOutput(stdout []byte, stderrStr string, runErr error) (*
 	default:
 		return nil, stderrStr, fmt.Errorf("parse close output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
 	}
+}
+
+func robinhoodCloseAsOrderResult(res *RobinhoodCloseResult) *RobinhoodExecuteResult {
+	if res == nil {
+		return nil
+	}
+	out := &RobinhoodExecuteResult{
+		OrderOutcome:      res.OrderOutcome,
+		Order:             res.Order,
+		RefID:             res.RefID,
+		RequestedQuantity: res.RequestedQuantity,
+		AccountID:         res.AccountID,
+		Cancel:            res.Cancel,
+		Platform:          res.Platform,
+		Timestamp:         res.Timestamp,
+		Error:             res.Error,
+	}
+	if res.Close != nil {
+		out.Execution = &RobinhoodExecution{Action: "sell", Symbol: res.Close.Symbol, Quantity: res.Close.HeldQty}
+		if f := res.Close.Fill; f != nil && (f.AvgPx != 0 || f.TotalSz != 0 || f.OID != "" || f.Fee != 0) {
+			out.Execution.Fill = &RobinhoodFill{AvgPx: f.AvgPx, Quantity: f.TotalSz, OID: f.OID, Fee: f.Fee}
+		}
+	}
+	return out
 }
 
 type RobinhoodPositionsResult struct {

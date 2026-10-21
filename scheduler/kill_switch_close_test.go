@@ -576,6 +576,9 @@ func stubRHPositionsFetcher(positions []RobinhoodPosition, err error) (Robinhood
 		if err != nil {
 			return nil, err
 		}
+		if calls > 1 {
+			return nil, nil
+		}
 		return positions, nil
 	}
 	return fetcher, &calls
@@ -712,8 +715,12 @@ func TestPlanKillSwitchClose_PlatformLifecycle(t *testing.T) {
 			if !plan.OnChainConfirmedFlat {
 				t.Fatalf("expected ConfirmedFlat, got plan=%+v", plan)
 			}
-			if *fetchCalls != 1 {
-				t.Errorf("%s fetcher should be called exactly once, got %d", h.name, *fetchCalls)
+			wantFetches := 1
+			if h.name == "Robinhood" {
+				wantFetches = 2
+			}
+			if *fetchCalls != wantFetches {
+				t.Errorf("%s fetcher should be called %d time(s), got %d", h.name, wantFetches, *fetchCalls)
 			}
 			if len(*calls) != 1 || (*calls)[0] != h.coin {
 				t.Errorf("closer calls = %v, want [%s]", *calls, h.coin)

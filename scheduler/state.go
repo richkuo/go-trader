@@ -107,8 +107,9 @@ type StrategyState struct {
 	paperFundingRaw     string
 	paperFundingCorrupt bool
 
-	EntryGuard        *entryGuardState `json:"-"`
-	Basket            *basketRuntime   `json:"-"`
+	EntryGuard        *entryGuardState     `json:"-"`
+	RobinhoodOrders   *robinhoodOrderGuard `json:"-"`
+	Basket            *basketRuntime       `json:"-"`
 	deferTradePersist bool
 	replayCapture     *[]ReplayDecision
 	bookClock         time.Time

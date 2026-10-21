@@ -11,12 +11,13 @@ SCRIPTS = REPO_ROOT / "shared_scripts"
 FIXTURE = SCRIPTS / "testdata" / "robinhood_offline"
 NOISE_MARKER = "robinhood offline stub stdout noise"
 MODES = ("login_ok", "login_rejected", "transport_error")
+REF_ID = "11111111-1111-4111-8111-111111111111"
 
 CASES = [
     ("check_paper", "check_robinhood.py", ["momentum_pro", "BTC", "1h", "--mode=paper"], None, True, True),
     ("check_live", "check_robinhood.py", ["momentum_pro", "BTC", "1h", "--mode=live"], None, True, True),
-    ("execute_buy", "check_robinhood.py", ["--execute", "--symbol=BTC", "--side=buy", "--amount_usd=10", "--mode=live"], None, True, True),
-    ("execute_sell", "check_robinhood.py", ["--execute", "--symbol=BTC", "--side=sell", "--quantity=0.001", "--mode=live"], None, True, True),
+    ("execute_buy", "check_robinhood.py", ["--execute", "--symbol=BTC", "--side=buy", "--amount_usd=10", "--mode=live", "--ref-id=" + REF_ID, "--budget-ms=3000"], None, True, False),
+    ("execute_sell", "check_robinhood.py", ["--execute", "--symbol=BTC", "--side=sell", "--quantity=0.001", "--mode=live", "--ref-id=" + REF_ID, "--budget-ms=3000"], None, True, False),
     ("close", "close_robinhood_position.py", ["--symbol=BTC", "--mode=live"], None, True, False),
     ("positions", "fetch_robinhood_positions.py", [], None, True, False),
     ("options", "check_options.py", ["vol_mean_reversion", "BTC", "--platform=robinhood"], "[]", False, True),
@@ -27,24 +28,26 @@ CASES = [
 
 READS_FAIL_CLOSED = ("close", "positions")
 
-EXECUTE_BUY = ["check_robinhood.py", "--execute", "--symbol=BTC", "--side=buy", "--amount_usd=10", "--mode=live"]
-EXECUTE_SELL = ["check_robinhood.py", "--execute", "--symbol=BTC", "--side=sell", "--quantity=0.1", "--mode=live"]
-CLOSE_BTC = ["close_robinhood_position.py", "--symbol=BTC", "--mode=live"]
-CLOSE_ETH = ["close_robinhood_position.py", "--symbol=ETH", "--mode=live"]
+BUDGET = "--budget-ms=3000"
+EXECUTE_BUY = ["check_robinhood.py", "--execute", "--symbol=BTC", "--side=buy", "--amount_usd=10", "--mode=live", "--ref-id=" + REF_ID, BUDGET]
+EXECUTE_SELL = ["check_robinhood.py", "--execute", "--symbol=BTC", "--side=sell", "--quantity=0.1", "--mode=live", "--ref-id=" + REF_ID, BUDGET]
+CLOSE_BTC = ["close_robinhood_position.py", "--symbol=BTC", "--mode=live", "--ref-id=" + REF_ID, BUDGET]
+CLOSE_ETH = ["close_robinhood_position.py", "--symbol=ETH", "--mode=live", "--ref-id=" + REF_ID, BUDGET]
 REFUSED = "Robinhood refused the order"
-UNKNOWN = "the order outcome is unknown"
+UNKNOWN = "the outcome is unknown"
+UNCONFIRMED = "state is unreadable"
 
 ORDER_CASES = [
-    ("buy_refused", EXECUTE_BUY, "order_rejected", 1, REFUSED),
-    ("sell_refused", EXECUTE_SELL, "order_rejected", 1, REFUSED),
-    ("close_refused", CLOSE_BTC, "order_rejected", 1, REFUSED),
-    ("buy_unknown", EXECUTE_BUY, "order_unknown", 1, UNKNOWN),
-    ("sell_unknown", EXECUTE_SELL, "order_unknown", 1, UNKNOWN),
-    ("close_unknown", CLOSE_BTC, "order_unknown", 1, "empty order response"),
-    ("buy_accepted", EXECUTE_BUY, "order_accepted", 0, None),
-    ("sell_accepted", EXECUTE_SELL, "order_accepted", 0, None),
-    ("close_accepted", CLOSE_BTC, "order_accepted", 0, None),
-    ("close_no_holding", CLOSE_ETH, "order_accepted", 0, None),
+    ("buy_refused", EXECUTE_BUY, "order_rejected", 1, REFUSED, "rejected"),
+    ("sell_refused", EXECUTE_SELL, "order_rejected", 1, REFUSED, "rejected"),
+    ("close_refused", CLOSE_BTC, "order_rejected", 1, REFUSED, "rejected"),
+    ("buy_unknown", EXECUTE_BUY, "order_unknown", 1, UNKNOWN, "unknown"),
+    ("sell_unknown", EXECUTE_SELL, "order_unknown", 1, UNKNOWN, "unknown"),
+    ("close_unknown", CLOSE_BTC, "order_unknown", 1, UNKNOWN, "unknown"),
+    ("buy_accepted", EXECUTE_BUY, "order_accepted", 1, UNCONFIRMED, "unknown"),
+    ("sell_accepted", EXECUTE_SELL, "order_accepted", 1, UNCONFIRMED, "unknown"),
+    ("close_accepted", CLOSE_BTC, "order_accepted", 1, UNCONFIRMED, "unknown"),
+    ("close_no_holding", CLOSE_ETH, "order_accepted", 0, None, "already_flat"),
 ]
 
 PARAMS = [
@@ -107,6 +110,8 @@ def test_robinhood_script_writes_one_json_document(case, mode, tmp_path):
     else:
         assert "Login failed" not in proc.stderr, detail
         assert ("503 Server Error" in proc.stderr) is call_after_login, detail
+        if _case_id.startswith("execute_"):
+            assert "HTTP status 503" in proc.stderr, detail
     if script_guard:
         assert NOISE_MARKER in proc.stderr, detail
     if _case_id in READS_FAIL_CLOSED:
@@ -115,8 +120,8 @@ def test_robinhood_script_writes_one_json_document(case, mode, tmp_path):
         assert not (doc.get("close") or {}).get("already_flat"), detail
 
 
-@pytest.mark.parametrize("label,argv,mode,want_exit,want_error", ORDER_CASES, ids=[c[0] for c in ORDER_CASES])
-def test_robinhood_order_response_decides_exit(label, argv, mode, want_exit, want_error, tmp_path):
+@pytest.mark.parametrize("label,argv,mode,want_exit,want_error,want_outcome", ORDER_CASES, ids=[c[0] for c in ORDER_CASES])
+def test_robinhood_order_response_decides_exit(label, argv, mode, want_exit, want_error, want_outcome, tmp_path):
     script, *args = argv
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / script), *args],
@@ -135,15 +140,18 @@ def test_robinhood_order_response_decides_exit(label, argv, mode, want_exit, wan
     assert "Starting login process..." in proc.stderr, detail
     assert NOISE_MARKER in proc.stderr, detail
     assert proc.returncode == want_exit, detail
+    assert doc.get("order_outcome") == want_outcome, detail
     if want_error is None:
         assert "error" not in doc, detail
     else:
         assert want_error in (doc.get("error") or ""), detail
-        assert not doc.get("execution"), detail
+        assert "fill" not in (doc.get("execution") or {}), detail
+        assert "fill" not in (doc.get("close") or {}), detail
     if label == "close_accepted":
-        assert doc["close"]["fill"].get("oid") == "offline-order-1", detail
+        assert doc["order"].get("id") == "offline-order-1", detail
         assert not doc["close"].get("already_flat"), detail
     if label == "close_no_holding":
         assert doc["close"].get("already_flat") is True, detail
     if label in ("buy_accepted", "sell_accepted"):
-        assert doc["execution"]["fill"] == {}, detail
+        assert doc["order"].get("id") == "offline-order-1", detail
+        assert doc["cancel"]["requested"] is True, detail

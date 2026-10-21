@@ -29,18 +29,19 @@ var readOnlyCommandNames = map[string]bool{
 }
 
 var opsCommandNames = map[string]bool{
-	"restart":              true,
-	"backtest":             true,
-	"logs":                 true,
-	"report-an-issue":      true,
-	"config":               true,
-	"add-strategy":         true,
-	"remove-strategy":      true,
-	"add-platform":         true,
-	"paper-to-live":        true,
-	"apply-regime-gate":    true,
-	"clear-cash-reconcile": true,
-	"resolve-entry":        true,
+	"restart":                 true,
+	"backtest":                true,
+	"logs":                    true,
+	"report-an-issue":         true,
+	"config":                  true,
+	"add-strategy":            true,
+	"remove-strategy":         true,
+	"add-platform":            true,
+	"paper-to-live":           true,
+	"apply-regime-gate":       true,
+	"clear-cash-reconcile":    true,
+	"resolve-entry":           true,
+	"resolve-robinhood-order": true,
 }
 
 func authorizeCommand(name, invokerID, guildID, ownerID string) (bool, string) {
@@ -466,6 +467,11 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the attempt", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "attempt", Description: "Attempt id (ei-...) from the LIVE ENTRY alert or the startup log", Required: true},
 		}},
+		{Name: commandPrefix + "resolve-robinhood-order", Description: "Re-check a held Robinhood order; settle or release only on venue evidence (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the attempt", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "attempt", Description: "Attempt id (rh-...) from the ROBINHOOD ORDER UNRESOLVED alert or the startup log", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "order", Description: "Robinhood order id to look up, when the alert shows none"},
+		}},
 	}
 }
 
@@ -549,6 +555,8 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		d.handleClearCashReconcile(s, i, data.Options)
 	case "resolve-entry":
 		d.handleResolveEntry(s, i, data.Options)
+	case "resolve-robinhood-order":
+		d.handleResolveRobinhoodOrder(s, i, data.Options)
 	default:
 		respondEphemeral(s, i, "unknown command")
 	}

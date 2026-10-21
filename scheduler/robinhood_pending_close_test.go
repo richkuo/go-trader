@@ -38,11 +38,12 @@ func TestRunPendingRobinhoodCircuitCloses_RecoversStuckCB(t *testing.T) {
 		cfg,
 		[]RobinhoodPosition{{Coin: "BTC", Size: 0.02, AvgPrice: 42000}},
 		true,
-		nil,
+		func() ([]RobinhoodPosition, error) { return nil, nil },
 		closer,
 		nil,
 		30*time.Second,
 		&mu,
+		robinhoodCircuitCloseDeps{},
 	)
 
 	if len(calls) != 1 || calls[0] != "BTC" {
@@ -88,6 +89,7 @@ func TestRunPendingRobinhoodCircuitCloses_SubmitErrorRetainsPending(t *testing.T
 		nil,
 		30*time.Second,
 		&mu,
+		robinhoodCircuitCloseDeps{},
 	)
 
 	pending := state.Strategies["rh-sma-btc"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood)

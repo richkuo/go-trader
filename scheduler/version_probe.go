@@ -199,6 +199,25 @@ var strategyTunerSchemaProbeArgv = []string{
 
 var simulateStrategyProbeArgv = []string{"--probe-only"}
 
+var robinhoodExecuteProbeArgv = []string{
+	"--execute", "--symbol=BTC", "--side=buy", "--mode=live",
+	"--ref-id=00000000-0000-4000-8000-000000000000", "--budget-ms=50000",
+	"--amount_usd=1", "--probe-only",
+}
+
+var robinhoodResolveProbeArgv = []string{
+	"--resolve-order", "--symbol=BTC", "--side=sell",
+	"--ref-id=00000000-0000-4000-8000-000000000000", "--budget-ms=50000",
+	"--submitted-after-ms=1", "--submitted-before-ms=2", "--mode=live",
+	"--order-id=probe", "--requested-quantity=1", "--expected-account-id=probe",
+	"--cancel-open", "--verify-order-fields", "--probe-only",
+}
+
+var robinhoodCloseProbeArgv = []string{
+	"--symbol=BTC", "--mode=live", "--budget-ms=50000",
+	"--ref-id=00000000-0000-4000-8000-000000000000", "--probe-only",
+}
+
 const probeTimeout = 15 * time.Second
 
 var probeOneCheckScriptFn = probeOneCheckScript
@@ -247,6 +266,14 @@ func probeCheckScripts(cfg *Config) error {
 				return err
 			}
 		}
+		if filepath.Base(script) == "check_robinhood.py" {
+			if err := probeOneCheckScriptFn(script, robinhoodExecuteProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, robinhoodResolveProbeArgv); err != nil {
+				return err
+			}
+		}
 		if filepath.Base(script) == "check_okx.py" {
 			if err := probeOneCheckScriptFn(script, okxExecuteProbeArgv); err != nil {
 				return err
@@ -254,6 +281,14 @@ func probeCheckScripts(cfg *Config) error {
 			if err := probeOneCheckScriptFn(script, okxRecoverEntryProbeArgv); err != nil {
 				return err
 			}
+		}
+	}
+	if anyRobinhoodLiveSpot(cfg) {
+		if err := probeOneCheckScriptFn(robinhoodResolveScript, robinhoodResolveProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn(robinhoodLiveCloseScript, robinhoodCloseProbeArgv); err != nil {
+			return err
 		}
 	}
 	if anyHLLiveReconcilable(cfg) {
@@ -359,4 +394,13 @@ func formatProbeFailure(script string, runErr error, stderr, stdout string) erro
 
 func probeFailureScriptMissing(detail string) bool {
 	return strings.Contains(detail, "can't open file")
+}
+
+func anyRobinhoodLiveSpot(cfg *Config) bool {
+	for _, sc := range cfg.Strategies {
+		if isRobinhoodLiveSpot(sc) {
+			return true
+		}
+	}
+	return false
 }

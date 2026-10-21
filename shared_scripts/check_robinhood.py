@@ -4,8 +4,11 @@ import sys
 import os
 import json
 import math
+import time
 import traceback
 from datetime import datetime, timezone
+
+_STARTED = time.monotonic()
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'robinhood'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'spot'))
@@ -13,7 +16,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator, latest_atr
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
-from robinhood_order_response import robinhood_order_response_error
 from stdout_contract import json_stdout
 
 
@@ -45,61 +47,6 @@ def _position_ctx_from_args(args):
     if regime:
         ctx["regime"] = regime
     return ctx
-
-
-def _float_or_none(value):
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-_FEE_CONTAINER_KEYS = (
-    "fee",
-    "fees",
-    "commission",
-    "commission_paid",
-    "total_fee",
-    "totalFee",
-    "estimated_fee",
-    "regulatory_fee",
-)
-
-_FEE_VALUE_KEYS = ("cost", "amount", "total", "value")
-
-
-def _extract_fee_value(value, fee_context=False):
-    if isinstance(value, dict):
-        keys = _FEE_VALUE_KEYS if fee_context else _FEE_CONTAINER_KEYS
-        for key in keys:
-            fee = _extract_fee_value(value.get(key), fee_context=True)
-            if fee is not None:
-                return fee
-        return None
-    if isinstance(value, list):
-        total = 0.0
-        found = False
-        for item in value:
-            fee = _extract_fee_value(item, fee_context=fee_context)
-            if fee is not None:
-                total += fee
-                found = True
-        return total if found else None
-    if fee_context:
-        return _float_or_none(value)
-    return None
-
-
-def _extract_fee(response):
-    if not isinstance(response, dict):
-        return None
-    for key in _FEE_CONTAINER_KEYS:
-        fee = _extract_fee_value(response.get(key), fee_context=True)
-        if fee is not None:
-            return fee
-    return _extract_fee_value(response.get("executions"))
 
 
 def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False,
@@ -287,80 +234,159 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
 
-def run_execute(symbol, side, amount_usd, quantity, mode):
+_BUDGET_MIN_MS = 2000
+_BUDGET_MAX_MS = 120000
+_CONFIRMED_FILL_OUTCOMES = ("filled", "partially_filled")
+
+
+def _finite_or_none(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def _budget_deadline(budget_ms):
+    if not isinstance(budget_ms, int) or budget_ms < _BUDGET_MIN_MS or budget_ms > _BUDGET_MAX_MS:
+        raise ValueError(f"--budget-ms must be an integer from {_BUDGET_MIN_MS} to {_BUDGET_MAX_MS}, got {budget_ms!r}")
+    return _STARTED + budget_ms / 1000.0
+
+
+def _order_envelope(order_result, action, symbol, amount_usd=None, quantity=None):
+    outcome = order_result.get("outcome") or "unknown"
+    execution = {"action": action, "symbol": symbol}
+    if action == "buy" and amount_usd is not None:
+        execution["amount_usd"] = _finite_or_none(amount_usd)
+    if action == "sell" and quantity is not None:
+        execution["quantity"] = _finite_or_none(quantity)
+    fill = order_result.get("fill")
+    payload = {
+        "execution": execution,
+        "order_outcome": outcome,
+        "order": order_result.get("order") or {},
+        "ref_id": order_result.get("ref_id"),
+        "requested_quantity": _finite_or_none(order_result.get("requested_quantity")),
+        "account_id": order_result.get("account_id"),
+        "cancel": order_result.get("cancel") or {"requested": False, "acknowledged": False},
+        "platform": "robinhood",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if outcome in _CONFIRMED_FILL_OUTCOMES and isinstance(fill, dict):
+        clean = {
+            "avg_px": _finite_or_none(fill.get("avg_px")),
+            "quantity": _finite_or_none(fill.get("quantity")),
+            "oid": fill.get("oid"),
+        }
+        fee = _finite_or_none(fill.get("fee"))
+        if fee is not None:
+            clean["fee"] = fee
+        execution["fill"] = clean
+    else:
+        payload["error"] = order_result.get("detail") or f"Robinhood order outcome {outcome}"
+    return payload
+
+
+def _not_sent(detail, ref_id=None):
+    return {"outcome": "not_sent", "detail": detail, "order": {}, "ref_id": ref_id,
+            "cancel": {"requested": False, "acknowledged": False}}
+
+
+def _live_adapter(deadline):
+    from adapter import RobinhoodExchangeAdapter
+
+    adapter = RobinhoodExchangeAdapter(mode="live", login_deadline=deadline)
+    if not adapter.is_live:
+        raise RuntimeError("Robinhood adapter not live — set ROBINHOOD_USERNAME / ROBINHOOD_PASSWORD / ROBINHOOD_TOTP_SECRET")
+    return adapter
+
+
+def _emit_order(emit, payload):
+    emit(payload)
+    if payload.get("order_outcome") not in _CONFIRMED_FILL_OUTCOMES:
+        sys.exit(1)
+
+
+def run_execute(symbol, side, amount_usd, quantity, mode, ref_id=None, budget_ms=None):
     with json_stdout() as emit:
+        action = (side or "").lower()
         if mode != "live":
-            emit({"error": "--execute requires --mode=live"})
-            sys.exit(1)
-
+            _emit_order(emit, _order_envelope(_not_sent("--execute requires --mode=live", ref_id), action, symbol, amount_usd, quantity))
+            return
         try:
-            from adapter import RobinhoodExchangeAdapter
-            adapter = RobinhoodExchangeAdapter(mode="live")
-
-            is_buy = side.lower() == "buy"
-
-            if is_buy:
-                result = adapter.market_buy(symbol, amount_usd)
-            else:
-                result = adapter.market_sell(symbol, quantity)
-
-            order_error = robinhood_order_response_error(result)
-            if order_error:
-                print(f"[robinhood] {order_error}", file=sys.stderr)
-                emit({
-                    "execution": None,
-                    "platform": "robinhood",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error": order_error,
-                })
-                sys.exit(1)
-
-            fill = {}
-            try:
-                if result:
-                    avg_px = float(result.get("average_price", 0) or 0)
-                    filled_qty = float(result.get("cumulative_quantity", 0) or 0)
-                    if avg_px > 0:
-                        fill = {"avg_px": avg_px, "quantity": filled_qty}
-                        fee = _extract_fee(result)
-                        if fee is not None:
-                            fill["fee"] = fee
-                        oid = result.get("id")
-                        if oid:
-                            fill["oid"] = str(oid)
-            except Exception:
-                pass
-
-            execution = {
-                "action": "buy" if is_buy else "sell",
-                "symbol": symbol,
-                "fill": fill,
-            }
-            if is_buy:
-                execution["amount_usd"] = amount_usd
-            else:
-                execution["quantity"] = quantity
-
-            emit({
-                "execution": execution,
-                "platform": "robinhood",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-
+            deadline = _budget_deadline(budget_ms)
+            if not ref_id:
+                raise ValueError("--ref-id is required")
+            adapter = _live_adapter(deadline)
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
-            emit({
-                "execution": None,
-                "platform": "robinhood",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": str(e),
-            })
-            sys.exit(1)
+            _emit_order(emit, _order_envelope(_not_sent(str(e), ref_id), action, symbol, amount_usd, quantity))
+            return
+        try:
+            if action == "buy":
+                result = adapter.place_market_order(symbol, "buy", ref_id=ref_id, deadline=deadline, amount_usd=amount_usd)
+            else:
+                result = adapter.place_market_order(symbol, "sell", ref_id=ref_id, deadline=deadline, quantity=quantity)
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            result = _not_sent(str(e), ref_id)
+        if result.get("detail"):
+            print(f"[robinhood] order {result.get('outcome')}: {result['detail']}", file=sys.stderr)
+        _emit_order(emit, _order_envelope(result, action, symbol, amount_usd, quantity))
+
+
+def run_resolve_order(args):
+    with json_stdout() as emit:
+        action = (args.side or "").lower()
+        if args.mode != "live":
+            _emit_order(emit, _order_envelope({"outcome": "unknown", "detail": "--resolve-order requires --mode=live", "ref_id": args.ref_id}, action, args.symbol))
+            return
+        try:
+            deadline = _budget_deadline(args.budget_ms)
+            adapter = _live_adapter(deadline)
+            result = adapter.resolve_order(
+                args.symbol, action,
+                ref_id=args.ref_id,
+                deadline=deadline,
+                submitted_after_ms=args.submitted_after_ms,
+                submitted_before_ms=args.submitted_before_ms,
+                order_id=args.order_id or None,
+                requested_quantity=args.requested_quantity if args.requested_quantity and args.requested_quantity > 0 else None,
+                expected_account_id=args.expected_account_id or None,
+                cancel_open=args.cancel_open,
+                verify_fields=args.verify_order_fields,
+            )
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            result = {"outcome": "unknown", "detail": f"resolution failed: {e}", "ref_id": args.ref_id}
+        if result.get("detail"):
+            print(f"[robinhood] resolution {result.get('outcome')}: {result['detail']}", file=sys.stderr)
+        _emit_order(emit, _order_envelope(result, action, args.symbol))
 
 
 def main():
     with json_stdout() as emit:
-        if "--execute" in sys.argv:
+        if "--resolve-order" in sys.argv:
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--resolve-order", action="store_true")
+            parser.add_argument("--symbol", required=True)
+            parser.add_argument("--side", required=True, choices=["buy", "sell"])
+            parser.add_argument("--ref-id", required=True)
+            parser.add_argument("--budget-ms", type=int, required=True)
+            parser.add_argument("--submitted-after-ms", type=int, required=True)
+            parser.add_argument("--submitted-before-ms", type=int, required=True)
+            parser.add_argument("--order-id", default="")
+            parser.add_argument("--requested-quantity", type=float, default=0)
+            parser.add_argument("--expected-account-id", default="")
+            parser.add_argument("--cancel-open", action="store_true")
+            parser.add_argument("--verify-order-fields", action="store_true")
+            parser.add_argument("--mode", default="live")
+            parser.add_argument("--probe-only", action="store_true")
+            args = parser.parse_args()
+            if args.probe_only:
+                sys.exit(0)
+            run_resolve_order(args)
+        elif "--execute" in sys.argv:
             import argparse
             parser = argparse.ArgumentParser()
             parser.add_argument("--execute", action="store_true")
@@ -369,8 +395,13 @@ def main():
             parser.add_argument("--amount_usd", type=float, default=0)
             parser.add_argument("--quantity", type=float, default=0)
             parser.add_argument("--mode", default="live")
+            parser.add_argument("--ref-id", required=True)
+            parser.add_argument("--budget-ms", type=int, required=True)
+            parser.add_argument("--probe-only", action="store_true")
             args = parser.parse_args()
-            run_execute(args.symbol, args.side, args.amount_usd, args.quantity, args.mode)
+            if args.probe_only:
+                sys.exit(0)
+            run_execute(args.symbol, args.side, args.amount_usd, args.quantity, args.mode, args.ref_id, args.budget_ms)
         else:
             import argparse
             parser = argparse.ArgumentParser()

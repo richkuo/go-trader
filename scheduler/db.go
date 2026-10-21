@@ -674,6 +674,9 @@ func (sdb *StateDB) migrateSchema() error {
 	if err := sdb.migrateEntryDecisionSchema(); err != nil {
 		return err
 	}
+	if err := sdb.migrateRobinhoodOrderSchema(); err != nil {
+		return err
+	}
 	if err := sdb.migrateBasketSchema(); err != nil {
 		return err
 	}
@@ -1716,6 +1719,9 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		if err := sdb.writeEntryGuardTx(tx, s, true); err != nil {
 			return err
 		}
+		if err := sdb.writeRobinhoodOrderGuardTx(tx, s, true); err != nil {
+			return err
+		}
 	}
 	basketSaves := basketSavesFor(req.Strategies)
 	for _, bs := range basketSaves {
@@ -1846,6 +1852,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		s.ClosedOptionPositions = nil
 		s.pendingTradeDiagnostics = nil
 		pruneEntryGuardAfterCommit(s)
+		pruneRobinhoodOrderGuardAfterCommit(s, true)
 	}
 	for _, bs := range basketSaves {
 		markBasketDurable(bs.rt, bs.books, bs.next)
@@ -2132,6 +2139,9 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 	if err := sdb.writeEntryGuardTx(tx, s, true); err != nil {
 		return err
 	}
+	if err := sdb.writeRobinhoodOrderGuardTx(tx, s, false); err != nil {
+		return err
+	}
 
 	var basketSave *basketSave
 	if s.Basket != nil {
@@ -2177,6 +2187,7 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 		s.TradeHistory[f.index].persisted = true
 	}
 	pruneEntryGuardAfterCommit(s)
+	pruneRobinhoodOrderGuardAfterCommit(s, false)
 	if basketSave != nil {
 		markBasketDurable(basketSave.rt, basketSave.books, basketSave.next)
 	}

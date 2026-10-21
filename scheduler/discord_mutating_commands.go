@@ -903,6 +903,22 @@ func (d *DiscordNotifier) resolveEntryCommand(invokerID, guildID string, opts []
 	return resolveEntryAttemptByOperator(deps, invokerID, optionString(opts, "strategy", ""), optionString(opts, "attempt", "")).Message
 }
 
+func (d *DiscordNotifier) handleResolveRobinhoodOrder(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+	deferAck(s, i)
+	followupText(s, i, d.resolveRobinhoodOrderCommand(interactionUserID(i), i.GuildID, opts))
+}
+
+func (d *DiscordNotifier) resolveRobinhoodOrderCommand(invokerID, guildID string, opts []*discordgo.ApplicationCommandInteractionDataOption) string {
+	if ok, reason := authorizeCommand(robinhoodOperatorCommandName, invokerID, guildID, d.ownerID); !ok {
+		return reason
+	}
+	if d.ss == nil || d.ss.state == nil || d.ss.mu == nil || d.ss.stateDB == nil {
+		return "status server not ready"
+	}
+	deps := robinhoodEmergencyDeps{store: d.ss.stateDB, state: d.ss.state, mu: d.ss.mu}
+	return resolveRobinhoodAttemptByOperator(deps, d.ss.strategyConfig, optionString(opts, "strategy", ""), optionString(opts, "attempt", ""), optionString(opts, "order", ""), time.Now())
+}
+
 func subcommandOptions(data discordgo.ApplicationCommandInteractionData) (string, []*discordgo.ApplicationCommandInteractionDataOption) {
 	for _, o := range data.Options {
 		if o.Type == discordgo.ApplicationCommandOptionSubCommand {

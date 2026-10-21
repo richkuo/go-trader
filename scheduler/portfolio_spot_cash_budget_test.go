@@ -5,6 +5,7 @@ import (
 	"math"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -264,19 +265,35 @@ func TestSellDoesNotClearCashReconcileWhenSolvent(t *testing.T) {
 func TestRunRobinhoodExecuteOrder_CashReconcileGate(t *testing.T) {
 	orig := robinhoodExecuteFn
 	t.Cleanup(func() { robinhoodExecuteFn = orig })
+	t.Setenv("ROBINHOOD_USERNAME", "cash-gate-user")
 
 	var calls []string
-	robinhoodExecuteFn = func(script, symbol, side string, amountUSD, quantity float64) (*RobinhoodExecuteResult, string, error) {
+	robinhoodExecuteFn = func(script, symbol, side string, amountUSD, quantity float64, refID string) (*RobinhoodExecuteResult, string, error) {
 		calls = append(calls, side)
 		return &RobinhoodExecuteResult{
-			Execution: &RobinhoodExecution{Action: side, Symbol: symbol, Fill: &RobinhoodFill{AvgPx: 100, Quantity: quantity}},
+			Execution:         &RobinhoodExecution{Action: side, Symbol: symbol, Fill: &RobinhoodFill{AvgPx: 100, Quantity: 0.1, OID: "rh-order-" + side}},
+			OrderOutcome:      "filled",
+			Order:             RobinhoodOrderEvidence{ID: "rh-order-" + side, RefID: refID, State: "filled"},
+			RefID:             refID,
+			RequestedQuantity: 0.1,
 		}, "", nil
 	}
 	logger := &StrategyLogger{stratID: "rh-btc", writer: io.Discard}
-	sc := StrategyConfig{ID: "rh-btc", Type: "spot", Platform: "robinhood", Script: "check_robinhood.py"}
+	sc := StrategyConfig{ID: "rh-btc", Type: "spot", Platform: "robinhood", Script: "check_robinhood.py", Args: []string{"momentum", "BTC", "1h", "--mode=live"}}
+	run := func(result *RobinhoodResult, cash float64, latched bool, posQty float64, posSide string) (*robinhoodOrderAttempt, bool) {
+		cfg := &Config{DBFile: filepath.Join(t.TempDir(), "state.db"), Strategies: []StrategyConfig{sc}}
+		store := openSplitStore(t, cfg)
+		state := NewAppState()
+		state.Strategies[sc.ID] = NewStrategyState(sc)
+		if err := store.LoadRobinhoodOrderGuards(state, cfg.Strategies); err != nil {
+			t.Fatalf("load guards: %v", err)
+		}
+		var mu sync.RWMutex
+		return runRobinhoodExecuteOrder(store, state, &mu, sc, state.Strategies[sc.ID], result, "", 100, cash, latched, posQty, posSide, HurstGateDecision{}, nil, logger)
+	}
 
 	calls = nil
-	er, ok := runRobinhoodExecuteOrder(sc, &RobinhoodResult{Symbol: "BTC", Signal: 1}, 100, 50, true, 0, "", HurstGateDecision{}, nil, logger)
+	er, ok := run(&RobinhoodResult{Symbol: "BTC", Signal: 1}, 50, true, 0, "")
 	if ok || er != nil {
 		t.Fatalf("latched buy: got ok=%v er=%v, want held", ok, er != nil)
 	}
@@ -285,7 +302,7 @@ func TestRunRobinhoodExecuteOrder_CashReconcileGate(t *testing.T) {
 	}
 
 	calls = nil
-	er, ok = runRobinhoodExecuteOrder(sc, &RobinhoodResult{Symbol: "BTC", Signal: -1}, 100, 0, true, 0.5, "long", HurstGateDecision{}, nil, logger)
+	er, ok = run(&RobinhoodResult{Symbol: "BTC", Signal: -1}, 0, true, 0.5, "long")
 	if !ok || er == nil {
 		t.Fatalf("latched sell: got ok=%v er=%v, want proceed", ok, er != nil)
 	}
@@ -294,7 +311,7 @@ func TestRunRobinhoodExecuteOrder_CashReconcileGate(t *testing.T) {
 	}
 
 	calls = nil
-	er, ok = runRobinhoodExecuteOrder(sc, &RobinhoodResult{Symbol: "BTC", Signal: 1}, 100, 50, false, 0, "", HurstGateDecision{}, nil, logger)
+	er, ok = run(&RobinhoodResult{Symbol: "BTC", Signal: 1}, 50, false, 0, "")
 	if !ok || er == nil {
 		t.Fatalf("unlatched buy: got ok=%v er=%v, want proceed", ok, er != nil)
 	}
