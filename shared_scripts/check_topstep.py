@@ -401,11 +401,28 @@ def main():
             help="#1712: accepted for argv-shape compatibility; this platform refuses closed-bar decisions.")
         parser.add_argument("--decision-regime-timeframe", default="",
             help="#1712: accepted for argv-shape compatibility; this platform refuses closed-bar decisions.")
+        parser.add_argument("--basket-member", action="store_true", default=False,
+            help="#1781: accepted for argv-shape compatibility with the startup probe; basket members run only on Hyperliquid, so this platform refuses it.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
+        if args.basket_member:
+            print(json.dumps({
+                "strategy": args.strategy,
+                "symbol": args.symbol,
+                "timeframe": args.timeframe,
+                "signal": 0,
+                "price": 0,
+                "indicators": {},
+                "regime": None,
+                "mode": args.mode,
+                "platform": "topstep",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": "basket members are not supported on topstep: the basket coordinator runs only Hyperliquid members",
+            }))
+            sys.exit(1)
         if args.closed_bar_decisions:
             print(json.dumps({
                 "strategy": args.strategy,

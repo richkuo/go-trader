@@ -1284,6 +1284,8 @@ func TestRobinhoodLiveOrderProbeArgvsParse(t *testing.T) {
 	}{
 		{robinhoodResolveScript, robinhoodExecuteProbeArgv},
 		{robinhoodResolveScript, robinhoodExecuteSellProbeArgv},
+		{robinhoodResolveScript, probeArgv},
+		{robinhoodResolveScript, probeCompositeArgv},
 		{robinhoodResolveScript, robinhoodResolveProbeArgv},
 		{robinhoodLiveCloseScript, robinhoodCloseProbeArgv},
 	} {
