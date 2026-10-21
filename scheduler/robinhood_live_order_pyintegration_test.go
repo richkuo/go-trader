@@ -1981,3 +1981,95 @@ func TestRobinhoodLiveOrderCircuitBreakerLegacyAccountSizedPendingNeverSellsAbov
 		}
 	})
 }
+
+func rhBuyFilledAs(id, quantity, average string) rhRoutes {
+	return rhWith(rhPrepRoutes(), rhRoutes{
+		"POST " + rhTestOrders:  {{"status": 201, "json": rhOrderBody(id, "unconfirmed", "buy", "0", nil, "")}},
+		"GET " + rhOrderURL(id): {{"status": 200, "json": rhOrderBody(id, "filled", "buy", quantity, average, "")}},
+	})
+}
+
+func (e *rhLiveEnv) cooldownEnds(id string) {
+	e.mu.Lock()
+	s := e.state.Strategies[id]
+	s.RiskState.CircuitBreaker = false
+	s.RiskState.CircuitBreakerUntil = time.Now().Add(-time.Minute)
+	e.mu.Unlock()
+}
+
+func TestRobinhoodLiveOrderCircuitBreakerNeverSellsAPositionOpenedAfterItsTarget(t *testing.T) {
+	readFails := rhRoutes{"GET " + rhTestHoldings: {{"status": 500, "json": map[string]interface{}{"detail": "down"}}}}
+	t.Run("full_sale_failed_reads_then_a_new_buy", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setPosition("rh-btc", "BTC", 0.4, 90)
+		e.ageBook("rh-btc", "BTC")
+		e.tripCB("rh-btc")
+		e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "0.4", "0.4"), rhHoldingsPhase(rhHeld("BTC", "0.4")), readFails)
+		if p := e.pendingRH("rh-btc"); p == nil {
+			t.Fatal("pending close must be kept after a failed refetch")
+		}
+		e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "0.4", "0.4"), readFails)
+		e.cooldownEnds("rh-btc")
+		e.setRoutes(rhBuyFilledAs("ord-3", "0.5", "100"))
+		if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 1 {
+			t.Fatalf("new buy trades = %d, want 1", trades)
+		}
+		e.resetSent()
+		e.runCBPhases(rhClosePhase(rhSellFilledAs("ord-4", "0.4", "97"), "0.5", "0.5"), rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.5")))
+		rhSamePosts(t, e.allPostQuantities())
+		if p := e.pendingRH("rh-btc"); p != nil {
+			t.Fatalf("pending = %+v, want cleared without a sale", p)
+		}
+		if got := e.bookQty("rh-btc", "BTC"); got != 0.5 {
+			t.Fatalf("book = %v, want the new 0.5 kept", got)
+		}
+	})
+	t.Run("remainder_closed_by_a_signal_then_a_new_buy", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setPosition("rh-btc", "BTC", 0.5, 90)
+		e.ageBook("rh-btc", "BTC")
+		e.tripCB("rh-btc")
+		e.runCBPhases(rhClosePhase(rhSellPartial("0.3", "97"), "0.5", "0.5"), rhHoldingsPhase(rhHeld("BTC", "0.5")), rhHoldingsPhase(rhHeld("BTC", "0.2")))
+		if p := e.pendingRH("rh-btc"); p == nil || math.Abs(p.Symbols[0].Size-0.2) > 1e-12 {
+			t.Fatalf("pending = %+v, want the 0.2 remainder", p)
+		}
+		e.cooldownEnds("rh-btc")
+		e.setRoutes(rhWith(rhSellFilledAs("ord-3", "0.2", "98"), rhSellHolding("0.2", "0.2")))
+		if trades, _ := e.signal("rh-btc", -1, 0, 98); trades != 1 || e.bookQty("rh-btc", "BTC") != 0 {
+			t.Fatalf("signal sell trades = %d book = %v, want the remainder closed", trades, e.bookQty("rh-btc", "BTC"))
+		}
+		e.runCBPhases(rhClosePhase(rhSellFilledAs("ord-9", "0.2", "97"), "0.2", "0.2"), readFails)
+		e.setRoutes(rhBuyFilledAs("ord-4", "0.3", "100"))
+		if trades, _ := e.signal("rh-btc", 1, 0, 100); trades != 1 {
+			t.Fatalf("new buy trades = %d, want 1", trades)
+		}
+		e.resetSent()
+		e.runCBPhases(rhClosePhase(rhSellFilledAs("ord-5", "0.2", "97"), "0.3", "0.3"), rhHoldingsPhase(rhHeld("BTC", "0.3")), rhHoldingsPhase(rhHeld("BTC", "0.3")))
+		rhSamePosts(t, e.allPostQuantities())
+		if p := e.pendingRH("rh-btc"); p != nil {
+			t.Fatalf("pending = %+v, want cleared without a sale", p)
+		}
+		if got := e.bookQty("rh-btc", "BTC"); math.Abs(got-0.3) > 1e-12 {
+			t.Fatalf("book = %v, want the new 0.3 kept", got)
+		}
+	})
+	t.Run("legacy_pending_after_the_breaker_reset", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setPosition("rh-btc", "BTC", 0.4, 90)
+		e.ageBook("rh-btc", "BTC")
+		e.mu.Lock()
+		e.state.Strategies["rh-btc"].RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 1.0}}})
+		e.mu.Unlock()
+		e.runCBPhases(rhClosePhase(rhSellFilled("0.4", "97"), "1.0", "1.0"), rhHoldingsPhase(rhHeld("BTC", "1.0")), rhHoldingsPhase(rhHeld("BTC", "1.0")))
+		rhSamePosts(t, e.allPostQuantities())
+		if p := e.pendingRH("rh-btc"); p != nil {
+			t.Fatalf("pending = %+v, want cleared", p)
+		}
+		if n := e.dmCount("the circuit breaker is no longer latched"); n != 1 {
+			t.Fatalf("owner DMs = %d, want one", n)
+		}
+		if got := e.bookQty("rh-btc", "BTC"); got != 0.4 {
+			t.Fatalf("book = %v, want 0.4 kept", got)
+		}
+	})
+}

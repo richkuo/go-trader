@@ -764,8 +764,9 @@ type PendingCircuitClose struct {
 const robinhoodPendingSizeBasisBook = "book"
 
 type PendingCircuitCloseSymbol struct {
-	Symbol string  `json:"symbol"`
-	Size   float64 `json:"size"`
+	Symbol     string  `json:"symbol"`
+	Size       float64 `json:"size"`
+	PositionID string  `json:"position_id,omitempty"`
 }
 
 type PlatformRiskAssist struct {
@@ -1004,7 +1005,7 @@ func setRobinhoodCircuitBreakerPending(sc *StrategyConfig, s *StrategyState) {
 		return
 	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{
-		Symbols:   []PendingCircuitCloseSymbol{{Symbol: coin, Size: pos.Quantity}},
+		Symbols:   []PendingCircuitCloseSymbol{{Symbol: coin, Size: pos.Quantity, PositionID: ensurePositionTradeID(s.ID, coin, pos)}},
 		SizeBasis: robinhoodPendingSizeBasisBook,
 	})
 }

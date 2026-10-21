@@ -59,11 +59,11 @@ func TestRunPendingRobinhoodCircuitCloses_SubmitErrorRetainsPending(t *testing.T
 		Strategies: map[string]*StrategyState{
 			"rh-sma-btc": {
 				ID:        "rh-sma-btc",
-				Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 0.02, Side: "long"}},
+				Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 0.02, Side: "long", TradePositionID: "rh-sma-btc:BTC:1"}},
 				RiskState: RiskState{
 					PendingCircuitCloses: map[string]*PendingCircuitClose{
 						PlatformPendingCloseRobinhood: {
-							Symbols:   []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.02}},
+							Symbols:   []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.02, PositionID: "rh-sma-btc:BTC:1"}},
 							SizeBasis: robinhoodPendingSizeBasisBook,
 						},
 					},

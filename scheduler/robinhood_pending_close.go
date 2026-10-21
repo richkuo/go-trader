@@ -44,6 +44,21 @@ func formatRobinhoodCBResidueDM(strategyID, coin string, held float64) string {
 	return fmt.Sprintf("Robinhood CB close [%s]: the go-trader book for %s is closed, and the account still holds %.10g %s above every go-trader book. go-trader never sells coin outside its book; that coin is the operator's.", strategyID, coin, held, coin)
 }
 
+func robinhoodOwnLongPositionID(ss *StrategyState, coin string) string {
+	if robinhoodBookFlat(robinhoodOwnLongBook(ss, coin)) {
+		return ""
+	}
+	return ss.Positions[coin].TradePositionID
+}
+
+func robinhoodCBLatched(ss *StrategyState, now time.Time) bool {
+	return ss != nil && ss.RiskState.CircuitBreaker && now.Before(ss.RiskState.CircuitBreakerUntil)
+}
+
+func formatRobinhoodUnlatchedLegacyPendingDM(strategyID, coin string, legacySize, book, held float64) string {
+	return fmt.Sprintf("Robinhood CB close [%s]: a pending close of %.10g %s from an earlier version was sized from the account, and the circuit breaker is no longer latched, so the current %.10g %s book may be a position opened after it fired. No order was sent and the pending close is cleared. The account holds %.10g %s; reconcile it by hand.", strategyID, legacySize, coin, book, coin, held, coin)
+}
+
 func formatRobinhoodLegacyPendingDM(strategyID, coin string, legacySize, held float64) string {
 	return fmt.Sprintf("Robinhood CB close [%s]: a pending close of %.10g %s from an earlier version was sized from the account, and the go-trader book for %s is flat. No order was sent and the pending close is cleared. The account holds %.10g %s; reconcile it by hand.", strategyID, legacySize, coin, coin, held, coin)
 }
@@ -181,7 +196,7 @@ func runPendingRobinhoodCircuitCloses(
 				continue
 			}
 			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{
-				Symbols:   []PendingCircuitCloseSymbol{{Symbol: coin, Size: book}},
+				Symbols:   []PendingCircuitCloseSymbol{{Symbol: coin, Size: book, PositionID: ensurePositionTradeID(ss.ID, coin, ss.Positions[coin])}},
 				SizeBasis: robinhoodPendingSizeBasisBook,
 			})
 			fmt.Printf("[CRITICAL] rh-circuit-close: recovered pending for strategy %s coin %s size=%.10g from the go-trader book (CB latched with no pending close; the account holds %.10g) (#1825)\n",
@@ -262,11 +277,21 @@ func runPendingRobinhoodCircuitCloses(
 			onAccount := robinhoodOnAccountSize(c.Symbol, positions)
 			mu.RLock()
 			book := robinhoodOwnLongBook(state.Strategies[j.stratID], c.Symbol)
+			positionID := robinhoodOwnLongPositionID(state.Strategies[j.stratID], c.Symbol)
+			latched := robinhoodCBLatched(state.Strategies[j.stratID], time.Now())
 			mu.RUnlock()
 			target := c.Size
-			if legacy {
+			if !legacy && c.PositionID != "" && !robinhoodBookFlat(book) && positionID != c.PositionID {
+				fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s: the position %s this pending close was sized from is gone and the book now holds position %s; the pending close is cleared and nothing is sold (#1825)\n", j.stratID, c.Symbol, c.PositionID, positionID)
+				continue
+			}
+			if legacy || c.PositionID == "" {
 				if robinhoodBookFlat(book) {
 					dms = append(dms, formatRobinhoodLegacyPendingDM(j.stratID, c.Symbol, c.Size, onAccount))
+					continue
+				}
+				if !latched {
+					dms = append(dms, formatRobinhoodUnlatchedLegacyPendingDM(j.stratID, c.Symbol, c.Size, book, onAccount))
 					continue
 				}
 				mu.Lock()
@@ -276,6 +301,7 @@ func runPendingRobinhoodCircuitCloses(
 						for i := range p.Symbols {
 							if p.Symbols[i].Symbol == c.Symbol {
 								p.Symbols[i].Size = book
+								p.Symbols[i].PositionID = ensurePositionTradeID(ss.ID, c.Symbol, ss.Positions[c.Symbol])
 							}
 						}
 					}

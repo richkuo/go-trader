@@ -144,7 +144,7 @@ func robinhoodStdoutKillSwitchDeps(closer RobinhoodLiveCloser, book map[string]f
 }
 
 func robinhoodStdoutSeedBook(state *AppState, id, coin string, qty float64) {
-	state.Strategies[id].Positions[coin] = &Position{Symbol: coin, Quantity: qty, InitialQuantity: qty, AvgCost: 90, Side: "long", OwnerStrategyID: id}
+	state.Strategies[id].Positions[coin] = &Position{Symbol: coin, Quantity: qty, InitialQuantity: qty, AvgCost: 90, Side: "long", OwnerStrategyID: id, TradePositionID: id + ":" + coin + ":seed"}
 }
 
 func robinhoodStdoutStore(t *testing.T, strategies []StrategyConfig) (*StateStore, *AppState) {
@@ -342,7 +342,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 			cbStore, state := robinhoodStdoutStore(t, liveStrategies)
 			var mu sync.RWMutex
 			robinhoodStdoutSeedBook(state, sc.ID, "BTC", 0.5)
-			state.Strategies[sc.ID].RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.5}}, SizeBasis: robinhoodPendingSizeBasisBook})
+			state.Strategies[sc.ID].RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.5, PositionID: sc.ID + ":BTC:seed"}}, SizeBasis: robinhoodPendingSizeBasisBook})
 			cbDeps := robinhoodEmergencyDeps{store: cbStore, state: state, mu: &mu, cfgs: liveStrategies}
 			runPendingRobinhoodCircuitCloses(context.Background(), state, liveStrategies, []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, true, nil, newRobinhoodEmergencyCloser(cbDeps, robinhoodOriginCircuitBreaker), nil, 60*time.Second, &mu, robinhoodCircuitCloseDeps{store: cbStore, prices: map[string]float64{"BTC": 50}})
 			pending := state.Strategies[sc.ID].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood)
