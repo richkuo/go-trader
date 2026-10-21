@@ -2,6 +2,10 @@ package main
 
 import (
 	"fmt"
+	"go/ast"
+	"go/build"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 type shellSuiteWiring struct {
@@ -185,6 +191,7 @@ var (
 	ciShellKey    = regexp.MustCompile(`^\s*(- )?(shell|defaults):`)
 	ciTeeTarget   = regexp.MustCompile(`2>&1 \| tee ("[^"]+"|\S+)$`)
 	ciRunPattern  = regexp.MustCompile(`-run '([^']*)'`)
+	ciSkipPattern = regexp.MustCompile(`-skip '([^']*)'`)
 	ciSuiteInvoke = regexp.MustCompile(`bash scripts/(test_[A-Za-z0-9_.-]+\.sh)`)
 	ciOmissionMsg = regexp.MustCompile(`^\s*echo "((?:NOTE|note): [^"]*)"`)
 	ciGateEcho    = regexp.MustCompile("^echo \"[^\"$`\\\\]*\"$")
@@ -335,6 +342,248 @@ func goTestFuncBody(t *testing.T, path, name string) string {
 	return body[:end]
 }
 
+const ciPyIntegrationJob = "go-python-integration"
+
+type ciPyIntegrationShard struct {
+	job  string
+	run  *regexp.Regexp
+	skip *regexp.Regexp
+}
+
+func (s ciPyIntegrationShard) selects(test string) bool {
+	return s.run.MatchString(test) && (s.skip == nil || !s.skip.MatchString(test))
+}
+
+func readPyIntegrationShards(t *testing.T, jobs map[string]*ciWorkflowJob) []ciPyIntegrationShard {
+	t.Helper()
+	if _, ok := jobs[ciPyIntegrationJob]; !ok {
+		t.Fatalf(".github/workflows/ci.yml has no %s job, which holds the allowlist", ciPyIntegrationJob)
+	}
+	var named []string
+	for name, job := range jobs {
+		if strings.HasPrefix(name, ciPyIntegrationJob+"-") {
+			named = append(named, name)
+			continue
+		}
+		if name == ciPyIntegrationJob {
+			continue
+		}
+		for _, line := range job.raw {
+			if strings.Contains(line, "pyintegration") {
+				t.Fatalf("job %s runs pyintegration tests outside the %s shard jobs: %s", name, ciPyIntegrationJob, strings.TrimSpace(line))
+			}
+		}
+	}
+	sort.Strings(named)
+	shards := []ciPyIntegrationShard{readPyIntegrationShard(t, ciPyIntegrationJob, requireCIJob(t, jobs, ciPyIntegrationJob))}
+	for _, name := range named {
+		shards = append(shards, readPyIntegrationShard(t, name, requireCIJob(t, jobs, name)))
+	}
+	return shards
+}
+
+func compilePyIntegrationPattern(t *testing.T, job, flag, pattern string) *regexp.Regexp {
+	t.Helper()
+	if strings.Contains(pattern, "/") {
+		t.Fatalf("%s %s pattern has a /, and go test then matches subtests, which this guard does not model: %s", job, flag, pattern)
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		t.Fatalf("%s %s regex does not compile: %v", job, flag, err)
+	}
+	return re
+}
+
+func readPyIntegrationShard(t *testing.T, name string, job *ciWorkflowJob) ciPyIntegrationShard {
+	t.Helper()
+	shard := ciPyIntegrationShard{job: name}
+	sawSkipGate := false
+	for _, step := range job.logical {
+		pipefail := false
+		teeLog := ""
+		gateOpen := false
+		gateExits := false
+		for _, line := range step {
+			runs := ciRunPattern.FindAllStringSubmatch(line, -1)
+			skips := ciSkipPattern.FindAllStringSubmatch(line, -1)
+			if strings.Count(line, "-run") != len(runs) || strings.Count(line, "-skip") != len(skips) {
+				t.Fatalf("%s has a -run or -skip flag this guard cannot read: %s", name, line)
+			}
+			if gateOpen {
+				switch {
+				case line == "fi":
+					if !gateExits {
+						t.Fatalf("the %s SKIP gate must run exit 1 before fi, or a --- SKIP line does not fail the step", name)
+					}
+					gateOpen = false
+					sawSkipGate = true
+				case line == "exit 1":
+					gateExits = true
+				case ciGateEcho.MatchString(line):
+				default:
+					t.Fatalf("the %s SKIP gate may hold only plain echo lines and exit 1 before fi: %s", name, line)
+				}
+				continue
+			}
+			if line == "set -o pipefail" {
+				pipefail = true
+			}
+			if teeLog != "" && strings.Contains(line, "--- SKIP") {
+				want := "if grep -n -- '--- SKIP' " + teeLog + "; then"
+				if line != want {
+					t.Fatalf("the %s SKIP gate must be exactly %q: %s", name, want, line)
+				}
+				gateOpen = true
+				gateExits = false
+				continue
+			}
+			if len(runs) == 0 {
+				if len(skips) > 0 {
+					t.Fatalf("%s has a -skip flag outside its go test line: %s", name, line)
+				}
+				continue
+			}
+			if shard.run != nil || len(runs) != 1 || len(skips) > 1 {
+				t.Fatalf("%s must have exactly one -run '...' argument and at most one -skip '...' argument", name)
+			}
+			if !strings.HasPrefix(line, "go -C scheduler test ") || !strings.Contains(line, " -tags pyintegration ") || !strings.Contains(line, " -v ") {
+				t.Fatalf("the %s -run line must be a verbose pyintegration go test: %s", name, line)
+			}
+			if !pipefail {
+				t.Fatalf("the %s step must run set -o pipefail before the piped go test, or a failing test passes: %s", name, line)
+			}
+			tee := ciTeeTarget.FindStringSubmatch(line)
+			if tee == nil {
+				t.Fatalf("the %s go test must end with 2>&1 | tee <log> so the SKIP gate reads its output: %s", name, line)
+			}
+			teeLog = tee[1]
+			shard.run = compilePyIntegrationPattern(t, name, "-run", runs[0][1])
+			if len(skips) == 1 {
+				shard.skip = compilePyIntegrationPattern(t, name, "-skip", skips[0][1])
+			}
+		}
+		if gateOpen {
+			t.Fatalf("the %s SKIP gate has no closing fi", name)
+		}
+	}
+	if shard.run == nil {
+		t.Fatalf("%s has no -run '...' argument", name)
+	}
+	if !sawSkipGate {
+		t.Fatalf("%s does not fail when a selected test reports --- SKIP in the log its go test writes", name)
+	}
+	return shard
+}
+
+func pyIntegrationBuildTests(t *testing.T, schedDir string) []string {
+	t.Helper()
+	ctx := build.Default
+	ctx.GOOS = "linux"
+	ctx.GOARCH = "amd64"
+	ctx.BuildTags = []string{"pyintegration"}
+	paths, err := filepath.Glob(filepath.Join(schedDir, "*_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	var tests []string
+	for _, path := range paths {
+		ok, err := ctx.MatchFile(schedDir, filepath.Base(path))
+		if err != nil {
+			t.Fatalf("read build constraints of %s: %v", filepath.Base(path), err)
+		}
+		if !ok {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", filepath.Base(path), err)
+		}
+		testingName := ""
+		for _, imp := range file.Imports {
+			if imp.Path.Value != `"testing"` {
+				continue
+			}
+			testingName = "testing"
+			if imp.Name != nil {
+				testingName = imp.Name.Name
+			}
+		}
+		if testingName == "" {
+			continue
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil {
+				continue
+			}
+			if goTestRunnerName(fn, testingName, "Test", "T") || goTestRunnerName(fn, testingName, "Fuzz", "F") {
+				tests = append(tests, fn.Name.Name)
+			}
+		}
+	}
+	if len(tests) == 0 {
+		t.Fatalf("found no test functions in %s", schedDir)
+	}
+	sort.Strings(tests)
+	return tests
+}
+
+func goTestRunnerName(fn *ast.FuncDecl, testingName, prefix, param string) bool {
+	name := fn.Name.Name
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	if len(name) > len(prefix) {
+		if r, _ := utf8.DecodeRuneInString(name[len(prefix):]); unicode.IsLower(r) {
+			return false
+		}
+	}
+	params := fn.Type.Params.List
+	if len(params) != 1 || len(params[0].Names) > 1 || fn.Type.Results != nil {
+		return false
+	}
+	star, ok := params[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != param {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == testingName
+}
+
+func checkPyIntegrationPartition(t *testing.T, shards []ciPyIntegrationShard, tests []string) {
+	t.Helper()
+	allowlist := shards[0].run
+	selected := map[string]int{}
+	for _, test := range tests {
+		var owners []string
+		for _, shard := range shards {
+			if shard.selects(test) {
+				owners = append(owners, shard.job)
+				selected[shard.job]++
+			}
+		}
+		allowed := allowlist.MatchString(test)
+		switch {
+		case !allowed && len(owners) > 0:
+			t.Errorf("%s runs %s, which the %s allowlist does not select", strings.Join(owners, " and "), test, ciPyIntegrationJob)
+		case allowed && len(owners) == 0:
+			t.Errorf("no %s shard job runs the allowlisted %s", ciPyIntegrationJob, test)
+		case len(owners) > 1:
+			t.Errorf("%s runs in more than one shard job: %s", test, strings.Join(owners, ", "))
+		}
+	}
+	for _, shard := range shards {
+		if selected[shard.job] == 0 {
+			t.Errorf("%s selects no test, so it proves nothing", shard.job)
+		}
+	}
+}
+
 func TestShellSuiteCIWiring(t *testing.T) {
 	t.Parallel()
 	schedDir, repoRoot := shellSuiteRepoRoot(t)
@@ -357,82 +606,19 @@ func TestShellSuiteCIWiring(t *testing.T) {
 	}
 	sort.Strings(names)
 
-	jobs := parseCIWorkflowJobs(t, filepath.Join(repoRoot, ".github", "workflows", "ci.yml"))
-	pyJob := requireCIJob(t, jobs, "go-python-integration")
+	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "ci.yml")
+	workflow, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(workflow), "GOFLAGS") {
+		t.Fatal(".github/workflows/ci.yml sets GOFLAGS, which can change the tests a go-python-integration shard selects")
+	}
+	jobs := parseCIWorkflowJobs(t, workflowPath)
+	shards := readPyIntegrationShards(t, jobs)
+	allowlist := shards[0].run
 	shellJob := requireCIJob(t, jobs, "shell-suites")
-
-	var runRegex *regexp.Regexp
-	sawSkipGate := false
-	for _, step := range pyJob.logical {
-		pipefail := false
-		teeLog := ""
-		gateOpen := false
-		gateExits := false
-		for _, line := range step {
-			matches := ciRunPattern.FindAllStringSubmatch(line, -1)
-			if strings.Count(line, "-run") != len(matches) {
-				t.Fatalf("go-python-integration has a -run flag this guard cannot read: %s", line)
-			}
-			if gateOpen {
-				switch {
-				case line == "fi":
-					if !gateExits {
-						t.Fatal("the go-python-integration SKIP gate must run exit 1 before fi, or a --- SKIP line does not fail the step")
-					}
-					gateOpen = false
-					sawSkipGate = true
-				case line == "exit 1":
-					gateExits = true
-				case ciGateEcho.MatchString(line):
-				default:
-					t.Fatalf("the go-python-integration SKIP gate may hold only plain echo lines and exit 1 before fi: %s", line)
-				}
-				continue
-			}
-			if line == "set -o pipefail" {
-				pipefail = true
-			}
-			if teeLog != "" && strings.Contains(line, "--- SKIP") {
-				want := "if grep -n -- '--- SKIP' " + teeLog + "; then"
-				if line != want {
-					t.Fatalf("the go-python-integration SKIP gate must be exactly %q: %s", want, line)
-				}
-				gateOpen = true
-				gateExits = false
-				continue
-			}
-			if len(matches) == 0 {
-				continue
-			}
-			if runRegex != nil || len(matches) != 1 {
-				t.Fatal("go-python-integration must have exactly one -run '...' argument")
-			}
-			if !strings.HasPrefix(line, "go -C scheduler test ") || !strings.Contains(line, " -tags pyintegration ") || !strings.Contains(line, " -v ") {
-				t.Fatalf("the go-python-integration -run line must be a verbose pyintegration go test: %s", line)
-			}
-			if !pipefail {
-				t.Fatalf("the go-python-integration step must run set -o pipefail before the piped go test, or a failing test passes: %s", line)
-			}
-			tee := ciTeeTarget.FindStringSubmatch(line)
-			if tee == nil {
-				t.Fatalf("the go-python-integration go test must end with 2>&1 | tee <log> so the SKIP gate reads its output: %s", line)
-			}
-			teeLog = tee[1]
-			runRegex, err = regexp.Compile(matches[0][1])
-			if err != nil {
-				t.Fatalf("go-python-integration -run regex does not compile: %v", err)
-			}
-		}
-		if gateOpen {
-			t.Fatal("the go-python-integration SKIP gate has no closing fi")
-		}
-	}
-	if runRegex == nil {
-		t.Fatal("go-python-integration has no -run '...' argument")
-	}
-	if !sawSkipGate {
-		t.Fatal("go-python-integration does not fail when a selected test reports --- SKIP in the log its go test writes")
-	}
+	checkPyIntegrationPartition(t, shards, pyIntegrationBuildTests(t, schedDir))
 
 	invoked := map[string]int{}
 	for _, step := range shellJob.logical {
@@ -517,8 +703,8 @@ func TestShellSuiteCIWiring(t *testing.T) {
 		}
 		switch {
 		case w.goTest != "":
-			if !runRegex.MatchString(w.goTest) {
-				t.Errorf("the go-python-integration -run regex does not select %s, so scripts/%s never runs", w.goTest, name)
+			if !allowlist.MatchString(w.goTest) {
+				t.Errorf("the go-python-integration allowlist does not select %s, so scripts/%s never runs", w.goTest, name)
 			}
 			body := goTestFuncBody(t, filepath.Join(schedDir, w.goTestFile), w.goTest)
 			if !strings.Contains(body, `"`+name+`"`) || !strings.Contains(body, "exec.Command(") {

@@ -112,7 +112,76 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBasketRealRanker[A-Za-z]*|TestBasketMemberRealCheckIsManagementOnly|TestBasketMemberBatched[A-Za-z]*|TestBasketReplay[A-Za-z]*|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBasketRealRanker[A-Za-z]*|TestBasketMemberRealCheckIsManagementOnly|TestBasketMemberBatched[A-Za-z]*|TestBasketReplay[A-Za-z]*|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*)$' -skip '^TestBasketReplay[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
+            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
+            exit 1
+          fi
+
+  go-python-integration-basket-replay-momentum-study:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Python-backed Go integration tests
+        run: |
+          set -o pipefail
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestBasketReplayMomentumStudy[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
+            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
+            exit 1
+          fi
+
+  go-python-integration-basket-replay-reversal-study:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Python-backed Go integration tests
+        run: |
+          set -o pipefail
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestBasketReplayReversalStudy[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
+            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
+            exit 1
+          fi
+
+  go-python-integration-basket-replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Python-backed Go integration tests
+        run: |
+          set -o pipefail
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestBasketReplay[A-Za-z]*$' -skip '^TestBasketReplay(MomentumStudy|ReversalStudy)[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
