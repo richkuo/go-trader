@@ -2910,7 +2910,7 @@ def volume_profile_reclaim_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "perpetual_premium_reversion",
-    "RESEARCH, production-refused (#1639) \u2014 perpetual premium mean reversion on closed bars: premium is the executable bid/ask midpoint divided by the time-aligned oracle price minus one, from supplied synchronized Hyperliquid quote/oracle samples on a fixed 60 s grid (premium_observations; each sample holds the latest bbo and asset context received at or before its grid time). At each bar close the mean and population deviation come from the lookback_samples samples strictly before the current sample; a positive premium whose z-score turn_span samples earlier was strictly above entry_z and whose distance to that mean then fell strictly at every step while staying above it enters short, and the negative mirror enters long. Every sample in the window must be sampled, unrevoked by the decision time, in one socket session, with quote age, observed oracle receipt age and quote/context skew within bounds, spread at most max_spread_bps and premium and mark dislocation within bounds; the variance must be strictly above variance_floor, else the entry holds with a reason. Oracle freshness is receipt age only; the venue context has no source time. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    "RESEARCH, production-refused, frozen study INCONCLUSIVE (#1639: 9 held-out event-replay positions in a 10.8 h recording, under the 30-position floor; net negative on both windows) \u2014 perpetual premium mean reversion on closed bars: premium is the executable bid/ask midpoint divided by the time-aligned oracle price minus one, from supplied synchronized Hyperliquid quote/oracle samples on a fixed 60 s grid (premium_observations; each sample holds the latest bbo and asset context received at or before its grid time). At each bar close the mean and population deviation come from the lookback_samples samples strictly before the current sample; a positive premium whose z-score turn_span samples earlier was strictly above entry_z and whose distance to that mean then fell strictly at every step while staying above it enters short, and the negative mirror enters long. Every sample in the window must be sampled, unrevoked by the decision time, in one socket session, with quote age, observed oracle receipt age and quote/context skew within bounds, spread at most max_spread_bps and premium and mark dislocation within bounds; the variance must be strictly above variance_floor, else the entry holds with a reason. Oracle freshness is receipt age only; the venue context has no source time. Entry-only; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
     dict(DEFAULT_PREMIUM_PARAMS),
     platforms=("futures",),
     constraints=[
@@ -2939,7 +2939,7 @@ def volume_profile_reclaim_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "expected_interval_ms <= 3600000",
     ],
     edge_status="no_edge",
-    edge_source="unvalidated",
+    edge_source="study_inconclusive",
     edge_ref="backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
     short_entries=True,
     param_validator=premium_param_validator,

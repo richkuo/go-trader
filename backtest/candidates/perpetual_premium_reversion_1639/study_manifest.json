@@ -1,0 +1,126 @@
+{
+  "schema": "offline_candle_manifest/v6",
+  "study": "perpetual_premium_reversion_1639",
+  "venue": "hyperliquid",
+  "provenance": {
+    "kind": "venue",
+    "label": "Hyperliquid mainnet perpetual 1m candles from the public info API (candleSnapshot, closed bars only); synchronized bbo and activeAssetCtx samples from a forward recording of the public WebSocket streams (receipt cutoff on a 60 s grid)"
+  },
+  "interval": "1m",
+  "warmup_bars": 400,
+  "funding_entry_input": true,
+  "windows": {
+    "train": {
+      "start": "2026-10-21T05:00:00Z",
+      "end": "2026-10-21T10:00:00Z",
+      "role": "selection: the parameter grid and the frozen selection rule read only this window"
+    },
+    "test": {
+      "start": "2026-10-21T10:00:00Z",
+      "end": "2026-10-21T14:00:00Z",
+      "role": "held-out: scored once with the frozen selection"
+    }
+  },
+  "acquisition": {
+    "source": "POST https://api.hyperliquid.xyz/info candleSnapshot + fundingHistory (shared_tools/funding_fetcher.py); premium samples are not acquirable here and come only from run_study.py prepare",
+    "start": "2026-10-20T05:00:00Z",
+    "end": "2026-10-21T14:15:00Z"
+  },
+  "costs": {
+    "taker_fee_pct": 0.00045,
+    "maker_fee_pct": 0.00015,
+    "slippage_bps": 1.0,
+    "min_notional_usd": 10.0,
+    "min_notional_margin": 0.03
+  },
+  "datasets": [
+    {
+      "coin": "BTC",
+      "symbol": "BTC/USDT",
+      "size_decimals": 5,
+      "half_spread_bps": 0.0602,
+      "candles": {
+        "path": "data/BTC_1m_candles.csv.gz",
+        "sha256": "f03d3c9a42cd1ec28571a6bbf08152ec5f5e8a0246605f6f07df88dae2d02e4d"
+      },
+      "funding": {
+        "path": "data/BTC_funding.csv.gz",
+        "sha256": "6126bf199b2f5418d3a0457e6e84d7aef644758a102308ad7ef9d5a6ae5dd74a"
+      },
+      "perp_premium": {
+        "path": "data/BTC_perp_premium.json.gz",
+        "sha256": "3c4c6b2bf99b3c5c2c85b1392697167e7bf000fcfddf60f88f3471571b89d112"
+      }
+    },
+    {
+      "coin": "ETH",
+      "symbol": "ETH/USDT",
+      "size_decimals": 4,
+      "half_spread_bps": 0.2039,
+      "candles": {
+        "path": "data/ETH_1m_candles.csv.gz",
+        "sha256": "95ebcf17cf2d68ddd25fd4d73ad722e62c27e04e1c58c1cc2ec383c44c11bb5a"
+      },
+      "funding": {
+        "path": "data/ETH_funding.csv.gz",
+        "sha256": "926866a58c81c20eb50673366c8d5f88553178952b27cf3b430c8541efefff88"
+      },
+      "perp_premium": {
+        "path": "data/ETH_perp_premium.json.gz",
+        "sha256": "d3de4cf2a5be8b68914d33a752352a6a0392147c39fd889fe4908c0c5ea0377d"
+      }
+    }
+  ],
+  "venue_reference": {
+    "meta": {
+      "path": "data/venue_meta.json",
+      "sha256": "458d89887417a477a93db9c93607de5f64b8813d88013e0f4883fc06d6c35249"
+    },
+    "l2_snapshot": {
+      "path": "data/venue_l2_snapshot.json",
+      "sha256": "feb4e9eb1b46cef64f796a7d69216ae0c831b1fb86a9e6a1e23232c743d9e04a"
+    },
+    "documents": [
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps base-tier taker and maker fee",
+        "quote": "Perps fee tiers Base rate Diamond Platinum Gold Silver Bronze Wood Tier 14d weighted volume ($) Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker 0 0.045% 0.015%",
+        "quote_sha256": "8cca42ca08eea9e26b2affe200d4d958dda0d5e0310ba162a8e1f5c9554f3bd9"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/error-responses",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps minimum order value",
+        "quote": "Order MinTradeNtl Order must have minimum value of $10.",
+        "quote_sha256": "28b93383786330e253affaed0d14b98ff3f683d9a66f0111d346f94650a2850d"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "lot size from meta szDecimals",
+        "quote": "Sizes are rounded to the szDecimals of that asset. For example, if szDecimals = 3 then 1.001 is a valid size but 1.0001 is not. szDecimals for an asset is found in the meta response to the info endpoint",
+        "quote_sha256": "9ae73e64e273ae0d0d329a2cd68cdf562ee50b583d581876b5a83bd5309dbc5f"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions",
+        "retrieved_at": "2026-10-04T03:05:00+00:00",
+        "supports": "oracle source: activeAssetCtx carries PerpsAssetCtx.oraclePx and no event timestamp, so oracle freshness is receipt age only",
+        "quote": "type PerpsAssetCtx = SharedAssetCtx & { funding: number; openInterest: number; oraclePx: number; };",
+        "quote_sha256": "3208d363bbab01ccbba7feccff1214cf32091886f9ce7dbf9238f0e40c6bcf88"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/historical-data",
+        "retrieved_at": "2026-10-04T03:05:00+00:00",
+        "supports": "historical asset contexts exist only in a requester-pays archive with possible gaps and no receipt times",
+        "quote": "There is no guarantee of timely updates and data may be missing.",
+        "quote_sha256": "23b96d72f9cd0b9660204a4b101ccd8c5cbdfe1190096a6a2e6eac56b201b674"
+      }
+    ]
+  },
+  "recording": {
+    "path": "data/recording/run.manifest.json",
+    "sha256": "f2049ad00554b91f2e2dc8d1ef0c69d80b7fc31dce1e5cd313c13f173d0c9e50",
+    "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115"
+  }
+}

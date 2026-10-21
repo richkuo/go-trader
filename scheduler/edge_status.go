@@ -92,7 +92,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"macro_event_breakout":               {"study_inconclusive", "backtest/candidates/macro_event_breakout_1654/REPORT.md"},
 	"bitcoin_lead_lag":                   {"study_fail", "backtest/candidates/bitcoin_lead_lag_1640/REPORT.md"},
 	"volume_profile_reclaim":             {"study_inconclusive", "backtest/candidates/volume_profile_reclaim_1665/REPORT.md"},
-	"perpetual_premium_reversion":        {"unvalidated", "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md"},
+	"perpetual_premium_reversion":        {"study_inconclusive", "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md"},
 }
 
 func noEdgeEvidenceFor(name string) (noEdgeEvidence, bool) {

@@ -1,0 +1,368 @@
+{
+  "schema": "go_trader_observation_run/v3",
+  "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+  "kinds": [
+    "perp_premium"
+  ],
+  "sources": {
+    "perp_premium": "hyperliquid_ws_activeAssetCtx+bbo"
+  },
+  "trade_contract": {
+    "source": "hyperliquid_ws_trades",
+    "units": "base",
+    "time_basis": "event_time_receipt_cutoff",
+    "identity": "venue+namespace+coin+time+tid",
+    "side_evidence": "hyperliquid-trades-side-aggressor/1638-v1",
+    "interval_ms": 60000,
+    "reorder_grace_ms": 5000,
+    "max_event_gap_ms": 30000,
+    "max_future_skew_ms": 5000,
+    "identity_retain_ms": 900000,
+    "identity_cap": 400000,
+    "decimal_scale": 8
+  },
+  "premium_contract": {
+    "source": "hyperliquid_ws_activeAssetCtx+bbo",
+    "contract": "perp-premium-quote-oracle/1639-v1",
+    "time_basis": "receipt_cutoff_latest_component",
+    "oracle_time_basis": "receipt_only_no_source_time",
+    "sample_ms": 60000,
+    "max_future_skew_ms": 5000,
+    "stale_after_ms": 120000
+  },
+  "host": "https://api.hyperliquid.xyz",
+  "ws_url": "wss://api.hyperliquid.xyz/ws",
+  "coins": [
+    "BTC",
+    "ETH"
+  ],
+  "started_ms": 1792553115334,
+  "closed_ms": 1792592140519,
+  "closed": true,
+  "dropped_total": 0,
+  "recorder_version": "ppr1639-rec-2d72a087b4c5",
+  "segments": [
+    {
+      "schema": "go_trader_observation_segment/v3",
+      "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+      "index": 1,
+      "file": "segment-00001.jsonl",
+      "sha256": "a8803cea327ff737d065fa9177d1e0d5335c6c1a819ef51aabe370a08e546a57",
+      "bytes": 12891902,
+      "records": 41925,
+      "obs_records": 0,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1792553115525,
+      "last_recv_ms": 1792556715467,
+      "opened_ms": 1792553115525,
+      "closed_ms": 1792556715662,
+      "sessions": [
+        1
+      ],
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "ppr1639-rec-2d72a087b4c5",
+      "quote_frames": 34749,
+      "context_frames": 7038,
+      "premium_samples": 120
+    },
+    {
+      "schema": "go_trader_observation_segment/v3",
+      "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+      "index": 2,
+      "file": "segment-00002.jsonl",
+      "sha256": "18ada061dfdba7d6d7b46ca2757b91d8606b4b1a4bbedb79f477e2c73586cc55",
+      "bytes": 12947318,
+      "records": 42051,
+      "obs_records": 0,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1792556715662,
+      "last_recv_ms": 1792560315556,
+      "opened_ms": 1792556715662,
+      "closed_ms": 1792560315698,
+      "sessions": [
+        1
+      ],
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "ppr1639-rec-2d72a087b4c5",
+      "quote_frames": 34878,
+      "context_frames": 7034,
+      "premium_samples": 120
+    },
+    {
+      "schema": "go_trader_observation_segment/v3",
+      "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+      "index": 3,
+      "file": "segment-00003.jsonl",
+      "sha256": "d56b5d8cac268dfb2d03a7a0b082c857709a12672ccd21b05b86e8b6a128ef24",
+      "bytes": 14498763,
+      "records": 47663,
+      "obs_records": 0,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1792560315698,
+      "last_recv_ms": 1792563915650,
+      "opened_ms": 1792560315698,
+      "closed_ms": 1792563915969,
+      "sessions": [
+        1,
+        2
+      ],
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "ppr1639-rec-2d72a087b4c5",
+      "quote_frames": 40506,
+      "context_frames": 7028,
+      "premium_samples": 120
+    },
+    {
+      "schema": "go_trader_observation_segment/v3",
+      "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+      "index": 4,
+      "file": "segment-00004.jsonl",
+      "sha256": "1f2c584d784cf006e95b3b3173b79428871c4517997fec199f93c62541f0da95",
+      "bytes": 13744109,
+      "records": 44907,
+      "obs_records": 0,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1792563915969,
+      "last_recv_ms": 1792567515893,
+      "opened_ms": 1792563915969,
+      "closed_ms": 1792567515984,
+      "sessions": [
+        2
+      ],
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "ppr1639-rec-2d72a087b4c5",
+      "quote_frames": 37746,
+      "context_frames": 7028,
+      "premium_samples": 120
+    },
+    {
+      "schema": "go_trader_observation_segment/v3",
+      "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+      "index": 5,
+      "file": "segment-00005.jsonl",
+      "sha256": "03eb71a0f93515eccd3914413a263052759dad7aa34eeab642ef0105955deda0",
+      "bytes": 17404290,
+      "records": 58184,
+      "obs_records": 0,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1792567515983,
+      "last_recv_ms": 1792571115875,
+      "opened_ms": 1792567515983,
+      "closed_ms": 1792571116141,
+      "sessions": [
+        2
+      ],
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "ppr1639-rec-2d72a087b4c5",
+      "quote_frames": 51031,
+      "context_frames": 7026,
+      "premium_samples": 120
+    },
+    {
+      "schema": "go_trader_observation_segment/v3",
+      "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+      "index": 6,
+      "file": "segment-00006.jsonl",
+      "sha256": "5df8fabcfd86dc01f8d71924aa415b25b986b558e0cfa09e476be671bb92084c",
+      "bytes": 18001440,
+      "records": 60214,
+      "obs_records": 0,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1792571116141,
+      "last_recv_ms": 1792574716102,
+      "opened_ms": 1792571116141,
+      "closed_ms": 1792574716213,
+      "sessions": [
+        2,
+        3
+      ],
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "ppr1639-rec-2d72a087b4c5",
+      "quote_frames": 53061,
+      "context_frames": 7022,
+      "premium_samples": 120
+    },
+    {
+      "schema": "go_trader_observation_segment/v3",
+      "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+      "index": 7,
+      "file": "segment-00007.jsonl",
+      "sha256": "07cfe1c5f37686092253bcbc45afe22b1ec807b85e8e8cad938ab166bc3bfef4",
+      "bytes": 16831122,
+      "records": 55959,
+      "obs_records": 0,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1792574716213,
+      "last_recv_ms": 1792578316095,
+      "opened_ms": 1792574716213,
+      "closed_ms": 1792578316223,
+      "sessions": [
+        3
+      ],
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "ppr1639-rec-2d72a087b4c5",
+      "quote_frames": 48806,
+      "context_frames": 7024,
+      "premium_samples": 120
+    },
+    {
+      "schema": "go_trader_observation_segment/v3",
+      "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+      "index": 8,
+      "file": "segment-00008.jsonl",
+      "sha256": "66a78850bfc15092620d3cf97e9b73fa0e4801f55778c314bba050374c47cc1a",
+      "bytes": 15759101,
+      "records": 52107,
+      "obs_records": 0,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1792578316223,
+      "last_recv_ms": 1792581916098,
+      "opened_ms": 1792578316223,
+      "closed_ms": 1792581916329,
+      "sessions": [
+        3
+      ],
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "ppr1639-rec-2d72a087b4c5",
+      "quote_frames": 44961,
+      "context_frames": 7022,
+      "premium_samples": 120
+    },
+    {
+      "schema": "go_trader_observation_segment/v3",
+      "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+      "index": 9,
+      "file": "segment-00009.jsonl",
+      "sha256": "cef41c338cd5a92f0a4910d9213c8cdbe12cce1a5b5f454c68c410c50329f213",
+      "bytes": 16252224,
+      "records": 53892,
+      "obs_records": 0,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1792581916329,
+      "last_recv_ms": 1792585516242,
+      "opened_ms": 1792581916329,
+      "closed_ms": 1792585516382,
+      "sessions": [
+        3,
+        4
+      ],
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "ppr1639-rec-2d72a087b4c5",
+      "quote_frames": 46751,
+      "context_frames": 7014,
+      "premium_samples": 120
+    },
+    {
+      "schema": "go_trader_observation_segment/v3",
+      "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+      "index": 10,
+      "file": "segment-00010.jsonl",
+      "sha256": "0275226ace0a5246496795bde3503730ad5e35ad8270cc7bd637fe6166366fde",
+      "bytes": 18535881,
+      "records": 62172,
+      "obs_records": 0,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1792585516382,
+      "last_recv_ms": 1792589116375,
+      "opened_ms": 1792585516382,
+      "closed_ms": 1792589116462,
+      "sessions": [
+        4
+      ],
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "ppr1639-rec-2d72a087b4c5",
+      "quote_frames": 55034,
+      "context_frames": 7016,
+      "premium_samples": 120
+    },
+    {
+      "schema": "go_trader_observation_segment/v3",
+      "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+      "index": 11,
+      "file": "segment-00011.jsonl",
+      "sha256": "cfddf65cddaec12d8284a25ea3594a97e75930a9389c5ac299960c0ca690094f",
+      "bytes": 19838138,
+      "records": 67711,
+      "obs_records": 0,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1792589116462,
+      "last_recv_ms": 1792592140509,
+      "opened_ms": 1792589116462,
+      "closed_ms": 1792592140509,
+      "sessions": [
+        4
+      ],
+      "coins": [
+        "BTC",
+        "ETH"
+      ],
+      "complete": true,
+      "close_reason": "shutdown",
+      "recorder_version": "ppr1639-rec-2d72a087b4c5",
+      "quote_frames": 61749,
+      "context_frames": 5860,
+      "premium_samples": 100
+    }
+  ]
+}

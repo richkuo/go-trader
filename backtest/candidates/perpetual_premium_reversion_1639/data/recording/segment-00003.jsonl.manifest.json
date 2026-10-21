@@ -1,0 +1,30 @@
+{
+  "schema": "go_trader_observation_segment/v3",
+  "run_id": "Richards-MacBook-Pro.local-35268-1792553115334-1792553115",
+  "index": 3,
+  "file": "segment-00003.jsonl",
+  "sha256": "d56b5d8cac268dfb2d03a7a0b082c857709a12672ccd21b05b86e8b6a128ef24",
+  "bytes": 14498763,
+  "records": 47663,
+  "obs_records": 0,
+  "rejected": 0,
+  "dropped": 0,
+  "first_recv_ms": 1792560315698,
+  "last_recv_ms": 1792563915650,
+  "opened_ms": 1792560315698,
+  "closed_ms": 1792563915969,
+  "sessions": [
+    1,
+    2
+  ],
+  "coins": [
+    "BTC",
+    "ETH"
+  ],
+  "complete": true,
+  "close_reason": "rotation",
+  "recorder_version": "ppr1639-rec-2d72a087b4c5",
+  "quote_frames": 40506,
+  "context_frames": 7028,
+  "premium_samples": 120
+}

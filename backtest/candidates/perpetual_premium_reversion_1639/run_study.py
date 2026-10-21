@@ -709,11 +709,12 @@ def render(result: dict) -> str:
                 f"{_fmt(sm['net_pnl_usd'])} | {_fmt(sm['fees_usd'])} | {_fmt(sm['funding_pnl_usd'], 4)} | "
                 f"{_fmt(sm['mean_return_pct'], 3)} | {_fmt(sm['mean_ddadj'], 3)} | {_fmt(sm['worst_max_dd_pct'], 3)} | "
                 f"{_fmt(sm['mean_turnover'])} | {_fmt(sm['top_dataset_abs_pnl_share'])} |")
-    for name, h in result["held_out"].items():
+    arms = [CANDIDATE] + list(BASELINES)
+    for name in arms:
         for label in ("base", "stress"):
-            lines.append(row(f"`{name}`", label, h[label]))
-    for name, sm in result["held_out_masked_baselines"].items():
-        lines.append(row(f"`{name}` masked to valid-premium bars", "base", sm))
+            lines.append(row(f"`{name}`", label, result["held_out"][name][label]))
+    for name in BASELINES:
+        lines.append(row(f"`{name}` masked to valid-premium bars", "base", result["held_out_masked_baselines"][name]))
     lines += ["", "## Event replay on recorded quotes (candidate, selected params)", "",
               "| Window | Cost | Positions (L/S) | Net $ | Gross $ | Fees $ | Funding $ | Max DD $ | Win rate | Delayed exits | Refused entries | Top coin share |",
               "|---|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -727,7 +728,8 @@ def render(result: dict) -> str:
                          f"{s.get('delayed_exits', 0)} | {len(ev['refusals'])} | {_fmt(s['top_coin_abs_pnl_share'])} |")
     lines += ["", "## Train window (selected params, candle model)", "",
               "| Arm | Positions (L/S) | Net $ | Mean DDadj |", "|---|---|---|---|"]
-    for name, sm in result["train_selected"].items():
+    for name in arms:
+        sm = result["train_selected"][name]
         if not sm.get("datasets"):
             lines.append(f"| `{name}` | 0 | - | - |")
             continue
