@@ -116,6 +116,245 @@ def robinhood_library():
         yield rh
 
 
+class RobinhoodLoginError(RuntimeError):
+    pass
+
+
+_LOGIN_ERROR_PREFIX = "Robinhood login failed:"
+_LOGIN_LINE_PREFIX = "[robinhood] robin_stocks: "
+_WITHHELD = "(detail withheld)"
+_LOGIN_FIXED_LINES = frozenset({
+    "Starting login process...",
+    "ERROR: There was an issue loading pickle file. Authentication may be expired - logging in normally.",
+    "Verification required, handling challenge...",
+    "Starting verification process...",
+    "Error: No response from Robinhood API. Retrying...",
+    "Check robinhood app for device approvals method...",
+    "Verification successful!",
+    "Retrying workflow status check...",
+    "Workflow status approved! Proceeding with login...",
+    "Still waiting for Robinhood to finalize login approval...",
+    "Login failed. Check credentials and try again.",
+})
+_LOGIN_VERIFICATION_KEYS = frozenset({
+    "access_token",
+    "token_type",
+    "refresh_token",
+    "verification_workflow",
+    "id",
+    "type_context",
+    "result",
+    "challenge_status",
+})
+_LOGIN_VERIFICATION_TEXTS = frozenset({
+    "Error: No verification ID returned in user-machine response",
+    "Max retries reached. Assuming login approved and proceeding.",
+    "Timeout reached. Assuming login is approved and proceeding.",
+    "EOF when reading a line",
+})
+_REQUEST_POST_PREFIX = "Error in request_post: "
+_VERIFICATION_PREFIX = "Error during login verification: "
+_API_FAILED_PREFIX = "API request failed: "
+_REQUEST_POST_STATUS = re.compile(r"Received \d{3}")
+_ERRNO_TAIL = re.compile(r"\[Errno (\d{1,4})\] ")
+_LOGIN_PROMPT = re.compile(r"Enter the (?:sms|email) verification code sent to your device: ")
+
+
+def _safe_verification_tail(tail):
+    if tail.startswith("'") and tail.endswith("'") and tail[1:-1] in _LOGIN_VERIFICATION_KEYS:
+        return tail
+    if tail in _LOGIN_VERIFICATION_TEXTS:
+        return tail
+    match = _ERRNO_TAIL.match(tail)
+    if match:
+        number = int(match.group(1))
+        return f"[Errno {number}] {os.strerror(number)} (path withheld)"
+    return None
+
+
+class _LoginOutputFilter:
+
+    def __init__(self, sink):
+        self._sink = sink
+        self._buffer = ""
+        self.detail = None
+
+    def isatty(self):
+        return False
+
+    def writable(self):
+        return True
+
+    def write(self, text):
+        try:
+            if not isinstance(text, str):
+                self._forward(_WITHHELD)
+                return 0
+            self._buffer += text
+            while "\n" in self._buffer:
+                line, self._buffer = self._buffer.split("\n", 1)
+                self._forward(self._map_line(line))
+            return len(text)
+        except Exception:
+            self._buffer = ""
+            self._forward(_WITHHELD)
+            return 0
+
+    def flush(self):
+        try:
+            if self._buffer and _LOGIN_PROMPT.fullmatch(self._buffer):
+                self._forward(self._buffer, newline=False)
+                self._buffer = ""
+            self._sink.flush()
+        except Exception:
+            pass
+
+    def drain(self):
+        try:
+            if self._buffer:
+                line = self._buffer
+                self._buffer = ""
+                self._forward(self._map_line(line))
+            self._sink.flush()
+        except Exception:
+            pass
+
+    def _forward(self, text, newline=True):
+        try:
+            self._sink.write(_LOGIN_LINE_PREFIX + text + ("\n" if newline else ""))
+        except Exception:
+            pass
+
+    def _map_line(self, line):
+        line = line.rstrip("\r")
+        if line in _LOGIN_FIXED_LINES:
+            return line
+        if line.startswith(_REQUEST_POST_PREFIX):
+            tail = line[len(_REQUEST_POST_PREFIX):]
+            if _REQUEST_POST_STATUS.fullmatch(tail):
+                return line
+            return _REQUEST_POST_PREFIX + _WITHHELD
+        if line.startswith(_VERIFICATION_PREFIX):
+            safe = _safe_verification_tail(line[len(_VERIFICATION_PREFIX):])
+            self.detail = safe
+            return _VERIFICATION_PREFIX + (safe if safe is not None else _WITHHELD)
+        if line.startswith(_API_FAILED_PREFIX):
+            return _API_FAILED_PREFIX + _WITHHELD
+        return "login line withheld"
+
+
+@contextlib.contextmanager
+def _filtered_login_output(rh):
+    previous = rh.helper.get_output()
+    output_filter = _LoginOutputFilter(sys.stderr)
+    rh.helper.set_output(output_filter)
+    try:
+        with contextlib.redirect_stdout(output_filter):
+            yield output_filter
+    finally:
+        output_filter.drain()
+        rh.helper.set_output(previous)
+
+
+def _nonempty_text(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _login_failure_reason(totp_error, login_error, login_os_error, result, logged_in, authorization, detail):
+    if totp_error is not None:
+        return f"could not make a TOTP code from ROBINHOOD_TOTP_SECRET ({totp_error})"
+    if login_error is not None:
+        reason = f"robin_stocks login raised {login_error}"
+        if login_os_error:
+            reason += "; check that HOME is set and that the token cache directory $HOME/.tokens can be created and written"
+        return reason
+    if result is None:
+        if logged_in is True:
+            reason = (
+                "robin_stocks set its login state but returned no session; "
+                "the token cache write to $HOME/.tokens/robinhood.pickle may have failed "
+                "or the login response may have had no refresh token"
+            )
+        else:
+            reason = "robin_stocks reported a failed login (credentials, MFA code, device verification, or transport)"
+        if detail is not None:
+            reason += f"; robin_stocks reported {detail}"
+        return reason
+    if not isinstance(result, dict):
+        return f"robin_stocks login returned {type(result).__name__}, expected a token object"
+    access_token = result.get("access_token")
+    token_type = result.get("token_type")
+    if not _nonempty_text(access_token):
+        return "login response has no access token"
+    if not _nonempty_text(token_type):
+        return "login response has no token type"
+    if logged_in is not True:
+        return "robin_stocks login state is not set after login"
+    if not isinstance(authorization, str) or authorization != f"{token_type} {access_token}":
+        return "robin_stocks session Authorization header does not match the returned token"
+    return None
+
+
+def _attempt_robinhood_login(username, password, totp_secret):
+    if not (_nonempty_text(username) and _nonempty_text(password) and _nonempty_text(totp_secret)):
+        return "credentials are missing"
+
+    totp_error = None
+    code = None
+    try:
+        import pyotp
+
+        code = pyotp.TOTP(totp_secret).now()
+    except Exception as e:
+        totp_error = type(e).__name__
+
+    login_error = None
+    login_os_error = False
+    result = None
+    detail = None
+    with robinhood_library() as rh:
+        if totp_error is None:
+            with _filtered_login_output(rh) as output_filter:
+                try:
+                    result = rh.login(username, password, mfa_code=code)
+                except Exception as e:
+                    login_error = type(e).__name__
+                    login_os_error = isinstance(e, OSError) and type(e).__module__ == "builtins"
+            detail = output_filter.detail
+        try:
+            reason = _login_failure_reason(
+                totp_error,
+                login_error,
+                login_os_error,
+                result,
+                rh.helper.LOGGED_IN,
+                rh.helper.SESSION.headers.get("Authorization"),
+                detail,
+            )
+        except Exception as e:
+            reason = f"login validation raised {type(e).__name__}"
+        if reason is not None:
+            try:
+                rh.helper.set_login_state(False)
+                rh.helper.update_session("Authorization", None)
+            except Exception as e:
+                reason += f"; library session reset raised {type(e).__name__}"
+    return reason
+
+
+def robinhood_login(username, password, totp_secret):
+    reason = _attempt_robinhood_login(username, password, totp_secret)
+    if reason is None:
+        return
+    message = f"{_LOGIN_ERROR_PREFIX} {reason}"
+    try:
+        sys.stderr.write(f"[robinhood] {message}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+    raise RobinhoodLoginError(message) from None
+
+
 class RobinhoodExchangeAdapter:
 
     def __init__(self, mode="paper"):
@@ -143,11 +382,13 @@ class RobinhoodExchangeAdapter:
                 )
             return
 
-        import pyotp
-
-        totp = pyotp.TOTP(totp_secret).now()
-        with robinhood_library() as rh:
-            rh.login(username, password, mfa_code=totp)
+        try:
+            robinhood_login(username, password, totp_secret)
+        except RobinhoodLoginError:
+            if self._mode == "live":
+                raise
+            print("[robinhood] paper mode continues logged out on public data", file=sys.stderr)
+            return
         self._logged_in = True
 
     @property

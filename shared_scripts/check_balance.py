@@ -53,12 +53,10 @@ def fetch_robinhood_balance():
         raise ValueError("ROBINHOOD_USERNAME, ROBINHOOD_PASSWORD, and ROBINHOOD_TOTP_SECRET env vars required")
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "platforms", "robinhood"))
-    from adapter import robinhood_library
-    import pyotp
+    from adapter import robinhood_library, robinhood_login
 
-    totp = pyotp.TOTP(totp_secret).now()
+    robinhood_login(username, password, totp_secret)
     with robinhood_library() as rh:
-        rh.login(username, password, mfa_code=totp)
         try:
             profile = rh.profiles.load_account_profile()
             buying_power = float(profile.get("crypto_buying_power", 0))

@@ -1,3 +1,4 @@
+import errno
 import importlib
 import json
 import os
@@ -5,7 +6,23 @@ import socket
 import sys
 
 _MODE = os.environ.get("RH_OFFLINE_STUB_MODE", "")
-_MODES = ("login_ok", "login_rejected", "transport_error", "order_accepted", "order_rejected", "order_unknown")
+_MODES = (
+    "login_ok",
+    "login_rejected",
+    "transport_error",
+    "order_accepted",
+    "order_rejected",
+    "order_unknown",
+    "login_no_refresh_token",
+    "login_empty_token",
+    "token_cache_unwritable",
+    "token_cache_dir_error",
+    "transport_error_secret",
+    "login_verification_required",
+)
+_TOKEN_OK_MODES = ("login_ok", "token_cache_unwritable", "token_cache_dir_error")
+_CACHE_MODES = ("token_cache_unwritable", "token_cache_dir_error")
+_OFFLINE_TOKEN = "offline-access-token"
 _ORDER_MODES = ("order_accepted", "order_rejected", "order_unknown")
 _PAIR_ID = "offline-btc-pair"
 _NOISE_MARKER = "robinhood offline stub stdout noise"
@@ -16,6 +33,29 @@ def _install():
         sys.stderr.write("robinhood offline stub: unknown RH_OFFLINE_STUB_MODE %r\n" % _MODE)
         sys.stderr.flush()
         os._exit(97)
+
+    if _MODE in _CACHE_MODES:
+        tokens_dir = os.path.join(os.path.expanduser("~"), ".tokens")
+        if os.path.lexists(tokens_dir):
+            sys.stderr.write("robinhood offline stub: %s refuses to run with an existing token cache\n" % _MODE)
+            sys.stderr.flush()
+            os._exit(97)
+        if _MODE == "token_cache_unwritable":
+            with open(tokens_dir, "w"):
+                pass
+        else:
+            real_makedirs = os.makedirs
+            secret_text = " ".join(
+                os.environ.get(name, "")
+                for name in ("ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET")
+            )
+
+            def refusing_makedirs(name, *args, **kwargs):
+                if os.path.basename(os.path.normpath(os.fspath(name))) == ".tokens":
+                    raise PermissionError(errno.EACCES, "robinhood offline stub refused %s" % secret_text, os.fspath(name))
+                return real_makedirs(name, *args, **kwargs)
+
+            os.makedirs = refusing_makedirs
 
     real_connect = socket.socket.connect
 
@@ -101,23 +141,65 @@ def _install():
             })
         return None
 
+    log_path = os.environ.get("RH_OFFLINE_STUB_LOG", "")
+
+    def log_request(request):
+        if not log_path:
+            return
+        authorization = request.headers.get("Authorization")
+        record = {
+            "method": request.method,
+            "url": request.url.split("?", 1)[0],
+            "auth": bool(authorization),
+            "auth_is_offline_token": authorization == "Bearer " + _OFFLINE_TOKEN,
+        }
+        with open(log_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def token_answer(request):
+        if _MODE in _TOKEN_OK_MODES or _MODE in _ORDER_MODES:
+            return response(request, 200, {
+                "access_token": _OFFLINE_TOKEN,
+                "token_type": "Bearer",
+                "refresh_token": "offline-refresh-token",
+                "expires_in": 86400,
+                "scope": "internal",
+            })
+        if _MODE == "login_no_refresh_token":
+            return response(request, 200, {
+                "access_token": _OFFLINE_TOKEN,
+                "token_type": "Bearer",
+                "expires_in": 86400,
+                "scope": "internal",
+            })
+        if _MODE == "login_empty_token":
+            return response(request, 200, {
+                "access_token": "",
+                "token_type": "Bearer",
+                "refresh_token": "offline-refresh-token",
+                "expires_in": 86400,
+                "scope": "internal",
+            })
+        if _MODE == "login_verification_required":
+            return response(request, 200, {"verification_workflow": {"id": "offline-workflow"}})
+        return response(request, 400, {"detail": "robinhood offline stub rejected the credentials"})
+
     def stub_send(self, request, *args, **kwargs):
+        log_request(request)
         if _MODE == "transport_error":
             raise requests.exceptions.ConnectionError("robinhood offline stub: transport down for %s" % request.url)
+        if _MODE == "transport_error_secret":
+            raise requests.exceptions.ConnectionError("robinhood offline stub: transport down for %s %s %s" % (
+                os.environ.get("ROBINHOOD_USERNAME", ""),
+                os.environ.get("ROBINHOOD_PASSWORD", ""),
+                os.environ.get("ROBINHOOD_TOTP_SECRET", ""),
+            ))
         if _MODE in _ORDER_MODES:
             answer = order_answer(request)
             if answer is not None:
                 return answer
         if request.method == "POST" and "/oauth2/token/" in request.url:
-            if _MODE == "login_ok" or _MODE in _ORDER_MODES:
-                return response(request, 200, {
-                    "access_token": "offline-access-token",
-                    "token_type": "Bearer",
-                    "refresh_token": "offline-refresh-token",
-                    "expires_in": 86400,
-                    "scope": "internal",
-                })
-            return response(request, 400, {"detail": "robinhood offline stub rejected the credentials"})
+            return token_answer(request)
         return response(request, 503, {"detail": "robinhood offline stub has no answer for this request"})
 
     requests.adapters.HTTPAdapter.send = stub_send

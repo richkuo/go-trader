@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func robinhoodStdoutPyRoot(t *testing.T) string {
@@ -190,4 +192,146 @@ func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
 			t.Fatalf("accepted close: got %+v, want BTC closed", report)
 		}
 	})
+}
+
+func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
+	root := robinhoodStdoutPyRoot(t)
+	t.Chdir(root)
+	const loginFailed = "Robinhood login failed:"
+	checkScript := "shared_scripts/check_robinhood.py"
+	secrets := []string{"offline-user", "offline-pass", "JBSWY3DPEHPK3PXP", "offline-access-token", "offline-refresh-token"}
+	logger := &StrategyLogger{stratID: "rh-login", writer: io.Discard}
+	sc := StrategyConfig{ID: "rh-login", Type: "spot", Platform: "robinhood", Script: checkScript, Args: []string{"momentum_pro", "BTC", "1h", "--mode=live"}}
+	liveStrategies := []StrategyConfig{sc}
+	modes := []string{
+		"login_rejected",
+		"transport_error",
+		"transport_error_secret",
+		"login_no_refresh_token",
+		"login_empty_token",
+		"token_cache_unwritable",
+		"token_cache_dir_error",
+		"login_verification_required",
+	}
+
+	for _, mode := range modes {
+		t.Run(mode, func(t *testing.T) {
+			robinhoodStdoutOfflineEnv(t, root, mode)
+			var texts []string
+			keep := func(parts ...string) { texts = append(texts, parts...) }
+
+			robinhoodStdoutFreshHome(t)
+			live, stderr, err := RunRobinhoodCheck(checkScript, []string{"momentum_pro", "BTC", "1h", "--mode=live"})
+			keep(stderr)
+			if err != nil || live == nil || !strings.HasPrefix(live.Error, loginFailed) || live.Signal != 0 {
+				t.Errorf("live check: got result=%+v err=%v, want an %q envelope with signal 0", live, err, loginFailed)
+			}
+
+			robinhoodStdoutFreshHome(t)
+			paper, stderr, err := RunRobinhoodCheck(checkScript, []string{"momentum_pro", "BTC", "1h", "--mode=paper"})
+			keep(stderr)
+			if err != nil || paper == nil || paper.Error != "" || paper.Price <= 0 || strings.Contains(stderr, "can only be called when logged in") {
+				t.Errorf("paper check: got result=%+v err=%v, want a logged-out paper result on public data; stderr:\n%s", paper, err, stderr)
+			}
+
+			for _, side := range []string{"buy", "sell"} {
+				robinhoodStdoutFreshHome(t)
+				execResult, stderr, err := RunRobinhoodExecute(checkScript, "BTC", side, 10, 0.1)
+				keep(stderr)
+				if err != nil || execResult == nil || !strings.HasPrefix(execResult.Error, loginFailed) || execResult.Execution != nil {
+					t.Errorf("execute %s: got result=%+v err=%v, want an %q envelope with no execution", side, execResult, err, loginFailed)
+				}
+			}
+
+			robinhoodStdoutFreshHome(t)
+			if er, ok := runRobinhoodExecuteOrder(sc, &RobinhoodResult{Symbol: "BTC", Signal: 1}, 100, 50, false, 0, "", HurstGateDecision{}, nil, logger); ok || er != nil {
+				t.Errorf("execute order buy: got ok=%v result=%+v, want the live-execute-failed path", ok, er)
+			}
+			robinhoodStdoutFreshHome(t)
+			if er, ok := runRobinhoodExecuteOrder(sc, &RobinhoodResult{Symbol: "BTC", Signal: -1}, 100, 0, false, 0.1, "long", HurstGateDecision{}, nil, logger); ok || er != nil {
+				t.Errorf("execute order sell: got ok=%v result=%+v, want the live-execute-failed path", ok, er)
+			}
+
+			robinhoodStdoutFreshHome(t)
+			closeResult, stderr, closeErr := RunRobinhoodClose(robinhoodLiveCloseScript, "BTC")
+			keep(stderr)
+			if closeErr != nil {
+				keep(closeErr.Error())
+			}
+			if closeErr == nil || closeResult == nil || !strings.HasPrefix(closeResult.Error, loginFailed) || (closeResult.Close != nil && closeResult.Close.AlreadyFlat) {
+				t.Errorf("close: got result=%+v err=%v, want an %q error and no already-flat", closeResult, closeErr, loginFailed)
+			}
+
+			robinhoodStdoutFreshHome(t)
+			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, liveStrategies, defaultRobinhoodLiveCloser)
+			if report.Errors["BTC"] != nil {
+				keep(report.Errors["BTC"].Error())
+			}
+			if report.Errors["BTC"] == nil || !strings.Contains(report.Errors["BTC"].Error(), loginFailed) || len(report.AlreadyFlat) != 0 || len(report.ClosedCoins) != 0 || report.ConfirmedFlat() {
+				t.Errorf("kill-switch close: got %+v, want a BTC login error and no confirmed flat", report)
+			}
+
+			robinhoodStdoutFreshHome(t)
+			state := &AppState{Strategies: map[string]*StrategyState{
+				sc.ID: {ID: sc.ID, RiskState: RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+					PlatformPendingCloseRobinhood: {Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.5}}},
+				}}},
+			}}
+			var mu sync.RWMutex
+			runPendingRobinhoodCircuitCloses(context.Background(), state, liveStrategies, []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, true, nil, defaultRobinhoodLiveCloser, nil, 60*time.Second, &mu)
+			pending := state.Strategies[sc.ID].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood)
+			if pending == nil || len(pending.Symbols) != 1 || pending.Symbols[0].Symbol != "BTC" {
+				t.Errorf("circuit-breaker pending close: got %+v, want the BTC pending close kept", pending)
+			}
+
+			robinhoodStdoutFreshHome(t)
+			positions, stderr, posErr := RunRobinhoodFetchPositions(robinhoodFetchPositionsScript)
+			keep(stderr)
+			if posErr == nil || positions == nil || !strings.HasPrefix(positions.Error, loginFailed) || len(positions.Positions) != 0 {
+				t.Errorf("positions: got result=%+v err=%v, want an %q error and no positions", positions, posErr, loginFailed)
+			}
+
+			robinhoodStdoutFreshHome(t)
+			_, _, liveCandlesErr := FetchUICandles(UICandleRequest{Strategy: sc, Limit: 50})
+			if liveCandlesErr != nil {
+				keep(liveCandlesErr.Error())
+			}
+			if liveCandlesErr == nil || !strings.Contains(liveCandlesErr.Error(), loginFailed) {
+				t.Errorf("live candles: got err=%v, want an %q error", liveCandlesErr, loginFailed)
+			}
+
+			robinhoodStdoutFreshHome(t)
+			paperCandles, source, err := FetchUICandles(UICandleRequest{
+				Strategy: StrategyConfig{ID: "rh-login-paper", Platform: "robinhood", Type: "spot", Args: []string{"momentum_pro", "BTC", "1h", "--mode=paper"}},
+				Limit:    50,
+			})
+			if err != nil || len(paperCandles) == 0 || source != "robinhood:adapter" {
+				t.Errorf("paper candles: got %d candles from %q err=%v, want candles from robinhood:adapter", len(paperCandles), source, err)
+			}
+
+			robinhoodStdoutFreshHome(t)
+			options, stderr, err := RunOptionsCheckWithStdin("shared_scripts/check_options.py", []string{"vol_mean_reversion", "BTC", "--platform=robinhood"}, "[]")
+			keep(stderr)
+			if err != nil || options == nil || options.Error != "" {
+				t.Errorf("options: got result=%+v err=%v, want a paper result with no error", options, err)
+			}
+
+			robinhoodStdoutFreshHome(t)
+			balance, balanceErr := FetchPlatformBalance("robinhood")
+			if balanceErr != nil {
+				keep(balanceErr.Error())
+			}
+			if balanceErr == nil || balance != 0 || !strings.Contains(balanceErr.Error(), loginFailed) {
+				t.Errorf("balance: got balance=%v err=%v, want an %q error", balance, balanceErr, loginFailed)
+			}
+
+			for _, text := range texts {
+				for _, secret := range secrets {
+					if strings.Contains(text, secret) {
+						t.Errorf("a returned stderr or error text holds the fake secret %q:\n%s", secret, text)
+					}
+				}
+			}
+		})
+	}
 }

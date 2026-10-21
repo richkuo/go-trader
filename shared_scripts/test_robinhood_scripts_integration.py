@@ -298,5 +298,160 @@ def test_close_sells_holding_found_on_later_page(tmp_path):
     assert _count(made, ORDERS, "POST") == 0
 
 
+LOGIN_FAILED = "Robinhood login failed:"
+PATHFINDER = "https://api.robinhood.com/pathfinder/user_machine/"
+POSITIONS_CHECK = "https://api.robinhood.com/positions/?nonzero=true"
+FAKE_SECRETS = ("integration-user", "integration-password", "JBSWY3DPEHPK3PXP", "fake-access-token", "fake-refresh-token")
+LOGIN_FAILURES = {
+    "refused": (LOGIN_REFUSED, {}, None),
+    "connection_error": ([{"raise": "connection"}], {}, None),
+    "no_refresh_token": ([{"status": 200, "json": {"access_token": "fake-access-token", "token_type": "Bearer"}}], {}, "'refresh_token'"),
+    "empty_access_token": ([{"status": 200, "json": {
+        "access_token": "", "token_type": "Bearer", "refresh_token": "fake-refresh-token",
+    }}], {}, "no access token"),
+    "no_token_type": ([{"status": 200, "json": {
+        "access_token": "fake-access-token", "refresh_token": "fake-refresh-token",
+    }}], {}, "'token_type'"),
+    "verification_workflow": (
+        [{"status": 200, "json": {"verification_workflow": {"id": "fake-workflow"}}}],
+        {"POST " + PATHFINDER: [{"status": 200, "json": {}}]},
+        "robin_stocks reported Error: No verification ID returned in user-machine response",
+    ),
+}
+SCRIPTS = {"fetch": (FETCH, []), "close": (CLOSE, ["--symbol=BTC", "--mode=live"])}
+
+
+def _run_capture(tmp_path, script, args, routes, login=LOGIN_OK, home=None):
+    run_dir = tmp_path / f"run-{len(list(tmp_path.iterdir()))}"
+    site = run_dir / "site"
+    site.mkdir(parents=True)
+    (site / "sitecustomize.py").write_text(SITECUSTOMIZE)
+    if home is None:
+        home_dir = run_dir / "home"
+        home_dir.mkdir()
+    else:
+        home_dir = home(run_dir)
+    fixture = run_dir / "routes.json"
+    fixture.write_text(json.dumps(dict(routes, **{"POST " + TOKEN_URL: login})))
+    log = run_dir / "requests.jsonl"
+    log.write_text("")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ROBINHOOD")}
+    env.update({
+        "HOME": str(home_dir),
+        "PYTHONPATH": os.pathsep.join([str(site)] + [p for p in [os.environ.get("PYTHONPATH")] if p]),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "RH_FAKE_FIXTURE": str(fixture),
+        "RH_FAKE_LOG": str(log),
+        "ROBINHOOD_USERNAME": "integration-user",
+        "ROBINHOOD_PASSWORD": "integration-password",
+        "ROBINHOOD_TOTP_SECRET": "JBSWY3DPEHPK3PXP",
+    })
+    proc = subprocess.run(
+        [sys.executable, script, *args],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+    )
+    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+    assert lines, proc.stderr
+    payload = json.loads(lines[-1])
+    requests_made = [json.loads(ln) for ln in log.read_text().splitlines() if ln.strip()]
+    assert [r["url"] for r in requests_made if not r["listed"]] == []
+    return proc, payload, requests_made
+
+
+def _assert_login_refused(proc, payload, made):
+    detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\nrequests:\n{made}"
+    assert proc.returncode == 1, detail
+    assert isinstance(payload.get("error"), str) and payload["error"].startswith(LOGIN_FAILED), detail
+    assert _count(made, HOLDINGS) == 0, detail
+    assert _count(made, CURRENCY_PAIRS) == 0, detail
+    assert _count(made, ORDERS, "POST") == 0, detail
+    assert [r["url"] for r in made if r["auth"]] == [], detail
+    assert [s for s in FAKE_SECRETS if s in proc.stdout or s in proc.stderr] == [], detail
+    if "close" in payload:
+        assert payload["close"].get("already_flat") is None, detail
+    return detail
+
+
+def _home_with_tokens_file(run_dir):
+    home = run_dir / "home"
+    home.mkdir()
+    (home / ".tokens").write_text("")
+    return home
+
+
+def _home_under_file(run_dir):
+    blocker = run_dir / "home-blocker"
+    blocker.write_text("")
+    return blocker / "home"
+
+
+def _home_with_cached_session(run_dir):
+    import pickle
+
+    home = run_dir / "home"
+    (home / ".tokens").mkdir(parents=True)
+    with open(home / ".tokens" / "robinhood.pickle", "wb") as f:
+        pickle.dump({
+            "token_type": "Bearer",
+            "access_token": "fake-access-token",
+            "refresh_token": "fake-refresh-token",
+            "device_token": "fake-device-token",
+        }, f)
+    return home
+
+
+@pytest.mark.parametrize("script_id", sorted(SCRIPTS))
+@pytest.mark.parametrize("shape", sorted(LOGIN_FAILURES))
+def test_failed_login_stops_script_before_any_account_request(tmp_path, shape, script_id):
+    login, extra_routes, want_reason = LOGIN_FAILURES[shape]
+    script, args = SCRIPTS[script_id]
+    proc, payload, made = _run_capture(tmp_path, script, args, dict(_single([BTC]), **extra_routes), login=login)
+    detail = _assert_login_refused(proc, payload, made)
+    assert _count(made, TOKEN_URL, "POST") == 1, detail
+    if want_reason is not None:
+        assert want_reason in payload["error"], detail
+
+
+@pytest.mark.parametrize("script_id", sorted(SCRIPTS))
+def test_token_cache_write_failure_refuses_login(tmp_path, script_id):
+    script, args = SCRIPTS[script_id]
+    proc, payload, made = _run_capture(tmp_path, script, args, _single([BTC]), home=_home_with_tokens_file)
+    detail = _assert_login_refused(proc, payload, made)
+    assert "token cache" in payload["error"], detail
+    assert _count(made, TOKEN_URL, "POST") == 1, detail
+
+
+@pytest.mark.parametrize("script_id", sorted(SCRIPTS))
+def test_token_cache_directory_failure_refuses_login(tmp_path, script_id):
+    script, args = SCRIPTS[script_id]
+    proc, payload, made = _run_capture(tmp_path, script, args, _single([BTC]), home=_home_under_file)
+    detail = _assert_login_refused(proc, payload, made)
+    assert "raised NotADirectoryError" in payload["error"], detail
+    assert _count(made, TOKEN_URL, "POST") == 0, detail
+
+
+def test_cached_session_login_reads_holdings_with_its_token(tmp_path):
+    routes = dict(_single([BTC]), **{"GET " + POSITIONS_CHECK: [_page([])]})
+    proc, payload, made = _run_capture(tmp_path, FETCH, [], routes, home=_home_with_cached_session)
+    detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\nrequests:\n{made}"
+    assert proc.returncode == 0, detail
+    assert payload.get("error") is None, detail
+    assert payload["positions"] == [{"coin": "BTC", "size": 0.5, "avg_price": 40000.0}], detail
+    assert _count(made, TOKEN_URL, "POST") == 0, detail
+    holdings = [r for r in made if r["url"].startswith(HOLDINGS)]
+    assert len(holdings) == 1 and all(r["auth"] for r in holdings), detail
+
+
+def test_rejected_cached_session_falls_back_to_password_login(tmp_path):
+    routes = dict(_single([BTC]), **{"GET " + POSITIONS_CHECK: [{"status": 401, "json": {"detail": "expired"}}]})
+    proc, payload, made = _run_capture(tmp_path, FETCH, [], routes, home=_home_with_cached_session)
+    detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\nrequests:\n{made}"
+    assert proc.returncode == 0, detail
+    assert payload.get("error") is None, detail
+    assert payload["positions"] == [{"coin": "BTC", "size": 0.5, "avg_price": 40000.0}], detail
+    assert _count(made, TOKEN_URL, "POST") == 1, detail
+    assert _count(made, POSITIONS_CHECK) == 1, detail
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
