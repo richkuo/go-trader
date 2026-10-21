@@ -458,6 +458,19 @@ Never apply a runtime-default change silently when the operator has not been sho
 
 When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
 
+- **A failed Robinhood login stops live Robinhood work (#1816, runtime default, no opt-out, no config change).** A Robinhood login now succeeds only when robin_stocks returns a token, sets its login state, and sets the matching `Authorization` header.
+  In live mode a failed login ends the signal check, execute, emergency close, position fetch, live strategy chart and balance check with an `error` that starts `Robinhood login failed:` and names the failed check, so there is no signal and no order, the kill switch stays unconfirmed, and the circuit-breaker pending close is kept until a login succeeds.
+  Before this change the adapter stayed marked live after a failed login, signal checks ran on Yahoo prices, and orders failed with a library "can only be called when logged in" error.
+  In paper mode a failed login leaves the adapter logged out, and it uses the public price and option fallbacks with no Robinhood call.
+  robin_stocks login lines on stderr now pass through an allowlist with a `[robinhood] robin_stocks:` prefix, and other login text shows as `(detail withheld)`, so credentials, tokens and paths stay out of logs.
+  A login that gets a token but cannot write `$HOME/.tokens/robinhood.pickle` now fails with a reason that names the token cache; before, it ran logged in.
+  The token cache is `$HOME/.tokens`, and the Python scripts inherit HOME from the go-trader process.
+  The shipped units (`go-trader.service`, `systemd/go-trader@.service`) set `ProtectSystem=strict`, which mounts every path read-only except `ReadWritePaths` (`scheduler`, `logs`) and the `StateDirectory`, so a normal home such as `/home/go-trader` is not enough, and `scripts/migrate-service-layout.py` creates service users with home `/nonexistent`.
+  If that reason appears under a shipped unit, set HOME to the unit's state directory in its `EnvironmentFile`: `HOME=/var/lib/go-trader` in `/opt/go-trader/.env` for `go-trader.service`, or `HOME=/var/lib/go-trader/<instance>` in `/opt/go-trader-<instance>/.env` for `go-trader@<instance>`.
+  Restart the service, then restrict the cache to the service user with `chmod 700 $HOME/.tokens`, because the cache file holds a Robinhood session token.
+  Other per-user caches of the service, for example the yfinance cache, then also go under that HOME.
+  #1818 tracks one fixed, owner-only Robinhood session folder, which replaces this HOME step when it lands.
+  After an update, tell operators with live or paper Robinhood strategies; there is nothing to opt out of.
 - **Live Robinhood strategies start trading (#1814, runtime default, no opt-out, no config change).** Before this change, when `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD` and `ROBINHOOD_TOTP_SECRET` were set, robin_stocks login text went to stdout and every Robinhood script result failed to parse: Robinhood strategies got no signals, live ones placed no orders, and the kill switch and circuit-breaker close never sold Robinhood coin.
   Now each Robinhood script writes one JSON document, so with credentials set, live Robinhood strategies place real orders and the kill switch and circuit-breaker close sell.
   Defects on that path are still open: a live sell asks for the booked quantity, which can differ from the held quantity (#1819); the kill switch and circuit-breaker close sell all of a coin in the account, also coin that go-trader did not buy (#1825).
@@ -1458,6 +1471,7 @@ Gather first: platform name and ID prefix; products (spot, perps, futures, optio
 4. `shared_scripts/check_<name>.py`, only if an existing entry script does not fit. Go parses stdout as exactly one JSON document, so a venue SDK that prints must run inside an adapter guard that sends its output to stderr (Robinhood: `robinhood_library()` in `platforms/robinhood/adapter.py`), and an entry script that can print other library text writes its one JSON result through `json_stdout()` from `shared_tools/stdout_contract.py` (Robinhood: `check_robinhood.py`, `close_robinhood_position.py`, `fetch_robinhood_positions.py`, `check_balance.py`; `check_options.py` and `fetch_candles.py` rely on the adapter guard alone).
    Robinhood live orders go only through the adapter-owned `place_market_order` and `resolve_order` (`platforms/robinhood/adapter.py`): every request has an explicit timeout inside the `--budget-ms` budget, login runs under a watchdog, and the result carries one `order_outcome` (`filled`, `partially_filled`, `no_fill`, `rejected`, `not_sent`, `not_found`, `open`, `unknown`, `inconsistent`; the close script adds `already_flat`).
    The scripts exit 0 only for a confirmed fill or `already_flat`, and Go books only a confirmed fill (#1815)
+   Every Robinhood login goes through `robinhood_login()` in `platforms/robinhood/adapter.py`, which accepts a login only with a returned token, the library login state set, and the matching `Authorization` header, and which passes robin_stocks login text through an allowlist so no credential or token reaches stderr.
 5. ID-prefix inference in `scheduler/config.go`
 6. Fee dispatch in `scheduler/fees.go`
 7. Executor wiring, only if a new live execution path is needed
