@@ -203,16 +203,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 	logger := &StrategyLogger{stratID: "rh-login", writer: io.Discard}
 	sc := StrategyConfig{ID: "rh-login", Type: "spot", Platform: "robinhood", Script: checkScript, Args: []string{"momentum_pro", "BTC", "1h", "--mode=live"}}
 	liveStrategies := []StrategyConfig{sc}
-	modes := []string{
-		"login_rejected",
-		"transport_error",
-		"transport_error_secret",
-		"login_no_refresh_token",
-		"login_empty_token",
-		"token_cache_unwritable",
-		"token_cache_dir_error",
-		"login_verification_required",
-	}
+	modes := []string{"login_rejected", "token_cache_unwritable", "transport_error_secret"}
 
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {

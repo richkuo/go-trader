@@ -464,7 +464,12 @@ When in doubt, treat a commit as a runtime default and prompt. Per-release narra
   In paper mode a failed login leaves the adapter logged out, and it uses the public price and option fallbacks with no Robinhood call.
   robin_stocks login lines on stderr now pass through an allowlist with a `[robinhood] robin_stocks:` prefix, and other login text shows as `(detail withheld)`, so credentials, tokens and paths stay out of logs.
   A login that gets a token but cannot write `$HOME/.tokens/robinhood.pickle` now fails with a reason that names the token cache; before, it ran logged in.
-  If that reason appears, give the service user a HOME where `$HOME/.tokens` can be created and written (`scripts/migrate-service-layout.py` creates service users with home `/nonexistent`).
+  The token cache is `$HOME/.tokens`, and the Python scripts inherit HOME from the go-trader process.
+  The shipped units (`go-trader.service`, `systemd/go-trader@.service`) set `ProtectSystem=strict`, which mounts every path read-only except `ReadWritePaths` (`scheduler`, `logs`) and the `StateDirectory`, so a normal home such as `/home/go-trader` is not enough, and `scripts/migrate-service-layout.py` creates service users with home `/nonexistent`.
+  If that reason appears under a shipped unit, set HOME to the unit's state directory in its `EnvironmentFile`: `HOME=/var/lib/go-trader` in `/opt/go-trader/.env` for `go-trader.service`, or `HOME=/var/lib/go-trader/<instance>` in `/opt/go-trader-<instance>/.env` for `go-trader@<instance>`.
+  Restart the service, then restrict the cache to the service user with `chmod 700 $HOME/.tokens`, because the cache file holds a Robinhood session token.
+  Other per-user caches of the service, for example the yfinance cache, then also go under that HOME.
+  #1818 tracks one fixed, owner-only Robinhood session folder, which replaces this HOME step when it lands.
   After an update, tell operators with live or paper Robinhood strategies; there is nothing to opt out of.
 - **Live Robinhood strategies start trading (#1814, runtime default, no opt-out, no config change).** Before this change, when `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD` and `ROBINHOOD_TOTP_SECRET` were set, robin_stocks login text went to stdout and every Robinhood script result failed to parse: Robinhood strategies got no signals, live ones placed no orders, and the kill switch and circuit-breaker close never sold Robinhood coin.
   Now each Robinhood script writes one JSON document, so with credentials set, live Robinhood strategies place real orders and the kill switch and circuit-breaker close sell.
