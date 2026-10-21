@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import math
 import os
 import sys
 import traceback
@@ -26,20 +27,28 @@ def main():
             _emit_error(emit, str(e))
             return
 
+        if not isinstance(raw, list):
+            _emit_error(emit, f"Robinhood holdings read returned {type(raw).__name__}, expected list")
+            return
+
         positions = []
-        for p in raw or []:
-            symbol = (p.get("symbol") or "").upper()
+        for index, p in enumerate(raw):
+            if not isinstance(p, dict):
+                _emit_error(emit, f"Robinhood holding {index} is not an object")
+                return
+            qty = _finite_number(p.get("quantity"))
+            if qty is None or qty < 0:
+                _emit_error(emit, f"Robinhood holding {index} has a malformed, non-finite or negative quantity")
+                return
+            if qty == 0:
+                continue
+            raw_symbol = p.get("symbol")
+            symbol = raw_symbol.strip().upper() if isinstance(raw_symbol, str) else ""
             if not symbol:
-                continue
-            try:
-                qty = float(p.get("quantity") or 0)
-            except (TypeError, ValueError):
-                continue
-            if qty <= 0:
-                continue
-            try:
-                avg_price = float(p.get("avg_price") or 0)
-            except (TypeError, ValueError):
+                _emit_error(emit, f"Robinhood holding {index} has no symbol")
+                return
+            avg_price = _finite_number(p.get("avg_price"))
+            if avg_price is None or avg_price < 0:
                 avg_price = 0.0
             positions.append({
                 "coin": symbol,
@@ -52,6 +61,18 @@ def main():
             "platform": "robinhood",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
+
+
+def _finite_number(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
 
 
 def _emit_error(emit, message):
