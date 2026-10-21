@@ -44,7 +44,7 @@ uv run --no-sync python backtest/candidates/perpetual_premium_reversion_1639/run
 
 `run` rewrites `results.json` and `REPORT.md` from the pinned inputs only; it
 makes no network request. The freezing steps that produced the inputs were
-`init-manifest`, `acquire`, `prepare --run-dir <recording>` and `finalize`.
+`init-manifest --start-ms <run start> --close-ms <run close>` (windows follow the frozen rule in `candidate_spec.json`), `acquire`, `prepare --run-dir <recording>` and `finalize`.
 
 ## Execution models
 

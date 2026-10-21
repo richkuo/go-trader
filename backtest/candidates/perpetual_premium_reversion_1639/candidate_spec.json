@@ -67,7 +67,8 @@
     "recording": "pending",
     "interval": "1m",
     "coins": ["BTC", "ETH"],
-    "windows": "fixed from the recording span when the recording starts: train = the first whole hours after a one-hour warm-up, test = the remaining whole hours; train selects, test is scored once with the frozen selection",
+    "planned_length": "20 hours; the recording may be stopped early, at 12 hours or more",
+    "windows": "derived mechanically from the closed recording's start and close times before any scoring: S = the first whole UTC hour at or after the start, E = the last whole UTC hour at or before the close; the hour [S, S+1h) is warm-up only (premium lookback); of the H = (E - S) / 1h - 1 remaining whole hours, train = the first floor(0.6 * H) hours and test = the rest; at least 2 test hours are required, else the study is inconclusive for missing data; train selects, test is scored once with the frozen selection",
     "candles_and_funding": "public Hyperliquid candleSnapshot (1m, closed bars only) and fundingHistory through offline_manifest.py acquire, hash-pinned in study_manifest.json (offline_candle_manifest/v6)",
     "costs": {"taker_fee_pct": 0.00045, "maker_fee_pct": 0.00015, "slippage_bps": 1.0, "min_notional_usd": 10.0, "min_notional_margin": 0.03, "half_spread_bps": "measured median half spread of accepted recorded quotes per coin in the train window"}
   },

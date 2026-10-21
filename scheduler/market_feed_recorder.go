@@ -441,6 +441,11 @@ func (r *observationRecorder) handle(rec observationRecord) {
 	}
 	seg.sessions[rec.Session] = true
 	r.writeLine(seg, rec.fields())
+	if r.writeError == nil {
+		if err := seg.buf.Flush(); err != nil {
+			r.fail(err)
+		}
+	}
 }
 
 func (r *observationRecorder) segmentFor(recvMs int64) *observationSegment {

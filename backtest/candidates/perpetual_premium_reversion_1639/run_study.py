@@ -115,14 +115,26 @@ def _iso(ms: int) -> str:
     return pd.Timestamp(int(ms), unit="ms", tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def init_manifest(start_ms: int, hours: int, train_hours: int) -> dict:
+MIN_TEST_HOURS = 2
+TRAIN_SHARE = 0.6
+
+
+def plan_windows(start_ms: int, close_ms: int) -> tuple:
+    first = _hour_ceil(start_ms)
+    last = close_ms // 3_600_000 * 3_600_000
+    usable = (last - first) // 3_600_000 - 1
+    train_hours = int(usable * TRAIN_SHARE)
+    if usable - train_hours < MIN_TEST_HOURS or train_hours < 1:
+        raise SystemExit(f"the recording leaves {usable} usable whole hours; the frozen rule needs at least "
+                         f"{MIN_TEST_HOURS} test hours after a train window")
+    train_start = first + 3_600_000
+    return train_start, train_start + train_hours * 3_600_000, last
+
+
+def init_manifest(start_ms: int, close_ms: int) -> dict:
     if os.path.exists(MANIFEST):
         raise SystemExit(f"{MANIFEST} exists; the frozen manifest is never rewritten by init-manifest")
-    train_start = _hour_ceil(start_ms) + 3_600_000
-    split = train_start + train_hours * 3_600_000
-    end = _hour_ceil(start_ms) + hours * 3_600_000
-    if split >= end:
-        raise SystemExit("the planned recording leaves no held-out window")
+    train_start, split, end = plan_windows(start_ms, close_ms)
     with open(DOC_SOURCE) as fh:
         docs = [dict(d, supports=DOC_SUPPORTS[d["supports"]]) for d in json.load(fh)["venue_reference"]["documents"]
                 if d["supports"] in DOC_SUPPORTS]
@@ -757,10 +769,9 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd")
     prep = sub.add_parser("prepare", help="Freeze a closed premium recording into data/ and pin its series hashes")
     prep.add_argument("--run-dir", required=True)
-    init = sub.add_parser("init-manifest", help="Write the frozen study manifest from the recording start and planned length")
+    init = sub.add_parser("init-manifest", help="Write the frozen study manifest from the closed recording's start and close times")
     init.add_argument("--start-ms", type=int, required=True)
-    init.add_argument("--hours", type=int, required=True)
-    init.add_argument("--train-hours", type=int, required=True)
+    init.add_argument("--close-ms", type=int, required=True)
     sub.add_parser("acquire", help="Fetch the frozen 1m candles, funding and venue meta and pin their hashes")
     sub.add_parser("finalize", help="Pin per-coin half spreads measured from recorded train-window quotes")
     runp = sub.add_parser("run", help="Score the frozen study (default)")
@@ -774,7 +785,7 @@ def main(argv=None) -> int:
             print(json.dumps(prepare(args.run_dir), indent=2, sort_keys=True))
             return 0
         if args.cmd == "init-manifest":
-            print(json.dumps(init_manifest(args.start_ms, args.hours, args.train_hours), indent=2, sort_keys=True))
+            print(json.dumps(init_manifest(args.start_ms, args.close_ms), indent=2, sort_keys=True))
             return 0
         if args.cmd == "acquire":
             print(json.dumps(acquire(), indent=2, sort_keys=True, default=str))
