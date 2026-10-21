@@ -131,6 +131,7 @@ def _held(code, quantity, **extra):
 
 
 BTC = _held("BTC", "0.5", cost_bases=[{"direct_cost_basis": "20000"}])
+BTC_SELLABLE = _held("BTC", "0.5", quantity_available="0.5", cost_bases=[{"direct_cost_basis": "20000"}])
 ETH = _held("ETH", "1.25", cost_bases=[{"direct_cost_basis": "2500"}])
 
 
@@ -244,7 +245,7 @@ def test_failed_holdings_read_fails_fetch_script(tmp_path, shape):
 
 @pytest.mark.parametrize("shape", sorted(FAILED_READS))
 def test_failed_holdings_read_fails_close_script(tmp_path, shape):
-    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live"], FAILED_READS[shape])
+    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"], FAILED_READS[shape])
     assert code == 1
     assert isinstance(payload.get("error"), str) and payload["error"]
     assert payload["close"].get("already_flat") is None
@@ -260,7 +261,7 @@ def test_page_cap_stops_after_fifty_holdings_requests(tmp_path):
 
 
 def test_unlogged_library_session_sends_no_holdings_request(tmp_path):
-    for script, args in ((FETCH, []), (CLOSE, ["--symbol=BTC", "--mode=live"])):
+    for script, args in ((FETCH, []), (CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"])):
         code, payload, made = _run(tmp_path, script, args, _single([BTC]), login=LOGIN_REFUSED)
         assert code == 1
         assert isinstance(payload.get("error"), str) and payload["error"]
@@ -306,7 +307,7 @@ def test_unusable_cost_basis_gives_zero_avg_price(tmp_path, extra):
 
 def test_close_reports_already_flat_only_after_complete_read(tmp_path):
     routes = {"GET " + HOLDINGS: [_page([ETH], PAGE2)], "GET " + PAGE2: [_page([])]}
-    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live"], routes)
+    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"], routes)
     assert code == 0
     assert payload.get("error") is None
     assert payload["close"]["already_flat"] is True
@@ -318,10 +319,10 @@ def test_close_reports_already_flat_only_after_complete_read(tmp_path):
 def test_close_sells_holding_found_on_later_page(tmp_path):
     routes = {
         "GET " + HOLDINGS: [_page([ETH], PAGE2)],
-        "GET " + PAGE2: [_page([BTC])],
+        "GET " + PAGE2: [_page([BTC_SELLABLE])],
         "GET " + CURRENCY_PAIRS: [{"raise": "connection"}],
     }
-    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--ref-id=" + REF_ID], routes)
+    code, payload, made = _run(tmp_path, CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--ref-id=" + REF_ID], routes)
     assert code == 1
     assert isinstance(payload.get("error"), str) and payload["error"]
     assert payload["close"].get("already_flat") is None
@@ -828,13 +829,13 @@ def test_execute_sell_refusals_send_no_order(tmp_path, case):
     _assert_finite_document(payload)
 
 
-def _close(budget_ms=6000):
-    return ["--symbol=BTC", "--mode=live", "--ref-id=" + REF_ID, f"--budget-ms={budget_ms}"]
+def _close(budget_ms=6000, quantity="0.5"):
+    return ["--symbol=BTC", "--mode=live", "--quantity=" + quantity, "--ref-id=" + REF_ID, f"--budget-ms={budget_ms}"]
 
 
 def test_close_reports_the_polled_fill_and_not_the_held_quantity(tmp_path):
     routes = _routes([_accepted(side="sell")], [_order("filled", "0.4", "99.25", side="sell")],
-                     **{"GET " + HOLDINGS: [_page([BTC])]})
+                     **{"GET " + HOLDINGS: [_page([BTC_SELLABLE])]})
     code, payload, made = _run(tmp_path, CLOSE, _close(), routes)
     assert code == 0, payload
     assert payload["order_outcome"] == "filled"
@@ -846,7 +847,7 @@ def test_close_reports_the_polled_fill_and_not_the_held_quantity(tmp_path):
 
 def test_close_partial_then_cancel_reports_the_partial_fill(tmp_path):
     routes = _routes([_accepted(side="sell")], [_order("confirmed", side="sell"), _order("canceled", "0.1", "99", side="sell")],
-                     **{"GET " + HOLDINGS: [_page([BTC])]})
+                     **{"GET " + HOLDINGS: [_page([BTC_SELLABLE])]})
     code, payload, _ = _run(tmp_path, CLOSE, _close(), routes)
     assert code == 0, payload
     assert payload["order_outcome"] == "partially_filled"
@@ -858,11 +859,93 @@ def test_close_partial_then_cancel_reports_the_partial_fill(tmp_path):
     ({"status": 503, "json": {"detail": "unavailable"}}, "unknown"),
 ], ids=["refused", "http_503"])
 def test_close_failed_submit_exits_one(tmp_path, post, outcome):
-    routes = _routes([post], **{"GET " + HOLDINGS: [_page([BTC])]})
+    routes = _routes([post], **{"GET " + HOLDINGS: [_page([BTC_SELLABLE])]})
     code, payload, _ = _run(tmp_path, CLOSE, _close(), routes)
     assert code == 1
     assert payload["order_outcome"] == outcome
     assert "fill" not in payload["close"]
+
+
+def _run_emergency_close(tmp_path, quantity, holding, sent="0.4", pairs=None):
+    routes = _sell_routes(sent, holding, pairs)
+    return _run(tmp_path, CLOSE, _close(quantity=quantity), routes)
+
+
+@pytest.mark.parametrize("quantity,want", [("0.4", 0.4), ("0.30000000000000004", 0.3)], ids=["book_below_account", "ask_off_increment"])
+def test_emergency_close_sells_at_most_the_book_and_reports_the_residue(tmp_path, quantity, want):
+    code, payload, made = _run_emergency_close(tmp_path, quantity, _holding("1.0", "1.0"), sent=str(want))
+    assert code == 0, payload
+    posts = _posts(made)
+    assert len(posts) == 1, made
+    assert posts[0]["body"]["quantity"] == want
+    assert payload["requested_quantity"] == want
+    assert payload["close"]["held_qty"] == 1.0
+    assert payload["close"]["available_qty"] == 1.0
+    sizing = payload["sizing"]
+    assert sizing["asked_quantity"] == float(quantity)
+    assert sizing["account_quantity"] == 1.0
+    assert sizing["account_available"] == 1.0
+    assert sizing["sent_quantity"] == want
+    assert abs(sizing["residue_quantity"] - (1.0 - want)) < 1e-12
+    assert sizing["close_kind"] == "emergency"
+    assert sizing["swept"] is False
+    assert sizing["sole_owner"] is False
+    _assert_finite_document(payload)
+
+
+def test_emergency_close_never_sweeps_a_sub_minimum_residue(tmp_path):
+    code, payload, made = _run_emergency_close(tmp_path, "0.5", _holding("0.5004", "0.5004"), sent="0.5", pairs=_pairs(min_size="0.001"))
+    assert code == 0, payload
+    posts = _posts(made)
+    assert len(posts) == 1 and posts[0]["body"]["quantity"] == 0.5
+    assert payload["sizing"]["swept"] is False
+    assert abs(payload["sizing"]["residue_quantity"] - 0.0004) < 1e-12
+
+
+def test_emergency_close_below_the_venue_minimum_sends_no_order(tmp_path):
+    code, payload, made = _run_emergency_close(tmp_path, "0.0005", _holding("0.5", "0.5"), pairs=_pairs(min_size="0.001"))
+    assert code == 1
+    assert payload["order_outcome"] == "not_sent"
+    assert "minimum" in payload["error"] and "R=0.0005" in payload["error"] and "M=0.001" in payload["error"]
+    assert len(_posts(made)) == 0
+    assert "sizing" not in payload
+
+
+def test_emergency_close_with_no_total_holding_is_already_flat(tmp_path):
+    code, payload, made = _run(tmp_path, CLOSE, _close(quantity="0.5"), {"GET " + HOLDINGS: [_page([ETH])]})
+    assert code == 0, payload
+    assert payload["close"]["already_flat"] is True
+    assert payload.get("error") is None
+    assert len(_posts(made)) == 0
+    assert _count(made, CURRENCY_PAIRS) == 0
+
+
+def test_emergency_close_with_reserved_holdings_is_not_flat_and_sends_no_order(tmp_path):
+    code, payload, made = _run_emergency_close(tmp_path, "0.5", _holding("0.5", "0"))
+    assert code == 1
+    assert payload["order_outcome"] == "not_sent"
+    assert payload["close"].get("already_flat") is None
+    assert payload["close"]["held_qty"] == 0.5
+    assert payload["close"]["available_qty"] == 0.0
+    assert "A=0" in payload["error"]
+    assert len(_posts(made)) == 0
+
+
+@pytest.mark.parametrize("args", [
+    ["--symbol=BTC", "--mode=live", "--ref-id=" + REF_ID],
+    ["--symbol=BTC", "--mode=live", "--quantity=abc", "--ref-id=" + REF_ID],
+    ["--symbol=BTC", "--mode=live", "--quantity=0", "--ref-id=" + REF_ID],
+    ["--symbol=BTC", "--mode=live", "--quantity=-1", "--ref-id=" + REF_ID],
+    ["--symbol=BTC", "--mode=live", "--quantity=NaN", "--ref-id=" + REF_ID],
+    ["--symbol=BTC", "--mode=live", "--quantity=0.5", "--unknown-flag"],
+], ids=["missing", "text", "zero", "negative", "nan", "unknown_flag"])
+def test_emergency_close_refuses_a_missing_or_invalid_quantity_before_login(tmp_path, args):
+    proc, payload, made = _run_capture(tmp_path, CLOSE, args, _single([BTC_SELLABLE]))
+    assert proc.returncode == 1, proc.stdout
+    assert len([ln for ln in proc.stdout.splitlines() if ln.strip()]) == 1, proc.stdout
+    assert payload["order_outcome"] == "not_sent"
+    assert isinstance(payload.get("error"), str) and payload["error"]
+    assert made == []
 
 
 LOGIN_FAILED = "Robinhood login failed:"
@@ -885,7 +968,7 @@ LOGIN_FAILURES = {
         "robin_stocks reported Error: No verification ID returned in user-machine response",
     ),
 }
-SCRIPTS = {"fetch": (FETCH, []), "close": (CLOSE, ["--symbol=BTC", "--mode=live"])}
+SCRIPTS = {"fetch": (FETCH, []), "close": (CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"])}
 
 
 def _run_capture(tmp_path, script, args, routes, login=LOGIN_OK, home=None):

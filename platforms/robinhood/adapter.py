@@ -59,7 +59,9 @@ _SIZING_PRECISION = 100
 _FLOOR_QUOTIENT_CAP = Decimal(10) ** 36
 CLOSE_KIND_WHOLE = "whole"
 CLOSE_KIND_PARTIAL = "partial"
+CLOSE_KIND_EMERGENCY = "emergency"
 CLOSE_KINDS = (CLOSE_KIND_WHOLE, CLOSE_KIND_PARTIAL)
+SELL_POLICY_KINDS = (CLOSE_KIND_WHOLE, CLOSE_KIND_PARTIAL, CLOSE_KIND_EMERGENCY)
 
 _FILLED_STATES = frozenset({"filled"})
 _CANCELED_STATES = frozenset({"canceled", "cancelled"})
@@ -363,8 +365,8 @@ def _decimal_text(value):
 
 
 def plan_sized_sell(asked, available, rules, close_kind, sole_owner):
-    if close_kind not in CLOSE_KINDS:
-        raise _SellSizingRefusal(f"close kind {close_kind!r} is not whole or partial")
+    if close_kind not in SELL_POLICY_KINDS:
+        raise _SellSizingRefusal(f"close kind {close_kind!r} is not whole, partial or emergency")
     if not isinstance(asked, Decimal) or not asked.is_finite() or asked <= 0:
         raise _SellSizingRefusal(f"requested quantity {asked!r} is not a finite positive decimal")
     if not isinstance(available, Decimal) or not available.is_finite() or available < 0:
@@ -1106,7 +1108,7 @@ class RobinhoodExchangeAdapter:
             raise _OrderPrepError(f"currency pairs: the {want} pair has no id")
         return pair_id.strip(), matches[0]
 
-    def _sellable_quantity(self, symbol, deadline):
+    def holding_quantities(self, symbol, deadline):
         want = symbol.strip().upper()
         try:
             rows = self._read_crypto_holdings(deadline)
@@ -1116,7 +1118,7 @@ class RobinhoodExchangeAdapter:
             raise _OrderPrepError(f"{_HOLDINGS_ERROR_PREFIX} unexpected {type(e).__name__}") from e
         held = [row for row in rows if row.get("symbol") == want]
         if not held:
-            return Decimal(0)
+            return {"quantity": Decimal(0), "available": Decimal(0)}
         row = held[0]
         if not row.get("has_quantity_available"):
             raise _OrderPrepError(f"{_HOLDINGS_ERROR_PREFIX} the {want} holding has no quantity_available")
@@ -1131,7 +1133,7 @@ class RobinhoodExchangeAdapter:
             raise _OrderPrepError(f"{_HOLDINGS_ERROR_PREFIX} the {want} quantity {row.get('quantity_raw')!r} is not a bounded finite decimal")
         if available > quantity:
             raise _OrderPrepError(f"{_HOLDINGS_ERROR_PREFIX} the {want} quantity_available {raw_available!r} is above the quantity {row.get('quantity_raw')!r}")
-        return available
+        return {"quantity": quantity, "available": available}
 
     def _crypto_account_id(self, session, urls, deadline, expected_account_id):
         body = self._read_json_dict(session, urls.crypto_account_url(), deadline, "crypto account")
@@ -1276,8 +1278,8 @@ class RobinhoodExchangeAdapter:
             asked = sell_policy.get("asked") if isinstance(sell_policy, dict) else None
             if not isinstance(asked, Decimal) or not asked.is_finite() or asked <= 0:
                 raise ValueError(f"sell policy ask {asked!r} is not a finite positive decimal")
-            if sell_policy.get("close_kind") not in CLOSE_KINDS:
-                raise ValueError(f"sell policy close kind {sell_policy.get('close_kind')!r} is not whole or partial")
+            if sell_policy.get("close_kind") not in SELL_POLICY_KINDS:
+                raise ValueError(f"sell policy close kind {sell_policy.get('close_kind')!r} is not whole, partial or emergency")
         try:
             ref_id = str(uuid.UUID(str(ref_id)))
         except ValueError:
@@ -1327,9 +1329,10 @@ class RobinhoodExchangeAdapter:
         sizing = None
         if sell_policy is not None:
             rules = _pair_quantity_rules(pair_row, symbol)
-            available = self._sellable_quantity(symbol, deadline)
-            sizing = plan_sized_sell(sell_policy["asked"], available, rules,
+            holding = self.holding_quantities(symbol, deadline)
+            sizing = plan_sized_sell(sell_policy["asked"], holding["available"], rules,
                                      sell_policy["close_kind"], sell_policy.get("sole_owner") is True)
+            sizing["account_quantity"] = float(holding["quantity"])
             remaining = deadline - time.monotonic()
             reserve = min(_CANCEL_RESERVE_S, max(remaining, 0.0) * _CANCEL_RESERVE_SHARE)
             if remaining - reserve < _POLL_INTERVAL_START_S:

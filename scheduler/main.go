@@ -1590,6 +1590,8 @@ func main() {
 					RHFetcher:           defaultRobinhoodPositionsFetcher,
 					RHResolveUnresolved: robinhoodEmergencyResolver(rhEmergencyDeps, cfg, logMgr),
 					RHFreshLongs:        robinhoodFreshLongsReader(rhEmergencyDeps),
+					RHBookSnapshot:      robinhoodBookSnapshotReader(rhEmergencyDeps),
+					RHSettle:            robinhoodDurableSettler(rhEmergencyDeps, cfg, logMgr),
 					TSLiveAll:           tsLiveAll,
 					TSCloser:            defaultTopStepLiveCloser,
 					TSFetcher:           defaultTopStepPositionsFetcher,
@@ -1625,9 +1627,10 @@ func main() {
 			if liveKillSwitchFired && plan.OnChainConfirmedFlat {
 				liveSR := scopeRisk[livePartition]
 				mu.Lock()
+				rhFlatCoins := plan.RHCloseReport.VerifiedFlatCoins()
 				for _, sc := range strategiesInScope(cfg.Strategies, ScopeLive) {
 					if s, ok := state.Strategies[sc.ID]; ok {
-						forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, nil)
+						forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, rhFlatCoins, nil)
 					}
 				}
 				if !notifier.HasOwner() {
@@ -1917,6 +1920,7 @@ func main() {
 							store:   store,
 							prices:  prices,
 							resolve: robinhoodEmergencyResolver(rhEmergencyDeps, cfg, logMgr),
+							settle:  robinhoodDurableSettler(rhEmergencyDeps, cfg, logMgr),
 						},
 					)
 				}

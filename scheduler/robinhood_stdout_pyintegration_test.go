@@ -76,7 +76,7 @@ func TestRobinhoodScriptStdoutParsesInGo(t *testing.T) {
 			robinhoodStdoutRequireStubbedLogin(t, "RunRobinhoodExecute", mode, stderr)
 
 			robinhoodStdoutFreshHome(t)
-			closeResult, stderr, closeErr := RunRobinhoodClose(robinhoodLiveCloseScript, "BTC", "")
+			closeResult, stderr, closeErr := RunRobinhoodClose(robinhoodLiveCloseScript, "BTC", "", 0.5)
 			if closeResult == nil {
 				t.Errorf("RunRobinhoodClose (%s): stdout did not parse: err=%v stderr:\n%s", mode, closeErr, stderr)
 			} else if closeErr == nil || closeResult.Error == "" || (closeResult.Close != nil && closeResult.Close.AlreadyFlat) {
@@ -127,9 +127,24 @@ func TestRobinhoodScriptStdoutParsesInGo(t *testing.T) {
 	}
 }
 
-func robinhoodStdoutCloser(symbol string) (*RobinhoodCloseResult, error) {
-	result, _, err := RunRobinhoodClose(robinhoodLiveCloseScript, symbol, "")
+func robinhoodStdoutCloser(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error) {
+	result, _, err := RunRobinhoodClose(robinhoodLiveCloseScript, req.Symbol, "", req.Quantity)
 	return result, err
+}
+
+func robinhoodStdoutKillSwitchDeps(closer RobinhoodLiveCloser, book map[string]float64) robinhoodKillSwitchCloseDeps {
+	snap := robinhoodBookSnapshot{Targets: book, Held: map[string]bool{}}
+	return robinhoodKillSwitchCloseDeps{
+		Closer:    closer,
+		Fetcher:   defaultRobinhoodPositionsFetcher,
+		Book:      snap,
+		BookAfter: func() robinhoodBookSnapshot { return snap },
+		Settle:    func() robinhoodSettleOutcome { return robinhoodSettleOutcome{} },
+	}
+}
+
+func robinhoodStdoutSeedBook(state *AppState, id, coin string, qty float64) {
+	state.Strategies[id].Positions[coin] = &Position{Symbol: coin, Quantity: qty, InitialQuantity: qty, AvgCost: 90, Side: "long", OwnerStrategyID: id}
 }
 
 func robinhoodStdoutStore(t *testing.T, strategies []StrategyConfig) (*StateStore, *AppState) {
@@ -170,7 +185,7 @@ func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
 		t.Run("close_read_fails_"+mode, func(t *testing.T) {
 			robinhoodStdoutOfflineEnv(t, root, mode)
 			robinhoodStdoutFreshHome(t)
-			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, liveStrategies, robinhoodStdoutCloser, defaultRobinhoodPositionsFetcher, nil, nil)
+			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, liveStrategies, robinhoodStdoutKillSwitchDeps(robinhoodStdoutCloser, map[string]float64{"BTC": 0.5}))
 			if report.Errors["BTC"] == nil || report.ConfirmedFlat() || len(report.AlreadyFlat) != 0 || len(report.ClosedCoins) != 0 {
 				t.Fatalf("%s: close with a failed position read must land in Errors, got %+v", mode, report)
 			}
@@ -180,7 +195,7 @@ func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
 	t.Run("close_no_holding_is_flat", func(t *testing.T) {
 		robinhoodStdoutOfflineEnv(t, root, "order_accepted")
 		robinhoodStdoutFreshHome(t)
-		report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "ETH", Size: 0.5}}, []StrategyConfig{ethSC}, robinhoodStdoutCloser, defaultRobinhoodPositionsFetcher, nil, nil)
+		report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "ETH", Size: 0.5}}, []StrategyConfig{ethSC}, robinhoodStdoutKillSwitchDeps(robinhoodStdoutCloser, map[string]float64{"ETH": 0.5}))
 		if len(report.Errors) != 0 || len(report.AlreadyFlat) != 1 || report.AlreadyFlat[0] != "ETH" || !report.ConfirmedFlat() {
 			t.Fatalf("close after a successful read with no ETH row must be already flat, got %+v", report)
 		}
@@ -201,8 +216,9 @@ func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
 			}
 			robinhoodStdoutFreshHome(t)
 			store2, state2 := robinhoodStdoutStore(t, liveStrategies)
+			robinhoodStdoutSeedBook(state2, sc.ID, "BTC", 0.5)
 			deps := robinhoodEmergencyDeps{store: store2, state: state2, mu: &mu, cfgs: liveStrategies}
-			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, []StrategyConfig{sc}, newRobinhoodEmergencyCloser(deps, robinhoodOriginKillSwitch), defaultRobinhoodPositionsFetcher, nil, nil)
+			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, []StrategyConfig{sc}, robinhoodStdoutKillSwitchDeps(newRobinhoodEmergencyCloser(deps, robinhoodOriginKillSwitch), map[string]float64{"BTC": 0.5}))
 			if report.Errors["BTC"] == nil || report.ConfirmedFlat() || len(report.ClosedCoins) != 0 {
 				t.Errorf("%s close: a refused or unknown sell must land in Errors, got %+v", mode, report)
 			}
@@ -228,8 +244,9 @@ func TestRobinhoodScriptStdoutOrderAndCloseOutcomes(t *testing.T) {
 		}
 		robinhoodStdoutFreshHome(t)
 		store2, state2 := robinhoodStdoutStore(t, liveStrategies)
+		robinhoodStdoutSeedBook(state2, sc.ID, "BTC", 0.5)
 		deps := robinhoodEmergencyDeps{store: store2, state: state2, mu: &mu, cfgs: liveStrategies}
-		report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, []StrategyConfig{sc}, newRobinhoodEmergencyCloser(deps, robinhoodOriginKillSwitch), defaultRobinhoodPositionsFetcher, nil, nil)
+		report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, []StrategyConfig{sc}, robinhoodStdoutKillSwitchDeps(newRobinhoodEmergencyCloser(deps, robinhoodOriginKillSwitch), map[string]float64{"BTC": 0.5}))
 		if report.Errors["BTC"] == nil || len(report.ClosedCoins) != 0 || report.ConfirmedFlat() {
 			t.Fatalf("accepted close with no confirmed fill: got %+v, want BTC in Errors", report)
 		}
@@ -299,7 +316,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 			}
 
 			robinhoodStdoutFreshHome(t)
-			closeResult, stderr, closeErr := RunRobinhoodClose(robinhoodLiveCloseScript, "BTC", "")
+			closeResult, stderr, closeErr := RunRobinhoodClose(robinhoodLiveCloseScript, "BTC", "", 0.5)
 			keep(stderr)
 			if closeErr != nil {
 				keep(closeErr.Error())
@@ -311,8 +328,9 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 			robinhoodStdoutFreshHome(t)
 			killStore, killState := robinhoodStdoutStore(t, liveStrategies)
 			var killMu sync.RWMutex
+			robinhoodStdoutSeedBook(killState, sc.ID, "BTC", 0.5)
 			killDeps := robinhoodEmergencyDeps{store: killStore, state: killState, mu: &killMu, cfgs: liveStrategies}
-			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, liveStrategies, newRobinhoodEmergencyCloser(killDeps, robinhoodOriginKillSwitch), defaultRobinhoodPositionsFetcher, nil, nil)
+			report := forceCloseRobinhoodLive(context.Background(), []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, liveStrategies, robinhoodStdoutKillSwitchDeps(newRobinhoodEmergencyCloser(killDeps, robinhoodOriginKillSwitch), map[string]float64{"BTC": 0.5}))
 			if report.Errors["BTC"] != nil {
 				keep(report.Errors["BTC"].Error())
 			}
@@ -323,7 +341,8 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 			robinhoodStdoutFreshHome(t)
 			cbStore, state := robinhoodStdoutStore(t, liveStrategies)
 			var mu sync.RWMutex
-			state.Strategies[sc.ID].RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.5}}})
+			robinhoodStdoutSeedBook(state, sc.ID, "BTC", 0.5)
+			state.Strategies[sc.ID].RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.5}}, SizeBasis: robinhoodPendingSizeBasisBook})
 			cbDeps := robinhoodEmergencyDeps{store: cbStore, state: state, mu: &mu, cfgs: liveStrategies}
 			runPendingRobinhoodCircuitCloses(context.Background(), state, liveStrategies, []RobinhoodPosition{{Coin: "BTC", Size: 0.5}}, true, nil, newRobinhoodEmergencyCloser(cbDeps, robinhoodOriginCircuitBreaker), nil, 60*time.Second, &mu, robinhoodCircuitCloseDeps{store: cbStore, prices: map[string]float64{"BTC": 50}})
 			pending := state.Strategies[sc.ID].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood)

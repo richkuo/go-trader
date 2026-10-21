@@ -220,7 +220,7 @@ var robinhoodResolveProbeArgv = []string{
 }
 
 var robinhoodCloseProbeArgv = []string{
-	"--symbol=BTC", "--mode=live", "--budget-ms=50000",
+	"--symbol=BTC", "--mode=live", "--quantity=1", "--budget-ms=50000",
 	"--ref-id=00000000-0000-4000-8000-000000000000", "--probe-only",
 }
 

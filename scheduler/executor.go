@@ -1261,6 +1261,7 @@ type RobinhoodOrderCancel struct {
 
 type RobinhoodSellSizing struct {
 	AskedQuantity     float64 `json:"asked_quantity"`
+	AccountQuantity   float64 `json:"account_quantity,omitempty"`
 	AccountAvailable  float64 `json:"account_available"`
 	SentQuantity      float64 `json:"sent_quantity"`
 	MinOrderSize      float64 `json:"min_order_size"`
@@ -1289,8 +1290,9 @@ type RobinhoodExecuteResult struct {
 }
 
 const (
-	robinhoodCloseKindWhole   = "whole"
-	robinhoodCloseKindPartial = "partial"
+	robinhoodCloseKindWhole     = "whole"
+	robinhoodCloseKindPartial   = "partial"
+	robinhoodCloseKindEmergency = "emergency"
 )
 
 type RobinhoodSellArgs struct {
@@ -1715,10 +1717,11 @@ type RobinhoodCloseFill struct {
 }
 
 type RobinhoodClose struct {
-	Symbol      string              `json:"symbol"`
-	HeldQty     float64             `json:"held_qty,omitempty"`
-	Fill        *RobinhoodCloseFill `json:"fill,omitempty"`
-	AlreadyFlat bool                `json:"already_flat,omitempty"`
+	Symbol       string              `json:"symbol"`
+	HeldQty      float64             `json:"held_qty,omitempty"`
+	AvailableQty float64             `json:"available_qty,omitempty"`
+	Fill         *RobinhoodCloseFill `json:"fill,omitempty"`
+	AlreadyFlat  bool                `json:"already_flat,omitempty"`
 }
 
 type RobinhoodCloseResult struct {
@@ -1727,18 +1730,25 @@ type RobinhoodCloseResult struct {
 	Order             RobinhoodOrderEvidence `json:"order"`
 	RefID             string                 `json:"ref_id,omitempty"`
 	RequestedQuantity float64                `json:"requested_quantity,omitempty"`
+	Sizing            *RobinhoodSellSizing   `json:"sizing,omitempty"`
 	AccountID         string                 `json:"account_id,omitempty"`
 	Cancel            RobinhoodOrderCancel   `json:"cancel"`
 	Platform          string                 `json:"platform"`
 	Timestamp         string                 `json:"timestamp"`
 	Error             string                 `json:"error,omitempty"`
 	RunErr            error                  `json:"-"`
+	AskedQty          float64                `json:"-"`
+	NoBook            bool                   `json:"-"`
 }
 
-func RunRobinhoodClose(script, symbol, refID string) (*RobinhoodCloseResult, string, error) {
+func RunRobinhoodClose(script, symbol, refID string, quantity float64) (*RobinhoodCloseResult, string, error) {
+	if !(quantity > 0) || math.IsInf(quantity, 0) {
+		return nil, "", fmt.Errorf("the close quantity %v is not a finite positive number; no order was sent", quantity)
+	}
 	args := []string{
 		fmt.Sprintf("--symbol=%s", symbol),
 		"--mode=live",
+		"--quantity=" + strconv.FormatFloat(quantity, 'f', -1, 64),
 		fmt.Sprintf("--budget-ms=%d", robinhoodOrderBudgetMs()),
 	}
 	if refID != "" {
@@ -1787,6 +1797,7 @@ func robinhoodCloseAsOrderResult(res *RobinhoodCloseResult) *RobinhoodExecuteRes
 		Order:             res.Order,
 		RefID:             res.RefID,
 		RequestedQuantity: res.RequestedQuantity,
+		Sizing:            res.Sizing,
 		AccountID:         res.AccountID,
 		Cancel:            res.Cancel,
 		Platform:          res.Platform,
@@ -1794,7 +1805,7 @@ func robinhoodCloseAsOrderResult(res *RobinhoodCloseResult) *RobinhoodExecuteRes
 		Error:             res.Error,
 	}
 	if res.Close != nil {
-		out.Execution = &RobinhoodExecution{Action: "sell", Symbol: res.Close.Symbol, Quantity: res.Close.HeldQty}
+		out.Execution = &RobinhoodExecution{Action: "sell", Symbol: res.Close.Symbol, Quantity: res.RequestedQuantity}
 		if f := res.Close.Fill; f != nil && (f.AvgPx != 0 || f.TotalSz != 0 || f.OID != "" || f.Fee != 0) {
 			out.Execution.Fill = &RobinhoodFill{AvgPx: f.AvgPx, Quantity: f.TotalSz, OID: f.OID, Fee: f.Fee}
 		}

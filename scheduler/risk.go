@@ -758,7 +758,10 @@ type PendingCircuitClose struct {
 	OperatorRequired    bool                        `json:"operator_required,omitempty"`
 	ConsecutiveFailures int                         `json:"consecutive_failures,omitempty"`
 	LastNotifiedAt      time.Time                   `json:"last_notified_at,omitempty"`
+	SizeBasis           string                      `json:"size_basis,omitempty"`
 }
+
+const robinhoodPendingSizeBasisBook = "book"
 
 type PendingCircuitCloseSymbol struct {
 	Symbol string  `json:"symbol"`
@@ -770,8 +773,6 @@ type PlatformRiskAssist struct {
 	HLLiveAll    []StrategyConfig
 	OKXPositions []OKXPosition
 	OKXLiveAll   []StrategyConfig
-	RHPositions  []RobinhoodPosition
-	RHLiveAll    []StrategyConfig
 	TSPositions  []TopStepPosition
 	TSLiveAll    []StrategyConfig
 }
@@ -990,26 +991,21 @@ func setOperatorRequiredCircuitBreakerPending(sc *StrategyConfig, s *StrategySta
 	}
 }
 
-func setRobinhoodCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) {
-	if sc == nil || assist == nil || len(assist.RHPositions) == 0 {
-		return
-	}
-	if sc.Platform != "robinhood" || sc.Type != "spot" || !robinhoodIsLive(sc.Args) {
+func setRobinhoodCircuitBreakerPending(sc *StrategyConfig, s *StrategyState) {
+	if sc == nil || s == nil || !isRobinhoodLiveSpot(*sc) {
 		return
 	}
 	coin := robinhoodSymbol(sc.Args)
 	if coin == "" {
 		return
 	}
-	if _, ok := s.Positions[coin]; !ok {
-		return
-	}
-	qty := robinhoodOnAccountSize(coin, assist.RHPositions)
-	if qty <= 0 {
+	pos := s.Positions[coin]
+	if pos == nil || pos.Side != "long" || robinhoodBookFlat(pos.Quantity) || !robinhoodFinite(pos.Quantity) {
 		return
 	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: coin, Size: qty}},
+		Symbols:   []PendingCircuitCloseSymbol{{Symbol: coin, Size: pos.Quantity}},
+		SizeBasis: robinhoodPendingSizeBasisBook,
 	})
 }
 
@@ -1056,9 +1052,11 @@ func rolloverDailyPnL(r *RiskState) {
 	}
 }
 
-func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, hlFills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, hlVirtualQty hlVirtualQuantitySnapshot, logger *StrategyLogger) {
+func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, hlFills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, hlVirtualQty hlVirtualQuantitySnapshot, rhFlatCoins map[string]bool, logger *StrategyLogger) {
 	if isRobinhoodLiveSpot(sc) {
-		closeRobinhoodBookVerifiedFlat(s, sc, prices, nil, robinhoodVerifiedFlatKillSwitch, logger)
+		if len(rhFlatCoins) > 0 {
+			closeRobinhoodBookVerifiedFlat(s, sc, prices, rhFlatCoins, robinhoodVerifiedFlatKillSwitch, logger)
+		}
 		return
 	}
 	applyHyperliquidKillSwitchCloseFill(s, sc, hlFills, hlLiveAll, hlVirtualQty)
@@ -1370,7 +1368,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			r.CircuitBreakerUntil = now.Add(sc.CircuitBreakerDrawdownCooldown())
 			setHyperliquidCircuitBreakerPending(sc, s, assist)
 			setOKXCircuitBreakerPending(sc, s, assist)
-			setRobinhoodCircuitBreakerPending(sc, s, assist)
+			setRobinhoodCircuitBreakerPending(sc, s)
 			setTopStepCircuitBreakerPending(sc, s, assist)
 			setOperatorRequiredCircuitBreakerPending(sc, s)
 			if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
@@ -1389,7 +1387,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		r.CircuitBreakerUntil = now.Add(sc.CircuitBreakerLossStreakCooldown())
 		setHyperliquidCircuitBreakerPending(sc, s, assist)
 		setOKXCircuitBreakerPending(sc, s, assist)
-		setRobinhoodCircuitBreakerPending(sc, s, assist)
+		setRobinhoodCircuitBreakerPending(sc, s)
 		setTopStepCircuitBreakerPending(sc, s, assist)
 		setOperatorRequiredCircuitBreakerPending(sc, s)
 		if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
