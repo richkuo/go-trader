@@ -414,9 +414,9 @@ func TestPaperToLiveReadsBothModeForms(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"equals paper", []string{"momentum", "ETH", "1h", "--mode=paper"}, []string{"momentum", "ETH", "1h", "--mode=live"}},
-		{"split paper", []string{"momentum", "ETH", "1h", "--mode", "paper"}, []string{"momentum", "ETH", "1h", "--mode=live"}},
-		{"split live", []string{"momentum", "ETH", "1h", "--mode", "live"}, nil},
+		{"equals paper", []string{"breakout", "ETH", "1h", "--mode=paper"}, []string{"breakout", "ETH", "1h", "--mode=live"}},
+		{"split paper", []string{"breakout", "ETH", "1h", "--mode", "paper"}, []string{"breakout", "ETH", "1h", "--mode=live"}},
+		{"split live", []string{"breakout", "ETH", "1h", "--mode", "live"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
