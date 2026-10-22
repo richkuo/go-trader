@@ -1989,58 +1989,49 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 
 		if !skipLiveCredentialChecks {
 			if sc.Type == "futures" {
-				for _, arg := range sc.Args {
-					if arg == "--mode=live" {
-						if os.Getenv("TOPSTEP_API_KEY") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_KEY env var", prefix))
-						}
-						if os.Getenv("TOPSTEP_API_SECRET") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_SECRET env var", prefix))
-						}
-						if os.Getenv("TOPSTEP_ACCOUNT_ID") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_ACCOUNT_ID env var", prefix))
-						}
-						break
+				if isLiveArgs(sc.Args) {
+					if os.Getenv("TOPSTEP_API_KEY") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_KEY env var", prefix))
+					}
+					if os.Getenv("TOPSTEP_API_SECRET") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_SECRET env var", prefix))
+					}
+					if os.Getenv("TOPSTEP_ACCOUNT_ID") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_ACCOUNT_ID env var", prefix))
 					}
 				}
 			}
 
 			if sc.Platform == "robinhood" {
-				for _, arg := range sc.Args {
-					if arg == "--mode=live" {
-						if os.Getenv("ROBINHOOD_USERNAME") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_USERNAME env var", prefix))
-						}
-						if os.Getenv("ROBINHOOD_PASSWORD") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_PASSWORD env var", prefix))
-						}
-						if os.Getenv("ROBINHOOD_TOTP_SECRET") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_TOTP_SECRET env var", prefix))
-						}
-						break
+				if isLiveArgs(sc.Args) {
+					if os.Getenv("ROBINHOOD_USERNAME") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_USERNAME env var", prefix))
+					}
+					if os.Getenv("ROBINHOOD_PASSWORD") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_PASSWORD env var", prefix))
+					}
+					if os.Getenv("ROBINHOOD_TOTP_SECRET") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_TOTP_SECRET env var", prefix))
 					}
 				}
 			}
 
 			if sc.Type == "perps" || (sc.Platform == "okx" && sc.Type == "spot") {
-				for _, arg := range sc.Args {
-					if arg == "--mode=live" {
-						if sc.Platform == "okx" {
-							if os.Getenv("OKX_API_KEY") == "" {
-								errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_KEY env var", prefix))
-							}
-							if os.Getenv("OKX_API_SECRET") == "" {
-								errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_SECRET env var", prefix))
-							}
-							if os.Getenv("OKX_PASSPHRASE") == "" {
-								errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_PASSPHRASE env var", prefix))
-							}
-						} else if sc.Platform == "hyperliquid" || sc.Platform == "" {
-							if os.Getenv("HYPERLIQUID_SECRET_KEY") == "" {
-								errs = append(errs, fmt.Sprintf("%s: --mode=live requires HYPERLIQUID_SECRET_KEY env var", prefix))
-							}
+				if isLiveArgs(sc.Args) {
+					if sc.Platform == "okx" {
+						if os.Getenv("OKX_API_KEY") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_KEY env var", prefix))
 						}
-						break
+						if os.Getenv("OKX_API_SECRET") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_SECRET env var", prefix))
+						}
+						if os.Getenv("OKX_PASSPHRASE") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_PASSPHRASE env var", prefix))
+						}
+					} else if sc.Platform == "hyperliquid" || sc.Platform == "" {
+						if os.Getenv("HYPERLIQUID_SECRET_KEY") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires HYPERLIQUID_SECRET_KEY env var", prefix))
+						}
 					}
 				}
 			}
