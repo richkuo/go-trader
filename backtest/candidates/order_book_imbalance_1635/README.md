@@ -38,6 +38,6 @@ uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.
 
 `fetch`, `fetch-funding` and `fetch-venue` rewrite the pinned files. A fresh `fetch` must reproduce the manifest sha256 values, or `import` refuses the objects.
 
-The scoring run used commit `6c7a7080`. The working tree differed from it only in `SKILL.md` and `docs/research/1635-l2-book-contract.md`; the sha256 values that `results.json` records for every scoring source match that commit.
+The scoring run used local commit `6c7a7080`, which became `d3293502` after rebasing onto newer `main` commits that do not touch the study. The working tree differed from it only in `SKILL.md` and `docs/research/1635-l2-book-contract.md`. The sha256 values that `results.json` records for every scoring source match `d3293502`.
 
 Discovery before (`origin/main` 793097a1) and after this change is byte-identical (`discovery_before_*.json`, `discovery_after_*.json`).
