@@ -1467,11 +1467,7 @@ func main() {
 			}
 
 			for _, part := range cyclePartitions {
-				prs := state.partitionRisk(part)
-				if prs.QuotePrecisionRebaselined {
-					continue
-				}
-				for _, line := range applyQuotePrecisionPeakRebaseline(part, prs, cfg.Strategies, state, prices, scopeRisk[part].TotalPV) {
+				for _, line := range applyQuotePrecisionPeakRebaseline(part, state.partitionRisk(part), cfg.Strategies, state, prices, scopeRisk[part].TotalPV) {
 					fmt.Println(line)
 				}
 			}

@@ -643,6 +643,7 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE kill_switch_events ADD COLUMN scope TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE portfolio_risk ADD COLUMN kill_switch_close_applied INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE portfolio_risk ADD COLUMN quote_precision_rebaselined INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE strategies ADD COLUMN quote_precision_rebaselined INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN shared_close_hold_usd REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN shared_close_hold_reason TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE pending_manual_actions ADD COLUMN prev_tp_oids_json TEXT NOT NULL DEFAULT ''",
@@ -1308,10 +1309,10 @@ func (sdb *StateDB) PersistSharedWalletPoolStateTransition(s *StrategyState) err
 	res, err := sdb.db.Exec(
 		`UPDATE strategies
 		 SET cash = ?, initial_capital = ?, risk_peak_value = ?,
-		     risk_current_drawdown_pct = ?, shared_wallet_pool_budget = ?
+		     risk_current_drawdown_pct = ?, shared_wallet_pool_budget = ?, quote_precision_rebaselined = ?
 		 WHERE id = ?`,
 		s.Cash, s.InitialCapital, s.RiskState.PeakValue,
-		s.RiskState.CurrentDrawdownPct, poolInt, sid,
+		s.RiskState.CurrentDrawdownPct, poolInt, boolToInt(s.RiskState.QuotePrecisionRebaselined), sid,
 	)
 	if err != nil {
 		return fmt.Errorf("persist shared-wallet pool transition for %s: %w", s.ID, err)
@@ -1497,8 +1498,8 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
 		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source,
-		paper_funding_state)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		paper_funding_state, quote_precision_rebaselined)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare strategy insert: %w", err)
 	}
@@ -1555,6 +1556,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 			s.ReplayMirrorWatermark,
 			s.ReplayMirrorWatermarkSource,
 			paperFundingJSON,
+			boolToInt(s.RiskState.QuotePrecisionRebaselined),
 		); err != nil {
 			return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 		}
@@ -1978,8 +1980,8 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
 		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source,
-		paper_funding_state)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		paper_funding_state, quote_precision_rebaselined)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sid, s.Type, s.Platform, s.Cash, s.InitialCapital,
 		s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
 		s.RiskState.DailyPnL, s.RiskState.DailyPnLDate, s.RiskState.ConsecutiveLosses,
@@ -1992,6 +1994,7 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 		s.ReplayMirrorWatermark,
 		s.ReplayMirrorWatermarkSource,
 		paperFundingJSON,
+		boolToInt(s.RiskState.QuotePrecisionRebaselined),
 	); err != nil {
 		return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 	}
@@ -2429,7 +2432,8 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		COALESCE(hurst_gate_state, '') AS hurst_gate_state,
 		COALESCE(replay_mirror_watermark, 0) AS replay_mirror_watermark,
 		COALESCE(replay_mirror_watermark_source, '') AS replay_mirror_watermark_source,
-		COALESCE(paper_funding_state, '') AS paper_funding_state
+		COALESCE(paper_funding_state, '') AS paper_funding_state,
+		COALESCE(quote_precision_rebaselined, 0) AS quote_precision_rebaselined
 		FROM strategies`)
 	if err != nil {
 		return nil, fmt.Errorf("load strategies: %w", err)
@@ -2445,6 +2449,7 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		var cbUntilStr, pendingCircuitClosesJSON, activeProfile string
 		var hurstGateJSON string
 		var paperFundingJSON string
+		var quoteRebaselinedInt int
 		if err := rows.Scan(
 			&storedID, &s.Type, &s.Platform, &s.Cash, &s.InitialCapital,
 			&s.RiskState.PeakValue, &s.RiskState.MaxDrawdownPct, &s.RiskState.CurrentDrawdownPct,
@@ -2454,9 +2459,11 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 			&s.ReplayMirrorWatermark,
 			&s.ReplayMirrorWatermarkSource,
 			&paperFundingJSON,
+			&quoteRebaselinedInt,
 		); err != nil {
 			return nil, fmt.Errorf("scan strategy: %w", err)
 		}
+		s.RiskState.QuotePrecisionRebaselined = quoteRebaselinedInt != 0
 		procID, mapped := sdb.mapStoredStrategyID(storedID)
 		if !mapped {
 			orphanPositions[storedID] = 0

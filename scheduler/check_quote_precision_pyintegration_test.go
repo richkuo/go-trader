@@ -1188,6 +1188,7 @@ func TestCheckQuotePrecisionUpgradeRebaselinesRoundedPeaksOnce(t *testing.T) {
 	}
 
 	qpExec(t, db, `ALTER TABLE portfolio_risk DROP COLUMN quote_precision_rebaselined`)
+	qpExec(t, db, `ALTER TABLE strategies DROP COLUMN quote_precision_rebaselined`)
 	qpExec(t, db, `DELETE FROM positions WHERE strategy_id = 'qp-flat'`)
 	qpExec(t, db, `UPDATE strategies SET cash = 100, risk_peak_value = 101 WHERE id = 'qp-flat'`)
 	qpExec(t, db, `UPDATE strategies SET cash = 0 WHERE id IN ('qp-drawdown', 'qp-at-peak')`)
@@ -1273,6 +1274,104 @@ func TestCheckQuotePrecisionUpgradeRebaselinesRoundedPeaksOnce(t *testing.T) {
 		var events int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM kill_switch_events WHERE scope = 'paper' AND type = 'basis_rebaseline' AND details LIKE '#1820 %'`).Scan(&events); err != nil || events != 1 {
 			t.Fatalf("basis_rebaseline events = %d (err %v), want 1", events, err)
+		}
+	})
+}
+
+func TestCheckQuotePrecisionRebaselineSurvivesABookSaveBeforeSaveAll(t *testing.T) {
+	const q = 0.0055
+	const qty = 20000.0
+	sc := StrategyConfig{ID: "qp-rh-live", Type: "spot", Platform: "robinhood", Script: "shared_scripts/check_robinhood.py",
+		Args: []string{"sma_crossover", "DOGE", "1h", "--mode=live"}, Capital: 100, MaxDrawdownPct: 20}
+	flat := StrategyConfig{ID: "qp-rh-flat", Type: "spot", Platform: "robinhood", Script: "shared_scripts/check_robinhood.py",
+		Args: []string{"sma_crossover", "SHIB", "1h", "--mode=live"}, Capital: 100, MaxDrawdownPct: 20}
+	part := partitionFor(sc)
+	prices := map[string]float64{"DOGE": q, "SHIB": q}
+	legacyPeak := qty*0.01 + 20
+	legacyPart := legacyPeak + 101
+	bound := qty * quotePrecisionRoundingPerUnit
+	value := qty * q
+	total := value + 100
+	wantPeak := math.Max(value, legacyPeak-bound)
+	wantPart := math.Max(total, legacyPart-bound)
+	if wantPeak != legacyPeak-bound || wantPeak == value || wantPart != legacyPart-bound || wantPart == total {
+		t.Fatalf("fixture must take the bound branch: peak %v part %v", wantPeak, wantPart)
+	}
+
+	legacyStore := func(t *testing.T) *entryTestEnv {
+		env := openEntryTestEnv(t, newEntryTestConfig(t, sc, flat))
+		s := env.strat(sc.ID)
+		s.Cash = 0
+		s.Positions["DOGE"] = &Position{Symbol: "DOGE", Quantity: qty, InitialQuantity: qty, AvgCost: q, Side: "long"}
+		s.RiskState.PeakValue = legacyPeak
+		env.strat(flat.ID).Cash = 100
+		env.strat(flat.ID).RiskState.PeakValue = 101
+		env.state.partitionRisk(part).PeakValue = legacyPart
+		env.saveAll()
+		return env
+	}
+	pass := func(env *entryTestEnv) []string {
+		env.mu.Lock()
+		defer env.mu.Unlock()
+		lines := applyQuotePrecisionPeakRebaseline(part, env.state.partitionRisk(part), env.cfg.Strategies, env.state, prices, total)
+		env.t.Log(strings.Join(lines, "\n"))
+		return lines
+	}
+	singlePass := func(t *testing.T, env *entryTestEnv, save func(*StrategyState) error) *entryTestEnv {
+		pass(env)
+		if got := env.strat(sc.ID).RiskState.PeakValue; got != wantPeak {
+			t.Fatalf("upgrade pass peak %v, want %v", got, wantPeak)
+		}
+		if err := save(env.strat(sc.ID)); err != nil {
+			t.Fatalf("book save: %v", err)
+		}
+		env = env.restart()
+		if got := env.strat(sc.ID); got.RiskState.PeakValue != wantPeak || !got.RiskState.QuotePrecisionRebaselined {
+			t.Fatalf("after the book save and restart: peak %v marker %t, want %v true", got.RiskState.PeakValue, got.RiskState.QuotePrecisionRebaselined, wantPeak)
+		}
+		if prs := env.state.partitionRisk(part); prs.PeakValue != legacyPart || prs.QuotePrecisionRebaselined {
+			t.Fatalf("the book save must not move the partition row: peak %v marker %t", prs.PeakValue, prs.QuotePrecisionRebaselined)
+		}
+		lines := pass(env)
+		if got := env.strat(sc.ID).RiskState.PeakValue; got != wantPeak {
+			t.Fatalf("pass after restart: strategy peak %v, want the single-pass %v", got, wantPeak)
+		}
+		if got := env.state.partitionRisk(part).PeakValue; got != wantPart {
+			t.Fatalf("pass after restart: partition peak %v, want the single-pass %v", got, wantPart)
+		}
+		if got := env.strat(flat.ID).RiskState.PeakValue; got != 101 {
+			t.Fatalf("flat strategy peak %v, want 101", got)
+		}
+		for _, line := range lines {
+			if strings.Contains(line, sc.ID) {
+				t.Fatalf("the strategy took a second pass: %s", line)
+			}
+		}
+		return env
+	}
+
+	t.Run("settlement_book_save_then_kill_before_save_all", func(t *testing.T) {
+		env := legacyStore(t)
+		singlePass(t, env, env.store.SaveStrategyBook)
+	})
+
+	t.Run("dashboard_book_save_after_save_all_failed", func(t *testing.T) {
+		env := legacyStore(t)
+		singlePass(t, env, env.fileFor(sc.ID).SaveStrategyBook)
+	})
+
+	t.Run("save_all_then_restart_runs_no_second_pass", func(t *testing.T) {
+		env := legacyStore(t)
+		pass(env)
+		env.saveAll()
+		env = env.restart()
+		env.strat(sc.ID).RiskState.PeakValue = legacyPeak
+		env.state.partitionRisk(part).PeakValue = legacyPart
+		if lines := pass(env); len(lines) != 0 {
+			t.Fatalf("a spent marker still ran the pass: %v", lines)
+		}
+		if env.strat(sc.ID).RiskState.PeakValue != legacyPeak || env.state.partitionRisk(part).PeakValue != legacyPart {
+			t.Fatal("a spent marker still moved a peak")
 		}
 	})
 }

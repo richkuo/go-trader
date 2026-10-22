@@ -152,12 +152,15 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   The signal, fill, trade-detail, paper execution and cycle `Prices:` lines print `%.6g` for a price between 0 and 1 and `%.2f` otherwise, so BTC, ETH and futures lines do not change; money totals and fees keep two decimals.
   **Operator warning, one-time re-mark:** at the first cycle after the update, every open spot position is marked at its true quote instead of the cent-rounded one.
   A stored strategy peak or portfolio kill-switch peak that was set from a mark rounded up shows a sudden drawdown, which can trip a per-strategy circuit breaker (force-close) or the portfolio kill switch.
-  To stop this, the first cycle runs a one-time rebaseline per state file before any risk check: for each spot strategy with an open position, the peak becomes the larger of the current value and the stored peak minus the sum of quantity times $0.005 over its open positions.
+  To stop this, the first cycle runs a one-time rebaseline before any risk check: for each spot strategy with an open position, the peak becomes the larger of the current value and the stored peak minus the sum of quantity times $0.005 over its open positions.
   The same bound, summed over those strategies, applies to the portfolio kill-switch peak of each scope; a peak is never raised, and a strategy with no open position is not touched.
   Each changed peak prints one `[WARN] #1820 quote-precision peak rebaseline` line with the old and new values, and a changed portfolio peak also records a `basis_rebaseline` kill-switch event.
-  The rebaseline removes only the cent-rounding error; a quote below half a cent was valued at average cost before, so a loss hidden by that fallback still shows as a drawdown and can still trip a guard.
-  Before `scripts/update.sh --restart`, check the open spot positions priced below $1 and the `max_drawdown_pct` of their strategies and of `portfolio_risk`.
-  No config change. `state.db` change: an idempotent migration adds `portfolio_risk.quote_precision_rebaselined`, the marker that makes the rebaseline run once per state file.
+  The pass always subtracts the largest possible rounding error, whether or not rounding inflated the stored peak, so it can also forgive up to $0.005 per unit of real drawdown on each open spot position (about 5% of the position value at $0.10, about 50% at $0.01).
+  A peak set from a mark rounded down, set while a quote below half a cent was valued at average cost, or set before a realized loss still loses the full bound.
+  A loss that the average-cost fallback hid (a quote below half a cent) can exceed the bound; the part above the bound still shows as a drawdown and can still trip a guard.
+  Before `scripts/update.sh --restart`, check the open spot positions priced below $1 and the `max_drawdown_pct` of their strategies and of `portfolio_risk`, because after the pass a breaker can fire later than those limits allow until the strategy or scope sets a new peak.
+  No config change. `state.db` change: an idempotent migration adds `quote_precision_rebaselined` to `strategies` and to `portfolio_risk`.
+  Each strategy row and each scope's portfolio row stores its own marker in the same write as its peak, so every peak takes the bound at most once, whatever the save order or restart.
   Update Go and Python together with `scripts/update.sh --restart`.
 - **Live tiered take-profit positions hold on an opposite open signal (#1573)**: a live Hyperliquid strategy (`type: perps` or `type: manual`) whose close is a `tiered_tp_atr*` evaluator no longer closes, or flips under `direction: "both"`, on the open strategy's opposite signal.
   Go keeps the close ref and sends `"close_owner": "on_chain_tp"` on `--strategy-refs` and in the batch slot.
