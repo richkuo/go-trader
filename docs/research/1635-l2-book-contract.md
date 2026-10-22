@@ -1,6 +1,6 @@
 # l2_book common depth contract (1635, version 1)
 
-Status: implemented in Delivery 1 of issue 1635 (typed owner, recorder, importer, sealed transport and accessor). Delivery 1 registers no entry candidate. Issue 1636 adopts this contract if it lands second.
+Status: implemented in Delivery 1 of issue 1635 (typed owner, recorder, importer, sealed transport and accessor). Delivery 2 registers the production-refused `order_book_imbalance` candidate and adds the archive import in `docs/research/1635-l2-book-archive-note.md`. Issue 1636 adopts this contract if it lands second.
 
 Machine-readable contract: `docs/research/1635-l2-book-contract-v1.json`, sha256 `a0030268e56c2ddfb9c018ce00868de8dd1f9a12c658cd05615b6426a8320869`. The recorder writes the same object as `book_contract` in every v3 run manifest and segment header. `backtest/book_replay.py` accepts only an exact match. `scripts/test_book_replay.sh` checks the file hash, the recorder copy and the replay copy.
 

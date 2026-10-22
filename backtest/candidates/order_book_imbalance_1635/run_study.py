@@ -568,6 +568,8 @@ def render() -> dict:
               f"- Specification `candidate_spec.json`, sha256 `{r['spec_sha256']}` (frozen before download).",
               f"- Archive manifest `data/archive_manifest.json`, sha256 `{r['manifest_sha256']}`: Hyperliquid S3 archive books and asset contexts for {w['first_day']} to {w['last_day']} plus the lookback day.",
               f"- Eligible days: {r['eligible_days']} of {w['days']} (minimum {s['eligibility']['minimum_days']}).",
+              f"- Scored on commit `{r['source_commit']}` (working tree differed from it: {'yes' if r['source_tree_dirty'] else 'no'}); scoring sources by sha256: "
+              + ", ".join(f"`{k}` `{v[:12]}`" for k, v in sorted(r["source_sha256"].items())) + ".",
               "", "Opportunity coverage under both readings. The 99% gate uses eligible days only, a clarification committed before any PnL was computed (commit message: \"clarify that the 99% coverage gate counts eligible days only\").", "",
               "| Split | All coin-minutes | Usable | Share (all minutes) | Eligible-day coin-minutes | Usable | Share (gate) |", "|---|---|---|---|---|---|---|"]
     for k in ("train", "validation", "held_out"):
