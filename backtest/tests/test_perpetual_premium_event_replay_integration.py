@@ -102,6 +102,21 @@ def test_exits_cross_more_than_two_windows_and_an_empty_window_does_not_stop_the
     assert_quote_capacity(res, quotes)
 
 
+def test_the_fill_timing_gate_checks_every_exit_fill_of_a_closed_trade():
+    sizes = [(T + 61_000, 0.003), (T + 65_000, 0.002), (T + 75_000, 0.0), (T + 90_000, 0.004), (T + 105_000, 0.01)]
+    quotes = [q(T + 1_000, 99_990, 0, 100_000, 1)] + [q(ms, 100_100 + i, sz, 100_120 + i, 0)
+                                                      for i, (ms, sz) in enumerate(sizes)]
+    res = replay(quotes, [decision(T)])
+    (t,) = res["trades"]
+    lat = er.COST_CASES["x1"]["latency_ms"]
+    assert t["exit_windows"] == 4 and all(f["recv_ms"] >= t["exit_decision_ms"] + lat for f in t["exit_fills"])
+    assert study.event_result([("BTC", res)], "x1", 1200.0)["fill_timing_violations"] == 0
+    early = json.loads(json.dumps(res))
+    early["trades"][0]["exit_fills"][0]["recv_ms"] = t["exit_decision_ms"] + lat - 1
+    assert early["trades"][0]["exit_ms"] == T + 105_000
+    assert study.event_result([("BTC", early)], "x1", 1200.0)["fill_timing_violations"] == 1
+
+
 def test_quote_side_capacity_is_used_once_across_positions_in_one_coin_and_cost_case():
     quotes = [q(T + 1_000, 99_990, 0, 100_000, 1), q(T + 61_000, 100_100, 0.004, 100_110, 0),
               q(T + 61_500, 100_100, 0.004, 100_110, 0), q(T + 70_000, 100_150, 0.01, 100_160, 0.02),
