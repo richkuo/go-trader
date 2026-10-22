@@ -5,6 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
+import egress_policy
 from stdout_contract import json_stdout
 
 
@@ -28,7 +29,7 @@ def fetch_okx_balance():
     if sandbox:
         config["sandbox"] = True
 
-    exchange = ccxt.okx(config)
+    exchange = egress_policy.pin_ccxt(ccxt.okx(config))
     balance = exchange.fetch_balance({"type": "trading"})
     total = balance.get("total", {})
     usdt = float(total.get("USDT", 0))

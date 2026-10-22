@@ -38,6 +38,8 @@ var knownSubcommands = []string{
 	"healthcheck",
 	"basket-replay",
 	"robinhood-login",
+	"notify-broker",
+	"egress-anchor",
 }
 
 func validateDaemonInvocation(extra []string) error {
@@ -63,7 +65,14 @@ func main() {
 	processRuntime = policy
 
 	if len(os.Args) > 1 {
+		if code, stop := gateSubcommandEgress(os.Args[1], os.Args[2:]); stop {
+			os.Exit(code)
+		}
 		switch os.Args[1] {
+		case "notify-broker":
+			os.Exit(runNotifyBroker(os.Args[2:]))
+		case "egress-anchor":
+			os.Exit(runEgressAnchor(os.Args[2:]))
 		case "init":
 			os.Exit(runInit(os.Args[2:]))
 		case "export":
@@ -153,6 +162,9 @@ func main() {
 		os.Exit(1)
 	}
 	exportRobinhoodSessionDir(*configPath, cfg)
+	if code := startEgress(cfg, false); code != 0 {
+		os.Exit(code)
+	}
 	statusBindHost := resolveStatusBindHost(*statusBindFlag)
 	if err := validateStatusBind(statusBindHost, cfg.StatusToken); err != nil {
 		fmt.Fprintf(os.Stderr, "[server] CRITICAL: refusing to start: %v\n", err)
@@ -232,6 +244,22 @@ func main() {
 	// keeps down, so the owner is paged instead of reading stderr.
 	notifier, cleanupNotifier := buildNotifierFromConfig(cfg)
 	defer cleanupNotifier()
+	go runEgressAlertMonitor(shutdownReadOnlyCtx, func(msg string) {
+		if notifier.HasOwner() {
+			notifier.SendOwnerDM(msg)
+		}
+	})
+	go runEgressAttestationMonitor(shutdownReadOnlyCtx, func(err error) {
+		msg := fmt.Sprintf("**EGRESS NAMESPACE LOST** %s; restarting so the service rejoins the enforced namespace (no traffic can leave meanwhile).", processEgress.redact(err.Error()))
+		fmt.Fprintln(os.Stderr, "[egress] CRITICAL: "+msg)
+		if notifier.HasOwner() {
+			notifier.SendOwnerDM(msg)
+		}
+		if rerr := restartSelf(); rerr != nil {
+			fmt.Fprintf(os.Stderr, "[egress] CRITICAL: restart request failed: %v; exiting so the supervisor restarts the service\n", rerr)
+			os.Exit(1)
+		}
+	})
 
 	var ownership *stateOwnership
 	if !readOnlyReport && schedulerNeedsOwnership(*once) {

@@ -21,8 +21,18 @@ type dmHandler struct {
 	expires time.Time
 }
 
+type discordTransport interface {
+	ChannelMessageSend(channelID string, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
+	InteractionRespond(interaction *discordgo.Interaction, resp *discordgo.InteractionResponse, options ...discordgo.RequestOption) error
+	FollowupMessageCreate(interaction *discordgo.Interaction, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	ApplicationCommandBulkOverwrite(appID string, guildID string, commands []*discordgo.ApplicationCommand, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error)
+}
+
 type DiscordNotifier struct {
 	session    *discordgo.Session
+	transport  discordTransport
+	broker     *brokerDiscordTransport
 	ownerID    string
 	dmHandlers []dmHandler
 	mu         sync.Mutex
@@ -37,9 +47,12 @@ func NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error) {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 
+	pinDiscordSession(session)
+
 	d := &DiscordNotifier{
-		session: session,
-		ownerID: ownerID,
+		session:   session,
+		transport: session,
+		ownerID:   ownerID,
 	}
 	session.Identify.Intents = discordgo.IntentsDirectMessages
 	session.AddHandler(d.messageCreate)
@@ -52,26 +65,41 @@ func NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error) {
 }
 
 func (d *DiscordNotifier) Close() {
-	d.session.Close()
+	if d.session != nil {
+		d.session.Close()
+	}
+	if d.broker != nil {
+		d.broker.close()
+	}
+}
+
+func (d *DiscordNotifier) selfUserID() string {
+	if d.broker != nil {
+		return d.broker.selfID()
+	}
+	if d.session == nil || d.session.State == nil || d.session.State.User == nil {
+		return ""
+	}
+	return d.session.State.User.ID
 }
 
 func (d *DiscordNotifier) SendMessage(channelID string, content string) error {
 	if len(content) > 2000 {
 		content = content[:1997] + "..."
 	}
-	_, err := d.session.ChannelMessageSend(channelID, content)
+	_, err := d.transport.ChannelMessageSend(channelID, content)
 	return err
 }
 
 func (d *DiscordNotifier) SendDM(userID, content string) error {
-	ch, err := d.session.UserChannelCreate(userID)
+	ch, err := d.transport.UserChannelCreate(userID)
 	if err != nil {
 		return fmt.Errorf("create DM channel: %w", err)
 	}
 	if len(content) > 2000 {
 		content = content[:1997] + "..."
 	}
-	_, err = d.session.ChannelMessageSend(ch.ID, content)
+	_, err = d.transport.ChannelMessageSend(ch.ID, content)
 	return err
 }
 
@@ -107,11 +135,16 @@ func (d *DiscordNotifier) AskDM(userID, question string, timeout time.Duration) 
 	}
 }
 
-func (d *DiscordNotifier) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
-	if m.Author == nil || s.State == nil || s.State.User == nil {
+func (d *DiscordNotifier) messageCreate(_ *discordgo.Session, m *discordgo.MessageCreate) {
+	d.handleDirectMessage(m)
+}
+
+func (d *DiscordNotifier) handleDirectMessage(m *discordgo.MessageCreate) {
+	self := d.selfUserID()
+	if m == nil || m.Author == nil || self == "" {
 		return
 	}
-	if m.Author.ID == s.State.User.ID {
+	if m.Author.ID == self {
 		return
 	}
 	if m.GuildID != "" {

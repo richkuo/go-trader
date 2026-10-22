@@ -329,6 +329,7 @@ type Config struct {
 	SharedMarketFeed         *SharedMarketFeedConfig    `json:"shared_market_feed,omitempty"`
 	Role                     string                     `json:"role,omitempty"`
 	Feed                     *FeedRoleConfig            `json:"feed,omitempty"`
+	Egress                   *EgressConfig              `json:"egress,omitempty"`
 
 	migrationBaseVersion    int
 	migrationBaseVersionSet bool
@@ -1068,6 +1069,7 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 	unknownErrs := validateStrategyJSONKeys(data)
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
 	unknownErrs = append(unknownErrs, validateBasketJSONKeys(data)...)
+	unknownErrs = append(unknownErrs, validateEgressJSON(data)...)
 	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
 	}

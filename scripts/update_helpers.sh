@@ -948,14 +948,14 @@ update_git_version() {
 }
 
 update_build_go_export() {
-    local tree="$1" commit="$2" go_bin="$3" ver="$4" out="$5" work full rc=0
+    local tree="$1" commit="$2" go_bin="$3" ver="$4" out="$5" pkg="${6:-.}" work full rc=0
     full=$(update_git "$tree" rev-parse --verify "$commit^{commit}") || return 1
     work=$(mktemp -d "${TMPDIR:-/tmp}/go-trader-build.XXXXXX") || return 1
     if ! update_git "$tree" archive --format=tar -o "$work/src.tar" "$full" scheduler || ! tar -x -f "$work/src.tar" -C "$work"; then
         rm -rf "$work"
         return 1
     fi
-    GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$work/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver -X main.SourceCommit=$full" -o "$out" . || rc=$?
+    GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$work/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver -X main.SourceCommit=$full" -o "$out" "$pkg" || rc=$?
     rm -rf "$work"
     return "$rc"
 }
@@ -1286,7 +1286,7 @@ update_give_tree() {
 
 update_probe_as_owner() {
     local tree="$1" owner="$2" binary="$3" config="$4" p
-    local -a rw=() args=()
+    local -a rw=() args=() extra=("${@:5}")
     if ! command -v systemd-run >/dev/null 2>&1; then
         echo "[update] systemd-run is not installed, so the probe cannot run as the owner of $tree under the unit sandbox" >&2
         return 1
@@ -1299,6 +1299,7 @@ update_probe_as_owner() {
         -p "WorkingDirectory=$tree" -p ProtectSystem=strict -p PrivateTmp=true -p NoNewPrivileges=true
         -E PYTHONDONTWRITEBYTECODE=1)
     [[ ${#rw[@]} -gt 0 ]] && args+=(-p "ReadWritePaths=${rw[*]}")
+    [[ ${#extra[@]} -gt 0 ]] && args+=("${extra[@]}")
     systemd-run "${args[@]}" -- /bin/sh -c 'd=$(mktemp -d) && cp -- "$2" "$d/config.json" && exec "$1" probe --config "$d/config.json"' sh "$binary" "$config" </dev/null
 }
 
@@ -1316,4 +1317,125 @@ update_owner_runs_venv() {
         return 0
     fi
     runuser -u "$name" -- "$py" -c 'import encodings, sqlite3' >/dev/null 2>&1
+}
+
+UPDATE_EGRESS_LIBEXEC_ROOT="${UPDATE_EGRESS_LIBEXEC_ROOT:-/usr/local/libexec/go-trader-egress}"
+UPDATE_EGRESS_MANIFEST_DIR="${UPDATE_EGRESS_MANIFEST_DIR:-/etc/go-trader/egress}"
+
+update_egress_valid_deployment() {
+    [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]
+}
+
+update_egress_deployment_from_show() {
+    local ns="$1" env="$2" tok found=""
+    [[ -n "$ns" ]] || return 0
+    for tok in $env; do
+        if [[ "$tok" == GO_TRADER_EGRESS_DEPLOYMENT=* ]]; then
+            found="${tok#GO_TRADER_EGRESS_DEPLOYMENT=}"
+        fi
+    done
+    printf '%s' "$found"
+}
+
+update_egress_deployment() {
+    local unit="$1" ns env
+    command -v systemctl >/dev/null 2>&1 || return 0
+    ns=$(systemctl show -p NetworkNamespacePath --value "$unit" 2>/dev/null || true)
+    env=$(systemctl show -p Environment --value "$unit" 2>/dev/null || true)
+    update_egress_deployment_from_show "$ns" "$env"
+}
+
+update_egress_controller_path() {
+    printf '%s/%s/go-trader-egress-controller' "$UPDATE_EGRESS_LIBEXEC_ROOT" "$1"
+}
+
+update_egress_stage_controller() {
+    local deployment="$1" tree="$2" commit="$3" go_bin="$4" ver="$5" rsync_src="$6" dir stage
+    dir="$UPDATE_EGRESS_LIBEXEC_ROOT/$deployment"
+    install -d -o root -g root -m 0755 "$UPDATE_EGRESS_LIBEXEC_ROOT" "$dir" || return 1
+    stage=$(mktemp -d "$dir/.stage.XXXXXX") || return 1
+    chmod 0700 "$stage" || return 1
+    if [[ -n "$tree" ]]; then
+        update_build_go_export "$tree" "$commit" "$go_bin" "$ver" "$stage/go-trader-egress-controller" ./cmd/egress-controller >&2 || { rm -rf "$stage"; return 1; }
+    else
+        GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$rsync_src/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver" -o "$stage/go-trader-egress-controller" ./cmd/egress-controller >&2 || { rm -rf "$stage"; return 1; }
+    fi
+    "$stage/go-trader-egress-controller" version >&2 || { rm -rf "$stage"; return 1; }
+    printf '%s/go-trader-egress-controller' "$stage"
+}
+
+update_egress_protocol() {
+    "$1" version 2>/dev/null | sed -n 's/.* protocol \([0-9][0-9]*\)$/\1/p'
+}
+
+update_egress_wait_ready() {
+    local deployment="$1" timeout="${2:-30}" waited=0 bin
+    bin=$(update_egress_controller_path "$deployment")
+    while [[ $waited -lt $timeout ]]; do
+        if "$bin" status --manifest "$UPDATE_EGRESS_MANIFEST_DIR/$deployment.json" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
+update_egress_switch_controller() {
+    local deployment="$1" staged="$2" cur
+    cur=$(update_egress_controller_path "$deployment")
+    if [[ -f "$cur" ]] && cmp -s "$staged" "$cur"; then
+        echo "[update] egress: controller for $deployment is unchanged"
+        rm -rf "$(dirname "$staged")"
+        return 2
+    fi
+    rm -f "$cur.prev"
+    if [[ -f "$cur" ]]; then
+        echo "[update] egress: controller protocol $(update_egress_protocol "$cur") -> $(update_egress_protocol "$staged")"
+        cp -p "$cur" "$cur.prev" || return 1
+    fi
+    install -o root -g root -m 0755 "$staged" "$cur.tmp" && mv -f "$cur.tmp" "$cur" || return 1
+    rm -rf "$(dirname "$staged")"
+    systemctl restart "go-trader-egress@$deployment.service" || return 1
+    if ! update_egress_wait_ready "$deployment" 30; then
+        echo "[update] egress: controller for $deployment did not report ready within 30s" >&2
+        return 1
+    fi
+    echo "[update] egress: controller for $deployment switched and ready (namespace rules stayed installed throughout)"
+    return 0
+}
+
+update_egress_restore_controller() {
+    local deployment="$1" cur
+    cur=$(update_egress_controller_path "$deployment")
+    [[ -f "$cur.prev" ]] || return 1
+    mv -f "$cur.prev" "$cur" || return 1
+    systemctl restart "go-trader-egress@$deployment.service" || return 1
+    update_egress_wait_ready "$deployment" 30
+}
+
+update_egress_probe_args() {
+    local unit="$1" deployment="$2" entry path
+    local -a out=(-E "GO_TRADER_EGRESS_DEPLOYMENT=$deployment")
+    while IFS= read -r entry || [[ -n "$entry" ]]; do
+        [[ -n "$entry" ]] || continue
+        path="${entry%% (ignore_errors=*}"
+        [[ "$path" == /* ]] || continue
+        out+=(-p "EnvironmentFile=-$path")
+    done < <(systemctl show -p EnvironmentFiles --value "$unit" 2>/dev/null)
+    printf '%s\n' "${out[@]}"
+}
+
+update_unit_owner() {
+    local unit="$1" user group uid gid
+    user=$(systemctl show -p User --value "$unit" 2>/dev/null || true)
+    group=$(systemctl show -p Group --value "$unit" 2>/dev/null || true)
+    [[ -n "$user" ]] || { printf '0:0'; return 0; }
+    uid=$(id -u "$user" 2>/dev/null) || return 1
+    if [[ -n "$group" ]]; then
+        gid=$(getent group "$group" | cut -d: -f3) || return 1
+    else
+        gid=$(id -g "$user" 2>/dev/null) || return 1
+    fi
+    printf '%s:%s' "$uid" "$gid"
 }

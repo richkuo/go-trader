@@ -17,7 +17,7 @@ func fetchOKXPerpsMids(coins []string) (map[string]float64, error) {
 	}
 
 	url := okxMainnetURL + "/api/v5/market/tickers?instType=SWAP"
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := egressHTTPClient(10 * time.Second)
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)

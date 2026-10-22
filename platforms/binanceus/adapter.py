@@ -6,10 +6,12 @@ from typing import Tuple
 
 sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
+import egress_policy
+
 
 def _get_ccxt_exchange():
     import ccxt
-    return ccxt.binanceus({"enableRateLimit": True})
+    return egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
 
 
 class BinanceUSExchangeAdapter:

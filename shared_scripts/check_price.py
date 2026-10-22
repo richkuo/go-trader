@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 
+import os
 import sys
 import json
 import traceback
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
+
+import egress_policy
 
 
 def main():
@@ -13,7 +18,7 @@ def main():
 
     try:
         import ccxt
-        exchange = ccxt.binanceus({"enableRateLimit": True})
+        exchange = egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
 
         prices = {}
         for symbol in symbols:

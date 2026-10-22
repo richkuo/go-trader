@@ -30,6 +30,7 @@ Read the whole guide before you put real money behind it.
 - [Image identity](#image-identity)
 - [Volume permissions](#volume-permissions)
 - [Live trading](#live-trading)
+- [Egress proxy mode](#egress-proxy-mode)
 - [Build the image yourself](#build-the-image-yourself)
 - [Troubleshooting](#troubleshooting)
 
@@ -494,6 +495,28 @@ docker compose run --rm cli robinhood-login --config /data/config.json
 It runs the Robinhood verification (app approval, or an SMS or email code that you type), stores the session and clears the stop.
 It can run while the bot runs; bot logins during it wait for the next cycle.
 See [SKILL.md](../SKILL.md) § Secrets, Robinhood session.
+
+## Egress proxy mode
+
+Egress proxy mode sends all exchange traffic through one proxy and blocks every direct connection from the container.
+It needs Docker Engine running as root on a Linux host (not Docker Desktop on macOS or Windows), because a root-owned controller on the host builds the network boundary.
+
+1. Put the proxy URL in `go-trader.env`: `GO_TRADER_EGRESS_PROXY=http://user:pass@proxy.example:3128` (`https`, `socks5` and `socks5h` also work; the port is required).
+   A Gluetun sidecar works when the host can reach its proxy port, for example `http://127.0.0.1:8888`.
+2. Optionally add `"egress": {"proxy_required": true}` to `/data/config.json`, so the bot refuses to start without the proxy.
+3. Add `GO_TRADER_EGRESS_DEPLOYMENT=main` to `docker/.env`.
+4. From a checkout of the same release, as root, install the controller: `sudo bash scripts/egress-install.sh docker --deployment main --env-file docker/go-trader.env --anchor-container go-trader-egress-net-1`.
+   It builds the controller from the checkout, writes `/etc/go-trader/egress/main.json` (scheme, host and port only), and starts `go-trader-egress@main`.
+5. Start the stack with the overlay: `docker compose -f compose.yaml -f compose.egress.yaml up -d`.
+   The `egress-net` container holds an empty network namespace; the controller installs the firewall rules and the proxy relay in it, and `go-trader` and `cli` join it.
+   The dashboard stays on `http://127.0.0.1:8099` through a relay the controller owns (set `--status-port` on the installer if `GO_TRADER_HOST_PORT` is not 8099).
+6. Check it: `curl -s -H "Authorization: Bearer $STATUS_AUTH_TOKEN" http://127.0.0.1:8099/status` shows `"egress": {"mode": "proxy", "enforcement": "attested", ...}`.
+
+Use the same `-f compose.yaml -f compose.egress.yaml` flags for every later command, including `docker compose ... run --rm cli ...`.
+Direct notifications (`"notifications_direct": true`) need the `notify` profile: put only the notification tokens in `docker/notify.env`, pass `--notify-container go-trader-notify-broker-1 --notify-uid 10002 --notify-gid 10002 --notify-env-out docker/notify.env` (the installer resolves it to an absolute path) to the installer, and start with `--profile notify`.
+While the proxy is down the bot cannot close positions; only protection already resting on the exchange keeps working.
+To check your exit address, compare a non-venue echo service through the proxy and without it by hand; the bot never makes a direct comparison.
+[SKILL.md](../SKILL.md) § Egress Proxy Mode has the mechanism.
 
 ## Build the image yourself
 

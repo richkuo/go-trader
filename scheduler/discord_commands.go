@@ -479,23 +479,31 @@ func slashCommands() []*discordgo.ApplicationCommand {
 }
 
 func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) error {
-	if d == nil || d.session == nil {
+	if d == nil || d.transport == nil {
 		return fmt.Errorf("discord session not initialized")
 	}
-	if d.session.State == nil || d.session.State.User == nil {
+	appID := d.selfUserID()
+	for wait := 0; appID == "" && d.broker != nil && wait < 30; wait++ {
+		time.Sleep(time.Second)
+		appID = d.selfUserID()
+	}
+	if appID == "" {
 		return fmt.Errorf("discord gateway not ready (no application identity)")
 	}
 	d.ss = ss
 	d.cfg = cfg
-	d.session.AddHandler(d.interactionCreate)
-	appID := d.session.State.User.ID
-	if _, err := d.session.ApplicationCommandBulkOverwrite(appID, "", slashCommands()); err != nil {
+	if d.broker != nil {
+		d.broker.setInteractionHandler(func(i *discordgo.InteractionCreate) { d.interactionCreate(d.transport, i) })
+	} else {
+		d.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) { d.interactionCreate(s, i) })
+	}
+	if _, err := d.transport.ApplicationCommandBulkOverwrite(appID, "", slashCommands()); err != nil {
 		return fmt.Errorf("bulk overwrite commands: %w", err)
 	}
 	return nil
 }
 
-func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.InteractionCreate) {
 	if i.Type != discordgo.InteractionApplicationCommand {
 		return
 	}
@@ -604,7 +612,7 @@ func truncateForDiscord(s string) string {
 	return s[:cut] + "..."
 }
 
-func respondText(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+func respondText(s discordTransport, i *discordgo.InteractionCreate, content string) {
 	if content == "" {
 		content = "(no output)"
 	}
@@ -614,7 +622,7 @@ func respondText(s *discordgo.Session, i *discordgo.InteractionCreate, content s
 	})
 }
 
-func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+func respondEphemeral(s discordTransport, i *discordgo.InteractionCreate, content string) {
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Content: truncateForDiscord(content), Flags: discordgo.MessageFlagsEphemeral},
@@ -628,7 +636,7 @@ func (d *DiscordNotifier) readOnlyReplyFlags() discordgo.MessageFlags {
 	return 0
 }
 
-func (d *DiscordNotifier) respondReadOnlyInline(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+func (d *DiscordNotifier) respondReadOnlyInline(s discordTransport, i *discordgo.InteractionCreate, content string) {
 	if content == "" {
 		content = "(no output)"
 	}
@@ -638,7 +646,7 @@ func (d *DiscordNotifier) respondReadOnlyInline(s *discordgo.Session, i *discord
 	})
 }
 
-func (d *DiscordNotifier) respondReadOnlyDeferred(s *discordgo.Session, i *discordgo.InteractionCreate, build func() string) {
+func (d *DiscordNotifier) respondReadOnlyDeferred(s discordTransport, i *discordgo.InteractionCreate, build func() string) {
 	flags := d.readOnlyReplyFlags()
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -786,7 +794,7 @@ func (d *DiscordNotifier) buildCorrelation() string {
 	return formatCorrelationResponse(d.ss.state.CorrelationSnapshot)
 }
 
-func (d *DiscordNotifier) handleClosingStrategies(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (d *DiscordNotifier) handleClosingStrategies(s discordTransport, i *discordgo.InteractionCreate) {
 	flags := d.readOnlyReplyFlags()
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -861,13 +869,13 @@ func runLogs(n int) string {
 	return "```\n" + body + "\n```"
 }
 
-func deferAck(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func deferAck(s discordTransport, i *discordgo.InteractionCreate) {
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 }
 
-func (d *DiscordNotifier) handleRestart(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (d *DiscordNotifier) handleRestart(s discordTransport, i *discordgo.InteractionCreate) {
 	deferAck(s, i)
 	_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 		Content: "Restarting go-trader service… (this instance will go offline; the new one resumes the cycle)",
@@ -877,7 +885,7 @@ func (d *DiscordNotifier) handleRestart(s *discordgo.Session, i *discordgo.Inter
 	}()
 }
 
-func (d *DiscordNotifier) handleBacktest(s *discordgo.Session, i *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) {
+func (d *DiscordNotifier) handleBacktest(s discordTransport, i *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) {
 	strategy := optionString(data.Options, "strategy", "")
 	symbol := optionString(data.Options, "symbol", "")
 	timeframe := optionString(data.Options, "timeframe", "1h")

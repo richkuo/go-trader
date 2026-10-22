@@ -3,10 +3,12 @@
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
+
+import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
+
+import egress_policy
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -150,10 +152,15 @@ def record_usage(usage, reply_usage):
         pass
 
 
+def new_session():
+    return egress_policy.pin_requests_session(requests.Session())
+
+
 def build_llm_call(model, api_url=ANTHROPIC_API_URL, timeout=PER_CALL_TIMEOUT_S, usage=None):
     api_key = os.environ.get(API_KEY_ENV, "")
     if not api_key:
         raise RuntimeError(f"{API_KEY_ENV} is not set")
+    session = new_session()
 
     def llm_call(system, user, schema=None):
         output_config = {"effort": EFFORT}
@@ -166,16 +173,14 @@ def build_llm_call(model, api_url=ANTHROPIC_API_URL, timeout=PER_CALL_TIMEOUT_S,
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }).encode("utf-8")
-        req = urllib.request.Request(api_url, data=payload, method="POST", headers={
+        resp = session.post(api_url, data=payload, timeout=timeout, headers={
             "content-type": "application/json",
             "x-api-key": api_key,
             "anthropic-version": ANTHROPIC_VERSION,
         })
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"API HTTP {e.code}: {api_error_message(e)}") from None
+        if not 200 <= resp.status_code < 300:
+            raise RuntimeError(f"API HTTP {resp.status_code}: {api_error_message(resp)}") from None
+        body = json.loads(resp.content.decode("utf-8"))
         if not isinstance(body, dict):
             raise RuntimeError("API response is not a JSON object")
         record_usage(usage, body.get("usage"))
@@ -197,15 +202,15 @@ def build_llm_call(model, api_url=ANTHROPIC_API_URL, timeout=PER_CALL_TIMEOUT_S,
     return llm_call
 
 
-def api_error_message(err):
+def api_error_message(resp):
     try:
-        body = json.loads(err.read().decode("utf-8"))
+        body = json.loads(resp.content.decode("utf-8"))
         message = body["error"]["message"]
         if isinstance(message, str) and message.strip():
             return message.strip()[:300]
     except Exception:
         pass
-    return str(err.reason or "request failed")
+    return str(resp.reason or "request failed")
 
 
 def entry_summary(ctx):
@@ -318,7 +323,7 @@ def main():
         print(json.dumps(out))
         return 0
     except Exception as e:
-        print(json.dumps({"error": f"{type(e).__name__}: {e}", "usage": dict(usage)}))
+        print(json.dumps({"error": egress_policy.redact(f"{type(e).__name__}: {e}"), "usage": dict(usage)}))
         return 1
 
 
