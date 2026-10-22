@@ -433,6 +433,15 @@ Optional: `sudo bash scripts/shared-feed-convert.sh plan --consumer <unit>` star
 
 Restart modes, batch discovery, and graceful drain: [SKILL.md](SKILL.md).
 
+### Egress proxy mode (optional, Linux)
+
+To send all exchange traffic through one proxy (for example a remote proxy or a Gluetun sidecar) and block every direct connection, set `GO_TRADER_EGRESS_PROXY=http://user:pass@proxy.example:3128` (also `https`, `socks5`, `socks5h`) in the service environment file, optionally add `"egress": {"proxy_required": true}` to the config, and run `sudo bash scripts/egress-install.sh host --deployment main --unit go-trader.service`.
+A root-owned egress controller then runs the service in a network namespace whose only exit is a relay to that proxy, so Go, Python, native libraries and every child process can reach venues only through it; without the controller the service refuses to start in this mode.
+Manual venue commands run through `sudo /usr/local/libexec/go-trader-egress/main/go-trader-egress-controller launch --manifest /etc/go-trader/egress/main.json -- manual-open ...`, and updates stay `sudo bash scripts/update.sh --restart`.
+With `"notifications_direct": true` (and `--notify-user`), Discord, Telegram and issue reports go direct through a separate notification broker, so they keep working while the proxy is down.
+While the proxy is down the bot cannot close positions; only protection already resting on the exchange keeps working.
+Docker: `docker/compose.egress.yaml` (docs/DOCKER.md § Egress proxy mode). Full mechanism: [SKILL.md](SKILL.md) § Egress Proxy Mode.
+
 ---
 
 ## Monitoring

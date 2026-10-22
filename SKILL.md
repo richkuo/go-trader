@@ -232,6 +232,9 @@ Set in systemd overrides or exported environment variables before installation:
 | `GO_TRADER_ALLOW_MISSING_STATE` | `1` only for a genuine first-run live deployment |
 | `GO_TRADER_CASHFLOW_JOURNAL_ALARM` | `0`/`off`/`false`/`no` forces the legacy trade-ledger drift basis for HL shared wallets (default on) |
 | `GO_TRADER_HL_BATCH` | `0`/`off`/`false`/`no` disables batched Hyperliquid signal checks |
+| `GO_TRADER_EGRESS_PROXY` | Egress proxy URL (`http`, `https`, `socks5`, `socks5h`; explicit port; optional credentials); a non-empty value turns on egress proxy mode (§ Egress Proxy Mode) |
+| `GO_TRADER_EGRESS_DEPLOYMENT` | Egress deployment name; set by the egress drop-in or `docker/compose.egress.yaml`, not by hand |
+| `GO_TRADER_NOTIFY_GITHUB_REPOS` | Notification broker only: comma-separated repositories it may file issues in (default `richkuo/go-trader`) |
 
 ### Robinhood session
 
@@ -351,6 +354,117 @@ After the move, `scripts/merge-paper-instance.sh` folds migrated paper deploymen
 
 ---
 
+## Egress Proxy Mode
+
+Egress proxy mode sends every external connection of the scheduler, the feed service, manual venue commands and every child process through one configured proxy, and a kernel boundary blocks every other route (issue 1841).
+With the mode off (the default) nothing changes: no new environment variable is read into a policy, no child argument changes, and the clients keep their existing transports.
+
+**Turning it on.**
+- `GO_TRADER_EGRESS_PROXY` in the unit's environment file (or `docker/go-trader.env`) holds the proxy URL: `http`, `https` (TLS to the proxy), `socks5` or `socks5h`, a host, an explicit port, and optional `user:password`.
+  A path, query or fragment is refused.
+  Both SOCKS forms send venue host names to the proxy; no venue name is resolved locally.
+- A non-empty value turns the mode on, and an invalid value refuses every entry path, even with no `egress` block.
+  Error text names only `scheme://host:port` (or a scheme-free reason); credentials never reach logs, status, alerts, child output or the manifest.
+- The optional top-level `egress` block takes only `proxy_required` and `notifications_direct` (booleans, default false; any other key or type is refused by the scheduler, feed, probe and read-only loaders).
+  `proxy_required: true` refuses entry when the variable is unset or empty.
+  `notifications_direct: true` without the mode is refused.
+- The policy is frozen per process.
+  A SIGHUP that changes the `egress` block is refused in the scheduler and the feed (restart required), and the environment is read once.
+
+**Enforcement boundary** (`scheduler/cmd/egress-controller/`, `scheduler/internal/egresspolicy/`).
+- A root-owned controller (`go-trader-egress@<deployment>.service`, binary `/usr/local/libexec/go-trader-egress/<deployment>/go-trader-egress-controller`, manifest `/etc/go-trader/egress/<deployment>.json`) owns a network namespace, `go-trader-egress-<deployment>`, whose only usable link is loopback.
+- Inside it, table `inet go_trader_egress` drops all output, input and forward traffic except loopback; the output rule comment carries the installed generation.
+  Rules are installed in one `nft -f` transaction before the controller serves, re-verified every 15 seconds and on every attestation (exact chains, policies, rules, and no non-loopback link up), and reinstalled with a new generation when they drift.
+- The controller listens inside the namespace on the proxy address the workers dial: `127.77.0.1:<port>` for a proxy host name (the namespace hosts file maps the name there), the proxy's own literal address (added to `lo`), or the loopback address for a host-loopback proxy.
+  It relays each TCP connection to the proxy, so workers never route past loopback and the controller is the only process that resolves the proxy name.
+- The controller re-resolves the proxy name every `resolve_seconds` (default 60, minimum 10).
+  It accepts several addresses, refuses loopback, link-local, unspecified and multicast answers for a name, swaps the set atomically, and closes relayed connections to removed addresses.
+  A failed resolution keeps the last good set and shows the error in `status`; with no good set the controller is not ready and workers refuse to start.
+- Name service inside the namespace is the hosts file only (`/run/go-trader-egress/<deployment>/resolver/{hosts,resolv.conf,nsswitch.conf}` bind-mounted over `/etc`), and the drop-in makes the host resolver, D-Bus, nscd, Avahi, NetworkManager and container-runtime sockets inaccessible, so no venue name leaves through a host daemon.
+  Filesystem Unix sockets (the shared feed socket) keep working.
+- Workers run with no capabilities, `NoNewPrivileges`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `ProtectProc=invisible` and `SystemCallFilter=~@debug` (no ptrace or cross-process memory calls).
+  On a host the controller refuses attestation while the worker account runs any process outside every enforced worker namespace (`go-trader-egress-*` with verified rules), so a worker cannot reach an unconfined process of its own account; instances of one account (`go-trader@.service`, a shared feed and its consumers) may share it when each runs in its own enforced namespace.
+  A raw socket, a direct TCP or UDP connection over IPv4 or IPv6, ICMP, a direct DNS query, curl_cffi, and a child that never loads the Python bootstrap all fail with "network unreachable".
+- The controller stopping or dying leaves the namespace and its rules in place; only the relays close, so proxy traffic fails closed until it restarts.
+- **Attestation.** Every network entry path asks the controller over `/run/go-trader-egress/<deployment>/control.sock` (protocol 1; the peer must be root).
+  The controller reads the caller's `SO_PEERCRED`, then checks the uid, that effective, permitted and ambient capabilities are empty, that `no_new_privs` is set, that the process did not change during the check, and that its network namespace is the managed one; it re-verifies the rules and requires a ready relay.
+  The worker then checks that its own namespace and the configured proxy identity match the answer.
+  An environment variable or a file cannot stand in for this answer.
+  The daemon and the feed re-attest every 60 seconds (status `last_attested_at`, `attest_error`, `enforcement: unverified` while it fails); when the answer says the process is no longer in the managed namespace (for example after the Docker anchor restarted), the daemon DMs the owner with **EGRESS NAMESPACE LOST** and restarts, and the feed exits 1 so its unit restarts it, so both rejoin the enforced namespace.
+- Supported deployments: Linux system services under systemd 247 or newer (`NetworkNamespacePath`, `ProtectProc`), rootful Docker Engine on a Linux host with the controller on the host, and manual commands through the controller launcher.
+  Anything else, including a desktop shell or macOS, refuses the mode.
+
+**Entry paths** (`egress.go`, `egress_gate.go`).
+- The daemon (including `--once`, `--summary`, `--leaderboard`) and the feed service establish the policy right after the config load and before the notifier, ownership, capital sync or any client.
+  Manual venue commands (`manual-open`, `manual-add`, `manual-close`, `force-close`, `manual-cancel`, `manual-update-sl`, `manual-cancel-sl`), `backfill`, `record-observations` (it opens the Hyperliquid websocket) and `robinhood-login` (its Python child runs under the bootstrap) do the same before dispatch.
+- `probe` validates the policy and requires a ready controller with the same proxy identity (exit 78 otherwise); its Python children run under the bootstrap.
+  It does not need the namespace, because it makes no external connection.
+- Local commands (`init`, `export`, `inspect`, `storage-inspect`, `agent-info`, `diagnostics`, `feed-fetch`, `basket-replay`, `manual-clear-limit-row`) make no network call; when the variable is set they still pin their transports to the proxy, and they ignore `proxy_required`.
+- After attestation the daemon checks each Go client host it uses (Hyperliquid, OKX, Deribit, and Discord and Telegram when they go through the proxy) with a tunnel and a verified TLS handshake (no HTTP request, so no venue rate budget is spent), then runs `shared_tools/egress_bootstrap.py --check-policy <families>` for the Python client families of its strategies.
+  The feed checks Hyperliquid in Go only.
+  A failure is an ordinary exit 1, so the service retries; exits 78, 79 and 80 keep their meanings.
+
+**Go clients.** Every venue client gets an explicit policy transport (`egressHTTPClient`), the feed websocket and Discord use the policy dialer (`egressWebsocketDialer`, `pinDiscordSession`), and `http.DefaultTransport`, `http.DefaultClient` and `websocket.DefaultDialer` are replaced in the mode.
+One dialer (`egresspolicy.Dialer`) does HTTP CONNECT, CONNECT over TLS to an `https` proxy (the proxy certificate is verified against its host name), and SOCKS5 with user/password and domain targets, with context cancellation and deadlines and no direct fallback.
+Host `HTTP(S)_PROXY`, `ALL_PROXY` and `NO_PROXY` never change routing in the mode.
+Loopback and Unix-socket connections stay direct.
+
+**Python children.** In the mode every launch (regular, side-effect, advisory, tuning, backtest and the probe launcher) runs `.venv/bin/python3 shared_tools/egress_bootstrap.py <script> <args>`.
+Go applies per-call overrides first and then restores `GO_TRADER_EGRESS_MODE=proxy`, `GO_TRADER_EGRESS_PROXY`, upper- and lowercase `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (socks5 becomes socks5h) and `NO_PROXY=localhost,127.0.0.1,::1`.
+The bootstrap refuses a missing or invalid policy with `{"error": "egress policy: ..."}` and exit 1 before the target is imported, then runs the target exactly as plain Python would.
+`shared_tools/egress_policy.py` pins each client family: ccxt (`httpsProxy`, or `socksProxy` with socks5h, plus a safety-net wrapper on `Exchange.__init__`), the Hyperliquid SDK at its base `API.__init__` (every `Info`/`Exchange` session before its first request), the robin_stocks module session before login, TopStep and Deribit requests, yfinance (`YfConfig.network.proxy` for curl_cffi), and the advisory script (`llm_review.py` now uses a pinned requests session).
+At exit a child that made proxied requests writes one `go-trader-egress-outcome {"requests":N,"proxy_failures":M,"last_error":"..."}` line to stderr; Go adds it to the status and removes it before any stderr consumer sees it.
+A pinned client verifies the proxy certificate against public roots only, so an `https` proxy with a private CA works only for clients that read `REQUESTS_CA_BUNDLE`.
+
+**Notifications.** By default Discord REST and gateway, Telegram and GitHub issue reports use the proxy.
+With `notifications_direct: true` they go through the notification broker (`internal/notifybroker`, run as `notify-broker --deployment <name>` under its own account and its own loopback-only namespace `go-trader-notify-<deployment>`).
+The broker holds only the notification tokens (`/etc/go-trader/notify-<deployment>.env`, written by the installer with only `DISCORD_BOT_TOKEN`, `TELEGRAM_BOT_TOKEN`, `GO_TRADER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GO_TRADER_NOTIFY_GITHUB_REPOS`), cannot read the state, config or venue credentials, and reaches the network only through a controller-owned CONNECT proxy at `127.77.0.2:3128` that allows `discord.com`, `*.discord.gg`, `api.telegram.org` and `api.github.com` on port 443 to public addresses.
+The scheduler talks to it over `/run/go-trader-egress/<deployment>/notify/broker.sock` with typed operations (send, DM channel, interaction response, follow-up with attachments, command registration, an allowlisted Telegram call, an issue in an allowlisted repository); both sides check the peer uid, and there is no URL, request or dial operation.
+Inbound gateway interactions and DMs come back as events; owner checks, command dispatch, config changes and trading stay in the scheduler.
+The worker's network policy is the same in both notification modes.
+In direct mode the scheduler and feed refuse to start while they hold a Discord, Telegram or GitHub token (environment or config), so only the broker holds them.
+The app unit starts after the broker unit; if the broker is not answering yet the scheduler waits up to 30 seconds and then keeps reconnecting, and the broker keeps serving Telegram and issue reports while it retries a failed Discord gateway open.
+The scheduler installs its interaction handler before it waits for the broker's Discord identity; if the identity is not there within 30 seconds it logs one warning and registers the slash commands in the background once the gateway is up.
+A startup refusal in direct mode sends one owner DM per reason per alert throttle interval across restarts (`.egress-startup-refusal.json` beside the config, removed on a clean start).
+
+**Status, alerts and outages.** `/status` (scheduler) and the feed `/status` carry an `egress` block: `mode`, the redacted proxy, deployment, `enforcement` and generation, last success and error times, the redacted last error, consecutive and total tunnel failures, and the Python child totals.
+Three consecutive tunnel failures send one **EGRESS PROXY FAILING** owner DM, repeated at the alert throttle interval while they last, and one **EGRESS PROXY RECOVERED** DM on recovery (in proxy notification mode those DMs only arrive once the proxy is back).
+During an outage venue calls fail or hold through the existing paths: an order error after submission keeps the unknown-outcome hold and recovery path, nothing is retried blindly, and nothing is booked without a confirmed fill.
+The application cannot close positions through an unreachable proxy; resting venue protection that is already armed (for example an on-chain stop) keeps working, and a position without it has none.
+
+**Install and operate (host).**
+1.
+   Set `GO_TRADER_EGRESS_PROXY` (and, if wanted, `"egress": {"proxy_required": true}`) for the unit, then from the deployment checkout run `sudo bash scripts/egress-install.sh host --deployment <name> --unit <unit> [--notify-user go-trader-notify]`.
+2.
+   The installer refuses a checkout that `update.sh` would refuse (a foreign-owned tree whose units can change it outside `scheduler/` and `logs/`), builds the controller from the checkout's committed sources (git archive, never the service-writable tree), installs it root-owned, writes the manifest (scheme, host, port only), runs `preflight` (tools, a scratch namespace with rules, proxy resolution, systemd version), starts the controller, writes the app drop-in (`/etc/systemd/system/<unit>.d/50-egress.conf`, from `render-units`) and the broker unit, restarts the app inside the namespace, and checks `/health` through the status relay (host `127.0.0.1:<status_port>` to the namespace loopback, a fixed destination).
+   The controller does not need the status port free: while the pre-egress service or a published container port still holds it, the relay retries every 2 seconds and `status` shows `status_relay_errors`; the proxy relay and attestation do not depend on it.
+3.
+   Manual venue commands run through the restricted launcher: `sudo /usr/local/libexec/go-trader-egress/<name>/go-trader-egress-controller launch --manifest /etc/go-trader/egress/<name>.json -- manual-open ...`.
+   It accepts only a manual or backfill subcommand, `record-observations`, `robinhood-login`, `probe`, or the daemon with `--once`, `--summary` or `--leaderboard`, and runs the manifest's binary as the worker in a transient unit with the same sandbox and every environment file of the unit (`host.environment_files`).
+   Running `go-trader` from a shell with the variable set refuses.
+4.
+   `status --manifest ...` prints the controller state; `sudo bash scripts/egress-install.sh uninstall --deployment <name> --unit <unit>` removes the drop-in, broker, controller and namespaces (remove the variable before starting the unit again, or it refuses).
+5.
+   Updates stay `sudo bash scripts/update.sh --restart`.
+   For a unit with an egress drop-in it must run as root: it builds the controller from the same exported sources, runs the probe as the unit's user with the unit's environment files, switches the controller (previous binary kept as `.prev`) before the app restart, and restores both on rollback.
+   Controller restarts use `systemctl restart --job-mode=ignore-dependencies`, because the drop-in's `Requires=` would otherwise restart the app with the controller; the app restarts once, after the controller is ready.
+   The namespace rules stay installed through the switch.
+   In the mode the in-process updater and `auto_update` checks refuse (the service has no route to Git) and `/restart` asks the controller to restart the registered unit.
+
+**Container deployment.** `docker/compose.egress.yaml` adds `egress-net` (the release image running `egress-anchor`, `network_mode: none`, labeled with the deployment) and joins `go-trader` and `cli` to it with `network_mode: service:egress-net` (no published port; the host status relay serves `127.0.0.1:<port>`).
+The host controller (`scripts/egress-install.sh docker ...`, mode `docker`; the installer waits only until the controller answers, since the anchor starts in the next step) attaches to the anchor's namespace, writes its hosts and resolv.conf, installs the rules and relays, and re-attaches when the anchor restarts; the anchor health check passes only when the controller reports this namespace enforced, and the application still attests on its own.
+The optional `notify-broker` service (profile `notify`) runs the broker under its own uid with `network_mode: none`.
+`docker compose run --rm cli ...` commands join the same namespace. docs/DOCKER.md § Egress proxy mode has the steps.
+
+**Remote proxies and Gluetun.** Any reachable proxy works, including a Gluetun sidecar or a remote host; point the URL at the address the host can reach (a published Gluetun port such as `http://127.0.0.1:8888` works through the relay).
+Verifying the exit address is an operator task outside the application: compare a non-venue echo service through and outside the proxy by hand; the application never makes a direct comparison.
+
+**Adapter integration requirement.** A new platform adapter or check script must build its clients through the `shared_tools/egress_policy.py` helpers (`pin_ccxt`, `pin_requests_session`, `requests_proxies`, `pin_yfinance`, `pin_hyperliquid_sdk`), and a new Go client must use `egressHTTPClient` or `egressWebsocketDialer`; the kernel boundary still blocks a client that forgets, but it then fails instead of using the proxy.
+
+**Tests.** `scheduler/egress_integration_test.go` (every scheme, failures, cancellation, loopback, host proxy variables, config strictness, entry refusals), `scheduler/egress_broker_integration_test.go` (Linux: direct notifications through a real broker with a fake Discord gateway, Telegram and GitHub, during a venue proxy outage), `scheduler/egress_pyintegration_test.go` (`pyintegration`), `shared_tools/test_egress_integration.py`, `scripts/test_egress_enforcement.sh` (root: namespace rules, attestation, every direct path, relay-only egress, the daemon in the namespace, controller loss, address refresh, systemd sandbox and launcher) and `scripts/test_egress_docker.sh` (root, rootful Docker: anchor, application attestation, status relay, one-shot commands, anchor restart).
+
+---
+
 ## Auto-Update
 
 `auto_update`: `off` | `daily` | `heartbeat`. When an update is found the bot notifies active Discord channels. With `DISCORD_OWNER_ID` set it DMs the owner; replying yes within 30 minutes runs `scripts/update.sh`, saves state, and restarts.
@@ -377,7 +491,8 @@ The Docker image is the one exception: the root `Dockerfile` builds Go and Pytho
 On a difference it keeps the loaded file as `<unit>.prev`, installs the shipped one with mode 0644, and runs `daemon-reload`; on a match that systemd has not reloaded it runs `daemon-reload` only; otherwise it does nothing.
 A rollback restores `<unit>.prev` and reloads before restarting the previous binary.
 Before the binary swap, a `journal` phase runs the same journald namespace sync as the installer (Run And Install Service § Journal namespace); a failed sync removes `go-trader.new` and stops the update, so the binary, the unit and the running service stay unchanged.
-Drop-ins under `<unit>.d/` are never written — `scripts/merge-paper-instance.sh` owns those.
+Drop-ins under `<unit>.d/` are never written — `scripts/merge-paper-instance.sh` and `scripts/egress-install.sh` own those.
+For a unit with an egress drop-in (`NetworkNamespacePath` plus `GO_TRADER_EGRESS_DEPLOYMENT`), the update must run as root: it builds the egress controller from the same exported sources into a root-owned staging directory, runs the probe as the unit's user with the unit's environment files, switches `go-trader-egress@<deployment>` to the new controller (the previous one kept as `.prev`) before the app restart, and restores both on rollback (§ Egress Proxy Mode).
 A unit name this repo does not ship is logged and skipped, never guessed; a fragment that is a symlink whose target differs is left to the operator; a unit loaded from outside `/etc/systemd/system` (vendor or generator) stops the update before the swap.
 `scripts/install-service.sh` is still the first-install path: it also creates `logs/`, enables the unit, and starts it.
 
@@ -484,6 +599,12 @@ When in doubt, treat a commit as a runtime default and prompt. Per-release narra
   Backtests (`run_backtest.py --htf-filter`) and the `/tuning` simulator now refuse an empty HTF cache or one shorter than 50 rows (`HTF FILTER REFUSED`) and save no result; before, they ran unfiltered. The simulator's filtered path also works again with a valid cache (it failed on a time-zone mismatch).
   The Go result contract and the check scripts change together, so deploy only with `bash scripts/update.sh --restart`. This change does not depend on #1822 (Robinhood timeframe mapping); a Robinhood or TopStep strategy whose HTF interval the provider does not serve now holds entries and alerts instead of trading unfiltered.
   After an update, list every strategy with `htf_filter: true`, tell the operator that unavailable HTF input now holds its entries, and point to the `HTF filter: ... signal suppressed` log line and the alert; do not turn the filter off on the operator's behalf.
+- **Egress proxy mode (#1841, opt-in, nothing changes unless `GO_TRADER_EGRESS_PROXY` is set).** A deployment can send every external connection through one proxy behind a root-owned egress controller that blocks every direct route (§ Egress Proxy Mode).
+  With the variable unset, transports, child arguments and Python behavior are unchanged; `/status` and the feed `/status` gain an `egress` block that reads `{"mode": "disabled"}`.
+  The Python environment gains `requests[socks]` (PySocks), and `shared_scripts/llm_review.py` now calls the API through a requests session instead of urllib (same response parsing and stdout contract; transport error names in the advisory `error` text can differ).
+  An `egress` config key other than `proxy_required` or `notifications_direct`, or a non-boolean value, now fails the load, and a SIGHUP that changes the block is refused.
+  Deploy only with `bash scripts/update.sh --restart` (Go and Python change together).
+  After an update, tell the operator the mode exists and is off; do not turn it on without consent, because it needs the installer, a reachable proxy, and Linux with systemd 247+ or rootful Docker.
 - **Robinhood logins keep one owner-only session beside the config (#1818, runtime default, no opt-out, no config change).** Every Robinhood login now stores and reuses its session only in `<config folder>/robinhood-session` (Secrets, Robinhood session), which go-trader sets at startup; the scripts no longer read or write `$HOME/.tokens`.
   Before this change a shipped unit with home `/nonexistent` failed every live Robinhood login, and a host that followed the #1816 HOME step sent a new password login with a new random device token whenever the cache could not be used.
   A legacy `$HOME/.tokens/robinhood.pickle` is not read, so the first login after the update uses a new device identity and can need the one-time bootstrap (`go-trader robinhood-login --config <config.json>`); a login that meets a device challenge now fails at once and stays latched until the bootstrap succeeds, and it never waits for a prompt.
@@ -1527,7 +1648,8 @@ Gather first: platform name and ID prefix; products (spot, perps, futures, optio
 8. Config examples
 9. The init wizard and `generateConfig`, if the platform is user-selectable
 10. `pyproject.toml` for any new SDK dependency, then `uv sync`
-11. Tests only where CLAUDE.md § Testing allows them (venue states, money math such as fees, paper/live parity); otherwise prove the platform with the real build and `--once` run below
+11. Egress proxy mode: build every client through `shared_tools/egress_policy.py` (`pin_ccxt`, `pin_requests_session`, `requests_proxies`, `pin_yfinance`, `pin_hyperliquid_sdk`), add the family to `--check-policy` in `shared_tools/egress_bootstrap.py`, and use `egressHTTPClient` / `egressWebsocketDialer` for a Go client (§ Egress Proxy Mode)
+12. Tests only where CLAUDE.md § Testing allows them (venue states, money math such as fees, paper/live parity); otherwise prove the platform with the real build and `--once` run below
 
 A check script that receives `--htf-filter` must return the `htf_filter` block from `shared_tools/htf_filter.py` (`run_htf_filter`, `htf_skipped_block`, `htf_not_evaluated_block`); with the filter on, Go treats a result without it as a script error (§ Higher-timeframe filter).
 

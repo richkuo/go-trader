@@ -6,6 +6,7 @@ from datetime import datetime
 import ccxt
 import pandas as pd
 
+import egress_policy
 from closed_bar import TIMESTAMP_KIND_OPEN, declare_frame_cadence
 from storage import store_ohlcv, load_ohlcv
 
@@ -15,9 +16,9 @@ OHLCV_TIMESTAMP_KIND = TIMESTAMP_KIND_OPEN
 
 def get_exchange(exchange_id: str = "binanceus") -> ccxt.Exchange:
     exchange_class = getattr(ccxt, exchange_id)
-    exchange = exchange_class({
+    exchange = egress_policy.pin_ccxt(exchange_class({
         "enableRateLimit": True,
-    })
+    }))
     return exchange
 
 

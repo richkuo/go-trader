@@ -34,7 +34,7 @@ type DeribitPricer struct {
 
 func NewDeribitPricer() *DeribitPricer {
 	return &DeribitPricer{
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: egressHTTPClient(10 * time.Second),
 	}
 }
 

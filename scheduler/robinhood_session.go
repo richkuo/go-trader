@@ -80,8 +80,8 @@ func runRobinhoodLogin(args []string) int {
 	}
 	fmt.Fprintf(os.Stderr, "robinhood-login: session folder %s\n", dir)
 
-	cmd := exec.Command(robinhoodLoginPython, robinhoodLoginScript)
-	cmd.Env = processEnvironment(map[string]string{robinhoodSessionDirEnv: dir})
+	cmd := exec.Command(robinhoodLoginPython, egressPythonArgv(robinhoodLoginScript, nil)...)
+	cmd.Env = egressChildEnvironment(map[string]string{robinhoodSessionDirEnv: dir})
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

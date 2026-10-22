@@ -89,7 +89,7 @@ func interactionUserLabel(i *discordgo.InteractionCreate) string {
 	return "Discord ID " + u.ID
 }
 
-func (d *DiscordNotifier) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) {
+func (d *DiscordNotifier) handleReport(s discordTransport, i *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) {
 	title := optionString(data.Options, "title", "")
 	body := optionString(data.Options, "body", "")
 	label := optionString(data.Options, "label", "")
@@ -110,16 +110,22 @@ func (d *DiscordNotifier) handleReport(s *discordgo.Session, i *discordgo.Intera
 	if d.cfg != nil {
 		dcfg = d.cfg.Discord
 	}
-	token := dcfg.reportToken()
-	if token == "" {
-		followup("Issue reporting is not configured: set a GitHub token via the GO_TRADER_GITHUB_TOKEN env var (or discord.report_github_token).")
-		return
-	}
-
 	payload := buildIssueRequest(title, body, label, interactionUserLabel(i))
 	ctx, cancel := context.WithTimeout(shutdownReadOnlyCtx, 20*time.Second)
 	defer cancel()
-	url, number, err := createGitHubIssue(ctx, http.DefaultClient, dcfg.reportRepo(), token, payload)
+	var url string
+	var number int
+	var err error
+	if processEgress.directNotifications() {
+		url, number, err = brokerCreateGitHubIssue(ctx, dcfg.reportRepo(), payload)
+	} else {
+		token := dcfg.reportToken()
+		if token == "" {
+			followup("Issue reporting is not configured: set a GitHub token via the GO_TRADER_GITHUB_TOKEN env var (or discord.report_github_token).")
+			return
+		}
+		url, number, err = createGitHubIssue(ctx, egressHTTPClient(0), dcfg.reportRepo(), token, payload)
+	}
 	if err != nil {
 		followup(fmt.Sprintf("Failed to file issue: %v", err))
 		return

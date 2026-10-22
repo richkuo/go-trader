@@ -39,6 +39,9 @@ uv_env=()
 uv_sync_flags=(--no-dev)
 build_export_tree=""
 build_export_commit=""
+egress_deployment=""
+egress_staged=""
+egress_switched=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -478,6 +481,15 @@ do_rollback() {
         fi
     fi
 
+    if [[ "$egress_switched" == "1" ]]; then
+        if update_egress_restore_controller "$egress_deployment"; then
+            egress_switched=0
+            echo "[update] rollback: restored the previous egress controller for $egress_deployment" >&2
+        else
+            echo "[update] rollback: could not restore the previous egress controller for $egress_deployment; the namespace rules stay installed, so the service stays fail-closed" >&2
+        fi
+    fi
+
     if [[ ! -x ./go-trader.prev ]]; then
         echo "[update] rollback: no go-trader.prev to restore — service stays on broken binary" >&2
         return
@@ -830,6 +842,22 @@ if [[ "$restart" == "1" && "$restart_mode" == "systemd" ]]; then
     fi
 fi
 
+if [[ "$restart_mode" == "systemd" ]]; then
+    egress_deployment=$(update_egress_deployment "$service_unit")
+fi
+if [[ -n "$egress_deployment" ]]; then
+    if ! update_egress_valid_deployment "$egress_deployment"; then
+        fail "unit $service_unit sets an invalid GO_TRADER_EGRESS_DEPLOYMENT; repair its egress drop-in (SKILL.md Egress proxy mode)"
+    fi
+    if [[ "$EUID" != "0" ]]; then
+        fail "egress proxy deployment $egress_deployment updates as root, because the update rebuilds its root-owned egress controller: sudo bash scripts/update.sh --restart"
+    fi
+    if [[ ! -f "$UPDATE_EGRESS_MANIFEST_DIR/$egress_deployment.json" ]]; then
+        fail "egress manifest $UPDATE_EGRESS_MANIFEST_DIR/$egress_deployment.json is missing; reinstall with scripts/egress-install.sh"
+    fi
+    echo "[update] egress: deployment $egress_deployment (controller go-trader-egress@$egress_deployment.service)"
+fi
+
 if [[ -z "$rsync_from" ]]; then
     build_paths=(
         scheduler
@@ -939,11 +967,28 @@ if [[ ! -x ./go-trader.new ]]; then
     fail "go-trader.new is not executable"
 fi
 echo "[update] built ${ver}: $(stat -c '%s' ./go-trader.new 2>/dev/null || stat -f '%z' ./go-trader.new) bytes"
+if [[ -n "$egress_deployment" ]]; then
+    egress_staged=$(update_egress_stage_controller "$egress_deployment" "$build_export_tree" "$build_export_commit" "$go_bin" "$ver" "$rsync_from") || {
+        rm -f ./go-trader.new
+        fail "egress controller build failed; the binary, the controller and the running service are unchanged"
+    }
+    echo "[update] egress: staged controller $egress_staged from the same sources (protocol $(update_egress_protocol "$egress_staged"))"
+fi
 end_phase
 
 begin_phase probe
 give_back_tree_owner "before the probe"
-if [[ -n "$probe_owner" ]]; then
+if [[ -n "$egress_deployment" ]]; then
+    egress_probe_owner="$probe_owner"
+    [[ -n "$egress_probe_owner" ]] || egress_probe_owner=$(update_unit_owner "$service_unit") || fail "could not resolve the user of $service_unit for the probe"
+    echo "[update] probe: egress deployment $egress_deployment; runs as uid:gid $egress_probe_owner with the unit's environment files, so it checks the proxy policy and the controller"
+    egress_probe_args=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && egress_probe_args+=("$line")
+    done < <(update_egress_probe_args "$service_unit" "$egress_deployment")
+    probe_ok=0
+    update_probe_as_owner "$repo_root" "$egress_probe_owner" "$repo_root/go-trader.new" scheduler/config.json "${egress_probe_args[@]}" && probe_ok=1
+elif [[ -n "$probe_owner" ]]; then
     echo "[update] probe: runs as $(id -nu "${probe_owner%%:*}" 2>/dev/null || printf 'uid %s' "${probe_owner%%:*}") under the unit sandbox, on a private copy of scheduler/config.json, because that account can change the config and the scripts it names"
     probe_ok=0
     update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader.new" scheduler/config.json && probe_ok=1
@@ -994,6 +1039,10 @@ fi
 end_phase
 
 if [[ "$restart" != "1" ]]; then
+    if [[ -n "$egress_staged" ]]; then
+        rm -rf "$(dirname "$egress_staged")"
+        echo "[update] egress: the staged controller was discarded; it is installed only with --restart"
+    fi
     echo "[update] build OK at $ver (skipping restart; pass --restart to enable)"
     exit 0
 fi
@@ -1054,6 +1103,22 @@ if [[ "$restart_mode" == "systemd" ]]; then
 
     warn_execstart_vs_swap "$service_unit"
     warn_missing_systemd_environment_files "$service_unit"
+
+    if [[ -n "$egress_staged" ]]; then
+        begin_phase egress
+        egress_rc=0
+        update_egress_switch_controller "$egress_deployment" "$egress_staged" || egress_rc=$?
+        case "$egress_rc" in
+            0) egress_switched=1 ;;
+            2) ;;
+            *)
+                egress_switched=1
+                do_rollback "the egress controller for $egress_deployment did not switch cleanly"
+                fail "egress controller switch failed for $egress_deployment"
+                ;;
+        esac
+        end_phase
+    fi
 
     begin_phase restart
     restart_rc=0

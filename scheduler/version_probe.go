@@ -367,9 +367,11 @@ func probeOneCheckScript(script string, argv []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 
-	cmdArgs := append([]string{script}, argv...)
-	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
+	cmd := exec.CommandContext(ctx, ".venv/bin/python3", egressPythonArgv(script, argv)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if env := egressChildEnvironment(nil); env != nil {
+		cmd.Env = env
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

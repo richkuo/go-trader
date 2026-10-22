@@ -192,6 +192,11 @@ func spawnPythonProcess(parentCtx context.Context, script string, args []string,
 }
 
 func spawnPythonProcessWithEnv(parentCtx context.Context, script string, args []string, stdinData []byte, timeout time.Duration, envOverrides map[string]string) ([]byte, []byte, error) {
+	stdout, stderr, err := spawnPythonProcessRaw(parentCtx, ".venv/bin/python3", egressPythonArgv(script, args), stdinData, timeout, egressChildEnvironment(envOverrides))
+	return stdout, processEgress.recordChildOutcome(stderr), err
+}
+
+func spawnPythonProcessRaw(parentCtx context.Context, python string, cmdArgs []string, stdinData []byte, timeout time.Duration, env []string) ([]byte, []byte, error) {
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if timeout > 0 {
@@ -201,8 +206,7 @@ func spawnPythonProcessWithEnv(parentCtx context.Context, script string, args []
 	}
 	defer cancel()
 
-	cmdArgs := append([]string{script}, args...)
-	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
+	cmd := exec.CommandContext(ctx, python, cmdArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
@@ -214,8 +218,8 @@ func spawnPythonProcessWithEnv(parentCtx context.Context, script string, args []
 		return nil
 	}
 	cmd.WaitDelay = pythonPipeWaitDelay
-	if len(envOverrides) > 0 {
-		cmd.Env = processEnvironment(envOverrides)
+	if env != nil {
+		cmd.Env = env
 	}
 	if stdinData != nil {
 		cmd.Stdin = bytes.NewReader(stdinData)

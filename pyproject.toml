@@ -11,6 +11,7 @@ dependencies = [
     "robin-stocks>=3.0.0",
     "pyotp>=2.9.0",
     "yfinance>=0.2.0",
+    "requests[socks]>=2.34.2",
 ]
 
 [project.optional-dependencies]

@@ -7,6 +7,7 @@ from typing import Tuple
 
 sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
+import egress_policy
 from pricing import bs_price_and_greeks
 
 CME_SPECS = {
@@ -18,7 +19,7 @@ DEFAULT_SPECS = {"interval": 100, "multiplier": 1.0}
 
 def _get_spot_price(underlying: str) -> float:
     import ccxt
-    exchange = ccxt.binanceus({"enableRateLimit": True})
+    exchange = egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
     for suffix in ("/USDT", "/USD"):
         try:
             ticker = exchange.fetch_ticker(underlying + suffix)
@@ -33,7 +34,7 @@ def _get_spot_price(underlying: str) -> float:
 def _calc_vol_and_iv_rank(underlying: str) -> Tuple[float, float]:
     try:
         import ccxt
-        exchange = ccxt.binanceus({"enableRateLimit": True})
+        exchange = egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
         ohlcv = exchange.fetch_ohlcv(underlying + "/USDT", "1d", limit=90)
         if not ohlcv or len(ohlcv) < 15:
             return 0.60, 50.0

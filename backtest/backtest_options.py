@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
+import egress_policy
 from pricing import bs_price, bs_price_and_greeks
 
 
@@ -33,7 +34,7 @@ def fetch_historical_data(underlying: str, since: str, timeframe: str = "1d",
               f"Supported: {SUPPORTED_UNDERLYING_EXCHANGES}")
         exchange_name = "binanceus"
     exchange_cls = getattr(ccxt, exchange_name)
-    exchange = exchange_cls({"enableRateLimit": True})
+    exchange = egress_policy.pin_ccxt(exchange_cls({"enableRateLimit": True}))
     symbol = f"{underlying}/USDT"
 
     since_ts = exchange.parse8601(f"{since}T00:00:00Z")

@@ -1,0 +1,96 @@
+x-egress-run: &egress-run
+  - type: bind
+    source: /run/go-trader-egress/${GO_TRADER_EGRESS_DEPLOYMENT:?Set GO_TRADER_EGRESS_DEPLOYMENT in docker/.env (docs/DOCKER.md Egress proxy mode)}
+    target: /run/go-trader-egress/${GO_TRADER_EGRESS_DEPLOYMENT}
+    read_only: true
+
+services:
+  egress-net:
+    image: ghcr.io/richkuo/go-trader:${GO_TRADER_TAG:?Set GO_TRADER_TAG in docker/.env to a release tag, for example v0.109.0 (docs/DOCKER.md)}
+    init: true
+    user: "10001:10001"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    network_mode: none
+    labels:
+      io.github.richkuo.go-trader.egress.anchor: ${GO_TRADER_EGRESS_DEPLOYMENT}
+    environment:
+      GO_TRADER_EGRESS_DEPLOYMENT: ${GO_TRADER_EGRESS_DEPLOYMENT}
+    volumes: *egress-run
+    command: ["egress-anchor"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/go-trader", "egress-anchor", "--check"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+      start_interval: 2s
+
+  go-trader:
+    network_mode: service:egress-net
+    networks: !reset []
+    ports: !reset []
+    depends_on:
+      egress-net:
+        condition: service_healthy
+        restart: true
+    environment:
+      GO_TRADER_EGRESS_DEPLOYMENT: ${GO_TRADER_EGRESS_DEPLOYMENT}
+    volumes:
+      - data:/data
+      - logs:/app/logs
+      - type: bind
+        source: /run/go-trader-egress/${GO_TRADER_EGRESS_DEPLOYMENT}
+        target: /run/go-trader-egress/${GO_TRADER_EGRESS_DEPLOYMENT}
+        read_only: true
+
+  cli:
+    network_mode: service:egress-net
+    networks: !reset []
+    depends_on:
+      egress-net:
+        condition: service_healthy
+    environment:
+      GO_TRADER_EGRESS_DEPLOYMENT: ${GO_TRADER_EGRESS_DEPLOYMENT}
+    volumes:
+      - data:/data
+      - logs:/app/logs
+      - type: bind
+        source: /run/go-trader-egress/${GO_TRADER_EGRESS_DEPLOYMENT}
+        target: /run/go-trader-egress/${GO_TRADER_EGRESS_DEPLOYMENT}
+        read_only: true
+
+  notify-broker:
+    profiles: ["notify"]
+    image: ghcr.io/richkuo/go-trader:${GO_TRADER_TAG}
+    init: true
+    user: "${GO_TRADER_NOTIFY_UID:-10002}:${GO_TRADER_NOTIFY_GID:-10002}"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    network_mode: none
+    labels:
+      io.github.richkuo.go-trader.egress.notify: ${GO_TRADER_EGRESS_DEPLOYMENT}
+    env_file:
+      - path: notify.env
+        required: true
+    environment:
+      GO_TRADER_EGRESS_DEPLOYMENT: ${GO_TRADER_EGRESS_DEPLOYMENT}
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    volumes:
+      - type: bind
+        source: /run/go-trader-egress/${GO_TRADER_EGRESS_DEPLOYMENT}
+        target: /run/go-trader-egress/${GO_TRADER_EGRESS_DEPLOYMENT}
+        read_only: true
+      - type: bind
+        source: /run/go-trader-egress/${GO_TRADER_EGRESS_DEPLOYMENT}/notify
+        target: /run/go-trader-egress/${GO_TRADER_EGRESS_DEPLOYMENT}/notify
+    command: ["notify-broker", "--deployment", "${GO_TRADER_EGRESS_DEPLOYMENT}"]
+    restart: unless-stopped

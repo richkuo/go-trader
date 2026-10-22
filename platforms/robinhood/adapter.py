@@ -25,6 +25,8 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
+import egress_policy
+
 YAHOO_CRYPTO_MAP = {
     "BTC": "BTC-USD",
     "ETH": "ETH-USD",
@@ -497,6 +499,7 @@ def _get_strike_interval(price: float) -> float:
 def robinhood_library():
     with contextlib.redirect_stdout(sys.stderr):
         import robin_stocks.robinhood as rh
+        egress_policy.pin_robin_stocks()
         rh.helper.set_output(sys.stderr)
         yield rh
 
@@ -1337,6 +1340,7 @@ class RobinhoodExchangeAdapter:
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
         try:
             import yfinance as yf
+            egress_policy.pin_yfinance()
             yahoo_sym = self._resolve_yahoo_symbol(underlying)
             ticker = yf.Ticker(yahoo_sym)
             hist = ticker.history(period="90d", interval="1d")
@@ -1466,6 +1470,7 @@ class RobinhoodExchangeAdapter:
         yahoo_sym = self._resolve_yahoo_symbol(symbol)
         try:
             import yfinance as yf
+            egress_policy.pin_yfinance()
             ticker = yf.Ticker(yahoo_sym)
             hist = ticker.history(period="1d")
             if hist.empty:
@@ -1482,6 +1487,7 @@ class RobinhoodExchangeAdapter:
         yahoo_sym = self._resolve_yahoo_symbol(symbol)
         try:
             import yfinance as yf
+            egress_policy.pin_yfinance()
             yf_interval = interval
             if "m" in interval:
                 period = "5d"

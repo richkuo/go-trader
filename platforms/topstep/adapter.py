@@ -4,6 +4,12 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 
+_SHARED_TOOLS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools')
+if _SHARED_TOOLS not in sys.path:
+    sys.path.append(_SHARED_TOOLS)
+
+import egress_policy
+
 API_BASE_URL = "https://api.topstepx.com"
 
 YAHOO_SYMBOL_MAP = {
@@ -57,7 +63,7 @@ class TopStepExchangeAdapter:
                 )
             try:
                 import requests
-                self._session = requests.Session()
+                self._session = egress_policy.pin_requests_session(requests.Session())
                 self._session.headers.update({
                     "X-API-Key": self._api_key,
                     "X-API-Secret": self._api_secret,
@@ -244,6 +250,7 @@ class TopStepExchangeAdapter:
             return 0.0
         try:
             import yfinance as yf
+            egress_policy.pin_yfinance()
             ticker = yf.Ticker(yahoo_sym)
             hist = ticker.history(period="1d")
             if hist.empty:
@@ -262,6 +269,7 @@ class TopStepExchangeAdapter:
             return []
         try:
             import yfinance as yf
+            egress_policy.pin_yfinance()
             yf_interval = interval
             if "m" in interval:
                 period = "5d"
