@@ -166,7 +166,8 @@ def test_age_truncation_marker_and_flip_boundaries():
     cut["prefix_complete"], cut["retained_from_ms"] = False, run[2]["recv_ms"] + 1
     held = obi.evaluate_section(cut, "BTC", P, cut_deadline)
     assert held["signal"] == 0 and held["reason"] == "evidence_truncated" and held["entry_id"] == ""
-    assert obi.evaluate_section(dict(cut, prefix_complete=True), "BTC", P, cut_deadline)["signal"] == 1
+    unguarded = dict(cut, prefix_complete=True, retained_from_ms=cut_deadline - 60_000)
+    assert obi.evaluate_section(unguarded, "BTC", P, cut_deadline)["signal"] == 1
     full_deadline = obi.ceil_grid(max(run[2]["event_ms"], run[2]["recv_ms"]))
     full = decide(run, cut_marks, full_deadline)
     assert full["signal"] == 1 and full["reason"] == "entry_long" and full["boundary"].startswith("marker:1:subscribed:")
@@ -176,6 +177,8 @@ def test_age_truncation_marker_and_flip_boundaries():
     unmarked["prefix_complete"], unmarked["retained_from_ms"] = False, cut_deadline - 30_000
     unmarked_out = obi.evaluate_section(unmarked, "BTC", P, cut_deadline)
     assert unmarked_out["signal"] == 0 and unmarked_out["reason"] == "evidence_truncated"
+    late = dict(cut, prefix_complete=True)
+    assert obi.evaluate_section(late, "BTC", P, cut_deadline)["reason"] == "evidence_truncated"
 
 
 def test_missing_and_malformed_books_hold_and_candle_only_consumers_are_refused():
