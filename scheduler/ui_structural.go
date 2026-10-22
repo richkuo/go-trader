@@ -135,20 +135,8 @@ func (ss *StatusServer) confirmStructuralAction(action, strategyID string, param
 		if !ok {
 			return "", "", "", fmt.Errorf("strategy %q not found", strategyID)
 		}
-		hasPaper, hasLive := false, false
-		for _, a := range sc.Args {
-			switch strings.TrimSpace(a) {
-			case "--mode=paper":
-				hasPaper = true
-			case "--mode=live":
-				hasLive = true
-			}
-		}
-		if !hasPaper {
-			if hasLive {
-				return "", "", "", fmt.Errorf("strategy %q is already live", strategyID)
-			}
-			return "", "", "", fmt.Errorf("strategy %q has no --mode=paper arg to flip (only perps/futures-style strategies support paper→live)", strategyID)
+		if _, err := paperToLiveArgs(strategyID, sc.Args); err != nil {
+			return "", "", "", err
 		}
 		if reason := ss.paperToLiveBlockedReason(strategyID, false); reason != "" {
 			return "", "", "", fmt.Errorf("%s", reason)

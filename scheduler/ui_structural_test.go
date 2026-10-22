@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -404,6 +405,71 @@ func TestUIPaperToLiveRejectsModelessStrategy(t *testing.T) {
 	w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "no --mode=paper") {
 		t.Fatalf("modeless confirm status = %d body %s, want 400 no-mode", w.Code, w.Body.String())
+	}
+}
+
+func TestPaperToLiveReadsBothModeForms(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"equals paper", []string{"momentum", "ETH", "1h", "--mode=paper"}, []string{"momentum", "ETH", "1h", "--mode=live"}},
+		{"split paper", []string{"momentum", "ETH", "1h", "--mode", "paper"}, []string{"momentum", "ETH", "1h", "--mode=live"}},
+		{"split live", []string{"momentum", "ETH", "1h", "--mode", "live"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ss, path, _ := newStructuralTestServer(t)
+			argsJSON, err := json.Marshal(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := strings.Replace(minimalConfigJSON, `["momentum", "ETH", "1h", "--mode=paper"]`, string(argsJSON), 1)
+			if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ss.UpdateStrategies([]StrategyConfig{
+				{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+				{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: tc.args},
+			})
+			if tc.want == nil {
+				body := `{"action":"paper-to-live","strategy_id":"hl-momentum-eth","params":{}}`
+				rec := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
+				if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "already live") {
+					t.Fatalf("UI confirm status = %d body %s, want 400 already-live", rec.Code, rec.Body.String())
+				}
+				if _, err := ss.executePaperToLive("hl-momentum-eth"); err == nil || !strings.Contains(err.Error(), "already live") {
+					t.Fatalf("Discord execute error = %v, want already-live", err)
+				}
+				if got := string(mustReadFile(t, path)); got != cfg {
+					t.Fatalf("refused flip must not rewrite the config:\n%s", got)
+				}
+				return
+			}
+			confirm := structuralConfirm(t, ss, "paper-to-live", "hl-momentum-eth", `{}`)
+			h := func(w http.ResponseWriter, r *http.Request) {
+				ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "paper-to-live")
+			}
+			w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/paper-to-live", fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce), nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("paper-to-live status = %d, body %s", w.Code, w.Body.String())
+			}
+			list, err := configStrategies(readConfigRoot(t, path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var item struct {
+				ID   string   `json:"id"`
+				Args []string `json:"args"`
+			}
+			if err := json.Unmarshal(list[1], &item); err != nil {
+				t.Fatal(err)
+			}
+			if item.ID != "hl-momentum-eth" || !slices.Equal(item.Args, tc.want) || !isLiveArgs(item.Args) {
+				t.Fatalf("flipped %s args = %q, want %q", item.ID, item.Args, tc.want)
+			}
+		})
 	}
 }
 

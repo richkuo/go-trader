@@ -369,24 +369,11 @@ func flipStrategyToLive(root map[string]json.RawMessage, id string) (before, aft
 		}
 	}
 	before = append([]string(nil), args...)
-	flipped := false
-	hasLive := false
-	for i, a := range args {
-		switch strings.TrimSpace(a) {
-		case "--mode=paper":
-			args[i] = "--mode=live"
-			flipped = true
-		case "--mode=live":
-			hasLive = true
-		}
+	after, err = paperToLiveArgs(id, args)
+	if err != nil {
+		return nil, nil, err
 	}
-	if !flipped {
-		if hasLive {
-			return nil, nil, fmt.Errorf("strategy %q is already live", id)
-		}
-		return nil, nil, fmt.Errorf("strategy %q has no --mode=paper arg to flip (only perps/futures-style strategies support paper→live)", id)
-	}
-	nb, err := json.Marshal(args)
+	nb, err := json.Marshal(after)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -399,7 +386,34 @@ func flipStrategyToLive(root map[string]json.RawMessage, id string) (before, aft
 	if err := setConfigStrategies(root, list); err != nil {
 		return nil, nil, err
 	}
-	return before, args, nil
+	return before, after, nil
+}
+
+func paperToLiveArgs(id string, args []string) ([]string, error) {
+	if isLiveArgs(args) {
+		return nil, fmt.Errorf("strategy %q is already live", id)
+	}
+	out := make([]string, 0, len(args))
+	flipped := false
+	for i := 0; i < len(args); i++ {
+		a := strings.TrimSpace(args[i])
+		if a == "--mode=paper" {
+			out = append(out, "--mode=live")
+			flipped = true
+			continue
+		}
+		if a == "--mode" && i+1 < len(args) && strings.TrimSpace(args[i+1]) == "paper" {
+			out = append(out, "--mode=live")
+			flipped = true
+			i++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	if !flipped {
+		return nil, fmt.Errorf("strategy %q has no --mode=paper arg to flip (only perps/futures-style strategies support paper→live)", id)
+	}
+	return out, nil
 }
 
 func classifyConfigSetKey(key string) (kind, id, field string) {
