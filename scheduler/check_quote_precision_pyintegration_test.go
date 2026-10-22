@@ -1092,3 +1092,187 @@ func TestCheckQuotePrecisionPriceTextKeepsLargePrices(t *testing.T) {
 		}
 	})
 }
+
+type qpRiskRow struct {
+	Cash           float64
+	Peak           float64
+	CircuitBreaker bool
+	Quantity       float64
+}
+
+func qpRiskRows(t *testing.T, db *sql.DB) map[string]qpRiskRow {
+	t.Helper()
+	rows, err := db.Query(`SELECT s.id, s.cash, s.risk_peak_value, s.risk_circuit_breaker, COALESCE(SUM(p.quantity), 0)
+		FROM strategies s LEFT JOIN positions p ON p.strategy_id = s.id GROUP BY s.id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]qpRiskRow{}
+	for rows.Next() {
+		var id string
+		var r qpRiskRow
+		var cb int
+		if err := rows.Scan(&id, &r.Cash, &r.Peak, &cb, &r.Quantity); err != nil {
+			t.Fatal(err)
+		}
+		r.CircuitBreaker = cb != 0
+		out[id] = r
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func qpPaperRisk(t *testing.T, db *sql.DB) (peak float64, marker int, active int) {
+	t.Helper()
+	if err := db.QueryRow(`SELECT peak_value, quote_precision_rebaselined, kill_switch_active FROM portfolio_risk WHERE scope = 'paper'`).Scan(&peak, &marker, &active); err != nil {
+		t.Fatal(err)
+	}
+	return peak, marker, active
+}
+
+func qpLogLines(t *testing.T, out, needle string) {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, needle) {
+			t.Log(strings.TrimSpace(line))
+		}
+	}
+}
+
+func qpExec(t *testing.T, db *sql.DB, query string, args ...interface{}) {
+	t.Helper()
+	if _, err := db.Exec(query, args...); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+}
+
+func TestCheckQuotePrecisionUpgradeRebaselinesRoundedPeaksOnce(t *testing.T) {
+	root := qpRoot(t)
+	sched := qpBuildScheduler(t, root)
+	const q = 0.0055
+	const legacyMark = 0.01
+	tickers := `{"DOGE/USDT": 0.0055, "SHIB/USDT": 0.0055, "XRP/USDT": 0.0055}`
+	qpEnv(t, root, map[string]string{"QP_TICKERS": tickers, "QP_CLOSES": tickers, "QP_SHAPE": "cross_up"})
+	tight := func(sc StrategyConfig) StrategyConfig {
+		sc.MaxDrawdownPct = 20
+		return sc
+	}
+	cfg := sched.config([]StrategyConfig{
+		tight(qpSpotSC("qp-drawdown", "DOGE/USDT")),
+		tight(qpSpotSC("qp-at-peak", "SHIB/USDT")),
+		tight(qpSpotSC("qp-flat", "XRP/USDT")),
+	})
+	label := partitionLabel(defaultPaperPartition)
+	marker := "#1820 quote-precision peak rebaseline"
+
+	out := sched.run(cfg, "Cycle 1 complete", nil)
+	if strings.Contains(out, marker+" ["+label+"] qp-") || strings.Contains(out, "] portfolio: peak") {
+		t.Fatalf("a store with no open position must not rebaseline:\n%s", out)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(sched.dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, m, _ := qpPaperRisk(t, db); m != 1 {
+		t.Fatalf("the first cycle on a fresh store must set the one-time marker, got %d", m)
+	}
+	opened := qpRiskRows(t, db)
+	for _, id := range []string{"qp-drawdown", "qp-at-peak", "qp-flat"} {
+		if opened[id].Quantity <= 0 {
+			t.Fatalf("cycle 1 opened no position for %s: %+v", id, opened)
+		}
+	}
+
+	qpExec(t, db, `ALTER TABLE portfolio_risk DROP COLUMN quote_precision_rebaselined`)
+	qpExec(t, db, `DELETE FROM positions WHERE strategy_id = 'qp-flat'`)
+	qpExec(t, db, `UPDATE strategies SET cash = 100, risk_peak_value = 101 WHERE id = 'qp-flat'`)
+	qpExec(t, db, `UPDATE strategies SET cash = 0 WHERE id IN ('qp-drawdown', 'qp-at-peak')`)
+	dd, ap := opened["qp-drawdown"], opened["qp-at-peak"]
+	dd.Cash, ap.Cash = 0, 0
+	legacyDD := dd.Cash + dd.Quantity*legacyMark
+	legacyAP := ap.Cash + ap.Quantity*legacyMark
+	peakDD := legacyDD + 10
+	peakAP := legacyAP
+	peakPart := legacyDD + legacyAP + 100 + 10
+	qpExec(t, db, `UPDATE strategies SET risk_peak_value = ? WHERE id = 'qp-drawdown'`, peakDD)
+	qpExec(t, db, `UPDATE strategies SET risk_peak_value = ? WHERE id = 'qp-at-peak'`, peakAP)
+	qpExec(t, db, `UPDATE portfolio_risk SET peak_value = ? WHERE scope = 'paper'`, peakPart)
+
+	trueDD := dd.Cash + dd.Quantity*q
+	trueAP := ap.Cash + ap.Quantity*q
+	boundDD := dd.Quantity * quotePrecisionRoundingPerUnit
+	boundAP := ap.Quantity * quotePrecisionRoundingPerUnit
+	trueTotal := 0.0
+	trueTotal += trueDD
+	trueTotal += trueAP
+	trueTotal += 100.0
+	wantDD := math.Max(trueDD, peakDD-boundDD)
+	wantAP := math.Max(trueAP, peakAP-boundAP)
+	wantPart := math.Max(trueTotal, peakPart-(boundDD+boundAP))
+	if wantDD != peakDD-boundDD || wantAP != trueAP || wantPart != trueTotal {
+		t.Fatalf("fixture must exercise both branches: dd bound %v value %v, at-peak bound %v value %v, partition bound %v value %v",
+			peakDD-boundDD, trueDD, peakAP-boundAP, trueAP, peakPart-(boundDD+boundAP), trueTotal)
+	}
+	if (peakDD-trueDD)/peakDD*100 <= 20 || (peakPart-trueTotal)/peakPart*100 <= 25 {
+		t.Fatalf("fixture must trip both guards without the rebaseline: strategy %.2f%%, portfolio %.2f%%",
+			(peakDD-trueDD)/peakDD*100, (peakPart-trueTotal)/peakPart*100)
+	}
+
+	t.Run("upgrade_cycle_lowers_only_the_rounding_artifact", func(t *testing.T) {
+		out := sched.run(cfg, "Cycle 2 complete", nil)
+		for _, want := range []string{
+			fmt.Sprintf("[WARN] %s [%s] qp-drawdown: peak $%.4f -> $%.4f (value $%.4f, rounding bound $%.4f)", marker, label, peakDD, wantDD, trueDD, boundDD),
+			fmt.Sprintf("[WARN] %s [%s] qp-at-peak: peak $%.4f -> $%.4f (value $%.4f, rounding bound $%.4f)", marker, label, peakAP, wantAP, trueAP, boundAP),
+			fmt.Sprintf("[WARN] %s [%s] portfolio: peak $%.4f -> $%.4f (value $%.4f, rounding bound $%.4f)", marker, label, peakPart, wantPart, trueTotal, boundDD+boundAP),
+		} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("output lacks %q:\n%s", want, out)
+			}
+		}
+		qpLogLines(t, out, marker)
+		if strings.Contains(out, marker+" ["+label+"] qp-flat") || strings.Contains(out, "max drawdown") || strings.Contains(out, "Portfolio kill switch") {
+			t.Fatalf("the upgrade cycle touched the flat strategy or tripped a guard:\n%s", out)
+		}
+		got := qpRiskRows(t, db)
+		if !qpClose(got["qp-drawdown"].Peak, wantDD) || !qpClose(got["qp-at-peak"].Peak, wantAP) || got["qp-flat"].Peak != 101 {
+			t.Fatalf("peaks = %+v, want drawdown %v at-peak %v flat 101", got, wantDD, wantAP)
+		}
+		for _, id := range []string{"qp-drawdown", "qp-at-peak"} {
+			if got[id].CircuitBreaker || !qpClose(got[id].Quantity, opened[id].Quantity) {
+				t.Fatalf("%s must keep its position with no breaker: %+v", id, got[id])
+			}
+		}
+		peak, m, active := qpPaperRisk(t, db)
+		if !qpClose(peak, wantPart) || m != 1 || active != 0 {
+			t.Fatalf("portfolio peak %v marker %d kill switch %d, want %v, 1, 0", peak, m, active, wantPart)
+		}
+		var events int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM kill_switch_events WHERE scope = 'paper' AND type = 'basis_rebaseline' AND details LIKE '#1820 %'`).Scan(&events); err != nil || events != 1 {
+			t.Fatalf("basis_rebaseline events = %d (err %v), want 1", events, err)
+		}
+	})
+
+	t.Run("marker_blocks_a_second_rebaseline", func(t *testing.T) {
+		qpExec(t, db, `UPDATE strategies SET risk_peak_value = ? WHERE id = 'qp-drawdown'`, peakDD)
+		out := sched.run(cfg, "Cycle 3 complete", nil)
+		if strings.Contains(out, marker) {
+			t.Fatalf("the rebaseline ran a second time:\n%s", out)
+		}
+		if !strings.Contains(out, "max drawdown") {
+			t.Fatalf("the restored rounded peak must trip the breaker once the one-time rebaseline is spent:\n%s", out)
+		}
+		qpLogLines(t, out, "max drawdown")
+		got := qpRiskRows(t, db)
+		if !got["qp-drawdown"].CircuitBreaker || !qpClose(got["qp-at-peak"].Peak, wantAP) {
+			t.Fatalf("rows = %+v, want the drawdown breaker latched and the at-peak peak %v unchanged", got, wantAP)
+		}
+		var events int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM kill_switch_events WHERE scope = 'paper' AND type = 'basis_rebaseline' AND details LIKE '#1820 %'`).Scan(&events); err != nil || events != 1 {
+			t.Fatalf("basis_rebaseline events = %d (err %v), want 1", events, err)
+		}
+	})
+}
