@@ -142,7 +142,7 @@ func TestRobinhoodTimeframeRealBinaryRefusesUnsupportedTimeframesBeforeAnyCycle(
 		{"live-closed-bar", map[string]any{"args": []string{"atr_breakout", "BTC", "1h", "--mode=live"}, "closed_bar_decisions": true}, nil,
 			`strategy[rh-tf]: closed_bar_decisions is not supported: live Robinhood fills settle through robinhood_order_attempts`},
 		{"paper-closed-bar-1m", map[string]any{"args": []string{"atr_breakout", "BTC", "1m", "--mode=paper"}, "closed_bar_decisions": true}, nil,
-			`strategy[rh-tf]: closed_bar_decisions does not support timeframe "1m" (fixed-duration intervals only: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d); on Robinhood Yahoo's newest closed 1m row is a flat zero-volume placeholder`},
+			`strategy[rh-tf]: closed_bar_decisions does not support timeframe "1m" (fixed-duration intervals only: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d); on Robinhood Yahoo's newest closed 1m row was a flat zero-volume placeholder`},
 		{"paper-closed-bar-60m", map[string]any{"args": []string{"atr_breakout", "BTC", "60m", "--mode=paper"}, "closed_bar_decisions": true}, nil,
 			`strategy[rh-tf]: closed_bar_decisions does not support timeframe "60m"`},
 	}

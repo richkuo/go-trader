@@ -12,7 +12,7 @@ const robinhoodCheckScript = "shared_scripts/check_robinhood.py"
 const robinhoodLiveClosedBarRefusal = "live Robinhood fills settle through robinhood_order_attempts and the closed-bar entry ledger has no Robinhood provider, so one entry per decision candle and side cannot be enforced; use it on a --mode=paper Robinhood strategy"
 
 var robinhoodClosedBarRefusedTimeframes = map[string]string{
-	"1m": "Yahoo's newest closed 1m row is a flat zero-volume placeholder (open = high = low = close) until the next minute's row appears, between 10 and 20 seconds after the close in the sampled BTC-USD and ETH-USD minutes (#1822), so the settle hold would cover a third of every interval",
+	"1m": "Yahoo's newest closed 1m row was a flat zero-volume placeholder (open = high = low = close) in 6 of 8 sampled BTC-USD and ETH-USD minutes until the next minute's row appeared, 10 to 20 seconds after the close (#1822), so the settle hold would cover a third of every interval",
 }
 
 var robinhoodTimeframes = map[string]string{
