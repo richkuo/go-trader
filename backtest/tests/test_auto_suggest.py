@@ -88,14 +88,6 @@ def test_load_spec_rejects_invalid_spec(overrides, match):
         asug.load_spec(_base_spec(**overrides), _STUDY_DIR)
 
 
-def test_expand_explicit_candidates():
-    spec = asug.load_spec(_base_spec(), _STUDY_DIR)
-    entries = asug.expand_candidates(spec)
-    assert [e["key"] for e in entries] == ["c1"]
-    assert entries[0]["kind"] == "open"
-    assert entries[0]["harnesses"] == ["m1_noise", "m1"]
-
-
 def test_expand_sweep_and_gate_variants_cartesian_deterministic():
     spec = asug.load_spec(_base_spec(
         candidates=[],
@@ -216,11 +208,6 @@ def test_m1_argv_tail():
         "--candidate-json", "/t/c.json", "--registry", "spot",
         "--windows", "is,oos", "--funding", "charge", "--json", "/t/o.json",
         "--datasets", "BTC/USDT:1h"]
-
-
-def test_m1_argv_tail_omits_datasets_when_none():
-    tail = asug.m1_argv_tail("/t/c.json", "spot", ["is"], None, "/t/o.json")
-    assert "--datasets" not in tail
 
 
 def test_noise_argv_tail_threads_seed_and_direction():

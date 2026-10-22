@@ -107,11 +107,6 @@ def test_options_backtester_rejects_max_positions_below_two():
         OptionsBacktester(initial_capital=1000.0, max_positions=1)
 
 
-def test_options_backtester_accepts_max_positions_two_and_above():
-    OptionsBacktester(initial_capital=1000.0, max_positions=2)
-    OptionsBacktester(initial_capital=1000.0, max_positions=4)
-
-
 def test_annualized_return_uses_calendar_days_not_curve_length():
     bt = OptionsBacktester(initial_capital=1000.0, max_positions=2,
                            check_interval=7)

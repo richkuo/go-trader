@@ -1,7 +1,6 @@
 {
   "wording_only_tests": [
     "backtest/test_hurst_gate_backtest.py::test_run_single_backtest_accepts_the_hurst_gate_kwarg",
-    "backtest/tests/test_auto_suggest.py::test_m1_argv_tail_omits_datasets_when_none",
     "backtest/tests/test_auto_suggest.py::test_m5_params_limitation_flagged",
     "backtest/tests/test_auto_suggest.py::test_m6_argv_tail_baseline_config_path",
     "backtest/tests/test_auto_suggest.py::test_m6_argv_tail_incumbent_close_path_omits_baseline",

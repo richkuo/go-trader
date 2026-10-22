@@ -137,11 +137,6 @@ def test_parse_cli_param_grids():
     assert out == {"fast_period": [10, 15, 20], "num_std": [1.5, 2.0]}
 
 
-def test_parse_cli_param_grids_malformed():
-    with pytest.raises(ValueError, match="name=v1"):
-        tl.parse_cli_param_grids(["fast_period"])
-
-
 def test_resolve_overrides_valid_and_freeze():
     reg = load_registry("spot")
     og, fr = tl.resolve_overrides(

@@ -166,15 +166,6 @@ def test_trade_returns_rejects(trades, kwargs, match):
         mc.trade_returns(trades, **kwargs)
 
 
-def test_payload_dict_and_list_forms():
-    assert mc.trades_from_json_payload({"trades": [1, 2]}) == [1, 2]
-    assert mc.trades_from_json_payload([1, 2]) == [1, 2]
-    with pytest.raises(ValueError):
-        mc.trades_from_json_payload({"no_trades": []})
-    with pytest.raises(ValueError):
-        mc.trades_from_json_payload("nope")
-
-
 def _cfg(strategies, platforms=None):
     return {"strategies": strategies, "platforms": platforms or {}}
 

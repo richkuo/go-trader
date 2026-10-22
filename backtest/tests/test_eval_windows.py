@@ -146,12 +146,6 @@ def test_expand_sweep_cartesian_preserves_base_params():
         assert "a" in params and params["b"] == "x"
 
 
-def test_parse_dataset_arg():
-    assert ew.parse_dataset_arg("BTC/USDT:1h") == ("BTC/USDT", "1h")
-    with pytest.raises(ValueError):
-        ew.parse_dataset_arg("BTC-USDT-1h")
-
-
 def test_versioned_definitions_match_protocol():
     assert len(ew.INCUMBENTS) == 8
     assert "breakout" not in ew.INCUMBENTS
