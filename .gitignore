@@ -34,3 +34,6 @@ backtest/consolidation_out/
 AGENTS.generated.md
 
 !backtest/testdata/ledger_export/snapshot/state/primary.db
+
+# #1635 archive study: raw S3 objects and derived series (the manifest in data/ is committed)
+backtest/candidates/order_book_imbalance_1635/data/archive/

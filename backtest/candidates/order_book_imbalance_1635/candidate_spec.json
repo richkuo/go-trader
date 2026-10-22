@@ -4,7 +4,7 @@
   "candidate": "order_book_imbalance",
   "plan": "https://github.com/richkuo/go-trader/issues/1635#issuecomment-6181780202",
   "frozen_at": "2026-10-22",
-  "frozen_before_results": "This file was written and committed before the study recording started. No recording made under this specification existed when it was frozen. The earlier 6-hour recording (old contract, local only) was used only to measure venue cadence; it was never scored and never feeds this study.",
+  "frozen_before_results": "This file was written and committed before any archive object of the study window was downloaded. Only object listings (keys and sizes) of the window were read. Cadence evidence is the earlier 6-hour live recording and one archive hour (BTC, 2026-10-19 hour 12); neither is scored. This replaces the 840-hour recording plan of the earlier freeze commit b41ac26b, which was never started.",
   "status": "research-only, production-refused in every mode regardless of the verdict",
   "depth_contract": {
     "document": "docs/research/1635-l2-book-contract.md",
@@ -21,18 +21,82 @@
     "use": "venue cadence only; no signal, fill or result was computed",
     "recording": "earlier 6-hour BTC/ETH l2Book recording, run id Richards-MacBook-Pro.local-29584-1792553034479-1792553034, run manifest sha256 165e59edac9540522a9937b34186ed500e673676407032284d72f5b89147611c (local only, not committed)",
     "books_per_coin": 4021,
-    "receipt_gap_ms": {"p50": 5386, "p99": 5906, "max": 6185, "share_over_5000": 0.966, "count_over_10000": 0},
-    "receipt_minus_event_ms": {"p50": 326, "p99": 816, "max": 1064},
+    "receipt_gap_ms": {
+      "p50": 5386,
+      "p99": 5906,
+      "max": 6185,
+      "share_over_5000": 0.966,
+      "count_over_10000": 0
+    },
+    "receipt_minus_event_ms": {
+      "p50": 326,
+      "p99": 816,
+      "max": 1064
+    },
     "age_at_deadline_ms": {
       "definition": "D = smallest UTC whole second at or above max(event, receipt) of the newest of N consecutive accepted books; age = D minus the earlier of event and receipt",
-      "newest_book": {"p50": 836, "p99": 1542, "max": 1915, "share_le_1000": 0.665, "share_le_2000": 1.0, "share_le_5000": 1.0},
-      "oldest_of_2": {"p50": 6209, "p99": 6971, "max": 7419, "share_le_1000": 0.0, "share_le_2000": 0.0, "share_le_5000": 0.001},
-      "oldest_of_3": {"p50": 11583, "p99": 12369, "max": 12782, "share_le_5000": 0.0},
-      "oldest_of_5": {"p50": 22339, "p99": 23196, "max": 23652, "share_le_5000": 0.0},
-      "oldest_of_16": {"p50": 81472, "p99": 82650, "max": 83496}
+      "newest_book": {
+        "p50": 836,
+        "p99": 1542,
+        "max": 1915,
+        "share_le_1000": 0.665,
+        "share_le_2000": 1.0,
+        "share_le_5000": 1.0
+      },
+      "oldest_of_2": {
+        "p50": 6209,
+        "p99": 6971,
+        "max": 7419,
+        "share_le_1000": 0.0,
+        "share_le_2000": 0.0,
+        "share_le_5000": 0.001
+      },
+      "oldest_of_3": {
+        "p50": 11583,
+        "p99": 12369,
+        "max": 12782,
+        "share_le_5000": 0.0
+      },
+      "oldest_of_5": {
+        "p50": 22339,
+        "p99": 23196,
+        "max": 23652,
+        "share_le_5000": 0.0
+      },
+      "oldest_of_16": {
+        "p50": 81472,
+        "p99": 82650,
+        "max": 83496
+      }
     },
     "candle_history": "Hyperliquid candleSnapshot returned 5094 one-minute rows reaching back 3.54 days on 2026-10-22; a 1-hour request starting 4 days back returned 0 rows",
-    "funding_history": "fundingHistory returned 24 BTC rows for a day 60 days back on 2026-10-22"
+    "funding_history": "fundingHistory returned 24 BTC rows for a day 60 days back on 2026-10-22",
+    "archive_hour": {
+      "key": "market_data/20261019/12/l2Book/BTC.lz4",
+      "bytes": 246672,
+      "frames": 669,
+      "levels_per_side": 20,
+      "event_gap_ms": {
+        "p50": 5393,
+        "p99": 5553,
+        "max": 5610,
+        "min": 4954
+      },
+      "receipt_gap_ms": {
+        "p50": 5389,
+        "p99": 5691,
+        "max": 5805,
+        "min": 4845
+      },
+      "receipt_minus_event_ms": {
+        "p50": 307,
+        "p99": 584,
+        "max": 764,
+        "min": 229
+      }
+    },
+    "archive_object_sizes": "BTC hour-12 l2Book objects were 1.0 to 1.8 MB on 2026-01-05 through 2026-06-01, 491 KB on 2026-06-15 and 151 to 263 KB from 2026-07-01 through 2026-10-15 (246672 bytes for the evidence hour). The window uses only the later size regime, which matches the evidence hour.",
+    "asset_ctxs": "asset_ctxs rows are one per coin per minute (spacing 60 s on 2026-10-19). Full days held 1440 rows for BTC and ETH (2026-09-01); 2026-10-18 held 366 and 2026-10-19 held 720. Full-day objects were about 10 to 12 MB; objects under 9 MB were partial."
   },
   "deviations_from_plan": [
     {
@@ -55,28 +119,40 @@
       "ground": "receipt gap p50 5386 ms, p99 5906 ms, max 6185 ms, 96.6% of gaps over 5000 ms; 10000 ms is about 1.6 times the longest normal gap and resets on the first missed push (about 10.8 s)"
     },
     {
-      "item": "recording length",
-      "plan": "no length; at least 30 eligible complete UTC days to score",
-      "frozen": "840 hours (35 UTC days); the 30-eligible-day minimum is kept",
-      "ground": "at least 100 closed held-out positions per arm are required. The held-out split is the last 20% of whole UTC days, 7 days at 35, so each arm needs at least 14.3 closed positions per held-out day across BTC and ETH. The 5 days over the floor are margin for ineligible days."
-    },
-    {
       "item": "coins",
       "plan": "none named",
       "frozen": "BTC, ETH",
       "ground": "the only coins with measured cadence"
     },
     {
-      "item": "inputs captured beside the book recording",
-      "plan": "native marks, candles, funding and venue metadata with coverage",
-      "frozen": "record kind open_interest beside l2_book (raw activeAssetCtx frames carry markPx with receipt time); capture 1m candles every 24 hours during the recording (72-hour requests, so each minute is captured three times); pin venue metadata at the start and end; fetch funding after the recording",
-      "ground": "Hyperliquid keeps about 3.5 days of 1m candles (5094 rows measured); funding history is available afterwards (60-day-old rows returned). Storage: about 73 MB/day raw and 10.8 MB/day gzip for the book stream, so the recording stays outside git and only manifests and hashes are committed."
-    },
-    {
       "item": "decision grid",
       "plan": "UTC 1000 ms grid",
       "frozen": "unchanged",
       "ground": "the grid only places D; at about one book per 5.4 s each crossing maps to exactly one deadline"
+    },
+    {
+      "item": "data source",
+      "plan": "forward recording from the Delivery 1 recorder",
+      "frozen": "the public Hyperliquid S3 archive (s3://hyperliquid-archive, requester-pays), imported into the Delivery 1 l2_book contract by backtest/book_archive.py under docs/research/1635-l2-book-archive-note.md",
+      "ground": "the user rejected a 30-day live recording; the archive holds the same venue l2Book messages with the archiver's receipt time"
+    },
+    {
+      "item": "study window length",
+      "plan": "no length; at least 30 eligible complete UTC days and at least 100 closed held-out positions per arm",
+      "frozen": "59 UTC days, 2026-07-18 through 2026-09-14",
+      "ground": "the held-out floor needs as many held-out days as the data allows. This is the longest contiguous span in the later object-size regime with every BTC and ETH book hour object listed except one hour on each of 2026-08-24, 2026-09-04 and 2026-09-13 (2026-07-12 through 2026-07-17 have no objects) and with full-size asset_ctxs objects except 2026-08-08, 2026-08-09, 2026-08-27 and 2026-08-30 (after 2026-09-14 most asset_ctxs objects are partial). Held-out is 12 days, of which 10 are expected to be eligible, so each arm needs at least 10 closed held-out positions per eligible day."
+    },
+    {
+      "item": "one-minute candles",
+      "plan": "complete one-minute venue candles",
+      "frozen": "one-minute bars derived from accepted archive books by the frozen rule in data_plan.derived_bars",
+      "ground": "the archive has no candles and venue candleSnapshot keeps only about 3.5 days of 1m history"
+    },
+    {
+      "item": "marks",
+      "plan": "native mark observations with availability",
+      "frozen": "asset_ctxs mark_px and oracle_px one-minute rows, usable from their row time",
+      "ground": "the archive gives no receipt time for asset_ctxs rows; one row per minute"
     }
   ],
   "signal": {
@@ -93,7 +169,14 @@
     "failure_outcome": "missing, malformed, stale, conflicting or incomplete book evidence gives signal 0 with a stable reason; invalid parameters are refused before any data is read"
   },
   "parameters": {
-    "seed": {"depth_levels": 5, "entry_threshold": 0.30, "confirmation_observations": 3, "max_spread_bps": 5, "min_combined_depth_usd": 100000, "max_snapshot_age_ms": 2000},
+    "seed": {
+      "depth_levels": 5,
+      "entry_threshold": 0.3,
+      "confirmation_observations": 3,
+      "max_spread_bps": 5,
+      "min_combined_depth_usd": 100000,
+      "max_snapshot_age_ms": 2000
+    },
     "validation": {
       "depth_levels": "integer 1 through 20",
       "entry_threshold": "finite decimal strictly between 0 and 1",
@@ -104,77 +187,186 @@
       "rules": "booleans are not numbers; fractional integers, unknown keys, non-finite values and unsupported combinations are refused before data acquisition; Go requirement extraction and the Python registry mirror one validator"
     },
     "search": {
-      "depth_levels": [1, 5, 10, 20],
-      "entry_threshold": [0.20, 0.30, 0.40],
-      "confirmation_observations": [2, 3, 5],
-      "max_spread_bps": [2, 5, 10],
-      "min_combined_depth_usd": [10000, 100000, 1000000],
-      "max_snapshot_age_ms": [1000, 2000, 5000]
+      "depth_levels": [
+        1,
+        5,
+        10,
+        20
+      ],
+      "entry_threshold": [
+        0.2,
+        0.3,
+        0.4
+      ],
+      "confirmation_observations": [
+        2,
+        3,
+        5
+      ],
+      "max_spread_bps": [
+        2,
+        5,
+        10
+      ],
+      "min_combined_depth_usd": [
+        10000,
+        100000,
+        1000000
+      ],
+      "max_snapshot_age_ms": [
+        1000,
+        2000,
+        5000
+      ]
     },
-    "search_family": "the full Cartesian product (972 variants); every attempted variant is kept in the study log",
-    "fixed": {"evidence_window_ms": 60000, "evidence_capacity": 256, "decision_grid_ms": 1000},
+    "search_family": "the full Cartesian product (972 variants); every variant is scored on every split and published",
+    "fixed": {
+      "evidence_window_ms": 60000,
+      "evidence_capacity": 256,
+      "decision_grid_ms": 1000
+    },
     "note": "research seeds, not endorsed trading settings; the depth contract and the fixed values are never optimized"
   },
   "exit_and_risk": {
-    "close_strategy": {"name": "time_stop", "params": {"max_bars": 5}},
-    "stop_owner": "scalar stop_loss_atr_mult 1.0; ATR over the last 14 complete 1m bars with the simple method, frozen at the first confirmed entry fill; missing ATR prevents entry",
+    "close_strategy": {
+      "name": "time_stop",
+      "params": {
+        "max_bars": 5
+      }
+    },
+    "stop_owner": "scalar stop_loss_atr_mult 1.0; ATR = simple mean of the true range of the 14 most recent complete derived 1m bars before the entry fill minute, which needs the 15 most recent closed minutes complete; frozen at the entry fill; missing ATR prevents entry (missing_atr)",
     "bars_held": "integer count of complete one-minute durations since the entry fill",
     "no_other_owner": "no close fallback, reversal close, trailing stop, scale-in, hedge or take-profit",
     "closed_bar_decisions": "refused at research preflight (unsupported_cadence)",
-    "capital": {"initial_shared_equity": 10000, "margin_per_entry": 100, "leverage": 1, "margin_mode": "isolated", "sizing": "perps_open_notional fixed margin", "positions_per_coin": 1, "aggregate_gross_notional_cap": 2000},
+    "capital": {
+      "initial_shared_equity": 10000,
+      "margin_per_entry": 100,
+      "leverage": 1,
+      "margin_mode": "isolated",
+      "sizing": "perps_open_notional fixed margin",
+      "positions_per_coin": 1,
+      "aggregate_gross_notional_cap": 2000
+    },
     "pre_entry_stop_bound": "entry refused when the stop distance times size exceeds 1% of current equity (refusal bound only)",
     "portfolio_controls": "2% UTC daily realized-loss entry hold; 10% peak-equity drawdown entry latch; pause and unreadable portfolio marks hold new exposure; closes continue",
     "protection_order": "protection and risk exits apply before elective entries at a deadline",
-    "liquidation": "isolated venue margin tiers from pinned metadata and the existing liquidation-stop clamp; unresolved stop ownership or nonpositive protection geometry is refused",
+    "liquidation": "isolated 1x: a long cannot be liquidated above zero and a short only after about a 100% rise, so the 1 ATR stop is always inside the liquidation bound; the existing clamp is applied and unresolved stop geometry (ATR <= 0) refuses the entry",
     "not_modeled": "hedge, profile allocation, scale-in"
   },
   "execution": {
-    "latency": {"shared_feed_settle_ms": 5000, "processing_order_ms": 250, "processing_stresses_ms": [500, 1000], "direct_owner_scenario": "labeled separately with zero transport delay; never represents the shared consumer"},
-    "fill_book": "the first distinct valid book with event and receipt strictly after D and both at or after D + settle + processing; an event at D cannot fill its own decision; recorded seal or decision availability, if later, raises the executable time",
+    "latency": {
+      "shared_feed_settle_ms": 5000,
+      "processing_order_ms": 250,
+      "processing_stresses_ms": [
+        500,
+        1000
+      ],
+      "direct_owner_scenario": "labeled separately with zero transport delay; never represents the shared consumer"
+    },
+    "fill_book": "the first accepted archive book with event and receipt strictly after D and both at or after D + 5000 + processing; it must have receipt at most 10000 ms after that executable time, else the entry fails (no_executable_book) and the episode stays consumed",
     "depth_walk": "buys walk asks in ascending price, sells walk bids in descending price; requested and available quantity are lot-floored; same-time intents share depth once in stable coin, strategy, identity order; actual weighted prices and fees are booked",
     "partial": "one immediate-or-cancel attempt per entry identity; the remainder is cancelled; no resubmission",
     "minimums": "entries below the pinned venue minimum notional are refused; a full reduce-only close uses the frozen venue remainder rule; no close exceeds held size; partial closes keep entry ATR and sizing geometry",
-    "exits": "time-stop and stop requests use later executable depth and stay pending while books are unreadable; no close is booked from missing depth",
-    "costs": {"taker_fee_pct": 0.00045, "spread": "inside the walked bid/ask; no half spread is added", "slippage_bps": 5.0, "slippage_stress_bps": 10.0, "min_notional_usd": 10.0, "funding": "charged on held exposure under the right-closed hourly contract; pre-fee realized and net results are kept separate"},
-    "marks": "markPx from recorded activeAssetCtx frames at their receipt time, for stops and liquidation",
+    "exits": "time stop: at the first whole second at or after fill + 5 x 60000 ms, a close request executes like an entry (5000 + processing ms, first later book, at most 10000 ms after the executable time, else it stays pending and retries on each later book). ATR stop: a mark row at minute t with mark_px <= stop (long) or >= stop (short) triggers a venue-side close at the first accepted book with event and receipt after t (no added latency). A pending close is never booked without a book; minutes held without a mark row are a held-coverage gap.",
+    "costs": {
+      "taker_fee_pct": 0.00045,
+      "spread": "inside the walked bid/ask; no half spread is added",
+      "slippage_bps": 5.0,
+      "slippage_stress_bps": 10.0,
+      "min_notional_usd": 10.0,
+      "funding": "hourly fundingHistory rates (public info API, fetched once and hash-pinned), charged at each funding time T with the position open at T (entry fill < T <= exit fill): payment = size x oracle_px(T) x rate, a long pays a positive rate; pre-fee realized and net results are kept separate"
+    },
+    "marks": "mark_px rows from asset_ctxs, usable from their row time; funding uses oracle_px of the funding-hour row",
     "unresolvable_order": "a window where the event stream cannot resolve liquidation or stop/exit order is reported unsupported and inconclusive",
     "terminal_inventory": "marked separately and never labeled a venue close; missing exit prices prevent net scoring",
-    "replay_order": "resets and timers apply before a same-time decision; books apply before a decision only when event and receipt are both at or before it; tie order is receipt time, source key, local sequence; funding and candles use their own availability times"
+    "replay_order": "resets and timers apply before a same-time decision; books apply before a decision only when event and receipt are both at or before it; tie order is receipt time, source key, local sequence; funding and candles use their own availability times",
+    "sizing_detail": "target notional = margin 100 x leverage 1; quantity = floor(100 / reference price) to the lot step 10^-szDecimals (BTC 5, ETH 4 from pinned venue meta), reference = best ask for a buy and best bid for a sell of the fill book; the walk fills at most that quantity over up to 20 levels; filled notional under 10 USD is refused"
   },
   "comparator": {
     "strategy": "donchian_breakout",
-    "params": {"entry_period": 20, "exit_period": 10},
-    "bars": "complete one-minute candles",
+    "params": {
+      "entry_period": 20,
+      "exit_period": 10
+    },
+    "bars": "derived one-minute bars (data_plan.derived_bars), complete bars only",
     "entries": "native mirrored entry columns through the registry; the explicit native close owner suppresses its open-fallback exits",
-    "opportunity": "one per coin per closed candle; decision at the first UTC whole second when that candle is available",
+    "opportunity": "one per coin per complete derived bar whose donchian entry column is nonzero; decision at the bar close m + 60000 ms",
     "fill": "no earlier than the next bar open and the first later latency-eligible executable book",
     "identical": "data eligibility, stops, time close, capital, fees, latency, lot and minimum rules, risk and portfolio limits, and the same event simulator"
   },
   "data_plan": {
-    "coins": ["BTC", "ETH"],
-    "recording": {
-      "command": "go-trader record-observations --coins BTC,ETH --kinds open_interest,l2_book --segment 1h --duration 840h --out-dir <empty dir>",
-      "duration_hours": 840,
-      "storage": "outside git; run and segment manifests and their hashes are committed with the study"
+    "coins": [
+      "BTC",
+      "ETH"
+    ],
+    "window": {
+      "first_day": "2026-07-18",
+      "last_day": "2026-09-14",
+      "days": 59
     },
-    "candles": "1m candleSnapshot captures every 24 hours during the recording through run_study.py capture-candles (72-hour requests); overlapping captures must agree on every closed minute",
-    "venue": "meta (size decimals, max leverage, margin tables) pinned at the start and end through run_study.py capture-venue; the two must agree for BTC and ETH",
-    "funding": "fundingHistory fetched after the recording for the full span and hash-pinned",
-    "windows": "whole UTC days from the first complete recorded day: first 60% training, next 20% validation, last 20% held-out, split into three chronological held-out blocks; UTC start-inclusive, end-exclusive bounds are written into the study manifest from the hash-pinned data bounds before scoring",
-    "purge": "five-minute position purge at each boundary, flat scored starts, unscored lookback prefixes"
+    "splits": {
+      "rule": "whole UTC days in order: train = round(0.6 x 59) = 35, validation = round(0.2 x 59) = 12, held-out = the remaining 12",
+      "train": {
+        "start": "2026-07-18T00:00:00Z",
+        "end": "2026-08-22T00:00:00Z"
+      },
+      "validation": {
+        "start": "2026-08-22T00:00:00Z",
+        "end": "2026-09-03T00:00:00Z"
+      },
+      "held_out": {
+        "start": "2026-09-03T00:00:00Z",
+        "end": "2026-09-15T00:00:00Z"
+      },
+      "held_out_blocks": [
+        {
+          "start": "2026-09-03T00:00:00Z",
+          "end": "2026-09-07T00:00:00Z"
+        },
+        {
+          "start": "2026-09-07T00:00:00Z",
+          "end": "2026-09-11T00:00:00Z"
+        },
+        {
+          "start": "2026-09-11T00:00:00Z",
+          "end": "2026-09-15T00:00:00Z"
+        }
+      ],
+      "bounds": "start inclusive, end exclusive"
+    },
+    "objects": {
+      "books": "market_data/YYYYMMDD/H/l2Book/{BTC,ETH}.lz4 for every hour of the window (2832 keys); 2026-07-17 is the unscored lookback day and its book objects are listed as absent, so the window starts a new session at 2026-07-18T00:00:00Z",
+      "asset_ctxs": "asset_ctxs/YYYYMMDD.csv.lz4 for every window day plus 2026-07-17",
+      "funding": "fundingHistory for BTC and ETH from 2026-07-17T00:00:00Z to 2026-09-15T01:00:00Z",
+      "venue_meta": "meta (szDecimals, maxLeverage, marginTables), pinned once; BTC and ETH size decimals are assumed unchanged over the window"
+    },
+    "storage": "raw objects and derived series stay in backtest/candidates/order_book_imbalance_1635/data/archive/ (ignored by git); data/archive_manifest.json in git pins each S3 key, size and sha256 (absent keys listed as absent)",
+    "import": "backtest/book_archive.py with the research need (window 60000, capacity 4096, depth 20) and docs/research/1635-l2-book-archive-note.md; lookback hours start the epoch, so the window's first evidence is not a fresh epoch",
+    "derived_bars": "for each coin and UTC minute [m, m + 60000): the accepted books with receipt in the minute; mid = (best bid px + best ask px) / 2; open = first mid, high = max mid, low = min mid, close = last mid. A bar is complete when at least one book is present, the first receipt is at most 10000 ms after m, the last receipt is at most 10000 ms before m + 60000, and no marker has a time in the minute. A bar is available at m + 60000.",
+    "lookback": "evidence windows, derived bars and ATR may use data before a split start; no entry or score is taken from it",
+    "purge": "no entry decision in the last 5 minutes of a split; after a split end only exits run, and a position still open 30 minutes after the end is terminal inventory (reported, not counted as closed); each split starts flat"
   },
   "eligibility": {
-    "eligible_day": "a whole UTC day with book, mark and candle evidence for every decision opportunity of both coins except gaps covered by recorded markers, and funding for every hour",
+    "eligible_day": "both coins have all 24 book hour objects, 1440 asset_ctxs rows each and 24 funding rows each, and at least 99% of the day's minutes have complete derived bars for both coins",
+    "ineligible_day": "no entry decision on an ineligible day (both arms); exits continue",
     "minimum_days": 30,
     "minimum_heldout_blocks": 3,
     "minimum_heldout_positions_per_arm": 100,
-    "opportunity_coverage": "at least 99% of decision opportunities with full book, mark and candle evidence",
-    "held_hour_coverage": "100% funding, cost and executable-exit coverage for every held hour",
-    "integrity": "a recording that the independent replay refuses (unclosed, dropped records, incomplete segment, replay mismatch) is invalid evidence"
+    "opportunity": "a coin-minute; usable when the derived bar is complete, the asset_ctxs row is present and the book state is covered at the bar close",
+    "opportunity_coverage": "at least 99% of coin-minutes in the scored splits are usable",
+    "held_hour_coverage": "every held minute has a mark row, every crossed funding hour has a rate and an oracle_px row, and every close fills from a book; any gap makes the held coverage incomplete",
+    "integrity": "any manifest sha256 or size mismatch, LZ4 checksum failure or importer error stops the run as invalid"
   },
-  "selection_rule": "training selects the greatest net result among complete variants; ties choose the lexicographically smallest parameter JSON; validation freezes the selected variant and reports all variants; held-out values never change the choice",
+  "selection_rule": "training selects the greatest train net result among complete variants; ties choose the lexicographically smallest parameter JSON (sorted keys, compact separators); validation freezes the selected variant and reports all variants; held-out values never change the choice",
   "verdict": {
-    "bootstrap": {"method": "UTC-day block bootstrap of candidate-minus-comparator net equity change", "seed": 1635, "draws": 10000, "bound": "95% lower bound"},
+    "bootstrap": {
+      "method": "UTC-day block bootstrap of the held-out daily paired difference (candidate net minus comparator net, by day of close)",
+      "seed": 1635,
+      "draws": 10000,
+      "rng": "numpy.random.default_rng(1635), integers over the held-out day indexes",
+      "statistic": "sum of the resampled daily differences",
+      "bound": "one-sided 95% lower bound = 5th percentile"
+    },
     "pass_if_all": [
       "complete evidence (eligibility above)",
       "candidate held-out net result > 0",
@@ -188,6 +380,8 @@
     "inconclusive": "insufficient evidence: fewer than 30 eligible days, fewer than three held-out blocks, fewer than 100 closed held-out positions in either arm, coverage below the gates, or missing cost, funding, mark or exit evidence",
     "invalid": "failed integrity",
     "published": "every attempted variant with net return, maximum drawdown, turnover, fees, funding, coin and direction concentration and independent position totals, including negative results and parameter neighbors",
-    "live_status": "production_refused for every outcome; promotion needs a separate reviewed decision"
+    "live_status": "production_refused for every outcome; promotion needs a separate reviewed decision",
+    "neighbors": "one-axis neighbors: change one parameter to the adjacent value in its search list, others fixed; scored on the held-out split",
+    "complete_variant": "a variant is complete on a split when that split meets the opportunity and held-hour coverage gates"
   }
 }
