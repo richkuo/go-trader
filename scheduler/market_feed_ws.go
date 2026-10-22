@@ -97,7 +97,7 @@ func (o *marketFeedOwner) Run(ctx context.Context) {
 }
 
 func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
-	dialer := &websocket.Dialer{HandshakeTimeout: feedSocketDialTimeout}
+	dialer := egressWebsocketDialer(feedSocketDialTimeout)
 	dialCtx, cancelDial := context.WithTimeout(ctx, feedSocketDialTimeout)
 	conn, _, err := dialer.DialContext(dialCtx, hlFeedWebsocketURL(), nil)
 	cancelDial()

@@ -103,6 +103,21 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 			"NOTE: GO_TRADER_TEST_REQUIRE_ONCE=0",
 		},
 	},
+	"test_egress_enforcement.sh": {
+		ciStep:     true,
+		sudo:       true,
+		marker:     "PASS: egress enforcement (namespace rules, attestation, relay-only egress, controller loss, address refresh, refusal paths)",
+		requireEnv: []string{"EGRESS_FIXTURE_REQUIRE_RUN", "EGRESS_REQUIRE_SYSTEMD"},
+		forbidden: []string{
+			"NOTE: systemd is not running; the unit sandbox and the launcher are not checked",
+		},
+	},
+	"test_egress_docker.sh": {
+		ciStep:     true,
+		sudo:       true,
+		marker:     "PASS: egress docker deployment (anchor enforcement, application attestation, relay-only egress, status relay, one-shot commands, anchor restart)",
+		requireEnv: []string{"EGRESS_DOCKER_FIXTURE_REQUIRE_RUN"},
+	},
 	"test_migrate_service_layout_fixture.sh": {
 		ciStep:     true,
 		sudo:       true,

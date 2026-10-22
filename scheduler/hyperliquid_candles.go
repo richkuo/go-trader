@@ -233,7 +233,7 @@ func fetchHyperliquidCandleSnapshot(ctx context.Context, coin, interval string, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: hlCandleFetchTimeout}
+	client := egressHTTPClient(hlCandleFetchTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)

@@ -17,9 +17,17 @@ func containerUpdateInstruction() string {
 	return fmt.Sprintf("This go-trader runs in a container, which updates only by image. On the host, in the docker directory, set GO_TRADER_TAG in .env to the new release, then run: %s (docs/DOCKER.md § Upgrade)", containerUpgradeAdvice)
 }
 
+func egressUpdateInstruction() string {
+	return "This go-trader runs in egress proxy mode, so it cannot fetch or apply updates from inside its restricted network. On the host, as root, run: bash scripts/update.sh --restart (SKILL.md Egress proxy mode)"
+}
+
 func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *string, mu *sync.RWMutex, state *AppState, store *StateStore) bool {
 	if inContainerRuntime() {
 		logOnChangef("update-check", "container", "[update] skipped: %s\n", containerUpdateInstruction())
+		return false
+	}
+	if processEgress.isActive() {
+		logOnChangef("update-check", "egress", "[update] skipped: %s\n", egressUpdateInstruction())
 		return false
 	}
 	if err := gitCheck(); err != nil {
@@ -90,6 +98,10 @@ func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cf
 		notifier.SendOwnerDM(containerUpdateInstruction())
 		return
 	}
+	if processEgress.isActive() {
+		notifier.SendOwnerDM(egressUpdateInstruction())
+		return
+	}
 	notifier.SendOwnerDM("Starting upgrade...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -126,6 +138,9 @@ func tailForDM(s string, max int) string {
 func restartSelf() error {
 	if inContainerRuntime() {
 		return requestContainerRestart()
+	}
+	if processEgress.isActive() {
+		return requestEgressRestart()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

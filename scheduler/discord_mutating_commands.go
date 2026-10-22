@@ -652,7 +652,7 @@ func (d *DiscordNotifier) mutateConfig(_ string, fn func(root map[string]json.Ra
 	return d.ss.mutateConfigRoot(fn)
 }
 
-func followupText(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+func followupText(s discordTransport, i *discordgo.InteractionCreate, content string) {
 	if content == "" {
 		content = "(no output)"
 	}
@@ -661,7 +661,7 @@ func followupText(s *discordgo.Session, i *discordgo.InteractionCreate, content 
 	})
 }
 
-func (d *DiscordNotifier) applyConfigChange(s *discordgo.Session, i *discordgo.InteractionCreate, restartRequired bool, doneMsg string) {
+func (d *DiscordNotifier) applyConfigChange(s discordTransport, i *discordgo.InteractionCreate, restartRequired bool, doneMsg string) {
 	if restartRequired {
 		followupText(s, i, doneMsg+"\nApplying via **service restart** — this instance briefly goes offline; the new one resumes the cycle.")
 		go func() {
@@ -684,7 +684,7 @@ func (d *DiscordNotifier) confirmDestructive(userID, prompt string) bool {
 	return confirmYes(resp)
 }
 
-func (d *DiscordNotifier) handleConfigShow(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (d *DiscordNotifier) handleConfigShow(s discordTransport, i *discordgo.InteractionCreate) {
 	deferAck(s, i)
 	path, err := d.configOpsReady()
 	if err != nil {
@@ -711,7 +711,7 @@ func (d *DiscordNotifier) handleConfigShow(s *discordgo.Session, i *discordgo.In
 	})
 }
 
-func (d *DiscordNotifier) handleConfigSet(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+func (d *DiscordNotifier) handleConfigSet(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	path, err := d.configOpsReady()
 	if err != nil {
@@ -772,7 +772,7 @@ func (d *DiscordNotifier) handleConfigSet(s *discordgo.Session, i *discordgo.Int
 	d.applyConfigChange(s, i, restartRequired, "Set "+summary+".")
 }
 
-func (d *DiscordNotifier) handleAddStrategy(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+func (d *DiscordNotifier) handleAddStrategy(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	path, err := d.configOpsReady()
 	if err != nil {
@@ -795,7 +795,7 @@ func (d *DiscordNotifier) handleAddStrategy(s *discordgo.Session, i *discordgo.I
 	d.applyConfigChange(s, i, true, fmt.Sprintf("Added strategy `%s` (paper mode).", newID))
 }
 
-func (d *DiscordNotifier) handleRemoveStrategy(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+func (d *DiscordNotifier) handleRemoveStrategy(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	path, err := d.configOpsReady()
 	if err != nil {
@@ -821,7 +821,7 @@ func (d *DiscordNotifier) handleRemoveStrategy(s *discordgo.Session, i *discordg
 	d.applyConfigChange(s, i, true, fmt.Sprintf("Removed strategy `%s`.", id))
 }
 
-func (d *DiscordNotifier) handleAddPlatform(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+func (d *DiscordNotifier) handleAddPlatform(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	name := optionString(opts, "name", "")
 	guide, err := platformSetupGuide(name)
 	if err != nil {
@@ -831,7 +831,7 @@ func (d *DiscordNotifier) handleAddPlatform(s *discordgo.Session, i *discordgo.I
 	respondText(s, i, guide)
 }
 
-func (d *DiscordNotifier) handlePaperToLive(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+func (d *DiscordNotifier) handlePaperToLive(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	if _, err := d.configOpsReady(); err != nil {
 		followupText(s, i, err.Error())
@@ -858,7 +858,7 @@ func (d *DiscordNotifier) handlePaperToLive(s *discordgo.Session, i *discordgo.I
 	d.applyConfigChange(s, i, true, msg)
 }
 
-func (d *DiscordNotifier) handleClearCashReconcile(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+func (d *DiscordNotifier) handleClearCashReconcile(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	id := optionString(opts, "strategy", "")
 	if id == "" {
@@ -901,7 +901,7 @@ func (d *DiscordNotifier) handleClearCashReconcile(s *discordgo.Session, i *disc
 	followupText(s, i, msg)
 }
 
-func (d *DiscordNotifier) handleResolveEntry(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+func (d *DiscordNotifier) handleResolveEntry(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	followupText(s, i, d.resolveEntryCommand(interactionUserID(i), i.GuildID, opts))
 }
@@ -917,7 +917,7 @@ func (d *DiscordNotifier) resolveEntryCommand(invokerID, guildID string, opts []
 	return resolveEntryAttemptByOperator(deps, invokerID, optionString(opts, "strategy", ""), optionString(opts, "attempt", "")).Message
 }
 
-func (d *DiscordNotifier) handleResolveRobinhoodOrder(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+func (d *DiscordNotifier) handleResolveRobinhoodOrder(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	if release := optionString(opts, "release", ""); release != "" {
 		followupText(s, i, d.attestRobinhoodReleaseCommand(interactionUserID(i), i.GuildID, release, opts))

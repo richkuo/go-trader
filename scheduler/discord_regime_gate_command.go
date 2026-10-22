@@ -316,7 +316,7 @@ func applyRegimeGateToRoot(root map[string]json.RawMessage, strategyID string, p
 	return setConfigStrategies(root, list)
 }
 
-func (d *DiscordNotifier) handleApplyRegimeGate(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+func (d *DiscordNotifier) handleApplyRegimeGate(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	path, err := d.configOpsReady()
 	if err != nil {

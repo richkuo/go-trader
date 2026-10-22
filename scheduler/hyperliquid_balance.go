@@ -110,7 +110,7 @@ func fetchHyperliquidBalance(accountAddress string) (float64, error) {
 		return 0, fmt.Errorf("marshal request: %w", err)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := egressHTTPClient(10 * time.Second)
 	resp, err := client.Post(hlMainnetURL+"/info", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return 0, fmt.Errorf("http request: %w", err)
@@ -195,7 +195,7 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 		return 0, nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := egressHTTPClient(10 * time.Second)
 	resp, err := client.Post(hlMainnetURL+"/info", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, fmt.Errorf("http request: %w", err)

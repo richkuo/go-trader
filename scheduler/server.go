@@ -385,6 +385,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		MarketFeed           *marketFeedHealth               `json:"market_feed,omitempty"`
 		PaperSources         []PaperSourceStatus             `json:"paper_sources,omitempty"`
 		Partitions           []PartitionStatus               `json:"partitions,omitempty"`
+		Egress               egressStatus                    `json:"egress"`
 	}
 
 	ss.strategiesMu.RLock()
@@ -436,6 +437,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		CorrelationByScope:   corrByScope,
 		ReconciliationGaps:   ss.state.ReconciliationGaps,
 		MarketFeed:           marketFeedStatusBlock(),
+		Egress:               processEgress.status(),
 	}
 	// Only sources this process actually owns are listed, so the dashboard's
 	// selector can never offer a deployment this process does not read.

@@ -50,6 +50,14 @@ try:
 except ImportError:
     _HLCloid = None
 
+_SHARED_TOOLS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools')
+if _SHARED_TOOLS not in sys.path:
+    sys.path.append(_SHARED_TOOLS)
+
+import egress_policy
+
+egress_policy.pin_hyperliquid_sdk()
+
 
 def _to_cloid(cloid):
     if not cloid:
