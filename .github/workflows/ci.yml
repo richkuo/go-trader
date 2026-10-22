@@ -195,6 +195,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
 
       - uses: astral-sh/setup-uv@v6
 
@@ -270,12 +271,65 @@ jobs:
             --marker 'OK: robinhood session service fixture passed (state-directory session, owner-only modes, no home writes, reuse on second start)' \
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_UV="$(command -v uv)" ROBINHOOD_SESSION_SERVICE_FIXTURE_REQUIRE_RUN=1 bash scripts/test_robinhood_session_service_fixture.sh
 
+  shell-suites-migrate-1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - name: Build
+        run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
       - name: Service layout migration fixture (root, systemd)
         run: |
           bash scripts/run_ci_shell_suite.sh \
-            --marker 'OK: migrate-service-layout fixture passed (refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget)' \
+            --marker 'OK: migrate-service-layout fixture passed (update)' \
             --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
-            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='update' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
+
+  shell-suites-migrate-2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - name: Build
+        run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
+      - name: Service layout migration fixture (root, systemd)
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'OK: migrate-service-layout fixture passed (stages kill)' \
+            --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='stages kill' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
+
+  shell-suites-migrate-3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - name: Build
+        run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
+      - name: Service layout migration fixture (root, systemd)
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'OK: migrate-service-layout fixture passed (refuse plan confirm apply latch conflict resume signal fold newtarget)' \
+            --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='refuse plan confirm apply latch conflict resume signal fold newtarget' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
   python:
     runs-on: ubuntu-latest
