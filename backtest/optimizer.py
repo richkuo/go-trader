@@ -356,6 +356,8 @@ def walk_forward_optimize(
     regime_gate_on_failure: str = "open",
     regime_label_plan: Optional[dict] = None,
 ) -> dict:
+    from book_inputs import refuse_book_input_strategy
+    refuse_book_input_strategy(strategy_name, "walk-forward optimization")
     total_len = len(df)
     window_size = total_len // n_splits
     if window_size < 50:
@@ -405,8 +407,6 @@ def walk_forward_optimize(
     from volume_profile_replay import refuse_volume_profile_strategy
     refuse_leader_input_strategy(strategy_name, "walk-forward optimization")
     refuse_volume_profile_strategy(strategy_name, "walk-forward optimization")
-    from book_inputs import refuse_book_input_strategy
-    refuse_book_input_strategy(strategy_name, "walk-forward optimization")
     reg = load_registry(registry)
     apply_strategy = reg.apply_strategy
 

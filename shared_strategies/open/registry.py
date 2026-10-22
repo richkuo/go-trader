@@ -3039,9 +3039,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "bitcoin_lead_lag",
         "volume_profile_reclaim",
         "perpetual_premium_reversion",
-
-
-@register(
         "order_book_imbalance",
         "hold",
     ],

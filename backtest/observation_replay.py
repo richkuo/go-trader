@@ -547,6 +547,15 @@ def _book_harness_case(directory: str, case: dict, loaded: dict) -> dict:
         "full_depth_identities_recompute": all(
             book_identity(coin, r["event_ms"], r["bids"], r["asks"]) == r["identity"] for r in full_identities),
     }
+    sys.path.insert(0, os.path.join(_here, "..", "shared_strategies", "open"))
+    import order_book_imbalance as obi
+    decisions = {}
+    for label, sec in (("seal", live), ("replay", replay)):
+        p = {"depth_levels": min(5, int(live.get("depth") or 5)), "entry_threshold": 0.2, "confirmation_observations": 2}
+        decisions[label] = [(d["signal"], d["reason"], d["entry_id"]) for d in (
+            obi.evaluate_section(sec, coin, p, deadline) for deadline in range(
+                int(live.get("cutoff_ms") or 0) - 20_000, int(live.get("cutoff_ms") or 0) + 1, 1000))]
+    checks["evaluator_decisions_match_seal"] = decisions["seal"] == decisions["replay"]
     failures = [f"{k}: false" for k, v in checks.items() if not v]
     if not checks["recording_matches_seal"]:
         a, b = comparable_payload(live), comparable_payload(replay)

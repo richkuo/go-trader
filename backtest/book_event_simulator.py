@@ -346,6 +346,12 @@ def simulate(entries: list, market: dict, cfg: dict, split: dict) -> dict:
     leverage = cfg["leverage"]
     equity0 = cfg["initial_equity"]
     tail = end + cfg["exit_tail_ms"]
+    from close_registry_loader import evaluate as close_evaluate
+    time_stop_bars = 0
+    while close_evaluate("time_stop", {"bars_held": time_stop_bars}, {}, {"max_bars": cfg["time_stop_bars"]})["close_fraction"] < 1.0:
+        time_stop_bars += 1
+        if time_stop_bars > 100_000:
+            raise SimulationError("the time_stop close owner never closes")
     events = []
     positions = []
     refusals: Dict[str, int] = {}
@@ -437,7 +443,7 @@ def simulate(entries: list, market: dict, cfg: dict, split: dict) -> dict:
         if not stop > 0:
             refuse("protection_geometry")
             continue
-        time_stop_D = ceil_second(fill_t + cfg["time_stop_bars"] * MINUTE_MS)
+        time_stop_D = ceil_second(fill_t + time_stop_bars * MINUTE_MS)
         marks = marks_by[coin]
         trigger = None
         t = (fill_t // MINUTE_MS + 1) * MINUTE_MS

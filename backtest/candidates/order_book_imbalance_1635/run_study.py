@@ -278,15 +278,20 @@ def splits(s: dict) -> dict:
 
 
 def opportunity_coverage(market: dict, split: dict) -> dict:
-    total = usable = 0
+    total = usable = e_total = e_usable = 0
     for coin, b in market["bars"].items():
         k0, k1 = b.index(split["start_ms"]), b.index(split["end_ms"])
         for k in range(k0, k1):
-            total += 1
             m = b.first + k * 60_000
-            if b.complete[k] and market["marks"][coin].at(m) is not None:
-                usable += 1
-    return {"coin_minutes": total, "usable": usable, "share": usable / total if total else 0.0}
+            ok = bool(b.complete[k]) and market["marks"][coin].at(m) is not None
+            total += 1
+            usable += ok
+            if (m // ba.DAY_MS) * ba.DAY_MS in market["eligible_days"]:
+                e_total += 1
+                e_usable += ok
+    return {"coin_minutes": total, "usable": usable, "share_all_minutes": usable / total if total else 0.0,
+            "eligible_coin_minutes": e_total, "eligible_usable": e_usable,
+            "share": e_usable / e_total if e_total else 0.0}
 
 
 def variant_list(s: dict) -> list:
@@ -420,10 +425,9 @@ def run_study() -> dict:
     cache = {}
     variants = variant_list(s)
     rows = []
-    entries_by = {}
-    for p in variants:
+    started = time.time()
+    for n_done, p in enumerate(variants):
         ents = candidate_entries_for(market, p, cache)
-        entries_by[pjson(p)] = ents
         row = {"params": p, "params_json": pjson(p), "entries": len(ents)}
         for name in ("train", "validation", "held_out"):
             r = sim.simulate(ents, market, base, sp[name])
@@ -431,6 +435,8 @@ def run_study() -> dict:
             if name == "held_out":
                 row["held_out_daily"] = {str(k): v for k, v in sorted(r["daily"].items())}
         rows.append(row)
+        if n_done % 50 == 0:
+            print(f"[run] {n_done + 1}/{len(variants)} variants in {time.time() - started:.0f} s", file=sys.stderr, flush=True)
     comp_entries = comparator_entries(market, s)
     comp = {}
     comp_daily = {}
@@ -448,7 +454,14 @@ def run_study() -> dict:
     selected = None
     if eligible_rows:
         selected = sorted(eligible_rows, key=lambda r: (-r["train"]["net"], r["params_json"]))[0]
+    commit = subprocess.run(["git", "-C", _ROOT, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    dirty = bool(subprocess.run(["git", "-C", _ROOT, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True).stdout.strip())
+    sources = {rel: ba.sha256_file(os.path.join(_ROOT, rel)) for rel in (
+        "backtest/book_event_simulator.py", "backtest/book_archive.py", "backtest/book_replay.py", "backtest/lz4_frame.py",
+        "shared_strategies/open/order_book_imbalance.py", "shared_tools/book_inputs.py",
+        "backtest/candidates/order_book_imbalance_1635/run_study.py")}
     result = {"schema": "go_trader_obi_1635_results/v1", "spec_sha256": ba.sha256_file(SPEC_PATH),
+              "source_commit": commit, "source_tree_dirty": dirty, "source_sha256": sources,
               "manifest_sha256": market["manifest_sha256"], "coverage": cov, "day_detail": market["day_detail"],
               "eligible_days": len(market["eligible_days"]), "import": market["import_report"]["coins"],
               "comparator": comp, "variants": rows, "selected": selected["params_json"] if selected else None}
@@ -458,7 +471,7 @@ def run_study() -> dict:
         verdict["reasons"].append("no variant is complete on the training split")
     else:
         p = selected["params"]
-        ents = entries_by[selected["params_json"]]
+        ents = candidate_entries_for(market, p, cache)
         stress = {}
         for proc in s["execution"]["latency"]["processing_stresses_ms"]:
             stress[str(proc)] = summarize(sim.simulate(ents, market, sim_cfg(s, processing_ms=proc), sp["held_out"]))
@@ -484,7 +497,7 @@ def run_study() -> dict:
         probe_variants = [p, seed]
         probe_variants += [{k: grid[k][0] for k in grid}, {k: grid[k][-1] for k in grid}]
         for q in probe_variants:
-            qe = entries_by[pjson({k: q[k] for k in grid})]
+            qe = candidate_entries_for(market, {k: q[k] for k in grid}, cache)
             one = parity_check(market, q, [e for e in qe if sp["train"]["start_ms"] <= e["deadline_ms"] < sp["held_out"]["end_ms"]])
             parity["checked"] += one["checked"]
             parity["mismatches"] += one["mismatches"]
@@ -529,8 +542,97 @@ def run_study() -> dict:
     return {"outcome": verdict["outcome"], "reasons": verdict["reasons"], "selected": result["selected"]}
 
 
+def _ts(ms) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.gmtime(int(ms) / 1000)) + "Z"
+
+
+def _f(v, nd=2) -> str:
+    if v is None:
+        return "-"
+    if isinstance(v, float) and v != v:
+        return "nan"
+    return f"{v:,.{nd}f}"
+
+
 def render() -> dict:
-    raise SystemExit("render is written after the run")
+    with open(os.path.join(_HERE, "results.json")) as fh:
+        r = json.load(fh)
+    s = spec()
+    v = r["verdict"]
+    lines = ["# order_book_imbalance study (issue 1635, Delivery 2)", "",
+             f"**Verdict: {v['outcome']}.** The candidate stays production-refused for every outcome.", ""]
+    if v.get("reasons"):
+        lines += ["Reasons: " + "; ".join(v["reasons"]) + ".", ""]
+    w = s["data_plan"]["window"]
+    lines += ["## Inputs", "",
+              f"- Specification `candidate_spec.json`, sha256 `{r['spec_sha256']}` (frozen before download).",
+              f"- Archive manifest `data/archive_manifest.json`, sha256 `{r['manifest_sha256']}`: Hyperliquid S3 archive books and asset contexts for {w['first_day']} to {w['last_day']} plus the lookback day.",
+              f"- Eligible days: {r['eligible_days']} of {w['days']} (minimum {s['eligibility']['minimum_days']}).",
+              "", "Opportunity coverage under both readings. The 99% gate uses eligible days only, a clarification committed before any PnL was computed (commit message: \"clarify that the 99% coverage gate counts eligible days only\").", "",
+              "| Split | All coin-minutes | Usable | Share (all minutes) | Eligible-day coin-minutes | Usable | Share (gate) |", "|---|---|---|---|---|---|---|"]
+    for k in ("train", "validation", "held_out"):
+        c = r["coverage"][k]
+        lines.append(f"| {k} | {c['coin_minutes']} | {c['usable']} | {c['share_all_minutes']:.4f} | {c['eligible_coin_minutes']} | {c['eligible_usable']} | {c['share']:.4f} |")
+    lines += ["", "Ineligible days and their causes (an eligible day needs 24 book hours, 1440 mark rows and 24 funding rows per coin and at least 99% complete derived bars):", ""]
+    for d, det in sorted(r["day_detail"].items()):
+        if not det["eligible"]:
+            causes = []
+            for c in sorted(k for k in det if k != "eligible"):
+                x = det[c]
+                if x["book_hours"] != 24:
+                    causes.append(f"{c} book hours {x['book_hours']}/24")
+                if x["mark_rows"] != 1440:
+                    causes.append(f"{c} mark rows {x['mark_rows']}/1440")
+                if x["funding_rows"] != 24:
+                    causes.append(f"{c} funding rows {x['funding_rows']}/24")
+                if x["complete_bars"] < 0.99 * 1440:
+                    causes.append(f"{c} complete bars {x['complete_bars']}/1440")
+            lines.append(f"- {d}: " + "; ".join(causes))
+    lines += ["", "Archive import (all imported hours):", "", "| Coin | Lines | Accepted | Rejected | Missing hours | Markers | Max accept gap ms |", "|---|---|---|---|---|---|---|"]
+    for c, info in sorted(r["import"].items()):
+        lines.append(f"| {c} | {info['counts']['lines']} | {info['stats']['accepted']} | {info['stats']['rejected']} | "
+                     f"{info['counts']['missing_hours']} | {info['stats']['markers']} | {info['max_accept_gap_ms']} |")
+    sel = next((x for x in r["variants"] if x["params_json"] == r["selected"]), None)
+    lines += ["", "## Selected variant and comparator", ""]
+    if sel is None:
+        lines.append("No variant was complete on the training split.")
+    else:
+        lines += [f"Selected on train: `{sel['params_json']}`.", "",
+                  "| Arm | Split | Closed | Terminal | Net | Pre-fee | Fees | Funding | Max DD | Turnover |", "|---|---|---|---|---|---|---|---|---|---|"]
+        for arm, src in (("candidate", sel), ("donchian_breakout", r["comparator"])):
+            for k in ("train", "validation", "held_out"):
+                x = src[k]
+                lines.append(f"| {arm} | {k} | {x['closed']} | {x['terminal']} | {_f(x['net'])} | {_f(x['pre_fee'])} | {_f(x['fees'])} | "
+                             f"{_f(x['funding'])} | {_f(x['max_drawdown'])} | {_f(x['turnover'], 0)} |")
+        if "blocks" in v:
+            lines += ["", f"Bootstrap (seed {s['verdict']['bootstrap']['seed']}, {s['verdict']['bootstrap']['draws']} draws) one-sided 95% lower bound of the held-out paired improvement: {_f(v['bootstrap_lower_bound'])}.", "",
+                      "| Held-out block start | Candidate | Comparator | Improvement |", "|---|---|---|---|"]
+            for b in v["blocks"]:
+                lines.append(f"| {_ts(b['start_ms'])} | {_f(b['candidate'])} | {_f(b['comparator'])} | {_f(b['improvement'])} |")
+            lines += ["", "Latency stresses (held-out, processing ms): " + ", ".join(f"{k}: net {_f(x['net'])} ({x['closed']} closed)" for k, x in sorted(v["latency_stress"].items())) + ".",
+                      f"Slippage stress {s['execution']['costs']['slippage_stress_bps']} bps (held-out): candidate net {_f(v['slippage_stress']['candidate']['net'])}, comparator net {_f(v['slippage_stress']['comparator']['net'])}.", "",
+                      "One-axis neighbors (held-out net): " + "; ".join(f"`{pjson(n['params'])}` {_f(n['held_out_net'])}" for n in v["neighbors"]) + ".", ""]
+            lines += ["| Check | Result |", "|---|---|"]
+            for group in ("evidence", "pass"):
+                for k, val in sorted(v["checks"][group].items()):
+                    lines.append(f"| {group}: {k} | {'yes' if val else 'no'} |")
+            par = v["checks"]["parity"]
+            lines.append(f"| parity: evaluator probes | {par['checked']} checked, {par['mismatches']} mismatches |")
+            lines += ["", "Refusal counts (held-out): candidate " + json.dumps(sel["held_out"]["refusals"], sort_keys=True) +
+                      ", comparator " + json.dumps(r["comparator"]["held_out"]["refusals"], sort_keys=True) + "."]
+    lines += ["", "## Every variant", "", "Net in quote units; closed positions in parentheses.", "",
+              "| Parameters | Entries | Train | Validation | Held-out |", "|---|---|---|---|---|"]
+    for x in sorted(r["variants"], key=lambda x: x["params_json"]):
+        lines.append(f"| `{x['params_json']}` | {x['entries']} | {_f(x['train']['net'])} ({x['train']['closed']}) | "
+                     f"{_f(x['validation']['net'])} ({x['validation']['closed']}) | {_f(x['held_out']['net'])} ({x['held_out']['closed']}) |")
+    lines += ["", "## Reproduce", "", "```bash", "uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.py fetch",
+              "uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.py import",
+              "uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.py run",
+              "uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.py render", "```", "",
+              "`fetch` downloads with `--request-payer requester` and rewrites `data/archive_manifest.json`; `fetch-funding` and `fetch-venue` refresh the pinned funding and venue files. Research-only, suggest-only; no live default, config or deployment changes.", ""]
+    with open(os.path.join(_HERE, "REPORT.md"), "w") as fh:
+        fh.write("\n".join(lines))
+    return {"outcome": v["outcome"], "lines": len(lines)}
 
 
 def main(argv=None) -> int:

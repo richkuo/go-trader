@@ -11,7 +11,7 @@ var productionRefusedStrategies = map[string]string{
 	bitcoinLeadLagStrategyName:        "backtest/candidates/bitcoin_lead_lag_1640/REPORT.md",
 	volumeProfileReclaimStrategyName:  "backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
 	"perpetual_premium_reversion":     "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
-	orderBookImbalanceStrategyName:    "backtest/candidates/order_book_imbalance_1635/REPORT.md",
+	"order_book_imbalance":            "backtest/candidates/order_book_imbalance_1635/REPORT.md",
 }
 
 func productionRefusedReferences(sc StrategyConfig) []edgeReference {

@@ -126,7 +126,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 71
+    assert len(py) == 72
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -176,6 +176,7 @@ def test_go_production_refusal_equals_python_registry():
         "macro_event_breakout": "backtest/candidates/macro_event_breakout_1654/REPORT.md",
         "volume_profile_reclaim": "backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
         "perpetual_premium_reversion": "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
+        "order_book_imbalance": "backtest/candidates/order_book_imbalance_1635/REPORT.md",
     }
     assert go == py
     for name in py:
@@ -216,6 +217,7 @@ def test_go_bidirectional_perps_equal_python_short_entries():
     assert unpromoted_absence(mapping_mismatches(go, py), refused_in_both_languages()) == []
     assert "bitcoin_lead_lag" in py and "bitcoin_lead_lag" not in go
     assert "volume_profile_reclaim" in py and "volume_profile_reclaim" not in go
+    assert "order_book_imbalance" in py and "order_book_imbalance" not in go
 
 
 @pytest.mark.parametrize("side", ["go", "python"])
@@ -281,6 +283,7 @@ def test_every_registered_open_strategy_has_a_unique_short_name():
     assert set(OPEN_REGISTRY.STRATEGIES) - set(short) <= refused_in_both_languages()
     assert "bitcoin_lead_lag" not in short and "cumulative_volume_delta_divergence" in short
     assert "volume_profile_reclaim" not in short
+    assert "order_book_imbalance" not in short
     values = list(short.values())
     assert len(values) == len(set(values))
 

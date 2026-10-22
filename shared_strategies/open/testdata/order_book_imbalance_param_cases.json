@@ -1,0 +1,166 @@
+[
+ {
+  "params": {},
+  "valid": true
+ },
+ {
+  "params": {
+   "depth_levels": 1,
+   "entry_threshold": 0.2,
+   "confirmation_observations": 2,
+   "max_spread_bps": 2.0,
+   "min_combined_depth_usd": 10000.0,
+   "max_snapshot_age_ms": 1000
+  },
+  "valid": true
+ },
+ {
+  "params": {
+   "depth_levels": 20,
+   "entry_threshold": 0.4,
+   "confirmation_observations": 5,
+   "max_spread_bps": 100,
+   "min_combined_depth_usd": 1000000000,
+   "max_snapshot_age_ms": 5000
+  },
+  "valid": true
+ },
+ {
+  "params": {
+   "depth_levels": 5.0
+  },
+  "valid": true
+ },
+ {
+  "params": {
+   "max_snapshot_age_ms": 250
+  },
+  "valid": true
+ },
+ {
+  "params": {
+   "entry_threshold": 0.999
+  },
+  "valid": true
+ },
+ {
+  "params": {
+   "depth_levels": 0
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "depth_levels": 21
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "depth_levels": 5.5
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "depth_levels": true
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "entry_threshold": 0
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "entry_threshold": 1
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "entry_threshold": -0.1
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "confirmation_observations": 1
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "confirmation_observations": 6
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "confirmation_observations": 16
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "max_spread_bps": 0
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "max_spread_bps": 100.0001
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "min_combined_depth_usd": 0
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "min_combined_depth_usd": 1000000001
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "max_snapshot_age_ms": 249
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "max_snapshot_age_ms": 5001
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "max_snapshot_age_ms": 2000.5
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "unknown_key": 1
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "max_spread_bps": "5"
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "entry_threshold": false
+  },
+  "valid": false
+ }
+]
