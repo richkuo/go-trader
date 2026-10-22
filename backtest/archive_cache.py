@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -9,6 +10,7 @@ from typing import Callable, Dict, List
 ARCHIVE_CACHE_DIR_ENV = "GO_TRADER_ARCHIVE_CACHE_DIR"
 FETCH_WORKERS = 8
 AWS_ATTEMPTS = 6
+_NOT_FOUND = re.compile(r"An error occurred \((?:404|NoSuchKey)\)")
 
 
 class ArchiveError(ValueError):
@@ -57,7 +59,7 @@ def run_aws(args: list) -> subprocess.CompletedProcess:
 
 
 def _not_found(stderr: str) -> bool:
-    return "404" in stderr or "Not Found" in stderr
+    return _NOT_FOUND.search(stderr) is not None
 
 
 def _call(aws: Callable, args: list) -> subprocess.CompletedProcess:

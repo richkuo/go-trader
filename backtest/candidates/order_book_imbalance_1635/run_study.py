@@ -443,7 +443,7 @@ def run_study() -> dict:
     commit = subprocess.run(["git", "-C", _ROOT, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     dirty = bool(subprocess.run(["git", "-C", _ROOT, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True).stdout.strip())
     sources = {rel: ba.sha256_file(os.path.join(_ROOT, rel)) for rel in (
-        "backtest/book_event_simulator.py", "backtest/book_archive.py", "backtest/book_replay.py", "backtest/lz4_frame.py",
+        "backtest/archive_cache.py", "backtest/book_event_simulator.py", "backtest/book_archive.py", "backtest/book_replay.py", "backtest/lz4_frame.py",
         "shared_strategies/open/order_book_imbalance.py", "shared_tools/book_inputs.py",
         "backtest/candidates/order_book_imbalance_1635/run_study.py")}
     result = {"schema": "go_trader_obi_1635_results/v1", "spec_sha256": ba.sha256_file(SPEC_PATH),

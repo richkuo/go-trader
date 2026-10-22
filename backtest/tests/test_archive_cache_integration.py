@@ -19,6 +19,9 @@ remote = os.environ["STUB_REMOTE"]
 with open(os.environ["STUB_LOG"], "a") as fh:
     fh.write(" ".join(args) + "\\n")
 assert args[-2:] == ["--request-payer", "requester"]
+if os.environ.get("STUB_STDERR"):
+    sys.stderr.write(os.environ["STUB_STDERR"].replace("@DEST@", args[3] if args[:2] == ["s3", "cp"] else "") + "\\n")
+    sys.exit(int(os.environ.get("STUB_RC", "1")))
 if args[:2] == ["s3", "cp"]:
     key = args[2].split("/", 3)[3]
     src = os.path.join(remote, key)
@@ -138,3 +141,42 @@ def test_cache_root_resolution(monkeypatch, tmp_path):
     for bad in ("../escape", "/abs/key", "a//b", "a/./b"):
         with pytest.raises(ac.ArchiveError, match="not a plain relative name"):
             ac.object_path(str(tmp_path), bad)
+
+
+KEY_404 = "market_data/20240404/0/l2Book/BTC.lz4"
+
+
+def _calls(log, prefix: str) -> int:
+    return sum(1 for line in log.read_text().splitlines() if line.startswith(prefix))
+
+
+def test_a_connection_error_naming_a_404_key_retries_and_never_records_absent(archive, monkeypatch):
+    monkeypatch.setattr(ac.time, "sleep", lambda _: None)
+    monkeypatch.setenv("STUB_RC", "255")
+    monkeypatch.setenv("STUB_STDERR", f'Could not connect to the endpoint URL: "https://hyperliquid-archive.s3.amazonaws.com/{KEY_404}"')
+    with pytest.raises(ac.ArchiveError, match=f"{KEY_404}: download failed: Could not connect"):
+        ac.freeze(archive["root"], "stub-bucket", [KEY_404])
+    assert _calls(archive["log"], "s3 cp") == ac.AWS_ATTEMPTS
+    manifest = {"bucket": "stub-bucket", "files": [{"key": KEY_404, "status": "absent"}]}
+    with pytest.raises(ac.ArchiveError, match=f"{KEY_404}: head-object failed: Could not connect"):
+        ac.fetch_manifest(archive["root"], manifest)
+    assert _calls(archive["log"], "s3api head-object") == ac.AWS_ATTEMPTS
+
+
+def test_a_real_not_found_error_is_absent_without_retries(archive, monkeypatch):
+    monkeypatch.setattr(ac.time, "sleep", lambda _: pytest.fail("a not-found error was retried"))
+    monkeypatch.setenv("STUB_RC", "254")
+    monkeypatch.setenv("STUB_STDERR", "aws: [ERROR]: An error occurred (404) when calling the HeadObject operation: Not Found")
+    assert ac.freeze(archive["root"], "stub-bucket", [KEY_404]) == [{"key": KEY_404, "status": "absent"}]
+    assert (_calls(archive["log"], "s3 cp"), _calls(archive["log"], "s3api head-object")) == (1, 1)
+
+
+def test_a_service_error_through_a_404_cache_root_is_retried_and_not_missing(archive, monkeypatch, tmp_path):
+    monkeypatch.setattr(ac.time, "sleep", lambda _: None)
+    root = str(tmp_path / "u404" / "cache")
+    monkeypatch.setenv("STUB_STDERR", "download failed: s3://stub-bucket/" + KEY_404 + " to @DEST@ An error occurred (503) when calling the GetObject operation: Slow Down")
+    entry = {"key": KEY_404, "status": "present", "size": 1, "sha256": "0" * 64}
+    with pytest.raises(ac.ArchiveError, match=f"{KEY_404}: download failed: .*u404.*\\(503\\)"):
+        ac.fetch_manifest(root, {"bucket": "stub-bucket", "files": [entry]})
+    assert _calls(archive["log"], "s3 cp") == ac.AWS_ATTEMPTS
+    assert not [n for _, _, names in os.walk(root) for n in names]
