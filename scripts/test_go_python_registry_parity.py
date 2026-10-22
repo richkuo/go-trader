@@ -202,6 +202,38 @@ def test_go_calendar_training_default_equals_python_registry():
     assert int(match.group(1).replace("_", "")) == py
 
 
+def go_premium_lookback_bounds(source=None):
+    source = _go_source("market_feed_premium.go") if source is None else source
+    out = {}
+    for key, name in (("default", "perpetualPremiumDefaultLookback"), ("max", "perpetualPremiumMaxLookback")):
+        match = re.search(rf"^\s*{name}\s*=\s*([0-9_]+)\s*$", source, re.M)
+        assert match, f"{name} not found"
+        out[key] = int(match.group(1).replace("_", ""))
+    return out
+
+
+def python_premium_lookback_bounds():
+    entry = OPEN_REGISTRY.STRATEGIES["perpetual_premium_reversion"]
+    maxima = [int(m.group(1)) for c in entry["constraints"]
+              for m in [re.fullmatch(r"\s*lookback_samples\s*<=\s*([0-9]+)\s*", c)] if m]
+    assert len(maxima) == 1, f"expected one lookback_samples upper bound in constraints, got {maxima}"
+    return {"default": entry["default_params"]["lookback_samples"], "max": maxima[0]}
+
+
+def test_go_premium_lookback_default_and_maximum_equal_python_registry():
+    go, py = go_premium_lookback_bounds(), python_premium_lookback_bounds()
+    assert py == {"default": 30, "max": 720}
+    assert go == py
+
+
+@pytest.mark.parametrize("name,value", [("perpetualPremiumDefaultLookback", 60), ("perpetualPremiumMaxLookback", 721)])
+def test_premium_lookback_parity_detects_a_changed_go_value(name, value):
+    source = _go_source("market_feed_premium.go")
+    changed, n = re.subn(rf"^(\s*{name}\s*=\s*)[0-9_]+(\s*)$", rf"\g<1>{value}\g<2>", source, flags=re.M)
+    assert n == 1
+    assert go_premium_lookback_bounds(changed) != python_premium_lookback_bounds()
+
+
 def refused_in_both_languages():
     return set(go_production_refused()) & set(OPEN_REGISTRY.production_refused_strategies())
 

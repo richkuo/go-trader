@@ -423,9 +423,31 @@ def masked_baseline(reg, spec, manifest, datasets, name, params, window_name, co
     return summarize(legs)
 
 
+def event_result(per_coin: list, case: str, capital: float) -> dict:
+    trades, refusals, open_positions = [], [], []
+    for coin, res in per_coin:
+        trades += res["trades"]
+        refusals += [dict(x, coin=coin) for x in res["refusals"]]
+        open_positions += res["open_positions"]
+    lat = er.COST_CASES[case]["latency_ms"]
+    violations = [t for t in trades if t["entry_ms"] < t["decision_ms"] + lat or t["exit_ms"] < t["exit_decision_ms"] + lat
+                  or t["exit_ms"] < t["entry_ms"]]
+    violations += [p for p in open_positions if p["entry_ms"] < p["decision_ms"] + lat
+                   or any(f["recv_ms"] < p["exit_decision_ms"] + lat or f["recv_ms"] < p["entry_ms"] for f in p["exit_fills"])]
+    return {"summary": er.summarize(trades, capital, open_positions), "trades": trades, "refusals": refusals,
+            "open_positions": open_positions, "cost": er.COST_CASES[case],
+            "fill_timing_violations": len(violations)}
+
+
+def event_payload(ev: dict) -> dict:
+    return {"summary": ev["summary"], "refusals": ev["refusals"], "cost": ev["cost"],
+            "fill_timing_violations": ev["fill_timing_violations"], "trades": ev["trades"],
+            "open_positions": ev["open_positions"]}
+
+
 def event_study(reg, spec, manifest, quotes, window_name, params, case) -> dict:
     ex = spec["exit_and_risk"]
-    trades, refusals = [], []
+    per_coin = []
     for ds in manifest["datasets"]:
         _, win, cand = candidate_frame(reg, manifest, ds, window_name, params)
         cand = ensure_atr_indicator(cand)
@@ -442,14 +464,8 @@ def event_study(reg, spec, manifest, quotes, window_name, params, case) -> dict:
         res = er.replay_coin(ds["coin"], decisions, er.QuoteTape(quotes[ds["coin"]]), fund_rows, ds["size_decimals"],
                              ex["capital_usd"], ex["close_strategy"]["params"]["max_bars"], manifest["interval_ms"],
                              1.0, er.COST_CASES[case])
-        trades += res["trades"]
-        refusals += [dict(x, coin=ds["coin"]) for x in res["refusals"]]
-    lat = er.COST_CASES[case]["latency_ms"]
-    violations = [t for t in trades if t["entry_ms"] < t["decision_ms"] + lat or t["exit_ms"] < t["exit_decision_ms"] + lat
-                  or t["exit_ms"] < t["entry_ms"]]
-    return {"summary": er.summarize(trades, ex["capital_usd"]), "trades": trades, "refusals": refusals,
-            "cost": er.COST_CASES[case],
-            "fill_timing_violations": len(violations)}
+        per_coin.append((ds["coin"], res))
+    return event_result(per_coin, case, ex["capital_usd"])
 
 
 def verdict(event_x1, event_x2, cand_base, baselines, masked, shares, recording, candle_cov) -> dict:
@@ -465,9 +481,10 @@ def verdict(event_x1, event_x2, cand_base, baselines, masked, shares, recording,
                                      for b in list(baselines.values()) + list(masked.values())),
         "not_concentrated": (event_x1["summary"].get("top_coin_abs_pnl_share") or 1.0) <= MAX_COIN_PNL_SHARE,
         "event_fills_after_decision_and_latency": event_x1["fill_timing_violations"] == 0 and event_x2["fill_timing_violations"] == 0,
+        "event_positions_resolved": event_x1["summary"]["complete"] and event_x2["summary"]["complete"],
     }
     gates = ("recording_is_economic_evidence", "sample_sufficient", "premium_coverage", "candle_coverage_complete",
-             "event_fills_after_decision_and_latency")
+             "event_fills_after_decision_and_latency", "event_positions_resolved")
     missing = []
     if not checks["recording_is_economic_evidence"]:
         missing.append("the recording is incomplete or damaged: " + "; ".join(recording["refusals"]))
@@ -480,6 +497,10 @@ def verdict(event_x1, event_x2, cand_base, baselines, masked, shares, recording,
         missing.append("held-out candle coverage is incomplete")
     if not checks["event_fills_after_decision_and_latency"]:
         missing.append("an event-replay fill preceded its decision plus latency")
+    if not checks["event_positions_resolved"]:
+        missing.append(f"held-out event replay is incomplete: {event_x1['summary']['open_positions']} (x1) and "
+                       f"{event_x2['summary']['open_positions']} (x2) positions still open at the end of the recording, "
+                       "so the closed-position results cannot decide a pass or fail")
     if not all(checks[g] for g in gates):
         outcome, reason = "inconclusive", "; ".join(missing)
     elif all(checks.values()):
@@ -602,9 +623,7 @@ def run(manifest_path: str) -> dict:
         "held_out": held,
         "held_out_masked_baselines": masked,
         "train_selected": train_held,
-        "event_replay": {w: {c: {"summary": v["summary"], "refusals": v["refusals"], "cost": v["cost"],
-                                 "fill_timing_violations": v["fill_timing_violations"],
-                                 "trades": v["trades"]} for c, v in per.items()} for w, per in events.items()},
+        "event_replay": {w: {c: event_payload(v) for c, v in per.items()} for w, per in events.items()},
         "held_out_entries": entry_diagnostics(reg, manifest, HELD_OUT_WINDOW, selected),
         "train_entries": entry_diagnostics(reg, manifest, SELECTION_WINDOW, selected),
         "variants": variants,
@@ -629,6 +648,35 @@ def _fmt(v, nd=2):
 
 def _ts(ms):
     return "-" if ms is None else str(pd.Timestamp(int(ms), unit="ms", tz="UTC")).replace("+00:00", "Z")
+
+
+def event_completeness_lines(event_replay: dict) -> list:
+    lines = ["", "## Event replay completeness (positions open at the end of the recording)", "",
+             "The table above counts closed positions only. An open position keeps its entry fee, completed exit "
+             "fills, realized PnL on the closed quantity and accrued funding here; its remaining quantity is unpriced.",
+             "", "| Window | Cost | Complete | Open positions | Remaining qty | Fees $ | Realized gross $ | Funding $ | Realized net $ |",
+             "|---|---|---|---|---|---|---|---|---|"]
+    rows = []
+    for w in (SELECTION_WINDOW, HELD_OUT_WINDOW):
+        for c in ("x1", "x2"):
+            ev = event_replay[w][c]
+            s = ev["summary"]
+            qty = ", ".join(f"{k} {v}" for k, v in s["open_remaining_qty"].items()) or "-"
+            lines.append(f"| {w} | {c} | {_fmt(s['complete'])} | {s['open_positions']} | {qty} | "
+                         f"{_fmt(s['open_fees_usd'])} | {_fmt(s['open_realized_gross_usd'])} | "
+                         f"{_fmt(s['open_funding_usd'], 4)} | {_fmt(s['open_realized_net_usd'])} |")
+            rows += [(w, c, p) for p in ev["open_positions"]]
+    if not rows:
+        return lines + ["", "No position was open at the end of the recording."]
+    lines += ["", "| Window | Cost | Coin | Side | Decision | Entry | Entry px | Entered qty | Exit fills | Closed qty | "
+                  "Remaining qty | Entry fee $ | Exit fees $ | Realized gross $ | Funding $ | Funding through |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for w, c, p in rows:
+        lines.append(f"| {w} | {c} | {p['coin']} | {p['side']} | {_ts(p['decision_ms'])} | {_ts(p['entry_ms'])} | "
+                     f"{_fmt(p['entry_px'])} | {p['qty']} | {len(p['exit_fills'])} | {p['closed_qty']} | "
+                     f"{p['remaining_qty']} | {_fmt(p['entry_fees_usd'], 4)} | {_fmt(p['exit_fees_usd'], 4)} | "
+                     f"{_fmt(p['realized_gross_usd'], 4)} | {_fmt(p['funding_usd'], 4)} | {_ts(p['funding_through_ms'])} |")
+    return lines
 
 
 def render(result: dict) -> str:
@@ -739,6 +787,7 @@ def render(result: dict) -> str:
                          f"{_fmt(s['net_pnl_usd'])} | {_fmt(s['gross_usd'])} | {_fmt(s['fees_usd'])} | "
                          f"{_fmt(s['funding_usd'], 4)} | {_fmt(s['max_dd_usd'])} | {_fmt(s['win_rate'], 3)} | "
                          f"{s.get('delayed_exits', 0)} | {len(ev['refusals'])} | {_fmt(s['top_coin_abs_pnl_share'])} |")
+    lines += event_completeness_lines(result["event_replay"])
     lines += ["", "## Train window (selected params, candle model)", "",
               "| Arm | Positions (L/S) | Net $ | Mean DDadj |", "|---|---|---|---|"]
     for name in arms:
@@ -779,6 +828,19 @@ def render(result: dict) -> str:
     return "\n".join(lines)
 
 
+def _refuse_foreign_results(json_out: str) -> None:
+    if not os.path.exists(json_out):
+        return
+    with open(json_out) as fh:
+        pinned = json.load(fh).get("source_sha256") or {}
+    current = {p: _sha(os.path.join(_REPO, p)) for p in SOURCE_FILES}
+    changed = sorted(p for p in set(pinned) | set(current) if pinned.get(p) != current.get(p))
+    if changed:
+        raise SystemExit(f"{json_out} was produced by other sources ({', '.join(changed)}); run and render never "
+                         "overwrite it. Reproduce it at its source revision, or run a corrected study in a scratch "
+                         "copy after removing that copy's results.json and REPORT.md (README.md, Reproduce)")
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="#1639 recorded perpetual premium study driver (research-only)")
     sub = p.add_subparsers(dest="cmd")
@@ -795,6 +857,8 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     json_out = os.path.join(_HERE, "results.json")
     report = os.path.join(_HERE, "REPORT.md")
+    if args.cmd in (None, "run"):
+        _refuse_foreign_results(json_out)
     try:
         if args.cmd == "prepare":
             print(json.dumps(prepare(args.run_dir), indent=2, sort_keys=True))
