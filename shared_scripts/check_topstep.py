@@ -272,7 +272,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "symbol": symbol,
             "timeframe": timeframe,
             "signal": signal,
-            "price": round(price, 2),
+            "price": price,
             "contract_spec": adapter.get_contract_spec(symbol),
             "market_open": market_open,
             "indicators": indicators,

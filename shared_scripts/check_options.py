@@ -504,7 +504,7 @@ def main():
             "strategy": strategy_name,
             "underlying": underlying,
             "signal": signal,
-            "spot_price": round(spot_price, 2),
+            "spot_price": spot_price,
             "actions": scored_actions,
             "iv_rank": round(iv_rank, 1),
             "regime": regime_label,

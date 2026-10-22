@@ -205,7 +205,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 "symbol": symbol,
                 "timeframe": timeframe,
                 "signal": signal,
-                "price": round(price, 2),
+                "price": price,
                 "indicators": indicators,
                 "regime": stdout_regime,
                 "mode": mode,

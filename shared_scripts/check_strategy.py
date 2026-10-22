@@ -393,7 +393,7 @@ def main():
             "symbol": symbol,
             "timeframe": timeframe,
             "signal": signal,
-            "price": round(price, 2),
+            "price": price,
             "indicators": indicators,
             "regime": stdout_regime,
             "timestamp": datetime.now(timezone.utc).isoformat()

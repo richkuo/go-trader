@@ -2,6 +2,7 @@
 
 import sys
 import json
+import math
 import traceback
 
 
@@ -19,7 +20,12 @@ def main():
         for symbol in symbols:
             try:
                 ticker = exchange.fetch_ticker(symbol)
-                prices[symbol] = round(ticker["last"], 2)
+                last = ticker["last"]
+                if isinstance(last, bool) or not isinstance(last, (int, float)):
+                    raise TypeError(f"ticker last is not a number: {last!r}")
+                if not math.isfinite(last):
+                    raise ValueError(f"ticker last is not finite: {last!r}")
+                prices[symbol] = float(last)
             except Exception as e:
                 print(f"Failed to fetch {symbol}: {e}", file=sys.stderr)
 
