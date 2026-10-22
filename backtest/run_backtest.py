@@ -427,14 +427,49 @@ def _htf_trend_series(symbol: str, timeframe: str, ltf_index: pd.Index,
             f"higher-timeframe filter refused: {len(htf_df)} cached {htf} candles for {symbol} "
             f"(need at least {ema_period}); fetch more {htf} history or disable --htf-filter")
 
+    htf_index = _htf_index_like(htf_df.index, ltf_index)
+    _check_htf_cache_covers(symbol, htf, htf_index, ltf_index)
     closes = htf_df["close"].astype(float)
     ema = closes.ewm(span=ema_period, adjust=False).mean()
     trend = pd.Series(
         np.where(closes > ema, 1, np.where(closes < ema, -1, 0)),
-        index=_htf_index_like(htf_df.index, ltf_index),
+        index=htf_index,
         dtype=int,
     )
     return trend.shift(1).reindex(ltf_index, method="ffill").fillna(0).astype(int)
+
+
+_HTF_INTERVALS = {
+    "15m": pd.Timedelta(minutes=15),
+    "1h": pd.Timedelta(hours=1),
+    "4h": pd.Timedelta(hours=4),
+    "1d": pd.Timedelta(days=1),
+    "1w": pd.Timedelta(weeks=1),
+    "1M": pd.DateOffset(months=1),
+}
+
+
+def _check_htf_cache_covers(symbol: str, htf: str, htf_index: pd.Index,
+                            ltf_index: pd.Index) -> None:
+    if len(ltf_index) == 0:
+        return
+    interval = _HTF_INTERVALS.get(htf)
+    if interval is None:
+        raise HTFCacheError(
+            f"higher-timeframe filter refused: the {htf} interval for {symbol} is unknown, "
+            f"so cache coverage cannot be checked; disable --htf-filter")
+    if not isinstance(htf_index, pd.DatetimeIndex) or not isinstance(ltf_index, pd.DatetimeIndex):
+        raise HTFCacheError(
+            f"higher-timeframe filter refused: the {htf} cache or the candle frame for {symbol} "
+            f"has no datetime index, so cache coverage cannot be checked")
+    htf_first, htf_last = htf_index.min(), htf_index.max()
+    ltf_first, ltf_last = ltf_index.min(), ltf_index.max()
+    if htf_first > ltf_first + interval or htf_last < ltf_last - interval:
+        raise HTFCacheError(
+            f"higher-timeframe filter refused: cached {htf} candles for {symbol} span "
+            f"{htf_first} to {htf_last}, which does not cover the requested range "
+            f"{ltf_first} to {ltf_last} (allowed gap: one {htf} interval at each end); "
+            f"fetch the {htf} history for that range or disable --htf-filter")
 
 
 def _htf_index_like(htf_index: pd.Index, ltf_index: pd.Index) -> pd.Index:
