@@ -15,6 +15,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
+from htf_filter import (
+    HTF_EXCLUDED_DEFAULT,
+    htf_skipped_block,
+    run_htf_filter,
+)
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 from stdout_contract import json_stdout
 
@@ -152,20 +157,17 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             last = result_df.iloc[-1]
             price = float(last["close"])
 
-            htf_info = {}
+            htf_indicators = {}
+            htf_block = None
             htf_strategy_name = open_strategy or strategy_name
-            if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
-                from htf_filter import htf_trend_filter, apply_htf_filter
-
+            if htf_filter_enabled and htf_strategy_name in HTF_EXCLUDED_DEFAULT:
+                htf_block = htf_skipped_block(timeframe, htf_strategy_name)
+            elif htf_filter_enabled:
                 def _fetch_htf(sym, tf, limit):
                     candles = adapter.get_ohlcv(sym, interval=tf, limit=limit)
                     return _make_dataframe(candles) if candles else None
 
-                htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
-                original_signal = signal
-                signal = apply_htf_filter(signal, htf_info.get("htf_trend", 0))
-                if signal != original_signal:
-                    print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
+                signal, htf_block, htf_indicators = run_htf_filter(signal, symbol, timeframe, _fetch_htf)
 
             if open_close_enabled:
                 decision = finalize_decision(evaluation, position_side, signal)
@@ -195,10 +197,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                     except (ValueError, TypeError):
                         pass
 
-            if htf_info:
-                for k, v in htf_info.items():
-                    if isinstance(v, (int, float)):
-                        indicators[k] = v
+            indicators.update(htf_indicators)
 
             output = {
                 "strategy": strategy_name,
@@ -214,6 +213,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             }
             if decision:
                 output.update(decision)
+            if htf_block is not None:
+                output["htf_filter"] = htf_block
             emit(output)
 
         except Exception as e:

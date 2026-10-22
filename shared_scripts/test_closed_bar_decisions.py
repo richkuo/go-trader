@@ -1748,3 +1748,89 @@ def test_rcr_mixed_batch_matches_individual_checks():
     assert results["on"]["signal"] == 1
     assert results["off"]["signal"] == 0
     assert results["off"]["indicator_labels"]["rcr_reason"] == "no_reentry"
+
+
+def _htf_status_frames(mode, bars):
+    four_h = 4 * H
+    end = bars[-1]["t"] - bars[-1]["t"] % four_h
+    frames = {"BTC|1h": _hl_frame(bars)}
+    if mode == "short":
+        frames["BTC|4h"] = _hl_frame(_htf_bars(49, end, four_h), interval_ms=four_h)
+    elif mode == "nan":
+        htf = _htf_bars(60, end, four_h)
+        for b in htf:
+            b["c"] = float("nan")
+        frames["BTC|4h"] = _hl_frame(htf, interval_ms=four_h)
+    elif mode == "neutral":
+        htf = _htf_bars(60, end, four_h)
+        for b in htf:
+            b["o"] = b["h"] = b["l"] = b["c"] = 100.0
+        frames["BTC|4h"] = _hl_frame(htf, interval_ms=four_h)
+    return frames
+
+
+@pytest.mark.parametrize("mode,reason", [
+    ("missing", "fetching BTC 4h candles failed: MarketPayloadError"),
+    ("short", "49 4h candles available for BTC (need 50)"),
+    ("nan", "60 of 60 4h close values for BTC are not finite"),
+])
+def test_hyperliquid_unusable_higher_timeframe_frame_reports_unavailable_in_single_and_batch(mode, reason):
+    bars = _bars(240, forming_spike=12.0)
+    market = _market(_htf_status_frames(mode, bars), mid=bars[-1]["c"])
+    single = _run(CHECK_HL, ["breakout", "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200", "--htf-filter"],
+                  {"v": 2, "market": market})
+    assert single.returncode == 0, single.stderr + single.stdout
+    out = json.loads(single.stdout)
+    assert out["htf_filter"]["status"] == "unavailable"
+    assert reason in out["htf_filter"]["reason"]
+    assert out["signal"] == 1
+    assert single.stderr.count("HTF filter unavailable for BTC 4h: ") == 1
+
+    slots = [{"id": "a", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"], "htf_filter": True},
+             {"id": "b", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"], "htf_filter": True}]
+    batch = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200",
+                            "--atr-method=simple", "--market-stdin"], {"v": 2, "slots": slots, "market": market})
+    assert batch.returncode == 0, batch.stderr + batch.stdout
+    for slot in json.loads(batch.stdout)["results"]:
+        assert slot["htf_filter"] == out["htf_filter"]
+        assert _strip(slot) == _strip(out)
+
+
+def test_hyperliquid_neutral_higher_timeframe_trend_reports_ok_and_keeps_the_signal():
+    bars = _bars(240, forming_spike=12.0)
+    market = _market(_htf_status_frames("neutral", bars), mid=bars[-1]["c"])
+    argv = ["breakout", "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200"]
+    on = _run(CHECK_HL, argv + ["--htf-filter"], {"v": 2, "market": market})
+    off = _run(CHECK_HL, argv, {"v": 2, "market": market})
+    assert on.returncode == 0 and off.returncode == 0, on.stderr + off.stderr
+    on, off = json.loads(on.stdout), json.loads(off.stdout)
+    assert on["htf_filter"] == {"status": "ok", "timeframe": "4h", "trend": 0, "reason": ""}
+    assert on["signal"] == off["signal"] == 1
+    assert "htf_filter" not in off
+
+
+def test_hyperliquid_closed_bar_holds_report_the_higher_timeframe_stage():
+    bars = _bars(240, spike_at=238)
+    cutoff = bars[-1]["t"] + H // 2
+    short = _hl_check("breakout", bars, cutoff, closed=True, extra=["--htf-filter"], frames=_htf_status_frames("short", bars))
+    assert short["closed_bar_decision"]["held"] is True
+    assert short["htf_filter"]["status"] == "unavailable"
+    assert "insufficient closed history" in short["htf_filter"]["reason"]
+
+    untimed = _hl_check("breakout", bars, cutoff, closed=True, extra=["--htf-filter"], timing=False,
+                        frames={"BTC|1h": _hl_frame(bars, timing=False)})
+    assert untimed["closed_bar_decision"]["held"] is True
+    assert untimed["htf_filter"]["status"] == "not_evaluated"
+    assert "held before the higher-timeframe filter ran" in untimed["htf_filter"]["reason"]
+
+
+def test_hyperliquid_excluded_open_strategy_reports_skipped():
+    bars = _bars(240)
+    market = _market({"BTC|1h": _hl_frame(bars)}, mid=bars[-1]["c"])
+    market["funding"] = {"BTC": {"current": 0.0001, "avg_7d": 0.0001, "has_scalar": True, "records": [], "has_records": True}}
+    proc = _run(CHECK_HL, ["delta_neutral_funding", "BTC", "1h", "--mode=paper", "--market-stdin", "--htf-filter"],
+                {"v": 2, "market": market})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    block = json.loads(proc.stdout)["htf_filter"]
+    assert block["status"] == "skipped"
+    assert "delta_neutral_funding" in block["reason"]

@@ -25,6 +25,7 @@ type StrategyDecisionFields struct {
 	DecisionRegime     *RegimePayload     `json:"decision_regime,omitempty"`
 	RestingTPRule      *RestingTPRuleEcho `json:"resting_tp_rule,omitempty"`
 	CloseRestingFill   json.RawMessage    `json:"close_resting_fill,omitempty"`
+	HTFFilter          *HTFFilterEcho     `json:"htf_filter,omitempty"`
 }
 
 type PositionCtx struct {

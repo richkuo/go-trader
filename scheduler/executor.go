@@ -977,7 +977,7 @@ type TopStepResult struct {
 	Signal       int                    `json:"signal"`
 	Price        float64                `json:"price"`
 	ContractSpec ContractSpec           `json:"contract_spec"`
-	MarketOpen   bool                   `json:"market_open"`
+	MarketOpen   *bool                  `json:"market_open"`
 	Indicators   map[string]interface{} `json:"indicators"`
 	Mode         string                 `json:"mode"`
 	Platform     string                 `json:"platform"`

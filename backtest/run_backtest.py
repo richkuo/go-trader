@@ -410,21 +410,41 @@ def _profile_label_series(
     return labels.reindex(df.index, method="ffill").fillna("").astype(str)
 
 
+class HTFCacheError(ValueError):
+    pass
+
+
 def _htf_trend_series(symbol: str, timeframe: str, ltf_index: pd.Index,
                       ema_period: int = 50) -> pd.Series:
     htf = get_default_htf(timeframe)
     htf_df = load_cached_data(symbol, htf)
-    if htf_df.empty or len(htf_df) < ema_period:
-        return pd.Series(0, index=ltf_index, dtype=int)
+    if htf_df is None or htf_df.empty:
+        raise HTFCacheError(
+            f"higher-timeframe filter refused: no cached {htf} candles for {symbol} "
+            f"(need at least {ema_period}); fetch the {htf} cache or disable --htf-filter")
+    if len(htf_df) < ema_period:
+        raise HTFCacheError(
+            f"higher-timeframe filter refused: {len(htf_df)} cached {htf} candles for {symbol} "
+            f"(need at least {ema_period}); fetch more {htf} history or disable --htf-filter")
 
     closes = htf_df["close"].astype(float)
     ema = closes.ewm(span=ema_period, adjust=False).mean()
     trend = pd.Series(
         np.where(closes > ema, 1, np.where(closes < ema, -1, 0)),
-        index=htf_df.index,
+        index=_htf_index_like(htf_df.index, ltf_index),
         dtype=int,
     )
     return trend.shift(1).reindex(ltf_index, method="ffill").fillna(0).astype(int)
+
+
+def _htf_index_like(htf_index: pd.Index, ltf_index: pd.Index) -> pd.Index:
+    if not isinstance(htf_index, pd.DatetimeIndex) or not isinstance(ltf_index, pd.DatetimeIndex):
+        return htf_index
+    if ltf_index.tz is not None and htf_index.tz is None:
+        return htf_index.tz_localize("UTC").tz_convert(ltf_index.tz)
+    if ltf_index.tz is None and htf_index.tz is not None:
+        return htf_index.tz_convert("UTC").tz_localize(None)
+    return htf_index
 
 
 def _apply_htf_filter_to_df(df: pd.DataFrame, symbol: str,
@@ -1954,6 +1974,17 @@ def run_single_backtest(
     return results
 
 
+def _htf_refusal(strategy: str, symbol: str, exc: HTFCacheError) -> dict:
+    print(f"  HTF FILTER REFUSED: {strategy} {symbol}: {exc}")
+    return {"strategy": strategy, "symbol": symbol, "htf": str(exc)}
+
+
+def _print_htf_refusals(refused: list) -> None:
+    listed = sorted(f"{item['strategy']} {item['symbol']}" for item in refused if "htf" in item)
+    if listed:
+        print(f"  HTF FILTER REFUSED: {', '.join(listed)}")
+
+
 def _funding_refusal(strategy: str, symbol: str, exc: FundingIncompleteError) -> dict:
     """Record one charge-mode refusal. The caller keeps going and exits 1 later."""
     block = (exc.metrics or {}).get("funding") or {}
@@ -2012,6 +2043,9 @@ def run_all_strategies(
         except FundingIncompleteError as exc:
             refused.append(_funding_refusal(name, symbol, exc))
             continue
+        except HTFCacheError as exc:
+            refused.append(_htf_refusal(name, symbol, exc))
+            continue
         if result:
             all_results.append(result)
 
@@ -2019,9 +2053,11 @@ def run_all_strategies(
         print(format_comparison_report(all_results))
         print("  " + format_close_validation(aggregate_close_validations(
             r.get("close_validation") for r in all_results)))
-    if refused:
-        listed = ", ".join(sorted(item["strategy"] for item in refused))
+    funding_refused = [item for item in refused if "funding" in item]
+    if funding_refused:
+        listed = ", ".join(sorted(item["strategy"] for item in funding_refused))
         print(f"  FUNDING REFUSED strategies: {listed}")
+    _print_htf_refusals(refused)
 
     return all_results, refused
 
@@ -2084,6 +2120,9 @@ def run_multi_asset(
             except FundingIncompleteError as exc:
                 refused.append(_funding_refusal(strat_name, symbol, exc))
                 continue
+            except HTFCacheError as exc:
+                refused.append(_htf_refusal(strat_name, symbol, exc))
+                continue
             if result:
                 results_by_asset[symbol].append(result)
 
@@ -2091,10 +2130,12 @@ def run_multi_asset(
     print("  " + format_close_validation(aggregate_close_validations(
         r.get("close_validation")
         for results in results_by_asset.values() for r in results)))
-    if refused:
+    funding_refused = [item for item in refused if "funding" in item]
+    if funding_refused:
         listed = ", ".join(sorted(
-            f"{item['strategy']} {item['symbol']}" for item in refused))
+            f"{item['strategy']} {item['symbol']}" for item in funding_refused))
         print(f"  FUNDING REFUSED symbols: {listed}")
+    _print_htf_refusals(refused)
     return results_by_asset, refused
 
 
@@ -2647,6 +2688,9 @@ def _main():
                                 **live_stop_kwargs)
         except FundingIncompleteError as exc:
             _funding_refusal(args.strategy, args.symbol, exc)
+            sys.exit(1)
+        except HTFCacheError as exc:
+            _htf_refusal(args.strategy, args.symbol, exc)
             sys.exit(1)
 
     elif args.mode == "compare":
