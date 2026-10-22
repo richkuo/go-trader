@@ -88,6 +88,38 @@ func htfITHTF(mode string, now int64) any {
 	panic("unknown htf fixture mode " + mode)
 }
 
+func htfITHourlyHTF(mode string, now int64) any {
+	step := 4 * htfITHour
+	switch mode {
+	case "error":
+		return "network_error"
+	case "transient":
+		return map[string]any{"error": "yahoo 1h 503 Service Unavailable: bad gateway"}
+	}
+	forming := now - now%step
+	buckets := int64(60)
+	if mode == "short" {
+		buckets = 49
+	}
+	hours := int((now-(forming-(buckets-1)*step))/htfITHour) + 1
+	rows := htfITBars(hours, htfITHour, now, "")
+	switch mode {
+	case "short":
+		return rows
+	case "nan":
+		for _, r := range rows {
+			r[4] = "nan"
+		}
+		return rows
+	case "neutral":
+		for _, r := range rows {
+			r[1], r[2], r[3], r[4], r[5] = 100.0, 100.0, 100.0, 100.0, 1.0
+		}
+		return rows
+	}
+	panic("unknown htf fixture mode " + mode)
+}
+
 type htfITFixture struct {
 	HTF        string
 	Spot       string
@@ -121,7 +153,7 @@ func htfITWriteFixture(t *testing.T, path string, f htfITFixture) string {
 		},
 		"tickers": map[string]any{"BTC/USDT": htfITLastClose(spot), "BTC/USDT:USDT": htfITLastClose(fut)},
 		"yahoo": map[string]any{
-			"BTC-USD|1h": spotRows, "BTC-USD|4h": htf,
+			"BTC-USD|30m": spotRows, "BTC-USD|1h": htfITHourlyHTF(f.HTF, now),
 			"ES=F|1h": futRows, "ES=F|4h": htf,
 		},
 		"yahoo_price":         map[string]any{"BTC-USD": htfITLastClose(spot), "ES=F": htfITLastClose(fut)},
@@ -186,7 +218,7 @@ func TestHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *testing.
 		{"bus-atrb-btc", "BTC/USDT", true, map[string]any{"type": "spot", "platform": "binanceus", "script": "shared_scripts/check_strategy.py", "args": []string{"atr_breakout", "BTC/USDT", "1h"}, "capital": 1000}},
 		{"okx-atrb-btc", "BTC", true, map[string]any{"type": "spot", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": []string{"atr_breakout", "BTC", "1h", "--mode=paper", "--inst-type=spot"}, "capital": 1000}},
 		{"okx-brk-btc-perp", "BTC", false, map[string]any{"type": "perps", "platform": "okx", "script": "shared_scripts/check_okx.py", "args": []string{"breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap"}, "capital": 1000, "leverage": 1, "sizing_leverage": 1, "close_strategy": map[string]any{"name": "tiered_tp_pct"}}},
-		{"rh-atrb-btc", "BTC", true, map[string]any{"type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": []string{"atr_breakout", "BTC", "1h", "--mode=paper"}, "capital": 1000}},
+		{"rh-atrb-btc", "BTC", true, map[string]any{"type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": []string{"atr_breakout", "BTC", "30m", "--mode=paper"}, "capital": 1000}},
 		{"ts-brk-es", "ES", false, map[string]any{"type": "futures", "platform": "topstep", "script": "shared_scripts/check_topstep.py", "args": []string{"breakout", "ES", "1h", "--mode=paper"}, "capital": 50000, "close_strategy": map[string]any{"name": "tiered_tp_pct"}}},
 	}
 	var entries []any
@@ -271,7 +303,11 @@ func TestHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *testing.
 
 	closes := run("long-nan-htf-closes", htfITFixture{HTF: "nan", Spot: "down", Fut: "tp"})
 	for _, s := range strats {
-		if !pythonLine(closes, s) || !strings.Contains(closes, "4h close values for "+s.symbol+" are not finite") {
+		nonFinite := "4h close values for " + s.symbol + " are not finite"
+		if s.id == "rh-atrb-btc" {
+			nonFinite = "no 4h candle frame was returned for " + s.symbol
+		}
+		if !pythonLine(closes, s) || !strings.Contains(closes, nonFinite) {
 			t.Errorf("%s: non-finite HTF closes must report unavailable", s.id)
 		}
 		if strings.Contains(closes, "["+s.id+"] [WARN] HTF filter:") {

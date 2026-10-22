@@ -15,7 +15,7 @@ SCRIPTS = {
     "binanceus": ("check_strategy.py", ["atr_breakout", "BTC/USDT", "1h", "--mode=paper"], "BTC/USDT"),
     "okx-spot": ("check_okx.py", ["atr_breakout", "BTC", "1h", "--mode=paper", "--inst-type=spot"], "BTC"),
     "okx-swap": ("check_okx.py", ["breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap"], "BTC"),
-    "robinhood": ("check_robinhood.py", ["atr_breakout", "BTC", "1h", "--mode=paper"], "BTC"),
+    "robinhood": ("check_robinhood.py", ["atr_breakout", "BTC", "30m", "--mode=paper"], "BTC"),
     "topstep": ("check_topstep.py", ["breakout", "ES", "1h", "--mode=paper"], "ES"),
 }
 
@@ -55,6 +55,23 @@ def _htf(mode, now):
     raise ValueError(mode)
 
 
+def _hourly_htf(mode, now):
+    step = 4 * H
+    if mode == "missing":
+        return []
+    if mode == "error":
+        return "network_error"
+    forming = now - now % step
+    buckets = 49 if mode == "short" else 60
+    hours = (now - (forming - (buckets - 1) * step)) // H + 1
+    rows = _bars(hours, H, now)
+    if mode == "nan":
+        return [r[:4] + ["nan"] + r[5:] for r in rows]
+    if mode == "neutral":
+        return [[r[0], 100.0, 100.0, 100.0, 100.0, 1.0] for r in rows]
+    return rows
+
+
 def _fixture(tmp_path, htf_mode, *, primary=True, market_open=True):
     now = _now_hour()
     rows = _bars(200, H, now, "up") if primary else []
@@ -63,7 +80,7 @@ def _fixture(tmp_path, htf_mode, *, primary=True, market_open=True):
     doc = {
         "ccxt": {"BTC/USDT|1h": rows, "BTC/USDT|4h": htf, "BTC/USDT:USDT|1h": rows, "BTC/USDT:USDT|4h": htf},
         "tickers": {"BTC/USDT": last, "BTC/USDT:USDT": last},
-        "yahoo": {"BTC-USD|1h": rows, "BTC-USD|4h": htf, "ES=F|1h": rows, "ES=F|4h": htf},
+        "yahoo": {"BTC-USD|30m": rows, "BTC-USD|1h": _hourly_htf(htf_mode, now), "ES=F|1h": rows, "ES=F|4h": htf},
         "yahoo_price": {"BTC-USD": last, "ES=F": last},
         "topstep_market_open": market_open,
     }
@@ -98,6 +115,8 @@ UNAVAILABLE_REASONS = {
     "nan": ("60 of 60 4h close values for {sym} are not finite", "60 of 60 4h close values for {sym} are not finite"),
 }
 
+RESAMPLED_REASONS = {"nan": "no 4h candle frame was returned for {sym}"}
+
 
 @pytest.mark.parametrize("name", sorted(SCRIPTS))
 @pytest.mark.parametrize("htf_mode", sorted(UNAVAILABLE_REASONS))
@@ -106,7 +125,10 @@ def test_unusable_higher_timeframe_input_reports_unavailable_and_keeps_the_open_
     proc, out = _check(tmp_path, name, htf_mode)
     assert proc.returncode == 0, proc.stderr + proc.stdout
     direct, swallowed = UNAVAILABLE_REASONS[htf_mode]
-    reason = (swallowed if name in SWALLOWING_ADAPTERS else direct).format(sym=symbol)
+    reason = (swallowed if name in SWALLOWING_ADAPTERS else direct)
+    if name == "robinhood":
+        reason = RESAMPLED_REASONS.get(htf_mode, reason)
+    reason = reason.format(sym=symbol)
     block = out["htf_filter"]
     assert block["status"] == "unavailable"
     assert block["timeframe"] == "4h"

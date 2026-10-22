@@ -77,6 +77,9 @@ def _patch_yfinance(module):
             px = float(data["yahoo_price"][sym])
             idx = pd.DatetimeIndex([pd.Timestamp("2026-10-01", tz="UTC")])
             return pd.DataFrame({"Open": [px], "High": [px], "Low": [px], "Close": [px], "Volume": [0.0]}, index=idx)
+        if data.get("yahoo_log"):
+            with open(data["yahoo_log"], "a") as fh:
+                fh.write(json.dumps([sym, interval, period]) + "\n")
         value = data.get("yahoo", {}).get(sym + "|" + interval, [])
         if value == "network_error":
             raise ConnectionError("htf offline fixture: %s %s unreachable" % (sym, interval))

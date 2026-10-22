@@ -515,9 +515,9 @@ def test_hyperliquid_direct_acquisition_uses_native_close_times(tmp_path):
     assert out["signal"] == 1
 
 
-@pytest.mark.parametrize("script", [CHECK_RH, CHECK_TS])
-def test_session_venues_refuse_closed_bar_decisions(script):
-    proc = _run(script, ["breakout", "BTC", "1h", "--closed-bar-decisions"])
+@pytest.mark.parametrize("script,extra", [(CHECK_RH, ["--mode=live"]), (CHECK_TS, [])])
+def test_session_venues_refuse_closed_bar_decisions(script, extra):
+    proc = _run(script, ["breakout", "BTC", "1h", "--closed-bar-decisions", *extra])
     assert proc.returncode == 1
     assert "closed_bar_decisions is not supported" in json.loads(proc.stdout)["error"]
 

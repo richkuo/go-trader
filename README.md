@@ -166,7 +166,7 @@ Strategies are auto-discovered from `shared_strategies/` at `go-trader init` tim
 | IBKR/CME | Options | BTC, ETH | IBKR creds | Black-Scholes |
 | Hyperliquid | Perps | any HL-listed | `HYPERLIQUID_SECRET_KEY` | SDK public |
 | TopStep | Futures | ES, NQ, MES, MNQ, CL, GC | `TOPSTEP_API_KEY` / `_SECRET` / `_ACCOUNT_ID` | yfinance |
-| Robinhood | Crypto | BTC, ETH, SOL, DOGE, … | `ROBINHOOD_USERNAME` / `_PASSWORD` / `_TOTP_SECRET` | yfinance |
+| Robinhood | Crypto | BTC, ETH, SOL, DOGE, … | `ROBINHOOD_USERNAME` / `_PASSWORD` / `_TOTP_SECRET` | yfinance; timeframes `1m`, `2m`, `5m`, `15m`, `30m`, `1h`/`60m`, `90m`, `2h`, `4h`, `6h`, `8h`, `12h` (from Yahoo `1h`), `1d`, `1w`, `1M`/`1mo` |
 | Robinhood | Stock options | SPY, QQQ, AAPL, … | (same as above) | Black-Scholes |
 | OKX | Spot + Perps + Options | BTC, ETH, SOL | `OKX_API_KEY` / `_SECRET` / `_PASSPHRASE` (`OKX_SANDBOX=1` for demo) | CCXT public |
 | Luno | Spot | BTC, ETH, … | Luno creds | CCXT public |

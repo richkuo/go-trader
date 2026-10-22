@@ -98,8 +98,10 @@ func closedBarDecisionProvider(sc StrategyConfig) (closedBarProvider, string) {
 		return closedBarProvider{}, "options strategies have no candle decision contract"
 	case sc.Type == "futures":
 		return closedBarProvider{}, "TopStep candles have no verified closure contract that accounts for trading sessions"
-	case sc.Platform == "robinhood":
-		return closedBarProvider{}, "Robinhood candles have no verified closure contract that accounts for trading sessions"
+	case sc.Platform == "robinhood" && sc.Type == "spot" && isLiveArgs(sc.Args):
+		return closedBarProvider{}, robinhoodLiveClosedBarRefusal
+	case sc.Platform == "robinhood" && sc.Type == "spot":
+		return closedBarProvider{Label: "Robinhood spot paper", Script: robinhoodCheckScript}, ""
 	case sc.Type == "perps" && sc.Platform == "hyperliquid":
 		return closedBarProvider{Label: "Hyperliquid perps", Script: hyperliquidCheckScript}, ""
 	case (sc.Type == "spot" || sc.Type == "perps") && sc.Platform == "okx":
@@ -118,7 +120,20 @@ func closedBarIntervalSupported(sc StrategyConfig, timeframe string) bool {
 		_, ok := hlCandleIntervalMs(timeframe)
 		return ok
 	}
+	if sc.Platform == "robinhood" {
+		_, refused := robinhoodClosedBarRefusedTimeframes[timeframe]
+		return robinhoodTimeframeSupported(timeframe) && !refused
+	}
 	return true
+}
+
+func closedBarIntervalRefusalDetail(sc StrategyConfig, timeframe string) string {
+	if sc.Platform == "robinhood" {
+		if why, ok := robinhoodClosedBarRefusedTimeframes[timeframe]; ok {
+			return "; on Robinhood " + why
+		}
+	}
+	return ""
 }
 
 func closedBarSupportedIntervals() string {
@@ -149,7 +164,7 @@ func closedBarDecisionStrategyErrors(sc StrategyConfig, cfg *Config) []string {
 	if timeframe == "" {
 		errs = append(errs, fmt.Sprintf("%s needs args <strategy> <symbol> <timeframe>", prefix))
 	} else if !closedBarIntervalSupported(sc, timeframe) {
-		errs = append(errs, fmt.Sprintf("%s does not support timeframe %q (fixed-duration intervals only: %s)", prefix, timeframe, closedBarSupportedIntervals()))
+		errs = append(errs, fmt.Sprintf("%s does not support timeframe %q (fixed-duration intervals only: %s)%s", prefix, timeframe, closedBarSupportedIntervals(), closedBarIntervalRefusalDetail(sc, timeframe)))
 	}
 	names := []string{strategyNameFromArgs(sc.Args), effectiveOpenStrategy(sc)}
 	seen := map[string]bool{}
@@ -167,7 +182,7 @@ func closedBarDecisionStrategyErrors(sc StrategyConfig, cfg *Config) []string {
 	}
 	if sc.HTFFilter && timeframe != "" && effectiveOpenStrategy(sc) != fundingScalarStrategyName && effectiveOpenStrategy(sc) != fundingRecordsStrategyName {
 		if htf := hlFeedHTFTimeframe(timeframe); !closedBarIntervalSupported(sc, htf) {
-			errs = append(errs, fmt.Sprintf("%s does not support the higher-timeframe filter interval %q for timeframe %q", prefix, htf, timeframe))
+			errs = append(errs, fmt.Sprintf("%s does not support the higher-timeframe filter interval %q for timeframe %q%s", prefix, htf, timeframe, closedBarIntervalRefusalDetail(sc, htf)))
 		}
 	}
 	var rc *RegimeConfig
@@ -175,7 +190,7 @@ func closedBarDecisionStrategyErrors(sc StrategyConfig, cfg *Config) []string {
 		rc = cfg.Regime
 	}
 	if tf := closedBarDecisionRegimeTimeframe(sc, rc); tf != "" && !closedBarIntervalSupported(sc, tf) {
-		errs = append(errs, fmt.Sprintf("%s does not support regime timeframe %q (fixed-duration intervals only: %s)", prefix, tf, closedBarSupportedIntervals()))
+		errs = append(errs, fmt.Sprintf("%s does not support regime timeframe %q (fixed-duration intervals only: %s)%s", prefix, tf, closedBarSupportedIntervals(), closedBarIntervalRefusalDetail(sc, tf)))
 	}
 	if sc.RegimeDirectionalPolicy.IsConfigured() {
 		errs = append(errs, fmt.Sprintf("%s does not support regime_directional_policy: the policy resolves before the check runs, so it would read the current regime", prefix))

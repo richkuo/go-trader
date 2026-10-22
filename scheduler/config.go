@@ -293,6 +293,7 @@ func (lc LeaderboardSummaryConfig) Key() string {
 }
 
 type Config struct {
+	regimeTimeframeRaw       string
 	ConfigVersion            int                        `json:"config_version,omitempty"`
 	IntervalSeconds          int                        `json:"interval_seconds"`
 	LogDir                   string                     `json:"log_dir"`
@@ -1265,6 +1266,7 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 	if cfg.Regime == nil {
 		cfg.Regime = &RegimeConfig{Enabled: false}
 	}
+	cfg.regimeTimeframeRaw = strings.TrimSpace(cfg.Regime.Timeframe)
 	cfg.Regime.Timeframe = normalizeRegimeTimeframe(cfg.Regime.Timeframe)
 	if cfg.Regime.Enabled {
 		if cfg.Regime.Period == 0 {
@@ -1860,6 +1862,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	errs = append(errs, validateStorageIdentityConfig(cfg)...)
 
 	errs = append(errs, closedBarDecisionsConfigErrors(cfg)...)
+
+	errs = append(errs, robinhoodTimeframeConfigErrors(cfg)...)
 
 	errs = append(errs, restingTPTradeThroughConfigErrors(cfg)...)
 

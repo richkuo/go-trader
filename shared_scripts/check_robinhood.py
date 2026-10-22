@@ -15,9 +15,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strateg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
+from closed_bar import (
+    ClosedBarHold,
+    declare_frame_cadence,
+    fetch_rows_or_hold,
+    hold_metadata,
+    htf_closed_fetcher,
+    select_opening_time,
+    timings_timestamp_kind,
+    unsupported_open_strategy_reason,
+)
 from htf_filter import (
+    HTF_EMA_PERIOD,
     HTF_EXCLUDED_DEFAULT,
+    get_default_htf,
+    htf_not_evaluated_block,
     htf_skipped_block,
+    htf_unavailable_block,
     run_htf_filter,
 )
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
@@ -54,6 +68,48 @@ def _position_ctx_from_args(args):
     return ctx
 
 
+YAHOO_SETTLE_MS = 20_000
+
+LIVE_CLOSED_BAR_REFUSAL = (
+    "closed_bar_decisions is not supported on live robinhood: live Robinhood fills settle through "
+    "robinhood_order_attempts and the closed-bar entry ledger has no Robinhood provider, so one entry "
+    "per decision candle and side cannot be enforced; use it on a --mode=paper strategy"
+)
+
+
+def _format_ms(ms):
+    return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _require_newest_closed(selection, timeframe, at_ms, cutoff_ms):
+    newest = int(at_ms) - int(at_ms) % int(selection.interval_ms)
+    if selection.boundary_ms != newest:
+        raise ClosedBarHold(
+            f"the newest completed {timeframe} bar (closed {_format_ms(newest)}) is missing from the Yahoo rows; "
+            f"the newest closed row ends {_format_ms(selection.boundary_ms)}")
+    if selection.forming_rows_dropped < 1:
+        raise ClosedBarHold(
+            f"Yahoo has not started the {timeframe} bar that opens {_format_ms(newest)}, "
+            f"so the {timeframe} bar that closed then can still change")
+    if YAHOO_SETTLE_MS > 0 and newest + YAHOO_SETTLE_MS > int(cutoff_ms):
+        raise ClosedBarHold(
+            f"the newest {timeframe} bar closed {_format_ms(newest)} is inside the {YAHOO_SETTLE_MS // 1000}s "
+            f"Yahoo settle window at the cutoff {_format_ms(cutoff_ms)}")
+    return selection
+
+
+def _select_fresh(rows, timeframe, at_ms, cutoff_ms, keep, min_rows=None):
+    from adapter import ROBINHOOD_CLOSED_BAR_REFUSED
+
+    if timeframe in ROBINHOOD_CLOSED_BAR_REFUSED:
+        raise ClosedBarHold(f"closed_bar_decisions does not support {timeframe} on robinhood: {ROBINHOOD_CLOSED_BAR_REFUSED[timeframe]}")
+    kwargs = {"keep": keep}
+    if min_rows is not None:
+        kwargs["min_rows"] = min_rows
+    selection = select_opening_time(rows, timeframe=timeframe, cutoff_ms=at_ms, **kwargs)
+    return _require_newest_closed(selection, timeframe, at_ms, cutoff_ms)
+
+
 def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False,
                      strategy_params=None, open_strategy=None,
                      close_strategies=None,
@@ -61,10 +117,11 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
                      regime_payload_json=None,
                      close_params_by_name=None,
-                     atr_method="simple", gate_mode=None, acknowledgement=None):
+                     atr_method="simple", gate_mode=None, acknowledgement=None,
+                     closed_bar=False, decision_regime_timeframe=""):
     with json_stdout() as emit:
         try:
-            from adapter import RobinhoodExchangeAdapter
+            from adapter import ROBINHOOD_CLOSED_BAR_REFUSED, RobinhoodExchangeAdapter
             from strategies import apply_strategy, get_strategy, list_strategies
             from close_registry_loader import (
                 evaluate as close_evaluate,
@@ -95,10 +152,30 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 list_close_strategies,
             )
 
+            if closed_bar:
+                if mode == "live":
+                    raise ValueError(LIVE_CLOSED_BAR_REFUSAL)
+                for name in (strategy_name, open_strategy or strategy_name):
+                    why = unsupported_open_strategy_reason(name)
+                    if why:
+                        raise ValueError(f"closed_bar_decisions does not support {name}: {why}")
+                if getattr(RobinhoodExchangeAdapter, "OHLCV_TIMESTAMP_KIND", "") != "open":
+                    raise ValueError("closed_bar_decisions needs opening-time candle timestamps from the Robinhood adapter")
+                if timeframe in ROBINHOOD_CLOSED_BAR_REFUSED:
+                    raise ValueError(f"closed_bar_decisions does not support {timeframe} on robinhood: {ROBINHOOD_CLOSED_BAR_REFUSED[timeframe]}")
+
             adapter = RobinhoodExchangeAdapter(mode=mode)
 
             print(f"Fetching {symbol} {timeframe} from Robinhood/yfinance ({mode})...", file=sys.stderr)
-            candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
+            cutoff_ms = 0
+            raw_rows = None
+            if closed_bar:
+                cutoff_ms = int(time.time() * 1000)
+                raw_rows = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit + 1)
+                candles = raw_rows[-ohlcv_limit:] if raw_rows else raw_rows
+            else:
+                candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
+            print(f"Fetched {len(candles) if candles else 0} {symbol} {timeframe} candles", file=sys.stderr)
 
             if not candles or len(candles) < 30:
                 emit({
@@ -116,6 +193,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 sys.exit(1)
 
             df = _make_dataframe(candles)
+            if closed_bar:
+                df = declare_frame_cadence(df, timeframe, RobinhoodExchangeAdapter.OHLCV_TIMESTAMP_KIND)
             stdout_regime, live_regime, strategy_regime = prepare_check_regime(
                 df,
                 regime_enabled=regime_enabled,
@@ -123,8 +202,68 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 atr_window=regime_atr_window,
                 injected_payload_json=regime_payload_json,
             )
-            strategy_params = (strategy_params or {})
+            override_params = dict(strategy_params or {})
+            strategy_params = dict(override_params)
             strategy_params["regime"] = strategy_regime
+
+            closed_meta = None
+            decision_regime_payload = None
+            decision_df = df
+            protection_kwargs = {}
+            htf_frame = None
+            htf_strategy_name = open_strategy or strategy_name
+            htf_applies = htf_filter_enabled and htf_strategy_name not in HTF_EXCLUDED_DEFAULT
+            htf_block = None
+            if htf_filter_enabled and not htf_applies:
+                htf_block = htf_skipped_block(timeframe, htf_strategy_name)
+            if closed_bar:
+                hold = ""
+                try:
+                    selection = _select_fresh(raw_rows, timeframe, cutoff_ms, cutoff_ms, ohlcv_limit)
+                    decision_params = dict(override_params)
+                    if regime_enabled:
+                        regime_tf = decision_regime_timeframe or timeframe
+                        if regime_tf == timeframe:
+                            regime_rows = selection.rows
+                        else:
+                            regime_rows = _select_fresh(
+                                fetch_rows_or_hold(lambda: adapter.get_ohlcv(symbol, interval=regime_tf, limit=ohlcv_limit + 1), symbol, regime_tf),
+                                regime_tf, selection.boundary_ms, cutoff_ms, ohlcv_limit).rows
+                        decision_regime_payload, _decision_live, decision_strategy_regime = prepare_check_regime(
+                            _make_dataframe(regime_rows),
+                            regime_enabled=True,
+                            windows_spec=regime_windows_spec,
+                            injected_payload_json=None,
+                        )
+                        decision_params["regime"] = decision_strategy_regime
+                    else:
+                        decision_params["regime"] = strategy_regime
+                    if htf_applies:
+                        htf_tf = get_default_htf(timeframe)
+                        try:
+                            htf_frame = _make_dataframe(_select_fresh(
+                                fetch_rows_or_hold(lambda: adapter.get_ohlcv(symbol, interval=htf_tf, limit=61), symbol, htf_tf),
+                                htf_tf, selection.boundary_ms, cutoff_ms, 60, min_rows=HTF_EMA_PERIOD).rows)
+                        except ClosedBarHold as e:
+                            htf_block = htf_unavailable_block(symbol, htf_tf, e.reason)
+                            raise
+                    decision_df = declare_frame_cadence(_make_dataframe(selection.rows), timeframe,
+                                                        timings_timestamp_kind(selection.rows, selection.timings))
+                    closed_meta = selection.metadata()
+                except ClosedBarHold as e:
+                    hold = e.reason
+                protection_kwargs = {"protection_df": df, "protection_params": strategy_params}
+                if hold:
+                    closed_meta = hold_metadata(hold, cutoff_ms)
+                    decision_regime_payload = None
+                    decision_df = None
+                    print(f"Closed-bar decision held for {symbol} {timeframe}: {hold}", file=sys.stderr)
+                    if htf_applies and htf_block is None:
+                        htf_block = htf_not_evaluated_block(
+                            timeframe, f"the closed-bar decision held before the higher-timeframe filter ran: {hold}")
+                else:
+                    strategy_params = decision_params
+
             decision = None
             if open_close_enabled:
                 market_ctx = {"mark_price": float(df["close"].iloc[-1])}
@@ -136,7 +275,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 evaluation = evaluate_open_close(
                     apply_strategy,
                     get_strategy,
-                    df,
+                    decision_df,
                     strategy_name,
                     open_strategy,
                     parse_close_strategies(close_strategies),
@@ -146,28 +285,39 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                     close_evaluate=close_evaluate,
                     market_ctx=market_ctx,
                     close_params_by_name=close_params_by_name,
+                    **protection_kwargs,
                 )
                 result_df = evaluation.open_result_df
                 signal = evaluation.open_signal
-            else:
-                result_df = apply_strategy(strategy_name, df, strategy_params)
+            elif decision_df is not None:
+                result_df = apply_strategy(strategy_name, decision_df, strategy_params)
                 signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
+            else:
+                get_strategy(strategy_name)
+                result_df = None
+                signal = 0
 
-            ensure_atr_indicator(result_df, method=atr_method)
-            last = result_df.iloc[-1]
-            price = float(last["close"])
+            last = None
+            if result_df is not None and not result_df.empty:
+                ensure_atr_indicator(result_df, method=atr_method)
+                last = result_df.iloc[-1]
+            if closed_bar:
+                price = float(df["close"].iloc[-1])
+            else:
+                price = float(last["close"])
 
             htf_indicators = {}
-            htf_block = None
-            htf_strategy_name = open_strategy or strategy_name
-            if htf_filter_enabled and htf_strategy_name in HTF_EXCLUDED_DEFAULT:
-                htf_block = htf_skipped_block(timeframe, htf_strategy_name)
-            elif htf_filter_enabled:
-                def _fetch_htf(sym, tf, limit):
-                    candles = adapter.get_ohlcv(sym, interval=tf, limit=limit)
-                    return _make_dataframe(candles) if candles else None
+            if decision_df is not None and htf_applies and htf_block is None:
+                if closed_bar:
+                    _fetch_htf = htf_closed_fetcher(htf_frame)
+                else:
+                    def _fetch_htf(sym, tf, limit):
+                        candles = adapter.get_ohlcv(sym, interval=tf, limit=limit)
+                        return _make_dataframe(candles) if candles else None
 
                 signal, htf_block, htf_indicators = run_htf_filter(signal, symbol, timeframe, _fetch_htf)
+            if htf_filter_enabled and htf_block is None:
+                htf_block = htf_not_evaluated_block(timeframe, "the check produced no decision frame for the higher-timeframe filter")
 
             if open_close_enabled:
                 decision = finalize_decision(evaluation, position_side, signal)
@@ -185,7 +335,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 "open", "high", "low", "close", "volume",
                 "timestamp", "signal", "position", "datetime",
             }
-            for col in result_df.columns:
+            for col in (result_df.columns if last is not None else []):
                 if col in skip_cols:
                     continue
                 val = last.get(col)
@@ -215,6 +365,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 output.update(decision)
             if htf_block is not None:
                 output["htf_filter"] = htf_block
+            if closed_meta is not None:
+                output["closed_bar_decision"] = closed_meta
+                if decision_regime_payload is not None:
+                    output["decision_regime"] = decision_regime_payload
             emit(output)
 
         except Exception as e:
@@ -484,9 +638,9 @@ def main():
             parser.add_argument("--mark-price", type=float, default=0.0, help="Accepted for argv-shape compatibility with check_hyperliquid.py (#768); ignored on this platform.")
             parser.add_argument("--allow-no-edge", nargs="?", const=True, default=None)
             parser.add_argument("--closed-bar-decisions", action="store_true", default=False,
-                help="#1712: accepted for argv-shape compatibility; this platform refuses closed-bar decisions.")
+                help="#1712/#1822: decide on the last closed Yahoo bar (paper only; live refuses).")
             parser.add_argument("--decision-regime-timeframe", default="",
-                help="#1712: accepted for argv-shape compatibility; this platform refuses closed-bar decisions.")
+                help="#1712: regime timeframe for the closed-bar decision frame.")
             parser.add_argument("--basket-member", action="store_true", default=False,
                 help="#1781: accepted for argv-shape compatibility with the startup probe; basket members run only on Hyperliquid, so this platform refuses it.")
             parser.add_argument("--probe-only", action="store_true",
@@ -509,7 +663,7 @@ def main():
                     "error": "basket members are not supported on robinhood: the basket coordinator runs only Hyperliquid members",
                 })
                 sys.exit(1)
-            if args.closed_bar_decisions:
+            if args.closed_bar_decisions and args.mode == "live":
                 emit({
                     "strategy": args.strategy,
                     "symbol": args.symbol,
@@ -521,7 +675,7 @@ def main():
                     "mode": args.mode,
                     "platform": "robinhood",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error": "closed_bar_decisions is not supported on robinhood: Robinhood candles carry no verified closure contract that accounts for trading sessions",
+                    "error": LIVE_CLOSED_BAR_REFUSAL,
                 })
                 sys.exit(1)
             from strategy_composition import parse_allow_no_edge_tokens, parse_raw_gate_mode, parse_strategy_refs_arg
@@ -546,6 +700,8 @@ def main():
                 atr_method=args.atr_method,
                 gate_mode=parse_raw_gate_mode(sys.argv[1:]),
                 acknowledgement=parse_allow_no_edge_tokens(sys.argv[1:]),
+                closed_bar=args.closed_bar_decisions,
+                decision_regime_timeframe=args.decision_regime_timeframe,
             )
 
 

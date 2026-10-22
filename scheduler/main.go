@@ -2416,6 +2416,9 @@ func main() {
 								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
 							}
+							entryAdm := admitClosedBarEntry(sc, stratState, &mu, result.Symbol, result.StrategyDecisionFields, result.Signal, result.CloseFraction, rhPosQty, rhPosSide, time.Now())
+							logEntryAdmission(entryAdm, signalStr, logger)
+							applyEntryAdmission(entryAdm, &result.Signal, &result.CloseFraction)
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							mu.Unlock()
@@ -2424,7 +2427,10 @@ func main() {
 							} else {
 								var cashAlert string
 								mu.Lock()
+								entryAt := len(stratState.TradeHistory)
+								endEntryBooking := beginEntryBookingLocked(stratState, entryAdm, nil)
 								trades, detail, cashAlert = executeRobinhoodResult(sc, stratState, stratDB, result, nil, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
+								finishEntryBookingLocked(store, stratState, entryAdm, nil, entryAt, endEntryBooking(), entryIntentEvidence{}, logger)
 								mu.Unlock()
 								if cashAlert != "" {
 									notifySpotLiveCashOverBudget(notifier, cashAlert)

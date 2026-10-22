@@ -18,6 +18,7 @@ import threading
 import time
 import types
 import uuid
+from collections import namedtuple
 from datetime import datetime, timezone, timedelta
 from decimal import Context, Decimal, DivisionByZero, Inexact, InvalidOperation, Overflow, localcontext
 from typing import Tuple
@@ -39,6 +40,189 @@ YAHOO_CRYPTO_MAP = {
     "MATIC": "MATIC-USD",
     "SHIB": "SHIB-USD",
 }
+
+_HOUR_MS = 3_600_000
+_DAY_MS = 86_400_000
+
+
+RobinhoodTimeframe = namedtuple("RobinhoodTimeframe", ("yahoo_interval", "resample_hours", "session_interval"))
+
+ROBINHOOD_TIMEFRAMES = {
+    "1m": RobinhoodTimeframe("1m", 0, "1m"),
+    "2m": RobinhoodTimeframe("2m", 0, "2m"),
+    "5m": RobinhoodTimeframe("5m", 0, "5m"),
+    "15m": RobinhoodTimeframe("15m", 0, "15m"),
+    "30m": RobinhoodTimeframe("30m", 0, "30m"),
+    "1h": RobinhoodTimeframe("1h", 0, "1h"),
+    "60m": RobinhoodTimeframe("1h", 0, "1h"),
+    "90m": RobinhoodTimeframe("90m", 0, "90m"),
+    "2h": RobinhoodTimeframe("1h", 2, ""),
+    "4h": RobinhoodTimeframe("1h", 4, "4h"),
+    "6h": RobinhoodTimeframe("1h", 6, ""),
+    "8h": RobinhoodTimeframe("1h", 8, ""),
+    "12h": RobinhoodTimeframe("1h", 12, ""),
+    "1d": RobinhoodTimeframe("1d", 0, "1d"),
+    "1w": RobinhoodTimeframe("1wk", 0, "1wk"),
+    "1M": RobinhoodTimeframe("1mo", 0, "1mo"),
+    "1mo": RobinhoodTimeframe("1mo", 0, "1mo"),
+}
+
+ROBINHOOD_CLOSED_BAR_REFUSED = {
+    "1m": "Yahoo's newest closed 1m row is a flat zero-volume placeholder (open = high = low = close) until the next minute's row appears, between 10 and 20 seconds after the close in the sampled BTC-USD and ETH-USD minutes (#1822), so the settle hold would cover a third of every interval",
+}
+
+_YAHOO_INTERVAL_MS = {
+    "1m": 60_000,
+    "2m": 120_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "90m": 5_400_000,
+    "1h": _HOUR_MS,
+    "4h": 4 * _HOUR_MS,
+    "1d": _DAY_MS,
+    "1wk": 7 * _DAY_MS,
+    "1mo": 31 * _DAY_MS,
+}
+
+_YAHOO_GRID_INTERVALS = ("1m", "2m", "5m", "15m", "30m", "90m", "1h", "1d")
+
+_YAHOO_PERIODS = (
+    ("1d", 1),
+    ("5d", 5),
+    ("1mo", 28),
+    ("3mo", 89),
+    ("6mo", 181),
+    ("1y", 365),
+    ("2y", 730),
+    ("5y", 1826),
+    ("10y", 3652),
+    ("max", None),
+)
+
+_YAHOO_PERIOD_CAP = {
+    "1m": "5d",
+    "2m": "1mo",
+    "5m": "1mo",
+    "15m": "1mo",
+    "30m": "1mo",
+    "90m": "1mo",
+    "1h": "1y",
+    "4h": "1y",
+}
+
+_YAHOO_RANGE_MARGIN = 1.25
+_YAHOO_SESSION_DAY_FACTOR = 1.6
+
+
+class UnsupportedRobinhoodTimeframe(ValueError):
+    pass
+
+
+class RobinhoodCandleError(ValueError):
+    pass
+
+
+def robinhood_supported_timeframes():
+    return sorted(ROBINHOOD_TIMEFRAMES)
+
+
+def robinhood_timeframe(name):
+    entry = ROBINHOOD_TIMEFRAMES.get(name) if isinstance(name, str) else None
+    if entry is None:
+        raise UnsupportedRobinhoodTimeframe(
+            f"unsupported Robinhood timeframe {name!r}: Yahoo candles serve only "
+            f"{', '.join(robinhood_supported_timeframes())}")
+    return entry
+
+
+def _is_yahoo_crypto_pair(yahoo_symbol):
+    return yahoo_symbol.endswith("-USD")
+
+
+def _yahoo_period_for(yahoo_interval, bars, crypto):
+    span_ms = _YAHOO_INTERVAL_MS[yahoo_interval] * max(int(bars), 1)
+    cap = _YAHOO_PERIOD_CAP.get(yahoo_interval)
+    if not crypto and cap is not None:
+        return cap
+    days = span_ms / _DAY_MS
+    if not crypto:
+        days *= _YAHOO_SESSION_DAY_FACTOR
+    days = days * _YAHOO_RANGE_MARGIN + 1
+    names = [name for name, _ in _YAHOO_PERIODS]
+    chosen = "max"
+    for name, span_days in _YAHOO_PERIODS:
+        if span_days is not None and span_days >= days:
+            chosen = name
+            break
+    if cap is not None and names.index(chosen) > names.index(cap):
+        chosen = cap
+    return chosen
+
+
+def _finite_row(row):
+    return all(math.isfinite(v) for v in row[1:6])
+
+
+def _align_to_grid(rows, interval_ms, symbol, interval, now_ms):
+    if not rows:
+        return rows
+    out = [list(r) for r in rows]
+    last = out[-1]
+    if last[0] % interval_ms:
+        snapped = last[0] - last[0] % interval_ms
+        prev_open = out[-2][0] if len(out) > 1 else None
+        if (prev_open is None or snapped > prev_open) and snapped <= now_ms < snapped + interval_ms:
+            last[0] = snapped
+        else:
+            raise RobinhoodCandleError(
+                f"Yahoo {symbol} {interval} final row opens at {last[0]}, off the {interval} grid and not inside the current interval")
+    for i, row in enumerate(out):
+        if row[0] % interval_ms:
+            raise RobinhoodCandleError(
+                f"Yahoo {symbol} {interval} row {i} opens at {row[0]}, off the {interval} grid")
+        if i and row[0] <= out[i - 1][0]:
+            raise RobinhoodCandleError(
+                f"Yahoo {symbol} {interval} row {i} opens at {row[0]}, not after row {i - 1} ({out[i - 1][0]})")
+    return out
+
+
+def resample_hourly(rows, hours, now_ms, symbol="", timeframe=""):
+    span = int(hours) * _HOUR_MS
+    current_hour = int(now_ms) - int(now_ms) % _HOUR_MS
+    buckets = []
+    for row in rows:
+        start = row[0] - row[0] % span
+        if not buckets or buckets[-1][0] != start:
+            buckets.append((start, []))
+        buckets[-1][1].append(row)
+    out = []
+    dropped = 0
+    for idx, (start, members) in enumerate(buckets):
+        expected = [start + k * _HOUR_MS for k in range(int(hours))]
+        good = [r for r in members if _finite_row(r)]
+        opens = [r[0] for r in good]
+        if start + span <= now_ms:
+            complete = opens == expected
+        elif start <= now_ms:
+            complete = bool(opens) and opens == expected[:len(opens)] and opens[-1] <= current_hour
+        else:
+            complete = False
+        if not complete:
+            if idx:
+                dropped += 1
+            continue
+        out.append([
+            start,
+            good[0][1],
+            max(r[2] for r in good),
+            min(r[3] for r in good),
+            good[-1][4],
+            sum(r[5] for r in good),
+        ])
+    if dropped:
+        print(f"[robinhood] dropped {dropped} incomplete {timeframe} buckets for {symbol} (missing Yahoo 1h rows)", file=sys.stderr)
+    return out
 
 STRIKE_INTERVALS = [
     (100, 1),
@@ -1257,6 +1441,8 @@ def robinhood_login(username, password, totp_secret, deadline=None, interactive=
 
 class RobinhoodExchangeAdapter:
 
+    OHLCV_TIMESTAMP_KIND = "open"
+
     def __init__(self, mode="paper", login_deadline=None):
         self._mode = mode
         self._logged_in = False
@@ -1484,19 +1670,25 @@ class RobinhoodExchangeAdapter:
             return 0.0
 
     def _get_yahoo_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
+        entry = robinhood_timeframe(interval)
         yahoo_sym = self._resolve_yahoo_symbol(symbol)
+        crypto = _is_yahoo_crypto_pair(yahoo_sym)
+        hours = entry.resample_hours if crypto else 0
+        yf_interval = entry.yahoo_interval if crypto else entry.session_interval
+        if not yf_interval:
+            raise UnsupportedRobinhoodTimeframe(
+                f"Robinhood timeframe {interval!r} is resampled from Yahoo 1h rows only for crypto pairs; "
+                f"{yahoo_sym} is not a Yahoo crypto pair")
+        bars = int(limit) + 2
+        if hours:
+            bars = (bars + 1) * hours
+        period = _yahoo_period_for(yf_interval, bars, crypto)
         try:
             import yfinance as yf
             egress_policy.pin_yfinance()
-            yf_interval = interval
-            if "m" in interval:
-                period = "5d"
-            elif interval in ("1h", "60m"):
-                period = "30d"
-            else:
-                period = "1y"
             ticker = yf.Ticker(yahoo_sym)
             hist = ticker.history(period=period, interval=yf_interval)
+            now_ms = int(time.time() * 1000)
             if hist.empty:
                 return []
             result = []
@@ -1510,14 +1702,17 @@ class RobinhoodExchangeAdapter:
                     float(row["Close"]),
                     float(row.get("Volume", 0)),
                 ])
-            return result[-limit:]
         except ImportError:
             print("[robinhood] yfinance not installed. Run: uv add yfinance", file=sys.stderr)
             return []
         except Exception as e:
-            print(f"[robinhood] yahoo ohlcv error for {symbol}: {e}", file=sys.stderr)
+            print(f"[robinhood] yahoo ohlcv error for {symbol} {interval} (Yahoo {yf_interval}, period {period}): {e}", file=sys.stderr)
             return []
-
+        if crypto and yf_interval in _YAHOO_GRID_INTERVALS:
+            result = _align_to_grid(result, _YAHOO_INTERVAL_MS[yf_interval], yahoo_sym, yf_interval, now_ms)
+        if hours:
+            result = resample_hourly(result, hours, now_ms, yahoo_sym, interval)
+        return result[-limit:]
 
     def _logged_in_session(self, error_cls, not_logged_in="Robinhood adapter not logged in"):
         if not self._logged_in:
