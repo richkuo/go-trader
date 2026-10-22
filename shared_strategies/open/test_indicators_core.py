@@ -2,7 +2,6 @@ import os
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from shared_strategies.open.conftest import load_module
 
@@ -50,12 +49,13 @@ def _ref_unrounded_atr(df, period):
     return tr.rolling(window=period).mean()
 
 
-@pytest.mark.parametrize("scale", [0.5, 1.0, 200.0])
-def test_atr_sma_matches_standard_atr_reference(scale):
-    df = _ohlcv(scale)
-    pd.testing.assert_series_equal(
-        atr_sma(df, 14), _ref_standard_atr(df, 14), check_exact=True
-    )
+def test_atr_sma_matches_standard_atr_reference(subtests):
+    for scale in [0.5, 1.0, 200.0]:
+        with subtests.test(scale=scale):
+            df = _ohlcv(scale)
+            pd.testing.assert_series_equal(
+                atr_sma(df, 14), _ref_standard_atr(df, 14), check_exact=True
+            )
 
 
 def _ref_wilder_atr(df, period):
@@ -70,13 +70,14 @@ def _ref_wilder_atr(df, period):
     return series
 
 
-@pytest.mark.parametrize("scale", [1.0, 200.0])
-@pytest.mark.parametrize("period", [5, 14])
-def test_wilder_atr_matches_hand_computed_rma(scale, period):
-    df = _ohlcv(scale)
-    got = atr_sma(df, period, method="wilder")
-    ref = _ref_wilder_atr(df, period)
-    pd.testing.assert_series_equal(got, ref, check_exact=False, rtol=1e-12)
+def test_wilder_atr_matches_hand_computed_rma(subtests):
+    for period in [5, 14]:
+        for scale in [1.0, 200.0]:
+            with subtests.test(period=period, scale=scale):
+                df = _ohlcv(scale)
+                got = atr_sma(df, period, method="wilder")
+                ref = _ref_wilder_atr(df, period)
+                pd.testing.assert_series_equal(got, ref, check_exact=False, rtol=1e-12)
 
 
 def test_standard_atr_reexport_threads_wilder():

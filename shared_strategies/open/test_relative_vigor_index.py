@@ -201,30 +201,34 @@ def test_zero_range_windows_hold_and_zero_range_candle_is_allowed():
     assert mixed["signal"].iloc[13] == 1
 
 
-@pytest.mark.parametrize("mutate,reason", [
-    (lambda r: (r[0], r[2], r[1], r[3]), "inconsistent_ohlc"),
-    (lambda r: (r[1] + 5.0, r[1], r[2], r[3]), "inconsistent_ohlc"),
-    (lambda r: (r[0], r[1], r[2], r[2] - 5.0), "inconsistent_ohlc"),
-    (lambda r: (r[0], float("inf"), r[2], r[3]), "nonfinite_input"),
-    (lambda r: (float("nan"), r[1], r[2], r[3]), "nonfinite_input"),
-])
-def test_malformed_candle_holds_every_window_that_contains_it(mutate, reason):
-    df = market(80)
-    bad_at = 40
-    rows = df[["open", "high", "low", "close"]].to_numpy().tolist()
-    rows[bad_at] = list(mutate(tuple(rows[bad_at])))
-    bad = df.copy()
-    bad[["open", "high", "low", "close"]] = rows
-    out = run(bad, SMALL)
-    clean = run(df, SMALL)
-    for i in range(len(df)):
-        if bad_at <= i <= bad_at + NEED_SMALL - 1:
-            assert not out["rvi_valid"].iloc[i]
-            assert out["signal"].iloc[i] == 0
-            assert out["rvi_reason"].iloc[i] == reason
-        else:
-            assert out["signal"].iloc[i] == clean["signal"].iloc[i]
-            assert out["rvi_reason"].iloc[i] == clean["rvi_reason"].iloc[i]
+MALFORMED_CANDLE_CASES = [
+    ("swapped_high_low", lambda r: (r[0], r[2], r[1], r[3]), "inconsistent_ohlc"),
+    ("open_above_high", lambda r: (r[1] + 5.0, r[1], r[2], r[3]), "inconsistent_ohlc"),
+    ("close_below_low", lambda r: (r[0], r[1], r[2], r[2] - 5.0), "inconsistent_ohlc"),
+    ("infinite_high", lambda r: (r[0], float("inf"), r[2], r[3]), "nonfinite_input"),
+    ("nan_open", lambda r: (float("nan"), r[1], r[2], r[3]), "nonfinite_input"),
+]
+
+
+def test_malformed_candle_holds_every_window_that_contains_it(subtests):
+    for case, mutate, reason in MALFORMED_CANDLE_CASES:
+        with subtests.test(case=case, reason=reason):
+            df = market(80)
+            bad_at = 40
+            rows = df[["open", "high", "low", "close"]].to_numpy().tolist()
+            rows[bad_at] = list(mutate(tuple(rows[bad_at])))
+            bad = df.copy()
+            bad[["open", "high", "low", "close"]] = rows
+            out = run(bad, SMALL)
+            clean = run(df, SMALL)
+            for i in range(len(df)):
+                if bad_at <= i <= bad_at + NEED_SMALL - 1:
+                    assert not out["rvi_valid"].iloc[i]
+                    assert out["signal"].iloc[i] == 0
+                    assert out["rvi_reason"].iloc[i] == reason
+                else:
+                    assert out["signal"].iloc[i] == clean["signal"].iloc[i]
+                    assert out["rvi_reason"].iloc[i] == clean["rvi_reason"].iloc[i]
 
 
 def test_timestamp_defects_hold():
@@ -289,7 +293,7 @@ def test_appending_a_finer_step_never_reclassifies_earlier_bars():
     assert bool(out_before["rvi_valid"].iloc[-1])
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"period": True},
     {"period": 10.5},
     {"period": 1},
@@ -299,10 +303,14 @@ def test_appending_a_finer_step_never_reclassifies_earlier_bars():
     {"zero_line_filter": 1},
     {"zero_line_filter": "true"},
     {"zero_line_filter": None},
-])
-def test_invalid_parameters_raise(params):
-    with pytest.raises(ValueError):
-        run(market(40), params)
+]
+
+
+def test_invalid_parameters_raise(subtests):
+    for params in INVALID_PARAMS:
+        with subtests.test(params=params):
+            with pytest.raises(ValueError):
+                run(market(40), params)
 
 
 def test_integral_float_period_and_numpy_bool_accepted():

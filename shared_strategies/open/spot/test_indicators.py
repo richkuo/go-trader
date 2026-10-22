@@ -2,7 +2,6 @@
 import importlib.util
 import numpy as np
 import pandas as pd
-import pytest
 
 import sys, os
 
@@ -26,13 +25,13 @@ from shared_strategies.open.conftest import make_ohlcv
 
 
 class TestSMACrossover:
-    @pytest.mark.parametrize("closes,expected", [
-        (list(np.linspace(120, 90, 60)) + list(np.linspace(90, 130, 60)), 1),
-        (list(np.linspace(90, 130, 60)) + list(np.linspace(130, 80, 60)), -1),
-    ])
-    def test_crossover_emits_signal(self, closes, expected):
-        result = sma_crossover(make_ohlcv(closes), fast_period=10, slow_period=30)
-        assert "signal" in result.columns
-        assert len(result[result["signal"] == expected]) >= 1
+    def test_crossover_emits_signal(self):
+        for case, closes, expected in [
+            ("golden_cross", list(np.linspace(120, 90, 60)) + list(np.linspace(90, 130, 60)), 1),
+            ("death_cross", list(np.linspace(90, 130, 60)) + list(np.linspace(130, 80, 60)), -1),
+        ]:
+            result = sma_crossover(make_ohlcv(closes), fast_period=10, slow_period=30)
+            assert "signal" in result.columns, case
+            assert len(result[result["signal"] == expected]) >= 1, case
 
 

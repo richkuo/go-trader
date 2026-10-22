@@ -210,19 +210,23 @@ def test_missing_previous_bar_masks_shared_true_range_fallback():
     assert first["vortex_reason"].iloc[0] == "insufficient_history"
 
 
-@pytest.mark.parametrize("mutate,reason", [
-    (lambda r: (r[1], r[0], r[2]), "inconsistent_hlc"),
-    (lambda r: (r[0], r[1], r[0] + 5.0), "inconsistent_hlc"),
-    (lambda r: (float("inf"), r[1], r[2]), "nonfinite_input"),
-    (lambda r: (r[0], float("nan"), r[2]), "nonfinite_input"),
-])
-def test_malformed_bar_yields_reasoned_hold(mutate, reason):
-    rows = flat(7) + [UP]
-    rows[-1] = mutate(rows[-1])
-    row = run(frame(rows), SMALL).iloc[-1]
-    assert int(row["signal"]) == 0
-    assert not bool(row["vortex_valid"])
-    assert row["vortex_reason"] == reason
+MALFORMED_BAR_CASES = [
+    ("swapped_high_low", lambda r: (r[1], r[0], r[2]), "inconsistent_hlc"),
+    ("close_above_high", lambda r: (r[0], r[1], r[0] + 5.0), "inconsistent_hlc"),
+    ("infinite_high", lambda r: (float("inf"), r[1], r[2]), "nonfinite_input"),
+    ("nan_low", lambda r: (r[0], float("nan"), r[2]), "nonfinite_input"),
+]
+
+
+def test_malformed_bar_yields_reasoned_hold(subtests):
+    for case, mutate, reason in MALFORMED_BAR_CASES:
+        with subtests.test(case=case, reason=reason):
+            rows = flat(7) + [UP]
+            rows[-1] = mutate(rows[-1])
+            row = run(frame(rows), SMALL).iloc[-1]
+            assert int(row["signal"]) == 0
+            assert not bool(row["vortex_valid"])
+            assert row["vortex_reason"] == reason
 
 
 def test_insufficient_history_boundary_and_missing_columns():
@@ -259,7 +263,7 @@ def test_time_gap_uses_previous_row_like_shared_true_range():
     assert int(b["signal"]) == 1
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"period": True},
     {"period": 14.5},
     {"period": 1},
@@ -268,10 +272,14 @@ def test_time_gap_uses_previous_row_like_shared_true_range():
     {"min_separation": -0.01},
     {"min_separation": float("nan")},
     {"min_separation": False},
-])
-def test_invalid_parameters_raise(params):
-    with pytest.raises(ValueError):
-        run(frame(flat(30)), params)
+]
+
+
+def test_invalid_parameters_raise(subtests):
+    for params in INVALID_PARAMS:
+        with subtests.test(params=params):
+            with pytest.raises(ValueError):
+                run(frame(flat(30)), params)
 
 
 def test_integral_float_period_accepted():

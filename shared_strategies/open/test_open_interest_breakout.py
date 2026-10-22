@@ -101,18 +101,22 @@ def test_registered_no_edge_futures_and_hidden():
     assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
-@pytest.mark.parametrize("close,oi_end,signal,reason", [
+TRUTH_TABLE_CASES = [
     (110.0, 1030.0, 1, "entry_long"),
     (110.0, 1005.0, 0, "oi_below_threshold"),
     (110.0, 970.0, 0, "oi_below_threshold"),
     (90.0, 1030.0, -1, "entry_short"),
     (90.0, 970.0, 0, "oi_below_threshold"),
     (100.2, 1030.0, 0, "no_breakout"),
-])
-def test_truth_table_and_mirrored_rising_interest(close, oi_end, signal, reason):
-    df = frame(FLAT + [close])
-    row = last(df, observations(df, ramp(df, 1000.0, oi_end, len(df) - 1)))
-    assert row["signal"] == signal and row["oib_reason"] == reason
+]
+
+
+def test_truth_table_and_mirrored_rising_interest(subtests):
+    for close, oi_end, signal, reason in TRUTH_TABLE_CASES:
+        with subtests.test(close=close, oi_end=oi_end, reason=reason):
+            df = frame(FLAT + [close])
+            row = last(df, observations(df, ramp(df, 1000.0, oi_end, len(df) - 1)))
+            assert row["signal"] == signal and row["oib_reason"] == reason
 
 
 def test_equality_boundaries_never_trigger():
@@ -184,14 +188,15 @@ def _defect_cases():
     ]
 
 
-@pytest.mark.parametrize("case", [c[0] for c in _defect_cases()[1]])
-def test_observation_defects_hold_with_a_reason(case):
-    df, cases = _defect_cases()
-    _, obs, reason = next(c for c in cases if c[0] == case)
-    row = last(df, obs)
-    assert row["signal"] == 0
-    assert row["oib_reason"] == reason
-    assert not row["oib_oi_valid"]
+def test_observation_defects_hold_with_a_reason(subtests):
+    for case in [c[0] for c in _defect_cases()[1]]:
+        with subtests.test(case=case):
+            df, cases = _defect_cases()
+            _, obs, reason = next(c for c in cases if c[0] == case)
+            row = last(df, obs)
+            assert row["signal"] == 0
+            assert row["oib_reason"] == reason
+            assert not row["oib_oi_valid"]
 
 
 def test_gap_counts_only_once_it_was_detected_before_the_close():
@@ -245,16 +250,20 @@ def test_bar_spacing_and_warmup_reasons():
     assert row["signal"] == 0 and row["oib_reason"] == "bar_spacing"
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"price_lookback": 1}, {"price_lookback": 201}, {"oi_lookback": 0}, {"oi_lookback": 2.5},
     {"oi_change_threshold": -0.1}, {"oi_change_threshold": 1.0}, {"oi_change_threshold": True},
     {"min_coverage": 0.0}, {"min_coverage": 1.01}, {"max_gap_ms": 30_000},
     {"max_observation_age_ms": 400_000}, {"observation_cadence_ms": 500},
-])
-def test_invalid_parameters_raise(params):
-    df = frame(FLAT + [110.0])
-    with pytest.raises(ValueError):
-        run(df, None, {**SMALL, **params})
+]
+
+
+def test_invalid_parameters_raise(subtests):
+    for params in INVALID_PARAMS:
+        with subtests.test(params=params):
+            df = frame(FLAT + [110.0])
+            with pytest.raises(ValueError):
+                run(df, None, {**SMALL, **params})
 
 
 def _market(n, seed):

@@ -1,8 +1,6 @@
 import importlib.util
 from pathlib import Path
 
-import pytest
-
 _SCRIPT = Path(__file__).resolve().parent / "strip_comments_preserve.py"
 _SPEC = importlib.util.spec_from_file_location("strip_comments_preserve", _SCRIPT)
 strip = importlib.util.module_from_spec(_SPEC)
@@ -53,20 +51,17 @@ JS_CASES = [
 ]
 
 
-@pytest.mark.parametrize(
-    "src,starts_with,present,absent",
-    [c[1:] for c in JS_CASES],
-    ids=[c[0] for c in JS_CASES],
-)
-def test_js_stripper(src, starts_with, present, absent):
-    out = strip.strip_js_css_html(src)
-    if starts_with is not None:
-        assert out.startswith(starts_with)
-    for needle in present:
-        assert needle in out
-    for needle in absent:
-        assert needle not in out
-    assert strip.strip_js_css_html(out) == out
+def test_js_stripper(subtests):
+    for case, src, starts_with, present, absent in JS_CASES:
+        with subtests.test(case=case):
+            out = strip.strip_js_css_html(src)
+            if starts_with is not None:
+                assert out.startswith(starts_with)
+            for needle in present:
+                assert needle in out
+            for needle in absent:
+                assert needle not in out
+            assert strip.strip_js_css_html(out) == out
 
 
 PY_CASES = [
@@ -127,16 +122,13 @@ def f():
 ]
 
 
-@pytest.mark.parametrize(
-    "src,starts_with,present,absent",
-    [c[1:] for c in PY_CASES],
-    ids=[c[0] for c in PY_CASES],
-)
-def test_python_stripper(src, starts_with, present, absent):
-    out = strip.strip_python(src)
-    if starts_with is not None:
-        assert out.startswith(starts_with)
-    for needle in present:
-        assert needle in out
-    for needle in absent:
-        assert needle not in out
+def test_python_stripper(subtests):
+    for case, src, starts_with, present, absent in PY_CASES:
+        with subtests.test(case=case):
+            out = strip.strip_python(src)
+            if starts_with is not None:
+                assert out.startswith(starts_with)
+            for needle in present:
+                assert needle in out
+            for needle in absent:
+                assert needle not in out

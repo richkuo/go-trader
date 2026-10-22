@@ -195,7 +195,7 @@ def test_rising_falling_and_constant_series():
     assert (zero["signal"] == 0).all() and not zero["uo_valid"].any()
 
 
-@pytest.mark.parametrize("col,offset,value,reason", [
+BAD_CANDLE_CASES = [
     ("high", 0, np.nan, "nonfinite_input"),
     ("close", 0, np.inf, "nonfinite_input"),
     ("close", -1, np.nan, "nonfinite_input"),
@@ -203,20 +203,24 @@ def test_rising_falling_and_constant_series():
     ("close", 0, -1.0, "nonpositive_input"),
     ("close", 0, 1e9, "inconsistent_candle"),
     ("low", -5, 1e9, "inconsistent_candle"),
-])
-def test_bad_candle_holds_its_whole_dependency_span_then_recovers(col, offset, value, reason):
-    df = market(200)
-    clean = run(df)
-    j = 120 + offset
-    bad = df.copy()
-    bad.iloc[j, bad.columns.get_loc(col)] = value
-    out = run(bad)
-    for i in range(j, j + NEED):
-        assert not out["uo_valid"].iloc[i]
-        assert out["signal"].iloc[i] == 0
-        assert out["uo_reason"].iloc[i] == reason
-    for i in list(range(NEED - 1, j)) + list(range(j + NEED, len(df))):
-        same(clean.iloc[i], out.iloc[i])
+]
+
+
+def test_bad_candle_holds_its_whole_dependency_span_then_recovers(subtests):
+    for col, offset, value, reason in BAD_CANDLE_CASES:
+        with subtests.test(col=col, offset=offset, value=value, reason=reason):
+            df = market(200)
+            clean = run(df)
+            j = 120 + offset
+            bad = df.copy()
+            bad.iloc[j, bad.columns.get_loc(col)] = value
+            out = run(bad)
+            for i in range(j, j + NEED):
+                assert not out["uo_valid"].iloc[i]
+                assert out["signal"].iloc[i] == 0
+                assert out["uo_reason"].iloc[i] == reason
+            for i in list(range(NEED - 1, j)) + list(range(j + NEED, len(df))):
+                same(clean.iloc[i], out.iloc[i])
 
 
 def test_timestamp_defects_hold_and_both_timestamp_forms_agree():
@@ -307,7 +311,7 @@ def test_appending_a_smaller_future_step_never_changes_earlier_decisions():
     assert full["uo_valid"].iloc[len(df) + NEED - 2]
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"short_window": True},
     {"short_window": 7.5},
     {"short_window": float("nan")},
@@ -324,10 +328,14 @@ def test_appending_a_smaller_future_step_never_changes_earlier_decisions():
     {"bullish_threshold": 100.0},
     {"bearish_threshold": 0.0},
     {"bullish_threshold": "70"},
-])
-def test_invalid_configuration_raises_before_evaluation(params):
-    with pytest.raises(ValueError):
-        run(market(60), {**DEFAULTS, **params})
+]
+
+
+def test_invalid_configuration_raises_before_evaluation(subtests):
+    for params in INVALID_PARAMS:
+        with subtests.test(params=params):
+            with pytest.raises(ValueError):
+                run(market(60), {**DEFAULTS, **params})
 
 
 def test_integral_float_windows_are_accepted():

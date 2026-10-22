@@ -1,6 +1,5 @@
 
 import numpy as np
-import pytest
 
 from shared_strategies.open.conftest import load_module, make_ohlcv
 
@@ -41,14 +40,14 @@ def _frame(kind):
     return make_ohlcv(make_choppy_with_extremes())
 
 
-@pytest.mark.parametrize("kwargs", [
-    dict(entry_std=1.5),
-    dict(entry_std=1.5, touch_entry=1, turn_entry=1),
-], ids=["base", "extra_triggers"])
-def test_oscillating_range_fires_both_sides(kwargs):
-    out = mean_reversion_pro_core(make_ohlcv(make_choppy_with_extremes()), **kwargs)
-    assert (out["signal"] == 1).any(), "expected at least one long reversion"
-    assert (out["signal"] == -1).any(), "expected at least one short reversion"
+def test_oscillating_range_fires_both_sides():
+    for case, kwargs in [
+        ("base", dict(entry_std=1.5)),
+        ("extra_triggers", dict(entry_std=1.5, touch_entry=1, turn_entry=1)),
+    ]:
+        out = mean_reversion_pro_core(make_ohlcv(make_choppy_with_extremes()), **kwargs)
+        assert (out["signal"] == 1).any(), f"{case}: expected at least one long reversion"
+        assert (out["signal"] == -1).any(), f"{case}: expected at least one short reversion"
 
 
 def test_extra_triggers_prefix_stable():
