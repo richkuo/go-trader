@@ -358,6 +358,13 @@ type ciPyIntegrationShard struct {
 	skip *regexp.Regexp
 }
 
+type pyIntegrationCIExemption struct {
+	reason string
+	issue  int
+}
+
+var pyIntegrationCIExemptions = map[string]pyIntegrationCIExemption{}
+
 func (s ciPyIntegrationShard) selects(test string) bool {
 	return s.run.MatchString(test) && (s.skip == nil || !s.skip.MatchString(test))
 }
@@ -483,11 +490,13 @@ func readPyIntegrationShard(t *testing.T, name string, job *ciWorkflowJob) ciPyI
 	return shard
 }
 
-func pyIntegrationBuildTests(t *testing.T, schedDir string) []string {
+func pyIntegrationBuildTests(t *testing.T, schedDir string) ([]string, map[string]bool) {
 	t.Helper()
 	ctx := build.Default
 	ctx.GOOS = "linux"
 	ctx.GOARCH = "amd64"
+	untaggedCtx := ctx
+	untaggedCtx.BuildTags = nil
 	ctx.BuildTags = []string{"pyintegration"}
 	paths, err := filepath.Glob(filepath.Join(schedDir, "*_test.go"))
 	if err != nil {
@@ -495,6 +504,7 @@ func pyIntegrationBuildTests(t *testing.T, schedDir string) []string {
 	}
 	fset := token.NewFileSet()
 	var tests []string
+	tagged := map[string]bool{}
 	for _, path := range paths {
 		ok, err := ctx.MatchFile(schedDir, filepath.Base(path))
 		if err != nil {
@@ -502,6 +512,10 @@ func pyIntegrationBuildTests(t *testing.T, schedDir string) []string {
 		}
 		if !ok {
 			continue
+		}
+		untagged, err := untaggedCtx.MatchFile(schedDir, filepath.Base(path))
+		if err != nil {
+			t.Fatalf("read build constraints of %s: %v", filepath.Base(path), err)
 		}
 		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
@@ -527,6 +541,9 @@ func pyIntegrationBuildTests(t *testing.T, schedDir string) []string {
 			}
 			if goTestRunnerName(fn, testingName, "Test", "T") || goTestRunnerName(fn, testingName, "Fuzz", "F") {
 				tests = append(tests, fn.Name.Name)
+				if !untagged {
+					tagged[fn.Name.Name] = true
+				}
 			}
 		}
 	}
@@ -534,7 +551,7 @@ func pyIntegrationBuildTests(t *testing.T, schedDir string) []string {
 		t.Fatalf("found no test functions in %s", schedDir)
 	}
 	sort.Strings(tests)
-	return tests
+	return tests, tagged
 }
 
 func goTestRunnerName(fn *ast.FuncDecl, testingName, prefix, param string) bool {
@@ -563,7 +580,7 @@ func goTestRunnerName(fn *ast.FuncDecl, testingName, prefix, param string) bool 
 	return ok && pkg.Name == testingName
 }
 
-func checkPyIntegrationPartition(t *testing.T, shards []ciPyIntegrationShard, tests []string) {
+func checkPyIntegrationPartition(t *testing.T, shards []ciPyIntegrationShard, tests []string, tagged map[string]bool) {
 	t.Helper()
 	allowlist := shards[0].run
 	selected := map[string]int{}
@@ -576,13 +593,32 @@ func checkPyIntegrationPartition(t *testing.T, shards []ciPyIntegrationShard, te
 			}
 		}
 		allowed := allowlist.MatchString(test)
+		_, exempt := pyIntegrationCIExemptions[test]
 		switch {
 		case !allowed && len(owners) > 0:
 			t.Errorf("%s runs %s, which the %s allowlist does not select", strings.Join(owners, " and "), test, ciPyIntegrationJob)
+		case allowed && exempt:
+			t.Errorf("pyIntegrationCIExemptions exempts %s, but the %s allowlist selects it", test, ciPyIntegrationJob)
 		case allowed && len(owners) == 0:
 			t.Errorf("no %s shard job runs the allowlisted %s", ciPyIntegrationJob, test)
 		case len(owners) > 1:
 			t.Errorf("%s runs in more than one shard job: %s", test, strings.Join(owners, ", "))
+		case tagged[test] && !allowed && !exempt:
+			t.Errorf("the pyintegration test %s runs in no CI job: add it to the %s allowlist, or to pyIntegrationCIExemptions with a written reason and an issue number", test, ciPyIntegrationJob)
+		}
+	}
+	var exempted []string
+	for test := range pyIntegrationCIExemptions {
+		exempted = append(exempted, test)
+	}
+	sort.Strings(exempted)
+	for _, test := range exempted {
+		exemption := pyIntegrationCIExemptions[test]
+		if !tagged[test] {
+			t.Errorf("pyIntegrationCIExemptions exempts %s, which is not a test that only the pyintegration build declares", test)
+		}
+		if strings.TrimSpace(exemption.reason) == "" || exemption.issue <= 0 {
+			t.Errorf("pyIntegrationCIExemptions entry for %s needs a written reason and an issue number", test)
 		}
 	}
 	for _, shard := range shards {
@@ -626,7 +662,8 @@ func TestShellSuiteCIWiring(t *testing.T) {
 	shards := readPyIntegrationShards(t, jobs)
 	allowlist := shards[0].run
 	shellJob := requireCIJob(t, jobs, "shell-suites")
-	checkPyIntegrationPartition(t, shards, pyIntegrationBuildTests(t, schedDir))
+	pyTests, pyTagged := pyIntegrationBuildTests(t, schedDir)
+	checkPyIntegrationPartition(t, shards, pyTests, pyTagged)
 
 	invoked := map[string]int{}
 	for _, step := range shellJob.logical {
