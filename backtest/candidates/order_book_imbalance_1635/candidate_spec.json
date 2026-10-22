@@ -353,9 +353,10 @@
     "minimum_heldout_blocks": 3,
     "minimum_heldout_positions_per_arm": 100,
     "opportunity": "a coin-minute; usable when the derived bar is complete, the asset_ctxs row is present and the book state is covered at the bar close",
-    "opportunity_coverage": "at least 99% of coin-minutes in the scored splits are usable",
+    "opportunity_coverage": "at least 99% of coin-minutes on the eligible days of each scored split are usable; ineligible days, which allow no entry in either arm, are outside the gate and are reported separately",
     "held_hour_coverage": "every held minute has a mark row, every crossed funding hour has a rate and an oracle_px row, and every close fills from a book; any gap makes the held coverage incomplete",
-    "integrity": "any manifest sha256 or size mismatch, LZ4 checksum failure or importer error stops the run as invalid"
+    "integrity": "any manifest sha256 or size mismatch, LZ4 checksum failure or importer error stops the run as invalid",
+    "coverage_clarification": "Clarified before any PnL was computed: the original text did not say whether ineligible days count toward the 99% gate. Ineligible days allow no entries in either arm, so they cannot bias the arm comparison; sample size stays bounded by the 30-eligible-day minimum and the 100 held-out positions per arm. No other rule changed, including the 1440-row eligible-day rule."
   },
   "selection_rule": "training selects the greatest train net result among complete variants; ties choose the lexicographically smallest parameter JSON (sorted keys, compact separators); validation freezes the selected variant and reports all variants; held-out values never change the choice",
   "verdict": {
