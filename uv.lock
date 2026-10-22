@@ -1055,7 +1055,7 @@ provides-extras = ["research"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest", specifier = ">=9.0.0" },
     { name = "pytest-mock", specifier = ">=3.14.0" },
     { name = "pytest-xdist", specifier = ">=3.6.0" },
 ]
