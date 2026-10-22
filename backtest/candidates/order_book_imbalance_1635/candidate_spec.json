@@ -1,0 +1,193 @@
+{
+  "schema": "go_trader_candidate_spec/v1",
+  "issue": 1635,
+  "candidate": "order_book_imbalance",
+  "plan": "https://github.com/richkuo/go-trader/issues/1635#issuecomment-6181780202",
+  "frozen_at": "2026-10-22",
+  "frozen_before_results": "This file was written and committed before the study recording started. No recording made under this specification existed when it was frozen. The earlier 6-hour recording (old contract, local only) was used only to measure venue cadence; it was never scored and never feeds this study.",
+  "status": "research-only, production-refused in every mode regardless of the verdict",
+  "depth_contract": {
+    "document": "docs/research/1635-l2-book-contract.md",
+    "file": "docs/research/1635-l2-book-contract-v1.json",
+    "sha256": "a0030268e56c2ddfb9c018ce00868de8dd1f9a12c658cd05615b6426a8320869",
+    "kind": "l2_book",
+    "source": "hyperliquid_ws_l2Book",
+    "contract": "hyperliquid-l2book-native-slow/1635-v1",
+    "max_future_skew_ms": 250,
+    "max_lag_ms": 5000,
+    "max_gap_ms": 10000
+  },
+  "cadence_evidence": {
+    "use": "venue cadence only; no signal, fill or result was computed",
+    "recording": "earlier 6-hour BTC/ETH l2Book recording, run id Richards-MacBook-Pro.local-29584-1792553034479-1792553034, run manifest sha256 165e59edac9540522a9937b34186ed500e673676407032284d72f5b89147611c (local only, not committed)",
+    "books_per_coin": 4021,
+    "receipt_gap_ms": {"p50": 5386, "p99": 5906, "max": 6185, "share_over_5000": 0.966, "count_over_10000": 0},
+    "receipt_minus_event_ms": {"p50": 326, "p99": 816, "max": 1064},
+    "age_at_deadline_ms": {
+      "definition": "D = smallest UTC whole second at or above max(event, receipt) of the newest of N consecutive accepted books; age = D minus the earlier of event and receipt",
+      "newest_book": {"p50": 836, "p99": 1542, "max": 1915, "share_le_1000": 0.665, "share_le_2000": 1.0, "share_le_5000": 1.0},
+      "oldest_of_2": {"p50": 6209, "p99": 6971, "max": 7419, "share_le_1000": 0.0, "share_le_2000": 0.0, "share_le_5000": 0.001},
+      "oldest_of_3": {"p50": 11583, "p99": 12369, "max": 12782, "share_le_5000": 0.0},
+      "oldest_of_5": {"p50": 22339, "p99": 23196, "max": 23652, "share_le_5000": 0.0},
+      "oldest_of_16": {"p50": 81472, "p99": 82650, "max": 83496}
+    },
+    "candle_history": "Hyperliquid candleSnapshot returned 5094 one-minute rows reaching back 3.54 days on 2026-10-22; a 1-hour request starting 4 days back returned 0 rows",
+    "funding_history": "fundingHistory returned 24 BTC rows for a day 60 days back on 2026-10-22"
+  },
+  "deviations_from_plan": [
+    {
+      "item": "max_snapshot_age_ms scope",
+      "plan": "age bound applies to every observation of the confirming run",
+      "frozen": "age bound applies to the newest (crossing) observation; every confirming observation still needs event and receipt at or before D, and the run stays bounded by the 10000 ms gap reset",
+      "ground": "at the venue cadence the oldest of 2 books is within 5000 ms at 0.1% of deadlines and within 1000 or 2000 ms at 0.0%; the oldest of 3 or 5 books is never within 5000 ms. The plan rule cannot confirm with any allowed confirmation count. The newest book is within 1000 ms at 66.5% and within 2000 or 5000 ms at 100% of deadlines (max 1915 ms).",
+      "values_kept": "range 250 to 5000, default 2000, search 1000, 2000, 5000; at this cadence 2000 and 5000 act the same"
+    },
+    {
+      "item": "confirmation_observations validation range",
+      "plan": "2 through 16",
+      "frozen": "2 through 5; search values 2, 3, 5 unchanged",
+      "ground": "the boundary observation plus N confirmations must lie in the frozen 60000 ms evidence window. At the 10000 ms gap bound that span is up to N x 10000 + 1000 ms, so N <= 5 always fits. At the observed cadence N = 16 spans about 81 s (oldest-of-16 p50 81472 ms) and never fits."
+    },
+    {
+      "item": "gap bound",
+      "plan": "5000 ms",
+      "frozen": "10000 ms, from the merged Delivery 1 contract",
+      "ground": "receipt gap p50 5386 ms, p99 5906 ms, max 6185 ms, 96.6% of gaps over 5000 ms; 10000 ms is about 1.6 times the longest normal gap and resets on the first missed push (about 10.8 s)"
+    },
+    {
+      "item": "recording length",
+      "plan": "no length; at least 30 eligible complete UTC days to score",
+      "frozen": "840 hours (35 UTC days); the 30-eligible-day minimum is kept",
+      "ground": "at least 100 closed held-out positions per arm are required. The held-out split is the last 20% of whole UTC days, 7 days at 35, so each arm needs at least 14.3 closed positions per held-out day across BTC and ETH. The 5 days over the floor are margin for ineligible days."
+    },
+    {
+      "item": "coins",
+      "plan": "none named",
+      "frozen": "BTC, ETH",
+      "ground": "the only coins with measured cadence"
+    },
+    {
+      "item": "inputs captured beside the book recording",
+      "plan": "native marks, candles, funding and venue metadata with coverage",
+      "frozen": "record kind open_interest beside l2_book (raw activeAssetCtx frames carry markPx with receipt time); capture 1m candles every 24 hours during the recording (72-hour requests, so each minute is captured three times); pin venue metadata at the start and end; fetch funding after the recording",
+      "ground": "Hyperliquid keeps about 3.5 days of 1m candles (5094 rows measured); funding history is available afterwards (60-day-old rows returned). Storage: about 73 MB/day raw and 10.8 MB/day gzip for the book stream, so the recording stays outside git and only manifests and hashes are committed."
+    },
+    {
+      "item": "decision grid",
+      "plan": "UTC 1000 ms grid",
+      "frozen": "unchanged",
+      "ground": "the grid only places D; at about one book per 5.4 s each crossing maps to exactly one deadline"
+    }
+  ],
+  "signal": {
+    "levels": "first depth_levels validated levels on each side of the sealed or replayed book",
+    "formula": "B = sum(bid px x bid sz), A = sum(ask px x ask sz), total = B + A, I = (B - A) / total, spread_bps = 10000 x (best ask - best bid) / ((best ask + best bid) / 2). All comparisons use exact rational arithmetic; floats are for display only.",
+    "qualifying": "an observation qualifies long when I > entry_threshold and short when I < -entry_threshold (strict), with spread_bps <= max_spread_bps, total >= min_combined_depth_usd and total > 0. Equality to the threshold is neutral. A side with fewer than depth_levels levels does not qualify (insufficient_depth).",
+    "eligibility": "each confirming observation has event and first receipt at or before D, satisfies the contract time bounds and has a distinct source identity; the newest (crossing) observation has D - event <= max_snapshot_age_ms and D - receipt <= max_snapshot_age_ms",
+    "episode": "a maximal same-direction run of distinct qualifying observations after a proven boundary. A neutral observation, a spread or depth filter failure, the other direction, or any reset marker (epoch_start, subscribed, subscription_failed, disconnected, invalid_frame, conflict, out_of_order, clock_regression, silence, evidence_loss, depth_raised) ends it. A boundary is proven by a retained marker or a retained non-qualifying observation; if the window holds neither before the run, the result is evidence_truncated and entries hold.",
+    "crossing": "the Nth qualifying observation, N = confirmation_observations; crossing time = max(event, first receipt) of that observation",
+    "deadline": "the sole decision deadline is the smallest UTC whole second at or above the crossing time. The entry is emitted only if the episode is still the active valid run at D and its evidence is eligible. A break before D cancels the opportunity.",
+    "consumption": "the episode is consumed at its deadline whether a position is open, a risk limit blocks, a fill fails or the deadline is skipped. Later intervals return a consumed hold. A missed deadline never catches up.",
+    "identity": "episode identity = sha256 over contract, source key, specification hash, effective parameter JSON, boundary identity, direction and first qualifying observation identity; entry identity = sha256 over episode identity, crossing observation identity and deadline. The same interval and input always return the same decision and identity.",
+    "diagnostics": "every result records deadline, source/contract/specification hashes, episode and entry identity when defined, used observation identities, B, A, total, I, spread_bps, ages, confirmation count, state and reason",
+    "failure_outcome": "missing, malformed, stale, conflicting or incomplete book evidence gives signal 0 with a stable reason; invalid parameters are refused before any data is read"
+  },
+  "parameters": {
+    "seed": {"depth_levels": 5, "entry_threshold": 0.30, "confirmation_observations": 3, "max_spread_bps": 5, "min_combined_depth_usd": 100000, "max_snapshot_age_ms": 2000},
+    "validation": {
+      "depth_levels": "integer 1 through 20",
+      "entry_threshold": "finite decimal strictly between 0 and 1",
+      "confirmation_observations": "integer 2 through 5",
+      "max_spread_bps": "finite positive decimal, at most 100",
+      "min_combined_depth_usd": "finite positive quote notional, at most 1000000000",
+      "max_snapshot_age_ms": "integer 250 through 5000",
+      "rules": "booleans are not numbers; fractional integers, unknown keys, non-finite values and unsupported combinations are refused before data acquisition; Go requirement extraction and the Python registry mirror one validator"
+    },
+    "search": {
+      "depth_levels": [1, 5, 10, 20],
+      "entry_threshold": [0.20, 0.30, 0.40],
+      "confirmation_observations": [2, 3, 5],
+      "max_spread_bps": [2, 5, 10],
+      "min_combined_depth_usd": [10000, 100000, 1000000],
+      "max_snapshot_age_ms": [1000, 2000, 5000]
+    },
+    "search_family": "the full Cartesian product (972 variants); every attempted variant is kept in the study log",
+    "fixed": {"evidence_window_ms": 60000, "evidence_capacity": 256, "decision_grid_ms": 1000},
+    "note": "research seeds, not endorsed trading settings; the depth contract and the fixed values are never optimized"
+  },
+  "exit_and_risk": {
+    "close_strategy": {"name": "time_stop", "params": {"max_bars": 5}},
+    "stop_owner": "scalar stop_loss_atr_mult 1.0; ATR over the last 14 complete 1m bars with the simple method, frozen at the first confirmed entry fill; missing ATR prevents entry",
+    "bars_held": "integer count of complete one-minute durations since the entry fill",
+    "no_other_owner": "no close fallback, reversal close, trailing stop, scale-in, hedge or take-profit",
+    "closed_bar_decisions": "refused at research preflight (unsupported_cadence)",
+    "capital": {"initial_shared_equity": 10000, "margin_per_entry": 100, "leverage": 1, "margin_mode": "isolated", "sizing": "perps_open_notional fixed margin", "positions_per_coin": 1, "aggregate_gross_notional_cap": 2000},
+    "pre_entry_stop_bound": "entry refused when the stop distance times size exceeds 1% of current equity (refusal bound only)",
+    "portfolio_controls": "2% UTC daily realized-loss entry hold; 10% peak-equity drawdown entry latch; pause and unreadable portfolio marks hold new exposure; closes continue",
+    "protection_order": "protection and risk exits apply before elective entries at a deadline",
+    "liquidation": "isolated venue margin tiers from pinned metadata and the existing liquidation-stop clamp; unresolved stop ownership or nonpositive protection geometry is refused",
+    "not_modeled": "hedge, profile allocation, scale-in"
+  },
+  "execution": {
+    "latency": {"shared_feed_settle_ms": 5000, "processing_order_ms": 250, "processing_stresses_ms": [500, 1000], "direct_owner_scenario": "labeled separately with zero transport delay; never represents the shared consumer"},
+    "fill_book": "the first distinct valid book with event and receipt strictly after D and both at or after D + settle + processing; an event at D cannot fill its own decision; recorded seal or decision availability, if later, raises the executable time",
+    "depth_walk": "buys walk asks in ascending price, sells walk bids in descending price; requested and available quantity are lot-floored; same-time intents share depth once in stable coin, strategy, identity order; actual weighted prices and fees are booked",
+    "partial": "one immediate-or-cancel attempt per entry identity; the remainder is cancelled; no resubmission",
+    "minimums": "entries below the pinned venue minimum notional are refused; a full reduce-only close uses the frozen venue remainder rule; no close exceeds held size; partial closes keep entry ATR and sizing geometry",
+    "exits": "time-stop and stop requests use later executable depth and stay pending while books are unreadable; no close is booked from missing depth",
+    "costs": {"taker_fee_pct": 0.00045, "spread": "inside the walked bid/ask; no half spread is added", "slippage_bps": 5.0, "slippage_stress_bps": 10.0, "min_notional_usd": 10.0, "funding": "charged on held exposure under the right-closed hourly contract; pre-fee realized and net results are kept separate"},
+    "marks": "markPx from recorded activeAssetCtx frames at their receipt time, for stops and liquidation",
+    "unresolvable_order": "a window where the event stream cannot resolve liquidation or stop/exit order is reported unsupported and inconclusive",
+    "terminal_inventory": "marked separately and never labeled a venue close; missing exit prices prevent net scoring",
+    "replay_order": "resets and timers apply before a same-time decision; books apply before a decision only when event and receipt are both at or before it; tie order is receipt time, source key, local sequence; funding and candles use their own availability times"
+  },
+  "comparator": {
+    "strategy": "donchian_breakout",
+    "params": {"entry_period": 20, "exit_period": 10},
+    "bars": "complete one-minute candles",
+    "entries": "native mirrored entry columns through the registry; the explicit native close owner suppresses its open-fallback exits",
+    "opportunity": "one per coin per closed candle; decision at the first UTC whole second when that candle is available",
+    "fill": "no earlier than the next bar open and the first later latency-eligible executable book",
+    "identical": "data eligibility, stops, time close, capital, fees, latency, lot and minimum rules, risk and portfolio limits, and the same event simulator"
+  },
+  "data_plan": {
+    "coins": ["BTC", "ETH"],
+    "recording": {
+      "command": "go-trader record-observations --coins BTC,ETH --kinds open_interest,l2_book --segment 1h --duration 840h --out-dir <empty dir>",
+      "duration_hours": 840,
+      "storage": "outside git; run and segment manifests and their hashes are committed with the study"
+    },
+    "candles": "1m candleSnapshot captures every 24 hours during the recording through run_study.py capture-candles (72-hour requests); overlapping captures must agree on every closed minute",
+    "venue": "meta (size decimals, max leverage, margin tables) pinned at the start and end through run_study.py capture-venue; the two must agree for BTC and ETH",
+    "funding": "fundingHistory fetched after the recording for the full span and hash-pinned",
+    "windows": "whole UTC days from the first complete recorded day: first 60% training, next 20% validation, last 20% held-out, split into three chronological held-out blocks; UTC start-inclusive, end-exclusive bounds are written into the study manifest from the hash-pinned data bounds before scoring",
+    "purge": "five-minute position purge at each boundary, flat scored starts, unscored lookback prefixes"
+  },
+  "eligibility": {
+    "eligible_day": "a whole UTC day with book, mark and candle evidence for every decision opportunity of both coins except gaps covered by recorded markers, and funding for every hour",
+    "minimum_days": 30,
+    "minimum_heldout_blocks": 3,
+    "minimum_heldout_positions_per_arm": 100,
+    "opportunity_coverage": "at least 99% of decision opportunities with full book, mark and candle evidence",
+    "held_hour_coverage": "100% funding, cost and executable-exit coverage for every held hour",
+    "integrity": "a recording that the independent replay refuses (unclosed, dropped records, incomplete segment, replay mismatch) is invalid evidence"
+  },
+  "selection_rule": "training selects the greatest net result among complete variants; ties choose the lexicographically smallest parameter JSON; validation freezes the selected variant and reports all variants; held-out values never change the choice",
+  "verdict": {
+    "bootstrap": {"method": "UTC-day block bootstrap of candidate-minus-comparator net equity change", "seed": 1635, "draws": 10000, "bound": "95% lower bound"},
+    "pass_if_all": [
+      "complete evidence (eligibility above)",
+      "candidate held-out net result > 0",
+      "bootstrap lower bound of the paired improvement > 0",
+      "at least two of three held-out blocks with positive improvement",
+      "candidate maximum drawdown no worse than the comparator",
+      "selected variant net result > 0 at each processing stress (500 and 1000 ms)",
+      "net result > 0 for a majority of the selected variant's available one-axis neighbors"
+    ],
+    "fail": "a complete scored run that misses any pass requirement",
+    "inconclusive": "insufficient evidence: fewer than 30 eligible days, fewer than three held-out blocks, fewer than 100 closed held-out positions in either arm, coverage below the gates, or missing cost, funding, mark or exit evidence",
+    "invalid": "failed integrity",
+    "published": "every attempted variant with net return, maximum drawdown, turnover, fees, funding, coin and direction concentration and independent position totals, including negative results and parameter neighbors",
+    "live_status": "production_refused for every outcome; promotion needs a separate reviewed decision"
+  }
+}
