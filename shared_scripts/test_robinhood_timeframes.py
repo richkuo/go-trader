@@ -166,6 +166,7 @@ def test_one_hour_strategy_gets_a_real_four_hour_trend_filter(tmp_path):
 
 
 SETTLE_MARGIN_MS = 30_000
+HOUR_CROSSING_ATTEMPTS = 3
 
 
 def _hour_past_settle_window():
@@ -175,14 +176,18 @@ def _hour_past_settle_window():
     return _now_hour()
 
 
-def _closed(tmp_path, timeframe, hourly, *extra):
-    fixture, _log = _write_fixture(tmp_path, {"BTC-USD|1h": hourly}, name=f"closed-{timeframe}")
-    return _run("check_robinhood.py", ["atr_breakout", "BTC", timeframe, "--mode=paper", "--closed-bar-decisions", *extra], fixture)
+def _closed(tmp_path, timeframe, rows_for, *extra):
+    for attempt in range(HOUR_CROSSING_ATTEMPTS):
+        now = _hour_past_settle_window()
+        fixture, _log = _write_fixture(tmp_path, {"BTC-USD|1h": rows_for(now)}, name=f"closed-{timeframe}-{attempt}")
+        proc, out = _run("check_robinhood.py", ["atr_breakout", "BTC", timeframe, "--mode=paper", "--closed-bar-decisions", *extra], fixture)
+        if _now_hour() == now:
+            return now, proc, out
+    pytest.fail(f"each of {HOUR_CROSSING_ATTEMPTS} closed-bar runs crossed an hour boundary")
 
 
 def test_paper_closed_bar_decision_drops_the_forming_hour(tmp_path):
-    now = _hour_past_settle_window()
-    proc, out = _closed(tmp_path, "1h", _hourly(now - 300 * H, now))
+    now, proc, out = _closed(tmp_path, "1h", lambda now: _hourly(now - 300 * H, now))
     assert proc.returncode == 0, proc.stdout + proc.stderr
     meta = out["closed_bar_decision"]
     assert meta["held"] is False
@@ -194,9 +199,8 @@ def test_paper_closed_bar_decision_drops_the_forming_hour(tmp_path):
 
 
 def test_paper_closed_bar_decision_on_resampled_four_hour_bars(tmp_path):
-    now = _hour_past_settle_window()
+    now, proc, out = _closed(tmp_path, "4h", lambda now: _hourly(now - now % FOUR_H - 240 * FOUR_H, now))
     forming = now - now % FOUR_H
-    proc, out = _closed(tmp_path, "4h", _hourly(forming - 240 * FOUR_H, now))
     assert proc.returncode == 0, proc.stdout + proc.stderr
     meta = out["closed_bar_decision"]
     assert meta["held"] is False
@@ -206,8 +210,7 @@ def test_paper_closed_bar_decision_on_resampled_four_hour_bars(tmp_path):
 
 
 def test_paper_closed_bar_decision_holds_when_the_newest_completed_bar_is_missing(tmp_path):
-    now = _hour_past_settle_window()
-    proc, out = _closed(tmp_path, "1h", _hourly(now - 300 * H, now - 2 * H))
+    _now, proc, out = _closed(tmp_path, "1h", lambda now: _hourly(now - 300 * H, now - 2 * H))
     assert proc.returncode == 0, proc.stdout + proc.stderr
     meta = out["closed_bar_decision"]
     assert meta["held"] is True
@@ -217,13 +220,21 @@ def test_paper_closed_bar_decision_holds_when_the_newest_completed_bar_is_missin
 
 
 def test_paper_closed_bar_decision_holds_until_yahoo_starts_the_next_bar(tmp_path):
-    now = _hour_past_settle_window()
-    proc, out = _closed(tmp_path, "1h", _hourly(now - 300 * H, now - H))
+    _now, proc, out = _closed(tmp_path, "1h", lambda now: _hourly(now - 300 * H, now - H))
     assert proc.returncode == 0, proc.stdout + proc.stderr
     meta = out["closed_bar_decision"]
     assert meta["held"] is True
     assert "Yahoo has not started the 1h bar" in meta["hold_reason"]
     assert out["signal"] == 0
+
+
+@pytest.mark.parametrize("symbol", ["AAPL", "XRP"])
+def test_paper_closed_bar_decisions_are_refused_for_a_symbol_that_is_not_a_yahoo_crypto_pair(tmp_path, symbol):
+    fixture, log = _write_fixture(tmp_path, {})
+    proc, out = _run("check_robinhood.py", ["atr_breakout", symbol, "1h", "--mode=paper", "--closed-bar-decisions"], fixture)
+    assert proc.returncode == 1
+    assert f'closed_bar_decisions is not supported on robinhood: symbol "{symbol}" resolves to Yahoo "{symbol}", which is not a Yahoo crypto pair' in out["error"]
+    assert _requests(log) == []
 
 
 def test_one_minute_closed_bar_decisions_are_refused_with_the_measured_reason(tmp_path):

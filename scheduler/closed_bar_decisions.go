@@ -100,6 +100,8 @@ func closedBarDecisionProvider(sc StrategyConfig) (closedBarProvider, string) {
 		return closedBarProvider{}, "TopStep candles have no verified closure contract that accounts for trading sessions"
 	case sc.Platform == "robinhood" && sc.Type == "spot" && isLiveArgs(sc.Args):
 		return closedBarProvider{}, robinhoodLiveClosedBarRefusal
+	case sc.Platform == "robinhood" && sc.Type == "spot" && len(sc.Args) >= 2 && !robinhoodYahooCryptoPair(sc.Args[1]):
+		return closedBarProvider{}, robinhoodSessionClosedBarRefusal(sc.Args[1])
 	case sc.Platform == "robinhood" && sc.Type == "spot":
 		return closedBarProvider{Label: "Robinhood spot paper", Script: robinhoodCheckScript}, ""
 	case sc.Type == "perps" && sc.Platform == "hyperliquid":

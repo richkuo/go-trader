@@ -15,11 +15,14 @@ import (
 const robinhoodTimeframeParityScript = `import json, sys
 sys.path.insert(0, "platforms/robinhood")
 sys.path.insert(0, "shared_tools")
-from adapter import ROBINHOOD_CLOSED_BAR_REFUSED, ROBINHOOD_TIMEFRAMES
+from adapter import ROBINHOOD_CLOSED_BAR_REFUSED, ROBINHOOD_TIMEFRAMES, YAHOO_CRYPTO_MAP, robinhood_session_closed_bar_refusal
 from htf_filter import get_default_htf
 from closed_bar import FIXED_DURATION_MS
 print(json.dumps({
     "table": {k: v.yahoo_interval for k, v in ROBINHOOD_TIMEFRAMES.items()},
+    "session": {k: v.session_interval for k, v in ROBINHOOD_TIMEFRAMES.items()},
+    "crypto": YAHOO_CRYPTO_MAP,
+    "session_refusal": {s: robinhood_session_closed_bar_refusal(s) for s in ("AAPL", "XRP", "xrp-usd", "btc", "SPY")},
     "htf": {k: get_default_htf(k) for k in ROBINHOOD_TIMEFRAMES},
     "fixed": FIXED_DURATION_MS,
     "refused": ROBINHOOD_CLOSED_BAR_REFUSED,
@@ -35,10 +38,13 @@ func TestRobinhoodTimeframeTablesMatchThePythonAdapter(t *testing.T) {
 		t.Fatalf("parity script: %v\n%s", err, out)
 	}
 	var got struct {
-		Table   map[string]string `json:"table"`
-		HTF     map[string]string `json:"htf"`
-		Fixed   map[string]int64  `json:"fixed"`
-		Refused map[string]string `json:"refused"`
+		Table          map[string]string `json:"table"`
+		Session        map[string]string `json:"session"`
+		Crypto         map[string]string `json:"crypto"`
+		SessionRefusal map[string]string `json:"session_refusal"`
+		HTF            map[string]string `json:"htf"`
+		Fixed          map[string]int64  `json:"fixed"`
+		Refused        map[string]string `json:"refused"`
 	}
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("parity output: %v\n%s", err, out)
@@ -51,8 +57,30 @@ func TestRobinhoodTimeframeTablesMatchThePythonAdapter(t *testing.T) {
 		sort.Strings(out)
 		return out
 	}
-	if strings.Join(keys(got.Table), ",") != strings.Join(keys(robinhoodTimeframes), ",") {
-		t.Fatalf("Python ROBINHOOD_TIMEFRAMES keys %v differ from Go robinhoodTimeframes %v", keys(got.Table), keys(robinhoodTimeframes))
+	goKeys := make([]string, 0, len(robinhoodTimeframes))
+	for k := range robinhoodTimeframes {
+		goKeys = append(goKeys, k)
+	}
+	sort.Strings(goKeys)
+	if strings.Join(keys(got.Table), ",") != strings.Join(goKeys, ",") {
+		t.Fatalf("Python ROBINHOOD_TIMEFRAMES keys %v differ from Go robinhoodTimeframes %v", keys(got.Table), goKeys)
+	}
+	if strings.Join(keys(got.Crypto), ",") != strings.Join(keys(robinhoodYahooCryptoMap), ",") {
+		t.Fatalf("Python YAHOO_CRYPTO_MAP keys %v differ from Go robinhoodYahooCryptoMap %v", keys(got.Crypto), keys(robinhoodYahooCryptoMap))
+	}
+	for sym, yahoo := range robinhoodYahooCryptoMap {
+		if got.Crypto[sym] != yahoo {
+			t.Errorf("crypto symbol %q: Python Yahoo pair %q, Go %q", sym, got.Crypto[sym], yahoo)
+		}
+	}
+	for _, sym := range keys(got.SessionRefusal) {
+		goWhy := ""
+		if !robinhoodYahooCryptoPair(sym) {
+			goWhy = robinhoodSessionClosedBarRefusal(sym)
+		}
+		if got.SessionRefusal[sym] != goWhy {
+			t.Errorf("closed-bar session refusal for %q: Python %q, Go %q", sym, got.SessionRefusal[sym], goWhy)
+		}
 	}
 	if strings.Join(keys(got.Refused), ",") != strings.Join(keys(robinhoodClosedBarRefusedTimeframes), ",") {
 		t.Fatalf("Python ROBINHOOD_CLOSED_BAR_REFUSED %v differs from Go robinhoodClosedBarRefusedTimeframes %v", keys(got.Refused), keys(robinhoodClosedBarRefusedTimeframes))
@@ -62,9 +90,12 @@ func TestRobinhoodTimeframeTablesMatchThePythonAdapter(t *testing.T) {
 			t.Errorf("closed-bar refusal for %q: Python %q, Go %q", tf, got.Refused[tf], why)
 		}
 	}
-	for _, tf := range keys(robinhoodTimeframes) {
-		if got.Table[tf] != robinhoodTimeframes[tf] {
-			t.Errorf("timeframe %q: Python Yahoo interval %q, Go %q", tf, got.Table[tf], robinhoodTimeframes[tf])
+	for _, tf := range goKeys {
+		if got.Table[tf] != robinhoodTimeframes[tf].Yahoo {
+			t.Errorf("timeframe %q: Python Yahoo interval %q, Go %q", tf, got.Table[tf], robinhoodTimeframes[tf].Yahoo)
+		}
+		if got.Session[tf] != robinhoodTimeframes[tf].Session {
+			t.Errorf("timeframe %q: Python session interval %q, Go %q", tf, got.Session[tf], robinhoodTimeframes[tf].Session)
 		}
 		goHTF := hlFeedHTFTimeframe(tf)
 		if got.HTF[tf] != goHTF {
@@ -145,6 +176,12 @@ func TestRobinhoodTimeframeRealBinaryRefusesUnsupportedTimeframesBeforeAnyCycle(
 			`strategy[rh-tf]: closed_bar_decisions does not support timeframe "1m" (fixed-duration intervals only: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d); on Robinhood Yahoo's newest closed 1m row was a flat zero-volume placeholder`},
 		{"paper-closed-bar-60m", map[string]any{"args": []string{"atr_breakout", "BTC", "60m", "--mode=paper"}, "closed_bar_decisions": true}, nil,
 			`strategy[rh-tf]: closed_bar_decisions does not support timeframe "60m"`},
+		{"args-2h-non-crypto", map[string]any{"args": []string{"atr_breakout", "XRP", "2h", "--mode=paper"}}, nil,
+			`strategy[rh-tf]: robinhood args timeframe "2h" is built from Yahoo 1h rows only for crypto pairs, and symbol "XRP" resolves to Yahoo "XRP", which is not one (Yahoo crypto pairs: ADA, AVAX, BTC, DOGE, DOT, ETH, LINK, MATIC, SHIB, SOL, or a symbol ending in -USD)`},
+		{"regime-12h-non-crypto", map[string]any{"args": []string{"atr_breakout", "AAPL", "1h", "--mode=paper"}}, map[string]any{"enabled": true, "timeframe": "12h"},
+			`strategy[rh-tf]: robinhood regime.timeframe "12h" is built from Yahoo 1h rows only for crypto pairs, and symbol "AAPL" resolves to Yahoo "AAPL"`},
+		{"paper-closed-bar-non-crypto", map[string]any{"args": []string{"atr_breakout", "AAPL", "1h", "--mode=paper"}, "closed_bar_decisions": true}, nil,
+			`strategy[rh-tf]: closed_bar_decisions is not supported: symbol "AAPL" resolves to Yahoo "AAPL", which is not a Yahoo crypto pair`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

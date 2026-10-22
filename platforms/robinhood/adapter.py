@@ -140,6 +140,21 @@ def _is_yahoo_crypto_pair(yahoo_symbol):
     return yahoo_symbol.endswith("-USD")
 
 
+def robinhood_yahoo_symbol(symbol):
+    return YAHOO_CRYPTO_MAP.get(symbol.upper(), symbol.upper())
+
+
+def robinhood_session_closed_bar_refusal(symbol):
+    yahoo_sym = robinhood_yahoo_symbol(symbol)
+    if _is_yahoo_crypto_pair(yahoo_sym):
+        return ""
+    return (
+        f"symbol {json.dumps(symbol)} resolves to Yahoo {json.dumps(yahoo_sym)}, which is not a Yahoo crypto pair: its Yahoo rows follow "
+        "exchange trading sessions (no rows outside session hours, and hourly and longer rows open at session times "
+        "off the UTC interval grid), so the newest closed bar at the cutoff cannot be proven "
+        f"(Yahoo crypto pairs: {', '.join(sorted(YAHOO_CRYPTO_MAP))}, or a symbol ending in -USD)")
+
+
 def _yahoo_period_for(yahoo_interval, bars, crypto):
     span_ms = _YAHOO_INTERVAL_MS[yahoo_interval] * max(int(bars), 1)
     cap = _YAHOO_PERIOD_CAP.get(yahoo_interval)
@@ -1492,7 +1507,7 @@ class RobinhoodExchangeAdapter:
 
 
     def _resolve_yahoo_symbol(self, symbol: str) -> str:
-        return YAHOO_CRYPTO_MAP.get(symbol.upper(), symbol.upper())
+        return robinhood_yahoo_symbol(symbol)
 
     def get_price(self, symbol: str) -> float:
         if self._logged_in:
