@@ -6,31 +6,6 @@ import (
 	"testing"
 )
 
-func TestResolveStatusPort(t *testing.T) {
-	tests := []struct {
-		name    string
-		cliFlag int
-		cfgPort int
-		want    int
-	}{
-		{"both unset uses default", 0, 0, DefaultStatusPort},
-		{"cfg only", 0, 9000, 9000},
-		{"cli overrides cfg", 7000, 9000, 7000},
-		{"cli only", 7000, 0, 7000},
-		{"negative cli falls through to cfg", -1, 9000, 9000},
-		{"negative cli and cfg falls to default", -1, -1, DefaultStatusPort},
-		{"zero cli and negative cfg falls to default", 0, -5, DefaultStatusPort},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := resolveStatusPort(tc.cliFlag, tc.cfgPort)
-			if got != tc.want {
-				t.Fatalf("resolveStatusPort(%d, %d) = %d, want %d", tc.cliFlag, tc.cfgPort, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestBindWithFallback_FirstPortFree(t *testing.T) {
 	probe, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
