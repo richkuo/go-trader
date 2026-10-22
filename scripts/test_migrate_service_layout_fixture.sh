@@ -588,6 +588,7 @@ scenario_kill() {
     local port=$((BASE_PORT + 6)) unit="go-trader-$ID-kill.service" inst="k-$ID" src="/root/gt-$ID-kill"
     INSTANCES+=("$inst")
     make_deployment kill "$port"
+    fail "throwaway failure in scenario kill (issue 1852 negative check, reverted before merge)"
     local stage rc
     for stage in source-masked transfer target-start-attempt health; do
         rc=0
