@@ -1466,6 +1466,8 @@ func main() {
 				}
 			}
 
+			quotePrecisionRebaselineDM := runQuotePrecisionPeakRebaseline(cyclePartitions, cfg.Strategies, state, prices, scopeRisk)
+
 			for _, part := range cyclePartitions {
 				sr := scopeRisk[part]
 				applyScopeCycleRisk(sr, state.partitionRisk(part))
@@ -1500,6 +1502,9 @@ func main() {
 
 			if manualBasisRebaselineDM != "" {
 				notifier.SendOwnerDM(manualBasisRebaselineDM)
+			}
+			if quotePrecisionRebaselineDM != "" {
+				notifier.SendOwnerDM(quotePrecisionRebaselineDM)
 			}
 			for _, part := range cyclePartitions {
 				sr := scopeRisk[part]
@@ -3393,7 +3398,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	} else if result.Signal == -1 {
 		signalStr = "SELL"
 	}
-	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%.2f", signalStr, result.Symbol, result.Price)
+	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%s", signalStr, result.Symbol, formatSignalPrice(result.Price))
 
 	price := result.Price
 	if price <= 0 {
@@ -3429,7 +3434,7 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 
 	detail := ""
 	if trades > 0 {
-		detail = fmt.Sprintf("[%s] %s %s @ $%.2f", sc.ID, signalStr, result.Symbol, price)
+		detail = fmt.Sprintf("[%s] %s %s @ $%s", sc.ID, signalStr, result.Symbol, formatSignalPrice(price))
 	}
 	return trades, detail
 }
@@ -3522,8 +3527,8 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 	} else if result.Signal == -1 {
 		signalStr = "BEARISH"
 	}
-	logger.InfoOrDebug(result.Signal != 0 || len(result.Actions) > 0, "Signal: %s | %s spot=$%.2f | IV rank=%.1f | %d actions",
-		signalStr, result.Underlying, result.SpotPrice, result.IVRank, len(result.Actions))
+	logger.InfoOrDebug(result.Signal != 0 || len(result.Actions) > 0, "Signal: %s | %s spot=$%s | IV rank=%.1f | %d actions",
+		signalStr, result.Underlying, formatSignalPrice(result.SpotPrice), result.IVRank, len(result.Actions))
 
 	return result, signalStr, true
 }
@@ -3537,7 +3542,7 @@ func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsRe
 
 	detail := ""
 	if trades > 0 {
-		detail = fmt.Sprintf("[%s] %s %s spot=$%.2f IV=%.1f", sc.ID, signalStr, result.Underlying, result.SpotPrice, result.IVRank)
+		detail = fmt.Sprintf("[%s] %s %s spot=$%s IV=%.1f", sc.ID, signalStr, result.Underlying, formatSignalPrice(result.SpotPrice), result.IVRank)
 	}
 
 	var harvestDetails []string
@@ -4350,7 +4355,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	} else if result.Signal == -1 {
 		signalStr = "SELL"
 	}
-	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
+	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%s [%s]", signalStr, result.Symbol, formatSignalPrice(result.Price), result.Mode)
 
 	price := result.Price
 	if price <= 0 {
@@ -4446,7 +4451,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 		fillContracts = execResult.Execution.Fill.TotalContracts
 		fillFee = execResult.Execution.Fill.Fee
 		fillOID = execResult.Execution.Fill.OID
-		logger.Info("Live fill at $%.2f contracts=%d (signal was $%.2f)", fillPrice, fillContracts, price)
+		logger.Info("Live fill at $%s contracts=%d (signal was $%s)", formatSignalPrice(fillPrice), fillContracts, formatSignalPrice(price))
 	}
 
 	var feePerContract float64
@@ -4478,7 +4483,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 		if execResult != nil {
 			prefix = "LIVE "
 		}
-		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
+		detail = fmt.Sprintf("[%s] %s%s %s @ $%s", sc.ID, prefix, signalStr, result.Symbol, formatSignalPrice(fillPrice))
 	}
 	return trades, detail
 }
@@ -4551,7 +4556,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	} else if result.Signal == -1 {
 		signalStr = "SELL"
 	}
-	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
+	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%s [%s]", signalStr, result.Symbol, formatSignalPrice(result.Price), result.Mode)
 
 	price := result.Price
 	if price <= 0 {
@@ -4801,7 +4806,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 		fillQty = execResult.Execution.Fill.Quantity
 		fillFee = execResult.Execution.Fill.Fee
 		fillOID = execResult.Execution.Fill.OID
-		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
+		logger.Info("Live fill at $%s qty=%.6f (mid was $%s)", formatSignalPrice(fillPrice), fillQty, formatSignalPrice(price))
 	}
 
 	var soldQty float64
@@ -4830,7 +4835,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 		if execResult != nil {
 			prefix = "LIVE "
 		}
-		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
+		detail = fmt.Sprintf("[%s] %s%s %s @ $%s", sc.ID, prefix, signalStr, result.Symbol, formatSignalPrice(fillPrice))
 	}
 	cashAlert := ""
 	if exec.CashReconcileRequired {
@@ -4916,7 +4921,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	} else if result.Signal == -1 {
 		signalStr = "SELL"
 	}
-	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
+	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%s [%s]", signalStr, result.Symbol, formatSignalPrice(result.Price), result.Mode)
 
 	price := result.Price
 	if price <= 0 {
@@ -5069,7 +5074,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 		fillQty = execResult.Execution.Fill.TotalSz
 		fillFee = execResult.Execution.Fill.Fee
 		fillOID = execResult.Execution.Fill.OID
-		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
+		logger.Info("Live fill at $%s qty=%.6f (mid was $%s)", formatSignalPrice(fillPrice), fillQty, formatSignalPrice(price))
 	}
 
 	var exec SignalExecutionResult
@@ -5100,7 +5105,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 		if execResult != nil {
 			prefix = "LIVE "
 		}
-		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
+		detail = fmt.Sprintf("[%s] %s%s %s @ $%s", sc.ID, prefix, signalStr, result.Symbol, formatSignalPrice(fillPrice))
 	}
 	cashAlert := ""
 	if exec.CashReconcileRequired {

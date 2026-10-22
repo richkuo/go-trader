@@ -148,6 +148,26 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   Opt out with `"log_level": "debug"` (SIGHUP-reloadable), which restores the old output with the hidden per-strategy lines tagged `[DEBUG]`.
   No config version change, no `state.db` change.
 - **Hyperliquid check prices keep full precision (#1575)**: `check_hyperliquid.py` reported the mid price rounded to two decimals, and a batched member adopted that rounded mark. For coins priced near or below one dollar this skewed paper fills and PnL and made live orders too large. The check output (single check, `--batch-check` and `--market-stdin`) and the batched mark now carry the full-precision mid, and sizing, paper fills, stop tests, the ratchet, hedges and scale-in read it unrounded. The Hyperliquid `Signal:` log line prints `%.6g` for a price between 0 and 1 and `%.2f` otherwise, so BTC and ETH lines do not change. No config change. Update Go and Python together with `scripts/update.sh --restart`.
+- **Robinhood, OKX, Binance.US, TopStep and options check prices keep full precision (#1820)**: `check_robinhood.py`, `check_okx.py`, `check_strategy.py`, `check_topstep.py` and `check_price.py` rounded the selected quote to cents, and `check_options.py` rounded `spot_price`.
+  A positive quote below half a cent became zero, so a cycle whose spot prices were all such quotes was skipped and a strategy with no map fallback logged `No price available`.
+  A larger quote lost its fraction of a cent, which skewed paper fills, paper PnL, cycle and status marks, and OKX live spot and perps order sizes, and an options action without `premium_usd` priced its premium from the rounded spot.
+  The scripts now emit the full float quote.
+  `check_price.py` still omits a ticker whose `last` is missing or not a number, and now also omits a non-finite or boolean `last`.
+  Confirmed venue fills still replace the check price when booked (OKX, TopStep), and Robinhood live booking still needs a settled venue fill.
+  The signal, fill, trade-detail, paper execution and cycle `Prices:` lines print `%.6g` for a price between 0 and 1 and `%.2f` otherwise, so BTC, ETH and futures lines do not change; money totals and fees keep two decimals.
+  **Operator warning, one-time re-mark:** at the first cycle after the update, every open spot position is marked at its true quote instead of the cent-rounded one.
+  A stored strategy peak or portfolio kill-switch peak that was set from a mark rounded up shows a sudden drawdown, which can trip a per-strategy circuit breaker (force-close) or the portfolio kill switch.
+  To stop this, the first cycle runs a one-time rebaseline before any risk check: for each spot strategy with an open position, the peak becomes the larger of the current value and the stored peak minus the sum of quantity times $0.005 over its open positions.
+  The same bound, summed over those strategies, applies to the portfolio kill-switch peak of each scope; a peak is never raised, and a strategy with no open position is not touched.
+  Each changed peak prints one `[WARN] #1820 quote-precision peak rebaseline` line with the old and new values, and a changed portfolio peak also records a `basis_rebaseline` kill-switch event.
+  When any peak changes, the owner gets one DM that lists each changed peak with its old and new values and its rounding bound; a pass that changes nothing sends no DM.
+  The pass always subtracts the largest possible rounding error, whether or not rounding inflated the stored peak, so it can also forgive up to $0.005 per unit of real drawdown on each open spot position (about 5% of the position value at $0.10, about 50% at $0.01).
+  A peak set from a mark rounded down, set while a quote below half a cent was valued at average cost, or set before a realized loss still loses the full bound.
+  A loss that the average-cost fallback hid (a quote below half a cent) can exceed the bound; the part above the bound still shows as a drawdown and can still trip a guard.
+  Before `scripts/update.sh --restart`, check the open spot positions priced below $1 and the `max_drawdown_pct` of their strategies and of `portfolio_risk`, because after the pass a breaker can fire later than those limits allow until the strategy or scope sets a new peak.
+  No config change. `state.db` change: an idempotent migration adds `quote_precision_rebaselined` to `strategies` and to `portfolio_risk`.
+  Each strategy row and each scope's portfolio row stores its own marker in the same write as its peak, so every peak takes the bound at most once, whatever the save order or restart.
+  Update Go and Python together with `scripts/update.sh --restart`.
 - **Live tiered take-profit positions hold on an opposite open signal (#1573)**: a live Hyperliquid strategy (`type: perps` or `type: manual`) whose close is a `tiered_tp_atr*` evaluator no longer closes, or flips under `direction: "both"`, on the open strategy's opposite signal.
   Go keeps the close ref and sends `"close_owner": "on_chain_tp"` on `--strategy-refs` and in the batch slot.
   While a position is open, Python then evaluates no close and applies no open-as-close fallback, and it echoes `close_owner`.
