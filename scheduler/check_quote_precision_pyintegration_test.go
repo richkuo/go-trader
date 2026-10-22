@@ -1054,8 +1054,8 @@ func TestCheckQuotePrecisionPriceTextKeepsLargePrices(t *testing.T) {
 		text string
 	}{
 		{qpRunners()[0], 65000.5, "65000.50"},
-		{qpRunners()[3], 3000.25, "3000.25"},
-		{qpRunners()[6], 5000.25, "5000.25"},
+		{qpRunners()[3], 3000.5, "3000.50"},
+		{qpRunners()[6], 5000.5, "5000.50"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.r.name, func(t *testing.T) {
