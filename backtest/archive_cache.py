@@ -93,7 +93,11 @@ def _download(bucket: str, key: str, path: str, aws: Callable) -> str:
     os.makedirs(parent, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=parent, prefix="." + os.path.basename(path) + ".", suffix=".part")
     os.close(fd)
-    r = _call(aws, ["s3", "cp", f"s3://{bucket}/{key}", tmp, "--only-show-errors"])
+    try:
+        r = _call(aws, ["s3", "cp", f"s3://{bucket}/{key}", tmp, "--only-show-errors"])
+    except BaseException:
+        os.unlink(tmp)
+        raise
     if r.returncode != 0:
         os.unlink(tmp)
         if _not_found(r.stderr):
@@ -109,6 +113,8 @@ def _publish(tmp: str, path: str) -> bool:
     except FileExistsError:
         return False
     except OSError:
+        if os.path.lexists(path):
+            return False
         os.replace(tmp, path)
         return True
     os.unlink(tmp)

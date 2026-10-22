@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import os
 import stat
@@ -180,3 +181,47 @@ def test_a_service_error_through_a_404_cache_root_is_retried_and_not_missing(arc
         ac.fetch_manifest(root, {"bucket": "stub-bucket", "files": [entry]})
     assert _calls(archive["log"], "s3 cp") == ac.AWS_ATTEMPTS
     assert not [n for _, _, names in os.walk(root) for n in names]
+
+
+def _parts(root: str) -> list:
+    return [n for _, _, names in os.walk(root) for n in names if n.endswith(".part")]
+
+
+def test_a_missing_aws_executable_leaves_no_temporary_file(archive, monkeypatch, tmp_path):
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    with pytest.raises(FileNotFoundError):
+        ac.fetch_manifest(archive["root"], archive["manifest"])
+    assert os.path.isdir(archive["base"]) and _parts(archive["root"]) == []
+
+
+def test_an_aws_callable_that_raises_leaves_no_temporary_file(archive):
+    def boom(args):
+        raise RuntimeError("aws crashed")
+    keys = [f["key"] for f in archive["manifest"]["files"]]
+    with pytest.raises(RuntimeError, match="aws crashed"):
+        ac.freeze(archive["root"], "stub-bucket", keys, aws=boom, workers=1)
+    assert os.path.isdir(archive["base"]) and _parts(archive["root"]) == []
+
+
+def test_without_hard_links_a_final_path_placed_during_download_is_never_replaced(archive, monkeypatch):
+    def no_link(src, dst):
+        raise OSError(errno.EPERM, "hard links unsupported")
+    monkeypatch.setattr(ac.os, "link", no_link)
+    ctx, book = archive["manifest"]["files"][0], archive["manifest"]["files"][1]
+    final = os.path.join(archive["base"], ctx["key"])
+
+    def racing(args):
+        r = ac.run_aws(args)
+        if args[:2] == ["s3", "cp"] and ctx["key"] in args[2]:
+            with open(final, "wb") as fh:
+                fh.write(b"placed by another worktree")
+        return r
+    with pytest.raises(ac.ArchiveError, match=f"{ctx['key']}: the cached file .* does not match the manifest"):
+        ac.fetch_manifest(archive["root"], {"bucket": "stub-bucket", "files": [ctx]}, aws=racing, workers=1)
+    assert open(final, "rb").read() == b"placed by another worktree"
+    assert _parts(archive["root"]) == []
+    out = ac.fetch_manifest(archive["root"], {"bucket": "stub-bucket", "files": [book]}, workers=1)
+    assert out["downloaded"] == 1
+    assert ac.verified_object(archive["base"], book["key"], book)
