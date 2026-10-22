@@ -47,6 +47,7 @@ var feedRoleRootKeys = map[string]bool{
 	"telegram":                true,
 	"alert_throttle_interval": true,
 	"strategies":              true,
+	"egress":                  true,
 }
 
 func cleanFeedPath(p string) string {
@@ -143,6 +144,7 @@ func loadFeedRoleConfig(path string) (*Config, error) {
 			errs = append(errs, fmt.Sprintf("feed block: %v", err))
 		}
 	}
+	errs = append(errs, egressConfigErrors(raw["egress"])...)
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("feed config validation errors:\n  %s", strings.Join(errs, "\n  "))
 	}
@@ -527,6 +529,9 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
+	if code := startEgress(cfg, configPath, true); code != 0 {
+		return code
+	}
 	if err := applyAlertThrottleFromConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to apply alert throttle interval: %v\n", err)
 		return 1
@@ -550,6 +555,11 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 
 	notifier, cleanupNotifier := buildNotifierFromConfig(cfg)
 	defer cleanupNotifier()
+
+	go runEgressAttestationMonitor(context.Background(), func(err error) {
+		fmt.Fprintf(os.Stderr, "[egress] CRITICAL: %s; exiting so the service rejoins the enforced namespace\n", processEgress.redact(err.Error()))
+		os.Exit(1)
+	})
 
 	lock, err := acquireStateDBLock(cfg.Feed.SocketPath)
 	if err != nil {
@@ -759,6 +769,7 @@ func (rt *feedRuntime) reload() {
 	if next.StatusPort != rt.cfg.StatusPort {
 		errs = append(errs, fmt.Sprintf("status_port changed (%d -> %d; restart required)", rt.cfg.StatusPort, next.StatusPort))
 	}
+	errs = append(errs, egressReloadErrors(rt.cfg, next)...)
 	if len(errs) > 0 {
 		fmt.Fprintf(os.Stderr, "[reload] ERROR: reload rejected; keeping the previous feed generation: %s\n", strings.Join(errs, "; "))
 		return
@@ -920,6 +931,7 @@ func (rt *feedRuntime) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"sealer":         rt.sealer.describe(),
 		"consumers":      consumers,
 		"request_budget": rt.ledger.status(),
+		"egress":         processEgress.status(),
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

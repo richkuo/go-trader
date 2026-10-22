@@ -38,7 +38,7 @@ func fetchHyperliquidMidsCtx(ctx context.Context, coins []string) (map[string]fl
 		return nil, fmt.Errorf("build allMids request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := egressHTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)

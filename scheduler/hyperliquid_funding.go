@@ -49,7 +49,7 @@ func hlPostInfoTo(ctx context.Context, baseURL string, payload any, maxBytes int
 		return nil, fmt.Errorf("build info request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: hlFundingFetchTimeout}
+	client := egressHTTPClient(hlFundingFetchTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)

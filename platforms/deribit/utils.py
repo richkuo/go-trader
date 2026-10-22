@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 
+import os
 import sys
 import requests
 import traceback
 from datetime import datetime, timezone, timedelta
 from typing import List, Tuple, Optional, Dict, Any
+
+_SHARED_TOOLS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools')
+if _SHARED_TOOLS not in sys.path:
+    sys.path.append(_SHARED_TOOLS)
+
+import egress_policy
 
 DERIBIT_API_BASE = "https://www.deribit.com/api/v2"
 
@@ -21,7 +28,7 @@ def _format_instrument(underlying: str, option_type: str, strike: float, expiry_
 def fetch_available_expiries(underlying: str, min_dte: int = 7, max_dte: int = 60) -> List[Tuple[str, int]]:
     try:
         url = f"{DERIBIT_API_BASE}/public/get_instruments?currency={underlying}&kind=option&expired=false"
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=10, proxies=egress_policy.requests_proxies())
         resp.raise_for_status()
         data = resp.json()
         
@@ -69,7 +76,7 @@ def find_closest_expiry(underlying: str, target_dte: int, max_tolerance_days: in
 def fetch_available_strikes(underlying: str, expiry_str: str, option_type: str = "call") -> List[float]:
     try:
         url = f"{DERIBIT_API_BASE}/public/get_instruments?currency={underlying}&kind=option&expired=false"
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=10, proxies=egress_policy.requests_proxies())
         resp.raise_for_status()
         data = resp.json()
         
@@ -117,7 +124,7 @@ def get_live_quote(underlying: str, option_type: str, strike: float, expiry_str:
     try:
         instrument = _format_instrument(underlying, option_type, strike, expiry_str)
         url = f"{DERIBIT_API_BASE}/public/ticker?instrument_name={instrument}"
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=10, proxies=egress_policy.requests_proxies())
         resp.raise_for_status()
         data = resp.json()
         result = data.get("result", {})

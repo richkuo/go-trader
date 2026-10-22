@@ -653,11 +653,11 @@ func reportStateOwnershipFailure(err error) string {
 // sendStartupRefusalDM pages the owner about a refusal that systemd keeps down
 // under RestartPreventExitStatus. Every such exit must reach the notifier, not
 // stderr alone.
-func sendStartupRefusalDM(notifier *MultiNotifier, guard, msg string) {
+func sendStartupRefusalDM(notifier *MultiNotifier, guard, msg string) bool {
 	if notifier == nil || !notifier.HasOwner() {
-		return
+		return false
 	}
-	notifier.SendOwnerDM(fmt.Sprintf("**%s** — %s", guard, msg))
+	return notifier.SendOwnerDMDelivered(fmt.Sprintf("**%s** — %s", guard, msg))
 }
 
 // storageRefusalDMBody names each rejection so the owner can act without the

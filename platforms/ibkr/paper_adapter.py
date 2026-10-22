@@ -1,7 +1,15 @@
 
 import math
+import os
+import sys
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List, Tuple
+
+_SHARED_TOOLS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools')
+if _SHARED_TOOLS not in sys.path:
+    sys.path.append(_SHARED_TOOLS)
+
+import egress_policy
 
 
 def norm_cdf(x: float) -> float:
@@ -217,7 +225,7 @@ class IBKRPaperAdapter:
 def get_spot_price_ibkr(underlying: str) -> float:
     try:
         import ccxt
-        exchange = ccxt.binanceus({"enableRateLimit": True})
+        exchange = egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
         symbol = f"{underlying}/USDT"
         ticker = exchange.fetch_ticker(symbol)
         return ticker["last"]
@@ -229,7 +237,7 @@ def get_spot_price_ibkr(underlying: str) -> float:
 def calc_vol_and_iv_rank(underlying: str) -> Tuple[float, float]:
     try:
         import ccxt
-        exchange = ccxt.binanceus({"enableRateLimit": True})
+        exchange = egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
         symbol = f"{underlying}/USDT"
         ohlcv = exchange.fetch_ohlcv(symbol, "1d", limit=90)
 

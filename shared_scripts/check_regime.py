@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
 
+import egress_policy
 from market_payload import market_frame_rows
 from regime import (
     CLASSIFIER_ADX,
@@ -90,7 +91,7 @@ def _fetch_dataframe(args):
             print(f"adapter.get_ohlcv failed: {adapter_err}", file=sys.stderr)
         import ccxt
 
-        exchange = ccxt.binanceus({"enableRateLimit": True})
+        exchange = egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
         rows = exchange.fetch_ohlcv(f"{args.symbol}/USDT", args.timeframe, limit=args.ohlcv_limit)
 
     if not rows:
