@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sys
 import time
@@ -21,6 +22,14 @@ TRAIL_CANON = "trailing_stop_atr_mult_regime"
 TRAIL_V18 = "trail_stop_atr_regime"
 TRAIL_V17 = "trailing_stop_atr_regime"
 
+
+@contextlib.contextmanager
+def _case(*label):
+    try:
+        yield
+    except (Exception, pytest.fail.Exception) as exc:
+        raise AssertionError(f"case {label!r} failed: {exc}") from exc
+
 def _block(mult: float) -> dict:
     return {"trend_regime": {
         "trending_up": {"atr_multiple": mult},
@@ -38,34 +47,37 @@ def test_missing_field_resolves_to_none():
     assert _resolve_atr_regime_stop({}, TRAIL_CANON) is None
 
 
-@pytest.mark.parametrize("canon,key", [
-    (SL_CANON, SL_CANON), (SL_CANON, SL_LEGACY),
-    (TRAIL_CANON, TRAIL_CANON), (TRAIL_CANON, TRAIL_V18), (TRAIL_CANON, TRAIL_V17),
-])
-def test_each_spelling_resolves_on_its_own(canon, key):
-    assert _resolve_atr_regime_stop({key: A}, canon) == A
+def test_each_spelling_resolves_on_its_own():
+    cases = [
+        (SL_CANON, SL_CANON), (SL_CANON, SL_LEGACY),
+        (TRAIL_CANON, TRAIL_CANON), (TRAIL_CANON, TRAIL_V18), (TRAIL_CANON, TRAIL_V17),
+    ]
+    for canon, key in cases:
+        assert _resolve_atr_regime_stop({key: A}, canon) == A, (canon, key)
 
 
-@pytest.mark.parametrize("canon,cfg", [
-    (SL_CANON, {SL_LEGACY: A, SL_CANON: A}),
-    (SL_CANON, {SL_CANON: A, SL_LEGACY: A}),
-    (TRAIL_CANON, {TRAIL_CANON: A, TRAIL_V18: A, TRAIL_V17: A}),
-    (TRAIL_CANON, {TRAIL_V17: A, TRAIL_V18: A}),
-])
-def test_equivalent_spellings_merge_regardless_of_order(canon, cfg):
-    assert _resolve_atr_regime_stop(cfg, canon) == A
+def test_equivalent_spellings_merge_regardless_of_order():
+    cases = [
+        (SL_CANON, {SL_LEGACY: A, SL_CANON: A}),
+        (SL_CANON, {SL_CANON: A, SL_LEGACY: A}),
+        (TRAIL_CANON, {TRAIL_CANON: A, TRAIL_V18: A, TRAIL_V17: A}),
+        (TRAIL_CANON, {TRAIL_V17: A, TRAIL_V18: A}),
+    ]
+    for canon, cfg in cases:
+        assert _resolve_atr_regime_stop(cfg, canon) == A, (canon, list(cfg))
 
 
-@pytest.mark.parametrize("canon,cfg", [
-    (SL_CANON, {SL_LEGACY: B, SL_CANON: A}),
-    (SL_CANON, {SL_CANON: A, SL_LEGACY: B}),
-    (TRAIL_CANON, {TRAIL_CANON: A, TRAIL_V18: B}),
-    (TRAIL_CANON, {TRAIL_V17: A, TRAIL_V18: B}),
-    (TRAIL_CANON, {TRAIL_V18: B, TRAIL_V17: A}),
-])
-def test_conflicting_spellings_raise(canon, cfg):
-    with pytest.raises(ValueError):
-        _resolve_atr_regime_stop(cfg, canon)
+def test_conflicting_spellings_raise():
+    cases = [
+        (SL_CANON, {SL_LEGACY: B, SL_CANON: A}),
+        (SL_CANON, {SL_CANON: A, SL_LEGACY: B}),
+        (TRAIL_CANON, {TRAIL_CANON: A, TRAIL_V18: B}),
+        (TRAIL_CANON, {TRAIL_V17: A, TRAIL_V18: B}),
+        (TRAIL_CANON, {TRAIL_V18: B, TRAIL_V17: A}),
+    ]
+    for canon, cfg in cases:
+        with _case(canon, list(cfg)), pytest.raises(ValueError):
+            _resolve_atr_regime_stop(cfg, canon)
 
 
 def _payload(cfg: dict) -> dict:

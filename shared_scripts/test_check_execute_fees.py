@@ -28,34 +28,28 @@ def _load_robinhood_adapter():
     return mod
 
 
-def test_robinhood_extracts_nested_execution_fee():
+def test_robinhood_extracts_nested_execution_fee_and_ignores_notional_without_fee_keys():
     mod = _load_robinhood_adapter()
     response = {
         "average_price": "50000",
         "cumulative_quantity": "0.01",
         "executions": [{"fees": [{"amount": "0.03"}, {"amount": "0.02"}]}],
     }
-    assert abs(mod.extract_order_fee(response) - 0.05) < 1e-12
-
-
-def test_robinhood_ignores_execution_notional_without_fee_keys():
-    mod = _load_robinhood_adapter()
+    assert abs(mod.extract_order_fee(response) - 0.05) < 1e-12, "test_robinhood_extracts_nested_execution_fee"
     response = {
         "average_price": "50000",
         "cumulative_quantity": "0.015",
         "executions": [{"total": "750.00", "value": "0.015", "amount": "0.015"}],
     }
-    assert mod.extract_order_fee(response) is None
+    assert mod.extract_order_fee(response) is None, "test_robinhood_ignores_execution_notional_without_fee_keys"
 
 
-def test_topstep_extracts_nested_fee_total():
+def test_topstep_extracts_nested_fee_total_and_ignores_generic_totals_without_fee_context():
     mod = _load_script("check_topstep.py")
-    assert abs(mod._extract_fee({"totalFees": [{"amount": "1.50"}, {"amount": "2.62"}]}) - 4.12) < 1e-12
-
-
-def test_topstep_ignores_generic_nested_totals_without_fee_context():
-    mod = _load_script("check_topstep.py")
-    assert mod._extract_fee_value([{"total": "750.00", "value": "0.015"}]) is None
+    assert abs(mod._extract_fee({"totalFees": [{"amount": "1.50"}, {"amount": "2.62"}]}) - 4.12) < 1e-12, \
+        "test_topstep_extracts_nested_fee_total"
+    assert mod._extract_fee_value([{"total": "750.00", "value": "0.015"}]) is None, \
+        "test_topstep_ignores_generic_nested_totals_without_fee_context"
 
 
 def test_okx_execute_emits_exchange_order_id(monkeypatch, capsys):

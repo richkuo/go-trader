@@ -1,4 +1,5 @@
 
+import contextlib
 import importlib.util
 import io
 import json
@@ -11,6 +12,14 @@ import pytest
 
 
 SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_hyperliquid.py")
+
+
+@contextlib.contextmanager
+def _case(*label):
+    try:
+        yield
+    except (Exception, pytest.fail.Exception) as exc:
+        raise AssertionError(f"case {label!r} failed: {exc}") from exc
 
 
 def _load_check_module():
@@ -179,15 +188,15 @@ def test_spot_price_fallback_used_once_when_mark_absent(mod):
         assert result["price"] == 31_337.0
 
 
-@pytest.mark.parametrize("mark", [0.1234, 0.006, 0.34567])
-def test_sub_dollar_mark_is_reported_at_full_precision_on_both_paths(mod, mark):
-    envelope, exit_code = mod.run_batch_signal_check(
-        "BTC", "1h", SLOT_MATRIX, mark_price=mark, adapter=FakeAdapter())
-    assert exit_code == 0, envelope
-    for result in envelope["results"]:
-        assert result["price"] == mark, result["id"]
-    solo = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=mark), SLOT_MATRIX[0])
-    assert solo["price"] == mark
+def test_sub_dollar_mark_is_reported_at_full_precision_on_both_paths(mod):
+    for mark in (0.1234, 0.006, 0.34567):
+        envelope, exit_code = mod.run_batch_signal_check(
+            "BTC", "1h", SLOT_MATRIX, mark_price=mark, adapter=FakeAdapter())
+        assert exit_code == 0, (mark, envelope)
+        for result in envelope["results"]:
+            assert result["price"] == mark, (mark, result["id"])
+        solo = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=mark), SLOT_MATRIX[0])
+        assert solo["price"] == mark, mark
 
 
 def test_slot_cannot_mutate_the_shared_frame(mod):
@@ -302,18 +311,20 @@ def test_parse_batch_slots_accepts_the_documented_envelope(mod):
     assert slots[0]["close_params_by_name"] == {"atr_stop": {"atr_multiple": 2.0}}
 
 
-@pytest.mark.parametrize("payload,fragment", [
-    ({"v": 2, "slots": [{"id": "a", "strategy": "breakout"}]}, "protocol version"),
-    ({"v": 1, "slots": []}, "non-empty"),
-    ({"v": 1, "slots": [{"strategy": "breakout"}]}, "missing 'id'"),
-    ({"v": 1, "slots": [{"id": "a", "strategy": "breakout"},
-                        {"id": "a", "strategy": "breakout"}]}, "duplicate slot id"),
-    ({"v": 1, "slots": [{"id": "a"}]}, "missing 'strategy'"),
-])
-def test_parse_batch_slots_rejects_bad_envelopes(mod, payload, fragment):
-    with pytest.raises(ValueError) as exc:
-        mod.parse_batch_slots(json.dumps(payload))
-    assert fragment in str(exc.value)
+def test_parse_batch_slots_rejects_bad_envelopes(mod):
+    cases = [
+        ({"v": 2, "slots": [{"id": "a", "strategy": "breakout"}]}, "protocol version"),
+        ({"v": 1, "slots": []}, "non-empty"),
+        ({"v": 1, "slots": [{"strategy": "breakout"}]}, "missing 'id'"),
+        ({"v": 1, "slots": [{"id": "a", "strategy": "breakout"},
+                            {"id": "a", "strategy": "breakout"}]}, "duplicate slot id"),
+        ({"v": 1, "slots": [{"id": "a"}]}, "missing 'strategy'"),
+    ]
+    for payload, fragment in cases:
+        with _case(fragment):
+            with pytest.raises(ValueError) as exc:
+                mod.parse_batch_slots(json.dumps(payload))
+            assert fragment in str(exc.value)
 
 
 def _run_main(mod, monkeypatch, argv, stdin_text, adapter):
@@ -433,27 +444,23 @@ def _spot_registry_path(mod):
         "..", "shared_strategies", "open", "spot", "strategies.py")
 
 
-@pytest.mark.parametrize("stub_file,accepted", [
-    ("spot", False),
-    (None, False),
-    ("futures", True),
-])
-def test_futures_registry_fast_path_only_accepts_the_futures_registry(
-        mod, monkeypatch, stub_file, accepted):
-    stub = types.ModuleType("strategies")
-    if stub_file == "spot":
-        stub.__file__ = _spot_registry_path(mod)
-    elif stub_file == "futures":
-        stub.__file__ = mod.FUTURES_STRATEGIES_PATH
-    stub.apply_strategy = lambda *a, **k: None
-    monkeypatch.setitem(sys.modules, "strategies", stub)
+def test_futures_registry_fast_path_only_accepts_the_futures_registry(mod, monkeypatch):
+    for stub_file, accepted in (("spot", False), (None, False), ("futures", True)):
+        with _case(stub_file, accepted), monkeypatch.context() as mp:
+            stub = types.ModuleType("strategies")
+            if stub_file == "spot":
+                stub.__file__ = _spot_registry_path(mod)
+            elif stub_file == "futures":
+                stub.__file__ = mod.FUTURES_STRATEGIES_PATH
+            stub.apply_strategy = lambda *a, **k: None
+            mp.setitem(sys.modules, "strategies", stub)
 
-    resolved = mod._futures_strategies_module()
-    if accepted:
-        assert resolved is stub
-    else:
-        assert resolved is not stub
-    assert os.path.realpath(resolved.__file__) == os.path.realpath(mod.FUTURES_STRATEGIES_PATH)
+            resolved = mod._futures_strategies_module()
+            if accepted:
+                assert resolved is stub
+            else:
+                assert resolved is not stub
+            assert os.path.realpath(resolved.__file__) == os.path.realpath(mod.FUTURES_STRATEGIES_PATH)
 
 
 def _market_frame(rows, required=200, ready=True):
@@ -653,16 +660,21 @@ def _tier_slot(slot_id, initial_qty, current_qty, entry_atr, mode="live"):
     )
 
 
-@pytest.mark.parametrize("case,lot_decimals,initial_qty,current_qty,entry_atr,gated,expect_fraction", [
-    ("sub_lot_remainder", 4, 0.1234, 0.0741, 5.0, True, 0.0),
-    ("several_lots_above_minimum", 4, 12.34, 7.41, 3.0, False, None),
-    ("full_close_never_gated", 4, 0.1234, 0.0741, 2.0, False, 1.0),
-    ("unknown_lot_size_keeps_fraction", None, 0.1234, 0.0741, 5.0, False, None),
-    ("one_lot_below_minimum_value", 4, 0.1234, 0.0742, 5.0, True, 0.0),
-    ("paper_mode_never_gated", 4, 0.1234, 0.0741, 5.0, False, None),
-])
-def test_venue_close_gate_rewrites_only_dust_partial_closes(
-        mod, case, lot_decimals, initial_qty, current_qty, entry_atr, gated, expect_fraction):
+def test_venue_close_gate_rewrites_only_dust_partial_closes(mod):
+    cases = [
+        ("sub_lot_remainder", 4, 0.1234, 0.0741, 5.0, True, 0.0),
+        ("several_lots_above_minimum", 4, 12.34, 7.41, 3.0, False, None),
+        ("full_close_never_gated", 4, 0.1234, 0.0741, 2.0, False, 1.0),
+        ("unknown_lot_size_keeps_fraction", None, 0.1234, 0.0741, 5.0, False, None),
+        ("one_lot_below_minimum_value", 4, 0.1234, 0.0742, 5.0, True, 0.0),
+        ("paper_mode_never_gated", 4, 0.1234, 0.0741, 5.0, False, None),
+    ]
+    for case, *rest in cases:
+        with _case(case):
+            _check_venue_close_gate(mod, case, *rest)
+
+
+def _check_venue_close_gate(mod, case, lot_decimals, initial_qty, current_qty, entry_atr, gated, expect_fraction):
     shared = _shared(mod, FakeAdapter(lot_decimals=lot_decimals), mark_price=100.0)
     mode = "paper" if case == "paper_mode_never_gated" else "live"
     out = mod.evaluate_signal_slot(
@@ -682,23 +694,24 @@ def test_venue_close_gate_rewrites_only_dust_partial_closes(
         assert out["close_fraction"] == expect_fraction
 
 
-@pytest.mark.parametrize("case,price,gated", [
-    ("exactly_minimum_is_gated", 100.0, True),
-    ("inside_margin_band_is_gated", 102.0, True),
-    ("above_margin_band_passes", 104.0, False),
-])
-def test_venue_close_gate_margin_covers_price_drift_before_execute(mod, case, price, gated):
-    decision = {"close_fraction": 0.5, "open_action": "none", "signal": -1}
-    out = mod.apply_venue_close_gate(
-        decision, {"current_quantity": 0.2}, price, 4, 10.0, "long", min_notional_margin=0.03)
-    if gated:
-        assert out["close_fraction"] == 0.0
-        assert out["signal"] == 0
-        assert out["close_gate"] == "below_venue_minimum"
-        assert out["close_gate_detail"]["min_notional_usd"] == 10.0
-        assert out["close_gate_detail"]["gate_threshold_usd"] == pytest.approx(10.3)
-    else:
-        assert out is decision
+def test_venue_close_gate_margin_covers_price_drift_before_execute(mod):
+    cases = [
+        ("exactly_minimum_is_gated", 100.0, True),
+        ("inside_margin_band_is_gated", 102.0, True),
+        ("above_margin_band_passes", 104.0, False),
+    ]
+    for case, price, gated in cases:
+        decision = {"close_fraction": 0.5, "open_action": "none", "signal": -1}
+        out = mod.apply_venue_close_gate(
+            decision, {"current_quantity": 0.2}, price, 4, 10.0, "long", min_notional_margin=0.03)
+        if gated:
+            assert out["close_fraction"] == 0.0, case
+            assert out["signal"] == 0, case
+            assert out["close_gate"] == "below_venue_minimum", case
+            assert out["close_gate_detail"]["min_notional_usd"] == 10.0, case
+            assert out["close_gate_detail"]["gate_threshold_usd"] == pytest.approx(10.3), case
+        else:
+            assert out is decision, case
 
 
 def test_venue_close_gate_uses_the_meta_cache_on_the_sealed_path(mod, monkeypatch):
@@ -740,46 +753,47 @@ def _tiered_refs(owner):
     return refs
 
 
-@pytest.mark.parametrize("tier_reached", [False, True])
-def test_on_chain_tp_owner_holds_the_opposite_open_signal_on_every_path(mod, monkeypatch, tier_reached):
-    last_close = _candles()[-1][4]
-    avg_cost = last_close - 20.0 if tier_reached else last_close + 20.0
-    position_ctx = {"side": "long", "avg_cost": avg_cost, "current_quantity": 1.5,
-                    "initial_quantity": 1.5, "entry_atr": 1.0}
-    deps = _opposite_signal_deps(mod)
+def test_on_chain_tp_owner_holds_the_opposite_open_signal_on_every_path(mod, monkeypatch):
+    for tier_reached in (False, True):
+        with _case("tier_reached", tier_reached), monkeypatch.context() as mp:
+            last_close = _candles()[-1][4]
+            avg_cost = last_close - 20.0 if tier_reached else last_close + 20.0
+            position_ctx = {"side": "long", "avg_cost": avg_cost, "current_quantity": 1.5,
+                            "initial_quantity": 1.5, "entry_atr": 1.0}
+            deps = _opposite_signal_deps(mod)
 
-    slots, _ = mod.parse_batch_request(json.dumps({"v": 1, "slots": [
-        {"id": "hl-live", "strategy": "breakout", "mode": "live", "position_side": "long",
-         "position_ctx": position_ctx, "strategy_refs": _tiered_refs("on_chain_tp")},
-        {"id": "hl-paper", "strategy": "breakout", "mode": "paper", "position_side": "long",
-         "position_ctx": position_ctx, "strategy_refs": _tiered_refs(None)},
-    ]}))
-    live = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=0.0), slots[0], deps=deps)
-    paper = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=0.0), slots[1], deps=deps)
+            slots, _ = mod.parse_batch_request(json.dumps({"v": 1, "slots": [
+                {"id": "hl-live", "strategy": "breakout", "mode": "live", "position_side": "long",
+                 "position_ctx": position_ctx, "strategy_refs": _tiered_refs("on_chain_tp")},
+                {"id": "hl-paper", "strategy": "breakout", "mode": "paper", "position_side": "long",
+                 "position_ctx": position_ctx, "strategy_refs": _tiered_refs(None)},
+            ]}))
+            live = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=0.0), slots[0], deps=deps)
+            paper = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=0.0), slots[1], deps=deps)
 
-    assert live["open_action"] == "short"
-    assert live["signal"] == 0
-    assert live["close_fraction"] == 0.0
-    assert live["close_owner"] == "on_chain_tp"
-    assert "close_owner" not in paper
-    if tier_reached:
-        assert paper["close_fraction"] > 0
-        assert paper["signal"] == -1
-    else:
-        assert paper["signal"] == 0
+            assert live["open_action"] == "short"
+            assert live["signal"] == 0
+            assert live["close_fraction"] == 0.0
+            assert live["close_owner"] == "on_chain_tp"
+            assert "close_owner" not in paper
+            if tier_reached:
+                assert paper["close_fraction"] > 0
+                assert paper["signal"] == -1
+            else:
+                assert paper["signal"] == 0
 
-    monkeypatch.setattr(mod, "_signal_check_deps", lambda: deps)
-    out, code = _run_main(mod, monkeypatch, [
-        "breakout", "BTC", "1h", "--mode=live",
-        "--strategy-refs", json.dumps(_tiered_refs("on_chain_tp")),
-        "--position-side", "long", f"--position-avg-cost={avg_cost}",
-        "--position-qty=1.5", "--position-initial-qty=1.5", "--position-entry-atr=1.0",
-    ], "", FakeAdapter())
-    assert code == 0, out
-    single = json.loads(out)
-    assert single["signal"] == 0
-    assert single["close_fraction"] == 0.0
-    assert single["close_owner"] == "on_chain_tp"
+            mp.setattr(mod, "_signal_check_deps", lambda: deps)
+            out, code = _run_main(mod, mp, [
+                "breakout", "BTC", "1h", "--mode=live",
+                "--strategy-refs", json.dumps(_tiered_refs("on_chain_tp")),
+                "--position-side", "long", f"--position-avg-cost={avg_cost}",
+                "--position-qty=1.5", "--position-initial-qty=1.5", "--position-entry-atr=1.0",
+            ], "", FakeAdapter())
+            assert code == 0, out
+            single = json.loads(out)
+            assert single["signal"] == 0
+            assert single["close_fraction"] == 0.0
+            assert single["close_owner"] == "on_chain_tp"
 
 
 def test_unknown_close_owner_fails_the_slot(mod):
@@ -858,53 +872,56 @@ def _invert_refs(raw_signal_unused=None, close_name=None, invert=True):
     return refs
 
 
-@pytest.mark.parametrize("case", [
-    {"side": "long", "raw": 1, "registry": 0.4, "close": "atr_stop", "signal": -1, "fraction": 0.4},
-    {"side": "short", "raw": -1, "registry": 1.0, "close": "atr_stop", "signal": 1, "fraction": 1.0},
-    {"side": "", "raw": 1, "registry": None, "close": None, "signal": -1, "fraction": 0.0},
-    {"side": "short", "raw": -1, "registry": None, "close": None, "signal": 1, "fraction": 1.0},
-    {"side": "short", "raw": 1, "registry": None, "close": None, "signal": 0, "fraction": 0.0},
-])
-def test_invert_open_signal_echo_on_batch_slot_and_single_path(mod, monkeypatch, case):
-    deps = _fixed_signal_deps(mod, case["raw"], case["registry"])
-    refs = _invert_refs(close_name=case["close"])
-    ctx = None
-    if case["side"]:
-        ctx = {"side": case["side"], "avg_cost": 100.0, "current_quantity": 1.0, "initial_quantity": 1.0}
-    slots, _ = mod.parse_batch_request(json.dumps({"v": 1, "slots": [{
-        "id": "hl-inv", "strategy": "breakout", "mode": "paper",
-        "position_side": case["side"], "position_ctx": ctx, "strategy_refs": refs,
-    }]}))
-    slot_out = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=100.0), slots[0], deps=deps)
-    assert slot_out["signal"] == case["signal"]
-    assert slot_out["close_fraction"] == case["fraction"]
-    assert slot_out["open_signal_inverted"] is True
+def test_invert_open_signal_echo_on_batch_slot_and_single_path(mod, monkeypatch):
+    cases = [
+        {"side": "long", "raw": 1, "registry": 0.4, "close": "atr_stop", "signal": -1, "fraction": 0.4},
+        {"side": "short", "raw": -1, "registry": 1.0, "close": "atr_stop", "signal": 1, "fraction": 1.0},
+        {"side": "", "raw": 1, "registry": None, "close": None, "signal": -1, "fraction": 0.0},
+        {"side": "short", "raw": -1, "registry": None, "close": None, "signal": 1, "fraction": 1.0},
+        {"side": "short", "raw": 1, "registry": None, "close": None, "signal": 0, "fraction": 0.0},
+    ]
+    for case in cases:
+        with _case(case), monkeypatch.context() as mp:
+            deps = _fixed_signal_deps(mod, case["raw"], case["registry"])
+            refs = _invert_refs(close_name=case["close"])
+            ctx = None
+            if case["side"]:
+                ctx = {"side": case["side"], "avg_cost": 100.0, "current_quantity": 1.0, "initial_quantity": 1.0}
+            slots, _ = mod.parse_batch_request(json.dumps({"v": 1, "slots": [{
+                "id": "hl-inv", "strategy": "breakout", "mode": "paper",
+                "position_side": case["side"], "position_ctx": ctx, "strategy_refs": refs,
+            }]}))
+            slot_out = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=100.0), slots[0], deps=deps)
+            assert slot_out["signal"] == case["signal"]
+            assert slot_out["close_fraction"] == case["fraction"]
+            assert slot_out["open_signal_inverted"] is True
 
-    monkeypatch.setattr(mod, "_signal_check_deps", lambda: deps)
-    argv = ["breakout", "BTC", "1h", "--mode=paper", "--strategy-refs", json.dumps(refs)]
-    if case["side"]:
-        argv += ["--position-side", case["side"], "--position-avg-cost=100", "--position-qty=1", "--position-initial-qty=1"]
-    out, code = _run_main(mod, monkeypatch, argv, "", FakeAdapter())
-    assert code == 0, out
-    single = json.loads(out)
-    assert single["signal"] == case["signal"]
-    assert single["close_fraction"] == case["fraction"]
-    assert single["open_signal_inverted"] is True
+            mp.setattr(mod, "_signal_check_deps", lambda: deps)
+            argv = ["breakout", "BTC", "1h", "--mode=paper", "--strategy-refs", json.dumps(refs)]
+            if case["side"]:
+                argv += ["--position-side", case["side"], "--position-avg-cost=100", "--position-qty=1", "--position-initial-qty=1"]
+            out, code = _run_main(mod, mp, argv, "", FakeAdapter())
+            assert code == 0, out
+            single = json.loads(out)
+            assert single["signal"] == case["signal"]
+            assert single["close_fraction"] == case["fraction"]
+            assert single["open_signal_inverted"] is True
 
 
-@pytest.mark.parametrize("bad", ["yes", 1])
-def test_non_boolean_invert_open_signal_fails_the_slot_and_the_single_path(mod, monkeypatch, bad):
-    refs = {"open": {"name": "breakout"}, "invert_open_signal": bad}
-    slots, _ = mod.parse_batch_request(json.dumps({"v": 1, "slots": [{
-        "id": "hl-bad-invert", "strategy": "breakout", "strategy_refs": refs,
-    }]}))
-    envelope, code = mod.run_batch_signal_check("BTC", "1h", slots, adapter=FakeAdapter(), mark_price=100.0)
-    assert code == 1
-    assert "invert_open_signal" in envelope["results"][0]["error"]
+def test_non_boolean_invert_open_signal_fails_the_slot_and_the_single_path(mod, monkeypatch):
+    for bad in ("yes", 1):
+        with _case("bad", bad), monkeypatch.context() as mp:
+            refs = {"open": {"name": "breakout"}, "invert_open_signal": bad}
+            slots, _ = mod.parse_batch_request(json.dumps({"v": 1, "slots": [{
+                "id": "hl-bad-invert", "strategy": "breakout", "strategy_refs": refs,
+            }]}))
+            envelope, code = mod.run_batch_signal_check("BTC", "1h", slots, adapter=FakeAdapter(), mark_price=100.0)
+            assert code == 1
+            assert "invert_open_signal" in envelope["results"][0]["error"]
 
-    out, exit_code = _run_main(mod, monkeypatch, [
-        "breakout", "BTC", "1h", "--mode=paper", "--strategy-refs", json.dumps(refs),
-    ], "", FakeAdapter())
-    assert exit_code == 1
-    payload = json.loads(out)
-    assert "invert_open_signal" in payload["error"]
+            out, exit_code = _run_main(mod, mp, [
+                "breakout", "BTC", "1h", "--mode=paper", "--strategy-refs", json.dumps(refs),
+            ], "", FakeAdapter())
+            assert exit_code == 1
+            payload = json.loads(out)
+            assert "invert_open_signal" in payload["error"]

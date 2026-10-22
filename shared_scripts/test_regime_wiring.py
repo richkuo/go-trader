@@ -5,7 +5,6 @@ import sys
 
 import numpy as np
 import pandas as pd
-import pytest
 
 _SHARED_TOOLS = pathlib.Path(__file__).parent.parent / "shared_tools"
 _REPO_ROOT = _SHARED_TOOLS.parent
@@ -35,19 +34,17 @@ def _make_flat_df(n: int = 100) -> pd.DataFrame:
     return make_ohlcv(close, volume=1000.0, noise=0.05, index=idx)
 
 
-@pytest.mark.parametrize("make_df,expected_label", [
-    (_make_uptrend_df, None),
-    (_make_flat_df, "ranging"),
-])
-def test_latest_regime_output_json_serializable(make_df, expected_label):
-    payload = latest_regime(make_df())
-    parsed = json.loads(json.dumps(payload))
-    assert isinstance(parsed["regime"], str)
-    assert parsed["regime"] in ("trending_up", "trending_down", "ranging")
-    if expected_label is not None:
-        assert parsed["regime"] == expected_label
-    assert isinstance(parsed["score"], float)
-    assert isinstance(parsed["metrics"], dict)
+def test_latest_regime_output_json_serializable():
+    for make_df, expected_label in ((_make_uptrend_df, None), (_make_flat_df, "ranging")):
+        label = make_df.__name__
+        payload = latest_regime(make_df())
+        parsed = json.loads(json.dumps(payload))
+        assert isinstance(parsed["regime"], str), label
+        assert parsed["regime"] in ("trending_up", "trending_down", "ranging"), label
+        if expected_label is not None:
+            assert parsed["regime"] == expected_label, label
+        assert isinstance(parsed["score"], float), label
+        assert isinstance(parsed["metrics"], dict), label
 
 
 def test_composite_json_never_contains_nan_token_when_hurst_omitted():
@@ -164,18 +161,19 @@ def _load_check_options_module():
     return load_module("_check_options_under_test", src_path)
 
 
-@pytest.mark.parametrize("df_factory,expected", [
-    (lambda: _make_uptrend_df(100), ("trending_up", "trending_down", "ranging")),
-    (lambda: _make_uptrend_df(10), None),
-    (lambda: None, None),
-])
-def test_check_options_regime_label_from_df(df_factory, expected):
+def test_check_options_regime_label_from_df():
     module = _load_check_options_module()
-    label = module._regime_label_from_df(df_factory())
-    if expected is None:
-        assert label is None
-    else:
-        assert label in expected
+    cases = [
+        ("uptrend_100", lambda: _make_uptrend_df(100), ("trending_up", "trending_down", "ranging")),
+        ("uptrend_10", lambda: _make_uptrend_df(10), None),
+        ("none", lambda: None, None),
+    ]
+    for case, df_factory, expected in cases:
+        label = module._regime_label_from_df(df_factory())
+        if expected is None:
+            assert label is None, case
+        else:
+            assert label in expected, case
 
 
 def test_check_options_fetch_ohlcv_df_uses_adapter_when_available():

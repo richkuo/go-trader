@@ -55,33 +55,40 @@ def _run_script(positions_or_exc, is_live=True):
     return parsed, exit_code["value"]
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ([{"symbol": "BTC", "quantity": 0.01, "avg_price": 42000.0}],
+NORMALIZE_CASES = [
+    ("one_position", [{"symbol": "BTC", "quantity": 0.01, "avg_price": 42000.0}],
      [{"coin": "BTC", "size": 0.01, "avg_price": 42000.0}]),
-    ([{"symbol": "BTC", "quantity": 0, "avg_price": 0}], []),
-    ([], []),
-])
-def test_positions_are_normalized(raw, expected):
-    out, code = _run_script(raw)
-    assert code == 0
-    assert len(out["positions"]) == len(expected)
-    for got, want in zip(out["positions"], expected):
-        for key, value in want.items():
-            assert got[key] == value
-    assert "error" not in out
+    ("zero_quantity", [{"symbol": "BTC", "quantity": 0, "avg_price": 0}], []),
+    ("empty", [], []),
+]
 
-
-@pytest.mark.parametrize("positions_or_exc,is_live,fragment", [
-    ([], False, "ROBINHOOD"),
-    (RuntimeError("Robinhood 503 Service Unavailable"), True, "503"),
-    (RuntimeError("Robinhood adapter not logged in — cannot fetch crypto positions"),
+FAILURE_CASES = [
+    ("not_live", [], False, "ROBINHOOD"),
+    ("http_503", RuntimeError("Robinhood 503 Service Unavailable"), True, "503"),
+    ("not_logged_in", RuntimeError("Robinhood adapter not logged in — cannot fetch crypto positions"),
      True, "not logged in"),
-])
-def test_failure_paths_emit_error_envelope(positions_or_exc, is_live, fragment):
-    out, code = _run_script(positions_or_exc, is_live=is_live)
-    assert code == 1
-    assert fragment in out["error"]
-    assert out["positions"] == []
+]
+
+
+def test_positions_are_normalized():
+    for case, raw, expected in NORMALIZE_CASES:
+        label = f"test_positions_are_normalized[{case}]"
+        out, code = _run_script(raw)
+        assert code == 0, label
+        assert len(out["positions"]) == len(expected), label
+        for got, want in zip(out["positions"], expected):
+            for key, value in want.items():
+                assert got[key] == value, (label, key)
+        assert "error" not in out, label
+
+
+def test_failure_paths_emit_error_envelope():
+    for case, positions_or_exc, is_live, fragment in FAILURE_CASES:
+        label = f"test_failure_paths_emit_error_envelope[{case}]"
+        out, code = _run_script(positions_or_exc, is_live=is_live)
+        assert code == 1, label
+        assert fragment in out["error"], label
+        assert out["positions"] == [], label
 
 
 if __name__ == "__main__":

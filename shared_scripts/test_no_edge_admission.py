@@ -281,19 +281,22 @@ def test_chande_close_fallback_reference_without_mode_is_refused():
     assert "missing mode" in error
 
 
-@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],
-                                   ["--allow-no-edge"]])
-def test_chande_paper_or_acknowledged_evaluation_runs_offline_and_reports_inputs(extra):
-    proc = _cmo_run([CMO, "BTC", "1h"] + extra)
-    assert proc.returncode == 0, proc.stderr[-2000:]
+def _assert_chande_reports_inputs(proc, case):
+    assert proc.returncode == 0, (case, proc.stderr[-2000:])
     out = _payload(proc)
-    assert out["strategy"] == CMO and not out.get("error")
-    assert out["signal"] in (-1, 0, 1)
+    assert out["strategy"] == CMO and not out.get("error"), case
+    assert out["signal"] in (-1, 0, 1), case
     ind = out["indicators"]
     for key in ("cmo", "cmo_prev", "cmo_gain_sum", "cmo_loss_sum", "cmo_close", "cmo_eval_ts_ms",
                 "cmo_valid", "cmo_reason_code"):
-        assert key in ind, key
-    assert ind["cmo_valid"] == 1.0
+        assert key in ind, (case, key)
+    assert ind["cmo_valid"] == 1.0, case
+    return out
+
+
+@pytest.mark.parametrize("extra", [["--mode", "paper"], ["--mode=live", "--allow-no-edge"], ["--allow-no-edge"]])
+def test_chande_paper_or_acknowledged_evaluation_runs_offline_and_reports_inputs(extra):
+    _assert_chande_reports_inputs(_cmo_run([CMO, "BTC", "1h"] + extra), extra)
 
 
 @pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode=live", "--allow-no-edge"]])
@@ -306,7 +309,7 @@ def test_chande_close_fallback_admitted_in_paper_or_acknowledged(extra):
     assert out["close_strategies"] == [CMO]
 
 
-def test_chande_batch_slots_apply_the_admission_matrix_and_match_solo():
+def test_chande_batch_slots_apply_the_admission_matrix_and_match_the_reported_paper_solo():
     fallback = {"strategy": "breakout", "open_strategy": "breakout", "close_strategies": [CMO]}
     proc = _cmo_batch([
         {"id": "paper", "strategy": CMO, "mode": "paper", "mode_args": ["--mode=paper"]},
@@ -333,7 +336,8 @@ def test_chande_batch_slots_apply_the_admission_matrix_and_match_solo():
     assert "explicit live mode" in results["close-unacked"]["error"]
     assert "missing mode" in results["close-missing"]["error"]
 
-    solo = _payload(_cmo_run([CMO, "BTC", "1h", "--mode=paper"]))
+    solo = _assert_chande_reports_inputs(_cmo_run([CMO, "BTC", "1h", "--mode=paper"]),
+                                         "paper_or_acknowledged_evaluation_runs_offline_and_reports_inputs[--mode=paper]")
     for key in ("signal", "open_action", "close_fraction", "indicators"):
         assert results["paper"].get(key) == solo.get(key)
         assert results["acked"].get(key) == solo.get(key)

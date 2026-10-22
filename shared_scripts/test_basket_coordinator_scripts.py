@@ -86,23 +86,6 @@ def _rank(req):
     return proc.returncode, out
 
 
-def test_ranker_freezes_validated_targets_for_every_eligible_member():
-    code, out = _rank(_request())
-    assert code == 0, out
-    assert out["status"] == "targets"
-    assert out["weights"] == WEIGHTS
-    assert set(out["eligibility"]) == set(MARKS)
-    for sym, ev in out["eligibility"].items():
-        assert ev["status"] == "eligible"
-        assert ev["boundary_ms"] == DEADLINE
-        assert ev["closed_bars"] == 48
-        assert ev["mark"] == _frame(sym)["rows"][59][4]
-    assert out["snapshot_id"] == "test/1" and out["generation"] == 7 and out["cutoff_ms"] == DEADLINE
-    assert len(out["input_fingerprint"]) == 64
-    _, again = _rank(_request())
-    assert again["input_fingerprint"] == out["input_fingerprint"]
-
-
 def _mutated_market(edit):
     market = _market()
     edit(market)
@@ -126,7 +109,6 @@ def _mutated_market(edit):
     ("listing not yet known", lambda: _request(listings={**_request()["listings"], "ETH": {"listed_at_ms": 1, "known_at_ms": DEADLINE + 1}}), "not known at the deadline"),
     ("small population", lambda: _request(min_eligible=5), "below the minimum 5"),
     ("empty short side", lambda: _request(params={"weights": {"BTC": 0.5, "ETH": 0.5}}), "short side is empty"),
-    ("ranker hold", lambda: _request(params={"hold": "regime unclear"}), "regime unclear"),
 ])
 def test_ranker_holds_the_whole_target_set(name, req, reason):
     code, out = _rank(req())
@@ -262,12 +244,30 @@ def test_ranker_refuses_malformed_version_2_requests_before_evaluation(name, req
     assert "the evaluator ran" not in json.dumps(out)
 
 
-def test_ranker_echoes_version_2_and_fingerprints_the_whole_context():
+def test_ranker_freezes_validated_targets_holds_on_a_ranker_hold_and_fingerprints_the_whole_context():
     code, base = _rank(_request())
-    assert code == 0 and base["status"] == "targets" and base["v"] == 2, base
+    assert code == 0, ("freezes_validated_targets", base)
+    assert base["status"] == "targets", "freezes_validated_targets"
+    assert base["weights"] == WEIGHTS, "freezes_validated_targets"
+    assert set(base["eligibility"]) == set(MARKS), "freezes_validated_targets"
+    for sym, ev in base["eligibility"].items():
+        assert ev["status"] == "eligible", ("freezes_validated_targets", sym)
+        assert ev["boundary_ms"] == DEADLINE, ("freezes_validated_targets", sym)
+        assert ev["closed_bars"] == 48, ("freezes_validated_targets", sym)
+        assert ev["mark"] == _frame(sym)["rows"][59][4], ("freezes_validated_targets", sym)
+    assert base["snapshot_id"] == "test/1" and base["generation"] == 7 and base["cutoff_ms"] == DEADLINE, \
+        "freezes_validated_targets"
+    assert len(base["input_fingerprint"]) == 64, "freezes_validated_targets"
+    _, again = _rank(_request())
+    assert again["input_fingerprint"] == base["input_fingerprint"], "freezes_validated_targets: repeat run"
+    assert code == 0 and base["status"] == "targets" and base["v"] == 2, ("echoes_version_2", base)
     code, held = _rank(_request(params={"hold": "regime unclear"}))
-    assert code == 0 and held["status"] == "hold" and held["v"] == 2, held
-    assert len(held["input_fingerprint"]) == 64
+    assert code == 0, ("holds_the_whole_target_set[ranker hold]", held)
+    assert held["status"] == "hold", ("holds_the_whole_target_set[ranker hold]", held)
+    assert "regime unclear" in held["hold_reason"], ("holds_the_whole_target_set[ranker hold]", held["hold_reason"])
+    assert held["weights"] == {}, "holds_the_whole_target_set[ranker hold]"
+    assert code == 0 and held["status"] == "hold" and held["v"] == 2, ("echoes_version_2", held)
+    assert len(held["input_fingerprint"]) == 64, "echoes_version_2"
     for key, value in (("gross_budget_usd", 4100.0), ("max_coin_notional_usd", 1400.0),
                        ("max_transition_net_usd", 300.0), ("lookback_bars", 47), ("min_history_bars", 23)):
         code, out = _rank(_context(**{key: value}))

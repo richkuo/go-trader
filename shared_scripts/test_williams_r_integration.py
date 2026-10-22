@@ -124,24 +124,27 @@ def _frame_from_bars(bars):
     return df.set_index("datetime").sort_index()
 
 
+def _assert_registry_decision(out, bars, signal, action, code, case):
+    expected = _strategies().apply_strategy(NAME, _frame_from_bars(bars), None).iloc[-1]
+    assert out["signal"] == signal, case
+    assert out["open_action"] == action, case
+    assert out["close_strategies"] == ["tiered_tp_atr"], case
+    ind = out["indicators"]
+    assert ind["wr_reason_code"] == code == int(expected["wr_reason_code"]), case
+    assert ind["wr"] == round(float(expected["wr"]), 6), case
+    assert ind["wr_prev"] == round(float(expected["wr_prev"]), 6), case
+    assert ind["wr_lookback"] == 14 and ind["wr_oversold"] == -80.0 and ind["wr_overbought"] == -20.0, case
+    assert ind["wr_valid"] == 1.0, case
+    assert ind["wr_eval_ts_ms"] == float(T0 + len(bars) * H - 1), case
+
+
 @pytest.mark.parametrize("bars,signal,action,code", [
-    (_with_long_cross(120), 1, "long", 1),
     (_with_short_cross(120), -1, "short", -1),
     (_zigzag(120), 0, "none", 0),
 ])
 def test_explicit_paper_check_emits_the_registry_decision_and_explanation(bars, signal, action, code):
     out = _ok(_solo(bars, ["--mode=paper", "--strategy-refs", json.dumps(TP_REFS)]))
-    expected = _strategies().apply_strategy(NAME, _frame_from_bars(bars), None).iloc[-1]
-    assert out["signal"] == signal
-    assert out["open_action"] == action
-    assert out["close_strategies"] == ["tiered_tp_atr"]
-    ind = out["indicators"]
-    assert ind["wr_reason_code"] == code == int(expected["wr_reason_code"])
-    assert ind["wr"] == round(float(expected["wr"]), 6)
-    assert ind["wr_prev"] == round(float(expected["wr_prev"]), 6)
-    assert ind["wr_lookback"] == 14 and ind["wr_oversold"] == -80.0 and ind["wr_overbought"] == -20.0
-    assert ind["wr_valid"] == 1.0
-    assert ind["wr_eval_ts_ms"] == float(T0 + len(bars) * H - 1)
+    _assert_registry_decision(out, bars, signal, action, code, action)
 
 
 @pytest.mark.parametrize("last_close,want_wr,want_signal", [
@@ -208,7 +211,7 @@ def test_invalid_parameters_fail_preflight_before_any_candle_fetch(params):
     assert "Fetching" not in proc.stderr
 
 
-def test_batch_preflight_isolates_invalid_slots_and_keeps_valid_slots():
+def test_batch_preflight_isolates_invalid_slots_and_keeps_valid_slots_matching_the_long_paper_decision():
     bars = _with_long_cross(120)
     bad_close = {"open": {"name": "breakout"}, "closes": [{"name": NAME, "params": {"lookback": 0}}]}
     slots = [
@@ -227,6 +230,8 @@ def test_batch_preflight_isolates_invalid_slots_and_keeps_valid_slots():
     assert f"close strategy '{NAME}' has invalid parameters" in results["bad-close"]["error"]
     assert not results["good"].get("error")
     solo = _ok(_solo(bars, ["--mode=paper", "--strategy-refs", json.dumps(TP_REFS)]))
+    _assert_registry_decision(solo, bars, 1, "long", 1,
+                              "explicit_paper_check_emits_the_registry_decision_and_explanation[long]")
     for key in ("signal", "open_action", "close_fraction", "indicators"):
         assert results["good"][key] == solo[key]
 

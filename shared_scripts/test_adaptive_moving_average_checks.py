@@ -234,39 +234,37 @@ def test_batch_refuses_a_non_boolean_acknowledgement():
     assert "allow_no_edge must be a JSON boolean" in out["error"]
 
 
-def test_check_decision_matches_the_evaluator_on_the_200_row_frame_at_full_precision():
-    bars = _bars(260, H, forming_jump=8.0)
-    out = _check(bars, closed=False, extra=["--strategy-refs", _refs()])
-    df = _strategies().apply_strategy(NAME, _frame_df(_rows(bars[-200:])), PARAMS)
-    last = df.iloc[-1]
-    assert out["signal"] == int(last["signal"]) == 1 and out["open_action"] == "long"
-    for col in AMA_COLUMNS:
-        assert out["indicators"][col] == float(last[col])
-    assert out["indicator_labels"]["ama_reason"] == last["ama_reason"] == "entry_long"
-    assert "ama_eval_ts_ms" not in out["indicators"]
-    assert out["indicators"]["ama_close"] - out["indicators"]["ama_value"] > 0
-    assert out["indicators"]["ama_prev_close"] <= out["indicators"]["ama_prev_value"]
-    assert out["indicators"]["ama_slope"] > 0
-
-
-def test_forming_bar_cannot_create_a_closed_bar_entry():
+def test_check_decision_matches_the_evaluator_at_full_precision_and_a_forming_bar_cannot_create_a_closed_bar_entry():
     bars = _bars(260, H, forming_jump=8.0)
     extra = ["--strategy-refs", _refs()]
-    disabled = _check(bars, closed=False, extra=extra)
+    out = _check(bars, closed=False, extra=extra)
+    case = "check_decision_matches_the_evaluator_on_the_200_row_frame_at_full_precision"
+    df = _strategies().apply_strategy(NAME, _frame_df(_rows(bars[-200:])), PARAMS)
+    last = df.iloc[-1]
+    assert out["signal"] == int(last["signal"]) == 1 and out["open_action"] == "long", case
+    for col in AMA_COLUMNS:
+        assert out["indicators"][col] == float(last[col]), (case, col)
+    assert out["indicator_labels"]["ama_reason"] == last["ama_reason"] == "entry_long", case
+    assert "ama_eval_ts_ms" not in out["indicators"], case
+    assert out["indicators"]["ama_close"] - out["indicators"]["ama_value"] > 0, case
+    assert out["indicators"]["ama_prev_close"] <= out["indicators"]["ama_prev_value"], case
+    assert out["indicators"]["ama_slope"] > 0, case
+    case = "forming_bar_cannot_create_a_closed_bar_entry"
+    disabled = out
     enabled = _check(bars, closed=True, extra=extra)
     calm = [dict(b) for b in bars]
     calm[-1] = dict(calm[-1], h=bars[-2]["c"] + 30.0, l=bars[-2]["c"] - 30.0, c=bars[-2]["c"] - 20.0)
     calm_out = _check(calm, closed=True, extra=extra)
-    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
-    assert enabled["signal"] == 0 and enabled["open_action"] == "none"
-    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
-    assert enabled["closed_bar_decision"]["held"] is False
-    assert enabled["indicators"] == calm_out["indicators"]
-    assert enabled["closed_bar_decision"]["input_sha256"] == calm_out["closed_bar_decision"]["input_sha256"]
+    assert disabled["signal"] == 1 and disabled["open_action"] == "long", case
+    assert enabled["signal"] == 0 and enabled["open_action"] == "none", case
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1, case
+    assert enabled["closed_bar_decision"]["held"] is False, case
+    assert enabled["indicators"] == calm_out["indicators"], case
+    assert enabled["closed_bar_decision"]["input_sha256"] == calm_out["closed_bar_decision"]["input_sha256"], case
     closed_df = _strategies().apply_strategy(NAME, _frame_df(_rows(bars[:-1]), "native_close_inclusive"), PARAMS)
-    assert enabled["indicators"]["ama_reason_code"] == float(closed_df["ama_reason_code"].iloc[-1]) == 0.0
-    assert enabled["indicator_labels"]["ama_reason"] == "no_cross"
-    assert enabled["indicators"]["ama_eval_ts_ms"] == float(bars[-2]["t"])
+    assert enabled["indicators"]["ama_reason_code"] == float(closed_df["ama_reason_code"].iloc[-1]) == 0.0, case
+    assert enabled["indicator_labels"]["ama_reason"] == "no_cross", case
+    assert enabled["indicators"]["ama_eval_ts_ms"] == float(bars[-2]["t"]), case
 
 
 @pytest.mark.parametrize("offset,dropped", [(-1, 1), (0, 0), (1, 0)])

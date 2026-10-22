@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "shared_scripts"
 FIXTURE = SCRIPTS / "testdata" / "robinhood_offline"
 NOISE_MARKER = "robinhood offline stub stdout noise"
-MODES = ("login_ok", "login_rejected", "transport_error")
+MODES = ("login_ok",)
 REF_ID = "11111111-1111-4111-8111-111111111111"
 
 CASES = [
@@ -103,16 +103,10 @@ def test_robinhood_script_writes_one_json_document(case, mode, tmp_path):
 
     assert f"robinhood offline stub active: {mode}" in proc.stderr, detail
     assert "Starting login process..." in proc.stderr, detail
-    if mode == "login_rejected":
-        assert "Login failed. Check credentials and try again." in proc.stderr, detail
-    elif mode == "transport_error":
-        assert "Error in request_post:" in proc.stderr, detail
-        assert "Login failed." in proc.stderr, detail
-    else:
-        assert "Login failed" not in proc.stderr, detail
-        assert ("503 Server Error" in proc.stderr) is call_after_login, detail
-        if _case_id.startswith("execute_"):
-            assert "HTTP status 503" in proc.stderr, detail
+    assert "Login failed" not in proc.stderr, detail
+    assert ("503 Server Error" in proc.stderr) is call_after_login, detail
+    if _case_id.startswith("execute_"):
+        assert "HTTP status 503" in proc.stderr, detail
     if script_guard:
         assert NOISE_MARKER in proc.stderr, detail
     if _case_id in READS_FAIL_CLOSED:
@@ -188,6 +182,11 @@ MODE_STDERR = {
     "transport_error": ("Error in request_post: (detail withheld)",),
 }
 
+ONE_DOCUMENT_LOGIN_STDERR = {
+    "login_rejected": ("Login failed. Check credentials and try again.",),
+    "transport_error": ("Error in request_post:", "Login failed."),
+}
+
 FAILED_LOGIN_PARAMS = [
     pytest.param(case, mode, id=f"{case[0]}-{mode}")
     for case in CASES
@@ -225,7 +224,7 @@ def _login_reason(doc, stderr):
 
 
 @pytest.mark.parametrize("case,mode", FAILED_LOGIN_PARAMS)
-def test_failed_login_refuses_live_work_and_keeps_paper_logged_out(case, mode, tmp_path):
+def test_failed_login_writes_one_json_document_refuses_live_work_and_keeps_paper_logged_out(case, mode, tmp_path):
     case_id = case[0]
     proc, made = _run_logged(case, mode, tmp_path)
     detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\nrequests:\n{made}"
@@ -233,6 +232,18 @@ def test_failed_login_refuses_live_work_and_keeps_paper_logged_out(case, mode, t
     doc = _refuse_constant_doc(proc.stdout)
     assert isinstance(doc, dict), detail
     assert f"robinhood offline stub active: {mode}" in proc.stderr, detail
+    if mode in ONE_DOCUMENT_LOGIN_STDERR:
+        origin = f"test_robinhood_script_writes_one_json_document[{case_id}-{mode}]\n" + detail
+        assert proc.returncode in (0, 1), origin
+        assert "Starting login process..." in proc.stderr, origin
+        for want in ONE_DOCUMENT_LOGIN_STDERR[mode]:
+            assert want in proc.stderr, origin
+        if case[4]:
+            assert NOISE_MARKER in proc.stderr, origin
+        if case_id in READS_FAIL_CLOSED:
+            assert proc.returncode == 1, origin
+            assert doc.get("error"), origin
+            assert not (doc.get("close") or {}).get("already_flat"), origin
     leaked = [s for s in SECRETS if s in proc.stdout or s in proc.stderr]
     assert leaked == [], detail
     robinhood_requests = [r for r in made if "robinhood.com" in r["url"]]

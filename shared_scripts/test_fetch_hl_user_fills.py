@@ -1,5 +1,6 @@
 
 import builtins
+import contextlib
 import importlib.util
 import json
 import os
@@ -8,6 +9,14 @@ from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@contextlib.contextmanager
+def _case(*label):
+    try:
+        yield
+    except (Exception, pytest.fail.Exception) as exc:
+        raise AssertionError(f"case {label!r} failed: {exc}") from exc
 
 
 def _run_script(pages_or_exc, argv, account_address="0xabc"):
@@ -130,18 +139,20 @@ class TestMultiPage:
         assert out["by_oid"]["222"]["fee"] == pytest.approx(0.20)
 
 
-@pytest.mark.parametrize("pages_or_exc,argv,account_address,fragments", [
-    ([], ["--since-ms=500"], "", ["HYPERLIQUID_ACCOUNT_ADDRESS"]),
-    ([], ["--since-ms=0"], "0xabc", ["since-ms"]),
-    (RuntimeError("indexer down"), ["--since-ms=500"], "0xabc",
-     ["user_fills_by_time", "indexer down"]),
-])
-def test_error_paths_exit_one_with_json_envelope(pages_or_exc, argv, account_address, fragments):
-    out, code = _run_script(pages_or_exc, argv, account_address=account_address)
-    assert code == 1
-    for fragment in fragments:
-        assert fragment in out["error"]
-    assert out["by_oid"] == {}
+def test_error_paths_exit_one_with_json_envelope():
+    cases = [
+        ([], ["--since-ms=500"], "", ["HYPERLIQUID_ACCOUNT_ADDRESS"]),
+        ([], ["--since-ms=0"], "0xabc", ["since-ms"]),
+        (RuntimeError("indexer down"), ["--since-ms=500"], "0xabc",
+         ["user_fills_by_time", "indexer down"]),
+    ]
+    for pages_or_exc, argv, account_address, fragments in cases:
+        with _case(argv, account_address, fragments):
+            out, code = _run_script(pages_or_exc, argv, account_address=account_address)
+            assert code == 1
+            for fragment in fragments:
+                assert fragment in out["error"]
+            assert out["by_oid"] == {}
 
 
 class TestNoFills:

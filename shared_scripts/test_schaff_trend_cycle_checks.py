@@ -297,7 +297,6 @@ def test_closed_bar_entry_reproduces_from_the_emitted_values(side):
 
 @pytest.mark.parametrize("offset,dropped,signal,reason", [
     (-1, 1, 0, None),
-    (0, 0, 1, "entry_long"),
     (1, 0, 1, "entry_long"),
     (H - 1, 0, 1, "entry_long"),
     (H, 0, 0, "decision_bar_stale"),

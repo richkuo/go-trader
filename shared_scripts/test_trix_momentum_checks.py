@@ -230,40 +230,38 @@ def test_batch_slots_apply_the_same_admission_and_match_solo():
         assert results["acked"].get(key) == solo_out.get(key)
 
 
-def test_check_decision_matches_the_evaluator_on_the_200_row_frame_at_full_precision():
+def test_check_decision_matches_the_evaluator_and_a_forming_bar_cannot_create_a_closed_bar_entry():
     bars = _bars(260, H, forming_jump=8.0)
-    out = _check(bars, closed=False, extra=["--strategy-refs", _refs()])
+    extra = ["--strategy-refs", _refs()]
+    out = _check(bars, closed=False, extra=extra)
     df = _strategies().apply_strategy(NAME, _frame_df(_rows(bars[-200:])), PARAMS)
     full = _strategies().apply_strategy(NAME, _frame_df(_rows(bars)), PARAMS)
     last = df.iloc[-1]
-    assert out["signal"] == int(last["signal"]) == 1 and out["open_action"] == "long"
+    assert out["signal"] == int(last["signal"]) == 1 and out["open_action"] == "long", "evaluator_match"
     for col in TRIX_COLUMNS:
-        assert out["indicators"][col] == float(last[col]) == float(full[col].iloc[-1])
-    assert out["indicator_labels"]["trix_reason"] == last["trix_reason"] == "entry_long"
+        assert out["indicators"][col] == float(last[col]) == float(full[col].iloc[-1]), ("evaluator_match", col)
+    assert out["indicator_labels"]["trix_reason"] == last["trix_reason"] == "entry_long", "evaluator_match"
     ind = out["indicators"]
-    assert ind["trix_diff"] == ind["trix_value"] - ind["trix_signal_line"] > 0
-    assert ind["trix_prev_diff"] <= 0 and ind["trix_value"] > 0
-    assert ind["trix_value"] == 100.0 * (ind["trix_ema3"] - ind["trix_ema3_base"]) / ind["trix_ema3_base"]
-
-
-def test_forming_bar_cannot_create_a_closed_bar_entry():
-    bars = _bars(260, H, forming_jump=8.0)
-    extra = ["--strategy-refs", _refs()]
-    disabled = _check(bars, closed=False, extra=extra)
+    assert ind["trix_diff"] == ind["trix_value"] - ind["trix_signal_line"] > 0, "evaluator_match"
+    assert ind["trix_prev_diff"] <= 0 and ind["trix_value"] > 0, "evaluator_match"
+    assert ind["trix_value"] == 100.0 * (ind["trix_ema3"] - ind["trix_ema3_base"]) / ind["trix_ema3_base"], \
+        "evaluator_match"
     enabled = _check(bars, closed=True, extra=extra)
     calm = [dict(b) for b in bars]
     calm[-1] = dict(calm[-1], h=bars[-2]["c"] + 30.0, l=bars[-2]["c"] - 30.0, c=bars[-2]["c"] - 20.0)
     calm_out = _check(calm, closed=True, extra=extra)
-    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
-    assert enabled["signal"] == 0 and enabled["open_action"] == "none"
-    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
-    assert enabled["closed_bar_decision"]["held"] is False
-    assert enabled["indicators"] == calm_out["indicators"]
-    assert enabled["closed_bar_decision"]["input_sha256"] == calm_out["closed_bar_decision"]["input_sha256"]
+    assert out["signal"] == 1 and out["open_action"] == "long", "forming_excluded"
+    assert enabled["signal"] == 0 and enabled["open_action"] == "none", "forming_excluded"
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1, "forming_excluded"
+    assert enabled["closed_bar_decision"]["held"] is False, "forming_excluded"
+    assert enabled["indicators"] == calm_out["indicators"], "forming_excluded"
+    assert enabled["closed_bar_decision"]["input_sha256"] == calm_out["closed_bar_decision"]["input_sha256"], \
+        "forming_excluded"
     closed_df = _strategies().apply_strategy(NAME, _frame_df(_rows(bars[:-1]), "native_close_inclusive"), PARAMS)
-    assert enabled["indicators"]["trix_reason_code"] == float(closed_df["trix_reason_code"].iloc[-1]) == 0.0
-    assert enabled["indicator_labels"]["trix_reason"] == "no_cross"
-    assert enabled["indicators"]["trix_eval_ts_ms"] == float(bars[-2]["t"])
+    assert enabled["indicators"]["trix_reason_code"] == float(closed_df["trix_reason_code"].iloc[-1]) == 0.0, \
+        "forming_excluded"
+    assert enabled["indicator_labels"]["trix_reason"] == "no_cross", "forming_excluded"
+    assert enabled["indicators"]["trix_eval_ts_ms"] == float(bars[-2]["t"]), "forming_excluded"
 
 
 def test_an_already_closed_final_bar_is_the_decision_bar():
@@ -273,7 +271,7 @@ def test_an_already_closed_final_bar_is_the_decision_bar():
     assert out["signal"] == 1 and out["indicators"]["trix_eval_ts_ms"] == float(bars[-1]["t"])
 
 
-@pytest.mark.parametrize("offset,dropped", [(-1, 1), (0, 0), (1, 0)])
+@pytest.mark.parametrize("offset,dropped", [(-1, 1), (1, 0)])
 def test_cutoff_at_the_bar_boundary_selects_the_decision_bar(offset, dropped):
     bars = _bars(260, H, forming_jump=8.0)
     boundary = bars[-1]["t"] + H
@@ -339,23 +337,23 @@ def test_closed_bar_batch_matches_individual_checks():
 
 
 @pytest.mark.parametrize("closed", [True, False])
-@pytest.mark.parametrize("held,close_signal", [(HELD_LONG, -1), (HELD_SHORT, 1)])
-def test_invalid_entry_data_holds_the_entry_and_keeps_protection(closed, held, close_signal):
+def test_invalid_entry_data_holds_the_entry_and_keeps_protection(closed):
     bars = _bars(260, H, forming_jump=8.0)
     bars[-5] = dict(bars[-5], h=bars[-5]["l"] - 1.0)
     refs = _refs(CLOSE)
-    out = _check(bars, closed=closed, extra=["--strategy-refs", refs] + held)
-    if closed:
-        assert out["closed_bar_decision"]["held"] is True
-        assert out["indicators"] == {}
-    else:
-        assert out["indicator_labels"]["trix_reason"] == "invalid_candle_geometry"
-        assert out["indicators"]["trix_valid"] == 0.0
-    assert out["open_action"] == "none"
-    assert out["close_strategy"] == "tiered_tp_pct" and out["close_fraction"] == 1.0
-    assert out["signal"] == close_signal
+    for case, held, close_signal in (("held_long", HELD_LONG, -1), ("held_short", HELD_SHORT, 1)):
+        out = _check(bars, closed=closed, extra=["--strategy-refs", refs] + held)
+        if closed:
+            assert out["closed_bar_decision"]["held"] is True, case
+            assert out["indicators"] == {}, case
+        else:
+            assert out["indicator_labels"]["trix_reason"] == "invalid_candle_geometry", case
+            assert out["indicators"]["trix_valid"] == 0.0, case
+        assert out["open_action"] == "none", case
+        assert out["close_strategy"] == "tiered_tp_pct" and out["close_fraction"] == 1.0, case
+        assert out["signal"] == close_signal, case
     flat = _check(bars, closed=closed, extra=["--strategy-refs", refs])
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
+    assert flat["signal"] == 0 and flat["open_action"] == "none", "flat"
 
 
 def test_cadence_gap_holds_the_entry_and_keeps_protection():

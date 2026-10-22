@@ -98,22 +98,43 @@ def test_missing_mode_is_refused_for_a_close_fallback_reference():
     assert f"close strategy '{NAME}' is edge_status=no_edge" in payload["error"] and "missing mode" in payload["error"]
 
 
-def test_explicit_paper_check_decides_on_the_closed_bar_for_the_next_calendar_cell():
+def test_explicit_paper_check_decides_on_the_closed_bar_and_anchors_the_frame_hold_and_mixed_batch():
     bars = _bars()
     out = _check(bars)
+    solo = out
+    case = "explicit_paper_check_decides_on_the_closed_bar_for_the_next_calendar_cell"
     meta = out["closed_bar_decision"]
-    assert meta["held"] is False and meta["forming_rows_dropped"] == 1
-    assert out["signal"] == 1 and out["open_action"] == "long"
-    assert out["indicator_labels"]["cce_reason"] == "entry_long"
+    assert meta["held"] is False and meta["forming_rows_dropped"] == 1, case
+    assert out["signal"] == 1 and out["open_action"] == "long", case
+    assert out["indicator_labels"]["cce_reason"] == "entry_long", case
     ind = out["indicators"]
-    assert ind["cce_valid"] == 1.0 and ind["cce_eval_ts_ms"] == float(bars[-2]["t"])
-    assert ind["cce_next_open_ms"] == float(bars[-1]["t"]) and ind["cce_next_cell"] == 14.0
-    assert ind["cce_decision_boundary_ms"] == float(bars[-2]["t"] + H)
-    assert ind["cce_decision_cutoff_ms"] == float(bars[-1]["t"] + H // 2)
-    assert ind["cce_family_size"] == 336.0 and ind["cce_long_lower_bound"] > 0.0
-    assert ind["cce_long_net_edge"] == ind["cce_gross_mean"] - SMALL["cost_hurdle"]
-    assert ind["cce_refit_boundary_ms"] <= ind["cce_decision_boundary_ms"]
-    assert ind["cce_gross_mean"] != round(ind["cce_gross_mean"], 6)
+    assert ind["cce_valid"] == 1.0 and ind["cce_eval_ts_ms"] == float(bars[-2]["t"]), case
+    assert ind["cce_next_open_ms"] == float(bars[-1]["t"]) and ind["cce_next_cell"] == 14.0, case
+    assert ind["cce_decision_boundary_ms"] == float(bars[-2]["t"] + H), case
+    assert ind["cce_decision_cutoff_ms"] == float(bars[-1]["t"] + H // 2), case
+    assert ind["cce_family_size"] == 336.0 and ind["cce_long_lower_bound"] > 0.0, case
+    assert ind["cce_long_net_edge"] == ind["cce_gross_mean"] - SMALL["cost_hurdle"], case
+    assert ind["cce_refit_boundary_ms"] <= ind["cce_decision_boundary_ms"], case
+    assert ind["cce_gross_mean"] != round(ind["cce_gross_mean"], 6), case
+    case = "without_closed_bar_decisions_the_check_frame_holds_every_entry"
+    out = _check(bars, closed=False)
+    assert "closed_bar_decision" not in out, case
+    assert out["signal"] == 0 and out["open_action"] == "none", case
+    assert out["indicator_labels"]["cce_reason"] == "undeclared_timing", case
+    assert solo["signal"] == 1, case
+    case = "a_mixed_batch_evaluates_valid_peers_and_matches_the_solo_check"
+    good = {"id": "good", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"],
+            "closed_bar_decisions": True, "strategy_refs": json.loads(_refs(SMALL))}
+    bad = {"id": "bad", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"],
+           "closed_bar_decisions": True, "params": {**SMALL, "confidence": 1.5}}
+    proc = _run(["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "800", "--market-stdin"],
+                {"v": 2, "slots": [good, bad], "market": _market(bars)})
+    assert proc.returncode == 1, case
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    assert results["bad"]["signal"] == 0 and "has invalid parameters" in results["bad"]["error"], case
+    for key in ("signal", "open_action", "close_fraction", "indicators", "indicator_labels", "closed_bar_decision"):
+        assert results["good"].get(key) == solo.get(key), (case, key)
+    assert solo["signal"] == 1, case
 
 
 def test_the_production_frame_and_default_parameters_hold_for_missing_training_history():
@@ -123,15 +144,6 @@ def test_the_production_frame_and_default_parameters_hold_for_missing_training_h
     assert out["signal"] == 0 and out["open_action"] == "none"
     assert out["indicator_labels"]["cce_reason"] == "insufficient_history"
     assert out["indicators"]["cce_required_bars"] >= 4368.0 and out["indicators"]["cce_history_bars"] == 200.0
-
-
-def test_without_closed_bar_decisions_the_check_frame_holds_every_entry():
-    bars = _bars()
-    out = _check(bars, closed=False)
-    assert "closed_bar_decision" not in out
-    assert out["signal"] == 0 and out["open_action"] == "none"
-    assert out["indicator_labels"]["cce_reason"] == "undeclared_timing"
-    assert _check(bars)["signal"] == 1
 
 
 def test_an_entry_data_hold_keeps_close_management_for_an_open_position():
@@ -163,23 +175,6 @@ def test_a_cadence_mismatch_is_refused_before_any_candle_fetch():
     out = _payload(proc)
     assert out["signal"] == 0 and "registry default expected_interval_ms=3600000" in out["error"]
     assert "Fetching BTC" not in proc.stderr
-
-
-def test_a_mixed_batch_evaluates_valid_peers_and_matches_the_solo_check():
-    bars = _bars()
-    good = {"id": "good", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"],
-            "closed_bar_decisions": True, "strategy_refs": json.loads(_refs(SMALL))}
-    bad = {"id": "bad", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"],
-           "closed_bar_decisions": True, "params": {**SMALL, "confidence": 1.5}}
-    proc = _run(["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "800", "--market-stdin"],
-                {"v": 2, "slots": [good, bad], "market": _market(bars)})
-    assert proc.returncode == 1
-    results = {r["id"]: r for r in _payload(proc)["results"]}
-    assert results["bad"]["signal"] == 0 and "has invalid parameters" in results["bad"]["error"]
-    solo = _check(bars)
-    for key in ("signal", "open_action", "close_fraction", "indicators", "indicator_labels", "closed_bar_decision"):
-        assert results["good"].get(key) == solo.get(key), key
-    assert solo["signal"] == 1
 
 
 @pytest.mark.parametrize("effect", [0.0])

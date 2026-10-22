@@ -240,10 +240,12 @@ def _count(requests_made, prefix, method="GET"):
 
 @pytest.mark.parametrize("shape", sorted(FAILED_READS))
 def test_failed_holdings_read_fails_fetch_script(tmp_path, shape):
-    code, payload, _ = _run(tmp_path, FETCH, [], FAILED_READS[shape])
+    code, payload, made = _run(tmp_path, FETCH, [], FAILED_READS[shape])
     assert code == 1
     assert isinstance(payload.get("error"), str) and payload["error"]
     assert payload["positions"] == []
+    if shape == "page_cap_exceeded":
+        assert _count(made, HOLDINGS) == 50, "test_page_cap_stops_after_fifty_holdings_requests"
 
 
 @pytest.mark.parametrize("shape", sorted(FAILED_READS))
@@ -254,22 +256,6 @@ def test_failed_holdings_read_fails_close_script(tmp_path, shape):
     assert payload["close"].get("already_flat") is None
     assert _count(made, CURRENCY_PAIRS) == 0
     assert _count(made, ORDERS, "POST") == 0
-
-
-def test_page_cap_stops_after_fifty_holdings_requests(tmp_path):
-    code, payload, made = _run(tmp_path, FETCH, [], FAILED_READS["page_cap_exceeded"])
-    assert code == 1
-    assert payload["positions"] == []
-    assert _count(made, HOLDINGS) == 50
-
-
-def test_unlogged_library_session_sends_no_holdings_request(tmp_path):
-    for script, args in ((FETCH, []), (CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"])):
-        code, payload, made = _run(tmp_path, script, args, _single([BTC]), login=LOGIN_REFUSED)
-        assert code == 1
-        assert isinstance(payload.get("error"), str) and payload["error"]
-        assert _count(made, HOLDINGS) == 0
-        assert _count(made, CURRENCY_PAIRS) == 0
 
 
 def test_complete_two_page_read_returns_every_positive_holding(tmp_path):
