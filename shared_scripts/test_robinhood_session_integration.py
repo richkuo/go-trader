@@ -505,6 +505,68 @@ def test_bootstrap_answers_the_challenge_and_clears_the_latch(tmp_path):
     assert _token_posts(box.requests()) == [], detail
 
 
+def _run_bootstrap(box):
+    import pty
+
+    master, slave = pty.openpty()
+    try:
+        return subprocess.run(
+            [sys.executable, str(SCRIPTS / "robinhood_login.py")],
+            cwd=str(REPO_ROOT),
+            env=box.env(extra={"RH_OFFLINE_STUB_FAST_SLEEP": "1"}),
+            stdin=slave,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    finally:
+        os.close(slave)
+        os.close(master)
+
+
+def _write_latch(box, identity, mode=0o600):
+    fd = os.open(box.file("verification"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps({"session_sha256": identity, "since": "2026-10-01T00:00:00Z"}))
+    os.chmod(box.file("verification"), mode)
+
+
+@pytest.mark.parametrize("latch_mode,check,token,want_exit", [
+    pytest.param(0o600, EMPTY_PAGE, None, 0, id="matching_latch_session_accepted"),
+    pytest.param(0o644, EMPTY_PAGE, None, 0, id="unreadable_latch_session_accepted"),
+    pytest.param(0o600, {"status": 401, "json": {"detail": "expired"}}, TOKEN_REFUSED, 1, id="matching_latch_login_refused"),
+])
+def test_bootstrap_with_a_stored_session_clears_the_latch_only_on_success(tmp_path, latch_mode, check, token, want_exit):
+    box = Box(tmp_path)
+    stored = box.seed_session()
+    _write_latch(box, hashlib.sha256(stored).hexdigest(), latch_mode)
+    routes = {"GET " + POSITIONS_CHECK: [check]}
+    if token is not None:
+        routes["POST " + TOKEN_URL] = [token]
+    box.set_routes(routes)
+    proc = _run_bootstrap(box)
+    made = box.requests()
+    detail = _detail(proc, box)
+    assert proc.returncode == want_exit, detail
+    assert box.file("pickle").read_bytes() == stored, detail
+    assert _no_secrets(proc) == [], detail
+    if want_exit != 0:
+        assert box.file("verification").exists(), detail
+        assert len(_token_posts(made)) == 1, detail
+        return
+    assert not box.file("verification").exists(), detail
+    assert _token_posts(made) == [], detail
+
+    box.reset_log()
+    box.set_routes({"GET " + POSITIONS_CHECK: [EMPTY_PAGE], "GET " + HOLDINGS: [EMPTY_PAGE]})
+    after = _run(box, FETCH)
+    after_made = box.requests()
+    detail = _detail(after, box)
+    assert after.returncode == 0, detail
+    assert _count(after_made, POSITIONS_CHECK) == 1, detail
+    assert _token_posts(after_made) == [], detail
+
+
 def test_bootstrap_refuses_without_a_terminal(tmp_path):
     box = Box(tmp_path)
     proc = _run(box, ["robinhood_login.py"])

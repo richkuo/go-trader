@@ -1201,13 +1201,13 @@ def _finish_login(folder, attempt):
         except (ValueError, OSError) as e:
             _reset_library_session()
             raise _session_refusal(f"robin_stocks logged in but the session was not stored: {e}") from None
+        _remove_file(folder, attempt["latch_name"])
         if staged == attempt["pre_bytes"]:
             return "reused"
         os.replace(staged_path, os.path.join(folder, session_name))
         _fsync_folder(folder)
         if session["device_token"] != attempt["stored_device"]:
             _write_private_file(folder, attempt["device_name"], (session["device_token"] + "\n").encode("ascii"))
-        _remove_file(folder, attempt["latch_name"])
         return "stored"
     finally:
         shutil.rmtree(attempt["stage"], ignore_errors=True)
