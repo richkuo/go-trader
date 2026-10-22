@@ -23,7 +23,7 @@ Research-only, production-refused candidate. Delivery 1 (PR 1837) supplies the t
 | Venue meta | `data/venue_meta.json` (size decimals, max leverage, margin tables) |
 | Bars and ATR | one-minute mid bars derived from archive books by the frozen rule |
 
-Raw objects (1.25 GB) and derived series stay in `data/archive/`, which git ignores. `data/archive_manifest.json` pins the S3 key, size and sha256 of every object; absent keys are listed as absent. `data/import_report.json` holds the importer counts and the sha256 of every derived day file, and `run` checks those hashes before scoring.
+Raw objects (1.25 GB) live in the shared archive cache outside the checkout (`backtest/archive_cache.py`): `$GO_TRADER_ARCHIVE_CACHE_DIR`, else `${XDG_CACHE_HOME:-~/.cache}/go-trader/archive`, at `<root>/hyperliquid-archive/<S3 key>`. Every worktree reads the same files, and removing a worktree does not touch them. Derived series stay in `data/archive/series/`, which git ignores. `data/archive_manifest.json` pins the S3 key, size and sha256 of every object; absent keys are listed as absent. `import` and `run` read each book and asset-context object only after its size and sha256 match the manifest, and a missing or altered `present` object refuses the command. `data/import_report.json` holds the importer counts and the sha256 of every derived day file, and `run` checks those hashes before scoring.
 
 ## Commands
 
@@ -36,7 +36,9 @@ uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.
 uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.py render
 ```
 
-`fetch`, `fetch-funding` and `fetch-venue` rewrite the pinned files. A fresh `fetch` must reproduce the manifest sha256 values, or `import` refuses the objects.
+`fetch` reads the committed manifest and never writes it. It downloads only the `present` objects that the cache does not hold, each to a unique temporary file that it verifies against the manifest before it puts the file at its final path (read-only). A cached file that does not match refuses with its key and both hashes, and `fetch` never replaces it. An `absent` key that the archive now holds also refuses. `fetch --refreeze` downloads the window and writes a new manifest only when no manifest file exists. `fetch-funding` and `fetch-venue` rewrite their pinned files.
+
+Issue 1853 changed `run_study.py` and `backtest/book_archive.py` after scoring, to read the raw objects from the shared cache. `candidate_spec.json` stays frozen, so its `storage` line still names the old folder. A `run` on the cached data reproduced the committed `results.json` in every field except `source_commit`, `source_tree_dirty` and `source_sha256`; the committed file stays historical.
 
 The scoring run used local commit `6c7a7080`, which became `d3293502` after rebasing onto newer `main` commits that do not touch the study. The working tree differed from it only in `SKILL.md` and `docs/research/1635-l2-book-contract.md`. The sha256 values that `results.json` records for every scoring source match `d3293502`.
 
