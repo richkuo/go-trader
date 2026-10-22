@@ -132,19 +132,28 @@ func startEgress(cfg *Config, configPath string, feedRole bool) int {
 				interval = DefaultAlertThrottleInterval
 			}
 			now := time.Now().UTC()
-			if egressRefusalDMDue(dmPath, reason, interval, now) {
-				notifier, cleanup := buildNotifierFromConfig(cfg)
-				sendStartupRefusalDM(notifier, "Egress proxy", msg)
-				cleanup()
-				recordEgressRefusalDM(dmPath, reason, now)
-			} else {
-				fmt.Fprintf(os.Stderr, "[egress] the owner already has this refusal message; the next one goes out after %s or when the reason changes\n", interval)
-			}
+			notifyEgressRefusal(cfg, dmPath, reason, msg, interval, now)
 		}
 		return 1
 	}
 	_ = os.Remove(dmPath)
 	return 0
+}
+
+func notifyEgressRefusal(cfg *Config, dmPath, reason, msg string, interval time.Duration, now time.Time) bool {
+	if !egressRefusalDMDue(dmPath, reason, interval, now) {
+		fmt.Fprintf(os.Stderr, "[egress] the owner already has this refusal message; the next one goes out after %s or when the reason changes\n", interval)
+		return false
+	}
+	notifier, cleanup := buildNotifierFromConfig(cfg)
+	delivered := sendStartupRefusalDM(notifier, "Egress proxy", msg)
+	cleanup()
+	if !delivered {
+		fmt.Fprintln(os.Stderr, "[egress] no owner backend accepted the refusal message; the next restart sends it again")
+		return false
+	}
+	recordEgressRefusalDM(dmPath, reason, now)
+	return true
 }
 
 const egressRefusalDMFile = ".egress-startup-refusal.json"

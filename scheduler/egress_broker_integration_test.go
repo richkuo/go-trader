@@ -36,6 +36,13 @@ type fakeNotifyServices struct {
 
 	gatewayDown bool
 	selfDown    bool
+	messageDown bool
+}
+
+func (f *fakeNotifyServices) setMessageDown(down bool) {
+	f.mu.Lock()
+	f.messageDown = down
+	f.mu.Unlock()
 }
 
 func (f *fakeNotifyServices) setDown(gateway, self bool) {
@@ -137,6 +144,14 @@ func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyService
 			f.record("discord.dm_channel", string(body))
 			_, _ = io.WriteString(w, `{"id":"5001","type":1}`)
 		case host == "discord.com" && strings.Contains(path, "/channels/") && strings.HasSuffix(path, "/messages"):
+			f.mu.Lock()
+			messageDown := f.messageDown
+			f.mu.Unlock()
+			if messageDown {
+				f.record("discord.message_refused:"+path, string(body))
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			f.record("discord.message:"+path, string(body))
 			_, _ = io.WriteString(w, `{"id":"7001","channel_id":"5001","content":"ok"}`)
 		case host == "discord.com" && strings.Contains(path, "/applications/") && strings.HasSuffix(path, "/commands"):
@@ -502,4 +517,114 @@ func TestEgressBrokerSlashCommandsSurviveALateDiscordGateway(t *testing.T) {
 			t.Fatalf("unexpected request %s", key)
 		}
 	}
+}
+
+func TestEgressRefusalDMIsRecordedOnlyWhenDelivered(t *testing.T) {
+	ca := newEgressTestCA(t)
+	services, addr := startFakeNotifyServices(t, ca)
+	notifyProxy := startEgressTestProxy(t, "http", "", "", addr, nil)
+
+	closed, _ := net.Listen("tcp", "127.0.0.1:0")
+	_, deadPort, _ := net.SplitHostPort(closed.Addr().String())
+	closed.Close()
+	sentinel := egressSentinel(t)
+	installTestEgress(t, "http://"+egressTestUser+":"+sentinel+"@localhost:"+deadPort, ca.pool, nil)
+
+	sockDir, err := os.MkdirTemp("/tmp", "egr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "broker.sock")
+
+	t.Setenv("DISCORD_BOT_TOKEN", "fixture-discord-"+sentinel)
+	t.Setenv("TELEGRAM_BOT_TOKEN", "")
+	t.Setenv("GO_TRADER_GITHUB_TOKEN", "")
+	ep, err := egresspolicy.ParseProxyURL(notifyProxy.url("localhost"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	processEgress.mu.Lock()
+	processEgress.notificationsDirect = true
+	processEgress.attestation = &egresspolicy.Attestation{Notify: &egresspolicy.NotifyAttestation{Socket: sock, BrokerUID: os.Getuid()}}
+	processEgress.mu.Unlock()
+	t.Cleanup(func() { setProcessNotifyBroker(nil) })
+	prevWait := brokerStartupWait
+	brokerStartupWait = time.Second
+	t.Cleanup(func() { brokerStartupWait = prevWait })
+
+	cfg := &Config{Discord: DiscordConfig{Enabled: true, OwnerID: "424242"}}
+	dmPath := filepath.Join(t.TempDir(), egressRefusalDMFile)
+	const reason = "egress proxy unreachable"
+	interval := DefaultAlertThrottleInterval
+	dmKey := "discord.message:/api/v9/channels/5001/messages"
+	refusedKey := "discord.message_refused:/api/v9/channels/5001/messages"
+	recorded := func() bool {
+		_, err := os.Stat(dmPath)
+		return err == nil
+	}
+
+	if notifyEgressRefusal(cfg, dmPath, reason, "drill one", interval, time.Now().UTC()) {
+		t.Fatal("refusal DM reported delivered while the broker socket does not answer")
+	}
+	if recorded() {
+		t.Fatal("refusal DM recorded while the broker socket does not answer")
+	}
+	if len(services.bodiesFor(dmKey)) != 0 {
+		t.Fatalf("a DM reached Discord without a broker: %v", services.requests)
+	}
+	t.Log("case: broker socket does not answer: no DM delivered, no record written")
+
+	broker := notifybroker.NewBrokerFromEnv(os.Getuid(), sock, egresspolicy.NewDialer(ep), []string{"discord"})
+	broker.TLSConfig = &tls.Config{RootCAs: ca.pool, MinVersion: tls.VersionTLS12}
+	ctx, cancel := context.WithCancel(context.Background())
+	brokerDone := make(chan error, 1)
+	go func() { brokerDone <- broker.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		<-brokerDone
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(sock); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the broker socket never appeared")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	services.setMessageDown(true)
+	if notifyEgressRefusal(cfg, dmPath, reason, "drill two", interval, time.Now().UTC()) {
+		t.Fatal("refusal DM reported delivered while Discord returns 503")
+	}
+	if recorded() {
+		t.Fatal("refusal DM recorded while Discord returns 503 and Telegram is off")
+	}
+	if len(services.bodiesFor(refusedKey)) == 0 {
+		t.Fatalf("the broker never tried the DM: %v", services.requests)
+	}
+	t.Log("case: Discord REST returns 503 and Telegram is off: no record written")
+
+	services.setMessageDown(false)
+	if !notifyEgressRefusal(cfg, dmPath, reason, "drill three", interval, time.Now().UTC()) {
+		t.Fatalf("refusal DM not delivered after the broker and Discord came up: %v", services.requests)
+	}
+	if got := services.bodiesFor(dmKey); len(got) != 1 || !strings.Contains(got[0], "drill three") {
+		t.Fatalf("delivered DM: %v", got)
+	}
+	if !recorded() {
+		t.Fatal("delivered refusal DM was not recorded")
+	}
+	t.Log("case: the next restart after the broker comes up sends the DM and writes the record")
+
+	if notifyEgressRefusal(cfg, dmPath, reason, "drill four", interval, time.Now().UTC()) {
+		t.Fatal("a second refusal with the same reason was sent inside the throttle interval")
+	}
+	if got := services.bodiesFor(dmKey); len(got) != 1 {
+		t.Fatalf("throttled refusal reached Discord: %v", got)
+	}
+	t.Log("case: delivered DM recorded; a later restart with the same reason is throttled")
 }

@@ -224,13 +224,21 @@ func (m *MultiNotifier) SendToAllChannels(content string) {
 }
 
 func (m *MultiNotifier) SendOwnerDM(content string) {
+	m.SendOwnerDMDelivered(content)
+}
+
+func (m *MultiNotifier) SendOwnerDMDelivered(content string) bool {
+	delivered := false
 	for _, b := range m.snapshotBackends() {
 		if b.ownerID != "" {
 			if err := b.notifier.SendDM(b.ownerID, content); err != nil {
 				fmt.Printf("[WARN] Owner DM failed: %v\n", err)
+			} else {
+				delivered = true
 			}
 		}
 	}
+	return delivered
 }
 
 func (m *MultiNotifier) AskOwnerDM(question string, timeout time.Duration) (string, error) {

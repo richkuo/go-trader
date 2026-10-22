@@ -188,7 +188,7 @@ func connectNotifyBroker() (*notifyBrokerSession, error) {
 	return sess, nil
 }
 
-const brokerStartupWait = 30 * time.Second
+var brokerStartupWait = 30 * time.Second
 
 func newBrokerDiscordNotifier(sess *notifyBrokerSession, ownerID string) *DiscordNotifier {
 	d := &DiscordNotifier{transport: sess.discord, broker: sess.discord, ownerID: ownerID}
