@@ -39,6 +39,9 @@ def _patch_ccxt(module):
         if isinstance(value, dict):
             raise module.NetworkError(str(value.get("error", "htf offline fixture error")))
         rows = _rows(value)
+        if since is not None:
+            rows = [r for r in rows if r[0] >= since]
+            return rows[:limit] if limit else rows
         return rows[-limit:] if limit else rows
 
     def fetch_ticker(self, symbol, params=None):

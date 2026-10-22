@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import contextlib
 import sys
 import os
 import argparse
@@ -14,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator, normalize_atr_method
 from closed_bar import bind_fixed_interval_params
-from data_fetcher import load_cached_data
+from data_fetcher import fetch_full_history, load_cached_data
 from directional_certification import (
     config_directional_classifier,
     load_certifications,
@@ -417,18 +418,35 @@ class HTFCacheError(ValueError):
 def _htf_trend_series(symbol: str, timeframe: str, ltf_index: pd.Index,
                       ema_period: int = 50) -> pd.Series:
     htf = get_default_htf(timeframe)
-    htf_df = load_cached_data(symbol, htf)
-    if htf_df is None or htf_df.empty:
+    interval = _HTF_INTERVALS.get(htf)
+    if interval is None:
         raise HTFCacheError(
-            f"higher-timeframe filter refused: no cached {htf} candles for {symbol} "
-            f"(need at least {ema_period}); fetch the {htf} cache or disable --htf-filter")
-    if len(htf_df) < ema_period:
+            f"higher-timeframe filter refused: the {htf} interval for {symbol} is unknown, "
+            f"so cache coverage cannot be checked; disable --htf-filter")
+    if len(ltf_index) and not isinstance(ltf_index, pd.DatetimeIndex):
         raise HTFCacheError(
-            f"higher-timeframe filter refused: {len(htf_df)} cached {htf} candles for {symbol} "
-            f"(need at least {ema_period}); fetch more {htf} history or disable --htf-filter")
+            f"higher-timeframe filter refused: the candle frame for {symbol} has no datetime "
+            f"index, so {htf} cache coverage cannot be checked")
+    htf_df = _load_htf_cache(symbol, htf)
+    problem = _htf_cache_problem(symbol, htf, interval, htf_df, ltf_index, ema_period)
+    if problem:
+        if htf_df is None or htf_df.empty:
+            raise HTFCacheError(
+                f"higher-timeframe filter refused: {problem}; the cache was empty, so this run "
+                f"already fetched {htf} history from the exchange and got none; rerun when the "
+                f"exchange serves {symbol} {htf} candles, or disable --htf-filter")
+        since, fetch_error = _top_up_htf_cache(symbol, htf, interval, htf_df, ltf_index, ema_period)
+        htf_df = _load_htf_cache(symbol, htf)
+        problem = _htf_cache_problem(symbol, htf, interval, htf_df, ltf_index, ema_period)
+        if problem:
+            failed = f" (the fetch failed: {fetch_error})" if fetch_error else ""
+            raise HTFCacheError(
+                f"higher-timeframe filter refused: {problem}; this run fetched {htf} candles "
+                f"since {since} into the cache{failed} and the cache still falls short; rerun "
+                f"when the exchange serves {symbol} {htf} candles for that range (every run "
+                f"tops up the cache first), or disable --htf-filter")
 
     htf_index = _htf_index_like(htf_df.index, ltf_index)
-    _check_htf_cache_covers(symbol, htf, htf_index, ltf_index)
     closes = htf_df["close"].astype(float)
     ema = closes.ewm(span=ema_period, adjust=False).mean()
     trend = pd.Series(
@@ -449,27 +467,54 @@ _HTF_INTERVALS = {
 }
 
 
-def _check_htf_cache_covers(symbol: str, htf: str, htf_index: pd.Index,
-                            ltf_index: pd.Index) -> None:
+def _load_htf_cache(symbol: str, htf: str) -> pd.DataFrame:
+    with contextlib.redirect_stdout(sys.stderr):
+        return load_cached_data(symbol, htf)
+
+
+def _htf_cache_problem(symbol: str, htf: str, interval, htf_df: pd.DataFrame,
+                       ltf_index: pd.Index, ema_period: int) -> str:
+    if htf_df is None or htf_df.empty:
+        return f"no cached {htf} candles for {symbol} (need at least {ema_period})"
+    if len(htf_df) < ema_period:
+        return f"{len(htf_df)} cached {htf} candles for {symbol} (need at least {ema_period})"
     if len(ltf_index) == 0:
-        return
-    interval = _HTF_INTERVALS.get(htf)
-    if interval is None:
-        raise HTFCacheError(
-            f"higher-timeframe filter refused: the {htf} interval for {symbol} is unknown, "
-            f"so cache coverage cannot be checked; disable --htf-filter")
-    if not isinstance(htf_index, pd.DatetimeIndex) or not isinstance(ltf_index, pd.DatetimeIndex):
-        raise HTFCacheError(
-            f"higher-timeframe filter refused: the {htf} cache or the candle frame for {symbol} "
-            f"has no datetime index, so cache coverage cannot be checked")
+        return ""
+    htf_index = _htf_index_like(htf_df.index, ltf_index)
+    if not isinstance(htf_index, pd.DatetimeIndex):
+        return f"the {htf} cache for {symbol} has no datetime index, so its coverage cannot be checked"
     htf_first, htf_last = htf_index.min(), htf_index.max()
     ltf_first, ltf_last = ltf_index.min(), ltf_index.max()
     if htf_first > ltf_first + interval or htf_last < ltf_last - interval:
-        raise HTFCacheError(
-            f"higher-timeframe filter refused: cached {htf} candles for {symbol} span "
-            f"{htf_first} to {htf_last}, which does not cover the requested range "
-            f"{ltf_first} to {ltf_last} (allowed gap: one {htf} interval at each end); "
-            f"fetch the {htf} history for that range or disable --htf-filter")
+        return (f"cached {htf} candles for {symbol} span {htf_first} to {htf_last}, which does "
+                f"not cover the requested range {ltf_first} to {ltf_last} (allowed gap: one "
+                f"{htf} interval at each end)")
+    return ""
+
+
+def _utc_naive(ts: pd.Timestamp) -> pd.Timestamp:
+    ts = pd.Timestamp(ts)
+    return ts.tz_convert("UTC").tz_localize(None) if ts.tzinfo is not None else ts
+
+
+def _top_up_htf_cache(symbol: str, htf: str, interval, htf_df: pd.DataFrame,
+                      ltf_index: pd.Index, ema_period: int):
+    htf_first = _utc_naive(htf_df.index.min())
+    htf_last = _utc_naive(htf_df.index.max())
+    start = htf_last
+    if len(ltf_index):
+        ltf_first = _utc_naive(ltf_index.min())
+        if len(htf_df) < ema_period or htf_first > ltf_first + interval:
+            start = min(htf_first, ltf_first - interval * ema_period)
+    elif len(htf_df) < ema_period:
+        start = htf_first - interval * ema_period
+    since = start.strftime("%Y-%m-%d")
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            fetch_full_history(symbol, htf, since=since, store=True)
+    except Exception as exc:
+        return since, f"{type(exc).__name__}: {exc}"
+    return since, ""
 
 
 def _htf_index_like(htf_index: pd.Index, ltf_index: pd.Index) -> pd.Index:
