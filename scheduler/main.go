@@ -1466,11 +1466,7 @@ func main() {
 				}
 			}
 
-			for _, part := range cyclePartitions {
-				for _, line := range applyQuotePrecisionPeakRebaseline(part, state.partitionRisk(part), cfg.Strategies, state, prices, scopeRisk[part].TotalPV) {
-					fmt.Println(line)
-				}
-			}
+			quotePrecisionRebaselineDM := runQuotePrecisionPeakRebaseline(cyclePartitions, cfg.Strategies, state, prices, scopeRisk)
 
 			for _, part := range cyclePartitions {
 				sr := scopeRisk[part]
@@ -1506,6 +1502,9 @@ func main() {
 
 			if manualBasisRebaselineDM != "" {
 				notifier.SendOwnerDM(manualBasisRebaselineDM)
+			}
+			if quotePrecisionRebaselineDM != "" {
+				notifier.SendOwnerDM(quotePrecisionRebaselineDM)
 			}
 			for _, part := range cyclePartitions {
 				sr := scopeRisk[part]

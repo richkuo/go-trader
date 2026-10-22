@@ -1360,6 +1360,67 @@ func TestCheckQuotePrecisionRebaselineSurvivesABookSaveBeforeSaveAll(t *testing.
 		singlePass(t, env, env.fileFor(sc.ID).SaveStrategyBook)
 	})
 
+	cycleDMs := func(env *entryTestEnv) []mockDM {
+		mock := &mockNotifier{}
+		notifier := NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"})
+		scopeRisk := map[RiskPartition]*scopeCycleRisk{part: {Partition: part, TotalPV: total}}
+		env.mu.Lock()
+		dm := runQuotePrecisionPeakRebaseline(activePartitions(env.cfg.Strategies), env.cfg.Strategies, env.state, prices, scopeRisk)
+		env.mu.Unlock()
+		if dm != "" {
+			notifier.SendOwnerDM(dm)
+		}
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return append([]mockDM(nil), mock.dms...)
+	}
+
+	t.Run("owner_dm_lists_each_changed_peak_once", func(t *testing.T) {
+		env := legacyStore(t)
+		dms := cycleDMs(env)
+		if len(dms) != 1 {
+			t.Fatalf("owner DMs = %d, want 1: %+v", len(dms), dms)
+		}
+		label := partitionLabel(part)
+		for _, want := range []string{
+			"#1820 quote precision",
+			fmt.Sprintf("- [%s] %s: peak $%.4f -> $%.4f (value $%.4f, rounding bound $%.4f)", label, sc.ID, legacyPeak, wantPeak, value, bound),
+			fmt.Sprintf("- [%s] portfolio: peak $%.4f -> $%.4f (value $%.4f, rounding bound $%.4f)", label, legacyPart, wantPart, total, bound),
+		} {
+			if !strings.Contains(dms[0].content, want) {
+				t.Fatalf("owner DM lacks %q:\n%s", want, dms[0].content)
+			}
+		}
+		if strings.Contains(dms[0].content, flat.ID) {
+			t.Fatalf("owner DM names the flat strategy:\n%s", dms[0].content)
+		}
+		t.Log(dms[0].content)
+	})
+
+	t.Run("owner_dm_silent_when_no_peak_changes", func(t *testing.T) {
+		env := legacyStore(t)
+		env.strat(sc.ID).RiskState.PeakValue = value
+		env.state.partitionRisk(part).PeakValue = total
+		if dms := cycleDMs(env); len(dms) != 0 {
+			t.Fatalf("owner DMs = %+v, want none when every peak is unchanged", dms)
+		}
+		if !env.strat(sc.ID).RiskState.QuotePrecisionRebaselined || !env.state.partitionRisk(part).QuotePrecisionRebaselined {
+			t.Fatal("an unchanged pass must still spend the markers")
+		}
+	})
+
+	t.Run("owner_dm_silent_after_restart", func(t *testing.T) {
+		env := legacyStore(t)
+		if dms := cycleDMs(env); len(dms) != 1 {
+			t.Fatalf("upgrade cycle owner DMs = %d, want 1", len(dms))
+		}
+		env.saveAll()
+		env = env.restart()
+		if dms := cycleDMs(env); len(dms) != 0 {
+			t.Fatalf("owner DMs after restart = %+v, want none", dms)
+		}
+	})
+
 	t.Run("save_all_then_restart_runs_no_second_pass", func(t *testing.T) {
 		env := legacyStore(t)
 		pass(env)

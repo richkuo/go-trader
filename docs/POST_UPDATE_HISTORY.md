@@ -155,6 +155,7 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   To stop this, the first cycle runs a one-time rebaseline before any risk check: for each spot strategy with an open position, the peak becomes the larger of the current value and the stored peak minus the sum of quantity times $0.005 over its open positions.
   The same bound, summed over those strategies, applies to the portfolio kill-switch peak of each scope; a peak is never raised, and a strategy with no open position is not touched.
   Each changed peak prints one `[WARN] #1820 quote-precision peak rebaseline` line with the old and new values, and a changed portfolio peak also records a `basis_rebaseline` kill-switch event.
+  When any peak changes, the owner gets one DM that lists each changed peak with its old and new values and its rounding bound; a pass that changes nothing sends no DM.
   The pass always subtracts the largest possible rounding error, whether or not rounding inflated the stored peak, so it can also forgive up to $0.005 per unit of real drawdown on each open spot position (about 5% of the position value at $0.10, about 50% at $0.01).
   A peak set from a mark rounded down, set while a quote below half a cent was valued at average cost, or set before a realized loss still loses the full bound.
   A loss that the average-cost fallback hid (a quote below half a cent) can exceed the bound; the part above the bound still shows as a drawdown and can still trip a guard.

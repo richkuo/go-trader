@@ -356,6 +356,38 @@ func applyQuotePrecisionPeakRebaseline(part RiskPartition, prs *PortfolioRiskSta
 	return append(lines, "[WARN] "+details)
 }
 
+const quotePrecisionRebaselineWarnPrefix = "[WARN] #1820 quote-precision peak rebaseline "
+
+func runQuotePrecisionPeakRebaseline(parts []RiskPartition, cfgStrategies []StrategyConfig, state *AppState, prices map[string]float64, scopeRisk map[RiskPartition]*scopeCycleRisk) string {
+	var changed []string
+	for _, part := range parts {
+		total := 0.0
+		if sr := scopeRisk[part]; sr != nil {
+			total = sr.TotalPV
+		}
+		for _, line := range applyQuotePrecisionPeakRebaseline(part, state.partitionRisk(part), cfgStrategies, state, prices, total) {
+			fmt.Println(line)
+			if rest, ok := strings.CutPrefix(line, quotePrecisionRebaselineWarnPrefix); ok {
+				changed = append(changed, rest)
+			}
+		}
+	}
+	if len(changed) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**Peaks lowered once (#1820 quote precision)**\n")
+	b.WriteString("Open spot positions are now marked at the true quote instead of the cent-rounded one. ")
+	b.WriteString("Each peak below dropped by at most quantity x $0.005 per open spot position, so a circuit breaker or the kill switch can fire later than its max_drawdown_pct until a new peak is set. ")
+	b.WriteString("This runs once and is recorded in the scheduler log and the kill-switch event log.\n")
+	for _, line := range changed {
+		b.WriteString("- ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func collectFuturesMarkSymbols(strategies []StrategyConfig) []string {
 	set := make(map[string]bool)
 	for _, sc := range strategies {
