@@ -9,7 +9,7 @@ Guardrails only; mechanism: SKILL.md, docs/POST_UPDATE_HISTORY.md. CI fails at 1
 - **Always the best solution**: cost/compute/time/effort/code never narrow; branch+PR, issue-claim vs code, destructive-action safety win. **No time/effort estimates**; complexity=scope+risk.
 
 ## Repo (`scheduler/`=1 `package main`)
-- `executor.go`/`shutdown.go`: side effects via `runPythonSideEffect*`, NEVER `runPython`. Live HL book needs `confirmHyperliquidExecuteFill` (finite `AvgPx>0`+`TotalSz>0`); `check_hyperliquid.py execute` exits 1 on no fill. Live RH book ONLY from settled `robinhood_order_attempts` fill (row pre-send, 1 unresolved/coin, unknown=hold); RH flat ONLY via fresh strict read.
+- `executor.go`/`shutdown.go`: side effects via `runPythonSideEffect*`, NEVER `runPython`. Live HL book needs `confirmHyperliquidExecuteFill` (finite `AvgPx>0`+`TotalSz>0`); `check_hyperliquid.py execute` exits 1 on no fill. Live RH book ONLY from settled `robinhood_order_attempts` fill (row pre-send, 1 unresolved/coin, unknown=hold); flat ONLY via fresh strict read; sells≤`quantity_available`, emergency≤book.
 - `planHLCloseOrder`=SOLE size+mode for SIZED live closes (execute, `type=manual`, force-close, hedge, open cleanup; not whole/ForceFullClose); refetch fail=uncapped reduce_only; short fill books fill. Rearm ONLY `resolveHLCloseRemainderStop`; Q=0 verify-first cancels unconfirmed SL/TP; ONE CRITICAL; `order_outcome`=SOLE outcome.
 - `server.go`/`ui_*.go`: lock `mu>strategiesMu`, loopback only (container wildcard+token). `/tuning` never writes config; `ui_tuning.go`=`spawnPythonProcessWithEnv`, NEVER `runPython*`; `POST /api/tuning/apply`=sole promotion. `uiPartitionParam`=sole `?partition=` resolver: unparseable=400, unowned=404; diagnostics filter `SourceRole` pre paging+total; cash flow `live_owned`; selected correlation/portfolio-risk NEVER use untagged legacy.
 - `config*.go`: `close_strategy` canonical, unknown-key guard. On-chain TP gate!=`len(tiers)>0`. `CircuitBreaker *bool` via accessors ONLY. `portfolio_risk.paper`/`paper_sources[].portfolio_risk`: evaluators use `partitionRiskConfig`; nested `paper` rejected. `portfolio_warning.go`: paused off Top Contributors ONLY if flat (`Quantity==0` regular+option).
@@ -84,7 +84,7 @@ Guardrails only; mechanism: SKILL.md, docs/POST_UPDATE_HISTORY.md. CI fails at 1
 
 ## Testing
 - **Unit tests only** if a run can't prove it or regression is silent: rare venue states (partial/rejected/unknown), money math (sizing/PnL/fees), paper/live parity, DB migrations, large refactors. Else run real binaries/scripts (build/`probe`/`--once`); PR lists commands+log lines/criterion.
-- Kept test edit/removal: Outdated/Wrong/Obsolete+checkable ground, disclosed in commit+PR (`fix-pr-review` step 6); no ground=fix code.
+- Kept test edit/removal: Outdated/Wrong/Obsolete+checkable ground, disclosed in commit+PR; no ground=fix code.
 - Kept suites pass: `go -C scheduler test ./...` (+`-tags pyintegration`=SOLE Go tests spawning Python), `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ backtest/`, `shared_scripts/test_*.py` by path. CI `-n auto`: never bare-`import` ambiguous name.
 - Tabbed Go: Python `replace(old,new,1)`.
 - `tiered_tp_atr`/`trailing_stop_atr_mult` need `Position.EntryATR`; `*_live` recompute via `atr_source`; `avwap_stop`=virtual exit only.
