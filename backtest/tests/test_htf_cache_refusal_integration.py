@@ -39,23 +39,30 @@ def _series(tf, n, step, start, drift, flat=False):
     return {"tf": tf, "n": n, "step": step, "start": start, "drift": drift, "flat": flat}
 
 
-def _env(tmp_path, exchange_rows=None):
+def _env(tmp_path, exchange_rows=None, **extra):
     fixture = tmp_path / "offline.json"
-    fixture.write_text(json.dumps({"ccxt": exchange_rows or {}}))
+    fixture.write_text(json.dumps({"ccxt": exchange_rows or {}, **extra}))
     env = dict(os.environ)
     env.update({"GO_TRADER_OHLCV_CACHE_DB": str(tmp_path / "cache.db"),
                 "PYTHONPATH": _OFFLINE, "HTF_OFFLINE_FIXTURE": str(fixture)})
     return env
 
 
-def _seed_series(tmp_path, series, exchange_rows=None):
+def _seed_series(tmp_path, series, exchange_rows=None, **extra):
     script = tmp_path / "seed.py"
     script.write_text(_SEED)
     env = _env(tmp_path)
     env.pop("PYTHONPATH")
     subprocess.run([sys.executable, str(script), _ROOT, json.dumps(series)],
                    check=True, env=env, cwd=str(tmp_path), timeout=300)
-    return _env(tmp_path, exchange_rows)
+    return _env(tmp_path, exchange_rows, **extra)
+
+
+def _requests(tmp_path):
+    path = tmp_path / "ccxt.log"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines()]
 
 
 def _exchange_rows(n, step, start, drift):
@@ -173,14 +180,15 @@ def test_backtest_refuses_a_higher_timeframe_cache_that_starts_after_the_request
     env = _seed_series(tmp_path, [
         _series("1h", ltf_rows, _HOUR_MS, _START_MS, 0.01),
         _series("4h", 3000, 4 * _HOUR_MS, htf_start, 0.2),
-    ], {"BTC/USDT|4h": _exchange_rows(3000, 4 * _HOUR_MS, htf_start, 0.2)})
+    ], {"BTC/USDT|4h": _exchange_rows(3000, 4 * _HOUR_MS, htf_start, 0.2)}, ccxt_log=str(tmp_path / "ccxt.log"))
     proc = _backtest(tmp_path, env, timeframe="1h")
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "HTF FILTER REFUSED: sma_crossover BTC/USDT" in proc.stdout
     assert "cached 4h candles for BTC/USDT span 2025-06-01 00:00:00" in proc.stdout
     assert "does not cover the requested range 2023-01-01 00:00:00" in proc.stdout
-    assert "this run fetched 4h candles since 2022-12-23 into the cache" in proc.stdout
-    assert "Fetched 3000 candles" in proc.stderr
+    assert "this run fetched 4h candles since 2022-12-23 16:00 into the cache" in proc.stdout
+    assert "the exchange served no more of that range" in proc.stdout
+    assert [r[1] for r in _requests(tmp_path)] == ["4h"]
     assert _saved_results(tmp_path) == 0
 
 
@@ -200,7 +208,7 @@ def test_simulator_refuses_a_higher_timeframe_cache_that_ends_before_the_candles
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "does not cover the requested range" in out["error"]
     assert "this run fetched 4h candles since" in out["error"]
-    assert "rerun when the exchange serves BTC/USDT 4h candles" in out["error"]
+    assert "so rerun when the exchange serves BTC/USDT 4h candles" in out["error"]
     assert out["markers"] == {}
     assert len(proc.stdout.strip().splitlines()) == 1
 
@@ -226,3 +234,49 @@ def test_simulator_tops_up_a_stale_higher_timeframe_cache_and_runs_filtered(tmp_
     assert "htf" in out["markers"]
     assert len(proc.stdout.strip().splitlines()) == 1
     assert _last_cached_ms(tmp_path, "4h") >= last_ms - 4 * _HOUR_MS
+
+
+_TREND_PROBE = """
+import json, os, sys
+sys.path.insert(0, os.path.join(sys.argv[1], "backtest"))
+import pandas as pd
+import run_backtest
+
+index = pd.date_range(pd.Timestamp(int(sys.argv[2]), unit="ms"), periods=int(sys.argv[3]), freq="h")
+try:
+    trend = run_backtest._htf_trend_series("BTC/USDT", "1h", index, top_up_budget_s=float(sys.argv[4]))
+    print(json.dumps({"ok": len(trend)}))
+except run_backtest.HTFCacheError as exc:
+    print(json.dumps({"error": str(exc)}))
+"""
+
+
+def test_a_budget_stopped_top_up_keeps_its_rows_and_the_next_run_continues(tmp_path):
+    ltf_first = _START_MS + 1000 * _DAY_MS
+    ltf_hours = 400 * 24
+    cache_first = ltf_first + 300 * _DAY_MS
+    env = _seed_series(tmp_path, [
+        _series("4h", 600, 4 * _HOUR_MS, cache_first, 0.2),
+    ], {"BTC/USDT|4h": _exchange_rows(2700, 4 * _HOUR_MS, ltf_first - 30 * _DAY_MS, 0.2)},
+        ccxt_log=str(tmp_path / "ccxt.log"), ccxt_delay_s=0.5)
+    probe = tmp_path / "probe.py"
+    probe.write_text(_TREND_PROBE)
+    seen = []
+    outcomes = []
+    for _ in range(8):
+        proc = subprocess.run([sys.executable, str(probe), _ROOT, str(ltf_first), str(ltf_hours), "0.8"],
+                              capture_output=True, text=True, cwd=str(tmp_path), env=env, timeout=300)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        out = json.loads(proc.stdout.strip().splitlines()[-1])
+        made = _requests(tmp_path)[len(seen):]
+        assert made, "every run must make progress with at least one request"
+        assert not {r[2] for r in made} & {r[2] for r in seen}, "a later run repeated an earlier request"
+        seen.extend(made)
+        outcomes.append(out)
+        if "ok" in out:
+            break
+    assert "the top-up stopped at its 0.8s time budget with the cache starting at" in outcomes[0]["error"]
+    assert "ok" in outcomes[-1], outcomes
+    assert len(outcomes) >= 2
+    assert len(seen) == 4
+    assert all(r[2] < cache_first for r in seen)

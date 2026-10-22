@@ -20,9 +20,9 @@ from atr import ensure_atr_indicator
 from regime import normalize_regime_gate_on_failure
 from backtester import Backtester, CloseCapabilityError
 from registry_loader import load_registry, registry_for_strategy_type
-from run_backtest import (_apply_htf_filter_to_df, _atr_window_evidence,
-                          _resolve_regime_windows_spec, live_stop_engine_inputs,
-                          stop_raw_fields)
+from run_backtest import (SIMULATOR_HTF_TOP_UP_BUDGET_S, _apply_htf_filter_to_df,
+                          _atr_window_evidence, _resolve_regime_windows_spec,
+                          live_stop_engine_inputs, stop_raw_fields)
 from backtester import STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS, STOP_UNITS_PREVIEW
 
 
@@ -273,7 +273,8 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
         )
 
     if cfg.get("htf_filter"):
-        df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)
+        df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe,
+                                             top_up_budget_s=SIMULATOR_HTF_TOP_UP_BUDGET_S)
 
     regime_cfg = dict(cfg.get("regime") or {})
     regime_enabled = bool(regime_cfg.get("enabled"))

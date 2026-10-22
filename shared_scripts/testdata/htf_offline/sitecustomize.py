@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import sys
+import time
 
 _FIXTURE_PATH = os.environ.get("HTF_OFFLINE_FIXTURE", "")
 
@@ -33,7 +34,13 @@ def _block_network():
 
 def _patch_ccxt(module):
     def fetch_ohlcv(self, symbol, timeframe="1m", since=None, limit=None, params=None):
-        value = _load().get("ccxt", {}).get(symbol + "|" + timeframe, [])
+        data = _load()
+        if data.get("ccxt_log"):
+            with open(data["ccxt_log"], "a") as fh:
+                fh.write(json.dumps([symbol, timeframe, since, limit]) + "\n")
+        if data.get("ccxt_delay_s"):
+            time.sleep(float(data["ccxt_delay_s"]))
+        value = data.get("ccxt", {}).get(symbol + "|" + timeframe, [])
         if value == "network_error":
             raise module.NetworkError("htf offline fixture: %s %s unreachable" % (symbol, timeframe))
         if isinstance(value, dict):
