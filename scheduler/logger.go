@@ -247,7 +247,7 @@ func formatPricesLogLine(prices map[string]float64) string {
 	var b strings.Builder
 	b.WriteString("Prices:")
 	for _, sym := range syms {
-		fmt.Fprintf(&b, " %s=$%.2f", sym, prices[sym])
+		fmt.Fprintf(&b, " %s=$%s", sym, formatSignalPrice(prices[sym]))
 	}
 	return b.String()
 }

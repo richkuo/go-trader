@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -274,6 +275,119 @@ func manualMarkBasisPeakAdjustment(oldPeak, liveTotal, legacyTotal float64) (flo
 	return newPeak, true
 }
 
+const quotePrecisionRoundingPerUnit = 0.005
+
+func quotePrecisionRoundingBound(s *StrategyState) float64 {
+	bound := 0.0
+	for _, pos := range s.Positions {
+		if pos == nil || pos.Quantity == 0 {
+			continue
+		}
+		units := math.Abs(pos.Quantity)
+		if pos.Multiplier > 0 {
+			units *= pos.Multiplier
+		}
+		bound += units * quotePrecisionRoundingPerUnit
+	}
+	return bound
+}
+
+func quotePrecisionRebaselinedPeak(peak, current, bound float64) float64 {
+	if peak <= 0 || bound <= 0 {
+		return peak
+	}
+	next := math.Max(current, peak-bound)
+	if next <= 0 || next >= peak {
+		return peak
+	}
+	return next
+}
+
+func applyQuotePrecisionPeakRebaseline(part RiskPartition, prs *PortfolioRiskState, cfgStrategies []StrategyConfig, state *AppState, prices map[string]float64, partitionTotal float64) []string {
+	var lines []string
+	label := partitionLabel(part)
+	partitionBound := 0.0
+	for _, sc := range strategiesInPartition(cfgStrategies, part) {
+		s := state.Strategies[sc.ID]
+		if s == nil {
+			continue
+		}
+		bound := 0.0
+		if sc.Type == "spot" {
+			bound = quotePrecisionRoundingBound(s)
+		}
+		partitionBound += bound
+		if s.RiskState.QuotePrecisionRebaselined {
+			continue
+		}
+		s.RiskState.QuotePrecisionRebaselined = true
+		if bound <= 0 {
+			continue
+		}
+		oldPeak := s.RiskState.PeakValue
+		current := PortfolioValue(s, prices)
+		newPeak := quotePrecisionRebaselinedPeak(oldPeak, current, bound)
+		if newPeak == oldPeak {
+			lines = append(lines, fmt.Sprintf("[INFO] #1820 quote-precision peak rebaseline [%s] %s: no peak change (peak $%.4f, value $%.4f, rounding bound $%.4f)",
+				label, sc.ID, oldPeak, current, bound))
+			continue
+		}
+		s.RiskState.PeakValue = newPeak
+		lines = append(lines, fmt.Sprintf("[WARN] #1820 quote-precision peak rebaseline [%s] %s: peak $%.4f -> $%.4f (value $%.4f, rounding bound $%.4f)",
+			label, sc.ID, oldPeak, newPeak, current, bound))
+	}
+	if prs.QuotePrecisionRebaselined {
+		return lines
+	}
+	prs.QuotePrecisionRebaselined = true
+	if partitionBound <= 0 {
+		return lines
+	}
+	oldPeak := prs.PeakValue
+	newPeak := quotePrecisionRebaselinedPeak(oldPeak, partitionTotal, partitionBound)
+	if newPeak == oldPeak {
+		return append(lines, fmt.Sprintf("[INFO] #1820 quote-precision peak rebaseline [%s] portfolio: no peak change (peak $%.4f, value $%.4f, rounding bound $%.4f)",
+			label, oldPeak, partitionTotal, partitionBound))
+	}
+	prs.PeakValue = newPeak
+	details := fmt.Sprintf("#1820 quote-precision peak rebaseline [%s] portfolio: peak $%.4f -> $%.4f (value $%.4f, rounding bound $%.4f)",
+		label, oldPeak, newPeak, partitionTotal, partitionBound)
+	addKillSwitchEvent(prs, "basis_rebaseline", "equity", prs.CurrentDrawdownPct, partitionTotal, newPeak, details)
+	return append(lines, "[WARN] "+details)
+}
+
+const quotePrecisionRebaselineWarnPrefix = "[WARN] #1820 quote-precision peak rebaseline "
+
+func runQuotePrecisionPeakRebaseline(parts []RiskPartition, cfgStrategies []StrategyConfig, state *AppState, prices map[string]float64, scopeRisk map[RiskPartition]*scopeCycleRisk) string {
+	var changed []string
+	for _, part := range parts {
+		total := 0.0
+		if sr := scopeRisk[part]; sr != nil {
+			total = sr.TotalPV
+		}
+		for _, line := range applyQuotePrecisionPeakRebaseline(part, state.partitionRisk(part), cfgStrategies, state, prices, total) {
+			fmt.Println(line)
+			if rest, ok := strings.CutPrefix(line, quotePrecisionRebaselineWarnPrefix); ok {
+				changed = append(changed, rest)
+			}
+		}
+	}
+	if len(changed) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**Peaks lowered once (#1820 quote precision)**\n")
+	b.WriteString("Open spot positions are now marked at the true quote instead of the cent-rounded one. ")
+	b.WriteString("Each peak below dropped by at most quantity x $0.005 per open spot position, so a circuit breaker or the kill switch can fire later than its max_drawdown_pct until a new peak is set. ")
+	b.WriteString("This runs once and is recorded in the scheduler log and the kill-switch event log.\n")
+	for _, line := range changed {
+		b.WriteString("- ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func collectFuturesMarkSymbols(strategies []StrategyConfig) []string {
 	set := make(map[string]bool)
 	for _, sc := range strategies {
@@ -347,6 +461,7 @@ type PortfolioRiskState struct {
 	Events                     []KillSwitchEvent `json:"events,omitempty"`
 
 	ManualMarkBasisRebaselined bool `json:"manual_mark_basis_rebaselined,omitempty"`
+	QuotePrecisionRebaselined  bool `json:"quote_precision_rebaselined,omitempty"`
 	KillSwitchCloseApplied     bool `json:"kill_switch_close_applied,omitempty"`
 }
 
@@ -738,6 +853,8 @@ type RiskState struct {
 	CircuitBreaker       bool                            `json:"circuit_breaker"`
 	CircuitBreakerUntil  time.Time                       `json:"circuit_breaker_until"`
 	PendingCircuitCloses map[string]*PendingCircuitClose `json:"pending_circuit_closes,omitempty"`
+
+	QuotePrecisionRebaselined bool `json:"quote_precision_rebaselined,omitempty"`
 }
 
 const PlatformPendingCloseHyperliquid = "hyperliquid"

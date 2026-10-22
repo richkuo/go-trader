@@ -13,13 +13,13 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.abspath(os.path.join(_HERE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(_ROOT, "backtest"))
 
+import archive_cache as ac  # noqa: E402
 import book_archive as ba  # noqa: E402
 import numpy as np  # noqa: E402
 
 SPEC_PATH = os.path.join(_HERE, "candidate_spec.json")
 DATA = os.path.join(_HERE, "data")
 ARCHIVE = os.path.join(DATA, "archive")
-RAW = os.path.join(ARCHIVE, "raw")
 SERIES = os.path.join(ARCHIVE, "series")
 MANIFEST = os.path.join(DATA, "archive_manifest.json")
 FUNDING = os.path.join(DATA, "funding.json")
@@ -61,48 +61,34 @@ def expected_keys(s: dict) -> list:
     return keys
 
 
-def _aws(args: list) -> subprocess.CompletedProcess:
-    return subprocess.run(["aws"] + args + ["--request-payer", "requester"], capture_output=True, text=True)
+def load_manifest(s: dict) -> dict:
+    with open(MANIFEST) as fh:
+        manifest = json.load(fh)
+    if manifest.get("schema") != MANIFEST_SCHEMA or manifest.get("bucket") != ba.ARCHIVE_BUCKET:
+        raise ba.ArchiveError(f"{MANIFEST} is not a {MANIFEST_SCHEMA} manifest for {ba.ARCHIVE_BUCKET}")
+    if sorted(f["key"] for f in manifest["files"]) != sorted(expected_keys(s)):
+        raise ba.ArchiveError(f"{MANIFEST} does not list exactly the keys the frozen specification needs")
+    return manifest
 
 
-def fetch() -> dict:
+def archive_base() -> str:
+    return ac.bucket_dir(ac.cache_root(), ba.ARCHIVE_BUCKET)
+
+
+def fetch(refreeze: bool = False) -> dict:
     s = spec()
-    lookback, days = study_days(s)
-    os.makedirs(RAW, exist_ok=True)
-    for day in [lookback] + days:
-        args = ["s3", "sync", f"s3://{ba.ARCHIVE_BUCKET}/market_data/{day}/", os.path.join(RAW, "market_data", day),
-                "--exclude", "*", "--only-show-errors"]
-        for coin in s["data_plan"]["coins"]:
-            args += ["--include", f"*/l2Book/{coin}.lz4"]
-        r = _aws(args)
-        if r.returncode != 0:
-            raise SystemExit(f"sync market_data/{day} failed: {r.stderr.strip()}")
-        key = ba.asset_ctx_key(day)
-        target = os.path.join(RAW, key)
-        if not os.path.exists(target):
-            r = _aws(["s3", "cp", f"s3://{ba.ARCHIVE_BUCKET}/{key}", target, "--only-show-errors"])
-            if r.returncode != 0 and "404" not in r.stderr and "Not Found" not in r.stderr:
-                raise SystemExit(f"cp {key} failed: {r.stderr.strip()}")
-    files = []
-    total = 0
-    for key in expected_keys(s):
-        path = os.path.join(RAW, key)
-        if os.path.exists(path):
-            size = os.path.getsize(path)
-            total += size
-            files.append({"key": key, "status": "present", "size": size, "sha256": ba.sha256_file(path)})
-            continue
-        r = _aws(["s3api", "head-object", "--bucket", ba.ARCHIVE_BUCKET, "--key", key])
-        if r.returncode == 0:
-            raise SystemExit(f"{key} exists in the archive but was not downloaded")
-        if "404" not in r.stderr and "Not Found" not in r.stderr:
-            raise SystemExit(f"head-object {key} failed: {r.stderr.strip()}")
-        files.append({"key": key, "status": "absent"})
+    if not refreeze:
+        if not os.path.lexists(MANIFEST):
+            raise ba.ArchiveError(f"{MANIFEST} does not exist; fetch --refreeze writes a new one")
+        return ac.fetch_manifest(ac.cache_root(), load_manifest(s))
+    if os.path.lexists(MANIFEST):
+        raise ba.ArchiveError(f"fetch --refreeze refuses: {MANIFEST} exists, and a committed manifest is never rewritten")
+    files = ac.freeze(ac.cache_root(), ba.ARCHIVE_BUCKET, expected_keys(s))
+    present = [f for f in files if f["status"] == "present"]
     manifest = {"schema": MANIFEST_SCHEMA, "bucket": ba.ARCHIVE_BUCKET, "request_payer": "requester",
                 "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "spec_window": s["data_plan"]["window"],
-                "present": sum(1 for f in files if f["status"] == "present"), "absent": sum(1 for f in files if f["status"] == "absent"),
-                "bytes": total, "files": files}
-    with open(MANIFEST, "w") as fh:
+                "present": len(present), "absent": len(files) - len(present), "bytes": sum(f["size"] for f in present), "files": files}
+    with open(MANIFEST, "x") as fh:
         json.dump(manifest, fh, indent=1, sort_keys=True)
         fh.write("\n")
     return {k: manifest[k] for k in ("present", "absent", "bytes")}
@@ -166,10 +152,9 @@ def fetch_venue() -> dict:
 
 def import_series() -> dict:
     s = spec()
-    with open(MANIFEST) as fh:
-        manifest = json.load(fh)
+    manifest = load_manifest(s)
     lookback, days = study_days(s)
-    result = ba.import_window(RAW, SERIES, s["data_plan"]["coins"], [lookback] + days, manifest)
+    result = ba.import_window(archive_base(), SERIES, s["data_plan"]["coins"], [lookback] + days, manifest)
     with open(os.path.join(DATA, "import_report.json"), "w") as fh:
         json.dump(result, fh, indent=1, sort_keys=True)
         fh.write("\n")
@@ -200,8 +185,7 @@ def load_market(s: dict) -> dict:
         venue = json.load(fh)
     with open(FUNDING) as fh:
         funding_doc = json.load(fh)
-    with open(MANIFEST) as fh:
-        manifest = json.load(fh)
+    manifest = load_manifest(s)
     lookback, days = study_days(s)
     first_ms = ba._day_ms(lookback)
     end_ms = ba._day_ms(days[-1]) + ba.DAY_MS
@@ -231,11 +215,13 @@ def load_market(s: dict) -> dict:
     import lz4_frame
     import csv
     import io
+    files = {f["key"]: f for f in manifest["files"]}
+    base = archive_base()
     for day in [lookback] + days:
         key = ba.asset_ctx_key(day)
-        path = os.path.join(RAW, key)
-        if not os.path.exists(path):
+        if files[key]["status"] == "absent":
             continue
+        path = ac.verified_object(base, key, files[key])
         with open(path, "rb") as fh:
             text = lz4_frame.decompress(fh.read()).decode("utf-8")
         for r in csv.DictReader(io.StringIO(text)):
@@ -457,7 +443,7 @@ def run_study() -> dict:
     commit = subprocess.run(["git", "-C", _ROOT, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     dirty = bool(subprocess.run(["git", "-C", _ROOT, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True).stdout.strip())
     sources = {rel: ba.sha256_file(os.path.join(_ROOT, rel)) for rel in (
-        "backtest/book_event_simulator.py", "backtest/book_archive.py", "backtest/book_replay.py", "backtest/lz4_frame.py",
+        "backtest/archive_cache.py", "backtest/book_event_simulator.py", "backtest/book_archive.py", "backtest/book_replay.py", "backtest/lz4_frame.py",
         "shared_strategies/open/order_book_imbalance.py", "shared_tools/book_inputs.py",
         "backtest/candidates/order_book_imbalance_1635/run_study.py")}
     result = {"schema": "go_trader_obi_1635_results/v1", "spec_sha256": ba.sha256_file(SPEC_PATH),
@@ -631,7 +617,7 @@ def render() -> dict:
               "uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.py import",
               "uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.py run",
               "uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.py render", "```", "",
-              "`fetch` downloads with `--request-payer requester` and rewrites `data/archive_manifest.json`; `fetch-funding` and `fetch-venue` refresh the pinned funding and venue files. Research-only, suggest-only; no live default, config or deployment changes.", ""]
+              "`fetch` downloads with `--request-payer requester` into the shared archive cache (`$GO_TRADER_ARCHIVE_CACHE_DIR`, else `${XDG_CACHE_HOME:-~/.cache}/go-trader/archive`), verifies every object against `data/archive_manifest.json` and never rewrites it; `fetch-funding` and `fetch-venue` refresh the pinned funding and venue files. Research-only, suggest-only; no live default, config or deployment changes.", ""]
     with open(os.path.join(_HERE, "REPORT.md"), "w") as fh:
         fh.write("\n".join(lines))
     return {"outcome": v["outcome"], "lines": len(lines)}
@@ -640,16 +626,21 @@ def render() -> dict:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Issue 1635 order-book imbalance archive study")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("fetch", help="Download the frozen window from the S3 archive (requester pays) and write the manifest")
+    f = sub.add_parser("fetch", help="Fill and verify the shared archive cache from the committed manifest (requester pays)")
+    f.add_argument("--refreeze", action="store_true", help="download the frozen window and write a new manifest; refuses when one exists")
     sub.add_parser("fetch-funding", help="Fetch and pin hourly funding for the frozen span")
     sub.add_parser("fetch-venue", help="Pin venue size decimals and margin tables")
     sub.add_parser("import", help="Import the archive books into the l2_book contract (writes ignored series and a committed report)")
     sub.add_parser("run", help="Score every variant and the comparator under the frozen rules and write results.json")
     sub.add_parser("render", help="Render REPORT.md from results.json")
     args = p.parse_args(argv)
-    fn = {"fetch": fetch, "fetch-funding": fetch_funding, "fetch-venue": fetch_venue, "import": import_series,
+    fn = {"fetch": lambda: fetch(args.refreeze), "fetch-funding": fetch_funding, "fetch-venue": fetch_venue, "import": import_series,
           "run": run_study, "render": render}[args.cmd]
-    print(json.dumps(fn(), indent=1, sort_keys=True, default=str))
+    try:
+        out = fn()
+    except ba.ArchiveError as exc:
+        raise SystemExit(f"refused: {exc}")
+    print(json.dumps(out, indent=1, sort_keys=True, default=str))
     return 0
 
 

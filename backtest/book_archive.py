@@ -6,6 +6,7 @@ import re
 from typing import Dict, List, Optional
 
 import lz4_frame
+from archive_cache import ArchiveError, sha256_file, verified_object
 from book_replay import (CONTRACT, HOST, KIND, NAMESPACE, UnreplayableFrame, _go_field, _go_loads, _Obj, _Owner,
                          bounded_reason, parse_book_data)
 
@@ -19,10 +20,6 @@ RESEARCH_NEED = {"window_ms": 60_000, "capacity": CONTRACT["max_observations"], 
 HOUR_MS = 3_600_000
 DAY_MS = 86_400_000
 _TIME_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$")
-
-
-class ArchiveError(ValueError):
-    pass
 
 
 def book_key(day: str, hour: int, coin: str) -> str:
@@ -49,14 +46,6 @@ def parse_archive_time(text) -> Optional[int]:
         return None
     frac = (m.group(7) or "").ljust(9, "0")
     return secs * 1000 + int(frac[:3])
-
-
-def sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 class ArchiveCoinImporter:
@@ -259,9 +248,7 @@ def import_window(archive_dir: str, out_dir: str, coins: list, days: list, manif
                 if ref is None or ref.get("status") == "absent":
                     imp.missing_hour(h0)
                     continue
-                path = os.path.join(archive_dir, key)
-                if sha256_file(path) != ref["sha256"] or os.path.getsize(path) != ref["size"]:
-                    raise ArchiveError(f"{key}: the local file does not match the manifest size and sha256")
+                path = verified_object(archive_dir, key, ref)
                 with open(path, "rb") as fh:
                     imp.hour(h0, lz4_frame.decompress(fh.read()))
             settled = imp.take_settled(_day_ms(day) + DAY_MS)

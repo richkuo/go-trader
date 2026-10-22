@@ -1064,12 +1064,12 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				if !pos.isHedgeLeg() {
 					recordReplayDecision(s, ReplayDecisionPartialClose, symbol, pos.Side, closeQty, execPrice, "", now, 0, "")
 				}
-				logger.Info("Partial-close short %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
+				logger.Info("Partial-close short %s: %.6f (remaining %.6f) @ $%s (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, formatSignalPrice(execPrice), fee, pnl)
 			} else {
 				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 				delete(s.Positions, symbol)
 				clearHLPerpsPositionAlertThrottles(s, symbol)
-				logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
+				logger.Info("Closed short %s @ $%s (fee $%.2f) | PnL: $%.2f", symbol, formatSignalPrice(execPrice), fee, pnl)
 			}
 			tradesExecuted++
 		}
@@ -1151,7 +1151,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			Price:           execPrice,
 			Value:           notional,
 			TradeType:       "perps",
-			Details:         fmt.Sprintf("Open long %.6f @ $%.2f (%s, fee $%.2f)", qty, execPrice, leverageLabel, fee),
+			Details:         fmt.Sprintf("Open long %.6f @ $%s (%s, fee $%.2f)", qty, formatSignalPrice(execPrice), leverageLabel, fee),
 			ExchangeOrderID: openOID,
 			ExchangeFee:     fee,
 			FeeSource:       executionFeeSource(legFillFee, useFillFee),
@@ -1161,7 +1161,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 		trade.RegimeDivergenceNote = formatDivergenceDMLine(s.RegimeDivergence)
 		trade.RegimeProfileNote = formatProfileDMLine(s.RegimeProfile)
 		recordOpen(trade)
-		logger.Info("BUY %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverageLabel, notional, fee)
+		logger.Info("BUY %s: %.6f @ $%s (%s, notional $%.2f, fee $%.2f)", symbol, qty, formatSignalPrice(execPrice), leverageLabel, notional, fee)
 		tradesExecuted++
 
 	} else if signal == -1 {
@@ -1253,12 +1253,12 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				if !pos.isHedgeLeg() {
 					recordReplayDecision(s, ReplayDecisionPartialClose, symbol, pos.Side, closeQty, execPrice, "", now, 0, "")
 				}
-				logger.Info("Partial-close long %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
+				logger.Info("Partial-close long %s: %.6f (remaining %.6f) @ $%s (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, formatSignalPrice(execPrice), fee, pnl)
 			} else {
 				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 				delete(s.Positions, symbol)
 				clearHLPerpsPositionAlertThrottles(s, symbol)
-				logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, execPrice, fee, pnl)
+				logger.Info("SELL %s: %.6f @ $%s (fee $%.2f) | PnL: $%.2f", symbol, closeQty, formatSignalPrice(execPrice), fee, pnl)
 			}
 			tradesExecuted++
 		}
@@ -1340,7 +1340,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			Price:           execPrice,
 			Value:           notional,
 			TradeType:       "perps",
-			Details:         fmt.Sprintf("Open short %.6f @ $%.2f (%s, fee $%.2f)", qty, execPrice, leverageLabel, fee),
+			Details:         fmt.Sprintf("Open short %.6f @ $%s (%s, fee $%.2f)", qty, formatSignalPrice(execPrice), leverageLabel, fee),
 			ExchangeOrderID: openOID,
 			ExchangeFee:     fee,
 			FeeSource:       executionFeeSource(legFillFee, useFillFee),
@@ -1350,7 +1350,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 		trade.RegimeDivergenceNote = formatDivergenceDMLine(s.RegimeDivergence)
 		trade.RegimeProfileNote = formatProfileDMLine(s.RegimeProfile)
 		recordOpen(trade)
-		logger.Info("SELL %s: %.6f @ $%.2f (%s, notional $%.2f, fee $%.2f) [open short]", symbol, qty, execPrice, leverageLabel, notional, fee)
+		logger.Info("SELL %s: %.6f @ $%s (%s, notional $%.2f, fee $%.2f) [open short]", symbol, qty, formatSignalPrice(execPrice), leverageLabel, notional, fee)
 		tradesExecuted++
 	}
 	return tradesExecuted, "", nil
@@ -1487,11 +1487,11 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
 				pos.Quantity -= closeQty
-				logger.Info("Partial-close short %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
+				logger.Info("Partial-close short %s: %.6f (remaining %.6f) @ $%s (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, formatSignalPrice(execPrice), fee, pnl)
 			} else {
 				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 				delete(s.Positions, symbol)
-				logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
+				logger.Info("Closed short %s @ $%s (fee $%.2f) | PnL: $%.2f", symbol, formatSignalPrice(execPrice), fee, pnl)
 			}
 			tradesExecuted++
 		}
@@ -1543,7 +1543,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			OwnerStrategyID: s.ID,
 			OpenedAt:        now,
 		}
-		details := fmt.Sprintf("Open long %.6f @ $%.2f (fee $%.2f)", qty, execPrice, fee)
+		details := fmt.Sprintf("Open long %.6f @ $%s (fee $%.2f)", qty, formatSignalPrice(execPrice), fee)
 		if overBudget {
 			s.CashReconcileRequired = true
 			out.CashReconcileRequired = true
@@ -1571,7 +1571,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		}
 		trade.Regime = s.Regime
 		recordOpen(trade)
-		logger.Info("BUY %s: %.6f @ $%.2f (fee $%.2f, total $%.2f)", symbol, qty, execPrice, fee, totalDebit)
+		logger.Info("BUY %s: %.6f @ $%s (fee $%.2f, total $%.2f)", symbol, qty, formatSignalPrice(execPrice), fee, totalDebit)
 		tradesExecuted++
 
 	} else if signal == -1 {
@@ -1640,14 +1640,14 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
 				pos.Quantity -= closeQty
-				logger.Info("Partial-close long %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
+				logger.Info("Partial-close long %s: %.6f (remaining %.6f) @ $%s (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, formatSignalPrice(execPrice), fee, pnl)
 			} else {
 				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 				delete(s.Positions, symbol)
 				if saleQty != closeQty {
-					logger.Info("SELL %s: sold %.10g of a %.10g book @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, saleQty, closeQty, execPrice, fee, pnl)
+					logger.Info("SELL %s: sold %.10g of a %.10g book @ $%s (fee $%.2f) | PnL: $%.2f", symbol, saleQty, closeQty, formatSignalPrice(execPrice), fee, pnl)
 				} else {
-					logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, execPrice, fee, pnl)
+					logger.Info("SELL %s: %.6f @ $%s (fee $%.2f) | PnL: $%.2f", symbol, closeQty, formatSignalPrice(execPrice), fee, pnl)
 				}
 			}
 			tradesExecuted++

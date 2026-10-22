@@ -288,21 +288,52 @@ def test_combined_family_funds_the_tighter_alpha():
         m80.resolve_bakeoff_n_perm(combined, requested=300)
 
 
-def test_enriched_bakeoff_smoke_if_data_available():
-    try:
-        mod = _load_research("regime_1095_smoke", "regime_1095_enriched_vol_model.py")
-        report = mod.run_bakeoff("BTC/USDT", "1h", families=("kmeans",), k_range=range(3, 4),
-                                 subsets={"canonical": list(ref.CANONICAL_COLUMNS),
-                                          "volume": ref.CANONICAL_COLUMNS + ["volume_z"]},
-                                 eval_windows=("is", "oos"), n_perm=200)
-    except Exception as e:
-        pytest.skip(f"no cached OHLCV / data path unavailable: {e}")
-    assert "ablation" in report and "candidates" in report
-    status = report["ablation"]["canonical"]["status"]
-    assert status == "ok" or status == "unavailable" or status.startswith("unavailable: ")
+def test_enriched_bakeoff_report_on_offline_candles(monkeypatch):
+    import socket
+    import zlib
+    import data_fetcher
+    import funding_fetcher
+
+    def loader(symbol, timeframe="1h", exchange_id=None, start_date=None, end_date=None):
+        return _bakeoff_ohlcv(400, zlib.crc32(f"{start_date}|{end_date}".encode()) % 1000)
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("the offline bakeoff test reached the network")
+
+    monkeypatch.setattr(data_fetcher, "load_cached_data", loader)
+    monkeypatch.setattr(data_fetcher, "fetch_full_history", no_network)
+    monkeypatch.setattr(data_fetcher, "fetch_ohlcv", no_network)
+    monkeypatch.setattr(funding_fetcher, "load_cached_funding", lambda *a, **k: None)
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+    mod = _load_research("regime_1095_offline_bakeoff", "regime_1095_enriched_vol_model.py")
+    report = mod.run_bakeoff("BTC/USDT", "1h", families=("kmeans",), k_range=range(4, 6),
+                             filter_window=16,
+                             subsets={"canonical": list(ref.CANONICAL_COLUMNS),
+                                      "volume": ref.CANONICAL_COLUMNS + ["volume_z"]},
+                             eval_windows=("is", "oos"), n_perm=200)
+    assert report["subset_status"] == {"canonical": "ok", "volume": "ok"}
+    assert report["ablation"]["canonical"]["status"] == "ok"
     assert "live_wiring_delta" in report
+    cands = report["candidates"]
+    assert len(cands) == 4
+    assert sorted(c["structurally_ineligible"] for c in cands) == [False, False, True, True]
+    assert report["bonferroni_denominator"] == 2
+    assert report["bonferroni_denominator"] == sum(1 for c in cands if not c["structurally_ineligible"])
     assert report["n_perm"] == 200
-    assert report["bonferroni_denominator"] == sum(
-        1 for c in report["candidates"] if not c["structurally_ineligible"])
     for hr in report["handrule_held_out"].values():
         assert "permutation_steps_to_alpha" in hr and "knife_edge" in hr
+
+
+def _bakeoff_ohlcv(n, seed):
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2022-01-01", periods=n, freq="1h")
+    drift = np.where((np.arange(n) // 50) % 2 == 0, 0.002, 0.0)
+    vol = np.where((np.arange(n) // 120) % 2 == 0, 0.004, 0.02)
+    close = 100 * np.cumprod(1 + drift + rng.normal(0, 1, size=n) * vol)
+    high = close * (1 + np.abs(rng.normal(0, 0.004, size=n)))
+    low = close * (1 - np.abs(rng.normal(0, 0.004, size=n)))
+    openp = np.concatenate([[close[0]], close[:-1]])
+    volume = np.abs(rng.normal(1000, 200, size=n)) + (np.arange(n) // 50 % 2) * 500
+    return pd.DataFrame({"open": openp, "high": np.maximum(high, np.maximum(openp, close)),
+                         "low": np.minimum(low, np.minimum(openp, close)), "close": close,
+                         "volume": volume}, index=idx)

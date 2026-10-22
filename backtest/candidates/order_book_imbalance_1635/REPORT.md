@@ -1076,4 +1076,4 @@ uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.
 uv run --no-sync python backtest/candidates/order_book_imbalance_1635/run_study.py render
 ```
 
-`fetch` downloads with `--request-payer requester` and rewrites `data/archive_manifest.json`; `fetch-funding` and `fetch-venue` refresh the pinned funding and venue files. Research-only, suggest-only; no live default, config or deployment changes.
+`fetch` downloads with `--request-payer requester` into the shared archive cache (`$GO_TRADER_ARCHIVE_CACHE_DIR`, else `${XDG_CACHE_HOME:-~/.cache}/go-trader/archive`), verifies every object against `data/archive_manifest.json` and never rewrites it; `fetch-funding` and `fetch-venue` refresh the pinned funding and venue files. Research-only, suggest-only; no live default, config or deployment changes.

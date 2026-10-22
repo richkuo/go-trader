@@ -347,24 +347,64 @@ def test_fit_unsupervised_high_k_stores_no_zero_n_emission():
     assert sum(e["n"] for e in model["emissions"]) == int((~np.isnan(feats).any(1)).sum())
 
 
-def test_bakeoff_smoke_on_cached_data_if_available():
-    try:
-        mod = _load_research_module("smoke")
-        report = mod.run_bakeoff("BTC/USDT", "1h", families=("kmeans",),
-                                 k_range=range(3, 4), eval_windows=("is", "oos"),
-                                 n_perm=200)
-    except Exception as e:
-        pytest.skip(f"no cached OHLCV / data path unavailable: {e}")
-    assert "candidates" in report and len(report["candidates"]) == 1
+def _bakeoff_ohlcv(n, seed):
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2022-01-01", periods=n, freq="1h")
+    drift = np.where((np.arange(n) // 50) % 2 == 0, 0.002, 0.0)
+    vol = np.where((np.arange(n) // 120) % 2 == 0, 0.004, 0.02)
+    close = 100 * np.cumprod(1 + drift + rng.normal(0, 1, size=n) * vol)
+    high = close * (1 + np.abs(rng.normal(0, 0.004, size=n)))
+    low = close * (1 - np.abs(rng.normal(0, 0.004, size=n)))
+    openp = np.concatenate([[close[0]], close[:-1]])
+    volume = np.abs(rng.normal(1000, 200, size=n)) + (np.arange(n) // 50 % 2) * 500
+    return pd.DataFrame({"open": openp, "high": np.maximum(high, np.maximum(openp, close)),
+                         "low": np.minimum(low, np.minimum(openp, close)), "close": close,
+                         "volume": volume}, index=idx)
+
+
+def _offline_market(monkeypatch):
+    import socket
+    import zlib
+    import data_fetcher
+    import funding_fetcher
+
+    def loader(symbol, timeframe="1h", exchange_id=None, start_date=None, end_date=None):
+        return _bakeoff_ohlcv(400, zlib.crc32(f"{start_date}|{end_date}".encode()) % 1000)
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("the offline bakeoff test reached the network")
+
+    monkeypatch.setattr(data_fetcher, "load_cached_data", loader)
+    monkeypatch.setattr(data_fetcher, "fetch_full_history", no_network)
+    monkeypatch.setattr(data_fetcher, "fetch_ohlcv", no_network)
+    monkeypatch.setattr(funding_fetcher, "load_cached_funding", lambda *a, **k: None)
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+
+
+def test_bakeoff_report_on_offline_candles(monkeypatch):
+    _offline_market(monkeypatch)
+    mod = _load_research_module("offline_bakeoff")
+    report = mod.run_bakeoff("BTC/USDT", "1h", families=("kmeans",), k_range=range(4, 6),
+                             filter_window=16,
+                             eval_windows=("is", "oos"), n_perm=200)
+    cands = report["candidates"]
+    assert [(c["family"], c["k"]) for c in cands] == [("kmeans", 4), ("kmeans", 5)]
+    assert [c["structurally_ineligible"] for c in cands] == [True, False]
+    assert report["bonferroni_denominator"] == 1
+    assert report["bonferroni_alpha"] == pytest.approx(mod.bonferroni_alpha(1))
+    assert [e["k"] for e in report["structurally_ineligible"]] == [4]
+    assert cands[0]["passes_bonferroni"] is False
+    assert cands[1]["passes_bonferroni"] == (cands[1]["model_p_value"] <= report["bonferroni_alpha"])
     assert "non_degeneracy_thresholds" in report
-    assert "handrule_held_out" in report and "abstained" in report["handrule_held_out"]
-    assert report["n_perm"] == 200
-    assert report["min_achievable_p_value"] == pytest.approx(1.0 / 201.0)
-    assert "bonferroni_denominator" in report and "bonferroni_denominator_policy" in report
-    assert "structurally_ineligible" in report
+    assert "abstained" in report["handrule_held_out"]
     assert "permutation_steps_to_alpha" in report["handrule_held_out"]
     assert "knife_edge" in report["handrule_held_out"]
+    assert report["n_perm"] == 200
+    assert report["min_achievable_p_value"] == pytest.approx(1.0 / 201.0)
     assert report["min_achievable_p_value"] <= report["bonferroni_alpha"]
+    winner = mod.select_winner(cands)
+    assert report["winner"] == ({"family": winner["family"], "k": winner["k"]} if winner else None)
 
 
 def test_resolve_bakeoff_n_perm_default_achieves_corrected_alpha_with_headroom():

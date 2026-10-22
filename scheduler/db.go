@@ -642,6 +642,8 @@ func (sdb *StateDB) migrateSchema() error {
 		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_timestamp ON trades(strategy_id, timestamp DESC, rowid DESC)",
 		"ALTER TABLE kill_switch_events ADD COLUMN scope TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE portfolio_risk ADD COLUMN kill_switch_close_applied INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE portfolio_risk ADD COLUMN quote_precision_rebaselined INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE strategies ADD COLUMN quote_precision_rebaselined INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN shared_close_hold_usd REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN shared_close_hold_reason TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE pending_manual_actions ADD COLUMN prev_tp_oids_json TEXT NOT NULL DEFAULT ''",
@@ -924,20 +926,23 @@ const portfolioRiskScopedDDL = `CREATE TABLE portfolio_risk_v2 (
     manual_mark_basis_rebaselined INTEGER NOT NULL DEFAULT 0,
     drawdown_reading_substituted INTEGER NOT NULL DEFAULT 0,
     untrusted_over_limit_since TEXT NOT NULL DEFAULT '',
-    kill_switch_close_applied INTEGER NOT NULL DEFAULT 0
+    kill_switch_close_applied INTEGER NOT NULL DEFAULT 0,
+    quote_precision_rebaselined INTEGER NOT NULL DEFAULT 0
 )`
 
 const portfolioRiskScopedCopySQL = `INSERT INTO portfolio_risk_v2 (scope, peak_value, current_drawdown_pct,
     current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, warn_band_entered_at,
     last_warning_equity_dd_pct, last_warning_margin_dd_pct, warning_equity_delta_pct, warning_margin_delta_pct,
-    manual_mark_basis_rebaselined, drawdown_reading_substituted, untrusted_over_limit_since, kill_switch_close_applied)
+    manual_mark_basis_rebaselined, drawdown_reading_substituted, untrusted_over_limit_since, kill_switch_close_applied,
+    quote_precision_rebaselined)
     SELECT '', COALESCE(peak_value, 0), COALESCE(current_drawdown_pct, 0),
     COALESCE(current_margin_drawdown_pct, 0), COALESCE(kill_switch_active, 0), COALESCE(kill_switch_at, ''),
     COALESCE(warning_sent, 0), COALESCE(warn_band_entered_at, ''),
     COALESCE(last_warning_equity_dd_pct, 0), COALESCE(last_warning_margin_dd_pct, 0),
     COALESCE(warning_equity_delta_pct, 0), COALESCE(warning_margin_delta_pct, 0),
     COALESCE(manual_mark_basis_rebaselined, 0), COALESCE(drawdown_reading_substituted, 0),
-    COALESCE(untrusted_over_limit_since, ''), COALESCE(kill_switch_close_applied, 0) FROM portfolio_risk`
+    COALESCE(untrusted_over_limit_since, ''), COALESCE(kill_switch_close_applied, 0),
+    COALESCE(quote_precision_rebaselined, 0) FROM portfolio_risk`
 
 const correlationSnapshotScopedDDL = `CREATE TABLE correlation_snapshot_v2 (
     scope TEXT PRIMARY KEY CHECK (scope IN ('live','paper','')),
@@ -1304,10 +1309,10 @@ func (sdb *StateDB) PersistSharedWalletPoolStateTransition(s *StrategyState) err
 	res, err := sdb.db.Exec(
 		`UPDATE strategies
 		 SET cash = ?, initial_capital = ?, risk_peak_value = ?,
-		     risk_current_drawdown_pct = ?, shared_wallet_pool_budget = ?
+		     risk_current_drawdown_pct = ?, shared_wallet_pool_budget = ?, quote_precision_rebaselined = ?
 		 WHERE id = ?`,
 		s.Cash, s.InitialCapital, s.RiskState.PeakValue,
-		s.RiskState.CurrentDrawdownPct, poolInt, sid,
+		s.RiskState.CurrentDrawdownPct, poolInt, boolToInt(s.RiskState.QuotePrecisionRebaselined), sid,
 	)
 	if err != nil {
 		return fmt.Errorf("persist shared-wallet pool transition for %s: %w", s.ID, err)
@@ -1493,8 +1498,8 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
 		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source,
-		paper_funding_state)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		paper_funding_state, quote_precision_rebaselined)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare strategy insert: %w", err)
 	}
@@ -1551,6 +1556,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 			s.ReplayMirrorWatermark,
 			s.ReplayMirrorWatermarkSource,
 			paperFundingJSON,
+			boolToInt(s.RiskState.QuotePrecisionRebaselined),
 		); err != nil {
 			return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 		}
@@ -1785,13 +1791,14 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		basisRebaselined := boolToInt(prs.ManualMarkBasisRebaselined)
 		ddSubstituted := boolToInt(prs.DrawdownReadingSubstituted)
 		closeApplied := boolToInt(prs.KillSwitchCloseApplied)
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (scope, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, warn_band_entered_at, last_warning_equity_dd_pct, last_warning_margin_dd_pct, warning_equity_delta_pct, warning_margin_delta_pct, manual_mark_basis_rebaselined, drawdown_reading_substituted, untrusted_over_limit_since, kill_switch_close_applied)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		quoteRebaselined := boolToInt(prs.QuotePrecisionRebaselined)
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (scope, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, warn_band_entered_at, last_warning_equity_dd_pct, last_warning_margin_dd_pct, warning_equity_delta_pct, warning_margin_delta_pct, manual_mark_basis_rebaselined, drawdown_reading_substituted, untrusted_over_limit_since, kill_switch_close_applied, quote_precision_rebaselined)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			string(scope), prs.PeakValue, prs.CurrentDrawdownPct, prs.CurrentMarginDrawdownPct,
 			ksActive, formatTime(prs.KillSwitchAt), warnSent, formatTime(prs.WarnBandEnteredAt),
 			prs.LastWarningEquityDDPct, prs.LastWarningMarginDDPct,
 			prs.WarningEquityDeltaPct, prs.WarningMarginDeltaPct,
-			basisRebaselined, ddSubstituted, formatTime(prs.UntrustedOverLimitSince), closeApplied,
+			basisRebaselined, ddSubstituted, formatTime(prs.UntrustedOverLimitSince), closeApplied, quoteRebaselined,
 		); err != nil {
 			return fmt.Errorf("upsert portfolio_risk: %w", err)
 		}
@@ -1973,8 +1980,8 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
 		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source,
-		paper_funding_state)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		paper_funding_state, quote_precision_rebaselined)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sid, s.Type, s.Platform, s.Cash, s.InitialCapital,
 		s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
 		s.RiskState.DailyPnL, s.RiskState.DailyPnLDate, s.RiskState.ConsecutiveLosses,
@@ -1987,6 +1994,7 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 		s.ReplayMirrorWatermark,
 		s.ReplayMirrorWatermarkSource,
 		paperFundingJSON,
+		boolToInt(s.RiskState.QuotePrecisionRebaselined),
 	); err != nil {
 		return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 	}
@@ -2424,7 +2432,8 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		COALESCE(hurst_gate_state, '') AS hurst_gate_state,
 		COALESCE(replay_mirror_watermark, 0) AS replay_mirror_watermark,
 		COALESCE(replay_mirror_watermark_source, '') AS replay_mirror_watermark_source,
-		COALESCE(paper_funding_state, '') AS paper_funding_state
+		COALESCE(paper_funding_state, '') AS paper_funding_state,
+		COALESCE(quote_precision_rebaselined, 0) AS quote_precision_rebaselined
 		FROM strategies`)
 	if err != nil {
 		return nil, fmt.Errorf("load strategies: %w", err)
@@ -2440,6 +2449,7 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		var cbUntilStr, pendingCircuitClosesJSON, activeProfile string
 		var hurstGateJSON string
 		var paperFundingJSON string
+		var quoteRebaselinedInt int
 		if err := rows.Scan(
 			&storedID, &s.Type, &s.Platform, &s.Cash, &s.InitialCapital,
 			&s.RiskState.PeakValue, &s.RiskState.MaxDrawdownPct, &s.RiskState.CurrentDrawdownPct,
@@ -2449,9 +2459,11 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 			&s.ReplayMirrorWatermark,
 			&s.ReplayMirrorWatermarkSource,
 			&paperFundingJSON,
+			&quoteRebaselinedInt,
 		); err != nil {
 			return nil, fmt.Errorf("scan strategy: %w", err)
 		}
+		s.RiskState.QuotePrecisionRebaselined = quoteRebaselinedInt != 0
 		procID, mapped := sdb.mapStoredStrategyID(storedID)
 		if !mapped {
 			orphanPositions[storedID] = 0
@@ -2586,23 +2598,24 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 	}
 
 	scopeFilter, scopeArgs := scopePlaceholders(scopes)
-	prsRows, err := sdb.db.Query("SELECT scope, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct, COALESCE(manual_mark_basis_rebaselined, 0) AS manual_mark_basis_rebaselined, COALESCE(drawdown_reading_substituted, 0) AS drawdown_reading_substituted, COALESCE(untrusted_over_limit_since, '') AS untrusted_over_limit_since, COALESCE(kill_switch_close_applied, 0) AS kill_switch_close_applied FROM portfolio_risk WHERE scope IN ("+scopeFilter+")", scopeArgs...)
+	prsRows, err := sdb.db.Query("SELECT scope, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct, COALESCE(manual_mark_basis_rebaselined, 0) AS manual_mark_basis_rebaselined, COALESCE(drawdown_reading_substituted, 0) AS drawdown_reading_substituted, COALESCE(untrusted_over_limit_since, '') AS untrusted_over_limit_since, COALESCE(kill_switch_close_applied, 0) AS kill_switch_close_applied, COALESCE(quote_precision_rebaselined, 0) AS quote_precision_rebaselined FROM portfolio_risk WHERE scope IN ("+scopeFilter+")", scopeArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("load portfolio_risk: %w", err)
 	}
 	defer prsRows.Close()
 	for prsRows.Next() {
 		var scopeStr, ksAtStr, warnBandEnteredAtStr, untrustedOverLimitSinceStr string
-		var ksActiveInt, warnSentInt, basisRebaselinedInt, ddSubstitutedInt, closeAppliedInt int
+		var ksActiveInt, warnSentInt, basisRebaselinedInt, ddSubstitutedInt, closeAppliedInt, quoteRebaselinedInt int
 		prs := &PortfolioRiskState{}
 		if err := prsRows.Scan(&scopeStr, &prs.PeakValue, &prs.CurrentDrawdownPct, &prs.CurrentMarginDrawdownPct,
 			&ksActiveInt, &ksAtStr, &warnSentInt, &warnBandEnteredAtStr, &prs.LastWarningEquityDDPct,
 			&prs.LastWarningMarginDDPct, &prs.WarningEquityDeltaPct, &prs.WarningMarginDeltaPct,
-			&basisRebaselinedInt, &ddSubstitutedInt, &untrustedOverLimitSinceStr, &closeAppliedInt); err != nil {
+			&basisRebaselinedInt, &ddSubstitutedInt, &untrustedOverLimitSinceStr, &closeAppliedInt, &quoteRebaselinedInt); err != nil {
 			return nil, fmt.Errorf("scan portfolio_risk: %w", err)
 		}
 		prs.KillSwitchCloseApplied = closeAppliedInt != 0
 		prs.ManualMarkBasisRebaselined = basisRebaselinedInt != 0
+		prs.QuotePrecisionRebaselined = quoteRebaselinedInt != 0
 		prs.DrawdownReadingSubstituted = ddSubstitutedInt != 0
 		prs.UntrustedOverLimitSince = parseTime(untrustedOverLimitSinceStr)
 		prs.KillSwitchActive = ksActiveInt != 0

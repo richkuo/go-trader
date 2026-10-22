@@ -114,7 +114,30 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBasketRealRanker[A-Za-z]*|TestBasketMemberRealCheckIsManagementOnly|TestBasketMemberBatched[A-Za-z]*|TestBasketReplay[A-Za-z]*|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*)$' -skip '^TestBasketReplay[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBasketRealRanker[A-Za-z]*|TestBasketMemberRealCheckIsManagementOnly|TestBasketMemberBatched[A-Za-z]*|TestBasketReplay[A-Za-z]*|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*)$' -skip '^(TestBasketReplay[A-Za-z]*|TestMergePaperInstance)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
+            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
+            exit 1
+          fi
+
+  go-python-integration-merge-paper-instance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Python-backed Go integration tests
+        run: |
+          set -o pipefail
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestMergePaperInstance$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -358,7 +381,7 @@ jobs:
             --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='refuse plan confirm apply latch conflict resume signal fold newtarget' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
-  python:
+  python-collect:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -374,11 +397,110 @@ jobs:
             -name '*.py' -print0 \
             | xargs -0 uv run python3 -m py_compile
 
-      - name: Run tests
-        run: uv run pytest -n auto --durations=25
-
-      - name: Run shared_scripts tests (outside testpaths)
-        run: uv run pytest shared_scripts/ -n auto --durations=25
-
       - name: Test budget
         run: uv run python3 scripts/check_test_budget.py
+
+      - name: Collect every Python test
+        run: |
+          uv run python3 scripts/check_pytest_shards.py collect default --out "$RUNNER_TEMP/pytest-collect/default.json"
+          uv run python3 scripts/check_pytest_shards.py collect shared_scripts --out "$RUNNER_TEMP/pytest-collect/shared_scripts.json" -- shared_scripts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pytest-collect
+          path: ${{ runner.temp }}/pytest-collect/
+          if-no-files-found: error
+          retention-days: 7
+
+  python-shard:
+    name: python-shard (${{ matrix.suite }} ${{ matrix.group }}/${{ matrix.splits }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {suite: default, group: 1, splits: 3, paths: ''}
+          - {suite: default, group: 2, splits: 3, paths: ''}
+          - {suite: default, group: 3, splits: 3, paths: ''}
+          - {suite: shared_scripts, group: 1, splits: 1, paths: shared_scripts/}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        env:
+          SUITE: ${{ matrix.suite }}
+          GROUP: ${{ matrix.group }}
+          SPLITS: ${{ matrix.splits }}
+          PATHS: ${{ matrix.paths }}
+        run: |
+          uv run pytest ${PATHS:+"$PATHS"} -n auto --durations=25 \
+            --splits="$SPLITS" --group="$GROUP" --splitting-algorithm=least_duration \
+            --durations-path="scripts/pytest_durations/$SUITE.json" \
+            --report-log="$RUNNER_TEMP/pytest-shards/$SUITE-$GROUP-of-$SPLITS.jsonl"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: pytest-shard-${{ matrix.suite }}-${{ matrix.group }}-of-${{ matrix.splits }}
+          path: ${{ runner.temp }}/pytest-shards/
+          if-no-files-found: error
+          retention-days: 7
+
+  python:
+    needs: [python-collect, python-shard]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pytest-collect
+          path: ${{ runner.temp }}/pytest-collect
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pytest-shard-*
+          path: ${{ runner.temp }}/pytest-shards
+          merge-multiple: true
+
+      - name: Every default test ran exactly once and passed
+        if: ${{ !cancelled() }}
+        run: |
+          uv run --no-project python3 scripts/check_pytest_shards.py verify default \
+            --collected "$RUNNER_TEMP/pytest-collect/default.json" --logs "$RUNNER_TEMP/pytest-shards" \
+            --durations scripts/pytest_durations/default.json --durations-out "$RUNNER_TEMP/pytest-durations/default.json"
+
+      - name: Every shared_scripts test ran exactly once and passed
+        if: ${{ !cancelled() }}
+        run: |
+          uv run --no-project python3 scripts/check_pytest_shards.py verify shared_scripts \
+            --collected "$RUNNER_TEMP/pytest-collect/shared_scripts.json" --logs "$RUNNER_TEMP/pytest-shards" \
+            --durations scripts/pytest_durations/shared_scripts.json --durations-out "$RUNNER_TEMP/pytest-durations/shared_scripts.json"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: pytest-durations
+          path: ${{ runner.temp }}/pytest-durations/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Every Python job passed
+        if: ${{ !cancelled() }}
+        env:
+          COLLECT: ${{ needs.python-collect.result }}
+          SHARDS: ${{ needs.python-shard.result }}
+        run: |
+          echo "python-collect: $COLLECT, python-shard: $SHARDS"
+          if [ "$COLLECT" != success ] || [ "$SHARDS" != success ]; then
+            echo "::error::a Python CI job did not succeed"
+            exit 1
+          fi

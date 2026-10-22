@@ -23,6 +23,8 @@ research = [
 dev = [
     "pytest>=8.0.0",
     "pytest-mock>=3.14.0",
+    "pytest-reportlog>=1.0.0",
+    "pytest-split>=0.11.0",
     "pytest-xdist>=3.6.0",
 ]
 
