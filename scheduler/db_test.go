@@ -351,6 +351,18 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 	if btcExposure.ConcentrationPct != 70 {
 		t.Errorf("ConcentrationPct = %f, want 70", btcExposure.ConcentrationPct)
 	}
+
+	original.CorrelationSnapshot = map[RiskPartition]*CorrelationSnapshot{}
+	if err := db.SaveState(original); err != nil {
+		t.Fatalf("correlation snapshot cleared: SaveState nil snapshot: %v", err)
+	}
+	loaded2, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("correlation snapshot cleared: LoadState nil snapshot: %v", err)
+	}
+	if loaded2.partitionCorrelation(livePartition) != nil {
+		t.Errorf("correlation snapshot cleared: expected nil CorrelationSnapshot, got %+v", loaded2.partitionCorrelation(livePartition))
+	}
 }
 
 func TestSaveState_AppendsTradesOnly(t *testing.T) {
@@ -492,12 +504,12 @@ func TestQueryTradeHistory_Filters(t *testing.T) {
 		},
 		{name: "limit clamped", limit: 9999, wantTotal: 2, wantLen: 2},
 	}
+	db := openTestDB(t)
+	if err := db.SaveState(makeTestState()); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openTestDB(t)
-			if err := db.SaveState(makeTestState()); err != nil {
-				t.Fatalf("SaveState: %v", err)
-			}
 			trades, total, err := db.QueryTradeHistory(tc.strategy, tc.symbol, time.Time{}, time.Time{}, tc.limit, 0)
 			if err != nil {
 				t.Fatalf("QueryTradeHistory: %v", err)
@@ -590,38 +602,6 @@ func TestQueryTradeHistory_TimeBounds(t *testing.T) {
 	}
 	if len(trades) != 2 {
 		t.Errorf("trades len = %d, want 2", len(trades))
-	}
-}
-
-func TestCorrelationSnapshotRoundTrip(t *testing.T) {
-	db := openTestDB(t)
-
-	state := makeTestState()
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
-	}
-
-	loaded, err := db.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState: %v", err)
-	}
-	if loaded.partitionCorrelation(livePartition) == nil {
-		t.Fatal("CorrelationSnapshot is nil")
-	}
-	if loaded.partitionCorrelation(livePartition).PortfolioGrossUSD != 5000 {
-		t.Errorf("PortfolioGrossUSD = %f, want 5000", loaded.partitionCorrelation(livePartition).PortfolioGrossUSD)
-	}
-
-	state.CorrelationSnapshot = map[RiskPartition]*CorrelationSnapshot{}
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState nil snapshot: %v", err)
-	}
-	loaded2, err := db.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState nil snapshot: %v", err)
-	}
-	if loaded2.partitionCorrelation(livePartition) != nil {
-		t.Errorf("expected nil CorrelationSnapshot, got %+v", loaded2.partitionCorrelation(livePartition))
 	}
 }
 

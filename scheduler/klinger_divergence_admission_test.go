@@ -11,7 +11,7 @@ import (
 
 const klingerName = "klinger_divergence"
 
-func TestKlingerDivergenceAdmissionThroughRealLoaders(t *testing.T) {
+func TestKlingerDivergenceAdmissionAndBooleanAcknowledgementThroughRealLoaders(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	const ref = "backtest/candidates/klinger_divergence_1662/REPORT.md"
 	kd := func(args ...string) map[string]interface{} {
@@ -91,6 +91,14 @@ func TestKlingerDivergenceAdmissionThroughRealLoaders(t *testing.T) {
 				}
 			}
 		})
+	}
+	for _, raw := range []interface{}{"true", 1, map[string]interface{}{}} {
+		sc := noEdgeHLStrategy("hl-klingerdiv-eth", klingerName, "ETH", "4h", "--mode=live")
+		sc["closed_bar_decisions"] = true
+		sc["allow_no_edge"] = raw
+		if _, err := LoadConfig(writeNoEdgeConfig(t, CurrentConfigVersion, sc)); err == nil {
+			t.Fatalf("acknowledgement must be a boolean: allow_no_edge=%v must be refused", raw)
+		}
 	}
 }
 
@@ -177,18 +185,6 @@ func TestKlingerDivergenceRequiresHyperliquidClosedBarDecisions(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestKlingerDivergenceAcknowledgementMustBeABoolean(t *testing.T) {
-	setNoEdgeLiveCredentials(t)
-	for _, raw := range []interface{}{"true", 1, map[string]interface{}{}} {
-		sc := noEdgeHLStrategy("hl-klingerdiv-eth", klingerName, "ETH", "4h", "--mode=live")
-		sc["closed_bar_decisions"] = true
-		sc["allow_no_edge"] = raw
-		if _, err := LoadConfig(writeNoEdgeConfig(t, CurrentConfigVersion, sc)); err == nil {
-			t.Fatalf("allow_no_edge=%v must be refused", raw)
-		}
 	}
 }
 

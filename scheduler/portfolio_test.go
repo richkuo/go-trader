@@ -88,35 +88,27 @@ func TestPartialClosePreservesInitialQuantityAndEntryATR(t *testing.T) {
 	}
 }
 
-func TestPortfolioValueFutures(t *testing.T) {
-	s := &StrategyState{
-		Cash: 10000,
-		Positions: map[string]*Position{
-			"ES": {Symbol: "ES", Quantity: 2, AvgCost: 5000, Side: "long", Multiplier: 50},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
+func TestPortfolioValueFuturesAndShort(t *testing.T) {
+	cases := []struct {
+		name   string
+		cash   float64
+		pos    *Position
+		prices map[string]float64
+		want   float64
+	}{
+		{"futures", 10000, &Position{Symbol: "ES", Quantity: 2, AvgCost: 5000, Side: "long", Multiplier: 50}, map[string]float64{"ES": 5100}, 20000},
+		{"short", 1000, &Position{Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 60000, Side: "short"}, map[string]float64{"BTC/USDT": 55000}, 1650},
 	}
-	prices := map[string]float64{"ES": 5100}
-
-	got := PortfolioValue(s, prices)
-	if math.Abs(got-20000) > 0.01 {
-		t.Errorf("PortfolioValue futures = %g, want 20000", got)
-	}
-}
-
-func TestPortfolioValueShort(t *testing.T) {
-	s := &StrategyState{
-		Cash: 1000,
-		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 60000, Side: "short"},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
-	}
-	prices := map[string]float64{"BTC/USDT": 55000}
-
-	got := PortfolioValue(s, prices)
-	if math.Abs(got-1650) > 0.01 {
-		t.Errorf("PortfolioValue short = %g, want 1650", got)
+	for _, tc := range cases {
+		s := &StrategyState{
+			Cash:            tc.cash,
+			Positions:       map[string]*Position{tc.pos.Symbol: tc.pos},
+			OptionPositions: make(map[string]*OptionPosition),
+		}
+		got := PortfolioValue(s, tc.prices)
+		if math.Abs(got-tc.want) > 0.01 {
+			t.Errorf("PortfolioValue %s = %g, want %g", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -706,38 +698,32 @@ func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
 	}
 }
 
-func TestPerpsLiveOrderSize_SharedWalletPoolUsesReleasedMargin(t *testing.T) {
-	sizing := PerpsSizing{
-		ExchangeLeverage:    5,
-		MarginPerTradeUSD:   100,
-		SharedWalletPool:    true,
-		ReleasableMarginUSD: 200,
+func TestPerpsLiveOrderSize_SharedWalletPoolFlipUsesReleasedMarginOrClosesOnly(t *testing.T) {
+	cases := []struct {
+		name       string
+		releasable float64
+		wantSize   float64
+		tolerance  float64
+	}{
+		{"released margin sizes the flip", 200, 0.75, 1e-9},
+		{"unknown balance flip closes only", 0, 0.5, 0},
 	}
-	size, ok, reason := perpsLiveOrderSize(
-		-1, 2000, 0, 0.5, 2200, sizing, "long", DirectionBoth, 0,
-	)
-	if !ok || reason != "" {
-		t.Fatalf("pooled flip rejected: ok=%v reason=%q", ok, reason)
-	}
-	if math.Abs(size-0.75) > 1e-9 {
-		t.Fatalf("pooled flip size=%v, want 0.75", size)
-	}
-}
-
-func TestPerpsLiveOrderSize_SharedWalletPoolUnknownBalanceFlipClosesOnly(t *testing.T) {
-	sizing := PerpsSizing{
-		ExchangeLeverage:  5,
-		MarginPerTradeUSD: 100,
-		SharedWalletPool:  true,
-	}
-	size, ok, reason := perpsLiveOrderSize(
-		-1, 2000, 0, 0.5, 2200, sizing, "long", DirectionBoth, 0,
-	)
-	if !ok || reason != "" {
-		t.Fatalf("unknown-balance pooled flip rejected instead of closing: ok=%v reason=%q", ok, reason)
-	}
-	if size != 0.5 {
-		t.Fatalf("unknown-balance pooled flip size=%v, want close-only 0.5", size)
+	for _, tc := range cases {
+		sizing := PerpsSizing{
+			ExchangeLeverage:    5,
+			MarginPerTradeUSD:   100,
+			SharedWalletPool:    true,
+			ReleasableMarginUSD: tc.releasable,
+		}
+		size, ok, reason := perpsLiveOrderSize(
+			-1, 2000, 0, 0.5, 2200, sizing, "long", DirectionBoth, 0,
+		)
+		if !ok || reason != "" {
+			t.Fatalf("%s: pooled flip rejected: ok=%v reason=%q", tc.name, ok, reason)
+		}
+		if !(math.Abs(size-tc.wantSize) <= tc.tolerance) {
+			t.Fatalf("%s: pooled flip size=%v, want %v", tc.name, size, tc.wantSize)
+		}
 	}
 }
 
@@ -802,21 +788,18 @@ func TestPerpsOpenNotional(t *testing.T) {
 	}
 }
 
-func TestPerpsLiveOrderSize_PartialCloseScalesPosQty(t *testing.T) {
+func TestPerpsLiveOrderSize_CloseFractionScalesPosQty(t *testing.T) {
 	size, ok, reason := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionLong, 0.5)
 	if !ok {
-		t.Fatalf("expected ok, got reason=%q", reason)
+		t.Fatalf("partial close: expected ok, got reason=%q", reason)
 	}
 	if math.Abs(size-0.2) > 1e-9 {
-		t.Errorf("size = %g, want 0.2 (0.4 * 0.5)", size)
+		t.Errorf("partial close: size = %g, want 0.2 (0.4 * 0.5)", size)
 	}
-}
-
-func TestPerpsLiveOrderSize_FullCloseFractionIsFullPosQty(t *testing.T) {
 	for _, frac := range []float64{0, 1.0} {
 		size, ok, _ := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionLong, frac)
 		if !ok || math.Abs(size-0.4) > 1e-9 {
-			t.Errorf("frac=%g: size = %g (ok=%v), want 0.4", frac, size, ok)
+			t.Errorf("full close frac=%g: size = %g (ok=%v), want 0.4", frac, size, ok)
 		}
 	}
 }

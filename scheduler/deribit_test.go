@@ -284,77 +284,58 @@ func TestApplyAssignmentCallFullCloseUsesSingleTimestamp(t *testing.T) {
 	}
 }
 
-func TestFetchMarkPricesExpiredOTM(t *testing.T) {
-	prices := map[string]float64{"BTC/USDT": 60000}
-	pricer := NewIBKRPricer(prices)
-
-	lm, _ := NewLogManager("")
-	logger, _ := lm.GetStrategyLogger("test")
-	defer logger.Close()
-
-	requests := []markRequest{
-		{
-			ID:         "expired-otm-put",
-			Underlying: "BTC",
-			OptionType: "put",
-			Strike:     50000,
-			Action:     "sell",
-			Quantity:   1,
-			DTE:        -1,
-			Expired:    true,
-		},
+func TestFetchMarkPricesExpiredOTMAndITMPut(t *testing.T) {
+	cases := []struct {
+		name         string
+		spot         float64
+		id           string
+		wantAssigned bool
+		wantValue    float64
+	}{
+		{name: "expired OTM sold put", spot: 60000, id: "expired-otm-put", wantAssigned: false, wantValue: 0},
+		{name: "expired ITM sold put", spot: 45000, id: "expired-itm-put", wantAssigned: true, wantValue: -5000.0},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prices := map[string]float64{"BTC/USDT": tc.spot}
+			pricer := NewIBKRPricer(prices)
 
-	results := fetchMarkPrices(requests, pricer, logger)
-	if len(results) != 1 {
-		t.Fatalf("len(results) = %d, want 1", len(results))
-	}
+			lm, _ := NewLogManager("")
+			logger, _ := lm.GetStrategyLogger("test")
+			defer logger.Close()
 
-	r := results[0]
-	if !r.Expired {
-		t.Error("should be expired")
-	}
-	if r.Assigned {
-		t.Error("OTM put should not be assigned")
-	}
-	if r.CurrentValueUSD != 0 {
-		t.Errorf("OTM expired value should be 0, got %g", r.CurrentValueUSD)
-	}
-}
+			requests := []markRequest{
+				{
+					ID:         tc.id,
+					Underlying: "BTC",
+					OptionType: "put",
+					Strike:     50000,
+					Action:     "sell",
+					Quantity:   1,
+					DTE:        -1,
+					Expired:    true,
+				},
+			}
 
-func TestFetchMarkPricesExpiredITMPut(t *testing.T) {
-	prices := map[string]float64{"BTC/USDT": 45000}
-	pricer := NewIBKRPricer(prices)
+			results := fetchMarkPrices(requests, pricer, logger)
+			if len(results) != 1 {
+				t.Fatalf("%s: len(results) = %d, want 1", tc.name, len(results))
+			}
 
-	lm, _ := NewLogManager("")
-	logger, _ := lm.GetStrategyLogger("test")
-	defer logger.Close()
-
-	requests := []markRequest{
-		{
-			ID:         "expired-itm-put",
-			Underlying: "BTC",
-			OptionType: "put",
-			Strike:     50000,
-			Action:     "sell",
-			Quantity:   1,
-			DTE:        -1,
-			Expired:    true,
-		},
-	}
-
-	results := fetchMarkPrices(requests, pricer, logger)
-	r := results[0]
-
-	if !r.Assigned {
-		t.Error("ITM sold put should be assigned")
-	}
-	if r.AssignOptionType != "put" {
-		t.Error("should be put assignment")
-	}
-	expectedValue := -5000.0
-	if r.CurrentValueUSD != expectedValue {
-		t.Errorf("CurrentValueUSD = %g, want %g", r.CurrentValueUSD, expectedValue)
+			r := results[0]
+			if !r.Expired {
+				t.Errorf("%s: should be expired", tc.name)
+			}
+			if r.Assigned != tc.wantAssigned {
+				t.Errorf("%s: Assigned = %v, want %v", tc.name, r.Assigned, tc.wantAssigned)
+			}
+			if tc.wantAssigned && r.AssignOptionType != "put" {
+				t.Errorf("%s: should be put assignment, got %q", tc.name, r.AssignOptionType)
+			}
+			if r.CurrentValueUSD != tc.wantValue {
+				t.Errorf("%s: CurrentValueUSD = %g, want %g", tc.name, r.CurrentValueUSD, tc.wantValue)
+			}
+		})
 	}
 }
 

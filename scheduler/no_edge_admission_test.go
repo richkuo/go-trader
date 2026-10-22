@@ -226,7 +226,7 @@ func chandeLegacyFixture() []map[string]interface{} {
 	}
 }
 
-func TestV20NoEdgeMigrationNeverGrantsChandeMomentum(t *testing.T) {
+func TestV20NoEdgeMigrationNeverGrantsChandeMomentumAndReportVetoesIt(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
 	for _, version := range []int{0, 19} {
 		refusedIDs := []string{"hl-cmo-close", "hl-cmo-false", "hl-cmo-mixed", "hl-cmo-open"}
@@ -305,9 +305,7 @@ func TestV20NoEdgeMigrationNeverGrantsChandeMomentum(t *testing.T) {
 			}
 		})
 	}
-}
 
-func TestV20NoEdgeMigrationReportVetoesChandeMomentum(t *testing.T) {
 	raw := map[string]interface{}{"strategies": []interface{}{}}
 	for _, sc := range chandeLegacyFixture() {
 		blob, _ := json.Marshal(sc)
@@ -317,20 +315,20 @@ func TestV20NoEdgeMigrationReportVetoesChandeMomentum(t *testing.T) {
 	}
 	report, err := migrateV20NoEdge(raw, 19)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("report vetoes: %v", err)
 	}
 	if got := stampedIDs(report); !reflect.DeepEqual(got, []string{"hl-control"}) {
-		t.Fatalf("stamped = %v, want only the non-candidate control", got)
+		t.Fatalf("report vetoes: stamped = %v, want only the non-candidate control", got)
 	}
 	if want := []string{"hl-cmo-close", "hl-cmo-manual", "hl-cmo-mixed", "hl-cmo-open"}; !reflect.DeepEqual(report.VetoedResearch, want) {
-		t.Fatalf("vetoed = %v, want %v", report.VetoedResearch, want)
+		t.Fatalf("report vetoes: vetoed = %v, want %v", report.VetoedResearch, want)
 	}
 	again, err := migrateV20NoEdge(raw, 19)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("report vetoes: second pass: %v", err)
 	}
 	if len(again.Stamped) != 0 || len(again.VetoedResearch) != 4 {
-		t.Fatalf("second in-memory pass = %+v; it must grant nothing new", again)
+		t.Fatalf("report vetoes: second in-memory pass = %+v; it must grant nothing new", again)
 	}
 }
 
@@ -960,39 +958,61 @@ func TestNoEdgeBatchSlotCarriesRawModeEvidenceAndAcknowledgement(t *testing.T) {
 	}
 }
 
-func TestChandeMomentumOperatorAddCreatesBothDirectionHourlyPaperEntry(t *testing.T) {
+func TestChandeMomentumAndDualThrustOperatorAddCreateBothDirectionHourlyPaperEntries(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
-	id, entry, err := buildAddStrategyEntry("chande_momentum", "hyperliquid", "eth")
-	if err != nil {
-		t.Fatal(err)
+	dualThrustClose := map[string]interface{}{"name": "tiered_tp_pct", "params": map[string]interface{}{
+		"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 0.03, "close_fraction": 1.0}}}}
+	cases := []struct {
+		name      string
+		wantID    string
+		closedBar bool
+		wantClose map[string]interface{}
+	}{
+		{name: "chande_momentum", wantID: "hl-cmo-eth"},
+		{name: "dual_thrust", wantID: "hl-dt-eth", closedBar: true, wantClose: dualThrustClose},
 	}
-	if id != "hl-cmo-eth" {
-		t.Fatalf("id = %q, want hl-cmo-eth", id)
-	}
-	var sc map[string]interface{}
-	if err := json.Unmarshal(entry, &sc); err != nil {
-		t.Fatal(err)
-	}
-	if sc["direction"] != DirectionBoth {
-		t.Fatalf("direction = %v, want %q", sc["direction"], DirectionBoth)
-	}
-	if _, ack := sc["allow_no_edge"]; ack {
-		t.Fatal("operator add must not acknowledge no-edge live use")
-	}
-	args, _ := sc["args"].([]interface{})
-	if !reflect.DeepEqual(args, []interface{}{"chande_momentum", "ETH", "1h", "--mode=paper"}) {
-		t.Fatalf("args = %v, want the 1h explicit-paper positional form", args)
-	}
-	cfg, err := LoadConfig(writeNoEdgeConfigRoot(t, CurrentConfigVersion, map[string]interface{}{"market_feed": "websocket"}, sc))
-	if err != nil {
-		t.Fatalf("operator-added chande_momentum must load as paper without acknowledgement: %v", err)
-	}
-	got := cfg.Strategies[0]
-	if portfolioScopeFor(got) != ScopePaper || edgeGateModeForStrategy(got).Kind != edgeGateModePaper || got.AllowNoEdgeAcknowledged() {
-		t.Fatalf("operator-added entry is not explicit unacknowledged paper: scope=%q", portfolioScopeFor(got))
-	}
-	if _, _, err := buildAddStrategyEntry("chande_momentum", "binanceus", "ETH"); err == nil {
-		t.Fatal("spot add must refuse the futures-only chande_momentum")
+	for _, tc := range cases {
+		id, entry, err := buildAddStrategyEntry(tc.name, "hyperliquid", "eth")
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if id != tc.wantID {
+			t.Fatalf("%s: id = %q, want %s", tc.name, id, tc.wantID)
+		}
+		var sc map[string]interface{}
+		if err := json.Unmarshal(entry, &sc); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if sc["direction"] != DirectionBoth {
+			t.Fatalf("%s: direction = %v, want %q", tc.name, sc["direction"], DirectionBoth)
+		}
+		if _, ack := sc["allow_no_edge"]; ack {
+			t.Fatalf("%s: operator add must not acknowledge no-edge live use", tc.name)
+		}
+		if tc.closedBar && sc["closed_bar_decisions"] != true {
+			t.Fatalf("%s: closed_bar_decisions = %v, want true", tc.name, sc["closed_bar_decisions"])
+		}
+		if tc.wantClose != nil && !reflect.DeepEqual(sc["close_strategy"], tc.wantClose) {
+			t.Fatalf("%s: close_strategy = %v, want the study close %v", tc.name, sc["close_strategy"], tc.wantClose)
+		}
+		args, _ := sc["args"].([]interface{})
+		if !reflect.DeepEqual(args, []interface{}{tc.name, "ETH", "1h", "--mode=paper"}) {
+			t.Fatalf("%s: args = %v, want the 1h explicit-paper positional form", tc.name, args)
+		}
+		cfg, err := LoadConfig(writeNoEdgeConfigRoot(t, CurrentConfigVersion, map[string]interface{}{"market_feed": "websocket"}, sc))
+		if err != nil {
+			t.Fatalf("%s: operator-added entry must load as paper without acknowledgement: %v", tc.name, err)
+		}
+		got := cfg.Strategies[0]
+		if portfolioScopeFor(got) != ScopePaper || edgeGateModeForStrategy(got).Kind != edgeGateModePaper || got.AllowNoEdgeAcknowledged() {
+			t.Fatalf("%s: operator-added entry is not explicit unacknowledged paper: scope=%q", tc.name, portfolioScopeFor(got))
+		}
+		if tc.closedBar && !got.ClosedBarDecisions {
+			t.Fatalf("%s: operator-added entry must load with closed_bar_decisions", tc.name)
+		}
+		if _, _, err := buildAddStrategyEntry(tc.name, "binanceus", "ETH"); err == nil {
+			t.Fatalf("%s: spot add must refuse the futures-only strategy", tc.name)
+		}
 	}
 }
 
@@ -1520,27 +1540,41 @@ func TestChandeMomentumIntervalMustMatchTheConfiguredTimeframe(t *testing.T) {
 	}
 }
 
-func TestChandeMomentumStudyParityConfigsStillLoad(t *testing.T) {
+func TestChandeMomentumAndDualThrustStudyParityConfigsStillLoad(t *testing.T) {
 	setNoEdgeLiveCredentials(t)
-	for timeframe, want := range map[string]string{"1h": `"expected_interval_ms":3600000`, "4h": `"expected_interval_ms":14400000`} {
-		t.Run(timeframe, func(t *testing.T) {
-			src, err := os.ReadFile(filepath.Join("..", "backtest", "candidates", "chande_momentum_1661", "paper_parity_"+timeframe+".json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(t.TempDir(), "config.json")
-			if err := os.WriteFile(path, src, 0600); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := LoadConfig(path)
-			if err != nil {
-				t.Fatalf("study parity config refused: %v", err)
-			}
-			args, err := buildStrategyRefsArg(cfg.Strategies[0], "", false)
-			if err != nil || len(args) != 2 || !strings.Contains(args[1], want) {
-				t.Fatalf("strategy refs = %v, %v; want %s", args, err, want)
-			}
-		})
+	cases := []struct {
+		name      string
+		candidate string
+		closedBar bool
+	}{
+		{"chande_momentum", "chande_momentum_1661", false},
+		{"dual_thrust", "dual_thrust_1642", true},
+	}
+	for _, tc := range cases {
+		for timeframe, want := range map[string]string{"1h": `"expected_interval_ms":3600000`, "4h": `"expected_interval_ms":14400000`} {
+			t.Run(tc.name+"/"+timeframe, func(t *testing.T) {
+				src, err := os.ReadFile(filepath.Join("..", "backtest", "candidates", tc.candidate, "paper_parity_"+timeframe+".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(t.TempDir(), "config.json")
+				if err := os.WriteFile(path, src, 0600); err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := LoadConfig(path)
+				if err != nil {
+					t.Fatalf("study parity config refused: %v", err)
+				}
+				got := cfg.Strategies[0]
+				if tc.closedBar && (portfolioScopeFor(got) != ScopePaper || got.AllowNoEdgeAcknowledged() || !got.ClosedBarDecisions) {
+					t.Fatalf("study parity config must be unacknowledged paper with closed_bar_decisions: scope=%q closed=%t", portfolioScopeFor(got), got.ClosedBarDecisions)
+				}
+				args, err := buildStrategyRefsArg(got, "", false)
+				if err != nil || len(args) != 2 || !strings.Contains(args[1], want) {
+					t.Fatalf("strategy refs = %v, %v; want %s", args, err, want)
+				}
+			})
+		}
 	}
 }
 
@@ -1811,81 +1845,6 @@ func TestV20NoEdgeMigrationNeverGrantsDualThrust(t *testing.T) {
 	}
 	if want := []string{"hl-dt-close", "hl-dt-mixed", "hl-dt-open"}; !reflect.DeepEqual(report.VetoedResearch, want) {
 		t.Fatalf("vetoed = %v, want %v", report.VetoedResearch, want)
-	}
-}
-
-func TestDualThrustOperatorAddCreatesBothDirectionHourlyPaperEntry(t *testing.T) {
-	setNoEdgeLiveCredentials(t)
-	id, entry, err := buildAddStrategyEntry("dual_thrust", "hyperliquid", "eth")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id != "hl-dt-eth" {
-		t.Fatalf("id = %q, want hl-dt-eth", id)
-	}
-	var sc map[string]interface{}
-	if err := json.Unmarshal(entry, &sc); err != nil {
-		t.Fatal(err)
-	}
-	if sc["direction"] != DirectionBoth {
-		t.Fatalf("direction = %v, want %q", sc["direction"], DirectionBoth)
-	}
-	if _, has := sc["allow_no_edge"]; has {
-		t.Fatal("operator add must not acknowledge no-edge live use")
-	}
-	if sc["closed_bar_decisions"] != true {
-		t.Fatalf("closed_bar_decisions = %v, want true", sc["closed_bar_decisions"])
-	}
-	wantClose := map[string]interface{}{"name": "tiered_tp_pct", "params": map[string]interface{}{
-		"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 0.03, "close_fraction": 1.0}}}}
-	if !reflect.DeepEqual(sc["close_strategy"], wantClose) {
-		t.Fatalf("close_strategy = %v, want the study close %v", sc["close_strategy"], wantClose)
-	}
-	args, _ := sc["args"].([]interface{})
-	if !reflect.DeepEqual(args, []interface{}{"dual_thrust", "ETH", "1h", "--mode=paper"}) {
-		t.Fatalf("args = %v, want the 1h explicit-paper positional form", args)
-	}
-	cfg, err := LoadConfig(writeNoEdgeConfigRoot(t, CurrentConfigVersion, map[string]interface{}{"market_feed": "websocket"}, sc))
-	if err != nil {
-		t.Fatalf("operator-added dual_thrust must load as paper without acknowledgement: %v", err)
-	}
-	got := cfg.Strategies[0]
-	if portfolioScopeFor(got) != ScopePaper || edgeGateModeForStrategy(got).Kind != edgeGateModePaper || got.AllowNoEdgeAcknowledged() {
-		t.Fatalf("operator-added entry is not explicit unacknowledged paper: scope=%q", portfolioScopeFor(got))
-	}
-	if !got.ClosedBarDecisions {
-		t.Fatal("operator-added entry must load with closed_bar_decisions")
-	}
-	if _, _, err := buildAddStrategyEntry("dual_thrust", "binanceus", "ETH"); err == nil {
-		t.Fatal("spot add must refuse the futures-only dual_thrust")
-	}
-}
-
-func TestDualThrustStudyParityConfigsStillLoad(t *testing.T) {
-	setNoEdgeLiveCredentials(t)
-	for timeframe, want := range map[string]string{"1h": `"expected_interval_ms":3600000`, "4h": `"expected_interval_ms":14400000`} {
-		t.Run(timeframe, func(t *testing.T) {
-			src, err := os.ReadFile(filepath.Join("..", "backtest", "candidates", "dual_thrust_1642", "paper_parity_"+timeframe+".json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(t.TempDir(), "config.json")
-			if err := os.WriteFile(path, src, 0600); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := LoadConfig(path)
-			if err != nil {
-				t.Fatalf("study parity config refused: %v", err)
-			}
-			got := cfg.Strategies[0]
-			if portfolioScopeFor(got) != ScopePaper || got.AllowNoEdgeAcknowledged() || !got.ClosedBarDecisions {
-				t.Fatalf("study parity config must be unacknowledged paper with closed_bar_decisions: scope=%q closed=%t", portfolioScopeFor(got), got.ClosedBarDecisions)
-			}
-			args, err := buildStrategyRefsArg(got, "", false)
-			if err != nil || len(args) != 2 || !strings.Contains(args[1], want) {
-				t.Fatalf("strategy refs = %v, %v; want %s", args, err, want)
-			}
-		})
 	}
 }
 

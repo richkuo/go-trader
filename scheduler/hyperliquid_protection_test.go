@@ -9,28 +9,73 @@ import (
 	"time"
 )
 
-func TestApplyHyperliquidProtectionSyncRetainsOnZeroFields(t *testing.T) {
-	pos := &Position{Symbol: "ETH", StopLossOID: 11, TPOIDs: []int64{22, 33}}
-	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
-		OpenOrderCheckError: "indexer down",
-	}, nil)
-	if pos.StopLossOID != 11 || !reflect.DeepEqual(pos.TPOIDs, []int64{22, 33}) {
-		t.Errorf("zero-field result mutated OIDs: SL=%d TPs=%v, want 11/[22 33]", pos.StopLossOID, pos.TPOIDs)
+func TestApplyHyperliquidProtectionSyncStopLossFields(t *testing.T) {
+	cases := []struct {
+		name        string
+		pos         Position
+		result      HyperliquidProtectionSyncResult
+		wantOID     int64
+		wantTrigger float64
+		wantTPOIDs  []int64
+		why         string
+	}{
+		{
+			name:    "retains on zero fields",
+			pos:     Position{Symbol: "ETH", StopLossOID: 11, TPOIDs: []int64{22, 33}},
+			result:  HyperliquidProtectionSyncResult{OpenOrderCheckError: "indexer down"},
+			wantOID: 11, wantTrigger: 0, wantTPOIDs: []int64{22, 33},
+			why: "a zero-field result must not mutate the OIDs",
+		},
+		{
+			name: "keeps stop filled externally",
+			pos:  Position{Symbol: "ETH", StopLossOID: 11, StopLossTriggerPx: 1800, TPOIDs: []int64{22, 33}},
+			result: HyperliquidProtectionSyncResult{
+				StopLossFilledExternally: true,
+				TPFilledExternally:       []bool{true, false},
+				TPOIDs:                   []int64{0, 33},
+			},
+			wantOID: 11, wantTrigger: 1800, wantTPOIDs: []int64{0, 33},
+			why: "the SL is kept so the reconciler can attribute the stop fill, and TP1 is cleared because it filled externally",
+		},
+		{
+			name: "clears dead SL on cancel landed place failed",
+			pos:  Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325},
+			result: HyperliquidProtectionSyncResult{
+				CancelStopLossSucceeded: true,
+				StopLossError:           "place_stop_loss SDK error: open order cap",
+			},
+			wantOID: 0, wantTrigger: 0,
+			why: "a landed cancel with a failed placement must clear both fields",
+		},
+		{
+			name: "force replace success adopts the replacement",
+			pos:  Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325},
+			result: HyperliquidProtectionSyncResult{
+				CancelStopLossSucceeded: true,
+				StopLossOID:             6000,
+				StopLossTriggerPx:       2300,
+			},
+			wantOID: 6000, wantTrigger: 2300,
+			why: "the successful replacement must be adopted",
+		},
+		{
+			name:    "force replace failed cancel keeps the old SL",
+			pos:     Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325},
+			result:  HyperliquidProtectionSyncResult{StopLossError: "force replace cancel: timeout"},
+			wantOID: 5150, wantTrigger: 2325,
+			why: "a failed cancel must keep the SL because the order may still rest",
+		},
 	}
-}
-
-func TestApplyHyperliquidProtectionSyncKeepsStopFilledExternally(t *testing.T) {
-	pos := &Position{Symbol: "ETH", StopLossOID: 11, StopLossTriggerPx: 1800, TPOIDs: []int64{22, 33}}
-	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
-		StopLossFilledExternally: true,
-		TPFilledExternally:       []bool{true, false},
-		TPOIDs:                   []int64{0, 33},
-	}, nil)
-	if pos.StopLossOID != 11 || pos.StopLossTriggerPx != 1800 {
-		t.Errorf("SL = oid %d @ %g, want 11 @ 1800 kept so the reconciler can attribute the stop fill", pos.StopLossOID, pos.StopLossTriggerPx)
-	}
-	if !reflect.DeepEqual(pos.TPOIDs, []int64{0, 33}) {
-		t.Errorf("TPOIDs = %v, want [0 33] (TP1 cleared because filled externally)", pos.TPOIDs)
+	for _, tc := range cases {
+		pos := tc.pos
+		result := tc.result
+		applyHyperliquidProtectionSync(&pos, &result, nil)
+		if pos.StopLossOID != tc.wantOID || pos.StopLossTriggerPx != tc.wantTrigger {
+			t.Errorf("%s: SL = oid %d @ %g, want %d @ %g (%s)", tc.name, pos.StopLossOID, pos.StopLossTriggerPx, tc.wantOID, tc.wantTrigger, tc.why)
+		}
+		if !reflect.DeepEqual(pos.TPOIDs, tc.wantTPOIDs) {
+			t.Errorf("%s: TPOIDs = %v, want %v (%s)", tc.name, pos.TPOIDs, tc.wantTPOIDs, tc.why)
+		}
 	}
 }
 
@@ -117,37 +162,6 @@ func TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose(t *testing.T) 
 	pos := state.Positions["ETH"]
 	if pos.StopLossOID != 0 || len(pos.TPOIDs) != 0 {
 		t.Errorf("OIDs leaked into closed position: sl=%d tp=%v", pos.StopLossOID, pos.TPOIDs)
-	}
-}
-
-func TestApplyHyperliquidProtectionSyncClearsDeadSLOnCancelLandedPlaceFailed(t *testing.T) {
-	pos := &Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325}
-	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
-		CancelStopLossSucceeded: true,
-		StopLossError:           "place_stop_loss SDK error: open order cap",
-	}, nil)
-	if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
-		t.Errorf("SL = oid %d @ %g after cancel-landed/place-failed, want both cleared", pos.StopLossOID, pos.StopLossTriggerPx)
-	}
-}
-
-func TestApplyHyperliquidProtectionSyncForceReplaceSuccessUnchanged(t *testing.T) {
-	pos := &Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325}
-	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
-		CancelStopLossSucceeded: true,
-		StopLossOID:             6000,
-		StopLossTriggerPx:       2300,
-	}, nil)
-	if pos.StopLossOID != 6000 || pos.StopLossTriggerPx != 2300 {
-		t.Errorf("SL = oid %d @ %g, want 6000 @ 2300 from the successful replacement", pos.StopLossOID, pos.StopLossTriggerPx)
-	}
-
-	pos2 := &Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325}
-	applyHyperliquidProtectionSync(pos2, &HyperliquidProtectionSyncResult{
-		StopLossError: "force replace cancel: timeout",
-	}, nil)
-	if pos2.StopLossOID != 5150 || pos2.StopLossTriggerPx != 2325 {
-		t.Errorf("failed-cancel result mutated SL to oid %d @ %g, want 5150 @ 2325 kept (order may still rest)", pos2.StopLossOID, pos2.StopLossTriggerPx)
 	}
 }
 

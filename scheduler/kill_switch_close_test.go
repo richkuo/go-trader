@@ -274,7 +274,7 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatRecoversRecentUserFill(t *testing
 	}
 }
 
-func TestHyperliquidKillSwitchClose_AlreadyFlatAmbiguousUserFillFallsBack(t *testing.T) {
+func TestHyperliquidKillSwitchClose_AlreadyFlatRecoveryRefusesUnsafeUserFills(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
 			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
@@ -286,98 +286,69 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatAmbiguousUserFillFallsBack(t *tes
 			Platform: "hyperliquid",
 		}, nil
 	}
-	fetcher, _ := stubHLStateFetcher(nil, nil)
-	in := defaultHLInputs("0xaddr", true, positions, hlLive,
-		"portfolio drawdown 25.0% exceeds limit 20.0%",
-		time.Second, closer, fetcher)
-	in.HLNoFillRecoverer = func(since time.Time) (*HLUserFillsResult, error) {
-		return &HLUserFillsResult{
-			ByOID: map[string]HLFillSummary{
-				"100": {Coin: "ETH", Fee: 0.4, Qty: 1.0, Px: 1990, ClosedPnLGross: -10, LastTimeMS: time.Now().UnixMilli()},
-				"101": {Coin: "ETH", Fee: 0.5, Qty: 1.0, Px: 1989, ClosedPnLGross: -11, LastTimeMS: time.Now().UnixMilli()},
-			},
-		}, nil
+	plan := func(recover func(since time.Time) (*HLUserFillsResult, error)) KillSwitchClosePlan {
+		fetcher, _ := stubHLStateFetcher(nil, nil)
+		in := defaultHLInputs("0xaddr", true, positions, hlLive,
+			"portfolio drawdown 25.0% exceeds limit 20.0%",
+			time.Second, closer, fetcher)
+		in.HLNoFillRecoverer = recover
+		return planKillSwitchClose(in)
 	}
 
-	plan := planKillSwitchClose(in)
-	if !plan.OnChainConfirmedFlat {
-		t.Fatalf("expected confirmed-flat plan, got %+v", plan)
-	}
-	if _, ok := plan.CloseReport.Fills["ETH"]; ok {
-		t.Fatalf("ambiguous userFills must not inject a fill: %+v", plan.CloseReport.Fills)
-	}
-	if !strings.Contains(strings.Join(plan.LogLines, "\n"), "multiple userFills candidates") {
-		t.Fatalf("missing ambiguity warning: %v", plan.LogLines)
-	}
-}
+	t.Run("ambiguous userFills falls back", func(t *testing.T) {
+		got := plan(func(since time.Time) (*HLUserFillsResult, error) {
+			return &HLUserFillsResult{
+				ByOID: map[string]HLFillSummary{
+					"100": {Coin: "ETH", Fee: 0.4, Qty: 1.0, Px: 1990, ClosedPnLGross: -10, LastTimeMS: time.Now().UnixMilli()},
+					"101": {Coin: "ETH", Fee: 0.5, Qty: 1.0, Px: 1989, ClosedPnLGross: -11, LastTimeMS: time.Now().UnixMilli()},
+				},
+			}, nil
+		})
+		if !got.OnChainConfirmedFlat {
+			t.Fatalf("expected confirmed-flat plan, got %+v", got)
+		}
+		if _, ok := got.CloseReport.Fills["ETH"]; ok {
+			t.Fatalf("ambiguous userFills must not inject a fill: %+v", got.CloseReport.Fills)
+		}
+		if !strings.Contains(strings.Join(got.LogLines, "\n"), "multiple userFills candidates") {
+			t.Fatalf("missing ambiguity warning: %v", got.LogLines)
+		}
+	})
 
-func TestHyperliquidKillSwitchClose_AlreadyFlatRecoveryRejectsOpeningFill(t *testing.T) {
-	hlLive := []StrategyConfig{
-		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-	}
-	positions := []HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 2000}}
-	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
-		return &HyperliquidCloseResult{
-			Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
-			Platform: "hyperliquid",
-		}, nil
-	}
-	fetcher, _ := stubHLStateFetcher(nil, nil)
-	in := defaultHLInputs("0xaddr", true, positions, hlLive,
-		"portfolio drawdown 25.0% exceeds limit 20.0%",
-		time.Second, closer, fetcher)
-	in.HLNoFillRecoverer = func(since time.Time) (*HLUserFillsResult, error) {
-		return &HLUserFillsResult{
-			ByOID: map[string]HLFillSummary{
-				"300": {Coin: "ETH", Fee: 0.4, Qty: 1.0, Px: 1990, ClosedPnLGross: 0, LastTimeMS: time.Now().UnixMilli()},
-			},
-		}, nil
-	}
+	t.Run("opening fill is rejected", func(t *testing.T) {
+		got := plan(func(since time.Time) (*HLUserFillsResult, error) {
+			return &HLUserFillsResult{
+				ByOID: map[string]HLFillSummary{
+					"300": {Coin: "ETH", Fee: 0.4, Qty: 1.0, Px: 1990, ClosedPnLGross: 0, LastTimeMS: time.Now().UnixMilli()},
+				},
+			}, nil
+		})
+		if _, ok := got.CloseReport.Fills["ETH"]; ok {
+			t.Fatalf("opening fill must never be adopted as the close: %+v", got.CloseReport.Fills)
+		}
+		if !strings.Contains(strings.Join(got.LogLines, "\n"), "no userFills match") {
+			t.Fatalf("expected fail-closed warning, got: %v", got.LogLines)
+		}
+	})
 
-	plan := planKillSwitchClose(in)
-	if _, ok := plan.CloseReport.Fills["ETH"]; ok {
-		t.Fatalf("opening fill must never be adopted as the close: %+v", plan.CloseReport.Fills)
-	}
-	if !strings.Contains(strings.Join(plan.LogLines, "\n"), "no userFills match") {
-		t.Fatalf("expected fail-closed warning, got: %v", plan.LogLines)
-	}
-}
-
-func TestHyperliquidKillSwitchClose_AlreadyFlatRecoveryIgnoresFillBeforeSince(t *testing.T) {
-	hlLive := []StrategyConfig{
-		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-	}
-	positions := []HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 2000}}
-	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
-		return &HyperliquidCloseResult{
-			Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
-			Platform: "hyperliquid",
-		}, nil
-	}
-	fetcher, _ := stubHLStateFetcher(nil, nil)
-	var gotSince time.Time
-	in := defaultHLInputs("0xaddr", true, positions, hlLive,
-		"portfolio drawdown 25.0% exceeds limit 20.0%",
-		time.Second, closer, fetcher)
-	in.HLNoFillRecoverer = func(since time.Time) (*HLUserFillsResult, error) {
-		gotSince = since
-		return &HLUserFillsResult{
-			ByOID: map[string]HLFillSummary{
-				"400": {Coin: "ETH", Fee: 0.4, Qty: 1.0, Px: 1990, ClosedPnLGross: -10,
-					LastTimeMS: since.Add(-time.Minute).UnixMilli()},
-			},
-		}, nil
-	}
-
-	plan := planKillSwitchClose(in)
-	if gotSince.IsZero() {
-		t.Fatal("recovery since timestamp must be populated")
-	}
-	if _, ok := plan.CloseReport.Fills["ETH"]; ok {
-		t.Fatalf("fill before the since bound must not be adopted: %+v", plan.CloseReport.Fills)
-	}
+	t.Run("fill before since is ignored", func(t *testing.T) {
+		var gotSince time.Time
+		got := plan(func(since time.Time) (*HLUserFillsResult, error) {
+			gotSince = since
+			return &HLUserFillsResult{
+				ByOID: map[string]HLFillSummary{
+					"400": {Coin: "ETH", Fee: 0.4, Qty: 1.0, Px: 1990, ClosedPnLGross: -10,
+						LastTimeMS: since.Add(-time.Minute).UnixMilli()},
+				},
+			}, nil
+		})
+		if gotSince.IsZero() {
+			t.Fatal("recovery since timestamp must be populated")
+		}
+		if _, ok := got.CloseReport.Fills["ETH"]; ok {
+			t.Fatalf("fill before the since bound must not be adopted: %+v", got.CloseReport.Fills)
+		}
+	})
 }
 
 func TestHyperliquidKillSwitchClose_SharedCoinSplitsFillByVirtualQuantity(t *testing.T) {
@@ -440,64 +411,58 @@ func TestHyperliquidKillSwitchClose_SharedCoinSplitsFillByVirtualQuantity(t *tes
 	}
 }
 
-func TestPlanKillSwitchClose_CloseError(t *testing.T) {
+func TestPlanKillSwitchClose_CloseErrorLatchesWithOrWithoutVerification(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
 			Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}},
 	}
 	positions := []HLPosition{{Coin: "ETH", Size: 0.5}}
-	closer, _ := stubHLLiveCloser(map[string]error{"ETH": fmt.Errorf("hl rate limited")})
-	fetcher, fetchCalls := stubHLStateFetcher(positions, nil)
+	run := func(closeErr, fetchErr error, fetchPositions []HLPosition) (KillSwitchClosePlan, int) {
+		closer, _ := stubHLLiveCloser(map[string]error{"ETH": closeErr})
+		fetcher, fetchCalls := stubHLStateFetcher(fetchPositions, fetchErr)
+		plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, hlLive,
+			"portfolio drawdown 25.0% exceeds limit 20.0%",
+			time.Second, closer, fetcher))
+		return plan, *fetchCalls
+	}
 
-	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, hlLive,
-		"portfolio drawdown 25.0% exceeds limit 20.0%",
-		time.Second, closer, fetcher))
+	t.Run("close error", func(t *testing.T) {
+		plan, fetchCalls := run(fmt.Errorf("hl rate limited"), nil, positions)
+		if fetchCalls != 1 {
+			t.Fatalf("fetcher should be called once to verify the close error, got %d", fetchCalls)
+		}
+		if plan.OnChainConfirmedFlat {
+			t.Fatal("expected NOT ConfirmedFlat on close error — kill switch would clear virtual state while on-chain is still live")
+		}
+		if got, ok := plan.CloseReport.Errors["ETH"]; !ok || got == nil {
+			t.Errorf("expected ETH error in report, got %v", plan.CloseReport.Errors)
+		}
+		if !strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
+			t.Errorf("expected LATCHED message on close error, got: %s", plan.DiscordMessage)
+		}
+		if !strings.Contains(plan.DiscordMessage, "Virtual state preserved") {
+			t.Errorf("expected 'Virtual state preserved' in latched message, got: %s", plan.DiscordMessage)
+		}
+		if !strings.Contains(plan.DiscordMessage, "hl rate limited") {
+			t.Errorf("error detail missing from message, got: %s", plan.DiscordMessage)
+		}
+	})
 
-	if *fetchCalls != 1 {
-		t.Fatalf("fetcher should be called once to verify the close error, got %d", *fetchCalls)
-	}
-	if plan.OnChainConfirmedFlat {
-		t.Fatal("expected NOT ConfirmedFlat on close error — kill switch would clear virtual state while on-chain is still live")
-	}
-	if got, ok := plan.CloseReport.Errors["ETH"]; !ok || got == nil {
-		t.Errorf("expected ETH error in report, got %v", plan.CloseReport.Errors)
-	}
-	if !strings.Contains(plan.DiscordMessage, "LATCHED, RETRYING") {
-		t.Errorf("expected LATCHED message on close error, got: %s", plan.DiscordMessage)
-	}
-	if !strings.Contains(plan.DiscordMessage, "Virtual state preserved") {
-		t.Errorf("expected 'Virtual state preserved' in latched message, got: %s", plan.DiscordMessage)
-	}
-	if !strings.Contains(plan.DiscordMessage, "hl rate limited") {
-		t.Errorf("error detail missing from message, got: %s", plan.DiscordMessage)
-	}
-}
-
-func TestPlanKillSwitchClose_CloseErrorVerificationFetchFailure(t *testing.T) {
-	hlLive := []StrategyConfig{
-		{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
-			Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}},
-	}
-	positions := []HLPosition{{Coin: "ETH", Size: 0.5}}
-	closer, _ := stubHLLiveCloser(map[string]error{"ETH": fmt.Errorf("post-submit disconnect")})
-	fetcher, fetchCalls := stubHLStateFetcher(nil, fmt.Errorf("hl 503"))
-
-	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, hlLive,
-		"portfolio drawdown 25.0% exceeds limit 20.0%",
-		time.Second, closer, fetcher))
-
-	if *fetchCalls != 1 {
-		t.Fatalf("fetcher should be called once to verify the close error, got %d", *fetchCalls)
-	}
-	if plan.OnChainConfirmedFlat {
-		t.Fatal("expected NOT ConfirmedFlat when the verification fetch also fails")
-	}
-	if got, ok := plan.CloseReport.Errors["ETH"]; !ok || got == nil {
-		t.Errorf("expected ETH error to remain in report, got %v", plan.CloseReport.Errors)
-	}
-	if !strings.Contains(strings.Join(plan.LogLines, "\n"), "unable to verify HL state after close error: hl 503") {
-		t.Errorf("expected verification fetch error log line, got %v", plan.LogLines)
-	}
+	t.Run("verification fetch failure", func(t *testing.T) {
+		plan, fetchCalls := run(fmt.Errorf("post-submit disconnect"), fmt.Errorf("hl 503"), nil)
+		if fetchCalls != 1 {
+			t.Fatalf("fetcher should be called once to verify the close error, got %d", fetchCalls)
+		}
+		if plan.OnChainConfirmedFlat {
+			t.Fatal("expected NOT ConfirmedFlat when the verification fetch also fails")
+		}
+		if got, ok := plan.CloseReport.Errors["ETH"]; !ok || got == nil {
+			t.Errorf("expected ETH error to remain in report, got %v", plan.CloseReport.Errors)
+		}
+		if !strings.Contains(strings.Join(plan.LogLines, "\n"), "unable to verify HL state after close error: hl 503") {
+			t.Errorf("expected verification fetch error log line, got %v", plan.LogLines)
+		}
+	})
 }
 
 func TestPlanKillSwitchClose_FetchFailure(t *testing.T) {

@@ -57,13 +57,19 @@ func TestComputeCorrelation_MixedDirections(t *testing.T) {
 	}
 }
 
-func TestComputeCorrelation_OptionsGreeks(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"deribit-strat": {
-			ID:        "deribit-strat",
-			Type:      "options",
-			Positions: make(map[string]*Position),
-			OptionPositions: map[string]*OptionPosition{
+func TestComputeCorrelation_OptionsDeltaFromGreeksAndCoarseFallback(t *testing.T) {
+	cases := []struct {
+		name        string
+		id          string
+		args        []string
+		options     map[string]*OptionPosition
+		expectedNet float64
+	}{
+		{
+			name: "greeks",
+			id:   "deribit-strat",
+			args: []string{"iron_condor", "BTC"},
+			options: map[string]*OptionPosition{
 				"BTC-CALL-60000": {
 					Underlying: "BTC",
 					OptionType: "call",
@@ -79,33 +85,13 @@ func TestComputeCorrelation_OptionsGreeks(t *testing.T) {
 					Greeks:     OptGreeks{Delta: -0.3},
 				},
 			},
+			expectedNet: -40000.0,
 		},
-	}
-	cfgStrategies := []StrategyConfig{
-		{ID: "deribit-strat", Type: "options", Args: []string{"iron_condor", "BTC"}},
-	}
-	prices := map[string]float64{"BTC/USDT": 50000}
-	corrCfg := &CorrelationConfig{Enabled: true, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}
-
-	snap := ComputeCorrelation(strategies, cfgStrategies, prices, corrCfg)
-
-	ae := snap.Assets["BTC"]
-	if ae == nil {
-		t.Fatal("expected BTC asset exposure")
-	}
-	expectedNet := -40000.0
-	if ae.NetDeltaUSD != expectedNet {
-		t.Errorf("expected NetDeltaUSD=%f, got %f", expectedNet, ae.NetDeltaUSD)
-	}
-}
-
-func TestComputeCorrelation_OptionsCoarseDelta(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"opt-strat": {
-			ID:        "opt-strat",
-			Type:      "options",
-			Positions: make(map[string]*Position),
-			OptionPositions: map[string]*OptionPosition{
+		{
+			name: "coarse delta",
+			id:   "opt-strat",
+			args: []string{"straddle", "BTC"},
+			options: map[string]*OptionPosition{
 				"BTC-CALL-70000": {
 					Underlying: "BTC",
 					OptionType: "call",
@@ -121,22 +107,34 @@ func TestComputeCorrelation_OptionsCoarseDelta(t *testing.T) {
 					Greeks:     OptGreeks{Delta: 0},
 				},
 			},
+			expectedNet: 50000.0,
 		},
 	}
-	cfgStrategies := []StrategyConfig{
-		{ID: "opt-strat", Type: "options", Args: []string{"straddle", "BTC"}},
-	}
-	prices := map[string]float64{"BTC/USDT": 50000}
-	corrCfg := &CorrelationConfig{Enabled: true, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			strategies := map[string]*StrategyState{
+				tc.id: {
+					ID:              tc.id,
+					Type:            "options",
+					Positions:       make(map[string]*Position),
+					OptionPositions: tc.options,
+				},
+			}
+			cfgStrategies := []StrategyConfig{
+				{ID: tc.id, Type: "options", Args: tc.args},
+			}
+			prices := map[string]float64{"BTC/USDT": 50000}
+			corrCfg := &CorrelationConfig{Enabled: true, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}
 
-	snap := ComputeCorrelation(strategies, cfgStrategies, prices, corrCfg)
+			snap := ComputeCorrelation(strategies, cfgStrategies, prices, corrCfg)
 
-	ae := snap.Assets["BTC"]
-	if ae == nil {
-		t.Fatal("expected BTC asset exposure")
-	}
-	expectedNet := 50000.0
-	if ae.NetDeltaUSD != expectedNet {
-		t.Errorf("expected NetDeltaUSD=%f, got %f", expectedNet, ae.NetDeltaUSD)
+			ae := snap.Assets["BTC"]
+			if ae == nil {
+				t.Fatalf("%s: expected BTC asset exposure", tc.name)
+			}
+			if ae.NetDeltaUSD != tc.expectedNet {
+				t.Errorf("%s: expected NetDeltaUSD=%f, got %f", tc.name, tc.expectedNet, ae.NetDeltaUSD)
+			}
+		})
 	}
 }

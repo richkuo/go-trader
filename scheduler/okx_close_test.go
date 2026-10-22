@@ -83,148 +83,88 @@ func TestComputeOKXCircuitCloseQty(t *testing.T) {
 	}
 }
 
-func TestRunPendingOKXCircuitCloses_RecoversStuckCB(t *testing.T) {
-	state := &AppState{
-		Strategies: map[string]*StrategyState{
-			"okx-a": {
-				ID: "okx-a",
-				RiskState: RiskState{
-					CircuitBreaker:       true,
-					CircuitBreakerUntil:  time.Now().Add(24 * time.Hour),
-					PendingCircuitCloses: nil,
-				},
+func TestRunPendingOKXCircuitCloses(t *testing.T) {
+	cases := []struct {
+		name        string
+		risk        RiskState
+		chainSize   float64
+		fillSize    float64
+		closerErr   error
+		wantCalls   []string
+		wantCleared bool
+		why         string
+	}{
+		{
+			name: "recovers stuck CB",
+			risk: RiskState{
+				CircuitBreaker:       true,
+				CircuitBreakerUntil:  time.Now().Add(24 * time.Hour),
+				PendingCircuitCloses: nil,
 			},
+			chainSize: 0.4, fillSize: 0.4,
+			wantCalls: []string{"ETH:0.4"}, wantCleared: true,
+			why: "recovered pending should drain full abs size as sole owner, then clear after the successful recovery close",
+		},
+		{
+			name: "clears on success",
+			risk: RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+				PlatformPendingCloseOKX: {Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}}},
+			}},
+			chainSize: 0.5, fillSize: 0.1,
+			wantCalls: []string{"ETH:0.1"}, wantCleared: true,
+			why: "pending must clear after a successful close",
+		},
+		{
+			name: "pending preserved on failure",
+			risk: RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+				PlatformPendingCloseOKX: {Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}}},
+			}},
+			chainSize: 0.5, closerErr: fmt.Errorf("okx 503"),
+			wantCleared: false,
+			why:         "pending must be preserved after a closer failure (latch semantic)",
 		},
 	}
-	cfg := []StrategyConfig{
-		{ID: "okx-a", Platform: "okx", Type: "perps",
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-	}
-	var mu sync.RWMutex
-	var calls []string
-	closer := func(sym string, partialSz *float64) (*OKXCloseResult, error) {
-		if partialSz != nil {
-			calls = append(calls, fmt.Sprintf("%s:%g", sym, *partialSz))
-		} else {
-			calls = append(calls, sym)
+	for _, tc := range cases {
+		state := &AppState{Strategies: map[string]*StrategyState{"okx-a": {ID: "okx-a", RiskState: tc.risk}}}
+		cfg := []StrategyConfig{
+			{ID: "okx-a", Platform: "okx", Type: "perps",
+				Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 		}
-		return &OKXCloseResult{
-			Close:    &OKXClose{Symbol: sym, Fill: &OKXCloseFill{TotalSz: 0.4, AvgPx: 1}},
-			Platform: "okx",
-		}, nil
-	}
-	runPendingOKXCircuitCloses(
-		context.Background(),
-		state,
-		cfg,
-		true,
-		[]OKXPosition{{Coin: "ETH", Size: 0.4, EntryPrice: 1, Side: "long"}},
-		true,
-		nil,
-		closer,
-		30*time.Second,
-		&mu,
-		nil,
-	)
-	if len(calls) != 1 || calls[0] != "ETH:0.4" {
-		t.Errorf("closer calls=%v want [ETH:0.4] (recovered pending should drain full abs size as sole owner)", calls)
-	}
-	if state.Strategies["okx-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseOKX) != nil {
-		t.Error("expected pending cleared after successful recovery close")
-	}
-}
-
-func TestRunPendingOKXCircuitCloses_ClearsOnSuccess(t *testing.T) {
-	state := &AppState{
-		Strategies: map[string]*StrategyState{
-			"okx-a": {
-				ID: "okx-a",
-				RiskState: RiskState{
-					PendingCircuitCloses: map[string]*PendingCircuitClose{
-						PlatformPendingCloseOKX: {
-							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}},
-						},
-					},
-				},
-			},
-		},
-	}
-	cfg := []StrategyConfig{
-		{ID: "okx-a", Platform: "okx", Type: "perps",
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-	}
-	var mu sync.RWMutex
-	var calls []string
-	closer := func(sym string, partialSz *float64) (*OKXCloseResult, error) {
-		if partialSz != nil {
-			calls = append(calls, fmt.Sprintf("%s:%g", sym, *partialSz))
-		} else {
-			calls = append(calls, sym)
+		var mu sync.RWMutex
+		var calls []string
+		closer := func(sym string, partialSz *float64) (*OKXCloseResult, error) {
+			if tc.closerErr != nil {
+				return nil, tc.closerErr
+			}
+			if partialSz != nil {
+				calls = append(calls, fmt.Sprintf("%s:%g", sym, *partialSz))
+			} else {
+				calls = append(calls, sym)
+			}
+			return &OKXCloseResult{
+				Close:    &OKXClose{Symbol: sym, Fill: &OKXCloseFill{TotalSz: tc.fillSize, AvgPx: 1}},
+				Platform: "okx",
+			}, nil
 		}
-		return &OKXCloseResult{
-			Close:    &OKXClose{Symbol: sym, Fill: &OKXCloseFill{TotalSz: 0.1, AvgPx: 1}},
-			Platform: "okx",
-		}, nil
-	}
-	runPendingOKXCircuitCloses(
-		context.Background(),
-		state,
-		cfg,
-		true,
-		[]OKXPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 1, Side: "long"}},
-		true,
-		nil,
-		closer,
-		30*time.Second,
-		&mu,
-		nil,
-	)
-	if state.Strategies["okx-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseOKX) != nil {
-		t.Error("expected pending cleared after successful close")
-	}
-	if len(calls) != 1 || calls[0] != "ETH:0.1" {
-		t.Errorf("closer calls=%v want [ETH:0.1]", calls)
-	}
-}
-
-func TestRunPendingOKXCircuitCloses_PendingPreservedOnFailure(t *testing.T) {
-	state := &AppState{
-		Strategies: map[string]*StrategyState{
-			"okx-a": {
-				ID: "okx-a",
-				RiskState: RiskState{
-					PendingCircuitCloses: map[string]*PendingCircuitClose{
-						PlatformPendingCloseOKX: {
-							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}},
-						},
-					},
-				},
-			},
-		},
-	}
-	cfg := []StrategyConfig{
-		{ID: "okx-a", Platform: "okx", Type: "perps",
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-	}
-	var mu sync.RWMutex
-	closer := func(sym string, partialSz *float64) (*OKXCloseResult, error) {
-		return nil, fmt.Errorf("okx 503")
-	}
-	runPendingOKXCircuitCloses(
-		context.Background(),
-		state,
-		cfg,
-		true,
-		[]OKXPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 1, Side: "long"}},
-		true,
-		nil,
-		closer,
-		30*time.Second,
-		&mu,
-		nil,
-	)
-	if state.Strategies["okx-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseOKX) == nil {
-		t.Error("expected pending preserved after closer failure (latch semantic)")
+		runPendingOKXCircuitCloses(
+			context.Background(),
+			state,
+			cfg,
+			true,
+			[]OKXPosition{{Coin: "ETH", Size: tc.chainSize, EntryPrice: 1, Side: "long"}},
+			true,
+			nil,
+			closer,
+			30*time.Second,
+			&mu,
+			nil,
+		)
+		if cleared := state.Strategies["okx-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseOKX) == nil; cleared != tc.wantCleared {
+			t.Errorf("%s: pending cleared = %v, want %v (%s)", tc.name, cleared, tc.wantCleared, tc.why)
+		}
+		if tc.wantCalls != nil && (len(calls) != 1 || calls[0] != tc.wantCalls[0]) {
+			t.Errorf("%s: closer calls=%v want %v (%s)", tc.name, calls, tc.wantCalls, tc.why)
+		}
 	}
 }
 

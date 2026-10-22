@@ -552,37 +552,61 @@ func TestPlanKillSwitchClose_RecordsCancelIntentBeforeCancelling(t *testing.T) {
 	}
 }
 
-func TestReconcilePendingLimitOrdersAdoptsFillOnACancelRequestedRow(t *testing.T) {
-	sc, state := newLimitTestStrategy()
-	cfg := &Config{Strategies: []StrategyConfig{sc}}
-	db := newLimitTestStateDB(t)
-	var mu sync.RWMutex
-	withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.3})
-
-	db.InsertPendingLimitOrder(PendingLimitOrder{
-		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
-		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50,
-		CancelRequested: true, CreatedAt: time.Now().UTC(),
-	})
-
-	withStubbedLimitDeps(t,
-		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
-			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-				{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 0.3, AvgPx: 2000, Fee: 0.4, Count: 1},
-			}}, "", nil
-		},
-		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
-			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
-		},
-	)
-
-	alerts := reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
-	if len(alerts) != 1 {
-		t.Fatalf("a cancel-requested row must still adopt a fill that landed, alerts = %+v", alerts)
+func TestReconcilePendingLimitOrdersAdoptsFillOnACancelRequestedRowAndWhileKillSwitchLatched(t *testing.T) {
+	cases := []struct {
+		name            string
+		latched         bool
+		cancelRequested bool
+		resting         bool
+		filled          float64
+		fee             float64
+		cancel          HyperliquidCancelOrderResult
+		why             string
+	}{
+		{name: "cancel-requested row", cancelRequested: true, resting: true, filled: 0.3, fee: 0.4,
+			cancel: HyperliquidCancelOrderResult{OID: 9001, Cancelled: true},
+			why:    "a cancel-requested row must still adopt a fill that landed"},
+		{name: "kill switch latched", latched: true, filled: 0.5, fee: 0.7,
+			why: "a latched kill switch must not suppress fill adoption, so the flatten can close it"},
 	}
-	pos := state.Strategies[sc.ID].Positions["ETH"]
-	if pos == nil || pos.Quantity != 0.3 {
-		t.Fatalf("fill must reach the book, position = %+v", pos)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, state := newLimitTestStrategy()
+			if tc.latched {
+				state.partitionRisk(livePartition).KillSwitchActive = true
+			}
+			cfg := &Config{Strategies: []StrategyConfig{sc}}
+			db := newLimitTestStateDB(t)
+			var mu sync.RWMutex
+			withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: tc.filled})
+
+			db.InsertPendingLimitOrder(PendingLimitOrder{
+				StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
+				LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50,
+				CancelRequested: tc.cancelRequested, CreatedAt: time.Now().UTC(),
+			})
+
+			withStubbedLimitDeps(t,
+				func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+					return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+						{OID: 9001, Resting: limitTestBoolPtr(tc.resting), FilledSize: tc.filled, AvgPx: 2000, Fee: tc.fee, Count: 1},
+					}}, "", nil
+				},
+				func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+					res := tc.cancel
+					return &res, "", nil
+				},
+			)
+
+			alerts := reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
+			if len(alerts) != 1 || alerts[0].trades != 1 {
+				t.Fatalf("%s, alerts = %+v", tc.why, alerts)
+			}
+			pos := state.Strategies[sc.ID].Positions["ETH"]
+			if pos == nil || pos.Quantity != tc.filled || pos.AvgCost != 2000 {
+				t.Fatalf("fill must reach the book (%s), position = %+v", tc.why, pos)
+			}
+		})
 	}
 }
 
@@ -604,39 +628,5 @@ func TestKillSwitchLimitOrderRoster(t *testing.T) {
 	want := []string{live.ID, paper.ID, perps.ID, scriptless.ID}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Fatalf("roster = %v, want %v (every Hyperliquid strategy, so no queued order is left uncancellable)", ids, want)
-	}
-}
-
-func TestReconcilePendingLimitOrdersAdoptsFillWhileKillSwitchLatched(t *testing.T) {
-	sc, state := newLimitTestStrategy()
-	state.partitionRisk(livePartition).KillSwitchActive = true
-	cfg := &Config{Strategies: []StrategyConfig{sc}}
-	db := newLimitTestStateDB(t)
-	var mu sync.RWMutex
-	withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.5})
-
-	db.InsertPendingLimitOrder(PendingLimitOrder{
-		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
-		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC(),
-	})
-
-	withStubbedLimitDeps(t,
-		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
-			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
-				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.5, AvgPx: 2000, Fee: 0.7, Count: 1},
-			}}, "", nil
-		},
-		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
-			return &HyperliquidCancelOrderResult{}, "", nil
-		},
-	)
-
-	alerts := reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
-	if len(alerts) != 1 || alerts[0].trades != 1 {
-		t.Fatalf("a latched kill switch must not suppress fill adoption, alerts = %+v", alerts)
-	}
-	pos := state.Strategies[sc.ID].Positions["ETH"]
-	if pos == nil || pos.Quantity != 0.5 || pos.AvgCost != 2000 {
-		t.Fatalf("fill must reach the book so the flatten can close it, position = %+v", pos)
 	}
 }

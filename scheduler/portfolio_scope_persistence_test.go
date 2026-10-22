@@ -385,37 +385,29 @@ func TestHandleStatus_PerScopeFields(t *testing.T) {
 	}
 }
 
-func TestResolveChannelKey_PaperPrefersPaperKey(t *testing.T) {
-	mn := NewMultiNotifier(notifierBackend{
-		notifier: &mockNotifier{},
-		channels: map[string]string{"hyperliquid": "live-ch", "hyperliquid-paper": "paper-ch"},
-	})
-	if key := mn.resolveChannelKey("hyperliquid", "perps", false, ""); key != "hyperliquid-paper" {
-		t.Errorf("paper key = %q, want hyperliquid-paper", key)
+func TestResolveChannelKey(t *testing.T) {
+	split := map[string]string{"hyperliquid": "live-ch", "hyperliquid-paper": "paper-ch"}
+	merged := map[string]string{"hyperliquid": "one-ch", "spot": "spot-ch"}
+	emptyPaper := map[string]string{"hyperliquid": "one-ch", "hyperliquid-paper": ""}
+	cases := []struct {
+		name     string
+		channels map[string]string
+		platform string
+		typ      string
+		live     bool
+		want     string
+	}{
+		{"paper prefers the paper key", split, "hyperliquid", "perps", false, "hyperliquid-paper"},
+		{"live keeps the platform key", split, "hyperliquid", "perps", true, "hyperliquid"},
+		{"without a paper key the grouping stays merged", merged, "hyperliquid", "perps", false, "hyperliquid"},
+		{"no paper key falls back to the type key", merged, "binanceus", "spot", false, "spot"},
+		{"an empty paper channel id does not capture the grouping", emptyPaper, "hyperliquid", "perps", false, "hyperliquid"},
 	}
-	if key := mn.resolveChannelKey("hyperliquid", "perps", true, ""); key != "hyperliquid" {
-		t.Errorf("live key = %q, want hyperliquid", key)
-	}
-}
-
-func TestResolveChannelKey_NoPaperKeyFallsBack(t *testing.T) {
-	mn := NewMultiNotifier(notifierBackend{
-		notifier: &mockNotifier{},
-		channels: map[string]string{"hyperliquid": "one-ch", "spot": "spot-ch"},
-	})
-	if key := mn.resolveChannelKey("hyperliquid", "perps", false, ""); key != "hyperliquid" {
-		t.Errorf("without a paper key the grouping must stay merged; got %q", key)
-	}
-	if key := mn.resolveChannelKey("binanceus", "spot", false, ""); key != "spot" {
-		t.Errorf("type fallback = %q, want spot", key)
-	}
-
-	empty := NewMultiNotifier(notifierBackend{
-		notifier: &mockNotifier{},
-		channels: map[string]string{"hyperliquid": "one-ch", "hyperliquid-paper": ""},
-	})
-	if key := empty.resolveChannelKey("hyperliquid", "perps", false, ""); key != "hyperliquid" {
-		t.Errorf("an empty paper channel id must not capture the grouping; got %q", key)
+	for _, tc := range cases {
+		mn := NewMultiNotifier(notifierBackend{notifier: &mockNotifier{}, channels: tc.channels})
+		if key := mn.resolveChannelKey(tc.platform, tc.typ, tc.live, ""); key != tc.want {
+			t.Errorf("%s: key = %q, want %q", tc.name, key, tc.want)
+		}
 	}
 }
 

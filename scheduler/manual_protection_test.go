@@ -49,17 +49,6 @@ func cleanupInput(side string, fill float64, view manualStateView, chain hlOnCha
 	}
 }
 
-func TestAttemptManualOpenCleanup_CloseFails(t *testing.T) {
-	stubCleanupClose(t, nil, fmt.Errorf("rpc timeout"))
-	cleanedUp, msg := attemptManualOpenCleanup(cleanupInput("long", 0.8, manualStateView{}, hlCoinView("ETH", 0.8)))
-	if cleanedUp {
-		t.Fatalf("expected cleanedUp=false, got msg=%q", msg)
-	}
-	if !strings.Contains(msg, "rpc timeout") || !strings.Contains(msg, "UNKNOWN") {
-		t.Errorf("msg should report the unknown outcome and its cause; got %q", msg)
-	}
-}
-
 func TestAttemptManualOpenCleanupSizesAgainstPeersAndTheFreshChain(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -108,49 +97,56 @@ func TestAttemptManualOpenCleanupSizesAgainstPeersAndTheFreshChain(t *testing.T)
 	}
 }
 
-func TestAttemptManualOpenCleanupSmallFillIsSentAndADustFillIsNotFlattened(t *testing.T) {
-	calls := stubCleanupClose(t, filledClose(0.00001), nil)
-	in := cleanupInput("long", 0.00008, manualStateView{}, hlCoinView("ETH", 0.00008))
-	ok, msg := attemptManualOpenCleanup(in)
-	if len(*calls) != 1 {
-		t.Fatalf("calls=%v, want the close to be sent", *calls)
-	}
-	req := (*calls)[0]
-	if req.Mode != hlCloseModeReduceOnly || math.Abs(req.Size-0.00008) > 1e-12 || !finitePositive(req.CancelMinFill) {
-		t.Fatalf("req=%+v, want a reduce-only close of 0.00008 with a positive cancel threshold", req)
-	}
-	if ok || strings.Contains(msg, "flattened") || !strings.Contains(msg, "NOT proven closed") {
-		t.Fatalf("ok=%v msg=%q", ok, msg)
-	}
-}
-
-func TestAttemptManualOpenCleanupCappedNearTheFillDoesNotClaimTriggersCancelled(t *testing.T) {
-	calls := stubCleanupClose(t, filledClose(0.99995), nil)
-	in := cleanupInput("long", 1, manualStateView{PeerLongQty: 2}, hlCoinView("ETH", 2.99995))
-	ok, msg := attemptManualOpenCleanup(in)
-	if len(*calls) != 1 || len((*calls)[0].CancelOIDs) != 0 {
-		t.Fatalf("calls=%v, want one capped close with no cancel request", *calls)
-	}
-	if ok || !strings.Contains(msg, "NOT proven closed") || !strings.Contains(msg, "12345") || !strings.Contains(msg, "67890") {
-		t.Fatalf("ok=%v msg=%q", ok, msg)
-	}
-	if strings.Contains(msg, "orphan triggers cancelled") {
-		t.Fatalf("a capped cleanup must not claim the triggers were cancelled: %q", msg)
-	}
-}
-
-func TestAttemptManualOpenCleanupNeverTreatsAFlatNetAsResolved(t *testing.T) {
-	calls := stubCleanupClose(t, filledClose(1), nil)
-	ok, msg := attemptManualOpenCleanup(cleanupInput("long", 1, manualStateView{}, hlCoinView("ETH", 0)))
-	if len(*calls) != 0 {
-		t.Fatalf("a skipped plan must send no order, got %v", *calls)
-	}
-	if ok || !strings.Contains(msg, "NOT proven closed") {
-		t.Fatalf("a flat shared net must not report success; got ok=%v msg=%q", ok, msg)
-	}
-}
-
-func TestAttemptManualOpenCleanupReportsPartialAndUnconfirmedOutcomes(t *testing.T) {
+func TestAttemptManualOpenCleanupReportsFailedPartialAndUnconfirmedOutcomes(t *testing.T) {
+	t.Run("close fails", func(t *testing.T) {
+		stubCleanupClose(t, nil, fmt.Errorf("rpc timeout"))
+		cleanedUp, msg := attemptManualOpenCleanup(cleanupInput("long", 0.8, manualStateView{}, hlCoinView("ETH", 0.8)))
+		if cleanedUp {
+			t.Fatalf("expected cleanedUp=false, got msg=%q", msg)
+		}
+		if !strings.Contains(msg, "rpc timeout") || !strings.Contains(msg, "UNKNOWN") {
+			t.Errorf("msg should report the unknown outcome and its cause; got %q", msg)
+		}
+	})
+	t.Run("small fill is sent and a dust fill is not flattened", func(t *testing.T) {
+		calls := stubCleanupClose(t, filledClose(0.00001), nil)
+		in := cleanupInput("long", 0.00008, manualStateView{}, hlCoinView("ETH", 0.00008))
+		ok, msg := attemptManualOpenCleanup(in)
+		if len(*calls) != 1 {
+			t.Fatalf("calls=%v, want the close to be sent", *calls)
+		}
+		req := (*calls)[0]
+		if req.Mode != hlCloseModeReduceOnly || math.Abs(req.Size-0.00008) > 1e-12 || !finitePositive(req.CancelMinFill) {
+			t.Fatalf("req=%+v, want a reduce-only close of 0.00008 with a positive cancel threshold", req)
+		}
+		if ok || strings.Contains(msg, "flattened") || !strings.Contains(msg, "NOT proven closed") {
+			t.Fatalf("ok=%v msg=%q", ok, msg)
+		}
+	})
+	t.Run("capped near the fill does not claim triggers cancelled", func(t *testing.T) {
+		calls := stubCleanupClose(t, filledClose(0.99995), nil)
+		in := cleanupInput("long", 1, manualStateView{PeerLongQty: 2}, hlCoinView("ETH", 2.99995))
+		ok, msg := attemptManualOpenCleanup(in)
+		if len(*calls) != 1 || len((*calls)[0].CancelOIDs) != 0 {
+			t.Fatalf("calls=%v, want one capped close with no cancel request", *calls)
+		}
+		if ok || !strings.Contains(msg, "NOT proven closed") || !strings.Contains(msg, "12345") || !strings.Contains(msg, "67890") {
+			t.Fatalf("ok=%v msg=%q", ok, msg)
+		}
+		if strings.Contains(msg, "orphan triggers cancelled") {
+			t.Fatalf("a capped cleanup must not claim the triggers were cancelled: %q", msg)
+		}
+	})
+	t.Run("a flat net is never treated as resolved", func(t *testing.T) {
+		calls := stubCleanupClose(t, filledClose(1), nil)
+		ok, msg := attemptManualOpenCleanup(cleanupInput("long", 1, manualStateView{}, hlCoinView("ETH", 0)))
+		if len(*calls) != 0 {
+			t.Fatalf("a skipped plan must send no order, got %v", *calls)
+		}
+		if ok || !strings.Contains(msg, "NOT proven closed") {
+			t.Fatalf("a flat shared net must not report success; got ok=%v msg=%q", ok, msg)
+		}
+	})
 	t.Run("partial fill", func(t *testing.T) {
 		stubCleanupClose(t, filledClose(0.4), nil)
 		ok, msg := attemptManualOpenCleanup(cleanupInput("long", 1, manualStateView{}, hlCoinView("ETH", 1)))

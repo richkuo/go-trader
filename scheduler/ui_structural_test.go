@@ -399,12 +399,17 @@ func TestUIPaperToLiveFlatChecks(t *testing.T) {
 	}
 }
 
-func TestUIPaperToLiveRejectsModelessStrategy(t *testing.T) {
+func TestUIStructuralConfirmRejectsModelessPaperToLiveAndIneligibleRegimeGate(t *testing.T) {
 	ss, _, _ := newStructuralTestServer(t)
 	body := `{"action":"paper-to-live","strategy_id":"sma-btc","params":{}}`
 	w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "no --mode=paper") {
-		t.Fatalf("modeless confirm status = %d body %s, want 400 no-mode", w.Code, w.Body.String())
+		t.Errorf("paper-to-live modeless confirm status = %d body %s, want 400 no-mode", w.Code, w.Body.String())
+	}
+	body = `{"action":"apply-regime-gate","strategy_id":"sma-btc","params":{}}`
+	w = mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "not eligible") {
+		t.Errorf("apply-regime-gate ineligible confirm status = %d body %s, want 400 not-eligible", w.Code, w.Body.String())
 	}
 }
 
@@ -574,15 +579,6 @@ func TestUIApplyRegimeGateBlastRadiusGrowthRefused(t *testing.T) {
 	}
 	if cfg.Regime != nil && cfg.Regime.Enabled {
 		t.Fatal("refused apply must not enable regime detection")
-	}
-}
-
-func TestUIApplyRegimeGateRejectsIneligibleType(t *testing.T) {
-	ss, _, _ := newStructuralTestServer(t)
-	body := `{"action":"apply-regime-gate","strategy_id":"sma-btc","params":{}}`
-	w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "not eligible") {
-		t.Fatalf("ineligible confirm status = %d body %s, want 400 not-eligible", w.Code, w.Body.String())
 	}
 }
 

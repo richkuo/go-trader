@@ -680,7 +680,7 @@ func TestForceCloseHyperliquidLiveSkipsUnheldHedgeCoin(t *testing.T) {
 	}
 }
 
-func TestApplyHyperliquidKillSwitchHedgeFillBooksAgainstOwner(t *testing.T) {
+func TestApplyHyperliquidKillSwitchHedgeFillBooksAgainstOwnerOnceByOID(t *testing.T) {
 	prev := tradeRecorder
 	tradeRecorder = nil
 	t.Cleanup(func() { tradeRecorder = prev })
@@ -688,36 +688,24 @@ func TestApplyHyperliquidKillSwitchHedgeFillBooksAgainstOwner(t *testing.T) {
 	sc := hedgeTestConfig()
 	s := hedgeTestState("eth-long")
 	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
-
 	fills := map[string]HyperliquidCloseFill{"BTC": {AvgPx: 48000, TotalSz: 0.4, Fee: 5, OID: 91}}
+
 	if !applyHyperliquidKillSwitchHedgeFill(s, sc, fills) {
-		t.Fatal("hedge fill was not booked")
+		t.Fatal("books against owner: hedge fill was not booked")
 	}
 	if _, ok := s.Positions["BTC"]; ok {
-		t.Fatal("hedge leg must be closed by the kill-switch fill")
+		t.Fatal("books against owner: hedge leg must be closed by the kill-switch fill")
 	}
 	if s.RiskState.ConsecutiveLosses != 0 {
-		t.Fatalf("streak = %d — a kill-switch hedge close must not touch it", s.RiskState.ConsecutiveLosses)
+		t.Fatalf("books against owner: streak = %d — a kill-switch hedge close must not touch it", s.RiskState.ConsecutiveLosses)
 	}
-}
 
-func TestApplyHyperliquidKillSwitchHedgeFillIsIdempotentOnOID(t *testing.T) {
-	prev := tradeRecorder
-	tradeRecorder = nil
-	t.Cleanup(func() { tradeRecorder = prev })
-
-	sc := hedgeTestConfig()
-	s := hedgeTestState("eth-long")
-	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
-	fills := map[string]HyperliquidCloseFill{"BTC": {AvgPx: 48000, TotalSz: 0.4, Fee: 5, OID: 91}}
-
-	applyHyperliquidKillSwitchHedgeFill(s, sc, fills)
 	rowsAfterFirst := len(s.TradeHistory)
 	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
 	applyHyperliquidKillSwitchHedgeFill(s, sc, fills)
 
 	if len(s.TradeHistory) != rowsAfterFirst {
-		t.Fatalf("trade rows = %d, want %d — the same fill OID must book once", len(s.TradeHistory), rowsAfterFirst)
+		t.Fatalf("idempotent on OID: trade rows = %d, want %d — the same fill OID must book once", len(s.TradeHistory), rowsAfterFirst)
 	}
 }
 

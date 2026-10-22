@@ -31,32 +31,24 @@ func TestPerpsRiskBasedNotionalConstantDollarRisk(t *testing.T) {
 	}
 }
 
-func TestPerpsRiskBasedNotionalExchangeCap(t *testing.T) {
-	got := PerpsRiskBasedNotional(1000, 2000, 1.0, 1.0, 5)
-	if got != 5000 {
-		t.Fatalf("notional = %g, want 5000 (cash × exchange_leverage cap)", got)
-	}
-	got = PerpsRiskBasedNotional(1000, 2000, 1.0, 1.0, 0)
-	if got != 1000 {
-		t.Fatalf("notional = %g, want 1000 (1x cap when exchangeLeverage<=0)", got)
-	}
-}
-
-func TestPerpsRiskBasedNotionalBadInputs(t *testing.T) {
+func TestPerpsRiskBasedNotionalExchangeCapAndBadInputs(t *testing.T) {
 	cases := []struct {
 		name                               string
 		cash, price, pct, dist, exchangeLv float64
+		want                               float64
 	}{
-		{"zero cash", 0, 2000, 1, 20, 1},
-		{"negative cash", -5, 2000, 1, 20, 1},
-		{"zero price", 1000, 0, 1, 20, 1},
-		{"zero pct", 1000, 2000, 0, 20, 1},
-		{"zero dist", 1000, 2000, 1, 0, 1},
-		{"negative dist", 1000, 2000, 1, -3, 1},
+		{"cash × exchange_leverage cap", 1000, 2000, 1.0, 1.0, 5, 5000},
+		{"1x cap when exchangeLeverage<=0", 1000, 2000, 1.0, 1.0, 0, 1000},
+		{"zero cash", 0, 2000, 1, 20, 1, 0},
+		{"negative cash", -5, 2000, 1, 20, 1, 0},
+		{"zero price", 1000, 0, 1, 20, 1, 0},
+		{"zero pct", 1000, 2000, 0, 20, 1, 0},
+		{"zero dist", 1000, 2000, 1, 0, 1, 0},
+		{"negative dist", 1000, 2000, 1, -3, 1, 0},
 	}
 	for _, tc := range cases {
-		if got := PerpsRiskBasedNotional(tc.cash, tc.price, tc.pct, tc.dist, tc.exchangeLv); got != 0 {
-			t.Errorf("%s: notional = %g, want 0", tc.name, got)
+		if got := PerpsRiskBasedNotional(tc.cash, tc.price, tc.pct, tc.dist, tc.exchangeLv); got != tc.want {
+			t.Errorf("%s: notional = %g, want %g", tc.name, got, tc.want)
 		}
 	}
 }
