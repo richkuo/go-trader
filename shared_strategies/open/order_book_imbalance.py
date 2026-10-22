@@ -160,6 +160,11 @@ def decide(book: dict, deadline_ms: int, p: dict) -> dict:
     if deadline_ms % DECISION_GRID_MS:
         out["reason"] = "deadline_off_grid"
         return out
+    if book.get("prefix_complete") is not True:
+        out["reason"] = "evidence_truncated"
+        out["detail"] = (f"the section history is complete only from {book.get('retained_from_ms')}, after its window start, "
+                         "so no boundary before a run can be proven")
+        return out
     window_start = deadline_ms - EVIDENCE_WINDOW_MS
     items = []
     for m in book["markers"]:

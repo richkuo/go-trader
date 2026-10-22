@@ -157,6 +157,26 @@ def test_age_truncation_marker_and_flip_boundaries():
     thin = [b if i < 3 else obs(b["seq"], b["recv_ms"], 3, 1, count=4) for i, b in enumerate(books)]
     assert decide(thin, marks, deadline)["signal"] == 0
 
+    cut_base = T0 + 200_000
+    cut_marks = [marker(1, cut_base - 50_000)]
+    run = [obs(2 + i, cut_base - 49_000 + i * 2_000, 3, 1) for i in range(6)]
+    surviving = run[3:]
+    cut_deadline = obi.ceil_grid(max(surviving[2]["event_ms"], surviving[2]["recv_ms"]))
+    cut = section(surviving, cut_marks, cut_deadline)
+    cut["prefix_complete"], cut["retained_from_ms"] = False, run[2]["recv_ms"] + 1
+    held = obi.evaluate_section(cut, "BTC", P, cut_deadline)
+    assert held["signal"] == 0 and held["reason"] == "evidence_truncated" and held["entry_id"] == ""
+    assert obi.evaluate_section(dict(cut, prefix_complete=True), "BTC", P, cut_deadline)["signal"] == 1
+    full_deadline = obi.ceil_grid(max(run[2]["event_ms"], run[2]["recv_ms"]))
+    full = decide(run, cut_marks, full_deadline)
+    assert full["signal"] == 1 and full["reason"] == "entry_long" and full["boundary"].startswith("marker:1:subscribed:")
+    assert decide(run, cut_marks, full_deadline + 1000)["reason"] == "consumed"
+    assert decide(run, cut_marks, cut_deadline)["reason"] == "consumed"
+    unmarked = section(surviving, [], cut_deadline)
+    unmarked["prefix_complete"], unmarked["retained_from_ms"] = False, cut_deadline - 30_000
+    unmarked_out = obi.evaluate_section(unmarked, "BTC", P, cut_deadline)
+    assert unmarked_out["signal"] == 0 and unmarked_out["reason"] == "evidence_truncated"
+
 
 def test_missing_and_malformed_books_hold_and_candle_only_consumers_are_refused():
     reg = load_registry("futures")
