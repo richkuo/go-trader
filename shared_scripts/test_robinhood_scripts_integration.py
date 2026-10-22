@@ -869,6 +869,26 @@ def test_close_failed_submit_exits_one(tmp_path, post, outcome):
     assert "fill" not in payload["close"]
 
 
+@pytest.mark.parametrize("post,outcome,sends", [
+    ({"raise": "read_timeout"}, "unknown", 1),
+    ({"raise": "connection"}, "unknown", 1),
+    ({"raise": "new_connection"}, "not_sent", 3),
+    ({"raise": "connect_timeout"}, "not_sent", 3),
+], ids=["read_timeout_after_send", "connection_reset_after_send", "refused_before_send", "connect_timeout_before_send"])
+def test_close_transport_failure_on_the_sell_exits_one_with_no_fill(tmp_path, post, outcome, sends):
+    routes = _routes([post], **{"GET " + HOLDINGS: [_page([BTC_SELLABLE])]})
+    code, payload, made = _run(tmp_path, CLOSE, _close(), routes)
+    assert code == 1, payload
+    assert payload["order_outcome"] == outcome
+    assert isinstance(payload.get("error"), str) and payload["error"]
+    assert "fill" not in payload["close"]
+    assert payload["close"].get("already_flat") is None
+    posts = _posts(made)
+    assert len(posts) == sends, made
+    assert {p["body"]["ref_id"] for p in posts} == {REF_ID}
+    _assert_finite_document(payload)
+
+
 def _run_emergency_close(tmp_path, quantity, holding, sent="0.4", pairs=None):
     routes = _sell_routes(sent, holding, pairs)
     return _run(tmp_path, CLOSE, _close(quantity=quantity), routes)

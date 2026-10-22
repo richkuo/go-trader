@@ -23,6 +23,7 @@ const (
 	rhTestQuote    = "https://api.robinhood.com/marketdata/forex/quotes/pair-btc/"
 	rhTestOrders   = "https://nummus.robinhood.com/orders/"
 	rhTestHoldings = "https://nummus.robinhood.com/holdings/"
+	rhTestSession  = "https://api.robinhood.com/positions/?nonzero=true"
 	rhTestOrderID  = "ord-1"
 	rhTestAccount  = "acct-1"
 )
@@ -35,6 +36,7 @@ type rhLoggedRequest struct {
 	Method string          `json:"method"`
 	URL    string          `json:"url"`
 	Body   json.RawMessage `json:"body"`
+	Listed *bool           `json:"listed"`
 }
 
 type rhLiveEnv struct {
@@ -94,6 +96,7 @@ func newRHLiveEnv(t *testing.T, strategies ...StrategyConfig) *rhLiveEnv {
 	e.setRoutes(rhRoutes{})
 	e.open()
 	t.Cleanup(func() {
+		e.requireListed()
 		if e.store != nil {
 			e.store.Close()
 		}
@@ -141,7 +144,11 @@ func (e *rhLiveEnv) reopen() {
 func (e *rhLiveEnv) setRoutes(routes rhRoutes) {
 	e.t.Helper()
 	if _, err := os.Stat(e.log); err == nil {
+		e.requireListed()
 		e.sent = append(e.sent, e.orderPosts()...)
+	}
+	if _, ok := routes["GET "+rhTestSession]; !ok {
+		routes = rhWith(routes, rhRoutes{"GET " + rhTestSession: {rhHoldings()}})
 	}
 	b, err := json.Marshal(routes)
 	if err != nil {
@@ -176,6 +183,15 @@ func (e *rhLiveEnv) requests() []rhLoggedRequest {
 		out = append(out, r)
 	}
 	return out
+}
+
+func (e *rhLiveEnv) requireListed() {
+	e.t.Helper()
+	for _, r := range e.requests() {
+		if r.Listed == nil || !*r.Listed {
+			e.t.Errorf("the script sent %s %s, which the test fixture does not list", r.Method, r.URL)
+		}
+	}
 }
 
 func (e *rhLiveEnv) orderPosts() []rhLoggedRequest {
@@ -498,6 +514,8 @@ func TestRobinhoodLiveOrderUnresolvedOutcomeHoldsTheCoin(t *testing.T) {
 		status string
 	}{
 		{"http_503", rhRoutes{"POST " + rhTestOrders: {{"status": 503, "json": map[string]interface{}{"detail": "unavailable"}}}}, robinhoodAttemptUnknown},
+		{"read_timeout_after_send", rhRoutes{"POST " + rhTestOrders: {{"raise": "read_timeout"}}}, robinhoodAttemptUnknown},
+		{"connection_reset_after_send", rhRoutes{"POST " + rhTestOrders: {{"raise": "connection"}}}, robinhoodAttemptUnknown},
 		{"open_after_cancel", rhRoutes{
 			"POST " + rhTestOrders:                          {rhAccepted("buy")},
 			"GET " + rhOrderURL(rhTestOrderID):              {rhOrder("confirmed", "buy", "0", nil)},
@@ -1018,6 +1036,28 @@ func TestRobinhoodLiveOrderCircuitBreakerKeepsExposureUntilVerifiedFlat(t *testi
 		runPendingRobinhoodCircuitClosesWithCloser(e, fetcher, rhWith(rhSellFilled("0.5", "97"), held))
 		if e.state.Strategies["rh-btc"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil {
 			t.Fatal("pending close must be kept when the post-close read fails")
+		}
+	})
+	t.Run("rejected_sell_keeps_pending", func(t *testing.T) {
+		e := newRHLiveEnv(t, rhLiveSpot("rh-btc", "BTC", 1000))
+		e.setPosition("rh-btc", "BTC", 0.5, 90)
+		e.latchCB("rh-btc")
+		held := rhRoutes{"GET " + rhTestHoldings: {rhHoldings(rhAvailable("BTC", "0.5", "0.5"))}}
+		refused := rhWith(rhWith(rhPrepRoutes(), held), rhRoutes{"POST " + rhTestOrders: {{"status": 400, "json": map[string]interface{}{"detail": "insufficient holdings"}}}})
+		runPendingRobinhoodCircuitClosesWithCloser(e, e.phasedFetcher(held, held), refused)
+		s := e.state.Strategies["rh-btc"]
+		if e.pendingRH("rh-btc") == nil {
+			t.Fatal("pending close must be kept when the venue refuses the sell")
+		}
+		if pos := s.Positions["BTC"]; pos == nil || pos.Quantity != 0.5 {
+			t.Fatalf("position = %+v, want the 0.5 book kept after a refused sell", pos)
+		}
+		if dbt := e.dbTrades("rh-btc"); len(dbt) != 0 {
+			t.Fatalf("db trades = %+v, want none after a refused sell", dbt)
+		}
+		rhSamePosts(t, e.allPostQuantities(), 0.5)
+		if row := e.onlyAttempt(); row.Status != robinhoodAttemptNoFill || row.AppliedQty != 0 {
+			t.Fatalf("attempt = %+v, want a no_fill attempt with nothing applied", row)
 		}
 	})
 	t.Run("nil_fetcher_keeps_pending", func(t *testing.T) {

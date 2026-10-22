@@ -49,7 +49,7 @@ const (
 	feedPremiumReasonCrossed      = "crossed_book"
 
 	perpetualPremiumStrategyName      = "perpetual_premium_reversion"
-	perpetualPremiumDefaultLookback   = 60
+	perpetualPremiumDefaultLookback   = 30
 	perpetualPremiumMaxLookback       = 720
 	perpetualPremiumDefaultIntervalMs = int64(60_000)
 )

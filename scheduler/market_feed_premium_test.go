@@ -143,6 +143,20 @@ func TestPremiumObservationPipeline(t *testing.T) {
 	if _, err := deriveFeedRequirements(&Config{Strategies: []StrategyConfig{bad}}); err == nil || !strings.Contains(err.Error(), "lookback_samples") {
 		t.Fatalf("an oversized premium lookback must fail preflight, got %v", err)
 	}
+	omitted := pprTestStrategy("ppr-omitted", "BTC")
+	omitted.OpenStrategy.Params = nil
+	explicit := pprTestStrategy("ppr-explicit", "ETH")
+	explicit.OpenStrategy.Params = map[string]interface{}{"lookback_samples": float64(60)}
+	defaults, err := deriveFeedRequirements(&Config{Strategies: []StrategyConfig{omitted, explicit}})
+	if err != nil {
+		t.Fatalf("derive default and explicit premium requirements: %v", err)
+	}
+	if got := defaults.Strategies["ppr-omitted"].PremiumWindow; got != 1_920_000 {
+		t.Fatalf("an omitted lookback_samples on 1m must follow the strategy default 30 (1920000ms), got %dms", got)
+	}
+	if got := defaults.Strategies["ppr-explicit"].PremiumWindow; got != 3_720_000 {
+		t.Fatalf("an explicit lookback_samples 60 on 1m must need 3720000ms, got %dms", got)
+	}
 	if err := validateMarketFeedConfig(&Config{MarketFeed: marketFeedREST, Strategies: []StrategyConfig{btc}}); err == nil || !strings.Contains(err.Error(), "synchronized quote and oracle records") {
 		t.Fatalf("market_feed=rest with a premium strategy must be refused as an unsupported mode: %v", err)
 	}
