@@ -28,6 +28,8 @@ type shellSuiteWiring struct {
 	requireEnv   []string
 	forbidden    []string
 	permitted    map[string]string
+	shardEnv     string
+	shardDefault string
 }
 
 var shellSuiteWirings = map[string]shellSuiteWiring{
@@ -119,11 +121,13 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 	"test_migrate_service_layout_fixture.sh": {
 		ciStep:     true,
 		sudo:       true,
-		marker:     "OK: migrate-service-layout fixture passed (refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget)",
+		marker:     "OK: migrate-service-layout fixture passed (%s)",
 		requireEnv: []string{"MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN"},
 		forbidden: []string{
 			"note: this host has a system uv; the root-private uv refusals are skipped",
 		},
+		shardEnv:     "FIXTURE_SCENARIOS",
+		shardDefault: "SCENARIOS",
 	},
 }
 
@@ -224,6 +228,8 @@ var (
 	ciSuiteInvoke = regexp.MustCompile(`bash scripts/(test_[A-Za-z0-9_.-]+\.sh)`)
 	ciOmissionMsg = regexp.MustCompile(`^\s*echo "((?:NOTE|note): [^"]*)"`)
 	ciGateEcho    = regexp.MustCompile("^echo \"[^\"$`\\\\]*\"$")
+	ciShardName   = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	ciShellJobKey = regexp.MustCompile(`^\s*(- )?(strategy|matrix|needs):`)
 )
 
 func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
@@ -649,6 +655,118 @@ func checkPyIntegrationPartition(t *testing.T, shards []ciPyIntegrationShard, te
 	}
 }
 
+const ciShellSuitesJob = "shell-suites"
+
+type ciSuiteShard struct {
+	job       string
+	scenarios []string
+}
+
+func readCIShardList(t *testing.T, job, script string, w shellSuiteWiring, envArgs string) []string {
+	t.Helper()
+	if n := strings.Count(envArgs, w.shardEnv); n != 1 {
+		t.Fatalf("the %s command for scripts/%s must name %s exactly once, as %s='<scenarios>' before bash, found %d: %s", job, script, w.shardEnv, w.shardEnv, n, envArgs)
+	}
+	m := regexp.MustCompile(` ` + regexp.QuoteMeta(w.shardEnv) + `='([^']*)' `).FindStringSubmatch(" " + envArgs)
+	if m == nil {
+		t.Fatalf("the %s command for scripts/%s must set %s to one single-quoted literal scenario list before bash: %s", job, script, w.shardEnv, envArgs)
+	}
+	list := strings.Fields(m[1])
+	if len(list) == 0 {
+		t.Fatalf("the %s command for scripts/%s sets an empty %s, and the script then runs its whole default list", job, script, w.shardEnv)
+	}
+	seen := map[string]bool{}
+	for _, name := range list {
+		if !ciShardName.MatchString(name) {
+			t.Fatalf("the %s command for scripts/%s lists %q in %s, which is not a plain scenario name", job, script, name, w.shardEnv)
+		}
+		if seen[name] {
+			t.Fatalf("the %s command for scripts/%s lists scenario %s twice in %s", job, script, name, w.shardEnv)
+		}
+		seen[name] = true
+	}
+	return list
+}
+
+func readShardDefaults(t *testing.T, script string, w shellSuiteWiring, src string) []string {
+	t.Helper()
+	re := regexp.MustCompile(`^` + regexp.QuoteMeta(w.shardDefault) + `="\$\{` + regexp.QuoteMeta(w.shardEnv) + `:-([^}"$]*)\}"$`)
+	assignments := 0
+	var defaults string
+	matched := 0
+	for _, line := range strings.Split(src, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), w.shardDefault+"=") {
+			assignments++
+		}
+		if m := re.FindStringSubmatch(line); m != nil {
+			matched++
+			defaults = m[1]
+		}
+	}
+	if assignments != 1 || matched != 1 {
+		t.Fatalf("scripts/%s must assign %s exactly once, as %s=\"${%s:-<default scenarios>}\"", script, w.shardDefault, w.shardDefault, w.shardEnv)
+	}
+	list := strings.Fields(defaults)
+	if len(list) == 0 || strings.Join(list, " ") != defaults {
+		t.Fatalf("scripts/%s must list its default %s as single-space separated names: %q", script, w.shardDefault, defaults)
+	}
+	seen := map[string]bool{}
+	for _, name := range list {
+		if !ciShardName.MatchString(name) || seen[name] {
+			t.Fatalf("scripts/%s default %s has a repeated or unsupported scenario name %q", script, w.shardDefault, name)
+		}
+		seen[name] = true
+	}
+	line := `echo "` + fmt.Sprintf(w.marker, "$"+w.shardDefault) + `"`
+	if strings.Count(src, line) != 1 {
+		t.Fatalf("scripts/%s must print its success line once from the scenario list it ran: %s", script, line)
+	}
+	return list
+}
+
+func checkCIShardPartition(t *testing.T, script string, w shellSuiteWiring, src, workflow string, runs []ciSuiteShard) {
+	t.Helper()
+	defaults := readShardDefaults(t, script, w, src)
+	if len(runs) == 0 {
+		t.Errorf("no shell-suites job runs scripts/%s", script)
+	}
+	if n := strings.Count(workflow, w.shardEnv); n != len(runs) {
+		t.Errorf(".github/workflows/ci.yml names %s %d times, but %d shell-suites commands run scripts/%s with it", w.shardEnv, n, len(runs), script)
+	}
+	for _, m := range regexp.MustCompile(regexp.QuoteMeta(w.shardEnv)+`='([^']*)'`).FindAllStringSubmatch(workflow, -1) {
+		if strings.Join(strings.Fields(m[1]), " ") != m[1] {
+			t.Errorf(".github/workflows/ci.yml sets %s='%s', which is not a single-space separated list, so its success line differs from the marker", w.shardEnv, m[1])
+		}
+	}
+	owners := map[string][]string{}
+	for _, run := range runs {
+		for _, name := range run.scenarios {
+			owners[name] = append(owners[name], run.job)
+		}
+	}
+	known := map[string]bool{}
+	for _, name := range defaults {
+		known[name] = true
+		switch len(owners[name]) {
+		case 0:
+			t.Errorf("no shell-suites job runs scenario %s of scripts/%s: add it to exactly one %s list", name, script, w.shardEnv)
+		case 1:
+		default:
+			t.Errorf("scenario %s of scripts/%s runs in more than one shard: %s", name, script, strings.Join(owners[name], ", "))
+		}
+	}
+	var unknown []string
+	for name := range owners {
+		if !known[name] {
+			unknown = append(unknown, name)
+		}
+	}
+	sort.Strings(unknown)
+	for _, name := range unknown {
+		t.Errorf("%s runs scenario %s of scripts/%s, which is not in its default %s list", strings.Join(owners[name], ", "), name, script, w.shardDefault)
+	}
+}
+
 func TestShellSuiteCIWiring(t *testing.T) {
 	t.Parallel()
 	schedDir, repoRoot := shellSuiteRepoRoot(t)
@@ -682,59 +800,81 @@ func TestShellSuiteCIWiring(t *testing.T) {
 	jobs := parseCIWorkflowJobs(t, workflowPath)
 	shards := readPyIntegrationShards(t, jobs)
 	allowlist := shards[0].run
-	shellJob := requireCIJob(t, jobs, "shell-suites")
+	requireCIJob(t, jobs, ciShellSuitesJob)
+	var shellJobs []string
+	for name := range jobs {
+		if name == ciShellSuitesJob || strings.HasPrefix(name, ciShellSuitesJob+"-") {
+			shellJobs = append(shellJobs, name)
+		}
+	}
+	sort.Strings(shellJobs)
 	pyTests, pyTagged := pyIntegrationBuildTests(t, schedDir)
 	checkPyIntegrationPartition(t, shards, pyTests, pyTagged)
 
 	invoked := map[string]int{}
-	for _, step := range shellJob.logical {
-		for _, line := range step {
-			all := strings.Count(line, "scripts/test_")
-			found := ciSuiteInvoke.FindAllStringSubmatch(line, -1)
-			if all == 0 {
-				continue
+	shardRuns := map[string][]ciSuiteShard{}
+	for _, jobName := range shellJobs {
+		shellJob := requireCIJob(t, jobs, jobName)
+		for _, line := range shellJob.raw {
+			if ciShellJobKey.MatchString(line) {
+				t.Fatalf("job %s declares %s, so each of its suites might not run once on its own runner", jobName, strings.TrimSpace(line))
 			}
-			if all != 1 || len(found) != 1 {
-				t.Fatalf("shell-suites must invoke one suite per command as bash scripts/test_<name>.sh: %s", line)
-			}
-			script := found[0][1]
-			invoked[script]++
-			w, ok := shellSuiteWirings[script]
-			if !ok || !w.ciStep {
-				t.Fatalf("shell-suites runs scripts/%s, which is not declared as a shell-suites step", script)
-			}
-			if strings.Contains(line, "#") {
-				t.Fatalf("the shell-suites command for scripts/%s contains #, so part of it may be a comment: %s", script, line)
-			}
-			const runner = "bash scripts/run_ci_shell_suite.sh "
-			if !strings.HasPrefix(line, runner) {
-				t.Fatalf("shell-suites must run scripts/%s through scripts/run_ci_shell_suite.sh: %s", script, line)
-			}
-			sep := strings.Index(line, " -- ")
-			if sep < 0 || strings.Count(line, " -- ") != 1 {
-				t.Fatalf("shell-suites command for scripts/%s must have one -- separator: %s", script, line)
-			}
-			opts, cmd := line[len(runner):sep], line[sep+len(" -- "):]
-			if !strings.HasSuffix(cmd, "bash scripts/"+script) {
-				t.Fatalf("shell-suites command for scripts/%s must end with bash scripts/%s: %s", script, script, cmd)
-			}
-			if w.sudo != strings.HasPrefix(cmd, "sudo env ") || (!w.sudo && strings.Contains(cmd, "sudo")) {
-				t.Fatalf("scripts/%s sudo=%v, but its shell-suites command is: %s", script, w.sudo, cmd)
-			}
-			if !strings.Contains(opts, "--marker '"+w.marker+"'") {
-				t.Fatalf("shell-suites command for scripts/%s does not require its success line %q", script, w.marker)
-			}
-			if strings.Count(opts, "--forbid '") != len(w.forbidden) {
-				t.Fatalf("shell-suites command for scripts/%s must forbid exactly its %d unpermitted omissions: %s", script, len(w.forbidden), opts)
-			}
-			for _, text := range w.forbidden {
-				if !strings.Contains(opts, "--forbid '"+text+"'") {
-					t.Fatalf("shell-suites command for scripts/%s does not forbid %q", script, text)
+		}
+		for _, step := range shellJob.logical {
+			for _, line := range step {
+				all := strings.Count(line, "scripts/test_")
+				found := ciSuiteInvoke.FindAllStringSubmatch(line, -1)
+				if all == 0 {
+					continue
 				}
-			}
-			for _, env := range w.requireEnv {
-				if !strings.Contains(" "+cmd+" ", " "+env+"=1 ") {
-					t.Fatalf("shell-suites command for scripts/%s does not set %s=1", script, env)
+				if all != 1 || len(found) != 1 {
+					t.Fatalf("%s must invoke one suite per command as bash scripts/test_<name>.sh: %s", jobName, line)
+				}
+				script := found[0][1]
+				invoked[script]++
+				w, ok := shellSuiteWirings[script]
+				if !ok || !w.ciStep {
+					t.Fatalf("%s runs scripts/%s, which is not declared as a shell-suites step", jobName, script)
+				}
+				if strings.Contains(line, "#") {
+					t.Fatalf("the %s command for scripts/%s contains #, so part of it may be a comment: %s", jobName, script, line)
+				}
+				const runner = "bash scripts/run_ci_shell_suite.sh "
+				if !strings.HasPrefix(line, runner) {
+					t.Fatalf("%s must run scripts/%s through scripts/run_ci_shell_suite.sh: %s", jobName, script, line)
+				}
+				sep := strings.Index(line, " -- ")
+				if sep < 0 || strings.Count(line, " -- ") != 1 {
+					t.Fatalf("%s command for scripts/%s must have one -- separator: %s", jobName, script, line)
+				}
+				opts, cmd := line[len(runner):sep], line[sep+len(" -- "):]
+				if !strings.HasSuffix(cmd, "bash scripts/"+script) {
+					t.Fatalf("%s command for scripts/%s must end with bash scripts/%s: %s", jobName, script, script, cmd)
+				}
+				if w.sudo != strings.HasPrefix(cmd, "sudo env ") || (!w.sudo && strings.Contains(cmd, "sudo")) {
+					t.Fatalf("scripts/%s sudo=%v, but its %s command is: %s", script, w.sudo, jobName, cmd)
+				}
+				marker := w.marker
+				if w.shardEnv != "" {
+					list := readCIShardList(t, jobName, script, w, strings.TrimSuffix(cmd, "bash scripts/"+script))
+					shardRuns[script] = append(shardRuns[script], ciSuiteShard{job: jobName, scenarios: list})
+					marker = fmt.Sprintf(w.marker, strings.Join(list, " "))
+				}
+				if strings.Count(opts, "--marker ") != 1 || !strings.Contains(opts, "--marker '"+marker+"'") {
+					t.Fatalf("%s command for scripts/%s does not require exactly its success line %q", jobName, script, marker)
+				}
+				if strings.Count(opts, "--forbid '") != len(w.forbidden) {
+					t.Fatalf("%s command for scripts/%s must forbid exactly its %d unpermitted omissions: %s", jobName, script, len(w.forbidden), opts)
+				}
+				for _, text := range w.forbidden {
+					if !strings.Contains(opts, "--forbid '"+text+"'") {
+						t.Fatalf("%s command for scripts/%s does not forbid %q", jobName, script, text)
+					}
+				}
+				for _, env := range w.requireEnv {
+					if !strings.Contains(" "+cmd+" ", " "+env+"=1 ") {
+						t.Fatalf("%s command for scripts/%s does not set %s=1", jobName, script, env)
+					}
 				}
 			}
 		}
@@ -779,15 +919,22 @@ func TestShellSuiteCIWiring(t *testing.T) {
 			if !strings.Contains(body, `assertShellSuiteOutput(t, "`+name+`", `) {
 				t.Errorf("%s does not check scripts/%s output with assertShellSuiteOutput", w.goTest, name)
 			}
-		case w.ciStep:
+		case w.ciStep && w.shardEnv == "":
 			if invoked[name] != 1 {
-				t.Errorf("shell-suites runs scripts/%s %d times, want exactly once", name, invoked[name])
+				t.Errorf("the shell-suites jobs run scripts/%s %d times, want exactly once", name, invoked[name])
 			}
 		}
 
 		src, err := os.ReadFile(filepath.Join(repoRoot, "scripts", name))
 		if err != nil {
 			t.Fatal(err)
+		}
+		if w.shardEnv != "" {
+			if !w.ciStep || w.shardDefault == "" || strings.Count(w.marker, "%s") != 1 || strings.Count(w.marker, "%") != 1 {
+				t.Errorf("scripts/%s declares shards, so it needs ciStep, shardDefault and a marker with one %%s for the scenario list", name)
+				continue
+			}
+			checkCIShardPartition(t, name, w, string(src), string(workflow), shardRuns[name])
 		}
 		for _, env := range w.requireEnv {
 			if !strings.Contains(string(src), env) {

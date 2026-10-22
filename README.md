@@ -312,7 +312,7 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `circuit_breaker` | Set `false` to disable both CB arms; latched CB still drains | enabled |
 | `llm_entry_analysis` | `{enabled, model, max_debate_rounds, timeout_s, notify_dm, notify_channel}` — post-open LLM multi-agent entry commentary (advisory only; never touches the trade). Digest defaults to DM (`notify_dm` on); the shared channel is opt-in (`notify_channel` off) | disabled |
 | `interval_seconds` | Check interval (0 → global) | 0 |
-| `htf_filter` | Higher-timeframe trend filter | false |
+| `htf_filter` | Higher-timeframe trend filter (50-EMA on the default higher timeframe). Missing, short or unusable higher-timeframe candles hold new entries and additions while closes and protection continue, and repeated failures alert; restart-required | false |
 | `closed_bar_decisions` | Binance.US spot, OKX spot/perps, HL perps — signal, entry ATR and entry sizing use the last closed bar (as the backtester does); protection keeps current prices; restart-required | false |
 | `resting_tp_trade_through` | HL perps paper only — a tier take-profit books only after a completed bar since entry traded one tick past the venue-rounded limit (the backtester models the same rule with `--resting-tp-trade-through`); live is unchanged; JSON `true`/`false` only; restart-required | false |
 | `open_strategy` | Co-located ref `{name, params}` overriding entry; falls back to `args[0]` | null |
@@ -483,6 +483,7 @@ Open `https://<node>.tailnet.ts.net:8443/dashboard`. `status_token` still applie
 - **On-chain N-tier TP/SL** — `tiered_tp_atr` / `tiered_tp_atr_live` (default tiers `[{1.5×, 0.4}, {3×, 0.8}, {5×, 1.0}]`).
 - **Trailing-ratchet close** — `trailing_tp_ratchet` / `trailing_tp_ratchet_regime`: cleared tiers tighten a single trailing stop; no fixed on-chain TPs. HL perps + `manual`.
 - **AVWAP stop close** — `avwap_stop`: exits when price breaches the anchored VWAP by `buffer_atr_mult`× ATR on the losing side; virtual exit only (no on-chain trigger).
+- **Higher-timeframe filter hold** — with `htf_filter: true`, a check whose higher-timeframe candles are missing, fewer than 50 or unusable reports `unavailable`; entries and additions are held (closes, stops and protection continue), 3 consecutive unavailable evaluations (15 or 75 minutes for upstream 429/5xx errors) alert the strategy's channels and the owner, and the first good evaluation sends one recovery. Backtests and the tuning simulator top up a short or non-covering higher-timeframe cache, then refuse one that still is empty, short or not covering the requested range.
 - **Regime gate**, **HL margin mode** (`isolated` default), correlation warnings (opt-in), options position limits, theta harvesting.
 
 Latch ownership, the untrusted-reading deferral, the Hyperliquid liquidation guard, and every operator alert: [SKILL.md](SKILL.md).

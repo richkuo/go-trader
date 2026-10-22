@@ -75,6 +75,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
 
       - name: Build
         run: cd scheduler && go build -ldflags "-X main.Version=$(git describe --tags --always --dirty=-mod)" .
@@ -103,6 +104,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
 
       - uses: astral-sh/setup-uv@v6
 
@@ -112,7 +114,7 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBasketRealRanker[A-Za-z]*|TestBasketMemberRealCheckIsManagementOnly|TestBasketMemberBatched[A-Za-z]*|TestBasketReplay[A-Za-z]*|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*)$' -skip '^(TestBasketReplay[A-Za-z]*|TestMergePaperInstance)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBasketRealRanker[A-Za-z]*|TestBasketMemberRealCheckIsManagementOnly|TestBasketMemberBatched[A-Za-z]*|TestBasketReplay[A-Za-z]*|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*)$' -skip '^(TestBasketReplay[A-Za-z]*|TestMergePaperInstance)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -149,6 +151,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
 
       - uses: astral-sh/setup-uv@v6
 
@@ -172,6 +175,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
 
       - uses: astral-sh/setup-uv@v6
 
@@ -195,6 +199,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
 
       - uses: astral-sh/setup-uv@v6
 
@@ -218,6 +223,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
 
       - uses: astral-sh/setup-uv@v6
 
@@ -299,13 +305,6 @@ jobs:
             --marker 'OK: robinhood session service fixture passed (state-directory session, owner-only modes, no home writes, reuse on second start)' \
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_UV="$(command -v uv)" ROBINHOOD_SESSION_SERVICE_FIXTURE_REQUIRE_RUN=1 bash scripts/test_robinhood_session_service_fixture.sh
 
-      - name: Service layout migration fixture (root, systemd)
-        run: |
-          bash scripts/run_ci_shell_suite.sh \
-            --marker 'OK: migrate-service-layout fixture passed (refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget)' \
-            --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
-            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
-
       - name: Egress enforcement suite (root, systemd)
         run: |
           bash scripts/run_ci_shell_suite.sh \
@@ -321,6 +320,66 @@ jobs:
           bash scripts/run_ci_shell_suite.sh \
             --marker 'PASS: egress docker deployment (anchor enforcement, application attestation, relay-only egress, status relay, one-shot commands, anchor restart)' \
             -- sudo env EGRESS_CONTROLLER_BIN="$RUNNER_TEMP/go-trader-egress-controller" EGRESS_FIXTURE_BIN="$RUNNER_TEMP/egress-fixture" EGRESS_TEST_IMAGE=ghcr.io/richkuo/go-trader:egress-ci EGRESS_DOCKER_FIXTURE_REQUIRE_RUN=1 bash scripts/test_egress_docker.sh
+
+  shell-suites-migrate-1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - name: Build
+        run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
+      - name: Service layout migration fixture (root, systemd)
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'OK: migrate-service-layout fixture passed (update)' \
+            --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='update' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
+
+  shell-suites-migrate-2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - name: Build
+        run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
+      - name: Service layout migration fixture (root, systemd)
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'OK: migrate-service-layout fixture passed (stages kill)' \
+            --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='stages kill' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
+
+  shell-suites-migrate-3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - name: Build
+        run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
+      - name: Service layout migration fixture (root, systemd)
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'OK: migrate-service-layout fixture passed (refuse plan confirm apply latch conflict resume signal fold newtarget)' \
+            --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='refuse plan confirm apply latch conflict resume signal fold newtarget' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
   python-collect:
     runs-on: ubuntu-latest

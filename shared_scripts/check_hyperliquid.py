@@ -69,6 +69,13 @@ from market_payload import (
     market_volume_profile,
     validate_market_payload,
 )
+from htf_filter import (
+    get_default_htf,
+    htf_not_evaluated_block,
+    htf_skipped_block,
+    htf_unavailable_block,
+    run_htf_filter,
+)
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 from lead_lag_inputs import LEAD_LAG_STRATEGY, coin_of, prepare_sealed_inputs, support_bars, unavailable
 
@@ -693,15 +700,18 @@ def _shared_decision_regime(shared, selection):
     return out
 
 
+HYPERLIQUID_HTF_EXCLUDED = ("delta_neutral_funding", "funding_skew")
+
+
 def _shared_decision_htf(shared, sym, tf, limit, boundary_ms):
     cache = shared["decision_cache"]
     key = ("htf", sym, tf, limit, boundary_ms)
     if key not in cache:
         try:
             sel = _closed_frame_selection(shared, sym, tf, limit, boundary_ms, 50)
-            cache[key] = {"frame": _make_dataframe(sel.rows), "hold": ""}
+            cache[key] = {"frame": _make_dataframe(sel.rows), "hold": "", "reason": ""}
         except ClosedBarHold as e:
-            cache[key] = {"frame": None, "hold": f"higher timeframe {tf}: {e.reason}"}
+            cache[key] = {"frame": None, "hold": f"higher timeframe {tf}: {e.reason}", "reason": e.reason}
     return cache[key]
 
 
@@ -973,6 +983,10 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     decision_df = df
     protection_params = None
     htf_closed = None
+    htf_applies = htf_filter_enabled and funding_aware_name not in HYPERLIQUID_HTF_EXCLUDED
+    htf_block = None
+    if htf_filter_enabled and not htf_applies:
+        htf_block = htf_skipped_block(timeframe, funding_aware_name)
     if closed_bar:
         primary = _shared_closed_decision(shared)
         hold = primary["hold"]
@@ -997,10 +1011,12 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             hold = regime_view["hold"]
             decision_regime_payload = regime_view["payload"]
             decision_params["regime"] = regime_view["strategy"] if shared["regime_enabled"] else strategy_regime
-        if not hold and htf_filter_enabled and funding_aware_name not in ("delta_neutral_funding", "funding_skew"):
-            from htf_filter import get_default_htf
-            htf_closed = _shared_decision_htf(shared, symbol, get_default_htf(timeframe), 60, selection.boundary_ms)
+        if not hold and htf_applies:
+            htf_tf = get_default_htf(timeframe)
+            htf_closed = _shared_decision_htf(shared, symbol, htf_tf, 60, selection.boundary_ms)
             hold = htf_closed["hold"]
+            if hold:
+                htf_block = htf_unavailable_block(symbol, htf_tf, htf_closed["reason"])
         protection_params = {"regime": strategy_regime}
         if strategy_params_override:
             protection_params = {**strategy_params_override, **protection_params}
@@ -1010,6 +1026,9 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             decision_df = None
             strategy_params = {}
             print(f"Closed-bar decision held for {symbol} {timeframe}: {hold}", file=sys.stderr)
+            if htf_applies and htf_block is None:
+                htf_block = htf_not_evaluated_block(
+                    timeframe, f"the closed-bar decision held before the higher-timeframe filter ran: {hold}")
         else:
             closed_meta = selection.metadata()
             decision_df = _frame_with_cadence(selection.rows, timeframe, selection.timings)
@@ -1103,22 +1122,17 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     else:
         price = float(last["close"])
 
-    htf_info = {}
-    htf_strategy_name = open_strategy or strategy_name
-    if decision_df is not None and htf_filter_enabled and htf_strategy_name not in ("delta_neutral_funding", "funding_skew"):
-        from htf_filter import htf_trend_filter, apply_htf_filter
-
+    htf_indicators = {}
+    if decision_df is not None and htf_applies and htf_block is None:
         if closed_bar:
             _fetch_htf = htf_closed_fetcher(htf_closed["frame"])
         else:
             def _fetch_htf(sym, tf, limit):
                 return _shared_htf_frame(shared, sym, tf, limit)
 
-        htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
-        original_signal = signal
-        signal = apply_htf_filter(signal, htf_info.get("htf_trend", 0))
-        if signal != original_signal:
-            print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
+        signal, htf_block, htf_indicators = run_htf_filter(signal, symbol, timeframe, _fetch_htf)
+    if htf_filter_enabled and htf_block is None:
+        htf_block = htf_not_evaluated_block(timeframe, "the check produced no decision frame for the higher-timeframe filter")
 
     if shared["price_override"] > 0:
         price = shared["price_override"]
@@ -1169,10 +1183,7 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
                 except (ValueError, TypeError):
                     pass
 
-    if htf_info:
-        for k, v in htf_info.items():
-            if isinstance(v, (int, float)):
-                indicators[k] = v
+    indicators.update(htf_indicators)
 
     output = {
         "strategy": strategy_name,
@@ -1190,6 +1201,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         output["indicator_labels"] = indicator_labels
     if decision:
         output.update(decision)
+    if htf_block is not None:
+        output["htf_filter"] = htf_block
     if resting_request is not None:
         output["resting_tp_rule"] = _resting_rule_echo(resting_request, resting_obs, decision)
     if basket_member:

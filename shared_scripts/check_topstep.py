@@ -13,6 +13,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator, latest_atr
 from closed_bar import declare_frame_cadence
+from htf_filter import (
+    HTF_EXCLUDED_DEFAULT,
+    htf_not_evaluated_block,
+    htf_skipped_block,
+    run_htf_filter,
+)
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
 TEXT_INDICATOR_COLUMNS = ("eom_reason",)
@@ -135,9 +141,15 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
         adapter = TopStepExchangeAdapter(mode=mode)
 
+        htf_strategy_name = open_strategy or strategy_name
+        htf_applies = htf_filter_enabled and htf_strategy_name not in HTF_EXCLUDED_DEFAULT
+        htf_block = None
+        if htf_filter_enabled and not htf_applies:
+            htf_block = htf_skipped_block(timeframe, htf_strategy_name)
+
         market_open = adapter.is_market_open()
         if not market_open:
-            print(json.dumps({
+            closed_output = {
                 "strategy": strategy_name,
                 "symbol": symbol,
                 "timeframe": timeframe,
@@ -149,7 +161,11 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 "mode": mode,
                 "platform": "topstep",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-            }))
+            }
+            if htf_filter_enabled:
+                closed_output["htf_filter"] = htf_block or htf_not_evaluated_block(
+                    timeframe, "the market is closed, so the check returned before fetching candles")
+            print(json.dumps(closed_output))
             return
 
         print(f"Fetching {symbol} {timeframe} from TopStepX ({mode})...", file=sys.stderr)
@@ -214,20 +230,13 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         last = result_df.iloc[-1]
         price = float(last["close"])
 
-        htf_info = {}
-        htf_strategy_name = open_strategy or strategy_name
-        if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
-            from htf_filter import htf_trend_filter, apply_htf_filter
-
+        htf_indicators = {}
+        if htf_applies:
             def _fetch_htf(sym, tf, limit):
                 candles = adapter.get_ohlcv(sym, interval=tf, limit=limit)
                 return _make_dataframe(candles) if candles else None
 
-            htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
-            original_signal = signal
-            signal = apply_htf_filter(signal, htf_info.get("htf_trend", 0))
-            if signal != original_signal:
-                print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
+            signal, htf_block, htf_indicators = run_htf_filter(signal, symbol, timeframe, _fetch_htf)
 
         if open_close_enabled:
             decision = finalize_decision(evaluation, position_side, signal)
@@ -262,10 +271,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 except (ValueError, TypeError):
                     pass
 
-        if htf_info:
-            for k, v in htf_info.items():
-                if isinstance(v, (int, float)):
-                    indicators[k] = v
+        indicators.update(htf_indicators)
 
         output = {
             "strategy": strategy_name,
@@ -285,6 +291,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             output["indicator_labels"] = indicator_labels
         if decision:
             output.update(decision)
+        if htf_block is not None:
+            output["htf_filter"] = htf_block
         print(json.dumps(output))
 
     except Exception as e:
