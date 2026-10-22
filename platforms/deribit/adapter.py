@@ -1,4 +1,6 @@
 
+import os
+import sys
 import time
 import math
 import json
@@ -9,6 +11,12 @@ from dataclasses import dataclass, field, asdict
 
 import ccxt
 import numpy as np
+
+_SHARED_TOOLS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools')
+if _SHARED_TOOLS not in sys.path:
+    sys.path.append(_SHARED_TOOLS)
+
+import egress_policy
 
 try:
     from scipy.stats import norm
@@ -312,7 +320,7 @@ class DeribitOptionsAdapter:
             config["apiKey"] = api_key
             config["secret"] = api_secret
 
-        self.exchange = ccxt.deribit(config)
+        self.exchange = egress_policy.pin_ccxt(ccxt.deribit(config))
 
         self._cash_usd = initial_balance_usd
         self._positions: Dict[str, OptionPosition] = {}
@@ -850,7 +858,7 @@ class DeribitExchangeAdapter:
 
     def get_spot_price(self, underlying: str) -> float:
         try:
-            exchange = ccxt.binanceus({"enableRateLimit": True})
+            exchange = egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
             ticker = exchange.fetch_ticker(f"{underlying}/USDT")
             return float(ticker.get("last") or 0)
         except Exception:
@@ -859,7 +867,7 @@ class DeribitExchangeAdapter:
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
         import math as _math
         try:
-            exchange = ccxt.binanceus({"enableRateLimit": True})
+            exchange = egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
             ohlcv = exchange.fetch_ohlcv(f"{underlying}/USDT", "1d", limit=90)
             if not ohlcv or len(ohlcv) < 15:
                 return 0.60, 50.0

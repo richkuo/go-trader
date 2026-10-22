@@ -6,6 +6,8 @@ from typing import Tuple
 
 sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
+import egress_policy
+
 _LUNO_QUOTE_CURRENCIES = ["ZAR", "GBP", "EUR", "MYR", "NGN"]
 
 
@@ -17,7 +19,7 @@ def _get_ccxt_exchange():
     if api_key and api_secret:
         params["apiKey"] = api_key
         params["secret"] = api_secret
-    return ccxt.luno(params)
+    return egress_policy.pin_ccxt(ccxt.luno(params))
 
 
 class LunoExchangeAdapter:

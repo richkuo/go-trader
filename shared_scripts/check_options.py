@@ -13,6 +13,7 @@ _REPO_ROOT = os.path.dirname(_THIS_DIR)
 sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
 
+import egress_policy
 from regime import latest_regime, regime_from_injected_payload
 
 MAX_POSITIONS_PER_STRATEGY = 4
@@ -51,7 +52,7 @@ def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None):
     if not rows:
         try:
             import ccxt
-            exchange = ccxt.binanceus({"enableRateLimit": True})
+            exchange = egress_policy.pin_ccxt(ccxt.binanceus({"enableRateLimit": True}))
             rows = exchange.fetch_ohlcv(f"{underlying}/USDT", timeframe, limit=limit)
         except Exception as e:
             print(f"BinanceUS OHLCV fetch failed: {e}", file=sys.stderr)

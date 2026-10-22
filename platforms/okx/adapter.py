@@ -8,6 +8,7 @@ from typing import Tuple
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
 import ccxt
+import egress_policy
 
 
 def _bill_float(value) -> float:
@@ -70,7 +71,7 @@ class OKXExchangeAdapter:
             config["secret"] = api_secret
             config["password"] = passphrase
 
-        self._exchange = ccxt.okx(config)
+        self._exchange = egress_policy.pin_ccxt(ccxt.okx(config))
         self._markets_loaded = False
 
     @property

@@ -1,0 +1,17 @@
+[Unit]
+Description=go-trader egress controller (%i)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/go-trader-egress/%i/go-trader-egress-controller serve --manifest /etc/go-trader/egress/%i.json
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

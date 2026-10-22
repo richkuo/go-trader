@@ -72,7 +72,7 @@ func defaultFetchHyperliquidUserFillsByTime(accountAddress string, startTimeMs i
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := egressHTTPClient(10 * time.Second)
 	resp, err := client.Post(hlMainnetURL+"/info", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)

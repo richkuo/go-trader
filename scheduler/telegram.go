@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"trading-scheduler/internal/notifybroker"
 )
 
 const telegramAPIBase = "https://api.telegram.org/bot"
@@ -22,13 +25,14 @@ type TelegramNotifier struct {
 	lastUpdate  int64
 	mu          sync.Mutex
 	closed      bool
+	broker      *notifybroker.Client
 }
 
 func NewTelegramNotifier(botToken, ownerChatID string) (*TelegramNotifier, error) {
 	t := &TelegramNotifier{
 		botToken:    botToken,
 		ownerChatID: ownerChatID,
-		client:      &http.Client{Timeout: 35 * time.Second},
+		client:      egressHTTPClient(35 * time.Second),
 		baseURL:     telegramAPIBase,
 	}
 
@@ -79,6 +83,23 @@ type telegramCBData struct {
 }
 
 func (t *TelegramNotifier) apiCall(method string, payload interface{}) (*telegramResponse, error) {
+	if t.broker != nil {
+		var raw json.RawMessage
+		if payload != nil {
+			data, err := json.Marshal(payload)
+			if err != nil {
+				return nil, fmt.Errorf("marshal payload: %w", err)
+			}
+			raw = data
+		}
+		ctx, cancel := context.WithTimeout(shutdownReadOnlyCtx, brokerCallTimeout)
+		defer cancel()
+		var result telegramResponse
+		if err := t.broker.Call(ctx, notifybroker.OpTelegramCall, notifybroker.TelegramCallRequest{Method: method, Payload: raw}, &result); err != nil {
+			return nil, fmt.Errorf("telegram %s: %w", method, err)
+		}
+		return &result, nil
+	}
 	url := t.baseURL + t.botToken + "/" + method
 
 	var body io.Reader

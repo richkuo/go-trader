@@ -359,6 +359,11 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   #1725: that DM now reports the stop recorded after the same-cycle trailing update, not the alert-only intended price. An unknown venue result is named in the DM.
 
 **Opt-in field**
+- **Egress proxy mode (#1841)**: setting `GO_TRADER_EGRESS_PROXY` (and optionally `"egress": {"proxy_required": true, "notifications_direct": false}`) runs the scheduler, feed, manual commands and every child process behind a root-owned egress controller whose namespace allows only a relay to that proxy.
+  Nothing changes until an operator sets the variable and runs `scripts/egress-install.sh`; with it unset the only visible changes are the `egress` status block (`{"mode": "disabled"}`), strict validation of the new `egress` key, the `requests[socks]` dependency, and the advisory script's move from urllib to requests.
+  Supported: Linux systemd 247+ services and rootful Docker Engine with `docker/compose.egress.yaml`; anything else refuses the mode.
+  `notifications_direct: true` adds a separate notification broker account and namespace so Discord, Telegram and issue reports keep working while the proxy is down; the scheduler cannot close positions through a dead proxy.
+  Updates of an egress deployment run as root and also rebuild and switch the controller; the in-process updater and `auto_update` checks refuse in the mode.
 - **Resting take-profit trade-through (#1727)**: a paper Hyperliquid perps strategy with `resting_tp_trade_through: true` books a tier take-profit only after a completed bar since entry traded one tick past the adapter-rounded tier limit, at that limit; the entry bar counts only its close, the forming bar never counts, and a bar that reaches the stop trigger ends the scan.
   Nothing changes until an operator sets the field; with it off the check argv, batch slots and check output are unchanged, and live strategies refuse the field.
   Restart-required; `null` or a non-boolean value fails the load; replay mirrors, the dynamic close, scale-in and a check interval longer than the bar are refused (SKILL.md § Resting Take-Profit Trade-Through).
