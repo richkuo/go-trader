@@ -1,3 +1,4 @@
+import contextlib
 import json
 import math
 import os
@@ -15,7 +16,7 @@ if _TOOLS not in sys.path:
 
 import offline_manifest as om
 from atr import ensure_atr_indicator
-from backtester import Backtester, validate_close_capabilities
+from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from eval_windows import expand_sweep
 from optimizer import DEFAULT_PARAM_RANGES
@@ -39,6 +40,19 @@ DOMAIN_ENDPOINTS = [
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, params=None):
@@ -146,10 +160,15 @@ def test_equal_previous_comparison_qualifies_and_equal_current_does_not():
     assert int(last["signal"]) == -1 and last["fisher_reason"] == "entry_short"
 
 
-@pytest.mark.parametrize("side", [1, -1])
-def test_trigger_exactly_at_the_extreme_is_not_an_entry(side):
+def test_trigger_exactly_at_the_extreme_is_not_an_entry():
     df = _walk(600, 11)
     out = _apply(df, {"lookback": 9, "extreme": 0.5})
+    for side in (1, -1):
+        with _case(side):
+            _trigger_exactly_at_the_extreme_is_not_an_entry(df, out, side)
+
+
+def _trigger_exactly_at_the_extreme_is_not_an_entry(df, out, side):
     rows = [i for i in np.flatnonzero(out["signal"].to_numpy() == side)
             if 0.5 < abs(out["fisher_trigger"].iloc[i]) < 3.0]
     assert rows
@@ -184,7 +203,7 @@ def _shift_index(df, pos, delta):
     return df.set_axis(pd.DatetimeIndex(idx))
 
 
-@pytest.mark.parametrize("mutate,reason", [
+INVALID_ENTRY_DATA = [
     (lambda df: df.drop(columns=["volume"]), "missing_columns"),
     (lambda df: df.drop(columns=["open", "high"]), "missing_columns"),
     (lambda df: df.reset_index(drop=True), "missing_timestamps"),
@@ -202,9 +221,13 @@ def _shift_index(df, pos, delta):
     (lambda df: _shift_index(df, len(df) - 30, pd.Timedelta(hours=1)), "irregular_cadence"),
     (lambda df: df.assign(open=100.0, high=101.0, low=99.0, close=100.0), "flat_range"),
     (lambda df: df.iloc[-(P["lookback"] + HORIZON):], "insufficient_history"),
-])
-def test_invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame(mutate, reason):
-    _holds_at_end(mutate(_walk(160, 3)), P, reason)
+]
+
+
+def test_invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame():
+    for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
+        with _case(f"{i}-{reason}"):
+            _holds_at_end(mutate(_walk(160, 3)), P, reason)
 
 
 def test_timestamp_column_is_accepted_without_a_datetime_index():
@@ -236,14 +259,18 @@ def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame(
     assert out["fisher_valid"].iloc[bad + need - 1] == 1.0
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"lookback": 1}, {"lookback": 33}, {"lookback": 9.5}, {"lookback": True}, {"lookback": float("nan")},
     {"lookback": "9"}, {"extreme": 0.49}, {"extreme": 3.01}, {"extreme": float("inf")}, {"extreme": True},
     {"extreme": "1.5"},
-])
-def test_invalid_parameters_are_explicit_errors(params):
-    with pytest.raises(ValueError):
-        _apply(_walk(120, 1), {**{"lookback": 9, "extreme": 1.5}, **params})
+]
+
+
+def test_invalid_parameters_are_explicit_errors():
+    for params in INVALID_PARAMS:
+        with _case(params):
+            with pytest.raises(ValueError):
+                _apply(_walk(120, 1), {**{"lookback": 9, "extreme": 1.5}, **params})
 
 
 def test_integral_float_lookback_is_accepted():
@@ -314,8 +341,13 @@ def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_op
     assert held["signal"] == 0 and held["close_fraction"] == 0.0
 
 
-@pytest.mark.parametrize("mutation", ["volume", "geometry", "cadence"])
-def test_invalid_entry_frame_keeps_the_close_owner_executable(mutation):
+def test_invalid_entry_frame_keeps_the_close_owner_executable():
+    for mutation in ("volume", "geometry", "cadence"):
+        with _case(mutation):
+            _invalid_entry_frame_keeps_the_close_owner_executable(mutation)
+
+
+def _invalid_entry_frame_keeps_the_close_owner_executable(mutation):
     df = _walk(200, 9)
     if mutation == "volume":
         df = df.assign(volume=np.r_[df["volume"].to_numpy()[:-1], -5.0])
@@ -337,12 +369,6 @@ def test_invalid_entry_frame_keeps_the_close_owner_executable(mutation):
     partial = dict(ctx, avg_cost=mark / 1.015)
     _, decision = _composer(df, P, "long", partial)
     assert decision["close_fraction"] == 0.25
-
-
-def test_close_and_stop_owners_pass_strict_capability_validation():
-    report = validate_close_capabilities(close_refs=CLOSE, comparison_mode=None, platform="hyperliquid",
-                                         strategy_type="perps", phase="preflight").to_dict()
-    assert report["close_eligibility"] == "eligible" and not report["approximations"] and not report["refusals"]
 
 
 def _bt(params, **kw):

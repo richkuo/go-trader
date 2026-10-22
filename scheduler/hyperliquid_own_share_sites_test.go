@@ -113,28 +113,52 @@ func TestProtectionSyncPlacesTheOwnShare(t *testing.T) {
 	_ = b
 }
 
-func TestParseHLAllOpenOrdersReadsStopSize(t *testing.T) {
+func TestParseHLAllOpenOrdersReadsStopSizeAndNormalizesLotKeys(t *testing.T) {
 	raw := []byte(`{"open_orders":[{"oid":44444,"coin":"ETH","side":"A","sz":0.5,"reduce_only":true,"is_trigger":true,"order_type":"Stop Market","trigger_px":3104.12}],"sz_decimals_by_coin":{"ETH":4}}`)
 	got, err := parseHLAllOpenOrders(raw)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("reads stop size: %v", err)
 	}
 	if len(got.Orders) != 1 || got.Orders[0].OID != 44444 || math.Abs(got.Orders[0].Sz-0.5) > 1e-9 || got.Decimals["ETH"] != 4 {
-		t.Fatalf("parsed %+v", got)
+		t.Fatalf("reads stop size: parsed %+v", got)
+	}
+
+	got, err = parseHLAllOpenOrders([]byte(`{"open_orders":[],"sz_decimals_by_coin":{"kPEPE":0,"BTC":5}}`))
+	if err != nil {
+		t.Fatalf("normalizes lot keys: %v", err)
+	}
+	if d, ok := got.Decimals[hlCoinKey("kPEPE")]; !ok || d != 0 {
+		t.Fatalf("normalizes lot keys: kPEPE lot missing under %q: %v", hlCoinKey("kPEPE"), got.Decimals)
+	}
+	if got.Decimals["BTC"] != 5 {
+		t.Fatalf("normalizes lot keys: BTC lot %v", got.Decimals)
 	}
 }
 
-func TestImmediateStopFillBooksThePlacedShare(t *testing.T) {
-	st := &StrategyState{ID: "A", Cash: 10000, Positions: map[string]*Position{
-		"ETH": {Symbol: "ETH", Side: "long", Quantity: 10, InitialQuantity: 10, AvgCost: 100, RiskAnchorPrice: 100},
-	}}
+func TestImmediateStopFillBooksThePlacedShareAndTheFlooredSize(t *testing.T) {
+	newState := func() *StrategyState {
+		return &StrategyState{ID: "A", Cash: 10000, Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Side: "long", Quantity: 10, InitialQuantity: 10, AvgCost: 100, RiskAnchorPrice: 100},
+		}}
+	}
+
+	st := newState()
 	ok, px := applyTrailingStopUpdateResult(st, "ETH", "long", 0, 0, true, &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 90}, "trailing_stop_loss_immediate", nil, 8)
 	if !ok || px != 90 {
-		t.Fatalf("fill ok=%t px=%g", ok, px)
+		t.Fatalf("placed share: fill ok=%t px=%g", ok, px)
 	}
 	pos := st.Positions["ETH"]
 	if pos == nil || math.Abs(pos.Quantity-2) > 1e-9 {
-		t.Fatalf("book left %+v, want quantity 2", pos)
+		t.Fatalf("placed share: book left %+v, want quantity 2", pos)
+	}
+
+	st = newState()
+	ok, _ = applyTrailingStopUpdateResult(st, "ETH", "long", 0, 0, true, &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 90, StopLossSize: 6.66}, "trailing_stop_loss_immediate", nil, 20.0/3)
+	if pos := st.Positions["ETH"]; !ok || pos == nil || math.Abs(pos.Quantity-3.34) > 1e-9 {
+		t.Fatalf("floored size: fill ok=%t book=%+v, want quantity 3.34", ok, pos)
+	}
+	if got := hlPlacedStopQty(8, 0); got != 8 {
+		t.Fatalf("floored size: no reported size booked %g, want 8", got)
 	}
 }
 
@@ -285,19 +309,6 @@ func TestShareRearmAfterNettingShrinks(t *testing.T) {
 	}
 }
 
-func TestParseHLAllOpenOrdersNormalizesLotKeys(t *testing.T) {
-	got, err := parseHLAllOpenOrders([]byte(`{"open_orders":[],"sz_decimals_by_coin":{"kPEPE":0,"BTC":5}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d, ok := got.Decimals[hlCoinKey("kPEPE")]; !ok || d != 0 {
-		t.Fatalf("kPEPE lot missing under %q: %v", hlCoinKey("kPEPE"), got.Decimals)
-	}
-	if got.Decimals["BTC"] != 5 {
-		t.Fatalf("BTC lot %v", got.Decimals)
-	}
-}
-
 func TestShareNettingKeepsRestingOrders(t *testing.T) {
 	resetHLShareAlerts()
 	t.Cleanup(resetHLShareAlerts)
@@ -363,19 +374,6 @@ func TestShareRearmSyncsAnATROwner(t *testing.T) {
 	runHyperliquidShareRearm([]StrategyConfig{a}, state, stale, map[string]float64{"ETH": 100}, nil, nil, nil, nil, &mu, nil)
 	if len(got) != 1 {
 		t.Fatalf("stale book on a flat chain synced: %v", got)
-	}
-}
-
-func TestImmediateStopFillBooksTheFlooredSize(t *testing.T) {
-	st := &StrategyState{ID: "A", Cash: 10000, Positions: map[string]*Position{
-		"ETH": {Symbol: "ETH", Side: "long", Quantity: 10, InitialQuantity: 10, AvgCost: 100, RiskAnchorPrice: 100},
-	}}
-	ok, _ := applyTrailingStopUpdateResult(st, "ETH", "long", 0, 0, true, &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 90, StopLossSize: 6.66}, "trailing_stop_loss_immediate", nil, 20.0/3)
-	if pos := st.Positions["ETH"]; !ok || pos == nil || math.Abs(pos.Quantity-3.34) > 1e-9 {
-		t.Fatalf("fill ok=%t book=%+v, want quantity 3.34", ok, pos)
-	}
-	if got := hlPlacedStopQty(8, 0); got != 8 {
-		t.Fatalf("no reported size booked %g, want 8", got)
 	}
 }
 

@@ -46,7 +46,7 @@ _LIVE_POS = {"side": "long", "avg_cost": 100, "current_quantity": 1,
              "initial_quantity": 1, "entry_atr": 2}
 
 
-@pytest.mark.parametrize("position,market,params,expected", [
+ATR_SOURCE_CASES = [
     (_LIVE_POS, {"mark_price": 105, "atr": 3}, {},
      {"close_fraction": 0.4, "reason": "tiered_tp_atr_live:live:1.5"}),
     (_LIVE_POS, {"mark_price": 110}, {},
@@ -65,24 +65,25 @@ _LIVE_POS = {"side": "long", "avg_cost": 100, "current_quantity": 1,
     ({**_LIVE_POS, "risk_anchor_price": 99, "tp_model": "resting_limit"},
      {"mark_price": 105, "atr": 3}, {},
      {"close_fraction": 0.8, "reason": "tiered_tp_atr_live:entry:3", "tier_fill_price": pytest.approx(103.5)}),
-])
-def test_tiered_tp_atr_live_atr_source_resolution(registry, position, market, params, expected):
-    assert registry.evaluate("tiered_tp_atr_live", position, market, params) == expected
+]
 
 
-@pytest.mark.parametrize("initial,current", [
-    (7.6252, 0.3877),
-    (4.4594, 1.51),
-    (0.1234, 0.0247),
-])
-def test_final_tier_snaps_to_a_full_close_despite_float_noise(registry, initial, current):
-    result = registry.evaluate(
-        "tiered_tp_atr",
-        {"side": "long", "avg_cost": 100.0, "current_quantity": current,
-         "initial_quantity": initial, "entry_atr": 1.0},
-        {"mark_price": 200.0},
-        {"tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 0.4},
-                      {"atr_multiple": 2.0, "close_fraction": 0.8},
-                      {"atr_multiple": 3.0, "close_fraction": 1.0}]},
-    )
-    assert result["close_fraction"] == 1.0
+def test_tiered_tp_atr_live_atr_source_resolution(registry, subtests):
+    for case, (position, market, params, expected) in enumerate(ATR_SOURCE_CASES):
+        with subtests.test(case=case, reason=expected["reason"]):
+            assert registry.evaluate("tiered_tp_atr_live", position, market, params) == expected
+
+
+def test_final_tier_snaps_to_a_full_close_despite_float_noise(registry, subtests):
+    for initial, current in [(7.6252, 0.3877), (4.4594, 1.51), (0.1234, 0.0247)]:
+        with subtests.test(initial=initial, current=current):
+            result = registry.evaluate(
+                "tiered_tp_atr",
+                {"side": "long", "avg_cost": 100.0, "current_quantity": current,
+                 "initial_quantity": initial, "entry_atr": 1.0},
+                {"mark_price": 200.0},
+                {"tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 0.4},
+                              {"atr_multiple": 2.0, "close_fraction": 0.8},
+                              {"atr_multiple": 3.0, "close_fraction": 1.0}]},
+            )
+            assert result["close_fraction"] == 1.0

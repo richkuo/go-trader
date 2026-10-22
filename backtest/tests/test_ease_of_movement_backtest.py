@@ -1,3 +1,4 @@
+import contextlib
 import math
 import os
 import sqlite3
@@ -31,6 +32,19 @@ def _frame(rows, freq="1h", kind="open", declare=True):
 
 def _flat(n, px=100.0, volume=1000.0):
     return [(px, px + 1.0, px - 1.0, px, volume)] * n
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, params=None):
@@ -95,14 +109,18 @@ def test_warmup_is_the_larger_of_period_plus_one_and_window_plus_two():
     assert not _apply(_frame(_flat(24) + rows[-1:]), {"eom_period": 25, "breakout_window": 4})["eom_valid"].iloc[-1]
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"eom_period": True}, {"eom_period": 2.5}, {"eom_period": float("inf")}, {"eom_period": float("nan")},
     {"eom_period": 1}, {"eom_period": 101}, {"breakout_window": 1}, {"breakout_window": 101},
     {"breakout_window": "20"}, {"breakout_window": np.bool_(True)},
-])
-def test_invalid_parameters_raise_through_the_registry(params):
-    with pytest.raises(ValueError):
-        _apply(_frame(_flat(30)), {**PARAMS, **params})
+]
+
+
+def test_invalid_parameters_raise_through_the_registry():
+    for params in INVALID_PARAMS:
+        with _case(params):
+            with pytest.raises(ValueError):
+                _apply(_frame(_flat(30)), {**PARAMS, **params})
 
 
 def test_integral_float_parameters_and_bounds_are_accepted():
@@ -122,7 +140,7 @@ def _breakout_after(prefix_rows):
     return _apply(_frame(prefix_rows + _flat(8) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]))
 
 
-@pytest.mark.parametrize("bad,reason", [
+BAD_ROWS = [
     ((100.0, 101.0, 99.0, 100.0, 0.0), "invalid_volume"),
     ((100.0, 101.0, 99.0, 100.0, -5.0), "invalid_volume"),
     ((100.0, 101.0, 99.0, 100.0, float("inf")), "nonfinite_input"),
@@ -131,8 +149,16 @@ def _breakout_after(prefix_rows):
     ((100.0, 98.0, 99.0, 98.5, 1000.0), "inconsistent_range"),
     ((100.0, 101.0, 99.0, 101.5, 1000.0), "inconsistent_range"),
     ((1e308, 1.7e308, 1e308, 1.2e308, 1000.0), "nonfinite_derived"),
-])
-def test_bad_rows_hold_with_a_reason_and_recover_when_the_window_is_valid(bad, reason):
+]
+
+
+def test_bad_rows_hold_with_a_reason_and_recover_when_the_window_is_valid():
+    for i, (bad, reason) in enumerate(BAD_ROWS):
+        with _case(f"bad{i}-{reason}"):
+            _bad_rows_hold_with_a_reason_and_recover_when_the_window_is_valid(bad, reason)
+
+
+def _bad_rows_hold_with_a_reason_and_recover_when_the_window_is_valid(bad, reason):
     rows = _flat(10) + [bad] + _flat(9)
     out = _apply(_frame(rows))
     assert out["eom_reason"].iloc[10] == reason
@@ -168,13 +194,21 @@ def test_missing_columns_and_missing_cadence_hold_every_row():
     assert undeclared["eom_interval_ms"].isna().all()
 
 
-@pytest.mark.parametrize("edit,reason", [
+TIMESTAMP_DEFECTS = [
     ("duplicate", "timestamp_order"),
     ("reverse", "timestamp_order"),
     ("missing", "missing_timestamps"),
     ("gap", "cadence_gap"),
-])
-def test_timestamp_defects_hold_inside_the_window_only(edit, reason):
+]
+
+
+def test_timestamp_defects_hold_inside_the_window_only():
+    for edit, reason in TIMESTAMP_DEFECTS:
+        with _case(f"{edit}-{reason}"):
+            _timestamp_defects_hold_inside_the_window_only(edit, reason)
+
+
+def _timestamp_defects_hold_inside_the_window_only(edit, reason):
     rows = _flat(10) + _flat(8) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
     df = _frame(rows)
     idx = list(df.index)
@@ -407,13 +441,21 @@ def test_cached_loader_declares_cadence_and_m1_marks_unpriced_funding_incomplete
     assert verdict["checks"][0]["ok"] is False
 
 
-@pytest.mark.parametrize("arm,field,want", [
+COVERAGE_ARMS = [
     (None, None, "fail"),
     ("candidate_{sel}_slip0.002", "funding_incomplete_legs", "inconclusive"),
     ("candidate_P7_B10", "missing_legs", "inconclusive"),
     ("donchian_breakout_B20", "funding_incomplete_legs", "inconclusive"),
-])
-def test_frozen_verdict_coverage_rule_reads_every_arm(arm, field, want):
+]
+
+
+def test_frozen_verdict_coverage_rule_reads_every_arm():
+    for arm, field, want in COVERAGE_ARMS:
+        with _case(f"{arm}-{field}-{want}"):
+            _frozen_verdict_coverage_rule_reads_every_arm(arm, field, want)
+
+
+def _frozen_verdict_coverage_rule_reads_every_arm(arm, field, want):
     import copy
     import json
     repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))

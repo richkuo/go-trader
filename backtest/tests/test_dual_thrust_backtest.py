@@ -1,3 +1,4 @@
+import contextlib
 import json
 import math
 import os
@@ -34,6 +35,19 @@ CREDENTIAL_PREFIXES = ("HYPERLIQUID", "OKX", "ROBINHOOD", "TOPSTEP", "PROJECTX")
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, **kw):
@@ -266,13 +280,18 @@ IN_PLACE = {
 }
 
 
-@pytest.mark.parametrize("kind", sorted(IN_PLACE))
-def test_each_defect_holds_its_session_and_the_next_n_sessions_then_recovers(kind):
+def test_each_defect_holds_its_session_and_the_next_n_sessions_then_recovers():
+    ref = _apply(_frame(_days(8)))
+    for kind in sorted(IN_PLACE):
+        with _case(kind):
+            _each_defect_holds_its_session_and_the_next_n_sessions_then_recovers(kind, ref)
+
+
+def _each_defect_holds_its_session_and_the_next_n_sessions_then_recovers(kind, ref):
     clean = _frame(_days(8))
     j = 3 * 24 + 10
     df = _mutate(kind, clean, j)
     out = _apply(df)
-    ref = _apply(clean)
     assert out["dt_reason"].iloc[j] == IN_PLACE[kind]
     recover = (3 + 2 + 1) * 24
     blocked = out.iloc[j:recover]
@@ -284,12 +303,21 @@ def test_each_defect_holds_its_session_and_the_next_n_sessions_then_recovers(kin
     assert (ref["signal"].iloc[j:recover] != 0).any()
 
 
-@pytest.mark.parametrize("drop,first_bad,recover,reason", [
+MISSING_CANDLES = [
     ("session_open", 3 * 24, 6 * 24, "cadence_gap"),
     ("interior", 3 * 24 + 10, 6 * 24, "cadence_gap"),
     ("whole_day", 3 * 24, 6 * 24, "cadence_gap"),
-])
-def test_missing_candles_never_become_valid_sessions(drop, first_bad, recover, reason):
+]
+
+
+def test_missing_candles_never_become_valid_sessions():
+    ref = _apply(_frame(_days(8)))
+    for drop, first_bad, recover, reason in MISSING_CANDLES:
+        with _case(f"{drop}-{first_bad}-{recover}-{reason}"):
+            _missing_candles_never_become_valid_sessions(drop, first_bad, recover, reason, ref)
+
+
+def _missing_candles_never_become_valid_sessions(drop, first_bad, recover, reason, ref):
     clean = _frame(_days(8))
     if drop == "session_open":
         removed = [3 * 24]
@@ -299,7 +327,6 @@ def test_missing_candles_never_become_valid_sessions(drop, first_bad, recover, r
         removed = list(range(3 * 24, 4 * 24))
     df = clean.drop(clean.index[removed])
     out = _apply(df).reindex(clean.index)
-    ref = _apply(clean)
     kept = out.dropna(subset=["dt_reason"])
     assert kept["dt_reason"].loc[clean.index[first_bad + (len(removed) if drop != "interior" else 1)]] == reason
     window = kept[(kept.index >= clean.index[first_bad]) & (kept.index < clean.index[recover])]
@@ -366,7 +393,7 @@ def test_undeclared_or_contradictory_timing_holds_every_row():
     assert len(empty) == 0 and "dt_reason" in empty.columns
 
 
-@pytest.mark.parametrize("bad", [
+INVALID_PARAMS = [
     {"lookback_sessions": 0}, {"lookback_sessions": 200}, {"lookback_sessions": 2.5},
     {"lookback_sessions": True}, {"lookback_sessions": "2"}, {"lookback_sessions": float("nan")},
     {"k_long": 0}, {"k_long": -0.5}, {"k_long": 2.01}, {"k_long": float("inf")}, {"k_long": True},
@@ -379,24 +406,32 @@ def test_undeclared_or_contradictory_timing_holds_every_row():
     {"expected_interval_ms": 1_800_000, "lookback_sessions": 4},
     {"lookback_sessions": 8},
     {"expected_interval_ms": 4 * H, "lookback_sessions": 33},
-])
-def test_invalid_parameters_are_configuration_errors(bad):
-    df = _walk(24 * 3)
-    with pytest.raises(ValueError):
-        _apply(df, **bad)
-    with pytest.raises(ValueError):
-        _reg().validate_params(NAME, dict(P, **bad))
+]
 
 
-@pytest.mark.parametrize("good", [
+def test_invalid_parameters_are_configuration_errors():
+    for bad in INVALID_PARAMS:
+        with _case(bad):
+            df = _walk(24 * 3)
+            with pytest.raises(ValueError):
+                _apply(df, **bad)
+            with pytest.raises(ValueError):
+                _reg().validate_params(NAME, dict(P, **bad))
+
+
+BOUNDARY_PARAMS = [
     {"lookback_sessions": 7}, {"expected_interval_ms": 4 * H, "lookback_sessions": 32},
     {"expected_interval_ms": 4 * H, "session_start_hour": 8}, {"expected_interval_ms": 1_800_000,
                                                                "lookback_sessions": 3},
     {"expected_interval_ms": DAY, "lookback_sessions": 199}, {"session_start_hour": 23, "k_long": 2.0},
     {"lookback_sessions": 4.0, "k_short": 1},
-])
-def test_boundary_parameters_are_accepted(good):
-    _reg().validate_params(NAME, dict(P, **good))
+]
+
+
+def test_boundary_parameters_are_accepted():
+    for good in BOUNDARY_PARAMS:
+        with _case(good):
+            _reg().validate_params(NAME, dict(P, **good))
 
 
 def test_every_optimizer_grid_point_fits_the_window_at_1h_and_4h_and_30m_points_are_excluded():
@@ -545,8 +580,13 @@ def test_an_event_blocked_by_the_regime_gate_never_reappears_later_in_its_sessio
     assert [t["entry_date"] for t in open_gate["trades"]] == [str(df.index[49])]
 
 
-@pytest.mark.parametrize("path,want", [("up", "tp"), ("down", "sl")])
-def test_invalid_entry_data_keeps_close_and_stop_management(path, want):
+def test_invalid_entry_data_keeps_close_and_stop_management():
+    for path, want in (("up", "tp"), ("down", "sl")):
+        with _case(f"{path}-{want}"):
+            _invalid_entry_data_keeps_close_and_stop_management(path, want)
+
+
+def _invalid_entry_data_keeps_close_and_stop_management(path, want):
     head = _base() + _session([101.0, 102.0, 103.5], per=3)
     tail = ([104.0, 105.5, 106.5, 107.5, 108.5, 109.0] if path == "up" else [102.0, 99.0, 97.0, 95.0, 93.0, 92.0])
     rows = head + _session(tail, per=len(tail), anchor=103.5)

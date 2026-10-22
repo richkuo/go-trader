@@ -1,3 +1,4 @@
+import contextlib
 import gzip
 import importlib.util
 import json
@@ -17,7 +18,7 @@ if _TOOLS not in sys.path:
 
 import offline_manifest as om
 from atr import ensure_atr_indicator
-from backtester import Backtester, validate_close_capabilities
+from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from eval_windows import expand_sweep
 from optimizer import DEFAULT_PARAM_RANGES
@@ -45,6 +46,19 @@ DECISION_COLUMNS = [
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, params=None):
@@ -198,9 +212,14 @@ def _trend_frame(n, pullbacks, *, rising=True, deep=10.0, shallow=1.0):
     return _frame(close, low, high)
 
 
-@pytest.mark.parametrize("rising", [True, False])
-@pytest.mark.parametrize("window", [1, 4, 8, 16])
-def test_age_equal_to_the_window_enters_and_one_more_bar_expires(rising, window):
+def test_age_equal_to_the_window_enters_and_one_more_bar_expires():
+    for window in (1, 4, 8, 16):
+        for rising in (True, False):
+            with _case(f"{window}-{rising}"):
+                _age_equal_to_the_window_enters_and_one_more_bar_expires(rising, window)
+
+
+def _age_equal_to_the_window_enters_and_one_more_bar_expires(rising, window):
     params = dict(DEFAULTS, pullback_window=window)
     side = 1 if rising else -1
     ok_start, bad_start = 150, 200
@@ -318,7 +337,7 @@ def _shift_index(df, pos, delta):
     return df.set_axis(pd.DatetimeIndex(idx))
 
 
-@pytest.mark.parametrize("mutate,reason", [
+INVALID_ENTRY_DATA = [
     (lambda df: df.drop(columns=["volume"]), "missing_columns"),
     (lambda df: df.drop(columns=["open", "high"]), "missing_columns"),
     (lambda df: df.reset_index(drop=True), "missing_timestamps"),
@@ -338,8 +357,16 @@ def _shift_index(df, pos, delta):
     (lambda df: _shift_index(df, len(df) - 30, pd.Timedelta(hours=1)), "irregular_cadence"),
     (lambda df: df.iloc[-(_need(P) - 1):], "insufficient_history"),
     (lambda df: df.iloc[:0], None),
-])
-def test_invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame(mutate, reason):
+]
+
+
+def test_invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame():
+    for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
+        with _case(f"{i}-{reason}"):
+            _invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame(mutate, reason)
+
+
+def _invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame(mutate, reason):
     df = mutate(_walk(160, 3))
     if reason is None:
         out = _apply(df, P)
@@ -348,8 +375,13 @@ def test_invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame(
     _holds_at_end(df, P, reason)
 
 
-@pytest.mark.parametrize("params", DOMAIN_ENDPOINTS)
-def test_largest_finite_prices_stay_finite_because_the_average_is_a_convex_combination(params):
+def test_largest_finite_prices_stay_finite_because_the_average_is_a_convex_combination():
+    for params in DOMAIN_ENDPOINTS:
+        with _case(params):
+            _largest_finite_prices_stay_finite_because_the_average_is_a_convex_combination(params)
+
+
+def _largest_finite_prices_stay_finite_because_the_average_is_a_convex_combination(params):
     huge = np.finfo(float).max
     rng = np.random.default_rng(4)
     close = huge * (1.0 - rng.uniform(0.0, 1e-3, 200))
@@ -390,20 +422,24 @@ def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame(
     assert out["erp_valid"].iloc[bad + need - 1] == 1.0
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"ema_period": 1}, {"ema_period": 33}, {"ema_period": 13.5}, {"ema_period": True},
     {"ema_period": float("nan")}, {"ema_period": "13"}, {"ema_period": None},
     {"slope_span": 0}, {"slope_span": 9}, {"slope_span": 2.5}, {"slope_span": False}, {"slope_span": float("inf")},
     {"pullback_window": 0}, {"pullback_window": 17}, {"pullback_window": 3.25}, {"pullback_window": "8"},
     {"pullback_window": -1},
-])
-def test_invalid_parameters_are_explicit_errors_before_evaluation(params):
+]
+
+
+def test_invalid_parameters_are_explicit_errors_before_evaluation():
     reg = _reg()
-    merged = {**DEFAULTS, **params}
-    with pytest.raises((ValueError, TypeError)):
-        reg._registry.validate_params(NAME, merged)
-    with pytest.raises((ValueError, TypeError)):
-        _apply(_walk(120, 1), merged)
+    for params in INVALID_PARAMS:
+        merged = {**DEFAULTS, **params}
+        with _case(params):
+            with pytest.raises((ValueError, TypeError)):
+                reg._registry.validate_params(NAME, merged)
+            with pytest.raises((ValueError, TypeError)):
+                _apply(_walk(120, 1), merged)
 
 
 def test_integral_float_parameters_are_accepted_as_integers():
@@ -463,8 +499,13 @@ def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_op
         assert held["signal"] == 0 and held["close_fraction"] == 0.0
 
 
-@pytest.mark.parametrize("mutation", ["volume", "geometry", "cadence", "warmup", "nonfinite"])
-def test_invalid_entry_frame_keeps_the_close_owner_executable(mutation):
+def test_invalid_entry_frame_keeps_the_close_owner_executable():
+    for mutation in ("volume", "geometry", "cadence", "warmup", "nonfinite"):
+        with _case(mutation):
+            _invalid_entry_frame_keeps_the_close_owner_executable(mutation)
+
+
+def _invalid_entry_frame_keeps_the_close_owner_executable(mutation):
     df = _walk(200, 9)
     if mutation == "volume":
         df = df.assign(volume=np.r_[df["volume"].to_numpy()[:-1], -5.0])
@@ -490,12 +531,6 @@ def test_invalid_entry_frame_keeps_the_close_owner_executable(mutation):
     partial = dict(ctx, avg_cost=mark / 1.015)
     _, decision = _composer(df, P, "long", partial)
     assert decision["close_fraction"] == 0.25
-
-
-def test_close_and_stop_owners_pass_strict_capability_validation():
-    report = validate_close_capabilities(close_refs=CLOSE, comparison_mode=None, platform="hyperliquid",
-                                         strategy_type="perps", phase="preflight").to_dict()
-    assert report["close_eligibility"] == "eligible" and not report["approximations"] and not report["refusals"]
 
 
 def _bt(params, **kw):

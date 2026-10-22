@@ -33,21 +33,20 @@ def test_fit_drops_nan_rows():
     assert m["emissions"][0]["n"] == 1
 
 
-def test_fit_no_spurious_transition_across_midseries_nan():
+def test_fit_counts_adjacent_transitions_but_not_across_a_midseries_nan():
     feats = np.array([[0.0], [0.0], [0.0], [np.nan], [1.0], [1.0], [1.0]])
     labels = np.array(["s0", "s0", "s0", "s0", "s1", "s1", "s1"], dtype=object)
     m = fit_label_anchored_hmm(feats, labels, STATES, filter_window=4, laplace=1.0)
     A = np.array(m["transition"])
-    assert abs(A[0][1] - 0.25) < 1e-9
-    assert abs(A[0][0] - 0.75) < 1e-9
+    case = "test_fit_no_spurious_transition_across_midseries_nan"
+    assert abs(A[0][1] - 0.25) < 1e-9, case
+    assert abs(A[0][0] - 0.75) < 1e-9, case
 
-
-def test_fit_counts_genuine_adjacent_transition():
     feats = np.array([[0.0], [0.0], [0.0], [1.0], [1.0], [1.0]])
     labels = np.array(["s0", "s0", "s0", "s1", "s1", "s1"], dtype=object)
     m = fit_label_anchored_hmm(feats, labels, STATES, filter_window=4, laplace=1.0)
     A = np.array(m["transition"])
-    assert abs(A[0][1] - 0.4) < 1e-9
+    assert abs(A[0][1] - 0.4) < 1e-9, "test_fit_counts_genuine_adjacent_transition"
 
 
 def test_forward_filter_look_ahead_safe():

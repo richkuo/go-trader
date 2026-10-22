@@ -351,27 +351,27 @@ def test_parity_named_gate_keeps_the_primary_directional_label():
     assert (frame["live_open_action"] == "short").any()
 
 
-def test_parity_named_directional_window_reads_that_window_on_both_sides():
+def test_parity_named_directional_and_atr_windows_against_the_default_run():
+    _, default, _ = _parity_run({})
+
+    case = "test_parity_named_directional_window_reads_that_window_on_both_sides"
     _, named, summary = _parity_run({"regime_directional_window": "slow"})
-    assert summary["clean"], named[~named["match"]].head()
+    assert summary["clean"], f"{case}: {named[~named['match']].head()}"
     swapped = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": {
         "medium": {"classifier": "adx", "period": 40},
         "fast": {"classifier": "adx", "period": 5},
     }}
     _, primary_slow, _ = _parity_run({}, regime=swapped)
-    assert list(named["bt_signal"]) == list(primary_slow["bt_signal"])
-    assert list(named["live_signal"]) == list(primary_slow["live_signal"])
-    _, default, _ = _parity_run({})
-    assert list(named["live_signal"]) != list(default["live_signal"])
+    assert list(named["bt_signal"]) == list(primary_slow["bt_signal"]), case
+    assert list(named["live_signal"]) == list(primary_slow["live_signal"]), case
+    assert list(named["live_signal"]) != list(default["live_signal"]), case
 
-
-def test_parity_named_atr_window_keeps_the_primary_directional_label():
-    plan, named, summary = _parity_run({"regime_atr_window": "fast"})
-    assert plan["windows"]["directional"] == "medium"
-    assert summary["clean"], named[~named["match"]].head()
-    _, default, _ = _parity_run({})
-    assert list(named["bt_signal"]) == list(default["bt_signal"])
-    assert list(named["live_signal"]) == list(default["live_signal"])
+    case = "test_parity_named_atr_window_keeps_the_primary_directional_label"
+    plan, named_atr, summary = _parity_run({"regime_atr_window": "fast"})
+    assert plan["windows"]["directional"] == "medium", case
+    assert summary["clean"], f"{case}: {named_atr[~named_atr['match']].head()}"
+    assert list(named_atr["bt_signal"]) == list(default["bt_signal"]), case
+    assert list(named_atr["live_signal"]) == list(default["live_signal"]), case
 
 
 def _parity_atr_config(tmp_path, regime_timeframe):

@@ -3,6 +3,7 @@ import sys
 import os
 import json
 import math
+import contextlib
 import importlib.util
 from unittest.mock import MagicMock, patch
 from io import StringIO
@@ -11,6 +12,14 @@ import pytest
 
 
 _UNSET = object()
+
+
+@contextlib.contextmanager
+def _case(*label):
+    try:
+        yield
+    except (Exception, pytest.fail.Exception) as exc:
+        raise AssertionError(f"case {label!r} failed: {exc}") from exc
 
 
 def _load_check_module():
@@ -105,27 +114,29 @@ class TestFillExtraction:
         },
     }
 
-    @pytest.mark.parametrize("lookup_result,expected", [
-        (_UNSET, {}),
-        ({"fee": "0.42", "closed_pnl": "3.14"}, {"fee": 0.42, "closed_pnl": 3.14}),
-        (MagicMock(), {}),
-        ({"fee": MagicMock(), "closed_pnl": MagicMock()}, {}),
-    ])
-    def test_fill_lookup_result_handling(self, lookup_result, expected):
-        result, exit_code = self._run_execute_with_mock_response(
-            self._NO_FEE_RESPONSE,
-            **({} if lookup_result is _UNSET else {"lookup_result": lookup_result}),
-        )
-        assert exit_code == 0
-        fill = result["execution"]["fill"]
-        assert fill["avg_px"] == 2100.0
-        assert fill["total_sz"] == 0.5
-        assert fill["oid"] == 9876543210
-        for key in ("fee", "closed_pnl"):
-            if key in expected:
-                assert fill[key] == expected[key]
-            else:
-                assert key not in fill
+    def test_fill_lookup_result_handling(self):
+        cases = [
+            ("unset", _UNSET, {}),
+            ("fee_and_pnl", {"fee": "0.42", "closed_pnl": "3.14"}, {"fee": 0.42, "closed_pnl": 3.14}),
+            ("mock_result", MagicMock(), {}),
+            ("mock_fields", {"fee": MagicMock(), "closed_pnl": MagicMock()}, {}),
+        ]
+        for label, lookup_result, expected in cases:
+            with _case(label):
+                result, exit_code = self._run_execute_with_mock_response(
+                    self._NO_FEE_RESPONSE,
+                    **({} if lookup_result is _UNSET else {"lookup_result": lookup_result}),
+                )
+                assert exit_code == 0
+                fill = result["execution"]["fill"]
+                assert fill["avg_px"] == 2100.0
+                assert fill["total_sz"] == 0.5
+                assert fill["oid"] == 9876543210
+                for key in ("fee", "closed_pnl"):
+                    if key in expected:
+                        assert fill[key] == expected[key]
+                    else:
+                        assert key not in fill
 
     def test_fill_without_oid(self):
         sdk_response = {
@@ -162,9 +173,7 @@ class TestFillExtraction:
         assert result["execution"] is None
         assert "error" in result
 
-    @pytest.mark.parametrize(
-        "sdk_response",
-        [
+    _UNCONFIRMED_FILL_RESPONSES = [
             {"status": "err", "response": "rejected"},
             {
                 "status": "ok",
@@ -198,15 +207,17 @@ class TestFillExtraction:
                     "data": {"statuses": [{"filled": {"avgPx": "50000", "totalSz": "0"}}]},
                 },
             },
-        ],
-    )
-    def test_unconfirmed_fill_exits_with_error(self, sdk_response):
-        result, exit_code = self._run_execute_with_mock_response(sdk_response)
-        assert exit_code == 1
-        assert result["execution"] is None
-        assert result["error"]
+    ]
 
-    @pytest.mark.parametrize("sdk_response,want_outcome,want_fill", [
+    def test_unconfirmed_fill_exits_with_error(self):
+        for i, sdk_response in enumerate(self._UNCONFIRMED_FILL_RESPONSES):
+            with _case(i, sdk_response):
+                result, exit_code = self._run_execute_with_mock_response(sdk_response)
+                assert exit_code == 1
+                assert result["execution"] is None
+                assert result["error"]
+
+    _FILL_OUTCOME_CASES = [
         ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "3000", "totalSz": "0.2", "oid": 7}}]}}}, "filled", True),
         ({"status": "err", "response": "Insufficient margin"}, "rejected", False),
         ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"error": "Order could not immediately match"}]}}}, "rejected", False),
@@ -218,14 +229,17 @@ class TestFillExtraction:
         ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "bad", "totalSz": "0.2"}}]}}}, "unknown", False),
         ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "nan", "totalSz": "0.2"}}]}}}, "unknown", False),
         (None, "unknown", False),
-    ])
-    def test_extract_execute_fill_outcome(self, sdk_response, want_outcome, want_fill):
+    ]
+
+    def test_extract_execute_fill_outcome(self):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
-        fill, error, outcome = mod._extract_execute_fill(sdk_response)
-        assert outcome == want_outcome
-        assert (fill is not None) is want_fill
-        assert bool(error) is not want_fill
+        for i, (sdk_response, want_outcome, want_fill) in enumerate(self._FILL_OUTCOME_CASES):
+            with _case(i, sdk_response):
+                fill, error, outcome = mod._extract_execute_fill(sdk_response)
+                assert outcome == want_outcome
+                assert (fill is not None) is want_fill
+                assert bool(error) is not want_fill
 
     def test_unconfirmed_fill_preserves_cancel_metadata(self):
         sdk_response = {
@@ -363,22 +377,24 @@ class TestPeerLeverageSkip:
                     exit_code = e.code
         return json.loads(captured.getvalue()), mock_adapter, exit_code
 
-    @pytest.mark.parametrize("current_state,expect_update", [
-        ({"margin_mode": "isolated", "leverage": 5}, False),
-        ({"margin_mode": "cross", "leverage": 5}, True),
-        ({"margin_mode": "isolated", "leverage": 3}, True),
-        (None, True),
-    ])
-    def test_update_leverage_only_when_state_differs(self, current_state, expect_update):
-        result, adapter, exit_code = self._run_execute_with_existing_pos(
-            "isolated", 5, current_state)
-        assert exit_code == 0
-        if expect_update:
-            adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
-        else:
-            adapter.update_leverage.assert_not_called()
-        adapter.market_open.assert_called_once()
-        assert result["execution"]["action"] == "buy"
+    def test_update_leverage_only_when_state_differs(self):
+        cases = [
+            ({"margin_mode": "isolated", "leverage": 5}, False),
+            ({"margin_mode": "cross", "leverage": 5}, True),
+            ({"margin_mode": "isolated", "leverage": 3}, True),
+            (None, True),
+        ]
+        for current_state, expect_update in cases:
+            with _case(current_state, expect_update):
+                result, adapter, exit_code = self._run_execute_with_existing_pos(
+                    "isolated", 5, current_state)
+                assert exit_code == 0
+                if expect_update:
+                    adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
+                else:
+                    adapter.update_leverage.assert_not_called()
+                adapter.market_open.assert_called_once()
+                assert result["execution"]["action"] == "buy"
 
     def test_state_fetch_failure_falls_back_to_calling_update_leverage(self):
         mod, spec = _load_check_module()
@@ -426,7 +442,7 @@ class TestClassifySLResponse:
         spec.loader.exec_module(mod)
         return mod._classify_sl_response(response)
 
-    @pytest.mark.parametrize("response,expected", [
+    _SL_RESPONSE_CASES = [
         ({"response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 12345}}]}}},
          ("resting", 12345)),
         ({"response": {"type": "order", "data": {"statuses": [{"resting": {}}]}}},
@@ -443,9 +459,11 @@ class TestClassifySLResponse:
         ({}, ("missing", None)),
         ({"response": {"type": "order", "data": {"statuses": ["not a dict"]}}},
          ("missing", None)),
-    ])
-    def test_classify_sl_response(self, response, expected):
-        assert self._classify(response) == expected
+    ]
+
+    def test_classify_sl_response(self):
+        for response, expected in self._SL_RESPONSE_CASES:
+            assert self._classify(response) == expected, (response, expected)
 
 
 _CANCEL_OK_RESPONSE = {
@@ -465,22 +483,25 @@ class TestClassifyCancelResponse:
         spec.loader.exec_module(mod)
         return mod
 
-    @pytest.mark.parametrize("response,kind,fragment", [
-        (_CANCEL_OK_RESPONSE, "ok", ""),
-        ({"status": "ok", "response": {"data": {"statuses": [{}]}}}, "ok", ""),
-        ({"status": "err"}, "error", "err"),
-        ({"status": "ok", "response": {"data": {"statuses": [{"error": "no such order"}]}}},
-         "error", None),
-        ({}, "error", None),
-        (None, "error", None),
-    ])
-    def test_classify_cancel_response(self, response, kind, fragment):
-        got_kind, payload = self._load()._classify_cancel_response(response)
-        assert got_kind == kind
-        if fragment == "":
-            assert payload == ""
-        elif fragment is not None:
-            assert fragment in payload
+    def test_classify_cancel_response(self):
+        cases = [
+            (_CANCEL_OK_RESPONSE, "ok", ""),
+            ({"status": "ok", "response": {"data": {"statuses": [{}]}}}, "ok", ""),
+            ({"status": "err"}, "error", "err"),
+            ({"status": "ok", "response": {"data": {"statuses": [{"error": "no such order"}]}}},
+             "error", None),
+            ({}, "error", None),
+            (None, "error", None),
+        ]
+        mod = self._load()
+        for response, kind, fragment in cases:
+            label = (response, kind, fragment)
+            got_kind, payload = mod._classify_cancel_response(response)
+            assert got_kind == kind, label
+            if fragment == "":
+                assert payload == "", label
+            elif fragment is not None:
+                assert fragment in payload, label
 
 
 class TestUpdateStopLoss:
@@ -566,37 +587,39 @@ class TestUpdateStopLoss:
                     self.exit_code = exc.code
         return json.loads(captured.getvalue()), mock_adapter
 
-    @pytest.mark.parametrize("open_oids,open_err,cancel_response,cancel_err,lookup,want_keys,want_exit,want_cancel", [
-        ({11111}, None, _CANCEL_OK_RESPONSE, None, _UNSET, {"cancel_stop_loss_succeeded": True}, 0, True),
-        ({11111}, None, _CANCEL_REJECTED_RESPONSE, None, _UNSET, {"cancel_stop_loss_error": "already filled"}, 1, True),
-        ({11111}, None, _UNSET, RuntimeError("cancel down"), _UNSET, {"cancel_stop_loss_error": "cancel down"}, 1, True),
-        (set(), None, _UNSET, None, {"fee": 0.01, "count": 1}, {"stop_loss_filled_externally": True}, 0, False),
-        (set(), None, _UNSET, None, None, {"stop_loss_not_open": True}, 0, False),
-        (None, RuntimeError("indexer down"), _UNSET, None, _UNSET, {"open_order_check_error": "indexer down"}, 1, False),
-    ])
-    def test_update_stop_loss_cancel_only(self, open_oids, open_err, cancel_response, cancel_err, lookup, want_keys, want_exit, want_cancel):
-        out, adapter = self._run_update(
-            size=0,
-            open_oids=open_oids,
-            open_oids_side_effect=open_err,
-            cancel_response=cancel_response,
-            cancel_side_effect=cancel_err,
-            lookup_result=lookup,
-        )
-        adapter.place_stop_loss.assert_not_called()
-        adapter.round_perps_trigger_px.assert_not_called()
-        assert out["cancel_only"] is True
-        assert self.exit_code == want_exit
-        assert bool(out.get("error")) is (want_exit == 1)
-        if want_cancel:
-            adapter.cancel_trigger_order.assert_called_once_with("ETH", 11111)
-        else:
-            adapter.cancel_trigger_order.assert_not_called()
-        for key, want in want_keys.items():
-            if isinstance(want, str):
-                assert want in out[key]
-            else:
-                assert out[key] == want
+    def test_update_stop_loss_cancel_only(self):
+        cases = [
+            ({11111}, None, _CANCEL_OK_RESPONSE, None, _UNSET, {"cancel_stop_loss_succeeded": True}, 0, True),
+            ({11111}, None, _CANCEL_REJECTED_RESPONSE, None, _UNSET, {"cancel_stop_loss_error": "already filled"}, 1, True),
+            ({11111}, None, _UNSET, RuntimeError("cancel down"), _UNSET, {"cancel_stop_loss_error": "cancel down"}, 1, True),
+            (set(), None, _UNSET, None, {"fee": 0.01, "count": 1}, {"stop_loss_filled_externally": True}, 0, False),
+            (set(), None, _UNSET, None, None, {"stop_loss_not_open": True}, 0, False),
+            (None, RuntimeError("indexer down"), _UNSET, None, _UNSET, {"open_order_check_error": "indexer down"}, 1, False),
+        ]
+        for i, (open_oids, open_err, cancel_response, cancel_err, lookup, want_keys, want_exit, want_cancel) in enumerate(cases):
+            with _case(i, want_keys):
+                out, adapter = self._run_update(
+                    size=0,
+                    open_oids=open_oids,
+                    open_oids_side_effect=open_err,
+                    cancel_response=cancel_response,
+                    cancel_side_effect=cancel_err,
+                    lookup_result=lookup,
+                )
+                adapter.place_stop_loss.assert_not_called()
+                adapter.round_perps_trigger_px.assert_not_called()
+                assert out["cancel_only"] is True
+                assert self.exit_code == want_exit
+                assert bool(out.get("error")) is (want_exit == 1)
+                if want_cancel:
+                    adapter.cancel_trigger_order.assert_called_once_with("ETH", 11111)
+                else:
+                    adapter.cancel_trigger_order.assert_not_called()
+                for key, want in want_keys.items():
+                    if isinstance(want, str):
+                        assert want in out[key]
+                    else:
+                        assert out[key] == want
 
     def test_modify_in_place_long_stop(self):
         out, adapter = self._run_update(side="long")
@@ -644,14 +667,6 @@ class TestUpdateStopLoss:
         assert "stop_loss_oid" not in out
         assert "no usable status" in out["stop_loss_error"]
 
-    def test_unresolvable_diff_marks_outcome_unknown(self):
-        out, _ = self._run_update(
-            place_response={"status": "weird"},
-            post_place_oids=RuntimeError("indexer down"),
-        )
-        assert out.get("stop_loss_outcome_unknown") is True
-        assert "stop_loss_oid" not in out
-
     def test_ambiguous_diff_marks_outcome_unknown(self):
         out, _ = self._run_update(
             place_response={"status": "weird"},
@@ -679,14 +694,16 @@ class TestUpdateStopLoss:
         assert out.get("stop_loss_old_still_open") is True
         assert "stop_loss_oid" not in out
 
-    def test_unreadable_place_does_not_cancel(self):
+    def test_unreadable_place_with_unresolvable_diff_is_unknown_and_does_not_cancel(self):
         out, adapter = self._run_update(
             place_response={"status": "weird"},
             post_place_oids=RuntimeError("indexer down"),
         )
         adapter.cancel_trigger_order.assert_not_called()
-        assert out.get("stop_loss_outcome_unknown") is True
-        assert out.get("stop_loss_old_still_open") is True
+        assert out.get("stop_loss_outcome_unknown") is True, \
+            "test_unreadable_place_does_not_cancel and test_unresolvable_diff_marks_outcome_unknown"
+        assert out.get("stop_loss_old_still_open") is True, "test_unreadable_place_does_not_cancel"
+        assert "stop_loss_oid" not in out, "test_unresolvable_diff_marks_outcome_unknown"
 
     def test_immediate_fill_does_not_cancel_a_second_stop(self):
         out, adapter = self._run_update(
@@ -932,18 +949,23 @@ class TestRunExecuteCloseMode:
         "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "3000", "totalSz": "0.2", "oid": 77}}]}},
     }
 
-    @pytest.mark.parametrize("kwargs,mode,floored,want_exit,want_call", [
-        ({"close_mode": "reduce_only"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2, 2970.0), {"reduce_only": True})),
-        ({"close_mode": "cross"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2, 2970.0), {"reduce_only": False})),
-        ({}, "live", 0.2, 0, ("market_open", ("ETH", False, 0.2), {})),
-        ({"close_full_position": True}, "live", 0.2, 0, ("market_close", ("ETH",), {"sz": None})),
-        ({"close_mode": "reduce_only", "close_full_position": True}, "live", 0.2, 1, None),
-        ({"close_mode": "reduce_only", "stop_loss_pct": 2.0}, "live", 0.2, 1, None),
-        ({"close_mode": "cross", "prev_pos_qty": 0.1}, "live", 0.2, 1, None),
-        ({"close_mode": "reduce_only"}, "paper", 0.2, 1, None),
-        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.0, 1, None),
-    ])
-    def test_run_execute_close_mode_routes(self, kwargs, mode, floored, want_exit, want_call):
+    def test_run_execute_close_mode_routes(self):
+        cases = [
+            ({"close_mode": "reduce_only"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2, 2970.0), {"reduce_only": True})),
+            ({"close_mode": "cross"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2, 2970.0), {"reduce_only": False})),
+            ({}, "live", 0.2, 0, ("market_open", ("ETH", False, 0.2), {})),
+            ({"close_full_position": True}, "live", 0.2, 0, ("market_close", ("ETH",), {"sz": None})),
+            ({"close_mode": "reduce_only", "close_full_position": True}, "live", 0.2, 1, None),
+            ({"close_mode": "reduce_only", "stop_loss_pct": 2.0}, "live", 0.2, 1, None),
+            ({"close_mode": "cross", "prev_pos_qty": 0.1}, "live", 0.2, 1, None),
+            ({"close_mode": "reduce_only"}, "paper", 0.2, 1, None),
+            ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.0, 1, None),
+        ]
+        for kwargs, mode, floored, want_exit, want_call in cases:
+            with _case(kwargs, mode, floored):
+                self._check_close_mode_route(kwargs, mode, floored, want_exit, want_call)
+
+    def _check_close_mode_route(self, kwargs, mode, floored, want_exit, want_call):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
 
@@ -990,19 +1012,25 @@ class TestRunExecuteCloseMode:
                 getattr(mock_adapter, other).assert_not_called()
 
 
-    @pytest.mark.parametrize("kwargs,mode,floored,mid,order,want_exit,want_outcome,want_cancel", [
-        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, _FILLED, 0, "filled", True),
-        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"error": "Order could not immediately match"}]}}}, 1, "rejected", True),
-        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, {"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}, 1, "unknown", True),
-        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, RuntimeError("socket closed"), 1, "unknown", True),
-        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "paper", 0.2, 2970.0, _FILLED, 1, "not_sent", False),
-        ({"close_mode": "reduce_only", "cancel_oid": [555], "stop_loss_pct": 2.0}, "live", 0.2, 2970.0, _FILLED, 1, "not_sent", False),
-        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.0, 2970.0, _FILLED, 1, "not_sent", False),
-        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, ValueError("no usable mid price for ETH"), _FILLED, 1, "not_sent", False),
-        ({"close_mode": "cross", "cancel_oid": [555]}, "live", 0.2, ConnectionError("allMids down"), _FILLED, 1, "not_sent", False),
-        ({"cancel_oid": [555], "margin_mode": "bogus", "leverage": 3}, "live", 0.2, 2970.0, _FILLED, 1, "not_sent", False),
-    ])
-    def test_run_execute_order_outcome(self, kwargs, mode, floored, mid, order, want_exit, want_outcome, want_cancel):
+    def test_run_execute_order_outcome(self):
+        filled = self._FILLED
+        cases = [
+            ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, filled, 0, "filled", True),
+            ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"error": "Order could not immediately match"}]}}}, 1, "rejected", True),
+            ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, {"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}, 1, "unknown", True),
+            ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, RuntimeError("socket closed"), 1, "unknown", True),
+            ({"close_mode": "reduce_only", "cancel_oid": [555]}, "paper", 0.2, 2970.0, filled, 1, "not_sent", False),
+            ({"close_mode": "reduce_only", "cancel_oid": [555], "stop_loss_pct": 2.0}, "live", 0.2, 2970.0, filled, 1, "not_sent", False),
+            ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.0, 2970.0, filled, 1, "not_sent", False),
+            ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, ValueError("no usable mid price for ETH"), filled, 1, "not_sent", False),
+            ({"close_mode": "cross", "cancel_oid": [555]}, "live", 0.2, ConnectionError("allMids down"), filled, 1, "not_sent", False),
+            ({"cancel_oid": [555], "margin_mode": "bogus", "leverage": 3}, "live", 0.2, 2970.0, filled, 1, "not_sent", False),
+        ]
+        for i, (kwargs, mode, floored, mid, order, want_exit, want_outcome, want_cancel) in enumerate(cases):
+            with _case(i, kwargs, mode, floored, mid, want_outcome):
+                self._check_order_outcome(kwargs, mode, floored, mid, order, want_exit, want_outcome, want_cancel)
+
+    def _check_order_outcome(self, kwargs, mode, floored, mid, order, want_exit, want_outcome, want_cancel):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
 
@@ -1173,68 +1201,72 @@ class TestSyncProtection:
         return json.loads(captured.getvalue()), mock_adapter
 
 
-    @pytest.mark.parametrize("cancel_response,want_oids,want_placements,want_error", [
-        (_CANCEL_OK_RESPONSE, [9101, 7002], 1, False),
-        (_CANCEL_REJECTED_RESPONSE, [7001, 7002], 0, True),
-    ])
-    def test_force_tp_replace_places_only_after_a_confirmed_cancel(self, cancel_response, want_oids, want_placements, want_error):
-        out, adapter = self._run_sync(
-            stop_loss_atr_mult=0,
-            tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
-            tp_oids=[7001, 7002],
-            tp_armed_tiers=[True, True],
-            open_oids={7001, 7002},
-            cancel_response=cancel_response,
-            force_tp_replace=[True, False],
-        )
-        adapter.cancel_order_by_oid.assert_called_once_with("ETH", 7001)
-        assert adapter.place_take_profit_limit.call_count == want_placements
-        assert out["tp_oids"] == want_oids
-        assert bool(out.get("tp_errors", [""])[0]) is want_error
+    def test_force_tp_replace_places_only_after_a_confirmed_cancel(self):
+        cases = [
+            ("cancel_ok", _CANCEL_OK_RESPONSE, [9101, 7002], 1, False),
+            ("cancel_rejected", _CANCEL_REJECTED_RESPONSE, [7001, 7002], 0, True),
+        ]
+        for label, cancel_response, want_oids, want_placements, want_error in cases:
+            with _case(label):
+                out, adapter = self._run_sync(
+                    stop_loss_atr_mult=0,
+                    tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
+                    tp_oids=[7001, 7002],
+                    tp_armed_tiers=[True, True],
+                    open_oids={7001, 7002},
+                    cancel_response=cancel_response,
+                    force_tp_replace=[True, False],
+                )
+                adapter.cancel_order_by_oid.assert_called_once_with("ETH", 7001)
+                assert adapter.place_take_profit_limit.call_count == want_placements
+                assert out["tp_oids"] == want_oids
+                assert bool(out.get("tp_errors", [""])[0]) is want_error
 
-    @pytest.mark.parametrize("size,tiers,oids,skipped,placements", [
-        (0.003, [(1.0, 0.4), (2.0, 0.5), (3.0, 1.0)], [0, 7002, 0], [False, True, False], 2),
-        (0.0004, [(1.0, 0.5), (2.0, 1.0)], [7001, 7002], [True, True], 0),
-    ])
-    def test_size_skipped_tiers_report_unverified(self, size, tiers, oids, skipped, placements):
-        out, adapter = self._run_sync(
-            size=size, stop_loss_atr_mult=0, tp_tiers=tiers,
-            tp_oids=oids, tp_armed_tiers=[oid > 0 for oid in oids],
-            open_oids=set(),
-        )
-        assert out["tp_size_skipped"] == skipped
-        assert adapter.place_take_profit_limit.call_count == placements
-        if placements:
-            assert out["tp_oids"][1] == 7002
-            assert out["tp_oids"][0] > 0
-            assert out["tp_oids"][2] > 0
-        adapter.lookup_fill_fee_by_oid.assert_not_called()
+    def test_size_skipped_tiers_report_unverified(self):
+        cases = [
+            (0.003, [(1.0, 0.4), (2.0, 0.5), (3.0, 1.0)], [0, 7002, 0], [False, True, False], 2),
+            (0.0004, [(1.0, 0.5), (2.0, 1.0)], [7001, 7002], [True, True], 0),
+        ]
+        for size, tiers, oids, skipped, placements in cases:
+            with _case(size, tiers, oids):
+                out, adapter = self._run_sync(
+                    size=size, stop_loss_atr_mult=0, tp_tiers=tiers,
+                    tp_oids=oids, tp_armed_tiers=[oid > 0 for oid in oids],
+                    open_oids=set(),
+                )
+                assert out["tp_size_skipped"] == skipped
+                assert adapter.place_take_profit_limit.call_count == placements
+                if placements:
+                    assert out["tp_oids"][1] == 7002
+                    assert out["tp_oids"][0] > 0
+                    assert out["tp_oids"][2] > 0
+                adapter.lookup_fill_fee_by_oid.assert_not_called()
 
-    @pytest.mark.parametrize("reads,place_error,unreadable_response,want_oid,want_unknown,want_error", [
-        ([{7002}, {7002}, {7002, 9500}], None, True, 9500, False, False),
-        ([{7002}, {7002}, {7002, 9500}], RuntimeError("read timeout"), False, 9500, False, False),
-        ([{7002}, {7002}, {7002}], RuntimeError("connection refused"), False, 0, False, True),
-        ([{7002}, {7002}, Exception("re-read failed")], RuntimeError("connection refused"), False, 0, True, True),
-        ([{7002}, Exception("snapshot failed"), {7002, 9500}], RuntimeError("connection refused"), False, 0, True, True),
-        ([{7002}, {7002}, {7002, 9500, 9501}], RuntimeError("connection refused"), False, 0, True, True),
-    ])
-    def test_unresolved_tp_placement_resolves_by_book_diff(
-        self, reads, place_error, unreadable_response, want_oid, want_unknown, want_error
-    ):
-        responses = {"tp1": {"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}} if unreadable_response else None
-        out, adapter = self._run_sync(
-            stop_loss_atr_mult=0,
-            tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
-            tp_oids=[0, 7002],
-            tp_armed_tiers=[False, True],
-            open_oids_sequence=reads,
-            tp_place_error=place_error,
-            place_responses=responses,
-        )
-        assert adapter.place_take_profit_limit.call_count == 1
-        assert out["tp_oids"] == [want_oid, 7002]
-        assert bool(out.get("tp_outcome_unknown", [False])[0]) is want_unknown
-        assert bool(out.get("tp_errors", [""])[0]) is want_error
+    def test_unresolved_tp_placement_resolves_by_book_diff(self):
+        cases = [
+            ([{7002}, {7002}, {7002, 9500}], None, True, 9500, False, False),
+            ([{7002}, {7002}, {7002, 9500}], RuntimeError("read timeout"), False, 9500, False, False),
+            ([{7002}, {7002}, {7002}], RuntimeError("connection refused"), False, 0, False, True),
+            ([{7002}, {7002}, Exception("re-read failed")], RuntimeError("connection refused"), False, 0, True, True),
+            ([{7002}, Exception("snapshot failed"), {7002, 9500}], RuntimeError("connection refused"), False, 0, True, True),
+            ([{7002}, {7002}, {7002, 9500, 9501}], RuntimeError("connection refused"), False, 0, True, True),
+        ]
+        for i, (reads, place_error, unreadable_response, want_oid, want_unknown, want_error) in enumerate(cases):
+            with _case(i, reads, place_error, unreadable_response):
+                responses = {"tp1": {"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}} if unreadable_response else None
+                out, adapter = self._run_sync(
+                    stop_loss_atr_mult=0,
+                    tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
+                    tp_oids=[0, 7002],
+                    tp_armed_tiers=[False, True],
+                    open_oids_sequence=reads,
+                    tp_place_error=place_error,
+                    place_responses=responses,
+                )
+                assert adapter.place_take_profit_limit.call_count == 1
+                assert out["tp_oids"] == [want_oid, 7002]
+                assert bool(out.get("tp_outcome_unknown", [False])[0]) is want_unknown
+                assert bool(out.get("tp_errors", [""])[0]) is want_error
 
     def test_manual_close_recovery_leaves_the_stop_alone(self):
         out, adapter = self._run_sync(
@@ -1353,31 +1385,33 @@ class TestSyncProtection:
         adapter.cancel_order_by_oid.assert_not_called()
 
 
-    @pytest.mark.parametrize("open_oids,open_err,cancel_response,fills,want_cancel,want", [
-        ({303}, None, _CANCEL_OK_RESPONSE, {}, True, {}),
-        ({303}, None, _CANCEL_REJECTED_RESPONSE, {}, True, {"tp_cancel_failed_oids": [303]}),
-        (set(), None, None, {}, False, {"tp_cancel_not_open_oids": [303]}),
-        (set(), None, None, {303: {"fee": 0.05, "closed_pnl": 1.0, "count": 1}}, False, {"tp_cancel_filled_oids": [303]}),
-        (None, "userOpenOrders failed", None, {}, False, {"tp_cancel_failed_oids": [303]}),
-    ])
-    def test_sync_protection_surplus_cancel_verifies_first(self, open_oids, open_err, cancel_response, fills, want_cancel, want):
-        out, adapter = self._run_sync(
-            size=0,
-            stop_loss_atr_mult=0,
-            cancel_tp_oids=[303],
-            open_oids=open_oids,
-            open_orders_error=open_err,
-            cancel_response=cancel_response,
-            fill_lookup_by_oid=fills,
-        )
-        if want_cancel:
-            adapter.cancel_order_by_oid.assert_called_once_with("ETH", 303)
-        else:
-            adapter.cancel_order_by_oid.assert_not_called()
-        adapter.place_stop_loss.assert_not_called()
-        adapter.place_take_profit_limit.assert_not_called()
-        for key in ("tp_cancel_failed_oids", "tp_cancel_filled_oids", "tp_cancel_not_open_oids"):
-            assert out.get(key) == want.get(key)
+    def test_sync_protection_surplus_cancel_verifies_first(self):
+        cases = [
+            ({303}, None, _CANCEL_OK_RESPONSE, {}, True, {}),
+            ({303}, None, _CANCEL_REJECTED_RESPONSE, {}, True, {"tp_cancel_failed_oids": [303]}),
+            (set(), None, None, {}, False, {"tp_cancel_not_open_oids": [303]}),
+            (set(), None, None, {303: {"fee": 0.05, "closed_pnl": 1.0, "count": 1}}, False, {"tp_cancel_filled_oids": [303]}),
+            (None, "userOpenOrders failed", None, {}, False, {"tp_cancel_failed_oids": [303]}),
+        ]
+        for i, (open_oids, open_err, cancel_response, fills, want_cancel, want) in enumerate(cases):
+            with _case(i, open_oids, open_err, want):
+                out, adapter = self._run_sync(
+                    size=0,
+                    stop_loss_atr_mult=0,
+                    cancel_tp_oids=[303],
+                    open_oids=open_oids,
+                    open_orders_error=open_err,
+                    cancel_response=cancel_response,
+                    fill_lookup_by_oid=fills,
+                )
+                if want_cancel:
+                    adapter.cancel_order_by_oid.assert_called_once_with("ETH", 303)
+                else:
+                    adapter.cancel_order_by_oid.assert_not_called()
+                adapter.place_stop_loss.assert_not_called()
+                adapter.place_take_profit_limit.assert_not_called()
+                for key in ("tp_cancel_failed_oids", "tp_cancel_filled_oids", "tp_cancel_not_open_oids"):
+                    assert out.get(key) == want.get(key)
 
     def test_surplus_cancel_runs_when_size_zero(self):
         out, adapter = self._run_sync(
@@ -1701,20 +1735,23 @@ class TestComputeTPTierSizes:
         spec.loader.exec_module(mod)
         return mod
 
-    @pytest.mark.parametrize("size,tiers,expected", [
-        (0.0, [(1.0, 0.5), (2.0, 1.0)], [0.0, 0.0]),
-        (-0.5, [(1.0, 0.5), (2.0, 1.0)], [0.0, 0.0]),
-        (1.0, [], []),
-        (0.003, [(1.0, 0.5), (2.0, 1.0)], [0.001, 0.002]),
-        (0.007, [(1.0, 0.3), (2.0, 0.6), (3.0, 1.0)], [0.002, 0.002, 0.003]),
-        (10.0, [(1.0, 0.5), (2.0, 1.0)], [5.0, 5.0]),
-        (0.5, [(1.0, 0.5), (2.0, 1.0)], [0.25, 0.25]),
-    ])
-    def test_compute_tp_tier_sizes(self, size, tiers, expected):
-        sizes = self._load().compute_tp_tier_sizes(size, tiers, self._floor3)
-        assert sizes == pytest.approx(expected)
-        if expected:
-            assert sum(sizes) == pytest.approx(sum(expected))
+    def test_compute_tp_tier_sizes(self):
+        cases = [
+            (0.0, [(1.0, 0.5), (2.0, 1.0)], [0.0, 0.0]),
+            (-0.5, [(1.0, 0.5), (2.0, 1.0)], [0.0, 0.0]),
+            (1.0, [], []),
+            (0.003, [(1.0, 0.5), (2.0, 1.0)], [0.001, 0.002]),
+            (0.007, [(1.0, 0.3), (2.0, 0.6), (3.0, 1.0)], [0.002, 0.002, 0.003]),
+            (10.0, [(1.0, 0.5), (2.0, 1.0)], [5.0, 5.0]),
+            (0.5, [(1.0, 0.5), (2.0, 1.0)], [0.25, 0.25]),
+        ]
+        mod = self._load()
+        for size, tiers, expected in cases:
+            label = (size, tiers, expected)
+            sizes = mod.compute_tp_tier_sizes(size, tiers, self._floor3)
+            assert sizes == pytest.approx(expected), label
+            if expected:
+                assert sum(sizes) == pytest.approx(sum(expected)), label
 
 
 class TestProtectionSyncStopLossTriggerContract:
@@ -1783,21 +1820,17 @@ class TestProtectionSyncStopLossTriggerContract:
         assert "stop_loss_trigger_px" not in out
         assert out.get("stop_loss_error")
 
-    def test_force_replace_cancel_rejected_defers_replacement(self):
-        out, adapter = self._run_sync_cancel_response(_CANCEL_REJECTED_RESPONSE)
-        adapter.place_stop_loss.assert_not_called()
-        assert out.get("cancel_stop_loss_succeeded") is False
-        assert "already filled" in out["stop_loss_error"]
-        assert "stop_loss_oid" not in out
-
-
-    @pytest.mark.parametrize("cancel_response", [_CANCEL_REJECTED_RESPONSE, RuntimeError("rpc down")])
-    def test_force_replace_cancel_failure_reports_cancel_error(self, cancel_response):
-        out, adapter = self._run_sync_cancel_response(cancel_response)
-        adapter.place_stop_loss.assert_not_called()
-        assert out.get("cancel_stop_loss_succeeded") is False
-        assert out["cancel_stop_loss_error"]
-        assert out["cancel_stop_loss_error"] == out["stop_loss_error"]
+    def test_force_replace_cancel_failure_defers_replacement_and_reports_cancel_error(self):
+        for label, cancel_response in (("rejected", _CANCEL_REJECTED_RESPONSE), ("rpc_down", RuntimeError("rpc down"))):
+            with _case("test_force_replace_cancel_failure_reports_cancel_error", label):
+                out, adapter = self._run_sync_cancel_response(cancel_response)
+                adapter.place_stop_loss.assert_not_called()
+                assert out.get("cancel_stop_loss_succeeded") is False
+                assert out["cancel_stop_loss_error"]
+                assert out["cancel_stop_loss_error"] == out["stop_loss_error"]
+            if label == "rejected":
+                assert "already filled" in out["stop_loss_error"], "test_force_replace_cancel_rejected_defers_replacement"
+                assert "stop_loss_oid" not in out, "test_force_replace_cancel_rejected_defers_replacement"
 
     def _run_sync_cancel_response(self, cancel_response):
         import builtins
@@ -1974,31 +2007,34 @@ class TestSyncProtectionPreservedTrigger:
         adapter.place_stop_loss.assert_not_called()
         assert out["stop_loss_oid"] == 4242
 
-    @pytest.mark.parametrize("trigger", [None, 0.0, -1.0, float("nan"), float("inf")])
-    def test_invalid_moved_trigger_fails_before_any_cancel_or_place(self, trigger):
-        out, adapter, adapter_cls, code = self._run(trigger=trigger, preserve=True)
-        assert code == 1
-        assert "stop-loss-trigger-px" in out["error"]
-        adapter_cls.assert_not_called()
-        adapter.cancel_order_by_oid.assert_not_called()
-        adapter.place_stop_loss.assert_not_called()
+    def test_invalid_moved_trigger_fails_before_any_cancel_or_place(self):
+        for trigger in (None, 0.0, -1.0, float("nan"), float("inf")):
+            with _case(trigger):
+                out, adapter, adapter_cls, code = self._run(trigger=trigger, preserve=True)
+                assert code == 1
+                assert "stop-loss-trigger-px" in out["error"]
+                adapter_cls.assert_not_called()
+                adapter.cancel_order_by_oid.assert_not_called()
+                adapter.place_stop_loss.assert_not_called()
 
-    @pytest.mark.parametrize("trigger", [-1.0, float("nan")])
-    def test_invalid_supplied_trigger_fails_without_the_preserve_flag(self, trigger):
-        _, adapter, adapter_cls, code = self._run(trigger=trigger, preserve=False)
-        assert code == 1
-        adapter_cls.assert_not_called()
-        adapter.place_stop_loss.assert_not_called()
+    def test_invalid_supplied_trigger_fails_without_the_preserve_flag(self):
+        for trigger in (-1.0, float("nan")):
+            with _case(trigger):
+                _, adapter, adapter_cls, code = self._run(trigger=trigger, preserve=False)
+                assert code == 1
+                adapter_cls.assert_not_called()
+                adapter.place_stop_loss.assert_not_called()
 
-    @pytest.mark.parametrize("side,requested", [("long", 2400.004), ("short", 2399.996)])
-    def test_venue_rounding_never_loosens_a_moved_trigger(self, side, requested):
-        _, adapter, _, _ = self._run(trigger=requested, preserve=True, side=side)
-        placed = adapter.place_stop_loss.call_args.args[2]
-        if side == "long":
-            assert placed >= requested
-        else:
-            assert placed <= requested
-        assert placed == pytest.approx(requested, abs=0.011)
+    def test_venue_rounding_never_loosens_a_moved_trigger(self):
+        for side, requested in (("long", 2400.004), ("short", 2399.996)):
+            with _case(side, requested):
+                _, adapter, _, _ = self._run(trigger=requested, preserve=True, side=side)
+                placed = adapter.place_stop_loss.call_args.args[2]
+                if side == "long":
+                    assert placed >= requested
+                else:
+                    assert placed <= requested
+                assert placed == pytest.approx(requested, abs=0.011)
 
     def test_unroundable_moved_trigger_keeps_the_resting_stop(self):
         out, adapter, _, code = self._run(trigger=2400.004, preserve=True, tick=0.0)

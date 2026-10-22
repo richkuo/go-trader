@@ -152,15 +152,12 @@ def test_trailing_stop_atr_mult_regime_use_defaults_parses():
     assert mult == regime_atr.REGIME_ATR_DEFAULTS_TRAILING["trending_up"].atr
 
 
-def test_backtester_rejects_mutex_stop_loss_scalar_with_regime_block():
+def test_backtester_rejects_mutex_stop_loss_and_trailing_scalars_with_regime_blocks():
     with pytest.raises(ValueError, match="mutually exclusive"):
         Backtester(
             stop_loss_atr_mult=1.0,
             stop_loss_atr_mult_regime={"use_defaults": True},
         )
-
-
-def test_backtester_rejects_mutex_trailing_scalar_with_regime_block():
     with pytest.raises(ValueError, match="mutually exclusive"):
         Backtester(
             trailing_stop_atr_mult=1.0,

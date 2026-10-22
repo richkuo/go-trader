@@ -53,7 +53,7 @@ func TestEffectiveStopLossPct(t *testing.T) {
 	}
 }
 
-func TestParseHyperliquidExecuteOutput_NonFatalSLErrors(t *testing.T) {
+func TestParseHyperliquidExecuteOutputStopLossFields(t *testing.T) {
 	stdout := []byte(`{
 		"execution": {
 			"action": "sell",
@@ -69,16 +69,52 @@ func TestParseHyperliquidExecuteOutput_NonFatalSLErrors(t *testing.T) {
 
 	result, _, err := parseHyperliquidExecuteOutput(stdout, "warn: something", nil)
 	if err != nil {
-		t.Fatalf("parse failed: %v", err)
+		t.Fatalf("non-fatal SL errors: parse failed: %v", err)
 	}
 	if result.CancelStopLossError != "trigger already cancelled" {
-		t.Errorf("CancelStopLossError: got %q", result.CancelStopLossError)
+		t.Errorf("non-fatal SL errors: CancelStopLossError: got %q", result.CancelStopLossError)
 	}
 	if result.StopLossError != "placement rejected: max triggers reached" {
-		t.Errorf("StopLossError: got %q", result.StopLossError)
+		t.Errorf("non-fatal SL errors: StopLossError: got %q", result.StopLossError)
 	}
 	if result.Execution == nil || result.Execution.Fill.OID != 42 {
-		t.Errorf("main fill should still parse: %+v", result)
+		t.Errorf("non-fatal SL errors: main fill should still parse: %+v", result)
+	}
+
+	stdout = []byte(`{
+		"execution": {"action": "buy", "symbol": "ETH", "size": 0.1, "fill": {"avg_px": 3200, "total_sz": 0.1, "oid": 1}},
+		"platform": "hyperliquid",
+		"timestamp": "2026-04-25T00:00:00+00:00",
+		"stop_loss_filled_immediately": true
+	}`)
+	result, _, err = parseHyperliquidExecuteOutput(stdout, "", nil)
+	if err != nil {
+		t.Fatalf("stop loss filled immediately: parse: %v", err)
+	}
+	if !result.StopLossFilledImmediately {
+		t.Errorf("stop loss filled immediately: expected StopLossFilledImmediately=true, got %+v", result)
+	}
+	if result.Execution.Fill.StopLossOID != 0 {
+		t.Errorf("stop loss filled immediately: instant-fill should have no resting OID; got %d", result.Execution.Fill.StopLossOID)
+	}
+
+	stdout = []byte(`{
+		"execution": null,
+		"platform": "hyperliquid",
+		"timestamp": "2026-04-25T00:00:00+00:00",
+		"error": "market_open: insufficient balance",
+		"cancel_stop_loss_succeeded": true
+	}`)
+	runErr := errors.New("exit status 1")
+	result, _, err = parseHyperliquidExecuteOutput(stdout, "", runErr)
+	if err != nil {
+		t.Fatalf("cancel succeeded on failure: parse should swallow runErr when JSON carries .error: %v", err)
+	}
+	if !result.CancelStopLossSucceeded {
+		t.Errorf("cancel succeeded on failure: CancelStopLossSucceeded should be true, got %+v", result)
+	}
+	if result.Error == "" {
+		t.Errorf("cancel succeeded on failure: error payload should be preserved")
 	}
 }
 
@@ -101,46 +137,6 @@ func TestRunHyperliquidTrailingStopUpdate_DefersOnOpenOrderCheckFailure(t *testi
 	}
 	if newHighWater != 100 {
 		t.Fatalf("newHighWater=%v, want unchanged 100", newHighWater)
-	}
-}
-
-func TestParseHyperliquidExecuteOutput_StopLossFilledImmediately(t *testing.T) {
-	stdout := []byte(`{
-		"execution": {"action": "buy", "symbol": "ETH", "size": 0.1, "fill": {"avg_px": 3200, "total_sz": 0.1, "oid": 1}},
-		"platform": "hyperliquid",
-		"timestamp": "2026-04-25T00:00:00+00:00",
-		"stop_loss_filled_immediately": true
-	}`)
-	result, _, err := parseHyperliquidExecuteOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if !result.StopLossFilledImmediately {
-		t.Errorf("expected StopLossFilledImmediately=true, got %+v", result)
-	}
-	if result.Execution.Fill.StopLossOID != 0 {
-		t.Errorf("instant-fill should have no resting OID; got %d", result.Execution.Fill.StopLossOID)
-	}
-}
-
-func TestParseHyperliquidExecuteOutput_CancelSucceededOnFailure(t *testing.T) {
-	stdout := []byte(`{
-		"execution": null,
-		"platform": "hyperliquid",
-		"timestamp": "2026-04-25T00:00:00+00:00",
-		"error": "market_open: insufficient balance",
-		"cancel_stop_loss_succeeded": true
-	}`)
-	runErr := errors.New("exit status 1")
-	result, _, err := parseHyperliquidExecuteOutput(stdout, "", runErr)
-	if err != nil {
-		t.Fatalf("parse should swallow runErr when JSON carries .error: %v", err)
-	}
-	if !result.CancelStopLossSucceeded {
-		t.Errorf("CancelStopLossSucceeded should be true, got %+v", result)
-	}
-	if result.Error == "" {
-		t.Errorf("error payload should be preserved")
 	}
 }
 

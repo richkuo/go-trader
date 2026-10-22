@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import importlib.util
 import json
@@ -28,7 +29,16 @@ sl = _load_post_tp_sl()
 from backtester import Backtester, _close_refs_use_regime_tiered_tp
 
 
-@pytest.mark.parametrize("raw,kind,attr,value", [
+@contextlib.contextmanager
+def _raises_for(case, exc=ValueError, match=None):
+    try:
+        with pytest.raises(exc, match=match) as info:
+            yield info
+    except (AssertionError, pytest.fail.Exception) as err:
+        raise AssertionError(f"{case}: {err}") from None
+
+
+_PARSE_ACCEPTS = [
     ("breakeven", "breakeven", None, None),
     ({"atr_mult": 0.25}, "atr_offset", "atr_mult", 0.25),
     ({"atr_mult": -0.5}, "atr_offset", "atr_mult", -0.5),
@@ -37,21 +47,9 @@ from backtester import Backtester, _close_refs_use_regime_tiered_tp
      "trail_atr_mult", 1.0),
     ({"kind": "trail_from_here", "atr_mult": 1.5}, "trail_from_here",
      "trail_atr_mult", 1.5),
-])
-def test_parse_sl_after_rule_accepts(raw, kind, attr, value):
-    rule = sl.parse_sl_after_rule(raw)
-    assert rule.kind == kind
-    assert rule.is_empty() is False
-    if attr is not None:
-        assert getattr(rule, attr) == value
+]
 
-
-@pytest.mark.parametrize("raw", [None, ""])
-def test_parse_sl_after_rule_empty_inputs(raw):
-    assert sl.parse_sl_after_rule(raw).is_empty()
-
-
-@pytest.mark.parametrize("raw", [
+_PARSE_ERRORS = [
     "hold",
     {"kind": "weird"},
     {"trail_from_here": {"atr_mult": -1}},
@@ -61,13 +59,25 @@ def test_parse_sl_after_rule_empty_inputs(raw):
     42,
     {"kind": 1},
     {"trail_from_here": "1.0"},
-])
-def test_parse_sl_after_rule_errors(raw):
-    with pytest.raises(ValueError):
-        sl.parse_sl_after_rule(raw)
+]
 
 
-def test_validate_sl_after_rule_accepts_valid():
+def test_parse_sl_after_rule_accepts_empties_and_rejects():
+    for raw, kind, attr, value in _PARSE_ACCEPTS:
+        case = f"test_parse_sl_after_rule_accepts[{raw!r}]"
+        rule = sl.parse_sl_after_rule(raw)
+        assert rule.kind == kind, case
+        assert rule.is_empty() is False, case
+        if attr is not None:
+            assert getattr(rule, attr) == value, case
+    for raw in (None, ""):
+        assert sl.parse_sl_after_rule(raw).is_empty(), f"test_parse_sl_after_rule_empty_inputs[{raw!r}]"
+    for raw in _PARSE_ERRORS:
+        with _raises_for(f"test_parse_sl_after_rule_errors[{raw!r}]"):
+            sl.parse_sl_after_rule(raw)
+
+
+def test_validate_sl_after_rule_accepts_valid_and_rejects_bad():
     for r in [
         sl.SLAfterRule(),
         sl.SLAfterRule(kind="breakeven"),
@@ -77,20 +87,17 @@ def test_validate_sl_after_rule_accepts_valid():
         sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1.0),
     ]:
         sl.validate_sl_after_rule(r)
-
-
-def test_validate_sl_after_rule_rejects_bad():
     for r in [
         sl.SLAfterRule(kind="trail_from_here"),
         sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=0),
         sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=-1),
         sl.SLAfterRule(kind="weird"),
     ]:
-        with pytest.raises(ValueError):
+        with _raises_for(f"test_validate_sl_after_rule_rejects_bad[{r!r}]"):
             sl.validate_sl_after_rule(r)
 
 
-@pytest.mark.parametrize("rule,side,avg,atr,mark,want_ok,want_px,want_mode", [
+_TRIGGER_CASES = [
     (sl.SLAfterRule(kind="breakeven"), "long", 100, 5, 0, True, 100, "breakeven"),
     (sl.SLAfterRule(kind="breakeven"), "short", 200, 5, 0, True, 200, "breakeven"),
     (sl.SLAfterRule(kind="atr_offset", atr_mult=0.25), "long", 100, 5, 0,
@@ -121,16 +128,19 @@ def test_validate_sl_after_rule_rejects_bad():
     (sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=0), "long", 100, 5, 110,
      False, None, None),
     (sl.SLAfterRule(kind="weird"), "long", 100, 5, 110, False, None, None),
-])
-def test_compute_post_tp_stop_loss_trigger(
-        rule, side, avg, atr, mark, want_ok, want_px, want_mode):
-    px, mode, ok = sl.compute_post_tp_stop_loss_trigger(rule, side, avg, atr, mark)
-    assert bool(ok) is want_ok
-    if not want_ok:
-        return
-    assert abs(px - want_px) < 1e-9
-    if want_mode is not None:
-        assert mode == want_mode
+]
+
+
+def test_compute_post_tp_stop_loss_trigger():
+    for i, (rule, side, avg, atr, mark, want_ok, want_px, want_mode) in enumerate(_TRIGGER_CASES):
+        case = f"test_compute_post_tp_stop_loss_trigger[{i}] {rule!r} {side} avg={avg} atr={atr} mark={mark}"
+        px, mode, ok = sl.compute_post_tp_stop_loss_trigger(rule, side, avg, atr, mark)
+        assert bool(ok) is want_ok, case
+        if not want_ok:
+            continue
+        assert abs(px - want_px) < 1e-9, case
+        if want_mode is not None:
+            assert mode == want_mode, case
 
 
 def test_parse_strategy_tp_sl_after_rules_default_and_per_tier_override():
@@ -187,7 +197,7 @@ _TWO_TIERS = [
 ]
 
 
-@pytest.mark.parametrize("refs,kwargs,want_errs", [
+_VALIDATE_RULE_CASES = [
     (
         [{"name": "tiered_tp_atr_live",
           "params": {"sl_after": "breakeven", "tp_tiers": _TWO_TIERS}}],
@@ -238,14 +248,18 @@ _TWO_TIERS = [
         {"stop_loss_atr_mult": 1.0},
         [],
     ),
-])
-def test_validate_post_tp_stop_loss_rules(refs, kwargs, want_errs):
-    errs = sl.validate_post_tp_stop_loss_rules(refs, **kwargs)
-    if not want_errs:
-        assert errs == []
-        return
-    for parts in want_errs:
-        assert any(all(p in e for p in parts) for e in errs), errs
+]
+
+
+def test_validate_post_tp_stop_loss_rules():
+    for i, (refs, kwargs, want_errs) in enumerate(_VALIDATE_RULE_CASES):
+        case = f"test_validate_post_tp_stop_loss_rules[{i}] {refs[0]['name']} {kwargs}"
+        errs = sl.validate_post_tp_stop_loss_rules(refs, **kwargs)
+        if not want_errs:
+            assert errs == [], case
+            continue
+        for parts in want_errs:
+            assert any(all(p in e for p in parts) for e in errs), (case, errs)
 
 
 def test_parse_tp_tier_close_fractions_sorts_and_coerces_final():
@@ -512,7 +526,7 @@ _REGIME_TP_ATR_FRACTION = {
 }
 
 
-@pytest.mark.parametrize("kwargs,match", [
+_BACKTESTER_REJECTS = [
     (
         dict(close_strategies=[{
             "name": "tiered_tp_atr",
@@ -607,14 +621,17 @@ _REGIME_TP_ATR_FRACTION = {
                             "tp_tiers": _STANDARD_TIERS}}]),
         "stop_loss_margin_pct",
     ),
-])
-def test_backtester_validation_rejects(kwargs, match):
-    with pytest.raises(ValueError, match=match):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            platform="hyperliquid",
-            **dict({"strategy_type": "perps"}, **kwargs),
-        )
+]
+
+
+def test_backtester_validation_rejects():
+    for i, (kwargs, match) in enumerate(_BACKTESTER_REJECTS):
+        with _raises_for(f"test_backtester_validation_rejects[{i}] {match}", match=match):
+            Backtester(
+                initial_capital=1000, commission_pct=0, slippage_pct=0,
+                platform="hyperliquid",
+                **dict({"strategy_type": "perps"}, **kwargs),
+            )
 
 
 def test_backtester_sl_after_idempotent_across_bars():

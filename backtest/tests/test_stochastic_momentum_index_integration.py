@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import sys
@@ -14,7 +15,7 @@ if _TOOLS not in sys.path:
 
 import offline_manifest as om
 from atr import ensure_atr_indicator
-from backtester import Backtester, validate_close_capabilities
+from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from closed_bar import (
     FRAME_DECISION_TIME_ATTR,
@@ -50,6 +51,19 @@ DOMAIN_ENDPOINTS = [
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, params=None):
@@ -220,10 +234,15 @@ def _first(out, side=None, reason=None):
     return int(rows[0])
 
 
-@pytest.mark.parametrize("side", [1, -1])
-def test_threshold_equality_and_adjacent_floats_follow_the_strict_rules(side):
+def test_threshold_equality_and_adjacent_floats_follow_the_strict_rules():
     df = _walk(900, 11)
     out = _apply(df, DEFAULTS)
+    for side in (1, -1):
+        with _case(f"side={side}"):
+            _threshold_equality_and_adjacent_floats_follow_the_strict_rules(df, out, side)
+
+
+def _threshold_equality_and_adjacent_floats_follow_the_strict_rules(df, out, side):
     i = _first(out, side)
     prev, cur = float(out["smi_prev_value"].iloc[i]), float(out["smi_value"].iloc[i])
     key = "oversold" if side == 1 else "overbought"
@@ -301,7 +320,7 @@ def _set_last(df, col, value):
     return df.assign(**{col: np.r_[df[col].to_numpy()[:-1], value]})
 
 
-@pytest.mark.parametrize("mutate,reason", [
+MISSING_AND_MALFORMED_INPUTS = [
     (lambda df: df.drop(columns=["low"]), "missing_columns"),
     (_no_cadence, "missing_cadence"),
     (lambda df: df.reset_index(drop=True), "missing_timestamps"),
@@ -318,9 +337,13 @@ def _set_last(df, col, value):
     (lambda df: _shift_index(df, len(df) - 1, pd.Timedelta(hours=4)), "cadence_gap"),
     (lambda df: _shift_index(df, len(df) - NEED + 2, pd.Timedelta(hours=1)), "cadence_gap"),
     (lambda df: df.iloc[-(NEED - 1):], "insufficient_history"),
-])
-def test_missing_and_malformed_inputs_are_reasoned_holds_that_preserve_the_frame(mutate, reason):
-    _holds_at_end(mutate(_walk(300, 3)), DEFAULTS, reason)
+]
+
+
+def test_missing_and_malformed_inputs_are_reasoned_holds_that_preserve_the_frame():
+    for i, (mutate, reason) in enumerate(MISSING_AND_MALFORMED_INPUTS):
+        with _case(f"{i}-{reason}"):
+            _holds_at_end(mutate(_walk(300, 3)), DEFAULTS, reason)
 
 
 def test_volume_is_not_an_input():
@@ -391,7 +414,7 @@ def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame(
     assert out["smi_reason"].iloc[bad + NEED - 1] != "cadence_gap"
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"range_period": 0}, {"range_period": -3}, {"range_period": 10.5}, {"range_period": True},
     {"range_period": "10"}, {"range_period": float("nan")}, {"smoothing_period": 0}, {"smoothing_period": 2.5},
     {"smoothing_period": False}, {"signal_period": 0}, {"signal_period": float("inf")}, {"recursion_length": 0},
@@ -400,24 +423,32 @@ def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame(
     {"oversold": -100.0}, {"overbought": 100.0}, {"oversold": 40.0, "overbought": 40.0},
     {"oversold": 50.0, "overbought": 40.0}, {"oversold": float("nan")}, {"overbought": float("inf")},
     {"oversold": "-40"}, {"overbought": True},
-])
-def test_invalid_parameters_are_explicit_errors(params):
-    with pytest.raises(ValueError):
-        _apply(_walk(300, 1), dict(DEFAULTS, **params))
-    with pytest.raises(ValueError):
-        _reg()._registry.validate_params(NAME, dict(DEFAULTS, **params))
+]
 
 
-@pytest.mark.parametrize("params", [
+def test_invalid_parameters_are_explicit_errors():
+    for params in INVALID_PARAMS:
+        with _case(params):
+            with pytest.raises(ValueError):
+                _apply(_walk(300, 1), dict(DEFAULTS, **params))
+            with pytest.raises(ValueError):
+                _reg()._registry.validate_params(NAME, dict(DEFAULTS, **params))
+
+
+BOUNDARY_PARAMS = [
     dict(DEFAULTS, recursion_length=24),
     dict(DEFAULTS, recursion_length=188, range_period=10),
     dict(DEFAULTS, range_period=190, smoothing_period=1, signal_period=1, recursion_length=8),
     dict(DEFAULTS, range_period=10.0, smoothing_period=3.0, signal_period=3.0, recursion_length=60.0),
-])
-def test_boundary_parameters_are_accepted(params):
-    _reg()._registry.validate_params(NAME, params)
-    out = _apply(_walk(300, 1), params)
-    assert out["smi_required_history"].iloc[-1] == float(_need(params))
+]
+
+
+def test_boundary_parameters_are_accepted():
+    for params in BOUNDARY_PARAMS:
+        with _case(params):
+            _reg()._registry.validate_params(NAME, params)
+            out = _apply(_walk(300, 1), params)
+            assert out["smi_required_history"].iloc[-1] == float(_need(params))
 
 
 def test_integral_float_periods_match_integers():
@@ -484,10 +515,15 @@ def _runtime(df, kind, cutoff=None, boundary=None):
     return out
 
 
-@pytest.mark.parametrize("kind", [TIMESTAMP_KIND_OPEN, TIMESTAMP_KIND_NATIVE_CLOSE])
-def test_check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(kind):
+def test_check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar():
     base = _walk(900, 11)
     hist = _apply(base, DEFAULTS)
+    for kind in (TIMESTAMP_KIND_OPEN, TIMESTAMP_KIND_NATIVE_CLOSE):
+        with _case(kind):
+            _check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(base, hist, kind)
+
+
+def _check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(base, hist, kind):
     i = _first(hist, 1)
     df = base.iloc[:i + 1].copy()
     if kind == TIMESTAMP_KIND_NATIVE_CLOSE:
@@ -539,8 +575,13 @@ def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_op
             assert held["signal"] == 0 and held["close_fraction"] == 0.0
 
 
-@pytest.mark.parametrize("mutation", ["geometry", "cadence", "stale", "insufficient", "zero_range"])
-def test_invalid_entry_frame_keeps_the_explicit_close_owner_executable(mutation):
+def test_invalid_entry_frame_keeps_the_explicit_close_owner_executable():
+    for mutation in ("geometry", "cadence", "stale", "insufficient", "zero_range"):
+        with _case(mutation):
+            _invalid_entry_frame_keeps_the_explicit_close_owner_executable(mutation)
+
+
+def _invalid_entry_frame_keeps_the_explicit_close_owner_executable(mutation):
     df = _walk(300, 9)
     if mutation == "geometry":
         df = _set_last(df, "open", df["high"].iloc[-1] * 2)
@@ -569,12 +610,6 @@ def test_invalid_entry_frame_keeps_the_explicit_close_owner_executable(mutation)
     assert decision["signal"] == 0 and decision["open_action"] == "none"
 
 
-def test_close_and_stop_owners_pass_strict_capability_validation():
-    report = validate_close_capabilities(close_refs=CLOSE, comparison_mode=None, platform="hyperliquid",
-                                         strategy_type="perps", phase="preflight").to_dict()
-    assert report["close_eligibility"] == "eligible" and not report["approximations"] and not report["refusals"]
-
-
 def _bt(params, **kw):
     base = dict(initial_capital=1000.0, platform="hyperliquid", open_strategy={"name": NAME, "params": params},
                 close_strategies=CLOSE, stop_loss_atr_mult=1.0, direction="both")
@@ -582,9 +617,16 @@ def _bt(params, **kw):
     return Backtester(**base)
 
 
-def test_simulator_fills_next_open_with_explicit_exits_and_no_reversal_or_scale_in():
+def test_simulator_fills_next_open_with_explicit_exits_no_reversal_or_scale_in_and_long_only_opens_no_shorts():
     df = _walk(1500, 5)
     sig = ensure_atr_indicator(_apply(df, DEFAULTS))
+    with _case("test_simulator_fills_next_open_with_explicit_exits_and_no_reversal_or_scale_in"):
+        _simulator_fills_next_open_with_explicit_exits_and_no_reversal_or_scale_in(df, sig)
+    with _case("test_simulator_long_only_arm_never_opens_shorts"):
+        _simulator_long_only_arm_never_opens_shorts(sig)
+
+
+def _simulator_fills_next_open_with_explicit_exits_and_no_reversal_or_scale_in(df, sig):
     res = _bt(DEFAULTS).run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
     trades = res["trades"]
     assert {t["side"] for t in trades} == {"long", "short"}
@@ -606,9 +648,7 @@ def test_simulator_fills_next_open_with_explicit_exits_and_no_reversal_or_scale_
         assert next_entry >= prev_exit
 
 
-def test_simulator_long_only_arm_never_opens_shorts():
-    df = _walk(1500, 5)
-    sig = ensure_atr_indicator(_apply(df, DEFAULTS))
+def _simulator_long_only_arm_never_opens_shorts(sig):
     res = _bt(DEFAULTS, direction="long").run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h",
                                               save=False)
     assert res["trades"] and {t["side"] for t in res["trades"]} == {"long"}

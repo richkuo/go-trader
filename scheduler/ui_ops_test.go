@@ -79,10 +79,13 @@ func TestAPILeaderboardRanksByPnLPct(t *testing.T) {
 	}
 }
 
-func TestAPIDiagnosticsNilDB503(t *testing.T) {
+func TestAPIDiagnosticsAndCashflowNilDB503(t *testing.T) {
 	ss := newOpsTestServer(t, nil, NewAppState(), false)
 	if w := opsGet(ss, ss.handleAPIDiagnostics, "/api/diagnostics"); w.Code != http.StatusServiceUnavailable {
 		t.Errorf("nil-DB diagnostics = %d, want 503", w.Code)
+	}
+	if w := opsGet(ss, ss.handleAPICashflow, "/api/cashflow"); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("nil-DB cashflow = %d, want 503 (a failed money-path read must not render as a clean empty journal)", w.Code)
 	}
 }
 
@@ -300,13 +303,6 @@ func TestAPICashflowRuntimeBasisOverridesEligibility(t *testing.T) {
 	}
 	if resp.Wallets[0].Basis != cashflowBasisJournal {
 		t.Errorf("basis after usable cycle = %q, want %q", resp.Wallets[0].Basis, cashflowBasisJournal)
-	}
-}
-
-func TestAPICashflowNilDB503(t *testing.T) {
-	ss := newOpsTestServer(t, nil, NewAppState(), false)
-	if w := opsGet(ss, ss.handleAPICashflow, "/api/cashflow"); w.Code != http.StatusServiceUnavailable {
-		t.Errorf("nil-DB cashflow = %d, want 503 (a failed money-path read must not render as a clean empty journal)", w.Code)
 	}
 }
 

@@ -8,17 +8,19 @@ import eval_windows as ew
 import monte_carlo as mc
 
 
-@pytest.mark.parametrize("trades,expected_dd,expected_final", [
-    ([], 0.0, 0.0),
-    ([10.0, 10.0], 0.0, 21.0),
-    ([10.0, -20.0, 10.0], 20.0, -3.2),
-    ([-100.0, 50.0], 100.0, -100.0),
-    ([-10.0], 10.0, -10.0),
-])
-def test_equity_path_stats(trades, expected_dd, expected_final):
-    dd, final = mc.equity_path_stats(trades)
-    assert dd == pytest.approx(expected_dd)
-    assert final == pytest.approx(expected_final)
+def test_equity_path_stats():
+    cases = [
+        ([], 0.0, 0.0),
+        ([10.0, 10.0], 0.0, 21.0),
+        ([10.0, -20.0, 10.0], 20.0, -3.2),
+        ([-100.0, 50.0], 100.0, -100.0),
+        ([-10.0], 10.0, -10.0),
+    ]
+    for trades, expected_dd, expected_final in cases:
+        case = f"test_equity_path_stats[{trades}]"
+        dd, final = mc.equity_path_stats(trades)
+        assert dd == pytest.approx(expected_dd), case
+        assert final == pytest.approx(expected_final), case
 
 
 def test_percentile_empty_none_and_interpolation():
@@ -119,18 +121,18 @@ def test_resample_stats_single_trade():
         assert s["final_return_pct_percentiles"]["p50"] == pytest.approx(5.0)
 
 
-def test_all_winner_series_reports_smoothed_floor():
+def test_kill_switch_breach_probabilities_are_add_one_smoothed_at_both_extremes():
+    case = "test_all_winner_series_reports_smoothed_floor"
     s = mc.resample_stats([1.0, 2.0, 3.0], "permute", n_paths=100, seed=1,
                           kill_switch_pct=25.0)
-    assert s["p_dd_ge_kill_switch"] == pytest.approx(1 / 101)
-    assert s["p_final_below_start"] == pytest.approx(1 / 101)
+    assert s["p_dd_ge_kill_switch"] == pytest.approx(1 / 101), case
+    assert s["p_final_below_start"] == pytest.approx(1 / 101), case
 
-
-def test_certain_breach_smoothed_below_one():
+    case = "test_certain_breach_smoothed_below_one"
     s = mc.resample_stats([-50.0], "permute", n_paths=100, seed=1,
                           kill_switch_pct=25.0)
-    assert s["p_dd_ge_kill_switch"] == pytest.approx(101 / 101)
-    assert s["p_final_below_start"] == pytest.approx(101 / 101)
+    assert s["p_dd_ge_kill_switch"] == pytest.approx(101 / 101), case
+    assert s["p_final_below_start"] == pytest.approx(101 / 101), case
 
 
 def test_unknown_scheme_rejected():
@@ -143,15 +145,17 @@ def _trade(pnl_pct, shares=2.0, entry_price=100.0, pnl=None):
             "pnl": pnl}
 
 
-@pytest.mark.parametrize("trades,kwargs,expected", [
-    ([_trade(5.0, pnl=8.0)], {}, [4.0]),
-    ([_trade(5.0, pnl=8.0)], {"returns": "gross"}, [5.0]),
-    ([_trade(5.0, shares=0.0, pnl=8.0)], {}, [5.0]),
-    ([1.5, -2.0], {}, [1.5, -2.0]),
-])
-def test_trade_returns(trades, kwargs, expected):
-    assert mc.trade_returns(trades, **kwargs) == [pytest.approx(v)
-                                                  for v in expected]
+def test_trade_returns():
+    cases = [
+        ("net_from_pnl", [_trade(5.0, pnl=8.0)], {}, [4.0]),
+        ("gross", [_trade(5.0, pnl=8.0)], {"returns": "gross"}, [5.0]),
+        ("zero_shares_falls_back", [_trade(5.0, shares=0.0, pnl=8.0)], {}, [5.0]),
+        ("bare_floats", [1.5, -2.0], {}, [1.5, -2.0]),
+    ]
+    for case_id, trades, kwargs, expected in cases:
+        assert mc.trade_returns(trades, **kwargs) == [pytest.approx(v)
+                                                      for v in expected], (
+            f"test_trade_returns[{case_id}]")
 
 
 @pytest.mark.parametrize("trades,kwargs,match", [
@@ -170,25 +174,27 @@ def _cfg(strategies, platforms=None):
     return {"strategies": strategies, "platforms": platforms or {}}
 
 
-@pytest.mark.parametrize("cfg,strategy_id,expected", [
-    (_cfg([{"id": "s1", "type": "perps", "max_drawdown_pct": 12.5}]),
-     "s1", 12.5),
-    (_cfg([{"id": "s1", "type": "spot", "platform": "okx"}],
-          {"okx": {"risk": {"max_drawdown_pct": 33.0}}}), "s1", 33.0),
-    (_cfg([{"id": "hl-btc-x", "type": "perps"}],
-          {"hyperliquid": {"risk": {"max_drawdown_pct": 18.0}}}),
-     "hl-btc-x", 18.0),
-    (_cfg([{"id": "s1", "type": "options", "platform": "binanceus"}]),
-     "s1", 40.0),
-    (_cfg([{"id": "s1", "type": "futures", "platform": "binanceus"}]),
-     "s1", 45.0),
-    (_cfg([{"id": "s1", "type": "perps", "platform": "binanceus"}]),
-     "s1", 50.0),
-    (_cfg([{"id": "s1", "type": "spot", "platform": "binanceus"}]),
-     "s1", 60.0),
-])
-def test_resolve_kill_switch_pct(cfg, strategy_id, expected):
-    assert mc.resolve_kill_switch_pct(cfg, strategy_id) == expected
+def test_resolve_kill_switch_pct():
+    cases = [
+        (_cfg([{"id": "s1", "type": "perps", "max_drawdown_pct": 12.5}]),
+         "s1", 12.5),
+        (_cfg([{"id": "s1", "type": "spot", "platform": "okx"}],
+              {"okx": {"risk": {"max_drawdown_pct": 33.0}}}), "s1", 33.0),
+        (_cfg([{"id": "hl-btc-x", "type": "perps"}],
+              {"hyperliquid": {"risk": {"max_drawdown_pct": 18.0}}}),
+         "hl-btc-x", 18.0),
+        (_cfg([{"id": "s1", "type": "options", "platform": "binanceus"}]),
+         "s1", 40.0),
+        (_cfg([{"id": "s1", "type": "futures", "platform": "binanceus"}]),
+         "s1", 45.0),
+        (_cfg([{"id": "s1", "type": "perps", "platform": "binanceus"}]),
+         "s1", 50.0),
+        (_cfg([{"id": "s1", "type": "spot", "platform": "binanceus"}]),
+         "s1", 60.0),
+    ]
+    for cfg, strategy_id, expected in cases:
+        assert mc.resolve_kill_switch_pct(cfg, strategy_id) == expected, (
+            f"test_resolve_kill_switch_pct[{cfg['strategies'][0]}-{cfg['platforms']}]")
 
 
 def test_kill_switch_missing_strategy_raises():
@@ -196,19 +202,18 @@ def test_kill_switch_missing_strategy_raises():
         mc.resolve_kill_switch_pct(_cfg([]), "ghost")
 
 
-def test_trade_samples_carry_net_return():
+def test_trade_samples_carry_net_return_and_fall_back_to_gross():
+    case = "test_trade_samples_carry_net_return"
     results = {"trades": [{"entry_date": "2025-01-01", "pnl_pct": 5.0,
                            "shares": 2.0, "entry_price": 100.0, "pnl": 8.0}]}
     samples = ew.trade_samples_from_results(results)
-    assert samples[0]["pnl_pct"] == 5.0
-    assert samples[0]["pnl_pct_net"] == pytest.approx(4.0)
+    assert samples[0]["pnl_pct"] == 5.0, case
+    assert samples[0]["pnl_pct_net"] == pytest.approx(4.0), case
 
-
-def test_trade_samples_net_falls_back_to_gross():
     results = {"trades": [{"entry_date": "2025-01-01", "pnl_pct": 5.0,
                            "shares": 0.0, "entry_price": 0.0, "pnl": 8.0}]}
     samples = ew.trade_samples_from_results(results)
-    assert samples[0]["pnl_pct_net"] == 5.0
+    assert samples[0]["pnl_pct_net"] == 5.0, "test_trade_samples_net_falls_back_to_gross"
 
 
 def test_cli_deterministic_byte_identical_json(tmp_path):

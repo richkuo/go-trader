@@ -68,7 +68,8 @@ def _make_spread_series(n: int, base_a: float, base_b: float,
     return _flat_df(prices_a), _flat_df(prices_b)
 
 
-def test_short_a_signal_fires_when_spread_high() -> None:
+def test_short_a_fires_when_spread_high_and_long_a_when_spread_low():
+    case = "test_short_a_signal_fires_when_spread_high"
     df_a, df_b = _make_spread_series(n=300, base_a=2000.0, base_b=60000.0,
                                      spike_at=200, spike_pct=0.05, direction=+1)
     bt = PairsBacktester(
@@ -77,10 +78,9 @@ def test_short_a_signal_fires_when_spread_high() -> None:
     )
     results = bt.run(df_a, df_b)
     assert any(t.side_a == SIDE_SHORT_A for t in results.trades), \
-        "spike up in A should trigger short-A trade"
+        (case, "spike up in A should trigger short-A trade")
 
-
-def test_long_a_signal_fires_when_spread_low() -> None:
+    case = "test_long_a_signal_fires_when_spread_low"
     df_a, df_b = _make_spread_series(n=300, base_a=2000.0, base_b=60000.0,
                                      spike_at=200, spike_pct=0.05, direction=-1)
     bt = PairsBacktester(
@@ -89,7 +89,7 @@ def test_long_a_signal_fires_when_spread_low() -> None:
     )
     results = bt.run(df_a, df_b)
     assert any(t.side_a == SIDE_LONG_A for t in results.trades), \
-        "spike down in A should trigger long-A trade"
+        (case, "spike down in A should trigger long-A trade")
 
 
 def test_beta_hedge_scales_b_notional() -> None:
@@ -122,7 +122,8 @@ def test_fees_accumulate_round_trip() -> None:
     assert t.fees == pytest.approx(expected_fee, rel=1e-6)
 
 
-def test_liquidation_on_large_adverse_move() -> None:
+def test_liquidation_on_large_adverse_move_caps_loss_at_margin_posted():
+    case = "test_liquidation_on_large_adverse_move"
     n = 300
     prices_a = [2000.0] * 200 + [2100.0] * 5 + [2180.0] * (n - 205)
     prices_b = [60000.0] * n
@@ -134,11 +135,10 @@ def test_liquidation_on_large_adverse_move() -> None:
         taker_fee_pct=0.0, maker_fee_pct=0.0,
     )
     results = bt.run(df_a, df_b)
-    assert results.liquidations >= 1
-    assert any(t.exit_reason == "liquidation" for t in results.trades)
+    assert results.liquidations >= 1, case
+    assert any(t.exit_reason == "liquidation" for t in results.trades), case
 
-
-def test_liquidation_loss_capped_at_margin_posted() -> None:
+    case = "test_liquidation_loss_capped_at_margin_posted"
     n = 300
     prices_a = [2000.0] * 200 + [2100.0] * 10 + [2500.0] * (n - 210)
     prices_b = [60000.0] * n
@@ -151,13 +151,13 @@ def test_liquidation_loss_capped_at_margin_posted() -> None:
     )
     results = bt.run(df_a, df_b)
     liquidated = [t for t in results.trades if t.exit_reason == "liquidation"]
-    assert liquidated, "expected liquidation"
+    assert liquidated, (case, "expected liquidation")
     t = liquidated[0]
     assert -t.pnl_a <= t.margin_a + 1e-9, \
-        f"leg A loss {-t.pnl_a:.2f} exceeds posted margin {t.margin_a:.2f}"
+        (case, f"leg A loss {-t.pnl_a:.2f} exceeds posted margin {t.margin_a:.2f}")
     max_loss = t.margin_a + t.margin_b + t.fees
     assert -t.net_pnl <= max_loss + 1e-9, \
-        f"net loss {-t.net_pnl:.2f} exceeds margin+fees cap {max_loss:.2f}"
+        (case, f"net loss {-t.net_pnl:.2f} exceeds margin+fees cap {max_loss:.2f}")
 
 
 def test_funding_accrues_correctly_per_leg() -> None:

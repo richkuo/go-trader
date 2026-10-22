@@ -58,35 +58,15 @@ func TestTelegramNotifier_SendMessage(t *testing.T) {
 	}
 }
 
-func TestTelegramNotifier_SendDM_IsSendMessage(t *testing.T) {
+func TestTelegramNotifier_SendDMIsSendMessageAndTruncates(t *testing.T) {
 	var sentChatID string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
-			var body map[string]interface{}
-			json.NewDecoder(r.Body).Decode(&body)
-			sentChatID, _ = body["chat_id"].(string)
-		}
-		json.NewEncoder(w).Encode(telegramResponse{OK: true})
-	}))
-	defer server.Close()
-
-	tg := newTestTelegramNotifier(server.URL)
-
-	err := tg.SendDM("99999", "dm content")
-	if err != nil {
-		t.Fatalf("SendDM returned error: %v", err)
-	}
-	if sentChatID != "99999" {
-		t.Errorf("expected chat_id '99999', got %q", sentChatID)
-	}
-}
-
-func TestTelegramNotifier_MessageTruncation(t *testing.T) {
 	var receivedText string
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
 		json.NewDecoder(r.Body).Decode(&body)
+		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
+			sentChatID, _ = body["chat_id"].(string)
+		}
 		receivedText, _ = body["text"].(string)
 		json.NewEncoder(w).Encode(telegramResponse{OK: true})
 	}))
@@ -94,17 +74,29 @@ func TestTelegramNotifier_MessageTruncation(t *testing.T) {
 
 	tg := newTestTelegramNotifier(server.URL)
 
-	longContent := strings.Repeat("x", 5000)
-	err := tg.SendMessage("123", longContent)
-	if err != nil {
-		t.Fatalf("SendMessage returned error: %v", err)
-	}
-	if len(receivedText) != telegramMaxMessageLen {
-		t.Errorf("expected truncated length %d, got %d", telegramMaxMessageLen, len(receivedText))
-	}
-	if !strings.HasSuffix(receivedText, "...") {
-		t.Error("expected truncated message to end with '...'")
-	}
+	t.Run("send DM is sendMessage", func(t *testing.T) {
+		err := tg.SendDM("99999", "dm content")
+		if err != nil {
+			t.Fatalf("SendDM returned error: %v", err)
+		}
+		if sentChatID != "99999" {
+			t.Errorf("expected chat_id '99999', got %q", sentChatID)
+		}
+	})
+
+	t.Run("message truncation", func(t *testing.T) {
+		longContent := strings.Repeat("x", 5000)
+		err := tg.SendMessage("123", longContent)
+		if err != nil {
+			t.Fatalf("SendMessage returned error: %v", err)
+		}
+		if len(receivedText) != telegramMaxMessageLen {
+			t.Errorf("expected truncated length %d, got %d", telegramMaxMessageLen, len(receivedText))
+		}
+		if !strings.HasSuffix(receivedText, "...") {
+			t.Error("expected truncated message to end with '...'")
+		}
+	})
 }
 
 func TestAskDMRejectsStaleMessages(t *testing.T) {

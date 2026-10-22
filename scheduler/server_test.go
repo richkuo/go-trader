@@ -63,19 +63,22 @@ func TestHandleHealth(t *testing.T) {
 	}
 }
 
-func TestHandleStatusRejectsBadToken(t *testing.T) {
+func TestHandleStatusBearerTokenAuth(t *testing.T) {
 	cases := []struct {
-		name   string
-		header string
+		name     string
+		token    string
+		header   string
+		wantCode int
 	}{
-		{"no authorization header", ""},
-		{"wrong bearer token", "Bearer wrong-token"},
+		{"no authorization header", "secret-token", "", http.StatusUnauthorized},
+		{"wrong bearer token", "secret-token", "Bearer wrong-token", http.StatusUnauthorized},
+		{"matching bearer token", "my-token", "Bearer my-token", http.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			state := NewAppState()
 			var mu sync.RWMutex
-			ss := NewStatusServer(state, &mu, "secret-token", nil, nil)
+			ss := NewStatusServer(state, &mu, tc.token, nil, nil)
 
 			req := httptest.NewRequest("GET", "/status", nil)
 			if tc.header != "" {
@@ -84,8 +87,8 @@ func TestHandleStatusRejectsBadToken(t *testing.T) {
 			w := httptest.NewRecorder()
 			ss.handleStatus(w, req)
 
-			if w.Code != http.StatusUnauthorized {
-				t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+			if w.Code != tc.wantCode {
+				t.Errorf("status = %d, want %d", w.Code, tc.wantCode)
 			}
 		})
 	}
@@ -132,22 +135,6 @@ func TestHandleStatusNoAuth(t *testing.T) {
 	}
 	if testStrat["trade_count"].(float64) != 1 {
 		t.Errorf("trade_count = %v, want 1", testStrat["trade_count"])
-	}
-}
-
-func TestHandleStatusWithBearerToken(t *testing.T) {
-	state := NewAppState()
-	var mu sync.RWMutex
-
-	ss := NewStatusServer(state, &mu, "my-token", nil, nil)
-
-	req := httptest.NewRequest("GET", "/status", nil)
-	req.Header.Set("Authorization", "Bearer my-token")
-	w := httptest.NewRecorder()
-	ss.handleStatus(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 }
 
@@ -254,35 +241,33 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 	}
 }
 
-func TestHandleHistory_NilDB(t *testing.T) {
-	state := NewAppState()
-	var mu sync.RWMutex
-	ss := NewStatusServer(state, &mu, "", nil, nil)
+func TestHandleHistory_NilDBAndUnauthorized(t *testing.T) {
+	cases := []struct {
+		name     string
+		token    string
+		wantCode int
+	}{
+		{"nil DB", "", http.StatusServiceUnavailable},
+		{"unauthorized", "secret", http.StatusUnauthorized},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state := NewAppState()
+			var mu sync.RWMutex
+			ss := NewStatusServer(state, &mu, tc.token, nil, nil)
 
-	req := httptest.NewRequest("GET", "/history", nil)
-	w := httptest.NewRecorder()
-	ss.handleHistory(w, req)
+			req := httptest.NewRequest("GET", "/history", nil)
+			w := httptest.NewRecorder()
+			ss.handleHistory(w, req)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+			if w.Code != tc.wantCode {
+				t.Errorf("status = %d, want %d", w.Code, tc.wantCode)
+			}
+		})
 	}
 }
 
-func TestHandleHistory_Unauthorized(t *testing.T) {
-	state := NewAppState()
-	var mu sync.RWMutex
-	ss := NewStatusServer(state, &mu, "secret", nil, nil)
-
-	req := httptest.NewRequest("GET", "/history", nil)
-	w := httptest.NewRecorder()
-	ss.handleHistory(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
-	}
-}
-
-func TestHandleHistory_NoAuth(t *testing.T) {
+func TestHandleHistory_NoAuthDefaultsAndQueryParams(t *testing.T) {
 	db := openTestDB(t)
 	state := makeTestState()
 	if err := db.SaveState(state); err != nil {
@@ -292,66 +277,59 @@ func TestHandleHistory_NoAuth(t *testing.T) {
 	var mu sync.RWMutex
 	ss := NewStatusServer(NewAppState(), &mu, "", nil, openTestStore(t, db))
 
-	req := httptest.NewRequest("GET", "/history", nil)
-	w := httptest.NewRecorder()
-	ss.handleHistory(w, req)
+	t.Run("no auth defaults", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/history", nil)
+		w := httptest.NewRecorder()
+		ss.handleHistory(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
-	}
+		if w.Code != http.StatusOK {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+		}
 
-	var resp struct {
-		Trades []Trade `json:"trades"`
-		Total  int     `json:"total"`
-		Limit  int     `json:"limit"`
-		Offset int     `json:"offset"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Total != 2 {
-		t.Errorf("total = %d, want 2", resp.Total)
-	}
-	if resp.Limit != 50 {
-		t.Errorf("limit = %d, want 50", resp.Limit)
-	}
-}
+		var resp struct {
+			Trades []Trade `json:"trades"`
+			Total  int     `json:"total"`
+			Limit  int     `json:"limit"`
+			Offset int     `json:"offset"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Total != 2 {
+			t.Errorf("total = %d, want 2", resp.Total)
+		}
+		if resp.Limit != 50 {
+			t.Errorf("limit = %d, want 50", resp.Limit)
+		}
+	})
 
-func TestHandleHistory_QueryParams(t *testing.T) {
-	db := openTestDB(t)
-	state := makeTestState()
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
-	}
+	t.Run("query params", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/history?strategy=hl-momentum-btc&limit=1", nil)
+		w := httptest.NewRecorder()
+		ss.handleHistory(w, req)
 
-	var mu sync.RWMutex
-	ss := NewStatusServer(NewAppState(), &mu, "", nil, openTestStore(t, db))
+		if w.Code != http.StatusOK {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+		}
 
-	req := httptest.NewRequest("GET", "/history?strategy=hl-momentum-btc&limit=1", nil)
-	w := httptest.NewRecorder()
-	ss.handleHistory(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	var resp struct {
-		Trades []Trade `json:"trades"`
-		Total  int     `json:"total"`
-		Limit  int     `json:"limit"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Total != 2 {
-		t.Errorf("total = %d, want 2", resp.Total)
-	}
-	if len(resp.Trades) != 1 {
-		t.Errorf("trades len = %d, want 1 (limited)", len(resp.Trades))
-	}
-	if resp.Limit != 1 {
-		t.Errorf("limit = %d, want 1", resp.Limit)
-	}
+		var resp struct {
+			Trades []Trade `json:"trades"`
+			Total  int     `json:"total"`
+			Limit  int     `json:"limit"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Total != 2 {
+			t.Errorf("total = %d, want 2", resp.Total)
+		}
+		if len(resp.Trades) != 1 {
+			t.Errorf("trades len = %d, want 1 (limited)", len(resp.Trades))
+		}
+		if resp.Limit != 1 {
+			t.Errorf("limit = %d, want 1", resp.Limit)
+		}
+	})
 }
 
 func TestUIPausedAndDirectionalSerialization(t *testing.T) {

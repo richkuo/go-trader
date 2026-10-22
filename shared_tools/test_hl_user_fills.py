@@ -13,7 +13,7 @@ _spec.loader.exec_module(_mod)
 _finite_number = _mod._finite_number
 
 
-@pytest.mark.parametrize("value,expected", [
+FINITE_NUMBER_CASES = [
     ("3.14", 3.14),
     (42, 42.0),
     (1.5, 1.5),
@@ -25,10 +25,14 @@ _finite_number = _mod._finite_number
     (float("inf"), None),
     ("-inf", None),
     (float("nan"), None),
-])
-def test_finite_number(value, expected):
-    got = _finite_number(value)
-    if expected is None:
-        assert got is None
-    else:
-        assert got == pytest.approx(expected)
+]
+
+
+def test_finite_number(subtests):
+    for value, expected in FINITE_NUMBER_CASES:
+        with subtests.test(value=value, expected=expected):
+            got = _finite_number(value)
+            if expected is None:
+                assert got is None
+            else:
+                assert got == pytest.approx(expected)

@@ -64,7 +64,7 @@ def test_oscillator_equals_half_the_midpoint_step_for_one_and_two_bar_means():
     assert out["ao"].iloc[-2] == -1.0
 
 
-@pytest.mark.parametrize("tail,signal,reason,lag", [
+TRUTH_TABLE_CASES = [
     ([-1.0, 2.0], 1, "entry_long", 1.0),
     ([-1.0] + [0.0] * 7 + [2.0], 1, "entry_long", 8.0),
     ([1.0, 2.0], 0, "no_cross", 1.0),
@@ -73,20 +73,24 @@ def test_oscillator_equals_half_the_midpoint_step_for_one_and_two_bar_means():
     ([1.0, -2.0], -1, "entry_short", 1.0),
     ([1.0] + [0.0] * 7 + [-2.0], -1, "entry_short", 8.0),
     ([-1.0, -2.0], 0, "no_cross", 1.0),
-])
-def test_truth_table_cases(tail, signal, reason, lag):
-    out = run(ao_frame([0.5] * 12 + tail), SMALL)
-    row = out.iloc[-1]
-    assert int(row["signal"]) == signal
-    assert row["ao_reason"] == reason
-    assert bool(row["ao_valid"])
-    if np.isnan(lag):
-        assert np.isnan(row["ao_prev_lag"])
-    else:
-        assert row["ao_prev_lag"] == lag
-        assert row["ao_prev_nonzero"] == tail[-1 - int(lag)]
-    if signal:
-        assert np.sign(row["ao"]) == signal == -np.sign(row["ao_prev_nonzero"])
+]
+
+
+def test_truth_table_cases(subtests):
+    for case, (tail, signal, reason, lag) in enumerate(TRUTH_TABLE_CASES):
+        with subtests.test(case=case, tail=tail, reason=reason):
+            out = run(ao_frame([0.5] * 12 + tail), SMALL)
+            row = out.iloc[-1]
+            assert int(row["signal"]) == signal
+            assert row["ao_reason"] == reason
+            assert bool(row["ao_valid"])
+            if np.isnan(lag):
+                assert np.isnan(row["ao_prev_lag"])
+            else:
+                assert row["ao_prev_lag"] == lag
+                assert row["ao_prev_nonzero"] == tail[-1 - int(lag)]
+            if signal:
+                assert np.sign(row["ao"]) == signal == -np.sign(row["ao_prev_nonzero"])
 
 
 def test_long_zero_run_never_crosses_in_full_series_or_bounded_window():
@@ -121,18 +125,22 @@ def test_invalid_value_inside_predecessor_search_resets_it():
     assert int(out2["signal"].iloc[-1]) == int(recover["signal"].iloc[-1]) == 1
 
 
-@pytest.mark.parametrize("col,value,reason", [
+MALFORMED_BAR_CASES = [
     ("high", np.inf, "nonfinite_input"),
     ("low", np.nan, "nonfinite_input"),
     ("low", 1e9, "inconsistent_hl"),
-])
-def test_malformed_bar_yields_reasoned_hold(col, value, reason):
-    df = ao_frame([0.5] * 12 + [-1.0, 2.0])
-    df.iloc[-1, df.columns.get_loc(col)] = value
-    row = run(df, SMALL).iloc[-1]
-    assert int(row["signal"]) == 0
-    assert not bool(row["ao_valid"])
-    assert row["ao_reason"] == reason
+]
+
+
+def test_malformed_bar_yields_reasoned_hold(subtests):
+    for col, value, reason in MALFORMED_BAR_CASES:
+        with subtests.test(col=col, value=value, reason=reason):
+            df = ao_frame([0.5] * 12 + [-1.0, 2.0])
+            df.iloc[-1, df.columns.get_loc(col)] = value
+            row = run(df, SMALL).iloc[-1]
+            assert int(row["signal"]) == 0
+            assert not bool(row["ao_valid"])
+            assert row["ao_reason"] == reason
 
 
 def test_insufficient_history_and_missing_columns():
@@ -173,7 +181,7 @@ def test_constant_series_is_exact_zero_and_never_emits():
     assert (out["signal"] == 0).all()
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"fast_period": True},
     {"fast_period": 5.5},
     {"fast_period": 0},
@@ -181,10 +189,14 @@ def test_constant_series_is_exact_zero_and_never_emits():
     {"fast_period": 34, "slow_period": 34},
     {"fast_period": 40, "slow_period": 34},
     {"slow_period": float("nan")},
-])
-def test_invalid_parameters_raise(params):
-    with pytest.raises(ValueError):
-        run(frame([100.0] * 60), params)
+]
+
+
+def test_invalid_parameters_raise(subtests):
+    for params in INVALID_PARAMS:
+        with subtests.test(params=params):
+            with pytest.raises(ValueError):
+                run(frame([100.0] * 60), params)
 
 
 def test_integral_float_period_accepted():

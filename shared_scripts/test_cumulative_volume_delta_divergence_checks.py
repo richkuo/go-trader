@@ -69,7 +69,7 @@ def _assert_refused(proc, role, name=NAME):
 
 
 @pytest.mark.parametrize("name", REFUSED_NAMES)
-def test_every_solo_check_refuses_the_candidate_in_any_mode_and_reference(name):
+def test_every_solo_and_batch_check_refuses_the_candidate_in_any_mode_and_reference_and_keeps_batch_peers(name):
     NAME = name
     envelope = {"v": 2, "market": _market()}
     cases = [
@@ -89,11 +89,6 @@ def test_every_solo_check_refuses_the_candidate_in_any_mode_and_reference(name):
     proc = _run("check_okx.py", [NAME, "BTC", "5m", "--inst-type=swap", "--mode=paper"])
     assert proc.returncode == 1 and REFUSED in _payload(proc)["error"], proc.stdout[-2000:] + proc.stderr[-2000:]
     assert "Fetching" not in proc.stderr
-
-
-@pytest.mark.parametrize("name", REFUSED_NAMES)
-def test_batch_slots_refuse_the_candidate_and_keep_their_peers(name):
-    NAME = name
     slots = [
         {"id": "paper", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"]},
         {"id": "acked", "strategy": NAME, "mode": "live", "mode_args": ["--mode=live"], "allow_no_edge": True},
@@ -103,6 +98,6 @@ def test_batch_slots_refuse_the_candidate_and_keep_their_peers(name):
                 {"v": 2, "slots": slots, "market": _market()})
     results = {r["id"]: r for r in _payload(proc)["results"]}
     for slot in ("paper", "acked"):
-        assert f"open strategy '{NAME}' {REFUSED}" in results[slot]["error"]
-        assert results[slot].get("signal", 0) == 0
-    assert not results["peer"].get("error")
+        assert f"open strategy '{NAME}' {REFUSED}" in results[slot]["error"], f"batch_slots_refuse[{name}] {slot}"
+        assert results[slot].get("signal", 0) == 0, f"batch_slots_refuse[{name}] {slot}"
+    assert not results["peer"].get("error"), f"batch_slots_refuse[{name}] peer"

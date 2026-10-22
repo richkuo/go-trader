@@ -63,51 +63,50 @@ def _dump(res):
 
 
 @pytest.mark.parametrize("name", sorted(CASES))
-def test_event_output_changes_no_existing_result_field(name):
+def test_events_are_additive_and_reconcile_cash_quantity_fees_and_trade_rows(name):
+    additive = f"test_event_output_changes_no_existing_result_field[{name}]"
+    msg = f"test_events_reconcile_cash_quantity_fees_and_trade_rows[{name}]"
     off = _run(name, record=False)
-    on = _run(name, record=True)
-    assert "ledger_events" not in off
-    env = on.pop("ledger_events")
-    assert env["schema"] == LEDGER_EVENTS_SCHEMA and env["schema_version"] == LEDGER_EVENTS_SCHEMA_VERSION
-    assert _dump(on) == _dump(off)
-
-
-@pytest.mark.parametrize("name", sorted(CASES))
-def test_events_reconcile_cash_quantity_fees_and_trade_rows(name):
     res = _run(name, record=True)
+    assert "ledger_events" not in off, additive
     env = res["ledger_events"]
+    assert env["schema"] == LEDGER_EVENTS_SCHEMA and env["schema_version"] == LEDGER_EVENTS_SCHEMA_VERSION, additive
+    on = dict(res)
+    on.pop("ledger_events")
+    assert _dump(on) == _dump(off), additive
+
     events = env["events"]
-    assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
+    assert [e["seq"] for e in events] == list(range(1, len(events) + 1)), msg
     cash, qty = env["initial_cash"], 0.0
     for e in events:
-        assert e["cash_before"] == pytest.approx(cash, abs=1e-9)
-        assert e["qty_before"] == pytest.approx(qty, abs=1e-12)
-        assert e["kind"] == "funding" or e["position_local_id"] is not None
+        assert e["cash_before"] == pytest.approx(cash, abs=1e-9), msg
+        assert e["qty_before"] == pytest.approx(qty, abs=1e-12), msg
+        assert e["kind"] == "funding" or e["position_local_id"] is not None, msg
         cash, qty = e["cash_after"], e["qty_after"]
-    assert qty == 0.0
-    assert round(cash, 2) == res["final_capital"]
+    assert qty == 0.0, msg
+    assert round(cash, 2) == res["final_capital"], msg
     end = env["interval_end"]
     pre = [e for e in events if e["kind"] != "terminal_liquidation"]
     lhs = env["initial_cash"] + math.fsum(e["gross_realized"] or 0.0 for e in pre) \
         - math.fsum(e["fee_charged"] for e in pre) + math.fsum(e["funding_cash"] or 0.0 for e in pre)
     rhs = end["cash"] + end["position_qty"] * (end["avg_cost"] or 0.0)
-    assert lhs == pytest.approx(rhs, abs=1e-6)
+    assert lhs == pytest.approx(rhs, abs=1e-6), msg
     charged = math.fsum(e["fee_charged"] for e in pre if e["kind"] in ("open", "scale_in", "seed_inventory"))
     allocated = math.fsum(e["entry_fee_allocated"] or 0.0 for e in pre)
-    assert charged == pytest.approx(allocated + end["entry_fee_outstanding"], abs=1e-9)
+    assert charged == pytest.approx(allocated + end["entry_fee_outstanding"], abs=1e-9), msg
     closes = [e for e in events if e["kind"] in ("close", "terminal_liquidation")]
-    assert len(closes) == len(res["trades"])
+    assert len(closes) == len(res["trades"]), msg
     for e, row in zip(closes, res["trades"]):
-        assert row["exit_reason"] == e["reason"]
-        assert row["exit_fee"] == pytest.approx(e["fee_charged"], abs=5e-7)
-        assert row["entry_fee"] == pytest.approx(e["entry_fee_allocated"], abs=5e-7)
+        assert row["exit_reason"] == e["reason"], msg
+        assert row["exit_fee"] == pytest.approx(e["fee_charged"], abs=5e-7), msg
+        assert row["entry_fee"] == pytest.approx(e["entry_fee_allocated"], abs=5e-7), msg
         net = e["gross_realized"] - e["entry_fee_allocated"] - e["fee_charged"]
-        assert abs(row["pnl"] - net) <= 0.005 + 1e-9
+        assert abs(row["pnl"] - net) <= 0.005 + 1e-9, msg
     terminal = [e for e in events if e["kind"] == "terminal_liquidation"]
-    assert all(e["synthetic"] for e in terminal)
+    assert all(e["synthetic"] for e in terminal), msg
     if terminal:
-        assert end["position_qty"] != 0 and terminal[0]["qty_before"] == end["position_qty"]
-        assert events[-1] is terminal[0]
+        assert end["position_qty"] != 0 and terminal[0]["qty_before"] == end["position_qty"], msg
+        assert events[-1] is terminal[0], msg
 
 
 def test_scale_in_and_partial_closes_allocate_each_entry_fee_once():

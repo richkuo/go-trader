@@ -104,36 +104,54 @@ def test_missing_mode_is_refused_for_a_close_fallback_reference():
     assert f"close strategy '{NAME}' is edge_status=no_edge" in error and "missing mode" in error
 
 
-@pytest.mark.parametrize("current,signal,reason", [
-    ([100.0, 94.0, 95.0, 96.0], 1, "entry_long"),
-    ([100.0, 106.0, 105.0, 104.0], -1, "entry_short"),
-])
-def test_closed_bar_paper_check_decides_on_the_closed_crossing_candle(current, signal, reason):
-    bars = _bars(current)
-    out = _check(bars)
+def _assert_closed_crossing(out, bars, signal, reason, case):
     meta = out["closed_bar_decision"]
-    assert meta["held"] is False and meta["forming_rows_dropped"] == 1
-    assert out["signal"] == signal and out["indicator_labels"]["cpr_reason"] == reason
+    assert meta["held"] is False and meta["forming_rows_dropped"] == 1, case
+    assert out["signal"] == signal and out["indicator_labels"]["cpr_reason"] == reason, case
     ind = out["indicators"]
-    assert ind["cpr_valid"] == 1.0 and ind["cpr_eval_ts_ms"] == float(bars[-2]["t"])
-    assert ind["cpr_decision_boundary_ms"] == float(bars[-2]["t"] + H)
-    assert ind["cpr_decision_cutoff_ms"] == float(bars[-1]["t"] + H // 2)
-    assert (ind["cpr_prior_high"], ind["cpr_prior_low"], ind["cpr_prior_close"]) == (110.0, 90.0, 100.0)
+    assert ind["cpr_valid"] == 1.0 and ind["cpr_eval_ts_ms"] == float(bars[-2]["t"]), case
+    assert ind["cpr_decision_boundary_ms"] == float(bars[-2]["t"] + H), case
+    assert ind["cpr_decision_cutoff_ms"] == float(bars[-1]["t"] + H // 2), case
+    assert (ind["cpr_prior_high"], ind["cpr_prior_low"], ind["cpr_prior_close"]) == (110.0, 90.0, 100.0), case
     rng = ind["cpr_prior_high"] - ind["cpr_prior_low"]
-    assert ind["cpr_s3"] == ind["cpr_prior_close"] - 1.1 * rng / 4
-    assert ind["cpr_r4"] == ind["cpr_prior_close"] + 1.1 * rng / 2
-    assert (ind["cpr_prev_close"], ind["cpr_close"]) == (bars[-3]["c"], bars[-2]["c"])
-    assert ind["cpr_prior_day_open_ms"] == ind["cpr_day_open_ms"] - DAY
+    assert ind["cpr_s3"] == ind["cpr_prior_close"] - 1.1 * rng / 4, case
+    assert ind["cpr_r4"] == ind["cpr_prior_close"] + 1.1 * rng / 2, case
+    assert (ind["cpr_prev_close"], ind["cpr_close"]) == (bars[-3]["c"], bars[-2]["c"]), case
+    assert ind["cpr_prior_day_open_ms"] == ind["cpr_day_open_ms"] - DAY, case
 
 
-def test_without_closed_bar_decisions_the_check_frame_holds_every_entry():
+def test_closed_bar_long_crossing_decides_on_the_closed_candle_and_anchors_the_frame_hold_and_mixed_batch():
     bars = _bars([100.0, 94.0, 95.0, 96.0])
+    solo = _check(bars)
+    _assert_closed_crossing(solo, bars, 1, "entry_long",
+                            "closed_bar_paper_check_decides_on_the_closed_crossing_candle[entry_long]")
+    case = "without_closed_bar_decisions_the_check_frame_holds_every_entry"
     out = _check(bars, closed=False)
-    assert "closed_bar_decision" not in out
-    assert out["signal"] == 0 and out["open_action"] == "none"
-    assert out["indicator_labels"]["cpr_reason"] == "undeclared_timing"
-    assert out["indicators"]["cpr_valid"] == 0.0
-    assert _check(bars)["signal"] == 1
+    assert "closed_bar_decision" not in out, case
+    assert out["signal"] == 0 and out["open_action"] == "none", case
+    assert out["indicator_labels"]["cpr_reason"] == "undeclared_timing", case
+    assert out["indicators"]["cpr_valid"] == 0.0, case
+    assert solo["signal"] == 1, case
+    case = "a_mixed_batch_evaluates_valid_peers_and_matches_the_solo_check"
+    market = _market(bars)
+    good = {"id": "good", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"],
+            "closed_bar_decisions": True, "strategy_refs": json.loads(_refs())}
+    bad = {"id": "bad", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"],
+           "closed_bar_decisions": True, "params": {"expected_interval_ms": 4 * H}}
+    proc = _run(["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200", "--market-stdin"],
+                {"v": 2, "slots": [good, bad], "market": market})
+    assert proc.returncode == 1, case
+    results = {r["id"]: r for r in _payload(proc)["results"]}
+    assert results["bad"]["signal"] == 0 and "does not match timeframe '1h'" in results["bad"]["error"], case
+    for key in ("signal", "open_action", "close_fraction", "indicators", "indicator_labels", "closed_bar_decision"):
+        assert results["good"].get(key) == solo.get(key), (case, key)
+    assert solo["signal"] == 1, case
+
+
+def test_closed_bar_paper_check_decides_on_the_closed_short_crossing_candle():
+    bars = _bars([100.0, 106.0, 105.0, 104.0])
+    _assert_closed_crossing(_check(bars), bars, -1, "entry_short",
+                            "closed_bar_paper_check_decides_on_the_closed_crossing_candle[entry_short]")
 
 
 def test_a_stale_closed_bar_holds_and_a_forming_crossing_waits_for_its_close():
@@ -191,21 +209,3 @@ def test_a_batch_with_only_invalid_slots_refuses_every_slot_without_building_sha
     assert f"close strategy '{NAME}' has invalid parameters" in results["fallback"]["error"]
     assert all(r["signal"] == 0 for r in results.values())
     assert "Fetching BTC" not in proc.stderr
-
-
-def test_a_mixed_batch_evaluates_valid_peers_and_matches_the_solo_check():
-    bars = _bars([100.0, 94.0, 95.0, 96.0])
-    market = _market(bars)
-    good = {"id": "good", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"],
-            "closed_bar_decisions": True, "strategy_refs": json.loads(_refs())}
-    bad = {"id": "bad", "strategy": NAME, "mode": "paper", "mode_args": ["--mode=paper"],
-           "closed_bar_decisions": True, "params": {"expected_interval_ms": 4 * H}}
-    proc = _run(["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200", "--market-stdin"],
-                {"v": 2, "slots": [good, bad], "market": market})
-    assert proc.returncode == 1
-    results = {r["id"]: r for r in _payload(proc)["results"]}
-    assert results["bad"]["signal"] == 0 and "does not match timeframe '1h'" in results["bad"]["error"]
-    solo = _check(bars)
-    for key in ("signal", "open_action", "close_fraction", "indicators", "indicator_labels", "closed_bar_decision"):
-        assert results["good"].get(key) == solo.get(key), key
-    assert solo["signal"] == 1

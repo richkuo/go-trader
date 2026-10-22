@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import sys
@@ -14,7 +15,7 @@ if _TOOLS not in sys.path:
 
 import offline_manifest as om
 from atr import ensure_atr_indicator
-from backtester import Backtester, validate_close_capabilities
+from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from closed_bar import (
     FRAME_DECISION_TIME_ATTR,
@@ -50,6 +51,19 @@ DOMAIN_ENDPOINTS = [
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, params=None):
@@ -176,10 +190,15 @@ def _first(out, side, reason=None):
     return int(rows[0])
 
 
-@pytest.mark.parametrize("side", [1, -1])
-def test_threshold_equality_rules_and_strict_crossings(side):
+def test_threshold_equality_rules_and_strict_crossings():
     df = _walk(900, 11)
     out = _apply(df, DEFAULTS)
+    for side in (1, -1):
+        with _case(f"side={side}"):
+            _threshold_equality_rules_and_strict_crossings(df, out, side)
+
+
+def _threshold_equality_rules_and_strict_crossings(df, out, side):
     i = _first(out, side)
     prev, cur = float(out["stc_prev_value"].iloc[i]), float(out["stc_value"].iloc[i])
     key = "lower_threshold" if side == 1 else "upper_threshold"
@@ -241,7 +260,7 @@ def _no_cadence(df):
     return out
 
 
-@pytest.mark.parametrize("mutate,reason", [
+INVALID_ENTRY_DATA = [
     (lambda df: df.drop(columns=["volume"]), "missing_columns"),
     (_no_cadence, "missing_cadence"),
     (lambda df: df.reset_index(drop=True), "missing_timestamps"),
@@ -258,9 +277,13 @@ def _no_cadence(df):
     (lambda df: _shift_index(df, len(df) - 1, pd.Timedelta(hours=4)), "cadence_gap"),
     (lambda df: _shift_index(df, len(df) - 150, pd.Timedelta(hours=1)), "cadence_gap"),
     (lambda df: df.iloc[-(NEED - 1):], "insufficient_history"),
-])
-def test_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame(mutate, reason):
-    _holds_at_end(mutate(_walk(400, 3)), DEFAULTS, reason)
+]
+
+
+def test_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame():
+    for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
+        with _case(f"{i}-{reason}"):
+            _holds_at_end(mutate(_walk(400, 3)), DEFAULTS, reason)
 
 
 def test_constant_prices_hold_on_zero_range_and_zero_volume_is_valid():
@@ -303,7 +326,7 @@ def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame(
     assert out["stc_reason"].iloc[bad + NEED - 1] != "cadence_gap"
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"fast_period": 1}, {"fast_period": 33}, {"slow_period": 2}, {"slow_period": 65},
     {"fast_period": 30, "slow_period": 30}, {"fast_period": 40, "slow_period": 30}, {"cycle_length": 1},
     {"cycle_length": 17}, {"fast_period": 12.5}, {"fast_period": True}, {"fast_period": "23"},
@@ -311,12 +334,16 @@ def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame(
     {"smoothing": True}, {"lower_threshold": 0.0}, {"upper_threshold": 100.0},
     {"lower_threshold": 75.0, "upper_threshold": 75.0}, {"lower_threshold": 80.0, "upper_threshold": 70.0},
     {"lower_threshold": float("nan")}, {"upper_threshold": "75"},
-])
-def test_invalid_parameters_are_explicit_errors(params):
-    with pytest.raises(ValueError):
-        _apply(_walk(300, 1), dict(DEFAULTS, **params))
-    with pytest.raises(ValueError):
-        _reg()._registry.validate_params(NAME, dict(DEFAULTS, **params))
+]
+
+
+def test_invalid_parameters_are_explicit_errors():
+    for params in INVALID_PARAMS:
+        with _case(params):
+            with pytest.raises(ValueError):
+                _apply(_walk(300, 1), dict(DEFAULTS, **params))
+            with pytest.raises(ValueError):
+                _reg()._registry.validate_params(NAME, dict(DEFAULTS, **params))
 
 
 def test_integral_float_periods_are_accepted():
@@ -372,10 +399,15 @@ def _runtime(df, kind, cutoff=None, boundary=None):
     return out
 
 
-@pytest.mark.parametrize("kind", [TIMESTAMP_KIND_OPEN, TIMESTAMP_KIND_NATIVE_CLOSE])
-def test_check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(kind):
+def test_check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar():
     base = _walk(900, 11)
     hist = _apply(base, DEFAULTS)
+    for kind in (TIMESTAMP_KIND_OPEN, TIMESTAMP_KIND_NATIVE_CLOSE):
+        with _case(kind):
+            _check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(base, hist, kind)
+
+
+def _check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(base, hist, kind):
     i = _first(hist, 1)
     df = base.iloc[:i + 1].copy()
     if kind == TIMESTAMP_KIND_NATIVE_CLOSE:
@@ -435,8 +467,13 @@ def test_close_fallback_on_the_candidate_closes_on_its_own_opposite_entry():
     assert decision["close_strategy"] == NAME and decision["close_fraction"] == 1.0 and decision["signal"] == -1
 
 
-@pytest.mark.parametrize("mutation", ["volume", "geometry", "cadence", "stale"])
-def test_invalid_entry_frame_keeps_the_close_owner_executable(mutation):
+def test_invalid_entry_frame_keeps_the_close_owner_executable():
+    for mutation in ("volume", "geometry", "cadence", "stale"):
+        with _case(mutation):
+            _invalid_entry_frame_keeps_the_close_owner_executable(mutation)
+
+
+def _invalid_entry_frame_keeps_the_close_owner_executable(mutation):
     df = _walk(400, 9)
     if mutation == "volume":
         df = df.assign(volume=np.r_[df["volume"].to_numpy()[:-1], -5.0])
@@ -463,12 +500,6 @@ def test_invalid_entry_frame_keeps_the_close_owner_executable(mutation):
     assert decision["signal"] == 0 and decision["open_action"] == "none"
 
 
-def test_close_and_stop_owners_pass_strict_capability_validation():
-    report = validate_close_capabilities(close_refs=CLOSE, comparison_mode=None, platform="hyperliquid",
-                                         strategy_type="perps", phase="preflight").to_dict()
-    assert report["close_eligibility"] == "eligible" and not report["approximations"] and not report["refusals"]
-
-
 def _bt(params, **kw):
     base = dict(initial_capital=1000.0, platform="hyperliquid", open_strategy={"name": NAME, "params": params},
                 close_strategies=CLOSE, stop_loss_atr_mult=1.0, direction="both")
@@ -476,9 +507,16 @@ def _bt(params, **kw):
     return Backtester(**base)
 
 
-def test_simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_or_scale_in():
+def test_simulator_fills_next_open_with_explicit_exits_partials_no_reversal_or_scale_in_and_long_only_opens_no_shorts():
     df = _walk(1500, 5)
     sig = ensure_atr_indicator(_apply(df, DEFAULTS))
+    with _case("test_simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_or_scale_in"):
+        _simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_or_scale_in(df, sig)
+    with _case("test_simulator_long_only_arm_never_opens_shorts"):
+        _simulator_long_only_arm_never_opens_shorts(sig)
+
+
+def _simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_or_scale_in(df, sig):
     res = _bt(DEFAULTS).run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
     trades = res["trades"]
     assert {t["side"] for t in trades} == {"long", "short"}
@@ -500,9 +538,7 @@ def test_simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_
     assert any(len(legs) > 1 for legs in by_entry.values())
 
 
-def test_simulator_long_only_arm_never_opens_shorts():
-    df = _walk(1500, 5)
-    sig = ensure_atr_indicator(_apply(df, DEFAULTS))
+def _simulator_long_only_arm_never_opens_shorts(sig):
     res = _bt(DEFAULTS, direction="long").run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h",
                                               save=False)
     assert res["trades"] and {t["side"] for t in res["trades"]} == {"long"}

@@ -71,13 +71,14 @@ def _canned_stage2(spec_path, out_json, out_dir, jobs, funding_mode="charge",
     }
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ("10", 10), ("1.5", 1.5), ("true", True), ("false", False),
-    ("us_open", "us_open"), ("-3", -3),
-])
-def test_coerce_scalar(raw, expected):
-    assert tl.coerce_scalar(raw) == expected
-    assert type(tl.coerce_scalar(raw)) is type(expected)
+def test_coerce_scalar():
+    for raw, expected in [
+        ("10", 10), ("1.5", 1.5), ("true", True), ("false", False),
+        ("us_open", "us_open"), ("-3", -3),
+    ]:
+        case = f"test_coerce_scalar[{raw}-{expected}]"
+        assert tl.coerce_scalar(raw) == expected, case
+        assert type(tl.coerce_scalar(raw)) is type(expected), case
 
 
 def test_perturb_numeric_int_and_float():
@@ -88,16 +89,16 @@ def test_perturb_numeric_int_and_float():
     assert tl.perturb_numeric(True, 0.25, 2) == []
 
 
-def test_param_neighborhood_includes_live_and_range_sorted():
+def test_param_neighborhood_numeric_sorted_and_categorical_preserved():
+    case = "test_param_neighborhood_includes_live_and_range_sorted"
     n = tl.param_neighborhood(18, [10, 15, 20, 25], 0.25, 0)
-    assert n == [10, 15, 18, 20, 25]
-    assert 18 in n
+    assert n == [10, 15, 18, 20, 25], case
+    assert 18 in n, case
 
-
-def test_param_neighborhood_categorical_preserves_and_no_perturb():
+    case = "test_param_neighborhood_categorical_preserves_and_no_perturb"
     n = tl.param_neighborhood("us_open", ["asian", "us_open", "us_close"], 0.25, 2)
-    assert set(n) == {"asian", "us_open", "us_close"}
-    assert n[0] == "us_open"
+    assert set(n) == {"asian", "us_open", "us_close"}, case
+    assert n[0] == "us_open", case
 
 
 def test_effective_params_config_over_defaults():
@@ -105,23 +106,23 @@ def test_effective_params_config_over_defaults():
     assert eff == {"fast_period": 18, "slow_period": 50}
 
 
-def test_build_search_grid_searched_frozen_override():
+def test_build_search_grid_frozen_override_and_value_ok_keeps_live():
+    case = "test_build_search_grid_searched_frozen_override"
     eff = {"fast_period": 18, "slow_period": 50, "extra": 7}
     default_row = {"fast_period": [10, 15, 20, 25], "slow_period": [40, 50, 60, 80]}
     grid = tl.build_search_grid(
         eff, default_row, override_grids={"slow_period": [45, 55]},
         frozen={"fast_period"}, step_frac=0.25, n_steps=0, value_ok=lambda p, v: True)
-    assert grid["fast_period"] == [18]
-    assert grid["slow_period"] == [45, 55]
-    assert grid["extra"] == [7]
+    assert grid["fast_period"] == [18], case
+    assert grid["slow_period"] == [45, 55], case
+    assert grid["extra"] == [7], case
 
-
-def test_build_search_grid_value_ok_filters_but_keeps_live():
+    case = "test_build_search_grid_value_ok_filters_but_keeps_live"
     eff = {"fast_period": 18}
     default_row = {"fast_period": [10, 15, 20, 25]}
     grid = tl.build_search_grid(eff, default_row, {}, set(), 0.25, 0,
                                 value_ok=lambda p, v: False)
-    assert grid["fast_period"] == [18]
+    assert grid["fast_period"] == [18], case
 
 
 def test_grid_size():
@@ -179,7 +180,8 @@ def test_param_changes_and_build_patch():
     assert patch["param_changes"] == {"fast_period": 10}
 
 
-def test_build_candidate_carries_close_direction_stops():
+def test_build_candidate_carries_close_direction_stops_and_gate_lookback():
+    case = "test_build_candidate_carries_close_direction_stops"
     resolution = {
         "strategy_type": "perps", "direction": "both",
         "close_strategies": [{"name": "tiered_tp_atr", "params": {}}],
@@ -187,13 +189,38 @@ def test_build_candidate_carries_close_direction_stops():
         "allowed_regimes": ["trending_up"],
     }
     cand = tl.build_candidate("tema_cross_bd", {"short_period": 5}, resolution)
-    assert cand["direction"] == "both"
-    assert cand["type"] == "perps"
-    assert cand["close_strategies"][0]["name"] == "tiered_tp_atr"
-    assert cand["stop_loss_atr_mult"] == 2.0
-    assert cand["allowed_regimes"] == ["trending_up"]
-    assert cand["regime_period"] == 14
-    assert cand["regime_adx_threshold"] == 20.0
+    assert cand["direction"] == "both", case
+    assert cand["type"] == "perps", case
+    assert cand["close_strategies"][0]["name"] == "tiered_tp_atr", case
+    assert cand["stop_loss_atr_mult"] == 2.0, case
+    assert cand["allowed_regimes"] == ["trending_up"], case
+    assert cand["regime_period"] == 14, case
+    assert cand["regime_adx_threshold"] == 20.0, case
+
+    case = "test_build_candidate_threads_live_adx_lookback"
+    resolution = {
+        "regime_enabled": True, "allowed_regimes": ["trending_up"],
+        "regime_period": 21, "regime_adx_threshold": 25.0,
+    }
+    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
+    assert cand["allowed_regimes"] == ["trending_up"], case
+    assert cand["regime_period"] == 21, case
+    assert cand["regime_adx_threshold"] == 25.0, case
+    import eval_windows as ew
+    assert ew.validate_candidate(dict(cand)), case
+
+    case = "test_build_candidate_composite_gate_owns_lookback"
+    spec = {"primary": {"classifier": "composite", "period": 14}}
+    resolution = {
+        "regime_enabled": True, "allowed_regimes": ["trending_up"],
+        "regime_period": 21, "regime_adx_threshold": 25.0,
+        "regime_windows_spec": spec,
+    }
+    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
+    assert cand["allowed_regimes"] == ["trending_up"], case
+    assert cand["regime_windows_spec"] == spec, case
+    assert "regime_period" not in cand, case
+    assert "regime_adx_threshold" not in cand, case
 
 
 def test_build_candidate_dormant_gate_not_copied():
@@ -209,34 +236,8 @@ def test_build_candidate_dormant_gate_not_copied():
     assert "regime_adx_threshold" not in cand
 
 
-def test_build_candidate_threads_live_adx_lookback():
-    resolution = {
-        "regime_enabled": True, "allowed_regimes": ["trending_up"],
-        "regime_period": 21, "regime_adx_threshold": 25.0,
-    }
-    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
-    assert cand["allowed_regimes"] == ["trending_up"]
-    assert cand["regime_period"] == 21
-    assert cand["regime_adx_threshold"] == 25.0
-    import eval_windows as ew
-    assert ew.validate_candidate(dict(cand))
-
-
-def test_build_candidate_composite_gate_owns_lookback():
-    spec = {"primary": {"classifier": "composite", "period": 14}}
-    resolution = {
-        "regime_enabled": True, "allowed_regimes": ["trending_up"],
-        "regime_period": 21, "regime_adx_threshold": 25.0,
-        "regime_windows_spec": spec,
-    }
-    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
-    assert cand["allowed_regimes"] == ["trending_up"]
-    assert cand["regime_windows_spec"] == spec
-    assert "regime_period" not in cand
-    assert "regime_adx_threshold" not in cand
-
-
-@pytest.mark.parametrize("resolution,expected", [
+def test_unsupported_reason():
+    for resolution, expected in [
     ({"stop_loss_atr_mult_regime": {"x": 1}}, "unsupported_stop:stop_loss_atr_mult_regime"),
     ({"stop_loss_pct": 0.05}, "unsupported_stop:stop_loss_pct"),
     ({"regime_directional_policy": {"x": 1}}, "unsupported_regime_directional_policy"),
@@ -250,12 +251,12 @@ def test_build_candidate_composite_gate_owns_lookback():
     ({"atr_method": "simple"}, None),
     ({"regime_gate_on_failure": "open"}, None),
     ({}, None),
-])
-def test_unsupported_reason(resolution, expected):
-    assert tl.unsupported_reason(resolution) == expected
+    ]:
+        assert tl.unsupported_reason(resolution) == expected, f"test_unsupported_reason[{resolution}]"
 
 
-@pytest.mark.parametrize("resolution,expected", [
+def test_stage1_skip_reason():
+    for resolution, expected in [
     ({"direction": "short"}, "short_direction_long_only_seeder"),
     ({"direction": "long", "regime_enabled": True,
       "regime_windows_spec": {"d": {"classifier": "adx", "period": 14}}},
@@ -267,9 +268,8 @@ def test_unsupported_reason(resolution, expected):
      None),
     ({"regime_enabled": False, "regime_windows_spec": {
         "primary": {"classifier": "composite", "period": 14}}}, None),
-])
-def test_stage1_skip_reason(resolution, expected):
-    assert tl.stage1_skip_reason(resolution) == expected
+    ]:
+        assert tl.stage1_skip_reason(resolution) == expected, f"test_stage1_skip_reason[{resolution}]"
 
 
 def test_baseline_params_byte_match_load_strategy_config(tmp_path):
@@ -281,21 +281,6 @@ def test_baseline_params_byte_match_load_strategy_config(tmp_path):
                            load_registry("spot"), _make_args(dry_run=True), {},
                            str(tmp_path))
     assert res["baseline_params"] == resolved["open_strategy"]["params"]
-
-
-def test_stage2_spec_family_size_is_searched_N_not_survivor_count(tmp_path, monkeypatch):
-    monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
-    monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
-    path = _write_config(tmp_path, _sma_config())
-    res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
-                           load_registry("spot"), _make_args(), {}, str(tmp_path))
-    assert res["status"] == "ranked"
-    n = res["searched_family_size"]
-    assert n == 20
-    assert res["n_candidates"] < n
-    spec = json.loads((tmp_path / "suggest.spot-sma-btc.json").read_text())
-    assert spec["correction"]["family_size"] == n
-    assert spec["harnesses"] == ["m1_noise", "m1", "m3", "m5"]
 
 
 def test_generated_candidates_pass_auto_suggest_load_spec(tmp_path):
@@ -324,7 +309,7 @@ def _assert_complete_promotion_baseline(baseline):
     assert isinstance(baseline["user_close_defaults_present"], bool)
 
 
-def test_full_main_writes_versioned_artifact_and_progress(tmp_path, monkeypatch):
+def test_full_main_writes_versioned_artifact_progress_and_searched_family_size(tmp_path, monkeypatch):
     monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
     path = _write_config(tmp_path, _sma_config())
@@ -353,6 +338,14 @@ def test_full_main_writes_versioned_artifact_and_progress(tmp_path, monkeypatch)
     prog = json.loads((tmp_path / "tune_live.progress.json").read_text())
     assert prog["schema_version"] == 3
     assert prog["phase"] == "done"
+
+    case = "test_stage2_spec_family_size_is_searched_N_not_survivor_count"
+    n = s["searched_family_size"]
+    assert n == 20, case
+    assert s["n_candidates"] < n, case
+    spec = json.loads((tmp_path / "suggest.spot-sma-btc.json").read_text())
+    assert spec["correction"]["family_size"] == n, case
+    assert spec["harnesses"] == ["m1_noise", "m1", "m3", "m5"], case
 
 
 def test_promotion_baseline_raw_fidelity_with_user_defaults(tmp_path):
@@ -742,17 +735,16 @@ def test_pre_v15_config_error_status(tmp_path):
     assert res["status"] == "config_error"
 
 
-def test_config_strategy_entries_uses_trade_timeframe_not_regime(tmp_path):
+def test_config_strategy_entries_trade_timeframe_and_ordered_subset(tmp_path):
     cfg = {"config_version": 15, "regime": {"enabled": True, "timeframe": "1d"},
            "strategies": [{"id": "s", "type": "spot",
                            "args": ["sma_crossover", "BTC/USDT", "4h"],
                            "open_strategy": {"name": "sma_crossover", "params": {}}}]}
     path = _write_config(tmp_path, cfg)
     entries = tl.config_strategy_entries(path, None)
-    assert entries == [("s", "BTC/USDT", "4h", "spot")]
+    assert entries == [("s", "BTC/USDT", "4h", "spot")], \
+        "test_config_strategy_entries_uses_trade_timeframe_not_regime"
 
-
-def test_config_strategy_entries_accepts_ordered_strategy_subset(tmp_path):
     cfg = _sma_config(sid="first")
     second = dict(cfg["strategies"][0])
     second["id"] = "second"
@@ -765,7 +757,7 @@ def test_config_strategy_entries_accepts_ordered_strategy_subset(tmp_path):
     assert entries == [
         ("second", "ETH/USDT", "1h", "spot"),
         ("first", "BTC/USDT", "1d", "spot"),
-    ]
+    ], "test_config_strategy_entries_accepts_ordered_strategy_subset"
 
 
 def test_config_strategy_entries_rejects_duplicate_strategy_subset(tmp_path):

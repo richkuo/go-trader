@@ -1,5 +1,6 @@
 
 import builtins
+import contextlib
 import importlib.util
 import json
 import os
@@ -11,6 +12,14 @@ import pytest
 
 
 _UNSET = object()
+
+
+@contextlib.contextmanager
+def _case(*label):
+    try:
+        yield
+    except (Exception, pytest.fail.Exception) as exc:
+        raise AssertionError(f"case {label!r} failed: {exc}") from exc
 
 
 def _run_script(sdk_response_or_exc, argv, lookup_result=_UNSET):
@@ -129,31 +138,33 @@ class TestSuccessFill:
         assert out["cancel_stop_loss_succeeded"] is True
         assert out["cancel_stop_loss_succeeded_oids"] == [123, 456]
 
-    @pytest.mark.parametrize("lookup_result,expected", [
-        ({"fee": "0.91", "closed_pnl": "7.5"}, {"fee": 0.91, "closed_pnl": 7.5}),
-        (MagicMock(), {}),
-        ({"fee": MagicMock(), "closed_pnl": MagicMock()}, {}),
-    ])
-    def test_filled_lookup_result_handling(self, lookup_result, expected):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {"avgPx": "3000.5", "totalSz": "0.517", "oid": 9999999}}
-            ]}},
-        }
-        out, code = _run_script(
-            sdk_response,
-            ["--symbol=ETH", "--mode=live"],
-            lookup_result=lookup_result,
-        )
-        assert code == 0
-        fill = out["close"]["fill"]
-        assert fill["oid"] == 9999999
-        for key in ("fee", "closed_pnl"):
-            if key in expected:
-                assert fill[key] == expected[key]
-            else:
-                assert key not in fill
+    def test_filled_lookup_result_handling(self):
+        cases = [
+            ("fee_and_pnl", {"fee": "0.91", "closed_pnl": "7.5"}, {"fee": 0.91, "closed_pnl": 7.5}),
+            ("mock_result", MagicMock(), {}),
+            ("mock_fields", {"fee": MagicMock(), "closed_pnl": MagicMock()}, {}),
+        ]
+        for label, lookup_result, expected in cases:
+            with _case(label):
+                sdk_response = {
+                    "status": "ok",
+                    "response": {"type": "order", "data": {"statuses": [
+                        {"filled": {"avgPx": "3000.5", "totalSz": "0.517", "oid": 9999999}}
+                    ]}},
+                }
+                out, code = _run_script(
+                    sdk_response,
+                    ["--symbol=ETH", "--mode=live"],
+                    lookup_result=lookup_result,
+                )
+                assert code == 0
+                fill = out["close"]["fill"]
+                assert fill["oid"] == 9999999
+                for key in ("fee", "closed_pnl"):
+                    if key in expected:
+                        assert fill[key] == expected[key]
+                    else:
+                        assert key not in fill
 
 
 class TestAlreadyFlat:
@@ -470,18 +481,19 @@ class TestSizedClose:
         assert adapter.market_close_sized.call_args[0][2] == 0.4
         assert out["close"]["submitted_sz"] == 0.4
 
-    @pytest.mark.parametrize("fill_sz,want_cancel", [(0.5, True), (0.4999, True), (0.45, False)])
-    def test_cancels_protection_only_after_the_fill_reaches_the_threshold(self, fill_sz, want_cancel):
-        out, code, adapter = _run_sized(_filled(fill_sz), _SIZED_CANCEL)
-        assert code == 0, out
-        order_index = [c[0] for c in adapter.method_calls].index("market_close_sized")
-        cancel_calls = [i for i, c in enumerate(adapter.method_calls) if c[0] == "cancel_trigger_order"]
-        if want_cancel:
-            assert cancel_calls and min(cancel_calls) > order_index
-            assert out["cancel_stop_loss_succeeded_oids"] == [111, 222]
-        else:
-            assert not cancel_calls
-            assert "cancel_stop_loss_succeeded_oids" not in out
+    def test_cancels_protection_only_after_the_fill_reaches_the_threshold(self):
+        for fill_sz, want_cancel in ((0.5, True), (0.4999, True), (0.45, False)):
+            with _case(fill_sz, want_cancel):
+                out, code, adapter = _run_sized(_filled(fill_sz), _SIZED_CANCEL)
+                assert code == 0, out
+                order_index = [c[0] for c in adapter.method_calls].index("market_close_sized")
+                cancel_calls = [i for i, c in enumerate(adapter.method_calls) if c[0] == "cancel_trigger_order"]
+                if want_cancel:
+                    assert cancel_calls and min(cancel_calls) > order_index
+                    assert out["cancel_stop_loss_succeeded_oids"] == [111, 222]
+                else:
+                    assert not cancel_calls
+                    assert "cancel_stop_loss_succeeded_oids" not in out
 
     def test_a_rejected_cancel_is_reported_failed(self):
         out, code, adapter = _run_sized(_filled(0.5), _SIZED_CANCEL,
@@ -490,44 +502,48 @@ class TestSizedClose:
         assert out["cancel_stop_loss_failed_oids"] == [111, 222]
         assert "cancel_stop_loss_succeeded_oids" not in out
 
-    @pytest.mark.parametrize("argv_extra,floored,px,why", [
-        (["--sz=0.5", "--side=sell"], 0.0, 2970.0, "floors to zero"),
-        (["--sz=0.5", "--side=sell"], 0.5, ValueError("no usable mid price for ETH"), "preflight failed"),
-        (["--sz=0.5", "--side=hold"], 0.5, 2970.0, "--side=buy or --side=sell"),
-        (["--sz=0", "--side=sell"], 0.5, 2970.0, "--sz > 0"),
-        (["--sz=nan", "--side=sell"], 0.5, 2970.0, "--sz > 0"),
-        (["--sz=0.5", "--side=sell", "--cancel-stop-loss-oid=111"], 0.5, 2970.0, "only after the fill"),
-        (["--sz=0.5", "--side=sell", "--cancel-stop-loss-oid=111", "--cancel-protection-after-close"], 0.5, 2970.0, "--cancel-min-fill"),
-    ])
-    def test_invalid_or_unplaceable_requests_send_nothing(self, argv_extra, floored, px, why):
-        argv = ["--symbol=ETH", "--mode=live", "--close-mode=reduce_only"] + argv_extra
-        out, code, adapter = _run_sized(_filled(0.5), argv, floored=floored, px=px)
-        assert code == 1
-        assert out["order_outcome"] == "not_sent"
-        assert why in out["error"]
-        adapter.market_close_sized.assert_not_called()
-        adapter.cancel_trigger_order.assert_not_called()
+    def test_invalid_or_unplaceable_requests_send_nothing(self):
+        cases = [
+            (["--sz=0.5", "--side=sell"], 0.0, 2970.0, "floors to zero"),
+            (["--sz=0.5", "--side=sell"], 0.5, ValueError("no usable mid price for ETH"), "preflight failed"),
+            (["--sz=0.5", "--side=hold"], 0.5, 2970.0, "--side=buy or --side=sell"),
+            (["--sz=0", "--side=sell"], 0.5, 2970.0, "--sz > 0"),
+            (["--sz=nan", "--side=sell"], 0.5, 2970.0, "--sz > 0"),
+            (["--sz=0.5", "--side=sell", "--cancel-stop-loss-oid=111"], 0.5, 2970.0, "only after the fill"),
+            (["--sz=0.5", "--side=sell", "--cancel-stop-loss-oid=111", "--cancel-protection-after-close"], 0.5, 2970.0, "--cancel-min-fill"),
+        ]
+        for argv_extra, floored, px, why in cases:
+            with _case(argv_extra, floored, px, why):
+                argv = ["--symbol=ETH", "--mode=live", "--close-mode=reduce_only"] + argv_extra
+                out, code, adapter = _run_sized(_filled(0.5), argv, floored=floored, px=px)
+                assert code == 1
+                assert out["order_outcome"] == "not_sent"
+                assert why in out["error"]
+                adapter.market_close_sized.assert_not_called()
+                adapter.cancel_trigger_order.assert_not_called()
 
     def test_invalid_close_mode_sends_nothing(self):
         out, code, adapter = _run_sized(_filled(0.5), _SIZED[:-1] + ["--close-mode=whole"])
         assert code == 1 and out["order_outcome"] == "not_sent"
         adapter.market_close_sized.assert_not_called()
 
-    @pytest.mark.parametrize("response,outcome", [
-        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"error": "Order could not immediately match"}]}}}, "rejected"),
-        ({"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}, "unknown"),
-        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 1}}]}}}, "unknown"),
-        (_filled(0), "rejected"),
-        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "nan", "totalSz": "0.5"}}]}}}, "unknown"),
-        (RuntimeError("socket closed"), "unknown"),
-    ])
-    def test_non_fills_never_cancel_and_report_their_outcome(self, response, outcome):
-        out, code, adapter = _run_sized(response, _SIZED_CANCEL)
-        assert code == 1
-        assert out["order_outcome"] == outcome
-        assert out["close"]["fill"] == {}
-        adapter.cancel_trigger_order.assert_not_called()
-        adapter.market_close.assert_not_called()
+    def test_non_fills_never_cancel_and_report_their_outcome(self):
+        cases = [
+            ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"error": "Order could not immediately match"}]}}}, "rejected"),
+            ({"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}, "unknown"),
+            ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 1}}]}}}, "unknown"),
+            (_filled(0), "rejected"),
+            ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "nan", "totalSz": "0.5"}}]}}}, "unknown"),
+            (RuntimeError("socket closed"), "unknown"),
+        ]
+        for i, (response, outcome) in enumerate(cases):
+            with _case(i, response, outcome):
+                out, code, adapter = _run_sized(response, _SIZED_CANCEL)
+                assert code == 1
+                assert out["order_outcome"] == outcome
+                assert out["close"]["fill"] == {}
+                adapter.cancel_trigger_order.assert_not_called()
+                adapter.market_close.assert_not_called()
 
 
 class TestLegacyCancelCoverage:

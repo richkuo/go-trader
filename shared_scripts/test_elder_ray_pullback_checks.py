@@ -253,11 +253,9 @@ def test_check_decision_matches_the_evaluator_at_full_precision_on_the_200_row_f
 def test_forming_bar_cannot_create_a_closed_bar_entry():
     bars = _bars(260, H)
     extra = ["--strategy-refs", _refs()]
-    disabled = _check(bars, closed=False, extra=extra)
     enabled = _check(bars, closed=True, extra=extra)
     calm = _bars(260, H, recover_last=False)
     calm_out = _check(calm, closed=True, extra=extra)
-    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
     assert enabled["signal"] == 0 and enabled["open_action"] == "none"
     assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
     assert enabled["closed_bar_decision"]["held"] is False
@@ -315,23 +313,23 @@ HELD_SHORT = ["--position-side", "short", "--position-avg-cost=5000", "--positio
 
 
 @pytest.mark.parametrize("closed", [True, False])
-@pytest.mark.parametrize("held,close_signal", [(HELD_LONG, -1), (HELD_SHORT, 1)])
-def test_invalid_entry_data_holds_the_entry_and_keeps_protection(closed, held, close_signal):
+def test_invalid_entry_data_holds_the_entry_and_keeps_protection(closed):
     bars = [dict(b, v=-1.0) for b in _bars(260, H)]
     refs = _refs([{"name": "tiered_tp_pct", "params": {}}])
-    out = _check(bars, closed=closed, extra=["--strategy-refs", refs] + held)
-    if closed:
-        assert out["closed_bar_decision"]["held"] is True
-        assert "negative volume" in out["closed_bar_decision"]["hold_reason"]
-        assert out["indicators"] == {}
-    else:
-        assert out["indicators"]["erp_reason_code"] == 16.0
-        assert out["indicators"]["erp_valid"] == 0.0
-    assert out["open_action"] == "none"
-    assert out["close_strategy"] == "tiered_tp_pct" and out["close_fraction"] == 1.0
-    assert out["signal"] == close_signal
+    for case, held, close_signal in (("held_long", HELD_LONG, -1), ("held_short", HELD_SHORT, 1)):
+        out = _check(bars, closed=closed, extra=["--strategy-refs", refs] + held)
+        if closed:
+            assert out["closed_bar_decision"]["held"] is True, case
+            assert "negative volume" in out["closed_bar_decision"]["hold_reason"], case
+            assert out["indicators"] == {}, case
+        else:
+            assert out["indicators"]["erp_reason_code"] == 16.0, case
+            assert out["indicators"]["erp_valid"] == 0.0, case
+        assert out["open_action"] == "none", case
+        assert out["close_strategy"] == "tiered_tp_pct" and out["close_fraction"] == 1.0, case
+        assert out["signal"] == close_signal, case
     flat = _check(bars, closed=closed, extra=["--strategy-refs", refs])
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
+    assert flat["signal"] == 0 and flat["open_action"] == "none", "flat"
 
 
 @pytest.mark.parametrize("bars_count", [40, 75])

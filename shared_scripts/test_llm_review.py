@@ -1,4 +1,5 @@
 
+import contextlib
 import importlib.util
 import io
 import json
@@ -12,6 +13,14 @@ import pytest
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llm_review.py")
 GO_USAGE_STDERR_PREFIX = "llm_review_usage "
+
+
+@contextlib.contextmanager
+def _case(*label):
+    try:
+        yield
+    except (Exception, pytest.fail.Exception) as exc:
+        raise AssertionError(f"case {label!r} failed: {exc}") from exc
 
 
 def _load():
@@ -45,14 +54,15 @@ CTX = {
 
 
 class TestWordCap:
-    @pytest.mark.parametrize("text,cap,expected", [
-        ("one two three", 5, "one two three"),
-        ("  a\n b\tc ", 5, "a b c"),
-        ("a b c d e", 3, "a b c …"),
-        (None, 3, ""),
-    ])
-    def test_word_cap(self, mod, text, cap, expected):
-        assert mod.truncate_to_word_cap(text, cap) == expected
+    def test_word_cap(self, mod):
+        cases = [
+            ("one two three", 5, "one two three"),
+            ("  a\n b\tc ", 5, "a b c"),
+            ("a b c d e", 3, "a b c …"),
+            (None, 3, ""),
+        ]
+        for text, cap, expected in cases:
+            assert mod.truncate_to_word_cap(text, cap) == expected, (text, cap)
 
 
 class TestSummarizeOhlcv:
@@ -71,37 +81,37 @@ class TestSummarizeOhlcv:
 
 
 class TestJudgeParsing:
-    @pytest.mark.parametrize("raw,verdict", [
-        ('{"verdict": "bullish", "rationale": "looks good"}', "bullish"),
-        ('{"verdict":"bearish","rationale":"r"}', "bearish"),
-        ('{"rationale": "r", "verdict": "mixed"}', "mixed"),
-    ])
-    def test_verdict_parsing(self, mod, raw, verdict):
-        v, _ = mod.parse_judge_output(raw, 55)
-        assert v == verdict
-
-    def test_strict_json_rationale(self, mod):
+    def test_verdict_parsing_and_strict_json_rationale(self, mod):
+        cases = [
+            ('{"verdict": "bullish", "rationale": "looks good"}', "bullish"),
+            ('{"verdict":"bearish","rationale":"r"}', "bearish"),
+            ('{"rationale": "r", "verdict": "mixed"}', "mixed"),
+        ]
+        for raw, verdict in cases:
+            v, _ = mod.parse_judge_output(raw, 55)
+            assert v == verdict, ("test_verdict_parsing", raw)
         _, r = mod.parse_judge_output('{"verdict": "bullish", "rationale": "looks good"}', 55)
-        assert r == "looks good"
+        assert r == "looks good", "test_strict_json_rationale"
 
-    @pytest.mark.parametrize("raw", [
-        "could be bullish or bearish",
-        "no verdict here",
-        "I am not bullish here",
-        "Overall this reads mixed to me because ...",
-        '```json\n{"verdict":"bearish","rationale":"r"}\n```',
-        '{"verdict": "Bullish", "rationale": "looks good"}',
-        '{"verdict": "neutral", "rationale": "r"}',
-        '{"verdict": "bullish", "rationale": ""}',
-        '{"verdict": "bullish"}',
-        '{"verdict": "bullish", "rationale": "r", "extra": 1}',
-        '["bullish", "r"]',
-        "",
-        None,
-    ])
-    def test_non_schema_output_raises(self, mod, raw):
-        with pytest.raises(RuntimeError):
-            mod.parse_judge_output(raw, 55)
+    def test_non_schema_output_raises(self, mod):
+        cases = [
+            "could be bullish or bearish",
+            "no verdict here",
+            "I am not bullish here",
+            "Overall this reads mixed to me because ...",
+            '```json\n{"verdict":"bearish","rationale":"r"}\n```',
+            '{"verdict": "Bullish", "rationale": "looks good"}',
+            '{"verdict": "neutral", "rationale": "r"}',
+            '{"verdict": "bullish", "rationale": ""}',
+            '{"verdict": "bullish"}',
+            '{"verdict": "bullish", "rationale": "r", "extra": 1}',
+            '["bullish", "r"]',
+            "",
+            None,
+        ]
+        for raw in cases:
+            with _case(raw), pytest.raises(RuntimeError):
+                mod.parse_judge_output(raw, 55)
 
     def test_rationale_capped(self, mod):
         long = " ".join(["w"] * 100)

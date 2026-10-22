@@ -86,17 +86,18 @@ def test_long_cross_truth_table_rows_1_4_5_6():
     assert int(below_both["signal"]) == 0 and below_both["cct_reason"] == "no_cross"
 
 
-@pytest.mark.parametrize("rows,relation", [(UP_EQUAL, "equal"), (UP_BELOW, "below")])
-def test_long_cross_blocked_by_trend_rows_2_3(rows, relation):
-    prev, cur, row = indices(rows)
-    assert 0 < cur and prev < cur
-    if relation == "equal":
-        assert row["close"] == row["cct_trend_sma"]
-    else:
-        assert row["close"] < row["cct_trend_sma"]
-    out = last(rows, {**SMALL, "threshold": (max(prev, 0.0) + cur) / 2.0})
-    assert int(out["signal"]) == 0
-    assert out["cct_reason"] == "trend_blocked"
+def test_long_cross_blocked_by_trend_rows_2_3(subtests):
+    for rows, relation in [(UP_EQUAL, "equal"), (UP_BELOW, "below")]:
+        with subtests.test(relation=relation):
+            prev, cur, row = indices(rows)
+            assert 0 < cur and prev < cur
+            if relation == "equal":
+                assert row["close"] == row["cct_trend_sma"]
+            else:
+                assert row["close"] < row["cct_trend_sma"]
+            out = last(rows, {**SMALL, "threshold": (max(prev, 0.0) + cur) / 2.0})
+            assert int(out["signal"]) == 0
+            assert out["cct_reason"] == "trend_blocked"
 
 
 def test_short_cross_truth_table_rows_7_8_9():
@@ -143,24 +144,28 @@ def test_insufficient_history_row_12_and_missing_columns():
     assert missing["cct_reason"].iloc[-1] == "missing_columns:low"
 
 
-@pytest.mark.parametrize("mutate,reason", [
-    (lambda r: (r[1], r[0], r[2]), "inconsistent_hlc"),
-    (lambda r: (r[0], r[1], r[0] + 5.0), "inconsistent_hlc"),
-    (lambda r: (float("inf"), r[1], r[2]), "nonfinite_input"),
-    (lambda r: (r[0], r[1], float("nan")), "nonfinite_input"),
-])
-def test_malformed_bar_row_13_yields_reasoned_hold(mutate, reason):
-    rows = list(UP_ABOVE)
-    rows[-1] = mutate(rows[-1])
-    row = last(rows, {**SMALL, "threshold": 1.0})
-    assert int(row["signal"]) == 0
-    assert not bool(row["cct_valid"])
-    assert row["cct_reason"] == reason
-    earlier = list(UP_ABOVE)
-    earlier[-2] = mutate(earlier[-2])
-    row2 = last(earlier, {**SMALL, "threshold": 1.0})
-    assert int(row2["signal"]) == 0
-    assert row2["cct_reason"] == reason
+MALFORMED_BAR_CASES = [
+    ("swapped_high_low", lambda r: (r[1], r[0], r[2]), "inconsistent_hlc"),
+    ("close_above_high", lambda r: (r[0], r[1], r[0] + 5.0), "inconsistent_hlc"),
+    ("infinite_high", lambda r: (float("inf"), r[1], r[2]), "nonfinite_input"),
+    ("nan_close", lambda r: (r[0], r[1], float("nan")), "nonfinite_input"),
+]
+
+
+def test_malformed_bar_row_13_yields_reasoned_hold(subtests):
+    for case, mutate, reason in MALFORMED_BAR_CASES:
+        with subtests.test(case=case, reason=reason):
+            rows = list(UP_ABOVE)
+            rows[-1] = mutate(rows[-1])
+            row = last(rows, {**SMALL, "threshold": 1.0})
+            assert int(row["signal"]) == 0
+            assert not bool(row["cct_valid"])
+            assert row["cct_reason"] == reason
+            earlier = list(UP_ABOVE)
+            earlier[-2] = mutate(earlier[-2])
+            row2 = last(earlier, {**SMALL, "threshold": 1.0})
+            assert int(row2["signal"]) == 0
+            assert row2["cct_reason"] == reason
 
 
 def test_timestamp_order_defect_detected():
@@ -177,7 +182,7 @@ def test_timestamp_order_defect_detected():
     assert run(with_col, SMALL).iloc[-1]["cct_reason"] == "timestamp_order"
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"lookback": True},
     {"lookback": 20.5},
     {"lookback": 1},
@@ -190,10 +195,14 @@ def test_timestamp_order_defect_detected():
     {"threshold": float("nan")},
     {"threshold": float("inf")},
     {"threshold": True},
-])
-def test_invalid_parameters_raise(params):
-    with pytest.raises(ValueError):
-        run(frame(base(200)), params)
+]
+
+
+def test_invalid_parameters_raise(subtests):
+    for params in INVALID_PARAMS:
+        with subtests.test(params=params):
+            with pytest.raises(ValueError):
+                run(frame(base(200)), params)
 
 
 def test_integral_float_periods_accepted():

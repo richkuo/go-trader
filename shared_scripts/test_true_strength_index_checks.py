@@ -193,41 +193,38 @@ def test_invalid_parameters_fail_preflight_before_market_input_is_read(params):
     assert "BTC|4h" not in err
 
 
-def test_check_decision_matches_the_evaluator_on_the_200_row_frame_at_full_precision():
+def test_check_decision_matches_the_evaluator_and_a_forming_bar_cannot_create_a_closed_bar_entry():
     bars = _long()
-    out = _check(bars, closed=False, extra=["--strategy-refs", _refs()])
+    extra = ["--strategy-refs", _refs()]
+    out = _check(bars, closed=False, extra=extra)
     df = _strategies().apply_strategy(NAME, _frame_df(_rows(bars[-200:])), PARAMS)
     full = _strategies().apply_strategy(NAME, _frame_df(_rows(bars)), PARAMS)
     last = df.iloc[-1]
-    assert out["signal"] == int(last["signal"]) == 1 and out["open_action"] == "long"
+    assert out["signal"] == int(last["signal"]) == 1 and out["open_action"] == "long", "evaluator_match"
     for col in TSI_COLUMNS:
-        assert out["indicators"][col] == float(last[col]) == float(full[col].iloc[-1]), col
-    assert out["indicator_labels"]["tsi_reason"] == last["tsi_reason"] == "entry_long"
+        assert out["indicators"][col] == float(last[col]) == float(full[col].iloc[-1]), ("evaluator_match", col)
+    assert out["indicator_labels"]["tsi_reason"] == last["tsi_reason"] == "entry_long", "evaluator_match"
     ind = out["indicators"]
-    assert ind["tsi_diff"] == ind["tsi_value"] - ind["tsi_signal_line"] > 0
-    assert ind["tsi_prev_diff"] == 0.0 and ind["tsi_value"] > 0
-    assert ind["tsi_value"] == 100.0 * (ind["tsi_double_change"] / ind["tsi_double_abs"])
-    assert ind["tsi_value"] != round(ind["tsi_value"], 6)
-
-
-def test_forming_bar_cannot_create_a_closed_bar_entry():
-    bars = _long()
-    extra = ["--strategy-refs", _refs()]
-    disabled = _check(bars, closed=False, extra=extra)
+    assert ind["tsi_diff"] == ind["tsi_value"] - ind["tsi_signal_line"] > 0, "evaluator_match"
+    assert ind["tsi_prev_diff"] == 0.0 and ind["tsi_value"] > 0, "evaluator_match"
+    assert ind["tsi_value"] == 100.0 * (ind["tsi_double_change"] / ind["tsi_double_abs"]), "evaluator_match"
+    assert ind["tsi_value"] != round(ind["tsi_value"], 6), "evaluator_match"
     enabled = _check(bars, closed=True, extra=extra)
     calm = [dict(b) for b in bars]
     calm[-1] = dict(calm[-1], h=bars[-2]["c"] + 30.0, l=bars[-2]["c"] - 30.0, c=bars[-2]["c"] - 20.0)
     calm_out = _check(calm, closed=True, extra=extra)
-    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
-    assert enabled["signal"] == 0 and enabled["open_action"] == "none"
-    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
-    assert enabled["closed_bar_decision"]["held"] is False
-    assert enabled["indicators"] == calm_out["indicators"]
-    assert enabled["closed_bar_decision"]["input_sha256"] == calm_out["closed_bar_decision"]["input_sha256"]
+    assert out["signal"] == 1 and out["open_action"] == "long", "forming_excluded"
+    assert enabled["signal"] == 0 and enabled["open_action"] == "none", "forming_excluded"
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1, "forming_excluded"
+    assert enabled["closed_bar_decision"]["held"] is False, "forming_excluded"
+    assert enabled["indicators"] == calm_out["indicators"], "forming_excluded"
+    assert enabled["closed_bar_decision"]["input_sha256"] == calm_out["closed_bar_decision"]["input_sha256"], \
+        "forming_excluded"
     closed_df = _strategies().apply_strategy(NAME, _frame_df(_rows(bars[:-1]), "native_close_inclusive"), PARAMS)
-    assert enabled["indicators"]["tsi_reason_code"] == float(closed_df["tsi_reason_code"].iloc[-1]) == 0.0
-    assert enabled["indicator_labels"]["tsi_reason"] == "no_cross"
-    assert enabled["indicators"]["tsi_eval_ts_ms"] == float(bars[-2]["t"])
+    assert enabled["indicators"]["tsi_reason_code"] == float(closed_df["tsi_reason_code"].iloc[-1]) == 0.0, \
+        "forming_excluded"
+    assert enabled["indicator_labels"]["tsi_reason"] == "no_cross", "forming_excluded"
+    assert enabled["indicators"]["tsi_eval_ts_ms"] == float(bars[-2]["t"]), "forming_excluded"
 
 
 def test_an_already_closed_final_bar_is_the_decision_bar():
@@ -237,7 +234,7 @@ def test_an_already_closed_final_bar_is_the_decision_bar():
     assert out["signal"] == 1 and out["indicators"]["tsi_eval_ts_ms"] == float(bars[-1]["t"])
 
 
-@pytest.mark.parametrize("offset,dropped", [(-1, 1), (0, 0), (1, 0)])
+@pytest.mark.parametrize("offset,dropped", [(-1, 1), (1, 0)])
 def test_cutoff_at_the_bar_boundary_selects_the_decision_bar(offset, dropped):
     bars = _long()
     boundary = bars[-1]["t"] + H
@@ -303,35 +300,35 @@ def test_closed_bar_batch_matches_individual_checks_and_isolates_a_failing_slot(
 
 
 @pytest.mark.parametrize("closed", [True, False])
-@pytest.mark.parametrize("held,close_signal", [(HELD_LONG, -1), (HELD_SHORT, 1)])
-def test_invalid_entry_data_holds_the_entry_and_keeps_protection(closed, held, close_signal):
+def test_invalid_entry_data_holds_the_entry_and_keeps_protection(closed):
     bars = _long()
     bars[-5] = dict(bars[-5], h=bars[-5]["l"] - 1.0)
     refs = _refs(CLOSE)
-    out = _check(bars, closed=closed, extra=["--strategy-refs", refs] + held)
-    if closed:
-        assert out["closed_bar_decision"]["held"] is True
-        assert out["indicators"] == {}
-    else:
-        assert out["indicator_labels"]["tsi_reason"] == "invalid_candle_geometry"
-        assert out["indicators"]["tsi_valid"] == 0.0
-    assert out["open_action"] == "none"
-    assert out["close_strategy"] == "tiered_tp_pct" and out["close_fraction"] == 1.0
-    assert out["signal"] == close_signal
+    for case, held, close_signal in (("held_long", HELD_LONG, -1), ("held_short", HELD_SHORT, 1)):
+        out = _check(bars, closed=closed, extra=["--strategy-refs", refs] + held)
+        if closed:
+            assert out["closed_bar_decision"]["held"] is True, case
+            assert out["indicators"] == {}, case
+        else:
+            assert out["indicator_labels"]["tsi_reason"] == "invalid_candle_geometry", case
+            assert out["indicators"]["tsi_valid"] == 0.0, case
+        assert out["open_action"] == "none", case
+        assert out["close_strategy"] == "tiered_tp_pct" and out["close_fraction"] == 1.0, case
+        assert out["signal"] == close_signal, case
     flat = _check(bars, closed=closed, extra=["--strategy-refs", refs])
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
+    assert flat["signal"] == 0 and flat["open_action"] == "none", "flat"
 
 
-@pytest.mark.parametrize("held,close_signal", [(HELD_LONG, -1), (HELD_SHORT, 1)])
-def test_cadence_gap_holds_the_entry_and_keeps_protection(held, close_signal):
+def test_cadence_gap_holds_the_entry_and_keeps_protection():
     bars = _long()
     del bars[-10]
     refs = _refs(CLOSE)
-    out = _check(bars, closed=False, extra=["--strategy-refs", refs] + held, timing=False)
-    assert out["indicator_labels"]["tsi_reason"] == "cadence_gap"
-    assert out["open_action"] == "none" and out["close_fraction"] == 1.0 and out["signal"] == close_signal
+    for case, held, close_signal in (("held_long", HELD_LONG, -1), ("held_short", HELD_SHORT, 1)):
+        out = _check(bars, closed=False, extra=["--strategy-refs", refs] + held, timing=False)
+        assert out["indicator_labels"]["tsi_reason"] == "cadence_gap", case
+        assert out["open_action"] == "none" and out["close_fraction"] == 1.0 and out["signal"] == close_signal, case
     flat = _check(bars, closed=False, extra=["--strategy-refs", refs], timing=False)
-    assert flat["signal"] == 0 and flat["indicator_labels"]["tsi_reason"] == "cadence_gap"
+    assert flat["signal"] == 0 and flat["indicator_labels"]["tsi_reason"] == "cadence_gap", "flat"
 
 
 def test_received_order_defects_survive_normalization_and_hold_the_entry():

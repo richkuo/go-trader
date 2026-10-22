@@ -1,3 +1,4 @@
+import contextlib
 import json
 import pathlib
 import sys
@@ -41,6 +42,15 @@ def _run(df, capital=10000.0, **kw):
                   timeframe="1d", save=False)
 
 
+@contextlib.contextmanager
+def _raises_for(case, exc=ValueError, match=None):
+    try:
+        with pytest.raises(exc, match=match) as info:
+            yield info
+    except (AssertionError, pytest.fail.Exception) as err:
+        raise AssertionError(f"{case}: {err}") from None
+
+
 def _decide(cfg=None, side="long", qty=1.0, avg_cost=100.0, entry_atr=2.0,
             count=0, added=0.0, last_add=0.0, signal=1, price=100.0,
             default_notional=1000.0):
@@ -50,9 +60,7 @@ def _decide(cfg=None, side="long", qty=1.0, avg_cost=100.0, entry_atr=2.0,
     )
 
 
-@pytest.mark.parametrize(
-    "cfg,kw,expect_ok,reason_eq,reason_has,expect_qty",
-    [
+_DECISION_GATE_CASES = [
         (None, {"side": "long", "signal": 1}, True, None, None, None),
         (None, {"side": "long", "signal": -1}, False,
          "not a same-direction add", None, None),
@@ -96,23 +104,23 @@ def _decide(cfg=None, side="long", qty=1.0, avg_cost=100.0, entry_atr=2.0,
          None, None, None),
         ({"add_spacing_atr": 0.0}, {"last_add": 100.0, "price": 100.0}, True,
          None, None, None),
-    ],
-)
-def test_scale_in_decision_gates(cfg, kw, expect_ok, reason_eq, reason_has,
-                                 expect_qty):
-    qty, ok, reason = _decide(cfg, **kw)
-    assert ok is expect_ok
-    if reason_eq is not None:
-        assert reason == reason_eq
-    if reason_has is not None:
-        assert reason_has in reason
-    if expect_qty is not None:
-        assert qty == pytest.approx(expect_qty)
+]
 
 
-@pytest.mark.parametrize(
-    "kwargs,match",
-    [
+def test_scale_in_decision_gates():
+    for i, (cfg, kw, expect_ok, reason_eq, reason_has, expect_qty) in enumerate(_DECISION_GATE_CASES):
+        case = f"test_scale_in_decision_gates[{i}] cfg={cfg} kw={kw}"
+        qty, ok, reason = _decide(cfg, **kw)
+        assert ok is expect_ok, case
+        if reason_eq is not None:
+            assert reason == reason_eq, case
+        if reason_has is not None:
+            assert reason_has in reason, case
+        if expect_qty is not None:
+            assert qty == pytest.approx(expect_qty), case
+
+
+_INIT_REJECT_CASES = [
         ({"scale_in": {"max_adds": 2}}, "allow_scale_in"),
         ({"allow_scale_in": True, "risk_per_trade_pct": 1.0,
           "stop_loss_atr_mult": 1.0}, "risk_per_trade_pct"),
@@ -120,11 +128,13 @@ def test_scale_in_decision_gates(cfg, kw, expect_ok, reason_eq, reason_has,
         ({"allow_scale_in": True, "scale_in": {"max_adds": -1}}, "max_adds"),
         ({"allow_scale_in": True, "scale_in": {"add_notional_usd": -5}},
          "add_notional_usd"),
-    ],
-)
-def test_init_rejects_invalid_scale_in(kwargs, match):
-    with pytest.raises(ValueError, match=match):
-        Backtester(**kwargs)
+]
+
+
+def test_init_rejects_invalid_scale_in():
+    for i, (kwargs, match) in enumerate(_INIT_REJECT_CASES):
+        with _raises_for(f"test_init_rejects_invalid_scale_in[{i}] {kwargs}", match=match):
+            Backtester(**kwargs)
 
 
 def test_run_rejects_entry_fraction_column():
@@ -412,9 +422,7 @@ def test_loader_defaults_off(tmp_path):
     assert kwargs["scale_in"] is None
 
 
-@pytest.mark.parametrize(
-    "overrides,match",
-    [
+_LOADER_REJECT_CASES = [
         ({"scale_in": {"max_adds": 3}}, "allow_scale_in"),
         ({"type": "spot", "allow_scale_in": True}, "perps/manual-only"),
         ({"platform": "okx", "allow_scale_in": True}, "hyperliquid-only"),
@@ -422,12 +430,14 @@ def test_loader_defaults_off(tmp_path):
           "args": ["tema_cross", "BTC", "4h", "--mode", "live"],
           "stop_loss_atr_mult": None, "stop_loss_pct": 5.0}, "static scalar"),
         ({"allow_scale_in": True, "risk_per_trade_pct": 1.0}, "allow_scale_in"),
-    ],
-)
-def test_loader_rejects_invalid_scale_in_config(tmp_path, overrides, match):
-    path = _config(tmp_path, _hl_strategy(**overrides))
-    with pytest.raises(ValueError, match=match):
-        run_backtest.load_strategy_config(path, "hl-test")
+]
+
+
+def test_loader_rejects_invalid_scale_in_config(tmp_path):
+    for i, (overrides, match) in enumerate(_LOADER_REJECT_CASES):
+        path = _config(tmp_path, _hl_strategy(**overrides))
+        with _raises_for(f"test_loader_rejects_invalid_scale_in_config[{i}] {overrides}", match=match):
+            run_backtest.load_strategy_config(path, "hl-test")
 
 
 def test_loader_accepts_live_trailing_sl(tmp_path):

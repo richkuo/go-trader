@@ -44,14 +44,6 @@ def test_canonical_columns_lead_enriched_set():
     assert set(ref.ENRICHED_EXTRA_COLUMNS).isdisjoint(ref.CANONICAL_COLUMNS)
 
 
-def test_builder_full_matrix_columns_and_order():
-    df = _synthetic_ohlcv()
-    fund = _synthetic_funding(df.index)
-    mat = ref.enriched_feature_matrix(df, period=48, funding=fund)
-    assert list(mat.columns) == ref.ENRICHED_COLUMNS
-    assert len(mat) == len(df)
-
-
 def test_subset_selection_preserves_canonical_first_order():
     df = _synthetic_ohlcv()
     fund = _synthetic_funding(df.index)
@@ -132,27 +124,25 @@ def test_volume_z_is_trailing_and_warmup_nan():
     assert vz[i] == pytest.approx(expected, rel=1e-9)
 
 
-def test_hurst_column_is_trailing_and_warmup_nan():
+def test_hurst_column_is_trailing_warmup_nan_and_independent_of_period():
     df = _synthetic_ohlcv(n=300)
     mat = ref.enriched_feature_matrix(df, period=48, columns=ref.CANONICAL_COLUMNS + ["hurst"],
                                       hurst_window=100)
+
+    case = "test_hurst_column_is_trailing_and_warmup_nan"
     h = mat["hurst"].to_numpy()
-    assert np.isnan(h[:100]).all()
-    assert np.isfinite(h[100])
+    assert np.isnan(h[:100]).all(), case
+    assert np.isfinite(h[100]), case
     from indicators_core import hurst_exponent
     close = df["close"].to_numpy()
     i = 200
     expected = hurst_exponent(pd.Series(close[i - 100: i + 1]), min_points=100)
-    assert h[i] == pytest.approx(expected, rel=1e-12)
+    assert h[i] == pytest.approx(expected, rel=1e-12), case
 
-
-def test_hurst_column_uses_own_window_independent_of_period():
-    df = _synthetic_ohlcv(n=300)
     mat_a = ref.enriched_feature_matrix(df, period=20, columns=ref.CANONICAL_COLUMNS + ["hurst"],
                                         hurst_window=100)
-    mat_b = ref.enriched_feature_matrix(df, period=48, columns=ref.CANONICAL_COLUMNS + ["hurst"],
-                                        hurst_window=100)
-    pd.testing.assert_series_equal(mat_a["hurst"], mat_b["hurst"], check_exact=True)
+    pd.testing.assert_series_equal(mat_a["hurst"], mat["hurst"], check_exact=True,
+                                   obj="test_hurst_column_uses_own_window_independent_of_period")
 
 
 def test_hurst_column_is_causal_future_bars_do_not_change_past_rows():
@@ -167,24 +157,51 @@ def test_hurst_column_is_causal_future_bars_do_not_change_past_rows():
     assert np.array_equal(np.nan_to_num(a, nan=-7.0), np.nan_to_num(b, nan=-7.0))
 
 
-def test_fit_unsupervised_enriched_schema_and_decode():
+def test_full_enriched_matrix_builds_in_order_and_fitted_models_hold_the_feature_contract():
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
+    from regime_hmm import forward_filter_labels
     df = _synthetic_ohlcv()
     fund = _synthetic_funding(df.index)
     cols = ref.ENRICHED_COLUMNS
     mat = ref.enriched_feature_matrix(df, period=48, funding=fund, columns=cols)
+    default_mat = ref.enriched_feature_matrix(df, period=48, funding=fund)
+
+    case = "test_builder_full_matrix_columns_and_order"
+    assert list(default_mat.columns) == ref.ENRICHED_COLUMNS, case
+    assert len(default_mat) == len(df), case
+
+    case = "test_fit_unsupervised_enriched_schema_and_decode"
     model = rvm.fit_unsupervised(mat.to_numpy(dtype=float), family="hmm", k=4, filter_window=32,
                                  thresholds=dict(TH), seed=0, feature_names=cols,
                                  canonical_indices=ref.canonical_indices_for(cols))
-    assert model["features"] == list(cols)
-    assert model["canonical_indices"] == [0, 1, 2, 3]
-    assert len(model["feature_means"]) == len(cols)
-    assert all(len(e["mean"]) == len(cols) for e in model["emissions"])
-    assert all(s in VALID_LABELS_COMPOSITE for s in model["states"])
+    assert model["features"] == list(cols), case
+    assert model["canonical_indices"] == [0, 1, 2, 3], case
+    assert len(model["feature_means"]) == len(cols), case
+    assert all(len(e["mean"]) == len(cols) for e in model["emissions"]), case
+    assert all(s in VALID_LABELS_COMPOSITE for s in model["states"]), case
     labels, conf = ref.decode_with_model(mat, model)
-    assert len(labels) == len(mat)
+    assert len(labels) == len(mat), case
     valid = ~np.isnan(mat.to_numpy(dtype=float)).any(1)
-    assert set(np.asarray(labels, dtype=object)[valid]).issubset(VALID_LABELS_COMPOSITE)
+    assert set(np.asarray(labels, dtype=object)[valid]).issubset(VALID_LABELS_COMPOSITE), case
+
+    model = rvm.fit_unsupervised(mat.to_numpy(dtype=float), family="kmeans", k=4, filter_window=32,
+                                 thresholds=dict(TH), seed=0, feature_names=cols,
+                                 canonical_indices=(0, 1, 2, 3))
+    reordered = mat[list(reversed(cols))]
+    with pytest.raises(ValueError, match="feature-order contract violated"):
+        ref.decode_with_model(reordered, model)
+    with pytest.raises(ValueError, match="feature-order contract violated"):
+        ref.assert_feature_contract(model, list(reversed(cols)))
+
+    case = "test_column_order_is_load_bearing_for_labels"
+    model = rvm.fit_unsupervised(mat.to_numpy(dtype=float), family="hmm", k=5, filter_window=32,
+                                 thresholds=dict(TH), seed=0, feature_names=cols,
+                                 canonical_indices=(0, 1, 2, 3))
+    correct, _ = forward_filter_labels(mat.to_numpy(dtype=float), model)
+    swapped = mat[["adx", "range_eff", "efficiency", "return_eff", "funding_rate",
+                   "volume_z", "htf_range_eff", "hurst"]]
+    wrong, _ = forward_filter_labels(swapped.to_numpy(dtype=float), model)
+    assert list(np.asarray(correct)[valid]) != list(np.asarray(wrong)[valid]), case
 
 
 def test_fit_unsupervised_rejects_feature_name_count_mismatch():
@@ -195,41 +212,7 @@ def test_fit_unsupervised_rejects_feature_name_count_mismatch():
                              feature_names=["a", "b", "c"])
 
 
-def test_decode_contract_rejects_column_reorder():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    df = _synthetic_ohlcv()
-    fund = _synthetic_funding(df.index)
-    cols = ref.ENRICHED_COLUMNS
-    mat = ref.enriched_feature_matrix(df, period=48, funding=fund, columns=cols)
-    model = rvm.fit_unsupervised(mat.to_numpy(dtype=float), family="kmeans", k=4, filter_window=32,
-                                 thresholds=dict(TH), seed=0, feature_names=cols,
-                                 canonical_indices=(0, 1, 2, 3))
-    reordered = mat[list(reversed(cols))]
-    with pytest.raises(ValueError, match="feature-order contract violated"):
-        ref.decode_with_model(reordered, model)
-    with pytest.raises(ValueError, match="feature-order contract violated"):
-        ref.assert_feature_contract(model, list(reversed(cols)))
-
-
-def test_column_order_is_load_bearing_for_labels():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    from regime_hmm import forward_filter_labels
-    df = _synthetic_ohlcv()
-    fund = _synthetic_funding(df.index)
-    cols = ref.ENRICHED_COLUMNS
-    mat = ref.enriched_feature_matrix(df, period=48, funding=fund, columns=cols)
-    model = rvm.fit_unsupervised(mat.to_numpy(dtype=float), family="hmm", k=5, filter_window=32,
-                                 thresholds=dict(TH), seed=0, feature_names=cols,
-                                 canonical_indices=(0, 1, 2, 3))
-    correct, _ = forward_filter_labels(mat.to_numpy(dtype=float), model)
-    swapped = mat[["adx", "range_eff", "efficiency", "return_eff", "funding_rate",
-                   "volume_z", "htf_range_eff", "hurst"]]
-    wrong, _ = forward_filter_labels(swapped.to_numpy(dtype=float), model)
-    valid = ~np.isnan(mat.to_numpy(dtype=float)).any(1)
-    assert list(np.asarray(correct)[valid]) != list(np.asarray(wrong)[valid])
-
-
-def test_naming_ignores_extra_dims_given_same_canonical_centroids():
+def test_naming_uses_canonical_indices_ignoring_extra_dims_and_column_position():
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
     mean = np.zeros(6); std = np.ones(6)
     em_a = np.array([[0.0, 0.02, 0.1, 8.0, 0.0, 0.0],
@@ -237,16 +220,13 @@ def test_naming_ignores_extra_dims_given_same_canonical_centroids():
     em_b = em_a.copy(); em_b[:, 4:] = 99.0
     names_a, _ = rvm.map_latent_to_names(em_a, mean, std, dict(TH), canonical_indices=(0, 1, 2, 3))
     names_b, _ = rvm.map_latent_to_names(em_b, mean, std, dict(TH), canonical_indices=(0, 1, 2, 3))
-    assert names_a == names_b
+    assert names_a == names_b, "test_naming_ignores_extra_dims_given_same_canonical_centroids"
 
-
-def test_naming_with_canonical_columns_not_first():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
     mean = np.zeros(5); std = np.ones(5)
     em = np.array([[0.0, 0.0, 0.02, 0.1, 8.0],
                    [0.0, 0.4, 0.5, 0.9, 40.0]], dtype=float)
     names, _ = rvm.map_latent_to_names(em, mean, std, dict(TH), canonical_indices=(1, 2, 3, 4))
-    assert names == ["ranging_quiet", "trending_up_clean"]
+    assert names == ["ranging_quiet", "trending_up_clean"], "test_naming_with_canonical_columns_not_first"
 
 
 def _load_research(mod_name, filename):

@@ -1,3 +1,4 @@
+import contextlib
 import json
 import math
 import os
@@ -29,6 +30,19 @@ COLS = ["signal", "cmo_reason", "cmo_valid", "cmo", "cmo_prev", "cmo_gain_sum", 
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, params=PARAMS):
@@ -116,8 +130,13 @@ def test_flat_window_then_rise_fires_from_the_neutral_value():
     assert out["signal"].iloc[12] == 1 and out["cmo"].iloc[12] == 100.0
 
 
-@pytest.mark.parametrize("sign", [1, -1])
-def test_threshold_equality_never_fires_and_a_cross_from_exactly_the_threshold_does(sign):
+def test_threshold_equality_never_fires_and_a_cross_from_exactly_the_threshold_does():
+    for sign in (1, -1):
+        with _case(sign):
+            _threshold_equality_never_fires_and_a_cross_from_exactly_the_threshold_does(sign)
+
+
+def _threshold_equality_never_fires_and_a_cross_from_exactly_the_threshold_does(sign):
     closes = [100.0] * 8 + [100.0 - 3 * sign, 100.0 - 3 * sign, 100.0 - 3 * sign,
                             100.0 + 2 * sign, 100.0 + 3 * sign]
     out = _apply(_frame(closes), dict(PARAMS, period=4))
@@ -171,8 +190,13 @@ DEFECTS = {
 }
 
 
-@pytest.mark.parametrize("kind", sorted(DEFECTS))
-def test_each_defect_holds_with_a_reason_and_resumes_once_both_windows_clear(kind):
+def test_each_defect_holds_with_a_reason_and_resumes_once_both_windows_clear():
+    for kind in sorted(DEFECTS):
+        with _case(kind):
+            _defect_holds_with_a_reason_and_resumes_once_both_windows_clear(kind)
+
+
+def _defect_holds_with_a_reason_and_resumes_once_both_windows_clear(kind):
     period = 5
     clean = _frame(_walk(90, seed=7))
     j = 40
@@ -237,17 +261,21 @@ def test_missing_inputs_hold_without_raising():
     assert (out["signal"] == 0).all() and (out["cmo_reason"] == "missing_timestamp").all()
 
 
-@pytest.mark.parametrize("bad", [
+INVALID_PARAMS = [
     {"period": 0}, {"period": 199}, {"period": 20.5}, {"period": True}, {"period": float("nan")},
     {"period": float("inf")}, {"period": "20"},
     {"threshold": 0}, {"threshold": 100}, {"threshold": -10}, {"threshold": float("nan")},
     {"threshold": float("inf")}, {"threshold": True}, {"threshold": "25"},
     {"expected_interval_ms": 0}, {"expected_interval_ms": -H}, {"expected_interval_ms": 1.5},
     {"expected_interval_ms": True}, {"expected_interval_ms": float("nan")}, {"expected_interval_ms": None},
-])
-def test_invalid_parameters_are_configuration_errors(bad):
-    with pytest.raises(ValueError):
-        _apply(_frame(_walk(40)), dict(PARAMS, **bad))
+]
+
+
+def test_invalid_parameters_are_configuration_errors():
+    for bad in INVALID_PARAMS:
+        with _case(bad):
+            with pytest.raises(ValueError):
+                _apply(_frame(_walk(40)), dict(PARAMS, **bad))
 
 
 def test_period_endpoints_and_the_200_bar_check_window():
@@ -358,8 +386,13 @@ def test_opposite_and_repeated_signals_never_reverse_or_add_while_open():
     assert trades[0]["shares"] == pytest.approx(trades[0].get("initial_shares", trades[0]["shares"]))
 
 
-@pytest.mark.parametrize("path,want", [("up", "tp"), ("down", "sl")])
-def test_invalid_entry_data_keeps_close_and_stop_management(path, want):
+def test_invalid_entry_data_keeps_close_and_stop_management():
+    for path, want in (("up", "tp"), ("down", "sl")):
+        with _case(path):
+            _invalid_entry_data_keeps_close_and_stop_management(path, want)
+
+
+def _invalid_entry_data_keeps_close_and_stop_management(path, want):
     rise = [100.0] * 30 + [100.5, 101.0, 101.4, 101.8]
     tail = [102.0, 103.5, 104.5, 105.5, 106.0] if path == "up" else [101.0, 99.0, 97.0, 95.0, 93.0]
     df = _frame(rise + tail)

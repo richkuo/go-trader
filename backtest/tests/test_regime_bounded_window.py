@@ -148,60 +148,67 @@ def _drift(agreement, n=500):
             "disagreements": int(round((1 - agreement) * n)), "transitions": {}}
 
 
-def test_go_no_go_promotes_when_bounded_ships_and_agreement_high():
+def test_go_no_go_promotion_and_every_blocking_reason():
     hr = _scored(10.0, 0.40)
     md = _scored(9.7, 0.25)
+
+    case = "test_go_no_go_promotes_when_bounded_ships_and_agreement_high"
     v = go_no_go(md, hr, md, hr, _drift(0.99))
-    assert v["promote"] is True
-    assert v["blocking_reasons"] == []
-    assert v["bounded_window_verdict"]["ship"] is True
+    assert v["promote"] is True, case
+    assert v["blocking_reasons"] == [], case
+    assert v["bounded_window_verdict"]["ship"] is True, case
 
-
-def test_go_no_go_blocks_when_bounded_fails_gate():
-    hr = _scored(10.0, 0.40)
-    md_full = _scored(9.7, 0.25)
+    case = "test_go_no_go_blocks_when_bounded_fails_gate"
     md_bounded = _scored(4.0, 0.25)
-    v = go_no_go(md_full, hr, md_bounded, hr, _drift(0.99))
-    assert v["promote"] is False
-    assert any("fails the calibrate gate" in r for r in v["blocking_reasons"])
-    assert any("regressed" in r for r in v["blocking_reasons"])
+    v = go_no_go(md, hr, md_bounded, hr, _drift(0.99))
+    assert v["promote"] is False, case
+    assert any("fails the calibrate gate" in r for r in v["blocking_reasons"]), case
+    assert any("regressed" in r for r in v["blocking_reasons"]), case
 
-
-def test_go_no_go_blocks_when_label_agreement_below_threshold():
-    hr = _scored(10.0, 0.40)
-    md = _scored(9.7, 0.25)
+    case = "test_go_no_go_blocks_when_label_agreement_below_threshold"
     v = go_no_go(md, hr, md, hr, _drift(0.80))
-    assert v["promote"] is False
-    assert any("label agreement" in r for r in v["blocking_reasons"])
-    assert v["bounded_window_verdict"]["ship"] is True
+    assert v["promote"] is False, case
+    assert any("label agreement" in r for r in v["blocking_reasons"]), case
+    assert v["bounded_window_verdict"]["ship"] is True, case
 
-
-def test_go_no_go_default_threshold():
-    hr = _scored(10.0, 0.40)
-    md = _scored(9.7, 0.25)
+    case = "test_go_no_go_default_threshold"
     just_under = go_no_go(md, hr, md, hr, _drift(DEFAULT_AGREEMENT_THRESHOLD - 0.001))
     at = go_no_go(md, hr, md, hr, _drift(DEFAULT_AGREEMENT_THRESHOLD))
-    assert just_under["promote"] is False and at["promote"] is True
+    assert just_under["promote"] is False and at["promote"] is True, case
 
-
-def test_go_no_go_blocks_on_insufficient_comparable_bars():
-    hr = _scored(10.0, 0.40)
-    md = _scored(9.7, 0.25)
+    case = "test_go_no_go_blocks_on_insufficient_comparable_bars"
     v = go_no_go(md, hr, md, hr, _drift(1.0, n=5), min_agreement_bars=30)
-    assert v["promote"] is False
-    assert any("insufficient comparable bars" in r for r in v["blocking_reasons"])
-    assert v["bounded_window_verdict"]["ship"] is True
+    assert v["promote"] is False, case
+    assert any("insufficient comparable bars" in r for r in v["blocking_reasons"]), case
+    assert v["bounded_window_verdict"]["ship"] is True, case
 
-
-def test_go_no_go_zero_comparable_bars_vacuous_agreement_blocks():
+    case = "test_go_no_go_zero_comparable_bars_vacuous_agreement_blocks"
     empty = label_drift_stats(np.array([], dtype=object), np.array([], dtype=object),
                               np.array([], dtype=bool))
-    assert empty["agreement"] == 1.0 and empty["n"] == 0
-    hr = _scored(10.0, 0.40)
-    md = _scored(9.7, 0.25)
+    assert empty["agreement"] == 1.0 and empty["n"] == 0, case
     v = go_no_go(md, hr, md, hr, empty)
-    assert v["promote"] is False
-    assert any("insufficient comparable bars" in r for r in v["blocking_reasons"])
+    assert v["promote"] is False, case
+    assert any("insufficient comparable bars" in r for r in v["blocking_reasons"]), case
+
+    case = "test_go_no_go_blocks_in_sample_rescore"
+    v = go_no_go(md, hr, md, hr, _drift(1.0), in_sample=True)
+    assert v["promote"] is False, case
+    assert v["in_sample"] is True, case
+    assert any("in-sample re-score" in r for r in v["blocking_reasons"]), case
+    assert v["bounded_window_verdict"]["ship"] is True, case
+
+    case = "test_go_no_go_unverified_provenance_warns_but_does_not_block_by_default"
+    v = go_no_go(md, hr, md, hr, _drift(0.99), provenance_verified=False)
+    assert v["promote"] is True, case
+    assert v["provenance_verified"] is False, case
+    assert v["warnings"] and any("provenance" in w for w in v["warnings"]), case
+    assert v["blocking_reasons"] == [], case
+
+    case = "test_go_no_go_unverified_provenance_blocks_when_required"
+    v = go_no_go(md, hr, md, hr, _drift(0.99), provenance_verified=False,
+                 require_provenance=True)
+    assert v["promote"] is False, case
+    assert any("provenance unverifiable" in r for r in v["blocking_reasons"]), case
 
 
 def test_sweep_blocked_worst_case_over_lookbacks():
@@ -212,16 +219,14 @@ def test_sweep_blocked_worst_case_over_lookbacks():
     assert _sweep_blocked([{"lookback": 200, "adx_mean_abs": 0.1}]) is False
 
 
-def test_align_eval_start_is_window_tail():
+def test_align_eval_start_is_window_tail_and_rejects_misaligned_frames():
+    import pytest
     df_ext = _ohlcv(500, seed=8)
     df_window = df_ext.iloc[200:].reset_index(drop=True)
-    assert _align_eval_start(df_window, df_ext) == 200
+    assert _align_eval_start(df_window, df_ext) == 200, "test_align_eval_start_is_window_tail"
 
-
-def test_align_eval_start_rejects_misaligned_frames():
     df_ext = _ohlcv(500, seed=9)
     df_window = _ohlcv(300, seed=99)
-    import pytest
     with pytest.raises(ValueError):
         _align_eval_start(df_window, df_ext)
 
@@ -277,17 +282,44 @@ def test_validate_frames_handrule_only_allows_horizons_without_gate_primary():
     assert "go_no_go" not in rep and rep["adx_drift"]["n"] > 0
 
 
-def test_provenance_status_flags_in_sample_and_out_of_sample():
+def test_provenance_status_name_match_date_overlap_and_unresolvable_fit_window():
+    case = "test_provenance_status_flags_in_sample_and_out_of_sample"
     fit = {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}
     model = {"fitted_on": fit}
     same = _provenance_status(model, "BTC/USDT", "1h", "is")
-    assert same["in_sample"] is True and same["verified"] is True
+    assert same["in_sample"] is True and same["verified"] is True, case
     diff_window = _provenance_status(model, "BTC/USDT", "1h", "oos")
-    assert diff_window["in_sample"] is False and diff_window["verified"] is True
+    assert diff_window["in_sample"] is False and diff_window["verified"] is True, case
     diff_symbol = _provenance_status(model, "ETH/USDT", "1h", "is")
-    assert diff_symbol["in_sample"] is False
+    assert diff_symbol["in_sample"] is False, case
     missing = _provenance_status({"states": []}, "BTC/USDT", "1h", "is")
-    assert missing["verified"] is False and missing["in_sample"] is False
+    assert missing["verified"] is False and missing["in_sample"] is False, case
+
+    case = "test_provenance_status_detects_date_overlap_across_window_names"
+    WIN = {"is": ("2025-06-10", "2026-01-01"), "oos": ("2026-01-01", None),
+           "2023": ("2023-01-01", "2024-01-01"), "2025H1": ("2025-01-01", "2025-07-01")}
+    model = {"fitted_on": {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}}
+
+    overlap = _provenance_status(model, "BTC/USDT", "1h", "2025H1", WIN)
+    assert overlap["in_sample"] is True and overlap["date_overlap"] is True, case
+    assert overlap["name_match"] is False and overlap["overlap_detail"]["fit_window"] == "is", case
+
+    disjoint = _provenance_status(model, "BTC/USDT", "1h", "2023", WIN)
+    assert disjoint["in_sample"] is False and disjoint["date_overlap"] is False, case
+
+    boundary = _provenance_status(model, "BTC/USDT", "1h", "oos", WIN)
+    assert boundary["in_sample"] is False, case
+
+    cross_instrument = _provenance_status(model, "ETH/USDT", "1h", "2025H1", WIN)
+    assert cross_instrument["in_sample"] is False, case
+
+    case = "test_provenance_status_unresolvable_fit_window_is_unverifiable"
+    WIN = {"is": ("2025-06-10", "2026-01-01"), "2025H1": ("2025-01-01", "2025-07-01")}
+    model = {"fitted_on": {"symbol": "BTC/USDT", "timeframe": "1h", "window": "ancient"}}
+    p = _provenance_status(model, "BTC/USDT", "1h", "2025H1", WIN)
+    assert p["verified"] is True, case
+    assert p["overlap_resolvable"] is False, case
+    assert p["in_sample"] is False, case
 
 
 def test_windows_overlap_half_open_boundary_is_disjoint():
@@ -297,63 +329,6 @@ def test_windows_overlap_half_open_boundary_is_disjoint():
     assert _windows_overlap(("2025-06-10", "2026-01-01"), ("2024-01-01", "2025-01-01")) is False
     assert _windows_overlap(("2025-06-10", "2026-01-01"), ("2023-01-01", "2024-01-01")) is False
     assert _windows_overlap(("2026-01-01", None), ("2025-06-10", "2026-06-01")) is True
-
-
-def test_provenance_status_detects_date_overlap_across_window_names():
-    WIN = {"is": ("2025-06-10", "2026-01-01"), "oos": ("2026-01-01", None),
-           "2023": ("2023-01-01", "2024-01-01"), "2025H1": ("2025-01-01", "2025-07-01")}
-    model = {"fitted_on": {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}}
-
-    overlap = _provenance_status(model, "BTC/USDT", "1h", "2025H1", WIN)
-    assert overlap["in_sample"] is True and overlap["date_overlap"] is True
-    assert overlap["name_match"] is False and overlap["overlap_detail"]["fit_window"] == "is"
-
-    disjoint = _provenance_status(model, "BTC/USDT", "1h", "2023", WIN)
-    assert disjoint["in_sample"] is False and disjoint["date_overlap"] is False
-
-    boundary = _provenance_status(model, "BTC/USDT", "1h", "oos", WIN)
-    assert boundary["in_sample"] is False
-
-    cross_instrument = _provenance_status(model, "ETH/USDT", "1h", "2025H1", WIN)
-    assert cross_instrument["in_sample"] is False
-
-
-def test_provenance_status_unresolvable_fit_window_is_unverifiable():
-    WIN = {"is": ("2025-06-10", "2026-01-01"), "2025H1": ("2025-01-01", "2025-07-01")}
-    model = {"fitted_on": {"symbol": "BTC/USDT", "timeframe": "1h", "window": "ancient"}}
-    p = _provenance_status(model, "BTC/USDT", "1h", "2025H1", WIN)
-    assert p["verified"] is True
-    assert p["overlap_resolvable"] is False
-    assert p["in_sample"] is False
-
-
-def test_go_no_go_blocks_in_sample_rescore():
-    hr = _scored(10.0, 0.40)
-    md = _scored(9.7, 0.25)
-    v = go_no_go(md, hr, md, hr, _drift(1.0), in_sample=True)
-    assert v["promote"] is False
-    assert v["in_sample"] is True
-    assert any("in-sample re-score" in r for r in v["blocking_reasons"])
-    assert v["bounded_window_verdict"]["ship"] is True
-
-
-def test_go_no_go_unverified_provenance_warns_but_does_not_block_by_default():
-    hr = _scored(10.0, 0.40)
-    md = _scored(9.7, 0.25)
-    v = go_no_go(md, hr, md, hr, _drift(0.99), provenance_verified=False)
-    assert v["promote"] is True
-    assert v["provenance_verified"] is False
-    assert v["warnings"] and any("provenance" in w for w in v["warnings"])
-    assert v["blocking_reasons"] == []
-
-
-def test_go_no_go_unverified_provenance_blocks_when_required():
-    hr = _scored(10.0, 0.40)
-    md = _scored(9.7, 0.25)
-    v = go_no_go(md, hr, md, hr, _drift(0.99), provenance_verified=False,
-                 require_provenance=True)
-    assert v["promote"] is False
-    assert any("provenance unverifiable" in r for r in v["blocking_reasons"])
 
 
 def test_validate_frames_in_sample_blocks_end_to_end():
@@ -421,38 +396,26 @@ def _argv(model_json, window, lookback=250, extra=None):
     return a + (extra or [])
 
 
-def test_validate_blocks_confirmed_in_sample_model(monkeypatch):
-    df_ext, _ = _wire_loader(monkeypatch)
-    _stub_gate_ship(monkeypatch)
-    model = _fit_model(df_ext, filter_window=24)
-    model["fitted_on"] = {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}
-    rep = rbwv.validate("BTC/USDT", "1h", "is", model, lookback=250,
-                        agreement_threshold=0.0, min_agreement_bars=1)
-    assert rep["provenance"]["in_sample"] is True
-    assert rep["go_no_go"]["promote"] is False
-    assert any("in-sample re-score" in r for r in rep["go_no_go"]["blocking_reasons"])
-
-
-def test_validate_promotes_disjoint_oos_model(monkeypatch):
-    df_ext, _ = _wire_loader(monkeypatch)
-    _stub_gate_ship(monkeypatch)
-    model = _fit_model(df_ext, filter_window=24)
-    model["fitted_on"] = {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}
-    rep = rbwv.validate("BTC/USDT", "1h", "oos", model, lookback=250,
-                        agreement_threshold=0.0, min_agreement_bars=1)
-    assert rep["provenance"]["in_sample"] is False
-    assert rep["go_no_go"]["provenance_verified"] is True
-    assert rep["go_no_go"]["promote"] is True
-
-
-def test_main_exit_codes_block_in_sample_promote_oos(monkeypatch, tmp_path, capsys):
+def test_main_and_validate_block_in_sample_and_promote_disjoint_oos(monkeypatch, tmp_path, capsys):
     df_ext, _ = _wire_loader(monkeypatch)
     _stub_gate_ship(monkeypatch)
     fit = {"symbol": "BTC/USDT", "timeframe": "1h", "window": "is"}
     mj = _write_model(tmp_path, df_ext, fitted_on=fit)
-    assert rbwv.main(_argv(mj, "is")) == 1
     capsys.readouterr()
-    assert rbwv.main(_argv(mj, "oos")) == 0
+
+    assert rbwv.main(_argv(mj, "is")) == 1, "test_main_exit_codes_block_in_sample_promote_oos: is"
+    rep = json.loads(capsys.readouterr().out)
+    case = "test_validate_blocks_confirmed_in_sample_model"
+    assert rep["provenance"]["in_sample"] is True, case
+    assert rep["go_no_go"]["promote"] is False, case
+    assert any("in-sample re-score" in r for r in rep["go_no_go"]["blocking_reasons"]), case
+
+    assert rbwv.main(_argv(mj, "oos")) == 0, "test_main_exit_codes_block_in_sample_promote_oos: oos"
+    rep = json.loads(capsys.readouterr().out)
+    case = "test_validate_promotes_disjoint_oos_model"
+    assert rep["provenance"]["in_sample"] is False, case
+    assert rep["go_no_go"]["provenance_verified"] is True, case
+    assert rep["go_no_go"]["promote"] is True, case
 
 
 def test_main_require_provenance_blocks_unstamped(monkeypatch, tmp_path, capsys):

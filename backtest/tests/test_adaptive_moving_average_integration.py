@@ -1,3 +1,4 @@
+import contextlib
 import gzip
 import csv
 import json
@@ -39,6 +40,19 @@ DECISION_COLUMNS = ["ama_value", "ama_prev_value", "ama_slope_ref", "ama_slope",
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, params=None):
@@ -228,7 +242,7 @@ def _with_index(df, idx):
     return out
 
 
-@pytest.mark.parametrize("mutate,reason", [
+INVALID_MARKET_INPUTS = [
     (lambda df: df.drop(columns=["volume"]), "missing_columns"),
     (lambda df: df.drop(columns=["open", "high"]), "missing_columns"),
     (lambda df: df.reset_index(drop=True), "missing_timestamps"),
@@ -246,9 +260,13 @@ def _with_index(df, idx):
     (lambda df: _with_index(df, list(df.index[:-1]) + [df.index[-1] + pd.Timedelta(hours=4)]), "cadence_gap"),
     (lambda df: df.drop(df.index[-20]), "cadence_gap"),
     (lambda df: df.iloc[-(_need(SMALL) - 1):], "insufficient_history"),
-])
-def test_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame(mutate, reason):
-    _holds_at_end(mutate(_walk(120, 3)), SMALL, reason)
+]
+
+
+def test_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame():
+    for i, (mutate, reason) in enumerate(INVALID_MARKET_INPUTS):
+        with _case(f"{i}-{reason}"):
+            _holds_at_end(mutate(_walk(120, 3)), SMALL, reason)
 
 
 def test_missing_or_wrong_cadence_holds_every_row():
@@ -299,24 +317,28 @@ def test_a_defect_holds_only_inside_its_dependency_window():
     assert out["ama_valid"].iloc[bad + need - 1] == 1.0
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"efficiency_period": 0}, {"efficiency_period": 65}, {"efficiency_period": 9.5}, {"efficiency_period": True},
     {"efficiency_period": float("nan")}, {"efficiency_period": "10"}, {"fast_period": 0}, {"fast_period": 30},
     {"fast_period": 31}, {"slow_period": 1}, {"slow_period": 257}, {"slow_period": float("inf")},
     {"slope_span": 0}, {"slope_span": False}, {"recursion_length": 0}, {"recursion_length": 198},
     {"recursion_length": 120.5}, {"recursion_length": 197, "efficiency_period": 1, "slope_span": 2},
     {"recursion_length": 160, "efficiency_period": 30, "slope_span": 10},
-])
-def test_invalid_parameters_fail_validation(params):
-    p = {**SEED, **params}
+]
+
+
+def test_invalid_parameters_fail_validation():
     reg = _reg()
-    with pytest.raises(ValueError):
-        reg._registry.validate_params(NAME, p)
-    with pytest.raises(ValueError):
-        _apply(_walk(120, 1), p)
-    from adaptive_moving_average import adaptive_moving_average_core
-    with pytest.raises(ValueError):
-        adaptive_moving_average_core(_walk(120, 1), **p)
+    for params in INVALID_PARAMS:
+        p = {**SEED, **params}
+        with _case(params):
+            with pytest.raises(ValueError):
+                reg._registry.validate_params(NAME, p)
+            with pytest.raises(ValueError):
+                _apply(_walk(120, 1), p)
+            from adaptive_moving_average import adaptive_moving_average_core
+            with pytest.raises(ValueError):
+                adaptive_moving_average_core(_walk(120, 1), **p)
 
 
 def test_boundary_history_of_199_rows_and_integral_floats():
@@ -417,8 +439,13 @@ def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_op
             assert held["signal"] == 0 and held["close_fraction"] == 0.0
 
 
-@pytest.mark.parametrize("mutation", ["volume", "geometry", "cadence", "insufficient"])
-def test_entry_data_hold_keeps_the_close_owner_executable(mutation):
+def test_entry_data_hold_keeps_the_close_owner_executable():
+    for mutation in ("volume", "geometry", "cadence", "insufficient"):
+        with _case(mutation):
+            _entry_data_hold_keeps_the_close_owner_executable(mutation)
+
+
+def _entry_data_hold_keeps_the_close_owner_executable(mutation):
     df = _walk(200, 9)
     if mutation == "volume":
         df = _set_last(df, "volume", -5.0)

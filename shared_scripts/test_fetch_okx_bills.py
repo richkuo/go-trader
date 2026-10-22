@@ -1,5 +1,6 @@
 
 import builtins
+import contextlib
 import importlib.util
 import json
 import os
@@ -8,6 +9,14 @@ from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@contextlib.contextmanager
+def _case(*label):
+    try:
+        yield
+    except (Exception, pytest.fail.Exception) as exc:
+        raise AssertionError(f"case {label!r} failed: {exc}") from exc
 
 
 def _run_script(bills_or_exc, capped=False, is_live=True, argv=None):
@@ -61,17 +70,19 @@ BILLS = [
 ]
 
 
-@pytest.mark.parametrize("bills,capped", [
-    (BILLS, False),
-    ([{"bill_id": "b", "ts_ms": 1, "bal_chg": 1.0}], True),
-    ([], False),
-])
-def test_relays_bills_and_capped_flag(bills, capped):
-    out, code, _ = _run_script(bills, capped=capped)
-    assert code == 0
-    assert out["bills"] == bills
-    assert out["capped"] is capped
-    assert "error" not in out
+def test_relays_bills_and_capped_flag():
+    cases = [
+        (BILLS, False),
+        ([{"bill_id": "b", "ts_ms": 1, "bal_chg": 1.0}], True),
+        ([], False),
+    ]
+    for bills, capped in cases:
+        with _case(bills, capped):
+            out, code, _ = _run_script(bills, capped=capped)
+            assert code == 0
+            assert out["bills"] == bills
+            assert out["capped"] is capped
+            assert "error" not in out
 
 
 def test_passes_since_ms_to_adapter():
@@ -80,16 +91,18 @@ def test_passes_since_ms_to_adapter():
     adapter.get_account_bills.assert_called_once_with(since_ms=987654321)
 
 
-@pytest.mark.parametrize("bills_or_exc,is_live,fragment", [
-    ([], False, "OKX_API_KEY"),
-    (RuntimeError("OKX 503 Service Unavailable"), True, "OKX 503"),
-])
-def test_failure_paths_emit_error_envelope(bills_or_exc, is_live, fragment):
-    out, code, _ = _run_script(bills_or_exc, is_live=is_live)
-    assert code == 1
-    assert fragment in out["error"]
-    assert out["bills"] == []
-    assert out["capped"] is False
+def test_failure_paths_emit_error_envelope():
+    cases = [
+        ([], False, "OKX_API_KEY"),
+        (RuntimeError("OKX 503 Service Unavailable"), True, "OKX 503"),
+    ]
+    for bills_or_exc, is_live, fragment in cases:
+        with _case(fragment):
+            out, code, _ = _run_script(bills_or_exc, is_live=is_live)
+            assert code == 1
+            assert fragment in out["error"]
+            assert out["bills"] == []
+            assert out["capped"] is False
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import contextlib
 import math
 import os
 import sys
@@ -47,6 +48,19 @@ CONTRACT = {"close_strategies": [{"name": "time_stop", "params": {"max_bars": P[
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, **over):
@@ -294,7 +308,7 @@ def _defect(df, kind, k):
     return out
 
 
-@pytest.mark.parametrize("kind,row_reason", [
+INPUT_DEFECTS = [
     ("cadence_gap", "cadence_gap"),
     ("duplicate_timestamp", "duplicate_timestamp"),
     ("descending_timestamp", "descending_timestamp"),
@@ -303,11 +317,18 @@ def _defect(df, kind, k):
     ("nonpositive_price", "nonpositive_price"),
     ("inconsistent_candle", "inconsistent_candle"),
     ("grid_misaligned", "grid_misaligned"),
-])
-def test_input_defects_hold_with_a_reason_never_rewrite_earlier_decisions_and_recover_on_clean_history(kind,
-                                                                                                    row_reason):
+]
+
+
+def test_input_defects_hold_with_a_reason_never_rewrite_earlier_decisions_and_recover_on_clean_history():
     df = _calendar(n=N_BARS + 2600)
     clean = _apply(df)
+    for kind, row_reason in INPUT_DEFECTS:
+        with _case(kind):
+            _input_defect_holds_and_recovers(df, clean, kind, row_reason)
+
+
+def _input_defect_holds_and_recovers(df, clean, kind, row_reason):
     k = 2400
     bad = _defect(df, kind, k)
     out = _apply(bad)
@@ -350,10 +371,15 @@ def test_future_rows_never_change_earlier_signals_tables_or_refit_timing():
         assert list(mut[col].iloc[:cut - 1].astype(str)) == list(full[col].iloc[:cut - 1].astype(str)), col
 
 
-@pytest.mark.parametrize("shift", [1, 37, 167, 168, 500])
-def test_shifting_the_frame_start_keeps_every_decision_that_still_has_its_history(shift):
+def test_shifting_the_frame_start_keeps_every_decision_that_still_has_its_history():
     df = _calendar(n=N_BARS + 600)
     full = _apply(df)
+    for shift in (1, 37, 167, 168, 500):
+        with _case(shift):
+            _shifted_start_keeps_decisions(df, full, shift)
+
+
+def _shifted_start_keeps_decisions(df, full, shift):
     out = _apply(df.iloc[shift:])
     kept = 0
     for j in range(len(out)):
@@ -406,22 +432,26 @@ def test_check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar():
         assert out["cce_gross_mean"].iloc[-1] == full["cce_gross_mean"].iloc[i]
 
 
-@pytest.mark.parametrize("bad", [
+INVALID_PARAMS = [
     {"training_bars": True}, {"training_bars": "4368"}, {"training_bars": None}, {"training_bars": 4368.5},
     {"training_bars": float("nan")}, {"holding_bars": 0}, {"holding_bars": 4368}, {"refit_bars": 0},
     {"refit_bars": 5000}, {"min_effective_obs": 1}, {"confidence": 0.0}, {"confidence": 1.0},
     {"confidence": float("inf")}, {"confidence": True}, {"cost_hurdle": -0.001}, {"cost_hurdle": float("nan")},
     {"expected_interval_ms": 7_000_000}, {"expected_interval_ms": 3_600_000.5},
-])
-def test_invalid_parameters_are_refused_before_evaluation(bad):
+]
+
+
+def test_invalid_parameters_are_refused_before_evaluation():
     reg = _reg()
-    with pytest.raises(ValueError):
-        reg.validate_params(NAME, bad)
-    refs = [StrategyReference("open", NAME)]
-    with pytest.raises(ValueError, match=f"open strategy '{NAME}' has invalid parameters"):
-        preflight_reference_params(refs, bad, None, reg.get_strategy, reg.validate_params)
-    with pytest.raises((ValueError, TypeError)):
-        reg.apply_strategy(NAME, _calendar(n=50), {**P, **bad})
+    for bad in INVALID_PARAMS:
+        with _case(bad):
+            with pytest.raises(ValueError):
+                reg.validate_params(NAME, bad)
+            refs = [StrategyReference("open", NAME)]
+            with pytest.raises(ValueError, match=f"open strategy '{NAME}' has invalid parameters"):
+                preflight_reference_params(refs, bad, None, reg.get_strategy, reg.validate_params)
+            with pytest.raises((ValueError, TypeError)):
+                reg.apply_strategy(NAME, _calendar(n=50), {**P, **bad})
 
 
 def _backtest(df, p=P, stop=3.0, direction="both", mode="approximate"):

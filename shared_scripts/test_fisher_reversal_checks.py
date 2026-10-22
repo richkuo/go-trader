@@ -201,33 +201,31 @@ def test_batch_slots_apply_the_same_admission_and_match_solo():
         assert results["acked"].get(key) == solo_out.get(key)
 
 
-def test_check_decision_matches_the_evaluator_on_the_200_row_frame():
-    bars = _bars(260, H, forming_jump=30.0)
-    out = _check(bars, closed=False, extra=["--strategy-refs", _refs()])
-    df = _strategies().apply_strategy(NAME, _frame_df(_rows(bars[-200:])), PARAMS)
-    last = df.iloc[-1]
-    assert out["signal"] == int(last["signal"]) == 1 and out["open_action"] == "long"
-    for col in ("fisher_value", "fisher_trigger", "fisher_prev_trigger", "fisher_valid", "fisher_reason_code"):
-        assert out["indicators"][col] == round(float(last[col]), 6)
-
-
-def test_forming_bar_cannot_create_a_closed_bar_entry():
+def test_check_decision_matches_the_evaluator_and_a_forming_bar_cannot_create_a_closed_bar_entry():
     bars = _bars(260, H, forming_jump=30.0)
     extra = ["--strategy-refs", _refs()]
-    disabled = _check(bars, closed=False, extra=extra)
+    out = _check(bars, closed=False, extra=extra)
+    case = "check_decision_matches_the_evaluator_on_the_200_row_frame"
+    df = _strategies().apply_strategy(NAME, _frame_df(_rows(bars[-200:])), PARAMS)
+    last = df.iloc[-1]
+    assert out["signal"] == int(last["signal"]) == 1 and out["open_action"] == "long", case
+    for col in ("fisher_value", "fisher_trigger", "fisher_prev_trigger", "fisher_valid", "fisher_reason_code"):
+        assert out["indicators"][col] == round(float(last[col]), 6), (case, col)
+    case = "forming_bar_cannot_create_a_closed_bar_entry"
+    disabled = out
     enabled = _check(bars, closed=True, extra=extra)
     calm = [dict(b) for b in bars]
     calm[-1] = dict(calm[-1], o=bars[-2]["c"], h=bars[-2]["c"] + 9.0, l=bars[-2]["c"] - 0.5, c=bars[-2]["c"] + 8.0)
     calm_out = _check(calm, closed=True, extra=extra)
-    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
-    assert enabled["signal"] == 0 and enabled["open_action"] == "none"
-    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
-    assert enabled["closed_bar_decision"]["held"] is False
-    assert enabled["indicators"] == calm_out["indicators"]
-    assert enabled["closed_bar_decision"]["input_sha256"] == calm_out["closed_bar_decision"]["input_sha256"]
+    assert disabled["signal"] == 1 and disabled["open_action"] == "long", case
+    assert enabled["signal"] == 0 and enabled["open_action"] == "none", case
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1, case
+    assert enabled["closed_bar_decision"]["held"] is False, case
+    assert enabled["indicators"] == calm_out["indicators"], case
+    assert enabled["closed_bar_decision"]["input_sha256"] == calm_out["closed_bar_decision"]["input_sha256"], case
     closed_df = _strategies().apply_strategy(NAME, _frame_df(_rows(bars[:-1])), PARAMS)
-    assert enabled["indicators"]["fisher_reason_code"] == float(closed_df["fisher_reason_code"].iloc[-1]) == 0.0
-    assert enabled["indicators"]["fisher_eval_ts_ms"] == float(bars[-2]["T"])
+    assert enabled["indicators"]["fisher_reason_code"] == float(closed_df["fisher_reason_code"].iloc[-1]) == 0.0, case
+    assert enabled["indicators"]["fisher_eval_ts_ms"] == float(bars[-2]["T"]), case
 
 
 @pytest.mark.parametrize("offset,dropped", [(-1, 1), (0, 0), (1, 0)])

@@ -13,32 +13,27 @@ list_strategies_detailed = _CLOSE_REGISTRY_LOADER.list_strategies_detailed
 _LOADER_PATH = Path(__file__).resolve().parent / "close_registry_loader.py"
 
 
-def test_list_strategies_detailed_matches_list_strategies():
+def test_list_strategies_detailed_matches_names_sorted_shape_and_known_evaluators():
     detailed = list_strategies_detailed()
-    assert {e["name"] for e in detailed} == set(list_strategies())
+    assert {e["name"] for e in detailed} == set(list_strategies()), "matches_list_strategies"
 
-
-def test_list_strategies_detailed_sorted_by_name():
     names = [e["name"] for e in list_strategies_detailed()]
-    assert names == sorted(names)
+    assert names == sorted(names), "sorted_by_name"
 
-
-def test_list_strategies_detailed_shape():
     detailed = list_strategies_detailed()
-    assert detailed, "expected at least one registered close evaluator"
+    assert detailed, "shape: expected at least one registered close evaluator"
     for entry in detailed:
-        assert set(entry.keys()) == {"name", "description", "default_params", "platforms"}
-        assert isinstance(entry["name"], str) and entry["name"]
-        assert isinstance(entry["description"], str) and entry["description"]
-        assert isinstance(entry["default_params"], dict)
-        assert isinstance(entry["platforms"], list) and entry["platforms"]
+        assert set(entry.keys()) == {"name", "description", "default_params", "platforms"}, ("shape", entry)
+        assert isinstance(entry["name"], str) and entry["name"], ("shape", entry)
+        assert isinstance(entry["description"], str) and entry["description"], ("shape", entry)
+        assert isinstance(entry["default_params"], dict), ("shape", entry)
+        assert isinstance(entry["platforms"], list) and entry["platforms"], ("shape", entry)
 
-
-def test_list_strategies_detailed_spot_check_known_evaluators():
     by_name = {e["name"]: e for e in list_strategies_detailed()}
     for name in ("tiered_tp_atr_live", "trailing_tp_ratchet", "avwap_stop"):
-        assert name in by_name
-    assert by_name["avwap_stop"]["default_params"] == {"buffer_atr_mult": 0.25, "atr_source": "live"}
+        assert name in by_name, ("spot_check_known_evaluators", name)
+    assert by_name["avwap_stop"]["default_params"] == {"buffer_atr_mult": 0.25, "atr_source": "live"}, (
+        "spot_check_known_evaluators: avwap_stop default_params")
 
 
 def test_cli_list_json_emits_same_shape_as_python_call():

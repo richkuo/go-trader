@@ -9,9 +9,8 @@ def _bt(direction=None, invert_signal=False):
                       invert_signal=invert_signal)
 
 
-@pytest.mark.parametrize(
-    "direction,invert_signal,uses_open_close,signal,expected",
-    [
+def test_apply_direction_invert():
+    for direction, invert_signal, uses_open_close, signal, expected in [
         (None, True, True, [1, -1, 0, 1], [-1, 1, 0, -1]),
         (None, False, True, [1, -1, 0], [1, -1, 0]),
         (None, False, False, [1, -1, 0], [1, -1, 0]),
@@ -20,14 +19,12 @@ def _bt(direction=None, invert_signal=False):
         ("both", False, True, [1, -1, 0], [1, -1, 0]),
         ("long", False, False, [1, -1, 0], [1, -1, 0]),
         ("long", True, True, [1, -1], [0, 1]),
-    ],
-)
-def test_apply_direction_invert(direction, invert_signal, uses_open_close,
-                                signal, expected):
-    out = _bt(direction=direction,
-              invert_signal=invert_signal)._apply_direction_invert(
-        pd.Series(signal), uses_open_close=uses_open_close)
-    assert out.tolist() == expected
+    ]:
+        out = _bt(direction=direction,
+                  invert_signal=invert_signal)._apply_direction_invert(
+            pd.Series(signal), uses_open_close=uses_open_close)
+        assert out.tolist() == expected, (
+            f"test_apply_direction_invert[{direction}-{invert_signal}-{uses_open_close}-{signal}]")
 
 
 def _ohlc(signal):

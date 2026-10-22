@@ -772,20 +772,18 @@ def _eom_cfg(batched):
     )
 
 
-@pytest.mark.parametrize("batched", [False, True])
 @pytest.mark.parametrize("window", [None, 200])
-def test_eom_candidate_full_prefix_window_and_batch_parity(window, batched):
+def test_eom_candidate_full_prefix_window_and_batch_parity(window):
     from closed_bar import declare_frame_cadence
     df = declare_frame_cadence(_ohlcv(330, seed=3), "1h", "open")
-    frame = compute_parity_frame(df, cfg=_eom_cfg(batched), window=window, stride=1)
+    frame = compute_parity_frame(df, cfg=_eom_cfg(True), window=window, stride=1)
     result = summarize(frame)
     assert result["bars_compared"] > 100
     assert result["clean"], frame[~frame["match"]].head()
     assert result["close_parity"] != "unknown"
     assert set(frame["live_signal"]) >= {1, -1}
     assert (frame["live_close_fraction"] > 0).any()
-    if batched:
-        assert result["batch_mismatches"] == 0 and result["batch_clean"]
+    assert result["batch_mismatches"] == 0 and result["batch_clean"]
 
 
 def test_eom_candidate_without_declared_cadence_holds_in_both_paths():

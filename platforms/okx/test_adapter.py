@@ -90,15 +90,15 @@ class TestNormalizeOKXBill:
 
 class TestOKXUSDTCashBalance:
 
-    @pytest.mark.parametrize("info", [
-        {"data": [{}]},
-        {},
-        None,
-        {"code": "0", "data": [{"details": [{"ccy": "BTC", "cashBal": "0.5"}]}]},
-        {"code": "0", "data": [{"details": [{"ccy": "USDT", "cashBal": "n/a"}]}]},
-    ])
-    def test_unreadable_cash_bal_returns_none(self, info):
-        assert _mod._okx_usdt_cash_balance(info) is None
+    def test_unreadable_cash_bal_returns_none(self):
+        for info in [
+            {"data": [{}]},
+            {},
+            None,
+            {"code": "0", "data": [{"details": [{"ccy": "BTC", "cashBal": "0.5"}]}]},
+            {"code": "0", "data": [{"details": [{"ccy": "USDT", "cashBal": "n/a"}]}]},
+        ]:
+            assert _mod._okx_usdt_cash_balance(info) is None, info
 
 
 class TestGetAccountEquityAndUPnL:

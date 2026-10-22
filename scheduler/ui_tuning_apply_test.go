@@ -872,7 +872,7 @@ func TestNormalizeLegacyTrailStopKeyValueMergesEquivalentLegacySpellings(t *test
 	}
 }
 
-func TestNormalizeLegacyTrailStopKeyValueRejectsConflictingLegacySpellings(t *testing.T) {
+func TestNormalizeLegacyTrailStopKeyValueRejectsConflictingLegacySpellingsIncludingNested(t *testing.T) {
 	a := map[string]any{"trending_up": 2.0}
 	b := map[string]any{"trending_up": 4.0}
 	cases := []map[string]any{
@@ -887,15 +887,12 @@ func TestNormalizeLegacyTrailStopKeyValueRejectsConflictingLegacySpellings(t *te
 			t.Fatalf("case %d: expected conflict error, got nil", i)
 		}
 	}
-}
-
-func TestNormalizeLegacyTrailStopKeyValueDetectsNestedConflict(t *testing.T) {
-	in := map[string]any{"strategies": []any{map[string]any{
+	nested := map[string]any{"strategies": []any{map[string]any{
 		legacyTrailStopATRRegimeKey: map[string]any{"trending_up": 2.0},
 		trailStopATRRegimeKey:       map[string]any{"trending_up": 4.0},
 	}}}
-	if _, _, err := normalizeLegacyTrailStopKeyValue(in); err == nil {
-		t.Fatalf("expected nested conflict error, got nil")
+	if _, _, err := normalizeLegacyTrailStopKeyValue(nested); err == nil {
+		t.Fatalf("nested strategies case: expected nested conflict error, got nil")
 	}
 }
 

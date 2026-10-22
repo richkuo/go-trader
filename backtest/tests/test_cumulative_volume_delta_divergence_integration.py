@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sys
 from decimal import Decimal
@@ -41,6 +42,19 @@ CONFIRM = P2 + 2
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _dec(value) -> str:
@@ -154,11 +168,12 @@ def test_price_only_baseline_enters_where_delta_disagrees():
     assert base["cvd_reason"].iloc[CONFIRM] == "armed_long" and base["signal"].iloc[CONFIRM + 2] == 1
 
 
-@pytest.mark.parametrize("threshold,armed", [(0.2, False), (0.19, True)])
-def test_threshold_is_strict(threshold, armed):
-    df, series = _build(_scenario())
-    out = _run(df, series, delta_threshold=threshold)
-    assert (out["cvd_reason"].iloc[CONFIRM] == "armed_long") is armed
+def test_threshold_is_strict():
+    for threshold, armed in ((0.2, False), (0.19, True)):
+        with _case(f"{threshold}-{armed}"):
+            df, series = _build(_scenario())
+            out = _run(df, series, delta_threshold=threshold)
+            assert (out["cvd_reason"].iloc[CONFIRM] == "armed_long") is armed
 
 
 def test_equal_extrema_never_qualify():
@@ -374,8 +389,16 @@ def test_simulator_fills_next_open_and_closes_by_time_stop_or_the_atr_stop_while
     assert len(res2["trades"]) < len(trades)
 
 
-@pytest.mark.parametrize("refused", sorted(load_registry("futures")._registry.production_refused_strategies()))
-def test_production_admission_refuses_every_reference_and_keeps_existing_candidates(refused):
+PRODUCTION_REFUSED = sorted(load_registry("futures")._registry.production_refused_strategies())
+
+
+def test_production_admission_refuses_every_reference_and_keeps_existing_candidates():
+    for refused in PRODUCTION_REFUSED:
+        with _case(refused):
+            _production_admission_refuses_every_reference_and_keeps_existing_candidates(refused)
+
+
+def _production_admission_refuses_every_reference_and_keeps_existing_candidates(refused):
     NAME = refused
     reg = _reg()
     from close_registry_loader import get_strategy as get_close

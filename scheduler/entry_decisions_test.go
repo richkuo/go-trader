@@ -990,8 +990,20 @@ func backdateEntryDeadlines(t *testing.T, env *entryTestEnv, id string) {
 	}
 }
 
-func TestClosedBarLiveEntryRecoveryBooksProvenFillOnce(t *testing.T) {
+func TestClosedBarLiveEntryRecoveryNamesTheUnresolvedAttemptAtStartupAndBooksProvenFillOnce(t *testing.T) {
 	env, sc := entryTestUnknownAttempt(t)
+	lines := entryGuardStartupLines(env.state)
+	sort.Strings(lines)
+	if len(lines) != 1 {
+		t.Fatalf("startup lines name unresolved attempts: startup lines %v", lines)
+	}
+	var loaded *entryIntent
+	for _, v := range env.strat(sc.ID).EntryGuard.Intents {
+		loaded = v
+	}
+	if loaded == nil || loaded.ClientOrderID == "" || loaded.Status != entryIntentSubmitting {
+		t.Fatalf("startup lines name unresolved attempts: loaded intent %+v", loaded)
+	}
 	stub := &entryRecoveryStub{res: &entryRecoveryResult{Platform: "hyperliquid",
 		Order: &entryRecoveryOrder{Found: true, Status: "filled", OrderID: "901", OrigSz: 0.4, ExecutedSz: 0.4, Terminal: true, FillQty: 0.4, FillNotional: 40.2, FillFee: 0.018, FillCount: 2, FillAvgPx: 100.5, FillsComplete: true},
 		Stop:  &entryRecoveryOrder{Found: true, Status: "open", OrderID: "902", Terminal: false, TriggerPx: 98.5},
@@ -1396,22 +1408,6 @@ func TestClosedBarBinanceUSPaperSpotEntryUsesTheSameAllowance(t *testing.T) {
 	next := entryTestBar(2).Add(10 * time.Second)
 	if adm, n := dispatch(1, entryTestDecision(entryTestBar(1), next), next); !adm.admitted() || n == 0 {
 		t.Fatalf("next candle: admitted=%t trades=%d", adm.admitted(), n)
-	}
-}
-
-func TestEntryGuardStartupLinesNameUnresolvedAttempts(t *testing.T) {
-	env, sc := entryTestUnknownAttempt(t)
-	lines := entryGuardStartupLines(env.state)
-	sort.Strings(lines)
-	if len(lines) != 1 {
-		t.Fatalf("startup lines %v", lines)
-	}
-	var in *entryIntent
-	for _, v := range env.strat(sc.ID).EntryGuard.Intents {
-		in = v
-	}
-	if in == nil || in.ClientOrderID == "" || in.Status != entryIntentSubmitting {
-		t.Fatalf("loaded intent %+v", in)
 	}
 }
 

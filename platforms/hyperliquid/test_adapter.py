@@ -79,7 +79,7 @@ class TestMarketCloseSized:
             adapter._exchange = mock_exchange
         return adapter, mock_info, mock_exchange
 
-    @pytest.mark.parametrize("live,is_buy,size,px,reduce_only,want", [
+    MARKET_CLOSE_SIZED_CASES = [
         (True, False, 0.12349, 2970.0, True, 0.1234),
         (True, True, 0.12349, 3030.0, True, 0.1234),
         (True, False, 0.5, 2970.0, False, 0.5),
@@ -89,39 +89,45 @@ class TestMarketCloseSized:
         (True, False, 0.5, 0.0, True, ValueError),
         (True, False, 0.5, float("nan"), True, ValueError),
         (False, False, 0.5, 2970.0, True, RuntimeError),
-    ])
-    def test_market_close_sized(self, live, is_buy, size, px, reduce_only, want):
-        adapter, mock_info, mock_exchange = self._adapter(live, {"ETH": "3000"})
+    ]
 
-        if isinstance(want, type):
-            with pytest.raises(want):
+    def test_market_close_sized(self, subtests):
+        for live, is_buy, size, px, reduce_only, want in self.MARKET_CLOSE_SIZED_CASES:
+            with subtests.test(live=live, is_buy=is_buy, size=size, px=px, reduce_only=reduce_only):
+                adapter, mock_info, mock_exchange = self._adapter(live, {"ETH": "3000"})
+
+                if isinstance(want, type):
+                    with pytest.raises(want):
+                        adapter.market_close_sized("ETH", is_buy, size, px, reduce_only=reduce_only)
+                    mock_exchange.order.assert_not_called()
+                    continue
                 adapter.market_close_sized("ETH", is_buy, size, px, reduce_only=reduce_only)
-            mock_exchange.order.assert_not_called()
-            return
-        adapter.market_close_sized("ETH", is_buy, size, px, reduce_only=reduce_only)
-        assert mock_exchange.order.call_args.args == ("ETH", is_buy, want, px, {"limit": {"tif": "Ioc"}})
-        assert mock_exchange.order.call_args.kwargs == {"reduce_only": reduce_only}
-        mock_info.all_mids.assert_not_called()
-        mock_exchange.market_open.assert_not_called()
-        mock_exchange.market_close.assert_not_called()
+                assert mock_exchange.order.call_args.args == ("ETH", is_buy, want, px, {"limit": {"tif": "Ioc"}})
+                assert mock_exchange.order.call_args.kwargs == {"reduce_only": reduce_only}
+                mock_info.all_mids.assert_not_called()
+                mock_exchange.market_open.assert_not_called()
+                mock_exchange.market_close.assert_not_called()
 
-    @pytest.mark.parametrize("is_buy,mids,want", [
+    SIZED_CLOSE_PRICE_CASES = [
         (False, {"ETH": "3000"}, 2970.0),
         (True, {"ETH": "3000"}, 3030.0),
         (False, {}, ValueError),
         (False, {"ETH": "0"}, ValueError),
         (False, {"ETH": "nan"}, ValueError),
         (False, ConnectionError("info down"), ConnectionError),
-    ])
-    def test_sized_close_price(self, is_buy, mids, want):
-        adapter, _, mock_exchange = self._adapter(True, mids)
+    ]
 
-        if isinstance(want, type):
-            with pytest.raises(want):
-                adapter.sized_close_price("ETH", is_buy)
-        else:
-            assert adapter.sized_close_price("ETH", is_buy) == want
-        mock_exchange.order.assert_not_called()
+    def test_sized_close_price(self, subtests):
+        for is_buy, mids, want in self.SIZED_CLOSE_PRICE_CASES:
+            with subtests.test(is_buy=is_buy, mids=mids):
+                adapter, _, mock_exchange = self._adapter(True, mids)
+
+                if isinstance(want, type):
+                    with pytest.raises(want):
+                        adapter.sized_close_price("ETH", is_buy)
+                else:
+                    assert adapter.sized_close_price("ETH", is_buy) == want
+                mock_exchange.order.assert_not_called()
 
 
 
@@ -260,18 +266,16 @@ class TestFillsSummaryByOID:
         assert out["avg_px"] == pytest.approx(2006.0)
 
 
-@pytest.mark.parametrize("symbol,strict,rounded", [
-    ("BTC", 5, 5),
-    ("UNLISTED", None, 3),
-])
-def test_lot_size_decimals_is_strict_while_sz_decimals_keeps_the_default(symbol, strict, rounded):
-    mod = _load_hl_adapter()
-    adapter = mod.HyperliquidExchangeAdapter()
-    adapter._info = MagicMock()
-    adapter._info.asset_to_sz_decimals = {"BTC": 5}
-    refreshed = MagicMock()
-    refreshed.asset_to_sz_decimals = {"BTC": 5}
-    adapter._build_info = lambda base_url, allow_cache: refreshed
+def test_lot_size_decimals_is_strict_while_sz_decimals_keeps_the_default(subtests):
+    for symbol, strict, rounded in [("BTC", 5, 5), ("UNLISTED", None, 3)]:
+        with subtests.test(symbol=symbol):
+            mod = _load_hl_adapter()
+            adapter = mod.HyperliquidExchangeAdapter()
+            adapter._info = MagicMock()
+            adapter._info.asset_to_sz_decimals = {"BTC": 5}
+            refreshed = MagicMock()
+            refreshed.asset_to_sz_decimals = {"BTC": 5}
+            adapter._build_info = lambda base_url, allow_cache: refreshed
 
-    assert adapter.lot_size_decimals(symbol) == strict
-    assert adapter._sz_decimals(symbol) == rounded
+            assert adapter.lot_size_decimals(symbol) == strict
+            assert adapter._sz_decimals(symbol) == rounded

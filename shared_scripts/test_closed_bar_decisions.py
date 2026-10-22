@@ -799,12 +799,15 @@ def _stop_bar_bars(bar63_low):
                               (105.5, 106.01, bar63_low, 105.9), (105.9, 106.0, 105.5, 105.8)])
 
 
-def _stop_bar_cycles(bars, stops, mids=None):
+def _stop_bar_cycles(bars, stops, mids=None, done=()):
     out = []
     scanned_through, prior, qty = 0, None, 1.0
     for i, stop in enumerate(stops):
-        cycle = _moving_stop_cycle(bars, _STOP_BAR_TIERS, entry=60, closed_through=60 + i, qty=qty, stop=stop,
-                                   scanned_through=scanned_through, prior=prior, mid=(mids or {}).get(i))
+        if i < len(done):
+            cycle = done[i]
+        else:
+            cycle = _moving_stop_cycle(bars, _STOP_BAR_TIERS, entry=60, closed_through=60 + i, qty=qty, stop=stop,
+                                       scanned_through=scanned_through, prior=prior, mid=(mids or {}).get(i))
         echo = cycle["resting_tp_rule"]
         scanned_through, prior = echo["next_scanned_through_ms"], echo["next_reach_px"]
         qty = round(qty * (1 - cycle["close_fraction"]), 8) if cycle["close_fraction"] < 1 else 0.0
@@ -812,36 +815,40 @@ def _stop_bar_cycles(bars, stops, mids=None):
     return out
 
 
-@pytest.mark.parametrize("bar63_low,want_fraction", [(105.2, 1.0), (102.95, 0.0)])
-def test_resting_rule_stop_bar_the_paper_stop_did_not_book_drops_only_that_bar(bar63_low, want_fraction):
-    bars = _stop_bar_bars(bar63_low)
-    first, second, third, fourth = _stop_bar_cycles(bars, [98.0, 98.0, 103.0, 103.0])
+def test_resting_rule_stop_bar_the_paper_stop_did_not_book_drops_only_that_bar_and_a_breaching_mark_books_no_tier():
+    shared_bars = _stop_bar_bars(105.2)
+    shared = _stop_bar_cycles(shared_bars, [98.0, 98.0])
 
-    assert (first["close_fraction"], first["close_tier_fill_price"]) == (0.5, 102.0)
-    assert second["close_fraction"] == 0.0
-    assert second["resting_tp_rule"]["next_scanned_through_ms"] == bars[61]["t"]
-    assert third["close_fraction"] == 0.0
-    assert "close_tier_fill_price" not in third
-    assert third["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[62]["t"]
-    assert third["resting_tp_rule"]["next_scanned_through_ms"] == bars[62]["t"]
-    assert third["resting_tp_rule"]["next_reach_px"] == 103.8
-    assert fourth["resting_tp_rule"]["next_scanned_through_ms"] == bars[63]["t"]
-    assert fourth["close_fraction"] == want_fraction
-    if want_fraction:
-        assert fourth["close_tier_fill_price"] == 106.0
-        assert fourth["resting_tp_rule"]["stop_reached_bar_open_ms"] == 0
-    else:
-        assert "close_tier_fill_price" not in fourth
-        assert fourth["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[63]["t"]
+    for bar63_low, want_fraction in ((105.2, 1.0), (102.95, 0.0)):
+        case = f"stop_bar_did_not_book[{bar63_low}-{want_fraction}]"
+        bars = _stop_bar_bars(bar63_low)
+        assert bars[:63] == shared_bars[:63], case
+        first, second, third, fourth = _stop_bar_cycles(bars, [98.0, 98.0, 103.0, 103.0], done=shared)
 
+        assert (first["close_fraction"], first["close_tier_fill_price"]) == (0.5, 102.0), case
+        assert second["close_fraction"] == 0.0, case
+        assert second["resting_tp_rule"]["next_scanned_through_ms"] == bars[61]["t"], case
+        assert third["close_fraction"] == 0.0, case
+        assert "close_tier_fill_price" not in third, case
+        assert third["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[62]["t"], case
+        assert third["resting_tp_rule"]["next_scanned_through_ms"] == bars[62]["t"], case
+        assert third["resting_tp_rule"]["next_reach_px"] == 103.8, case
+        assert fourth["resting_tp_rule"]["next_scanned_through_ms"] == bars[63]["t"], case
+        assert fourth["close_fraction"] == want_fraction, case
+        if want_fraction:
+            assert fourth["close_tier_fill_price"] == 106.0, case
+            assert fourth["resting_tp_rule"]["stop_reached_bar_open_ms"] == 0, case
+        else:
+            assert "close_tier_fill_price" not in fourth, case
+            assert fourth["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[63]["t"], case
 
-def test_resting_rule_stop_bar_with_a_breaching_mark_books_no_tier_from_that_bar():
+    case = "stop_bar_with_a_breaching_mark"
     bars = _stop_bar_bars(105.2)
-    cycles = _stop_bar_cycles(bars, [98.0, 98.0, 103.0], mids={2: 102.8})
+    cycles = _stop_bar_cycles(bars, [98.0, 98.0, 103.0], mids={2: 102.8}, done=shared)
     third = cycles[2]
-    assert third["close_fraction"] == 0.0
-    assert "close_tier_fill_price" not in third
-    assert third["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[62]["t"]
+    assert third["close_fraction"] == 0.0, case
+    assert "close_tier_fill_price" not in third, case
+    assert third["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[62]["t"], case
 
 
 @pytest.mark.parametrize("bar_low,sent_stop,want", [(99.5, 99.0, "tier"), (98.9, 99.0, "sl")])
@@ -1200,45 +1207,44 @@ def _eom_refs(closes=None):
     return ["--strategy-refs", json.dumps(refs)]
 
 
-def test_eom_forming_breakout_bar_is_excluded_and_the_closed_bar_enters():
+def test_eom_forming_breakout_bar_is_excluded_the_closed_bar_enters_and_forming_values_never_change_it():
+    case = "forming_breakout_bar_is_excluded"
     bars = _eom_bars()
     forming = bars[-1]["t"] + H // 2
     disabled = _hl_check(_EOM, bars, forming, closed=False, extra=_eom_refs())
     enabled = _hl_check(_EOM, bars, forming, closed=True, extra=_eom_refs())
-    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
-    assert "eom_eval_ts_ms" not in disabled["indicators"]
-    assert enabled["signal"] == 0 and enabled["open_action"] == "none"
-    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
-    assert enabled["indicator_labels"]["eom_reason"] == "no_breakout"
-    assert enabled["indicators"]["eom_eval_ts_ms"] == bars[-2]["t"]
+    assert disabled["signal"] == 1 and disabled["open_action"] == "long", case
+    assert "eom_eval_ts_ms" not in disabled["indicators"], case
+    assert enabled["signal"] == 0 and enabled["open_action"] == "none", case
+    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1, case
+    assert enabled["indicator_labels"]["eom_reason"] == "no_breakout", case
+    assert enabled["indicators"]["eom_eval_ts_ms"] == bars[-2]["t"], case
 
     closed = _hl_check(_EOM, bars, bars[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs())
-    assert closed["closed_bar_decision"]["forming_rows_dropped"] == 0
-    assert closed["signal"] == 1 and closed["open_action"] == "long"
-    assert closed["indicators"]["eom_eval_ts_ms"] == bars[-1]["t"]
-    assert closed["indicator_labels"]["eom_reason"] == "entry_long"
+    assert closed["closed_bar_decision"]["forming_rows_dropped"] == 0, case
+    assert closed["signal"] == 1 and closed["open_action"] == "long", case
+    assert closed["indicators"]["eom_eval_ts_ms"] == bars[-1]["t"], case
+    assert closed["indicator_labels"]["eom_reason"] == "entry_long", case
 
     frame = _frame_from_rows(_hl_rows(bars))
     frame.attrs["bar_interval_ms"] = H
     direct = _strategies().apply_strategy(_EOM, frame, _EOM_PARAMS)
-    assert int(direct["signal"].iloc[-1]) == 1
-    assert closed["indicators"]["eom_smoothed"] == float(direct["eom_smoothed"].iloc[-1])
-    assert closed["indicators"]["eom_raw"] == float(direct["eom_raw"].iloc[-1])
+    assert int(direct["signal"].iloc[-1]) == 1, case
+    assert closed["indicators"]["eom_smoothed"] == float(direct["eom_smoothed"].iloc[-1]), case
+    assert closed["indicators"]["eom_raw"] == float(direct["eom_raw"].iloc[-1]), case
 
-
-@pytest.mark.parametrize("forming", [(103.5, 140.0, 103.0, 139.0, 50.0), (103.5, 104.0, 60.0, 61.0, 0.0),
-                                     (103.5, 103.6, 103.4, 103.5, 9_000.0)])
-def test_eom_forming_bar_values_never_change_the_closed_bar_decision(forming):
-    base = _eom_bars()
-    bars = base + [{"t": base[-1]["t"] + H, "T": base[-1]["T"] + H, "o": forming[0], "h": forming[1],
-                    "l": forming[2], "c": forming[3], "v": forming[4]}]
-    cutoff = bars[-1]["t"] + H // 3
-    reference = _hl_check(_EOM, base, base[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs())
-    out = _hl_check(_EOM, bars, cutoff, closed=True, extra=_eom_refs())
-    assert out["closed_bar_decision"]["forming_rows_dropped"] == 1
-    assert out["signal"] == reference["signal"] == 1
-    assert out["indicators"] == reference["indicators"]
-    assert out["indicator_labels"] == reference["indicator_labels"]
+    reference = closed
+    for values in ((103.5, 140.0, 103.0, 139.0, 50.0), (103.5, 104.0, 60.0, 61.0, 0.0),
+                   (103.5, 103.6, 103.4, 103.5, 9_000.0)):
+        case = f"forming_bar_values_never_change_the_closed_bar_decision[{values}]"
+        extended = bars + [{"t": bars[-1]["t"] + H, "T": bars[-1]["T"] + H, "o": values[0], "h": values[1],
+                            "l": values[2], "c": values[3], "v": values[4]}]
+        cutoff = extended[-1]["t"] + H // 3
+        out = _hl_check(_EOM, extended, cutoff, closed=True, extra=_eom_refs())
+        assert out["closed_bar_decision"]["forming_rows_dropped"] == 1, case
+        assert out["signal"] == reference["signal"] == 1, case
+        assert out["indicators"] == reference["indicators"], case
+        assert out["indicator_labels"] == reference["indicator_labels"], case
 
 
 def test_eom_missing_bar_timing_holds_the_entry_with_a_reason():
@@ -1461,30 +1467,31 @@ def test_aroon_maximum_period_needs_two_hundred_closed_rows_plus_the_forming_row
 
 @pytest.mark.parametrize("closed", [True, False])
 @pytest.mark.parametrize("hold", ["flat", "bad"])
-@pytest.mark.parametrize("side", ["long", "short"])
-def test_aroon_data_hold_keeps_the_explicit_close_running(closed, hold, side):
+def test_aroon_data_hold_keeps_the_explicit_close_running(closed, hold):
     n = 61
     bars = _aroon_bars(n, flat=True) if hold == "flat" else _aroon_bars(n, bad_at=n - 2)
     mark = bars[-1]["c"]
-    avg_cost = mark * (0.9 if side == "long" else 1.1)
     cutoff = bars[-1]["t"] + H // 2
-    held = _aroon_refs() + ["--position-side", side, f"--position-avg-cost={avg_cost}",
-                            "--position-qty=1", "--position-initial-qty=1"]
-    out = _hl_check(_AROON, bars, cutoff, closed=closed, extra=held, mid=mark)
-    if closed and hold == "bad":
-        assert out["closed_bar_decision"]["held"] is True
-        assert out["indicators"] == {}
-    else:
-        assert out["indicators"]["aroon_reason_code"] == (14 if hold == "flat" else 12)
-        assert out["indicators"]["aroon_valid"] == 0.0
-    assert out["open_action"] == "none"
-    assert out["close_fraction"] == 1.0
-    assert out["close_strategy"] == "tiered_tp_pct"
-    assert out["signal"] == (-1 if side == "long" else 1)
-    assert out["price"] == mark
+    for side in ("long", "short"):
+        case = f"side={side}"
+        avg_cost = mark * (0.9 if side == "long" else 1.1)
+        held = _aroon_refs() + ["--position-side", side, f"--position-avg-cost={avg_cost}",
+                                "--position-qty=1", "--position-initial-qty=1"]
+        out = _hl_check(_AROON, bars, cutoff, closed=closed, extra=held, mid=mark)
+        if closed and hold == "bad":
+            assert out["closed_bar_decision"]["held"] is True, case
+            assert out["indicators"] == {}, case
+        else:
+            assert out["indicators"]["aroon_reason_code"] == (14 if hold == "flat" else 12), case
+            assert out["indicators"]["aroon_valid"] == 0.0, case
+        assert out["open_action"] == "none", case
+        assert out["close_fraction"] == 1.0, case
+        assert out["close_strategy"] == "tiered_tp_pct", case
+        assert out["signal"] == (-1 if side == "long" else 1), case
+        assert out["price"] == mark, case
 
     flat = _hl_check(_AROON, bars, cutoff, closed=closed, extra=_aroon_refs(), mid=mark)
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
+    assert flat["signal"] == 0 and flat["open_action"] == "none", "flat run shared by side=long and side=short"
 
 
 def test_aroon_unavailable_protection_inputs_invent_no_close_price():
@@ -1667,31 +1674,33 @@ def test_rcr_unverifiable_closure_holds_and_keeps_close_management(case):
 
 @pytest.mark.parametrize("closed", [True, False])
 @pytest.mark.parametrize("hold", ["flat", "bad"])
-@pytest.mark.parametrize("side", ["long", "short"])
-def test_rcr_data_hold_keeps_the_explicit_close_running(closed, hold, side):
+def test_rcr_data_hold_keeps_the_explicit_close_running(closed, hold):
     n = 41
     bars = _rcr_bars(n, flat=True) if hold == "flat" else _rcr_bars(n, bad_at=n - 3)
     mark = bars[-1]["c"]
-    avg_cost = mark * (0.9 if side == "long" else 1.1)
     cutoff = bars[-1]["t"] + H // 2
-    held = _rcr_refs() + ["--position-side", side, f"--position-avg-cost={avg_cost}",
-                          "--position-qty=1", "--position-initial-qty=1"]
-    out = _hl_check(_RCR, bars, cutoff, closed=closed, extra=held, mid=mark)
-    if closed and hold == "bad":
-        assert out["closed_bar_decision"]["held"] is True
-        assert out["indicators"] == {}
-    else:
-        assert out["indicators"]["rcr_reason_code"] == (17 if hold == "flat" else 16)
-        assert out["indicator_labels"]["rcr_reason"] == ("degenerate_fit" if hold == "flat" else "nonpositive_price")
-        assert out["indicators"]["rcr_valid"] == 0.0
-    assert out["open_action"] == "none"
-    assert out["close_fraction"] == 1.0
-    assert out["close_strategy"] == "tiered_tp_pct"
-    assert out["signal"] == (-1 if side == "long" else 1)
-    assert out["price"] == mark
+    for side in ("long", "short"):
+        case = f"side={side}"
+        avg_cost = mark * (0.9 if side == "long" else 1.1)
+        held = _rcr_refs() + ["--position-side", side, f"--position-avg-cost={avg_cost}",
+                              "--position-qty=1", "--position-initial-qty=1"]
+        out = _hl_check(_RCR, bars, cutoff, closed=closed, extra=held, mid=mark)
+        if closed and hold == "bad":
+            assert out["closed_bar_decision"]["held"] is True, case
+            assert out["indicators"] == {}, case
+        else:
+            assert out["indicators"]["rcr_reason_code"] == (17 if hold == "flat" else 16), case
+            assert out["indicator_labels"]["rcr_reason"] == ("degenerate_fit" if hold == "flat"
+                                                             else "nonpositive_price"), case
+            assert out["indicators"]["rcr_valid"] == 0.0, case
+        assert out["open_action"] == "none", case
+        assert out["close_fraction"] == 1.0, case
+        assert out["close_strategy"] == "tiered_tp_pct", case
+        assert out["signal"] == (-1 if side == "long" else 1), case
+        assert out["price"] == mark, case
 
     flat = _hl_check(_RCR, bars, cutoff, closed=closed, extra=_rcr_refs(), mid=mark)
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
+    assert flat["signal"] == 0 and flat["open_action"] == "none", "flat run shared by side=long and side=short"
 
 
 def test_rcr_unavailable_protection_inputs_invent_no_close_price():

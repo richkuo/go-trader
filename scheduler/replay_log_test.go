@@ -54,12 +54,18 @@ func replayTestStrategyState(id string) *StrategyState {
 	return NewStrategyState(StrategyConfig{ID: id, Type: "perps", Platform: "hyperliquid", Capital: 10000})
 }
 
-func TestDecisionLogDBRoundTrip(t *testing.T) {
+func TestDecisionLogDBRoundTripAndPendingIndex(t *testing.T) {
 	db, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))
 	if err != nil {
 		t.Fatalf("OpenDecisionLogDB: %v", err)
 	}
 	defer db.Close()
+
+	var name string
+	err = db.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_decisions_strategy_status_id'`).Scan(&name)
+	if err != nil {
+		t.Errorf("covering index idx_decisions_strategy_status_id missing: %v", err)
+	}
 
 	now := time.Date(2026, 8, 10, 12, 53, 0, 0, time.UTC)
 	rows := []ReplayDecision{
@@ -452,19 +458,6 @@ func TestDecisionLogMigratesLegacySchema(t *testing.T) {
 	}
 	if len(pending) != 1 || pending[0].EntryATR != 10 || pending[0].Regime != "ranging" {
 		t.Fatalf("post-migration row = %+v", pending)
-	}
-}
-
-func TestDecisionLogPendingIndexExists(t *testing.T) {
-	db, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))
-	if err != nil {
-		t.Fatalf("OpenDecisionLogDB: %v", err)
-	}
-	defer db.Close()
-	var name string
-	err = db.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_decisions_strategy_status_id'`).Scan(&name)
-	if err != nil {
-		t.Fatalf("covering index idx_decisions_strategy_status_id missing: %v", err)
 	}
 }
 

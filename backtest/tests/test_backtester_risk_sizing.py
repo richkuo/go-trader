@@ -1,3 +1,4 @@
+import contextlib
 import json
 import sys
 import pathlib
@@ -142,9 +143,16 @@ def test_rejects_entry_fraction_column_combo():
              risk_per_trade_pct=1.0, stop_loss_atr_mult=1.0)
 
 
-@pytest.mark.parametrize(
-    "kwargs,match",
-    [
+@contextlib.contextmanager
+def _raises_for(case, exc=ValueError, match=None):
+    try:
+        with pytest.raises(exc, match=match) as info:
+            yield info
+    except (AssertionError, pytest.fail.Exception) as err:
+        raise AssertionError(f"{case}: {err}") from None
+
+
+_INIT_REJECT_CASES = [
         ({"risk_per_trade_pct": 0.0, "stop_loss_atr_mult": 1.0}, r"\(0, 10\]"),
         ({"risk_per_trade_pct": 12.0, "stop_loss_atr_mult": 1.0}, r"\(0, 10\]"),
         ({"risk_per_trade_pct": 1.0,
@@ -152,11 +160,13 @@ def test_rejects_entry_fraction_column_combo():
         ({"risk_per_trade_pct": 1.0, "stop_loss_margin_pct": 20.0},
          "stop_loss_margin_pct"),
         ({"risk_per_trade_pct": 1.0}, "explicit stop owner"),
-    ],
-)
-def test_init_rejects_invalid_risk_sizing(kwargs, match):
-    with pytest.raises(ValueError, match=match):
-        Backtester(**kwargs)
+]
+
+
+def test_init_rejects_invalid_risk_sizing():
+    for i, (kwargs, match) in enumerate(_INIT_REJECT_CASES):
+        with _raises_for(f"test_init_rejects_invalid_risk_sizing[{i}] {kwargs}", match=match):
+            Backtester(**kwargs)
 
 
 def _write_config(tmp_path, strategy, extra=None):
@@ -187,22 +197,18 @@ def test_config_threads_risk_per_trade_pct(tmp_path):
     assert kwargs["stop_loss_atr_mult"] == 1.5
 
 
-@pytest.mark.parametrize(
-    "overrides,drop_atr_mult,match",
-    [
+def test_config_rejects_invalid_risk_sizing_combo(tmp_path):
+    for overrides, drop_atr_mult, match in [
         ({"sizing_leverage": 2.0}, False, "sizing_leverage"),
         ({"margin_per_trade_usd": 50.0}, False, "margin_per_trade_usd"),
         ({"allow_scale_in": True}, False, "allow_scale_in"),
-    ],
-)
-def test_config_rejects_invalid_risk_sizing_combo(tmp_path, overrides,
-                                                  drop_atr_mult, match):
-    sc = _risk_strategy(**overrides)
-    if drop_atr_mult:
-        del sc["stop_loss_atr_mult"]
-    path = _write_config(tmp_path, sc)
-    with pytest.raises(ValueError, match=match):
-        run_backtest.load_strategy_config(path, "hl-r-btc")
+    ]:
+        sc = _risk_strategy(**overrides)
+        if drop_atr_mult:
+            del sc["stop_loss_atr_mult"]
+        path = _write_config(tmp_path, sc)
+        with _raises_for(f"test_config_rejects_invalid_risk_sizing_combo[{overrides}]", match=match):
+            run_backtest.load_strategy_config(path, "hl-r-btc")
 
 
 def test_config_percent_risk_owner_converts_once(tmp_path):

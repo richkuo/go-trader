@@ -50,16 +50,18 @@ def test_a_surviving_aligned_held_out_row_is_certified():
     assert e["expires_at"] > e["generated_at"]
 
 
-@pytest.mark.parametrize("rows", [
-    pytest.param([], id="no_rows"),
-    pytest.param([_row(window="2024")], id="historical_window"),
-    pytest.param([_row(sign_aligned=False)], id="wrong_signed"),
-    pytest.param([_row(p=0.9)], id="not_significant"),
-])
-def test_nothing_else_is_certified(rows):
-    art = certify_mod.certify(rows, generated_at=GEN_AT)
-    assert art["schema_version"] == 1
-    assert art["certified"] == []
+def test_nothing_else_is_certified():
+    cases = [
+        ("no_rows", []),
+        ("historical_window", [_row(window="2024")]),
+        ("wrong_signed", [_row(sign_aligned=False)]),
+        ("not_significant", [_row(p=0.9)]),
+    ]
+    for case_id, rows in cases:
+        case = f"test_nothing_else_is_certified[{case_id}]"
+        art = certify_mod.certify(rows, generated_at=GEN_AT)
+        assert art["schema_version"] == 1, case
+        assert art["certified"] == [], case
 
 
 def test_composite_sublabel_maps_to_canonical():
@@ -88,16 +90,14 @@ def test_the_artifact_carries_the_schema_the_scheduler_parses():
 # --- refusals that keep an unearned certification out of the repo artifact ---
 
 
-def test_family_is_superset_true_for_the_default_universe():
-    assert certify_mod.family_is_superset(**FULL_UNIVERSE)
-
-
-@pytest.mark.parametrize("axis", ["symbols", "timeframes", "windows",
-                                  "classifiers", "horizons"])
-def test_family_is_superset_false_when_any_axis_is_narrowed(axis):
-    kwargs = dict(FULL_UNIVERSE)
-    kwargs[axis] = tuple(kwargs[axis])[:-1]
-    assert not certify_mod.family_is_superset(**kwargs)
+def test_family_is_superset_only_for_the_full_default_universe():
+    assert certify_mod.family_is_superset(**FULL_UNIVERSE), (
+        "test_family_is_superset_true_for_the_default_universe")
+    for axis in ["symbols", "timeframes", "windows", "classifiers", "horizons"]:
+        kwargs = dict(FULL_UNIVERSE)
+        kwargs[axis] = tuple(kwargs[axis])[:-1]
+        assert not certify_mod.family_is_superset(**kwargs), (
+            f"test_family_is_superset_false_when_any_axis_is_narrowed[{axis}]")
 
 
 def test_narrowed_run_refuses_to_write_the_repo_artifact():
@@ -116,19 +116,19 @@ def test_narrowed_run_refuses_when_only_the_report_targets_the_repo():
     assert "regime_1443_run_report.json" in str(exc.value)
 
 
-@pytest.mark.parametrize("sources,expected", [
-    pytest.param(
-        {"BTC/USDT": "kraken", "ETH/USDT": "coinbase", "SOL/USDT": "binanceus"},
-        {"BTC/USDT": "kraken", "ETH/USDT": "coinbase"},
-        id="reports_every_repointed_default"),
-    pytest.param(
-        {"BTC/USDT": "binanceus", "ETH/USDT": "binanceus",
-         "SOL/USDT": "binanceus", "HYPE/USDC:USDC": "hyperliquid"},
-        {},
-        id="ignores_added_symbols"),
-])
-def test_baseline_source_violations(sources, expected):
-    assert certify_mod.baseline_source_violations(sources, "binanceus") == expected
+def test_baseline_source_violations():
+    cases = [
+        ("reports_every_repointed_default",
+         {"BTC/USDT": "kraken", "ETH/USDT": "coinbase", "SOL/USDT": "binanceus"},
+         {"BTC/USDT": "kraken", "ETH/USDT": "coinbase"}),
+        ("ignores_added_symbols",
+         {"BTC/USDT": "binanceus", "ETH/USDT": "binanceus",
+          "SOL/USDT": "binanceus", "HYPE/USDC:USDC": "hyperliquid"},
+         {}),
+    ]
+    for case_id, sources, expected in cases:
+        assert certify_mod.baseline_source_violations(sources, "binanceus") == expected, (
+            f"test_baseline_source_violations[{case_id}]")
 
 
 def test_repointed_baseline_refuses_to_write_the_repo_artifact():
@@ -260,17 +260,16 @@ def test_load_clips_a_wider_fetch_to_the_held_out_window(window, monkeypatch):
     assert len(d["close"]) == n_in
 
 
-def test_clip_window_is_inclusive_of_both_bounds_and_drops_the_rest():
+def test_clip_window_keeps_both_bounds_drops_the_rest_and_refuses_a_non_datetime_index():
     start, end = premise_mod.WINDOWS["is"]
     out = premise_mod._clip_window(
         _ohlcv(pd.Timestamp(start) - pd.Timedelta(days=30), 24 * 400),
         start, end)
-    assert out.index.min() >= pd.Timestamp(start)
-    assert out.index.max() <= pd.Timestamp(end)
-    assert len(out) > 0
+    case = "test_clip_window_is_inclusive_of_both_bounds_and_drops_the_rest"
+    assert out.index.min() >= pd.Timestamp(start), case
+    assert out.index.max() <= pd.Timestamp(end), case
+    assert len(out) > 0, case
 
-
-def test_clip_window_refuses_a_frame_with_no_datetime_index():
     with pytest.raises(ValueError):
         premise_mod._clip_window(pd.DataFrame({"close": [1.0, 2.0]}),
                                  *premise_mod.WINDOWS["is"])

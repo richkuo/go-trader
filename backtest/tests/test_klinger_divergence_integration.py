@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import sys
@@ -58,6 +59,19 @@ def _support(p):
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, params=None):
@@ -307,9 +321,16 @@ def _states(out, side, state):
     return np.flatnonzero(out[f"klinger_{side}_state"].to_numpy() == state)
 
 
-def test_event_rules_cover_arming_replacement_expiry_consumption_and_equal_pivots():
+def test_event_rules_and_the_signal_cross_ablation_on_one_divergence_run():
     df = _walk(4000, 21, tick=0.05)
     out = _apply(df, FAST)
+    with _case("test_event_rules_cover_arming_replacement_expiry_consumption_and_equal_pivots"):
+        _event_rules_cover_arming_replacement_expiry_consumption_and_equal_pivots(out.copy())
+    with _case("test_signal_cross_ablation_drops_only_the_divergence_test"):
+        _signal_cross_ablation_drops_only_the_divergence_test(df, out.copy())
+
+
+def _event_rules_cover_arming_replacement_expiry_consumption_and_equal_pivots(out):
     reasons = set(out["klinger_reason"])
     assert {"entry_long", "entry_short", "setup_armed", "awaiting_cross", "setup_consumed", "no_divergence",
             "no_pivot_pair", "no_setup"} <= reasons
@@ -340,9 +361,7 @@ def test_event_rules_cover_arming_replacement_expiry_consumption_and_equal_pivot
     assert (out["signal"].to_numpy()[np.flatnonzero(out["klinger_reason"].to_numpy() == "opposite_events")] == 0).all()
 
 
-def test_signal_cross_ablation_drops_only_the_divergence_test():
-    df = _walk(4000, 21, tick=0.05)
-    div = _apply(df, FAST)
+def _signal_cross_ablation_drops_only_the_divergence_test(df, div):
     abl = _apply(df, dict(FAST, divergence_test=False))
     for col in ("klinger_oscillator", "klinger_signal_line", "klinger_cross", "klinger_long_confirm_ts_ms",
                 "klinger_short_pivot1_ts_ms"):
@@ -384,7 +403,7 @@ def _no_cadence(df):
     return out
 
 
-@pytest.mark.parametrize("mutate,reason", [
+INVALID_ENTRY_DATA = [
     (lambda df: df.drop(columns=["volume"]), "missing_columns"),
     (_no_cadence, "missing_cadence"),
     (lambda df: df.reset_index(drop=True), "missing_timestamps"),
@@ -402,9 +421,13 @@ def _no_cadence(df):
     (lambda df: _shift_index(df, len(df) - 1, pd.Timedelta(hours=4)), "cadence_gap"),
     (lambda df: _shift_index(df, len(df) - 150, pd.Timedelta(hours=1)), "cadence_gap"),
     (lambda df: df.iloc[-(_support(DEFAULTS) - 1):], "insufficient_history"),
-])
-def test_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame(mutate, reason):
-    _holds_at_end(mutate(_walk(400, 3)), DEFAULTS, reason)
+]
+
+
+def test_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame():
+    for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
+        with _case(f"{i}-{reason}"):
+            _holds_at_end(mutate(_walk(400, 3)), DEFAULTS, reason)
 
 
 @pytest.mark.parametrize("params", [DEFAULTS, FAST])
@@ -439,7 +462,7 @@ def test_received_out_of_order_rows_hold_only_inside_their_span():
     pd.testing.assert_frame_equal(out.iloc[bad + S:], clean.iloc[bad + S:])
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"fast_period": 1}, {"fast_period": 121}, {"slow_period": 2}, {"slow_period": 151},
     {"fast_period": 55, "slow_period": 55}, {"slow_period": 112}, {"signal_period": 112},
     {"signal_period": 1}, {"replay_bars": 191}, {"left_span": 0}, {"right_span": 11},
@@ -447,12 +470,16 @@ def test_received_out_of_order_rows_hold_only_inside_their_span():
     {"setup_expiry": 0}, {"setup_expiry": 51}, {"replay_bars": 150, "max_separation": 40},
     {"fast_period": 12.5}, {"fast_period": True}, {"fast_period": "34"}, {"slow_period": float("nan")},
     {"replay_bars": float("inf")}, {"divergence_test": 1}, {"divergence_test": "true"},
-])
-def test_invalid_parameters_are_explicit_errors(params):
-    with pytest.raises(ValueError):
-        _apply(_walk(300, 1), dict(DEFAULTS, **params))
-    with pytest.raises(ValueError):
-        _reg()._registry.validate_params(NAME, dict(DEFAULTS, **params))
+]
+
+
+def test_invalid_parameters_are_explicit_errors():
+    for params in INVALID_PARAMS:
+        with _case(params):
+            with pytest.raises(ValueError):
+                _apply(_walk(300, 1), dict(DEFAULTS, **params))
+            with pytest.raises(ValueError):
+                _reg()._registry.validate_params(NAME, dict(DEFAULTS, **params))
 
 
 def test_support_bound_and_integral_floats_are_accepted():
@@ -520,11 +547,16 @@ def _first(out, side):
     return int(rows[0])
 
 
-@pytest.mark.parametrize("kind", [TIMESTAMP_KIND_OPEN, TIMESTAMP_KIND_NATIVE_CLOSE])
-def test_check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(kind):
+def test_check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar():
     base = _walk(1500, 11)
     hist = _apply(base, DEFAULTS)
     i = _first(hist, 1)
+    for kind in (TIMESTAMP_KIND_OPEN, TIMESTAMP_KIND_NATIVE_CLOSE):
+        with _case(kind):
+            _check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(base, hist, i, kind)
+
+
+def _check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar(base, hist, i, kind):
     df = base.iloc[:i + 1].copy()
     if kind == TIMESTAMP_KIND_NATIVE_CLOSE:
         df.index = df.index + pd.Timedelta(hours=4) - pd.Timedelta(milliseconds=1)
@@ -561,12 +593,21 @@ def _entry_frame(side):
     return base.iloc[:i + 1].copy()
 
 
-def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_open():
-    _, flat_long = _composer(_entry_frame("long"), DEFAULTS)
-    _, flat_short = _composer(_entry_frame("short"), DEFAULTS)
+def test_composer_emits_both_directions_holds_entries_while_open_and_closes_on_its_own_opposite_entry():
+    long_frame = _entry_frame("long")
+    short_frame = _entry_frame("short")
+    with _case("test_composer_emits_both_directions_and_holds_entries_while_a_position_is_open"):
+        _composer_emits_both_directions_and_holds_entries_while_a_position_is_open(long_frame, short_frame)
+    with _case("test_close_fallback_on_the_candidate_closes_on_its_own_opposite_entry"):
+        _close_fallback_on_the_candidate_closes_on_its_own_opposite_entry(short_frame.copy())
+
+
+def _composer_emits_both_directions_and_holds_entries_while_a_position_is_open(long_frame, short_frame):
+    _, flat_long = _composer(long_frame.copy(), DEFAULTS)
+    _, flat_short = _composer(short_frame.copy(), DEFAULTS)
     assert (flat_long["open_action"], flat_long["signal"]) == ("long", 1)
     assert (flat_short["open_action"], flat_short["signal"]) == ("short", -1)
-    for frame in (_entry_frame("long"), _entry_frame("short")):
+    for frame in (long_frame.copy(), short_frame.copy()):
         mark = float(frame["close"].iloc[-1])
         for side in ("long", "short"):
             ctx = {"side": side, "avg_cost": mark, "entry_atr": 50.0, "current_quantity": 1.0,
@@ -575,16 +616,20 @@ def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_op
             assert held["signal"] == 0 and held["close_fraction"] == 0.0
 
 
-def test_close_fallback_on_the_candidate_closes_on_its_own_opposite_entry():
-    frame = _entry_frame("short")
+def _close_fallback_on_the_candidate_closes_on_its_own_opposite_entry(frame):
     mark = float(frame["close"].iloc[-1])
     ctx = {"side": "long", "avg_cost": mark, "entry_atr": 50.0, "current_quantity": 1.0, "initial_quantity": 1.0}
     _, decision = _composer(frame, DEFAULTS, "long", ctx, closes=(NAME,))
     assert decision["close_strategy"] == NAME and decision["close_fraction"] == 1.0 and decision["signal"] == -1
 
 
-@pytest.mark.parametrize("mutation", ["volume", "geometry", "cadence", "stale", "zero_cm"])
-def test_invalid_entry_frame_keeps_the_close_owner_executable(mutation):
+def test_invalid_entry_frame_keeps_the_close_owner_executable():
+    for mutation in ("volume", "geometry", "cadence", "stale", "zero_cm"):
+        with _case(mutation):
+            _invalid_entry_frame_keeps_the_close_owner_executable(mutation)
+
+
+def _invalid_entry_frame_keeps_the_close_owner_executable(mutation):
     df = _walk(400, 9)
     if mutation == "volume":
         df = df.assign(volume=np.r_[df["volume"].to_numpy()[:-1], -5.0])
@@ -626,9 +671,18 @@ def _bt(params, **kw):
     return Backtester(**base)
 
 
-def test_simulator_fills_next_open_with_explicit_exits_and_no_reversal_or_scale_in():
+def test_simulator_fills_next_open_both_arms_and_keeps_closing_after_entry_inputs_fail():
     df = _walk(3000, 5)
     sig = ensure_atr_indicator(_apply(df, FAST))
+    with _case("test_simulator_fills_next_open_with_explicit_exits_and_no_reversal_or_scale_in"):
+        _simulator_fills_next_open_with_explicit_exits_and_no_reversal_or_scale_in(df, sig.copy())
+    with _case("test_simulator_long_only_arm_never_opens_shorts"):
+        _simulator_long_only_arm_never_opens_shorts(sig.copy())
+    with _case("test_simulator_keeps_closing_and_stopping_after_entry_inputs_fail"):
+        _simulator_keeps_closing_and_stopping_after_entry_inputs_fail(df, sig.copy())
+
+
+def _simulator_fills_next_open_with_explicit_exits_and_no_reversal_or_scale_in(df, sig):
     res = _bt(FAST).run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
     trades = res["trades"]
     assert {t["side"] for t in trades} == {"long", "short"}
@@ -646,16 +700,12 @@ def test_simulator_fills_next_open_with_explicit_exits_and_no_reversal_or_scale_
         assert next_entry >= prev_exit
 
 
-def test_simulator_long_only_arm_never_opens_shorts():
-    df = _walk(3000, 5)
-    sig = ensure_atr_indicator(_apply(df, FAST))
+def _simulator_long_only_arm_never_opens_shorts(sig):
     res = _bt(FAST, direction="long").run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
     assert res["trades"] and {t["side"] for t in res["trades"]} == {"long"}
 
 
-def test_simulator_keeps_closing_and_stopping_after_entry_inputs_fail():
-    df = _walk(3000, 5)
-    sig = ensure_atr_indicator(_apply(df, FAST))
+def _simulator_keeps_closing_and_stopping_after_entry_inputs_fail(df, sig):
     first = next(int(i) for i in np.flatnonzero(sig["signal"].to_numpy() != 0)
                  if i > 300 and np.isfinite(sig["atr"].iloc[i]))
     corrupt = df.copy()

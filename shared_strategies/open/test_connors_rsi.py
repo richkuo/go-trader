@@ -240,23 +240,27 @@ def test_long_and_short_entries_cover_both_sides_with_reasons():
                                        "above_overbought", "insufficient_history"}
 
 
-@pytest.mark.parametrize("value,reason", [
+BAD_CLOSE_CASES = [
     (float("nan"), "nonfinite_input"),
     (float("inf"), "nonfinite_input"),
     (0.0, "nonpositive_close"),
     (-5.0, "nonpositive_close"),
-])
-def test_bad_close_holds_for_every_decision_whose_span_includes_it(value, reason):
-    df = market(300, seed=3)
-    df.iloc[150, df.columns.get_loc("close")] = value
-    out = run(df)
-    need = need_for(DEFAULTS["rank_window"])
-    assert out["crsi_reason"].iloc[150] == reason
-    affected = out.iloc[150: 150 + need]
-    assert (affected["signal"] == 0).all()
-    assert (~affected["crsi_valid"]).all()
-    assert (affected["crsi_reason"] == reason).all()
-    assert bool(out["crsi_valid"].iloc[150 + need])
+]
+
+
+def test_bad_close_holds_for_every_decision_whose_span_includes_it(subtests):
+    for value, reason in BAD_CLOSE_CASES:
+        with subtests.test(value=value, reason=reason):
+            df = market(300, seed=3)
+            df.iloc[150, df.columns.get_loc("close")] = value
+            out = run(df)
+            need = need_for(DEFAULTS["rank_window"])
+            assert out["crsi_reason"].iloc[150] == reason
+            affected = out.iloc[150: 150 + need]
+            assert (affected["signal"] == 0).all()
+            assert (~affected["crsi_valid"]).all()
+            assert (affected["crsi_reason"] == reason).all()
+            assert bool(out["crsi_valid"].iloc[150 + need])
 
 
 def test_missing_column_and_timestamp_order_hold():
@@ -276,7 +280,7 @@ def test_missing_column_and_timestamp_order_hold():
     assert run(with_col).iloc[-1]["crsi_reason"] == "timestamp_order"
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"price_period": True},
     {"price_period": 1},
     {"price_period": 11},
@@ -291,10 +295,14 @@ def test_missing_column_and_timestamp_order_hold():
     {"oversold": 60.0, "overbought": 40.0},
     {"oversold": float("nan")},
     {"overbought": False},
-])
-def test_invalid_parameters_raise(params):
-    with pytest.raises(ValueError):
-        run(market(200), params)
+]
+
+
+def test_invalid_parameters_raise(subtests):
+    for params in INVALID_PARAMS:
+        with subtests.test(params=params):
+            with pytest.raises(ValueError):
+                run(market(200), params)
 
 
 def test_integral_float_periods_accepted():

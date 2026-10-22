@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sys
 
@@ -14,21 +15,31 @@ _SIMULATE_STRATEGY = load_module("_simulate_strategy_gate_test", os.path.join(RO
 _resolve_gate_on_failure = _SIMULATE_STRATEGY._resolve_gate_on_failure
 
 
-@pytest.mark.parametrize("strategy_cfg,global_cfg,expected", [
-    ({}, {}, "open"),
-    ({}, {"gate_on_failure": "closed"}, "closed"),
-    ({"regime_gate_on_failure": "open"}, {"gate_on_failure": "closed"}, "open"),
-    ({"regime_gate_on_failure": "closed"}, {}, "closed"),
-])
-def test_resolves_gate_on_failure(strategy_cfg, global_cfg, expected):
-    assert _resolve_gate_on_failure(strategy_cfg, global_cfg) == expected
+@contextlib.contextmanager
+def _case(*label):
+    try:
+        yield
+    except (Exception, pytest.fail.Exception) as exc:
+        raise AssertionError(f"case {label!r} failed: {exc}") from exc
 
 
-@pytest.mark.parametrize("strategy_cfg,global_cfg", [
-    ({"regime_gate_on_failure": "fail-closed"}, {}),
-    ({}, {"gate_on_failure": "garbage"}),
-    ({"regime_gate_on_failure": "closed"}, {"gate_on_failure": "garbage"}),
-])
-def test_unknown_value_rejected(strategy_cfg, global_cfg):
-    with pytest.raises(ValueError, match="regime_gate_on_failure"):
-        _resolve_gate_on_failure(strategy_cfg, global_cfg)
+def test_resolves_gate_on_failure():
+    cases = [
+        ({}, {}, "open"),
+        ({}, {"gate_on_failure": "closed"}, "closed"),
+        ({"regime_gate_on_failure": "open"}, {"gate_on_failure": "closed"}, "open"),
+        ({"regime_gate_on_failure": "closed"}, {}, "closed"),
+    ]
+    for strategy_cfg, global_cfg, expected in cases:
+        assert _resolve_gate_on_failure(strategy_cfg, global_cfg) == expected, (strategy_cfg, global_cfg)
+
+
+def test_unknown_value_rejected():
+    cases = [
+        ({"regime_gate_on_failure": "fail-closed"}, {}),
+        ({}, {"gate_on_failure": "garbage"}),
+        ({"regime_gate_on_failure": "closed"}, {"gate_on_failure": "garbage"}),
+    ]
+    for strategy_cfg, global_cfg in cases:
+        with _case(strategy_cfg, global_cfg), pytest.raises(ValueError, match="regime_gate_on_failure"):
+            _resolve_gate_on_failure(strategy_cfg, global_cfg)

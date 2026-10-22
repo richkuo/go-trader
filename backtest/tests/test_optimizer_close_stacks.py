@@ -40,36 +40,52 @@ WIDE_LADDER = [
 ]
 
 
-def test_grid_expands_cartesian_per_spec():
+def test_grid_expands_baseline_dedupes_defaults_and_labels():
+    case = "test_grid_expands_cartesian_per_spec"
     grid = generate_close_stack_grid([
         {"close": {"name": "tiered_tp_atr",
                    "params": {"tp_tiers": [TIGHT_LADDER, WIDE_LADDER]}},
          "stop_loss_atr_mult": [None, 2.0]},
     ])
-    assert len(grid) == 4
+    assert len(grid) == 4, case
     ladders = [g["close_strategies"][0]["params"]["tp_tiers"] for g in grid]
-    assert TIGHT_LADDER in ladders and WIDE_LADDER in ladders
+    assert TIGHT_LADDER in ladders and WIDE_LADDER in ladders, case
     sl_values = {g["stop_loss_atr_mult"] for g in grid}
-    assert sl_values == {None, 2.0}
-    assert all(g["label"] for g in grid)
+    assert sl_values == {None, 2.0}, case
+    assert all(g["label"] for g in grid), case
 
-
-def test_grid_baseline_spec_yields_empty_stack():
+    case = "test_grid_baseline_spec_yields_empty_stack"
     grid = generate_close_stack_grid([{"close": None}])
-    assert len(grid) == 1
+    assert len(grid) == 1, case
     stack = grid[0]
-    assert stack["close_strategies"] == []
-    assert stack["stop_loss_atr_mult"] is None
-    assert stack["trailing_stop_atr_mult"] is None
-    assert stack["label"] == "baseline"
+    assert stack["close_strategies"] == [], case
+    assert stack["stop_loss_atr_mult"] is None, case
+    assert stack["trailing_stop_atr_mult"] is None, case
+    assert stack["label"] == "baseline", case
 
-
-def test_grid_dedupes_identical_stacks_across_specs():
+    case = "test_grid_dedupes_identical_stacks_across_specs"
     grid = generate_close_stack_grid([
         {"close": None},
         {"close": None, "stop_loss_atr_mult": [None, 1.5]},
     ])
-    assert len(grid) == 2
+    assert len(grid) == 2, case
+
+    case = "test_default_specs_expand_and_are_exclusive"
+    grid = generate_close_stack_grid(DEFAULT_CLOSE_STACK_SPECS)
+    assert len(grid) > 10, case
+    labels = [g["label"] for g in grid]
+    assert len(labels) == len(set(labels)), (case, "duplicate stack labels")
+    assert "baseline" in labels, case
+    for g in grid:
+        assert not (g["stop_loss_atr_mult"] and g["trailing_stop_atr_mult"]), case
+
+    case = "test_close_stack_label_is_compact"
+    grid = generate_close_stack_grid([
+        {"close": {"name": "tiered_tp_atr",
+                   "params": {"tp_tiers": [TIGHT_LADDER]}},
+         "stop_loss_atr_mult": [2.0]},
+    ])
+    assert grid[0]["label"] == "tiered_tp_atr[0.5x:0.5,1x:1] sl_atr=2", case
 
 
 @pytest.mark.parametrize(
@@ -91,38 +107,28 @@ def test_grid_rejects_invalid_specs(specs, match):
         generate_close_stack_grid(specs)
 
 
-def test_default_specs_expand_and_are_exclusive():
-    grid = generate_close_stack_grid(DEFAULT_CLOSE_STACK_SPECS)
-    assert len(grid) > 10
-    labels = [g["label"] for g in grid]
-    assert len(labels) == len(set(labels)), "duplicate stack labels"
-    assert "baseline" in labels
-    for g in grid:
-        assert not (g["stop_loss_atr_mult"] and g["trailing_stop_atr_mult"])
+def test_result_metric():
+    for case_id, (result, metric, expected) in {
+        "plain_key": ({"sharpe_ratio": 1.5}, "sharpe_ratio", 1.5),
+        "dd_adjusted": ({"total_return_pct": 30.0, "max_drawdown_pct": -15.0},
+                        "dd_adjusted_return", 2.0),
+        "dd_adjusted_zero_drawdown": ({"total_return_pct": 10.0, "max_drawdown_pct": 0.0},
+                                      "dd_adjusted_return", 0.0),
+    }.items():
+        assert _result_metric(result, metric) == pytest.approx(expected), \
+            f"test_result_metric[{case_id}]"
 
-
-def test_close_stack_label_is_compact():
-    grid = generate_close_stack_grid([
-        {"close": {"name": "tiered_tp_atr",
-                   "params": {"tp_tiers": [TIGHT_LADDER]}},
-         "stop_loss_atr_mult": [2.0]},
-    ])
-    assert grid[0]["label"] == "tiered_tp_atr[0.5x:0.5,1x:1] sl_atr=2"
-
-
-@pytest.mark.parametrize(
-    "result,metric,expected",
-    [
-        ({"sharpe_ratio": 1.5}, "sharpe_ratio", 1.5),
-        ({"total_return_pct": 30.0, "max_drawdown_pct": -15.0},
-         "dd_adjusted_return", 2.0),
-        ({"total_return_pct": 10.0, "max_drawdown_pct": 0.0},
-         "dd_adjusted_return", 0.0),
-    ],
-    ids=["plain_key", "dd_adjusted", "dd_adjusted_zero_drawdown"],
-)
-def test_result_metric(result, metric, expected):
-    assert _result_metric(result, metric) == pytest.approx(expected)
+    case = "test_result_metric_dd_adjusted_return_floors_liquidated"
+    blown = _result_metric(
+        {"total_return_pct": -100.0, "max_drawdown_pct": -100.0,
+         "liquidated": True},
+        "dd_adjusted_return")
+    survivor = _result_metric(
+        {"total_return_pct": -60.0, "max_drawdown_pct": -30.0,
+         "liquidated": False},
+        "dd_adjusted_return")
+    assert blown == -100.0, case
+    assert survivor > blown, case
 
 
 def test_joint_sweep_reports_best_close_stack():
@@ -314,16 +320,3 @@ def test_optimize_long_direction_with_no_close_ref_runs():
     sides = {t["side"] for w in result["window_results"]
              for t in w["test_result"]["trades"]}
     assert sides <= {"long"}, sides
-
-
-def test_result_metric_dd_adjusted_return_floors_liquidated():
-    blown = _result_metric(
-        {"total_return_pct": -100.0, "max_drawdown_pct": -100.0,
-         "liquidated": True},
-        "dd_adjusted_return")
-    survivor = _result_metric(
-        {"total_return_pct": -60.0, "max_drawdown_pct": -30.0,
-         "liquidated": False},
-        "dd_adjusted_return")
-    assert blown == -100.0
-    assert survivor > blown

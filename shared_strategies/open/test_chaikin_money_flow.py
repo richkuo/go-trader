@@ -57,7 +57,7 @@ def test_registered_no_edge_futures_and_hidden():
     assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
-@pytest.mark.parametrize("bar,expected_signal,expected_reason", [
+TRUTH_TABLE_CASES = [
     ((110.0, 100.0, 110.0, 8.0), 1, "entry_long"),
     ((110.0, 100.0, 110.0, 0.5), 0, "flow_below_threshold"),
     ((110.0, 100.0, 110.0, 0.2), 0, "flow_below_threshold"),
@@ -65,14 +65,18 @@ def test_registered_no_edge_futures_and_hidden():
     ((100.0, 90.0, 90.0, 8.0), -1, "entry_short"),
     ((100.0, 90.0, 90.0, 0.5), 0, "flow_below_threshold"),
     ((101.0, 99.0, 99.0, 8.0), 0, "no_breakout"),
-])
-def test_truth_table_single_bar_cases(bar, expected_signal, expected_reason):
-    row = last(frame(flat(6) + [bar]))
-    assert int(row["signal"]) == expected_signal
-    assert row["cmf_reason"] == expected_reason
-    assert bool(row["cmf_valid"])
-    assert row["cmf_upper"] == 101.0
-    assert row["cmf_lower"] == 99.0
+]
+
+
+def test_truth_table_single_bar_cases(subtests):
+    for bar, expected_signal, expected_reason in TRUTH_TABLE_CASES:
+        with subtests.test(bar=bar, reason=expected_reason):
+            row = last(frame(flat(6) + [bar]))
+            assert int(row["signal"]) == expected_signal
+            assert row["cmf_reason"] == expected_reason
+            assert bool(row["cmf_valid"])
+            assert row["cmf_upper"] == 101.0
+            assert row["cmf_lower"] == 99.0
 
 
 def test_flow_equal_to_threshold_holds_both_directions():
@@ -125,19 +129,23 @@ def test_invalid_predecessor_never_manufactures_an_episode():
     assert clean["cmf_reason"].iloc[11] == "breakout_continuation"
 
 
-@pytest.mark.parametrize("mutate,reason", [
-    (lambda r: (r[0], r[1], r[2], -1.0), "negative_volume"),
-    (lambda r: (r[1], r[0], r[2], r[3]), "inconsistent_hlc"),
-    (lambda r: (r[0], r[1], r[0] + 5.0, r[3]), "inconsistent_hlc"),
-    (lambda r: (float("inf"), r[1], r[2], r[3]), "nonfinite_input"),
-])
-def test_malformed_bar_yields_reasoned_hold(mutate, reason):
-    rows = flat(8)
-    rows[-1] = mutate(rows[-1])
-    row = last(frame(rows))
-    assert int(row["signal"]) == 0
-    assert not bool(row["cmf_valid"])
-    assert row["cmf_reason"] == reason
+MALFORMED_BAR_CASES = [
+    ("negative_volume", lambda r: (r[0], r[1], r[2], -1.0), "negative_volume"),
+    ("swapped_high_low", lambda r: (r[1], r[0], r[2], r[3]), "inconsistent_hlc"),
+    ("close_above_high", lambda r: (r[0], r[1], r[0] + 5.0, r[3]), "inconsistent_hlc"),
+    ("infinite_high", lambda r: (float("inf"), r[1], r[2], r[3]), "nonfinite_input"),
+]
+
+
+def test_malformed_bar_yields_reasoned_hold(subtests):
+    for case, mutate, reason in MALFORMED_BAR_CASES:
+        with subtests.test(case=case, reason=reason):
+            rows = flat(8)
+            rows[-1] = mutate(rows[-1])
+            row = last(frame(rows))
+            assert int(row["signal"]) == 0
+            assert not bool(row["cmf_valid"])
+            assert row["cmf_reason"] == reason
 
 
 def test_zero_volume_window_is_invalid_not_zero_flow():
@@ -179,7 +187,7 @@ def test_timestamp_order_defect_detected():
     assert last(with_col)["cmf_reason"] == "timestamp_order"
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"flow_window": True},
     {"flow_window": 20.5},
     {"breakout_window": 1},
@@ -188,10 +196,14 @@ def test_timestamp_order_defect_detected():
     {"flow_threshold": -0.01},
     {"flow_threshold": float("nan")},
     {"flow_threshold": False},
-])
-def test_invalid_parameters_raise(params):
-    with pytest.raises(ValueError):
-        run(frame(flat(30)), params)
+]
+
+
+def test_invalid_parameters_raise(subtests):
+    for params in INVALID_PARAMS:
+        with subtests.test(params=params):
+            with pytest.raises(ValueError):
+                run(frame(flat(30)), params)
 
 
 def test_integral_float_window_accepted():

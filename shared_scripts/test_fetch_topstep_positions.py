@@ -1,5 +1,6 @@
 
 import builtins
+import contextlib
 import importlib.util
 import json
 import os
@@ -8,6 +9,14 @@ from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@contextlib.contextmanager
+def _case(*label):
+    try:
+        yield
+    except (Exception, pytest.fail.Exception) as exc:
+        raise AssertionError(f"case {label!r} failed: {exc}") from exc
 
 
 def _run_script(positions_or_exc, is_live=True, use_raise=True):
@@ -56,35 +65,39 @@ def _run_script(positions_or_exc, is_live=True, use_raise=True):
     return parsed, exit_code["value"]
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ([{"symbol": "ES", "quantity": 2, "avg_price": 5000.0, "side": "long"}],
-     [{"coin": "ES", "size": 2, "avg_price": 5000.0, "side": "long"}]),
-    ([{"symbol": "NQ", "quantity": -1, "avg_price": 18000.0, "side": "short"}],
-     [{"coin": "NQ", "size": -1, "avg_price": 18000.0, "side": "short"}]),
-    ([{"symbol": "ES", "quantity": 0, "avg_price": 5000.0, "side": "long"}], []),
-    ([], []),
-])
-def test_positions_are_normalized(raw, expected):
-    out, code = _run_script(raw)
-    assert code == 0
-    assert len(out["positions"]) == len(expected)
-    for got, want in zip(out["positions"], expected):
-        for key, value in want.items():
-            assert got[key] == value
-    assert "error" not in out
+def test_positions_are_normalized():
+    cases = [
+        ([{"symbol": "ES", "quantity": 2, "avg_price": 5000.0, "side": "long"}],
+         [{"coin": "ES", "size": 2, "avg_price": 5000.0, "side": "long"}]),
+        ([{"symbol": "NQ", "quantity": -1, "avg_price": 18000.0, "side": "short"}],
+         [{"coin": "NQ", "size": -1, "avg_price": 18000.0, "side": "short"}]),
+        ([{"symbol": "ES", "quantity": 0, "avg_price": 5000.0, "side": "long"}], []),
+        ([], []),
+    ]
+    for raw, expected in cases:
+        with _case(raw):
+            out, code = _run_script(raw)
+            assert code == 0
+            assert len(out["positions"]) == len(expected)
+            for got, want in zip(out["positions"], expected):
+                for key, value in want.items():
+                    assert got[key] == value
+            assert "error" not in out
 
 
-@pytest.mark.parametrize("positions_or_exc,is_live,fragment", [
-    ([], False, "TOPSTEP_API_KEY"),
-    (RuntimeError("401 Unauthorized"), True, "401"),
-    (RuntimeError("TopStepX 503 Service Unavailable"), True, "503"),
-    (ConnectionError("DNS resolution failed"), True, "DNS"),
-])
-def test_failure_paths_emit_error_envelope(positions_or_exc, is_live, fragment):
-    out, code = _run_script(positions_or_exc, is_live=is_live)
-    assert code == 1
-    assert fragment in out["error"]
-    assert out["positions"] == []
+def test_failure_paths_emit_error_envelope():
+    cases = [
+        ([], False, "TOPSTEP_API_KEY"),
+        (RuntimeError("401 Unauthorized"), True, "401"),
+        (RuntimeError("TopStepX 503 Service Unavailable"), True, "503"),
+        (ConnectionError("DNS resolution failed"), True, "DNS"),
+    ]
+    for positions_or_exc, is_live, fragment in cases:
+        with _case(fragment):
+            out, code = _run_script(positions_or_exc, is_live=is_live)
+            assert code == 1
+            assert fragment in out["error"]
+            assert out["positions"] == []
 
 
 def test_uses_raise_variant_not_soft_fail():

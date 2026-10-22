@@ -225,40 +225,40 @@ def test_model_satisfies_bounded_window_and_forward_filter_contract():
     assert prov["in_sample"] is False
 
 
-@pytest.mark.parametrize("thr_kw,stream_fn,expected", [
-    pytest.param(
-        dict(min_active_labels=2, max_occupancy=0.8, min_transition_rate=0.05),
-        lambda: np.array(["ranging_quiet"] * 500, dtype=object),
-        {"ok": False, "active_labels": 1, "reason": "min_active_labels"},
-        id="constant_stream"),
-    pytest.param(
-        dict(min_active_labels=2, max_occupancy=0.9, min_transition_rate=0.01),
-        lambda: np.random.default_rng(0).choice(
-            ["ranging_quiet", "trending_up_clean", "ranging_volatile"],
-            size=600).astype(object),
-        {"ok": True, "reason": None},
-        id="healthy_stream"),
-    pytest.param(
-        dict(min_active_labels=2, max_occupancy=0.8, min_transition_rate=0.0),
-        lambda: np.array((["a"] * 9 + ["b"]) * 50, dtype=object),
-        {"ok": False, "active_labels": 2, "reason": "max_occupancy"},
-        id="high_occupancy"),
-    pytest.param(
-        dict(min_active_labels=2, max_occupancy=1.0, min_transition_rate=0.5),
-        lambda: np.array(["a"] * 300 + ["b"] * 300, dtype=object),
-        {"ok": False, "reason": "min_transition_rate"},
-        id="low_transition_rate"),
-])
-def test_non_degeneracy(thr_kw, stream_fn, expected):
+_NON_DEGENERACY_CASES = [
+    ("constant_stream",
+     dict(min_active_labels=2, max_occupancy=0.8, min_transition_rate=0.05),
+     lambda: np.array(["ranging_quiet"] * 500, dtype=object),
+     {"ok": False, "active_labels": 1, "reason": "min_active_labels"}),
+    ("healthy_stream",
+     dict(min_active_labels=2, max_occupancy=0.9, min_transition_rate=0.01),
+     lambda: np.random.default_rng(0).choice(
+         ["ranging_quiet", "trending_up_clean", "ranging_volatile"],
+         size=600).astype(object),
+     {"ok": True, "reason": None}),
+    ("high_occupancy",
+     dict(min_active_labels=2, max_occupancy=0.8, min_transition_rate=0.0),
+     lambda: np.array((["a"] * 9 + ["b"]) * 50, dtype=object),
+     {"ok": False, "active_labels": 2, "reason": "max_occupancy"}),
+    ("low_transition_rate",
+     dict(min_active_labels=2, max_occupancy=1.0, min_transition_rate=0.5),
+     lambda: np.array(["a"] * 300 + ["b"] * 300, dtype=object),
+     {"ok": False, "reason": "min_transition_rate"}),
+]
+
+
+def test_non_degeneracy_constant_healthy_high_occupancy_and_low_transition_streams():
     from regime_vol_model import NonDegeneracyThresholds, non_degeneracy
-    rep = non_degeneracy(stream_fn(), NonDegeneracyThresholds(**thr_kw))
-    assert rep["ok"] is expected["ok"]
-    if "active_labels" in expected:
-        assert rep["active_labels"] == expected["active_labels"]
-    if expected["reason"] is None:
-        assert rep["reasons"] == []
-    else:
-        assert expected["reason"] in " ".join(rep["reasons"])
+    for case_id, thr_kw, stream_fn, expected in _NON_DEGENERACY_CASES:
+        case = f"test_non_degeneracy[{case_id}]"
+        rep = non_degeneracy(stream_fn(), NonDegeneracyThresholds(**thr_kw))
+        assert rep["ok"] is expected["ok"], case
+        if "active_labels" in expected:
+            assert rep["active_labels"] == expected["active_labels"], case
+        if expected["reason"] is None:
+            assert rep["reasons"] == [], case
+        else:
+            assert expected["reason"] in " ".join(rep["reasons"]), case
 
 
 def test_derive_thresholds_is_looser_than_incumbent_worst_window():
@@ -282,8 +282,10 @@ def _load_research_module(tag):
     return mod
 
 
-def test_select_winner_prefers_eligible_high_separation():
-    mod = _load_research_module("rank1")
+def test_select_winner_eligibility_bonferroni_and_structural_ineligibility():
+    mod = _load_research_module("select_winner")
+
+    case = "test_select_winner_prefers_eligible_high_separation"
     cands = [
         {"family": "hmm", "k": 3, "verdict": {"ship": True}, "model_p_value": 0.001,
          "non_degenerate_all": True, "model_kruskal_h": 90.0, "stability_gain": 0.05},
@@ -295,28 +297,35 @@ def test_select_winner_prefers_eligible_high_separation():
          "non_degenerate_all": False, "model_kruskal_h": 999.0, "stability_gain": 0.9},
     ]
     win = mod.select_winner(cands)
-    assert win["family"] == "gmm" and win["k"] == 4
+    assert win["family"] == "gmm" and win["k"] == 4, case
 
-
-def test_select_winner_returns_none_when_no_eligible():
-    mod = _load_research_module("rank2")
+    case = "test_select_winner_returns_none_when_no_eligible"
     assert mod.select_winner([{"family": "hmm", "k": 3, "verdict": {"ship": False},
                                "model_p_value": 0.001, "non_degenerate_all": True,
-                               "model_kruskal_h": 1.0, "stability_gain": 0.0}]) is None
+                               "model_kruskal_h": 1.0, "stability_gain": 0.0}]) is None, case
 
-
-def test_select_winner_applies_bonferroni_correction():
-    mod = _load_research_module("bonf")
+    case = "test_select_winner_applies_bonferroni_correction"
     lucky = {"family": "kmeans", "k": 4, "verdict": {"ship": True}, "model_p_value": 0.03,
              "non_degenerate_all": True, "model_kruskal_h": 999.0, "stability_gain": 0.9}
     fillers = [{"family": "hmm", "k": 2, "verdict": {"ship": False}, "model_p_value": 0.9,
                 "non_degenerate_all": False, "model_kruskal_h": 1.0, "stability_gain": 0.0}
                for _ in range(19)]
-    assert mod.select_winner([lucky] + fillers) is None
-    assert mod.bonferroni_alpha(20) == pytest.approx(0.05 / 20)
+    assert mod.select_winner([lucky] + fillers) is None, case
+    assert mod.bonferroni_alpha(20) == pytest.approx(0.05 / 20), case
     lucky_real = dict(lucky, model_p_value=0.0001)
     win = mod.select_winner([lucky_real] + fillers)
-    assert win["family"] == "kmeans" and win["k"] == 4
+    assert win["family"] == "kmeans" and win["k"] == 4, case
+
+    case = "test_select_winner_ignores_structurally_ineligible_candidates"
+    eligible = {"family": "gmm", "k": 4, "verdict": {"ship": True}, "model_p_value": 0.03,
+                "non_degenerate_all": True, "model_kruskal_h": 10.0, "stability_gain": 0.1}
+    ineligible = [{"family": "kmeans", "k": 2, "verdict": {"ship": True},
+                   "model_p_value": 0.0001, "non_degenerate_all": True,
+                   "model_kruskal_h": 999.0, "stability_gain": 0.9,
+                   "structurally_ineligible": True}
+                  for _ in range(19)]
+    win = mod.select_winner([eligible] + ineligible)
+    assert win is not None and win["family"] == "gmm" and win["k"] == 4, case
 
 
 def test_fit_kmeans_reseeds_empty_clusters_no_ghost_states():
@@ -407,22 +416,19 @@ def test_bakeoff_report_on_offline_candles(monkeypatch):
     assert report["winner"] == ({"family": winner["family"], "k": winner["k"]} if winner else None)
 
 
-def test_resolve_bakeoff_n_perm_default_achieves_corrected_alpha_with_headroom():
-    mod = _load_research_module("nperm_default")
+def test_resolve_bakeoff_n_perm_default_explicit_underpowered_and_narrowed_requests():
+    mod = _load_research_module("nperm")
+
+    case = "test_resolve_bakeoff_n_perm_default_achieves_corrected_alpha_with_headroom"
     n = mod.resolve_bakeoff_n_perm(18)
-    assert n >= mod.DEFAULT_BAKEOFF_MIN_N_PERM
-    assert 1.0 / (n + 1) <= mod.bonferroni_alpha(18) / 2.0
+    assert n >= mod.DEFAULT_BAKEOFF_MIN_N_PERM, case
+    assert 1.0 / (n + 1) <= mod.bonferroni_alpha(18) / 2.0, case
 
-
-def test_resolve_bakeoff_n_perm_rejects_underpowered_explicit_request():
-    mod = _load_research_module("nperm_reject")
     with pytest.raises(ValueError, match="cannot satisfy the Bonferroni-corrected alpha"):
         mod.resolve_bakeoff_n_perm(18, requested=200)
 
-
-def test_resolve_bakeoff_n_perm_narrowed_sweep_accepts_200():
-    mod = _load_research_module("nperm_narrow")
-    assert mod.resolve_bakeoff_n_perm(6, requested=200) == 200
+    case = "test_resolve_bakeoff_n_perm_narrowed_sweep_accepts_200"
+    assert mod.resolve_bakeoff_n_perm(6, requested=200) == 200, case
 
 
 def test_real_pipeline_p_value_can_be_crowned_at_default_sweep_resolution():
@@ -463,19 +469,6 @@ def test_bonferroni_denominator_excludes_structurally_ineligible():
     assert mod.bonferroni_alpha(mod.bonferroni_denominator(cands)) == pytest.approx(0.05 / 12)
 
 
-def test_select_winner_ignores_structurally_ineligible_candidates():
-    mod = _load_research_module("inelig_select")
-    eligible = {"family": "gmm", "k": 4, "verdict": {"ship": True}, "model_p_value": 0.03,
-                "non_degenerate_all": True, "model_kruskal_h": 10.0, "stability_gain": 0.1}
-    ineligible = [{"family": "kmeans", "k": 2, "verdict": {"ship": True},
-                   "model_p_value": 0.0001, "non_degenerate_all": True,
-                   "model_kruskal_h": 999.0, "stability_gain": 0.9,
-                   "structurally_ineligible": True}
-                  for _ in range(19)]
-    win = mod.select_winner([eligible] + ineligible)
-    assert win is not None and win["family"] == "gmm" and win["k"] == 4
-
-
 def test_permutation_steps_to_alpha_and_knife_edge_are_symmetric():
     mod = _load_research_module("steps")
     assert mod.permutation_steps_to_alpha(10.0 / 201.0, 200) == 0
@@ -512,7 +505,8 @@ def _decoder_model(em_mean, em_var, states, *, filter_window=8):
             "filter_window": int(filter_window)}
 
 
-def test_neutralize_dead_components_classifies_by_soft_mass_not_geometry():
+def test_neutralize_dead_components_parks_by_soft_mass_and_is_noop_when_all_alive():
+    case = "test_neutralize_dead_components_classifies_by_soft_mass_not_geometry"
     mu = np.array([[0.0, 0.0, 0.0, 0.0],
                    [0.0, 0.0, 0.0, 0.0],
                    [3.0, 3.0, 3.0, 3.0]], dtype=float)
@@ -521,19 +515,18 @@ def test_neutralize_dead_components_classifies_by_soft_mass_not_geometry():
                     [0.4, 0.4, 0.4, 0.4]], dtype=float)
     dead = rvm._neutralize_dead_components(mu, var, np.array([1e-9, 250.0, 250.0]),
                                            min_soft_mass=1.0)
-    assert dead.tolist() == [True, False, False]
-    assert np.array_equal(mu[0], [0.0, 0.0, 0.0, 0.0]) and np.array_equal(var[0], [1.0, 1.0, 1.0, 1.0])
-    assert np.array_equal(var[1], [1e-3, 1e-3, 1e-3, 1e-3])
-    assert np.array_equal(mu[2], [3.0, 3.0, 3.0, 3.0]) and np.array_equal(var[2], [0.4, 0.4, 0.4, 0.4])
+    assert dead.tolist() == [True, False, False], case
+    assert np.array_equal(mu[0], [0.0, 0.0, 0.0, 0.0]) and np.array_equal(var[0], [1.0, 1.0, 1.0, 1.0]), case
+    assert np.array_equal(var[1], [1e-3, 1e-3, 1e-3, 1e-3]), case
+    assert np.array_equal(mu[2], [3.0, 3.0, 3.0, 3.0]) and np.array_equal(var[2], [0.4, 0.4, 0.4, 0.4]), case
 
-
-def test_neutralize_dead_components_is_noop_when_all_components_alive():
+    case = "test_neutralize_dead_components_is_noop_when_all_components_alive"
     mu = np.array([[1.0, 2.0, 3.0, 4.0], [-1.0, -2.0, -3.0, -4.0]], dtype=float)
     var = np.array([[0.5, 0.6, 0.7, 0.8], [0.9, 1.1, 1.2, 1.3]], dtype=float)
     mu0, var0 = mu.copy(), var.copy()
     dead = rvm._neutralize_dead_components(mu, var, np.array([500.0, 500.0]), min_soft_mass=1.0)
-    assert not dead.any()
-    assert np.array_equal(mu, mu0) and np.array_equal(var, var0)
+    assert not dead.any(), case
+    assert np.array_equal(mu, mu0) and np.array_equal(var, var0), case
 
 
 def test_truly_dead_component_cannot_win_near_mean_bars_after_parking():
@@ -719,21 +712,20 @@ def test_cell_distance_scales_violation_by_feature_std():
     assert wide == pytest.approx(1.0)
 
 
-def test_min_cost_assignment_matches_brute_force():
+def test_min_cost_assignment_matches_brute_force_and_rejects_more_rows_than_columns():
     import itertools
     rng = np.random.default_rng(11)
     for n, m in [(2, 2), (3, 5), (4, 4), (5, 9)]:
         for _ in range(20):
             cost = rng.uniform(0, 10, size=(n, m))
             assign = rvm._min_cost_assignment(cost)
-            assert sorted(assign) == sorted(set(assign)) and len(assign) == n
+            case = f"test_min_cost_assignment_matches_brute_force n={n} m={m}"
+            assert sorted(assign) == sorted(set(assign)) and len(assign) == n, case
             got = sum(cost[i, assign[i]] for i in range(n))
             best = min(sum(cost[i, p[i]] for i in range(n))
                        for p in itertools.permutations(range(m), n))
-            assert got == pytest.approx(best)
+            assert got == pytest.approx(best), case
 
-
-def test_min_cost_assignment_rejects_more_rows_than_columns():
     with pytest.raises(ValueError):
         rvm._min_cost_assignment(np.zeros((3, 2)))
 
@@ -812,34 +804,31 @@ def test_more_states_than_vocabulary_falls_back_to_handrule_names_and_records_du
     assert summary["duplicate_names"] == ["trending_up_choppy"]
 
 
-def test_fit_unsupervised_records_naming_summary_and_bumps_version():
+def test_kmeans_colliding_fit_records_naming_summary_and_decodes_distinct_states():
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
     feats = _colliding_feature_matrix()
     model = rvm.fit_unsupervised(feats, family="kmeans", k=3, filter_window=32,
                                  thresholds=dict(TH), seed=0)
-    assert model["version"] == 2
+
+    case = "test_fit_unsupervised_records_naming_summary_and_bumps_version"
+    assert model["version"] == 2, case
     naming = model["naming"]
-    assert naming["rule"] == "distinct_nearest_cell"
-    assert naming["distinct"] is True and naming["duplicate_names"] == []
-    assert len(naming["relabeled"]) == 1
+    assert naming["rule"] == "distinct_nearest_cell", case
+    assert naming["distinct"] is True and naming["duplicate_names"] == [], case
+    assert len(naming["relabeled"]) == 1, case
     (idx, rec), = naming["relabeled"].items()
-    assert model["mapping"][idx]["relabeled"] is True
-    assert rec["from"] == "trending_up_choppy" and rec["to"] == model["states"][int(idx)]
-    assert rec["to"] != "trending_up_choppy"
+    assert model["mapping"][idx]["relabeled"] is True, case
+    assert rec["from"] == "trending_up_choppy" and rec["to"] == model["states"][int(idx)], case
+    assert rec["to"] != "trending_up_choppy", case
     untouched = [i for i in range(3) if str(i) != idx]
     for i in untouched:
-        assert model["mapping"][str(i)]["relabeled"] is False
-        assert model["states"][i] == model["mapping"][str(i)]["handrule_name"]
+        assert model["mapping"][str(i)]["relabeled"] is False, case
+        assert model["states"][i] == model["mapping"][str(i)]["handrule_name"], case
 
-
-def test_non_degeneracy_counts_distinct_decoded_states_after_relabel():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    feats = _colliding_feature_matrix()
-    model = rvm.fit_unsupervised(feats, family="kmeans", k=3, filter_window=32,
-                                 thresholds=dict(TH), seed=0)
+    case = "test_non_degeneracy_counts_distinct_decoded_states_after_relabel"
     labels, _ = forward_filter_labels(feats, model)
     valid = ~np.isnan(feats).any(1)
     thr = rvm.NonDegeneracyThresholds(min_active_labels=3, max_occupancy=1.0,
                                       min_transition_rate=0.0)
     rep = rvm.non_degeneracy(labels[valid], thr)
-    assert rep["active_labels"] == 3 and rep["ok"] is True
+    assert rep["active_labels"] == 3 and rep["ok"] is True, case
