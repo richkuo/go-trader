@@ -62,6 +62,7 @@ func TestCumulativeVolumeDeltaIsRefusedInEveryModeAndReference(t *testing.T) {
 		macroEventBreakoutStrategyName:    {"hl-macrobrk-btc", "BTC", "1h"},
 		volumeProfileReclaimStrategyName:  {"hl-vpreclaim-btc", "BTC", "15m"},
 		perpetualPremiumStrategyName:      {"hl-ppr-btc", "BTC", "1m"},
+		orderBookImbalanceStrategyName:    {"hl-obi-btc", "BTC", "1m"},
 	}
 	for _, name := range refused {
 		fx, ok := fixtures[name]

@@ -34,6 +34,13 @@ MACRO_EVENT_INPUT_STRATEGIES = {"macro_event_breakout"}
 VOLUME_PROFILE_INPUT_STRATEGIES = {"volume_profile_reclaim"}
 PREMIUM_INPUT_STRATEGIES = {"perpetual_premium_reversion"}
 
+BOOK_INPUT_STRATEGIES = {"order_book_imbalance"}
+
+
+def refuse_book_input_strategy(name, consumer: str) -> None:
+    from book_inputs import refuse_book_input_strategy as _refuse
+    _refuse(name, consumer)
+
 
 def attach_macro_event_inputs(params: dict, symbol: str, manifest=None, dataset=None, window=None):
     import macro_event_inputs as mi
@@ -1585,6 +1592,11 @@ def run_single_backtest(
     regime_label_plan: Optional[dict] = None,
     resting_tp_trade_through: bool = False,
 ) -> Optional[dict]:
+    if strategy_name in BOOK_INPUT_STRATEGIES:
+        try:
+            refuse_book_input_strategy(strategy_name, "run_backtest.py single runs (cached or --manifest)")
+        except ValueError as exc:
+            raise SystemExit(str(exc))
     if resting_tp_trade_through and not manifest_path:
         raise SystemExit(
             "the resting take-profit trade-through rule needs --manifest (the tick grid "
@@ -2116,6 +2128,7 @@ def run_walk_forward(
     reg = load_registry(registry)
     refuse_basket_evaluator(reg, strategy_name)
     refuse_leader_input_strategy(strategy_name, "walk-forward optimization")
+    refuse_book_input_strategy(strategy_name, "walk-forward optimization")
     if strategy_name in VOLUME_PROFILE_INPUT_STRATEGIES:
         from volume_profile_replay import refuse_volume_profile_strategy
         refuse_volume_profile_strategy(strategy_name, "walk-forward optimization")
@@ -2431,6 +2444,12 @@ def _main():
             print(f"--mode {args.mode} cannot run {args.strategy}: it reads executed-trade volume profiles, "
                   "which only --mode single --manifest (or eval_windows.py --manifest) attaches")
             sys.exit(1)
+        if args.strategy in BOOK_INPUT_STRATEGIES:
+            try:
+                refuse_book_input_strategy(args.strategy, f"run_backtest.py --mode {args.mode}")
+            except ValueError as exc:
+                print(str(exc))
+                sys.exit(1)
 
     close_refs = None
     if args.close_strategies:

@@ -1673,6 +1673,9 @@ def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_v
         elif name in market.get("volume_profile_input_strategies", ()):
             row("open_strategy", "observation", open_ref, "refused",
                 f"{name} reads executed-trade volume profiles, which the frozen ledger comparison does not prepare")
+        elif name in market.get("book_input_strategies", ()):
+            row("open_strategy", "observation", open_ref, "refused",
+                f"{name} reads supplied l2Book depth observations, which the frozen ledger comparison does not prepare")
         elif name not in market["registry"]:
             row("open_strategy", "signal_model", open_ref, "refused", f"{name!r} is not in the futures registry")
         else:
@@ -2898,10 +2901,11 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
     market_ctx = {"coin": None, "interval": None, "registry": set(), "funding_input_strategies": set(),
                   "observation_input_strategies": set(), "trade_flow_input_strategies": set(),
                   "macro_event_input_strategies": set(), "leader_input_strategies": set(),
-                  "volume_profile_input_strategies": set(), "premium_input_strategies": set()}
+                  "volume_profile_input_strategies": set(), "premium_input_strategies": set(),
+                  "book_input_strategies": set()}
     if "dataset" in market:
         from registry_loader import load_registry
-        from run_backtest import (FUNDING_COLUMN_STRATEGIES, LEADER_INPUT_STRATEGIES,
+        from run_backtest import (BOOK_INPUT_STRATEGIES, FUNDING_COLUMN_STRATEGIES, LEADER_INPUT_STRATEGIES,
                                   MACRO_EVENT_INPUT_STRATEGIES, OBSERVATION_INPUT_STRATEGIES,
                                   PREMIUM_INPUT_STRATEGIES, TRADE_FLOW_INPUT_STRATEGIES,
                                   VOLUME_PROFILE_INPUT_STRATEGIES)
@@ -2913,7 +2917,8 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                       "macro_event_input_strategies": set(MACRO_EVENT_INPUT_STRATEGIES),
                       "leader_input_strategies": set(LEADER_INPUT_STRATEGIES),
                       "volume_profile_input_strategies": set(VOLUME_PROFILE_INPUT_STRATEGIES),
-                      "premium_input_strategies": set(PREMIUM_INPUT_STRATEGIES)}
+                      "premium_input_strategies": set(PREMIUM_INPUT_STRATEGIES),
+                      "book_input_strategies": set(BOOK_INPUT_STRATEGIES)}
         try:
             import offline_manifest as om
             market_ctx["venue_margin"] = om.venue_margin(market["manifest"], market["dataset"])

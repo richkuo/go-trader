@@ -43,6 +43,7 @@ FIXED_DURATION_MS = {
 UNSUPPORTED_OPEN_STRATEGIES = {
     "delta_neutral_funding": "its scalar and rolling funding average have no historical value at the decision boundary",
     "open_interest_breakout": "its open-interest observations have no closed-bar decision contract yet",
+    "order_book_imbalance": "unsupported_cadence: it decides at one-second book deadlines, and a candle boundary would change its entry opportunities",
 }
 
 

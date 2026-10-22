@@ -109,6 +109,11 @@ from volume_profile_reclaim import (
     volume_profile_reclaim_core,
     vpr_param_validator,
 )
+from order_book_imbalance import (
+    DEFAULT_PARAMS as DEFAULT_OBI_PARAMS,
+    obi_param_validator,
+    order_book_imbalance_core,
+)
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -2949,6 +2954,36 @@ def perpetual_premium_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataF
     return perpetual_premium_reversion_core(df, **params)
 
 
+@register(
+    "order_book_imbalance",
+    "RESEARCH, production-refused, frozen study pending (#1635) \u2014 order-book imbalance on supplied Hyperliquid l2Book snapshots (l2_book_observations, the Delivery 1 l2_book contract): for the first depth_levels levels per side, B = sum(bid px x sz), A = sum(ask px x sz), I = (B - A) / (B + A) and spread_bps = 10000 x (ask - bid) / mid, all in exact rational arithmetic. A book qualifies long when I > entry_threshold and short when I < -entry_threshold (strict; equality is neutral) with spread_bps <= max_spread_bps and B + A >= min_combined_depth_usd. An episode is a same-direction run of distinct qualifying books after a retained boundary (a reset marker, a non-qualifying book or the last book of the opposite run) inside the 60000 ms evidence window; the confirmation_observations-th book is the crossing, and its sole decision deadline is the next UTC whole second at or above max(event, receipt). The entry fires only at that deadline, only if the run is still active and the crossing book's event and receipt are each at most max_snapshot_age_ms old; later deadlines return consumed, a missing boundary returns evidence_truncated, and missing or malformed books hold with a reason. Entry-only; the closed-bar branch is unsupported; research use only: every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    dict(DEFAULT_OBI_PARAMS),
+    platforms=("futures",),
+    constraints=[
+        "depth_levels >= 1",
+        "depth_levels <= 20",
+        "entry_threshold > 0",
+        "entry_threshold < 1",
+        "confirmation_observations >= 2",
+        "confirmation_observations <= 5",
+        "max_spread_bps > 0",
+        "max_spread_bps <= 100",
+        "min_combined_depth_usd > 0",
+        "min_combined_depth_usd <= 1000000000",
+        "max_snapshot_age_ms >= 250",
+        "max_snapshot_age_ms <= 5000",
+    ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/order_book_imbalance_1635/REPORT.md",
+    short_entries=True,
+    param_validator=obi_param_validator,
+    production_refused=True,
+)
+def order_book_imbalance_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return order_book_imbalance_core(df, **params)
+
+
 PLATFORM_ORDER: Dict[str, List[str]] = {
     "spot": [
         "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
@@ -3004,6 +3039,10 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "bitcoin_lead_lag",
         "volume_profile_reclaim",
         "perpetual_premium_reversion",
+
+
+@register(
+        "order_book_imbalance",
         "hold",
     ],
 }

@@ -23,6 +23,7 @@ SKIP_STRATEGIES = {
     "basket_scripted_fixture": "basket evaluator: it ranks a symbol-keyed universe and refuses one-symbol evaluation by contract (#1781)",
     "cross_sectional_momentum": "basket evaluator: it ranks a symbol-keyed universe and refuses one-symbol evaluation by contract (#1781); its post-deadline invariance runs through the real basket runner (#1787)",
     "cross_sectional_reversal": "basket evaluator: it ranks a symbol-keyed universe and refuses one-symbol evaluation by contract (#1781); its post-deadline invariance runs through the real basket runner (#1793)",
+    "order_book_imbalance": "book evaluator: it decides once, at the deadline of the supplied l2Book section, and never per candle row (#1635); its post-deadline invariance runs through the evaluator and study-path parity in test_order_book_imbalance_integration.py",
 }
 
 EXPECTED_ALL_ZERO_SIGNAL = {

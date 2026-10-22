@@ -1,0 +1,47 @@
+{
+ "assets": {
+  "BTC": {
+   "marginTableId": 56,
+   "maxLeverage": 40,
+   "name": "BTC",
+   "szDecimals": 5
+  },
+  "ETH": {
+   "marginTableId": 55,
+   "maxLeverage": 25,
+   "name": "ETH",
+   "szDecimals": 4
+  }
+ },
+ "fetched_at": "2026-10-22T03:12:17Z",
+ "margin_tables": {
+  "55": {
+   "description": "tiered 25x",
+   "marginTiers": [
+    {
+     "lowerBound": "0.0",
+     "maxLeverage": 25
+    },
+    {
+     "lowerBound": "100000000.0",
+     "maxLeverage": 15
+    }
+   ]
+  },
+  "56": {
+   "description": "tiered 40x",
+   "marginTiers": [
+    {
+     "lowerBound": "0.0",
+     "maxLeverage": 40
+    },
+    {
+     "lowerBound": "150000000.0",
+     "maxLeverage": 20
+    }
+   ]
+  }
+ },
+ "schema": "go_trader_obi_1635_venue/v1",
+ "source": "Hyperliquid info meta"
+}

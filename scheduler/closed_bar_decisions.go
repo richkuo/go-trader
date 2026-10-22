@@ -32,6 +32,7 @@ var closedBarDecisionIntervalsMs = map[string]int64{
 var closedBarUnsupportedOpenStrategies = map[string]string{
 	fundingScalarStrategyName:        "its scalar and rolling funding average have no historical value at the decision boundary",
 	openInterestBreakoutStrategyName: "its open-interest observations have no closed-bar decision contract yet",
+	orderBookImbalanceStrategyName:   "unsupported_cadence: it decides at one-second book deadlines, and a candle boundary would change its entry opportunities",
 }
 
 var closedBarRequiredOpenStrategies = map[string]string{

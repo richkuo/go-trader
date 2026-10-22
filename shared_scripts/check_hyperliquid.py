@@ -58,6 +58,7 @@ from market_payload import (
     market_frame_rows,
     market_frame_rows_with_timing,
     market_funding_records,
+    market_l2_book,
     market_funding_scalar,
     market_mid,
     market_observation,
@@ -553,6 +554,18 @@ def _shared_premium(shared, symbol):
     return market_premium(market, symbol, MarketPayloadError)
 
 
+BOOK_STRATEGY = "order_book_imbalance"
+
+
+def _shared_l2_book(shared, symbol):
+    market = shared.get("market")
+    if market is None:
+        return {"available": False, "kind": "l2_book", "coin": symbol,
+                "reason": "order_book_imbalance reads l2Book depth observations only from the sealed market feed "
+                          "payload; this check has none and never fetches a book"}
+    return market_l2_book(market, symbol, MarketPayloadError)
+
+
 MACRO_EVENT_STRATEGY = "macro_event_breakout"
 
 
@@ -1024,6 +1037,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             strategy_params["volume_profile_observations"] = _shared_volume_profile(shared, symbol)
         if funding_aware_name == PREMIUM_STRATEGY:
             strategy_params["premium_observations"] = _shared_premium(shared, symbol)
+        if funding_aware_name == BOOK_STRATEGY:
+            strategy_params["l2_book_observations"] = _shared_l2_book(shared, symbol)
         if funding_aware_name == MACRO_EVENT_STRATEGY:
             strategy_params.update(_shared_macro_inputs(shared, symbol, strategy_params_override))
         if funding_aware_name == LEAD_LAG_STRATEGY:

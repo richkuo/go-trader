@@ -300,6 +300,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                               PREMIUM_INPUT_STRATEGIES, TRADE_FLOW_INPUT_STRATEGIES, VOLUME_PROFILE_INPUT_STRATEGIES,
                               _attach_funding_if_needed, _build_profile_label_series, attach_macro_event_inputs)
 
+    from book_inputs import refuse_book_input_strategy
+    refuse_book_input_strategy(name, "eval_windows.py (cached, --manifest and M1 candidate runs)")
     validate_close_capabilities(close_refs=close_strategies,
                                 comparison_mode=comparison_mode,
                                 platform=FEE_PLATFORM, phase="preflight")
