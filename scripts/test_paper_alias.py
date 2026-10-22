@@ -33,7 +33,6 @@ def test_paper_alias_base_reads_the_suffix():
     ]
     got = [(sid, paper_alias_base(sid)) for sid, _ in cases]
     assert got == cases
-    assert 1 == 2
 
 
 def test_paper_alias_suffix_reads_the_source_id():

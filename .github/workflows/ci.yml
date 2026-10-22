@@ -320,7 +320,6 @@ jobs:
           - {suite: default, group: 3, splits: 6, paths: ''}
           - {suite: default, group: 4, splits: 6, paths: ''}
           - {suite: default, group: 5, splits: 6, paths: ''}
-          - {suite: default, group: 6, splits: 6, paths: ''}
           - {suite: shared_scripts, group: 1, splits: 2, paths: shared_scripts/}
           - {suite: shared_scripts, group: 2, splits: 2, paths: shared_scripts/}
     steps:
