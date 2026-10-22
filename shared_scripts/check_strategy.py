@@ -20,6 +20,15 @@ from closed_bar import (
     select_opening_time,
     unsupported_open_strategy_reason,
 )
+from htf_filter import (
+    HTF_EMA_PERIOD,
+    HTF_EXCLUDED_DEFAULT,
+    get_default_htf,
+    htf_not_evaluated_block,
+    htf_skipped_block,
+    htf_unavailable_block,
+    run_htf_filter,
+)
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
 
@@ -251,6 +260,10 @@ def main():
         protection_kwargs = {}
         htf_frame = None
         htf_strategy_name = open_strategy or strategy_name
+        htf_applies = htf_filter_enabled and htf_strategy_name not in HTF_EXCLUDED_DEFAULT
+        htf_block = None
+        if htf_filter_enabled and not htf_applies:
+            htf_block = htf_skipped_block(timeframe, htf_strategy_name)
         if closed_bar:
             hold = ""
             try:
@@ -287,12 +300,15 @@ def main():
                     decision_params["regime"] = decision_strategy_regime
                 else:
                     decision_params["regime"] = strategy_regime
-                if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
-                    from htf_filter import get_default_htf
+                if htf_applies:
                     htf_tf = get_default_htf(timeframe)
-                    htf_frame = ohlcv_rows_frame(select_opening_time(
-                        fetch_rows_or_hold(lambda: fetch_ohlcv_rows(symbol, htf_tf, 61), symbol, htf_tf),
-                        timeframe=htf_tf, cutoff_ms=selection.boundary_ms, keep=60, min_rows=50).rows)
+                    try:
+                        htf_frame = ohlcv_rows_frame(select_opening_time(
+                            fetch_rows_or_hold(lambda: fetch_ohlcv_rows(symbol, htf_tf, 61), symbol, htf_tf),
+                            timeframe=htf_tf, cutoff_ms=selection.boundary_ms, keep=60, min_rows=HTF_EMA_PERIOD).rows)
+                    except ClosedBarHold as e:
+                        htf_block = htf_unavailable_block(symbol, htf_tf, e.reason)
+                        raise
                 closed_meta = selection.metadata()
             except ClosedBarHold as e:
                 hold = e.reason
@@ -302,6 +318,9 @@ def main():
                 decision_regime_payload = None
                 decision_df = None
                 print(f"Closed-bar decision held for {symbol} {timeframe}: {hold}", file=sys.stderr)
+                if htf_applies and htf_block is None:
+                    htf_block = htf_not_evaluated_block(
+                        timeframe, f"the closed-bar decision held before the higher-timeframe filter ran: {hold}")
             else:
                 strategy_params = decision_params
 
@@ -347,21 +366,17 @@ def main():
         else:
             price = float(last["close"])
 
-        htf_info = {}
-        if decision_df is not None and htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
-            from htf_filter import htf_trend_filter, apply_htf_filter
-
+        htf_indicators = {}
+        if decision_df is not None and htf_applies and htf_block is None:
             if closed_bar:
                 _fetch_htf = htf_closed_fetcher(htf_frame)
             else:
                 def _fetch_htf(sym, tf, limit):
                     return fetch_ohlcv(symbol=sym, timeframe=tf, limit=limit, store=False)
 
-            htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
-            original_signal = signal
-            signal = apply_htf_filter(signal, htf_info.get("htf_trend", 0))
-            if signal != original_signal:
-                print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
+            signal, htf_block, htf_indicators = run_htf_filter(signal, symbol, timeframe, _fetch_htf)
+        if htf_filter_enabled and htf_block is None:
+            htf_block = htf_not_evaluated_block(timeframe, "the check produced no decision frame for the higher-timeframe filter")
 
         if open_close_enabled:
             decision = finalize_decision(evaluation, position_side, signal)
@@ -383,10 +398,7 @@ def main():
                 except (ValueError, TypeError):
                     pass
 
-        if htf_info:
-            for k, v in htf_info.items():
-                if isinstance(v, (int, float)):
-                    indicators[k] = v
+        indicators.update(htf_indicators)
 
         output = {
             "strategy": strategy_name,
@@ -400,6 +412,8 @@ def main():
         }
         if decision:
             output.update(decision)
+        if htf_block is not None:
+            output["htf_filter"] = htf_block
         if closed_meta is not None:
             output["closed_bar_decision"] = closed_meta
             if decision_regime_payload is not None:

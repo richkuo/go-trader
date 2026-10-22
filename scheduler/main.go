@@ -2300,6 +2300,10 @@ func main() {
 								logger.Warn("Closed-bar decision: %s signal suppressed — %s (#1712)", signalStr, decisionGate.HoldReason)
 								result.Signal = 0
 							}
+							if htfHeld, htfWhy := htfFilterHoldsSignal(sc, result.StrategyDecisionFields, result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false); htfHeld {
+								logHTFFilterHold(signalStr, htfWhy, logger)
+								result.Signal = 0
+							}
 							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
 								logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 								result.Signal = 0
@@ -2389,6 +2393,10 @@ func main() {
 								logger.Warn("Closed-bar decision: %s signal suppressed — %s (#1712)", signalStr, decisionGate.HoldReason)
 								result.Signal = 0
 							}
+							if htfHeld, htfWhy := htfFilterHoldsSignal(sc, result.StrategyDecisionFields, result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false); htfHeld {
+								logHTFFilterHold(signalStr, htfWhy, logger)
+								result.Signal = 0
+							}
 							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
 								logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 								result.Signal = 0
@@ -2446,6 +2454,10 @@ func main() {
 						hurstDecision := closedBarHurstGate(sc, decisionGate, cfg.Regime, stratState, &mu, spotPosCtx.Quantity)
 						if decisionGate.HoldReason != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
 							logger.Warn("Closed-bar decision: %s signal suppressed — %s (#1712)", signalStr, decisionGate.HoldReason)
+							result.Signal = 0
+						}
+						if htfHeld, htfWhy := htfFilterHoldsSignal(sc, result.StrategyDecisionFields, result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false); htfHeld {
+							logHTFFilterHold(signalStr, htfWhy, logger)
 							result.Signal = 0
 						}
 						if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
@@ -2559,6 +2571,10 @@ func main() {
 							hurstDecision := closedBarHurstGate(sc, decisionGate, cfg.Regime, stratState, &mu, okxPosQty)
 							if decisionGate.HoldReason != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 								logger.Warn("Closed-bar decision: %s signal suppressed — %s (#1712)", signalStr, decisionGate.HoldReason)
+								result.Signal = 0
+							}
+							if htfHeld, htfWhy := htfFilterHoldsSignal(sc, result.StrategyDecisionFields, result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); htfHeld {
+								logHTFFilterHold(signalStr, htfWhy, logger)
 								result.Signal = 0
 							}
 							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
@@ -2710,6 +2726,10 @@ func main() {
 						hurstDecision := closedBarHurstGate(sc, decisionGate, cfg.Regime, stratState, &mu, tsContracts)
 						if decisionGate.HoldReason != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
 							logger.Warn("Closed-bar decision: %s signal suppressed — %s (#1712)", signalStr, decisionGate.HoldReason)
+							result.Signal = 0
+						}
+						if htfHeld, htfWhy := htfFilterHoldsSignal(sc, result.StrategyDecisionFields, result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true); htfHeld {
+							logHTFFilterHold(signalStr, htfWhy, logger)
 							result.Signal = 0
 						}
 						if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
@@ -3363,6 +3383,13 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
 		return nil, "", 0, false
 	}
+	if msg := htfFilterContractError(sc, result.StrategyDecisionFields, htfFilterContext{}); msg != "" {
+		logger.RunningOnFailure(sc.Script, args)
+		logger.Error("Script returned error: %s", msg)
+		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
+		return nil, "", 0, false
+	}
+	observeHTFFilterResult(notifier, sc, result.StrategyDecisionFields)
 	clearScriptFailure(notifier, sc)
 
 	signalStr := "HOLD"
@@ -3776,6 +3803,10 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 			errMsg = msg
 			mode = scriptFailureError
 			result = nil
+		} else if msg := htfFilterContractError(*sc, result.StrategyDecisionFields, htfFilterContext{}); msg != "" {
+			errMsg = msg
+			mode = scriptFailureError
+			result = nil
 		}
 	}
 	if errMsg != "" {
@@ -3797,6 +3828,7 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 	}
 	logger.ScriptStderr(stderr)
 	if result.Degraded == "" {
+		observeHTFFilterResult(notifier, *sc, result.StrategyDecisionFields)
 		clearScriptFailure(notifier, *sc)
 		logRestingTPRule(*sc, posCtx, result.StrategyDecisionFields, logger)
 	}
@@ -4302,9 +4334,16 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
 		return nil, "", 0, false
 	}
+	if msg := htfFilterContractError(sc, result.StrategyDecisionFields, topStepHTFFilterContext(result)); msg != "" {
+		logger.RunningOnFailure(sc.Script, args)
+		logger.Error("Script returned error: %s", msg)
+		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
+		return nil, "", 0, false
+	}
+	observeHTFFilterResult(notifier, sc, result.StrategyDecisionFields)
 	clearScriptFailure(notifier, sc)
 
-	if !result.MarketOpen {
+	if result.MarketOpen == nil || !*result.MarketOpen {
 		logger.InfoOnChange("market", "closed", "Market closed for %s, skipping", result.Symbol)
 		return nil, "", 0, false
 	}
@@ -4502,6 +4541,13 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
 		return nil, "", 0, false
 	}
+	if msg := htfFilterContractError(sc, result.StrategyDecisionFields, htfFilterContext{}); msg != "" {
+		logger.RunningOnFailure(sc.Script, args)
+		logger.Error("Script returned error: %s", msg)
+		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
+		return nil, "", 0, false
+	}
+	observeHTFFilterResult(notifier, sc, result.StrategyDecisionFields)
 	clearScriptFailure(notifier, sc)
 
 	signalStr := "HOLD"
@@ -4860,6 +4906,13 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
 		return nil, "", 0, false
 	}
+	if msg := htfFilterContractError(sc, result.StrategyDecisionFields, htfFilterContext{}); msg != "" {
+		logger.RunningOnFailure(sc.Script, args)
+		logger.Error("Script returned error: %s", msg)
+		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
+		return nil, "", 0, false
+	}
+	observeHTFFilterResult(notifier, sc, result.StrategyDecisionFields)
 	clearScriptFailure(notifier, sc)
 
 	signalStr := "HOLD"

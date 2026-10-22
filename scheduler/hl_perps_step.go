@@ -215,6 +215,10 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 			logger.Warn("Closed-bar decision: %s signal suppressed — %s (#1712)", signalStr, decisionGate.HoldReason)
 			result.Signal = 0
 		}
+		if htfHeld, htfWhy := htfFilterHoldsSignal(sc, result.StrategyDecisionFields, result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); htfHeld {
+			logHTFFilterHold(signalStr, htfWhy, logger)
+			result.Signal = 0
+		}
 		if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 			logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 			result.Signal = 0

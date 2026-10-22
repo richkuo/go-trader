@@ -53,6 +53,11 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   Adding or removing `allow_no_edge` on a live strategy needs a restart.
 
 **Runtime default**
+- **#1826 Missing higher-timeframe input holds entries.** With `htf_filter: true`, missing, short (fewer than 50), unreadable or non-finite higher-timeframe candles, or a failed fetch, used to return a neutral trend that passed every signal, so entries opened unfiltered with no warning.
+  Each successful check now returns an `htf_filter` block (`ok`/`unavailable`/`skipped`/`not_evaluated`); Go treats a missing block or unknown status as a script error, accepts `not_evaluated` only with a held closed-bar decision or TopStep's closed market, and holds position-increasing signals on `unavailable` at all six gate sites while closes and protection continue.
+  Repeated unavailable evaluations alert the partition's channels and the owner with the script-failure thresholds (3; 15 or 75 minutes for upstream 429/5xx) and repeat throttle; one recovery message follows the first `ok`. State is in memory only and resets on restart.
+  `run_backtest.py --htf-filter` and the `/tuning` simulator top up a short or non-covering higher-timeframe cache from the exchange, then refuse one that is still empty, short, or not covering the requested range and save nothing; the simulator's filtered path with a valid cache works again (time-zone alignment).
+  Go and Python ship together through `bash scripts/update.sh --restart`. Independent of #1822.
 - **Paper Hyperliquid perps book funding payments (#1729)**: paper Hyperliquid `perps` and `manual` strategies now pay or receive venue funding as paper cash and one `funding` trade row per strategy, coin and record (`ExchangeOrderID` `paper_funding:<COIN>:<t ms>`, the captured `position_id`, quantity, price and value 0), valued at the first cycle mark at or after the record time.
   Accounting starts at the first sync after the update with every open position anchored and no historical replay; paper results before and after the update are not comparable for funding.
   A new `strategies.paper_funding_state` column (idempotent migration, empty for live) holds the inventory timeline and commits with cash and trade rows in the owning file.

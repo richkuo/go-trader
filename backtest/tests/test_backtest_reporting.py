@@ -163,12 +163,12 @@ def test_theta_run_leaves_no_open_positions():
     assert len(bt.positions) == 0
 
 
-def _htf_ohlcv_df(n=120, start_price=100.0, drift=0.5, seed=3):
+def _htf_ohlcv_df(n=120, start_price=100.0, drift=0.5, seed=3, freq="D"):
     rng = np.random.default_rng(seed)
     closes = [start_price]
     for _ in range(n - 1):
         closes.append(closes[-1] + drift + rng.normal(0, 0.2))
-    idx = pd.date_range("2023-01-01", periods=n, freq="D", name="datetime")
+    idx = pd.date_range("2023-01-01", periods=n, freq=freq, name="datetime")
     return pd.DataFrame(
         {"open": closes, "high": closes, "low": closes,
          "close": closes, "volume": [1.0] * n},
@@ -214,13 +214,13 @@ def test_htf_trend_series_uses_last_closed_htf_bar_no_lookahead(monkeypatch):
         [idx[-1] + pd.Timedelta(hours=h) for h in (0, 6, 12)],
         name="datetime",
     )
-    trend = run_backtest._htf_trend_series("BTC/USDT", "1h", ltf_index)
+    trend = run_backtest._htf_trend_series("BTC/USDT", "4h", ltf_index)
     assert list(trend) == [1, 1, 1], (
         "LTF bars inside the forming HTF candle must see the last CLOSED "
         "candle's trend (1), not the forming candle's final close (-1)")
 
     early = run_backtest._htf_trend_series(
-        "BTC/USDT", "1h",
+        "BTC/USDT", "4h",
         pd.DatetimeIndex([idx[0] + pd.Timedelta(hours=6)], name="datetime"))
     assert list(early) == [0]
 
@@ -229,7 +229,7 @@ def test_run_single_backtest_with_htf_filter(monkeypatch):
     import run_backtest
 
     ltf = _htf_ohlcv_df(n=200, drift=0.3)
-    htf = _htf_ohlcv_df(n=60, drift=1.0)
+    htf = _htf_ohlcv_df(n=60, drift=1.0, freq="7D")
     calls = {"n": 0}
 
     def fake_load(symbol, timeframe, **kw):

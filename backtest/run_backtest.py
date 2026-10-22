@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
+import contextlib
 import sys
 import os
+import time
 import argparse
 import json
 from copy import deepcopy
@@ -14,7 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator, normalize_atr_method
 from closed_bar import bind_fixed_interval_params
-from data_fetcher import load_cached_data
+from data_fetcher import get_exchange, load_cached_data
+from storage import store_ohlcv
 from directional_certification import (
     config_directional_classifier,
     load_certifications,
@@ -410,28 +413,204 @@ def _profile_label_series(
     return labels.reindex(df.index, method="ffill").fillna("").astype(str)
 
 
-def _htf_trend_series(symbol: str, timeframe: str, ltf_index: pd.Index,
-                      ema_period: int = 50) -> pd.Series:
-    htf = get_default_htf(timeframe)
-    htf_df = load_cached_data(symbol, htf)
-    if htf_df.empty or len(htf_df) < ema_period:
-        return pd.Series(0, index=ltf_index, dtype=int)
+class HTFCacheError(ValueError):
+    pass
 
+
+def _htf_trend_series(symbol: str, timeframe: str, ltf_index: pd.Index,
+                      ema_period: int = 50, top_up_budget_s: Optional[float] = None) -> pd.Series:
+    htf = get_default_htf(timeframe)
+    interval = _HTF_INTERVALS.get(htf)
+    if interval is None:
+        raise HTFCacheError(
+            f"higher-timeframe filter refused: the {htf} interval for {symbol} is unknown, "
+            f"so cache coverage cannot be checked; disable --htf-filter")
+    if len(ltf_index) and not isinstance(ltf_index, pd.DatetimeIndex):
+        raise HTFCacheError(
+            f"higher-timeframe filter refused: the candle frame for {symbol} has no datetime "
+            f"index, so {htf} cache coverage cannot be checked")
+    htf_df = _load_htf_cache(symbol, htf)
+    problem = _htf_cache_problem(symbol, htf, interval, htf_df, ltf_index, ema_period)
+    if problem:
+        if htf_df is None or htf_df.empty:
+            raise HTFCacheError(
+                f"higher-timeframe filter refused: {problem}; the cache was empty, so this run "
+                f"already fetched {htf} history from the exchange and got none; rerun when the "
+                f"exchange serves {symbol} {htf} candles, or disable --htf-filter")
+        since, outcome = _top_up_htf_cache(symbol, htf, interval, htf_df, ltf_index, ema_period,
+                                           top_up_budget_s)
+        htf_df = _load_htf_cache(symbol, htf)
+        problem = _htf_cache_problem(symbol, htf, interval, htf_df, ltf_index, ema_period)
+        if problem:
+            raise HTFCacheError(
+                f"higher-timeframe filter refused: {problem}; this run fetched {htf} candles "
+                f"since {since} into the cache and {outcome}; every run keeps the rows it "
+                f"fetched and continues from there, so rerun when the exchange serves {symbol} "
+                f"{htf} candles for that range, or disable --htf-filter")
+
+    htf_index = _htf_index_like(htf_df.index, ltf_index)
     closes = htf_df["close"].astype(float)
     ema = closes.ewm(span=ema_period, adjust=False).mean()
     trend = pd.Series(
         np.where(closes > ema, 1, np.where(closes < ema, -1, 0)),
-        index=htf_df.index,
+        index=htf_index,
         dtype=int,
     )
     return trend.shift(1).reindex(ltf_index, method="ffill").fillna(0).astype(int)
 
 
-def _apply_htf_filter_to_df(df: pd.DataFrame, symbol: str,
-                            timeframe: str) -> pd.DataFrame:
+_HTF_INTERVALS = {
+    "15m": pd.Timedelta(minutes=15),
+    "1h": pd.Timedelta(hours=1),
+    "4h": pd.Timedelta(hours=4),
+    "1d": pd.Timedelta(days=1),
+    "1w": pd.Timedelta(weeks=1),
+    "1M": pd.DateOffset(months=1),
+}
+
+
+def _load_htf_cache(symbol: str, htf: str) -> pd.DataFrame:
+    with contextlib.redirect_stdout(sys.stderr):
+        return load_cached_data(symbol, htf, exchange_id=_HTF_CACHE_EXCHANGE)
+
+
+def _htf_cache_problem(symbol: str, htf: str, interval, htf_df: pd.DataFrame,
+                       ltf_index: pd.Index, ema_period: int) -> str:
+    if htf_df is None or htf_df.empty:
+        return f"no cached {htf} candles for {symbol} (need at least {ema_period})"
+    if len(htf_df) < ema_period:
+        return f"{len(htf_df)} cached {htf} candles for {symbol} (need at least {ema_period})"
+    if len(ltf_index) == 0:
+        return ""
+    htf_index = _htf_index_like(htf_df.index, ltf_index)
+    if not isinstance(htf_index, pd.DatetimeIndex):
+        return f"the {htf} cache for {symbol} has no datetime index, so its coverage cannot be checked"
+    htf_first, htf_last = htf_index.min(), htf_index.max()
+    ltf_first, ltf_last = ltf_index.min(), ltf_index.max()
+    if htf_first > ltf_first + interval or htf_last < ltf_last - interval:
+        return (f"cached {htf} candles for {symbol} span {htf_first} to {htf_last}, which does "
+                f"not cover the requested range {ltf_first} to {ltf_last} (allowed gap: one "
+                f"{htf} interval at each end)")
+    return ""
+
+
+def _utc_naive(ts: pd.Timestamp) -> pd.Timestamp:
+    ts = pd.Timestamp(ts)
+    return ts.tz_convert("UTC").tz_localize(None) if ts.tzinfo is not None else ts
+
+
+_HTF_CACHE_EXCHANGE = "binanceus"
+_HTF_TOP_UP_PAGE = 500
+SIMULATOR_HTF_TOP_UP_BUDGET_S = 15.0
+
+
+def _ms(ts: pd.Timestamp) -> int:
+    return int(_utc_naive(ts).value // 1_000_000)
+
+
+def _ms_ts(ms: int) -> pd.Timestamp:
+    return pd.Timestamp(int(ms), unit="ms")
+
+
+def _fetch_htf_rows(exchange, symbol: str, htf: str, interval, since_ms: int,
+                    end_ms: Optional[int]) -> list:
+    out = []
+    cursor = since_ms
+    while end_ms is None or cursor < end_ms:
+        if out:
+            time.sleep(exchange.rateLimit / 1000)
+        page = exchange.fetch_ohlcv(symbol, htf, since=cursor, limit=_HTF_TOP_UP_PAGE) or []
+        page = [list(r) for r in page if int(r[0]) >= cursor and (end_ms is None or int(r[0]) < end_ms)]
+        if not page:
+            break
+        out.extend(page)
+        cursor = int(page[-1][0]) + 1
+        if end_ms is None or _ms(_ms_ts(page[-1][0]) + interval) >= end_ms:
+            break
+    return out
+
+
+def _store_htf_rows(rows: list, symbol: str, htf: str) -> None:
+    store_ohlcv(pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"]),
+                _HTF_CACHE_EXCHANGE, symbol, htf)
+
+
+def _top_up_htf_cache(symbol: str, htf: str, interval, htf_df: pd.DataFrame,
+                      ltf_index: pd.Index, ema_period: int,
+                      budget_s: Optional[float] = None):
+    first = _utc_naive(htf_df.index.min())
+    last = _utc_naive(htf_df.index.max())
+    shortfall = max(0, ema_period - len(htf_df))
+    target_first = first - interval * shortfall if shortfall else None
+    ltf_last = None
+    if len(ltf_index):
+        ltf_first = _utc_naive(ltf_index.min())
+        ltf_last = _utc_naive(ltf_index.max())
+        if shortfall or first > ltf_first + interval:
+            wanted = ltf_first - interval * ema_period
+            target_first = wanted if target_first is None else min(target_first, wanted)
+    forward = ltf_last is not None and last < ltf_last - interval
+    since = (target_first if target_first is not None and target_first < first else last)
+    since_text = since.strftime("%Y-%m-%d %H:%M")
+    deadline = None if budget_s is None else time.monotonic() + budget_s
+    requests = 0
+
+    def out_of_time() -> bool:
+        return requests > 0 and deadline is not None and time.monotonic() >= deadline
+
+    try:
+        exchange = get_exchange(_HTF_CACHE_EXCHANGE)
+        while target_first is not None and first > target_first:
+            if out_of_time():
+                return since_text, (f"the top-up stopped at its {budget_s:g}s time budget with the "
+                                    f"cache starting at {first}")
+            if requests:
+                time.sleep(exchange.rateLimit / 1000)
+            chunk_start = max(target_first, first - interval * _HTF_TOP_UP_PAGE)
+            rows = _fetch_htf_rows(exchange, symbol, htf, interval, _ms(chunk_start), _ms(first))
+            requests += 1
+            if not rows:
+                break
+            _store_htf_rows(rows, symbol, htf)
+            new_first = _ms_ts(rows[0][0])
+            if new_first >= first:
+                break
+            first = new_first
+        while forward and last < ltf_last:
+            if out_of_time():
+                return since_text, (f"the top-up stopped at its {budget_s:g}s time budget with the "
+                                    f"cache ending at {last}")
+            if requests:
+                time.sleep(exchange.rateLimit / 1000)
+            rows = _fetch_htf_rows(exchange, symbol, htf, interval, _ms(last), None)
+            requests += 1
+            if not rows:
+                break
+            _store_htf_rows(rows, symbol, htf)
+            new_last = _ms_ts(rows[-1][0])
+            if new_last <= last:
+                break
+            last = new_last
+    except Exception as exc:
+        return since_text, f"the top-up failed: {type(exc).__name__}: {exc}"
+    return since_text, "the exchange served no more of that range"
+
+
+def _htf_index_like(htf_index: pd.Index, ltf_index: pd.Index) -> pd.Index:
+    if not isinstance(htf_index, pd.DatetimeIndex) or not isinstance(ltf_index, pd.DatetimeIndex):
+        return htf_index
+    if ltf_index.tz is not None and htf_index.tz is None:
+        return htf_index.tz_localize("UTC").tz_convert(ltf_index.tz)
+    if ltf_index.tz is None and htf_index.tz is not None:
+        return htf_index.tz_convert("UTC").tz_localize(None)
+    return htf_index
+
+
+def _apply_htf_filter_to_df(df: pd.DataFrame, symbol: str, timeframe: str,
+                            top_up_budget_s: Optional[float] = None) -> pd.DataFrame:
     if "signal" not in df.columns:
         return df
-    trend = _htf_trend_series(symbol, timeframe, df.index)
+    trend = _htf_trend_series(symbol, timeframe, df.index, top_up_budget_s=top_up_budget_s)
     df = df.copy()
     df["signal"] = [
         apply_htf_filter(int(s), int(t))
@@ -1954,6 +2133,17 @@ def run_single_backtest(
     return results
 
 
+def _htf_refusal(strategy: str, symbol: str, exc: HTFCacheError) -> dict:
+    print(f"  HTF FILTER REFUSED: {strategy} {symbol}: {exc}")
+    return {"strategy": strategy, "symbol": symbol, "htf": str(exc)}
+
+
+def _print_htf_refusals(refused: list) -> None:
+    listed = sorted(f"{item['strategy']} {item['symbol']}" for item in refused if "htf" in item)
+    if listed:
+        print(f"  HTF FILTER REFUSED: {', '.join(listed)}")
+
+
 def _funding_refusal(strategy: str, symbol: str, exc: FundingIncompleteError) -> dict:
     """Record one charge-mode refusal. The caller keeps going and exits 1 later."""
     block = (exc.metrics or {}).get("funding") or {}
@@ -2012,6 +2202,9 @@ def run_all_strategies(
         except FundingIncompleteError as exc:
             refused.append(_funding_refusal(name, symbol, exc))
             continue
+        except HTFCacheError as exc:
+            refused.append(_htf_refusal(name, symbol, exc))
+            continue
         if result:
             all_results.append(result)
 
@@ -2019,9 +2212,11 @@ def run_all_strategies(
         print(format_comparison_report(all_results))
         print("  " + format_close_validation(aggregate_close_validations(
             r.get("close_validation") for r in all_results)))
-    if refused:
-        listed = ", ".join(sorted(item["strategy"] for item in refused))
+    funding_refused = [item for item in refused if "funding" in item]
+    if funding_refused:
+        listed = ", ".join(sorted(item["strategy"] for item in funding_refused))
         print(f"  FUNDING REFUSED strategies: {listed}")
+    _print_htf_refusals(refused)
 
     return all_results, refused
 
@@ -2084,6 +2279,9 @@ def run_multi_asset(
             except FundingIncompleteError as exc:
                 refused.append(_funding_refusal(strat_name, symbol, exc))
                 continue
+            except HTFCacheError as exc:
+                refused.append(_htf_refusal(strat_name, symbol, exc))
+                continue
             if result:
                 results_by_asset[symbol].append(result)
 
@@ -2091,10 +2289,12 @@ def run_multi_asset(
     print("  " + format_close_validation(aggregate_close_validations(
         r.get("close_validation")
         for results in results_by_asset.values() for r in results)))
-    if refused:
+    funding_refused = [item for item in refused if "funding" in item]
+    if funding_refused:
         listed = ", ".join(sorted(
-            f"{item['strategy']} {item['symbol']}" for item in refused))
+            f"{item['strategy']} {item['symbol']}" for item in funding_refused))
         print(f"  FUNDING REFUSED symbols: {listed}")
+    _print_htf_refusals(refused)
     return results_by_asset, refused
 
 
@@ -2647,6 +2847,9 @@ def _main():
                                 **live_stop_kwargs)
         except FundingIncompleteError as exc:
             _funding_refusal(args.strategy, args.symbol, exc)
+            sys.exit(1)
+        except HTFCacheError as exc:
+            _htf_refusal(args.strategy, args.symbol, exc)
             sys.exit(1)
 
     elif args.mode == "compare":
