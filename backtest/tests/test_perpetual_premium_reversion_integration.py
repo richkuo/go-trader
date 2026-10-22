@@ -1,6 +1,6 @@
 import os
 import sys
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 
 import numpy as np
 import pandas as pd
@@ -41,7 +41,7 @@ def _reg():
 
 
 def _dec(value: float) -> str:
-    text = format(Decimal(repr(float(value))).quantize(Decimal("0.000001")).normalize(), "f")
+    text = format(Decimal(repr(float(value))).quantize(Decimal("0.000001"), rounding=ROUND_HALF_EVEN).normalize(), "f")
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
