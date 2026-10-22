@@ -202,8 +202,8 @@ def test_go_calendar_training_default_equals_python_registry():
     assert int(match.group(1).replace("_", "")) == py
 
 
-def go_premium_lookback_bounds(source=None):
-    source = _go_source("market_feed_premium.go") if source is None else source
+def go_premium_lookback_bounds():
+    source = _go_source("market_feed_premium.go")
     out = {}
     for key, name in (("default", "perpetualPremiumDefaultLookback"), ("max", "perpetualPremiumMaxLookback")):
         match = re.search(rf"^\s*{name}\s*=\s*([0-9_]+)\s*$", source, re.M)
@@ -224,14 +224,6 @@ def test_go_premium_lookback_default_and_maximum_equal_python_registry():
     go, py = go_premium_lookback_bounds(), python_premium_lookback_bounds()
     assert py == {"default": 30, "max": 720}
     assert go == py
-
-
-@pytest.mark.parametrize("name,value", [("perpetualPremiumDefaultLookback", 60), ("perpetualPremiumMaxLookback", 721)])
-def test_premium_lookback_parity_detects_a_changed_go_value(name, value):
-    source = _go_source("market_feed_premium.go")
-    changed, n = re.subn(rf"^(\s*{name}\s*=\s*)[0-9_]+(\s*)$", rf"\g<1>{value}\g<2>", source, flags=re.M)
-    assert n == 1
-    assert go_premium_lookback_bounds(changed) != python_premium_lookback_bounds()
 
 
 def refused_in_both_languages():

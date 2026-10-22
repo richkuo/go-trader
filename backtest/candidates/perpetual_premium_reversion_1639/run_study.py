@@ -431,7 +431,8 @@ def event_result(per_coin: list, case: str, capital: float) -> dict:
         open_positions += res["open_positions"]
     lat = er.COST_CASES[case]["latency_ms"]
     violations = [t for t in trades if t["entry_ms"] < t["decision_ms"] + lat or t["exit_ms"] < t["exit_decision_ms"] + lat
-                  or t["exit_ms"] < t["entry_ms"]]
+                  or t["exit_ms"] < t["entry_ms"]
+                  or any(f["recv_ms"] < t["exit_decision_ms"] + lat or f["recv_ms"] < t["entry_ms"] for f in t["exit_fills"])]
     violations += [p for p in open_positions if p["entry_ms"] < p["decision_ms"] + lat
                    or any(f["recv_ms"] < p["exit_decision_ms"] + lat or f["recv_ms"] < p["entry_ms"] for f in p["exit_fills"])]
     return {"summary": er.summarize(trades, capital, open_positions), "trades": trades, "refusals": refusals,
