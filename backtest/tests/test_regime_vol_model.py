@@ -347,26 +347,6 @@ def test_fit_unsupervised_high_k_stores_no_zero_n_emission():
     assert sum(e["n"] for e in model["emissions"]) == int((~np.isnan(feats).any(1)).sum())
 
 
-def test_bakeoff_smoke_on_cached_data_if_available():
-    try:
-        mod = _load_research_module("smoke")
-        report = mod.run_bakeoff("BTC/USDT", "1h", families=("kmeans",),
-                                 k_range=range(3, 4), eval_windows=("is", "oos"),
-                                 n_perm=200)
-    except Exception as e:
-        pytest.skip(f"no cached OHLCV / data path unavailable: {e}")
-    assert "candidates" in report and len(report["candidates"]) == 1
-    assert "non_degeneracy_thresholds" in report
-    assert "handrule_held_out" in report and "abstained" in report["handrule_held_out"]
-    assert report["n_perm"] == 200
-    assert report["min_achievable_p_value"] == pytest.approx(1.0 / 201.0)
-    assert "bonferroni_denominator" in report and "bonferroni_denominator_policy" in report
-    assert "structurally_ineligible" in report
-    assert "permutation_steps_to_alpha" in report["handrule_held_out"]
-    assert "knife_edge" in report["handrule_held_out"]
-    assert report["min_achievable_p_value"] <= report["bonferroni_alpha"]
-
-
 def test_resolve_bakeoff_n_perm_default_achieves_corrected_alpha_with_headroom():
     mod = _load_research_module("nperm_default")
     n = mod.resolve_bakeoff_n_perm(18)

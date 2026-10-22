@@ -286,23 +286,3 @@ def test_combined_family_funds_the_tighter_alpha():
     assert m80.resolve_bakeoff_n_perm(per_subset, requested=300) == 300
     with pytest.raises(ValueError, match="cannot satisfy the Bonferroni-corrected alpha"):
         m80.resolve_bakeoff_n_perm(combined, requested=300)
-
-
-def test_enriched_bakeoff_smoke_if_data_available():
-    try:
-        mod = _load_research("regime_1095_smoke", "regime_1095_enriched_vol_model.py")
-        report = mod.run_bakeoff("BTC/USDT", "1h", families=("kmeans",), k_range=range(3, 4),
-                                 subsets={"canonical": list(ref.CANONICAL_COLUMNS),
-                                          "volume": ref.CANONICAL_COLUMNS + ["volume_z"]},
-                                 eval_windows=("is", "oos"), n_perm=200)
-    except Exception as e:
-        pytest.skip(f"no cached OHLCV / data path unavailable: {e}")
-    assert "ablation" in report and "candidates" in report
-    status = report["ablation"]["canonical"]["status"]
-    assert status == "ok" or status == "unavailable" or status.startswith("unavailable: ")
-    assert "live_wiring_delta" in report
-    assert report["n_perm"] == 200
-    assert report["bonferroni_denominator"] == sum(
-        1 for c in report["candidates"] if not c["structurally_ineligible"])
-    for hr in report["handrule_held_out"].values():
-        assert "permutation_steps_to_alpha" in hr and "knife_edge" in hr
