@@ -14,45 +14,42 @@ import eval_windows as ew
 import fee_audit as fa
 
 
-def test_salvage_verdict_no_trades():
-    assert fa.salvage_verdict(0, None, None) == "no_trades"
-    assert fa.salvage_verdict(0, 5.0, 5.0) == "no_trades"
-    assert fa.salvage_verdict(10, None, -3.0) == "no_trades"
+def test_salvage_verdict_no_trades_deprecate_graduate_healthy_and_short_unmeasured():
+    case = "test_salvage_verdict_no_trades"
+    assert fa.salvage_verdict(0, None, None) == "no_trades", case
+    assert fa.salvage_verdict(0, 5.0, 5.0) == "no_trades", case
+    assert fa.salvage_verdict(10, None, -3.0) == "no_trades", case
+
+    case = "test_salvage_verdict_deprecate_when_gross_nonpositive"
+    assert fa.salvage_verdict(100, -2.0, -5.0) == "deprecate", case
+    assert fa.salvage_verdict(100, 0.0, -5.0) == "deprecate", case
+
+    case = "test_salvage_verdict_graduate_when_gross_positive_net_dead"
+    assert fa.salvage_verdict(100, 8.0, -3.0) == "graduate_m1", case
+    assert fa.salvage_verdict(100, 8.0, 0.0) == "graduate_m1", case
+    assert fa.salvage_verdict(100, 8.0, None) == "graduate_m1", case
+
+    case = "test_salvage_verdict_healthy_when_net_survives"
+    assert fa.salvage_verdict(50, 12.0, 4.0) == "healthy", case
+
+    case = "test_salvage_verdict_short_unmeasured_withholds_negative_calls"
+    assert fa.salvage_verdict(0, None, None, short_unmeasured=True) == "unscreened_short", case
+    assert fa.salvage_verdict(100, -2.0, -5.0, short_unmeasured=True) == "unscreened_short", case
+    assert fa.salvage_verdict(100, 0.0, -5.0, short_unmeasured=True) == "unscreened_short", case
+    assert fa.salvage_verdict(100, 8.0, -3.0, short_unmeasured=True) == "graduate_m1", case
+    assert fa.salvage_verdict(50, 12.0, 4.0, short_unmeasured=True) == "healthy", case
 
 
-def test_salvage_verdict_deprecate_when_gross_nonpositive():
-    assert fa.salvage_verdict(100, -2.0, -5.0) == "deprecate"
-    assert fa.salvage_verdict(100, 0.0, -5.0) == "deprecate"
+def test_trades_per_year_basic_and_guards_zero_span():
+    case = "test_trades_per_year_basic"
+    assert fa.trades_per_year(100, 365.25) == pytest.approx(100.0), case
+    assert fa.trades_per_year(50, 365.25 / 2) == pytest.approx(100.0), case
 
-
-def test_salvage_verdict_graduate_when_gross_positive_net_dead():
-    assert fa.salvage_verdict(100, 8.0, -3.0) == "graduate_m1"
-    assert fa.salvage_verdict(100, 8.0, 0.0) == "graduate_m1"
-    assert fa.salvage_verdict(100, 8.0, None) == "graduate_m1"
-
-
-def test_salvage_verdict_healthy_when_net_survives():
-    assert fa.salvage_verdict(50, 12.0, 4.0) == "healthy"
-
-
-def test_salvage_verdict_short_unmeasured_withholds_negative_calls():
-    assert fa.salvage_verdict(0, None, None, short_unmeasured=True) == "unscreened_short"
-    assert fa.salvage_verdict(100, -2.0, -5.0, short_unmeasured=True) == "unscreened_short"
-    assert fa.salvage_verdict(100, 0.0, -5.0, short_unmeasured=True) == "unscreened_short"
-    assert fa.salvage_verdict(100, 8.0, -3.0, short_unmeasured=True) == "graduate_m1"
-    assert fa.salvage_verdict(50, 12.0, 4.0, short_unmeasured=True) == "healthy"
-
-
-def test_trades_per_year_basic():
-    assert fa.trades_per_year(100, 365.25) == pytest.approx(100.0)
-    assert fa.trades_per_year(50, 365.25 / 2) == pytest.approx(100.0)
-
-
-def test_trades_per_year_zero_span_and_zero_trades_guarded():
-    assert fa.trades_per_year(100, 0) is None
-    assert fa.trades_per_year(100, None) is None
-    assert fa.trades_per_year(100, -5) is None
-    assert fa.trades_per_year(0, 365.25) == pytest.approx(0.0)
+    case = "test_trades_per_year_zero_span_and_zero_trades_guarded"
+    assert fa.trades_per_year(100, 0) is None, case
+    assert fa.trades_per_year(100, None) is None, case
+    assert fa.trades_per_year(100, -5) is None, case
+    assert fa.trades_per_year(0, 365.25) == pytest.approx(0.0), case
 
 
 def _leg(trades, span, net, gross, sharpe=1.0):
@@ -60,63 +57,59 @@ def _leg(trades, span, net, gross, sharpe=1.0):
             "net_ret": net, "gross_ret": gross, "net_sharpe": sharpe}
 
 
-def test_aggregate_excludes_errors_and_sums_trades():
+def test_aggregate_strategy_sums_legs_and_assigns_every_verdict():
+    case = "test_aggregate_excludes_errors_and_sums_trades"
     legs = [
         _leg(800, 182.6, -40.0, 5.0),
         _leg(700, 182.6, -30.0, 7.0),
         {"error": "boom", "dataset": "X 1h"},
     ]
     row = fa.aggregate_strategy("vwap_reversion", "spot", legs)
-    assert row["trades"] == 1500
-    assert row["n_legs"] == 2
-    assert row["n_errors"] == 1
-    assert row["mean_gross_ret"] == pytest.approx(6.0)
-    assert row["mean_net_ret"] == pytest.approx(-35.0)
-    assert row["fee_drag_pp"] == pytest.approx(41.0)
-    assert row["verdict"] == "graduate_m1"
-    assert row["short_unmeasured"] is False
-    assert row["drag_per_trade_pp"] == pytest.approx(round(41.0 * 2 / 1500, 4))
+    assert row["trades"] == 1500, case
+    assert row["n_legs"] == 2, case
+    assert row["n_errors"] == 1, case
+    assert row["mean_gross_ret"] == pytest.approx(6.0), case
+    assert row["mean_net_ret"] == pytest.approx(-35.0), case
+    assert row["fee_drag_pp"] == pytest.approx(41.0), case
+    assert row["verdict"] == "graduate_m1", case
+    assert row["short_unmeasured"] is False, case
+    assert row["drag_per_trade_pp"] == pytest.approx(round(41.0 * 2 / 1500, 4)), case
 
-
-def test_aggregate_all_no_data_is_no_trades():
+    case = "test_aggregate_all_no_data_is_no_trades"
     row = fa.aggregate_strategy("x", "spot", [])
-    assert row["verdict"] == "no_trades"
-    assert row["trades"] == 0
-    assert row["fee_drag_pp"] is None
-    assert row["trades_per_year"] is None
-    assert row["drag_per_trade_pp"] is None
+    assert row["verdict"] == "no_trades", case
+    assert row["trades"] == 0, case
+    assert row["fee_drag_pp"] is None, case
+    assert row["trades_per_year"] is None, case
+    assert row["drag_per_trade_pp"] is None, case
 
-
-def test_aggregate_deprecate_when_gross_negative():
+    case = "test_aggregate_deprecate_when_gross_negative"
     legs = [_leg(300, 182.6, -10.0, -2.0), _leg(300, 182.6, -12.0, -4.0)]
     row = fa.aggregate_strategy("macd", "spot", legs)
-    assert row["mean_gross_ret"] == pytest.approx(-3.0)
-    assert row["verdict"] == "deprecate"
-    assert row["short_unmeasured"] is False
+    assert row["mean_gross_ret"] == pytest.approx(-3.0), case
+    assert row["verdict"] == "deprecate", case
+    assert row["short_unmeasured"] is False, case
 
-
-def test_aggregate_short_unmeasured_withholds_deprecate():
+    case = "test_aggregate_short_unmeasured_withholds_deprecate"
     legs = [_leg(300, 182.6, -10.0, -2.0), _leg(300, 182.6, -12.0, -4.0)]
     row = fa.aggregate_strategy("triple_ema_bidir", "futures", legs,
                                 short_capable=True)
-    assert row["short_unmeasured"] is True
-    assert row["verdict"] == "unscreened_short"
+    assert row["short_unmeasured"] is True, case
+    assert row["verdict"] == "unscreened_short", case
 
-
-def test_aggregate_short_only_no_long_trades_is_unscreened_not_no_trades():
+    case = "test_aggregate_short_only_no_long_trades_is_unscreened_not_no_trades"
     legs = [_leg(0, 182.6, 0.0, 0.0)]
     row = fa.aggregate_strategy("bear_pullback_st", "futures", legs,
                                 short_capable=True)
-    assert row["trades"] == 0
-    assert row["verdict"] == "unscreened_short"
+    assert row["trades"] == 0, case
+    assert row["verdict"] == "unscreened_short", case
 
-
-def test_aggregate_short_unmeasured_keeps_positive_long_verdict():
+    case = "test_aggregate_short_unmeasured_keeps_positive_long_verdict"
     legs = [_leg(200, 182.6, -3.0, 8.0)]
     row = fa.aggregate_strategy("vol_momentum", "futures", legs,
                                 short_capable=True)
-    assert row["short_unmeasured"] is True
-    assert row["verdict"] == "graduate_m1"
+    assert row["short_unmeasured"] is True, case
+    assert row["verdict"] == "graduate_m1", case
 
 
 def test_strategy_is_short_capable_predicate():
@@ -133,7 +126,8 @@ def test_live_bidirectional_set_is_the_registry_short_entry_set():
     assert fa.LIVE_BIDIRECTIONAL_STRATEGIES == registry.short_entry_strategies()
 
 
-def test_rank_rows_orders_by_drag_then_no_trades_last():
+def test_rank_rows_orders_by_drag_no_trades_last_and_tiebreaks_by_name():
+    case = "test_rank_rows_orders_by_drag_then_no_trades_last"
     rows = [
         {"strategy": "low", "verdict": "healthy", "fee_drag_pp": 2.0},
         {"strategy": "high", "verdict": "graduate_m1", "fee_drag_pp": 40.0},
@@ -141,16 +135,15 @@ def test_rank_rows_orders_by_drag_then_no_trades_last():
         {"strategy": "mid", "verdict": "deprecate", "fee_drag_pp": 15.0},
     ]
     ordered = [r["strategy"] for r in fa.rank_rows(rows)]
-    assert ordered == ["high", "mid", "low", "dead"]
+    assert ordered == ["high", "mid", "low", "dead"], case
 
-
-def test_rank_rows_no_trades_tiebreak_by_name():
+    case = "test_rank_rows_no_trades_tiebreak_by_name"
     rows = [
         {"strategy": "zeta", "verdict": "no_trades", "fee_drag_pp": None},
         {"strategy": "alpha", "verdict": "no_trades", "fee_drag_pp": None},
     ]
     ordered = [r["strategy"] for r in fa.rank_rows(rows)]
-    assert ordered == ["alpha", "zeta"]
+    assert ordered == ["alpha", "zeta"], case
 
 
 def test_render_markdown_has_table_and_sections():

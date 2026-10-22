@@ -981,16 +981,16 @@ def test_resting_tp_snapshot_older_than_five_thousand_bars_is_unconfirmed(tmp_pa
     assert _basis(candles, frame, since, end, bundle["completeness"]["candleSnapshot"]) == "unconfirmed"
 
 
-def test_resting_tp_snapshot_high_mismatch_is_unconfirmed():
+def test_resting_tp_snapshot_high_or_close_mismatch_is_unconfirmed():
+    case = "test_resting_tp_snapshot_high_mismatch_is_unconfirmed"
     candles = [{"t": DAY_MS, "h": "100.03", "l": "99", "c": "100", "o": "99"}]
     frame = pd.DataFrame({"timestamp": [DAY_MS], "high": [100.05], "low": [99.0], "close": [100.0]})
-    assert _basis(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, [{"complete": True, "interval": "5m"}]) == "unconfirmed"
+    assert _basis(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, [{"complete": True, "interval": "5m"}]) == "unconfirmed", case
 
-
-def test_resting_tp_snapshot_close_mismatch_is_unconfirmed():
+    case = "test_resting_tp_snapshot_close_mismatch_is_unconfirmed"
     candles = [{"t": DAY_MS, "h": "101", "l": "99", "c": "100.01", "o": "100"}]
     frame = pd.DataFrame({"timestamp": [DAY_MS], "high": [101.0], "low": [99.0], "close": [100.02]})
-    assert _basis(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, [{"complete": True, "interval": "5m"}]) == "unconfirmed"
+    assert _basis(candles, frame, DAY_MS, DAY_MS + FIVE_MIN, [{"complete": True, "interval": "5m"}]) == "unconfirmed", case
 
 
 def test_resting_tp_matching_high_low_and_close_confirms():

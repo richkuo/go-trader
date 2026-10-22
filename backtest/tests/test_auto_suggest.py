@@ -25,14 +25,27 @@ def _base_spec(**over):
     return spec
 
 
-def test_load_spec_accepts_committed_1198_shape():
+def test_committed_1198_spec_loads_and_expands():
     with open(os.path.join(_STUDY_DIR, "suggest.json")) as fh:
         raw = json.load(fh)
     spec = asug.load_spec(raw, _STUDY_DIR)
-    assert spec["registry"] == "spot"
+    case = "test_load_spec_accepts_committed_1198_shape"
+    assert spec["registry"] == "spot", case
     assert [c["key"] for c in spec["candidates"]] == ["baseline", "adx_not_down",
-                                                      "comp_up_family"]
-    assert spec["candidates"][1]["candidate"]["allowed_regimes"] == ["trending_up", "ranging"]
+                                                      "comp_up_family"], case
+    assert spec["candidates"][1]["candidate"]["allowed_regimes"] == ["trending_up", "ranging"], case
+
+    case = "test_shipped_full_options_spec_loads_and_expands"
+    entries = asug.expand_candidates(spec)
+    kinds = {e["kind"] for e in entries}
+    assert kinds == {"open", "exit_ab"}, case
+    ab = {e["key"]: e for e in entries if e["kind"] == "exit_ab"}
+    atr_trail = ab["m6.atr_trail"]["candidate"]
+    assert atr_trail["candidate_close"] == [], case
+    assert atr_trail["candidate_stops"] == {"trailing_stop_atr_mult": 3.0}, case
+    assert atr_trail["candidate_stop_only"] is True, case
+    assert all(e["precondition_errors"] == [] for e in ab.values()), case
+    assert len({e["key"] for e in entries}) == len(entries), case
 
 
 _M6_VARIANT = {"key": "v",
@@ -177,22 +190,6 @@ def test_m6_per_variant_strategy_id_override_loads_without_m6_default():
 
 
 
-def test_shipped_full_options_spec_loads_and_expands():
-    with open(os.path.join(_STUDY_DIR, "suggest.json")) as fh:
-        raw = json.load(fh)
-    spec = asug.load_spec(raw, _STUDY_DIR)
-    entries = asug.expand_candidates(spec)
-    kinds = {e["kind"] for e in entries}
-    assert kinds == {"open", "exit_ab"}
-    ab = {e["key"]: e for e in entries if e["kind"] == "exit_ab"}
-    atr_trail = ab["m6.atr_trail"]["candidate"]
-    assert atr_trail["candidate_close"] == []
-    assert atr_trail["candidate_stops"] == {"trailing_stop_atr_mult": 3.0}
-    assert atr_trail["candidate_stop_only"] is True
-    assert all(e["precondition_errors"] == [] for e in ab.values())
-    assert len({e["key"] for e in entries}) == len(entries)
-
-
 def test_m5_params_limitation_flagged():
     spec = asug.load_spec(_base_spec(
         harnesses=["m5"],
@@ -262,20 +259,20 @@ def _m6_payload(is_rows, oos_rows):
     return {"results": {"is": _mk(is_rows), "oos": _mk(oos_rows)}}
 
 
-def test_m6_window_rollup_matches_paired_n_weighting():
+def test_m6_window_rollup_weighting_none_means_and_missing_results():
+    case = "test_m6_window_rollup_matches_paired_n_weighting"
     payload = _m6_payload(
         is_rows=[("BTC 1h", 0.10, 100, 0.01), ("ETH 1h", -0.20, 50, 0.30)],
         oos_rows=[("BTC 1h", 0.05, 40, 0.20)])
     roll = asug.m6_window_rollup(payload)
-    assert roll["is"]["pooled_delta_net_pct_per_entry"] == 0.0
-    assert roll["is"]["paired_n"] == 150
-    assert roll["is"]["datasets_delta_pos"] == 1
-    assert roll["is"]["datasets_delta_neg"] == 1
+    assert roll["is"]["pooled_delta_net_pct_per_entry"] == 0.0, case
+    assert roll["is"]["paired_n"] == 150, case
+    assert roll["is"]["datasets_delta_pos"] == 1, case
+    assert roll["is"]["datasets_delta_neg"] == 1, case
     assert roll["is"]["per_dataset"][0] == {"dataset": "BTC 1h", "mean": 0.10,
-                                            "n": 100, "p": 0.01}
+                                            "n": 100, "p": 0.01}, case
 
-
-def test_m6_rollup_skips_none_mean_datasets():
+    case = "test_m6_rollup_skips_none_mean_datasets"
     payload = {"results": {"oos": [
         {"dataset": "A", "per_regime": {"all": {"n": 10,
          "paired_delta": {"mean": None, "signed_rank": {"p_value": None}}}}},
@@ -283,12 +280,10 @@ def test_m6_rollup_skips_none_mean_datasets():
          "paired_delta": {"mean": 0.3, "signed_rank": {"p_value": 0.04}}}}},
     ]}}
     roll = asug.m6_window_rollup(payload)
-    assert roll["oos"]["paired_n"] == 20
-    assert len(roll["oos"]["per_dataset"]) == 1
+    assert roll["oos"]["paired_n"] == 20, case
+    assert len(roll["oos"]["per_dataset"]) == 1, case
 
-
-def test_m6_rollup_missing_results_is_empty():
-    assert asug.m6_window_rollup({}) == {}
+    assert asug.m6_window_rollup({}) == {}, "test_m6_rollup_missing_results_is_empty"
 
 
 def test_extract_noise():
@@ -318,7 +313,7 @@ def test_extract_m5_matches_strategy_row():
     assert out["fee_drag_pp"] == 0.3
 
 
-def test_apply_correction_matches_direct_bh_and_reports_threshold():
+def test_apply_correction_matches_direct_bh_and_handles_empty_and_family_size():
     tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
              for p in [0.001, 0.02, 0.04, 0.5]]
     corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
@@ -331,12 +326,24 @@ def test_apply_correction_matches_direct_bh_and_reports_threshold():
         assert corr["effective_threshold"] == max(p for p, ok in
                                                    zip([t["p"] for t in tests], mask) if ok)
 
-
-def test_correction_empty_family():
+    case = "test_correction_empty_family"
     corr = asug.apply_family_correction([], alpha=0.05)
-    assert corr["m"] == 0
-    assert corr["effective_threshold"] is None
-    assert corr["n_survivors"] == 0
+    assert corr["m"] == 0, case
+    assert corr["effective_threshold"] is None, case
+    assert corr["n_survivors"] == 0, case
+
+    case = "test_apply_correction_family_size_reports_m_and_tests_run"
+    tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
+             for p in [0.001, 0.02]]
+    corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
+                                        family_size=8)
+    assert corr["m"] == 8, case
+    assert corr["tests_run"] == 2, case
+    assert corr["bonferroni_threshold"] == pytest.approx(0.05 / 8), case
+    strict = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
+                                          family_size=8)
+    loose = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
+    assert strict["n_survivors"] <= loose["n_survivors"], case
 
 
 def test_bh_family_size_widens_denominator_and_is_stricter():
@@ -350,20 +357,6 @@ def test_bh_family_size_widens_denominator_and_is_stricter():
 def test_bh_family_size_below_test_count_raises():
     with pytest.raises(ValueError, match="family_size"):
         benjamini_hochberg([0.01, 0.04], 0.05, family_size=1)
-
-
-def test_apply_correction_family_size_reports_m_and_tests_run():
-    tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
-             for p in [0.001, 0.02]]
-    corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
-                                        family_size=8)
-    assert corr["m"] == 8
-    assert corr["tests_run"] == 2
-    assert corr["bonferroni_threshold"] == pytest.approx(0.05 / 8)
-    strict = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
-                                          family_size=8)
-    loose = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
-    assert strict["n_survivors"] <= loose["n_survivors"]
 
 
 def test_apply_correction_family_size_below_produced_count_raises():
@@ -411,38 +404,34 @@ def _noise_test(fam, key, p, bh_pass, positive=True):
             "p": p, "effect_positive": positive, "bh_pass": bh_pass}
 
 
-def test_verdict_run_failed_never_survivor():
+def test_verdict_failure_exclusion_and_open_entry_paths():
     e = {"key": "x", "kind": "open", "precondition_errors": [],
          "results": {"m1": {"status": "failed"}}}
-    assert asug.candidate_verdict(e, []) == "run_failed"
+    assert asug.candidate_verdict(e, []) == "run_failed", "test_verdict_run_failed_never_survivor"
 
-
-def test_verdict_excluded_not_replayable():
     e = {"key": "x", "kind": "exit_ab",
          "precondition_errors": ["excluded_not_replayable"], "results": {}}
-    assert asug.candidate_verdict(e, []) == "excluded_not_replayable"
+    assert asug.candidate_verdict(e, []) == "excluded_not_replayable", \
+        "test_verdict_excluded_not_replayable"
 
-
-def test_verdict_noise_gate_blocks_before_selectivity():
     e = _open_entry("x", noise={"verdict": "no_positive_edge", "mean": -0.1},
                     m1={"is": {"verdict": "pass"}, "oos": {"verdict": "pass"}})
-    assert asug.candidate_verdict(e, []) == "noise_gate_blocked"
+    assert asug.candidate_verdict(e, []) == "noise_gate_blocked", \
+        "test_verdict_noise_gate_blocks_before_selectivity"
 
-
-def test_verdict_open_survivor_requires_bh_survival():
+    case = "test_verdict_open_survivor_requires_bh_survival"
     e = _open_entry("x", fam="F", noise={"verdict": "distinguishable_positive", "mean": 0.3},
                     m1={"is": {"verdict": "pass"}, "oos": {"verdict": "pass"}})
     tests = [_noise_test("F", "x", 0.001, True)]
-    assert asug.candidate_verdict(e, tests) == "survivor"
+    assert asug.candidate_verdict(e, tests) == "survivor", case
     tests[0]["bh_pass"] = False
-    assert asug.candidate_verdict(e, tests) == "positive_uncorrected_only"
+    assert asug.candidate_verdict(e, tests) == "positive_uncorrected_only", case
 
-
-def test_verdict_open_m1_fail_is_incumbent_stands():
     e = _open_entry("x", fam="F", noise={"verdict": "distinguishable_positive", "mean": 0.3},
                     m1={"is": {"verdict": "pass"}, "oos": {"verdict": "fail"}})
     tests = [_noise_test("F", "x", 0.001, True)]
-    assert asug.candidate_verdict(e, tests) == "incumbent_stands"
+    assert asug.candidate_verdict(e, tests) == "incumbent_stands", \
+        "test_verdict_open_m1_fail_is_incumbent_stands"
 
 
 def test_gated_siblings_share_noise_bh_verdict():
@@ -478,37 +467,34 @@ def _ab_entry(key, is_pooled, oos_pooled):
                 "oos": {"pooled_delta_net_pct_per_entry": oos_pooled}}}}}
 
 
-def test_verdict_m6_survivor_needs_bh_positive_and_no_contradiction():
+def test_verdict_m6_exit_ab_paths():
     e = _ab_entry("x", 0.2, 0.15)
     tests = [{"candidate_key": "x", "harness": "m6", "p": 0.01,
               "effect_positive": True, "bh_pass": True}]
-    assert asug.candidate_verdict(e, tests) == "survivor"
+    assert asug.candidate_verdict(e, tests) == "survivor", \
+        "test_verdict_m6_survivor_needs_bh_positive_and_no_contradiction"
 
-
-def test_verdict_m6_significant_contradiction_blocks():
     e = _ab_entry("x", 0.2, 0.15)
     tests = [{"candidate_key": "x", "harness": "m6", "p": 0.01,
               "effect_positive": True, "bh_pass": True},
              {"candidate_key": "x", "harness": "m6", "p": 0.02,
               "effect_positive": False, "bh_pass": False}]
-    assert asug.candidate_verdict(e, tests) == "incumbent_stands"
+    assert asug.candidate_verdict(e, tests) == "incumbent_stands", \
+        "test_verdict_m6_significant_contradiction_blocks"
 
-
-def test_verdict_m6_positive_uncorrected_only():
     e = _ab_entry("x", 0.2, 0.15)
     tests = [{"candidate_key": "x", "harness": "m6", "p": 0.03,
               "effect_positive": True, "bh_pass": False}]
-    assert asug.candidate_verdict(e, tests) == "positive_uncorrected_only"
+    assert asug.candidate_verdict(e, tests) == "positive_uncorrected_only", \
+        "test_verdict_m6_positive_uncorrected_only"
 
-
-def test_verdict_m6_inconclusive_on_none_pooled():
     e = _ab_entry("x", None, 0.15)
-    assert asug.candidate_verdict(e, []) == "inconclusive"
+    assert asug.candidate_verdict(e, []) == "inconclusive", \
+        "test_verdict_m6_inconclusive_on_none_pooled"
 
-
-def test_verdict_m6_incumbent_stands_when_not_both_positive():
     e = _ab_entry("x", 0.2, -0.05)
-    assert asug.candidate_verdict(e, []) == "incumbent_stands"
+    assert asug.candidate_verdict(e, []) == "incumbent_stands", \
+        "test_verdict_m6_incumbent_stands_when_not_both_positive"
 
 
 def test_rank_survivors_first_failed_still_present():
@@ -607,7 +593,7 @@ def test_mc_contributes_no_pvalue_and_leaves_bh_family_size_unchanged():
     assert all(t["harness"] != "mc" for t in with_mc)
 
 
-def test_mc_argv_tail_threads_the_candidate_json_not_a_bare_strategy():
+def test_mc_argv_tail_threads_the_candidate_json_and_exclusive_threshold_sources():
     tail = asug.mc_argv_tail("/t/c.json", "spot", ["is", "oos"],
                              ["BTC/USDT:1h"], 500, 7, {}, "/t/o.json")
     assert tail[:2] == ["--candidate-json", "/t/c.json"]
@@ -617,25 +603,24 @@ def test_mc_argv_tail_threads_the_candidate_json_not_a_bare_strategy():
     assert tail[tail.index("--n-paths") + 1] == "500"
     assert tail[tail.index("--seed") + 1] == "7"
 
+    case = "test_mc_argv_tail_threshold_sources_are_exclusive"
+    explicit = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
+                                 {"kill_switch_pct": 30}, "/o")
+    assert explicit[explicit.index("--kill-switch-pct") + 1] == "30", case
+    assert "--config" not in explicit, case
+
+    from_cfg = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
+                                 {"config": "/cfg.json", "strategy_id": "hl-x"},
+                                 "/o")
+    assert from_cfg[from_cfg.index("--config") + 1] == "/cfg.json", case
+    assert from_cfg[from_cfg.index("--strategy-id") + 1] == "hl-x", case
+    assert "--kill-switch-pct" not in from_cfg, case
+
 
 def test_mc_argv_tail_omits_datasets_when_none_and_threshold_when_default():
     tail = asug.mc_argv_tail("/t/c.json", "spot", ["is"], None, 10, 1, {}, "/o")
     assert "--datasets" not in tail
     assert "--kill-switch-pct" not in tail and "--config" not in tail
-
-
-def test_mc_argv_tail_threshold_sources_are_exclusive():
-    explicit = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
-                                 {"kill_switch_pct": 30}, "/o")
-    assert explicit[explicit.index("--kill-switch-pct") + 1] == "30"
-    assert "--config" not in explicit
-
-    from_cfg = asug.mc_argv_tail("/c", "spot", ["is"], None, 10, 1,
-                                 {"config": "/cfg.json", "strategy_id": "hl-x"},
-                                 "/o")
-    assert from_cfg[from_cfg.index("--config") + 1] == "/cfg.json"
-    assert from_cfg[from_cfg.index("--strategy-id") + 1] == "hl-x"
-    assert "--kill-switch-pct" not in from_cfg
 
 
 def test_load_spec_resolves_mc_config_against_the_spec_dir():
@@ -665,7 +650,7 @@ def _mc_payload():
                      leg("oos", "ETH/USDT 4h", 0.55, 70.0, 0.40)]}
 
 
-def test_extract_mc_keys_by_window_and_takes_the_worst_dataset():
+def test_extract_mc_worst_dataset_per_window_and_tolerates_partial_legs():
     out = asug.extract_mc(_mc_payload())
     assert set(out) == {"is", "oos"}
     worst = out["oos"]["worst"]["permute"]
@@ -673,8 +658,7 @@ def test_extract_mc_keys_by_window_and_takes_the_worst_dataset():
                      "p_final_below_start": 0.40}
     assert set(out["oos"]["per_dataset"]) == {"BTC/USDT 1h", "ETH/USDT 4h"}
 
-
-def test_extract_mc_tolerates_no_data_legs_and_missing_percentiles():
+    case = "test_extract_mc_tolerates_no_data_legs_and_missing_percentiles"
     payload = {"legs": [
         {"window": "oos", "dataset": "BTC/USDT 1h", "status": "no_data",
          "n_trades": 0, "schemes": []},
@@ -684,12 +668,12 @@ def test_extract_mc_tolerates_no_data_legs_and_missing_percentiles():
                       "p_final_below_start": 0.1}]}]}
     out = asug.extract_mc(payload)
     worst = out["oos"]["worst"]["permute"]
-    assert worst["p_dd_ge_kill_switch"] == 0.2
-    assert worst["p95_max_dd"] is None
-    assert asug.extract_mc({}) == {}
+    assert worst["p_dd_ge_kill_switch"] == 0.2, case
+    assert worst["p95_max_dd"] is None, case
+    assert asug.extract_mc({}) == {}, case
 
 
-def test_dry_run_prints_a_command_for_every_enabled_harness():
+def test_dry_run_prints_every_enabled_harness_and_default_omits_mc():
     spec = asug.load_spec(_base_spec(harnesses=["m1_noise", "m1", "m3", "m5", "mc"]),
                            _STUDY_DIR)
     spec["seed"], spec["resamples"], spec["datasets"] = 1066, 10, None
@@ -699,15 +683,13 @@ def test_dry_run_prints_a_command_for_every_enabled_harness():
         assert any(asug.HARNESS_REL[harness] in c for c in cmds), \
             f"dry-run omits {harness} — it would spawn it anyway"
 
-
-def test_dry_run_with_default_harnesses_omits_mc():
     spec = asug.load_spec(_base_spec(harnesses=None), _STUDY_DIR)
     spec["seed"], spec["resamples"], spec["datasets"] = 1066, 10, None
     entries = asug.expand_candidates(spec)
     cmds = asug._dry_run_commands(entries, spec, "/tmp/out")
     for harness in ("m1_noise", "m1", "m3", "m5"):
         assert any(asug.HARNESS_REL[harness] in c for c in cmds), \
-            f"dry-run omits {harness} — it would spawn it anyway"
+            f"test_dry_run_with_default_harnesses_omits_mc: dry-run omits {harness} — it would spawn it anyway"
     assert not any("monte_carlo.py" in c for c in cmds), \
         "mc must not run when a spec doesn't opt into it (#1316)"
 
@@ -794,11 +776,12 @@ _NO_TRADES = {"p_dd_ge_kill_switch": None, "p95_max_dd": None,
               "p_final_below_start": None}
 
 
-@pytest.mark.parametrize("windows,expected", [
-    ({"is": _SCORED, "oos": None}, "is"),
-    ({"is": _SCORED, "oos": _SCORED_OOS}, "oos"),
-    ({"is": _SCORED, "oos": _NO_TRADES}, "is"),
-    ({"is": None, "oos": None}, None),
-])
-def test_mc_column_window(windows, expected):
-    assert asug._mc_column_window(_mc_data(**windows)) == expected
+def test_mc_column_window():
+    for i, (windows, expected) in enumerate([
+        ({"is": _SCORED, "oos": None}, "is"),
+        ({"is": _SCORED, "oos": _SCORED_OOS}, "oos"),
+        ({"is": _SCORED, "oos": _NO_TRADES}, "is"),
+        ({"is": None, "oos": None}, None),
+    ]):
+        assert asug._mc_column_window(_mc_data(**windows)) == expected, \
+            f"test_mc_column_window[windows{i}-{expected}]"

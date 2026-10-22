@@ -33,19 +33,15 @@ def _trending_ohlc(n: int = 500, seed: int = 7) -> pd.DataFrame:
     )
 
 
-@pytest.mark.parametrize(
-    "ranges,expected",
-    [
-        ({"fast_period": [10, 15, 20],
-          "slow_period": [40, 50, 80],
-          "multiplier": [1.5, 2.0, 3.0]}, 80),
-        ({"entry_std": [1.0, 1.5, 2.0],
-          "exit_std": [0.0, 0.5, 1.0]}, 0),
-    ],
-    ids=["largest_int", "float_only_grid"],
-)
-def test_max_indicator_lookback(ranges, expected):
-    assert max_indicator_lookback(ranges) == expected
+def test_max_indicator_lookback():
+    for case_id, ranges, expected in [
+        ("largest_int", {"fast_period": [10, 15, 20],
+                         "slow_period": [40, 50, 80],
+                         "multiplier": [1.5, 2.0, 3.0]}, 80),
+        ("float_only_grid", {"entry_std": [1.0, 1.5, 2.0],
+                             "exit_std": [0.0, 0.5, 1.0]}, 0),
+    ]:
+        assert max_indicator_lookback(ranges) == expected, f"test_max_indicator_lookback[{case_id}]"
 
 
 def test_sma_80_grid_generates_trades_with_warmup():
@@ -686,22 +682,27 @@ def test_certified_regime_policy_decides_the_seed(monkeypatch, policy, cert, kwa
     assert _seeded_phases(by_phase) == seeded
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"direction": " Short "},
-    {"direction": " BOTH ", "close_strategies": None},
-    {"direction": "Both", "close_stack_grid": generate_close_stack_grid(
-        [{"close": None}, {"close": {"name": "tiered_tp_atr", "params": SCRIPT_LADDERS}}])},
-], ids=["short_only", "both_without_close", "both_grid_with_baseline"])
-def test_normalized_unsupported_directions_refuse_before_scoring(monkeypatch, kwargs):
+def test_normalized_unsupported_directions_refuse_before_scoring(monkeypatch):
     _register_scripted(monkeypatch)
     calls = _capture_runs(monkeypatch)
-    kw = {"close_strategies": [SCRIPT_TP], **kwargs}
-    if kw.get("close_stack_grid") or kw["close_strategies"] is None:
-        kw.pop("close_strategies")
-    with pytest.raises(ValueError, match="direction='(short|both)'"):
-        walk_forward_optimize(_scripted_frame(), SCRIPTED, SCRIPT_GRID, n_splits=2,
-                              registry="futures", platform="hyperliquid", verbose=False, **kw)
-    assert calls == []
+    for case_id, kwargs in [
+        ("short_only", {"direction": " Short "}),
+        ("both_without_close", {"direction": " BOTH ", "close_strategies": None}),
+        ("both_grid_with_baseline", {"direction": "Both", "close_stack_grid": generate_close_stack_grid(
+            [{"close": None}, {"close": {"name": "tiered_tp_atr", "params": SCRIPT_LADDERS}}])}),
+    ]:
+        label = f"test_normalized_unsupported_directions_refuse_before_scoring[{case_id}]"
+        calls.clear()
+        kw = {"close_strategies": [SCRIPT_TP], **kwargs}
+        if kw.get("close_stack_grid") or kw["close_strategies"] is None:
+            kw.pop("close_strategies")
+        try:
+            with pytest.raises(ValueError, match="direction='(short|both)'"):
+                walk_forward_optimize(_scripted_frame(), SCRIPTED, SCRIPT_GRID, n_splits=2,
+                                      registry="futures", platform="hyperliquid", verbose=False, **kw)
+        except (AssertionError, pytest.fail.Exception) as err:
+            raise AssertionError(f"{label}: {err}") from None
+        assert calls == [], label
 
 
 def _random_walk(timeframe="1h", n=1200, seed=3):

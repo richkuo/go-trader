@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import json
 import math
@@ -56,6 +57,19 @@ EVENT_COLS = ("signal", "efp_valid", "efp_reason", "efp_eval_ts_ms", "efp_close"
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, **over):
@@ -291,7 +305,7 @@ def test_trend_needs_both_candles():
     assert (out.loc[one_bar, "signal"] == 0).all()
 
 
-@pytest.mark.parametrize("override,needle", [
+INVALID_PARAMS = [
     ({"force_period": 1}, "force_period"),
     ({"force_period": 13.5}, "force_period"),
     ({"force_period": True}, "force_period"),
@@ -309,13 +323,17 @@ def test_trend_needs_both_candles():
     ({"volume_weighting": 0.5}, "volume_weighting"),
     ({"trend_period": 190, "slope_span": 9}, "required history"),
     ({"unknown_knob": 1}, "unknown parameters"),
-])
-def test_invalid_parameters_are_refused_by_the_registry_and_the_evaluator(override, needle):
-    with pytest.raises(ValueError, match=needle):
-        _reg()._registry.validate_params(NAME, override)
-    if "unknown_knob" not in override:
-        with pytest.raises(ValueError):
-            _apply(_frame(_pullback()), **override)
+]
+
+
+def test_invalid_parameters_are_refused_by_the_registry_and_the_evaluator():
+    for override, needle in INVALID_PARAMS:
+        with _case(f"{override}-{needle}"):
+            with pytest.raises(ValueError, match=needle):
+                _reg()._registry.validate_params(NAME, override)
+            if "unknown_knob" not in override:
+                with pytest.raises(ValueError):
+                    _apply(_frame(_pullback()), **override)
 
 
 def test_the_largest_allowed_history_is_199_rows():
@@ -331,7 +349,7 @@ DEFECT_REASONS = {"nonfinite_input", "nonpositive_price", "invalid_candle_geomet
                   "timestamp_order", "cadence_gap", "missing_timestamps"}
 
 
-@pytest.mark.parametrize("mutate,reason,at", [
+WINDOW_DEFECTS = [
     (lambda df: _set(df, DEFECT_AT, "close", np.nan), "nonfinite_input", 0),
     (lambda df: _set(df, DEFECT_AT, "volume", np.inf), "nonfinite_input", 0),
     (lambda df: _set(df, DEFECT_AT, "low", 0.0), "nonpositive_price", 0),
@@ -346,8 +364,16 @@ DEFECT_REASONS = {"nonfinite_input", "nonpositive_price", "invalid_candle_geomet
      "cadence_gap", 0),
     (lambda df: _with_index(df, list(df.index[:DEFECT_AT]) + [pd.NaT] + list(df.index[DEFECT_AT + 1:])),
      "missing_timestamps", 0),
-])
-def test_defects_inside_the_required_window_hold_and_recover_after_a_clean_window(mutate, reason, at):
+]
+
+
+def test_defects_inside_the_required_window_hold_and_recover_after_a_clean_window():
+    for i, (mutate, reason, at) in enumerate(WINDOW_DEFECTS):
+        with _case(f"{i}-{reason}-{at}"):
+            _defects_inside_the_required_window_hold_and_recover_after_a_clean_window(mutate, reason, at)
+
+
+def _defects_inside_the_required_window_hold_and_recover_after_a_clean_window(mutate, reason, at):
     clean = _frame(_pullback(n=420))
     assert int(_apply(clean)["signal"].iloc[CROSS_AT]) == 1
     out = _apply(mutate(clean))
@@ -505,8 +531,13 @@ def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_op
             assert held["signal"] == 0 and held["close_fraction"] == 0.0
 
 
-@pytest.mark.parametrize("mutation", ["gap", "nan_close", "undeclared", "short_history", "unavailable"])
-def test_entry_holds_keep_the_close_owner_executable(mutation):
+def test_entry_holds_keep_the_close_owner_executable():
+    for mutation in ("gap", "nan_close", "undeclared", "short_history", "unavailable"):
+        with _case(mutation):
+            _entry_holds_keep_the_close_owner_executable(mutation)
+
+
+def _entry_holds_keep_the_close_owner_executable(mutation):
     df = _frame(_pullback(1)).iloc[:CROSS_AT + 1].copy()
     protection = None
     if mutation == "gap":

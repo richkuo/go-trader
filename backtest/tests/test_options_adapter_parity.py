@@ -24,9 +24,8 @@ from pricing import bs_price, bs_price_and_greeks
 DERIBIT_ADAPTER = REPO_ROOT / "platforms" / "deribit" / "adapter.py"
 
 
-@pytest.mark.parametrize(
-    "underlying,target,expected",
-    [
+def test_strikes_round_to_the_underlying_grid():
+    for underlying, target, expected in [
         ("BTC", 67234, 67000),
         ("BTC", 67501, 68000),
         ("BTC", 67500, 68000),
@@ -36,10 +35,9 @@ DERIBIT_ADAPTER = REPO_ROOT / "platforms" / "deribit" / "adapter.py"
         ("SOL", 150, 150),
         ("SOL", 173, 150),
         ("DOGE", 0.2134, 0.0),
-    ],
-)
-def test_strikes_round_to_the_underlying_grid(underlying, target, expected):
-    assert adapter_strike(underlying, target) == expected
+    ]:
+        assert adapter_strike(underlying, target) == expected, \
+            f"test_strikes_round_to_the_underlying_grid[{underlying}-{target}-{expected}]"
 
 
 def test_strike_grid_matches_adapter_source():
@@ -74,40 +72,35 @@ def test_strike_grid_matches_adapter_source():
     )
 
 
-@pytest.mark.parametrize(
-    "spot,strike,dte,vol,option_type",
-    [
+def test_backtest_bs_matches_shared_pricing():
+    for spot, strike, dte, vol, option_type in [
         (67000, 68000, 30, 0.80, "call"),
         (67000, 66000, 30, 0.80, "put"),
         (67000, 67000, 7,  0.60, "call"),
         (3400,  3500,  14, 0.70, "call"),
         (3400,  3300,  45, 0.70, "put"),
-    ],
-)
-def test_backtest_bs_matches_shared_pricing(spot, strike, dte, vol, option_type):
-    got = black_scholes_price(spot, strike, dte, vol, option_type=option_type)
-    expected = bs_price(spot, strike, dte, vol, option_type=option_type)
-    assert got == pytest.approx(expected, rel=1e-12), (
-        f"Drift between backtest BS and shared_tools BS on "
-        f"({spot}, {strike}, {dte}d, {vol}, {option_type})"
-    )
+    ]:
+        got = black_scholes_price(spot, strike, dte, vol, option_type=option_type)
+        expected = bs_price(spot, strike, dte, vol, option_type=option_type)
+        assert got == pytest.approx(expected, rel=1e-12), (
+            f"test_backtest_bs_matches_shared_pricing: drift between backtest BS and shared_tools BS on "
+            f"({spot}, {strike}, {dte}d, {vol}, {option_type})"
+        )
 
 
-@pytest.mark.parametrize(
-    "option_type,delta_lo,delta_hi",
-    [
+def test_greeks_populated_on_bs_price():
+    for option_type, delta_lo, delta_hi in [
         ("call", 0.4, 0.7),
         ("put", -0.6, -0.3),
-    ],
-)
-def test_greeks_populated_on_bs_price(option_type, delta_lo, delta_hi):
-    price, greeks = bs_price_and_greeks(67000, 67000, 30, 0.80,
-                                        option_type=option_type)
-    assert price > 0
-    assert delta_lo < greeks["delta"] < delta_hi, greeks
-    assert greeks["gamma"] > 0
-    assert greeks["vega"] > 0
-    assert greeks["theta"] < 0
+    ]:
+        case = f"test_greeks_populated_on_bs_price[{option_type}-{delta_lo}-{delta_hi}]"
+        price, greeks = bs_price_and_greeks(67000, 67000, 30, 0.80,
+                                            option_type=option_type)
+        assert price > 0, case
+        assert delta_lo < greeks["delta"] < delta_hi, (case, greeks)
+        assert greeks["gamma"] > 0, case
+        assert greeks["vega"] > 0, case
+        assert greeks["theta"] < 0, case
 
 
 def _deterministic_candles(underlying: str = "BTC", start_price: float = 50000.0,

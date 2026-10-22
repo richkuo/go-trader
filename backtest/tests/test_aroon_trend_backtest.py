@@ -1,3 +1,4 @@
+import contextlib
 import os
 
 import numpy as np
@@ -47,6 +48,19 @@ def _apply(df, params):
     return load_registry("futures").apply_strategy(NAME, df, params)
 
 
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
+
+
 def _bt(**kw):
     base = dict(initial_capital=1000.0, platform="hyperliquid",
                 open_strategy={"name": NAME, "params": {"period": 10, "strength": 70.0}},
@@ -86,7 +100,7 @@ def test_registered_futures_only_hidden_and_grid_fits_the_live_window():
             assert bool(out["aroon_valid"].iloc[period + 1])
 
 
-@pytest.mark.parametrize("params,needle", [
+INVALID_PARAMS = [
     ({"period": True}, "period"),
     ({"period": 2.5}, "period must be an integer"),
     ({"period": 1}, "period"),
@@ -99,16 +113,20 @@ def test_registered_futures_only_hidden_and_grid_fits_the_live_window():
     ({"strength": float("nan")}, "strength"),
     ({"strength": float("inf")}, "strength"),
     ({"strength": "70"}, "strength must be a number"),
-])
-def test_invalid_parameters_are_refused_by_every_registry_entry_point(params, needle):
+]
+
+
+def test_invalid_parameters_are_refused_by_every_registry_entry_point():
     fut = load_registry("futures")
-    with pytest.raises(ValueError, match=needle):
-        fut.apply_strategy(NAME, _market(40), params)
-    with pytest.raises(ValueError, match=needle):
-        fut.validate_params(NAME, params)
-    (key, value), = params.items()
-    with pytest.raises(ValueError, match=needle):
-        fut.validate_param_value(NAME, key, value)
+    for params, needle in INVALID_PARAMS:
+        with _case(params):
+            with pytest.raises(ValueError, match=needle):
+                fut.apply_strategy(NAME, _market(40), params)
+            with pytest.raises(ValueError, match=needle):
+                fut.validate_params(NAME, params)
+            (key, value), = params.items()
+            with pytest.raises(ValueError, match=needle):
+                fut.validate_param_value(NAME, key, value)
 
 
 def test_rising_and_falling_series_hold_without_a_crossing():
@@ -186,13 +204,21 @@ def test_missing_columns_hold_every_row():
     assert (out["aroon_reason_code"] == 15).all()
 
 
-@pytest.mark.parametrize("bad,reason,code", [
+BAD_ROWS = [
     ({"close": float("nan")}, "nonfinite_input", 11),
     ({"high": float("inf")}, "nonfinite_input", 11),
     ({"high": 50.0}, "inconsistent_hlc", 12),
     ({"close": 200.0}, "inconsistent_hlc", 12),
-])
-def test_a_bad_row_holds_its_whole_support_then_recovers(bad, reason, code):
+]
+
+
+def test_a_bad_row_holds_its_whole_support_then_recovers():
+    for bad, reason, code in BAD_ROWS:
+        with _case(bad):
+            _a_bad_row_holds_its_whole_support_then_recovers(bad, reason, code)
+
+
+def _a_bad_row_holds_its_whole_support_then_recovers(bad, reason, code):
     p = 10
     df = _frame(_trend(60))
     bad_row = 30
@@ -216,8 +242,13 @@ def test_timestamp_defects_hold():
     assert bool(out["aroon_valid"].iloc[37])
 
 
-@pytest.mark.parametrize("period", [2, 198])
-def test_boundary_periods_need_exactly_period_plus_two_rows(period):
+def test_boundary_periods_need_exactly_period_plus_two_rows():
+    for period in (2, 198):
+        with _case(period):
+            _boundary_periods_need_exactly_period_plus_two_rows(period)
+
+
+def _boundary_periods_need_exactly_period_plus_two_rows(period):
     need = period + 2
     short = _apply(_market(need - 1), {"period": period, "strength": 0.0})
     assert not short["aroon_valid"].any()
@@ -333,9 +364,13 @@ def test_incumbent_contract_reaches_every_incumbent_and_default_callers_are_unch
     assert default["rows"][0]["leg"]["return_pct"] == contract["rows"][0]["leg"]["return_pct"]
 
 
-@pytest.mark.parametrize("bad", [{"direction": "both"}, {"direction": "long", "params": {}}, "both",
-                                 {"direction": "both", "close_strategies": TP, "stop_loss_atr_mult": 1.0,
-                                  "trailing_stop_atr_mult": 1.0}])
-def test_invalid_incumbent_contracts_are_refused(bad):
-    with pytest.raises(ValueError):
-        incumbent_contract_kwargs(bad)
+INVALID_INCUMBENT_CONTRACTS = [{"direction": "both"}, {"direction": "long", "params": {}}, "both",
+                               {"direction": "both", "close_strategies": TP, "stop_loss_atr_mult": 1.0,
+                                "trailing_stop_atr_mult": 1.0}]
+
+
+def test_invalid_incumbent_contracts_are_refused():
+    for bad in INVALID_INCUMBENT_CONTRACTS:
+        with _case(bad):
+            with pytest.raises(ValueError):
+                incumbent_contract_kwargs(bad)

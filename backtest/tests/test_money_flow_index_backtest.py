@@ -1,3 +1,4 @@
+import contextlib
 import json
 import math
 import os
@@ -33,6 +34,19 @@ INPUT_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, params):
@@ -86,7 +100,7 @@ def test_registration_is_futures_only_bidirectional_no_edge_and_hidden():
     assert set(DEFAULT_PARAM_RANGES[NAME]) == {"lookback", "oversold", "overbought"}
 
 
-@pytest.mark.parametrize("rows,params,sig,reason,prev,cur", [
+HAND_DERIVED_CASES = [
     ([(12, 1), (6, 2), (12, 1), (15, 1)], {"lookback": 2, "oversold": 50.0, "overbought": 90.0},
      1, "entry_long", 50.0, 100.0),
     ([(12, 1), (6, 2), (3, 4), (6, 2)], {"lookback": 2, "oversold": 50.0, "overbought": 90.0},
@@ -99,8 +113,16 @@ def test_registration_is_futures_only_bidirectional_no_edge_and_hidden():
      1, "entry_long", 0.0, None),
     ([(10, 1), (11, 1), (12, 1), (11, 1)], {"lookback": 2, "oversold": 20.0, "overbought": 80.0},
      -1, "entry_short", 100.0, None),
-])
-def test_hand_derived_crossings_and_threshold_equality(rows, params, sig, reason, prev, cur):
+]
+
+
+def test_hand_derived_crossings_and_threshold_equality():
+    for i, (rows, params, sig, reason, prev, cur) in enumerate(HAND_DERIVED_CASES):
+        with _case(f"{i}-{reason}"):
+            _hand_derived_crossings_and_threshold_equality(rows, params, sig, reason, prev, cur)
+
+
+def _hand_derived_crossings_and_threshold_equality(rows, params, sig, reason, prev, cur):
     df = _flat_frame(rows)
     before = df.copy()
     out = _apply(df, params)
@@ -141,7 +163,7 @@ def _holds(df, params, reason):
 P2 = {"lookback": 2, "oversold": 20.0, "overbought": 80.0}
 
 
-@pytest.mark.parametrize("mutate,reason", [
+INVALID_ENTRY_DATA = [
     (lambda df: df.drop(columns=["volume"]), "missing_columns:volume"),
     (lambda df: df.drop(columns=["high", "volume"]), "missing_columns:high,volume"),
     (lambda df: df.assign(volume=np.nan), "nonfinite_input"),
@@ -155,10 +177,14 @@ P2 = {"lookback": 2, "oversold": 20.0, "overbought": 80.0}
     (lambda df: df.assign(volume=1e308), "arithmetic_overflow"),
     (lambda df: df.set_axis(df.index[::-1]), "timestamp_order"),
     (lambda df: df.iloc[:3], "insufficient_history"),
-])
-def test_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame(mutate, reason):
-    df = mutate(_flat_frame([(10, 1), (11, 1), (12, 1), (11, 1), (10, 1), (11, 1)]))
-    _holds(df, P2, reason)
+]
+
+
+def test_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame():
+    for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
+        with _case(f"{i}-{reason}"):
+            df = mutate(_flat_frame([(10, 1), (11, 1), (12, 1), (11, 1), (10, 1), (11, 1)]))
+            _holds(df, P2, reason)
 
 
 def test_window_total_overflow_holds_while_each_flow_is_finite():
@@ -185,22 +211,29 @@ def test_a_bad_bar_invalidates_its_dependent_windows_and_recovery_needs_full_his
                                   clean["mfi_value"].iloc[6:].to_numpy())
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"lookback": 1}, {"lookback": 199}, {"lookback": 14.5}, {"lookback": True}, {"lookback": float("nan")},
     {"oversold": -1.0}, {"overbought": 101.0}, {"oversold": 80.0, "overbought": 80.0},
     {"oversold": float("inf")}, {"overbought": True}, {"oversold": "20"},
-])
-def test_invalid_parameters_are_explicit_errors(params):
-    with pytest.raises(ValueError):
-        _apply(_walk(30, 1), {**{"lookback": 14, "oversold": 20.0, "overbought": 80.0}, **params})
+]
 
 
-@pytest.mark.parametrize("params", [
-    {"lookback": 2, "oversold": 0.0, "overbought": 100.0},
-    {"lookback": 198, "oversold": 20.0, "overbought": 80.0},
-])
-def test_supported_bounds_decide_inside_the_200_bar_check_window(params):
+def test_invalid_parameters_are_explicit_errors():
+    for params in INVALID_PARAMS:
+        with _case(params):
+            with pytest.raises(ValueError):
+                _apply(_walk(30, 1), {**{"lookback": 14, "oversold": 20.0, "overbought": 80.0}, **params})
+
+
+def test_supported_bounds_decide_inside_the_200_bar_check_window():
     df = _walk(260, 11)
+    for params in ({"lookback": 2, "oversold": 0.0, "overbought": 100.0},
+                   {"lookback": 198, "oversold": 20.0, "overbought": 80.0}):
+        with _case(params):
+            _supported_bounds_decide_inside_the_200_bar_check_window(df, params)
+
+
+def _supported_bounds_decide_inside_the_200_bar_check_window(df, params):
     full = _apply(df, params)
     tail = _apply(df.iloc[-200:], params)
     assert bool(tail["mfi_valid"].iloc[-1])

@@ -1,3 +1,4 @@
+import contextlib
 import json
 from pathlib import Path
 
@@ -5,6 +6,15 @@ import pandas as pd
 import pytest
 
 from backtester import CLOSE_CAPABILITIES, Backtester, CloseCapabilityError
+
+
+@contextlib.contextmanager
+def _raises_for(case, exc=ValueError, match=None):
+    try:
+        with pytest.raises(exc, match=match) as info:
+            yield info
+    except (AssertionError, pytest.fail.Exception) as err:
+        raise AssertionError(f"{case}: {err}") from None
 
 
 def _df_open_then_hold(opens, closes, atrs=None):
@@ -766,9 +776,7 @@ def _bare_block_without_sl_ref():
     }
 
 
-@pytest.mark.parametrize(
-    "kwargs_factory,match",
-    [
+_UNIFIED_REJECT_CASES = [
         (lambda: {"stop_loss_atr_mult": 1.5,
                   "close_strategies": [_UNIFIED_CLOSE]},
          "unified per-regime close"),
@@ -790,14 +798,16 @@ def _bare_block_without_sl_ref():
          "stop_loss_atr"),
         (lambda: {"close_strategies": [_single_tier_adx_block()]},
          "at least 2 tiers"),
-    ],
-)
-def test_unified_regime_close_rejected_at_load(kwargs_factory, match):
-    with pytest.raises(ValueError, match=match):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            **kwargs_factory(),
-        )
+]
+
+
+def test_unified_regime_close_rejected_at_load():
+    for i, (kwargs_factory, match) in enumerate(_UNIFIED_REJECT_CASES):
+        with _raises_for(f"test_unified_regime_close_rejected_at_load[{i}] {match}", match=match):
+            Backtester(
+                initial_capital=1000, commission_pct=0, slippage_pct=0,
+                **kwargs_factory(),
+            )
 
 
 _TP_TIER_PARITY = json.loads(

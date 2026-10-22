@@ -38,15 +38,16 @@ def test_rejects_enabled_hedge_block(tmp_path):
         run_backtest.load_strategy_config(path, "hl-test")
 
 
-@pytest.mark.parametrize("hedge", [
-    {"enabled": False, "symbol": "BTC", "ratio": 1.0},
-    None,
-])
-def test_allows_config_without_enabled_hedge(tmp_path, hedge):
-    over = {} if hedge is None else {"hedge": hedge}
-    path = _config(tmp_path, _hl_strategy(**over))
-    kwargs = run_backtest.load_strategy_config(path, "hl-test")
-    assert kwargs["open_strategy"] == {"name": "tema_cross", "params": {}}
+def test_allows_config_without_enabled_hedge(tmp_path):
+    for hedge in [
+        {"enabled": False, "symbol": "BTC", "ratio": 1.0},
+        None,
+    ]:
+        over = {} if hedge is None else {"hedge": hedge}
+        path = _config(tmp_path, _hl_strategy(**over))
+        kwargs = run_backtest.load_strategy_config(path, "hl-test")
+        assert kwargs["open_strategy"] == {"name": "tema_cross", "params": {}}, (
+            f"test_allows_config_without_enabled_hedge[{hedge}]")
 
 
 def test_only_the_hedge_enabled_strategy_is_rejected(tmp_path):

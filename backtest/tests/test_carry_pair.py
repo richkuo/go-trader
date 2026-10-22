@@ -237,7 +237,8 @@ def test_basis_drift_triggers_one_rebalance() -> None:
     assert res.fees > 1000.0 * 0.00045 * 1
 
 
-def test_below_threshold_never_rebalances() -> None:
+def test_below_threshold_and_single_series_never_rebalance():
+    case = "test_below_threshold_never_rebalances"
     n = 12
     spot = [100.0] * n
     perp = [100.0, 100.0] + [100.5] * (n - 2)
@@ -246,19 +247,19 @@ def test_below_threshold_never_rebalances() -> None:
                              maintenance_margin=0.0, drift_threshold=2.0,
                              perp_fee_pct=0.0, spot_fee_pct=0.0)
     res = bt.run(df)
-    assert res.rebalances == 0
+    assert res.rebalances == 0, case
 
-
-def test_single_series_never_drifts() -> None:
+    case = "test_single_series_never_drifts"
     prices = [100.0 + i for i in range(30)]
     df = _make_df(prices, _open_hold(len(prices)))
     bt = CarryPairBacktester(base_notional=1000.0, leverage=50.0,
                              maintenance_margin=0.0, drift_threshold=2.0)
     res = bt.run(df)
-    assert res.rebalances == 0
+    assert res.rebalances == 0, case
 
 
-def test_rebalance_preserves_spot_leg_pnl_across_sell_rebalances() -> None:
+def test_rebalance_spot_leg_pnl_across_sells_buys_and_signal_close():
+    case = "test_rebalance_preserves_spot_leg_pnl_across_sell_rebalances"
     spot = [100.0, 100.0, 200.0, 250.0, 250.0]
     perp = [100.0] * 5
     sig = [-1, 0, 0, 0, 0]
@@ -268,12 +269,11 @@ def test_rebalance_preserves_spot_leg_pnl_across_sell_rebalances() -> None:
                              perp_fee_pct=0.0, spot_fee_pct=0.0)
     res = bt.run(df)
     ep = res.episodes[0]
-    assert ep.rebalances == 2
-    assert ep.realized_spot_pnl == pytest.approx(650.0)
-    assert ep.price_pnl == pytest.approx(1250.0)
+    assert ep.rebalances == 2, case
+    assert ep.realized_spot_pnl == pytest.approx(650.0), case
+    assert ep.price_pnl == pytest.approx(1250.0), case
 
-
-def test_rebalance_that_increases_qty_prices_new_units_from_purchase() -> None:
+    case = "test_rebalance_that_increases_qty_prices_new_units_from_purchase"
     spot = [100.0, 100.0, 50.0, 100.0, 100.0]
     perp = [100.0] * 5
     sig = [-1, 0, 0, 0, 0]
@@ -283,11 +283,10 @@ def test_rebalance_that_increases_qty_prices_new_units_from_purchase() -> None:
                              perp_fee_pct=0.0, spot_fee_pct=0.0)
     res = bt.run(df)
     ep = res.episodes[0]
-    assert ep.rebalances == 2
-    assert ep.price_pnl == pytest.approx(500.0)
+    assert ep.rebalances == 2, case
+    assert ep.price_pnl == pytest.approx(500.0), case
 
-
-def test_rebalance_pnl_survives_into_signal_close() -> None:
+    case = "test_rebalance_pnl_survives_into_signal_close"
     spot = [100.0, 100.0, 200.0, 200.0, 200.0, 200.0]
     perp = [100.0] * 6
     sig = [-1, 0, 0, 1, 0, 0]
@@ -297,27 +296,27 @@ def test_rebalance_pnl_survives_into_signal_close() -> None:
                              perp_fee_pct=0.0, spot_fee_pct=0.0)
     res = bt.run(df)
     ep = res.episodes[0]
-    assert ep.exit_reason == "exit_signal"
-    assert ep.rebalances == 1
-    assert ep.realized_spot_pnl == pytest.approx(500.0)
-    assert ep.price_pnl == pytest.approx(1000.0)
+    assert ep.exit_reason == "exit_signal", case
+    assert ep.rebalances == 1, case
+    assert ep.realized_spot_pnl == pytest.approx(500.0), case
+    assert ep.price_pnl == pytest.approx(1000.0), case
 
 
-def test_leg_from_results_liquidated_floors() -> None:
+def test_leg_from_results_liquidated_floors_and_funding_share():
+    case = "test_leg_from_results_liquidated_floors"
     res = CarryResults(total_return_pct=-100.0, max_drawdown_pct=-100.0,
                        sharpe=5.0, account_liquidated=True, pairs_opened=1)
     leg = leg_from_carry_results(res)
-    assert leg["liquidated"] is True
-    assert leg["sharpe"] == -LIQUIDATED_METRIC_FLOOR
-    assert leg["ddadj"] == LIQUIDATED_DDADJ_FLOOR
+    assert leg["liquidated"] is True, case
+    assert leg["sharpe"] == -LIQUIDATED_METRIC_FLOOR, case
+    assert leg["ddadj"] == LIQUIDATED_DDADJ_FLOOR, case
 
-
-def test_leg_from_results_funding_share() -> None:
+    case = "test_leg_from_results_funding_share"
     res = CarryResults(total_return_pct=2.0, max_drawdown_pct=-1.0, sharpe=1.5,
                        price_pnl=0.0, funding_pnl=30.0, fees=10.0, pairs_opened=3)
     leg = leg_from_carry_results(res)
-    assert leg["funding_share"] == pytest.approx(0.75)
-    assert leg["ddadj"] == pytest.approx(2.0, abs=1e-6)
+    assert leg["funding_share"] == pytest.approx(0.75), case
+    assert leg["ddadj"] == pytest.approx(2.0, abs=1e-6), case
 
 
 def test_aggregate_legs_degenerate_rule() -> None:

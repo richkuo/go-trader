@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import json
 import os
@@ -15,6 +16,19 @@ er = study.er
 T = 1_800_000_000_000
 BAR = 60_000
 FEE = er.COST_CASES["x1"]["taker_fee_pct"]
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def q(recv, bid, bid_sz, ask, ask_sz, seq=0):
@@ -79,8 +93,13 @@ def test_a_partial_first_exit_window_keeps_its_fill_and_closes_the_rest_from_a_l
     assert_quantity_conserved(t)
 
 
-@pytest.mark.parametrize("side", ["long", "short"])
-def test_exits_cross_more_than_two_windows_and_an_empty_window_does_not_stop_the_search(side):
+def test_exits_cross_more_than_two_windows_and_an_empty_window_does_not_stop_the_search():
+    for side in ("long", "short"):
+        with _case(side):
+            _exits_cross_more_than_two_windows_and_an_empty_window_does_not_stop_the_search(side)
+
+
+def _exits_cross_more_than_two_windows_and_an_empty_window_does_not_stop_the_search(side):
     sizes = [(T + 61_000, 0.003), (T + 65_000, 0.002), (T + 75_000, 0.0), (T + 90_000, 0.004), (T + 105_000, 0.01)]
     if side == "long":
         quotes = [q(T + 1_000, 99_990, 0, 100_000, 1)] + [q(ms, 100_100 + i, sz, 100_120 + i, 0)
@@ -133,8 +152,13 @@ def _open_tape(first_exit_size):
             q(T + 66_000, 100_050, 0, 100_060, 0), q(T + 121_000, 100_000, 0, 100_010, 1)]
 
 
-@pytest.mark.parametrize("first_exit_size", [0.004, 0.0])
-def test_exposure_still_open_at_the_end_of_the_tape_is_reported_and_blocks_a_later_entry(first_exit_size):
+def test_exposure_still_open_at_the_end_of_the_tape_is_reported_and_blocks_a_later_entry():
+    for first_exit_size in (0.004, 0.0):
+        with _case(f"first_exit_size={first_exit_size}"):
+            _exposure_still_open_at_the_end_of_the_tape_is_reported_and_blocks_a_later_entry(first_exit_size)
+
+
+def _exposure_still_open_at_the_end_of_the_tape_is_reported_and_blocks_a_later_entry(first_exit_size):
     quotes = _open_tape(first_exit_size)
     funding = [(T + 30_000, 0.0001), (T + 65_000, 0.0002), (T + 200_000, 0.0003)]
     res = replay(quotes, [decision(T), decision(T + 120_000)], funding)
@@ -160,8 +184,13 @@ def test_exposure_still_open_at_the_end_of_the_tape_is_reported_and_blocks_a_lat
         assert p["exit_fills"] == [] and p["exit_px"] is None and p["exit_ms"] is None
 
 
-@pytest.mark.parametrize("side", ["long", "short"])
-def test_funding_charges_the_quantity_open_at_each_settlement_with_settlement_before_an_equal_time_fill(side):
+def test_funding_charges_the_quantity_open_at_each_settlement_with_settlement_before_an_equal_time_fill():
+    for side in ("long", "short"):
+        with _case(side):
+            _funding_charges_the_quantity_open_at_each_settlement_with_settlement_before_an_equal_time_fill(side)
+
+
+def _funding_charges_the_quantity_open_at_each_settlement_with_settlement_before_an_equal_time_fill(side):
     if side == "long":
         quotes = [q(T + 1_000, 99_990, 0, 100_000, 1), q(T + 61_000, 100_100, 0.004, 100_110, 0),
                   q(T + 81_000, 100_200, 1, 100_210, 0), q(T + 95_000, 100_300, 0, 100_310, 0)]

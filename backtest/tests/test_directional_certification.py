@@ -21,16 +21,14 @@ def test_normalize_cert_asset():
     assert normalize_cert_asset("") == ""
 
 
-def test_load_missing_is_failclosed_empty(tmp_path):
-    assert load_certifications(str(tmp_path / "nope.json")) == {}
-
-
-def test_load_malformed_is_failclosed_empty(tmp_path):
+def test_load_missing_or_malformed_is_failclosed_empty(tmp_path):
+    assert load_certifications(str(tmp_path / "nope.json")) == {}, (
+        "test_load_missing_is_failclosed_empty")
     p = tmp_path / "cert.json"
     p.write_text("{not json")
-    assert load_certifications(str(p)) == {}
+    assert load_certifications(str(p)) == {}, "test_load_malformed_is_failclosed_empty: not json"
     p.write_text(json.dumps({"schema_version": 2, "certified": []}))
-    assert load_certifications(str(p)) == {}
+    assert load_certifications(str(p)) == {}, "test_load_malformed_is_failclosed_empty: schema 2"
 
 
 def test_is_directional_certified_active_expired_never(tmp_path):

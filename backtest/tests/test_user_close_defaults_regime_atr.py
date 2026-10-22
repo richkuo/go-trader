@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -18,28 +19,37 @@ from run_backtest import (
 )
 
 
-@pytest.mark.parametrize("payload,match", [
-    (
-        {"regime_atr": {"stop_loss_atr_mult_regime": {"use_defaults": True},
-                        "foo": 1}},
-        "unknown key 'foo'",
-    ),
-    (
-        {
-            "regime_atr": {
-                "stop_loss_atr_mult_regime": {
-                    "trend_regime": {
-                        "trending_up": {"close_fraction": 0.5},
+@contextlib.contextmanager
+def _raises_for(case, exc=ValueError, match=None):
+    try:
+        with pytest.raises(exc, match=match) as info:
+            yield info
+    except (AssertionError, pytest.fail.Exception) as err:
+        raise AssertionError(f"{case}: {err}") from None
+
+
+def test_validate_regime_atr_rejects():
+    for payload, match in [
+        (
+            {"regime_atr": {"stop_loss_atr_mult_regime": {"use_defaults": True},
+                            "foo": 1}},
+            "unknown key 'foo'",
+        ),
+        (
+            {
+                "regime_atr": {
+                    "stop_loss_atr_mult_regime": {
+                        "trend_regime": {
+                            "trending_up": {"close_fraction": 0.5},
+                        }
                     }
                 }
-            }
-        },
-        "close_fraction",
-    ),
-])
-def test_validate_regime_atr_rejects(payload, match):
-    with pytest.raises(ValueError, match=match):
-        _validate_user_close_defaults_regime_atr(payload)
+            },
+            "close_fraction",
+        ),
+    ]:
+        with _raises_for(f"test_validate_regime_atr_rejects[{match}]", match=match):
+            _validate_user_close_defaults_regime_atr(payload)
 
 
 _USER_SL_REGIME_ATR = {
@@ -71,7 +81,7 @@ _RATCHET_REGIME_REF = [
 ]
 
 
-@pytest.mark.parametrize("sc,close_refs,user_defaults,key,path,expected", [
+_APPLY_CASES = [
     (
         {"stop_loss_atr_mult_regime": {"use_defaults": True}},
         [],
@@ -119,15 +129,17 @@ _RATCHET_REGIME_REF = [
         (),
         {"use_defaults": True},
     ),
-])
-def test_apply_user_close_defaults_regime_atr(
-        sc, close_refs, user_defaults, key, path, expected):
-    sc = json.loads(json.dumps(sc))
-    _apply_user_close_defaults(list(close_refs), user_defaults, sc)
-    got = sc[key]
-    for step in path:
-        got = got[step]
-    assert got == expected
+]
+
+
+def test_apply_user_close_defaults_regime_atr():
+    for i, (sc, close_refs, user_defaults, key, path, expected) in enumerate(_APPLY_CASES):
+        sc = json.loads(json.dumps(sc))
+        _apply_user_close_defaults(list(close_refs), user_defaults, sc)
+        got = sc[key]
+        for step in path:
+            got = got[step]
+        assert got == expected, f"test_apply_user_close_defaults_regime_atr[{i}] {key} {path}"
 
 
 def test_load_strategy_config_rejects_malformed_regime_atr(tmp_path):

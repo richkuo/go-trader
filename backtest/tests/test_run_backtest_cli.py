@@ -4,24 +4,24 @@ import pytest
 import run_backtest
 
 
-@pytest.mark.parametrize("argv,expected", [
-    (
-        ["--registry", "futures", "--platform", "hyperliquid",
-         "--strategy", "sma_crossover", "--mode", "single"],
-        {"registry": "futures", "platform": "hyperliquid"},
-    ),
-    (
-        ["--mode", "optimize", "--strategy", "sma_crossover",
-         "--sweep-close", "--optimize-metric", "dd_adjusted_return",
-         "--direction", "long"],
-        {"sweep_close": True, "optimize_metric": "dd_adjusted_return",
-         "direction": "long", "close_stacks_json": None},
-    ),
-])
-def test_build_parser_accepts(argv, expected):
-    args = run_backtest._build_parser().parse_args(argv)
-    for field, want in expected.items():
-        assert getattr(args, field) == want
+def test_build_parser_accepts():
+    for i, (argv, expected) in enumerate([
+        (
+            ["--registry", "futures", "--platform", "hyperliquid",
+             "--strategy", "sma_crossover", "--mode", "single"],
+            {"registry": "futures", "platform": "hyperliquid"},
+        ),
+        (
+            ["--mode", "optimize", "--strategy", "sma_crossover",
+             "--sweep-close", "--optimize-metric", "dd_adjusted_return",
+             "--direction", "long"],
+            {"sweep_close": True, "optimize_metric": "dd_adjusted_return",
+             "direction": "long", "close_stacks_json": None},
+        ),
+    ]):
+        args = run_backtest._build_parser().parse_args(argv)
+        for field, want in expected.items():
+            assert getattr(args, field) == want, f"test_build_parser_accepts[argv{i}-expected{i}] {field}"
 
 
 @pytest.mark.parametrize("argv", [

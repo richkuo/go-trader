@@ -1,3 +1,4 @@
+import contextlib
 import itertools
 import math
 import os
@@ -31,6 +32,19 @@ P_ROW, Q_ROW, CONFIRM_ROW, ENTRY_ROW = 32, 39, 41, 43
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _volumes(closes, up=10.0, down=1.0, flat=5.0):
@@ -109,7 +123,7 @@ def test_every_optimizer_grid_combination_validates_through_the_registry():
     assert combos == 972
 
 
-@pytest.mark.parametrize("override,match", [
+INVALID_PARAMS = [
     ({"left_span": 0}, "left_span"),
     ({"right_span": 11}, "right_span"),
     ({"left_span": 2.5}, "left_span must be an integer"),
@@ -124,10 +138,14 @@ def test_every_optimizer_grid_combination_validates_through_the_registry():
     ({"volume_threshold": True}, "volume_threshold must be a number"),
     ({"volume_test": 1}, "volume_test must be a boolean"),
     ({"volume_test": "true"}, "volume_test must be a boolean"),
-])
-def test_invalid_parameters_are_rejected(override, match):
-    with pytest.raises(ValueError, match=match):
-        _run(_frame(_long_closes()), **override)
+]
+
+
+def test_invalid_parameters_are_rejected():
+    for override, match in INVALID_PARAMS:
+        with _case(override):
+            with pytest.raises(ValueError, match=match):
+                _run(_frame(_long_closes()), **override)
 
 
 def test_largest_declared_support_stays_inside_the_scheduler_candle_limit():
@@ -164,15 +182,14 @@ def test_bearish_mirror_enters_short():
     assert row["obvd_short_reclaim"] == 101.0
 
 
-@pytest.mark.parametrize("closes,vols", [
-    ([100.0] * 80, None),
-    (list(np.linspace(100.0, 180.0, 80)), None),
-    (list(np.linspace(180.0, 100.0, 80)), None),
-])
-def test_constant_rising_and_falling_input_never_enters(closes, vols):
-    out = _run(_frame(closes, vols))
-    assert _entries(out) == {}
-    assert set(out["obvd_reason"].iloc[SUPPORT - 1:]) <= {"no_setup", "no_pivot_pair"}
+def test_constant_rising_and_falling_input_never_enters():
+    for label, closes, vols in (("constant", [100.0] * 80, None),
+                                ("rising", list(np.linspace(100.0, 180.0, 80)), None),
+                                ("falling", list(np.linspace(180.0, 100.0, 80)), None)):
+        with _case(label):
+            out = _run(_frame(closes, vols))
+            assert _entries(out) == {}
+            assert set(out["obvd_reason"].iloc[SUPPORT - 1:]) <= {"no_setup", "no_pivot_pair"}
 
 
 def test_equal_pivot_prices_hold():
@@ -208,8 +225,13 @@ def test_falling_indicator_blocks_the_long_and_the_ablation_keeps_it():
     assert _entries(_run(df, volume_test=False)) == {ENTRY_ROW: 1}
 
 
-@pytest.mark.parametrize("threshold,expected", [(0.5, {}), (0.49, {ENTRY_ROW: 1})])
-def test_threshold_is_strict(threshold, expected):
+def test_threshold_is_strict():
+    for threshold, expected in ((0.5, {}), (0.49, {ENTRY_ROW: 1})):
+        with _case(threshold):
+            _threshold_is_strict(threshold, expected)
+
+
+def _threshold_is_strict(threshold, expected):
     closes = _long_closes()
     vols = _volumes(closes)
     for i in range(33, 36):
@@ -247,9 +269,10 @@ def test_nearest_pivot_is_selected_within_inclusive_separation_bounds():
     assert _entries(too_close) == {}
 
 
-@pytest.mark.parametrize("expiry,expected", [(1, {}), (2, {ENTRY_ROW: 1})])
-def test_setup_expiry_is_inclusive(expiry, expected):
-    assert _entries(_run(_frame(_long_closes()), setup_expiry=expiry)) == expected
+def test_setup_expiry_is_inclusive():
+    for expiry, expected in ((1, {}), (2, {ENTRY_ROW: 1})):
+        with _case(expiry):
+            assert _entries(_run(_frame(_long_closes()), setup_expiry=expiry)) == expected
 
 
 def test_a_newer_pivot_replaces_the_setup():
@@ -273,15 +296,23 @@ def test_confirmation_uses_only_closed_right_side_bars():
     assert _run(df.iloc[:CONFIRM_ROW + 1])["obvd_long_state"].iloc[-1] == 2
 
 
-@pytest.mark.parametrize("corrupt,reason", [
+INVALID_ROWS = [
     (lambda df, r: df.__setitem__("volume", df["volume"].where(df.index != df.index[r], np.nan)), "invalid_volume"),
     (lambda df, r: df.__setitem__("volume", df["volume"].where(df.index != df.index[r], -1.0)), "invalid_volume"),
     (lambda df, r: df.__setitem__("volume", df["volume"].where(df.index != df.index[r], np.inf)), "invalid_volume"),
     (lambda df, r: df.__setitem__("close", df["close"].where(df.index != df.index[r], np.nan)), "nonfinite_input"),
     (lambda df, r: df.__setitem__("low", df["low"].where(df.index != df.index[r], 0.0)), "invalid_price"),
     (lambda df, r: df.__setitem__("high", df["high"].where(df.index != df.index[r], 10.0)), "inconsistent_ohlc"),
-])
-def test_invalid_row_inside_the_support_holds_and_decisions_recover(corrupt, reason):
+]
+
+
+def test_invalid_row_inside_the_support_holds_and_decisions_recover():
+    for i, (corrupt, reason) in enumerate(INVALID_ROWS):
+        with _case(f"{i}-{reason}"):
+            _invalid_row_inside_the_support_holds_and_decisions_recover(corrupt, reason)
+
+
+def _invalid_row_inside_the_support_holds_and_decisions_recover(corrupt, reason):
     clean = _frame(_long_closes() + [103.0] * 40)
     bad = clean.copy()
     corrupt(bad, 36)
@@ -295,9 +326,13 @@ def test_invalid_row_inside_the_support_holds_and_decisions_recover(corrupt, rea
     assert (out["obvd_reason"].iloc[after].to_numpy() == ref["obvd_reason"].iloc[after].to_numpy()).all()
 
 
-@pytest.mark.parametrize("edit,reason", [("duplicate", "timestamp_order"), ("reverse", "timestamp_order"),
-                                         ("gap", "cadence_gap")])
-def test_timestamp_defects_hold_until_they_leave_the_support(edit, reason):
+def test_timestamp_defects_hold_until_they_leave_the_support():
+    for edit, reason in (("duplicate", "timestamp_order"), ("reverse", "timestamp_order"), ("gap", "cadence_gap")):
+        with _case(edit):
+            _timestamp_defects_hold_until_they_leave_the_support(edit, reason)
+
+
+def _timestamp_defects_hold_until_they_leave_the_support(edit, reason):
     df = _frame(_long_closes() + [103.0] * 40)
     idx = list(df.index)
     if edit == "duplicate":

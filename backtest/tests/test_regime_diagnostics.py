@@ -13,18 +13,17 @@ def test_forward_returns_horizon():
     assert np.isnan(fr[-1])
 
 
-def test_forward_realized_vol_horizon1():
+def test_forward_realized_vol_horizon1_and_horizon2_sums_squared_log_returns():
     close = np.exp(np.array([0.0, 0.1, 0.3, 0.6]))
     fv = forward_realized_vol(close, 1)
-    np.testing.assert_allclose(fv[:3], [0.1, 0.2, 0.3], atol=1e-12)
-    assert np.isnan(fv[-1])
+    np.testing.assert_allclose(fv[:3], [0.1, 0.2, 0.3], atol=1e-12,
+                               err_msg="test_forward_realized_vol_horizon1")
+    assert np.isnan(fv[-1]), "test_forward_realized_vol_horizon1"
 
-
-def test_forward_realized_vol_horizon2_sums_squared_log_returns():
-    close = np.exp(np.array([0.0, 0.1, 0.3, 0.6]))
     fv = forward_realized_vol(close, 2)
-    np.testing.assert_allclose(fv[:2], [np.sqrt(0.05), np.sqrt(0.13)], atol=1e-12)
-    assert np.isnan(fv[2]) and np.isnan(fv[3])
+    np.testing.assert_allclose(fv[:2], [np.sqrt(0.05), np.sqrt(0.13)], atol=1e-12,
+                               err_msg="test_forward_realized_vol_horizon2_sums_squared_log_returns")
+    assert np.isnan(fv[2]) and np.isnan(fv[3]), "test_forward_realized_vol_horizon2_sums_squared_log_returns"
 
 
 def test_coverage_counts():
@@ -48,21 +47,19 @@ def test_stability_transition_rate():
     assert st["flips"] == 2
 
 
-def test_block_shuffle_pvalue_separated_is_significant():
+def test_block_shuffle_pvalue_separated_is_significant_and_noise_is_not():
     from regime_diagnostics import block_shuffle_pvalue
     labels = np.array(["up"] * 60 + ["down"] * 60)
     fwd = np.concatenate([np.full(60, 0.02), np.full(60, -0.02)])
     out = block_shuffle_pvalue(labels, fwd, block_len=5, n_perm=100, seed=0)
-    assert out["p_value"] < 0.05 and out["kruskal_h"] > 5.0
+    assert out["p_value"] < 0.05 and out["kruskal_h"] > 5.0, (
+        "test_block_shuffle_pvalue_separated_is_significant")
 
-
-def test_block_shuffle_pvalue_noise_not_significant():
-    from regime_diagnostics import block_shuffle_pvalue
     rng = np.random.default_rng(0)
     labels = np.array(["a", "b"])[rng.integers(0, 2, 200)]
     fwd = rng.normal(0, 0.01, 200)
     out = block_shuffle_pvalue(labels, fwd, block_len=10, n_perm=100, seed=0)
-    assert out["p_value"] > 0.05
+    assert out["p_value"] > 0.05, "test_block_shuffle_pvalue_noise_not_significant"
 
 
 def test_kmeans_yardstick_runs():

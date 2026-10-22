@@ -44,24 +44,25 @@ def test_single_legacy_spelling_renames_to_canonical():
     assert out == {SL_CANON: BLOCK_A}
 
 
-@pytest.mark.parametrize("block", [{TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_A},
-                                   {TRAIL_V18: BLOCK_A, TRAIL_V17: BLOCK_A}])
-def test_two_legacy_spellings_with_equal_values_merge_regardless_of_order(block):
-    assert rb._normalize_atr_regime_keys(block) == {TRAIL_CANON: BLOCK_A}
+def test_two_legacy_spellings_with_equal_values_merge_regardless_of_order():
+    for block in ({TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_A},
+                  {TRAIL_V18: BLOCK_A, TRAIL_V17: BLOCK_A}):
+        assert rb._normalize_atr_regime_keys(block) == {TRAIL_CANON: BLOCK_A}, (
+            f"test_two_legacy_spellings_with_equal_values_merge_regardless_of_order[{list(block)}]")
 
 
-@pytest.mark.parametrize("block", [{TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_B},
-                                   {TRAIL_V18: BLOCK_B, TRAIL_V17: BLOCK_A}])
-def test_two_legacy_spellings_with_differing_values_raise(block):
-    with pytest.raises(rb.AtrRegimeKeyConflict):
-        rb._normalize_atr_regime_keys(block)
-
-
-@pytest.mark.parametrize("block", [{TRAIL_V17: BLOCK_A, TRAIL_CANON: BLOCK_B},
-                                   {TRAIL_V18: BLOCK_A, TRAIL_CANON: BLOCK_B}])
-def test_legacy_conflicting_with_canonical_raises(block):
-    with pytest.raises(rb.AtrRegimeKeyConflict):
-        rb._normalize_atr_regime_keys(block)
+def test_differing_legacy_spellings_or_legacy_against_canonical_raise():
+    for block in ({TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_B},
+                  {TRAIL_V18: BLOCK_B, TRAIL_V17: BLOCK_A},
+                  {TRAIL_V17: BLOCK_A, TRAIL_CANON: BLOCK_B},
+                  {TRAIL_V18: BLOCK_A, TRAIL_CANON: BLOCK_B}):
+        try:
+            rb._normalize_atr_regime_keys(block)
+        except rb.AtrRegimeKeyConflict:
+            continue
+        pytest.fail(f"AtrRegimeKeyConflict not raised for {list(block)}: "
+                    "test_two_legacy_spellings_with_differing_values_raise / "
+                    "test_legacy_conflicting_with_canonical_raises")
 
 
 def test_conflict_is_detected_when_nested_in_lists_and_dicts():

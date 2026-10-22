@@ -69,24 +69,18 @@ _LADDERS = {
 }
 
 
-@pytest.mark.parametrize("name", sorted(_LADDERS))
-def test_default_tier_ladders_match_expected(name):
-    assert _LADDERS[name]() == EXPECTED_LADDER, (
-        "Default tier ladder desync — defaultHLProtectionTiers() (Go), "
-        "DEFAULT_TIERS (tiered_tp_atr.py) and _DEFAULT_SCALAR_TP_TIERS "
-        "(post_tp_sl.py) MUST be updated together."
-    )
-
-
-@pytest.mark.parametrize("name", sorted(_LADDERS))
-def test_final_tier_closes_everything_remaining(name):
-    assert _LADDERS[name]()[-1][1] == pytest.approx(1.0)
-
-
-@pytest.mark.parametrize("name", sorted(_LADDERS))
-def test_tier_multiples_and_fractions_are_monotonic(name):
-    ladder = _LADDERS[name]()
-    mults = [m for m, _ in ladder]
-    fracs = [f for _, f in ladder]
-    assert mults == sorted(mults) and len(set(mults)) == len(mults)
-    assert fracs == sorted(fracs)
+def test_default_tier_ladders_match_expected_close_fully_and_are_monotonic():
+    for name in sorted(_LADDERS):
+        ladder = _LADDERS[name]()
+        assert ladder == EXPECTED_LADDER, (
+            f"test_default_tier_ladders_match_expected[{name}]: "
+            "Default tier ladder desync — defaultHLProtectionTiers() (Go), "
+            "DEFAULT_TIERS (tiered_tp_atr.py) and _DEFAULT_SCALAR_TP_TIERS "
+            "(post_tp_sl.py) MUST be updated together."
+        )
+        assert ladder[-1][1] == pytest.approx(1.0), f"test_final_tier_closes_everything_remaining[{name}]"
+        mults = [m for m, _ in ladder]
+        fracs = [f for _, f in ladder]
+        monotonic = f"test_tier_multiples_and_fractions_are_monotonic[{name}]"
+        assert mults == sorted(mults) and len(set(mults)) == len(mults), monotonic
+        assert fracs == sorted(fracs), monotonic

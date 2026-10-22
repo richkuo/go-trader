@@ -6,16 +6,16 @@ from registry_loader import load_registry, registry_for_strategy_type
 from optimizer import DEFAULT_PARAM_RANGES
 
 
-@pytest.mark.parametrize("platform,present,absent", [
-    ("spot", ["sma_crossover", "pairs_spread"], ["delta_neutral_funding", "breakout"]),
-    ("futures", ["sma_crossover", "delta_neutral_funding", "breakout"], ["pairs_spread"]),
-])
-def test_load_registry_membership(platform, present, absent):
-    mod = load_registry(platform)
-    for name in present:
-        assert name in mod.STRATEGY_REGISTRY
-    for name in absent:
-        assert name not in mod.STRATEGY_REGISTRY
+def test_load_registry_membership():
+    for platform, present, absent in [
+        ("spot", ["sma_crossover", "pairs_spread"], ["delta_neutral_funding", "breakout"]),
+        ("futures", ["sma_crossover", "delta_neutral_funding", "breakout"], ["pairs_spread"]),
+    ]:
+        mod = load_registry(platform)
+        for name in present:
+            assert name in mod.STRATEGY_REGISTRY, f"test_load_registry_membership[{platform}] present {name}"
+        for name in absent:
+            assert name not in mod.STRATEGY_REGISTRY, f"test_load_registry_membership[{platform}] absent {name}"
 
 
 def test_both_registries_coexist():
@@ -32,16 +32,17 @@ def test_unknown_platform_rejected():
         load_registry("options")
 
 
-@pytest.mark.parametrize("strategy_type,expected", [
-    ("spot", "spot"),
-    ("options", "spot"),
-    ("perps", "futures"),
-    ("futures", "futures"),
-    ("manual", "futures"),
-    (" PERPS ", "futures"),
-])
-def test_registry_for_strategy_type(strategy_type, expected):
-    assert registry_for_strategy_type(strategy_type) == expected
+def test_registry_for_strategy_type():
+    for strategy_type, expected in [
+        ("spot", "spot"),
+        ("options", "spot"),
+        ("perps", "futures"),
+        ("futures", "futures"),
+        ("manual", "futures"),
+        (" PERPS ", "futures"),
+    ]:
+        assert registry_for_strategy_type(strategy_type) == expected, \
+            f"test_registry_for_strategy_type[{strategy_type}-{expected}]"
 
 
 def test_param_ranges_cover_every_registered_strategy():

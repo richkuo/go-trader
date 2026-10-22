@@ -44,37 +44,37 @@ def _frame(n: int = 400, seed: int = 1411) -> pd.DataFrame:
     )
 
 
-def test_min_only_hysteresis_sequence():
+def test_min_only_max_only_and_unset_disarm_hysteresis_sequences():
+    case = "test_min_only_hysteresis_sequence"
     gate = hg.HurstGate({"enabled": True, "min": 0.55, "disarm_min": 0.50})
-    assert gate.advance(0.40) == hg.HURST_STATE_DISARMED
-    assert gate.advance(0.52) == hg.HURST_STATE_DISARMED
-    assert gate.advance(0.55) == hg.HURST_STATE_ARMED
-    assert gate.advance(0.51) == hg.HURST_STATE_ARMED
-    assert gate.advance(0.4999) == hg.HURST_STATE_DISARMED
+    assert gate.advance(0.40) == hg.HURST_STATE_DISARMED, case
+    assert gate.advance(0.52) == hg.HURST_STATE_DISARMED, case
+    assert gate.advance(0.55) == hg.HURST_STATE_ARMED, case
+    assert gate.advance(0.51) == hg.HURST_STATE_ARMED, case
+    assert gate.advance(0.4999) == hg.HURST_STATE_DISARMED, case
 
-
-def test_max_only_hysteresis_sequence():
+    case = "test_max_only_hysteresis_sequence"
     gate = hg.HurstGate({"enabled": True, "max": 0.45, "disarm_max": 0.50})
-    assert gate.advance(0.40) == hg.HURST_STATE_ARMED
-    assert gate.advance(0.48) == hg.HURST_STATE_ARMED
-    assert gate.advance(0.51) == hg.HURST_STATE_DISARMED
-    assert gate.advance(0.47) == hg.HURST_STATE_DISARMED
-    assert gate.advance(0.45) == hg.HURST_STATE_ARMED
+    assert gate.advance(0.40) == hg.HURST_STATE_ARMED, case
+    assert gate.advance(0.48) == hg.HURST_STATE_ARMED, case
+    assert gate.advance(0.51) == hg.HURST_STATE_DISARMED, case
+    assert gate.advance(0.47) == hg.HURST_STATE_DISARMED, case
+    assert gate.advance(0.45) == hg.HURST_STATE_ARMED, case
 
-
-def test_unset_disarm_collapses_onto_the_arm_bound():
+    case = "test_unset_disarm_collapses_onto_the_arm_bound"
     gate = hg.HurstGate({"enabled": True, "min": 0.55})
     gate.state = hg.HURST_STATE_ARMED
-    assert gate.advance(0.5499) == hg.HURST_STATE_DISARMED
-    assert gate.advance(0.55) == hg.HURST_STATE_ARMED
+    assert gate.advance(0.5499) == hg.HURST_STATE_DISARMED, case
+    assert gate.advance(0.55) == hg.HURST_STATE_ARMED, case
 
 
-@pytest.mark.parametrize("prior", [hg.HURST_STATE_UNKNOWN, hg.HURST_STATE_ARMED, hg.HURST_STATE_DISARMED])
-def test_nan_never_transitions_state(prior):
-    gate = hg.HurstGate({"enabled": True, "min": 0.55})
-    gate.state = prior
-    assert gate.advance(float("nan")) == prior
-    assert gate.advance(None) == prior
+def test_nan_never_transitions_state():
+    for prior in [hg.HURST_STATE_UNKNOWN, hg.HURST_STATE_ARMED, hg.HURST_STATE_DISARMED]:
+        case = f"test_nan_never_transitions_state[{prior}]"
+        gate = hg.HurstGate({"enabled": True, "min": 0.55})
+        gate.state = prior
+        assert gate.advance(float("nan")) == prior, case
+        assert gate.advance(None) == prior, case
 
 
 def test_readings_above_one_stay_coherent():
@@ -112,9 +112,8 @@ def test_known_disarmed_holds_regardless_of_position():
     assert blocked
 
 
-@pytest.mark.parametrize(
-    "h,floor,want",
-    [
+def test_size_multiplier_matches_the_go_formula():
+    cases = [
         (0.50, 0.25, 0.25),
         (0.575, 0.25, 0.5),
         (0.65, 0.25, 1.0),
@@ -122,11 +121,11 @@ def test_known_disarmed_holds_regardless_of_position():
         (0.35, 0.25, 1.0),
         (2.0033, 0.25, 1.0),
         (0.50, 0.9, 0.9),
-    ],
-)
-def test_size_multiplier_matches_the_go_formula(h, floor, want):
-    gate = hg.HurstGate({"enabled": True, "mode": "size", "size_floor": floor})
-    assert gate.size_multiplier(h) == pytest.approx(want)
+    ]
+    for h, floor, want in cases:
+        gate = hg.HurstGate({"enabled": True, "mode": "size", "size_floor": floor})
+        assert gate.size_multiplier(h) == pytest.approx(want), (
+            f"test_size_multiplier_matches_the_go_formula[{h}-{floor}-{want}]")
 
 
 def test_size_multiplier_never_exceeds_one():

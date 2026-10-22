@@ -1,3 +1,4 @@
+import contextlib
 import csv
 import gzip
 import json
@@ -51,6 +52,19 @@ def _close_params():
 
 def _reg():
     return load_registry("futures")
+
+
+@contextlib.contextmanager
+def _case(label):
+    try:
+        yield
+    except AssertionError as exc:
+        raise AssertionError(f"case {label}: {exc}") from exc
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"case {label}: {exc}")
+    except Exception as exc:
+        exc.add_note(f"case {label}")
+        raise
 
 
 def _apply(df, params=None):
@@ -274,7 +288,7 @@ def _with_index(df, idx):
     return out
 
 
-@pytest.mark.parametrize("mutate,reason", [
+INVALID_MARKET_INPUTS = [
     (lambda df: df.drop(columns=["close"]), "missing_columns"),
     (lambda df: df.drop(columns=["open", "high"]), "missing_columns"),
     (lambda df: df.reset_index(drop=True), "missing_timestamps"),
@@ -291,9 +305,13 @@ def _with_index(df, idx):
     (lambda df: _with_index(df, list(df.index[:-1]) + [df.index[-1] + pd.Timedelta(hours=4)]), "cadence_gap"),
     (lambda df: df.drop(df.index[-10]), "cadence_gap"),
     (lambda df: df.iloc[-(_need(SMALL) - 1):], "insufficient_history"),
-])
-def test_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame(mutate, reason):
-    _holds_at_end(mutate(_walk(120, 3)), SMALL, reason)
+]
+
+
+def test_invalid_market_input_is_a_reasoned_hold_that_preserves_the_frame():
+    for i, (mutate, reason) in enumerate(INVALID_MARKET_INPUTS):
+        with _case(f"{i}-{reason}"):
+            _holds_at_end(mutate(_walk(120, 3)), SMALL, reason)
 
 
 def test_negative_or_missing_volume_is_not_an_entry_input():
@@ -388,28 +406,40 @@ def test_a_defect_holds_only_inside_its_dependency_window():
     assert out["trix_valid"].iloc[bad + need - 1] == 1.0
 
 
-@pytest.mark.parametrize("params", [
+INVALID_PARAMS = [
     {"period": 0}, {"period": -1}, {"period": 9.5}, {"period": True}, {"period": float("nan")}, {"period": "18"},
     {"period": 33, "recursion_length": 197}, {"period": 21}, {"signal_period": 0}, {"signal_period": False},
     {"signal_period": 120}, {"signal_period": 121}, {"signal_period": float("inf")}, {"recursion_length": 198},
     {"recursion_length": 107}, {"recursion_length": 120.5}, {"recursion_length": None},
     {"period": 1, "recursion_length": 5, "signal_period": 1},
-])
-def test_invalid_parameters_fail_validation(params):
-    p = {**SEED, **params}
+]
+
+
+def test_invalid_parameters_fail_validation():
     reg = _reg()
-    with pytest.raises(ValueError):
-        reg._registry.validate_params(NAME, p)
-    with pytest.raises(ValueError):
-        _apply(_walk(120, 1), p)
-    from trix_momentum import trix_momentum_core
-    with pytest.raises(ValueError):
-        trix_momentum_core(_walk(120, 1), **p)
+    for params in INVALID_PARAMS:
+        p = {**SEED, **params}
+        with _case(params):
+            with pytest.raises(ValueError):
+                reg._registry.validate_params(NAME, p)
+            with pytest.raises(ValueError):
+                _apply(_walk(120, 1), p)
+            from trix_momentum import trix_momentum_core
+            with pytest.raises(ValueError):
+                trix_momentum_core(_walk(120, 1), **p)
 
 
-@pytest.mark.parametrize("params", [SMALLEST, BOUNDARY, {"period": 32, "signal_period": 191, "recursion_length": 192},
-                                    {"period": 1, "signal_period": 5, "recursion_length": 6}])
-def test_boundary_parameters_validate_and_decide_at_l_plus_two_rows(params):
+BOUNDARY_PARAMS = [SMALLEST, BOUNDARY, {"period": 32, "signal_period": 191, "recursion_length": 192},
+                   {"period": 1, "signal_period": 5, "recursion_length": 6}]
+
+
+def test_boundary_parameters_validate_and_decide_at_l_plus_two_rows():
+    for params in BOUNDARY_PARAMS:
+        with _case(params):
+            _boundary_parameters_validate_and_decide_at_l_plus_two_rows(params)
+
+
+def _boundary_parameters_validate_and_decide_at_l_plus_two_rows(params):
     reg = _reg()
     reg._registry.validate_params(NAME, params)
     df = _walk(260, 2)
@@ -541,8 +571,13 @@ def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_op
             assert held["signal"] == 0 and held["close_fraction"] == 0.0
 
 
-@pytest.mark.parametrize("mutation", ["price", "geometry", "cadence", "insufficient", "order"])
-def test_entry_data_hold_keeps_the_close_owner_executable(mutation):
+def test_entry_data_hold_keeps_the_close_owner_executable():
+    for mutation in ("price", "geometry", "cadence", "insufficient", "order"):
+        with _case(mutation):
+            _entry_data_hold_keeps_the_close_owner_executable(mutation)
+
+
+def _entry_data_hold_keeps_the_close_owner_executable(mutation):
     df = _walk(200, 9)
     if mutation == "price":
         df = _set_at(df, -5, "close", np.nan)
@@ -581,9 +616,16 @@ def _bt(params, **kw):
     return Backtester(**base)
 
 
-def test_simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_or_scale_in():
+def test_simulator_fills_next_open_with_explicit_exits_partials_no_reversal_or_scale_in_and_long_only_opens_no_short():
     df = _walk(1500, 5)
     sig = ensure_atr_indicator(_apply(df, SMALL))
+    with _case("test_simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_or_scale_in"):
+        _simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_or_scale_in(df, sig)
+    with _case("test_simulator_long_only_never_opens_a_short"):
+        _simulator_long_only_never_opens_a_short(sig)
+
+
+def _simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_or_scale_in(df, sig):
     bt = _bt(SMALL)
     res = bt.run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
     trades = res["trades"]
@@ -610,9 +652,7 @@ def test_simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_
     assert skipped
 
 
-def test_simulator_long_only_never_opens_a_short():
-    df = _walk(1500, 5)
-    sig = ensure_atr_indicator(_apply(df, SMALL))
+def _simulator_long_only_never_opens_a_short(sig):
     assert (sig["signal"] == -1).any()
     res = _bt(SMALL, direction="long").run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
     assert res["trades"] and {t["side"] for t in res["trades"]} == {"long"}

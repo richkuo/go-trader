@@ -21,17 +21,14 @@ def _path_from_vol_schedule(vol_per_day: list, seed: int = 0) -> list:
     return closes
 
 
-@pytest.mark.parametrize(
-    "closes",
-    [
-        [100.0 + i for i in range(50)],
-        [100.0 + i for i in range(74)],
-        [100.0] * (RECENT + LOOKBACK + 5),
-    ],
-    ids=["history_too_short", "one_below_minimum", "flat_lookback"],
-)
-def test_degenerate_history_returns_neutral_50(closes):
-    assert calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK) == 50.0
+def test_degenerate_history_returns_neutral_50():
+    for case_id, closes in [
+        ("history_too_short", [100.0 + i for i in range(50)]),
+        ("one_below_minimum", [100.0 + i for i in range(74)]),
+        ("flat_lookback", [100.0] * (RECENT + LOOKBACK + 5)),
+    ]:
+        assert calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK) == 50.0, \
+            f"test_degenerate_history_returns_neutral_50[{case_id}]"
 
 
 def test_boundary_exact_minimum_computes_rank():
@@ -42,21 +39,19 @@ def test_boundary_exact_minimum_computes_rank():
     assert rank != 50.0
 
 
-@pytest.mark.parametrize(
-    "schedule,seed,lo,hi,strict_lo,strict_hi",
-    [
-        ([0.005] * 76 + [0.08] * 14, 1, 90.0, 100.0, True, False),
-        ([0.08] * 76 + [0.001] * 14, 2, 0.0, 10.0, False, True),
-        ([0.02] * 76 + [0.04] * 14, 3, 0.0, 100.0, False, False),
-        (list(np.linspace(0.01, 0.05, 76)) + [0.03] * 14, 4, 20.0, 80.0, True, True),
-    ],
-    ids=["recent_spike", "recent_calm", "clamped_to_0_100", "middle_of_distribution"],
-)
-def test_rank_lands_in_expected_band(schedule, seed, lo, hi, strict_lo, strict_hi):
-    closes = _path_from_vol_schedule(schedule, seed=seed)
-    rank = calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK)
-    assert (rank > lo) if strict_lo else (rank >= lo), f"got {rank}, low bound {lo}"
-    assert (rank < hi) if strict_hi else (rank <= hi), f"got {rank}, high bound {hi}"
+def test_rank_lands_in_expected_band():
+    for case_id, (schedule, seed, lo, hi, strict_lo, strict_hi) in {
+        "recent_spike": ([0.005] * 76 + [0.08] * 14, 1, 90.0, 100.0, True, False),
+        "recent_calm": ([0.08] * 76 + [0.001] * 14, 2, 0.0, 10.0, False, True),
+        "clamped_to_0_100": ([0.02] * 76 + [0.04] * 14, 3, 0.0, 100.0, False, False),
+        "middle_of_distribution": (list(np.linspace(0.01, 0.05, 76)) + [0.03] * 14, 4,
+                                   20.0, 80.0, True, True),
+    }.items():
+        case = f"test_rank_lands_in_expected_band[{case_id}]"
+        closes = _path_from_vol_schedule(schedule, seed=seed)
+        rank = calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK)
+        assert (rank > lo) if strict_lo else (rank >= lo), f"{case}: got {rank}, low bound {lo}"
+        assert (rank < hi) if strict_hi else (rank <= hi), f"{case}: got {rank}, high bound {hi}"
 
 
 def _live_okx_iv_rank(closes: list, window: int = 14) -> float:

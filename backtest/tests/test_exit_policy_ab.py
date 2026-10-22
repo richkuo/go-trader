@@ -7,33 +7,29 @@ import pytest
 import exit_policy_ab as m
 
 
-@pytest.mark.parametrize(
-    "xs,n_pos,n_neg,n_zero,n,p_value",
-    [
-        ([0.5, 1.0, 2.0, 0.1, 0.3], 5, 0, 0, 5, 0.0625),
-        ([1.0, -1.0, 2.0, -2.0], 2, 2, 0, 4, 1.0),
-        ([0.0, 0.0, 1.0, 2.0], 2, 0, 2, 2, 0.5),
-        ([], 0, 0, 0, 0, 1.0),
-    ],
-    ids=["all_positive", "balanced", "zeros_dropped", "empty"],
-)
-def test_sign_test(xs, n_pos, n_neg, n_zero, n, p_value):
-    r = m.sign_test(xs)
-    assert r["n_pos"] == n_pos
-    assert r["n_neg"] == n_neg
-    assert r["n_zero"] == n_zero
-    assert r["n"] == n
-    assert r["p_value"] == pytest.approx(p_value, abs=1e-6)
+def test_sign_test():
+    for case_id, (xs, n_pos, n_neg, n_zero, n, p_value) in {
+        "all_positive": ([0.5, 1.0, 2.0, 0.1, 0.3], 5, 0, 0, 5, 0.0625),
+        "balanced": ([1.0, -1.0, 2.0, -2.0], 2, 2, 0, 4, 1.0),
+        "zeros_dropped": ([0.0, 0.0, 1.0, 2.0], 2, 0, 2, 2, 0.5),
+        "empty": ([], 0, 0, 0, 0, 1.0),
+    }.items():
+        case = f"test_sign_test[{case_id}]"
+        r = m.sign_test(xs)
+        assert r["n_pos"] == n_pos, case
+        assert r["n_neg"] == n_neg, case
+        assert r["n_zero"] == n_zero, case
+        assert r["n"] == n, case
+        assert r["p_value"] == pytest.approx(p_value, abs=1e-6), case
 
 
-def test_binom_p_large_n_no_overflow():
+def test_binom_p_large_n_no_overflow_and_log_space_matches_small_n_exact():
+    case = "test_binom_p_large_n_no_overflow"
     p = m._binom_two_sided_p(700, 2000)
-    assert 0.0 <= p <= 1.0
-    assert p < 1e-6
-    assert m._binom_two_sided_p(1000, 2000) > 0.9
+    assert 0.0 <= p <= 1.0, case
+    assert p < 1e-6, case
+    assert m._binom_two_sided_p(1000, 2000) > 0.9, case
 
-
-def test_binom_p_log_space_matches_small_n_exact():
     def direct(k, n, pr=0.5):
         def cdf(u):
             return sum(math.comb(n, i) * (pr ** i) * ((1.0 - pr) ** (n - i))
@@ -43,80 +39,72 @@ def test_binom_p_log_space_matches_small_n_exact():
         return min(1.0, 2.0 * min(lo, hi))
 
     for k, n in [(0, 5), (3, 10), (7, 8), (25, 60)]:
-        assert m._binom_two_sided_p(k, n) == pytest.approx(direct(k, n), rel=1e-9)
+        assert m._binom_two_sided_p(k, n) == pytest.approx(direct(k, n), rel=1e-9), \
+            f"test_binom_p_log_space_matches_small_n_exact[{k},{n}]"
 
 
-def test_signed_rank_all_positive_low_p():
+def test_signed_rank_low_p_symmetric_zeros_ties_and_empty():
+    case = "test_signed_rank_all_positive_low_p"
     r = m.wilcoxon_signed_rank([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
-    assert r["n"] == 8
-    assert r["w"] == pytest.approx(36.0)
-    assert r["z"] > 0
-    assert r["p_value"] < 0.05
+    assert r["n"] == 8, case
+    assert r["w"] == pytest.approx(36.0), case
+    assert r["z"] > 0, case
+    assert r["p_value"] < 0.05, case
 
-
-def test_signed_rank_symmetric_high_p():
     r = m.wilcoxon_signed_rank([1.0, -1.0, 2.0, -2.0, 3.0, -3.0])
-    assert r["p_value"] == pytest.approx(1.0, abs=0.05)
+    assert r["p_value"] == pytest.approx(1.0, abs=0.05), "test_signed_rank_symmetric_high_p"
 
-
-def test_signed_rank_drops_zeros():
     a = m.wilcoxon_signed_rank([0.0, 0.0, 1.0, 2.0, 3.0])
     b = m.wilcoxon_signed_rank([1.0, 2.0, 3.0])
-    assert a["n"] == b["n"] == 3
+    assert a["n"] == b["n"] == 3, "test_signed_rank_drops_zeros"
 
-
-def test_signed_rank_handles_ties():
+    case = "test_signed_rank_handles_ties"
     r = m.wilcoxon_signed_rank([1.0, 1.0, 1.0, -1.0, 2.0])
-    assert r["n"] == 5
-    assert 0.0 <= r["p_value"] <= 1.0
+    assert r["n"] == 5, case
+    assert 0.0 <= r["p_value"] <= 1.0, case
 
-
-def test_signed_rank_empty_is_undefined():
     r = m.wilcoxon_signed_rank([])
-    assert r["n"] == 0 and r["p_value"] == 1.0
+    assert r["n"] == 0 and r["p_value"] == 1.0, "test_signed_rank_empty_is_undefined"
 
 
-def test_bootstrap_point_is_mean_and_deterministic():
+def test_bootstrap_point_determinism_brackets_single_sample_and_empty():
+    case = "test_bootstrap_point_is_mean_and_deterministic"
     xs = [1.0, 2.0, 3.0, 4.0, 5.0]
     a = m.bootstrap_ci(xs, n_resamples=500, seed=7)
     b = m.bootstrap_ci(xs, n_resamples=500, seed=7)
-    assert a == b
-    assert a["point"] == pytest.approx(3.0)
-    assert a["lo"] <= a["point"] <= a["hi"]
+    assert a == b, case
+    assert a["point"] == pytest.approx(3.0), case
+    assert a["lo"] <= a["point"] <= a["hi"], case
 
-
-def test_bootstrap_point_is_seed_independent_and_brackets():
+    case = "test_bootstrap_point_is_seed_independent_and_brackets"
     xs = [1.0, -2.0, 3.0, -4.0, 5.0, 0.5]
     a = m.bootstrap_ci(xs, n_resamples=500, seed=1)
     b = m.bootstrap_ci(xs, n_resamples=500, seed=2)
-    assert a["point"] == b["point"]
-    assert a["lo"] <= a["point"] <= a["hi"]
-    assert b["lo"] <= b["point"] <= b["hi"]
+    assert a["point"] == b["point"], case
+    assert a["lo"] <= a["point"] <= a["hi"], case
+    assert b["lo"] <= b["point"] <= b["hi"], case
 
-
-def test_bootstrap_single_sample_collapses():
+    case = "test_bootstrap_single_sample_collapses"
     r = m.bootstrap_ci([2.5], n_resamples=100)
-    assert r["point"] == r["lo"] == r["hi"] == 2.5
-    assert r["n_resamples"] == 0
+    assert r["point"] == r["lo"] == r["hi"] == 2.5, case
+    assert r["n_resamples"] == 0, case
 
-
-def test_bootstrap_empty():
     r = m.bootstrap_ci([], n_resamples=100)
-    assert r["point"] is None and r["lo"] is None
+    assert r["point"] is None and r["lo"] is None, "test_bootstrap_empty"
 
 
-def test_unpaired_diff_point_is_difference_of_means():
+def test_unpaired_diff_difference_of_means_and_one_empty_arm():
+    case = "test_unpaired_diff_point_is_difference_of_means"
     control = [1.0, 1.0, 1.0, 1.0]
     candidate = [3.0, 3.0, 3.0, 3.0]
     r = m.unpaired_diff_ci(control, candidate, n_resamples=300, seed=3)
-    assert r["point"] == pytest.approx(2.0)
-    assert r["lo"] == pytest.approx(2.0) and r["hi"] == pytest.approx(2.0)
+    assert r["point"] == pytest.approx(2.0), case
+    assert r["lo"] == pytest.approx(2.0) and r["hi"] == pytest.approx(2.0), case
 
-
-def test_unpaired_diff_one_empty_arm():
+    case = "test_unpaired_diff_one_empty_arm"
     r = m.unpaired_diff_ci([], [2.0, 4.0], n_resamples=10)
-    assert r["point"] == pytest.approx(3.0)
-    assert r["lo"] is None
+    assert r["point"] == pytest.approx(3.0), case
+    assert r["lo"] is None, case
 
 
 def _leg(entry_date="2025-01-01", side="long", pnl_pct=2.0, shares=1.0,
@@ -130,31 +118,30 @@ def _leg(entry_date="2025-01-01", side="long", pnl_pct=2.0, shares=1.0,
     }
 
 
-def test_collapse_single_leg_matches_trade_metrics_net():
+def test_collapse_single_multi_leg_and_empty_entries():
+    case = "test_collapse_single_leg_matches_trade_metrics_net"
     leg = _leg()
     rec = m.collapse_entry([leg])
     tm = m.trade_metrics(leg)
-    assert rec["net_pct"] == pytest.approx(tm["net_pct"])
-    assert rec["side"] == "long" and rec["n_legs"] == 1
-    assert rec["mfe_pct"] == 3.0 and rec["mae_pct"] == -1.0
+    assert rec["net_pct"] == pytest.approx(tm["net_pct"]), case
+    assert rec["side"] == "long" and rec["n_legs"] == 1, case
+    assert rec["mfe_pct"] == 3.0 and rec["mae_pct"] == -1.0, case
 
-
-def test_collapse_multi_leg_notional_weighted():
+    case = "test_collapse_multi_leg_notional_weighted"
     leg_a = _leg(shares=3.0, pnl_pct=1.0, mfe_pct=2.0, mae_pct=-0.5, bars_held=4,
                  entry_fee=0.0, exit_fee=0.0, exit_price=101.0)
     leg_b = _leg(shares=1.0, pnl_pct=5.0, mfe_pct=6.0, mae_pct=-2.0, bars_held=9,
                  entry_fee=0.0, exit_fee=0.0, exit_price=105.0)
     rec = m.collapse_entry([leg_a, leg_b])
-    assert rec["net_pct"] == pytest.approx(2.0, abs=1e-6)
-    assert rec["mfe_pct"] == 6.0
-    assert rec["mae_pct"] == -2.0
-    assert rec["bars_held"] == 9
-    assert rec["n_legs"] == 2
+    assert rec["net_pct"] == pytest.approx(2.0, abs=1e-6), case
+    assert rec["mfe_pct"] == 6.0, case
+    assert rec["mae_pct"] == -2.0, case
+    assert rec["bars_held"] == 9, case
+    assert rec["n_legs"] == 2, case
 
-
-def test_collapse_empty_returns_none():
-    assert m.collapse_entry([]) is None
-    assert m.collapse_entry([None]) is None
+    case = "test_collapse_empty_returns_none"
+    assert m.collapse_entry([]) is None, case
+    assert m.collapse_entry([None]) is None, case
 
 
 def test_group_and_free_arm_entries_orders_by_entry():
@@ -170,7 +157,7 @@ def test_group_and_free_arm_entries_orders_by_entry():
     assert [e["entry_date"] for e in entries] == ["2025-01-01", "2025-01-05"]
 
 
-def test_build_paired_rows_pairs_and_counts_unmatched():
+def test_build_paired_rows_pairs_counts_unmatched_and_labels_unknown_regime():
     control = [
         {"entry_date": "d1", "side": "long", "net_pct": 1.0, "mfe_pct": 2.0,
          "mae_pct": -1.0, "bars_held": 3},
@@ -188,14 +175,12 @@ def test_build_paired_rows_pairs_and_counts_unmatched():
     assert rows[0]["regime"] == "ranging_quiet"
     assert rows[0]["delta_net_pct"] == pytest.approx(1.5)
 
-
-def test_build_paired_rows_unknown_regime_label():
     control = [{"entry_date": "d1", "side": "long", "net_pct": 1.0, "mfe_pct": 1.0,
                 "mae_pct": -1.0, "bars_held": 2}]
     rows, _ = m.build_paired_rows(
         control, {"d1": {"net_pct": 1.0, "mfe_pct": 1.0, "mae_pct": -1.0,
                          "bars_held": 2}}, {})
-    assert rows[0]["regime"] == m.UNKNOWN_REGIME
+    assert rows[0]["regime"] == m.UNKNOWN_REGIME, "test_build_paired_rows_unknown_regime_label"
 
 
 def _row(regime, ctrl, cand, mfe=2.0, mae=-1.0):
@@ -207,7 +192,7 @@ def _row(regime, ctrl, cand, mfe=2.0, mae=-1.0):
             "candidate_bars_held": 3}
 
 
-def test_per_regime_table_buckets_and_all_and_sorted():
+def test_per_regime_table_buckets_all_sorted_and_win_rate_delta():
     rows = [
         _row("trending", 1.0, 2.0),
         _row("ranging", 0.0, -1.0),
@@ -220,16 +205,15 @@ def test_per_regime_table_buckets_and_all_and_sorted():
     assert table["by_regime"]["trending"]["candidate_mean_net_pct"] == pytest.approx(3.0)
     assert table["all"]["paired_delta"]["mean"] == pytest.approx(2.0 / 3.0, abs=1e-6)
 
-
-def test_per_regime_win_rate_delta():
+    case = "test_per_regime_win_rate_delta"
     rows = [_row("r", -1.0, 1.0), _row("r", -2.0, 2.0)]
     blk = m.per_regime_table(rows)["by_regime"]["r"]
-    assert blk["control_win_rate"] == 0.0
-    assert blk["candidate_win_rate"] == 1.0
-    assert blk["delta_win_rate"] == pytest.approx(1.0)
+    assert blk["control_win_rate"] == 0.0, case
+    assert blk["candidate_win_rate"] == 1.0, case
+    assert blk["delta_win_rate"] == pytest.approx(1.0), case
 
 
-def test_arm_summary_passes_max_dd_and_computes_winrate():
+def test_arm_summary_passes_max_dd_computes_winrate_and_handles_none():
     results = {
         "total_trades": 2, "total_return_pct": 5.0, "max_drawdown_pct": -3.0,
         "sharpe_ratio": 1.2, "liquidated": False,
@@ -241,15 +225,13 @@ def test_arm_summary_passes_max_dd_and_computes_winrate():
     assert s["max_drawdown_pct"] == -3.0
     assert 0.0 <= s["win_rate"] <= 1.0
 
-
-def test_arm_summary_none_results():
     s = m.arm_summary(None)
-    assert s["entries"] == 0 and s["win_rate"] is None and s["max_drawdown_pct"] is None
+    assert s["entries"] == 0 and s["win_rate"] is None and s["max_drawdown_pct"] is None, \
+        "test_arm_summary_none_results"
 
 
-@pytest.mark.parametrize(
-    "candidate,expected",
-    [
+def test_candidate_is_replayable():
+    for candidate, expected in [
         ([{"name": "atr_stop", "params": {}}], True),
         ([{"name": "tiered_tp_atr", "params": {}},
           {"name": "trailing_stop_atr_mult", "params": {"atr_mult": 3}}], False),
@@ -262,22 +244,19 @@ def test_arm_summary_none_results():
         ([{"name": "some_signal_reversal_close"}], False),
         ([{"name": "tiered_tp_atr_live_regime"}], False),
         ([{"name": "tiered_tp_atr_live_regime_dynamic"}], False),
-    ],
-)
-def test_candidate_is_replayable(candidate, expected):
-    assert bool(m.candidate_is_replayable(candidate)) is expected
+    ]:
+        assert bool(m.candidate_is_replayable(candidate)) is expected, \
+            f"test_candidate_is_replayable[{candidate}-{expected}]"
 
 
-def test_paired_delta_summary_shape():
+def test_paired_delta_summary_shape_and_empty():
     s = m.paired_delta_summary([1.0, 2.0, -0.5, 3.0], n_resamples=200, seed=9)
     assert set(s) == {"n", "mean", "median", "sign_test", "signed_rank", "bootstrap"}
     assert s["n"] == 4
     assert s["sign_test"]["n_pos"] == 3 and s["sign_test"]["n_neg"] == 1
 
-
-def test_paired_delta_summary_empty():
     s = m.paired_delta_summary([])
-    assert s["n"] == 0 and s["mean"] is None
+    assert s["n"] == 0 and s["mean"] is None, "test_paired_delta_summary_empty"
 
 
 def _regime_args(classifier=None, windows_json=None, period=14, adx=20.0, gate_window=None):
@@ -300,25 +279,23 @@ _CONFIG_WINDOWS = {"medium": {"classifier": "composite", "period": 14}}
 _EXPLICIT_WINDOWS = {"fast": {"classifier": "composite", "period": 7}}
 
 
-@pytest.mark.parametrize(
-    "args,config,classifier,windows_spec",
-    [
-        (_regime_args(), {}, "adx", None),
-        (_regime_args(), {"windows": _CONFIG_WINDOWS}, "composite", _CONFIG_WINDOWS),
-        (_regime_args(windows_json=json.dumps(_EXPLICIT_WINDOWS)), {},
-         "composite", _EXPLICIT_WINDOWS),
-        (_regime_args(classifier="adx"), {"windows": _CONFIG_WINDOWS}, "adx", None),
-    ],
-    ids=["adx_default", "inherits_config_windows",
-         "explicit_windows_json_wins", "explicit_adx_overrides_config_windows"],
-)
-def test_resolve_regime_cfg(args, config, classifier, windows_spec):
-    cfg = m.resolve_regime_cfg(args, config)
-    assert cfg["classifier"] == classifier
-    assert cfg["windows_spec"] == windows_spec
+def test_resolve_regime_cfg():
+    for case_id, (args, config, classifier, windows_spec) in {
+        "adx_default": (_regime_args(), {}, "adx", None),
+        "inherits_config_windows": (_regime_args(), {"windows": _CONFIG_WINDOWS},
+                                    "composite", _CONFIG_WINDOWS),
+        "explicit_windows_json_wins": (_regime_args(windows_json=json.dumps(_EXPLICIT_WINDOWS)), {},
+                                       "composite", _EXPLICIT_WINDOWS),
+        "explicit_adx_overrides_config_windows": (_regime_args(classifier="adx"),
+                                                  {"windows": _CONFIG_WINDOWS}, "adx", None),
+    }.items():
+        case = f"test_resolve_regime_cfg[{case_id}]"
+        cfg = m.resolve_regime_cfg(args, config)
+        assert cfg["classifier"] == classifier, case
+        assert cfg["windows_spec"] == windows_spec, case
 
 
-def test_stops_from_kwargs_collects_all_present_and_drops_none():
+def test_stops_from_kwargs_collects_present_drops_none_and_empty_without_stops():
     kwargs = {
         "open_strategy": {"name": "x", "params": {}},
         "close_strategies": [{"name": "tiered_tp_atr", "params": {}}],
@@ -335,9 +312,8 @@ def test_stops_from_kwargs_collects_all_present_and_drops_none():
                      "trailing_stop_atr_mult_regime": {"trending_up": 2.0, "ranging_quiet": 3.0}}
     assert all(v is not None for v in stops.values())
 
-
-def test_stops_from_kwargs_empty_when_no_stops():
-    assert m._stops_from_kwargs({"open_strategy": {}, "close_strategies": None}) == {}
+    assert m._stops_from_kwargs({"open_strategy": {}, "close_strategies": None}) == {}, \
+        "test_stops_from_kwargs_empty_when_no_stops"
 
 
 def test_candidate_stops_inherit_copies_and_drop_clears():
@@ -348,28 +324,27 @@ def test_candidate_stops_inherit_copies_and_drop_clears():
     assert m._candidate_stops("inherit", None) == {}
 
 
-def test_backtester_kwargs_threads_present_stops_only():
+def test_backtester_kwargs_threads_present_stops_only_none_and_regime_trailing():
+    case = "test_backtester_kwargs_threads_present_stops_only"
     kw = m._backtester_kwargs(
         "sqz", {}, [{"name": "tiered_tp_atr", "params": {}}], "long", 10000.0,
         {"allowed_regimes": None}, stops={"stop_loss_atr_mult": 1.5})
-    assert kw["stop_loss_atr_mult"] == 1.5
-    assert "trailing_stop_atr_mult" not in kw
-    assert "stop_loss_pct" not in kw
+    assert kw["stop_loss_atr_mult"] == 1.5, case
+    assert "trailing_stop_atr_mult" not in kw, case
+    assert "stop_loss_pct" not in kw, case
 
-
-def test_backtester_kwargs_no_stops_means_no_stop_keys():
     kw = m._backtester_kwargs("sqz", {}, None, "long", 10000.0,
                               {"allowed_regimes": None}, stops=None)
-    assert not any(k in kw for k in m.STOP_FIELD_KEYS)
+    assert not any(k in kw for k in m.STOP_FIELD_KEYS), \
+        "test_backtester_kwargs_no_stops_means_no_stop_keys"
 
-
-def test_backtester_kwargs_threads_regime_trailing_stop_with_open_as_close():
+    case = "test_backtester_kwargs_threads_regime_trailing_stop_with_open_as_close"
     regime_trail = {"trending_up": 2.0, "ranging_quiet": 3.0}
     kw = m._backtester_kwargs("sqz", {}, None, "long", 10000.0,
                               {"allowed_regimes": None},
                               stops={"trailing_stop_atr_mult_regime": regime_trail})
-    assert kw["close_strategies"] is None
-    assert kw["trailing_stop_atr_mult_regime"] == regime_trail
+    assert kw["close_strategies"] is None, case
+    assert kw["trailing_stop_atr_mult_regime"] == regime_trail, case
 
 
 def test_control_keeps_stop_regardless_of_candidate_mode():
@@ -400,15 +375,25 @@ def _spec_args(extra=None):
     return m.build_parser().parse_args(base + (extra or []))
 
 
-def test_resolve_spec_explicit_path_has_no_stops():
-    spec = m._resolve_spec(_spec_args())
-    assert spec["control_stops"] == {} and spec["candidate_stops"] == {}
-    assert spec["candidate_stops_mode"] == "inherit"
-
-
 _MULTI_WINDOW = ('{"fast":{"classifier":"composite","period":7},'
                  '"slow":{"classifier":"composite","period":21}}')
 _SINGLE_WINDOW = '{"slow":{"classifier":"composite","period":21}}'
+
+
+def test_resolve_spec_explicit_path_has_no_stops_and_accepts_valid_gate_windows():
+    case = "test_resolve_spec_explicit_path_has_no_stops"
+    spec = m._resolve_spec(_spec_args())
+    assert spec["control_stops"] == {} and spec["candidate_stops"] == {}, case
+    assert spec["candidate_stops_mode"] == "inherit", case
+
+    spec = m._resolve_spec(_spec_args(["--regime-windows-json", _MULTI_WINDOW]))
+    assert len(spec["regime_cfg"]["windows_spec"]) == 2, \
+        "test_multi_window_without_gate_window_is_allowed"
+
+    spec = m._resolve_spec(_spec_args(["--regime-windows-json", _SINGLE_WINDOW,
+                                       "--gate-window", "slow"]))
+    assert list(spec["regime_cfg"]["windows_spec"].keys()) == ["slow"], \
+        "test_gate_window_on_single_window_spec_naming_that_window_ok"
 
 
 @pytest.mark.parametrize(
@@ -424,17 +409,6 @@ def test_gate_window_rejected(windows_json, gate_window):
     with pytest.raises(SystemExit):
         m._resolve_spec(_spec_args(["--regime-windows-json", windows_json,
                                     "--gate-window", gate_window]))
-
-
-def test_multi_window_without_gate_window_is_allowed():
-    spec = m._resolve_spec(_spec_args(["--regime-windows-json", _MULTI_WINDOW]))
-    assert len(spec["regime_cfg"]["windows_spec"]) == 2
-
-
-def test_gate_window_on_single_window_spec_naming_that_window_ok():
-    spec = m._resolve_spec(_spec_args(["--regime-windows-json", _SINGLE_WINDOW,
-                                       "--gate-window", "slow"]))
-    assert list(spec["regime_cfg"]["windows_spec"].keys()) == ["slow"]
 
 
 @pytest.mark.parametrize(
@@ -469,27 +443,26 @@ def test_no_reject_when_entry_shapers_absent_or_falsy():
          "profile_allocation": {}})
 
 
-def test_stop_candidate_stacks_under_inherited_stop():
+def test_candidate_stacks_on_inherited_stop_only_for_stop_candidates_with_an_inherited_stop():
+    case = "test_stop_candidate_stacks_under_inherited_stop"
     assert m._candidate_stacks_on_inherited_stop(
-        [{"name": "atr_stop", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5})
+        [{"name": "atr_stop", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5}), case
     assert m._candidate_stacks_on_inherited_stop(
         [{"name": "trailing_stop_atr_mult_regime", "params": {}}], "inherit",
-        {"trailing_stop_atr_mult": 2.0})
+        {"trailing_stop_atr_mult": 2.0}), case
 
+    case = "test_tp_ladder_candidate_does_not_stack"
+    assert not m._candidate_stacks_on_inherited_stop(
+        [{"name": "tiered_tp_atr", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5}), case
+    assert not m._candidate_stacks_on_inherited_stop(
+        [{"name": "zscore_target", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5}), case
 
-def test_tp_ladder_candidate_does_not_stack():
+    case = "test_no_stack_warning_when_dropped_or_no_inherited_stop"
     assert not m._candidate_stacks_on_inherited_stop(
-        [{"name": "tiered_tp_atr", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5})
+        [{"name": "atr_stop", "params": {}}], "drop", {"stop_loss_atr_mult": 1.5}), case
     assert not m._candidate_stacks_on_inherited_stop(
-        [{"name": "zscore_target", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5})
-
-
-def test_no_stack_warning_when_dropped_or_no_inherited_stop():
-    assert not m._candidate_stacks_on_inherited_stop(
-        [{"name": "atr_stop", "params": {}}], "drop", {"stop_loss_atr_mult": 1.5})
-    assert not m._candidate_stacks_on_inherited_stop(
-        [{"name": "atr_stop", "params": {}}], "inherit", {})
-    assert not m._candidate_stacks_on_inherited_stop(None, "inherit", {"stop_loss_atr_mult": 1.5})
+        [{"name": "atr_stop", "params": {}}], "inherit", {}), case
+    assert not m._candidate_stacks_on_inherited_stop(None, "inherit", {"stop_loss_atr_mult": 1.5}), case
 
 
 def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):

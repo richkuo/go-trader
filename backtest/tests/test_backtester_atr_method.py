@@ -1,3 +1,4 @@
+import contextlib
 import json
 import pathlib
 import sys
@@ -37,20 +38,26 @@ def _base_config(global_atr=None, strategy_atr=None):
     return cfg
 
 
-def test_backtester_rejects_unknown_atr_method():
-    with pytest.raises(ValueError, match="atr_method"):
+@contextlib.contextmanager
+def _raises_for(case, exc=ValueError, match=None):
+    try:
+        with pytest.raises(exc, match=match) as info:
+            yield info
+    except (AssertionError, pytest.fail.Exception) as err:
+        raise AssertionError(f"{case}: {err}") from None
+
+
+def test_backtester_normalizes_and_rejects_atr_method():
+    with _raises_for("test_backtester_rejects_unknown_atr_method", match="atr_method"):
         Backtester(atr_method="rma")
-
-
-@pytest.mark.parametrize("raw,want", [
-    ("simple", "simple"),
-    ("wilder", "wilder"),
-    (" Wilder ", "wilder"),
-    ("", "simple"),
-    (None, "simple"),
-])
-def test_backtester_normalizes_atr_method(raw, want):
-    assert Backtester(atr_method=raw).atr_method == want
+    for raw, want in [
+        ("simple", "simple"),
+        ("wilder", "wilder"),
+        (" Wilder ", "wilder"),
+        ("", "simple"),
+        (None, "simple"),
+    ]:
+        assert Backtester(atr_method=raw).atr_method == want, f"test_backtester_normalizes_atr_method[{raw!r}]"
 
 
 def _big_ohlcv(n=80, seed=3):
@@ -83,24 +90,21 @@ def test_wilder_changes_stamped_entry_atr():
     )
 
 
-@pytest.mark.parametrize("global_atr,strategy_atr,want", [
-    (None, None, "simple"),
-    ("wilder", None, "wilder"),
-    ("wilder", "simple", "simple"),
-])
-def test_config_resolves_atr_method(tmp_path, global_atr, strategy_atr, want):
-    kwargs = run_backtest.load_strategy_config(
-        _write_config(tmp_path, _base_config(global_atr=global_atr, strategy_atr=strategy_atr)),
-        "hl-temacb-btc")
-    assert kwargs["atr_method"] == want
-
-
-@pytest.mark.parametrize("global_atr,strategy_atr", [
-    ("rma", None),
-    ("simple", "bogus"),
-])
-def test_config_rejects_unknown_atr_method(tmp_path, global_atr, strategy_atr):
-    with pytest.raises(ValueError, match="atr_method"):
-        run_backtest.load_strategy_config(
+def test_config_resolves_and_rejects_atr_method(tmp_path):
+    for global_atr, strategy_atr, want in [
+        (None, None, "simple"),
+        ("wilder", None, "wilder"),
+        ("wilder", "simple", "simple"),
+    ]:
+        kwargs = run_backtest.load_strategy_config(
             _write_config(tmp_path, _base_config(global_atr=global_atr, strategy_atr=strategy_atr)),
             "hl-temacb-btc")
+        assert kwargs["atr_method"] == want, f"test_config_resolves_atr_method[{global_atr}-{strategy_atr}]"
+    for global_atr, strategy_atr in [
+        ("rma", None),
+        ("simple", "bogus"),
+    ]:
+        with _raises_for(f"test_config_rejects_unknown_atr_method[{global_atr}-{strategy_atr}]", match="atr_method"):
+            run_backtest.load_strategy_config(
+                _write_config(tmp_path, _base_config(global_atr=global_atr, strategy_atr=strategy_atr)),
+                "hl-temacb-btc")
