@@ -110,6 +110,7 @@ type ControllerStatus struct {
 	RelayConnections  int       `json:"relay_connections"`
 	RulesVerifiedAt   time.Time `json:"rules_verified_at,omitempty"`
 	RulesError        string    `json:"rules_error,omitempty"`
+	StatusRelayErrors []string  `json:"status_relay_errors,omitempty"`
 	ControllerVersion string    `json:"controller_version"`
 }
 

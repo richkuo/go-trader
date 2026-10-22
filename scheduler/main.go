@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"math"
@@ -162,7 +163,7 @@ func main() {
 		os.Exit(1)
 	}
 	exportRobinhoodSessionDir(*configPath, cfg)
-	if code := startEgress(cfg, false); code != 0 {
+	if code := startEgress(cfg, *configPath, false); code != 0 {
 		os.Exit(code)
 	}
 	statusBindHost := resolveStatusBindHost(*statusBindFlag)
@@ -620,7 +621,9 @@ func main() {
 	}
 
 	if d := notifier.DiscordBackend(); d != nil {
-		if err := d.RegisterSlashCommands(server, cfg); err != nil {
+		if err := d.RegisterSlashCommands(server, cfg); errors.Is(err, errSlashCommandsDeferred) {
+			fmt.Printf("[WARN] Discord slash commands: %v\n", err)
+		} else if err != nil {
 			fmt.Printf("[WARN] Discord slash command registration failed: %v\n", err)
 			if notifier.HasOwner() {
 				notifier.SendOwnerDM("[slash] registration failed: " + err.Error())

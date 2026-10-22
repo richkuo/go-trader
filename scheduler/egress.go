@@ -509,14 +509,20 @@ func egressStartupCheck(ctx context.Context, hosts []string) error {
 		conn, err := d.DialContext(cctx, "tcp", net.JoinHostPort(host, "443"))
 		if err != nil {
 			cancel()
-			return fmt.Errorf("startup check %s through the proxy: %s", host, r.redact(err.Error()))
+			return &egressStartupError{
+				msg:    fmt.Sprintf("startup check %s through the proxy: %s", host, r.redact(err.Error())),
+				reason: "startup check " + host + ": " + egressFailureClass(err),
+			}
 		}
 		tc := tls.Client(conn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
 		err = tc.HandshakeContext(cctx)
 		_ = tc.Close()
 		cancel()
 		if err != nil {
-			return fmt.Errorf("startup check %s through the proxy: TLS handshake: %s", host, r.redact(err.Error()))
+			return &egressStartupError{
+				msg:    fmt.Sprintf("startup check %s through the proxy: TLS handshake: %s", host, r.redact(err.Error())),
+				reason: "startup check " + host + ": TLS handshake failed",
+			}
 		}
 		fmt.Printf("[egress] startup check: %s reachable through %s\n", host, r.endpoint.Redacted())
 	}
@@ -552,6 +558,24 @@ func egressPythonFamilies(cfg *Config) []string {
 	return out
 }
 
+type egressStartupError struct {
+	msg    string
+	reason string
+}
+
+func (e *egressStartupError) Error() string { return e.msg }
+
+func egressFailureClass(err error) string {
+	var pe *egresspolicy.ProxyError
+	if !errors.As(err, &pe) {
+		return "the proxy connection failed"
+	}
+	if pe.Transport {
+		return pe.Stage + ": the proxy connection failed"
+	}
+	return pe.Stage + ": " + pe.Reason
+}
+
 func egressPythonPolicyCheck(ctx context.Context, families []string) error {
 	if !processEgress.isActive() {
 		return nil
@@ -563,7 +587,8 @@ func egressPythonPolicyCheck(ctx context.Context, families []string) error {
 		if detail == "" {
 			detail = strings.TrimSpace(string(stderr))
 		}
-		return fmt.Errorf("python client policy check (%s): %s", strings.Join(families, ", "), processEgress.redact(detail))
+		check := fmt.Sprintf("python client policy check (%s)", strings.Join(families, ", "))
+		return &egressStartupError{msg: check + ": " + processEgress.redact(detail), reason: check + " failed"}
 	}
 	fmt.Printf("[egress] python client policy check passed: %s\n", strings.Join(families, ", "))
 	return nil

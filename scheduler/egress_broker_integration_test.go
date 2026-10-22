@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -29,7 +30,30 @@ type fakeNotifyServices struct {
 	bodies   map[string][]string
 	gateway  *websocket.Conn
 	gwReady  chan struct{}
+	gwOnce   sync.Once
+	gwOpens  int
 	seq      int
+
+	gatewayDown bool
+	selfDown    bool
+}
+
+func (f *fakeNotifyServices) setDown(gateway, self bool) {
+	f.mu.Lock()
+	f.gatewayDown, f.selfDown = gateway, self
+	f.mu.Unlock()
+}
+
+func (f *fakeNotifyServices) down() (bool, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gatewayDown, f.selfDown
+}
+
+func (f *fakeNotifyServices) opens() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gwOpens
 }
 
 func (f *fakeNotifyServices) record(key, body string) {
@@ -71,6 +95,11 @@ func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyService
 		path := r.URL.Path
 		switch {
 		case host == "gateway.discord.gg":
+			if gwDown, _ := f.down(); gwDown {
+				f.record("discord.gateway_refused", "")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			c, err := upgrader.Upgrade(w, r, nil)
 			if err != nil {
 				return
@@ -83,8 +112,9 @@ func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyService
 			f.mu.Lock()
 			f.gateway = c
 			f.seq = 1
+			f.gwOpens++
 			f.mu.Unlock()
-			close(f.gwReady)
+			f.gwOnce.Do(func() { close(f.gwReady) })
 			go func() {
 				for {
 					if _, _, err := c.ReadMessage(); err != nil {
@@ -95,6 +125,14 @@ func startFakeNotifyServices(t *testing.T, ca *egressTestCA) (*fakeNotifyService
 			return
 		case host == "discord.com" && strings.HasSuffix(path, "/gateway"):
 			_, _ = io.WriteString(w, `{"url":"wss://gateway.discord.gg"}`)
+		case host == "discord.com" && strings.HasSuffix(path, "/users/@me"):
+			if _, selfDown := f.down(); selfDown {
+				f.record("discord.self_refused", "")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			f.record("discord.self", "")
+			_, _ = io.WriteString(w, `{"id":"999","username":"fixture-bot","bot":true}`)
 		case host == "discord.com" && strings.HasSuffix(path, "/users/@me/channels"):
 			f.record("discord.dm_channel", string(body))
 			_, _ = io.WriteString(w, `{"id":"5001","type":1}`)
@@ -315,5 +353,153 @@ func TestEgressDirectNotificationsUseTheIsolatedBroker(t *testing.T) {
 	st := processEgress.status()
 	if st.Tunnels != 0 {
 		t.Fatalf("notification traffic used the venue proxy: %+v", st)
+	}
+}
+
+func TestEgressBrokerSlashCommandsSurviveALateDiscordGateway(t *testing.T) {
+	ca := newEgressTestCA(t)
+	services, addr := startFakeNotifyServices(t, ca)
+	services.setDown(true, true)
+	notifyProxy := startEgressTestProxy(t, "http", "", "", addr, nil)
+
+	closed, _ := net.Listen("tcp", "127.0.0.1:0")
+	_, deadPort, _ := net.SplitHostPort(closed.Addr().String())
+	closed.Close()
+	sentinel := egressSentinel(t)
+	installTestEgress(t, "http://"+egressTestUser+":"+sentinel+"@localhost:"+deadPort, ca.pool, nil)
+
+	sockDir, err := os.MkdirTemp("/tmp", "egl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "broker.sock")
+
+	t.Setenv("DISCORD_BOT_TOKEN", "fixture-discord-"+sentinel)
+	t.Setenv("TELEGRAM_BOT_TOKEN", "fixture-telegram-"+sentinel)
+	t.Setenv("GO_TRADER_GITHUB_TOKEN", "")
+	ep, err := egresspolicy.ParseProxyURL(notifyProxy.url("localhost"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	startBroker := func() func() {
+		broker := notifybroker.NewBrokerFromEnv(os.Getuid(), sock, egresspolicy.NewDialer(ep), []string{"discord", "telegram"})
+		broker.TLSConfig = &tls.Config{RootCAs: ca.pool, MinVersion: tls.VersionTLS12}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- broker.Run(ctx) }()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(sock); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the broker socket never appeared")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				cancel()
+				<-done
+			})
+		}
+	}
+	stopBroker := startBroker()
+	t.Cleanup(func() { stopBroker() })
+
+	processEgress.mu.Lock()
+	processEgress.notificationsDirect = true
+	processEgress.attestation = &egresspolicy.Attestation{Notify: &egresspolicy.NotifyAttestation{Socket: sock, BrokerUID: os.Getuid()}}
+	processEgress.mu.Unlock()
+	t.Cleanup(func() { setProcessNotifyBroker(nil) })
+	prevWait, prevRetry := slashIdentityWait, slashRegisterFirstRetry
+	slashIdentityWait, slashRegisterFirstRetry = 2*time.Second, 500*time.Millisecond
+	t.Cleanup(func() { slashIdentityWait, slashRegisterFirstRetry = prevWait, prevRetry })
+
+	cfg := &Config{
+		Discord:  DiscordConfig{Enabled: true, OwnerID: "424242"},
+		Telegram: TelegramConfig{Enabled: true, OwnerChatID: "777"},
+	}
+	notifier, cleanup := buildNotifierFromConfig(cfg)
+	defer cleanup()
+	d := notifier.DiscordBackend()
+	if d == nil || notifier.BackendCount() != 2 {
+		t.Fatalf("broker backends = %d, want Discord and Telegram", notifier.BackendCount())
+	}
+
+	err = d.RegisterSlashCommands(nil, cfg)
+	if !errors.Is(err, errSlashCommandsDeferred) {
+		t.Fatalf("registration with no Discord identity = %v, want the deferred registration", err)
+	}
+	t.Logf("case: the broker never connects to Discord: RegisterSlashCommands returned the one deferred warning: %v", err)
+	if len(services.bodiesFor("discord.commands")) != 0 {
+		t.Fatal("commands were registered without an application identity")
+	}
+	notifier.SendOwnerDM("gateway down drill")
+	if got := services.bodiesFor("discord.message:/api/v9/channels/5001/messages"); len(got) != 1 || !strings.Contains(got[0], "gateway down drill") {
+		t.Fatalf("owner DM while the gateway is down: %v (requests %v)", got, services.requests)
+	}
+	if got := services.bodiesFor("telegram.sendMessage"); len(got) != 1 || !strings.Contains(got[0], "gateway down drill") {
+		t.Fatalf("telegram owner message while the gateway is down: %v", got)
+	}
+	if len(services.bodiesFor("discord.gateway_refused")) == 0 {
+		t.Fatal("the broker never tried the gateway")
+	}
+	t.Log("case: the broker never connects to Discord: owner DM and Telegram message delivered while the gateway was refused")
+
+	waitFor := func(desc string, timeout time.Duration, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(timeout)
+		for !ok() {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: timed out; requests %v", desc, services.requests)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	interaction := func(id string) map[string]any {
+		return map[string]any{
+			"id": id, "application_id": "999", "type": 2, "token": "tok-" + id,
+			"user": map[string]any{"id": "424242", "username": "owner"},
+			"data": map[string]any{"id": "c" + id, "name": "go-trader-health", "type": 1},
+		}
+	}
+	answered := func(id string) func() bool {
+		key := "discord.callback:/api/v9/interactions/" + id + "/tok-" + id + "/callback"
+		return func() bool {
+			got := services.bodiesFor(key)
+			return len(got) > 0 && strings.Contains(got[0], "status server not wired")
+		}
+	}
+
+	services.setDown(false, false)
+	select {
+	case <-services.gwReady:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the broker never opened the Discord gateway after it came back; requests %v", services.requests)
+	}
+	waitFor("background slash command registration", 30*time.Second, func() bool { return len(services.bodiesFor("discord.commands")) == 1 })
+	services.dispatch(t, "INTERACTION_CREATE", interaction("901"))
+	waitFor("the owner command after a late gateway", 10*time.Second, answered("901"))
+	t.Log("case: the broker opens Discord after the registration wait ran out: commands registered in the background and /health answered")
+
+	stopBroker()
+	stopBroker = startBroker()
+	waitFor("the restarted broker opens the gateway", 30*time.Second, func() bool { return services.opens() >= 2 })
+	waitFor("the scheduler reconnects to the restarted broker", 30*time.Second, func() bool {
+		sess := processNotifyBroker()
+		return sess != nil && sess.client.Connected()
+	})
+	time.Sleep(500 * time.Millisecond)
+	services.dispatch(t, "INTERACTION_CREATE", interaction("902"))
+	waitFor("the owner command after a broker restart", 10*time.Second, answered("902"))
+	t.Log("case: the broker restarts after a successful registration: /health answered again after it reconnected")
+
+	for _, key := range services.requests {
+		if strings.HasPrefix(key, "unexpected:") {
+			t.Fatalf("unexpected request %s", key)
+		}
 	}
 }

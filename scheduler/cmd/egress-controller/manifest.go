@@ -204,8 +204,10 @@ func (m *Manifest) validate() error {
 	return nil
 }
 
+const workerNamespacePrefix = "go-trader-egress-"
+
 func (m *Manifest) namespaceName() string {
-	return "go-trader-egress-" + m.Deployment
+	return workerNamespacePrefix + m.Deployment
 }
 
 func (m *Manifest) notifyNamespaceName() string {

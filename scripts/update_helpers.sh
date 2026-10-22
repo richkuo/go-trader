@@ -1381,6 +1381,24 @@ update_egress_wait_ready() {
     return 1
 }
 
+update_egress_wait_answering() {
+    local deployment="$1" timeout="${2:-30}" waited=0 bin out
+    bin=$(update_egress_controller_path "$deployment")
+    while [[ $waited -lt $timeout ]]; do
+        out=$("$bin" status --manifest "$UPDATE_EGRESS_MANIFEST_DIR/$deployment.json" 2>/dev/null || true)
+        if grep -q '"deployment": *"'"$deployment"'"' <<<"$out"; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
+update_egress_restart_controller() {
+    systemctl restart --job-mode=ignore-dependencies "go-trader-egress@$1.service"
+}
+
 update_egress_switch_controller() {
     local deployment="$1" staged="$2" cur
     cur=$(update_egress_controller_path "$deployment")
@@ -1396,7 +1414,7 @@ update_egress_switch_controller() {
     fi
     install -o root -g root -m 0755 "$staged" "$cur.tmp" && mv -f "$cur.tmp" "$cur" || return 1
     rm -rf "$(dirname "$staged")"
-    systemctl restart "go-trader-egress@$deployment.service" || return 1
+    update_egress_restart_controller "$deployment" || return 1
     if ! update_egress_wait_ready "$deployment" 30; then
         echo "[update] egress: controller for $deployment did not report ready within 30s" >&2
         return 1
@@ -1410,7 +1428,7 @@ update_egress_restore_controller() {
     cur=$(update_egress_controller_path "$deployment")
     [[ -f "$cur.prev" ]] || return 1
     mv -f "$cur.prev" "$cur" || return 1
-    systemctl restart "go-trader-egress@$deployment.service" || return 1
+    update_egress_restart_controller "$deployment" || return 1
     update_egress_wait_ready "$deployment" 30
 }
 

@@ -23,10 +23,11 @@ const DefaultHandshakeTimeout = 15 * time.Second
 var ErrProxyTransport = errors.New("egress proxy transport failure")
 
 type ProxyError struct {
-	Proxy  string
-	Target string
-	Stage  string
-	Reason string
+	Proxy     string
+	Target    string
+	Stage     string
+	Reason    string
+	Transport bool
 }
 
 func (e *ProxyError) Error() string {
@@ -104,7 +105,9 @@ func (d *Dialer) failErr(target, stage string, err error) error {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		reason = "timed out: " + reason
 	}
-	return d.fail(target, stage, reason)
+	pe := d.fail(target, stage, reason).(*ProxyError)
+	pe.Transport = true
+	return pe
 }
 
 func (d *Dialer) tunnel(ctx context.Context, host string, port int) (net.Conn, error) {

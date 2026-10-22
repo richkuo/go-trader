@@ -244,6 +244,10 @@ func canonicalString(s string) string {
 }
 
 func (t tools) verifyRules(ns string, m *Manifest) (uint64, error) {
+	return t.verifyDeploymentRules(ns, m.Deployment)
+}
+
+func (t tools) verifyDeploymentRules(ns, deployment string) (uint64, error) {
 	out, err := t.inNetns(ns, nil, t.nft, "-j", "list", "table", "inet", nftTable)
 	if err != nil {
 		return 0, fmt.Errorf("the %s table is not installed: %v", nftTable, err)
@@ -283,7 +287,7 @@ func (t tools) verifyRules(ns string, m *Manifest) (uint64, error) {
 			}
 			rules[r.Chain] = append(rules[r.Chain], expr)
 			if r.Chain == "output" {
-				want := fmt.Sprintf("%s deployment=%s generation=", commentPrefix, m.Deployment)
+				want := fmt.Sprintf("%s deployment=%s generation=", commentPrefix, deployment)
 				if !strings.HasPrefix(r.Comment, want) {
 					return 0, fmt.Errorf("the %s table belongs to another deployment or has no generation", nftTable)
 				}
@@ -415,6 +419,49 @@ func dialInNetns(ctx context.Context, nsPath, addr string) (net.Conn, error) {
 		return err
 	})
 	return conn, err
+}
+
+func (t tools) enforcedWorkerNamespaces() map[uint64]bool {
+	out := map[uint64]bool{}
+	entries, err := os.ReadDir("/run/netns")
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		deployment, ok := strings.CutPrefix(e.Name(), workerNamespacePrefix)
+		if !ok || egresspolicy.ValidDeployment(deployment) != nil {
+			continue
+		}
+		inode, err := egresspolicy.NamespaceInode("/run/netns/" + e.Name())
+		if err != nil {
+			continue
+		}
+		if _, err := t.verifyDeploymentRules(e.Name(), deployment); err != nil {
+			continue
+		}
+		out[inode] = true
+	}
+	return out
+}
+
+func (t tools) accountProcessesUnenforced(uid int, nsInode uint64) []int {
+	pids := accountProcessesOutside(uid, nsInode)
+	if len(pids) == 0 {
+		return nil
+	}
+	enforced := t.enforcedWorkerNamespaces()
+	var out []int
+	for _, pid := range pids {
+		ino, err := egresspolicy.ProcessNetnsInode(pid)
+		if err == nil && enforced[ino] {
+			continue
+		}
+		if _, serr := os.Stat("/proc/" + strconv.Itoa(pid)); err != nil && errors.Is(serr, os.ErrNotExist) {
+			continue
+		}
+		out = append(out, pid)
+	}
+	return out
 }
 
 func accountProcessesOutside(uid int, nsInode uint64) []int {

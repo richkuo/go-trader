@@ -529,7 +529,7 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
-	if code := startEgress(cfg, true); code != 0 {
+	if code := startEgress(cfg, configPath, true); code != 0 {
 		return code
 	}
 	if err := applyAlertThrottleFromConfig(cfg); err != nil {

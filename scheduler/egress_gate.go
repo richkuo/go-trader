@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"trading-scheduler/internal/egresspolicy"
 	"trading-scheduler/internal/notifybroker"
@@ -93,7 +97,7 @@ func probeEgressEnforcement() error {
 	return nil
 }
 
-func startEgress(cfg *Config, feedRole bool) int {
+func startEgress(cfg *Config, configPath string, feedRole bool) int {
 	if err := establishProcessEgress(context.Background(), cfg.Egress, true); err != nil {
 		fmt.Fprintf(os.Stderr, "[egress] CRITICAL: refusing to start: %v\n", err)
 		return 1
@@ -113,17 +117,73 @@ func startEgress(cfg *Config, feedRole bool) int {
 	if err == nil && !feedRole {
 		err = egressPythonPolicyCheck(ctx, egressPythonFamilies(cfg))
 	}
+	dmPath := egressRefusalDMPath(configPath)
 	if err != nil {
 		msg := processEgress.redact(err.Error())
+		reason := msg
+		var se *egressStartupError
+		if errors.As(err, &se) {
+			reason = se.reason
+		}
 		fmt.Fprintf(os.Stderr, "[egress] CRITICAL: refusing to start: %s (no direct connection was attempted; the service retries)\n", msg)
 		if processEgress.directNotifications() {
-			notifier, cleanup := buildNotifierFromConfig(cfg)
-			sendStartupRefusalDM(notifier, "Egress proxy", msg)
-			cleanup()
+			interval, perr := ParseAlertThrottleInterval(cfg.AlertThrottleInterval)
+			if perr != nil {
+				interval = DefaultAlertThrottleInterval
+			}
+			now := time.Now().UTC()
+			if egressRefusalDMDue(dmPath, reason, interval, now) {
+				notifier, cleanup := buildNotifierFromConfig(cfg)
+				sendStartupRefusalDM(notifier, "Egress proxy", msg)
+				cleanup()
+				recordEgressRefusalDM(dmPath, reason, now)
+			} else {
+				fmt.Fprintf(os.Stderr, "[egress] the owner already has this refusal message; the next one goes out after %s or when the reason changes\n", interval)
+			}
 		}
 		return 1
 	}
+	_ = os.Remove(dmPath)
 	return 0
+}
+
+const egressRefusalDMFile = ".egress-startup-refusal.json"
+
+type egressRefusalDMRecord struct {
+	Reason string    `json:"reason"`
+	SentAt time.Time `json:"sent_at"`
+}
+
+func egressRefusalDMPath(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), egressRefusalDMFile)
+}
+
+func egressRefusalDMDue(path, reason string, interval time.Duration, now time.Time) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return true
+	}
+	var rec egressRefusalDMRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return true
+	}
+	return rec.Reason != reason || now.Before(rec.SentAt) || now.Sub(rec.SentAt) >= interval
+}
+
+func recordEgressRefusalDM(path, reason string, now time.Time) {
+	raw, err := json.Marshal(egressRefusalDMRecord{Reason: reason, SentAt: now})
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "[egress] could not record the refusal message time (%v); each restart sends it again\n", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		fmt.Fprintf(os.Stderr, "[egress] could not record the refusal message time (%v); each restart sends it again\n", err)
+	}
 }
 
 func workerNotificationSecrets(cfg *Config) []string {

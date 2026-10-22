@@ -507,6 +507,8 @@ It needs Docker Engine running as root on a Linux host (not Docker Desktop on ma
 3. Add `GO_TRADER_EGRESS_DEPLOYMENT=main` to `docker/.env`.
 4. From a checkout of the same release, as root, install the controller: `sudo bash scripts/egress-install.sh docker --deployment main --env-file docker/go-trader.env --anchor-container go-trader-egress-net-1`.
    It builds the controller from the checkout, writes `/etc/go-trader/egress/main.json` (scheme, host and port only), and starts `go-trader-egress@main`.
+   It waits only until the controller answers; the controller enforces the namespace when the `egress-net` container starts in step 5.
+   A stack that still runs without the overlay can keep running: the controller retries the dashboard port until the overlay frees it.
 5. Start the stack with the overlay: `docker compose -f compose.yaml -f compose.egress.yaml up -d`.
    The `egress-net` container holds an empty network namespace; the controller installs the firewall rules and the proxy relay in it, and `go-trader` and `cli` join it.
    The dashboard stays on `http://127.0.0.1:8099` through a relay the controller owns (set `--status-port` on the installer if `GO_TRADER_HOST_PORT` is not 8099).

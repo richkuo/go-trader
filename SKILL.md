@@ -383,7 +383,7 @@ With the mode off (the default) nothing changes: no new environment variable is 
 - Name service inside the namespace is the hosts file only (`/run/go-trader-egress/<deployment>/resolver/{hosts,resolv.conf,nsswitch.conf}` bind-mounted over `/etc`), and the drop-in makes the host resolver, D-Bus, nscd, Avahi, NetworkManager and container-runtime sockets inaccessible, so no venue name leaves through a host daemon.
   Filesystem Unix sockets (the shared feed socket) keep working.
 - Workers run with no capabilities, `NoNewPrivileges`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `ProtectProc=invisible` and `SystemCallFilter=~@debug` (no ptrace or cross-process memory calls).
-  The worker account must be dedicated: on a host the controller refuses attestation while that account runs any process outside the namespace, so a worker cannot reach an unconfined process of its own account.
+  On a host the controller refuses attestation while the worker account runs any process outside every enforced worker namespace (`go-trader-egress-*` with verified rules), so a worker cannot reach an unconfined process of its own account; instances of one account (`go-trader@.service`, a shared feed and its consumers) may share it when each runs in its own enforced namespace.
   A raw socket, a direct TCP or UDP connection over IPv4 or IPv6, ICMP, a direct DNS query, curl_cffi, and a child that never loads the Python bootstrap all fail with "network unreachable".
 - The controller stopping or dying leaves the namespace and its rules in place; only the relays close, so proxy traffic fails closed until it restarts.
 - **Attestation.** Every network entry path asks the controller over `/run/go-trader-egress/<deployment>/control.sock` (protocol 1; the peer must be root).
@@ -424,6 +424,8 @@ Inbound gateway interactions and DMs come back as events; owner checks, command 
 The worker's network policy is the same in both notification modes.
 In direct mode the scheduler and feed refuse to start while they hold a Discord, Telegram or GitHub token (environment or config), so only the broker holds them.
 The app unit starts after the broker unit; if the broker is not answering yet the scheduler waits up to 30 seconds and then keeps reconnecting, and the broker keeps serving Telegram and issue reports while it retries a failed Discord gateway open.
+The scheduler installs its interaction handler before it waits for the broker's Discord identity; if the identity is not there within 30 seconds it logs one warning and registers the slash commands in the background once the gateway is up.
+A startup refusal in direct mode sends one owner DM per reason per alert throttle interval across restarts (`.egress-startup-refusal.json` beside the config, removed on a clean start).
 
 **Status, alerts and outages.** `/status` (scheduler) and the feed `/status` carry an `egress` block: `mode`, the redacted proxy, deployment, `enforcement` and generation, last success and error times, the redacted last error, consecutive and total tunnel failures, and the Python child totals.
 Three consecutive tunnel failures send one **EGRESS PROXY FAILING** owner DM, repeated at the alert throttle interval while they last, and one **EGRESS PROXY RECOVERED** DM on recovery (in proxy notification mode those DMs only arrive once the proxy is back).
@@ -434,7 +436,8 @@ The application cannot close positions through an unreachable proxy; resting ven
 1.
    Set `GO_TRADER_EGRESS_PROXY` (and, if wanted, `"egress": {"proxy_required": true}`) for the unit, then from the deployment checkout run `sudo bash scripts/egress-install.sh host --deployment <name> --unit <unit> [--notify-user go-trader-notify]`.
 2.
-   The installer builds the controller from the checkout's committed sources (git archive, never the service-writable tree), installs it root-owned, writes the manifest (scheme, host, port only), runs `preflight` (tools, a scratch namespace with rules, proxy resolution, systemd version), starts the controller, writes the app drop-in (`/etc/systemd/system/<unit>.d/50-egress.conf`, from `render-units`) and the broker unit, restarts the app inside the namespace, and checks `/health` through the status relay (host `127.0.0.1:<status_port>` to the namespace loopback, a fixed destination).
+   The installer refuses a checkout that `update.sh` would refuse (a foreign-owned tree whose units can change it outside `scheduler/` and `logs/`), builds the controller from the checkout's committed sources (git archive, never the service-writable tree), installs it root-owned, writes the manifest (scheme, host, port only), runs `preflight` (tools, a scratch namespace with rules, proxy resolution, systemd version), starts the controller, writes the app drop-in (`/etc/systemd/system/<unit>.d/50-egress.conf`, from `render-units`) and the broker unit, restarts the app inside the namespace, and checks `/health` through the status relay (host `127.0.0.1:<status_port>` to the namespace loopback, a fixed destination).
+   The controller does not need the status port free: while the pre-egress service or a published container port still holds it, the relay retries every 2 seconds and `status` shows `status_relay_errors`; the proxy relay and attestation do not depend on it.
 3.
    Manual venue commands run through the restricted launcher: `sudo /usr/local/libexec/go-trader-egress/<name>/go-trader-egress-controller launch --manifest /etc/go-trader/egress/<name>.json -- manual-open ...`.
    It accepts only a manual or backfill subcommand, `record-observations`, `robinhood-login`, `probe`, or the daemon with `--once`, `--summary` or `--leaderboard`, and runs the manifest's binary as the worker in a transient unit with the same sandbox and every environment file of the unit (`host.environment_files`).
@@ -444,11 +447,12 @@ The application cannot close positions through an unreachable proxy; resting ven
 5.
    Updates stay `sudo bash scripts/update.sh --restart`.
    For a unit with an egress drop-in it must run as root: it builds the controller from the same exported sources, runs the probe as the unit's user with the unit's environment files, switches the controller (previous binary kept as `.prev`) before the app restart, and restores both on rollback.
+   Controller restarts use `systemctl restart --job-mode=ignore-dependencies`, because the drop-in's `Requires=` would otherwise restart the app with the controller; the app restarts once, after the controller is ready.
    The namespace rules stay installed through the switch.
    In the mode the in-process updater and `auto_update` checks refuse (the service has no route to Git) and `/restart` asks the controller to restart the registered unit.
 
 **Container deployment.** `docker/compose.egress.yaml` adds `egress-net` (the release image running `egress-anchor`, `network_mode: none`, labeled with the deployment) and joins `go-trader` and `cli` to it with `network_mode: service:egress-net` (no published port; the host status relay serves `127.0.0.1:<port>`).
-The host controller (`scripts/egress-install.sh docker ...`, mode `docker`) attaches to the anchor's namespace, writes its hosts and resolv.conf, installs the rules and relays, and re-attaches when the anchor restarts; the anchor health check passes only when the controller reports this namespace enforced, and the application still attests on its own.
+The host controller (`scripts/egress-install.sh docker ...`, mode `docker`; the installer waits only until the controller answers, since the anchor starts in the next step) attaches to the anchor's namespace, writes its hosts and resolv.conf, installs the rules and relays, and re-attaches when the anchor restarts; the anchor health check passes only when the controller reports this namespace enforced, and the application still attests on its own.
 The optional `notify-broker` service (profile `notify`) runs the broker under its own uid with `network_mode: none`.
 `docker compose run --rm cli ...` commands join the same namespace. docs/DOCKER.md § Egress proxy mode has the steps.
 

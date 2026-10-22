@@ -27,6 +27,8 @@ const (
 	githubAPIBase   = "https://api.github.com"
 	defaultRepo     = "richkuo/go-trader"
 	requestTimeout  = 30 * time.Second
+
+	selfIDLookupTimeout = 3 * time.Second
 )
 
 type Broker struct {
@@ -42,6 +44,8 @@ type Broker struct {
 	githubRepos   map[string]bool
 
 	session *discordgo.Session
+	rest    *discordgo.Session
+	selfID  string
 	client  *http.Client
 
 	mu   sync.Mutex
@@ -114,7 +118,12 @@ func (b *Broker) redact(s string) string {
 
 func (b *Broker) Run(ctx context.Context) error {
 	b.client = &http.Client{Transport: b.transport(), Timeout: requestTimeout}
-	if b.discordToken != "" && b.Destinations["discord"] {
+	if b.discordEnabled() {
+		rest, err := b.newDiscordSession()
+		if err != nil {
+			return err
+		}
+		b.rest = rest
 		go b.keepDiscordOpen(ctx)
 	}
 	if err := os.Remove(b.SocketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -144,6 +153,45 @@ func (b *Broker) Run(ctx context.Context) error {
 		}
 		go b.serveConn(ctx, conn)
 	}
+}
+
+func (b *Broker) discordEnabled() bool {
+	return b.discordToken != "" && b.Destinations["discord"]
+}
+
+func (b *Broker) newDiscordSession() (*discordgo.Session, error) {
+	s, err := discordgo.New("Bot " + b.discordToken)
+	if err != nil {
+		return nil, err
+	}
+	s.Client = &http.Client{Transport: b.transport(), Timeout: 20 * time.Second}
+	return s, nil
+}
+
+func (b *Broker) discordSelfID(ctx context.Context) string {
+	b.mu.Lock()
+	id, gw := b.selfID, b.session
+	b.mu.Unlock()
+	if id != "" {
+		return id
+	}
+	if gw != nil && gw.State != nil && gw.State.User != nil {
+		id = gw.State.User.ID
+	} else if b.rest != nil {
+		rctx, cancel := context.WithTimeout(ctx, selfIDLookupTimeout)
+		u, err := b.rest.User("@me", discordgo.WithContext(rctx))
+		cancel()
+		if err == nil && u != nil {
+			id = u.ID
+		}
+	}
+	if ValidSnowflake(id) != nil {
+		return ""
+	}
+	b.mu.Lock()
+	b.selfID = id
+	b.mu.Unlock()
+	return id
 }
 
 func (b *Broker) telegramEnabled() bool {
@@ -184,11 +232,10 @@ func (b *Broker) keepDiscordOpen(ctx context.Context) {
 }
 
 func (b *Broker) openDiscord() error {
-	s, err := discordgo.New("Bot " + b.discordToken)
+	s, err := b.newDiscordSession()
 	if err != nil {
 		return err
 	}
-	s.Client = &http.Client{Transport: b.transport(), Timeout: 20 * time.Second}
 	s.Dialer = b.Dialer.WebsocketDialer(45 * time.Second)
 	if b.TLSConfig != nil {
 		s.Dialer.TLSClientConfig = b.TLSConfig.Clone()
@@ -230,6 +277,8 @@ func (b *Broker) publish(kind string, raw json.RawMessage) {
 
 func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	cred, err := egresspolicy.PeerCredentials(conn)
 	if err != nil || cred.UID != b.WorkerUID {
 		log.Printf("notification broker refused a connection (uid %d, err %v)", cred.UID, err)
@@ -289,17 +338,16 @@ func (b *Broker) handle(ctx context.Context, bc *brokerConn, f *Frame) (json.Raw
 			b.subs[bc] = append([]string(nil), req.Events...)
 			b.mu.Unlock()
 		}
-		resp := HelloResponse{Discord: b.discordToken != "" && b.Destinations["discord"], Telegram: b.telegramEnabled(), GitHub: b.githubEnabled()}
-		if s := b.discordSession(); s != nil && s.State != nil && s.State.User != nil {
-			resp.DiscordUserID = s.State.User.ID
+		resp := HelloResponse{Discord: b.discordEnabled(), Telegram: b.telegramEnabled(), GitHub: b.githubEnabled()}
+		if resp.Discord {
+			resp.DiscordUserID = b.discordSelfID(ctx)
 		}
 		return json.Marshal(resp)
 	case OpDiscordSend, OpDiscordUserChannel, OpDiscordRespond, OpDiscordFollowup, OpDiscordCommands:
-		s := b.discordSession()
-		if s == nil {
-			return nil, errors.New("discord is not connected in the notification broker")
+		if b.rest == nil {
+			return nil, errors.New("discord is not configured in the notification broker")
 		}
-		return b.handleDiscord(ctx, s, f)
+		return b.handleDiscord(ctx, b.rest, f)
 	case OpTelegramCall:
 		if !b.telegramEnabled() {
 			return nil, errors.New("telegram is not configured in the notification broker")
@@ -397,10 +445,11 @@ func (b *Broker) handleDiscord(ctx context.Context, session *discordgo.Session, 
 		if err := json.Unmarshal(req.Commands, &cmds); err != nil {
 			return nil, fmt.Errorf("commands: %v", err)
 		}
-		if session.State == nil || session.State.User == nil {
-			return nil, errors.New("discord gateway not ready (no application identity)")
+		appID := b.discordSelfID(ctx)
+		if appID == "" {
+			return nil, errors.New("discord application identity is not available yet")
 		}
-		out, err := session.ApplicationCommandBulkOverwrite(session.State.User.ID, "", cmds, opt)
+		out, err := session.ApplicationCommandBulkOverwrite(appID, "", cmds, opt)
 		if err != nil {
 			return nil, err
 		}

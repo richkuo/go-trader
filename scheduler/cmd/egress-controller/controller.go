@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ const (
 	verifyInterval    = 15 * time.Second
 	anchorPollTimeout = 2 * time.Second
 	controlIOTimeout  = 10 * time.Second
+	statusRelayRetry  = 2 * time.Second
 )
 
 var errPeerNamespace = errors.New("namespace mismatch")
@@ -39,6 +41,7 @@ type controller struct {
 	anchorPID       int
 	relayLn         net.Listener
 	relayAddr       string
+	statusRelayErrs map[string]string
 
 	ups    *upstreamSet
 	notify *notifyRuntime
@@ -88,13 +91,7 @@ func runServe(m *Manifest) error {
 	defer ctl.Close()
 	go c.serveControl(ctl)
 	for _, sr := range m.StatusRelays {
-		ln, err := net.Listen("tcp", sr.Listen)
-		if err != nil {
-			return fmt.Errorf("status relay %s: %w", sr.Listen, err)
-		}
-		defer ln.Close()
-		go serveStatusRelay(ctx, ln, m.namespacePath(), sr.TargetPort)
-		log.Printf("status relay %s -> namespace 127.0.0.1:%d", sr.Listen, sr.TargetPort)
+		go c.runStatusRelay(sr)
 	}
 	log.Printf("egress controller serving deployment %s (%s mode, proxy %s)", m.Deployment, m.Mode, m.Proxy)
 	resolveTick := time.NewTicker(time.Duration(m.ResolveSeconds) * time.Second)
@@ -126,6 +123,48 @@ func runServe(m *Manifest) error {
 					log.Printf("notification namespace check: %v", err)
 				}
 			}
+		}
+	}
+}
+
+func (c *controller) setStatusRelayErr(listen, msg string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.statusRelayErrs == nil {
+		c.statusRelayErrs = map[string]string{}
+	}
+	if c.statusRelayErrs[listen] == msg {
+		return false
+	}
+	if msg == "" {
+		delete(c.statusRelayErrs, listen)
+	} else {
+		c.statusRelayErrs[listen] = msg
+	}
+	return true
+}
+
+func (c *controller) runStatusRelay(sr StatusRelay) {
+	for {
+		ln, err := net.Listen("tcp", sr.Listen)
+		if err == nil {
+			c.setStatusRelayErr(sr.Listen, "")
+			log.Printf("status relay %s -> namespace 127.0.0.1:%d", sr.Listen, sr.TargetPort)
+			go func() {
+				<-c.ctx.Done()
+				_ = ln.Close()
+			}()
+			serveStatusRelay(c.ctx, ln, c.m.namespacePath(), sr.TargetPort)
+			return
+		}
+		msg := fmt.Sprintf("status relay %s: %v (retrying every %s; the proxy relay and attestation are unaffected)", sr.Listen, err, statusRelayRetry)
+		if c.setStatusRelayErr(sr.Listen, msg) {
+			log.Print(msg)
+		}
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-time.After(statusRelayRetry):
 		}
 	}
 }
@@ -295,7 +334,13 @@ func (c *controller) status() *egresspolicy.ControllerStatus {
 	addrs, resolved, resolveErr, conns := c.ups.snapshot()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	var relayErrs []string
+	for _, msg := range c.statusRelayErrs {
+		relayErrs = append(relayErrs, msg)
+	}
+	sort.Strings(relayErrs)
 	return &egresspolicy.ControllerStatus{
+		StatusRelayErrors: relayErrs,
 		Deployment:        c.m.Deployment,
 		Mode:              c.m.Mode,
 		Ready:             c.readyLocked(len(addrs) > 0),
@@ -490,8 +535,8 @@ func (c *controller) attest(cred egresspolicy.PeerCred, role string) (*egresspol
 		return nil, fmt.Errorf("%w: the peer is in network namespace %d, not the managed namespace %d", errPeerNamespace, peerNs, nsInode)
 	}
 	if c.m.Mode == modeHost {
-		if pids := accountProcessesOutside(wantUID, nsInode); len(pids) > 0 {
-			return nil, fmt.Errorf("the %s account also runs processes %v outside the namespace; it must be a dedicated account so no worker can reach an unconfined process", role, pids)
+		if pids := c.t.accountProcessesUnenforced(wantUID, nsInode); len(pids) > 0 {
+			return nil, fmt.Errorf("the %s account also runs processes %v outside every enforced egress namespace; every process of the account must run in an enforced namespace so no worker can reach an unconfined process", role, pids)
 		}
 	}
 	gen, err := c.t.verifyRules(nsName, c.m)

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -482,25 +483,65 @@ func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) e
 	if d == nil || d.transport == nil {
 		return fmt.Errorf("discord session not initialized")
 	}
-	appID := d.selfUserID()
-	for wait := 0; appID == "" && d.broker != nil && wait < 30; wait++ {
-		time.Sleep(time.Second)
-		appID = d.selfUserID()
-	}
-	if appID == "" {
-		return fmt.Errorf("discord gateway not ready (no application identity)")
-	}
 	d.ss = ss
 	d.cfg = cfg
 	if d.broker != nil {
 		d.broker.setInteractionHandler(func(i *discordgo.InteractionCreate) { d.interactionCreate(d.transport, i) })
-	} else {
+	}
+	appID := d.selfUserID()
+	for start := time.Now(); appID == "" && d.broker != nil && time.Since(start) < slashIdentityWait; {
+		time.Sleep(time.Second)
+		appID = d.selfUserID()
+	}
+	if appID == "" {
+		if d.broker != nil {
+			go d.registerSlashCommandsWhenReady()
+			return errSlashCommandsDeferred
+		}
+		return fmt.Errorf("discord gateway not ready (no application identity)")
+	}
+	if d.broker == nil {
 		d.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) { d.interactionCreate(s, i) })
 	}
 	if _, err := d.transport.ApplicationCommandBulkOverwrite(appID, "", slashCommands()); err != nil {
 		return fmt.Errorf("bulk overwrite commands: %w", err)
 	}
 	return nil
+}
+
+var errSlashCommandsDeferred = errors.New("the notification broker has no Discord identity yet; the command handler is installed and registration retries in the background")
+
+const slashRegisterMaxDelay = time.Minute
+
+var (
+	slashIdentityWait       = 30 * time.Second
+	slashRegisterFirstRetry = 5 * time.Second
+)
+
+func (d *DiscordNotifier) registerSlashCommandsWhenReady() {
+	delay := slashRegisterFirstRetry
+	lastErr := ""
+	for {
+		select {
+		case <-shutdownReadOnlyCtx.Done():
+			return
+		case <-time.After(delay):
+		}
+		if appID := d.selfUserID(); appID != "" {
+			_, err := d.transport.ApplicationCommandBulkOverwrite(appID, "", slashCommands())
+			if err == nil {
+				fmt.Println("Discord slash commands registered (the notification broker's Discord gateway is up)")
+				return
+			}
+			if msg := err.Error(); msg != lastErr {
+				lastErr = msg
+				fmt.Printf("[WARN] Discord slash command registration through the notification broker failed: %v (retrying)\n", err)
+			}
+		}
+		if delay < slashRegisterMaxDelay {
+			delay = min(delay*2, slashRegisterMaxDelay)
+		}
+	}
 }
 
 func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.InteractionCreate) {

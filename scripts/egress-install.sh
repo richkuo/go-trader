@@ -118,6 +118,10 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required to write the mani
 
 repo_root=$(update_git "$PWD" rev-parse --show-toplevel) || die "run from the deployment git checkout"
 cd "$repo_root"
+if ! tree_issues=$(update_foreign_tree_check "$repo_root"); then
+    printf '%s\n' "$tree_issues" >&2
+    die "$repo_root belongs in part to an account other than root, and root would build the egress controller from it, but the listed units or owners let that account change files in it outside scheduler/ and logs/ (or run without ProtectSystem=strict). Run those units from the go-trader@.service template, whose sandbox keeps the rest of the tree read-only, or give the tree to root"
+fi
 go_bin=$(update_resolve_tool go) || die "go is required to build the controller"
 ver=$(update_git_version "$repo_root") || die "could not read the checkout version"
 commit=$(update_git "$repo_root" rev-parse HEAD) || die "could not read HEAD"
@@ -255,14 +259,17 @@ say "wrote $manifest"
 install -o root -g root -m 0644 "$repo_root/systemd/go-trader-egress@.service" /etc/systemd/system/go-trader-egress@.service
 systemctl daemon-reload
 systemctl enable "$controller_unit" >/dev/null
-systemctl restart "$controller_unit"
-update_egress_wait_ready "$deployment" 60 || die "$controller_unit did not become ready; see: journalctl -u $controller_unit"
-say "$controller_unit is ready"
+update_egress_restart_controller "$deployment"
 
 if [[ "$mode" == "docker" ]]; then
+    update_egress_wait_answering "$deployment" 60 || die "$controller_unit did not answer on its control socket; see: journalctl -u $controller_unit"
+    say "$controller_unit is running; it enforces the namespace once the anchor container $anchor_container starts"
     say "next: in docker/, set GO_TRADER_EGRESS_DEPLOYMENT=$deployment in .env and run: docker compose -f compose.yaml -f compose.egress.yaml up -d (docs/DOCKER.md Egress proxy mode)"
     exit 0
 fi
+
+update_egress_wait_ready "$deployment" 60 || die "$controller_unit did not become ready; see: journalctl -u $controller_unit"
+say "$controller_unit is ready"
 
 "$ctl" install-units --manifest "$manifest"
 systemctl daemon-reload
