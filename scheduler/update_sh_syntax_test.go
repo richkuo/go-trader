@@ -88,6 +88,12 @@ var shellSuiteWirings = map[string]shellSuiteWiring{
 		marker:     "OK: merge-paper service fixture passed (exit 79 for the second start)",
 		requireEnv: []string{"MERGE_PAPER_SERVICE_FIXTURE_REQUIRE_RUN"},
 	},
+	"test_robinhood_session_service_fixture.sh": {
+		ciStep:     true,
+		sudo:       true,
+		marker:     "OK: robinhood session service fixture passed (state-directory session, owner-only modes, no home writes, reuse on second start)",
+		requireEnv: []string{"ROBINHOOD_SESSION_SERVICE_FIXTURE_REQUIRE_RUN"},
+	},
 	"test_container_image.sh": {
 		manualReason: "needs Docker and a built image; .github/workflows/container.yml runs it through scripts/run_ci_shell_suite.sh on linux/amd64 and linux/arm64",
 		marker:       "PASS: container image (identity, clean layers, volume setup, bind and token policy, auth, SIGHUP reload, dashboard and crash restarts, persistence, graceful stop with a Python child, fatal holds 78/79/80, early-failure restarts, one-shot exits, backup and restore)",

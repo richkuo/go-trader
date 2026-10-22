@@ -226,12 +226,30 @@ Set in systemd overrides or exported environment variables before installation:
 | `BINANCE_API_KEY`, `BINANCE_API_SECRET` | Binance live |
 | `HYPERLIQUID_SECRET_KEY`, `HYPERLIQUID_ACCOUNT_ADDRESS` | Hyperliquid live |
 | `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` | TopStep live |
-| `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` | Robinhood live |
+| `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` | Robinhood live; the login session is kept in `<config folder>/robinhood-session` (see Robinhood session below) |
 | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE`, `OKX_SANDBOX` | OKX live/demo |
 | `LUNO_API_KEY_ID`, `LUNO_API_KEY_SECRET` | Luno live |
 | `GO_TRADER_ALLOW_MISSING_STATE` | `1` only for a genuine first-run live deployment |
 | `GO_TRADER_CASHFLOW_JOURNAL_ALARM` | `0`/`off`/`false`/`no` forces the legacy trade-ledger drift basis for HL shared wallets (default on) |
 | `GO_TRADER_HL_BATCH` | `0`/`off`/`false`/`no` disables batched Hyperliquid signal checks |
+
+### Robinhood session
+
+Every Robinhood login (signal check, execute, emergency close, position fetch, options check, chart and balance check) reuses one stored session in a folder that go-trader owns (#1818).
+The folder is `<folder of the resolved --config file>/robinhood-session`: `/var/lib/go-trader/robinhood-session` for `go-trader.service`, `/var/lib/go-trader/<instance>/robinhood-session` for `go-trader@<instance>`, and `/data/robinhood-session` in the container image.
+go-trader sets `GO_TRADER_ROBINHOOD_SESSION_DIR` to that folder at startup, directly after the config loads, and replaces any inherited value; the startup log shows `[robinhood] session folder: <path>` when a strategy uses Robinhood.
+The Python scripts never use the home folder (`$HOME/.tokens`) and have no fallback: a missing, empty, relative, non-normalized, non-canonical, symlinked, foreign-owned or unwritable folder value refuses the login before any request, so live work fails with `Robinhood login failed:` and paper work continues logged out.
+The folder is mode 0700 and every file in it is 0600, owned by the service user: `robinhood-<key>.pickle` (the session, which holds access and refresh tokens), `robinhood-<key>.device` (the device token), `robinhood-<key>.lock` and, after a device challenge, `robinhood-<key>.verification`; `<key>` is the first 16 hex characters of the SHA-256 of `go-trader/robinhood-username/v1:` plus the lowercased, trimmed username.
+One lock per account serializes every login, and one watchdog bounds the lock wait and the login together (15 seconds, less for order scripts with a shorter budget, 600 seconds for the bootstrap); a waiter that runs out of time fails with `session lock busy` and sends no request.
+robin_stocks writes into a private stage folder under the lock, and the stage replaces the stored session only after the login checks pass, so a failed login keeps the stored session and device token unchanged; the stored session is read with a reader that refuses any pickle global.
+A scheduler login never answers a device verification prompt: it fails at once with an error that names the bootstrap, and it writes the verification latch, so later logins send no request until the bootstrap succeeds.
+Deleting `robinhood-<key>.verification` allows one more automatic attempt.
+Bootstrap on a host, as the service user, with the same sandbox as the unit: `sudo systemd-run --pty --collect --uid=go-trader --gid=go-trader -p WorkingDirectory=/opt/go-trader -p EnvironmentFile=/opt/go-trader/.env -p StateDirectory=go-trader -p ProtectSystem=strict -p PrivateTmp=true -p NoNewPrivileges=true -p "ReadWritePaths=/opt/go-trader/scheduler /opt/go-trader/logs" /opt/go-trader/go-trader robinhood-login --config /var/lib/go-trader/config.json`.
+For `go-trader@<instance>`, use the instance service user, `/opt/go-trader-<instance>` for the working folder, `.env`, `scheduler` and `logs`, `StateDirectory=go-trader/<instance>` and `--config /var/lib/go-trader/<instance>/config.json`.
+In the container image: `docker compose run --rm cli robinhood-login --config /data/config.json` (docs/DOCKER.md).
+The bootstrap needs a terminal (`--pty`), runs the real robin_stocks verification flow (app approval, SMS or email code), and can run while the service runs: scheduler logins during it fail with `session lock busy` and retry next cycle.
+Each instance keeps its own session, and a backup of the state folder or `/data` holds the session token, so protect it like the `.env` file.
+After a service-layout migration the folder moves with the config, so the first login after it can need the bootstrap.
 
 ---
 
@@ -458,6 +476,12 @@ Never apply a runtime-default change silently when the operator has not been sho
 
 When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
 
+- **Robinhood logins keep one owner-only session beside the config (#1818, runtime default, no opt-out, no config change).** Every Robinhood login now stores and reuses its session only in `<config folder>/robinhood-session` (Secrets, Robinhood session), which go-trader sets at startup; the scripts no longer read or write `$HOME/.tokens`.
+  Before this change a shipped unit with home `/nonexistent` failed every live Robinhood login, and a host that followed the #1816 HOME step sent a new password login with a new random device token whenever the cache could not be used.
+  A legacy `$HOME/.tokens/robinhood.pickle` is not read, so the first login after the update uses a new device identity and can need the one-time bootstrap (`go-trader robinhood-login --config <config.json>`); a login that meets a device challenge now fails at once and stays latched until the bootstrap succeeds, and it never waits for a prompt.
+  Operators can delete the old `$HOME/.tokens` cache after the bootstrap; the `HOME=` line that #1816 told them to add can stay for other per-user caches such as the yfinance cache, though Robinhood no longer uses it.
+  The new `robinhood-login` subcommand and `GO_TRADER_ROBINHOOD_SESSION_DIR` change no probe argv, and `scripts/update.sh` keeps a `robinhood-session/` folder out of its rsync delete.
+  After an update, tell operators with live or paper Robinhood strategies, show them the bootstrap command for their layout, and confirm the `[robinhood] session folder` startup line and that later cycles show no `Robinhood login failed`.
 - **Robinhood emergency closes sell only the go-trader book (#1825, runtime default, no opt-out, no config change).** Before this change the kill switch and the circuit-breaker (CB) close sold the whole account balance of a coin, also coin the operator holds by hand in the same Robinhood account.
   Now each sells at most the remaining go-trader book for the coin (the kill switch sums every live Robinhood spot book; the CB uses the latched strategy's own book), capped by `quantity_available` through the same exact-decimal sizing as #1819 with close kind `emergency`, which never sweeps dust.
   Holdings above the book are the operator's: they are logged as CRITICAL and named in the kill-switch message, the reset DM and a CB owner DM, and are never sold. A coin that no configured strategy trades stops blocking kill-switch confirmation only when no Robinhood book (configured or not) holds it and no order for it is unresolved.
@@ -472,13 +496,8 @@ When in doubt, treat a commit as a runtime default and prompt. Per-release narra
   Before this change the adapter stayed marked live after a failed login, signal checks ran on Yahoo prices, and orders failed with a library "can only be called when logged in" error.
   In paper mode a failed login leaves the adapter logged out, and it uses the public price and option fallbacks with no Robinhood call.
   robin_stocks login lines on stderr now pass through an allowlist with a `[robinhood] robin_stocks:` prefix, and other login text shows as `(detail withheld)`, so credentials, tokens and paths stay out of logs.
-  A login that gets a token but cannot write `$HOME/.tokens/robinhood.pickle` now fails with a reason that names the token cache; before, it ran logged in.
-  The token cache is `$HOME/.tokens`, and the Python scripts inherit HOME from the go-trader process.
-  The shipped units (`go-trader.service`, `systemd/go-trader@.service`) set `ProtectSystem=strict`, which mounts every path read-only except `ReadWritePaths` (`scheduler`, `logs`) and the `StateDirectory`, so a normal home such as `/home/go-trader` is not enough, and `scripts/migrate-service-layout.py` creates service users with home `/nonexistent`.
-  If that reason appears under a shipped unit, set HOME to the unit's state directory in its `EnvironmentFile`: `HOME=/var/lib/go-trader` in `/opt/go-trader/.env` for `go-trader.service`, or `HOME=/var/lib/go-trader/<instance>` in `/opt/go-trader-<instance>/.env` for `go-trader@<instance>`.
-  Restart the service, then restrict the cache to the service user with `chmod 700 $HOME/.tokens`, because the cache file holds a Robinhood session token.
-  Other per-user caches of the service, for example the yfinance cache, then also go under that HOME.
-  #1818 tracks one fixed, owner-only Robinhood session folder, which replaces this HOME step when it lands.
+  The Robinhood token cache and HOME steps of this entry are replaced by the #1818 entry above (Secrets, Robinhood session).
+  A `HOME=` line set for this entry can stay, because other per-user caches of the service, for example the yfinance cache, go under that HOME.
   After an update, tell operators with live or paper Robinhood strategies; there is nothing to opt out of.
 - **Robinhood live sells use the account's sellable quantity (#1819, runtime default, no opt-out, no config change).** A live Robinhood signal sell now reads the coin's `quantity_available` and the pair's `min_order_size`, `min_order_quantity_increment` and `max_order_size` in the order subprocess, on the same login and under the coin lock, before it sends.
   It sends `min(asked, available)` floored to the increment with exact decimal math, and refuses with `not_sent`, no order and a **LIVE ORDER FAILED** alert when a read fails, a field is missing or invalid, nothing is available, or the result is below the minimum or above the maximum.
@@ -1493,6 +1512,7 @@ Gather first: platform name and ID prefix; products (spot, perps, futures, optio
    The scripts exit 0 only for a confirmed fill or `already_flat`, and Go books only a confirmed fill (#1815)
    A signal sell passes `sell_policy` to `place_market_order`: the adapter reads the pair rules and `quantity_available`, sizes the order with `plan_sized_sell` (exact `Decimal`, floor to the increment, sole-owner whole-close dust sweep) and echoes `sizing`; every refusal happens before the send (#1819). The emergency close script uses the same path with close kind `emergency` and the go-trader book as the ask, which never sweeps (#1825).
    Every Robinhood login goes through `robinhood_login()` in `platforms/robinhood/adapter.py`, which accepts a login only with a returned token, the library login state set, and the matching `Authorization` header, and which passes robin_stocks login text through an allowlist so no credential or token reaches stderr.
+   `robinhood_login()` also owns the session (#1818): it checks the `GO_TRADER_ROBINHOOD_SESSION_DIR` folder before any request, takes the per-account lock under one watchdog, gives robin_stocks an explicit stage `pickle_path`, promotes the stage only after a validated login, reads the stored session with a global-refusing unpickler, keeps a stable per-account device token, and refuses a device verification prompt with a latch that only `go-trader robinhood-login` clears.
 5. ID-prefix inference in `scheduler/config.go`
 6. Fee dispatch in `scheduler/fees.go`
 7. Executor wiring, only if a new live execution path is needed

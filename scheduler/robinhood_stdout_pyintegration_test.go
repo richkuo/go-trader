@@ -36,9 +36,29 @@ func robinhoodStdoutOfflineEnv(t *testing.T, root, mode string) {
 	t.Setenv("ROBINHOOD_TOTP_SECRET", "JBSWY3DPEHPK3PXP")
 }
 
+func robinhoodStdoutResolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func robinhoodStdoutFreshHome(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv(robinhoodSessionDirEnv, filepath.Join(robinhoodStdoutResolvedTempDir(t), robinhoodSessionDirName))
+}
+
+func robinhoodStdoutBrokenSessionFolder(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	blocker := filepath.Join(robinhoodStdoutResolvedTempDir(t), "session-blocker")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(robinhoodSessionDirEnv, filepath.Join(blocker, robinhoodSessionDirName))
 }
 
 func robinhoodStdoutRequireStubbedLogin(t *testing.T, call, mode, stderr string) {
@@ -262,22 +282,38 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 	logger := &StrategyLogger{stratID: "rh-login", writer: io.Discard}
 	sc := StrategyConfig{ID: "rh-login", Type: "spot", Platform: "robinhood", Script: checkScript, Args: []string{"momentum_pro", "BTC", "1h", "--mode=live"}}
 	liveStrategies := []StrategyConfig{sc}
-	modes := []string{"login_rejected", "token_cache_unwritable", "transport_error_secret"}
+	cases := []struct {
+		name         string
+		mode         string
+		brokenFolder bool
+	}{
+		{name: "login_rejected", mode: "login_rejected"},
+		{name: "session_folder_under_a_file", mode: "login_ok", brokenFolder: true},
+		{name: "transport_error_secret", mode: "transport_error_secret"},
+	}
 
-	for _, mode := range modes {
-		t.Run(mode, func(t *testing.T) {
-			robinhoodStdoutOfflineEnv(t, root, mode)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			robinhoodStdoutOfflineEnv(t, root, tc.mode)
+			freshHome := func(t *testing.T) {
+				t.Helper()
+				if tc.brokenFolder {
+					robinhoodStdoutBrokenSessionFolder(t)
+					return
+				}
+				robinhoodStdoutFreshHome(t)
+			}
 			var texts []string
 			keep := func(parts ...string) { texts = append(texts, parts...) }
 
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			live, stderr, err := RunRobinhoodCheck(checkScript, []string{"momentum_pro", "BTC", "1h", "--mode=live"})
 			keep(stderr)
 			if err != nil || live == nil || !strings.HasPrefix(live.Error, loginFailed) || live.Signal != 0 {
 				t.Errorf("live check: got result=%+v err=%v, want an %q envelope with signal 0", live, err, loginFailed)
 			}
 
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			paper, stderr, err := RunRobinhoodCheck(checkScript, []string{"momentum_pro", "BTC", "1h", "--mode=paper"})
 			keep(stderr)
 			if err != nil || paper == nil || paper.Error != "" || paper.Price <= 0 || strings.Contains(stderr, "can only be called when logged in") {
@@ -285,7 +321,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 			}
 
 			for _, side := range []string{"buy", "sell"} {
-				robinhoodStdoutFreshHome(t)
+				freshHome(t)
 				execResult, stderr, err := RunRobinhoodExecute(checkScript, "BTC", side, 10, 0.1, "11111111-1111-4111-8111-111111111111", RobinhoodSellArgs{})
 				keep(stderr)
 				if err == nil || execResult == nil || !strings.HasPrefix(execResult.Error, loginFailed) || execResult.OrderOutcome != "not_sent" || (execResult.Execution != nil && execResult.Execution.Fill != nil) {
@@ -293,7 +329,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 				}
 			}
 
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			buyStore, buyState := robinhoodStdoutStore(t, liveStrategies)
 			var buyMu sync.RWMutex
 			buyS := buyState.Strategies[sc.ID]
@@ -304,7 +340,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 			if robinhoodStdoutTradeRows(t, buyStore) != 0 || len(buyS.Positions) != 0 || buyS.Cash != buyCash {
 				t.Errorf("execute order buy: a failed login must book nothing")
 			}
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			sellStore, sellState := robinhoodStdoutStore(t, liveStrategies)
 			var sellMu sync.RWMutex
 			sellS := sellState.Strategies[sc.ID]
@@ -315,7 +351,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 				t.Errorf("execute order sell: a failed login must book nothing")
 			}
 
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			closeResult, stderr, closeErr := RunRobinhoodClose(robinhoodLiveCloseScript, "BTC", "", 0.5)
 			keep(stderr)
 			if closeErr != nil {
@@ -325,7 +361,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 				t.Errorf("close: got result=%+v err=%v, want an %q error and no already-flat", closeResult, closeErr, loginFailed)
 			}
 
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			killStore, killState := robinhoodStdoutStore(t, liveStrategies)
 			var killMu sync.RWMutex
 			robinhoodStdoutSeedBook(killState, sc.ID, "BTC", 0.5)
@@ -338,7 +374,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 				t.Errorf("kill-switch close: got %+v, want a BTC login error and no confirmed flat", report)
 			}
 
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			cbStore, state := robinhoodStdoutStore(t, liveStrategies)
 			var mu sync.RWMutex
 			robinhoodStdoutSeedBook(state, sc.ID, "BTC", 0.5)
@@ -350,14 +386,14 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 				t.Errorf("circuit-breaker pending close: got %+v, want the BTC pending close kept", pending)
 			}
 
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			positions, stderr, posErr := RunRobinhoodFetchPositions(robinhoodFetchPositionsScript)
 			keep(stderr)
 			if posErr == nil || positions == nil || !strings.HasPrefix(positions.Error, loginFailed) || len(positions.Positions) != 0 {
 				t.Errorf("positions: got result=%+v err=%v, want an %q error and no positions", positions, posErr, loginFailed)
 			}
 
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			_, _, liveCandlesErr := FetchUICandles(UICandleRequest{Strategy: sc, Limit: 50})
 			if liveCandlesErr != nil {
 				keep(liveCandlesErr.Error())
@@ -366,7 +402,7 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 				t.Errorf("live candles: got err=%v, want an %q error", liveCandlesErr, loginFailed)
 			}
 
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			paperCandles, source, err := FetchUICandles(UICandleRequest{
 				Strategy: StrategyConfig{ID: "rh-login-paper", Platform: "robinhood", Type: "spot", Args: []string{"momentum_pro", "BTC", "1h", "--mode=paper"}},
 				Limit:    50,
@@ -375,14 +411,14 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 				t.Errorf("paper candles: got %d candles from %q err=%v, want candles from robinhood:adapter", len(paperCandles), source, err)
 			}
 
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			options, stderr, err := RunOptionsCheckWithStdin("shared_scripts/check_options.py", []string{"vol_mean_reversion", "BTC", "--platform=robinhood"}, "[]")
 			keep(stderr)
 			if err != nil || options == nil || options.Error != "" {
 				t.Errorf("options: got result=%+v err=%v, want a paper result with no error", options, err)
 			}
 
-			robinhoodStdoutFreshHome(t)
+			freshHome(t)
 			balance, balanceErr := FetchPlatformBalance("robinhood")
 			if balanceErr != nil {
 				keep(balanceErr.Error())
@@ -397,6 +433,52 @@ func TestRobinhoodScriptStdoutFailedLoginRefusesLiveWork(t *testing.T) {
 						t.Errorf("a returned stderr or error text holds the fake secret %q:\n%s", secret, text)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestRobinhoodScriptStdoutSessionFolderRefusal(t *testing.T) {
+	root := robinhoodStdoutPyRoot(t)
+	t.Chdir(root)
+	const loginFailed = "Robinhood login failed:"
+	checkScript := "shared_scripts/check_robinhood.py"
+	cases := []struct {
+		name  string
+		value string
+		unset bool
+	}{
+		{name: "unset", unset: true},
+		{name: "relative", value: "relative/robinhood-session"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			robinhoodStdoutOfflineEnv(t, root, "login_ok")
+			t.Setenv("HOME", t.TempDir())
+			requestLog := filepath.Join(t.TempDir(), "requests.jsonl")
+			t.Setenv("RH_OFFLINE_STUB_LOG", requestLog)
+			t.Setenv(robinhoodSessionDirEnv, tc.value)
+			if tc.unset {
+				os.Unsetenv(robinhoodSessionDirEnv)
+			}
+
+			live, stderr, err := RunRobinhoodCheck(checkScript, []string{"momentum_pro", "BTC", "1h", "--mode=live"})
+			if err != nil || live == nil || !strings.HasPrefix(live.Error, loginFailed) || !strings.Contains(live.Error, robinhoodSessionDirEnv) || live.Signal != 0 {
+				t.Errorf("live check: got result=%+v err=%v, want an %q envelope naming %s with signal 0; stderr:\n%s", live, err, loginFailed, robinhoodSessionDirEnv, stderr)
+			}
+
+			execResult, stderr, err := RunRobinhoodExecute(checkScript, "BTC", "buy", 10, 0, "11111111-1111-4111-8111-111111111111", RobinhoodSellArgs{})
+			if err == nil || execResult == nil || execResult.OrderOutcome != robinhoodOutcomeNotSent || (execResult.Execution != nil && execResult.Execution.Fill != nil) || !strings.Contains(execResult.Error, robinhoodSessionDirEnv) {
+				t.Errorf("execute: got result=%+v err=%v, want order_outcome not_sent with no fill and an error naming %s; stderr:\n%s", execResult, err, robinhoodSessionDirEnv, stderr)
+			}
+
+			if data, err := os.ReadFile(requestLog); err == nil && len(data) > 0 {
+				t.Errorf("a refused session folder must send no request, the stub logged:\n%s", data)
+			} else if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".tokens")); !os.IsNotExist(err) {
+				t.Errorf("a refused session folder must not create $HOME/.tokens, stat err=%v", err)
 			}
 		})
 	}

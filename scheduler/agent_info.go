@@ -47,6 +47,7 @@ var agentInfoCommands = []agentCommand{
 	{Name: "supervise", Summary: "Container image only: start one scheduler daemon, forward SIGTERM/SIGINT/SIGHUP to it, and pass its exit status through; on exit 78, 79 or 80 log one CRITICAL line and hold (unhealthy, no restart) until terminated.", Usage: "go-trader supervise [daemon flags]"},
 	{Name: "healthcheck", Summary: "Query the daemon health endpoint; exit 0 only on an HTTP 2xx reply (container healthcheck).", Usage: "go-trader healthcheck [--url <url>] [--timeout <d>]", Flags: []string{"--url", "--timeout"}},
 	{Name: "basket-replay", Summary: "Research-only offline basket replay (#1791): runs the real paper basket coordinator, member management and accounting owners on a simulated clock from one versioned step script, in a temporary state directory it creates (new) or created earlier (resume). Builds its own paper config, refuses live members, deployed paths and foreign state, fetches nothing, sends no live order, and writes protocol JSON to stdout with logs on stderr.", Usage: "go-trader basket-replay --spec <step-script.json|-> [--max-steps <n>] [--fault exit-after-submit:<n>]", Flags: []string{"--spec", "--max-steps", "--fault"}},
+	{Name: "robinhood-login", Summary: "Interactive Robinhood device approval (#1818): runs the real robin_stocks verification flow in a terminal as the service user and stores the session in <config folder>/robinhood-session (0700, files 0600) under the per-account session lock; scheduler logins never answer a verification prompt and stay refused until this succeeds.", Usage: "go-trader robinhood-login [--config <path>]", Flags: []string{"--config"}},
 }
 
 type agentEnvVar struct {
@@ -65,6 +66,7 @@ var agentInfoEnvVars = []agentEnvVar{
 	{Name: "GO_TRADER_CASHFLOW_JOURNAL_ALARM", Purpose: "Set to 0/off/false/no to force the legacy trade-ledger drift basis for HL shared wallets instead of the #1100 exchange-sourced cash-flow journal (default on).", Secret: false},
 	{Name: "GO_TRADER_DIRECTIONAL_CERT_PATH", Purpose: "Override path to the regime directional-certification artifact (#1085); default backtest/research/regime_directional_certifications.json.", Secret: false},
 	{Name: "GO_TRADER_GITHUB_TOKEN", Purpose: "GitHub token for the self-updater (preferred over GITHUB_TOKEN).", Secret: true},
+	{Name: "GO_TRADER_ROBINHOOD_SESSION_DIR", Purpose: "Set by go-trader at startup, directly after the config loads, to <folder of the resolved --config>/robinhood-session; an inherited value is replaced. Robinhood scripts refuse to log in without it and never use the home folder.", Secret: false},
 	{Name: "GO_TRADER_RUNTIME", Purpose: "Process runtime policy: unset on a host, \"container\" in the Docker image (image-only updates, restart by exit, wildcard status bind with a token, databases under /data).", Secret: false},
 	{Name: "GO_TRADER_SERVICE", Purpose: "systemd unit name used by the updater's restart path.", Secret: false},
 	{Name: "GO_TRADER_STATUS_BIND", Purpose: "Status server bind address when --status-bind is not given (default localhost); a non-loopback value needs GO_TRADER_RUNTIME=container and STATUS_AUTH_TOKEN.", Secret: false},

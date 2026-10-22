@@ -37,6 +37,7 @@ var knownSubcommands = []string{
 	"supervise",
 	"healthcheck",
 	"basket-replay",
+	"robinhood-login",
 }
 
 func validateDaemonInvocation(extra []string) error {
@@ -107,6 +108,8 @@ func main() {
 			os.Exit(runHealthcheck(os.Args[2:]))
 		case "basket-replay":
 			os.Exit(runBasketReplay(os.Args[2:]))
+		case "robinhood-login":
+			os.Exit(runRobinhoodLogin(os.Args[2:]))
 		}
 	}
 
@@ -149,6 +152,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
+	exportRobinhoodSessionDir(*configPath, cfg)
 	statusBindHost := resolveStatusBindHost(*statusBindFlag)
 	if err := validateStatusBind(statusBindHost, cfg.StatusToken); err != nil {
 		fmt.Fprintf(os.Stderr, "[server] CRITICAL: refusing to start: %v\n", err)

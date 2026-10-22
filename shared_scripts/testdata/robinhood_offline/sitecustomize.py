@@ -1,10 +1,10 @@
-import errno
 import importlib
 import json
 import os
 import socket
 import sys
 import time
+from urllib.parse import parse_qs
 
 _MODE = os.environ.get("RH_OFFLINE_STUB_MODE", "")
 _MODES = (
@@ -16,14 +16,11 @@ _MODES = (
     "order_unknown",
     "login_no_refresh_token",
     "login_empty_token",
-    "token_cache_unwritable",
-    "token_cache_dir_error",
     "transport_error_secret",
     "login_verification_required",
     "routes",
 )
-_TOKEN_OK_MODES = ("login_ok", "token_cache_unwritable", "token_cache_dir_error")
-_CACHE_MODES = ("token_cache_unwritable", "token_cache_dir_error")
+_TOKEN_OK_MODES = ("login_ok",)
 _OFFLINE_TOKEN = "offline-access-token"
 _ORDER_MODES = ("order_accepted", "order_rejected", "order_unknown")
 _PAIR_ID = "offline-btc-pair"
@@ -35,29 +32,6 @@ def _install():
         sys.stderr.write("robinhood offline stub: unknown RH_OFFLINE_STUB_MODE %r\n" % _MODE)
         sys.stderr.flush()
         os._exit(97)
-
-    if _MODE in _CACHE_MODES:
-        tokens_dir = os.path.join(os.path.expanduser("~"), ".tokens")
-        if os.path.lexists(tokens_dir):
-            sys.stderr.write("robinhood offline stub: %s refuses to run with an existing token cache\n" % _MODE)
-            sys.stderr.flush()
-            os._exit(97)
-        if _MODE == "token_cache_unwritable":
-            with open(tokens_dir, "w"):
-                pass
-        else:
-            real_makedirs = os.makedirs
-            secret_text = " ".join(
-                os.environ.get(name, "")
-                for name in ("ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET")
-            )
-
-            def refusing_makedirs(name, *args, **kwargs):
-                if os.path.basename(os.path.normpath(os.fspath(name))) == ".tokens":
-                    raise PermissionError(errno.EACCES, "robinhood offline stub refused %s" % secret_text, os.fspath(name))
-                return real_makedirs(name, *args, **kwargs)
-
-            os.makedirs = refusing_makedirs
 
     real_connect = socket.socket.connect
 
@@ -151,10 +125,20 @@ def _install():
             routes = json.load(f)
     route_log = os.environ.get("RH_OFFLINE_STUB_LOG", "")
 
-    def log_route_request(request, timeout, listed, with_body=True):
+    def token_device(request):
+        body = request.body
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", "replace")
+        if not isinstance(body, str):
+            return None
+        values = parse_qs(body).get("device_token")
+        return values[0] if values else None
+
+    def log_route_request(request, timeout, listed):
         if not route_log:
             return
-        body = request.body if with_body else None
+        token_post = "/oauth2/token/" in request.url
+        body = None if token_post else request.body
         if isinstance(body, bytes):
             body = body.decode("utf-8", "replace")
         try:
@@ -168,7 +152,11 @@ def _install():
             "body": parsed,
             "listed": listed,
             "pid": os.getpid(),
+            "auth": bool(request.headers.get("Authorization")),
+            "authorization": request.headers.get("Authorization") if not token_post else None,
         }
+        if token_post:
+            record["device_token"] = token_device(request)
         with open(route_log, "a") as f:
             f.write(json.dumps(record) + "\n")
 
@@ -176,7 +164,7 @@ def _install():
         key = request.method + " " + request.url
         items = routes.get(key)
         if items is None and request.method == "POST" and "/oauth2/token/" in request.url:
-            log_route_request(request, timeout, True, with_body=False)
+            log_route_request(request, timeout, True)
             return response(request, 200, {
                 "access_token": _OFFLINE_TOKEN,
                 "token_type": "Bearer",
@@ -227,6 +215,8 @@ def _install():
             "auth": bool(authorization),
             "auth_is_offline_token": authorization == "Bearer " + _OFFLINE_TOKEN,
         }
+        if "/oauth2/token/" in request.url:
+            record["device_token"] = token_device(request)
         with open(route_log, "a") as f:
             f.write(json.dumps(record) + "\n")
 
@@ -293,6 +283,12 @@ def _install():
         pyotp.TOTP.now = noisy_now
 
     importlib.import_module("robin_stocks.robinhood")
+
+    if os.environ.get("RH_OFFLINE_STUB_FAST_SLEEP") == "1":
+        import types
+
+        authentication = importlib.import_module("robin_stocks.robinhood.authentication")
+        authentication.time = types.SimpleNamespace(sleep=lambda seconds: None, time=time.time)
     sys.stderr.write("robinhood offline stub active: %s\n" % _MODE)
     sys.stderr.flush()
 

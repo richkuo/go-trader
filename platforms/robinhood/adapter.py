@@ -1,11 +1,22 @@
 
 import contextlib
+import fcntl
+import hashlib
+import io
+import json
 import os
+import pickle
+import secrets
+import shutil
 import signal
+import stat
 import sys
 import math
 import re
+import tempfile
+import threading
 import time
+import types
 import uuid
 from datetime import datetime, timezone, timedelta
 from decimal import Context, Decimal, DivisionByZero, Inexact, InvalidOperation, Overflow, localcontext
@@ -525,6 +536,8 @@ _LOGIN_VERIFICATION_TEXTS = frozenset({
     "Max retries reached. Assuming login approved and proceeding.",
     "Timeout reached. Assuming login is approved and proceeding.",
     "EOF when reading a line",
+    "go-trader refused the device verification prompt",
+    "go-trader never answers a login prompt",
 })
 _REQUEST_POST_PREFIX = "Error in request_post: "
 _VERIFICATION_PREFIX = "Error during login verification: "
@@ -640,13 +653,13 @@ def _login_failure_reason(totp_error, login_error, login_os_error, result, logge
     if login_error is not None:
         reason = f"robin_stocks login raised {login_error}"
         if login_os_error:
-            reason += "; check that HOME is set and that the token cache directory $HOME/.tokens can be created and written"
+            reason += f"; check that the session stage folder under {SESSION_DIR_ENV} can be written"
         return reason
     if result is None:
         if logged_in is True:
             reason = (
                 "robin_stocks set its login state but returned no session; "
-                "the token cache write to $HOME/.tokens/robinhood.pickle may have failed "
+                "the session write to the stage folder may have failed "
                 "or the login response may have had no refresh token"
             )
         else:
@@ -669,10 +682,7 @@ def _login_failure_reason(totp_error, login_error, login_os_error, result, logge
     return None
 
 
-def _attempt_robinhood_login(username, password, totp_secret):
-    if not (_nonempty_text(username) and _nonempty_text(password) and _nonempty_text(totp_secret)):
-        return "credentials are missing"
-
+def _attempt_robinhood_login(username, password, totp_secret, stage, pickle_name, device_token, interactive, outcome):
     totp_error = None
     code = None
     try:
@@ -688,13 +698,21 @@ def _attempt_robinhood_login(username, password, totp_secret):
     detail = None
     with robinhood_library() as rh:
         if totp_error is None:
-            with _filtered_login_output(rh) as output_filter:
-                try:
-                    result = rh.login(username, password, mfa_code=code)
-                except Exception as e:
-                    login_error = type(e).__name__
-                    login_os_error = isinstance(e, OSError) and type(e).__module__ == "builtins"
-            detail = output_filter.detail
+            with _login_guards(rh, device_token, interactive, outcome):
+                with _filtered_login_output(rh) as output_filter:
+                    try:
+                        result = rh.login(
+                            username,
+                            password,
+                            mfa_code=code,
+                            pickle_path=stage,
+                            pickle_name=pickle_name,
+                            store_session=True,
+                        )
+                    except Exception as e:
+                        login_error = type(e).__name__
+                        login_os_error = isinstance(e, OSError) and type(e).__module__ == "builtins"
+                detail = output_filter.detail
         try:
             reason = _login_failure_reason(
                 totp_error,
@@ -707,26 +725,531 @@ def _attempt_robinhood_login(username, password, totp_secret):
             )
         except Exception as e:
             reason = f"login validation raised {type(e).__name__}"
-        if reason is not None:
-            try:
-                rh.helper.set_login_state(False)
-                rh.helper.update_session("Authorization", None)
-            except Exception as e:
-                reason += f"; library session reset raised {type(e).__name__}"
+        if reason is not None or outcome.get("verification"):
+            reason = _reset_library_session(reason)
     return reason
 
 
-def robinhood_login(username, password, totp_secret):
-    reason = _attempt_robinhood_login(username, password, totp_secret)
-    if reason is None:
-        return
-    message = f"{_LOGIN_ERROR_PREFIX} {reason}"
+def _reset_library_session(reason=None):
     try:
-        sys.stderr.write(f"[robinhood] {message}\n")
+        with robinhood_library() as rh:
+            rh.helper.set_login_state(False)
+            rh.helper.update_session("Authorization", None)
+    except Exception as e:
+        suffix = f"library session reset raised {type(e).__name__}"
+        reason = suffix if reason is None else f"{reason}; {suffix}"
+    return reason
+
+
+SESSION_DIR_ENV = "GO_TRADER_ROBINHOOD_SESSION_DIR"
+BOOTSTRAP_COMMAND = "go-trader robinhood-login --config <config.json>"
+_BOOTSTRAP_TIMEOUT_S = 600.0
+_SESSION_FILE_MAX_BYTES = 65536
+_LATCH_FILE_MAX_BYTES = 4096
+_LOCK_MARGIN_S = 0.5
+_LOCK_POLL_START_S = 0.05
+_LOCK_POLL_MAX_S = 0.25
+_ACCOUNT_KEY_PREFIX = "go-trader/robinhood-username/v1:"
+_SESSION_KEYS = ("access_token", "device_token", "refresh_token", "token_type")
+_DEVICE_TOKEN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_SESSION_VALUE = re.compile(r"[\x21-\x7e]+")
+_LATCH_SINCE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+_LATCH_IDENTITY = re.compile(r"absent|[0-9a-f]{64}")
+_GUARDED_NAMES = frozenset({"_validate_sherrif_id", "generate_device_token", "input", "getpass"})
+_VERIFICATION_REFUSAL = "go-trader refused the device verification prompt"
+_PROMPT_REFUSAL = "go-trader never answers a login prompt"
+_VERIFICATION_MESSAGE = (
+    "Robinhood asks to verify this device, and go-trader never answers a verification prompt. "
+    f"Run once as the service user: {BOOTSTRAP_COMMAND} (SKILL.md, Robinhood session)."
+)
+
+
+class RobinhoodSessionError(RobinhoodLoginError):
+    pass
+
+
+class RobinhoodVerificationRequired(RobinhoodLoginError):
+    pass
+
+
+def robinhood_account_key(username):
+    user = username.strip().lower()
+    return hashlib.sha256((_ACCOUNT_KEY_PREFIX + user).encode("utf-8")).hexdigest()[:16]
+
+
+def _session_refusal(text):
+    return RobinhoodSessionError(f"{_LOGIN_ERROR_PREFIX} {text}")
+
+
+def _folder_refusal(folder, check):
+    return _session_refusal(f"the Robinhood session folder {SESSION_DIR_ENV}={folder!r} {check}")
+
+
+def _errno_text(e):
+    number = getattr(e, "errno", None)
+    if isinstance(number, int):
+        return f"[Errno {number}] {os.strerror(number)}"
+    return type(e).__name__
+
+
+def _warn(text):
+    try:
+        sys.stderr.write(f"[robinhood] {text}\n")
         sys.stderr.flush()
     except Exception:
         pass
-    raise RobinhoodLoginError(message) from None
+
+
+def _fsync_folder(folder):
+    fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _session_folder():
+    folder = os.environ.get(SESSION_DIR_ENV)
+    if folder is None or folder == "":
+        raise _session_refusal(
+            f"{SESSION_DIR_ENV} is not set; go-trader sets it at startup to <config folder>/robinhood-session, "
+            "so run Robinhood scripts from the go-trader binary, which never falls back to the home folder"
+        )
+    if "\x00" in folder or not os.path.isabs(folder):
+        raise _folder_refusal(folder, "is not an absolute path")
+    if os.path.normpath(folder) != folder or not os.path.basename(folder):
+        raise _folder_refusal(folder, "is not a normalized path")
+    parent = os.path.dirname(folder)
+    try:
+        parent_stat = os.stat(parent)
+    except OSError as e:
+        raise _folder_refusal(folder, f"has no parent folder ({_errno_text(e)})") from None
+    if not stat.S_ISDIR(parent_stat.st_mode):
+        raise _folder_refusal(folder, "has a parent that is not a folder")
+    created = False
+    try:
+        os.mkdir(folder, 0o700)
+        created = True
+    except FileExistsError:
+        pass
+    except OSError as e:
+        raise _folder_refusal(folder, f"cannot be created ({_errno_text(e)})") from None
+    try:
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as e:
+        raise _folder_refusal(folder, f"is a symlink or not a folder ({_errno_text(e)})") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode):
+            raise _folder_refusal(folder, "is not a folder")
+        if info.st_uid != os.geteuid():
+            raise _folder_refusal(folder, f"is owned by uid {info.st_uid}, not the running uid {os.geteuid()}")
+        mode = stat.S_IMODE(info.st_mode)
+        if created or mode & 0o077:
+            try:
+                os.fchmod(fd, 0o700)
+            except OSError as e:
+                raise _folder_refusal(folder, f"mode cannot be set to 0700 ({_errno_text(e)})") from None
+            if mode & 0o077 and not created:
+                _warn(f"session folder {folder} had mode {mode:04o}; set it to 0700")
+    finally:
+        os.close(fd)
+    if os.path.realpath(folder) != folder:
+        raise _folder_refusal(folder, f"is not canonical (it resolves to {os.path.realpath(folder)!r})")
+    return folder
+
+
+def _open_session_lock(folder, key):
+    path = os.path.join(folder, f"robinhood-{key}.lock")
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
+    except OSError as e:
+        raise _folder_refusal(folder, f"is not writable: the session lock cannot be opened ({_errno_text(e)})") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise _folder_refusal(folder, f"holds a session lock robinhood-{key}.lock that is not a regular file")
+        if info.st_uid != os.geteuid():
+            raise _folder_refusal(folder, f"holds a session lock robinhood-{key}.lock owned by uid {info.st_uid}")
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            os.fchmod(fd, 0o600)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _take_session_lock(fd, key, wait_until):
+    pause = _LOCK_POLL_START_S
+    started = time.monotonic()
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            pass
+        now = time.monotonic()
+        if now >= wait_until:
+            raise _session_refusal(
+                f"session lock busy: another Robinhood login held robinhood-{key}.lock for {now - started:.1f}s; "
+                "this login sent no request"
+            )
+        time.sleep(min(pause, max(wait_until - now, 0.0)))
+        pause = min(pause * 2, _LOCK_POLL_MAX_S)
+
+
+def _remove_stale_stages(folder, key):
+    prefix = f".stage-{key}-"
+    for name in os.listdir(folder):
+        if not name.startswith(prefix):
+            continue
+        path = os.path.join(folder, name)
+        info = os.lstat(path)
+        if info.st_uid != os.geteuid():
+            raise _folder_refusal(folder, f"holds a stale stage {name} owned by uid {info.st_uid}")
+        if stat.S_ISDIR(info.st_mode):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+
+
+class _SessionUnpickler(pickle.Unpickler):
+
+    def find_class(self, module, name):
+        raise pickle.UnpicklingError("the stored session refers to a global")
+
+    def persistent_load(self, pid):
+        raise pickle.UnpicklingError("the stored session refers to a persistent id")
+
+
+def _read_private_file(path, limit, fix_mode=False):
+    name = os.path.basename(path)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise ValueError(f"{name} is a symlink or cannot be opened ({_errno_text(e)})") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"{name} is not a regular file")
+        if info.st_uid != os.geteuid():
+            raise ValueError(f"{name} is owned by uid {info.st_uid}, not the running uid {os.geteuid()}")
+        if info.st_nlink != 1:
+            raise ValueError(f"{name} has {info.st_nlink} hard links, want 1")
+        if fix_mode and stat.S_IMODE(info.st_mode) != 0o600:
+            os.fchmod(fd, 0o600)
+            info = os.fstat(fd)
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError(f"{name} has mode {stat.S_IMODE(info.st_mode):04o}, want 0600")
+        if info.st_size > limit:
+            raise ValueError(f"{name} is {info.st_size} bytes, above the {limit} byte limit")
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(fd, limit + 1 - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                raise ValueError(f"{name} grew above the {limit} byte limit")
+        if fix_mode:
+            os.fsync(fd)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _decode_session(data, name):
+    try:
+        session = _SessionUnpickler(io.BytesIO(data)).load()
+    except Exception as e:
+        raise ValueError(f"{name} is not a plain session record ({type(e).__name__})") from None
+    if not isinstance(session, dict) or set(session) != set(_SESSION_KEYS):
+        raise ValueError(f"{name} does not hold exactly the keys {', '.join(_SESSION_KEYS)}")
+    for field in _SESSION_KEYS:
+        value = session[field]
+        if not isinstance(value, str) or not _SESSION_VALUE.fullmatch(value):
+            raise ValueError(f"{name} field {field} is not a non-empty printable string")
+    if not _DEVICE_TOKEN.fullmatch(session["device_token"]):
+        raise ValueError(f"{name} field device_token is not a device token")
+    return session
+
+
+def _write_private_file(folder, name, data):
+    final = os.path.join(folder, name)
+    tmp = os.path.join(folder, f".{name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    os.close(fd)
+    os.replace(tmp, final)
+    _fsync_folder(folder)
+
+
+def _remove_file(folder, name):
+    try:
+        os.unlink(os.path.join(folder, name))
+    except FileNotFoundError:
+        return
+    _fsync_folder(folder)
+
+
+def _verification_error(since=None):
+    message = f"{_LOGIN_ERROR_PREFIX} {_VERIFICATION_MESSAGE}"
+    if since is not None:
+        message += f" No login request was sent; verification is pending since {since}."
+    return RobinhoodVerificationRequired(message)
+
+
+def _read_latch(folder, name):
+    try:
+        data = _read_private_file(os.path.join(folder, name), _LATCH_FILE_MAX_BYTES)
+    except ValueError:
+        return {"identity": None, "since": "an unknown time (the latch file is unreadable)"}
+    if data is None:
+        return None
+    try:
+        latch = json.loads(data.decode("utf-8"))
+    except Exception:
+        return {"identity": None, "since": "an unknown time (the latch file is unreadable)"}
+    if not isinstance(latch, dict):
+        return {"identity": None, "since": "an unknown time (the latch file is unreadable)"}
+    identity = latch.get("session_sha256")
+    since = latch.get("since")
+    if not isinstance(identity, str) or not _LATCH_IDENTITY.fullmatch(identity):
+        return {"identity": None, "since": "an unknown time (the latch file is unreadable)"}
+    if not isinstance(since, str) or not _LATCH_SINCE.fullmatch(since):
+        since = "an unknown time"
+    return {"identity": identity, "since": since}
+
+
+def _utc_now_text():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@contextlib.contextmanager
+def _login_guards(rh, device_token, interactive, outcome):
+    from robin_stocks.robinhood import authentication as auth
+
+    login = getattr(rh, "login", None)
+    code = getattr(login, "__code__", None)
+    if (
+        login is not getattr(auth, "login", None)
+        or getattr(login, "__globals__", None) is not vars(auth)
+        or code is None
+        or not _GUARDED_NAMES <= set(code.co_names)
+        or not callable(getattr(auth, "_validate_sherrif_id", None))
+        or not callable(getattr(auth, "generate_device_token", None))
+        or not callable(getattr(getattr(auth, "getpass", None), "getpass", None))
+    ):
+        raise _session_refusal(
+            "the installed robin_stocks no longer matches the session guard, so go-trader cannot stop a "
+            "verification prompt; no login request was sent"
+        )
+
+    def refuse_verification(*args, **kwargs):
+        outcome["verification"] = True
+        raise RuntimeError(_VERIFICATION_REFUSAL)
+
+    def refuse_prompt(*args, **kwargs):
+        raise RuntimeError(_PROMPT_REFUSAL)
+
+    patches = {"generate_device_token": lambda: device_token}
+    if not interactive:
+        patches["_validate_sherrif_id"] = refuse_verification
+        patches["input"] = refuse_prompt
+        patches["getpass"] = types.SimpleNamespace(getpass=refuse_prompt)
+    namespace = vars(auth)
+    missing = object()
+    saved = {name: namespace.get(name, missing) for name in patches}
+    try:
+        for name, value in patches.items():
+            namespace[name] = value
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is missing:
+                namespace.pop(name, None)
+            else:
+                namespace[name] = value
+
+
+def _login_attempt(folder, key, username, password, totp_secret, interactive, lock_wait_until, progress):
+    lock_fd = _open_session_lock(folder, key)
+    stage = None
+    try:
+        _take_session_lock(lock_fd, key, lock_wait_until)
+        progress["locked"] = True
+        _remove_stale_stages(folder, key)
+
+        session_name = f"robinhood-{key}.pickle"
+        device_name = f"robinhood-{key}.device"
+        latch_name = f"robinhood-{key}.verification"
+        bootstrap = f"run the bootstrap ({BOOTSTRAP_COMMAND}) after fixing or removing it"
+
+        pre_bytes = None
+        session = None
+        try:
+            pre_bytes = _read_private_file(os.path.join(folder, session_name), _SESSION_FILE_MAX_BYTES)
+            if pre_bytes is not None:
+                session = _decode_session(pre_bytes, session_name)
+        except ValueError as e:
+            if not interactive:
+                raise _session_refusal(f"the stored Robinhood session in {folder} is refused: {e}; {bootstrap}") from None
+            _warn(f"ignoring the stored session: {e}; a successful login replaces it")
+            pre_bytes = None
+            session = None
+        identity = hashlib.sha256(pre_bytes).hexdigest() if pre_bytes is not None else "absent"
+
+        if not interactive:
+            latch = _read_latch(folder, latch_name)
+            if latch is not None:
+                if latch["identity"] is None or latch["identity"] == identity:
+                    raise _verification_error(latch["since"])
+                _remove_file(folder, latch_name)
+
+        device_token = session["device_token"] if session is not None else None
+        stored_device = None
+        try:
+            device_bytes = _read_private_file(os.path.join(folder, device_name), 256)
+            if device_bytes is not None:
+                stored_device = device_bytes.decode("ascii").strip()
+                if not _DEVICE_TOKEN.fullmatch(stored_device):
+                    raise ValueError(f"{device_name} does not hold a device token")
+        except (ValueError, UnicodeDecodeError) as e:
+            if not interactive:
+                raise _session_refusal(f"the Robinhood device file in {folder} is refused: {e}; {bootstrap}") from None
+            _warn(f"ignoring the device file: {e}; a successful login replaces it")
+            stored_device = None
+        if device_token is None:
+            device_token = stored_device
+        if device_token is None:
+            with robinhood_library():
+                from robin_stocks.robinhood import authentication as auth
+
+                device_token = auth.generate_device_token()
+            if not _DEVICE_TOKEN.fullmatch(device_token):
+                raise _session_refusal("robin_stocks made a device token in an unknown form; no login request was sent")
+        if device_token != stored_device:
+            _write_private_file(folder, device_name, (device_token + "\n").encode("ascii"))
+
+        stage = tempfile.mkdtemp(prefix=f".stage-{key}-", dir=folder)
+        os.chmod(stage, 0o700)
+        if pre_bytes is not None:
+            _write_private_file(stage, session_name, pre_bytes)
+
+        outcome = {"verification": False}
+        previous_umask = os.umask(0o077)
+        try:
+            reason = _attempt_robinhood_login(
+                username, password, totp_secret, stage, f"-{key}", device_token, interactive, outcome,
+            )
+        finally:
+            os.umask(previous_umask)
+        return {
+            "reason": reason,
+            "verification": outcome["verification"],
+            "identity": identity,
+            "pre_bytes": pre_bytes,
+            "stage": stage,
+            "session_name": session_name,
+            "device_name": device_name,
+            "latch_name": latch_name,
+            "stored_device": device_token,
+            "lock_fd": lock_fd,
+        }
+    except BaseException:
+        if stage is not None:
+            shutil.rmtree(stage, ignore_errors=True)
+        os.close(lock_fd)
+        raise
+
+
+def _finish_login(folder, attempt):
+    try:
+        if attempt["verification"]:
+            _write_private_file(
+                folder,
+                attempt["latch_name"],
+                (json.dumps({"session_sha256": attempt["identity"], "since": _utc_now_text()}, sort_keys=True) + "\n").encode("utf-8"),
+            )
+            raise _verification_error()
+        if attempt["reason"] is not None:
+            raise RobinhoodLoginError(f"{_LOGIN_ERROR_PREFIX} {attempt['reason']}")
+        session_name = attempt["session_name"]
+        staged_path = os.path.join(attempt["stage"], session_name)
+        try:
+            staged = _read_private_file(staged_path, _SESSION_FILE_MAX_BYTES, fix_mode=True)
+            if staged is None:
+                raise ValueError(f"{session_name} was not written to the stage folder")
+            session = _decode_session(staged, session_name)
+        except (ValueError, OSError) as e:
+            _reset_library_session()
+            raise _session_refusal(f"robin_stocks logged in but the session was not stored: {e}") from None
+        if staged == attempt["pre_bytes"]:
+            return "reused"
+        os.replace(staged_path, os.path.join(folder, session_name))
+        _fsync_folder(folder)
+        if session["device_token"] != attempt["stored_device"]:
+            _write_private_file(folder, attempt["device_name"], (session["device_token"] + "\n").encode("ascii"))
+        _remove_file(folder, attempt["latch_name"])
+        return "stored"
+    finally:
+        shutil.rmtree(attempt["stage"], ignore_errors=True)
+        os.close(attempt["lock_fd"])
+
+
+def _robinhood_login(username, password, totp_secret, deadline, interactive):
+    if not (_nonempty_text(username) and _nonempty_text(password) and _nonempty_text(totp_secret)):
+        raise RobinhoodLoginError(f"{_LOGIN_ERROR_PREFIX} credentials are missing")
+    if threading.current_thread() is not threading.main_thread():
+        raise _session_refusal("a Robinhood login must run on the main thread, which owns the login watchdog")
+    try:
+        folder = _session_folder()
+        key = robinhood_account_key(username)
+        cap = _BOOTSTRAP_TIMEOUT_S if interactive else _LOGIN_WATCHDOG_CAP_S
+        budget = cap if deadline is None else min(cap, deadline - time.monotonic())
+        lock_wait_until = time.monotonic() + budget - _LOCK_MARGIN_S
+        progress = {"locked": False}
+        attempt = None
+        try:
+            with _watchdog(budget, "Robinhood login"):
+                attempt = _login_attempt(folder, key, username, password, totp_secret, interactive, lock_wait_until, progress)
+        except _BudgetExpired as e:
+            if attempt is not None:
+                shutil.rmtree(attempt["stage"], ignore_errors=True)
+                os.close(attempt["lock_fd"])
+            message = f"{_LOGIN_ERROR_PREFIX} {e}"
+            if not progress["locked"]:
+                message += " while waiting for the session lock"
+            raise RobinhoodLoginError(_reset_library_session(message)) from None
+        return _finish_login(folder, attempt)
+    except OSError as e:
+        message = f"{_LOGIN_ERROR_PREFIX} a Robinhood session file operation failed ({_errno_text(e)})"
+        raise RobinhoodSessionError(_reset_library_session(message)) from None
+
+
+def robinhood_login(username, password, totp_secret, deadline=None, interactive=False):
+    try:
+        return _robinhood_login(username, password, totp_secret, deadline, interactive)
+    except RobinhoodLoginError as e:
+        _warn(str(e))
+        raise
 
 
 class RobinhoodExchangeAdapter:
@@ -758,22 +1281,7 @@ class RobinhoodExchangeAdapter:
             return
 
         try:
-            if self._login_deadline is None:
-                robinhood_login(username, password, totp_secret)
-            else:
-                remaining = self._login_deadline - time.monotonic()
-                try:
-                    with _watchdog(min(_LOGIN_WATCHDOG_CAP_S, remaining), "Robinhood login"):
-                        robinhood_login(username, password, totp_secret)
-                except _BudgetExpired as e:
-                    message = str(e)
-                    try:
-                        with robinhood_library() as rh:
-                            rh.helper.set_login_state(False)
-                            rh.helper.update_session("Authorization", None)
-                    except Exception as reset_error:
-                        message += f"; library session reset raised {type(reset_error).__name__}"
-                    raise RuntimeError(message) from None
+            robinhood_login(username, password, totp_secret, deadline=self._login_deadline)
         except RobinhoodLoginError:
             if self._mode == "live":
                 raise

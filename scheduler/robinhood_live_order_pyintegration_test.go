@@ -74,6 +74,11 @@ func newRHLiveEnv(t *testing.T, strategies ...StrategyConfig) *rhLiveEnv {
 	}
 	e.notifier = NewMultiNotifier(notifierBackend{notifier: e.mock, ownerID: "owner", channels: map[string]string{"spot": "chan-1"}})
 	t.Setenv("HOME", dir)
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(robinhoodSessionDirEnv, filepath.Join(resolvedDir, robinhoodSessionDirName))
 	t.Setenv("PYTHONPATH", filepath.Join(root, "shared_scripts", "testdata", "robinhood_offline"))
 	t.Setenv("RH_OFFLINE_STUB_MODE", "routes")
 	t.Setenv("RH_OFFLINE_STUB_ROUTES", e.routes)

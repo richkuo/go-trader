@@ -264,6 +264,12 @@ jobs:
             --marker 'OK: merge-paper service fixture passed (exit 79 for the second start)' \
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" MERGE_PAPER_SERVICE_FIXTURE_REQUIRE_RUN=1 bash scripts/test_merge_paper_service_fixture.sh
 
+      - name: Robinhood session service fixture (root, systemd)
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'OK: robinhood session service fixture passed (state-directory session, owner-only modes, no home writes, reuse on second start)' \
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_UV="$(command -v uv)" ROBINHOOD_SESSION_SERVICE_FIXTURE_REQUIRE_RUN=1 bash scripts/test_robinhood_session_service_fixture.sh
+
       - name: Service layout migration fixture (root, systemd)
         run: |
           bash scripts/run_ci_shell_suite.sh \

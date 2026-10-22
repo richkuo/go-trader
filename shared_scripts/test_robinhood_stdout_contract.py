@@ -70,6 +70,7 @@ def _offline_env(home, mode, noise):
     env.pop("RH_OFFLINE_STUB_STDOUT_NOISE", None)
     env.update({
         "HOME": str(home),
+        "GO_TRADER_ROBINHOOD_SESSION_DIR": os.path.join(os.path.realpath(home), "robinhood-session"),
         "PYTHONPATH": str(FIXTURE),
         "RH_OFFLINE_STUB_MODE": mode,
         "ROBINHOOD_USERNAME": "offline-user",
@@ -163,8 +164,6 @@ FAILED_LOGIN_MODES = (
     "transport_error_secret",
     "login_no_refresh_token",
     "login_empty_token",
-    "token_cache_unwritable",
-    "token_cache_dir_error",
     "login_verification_required",
 )
 LIVE_CASE_IDS = ("check_live", "execute_buy", "execute_sell", "close", "positions", "candles_live", "balance")
@@ -172,15 +171,19 @@ PAPER_CASE_IDS = ("check_paper", "options", "candles_paper")
 SECRETS = ("offline-user", "offline-pass", "JBSWY3DPEHPK3PXP", "offline-access-token", "offline-refresh-token")
 LOGIN_FAILED = "Robinhood login failed:"
 TOKEN_URL = "https://api.robinhood.com/oauth2/token/"
-PATHFINDER_URL = "https://api.robinhood.com/pathfinder/user_machine/"
 MODE_REASONS = {
     "login_empty_token": ("no access token",),
-    "login_no_refresh_token": ("token cache", "robin_stocks reported 'refresh_token'"),
-    "token_cache_unwritable": ("token cache", "robin_stocks reported [Errno 20]"),
-    "token_cache_dir_error": ("raised PermissionError", "token cache"),
+    "login_no_refresh_token": ("session write", "robin_stocks reported 'refresh_token'"),
+    "login_verification_required": ("go-trader robinhood-login --config",),
+}
+MODE_STDERR_ABSENT = {
+    "login_verification_required": ("Error in request_post: Received 503", "Starting verification process..."),
 }
 MODE_STDERR = {
-    "login_verification_required": ("Verification required, handling challenge...", "Error in request_post: Received 503"),
+    "login_verification_required": (
+        "Verification required, handling challenge...",
+        "Error during login verification: go-trader refused the device verification prompt",
+    ),
     "transport_error_secret": ("Error in request_post: (detail withheld)",),
     "transport_error": ("Error in request_post: (detail withheld)",),
 }
@@ -241,6 +244,9 @@ def test_failed_login_refuses_live_work_and_keeps_paper_logged_out(case, mode, t
         assert want in reason, detail
     for want in MODE_STDERR.get(mode, ()):
         assert want in proc.stderr, detail
+    for unwanted in MODE_STDERR_ABSENT.get(mode, ()):
+        assert unwanted not in proc.stderr, detail
+    assert len([r for r in made if r["method"] == "POST" and r["url"] == TOKEN_URL]) <= 1, detail
 
     if case_id in LIVE_CASE_IDS:
         assert proc.returncode == 1, detail
@@ -254,8 +260,7 @@ def test_failed_login_refuses_live_work_and_keeps_paper_logged_out(case, mode, t
         assert case_id in PAPER_CASE_IDS, detail
         assert proc.returncode == 0, detail
         assert "error" not in doc, detail
-        allowed = {TOKEN_URL, PATHFINDER_URL} if mode == "login_verification_required" else {TOKEN_URL}
-        assert {r["url"] for r in robinhood_requests} <= allowed, detail
+        assert {r["url"] for r in robinhood_requests} <= {TOKEN_URL}, detail
         assert "can only be called when logged in" not in proc.stderr, detail
         assert "503 Server Error" not in proc.stderr, detail
         assert "paper mode continues logged out on public data" in proc.stderr, detail

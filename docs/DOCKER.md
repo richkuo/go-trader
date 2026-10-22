@@ -40,7 +40,7 @@ Read the whole guide before you put real money behind it.
 | Image | `ghcr.io/richkuo/go-trader:<release>` | One image holds the Go binary and the Python scripts of one source commit. Images exist for `linux/amd64` and `linux/arm64`, for releases published after the Docker setup was added. |
 | Service `go-trader` | `docker/compose.yaml` | The long-running bot. It restarts by itself after a crash or an internal restart. |
 | Service `cli` | `docker/compose.yaml`, profile `cli` | One-shot commands: setup, probe, inspect, manual trades, `--once`. It never restarts by itself. |
-| Data volume | `go-trader_data`, mounted at `/data` | The config (`/data/config.json`), every state database and its sidecar files, lock files, tuning runs and the OHLCV cache. |
+| Data volume | `go-trader_data`, mounted at `/data` | The config (`/data/config.json`), every state database and its sidecar files, lock files, tuning runs, the OHLCV cache and the Robinhood login session (`/data/robinhood-session`). |
 | Log volume | `go-trader_logs`, mounted at `/app/logs` | Strategy log files. The bot's main output goes to `docker compose logs`. |
 | Secrets file | `docker/go-trader.env` | Tokens and exchange keys. It stays on your computer and never goes into an image. |
 | Dashboard | `http://127.0.0.1:8099/dashboard` | Only your own computer can open it, and every data request needs your token. |
@@ -354,7 +354,8 @@ Back up the data volume while the bot is **stopped**, so the config and every da
 
 3. Start the bot again: `docker compose start`.
 
-The copy holds `config.json`, every state database with its `-wal` and `-shm` files, the lock files, `tuning_runs/` and the OHLCV cache.
+The copy holds `config.json`, every state database with its `-wal` and `-shm` files, the lock files, `tuning_runs/`, the OHLCV cache and, when Robinhood is used, `robinhood-session/`.
+`robinhood-session/` holds a Robinhood session token, so protect the backup like `go-trader.env`.
 Keep `go-trader.env` in its own protected backup; this backup does not contain it.
 
 ## Restore
@@ -482,6 +483,17 @@ To trade with real money later, change a strategy to live mode in the config (se
 Every database must stay in `/data`: the container refuses a config whose `db_file`, `paper_db_file`, `paper_sources[].db_file` or `replay_log_path` points somewhere else.
 The container does not support `role: "feed"` services or `market_feed: "shared"`.
 Understand the [Roll back](#roll-back) limits before you trade live.
+
+**Robinhood device approval.** Robinhood logins keep their session in `/data/robinhood-session` (mode 0700, files 0600), and the bot never answers a Robinhood device verification prompt.
+When the log shows `Robinhood asks to verify this device`, Robinhood logins stop sending requests until you approve the device once in a terminal:
+
+```bash
+docker compose run --rm cli robinhood-login --config /data/config.json
+```
+
+It runs the Robinhood verification (app approval, or an SMS or email code that you type), stores the session and clears the stop.
+It can run while the bot runs; bot logins during it wait for the next cycle.
+See [SKILL.md](../SKILL.md) § Secrets, Robinhood session.
 
 ## Build the image yourself
 

@@ -18,6 +18,7 @@ logs/
 scheduler/config.json
 scheduler/state.json
 scheduler/state.db
+robinhood-session/
 .worktrees/
 .claude/*
 local/

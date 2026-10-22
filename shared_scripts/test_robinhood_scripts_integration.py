@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+import pickle
 import subprocess
 import sys
 import textwrap
@@ -211,6 +213,7 @@ def _run(tmp_path, script, args, routes, login=LOGIN_OK):
     env = {k: v for k, v in os.environ.items() if not k.startswith("ROBINHOOD")}
     env.update({
         "HOME": str(home),
+        "GO_TRADER_ROBINHOOD_SESSION_DIR": os.path.join(os.path.realpath(run_dir), "robinhood-session"),
         "PYTHONPATH": os.pathsep.join([str(site)] + [p for p in [os.environ.get("PYTHONPATH")] if p]),
         "PYTHONDONTWRITEBYTECODE": "1",
         "RH_FAKE_FIXTURE": str(fixture),
@@ -964,14 +967,18 @@ LOGIN_FAILURES = {
     }}], {}, "'token_type'"),
     "verification_workflow": (
         [{"status": 200, "json": {"verification_workflow": {"id": "fake-workflow"}}}],
-        {"POST " + PATHFINDER: [{"status": 200, "json": {}}]},
-        "robin_stocks reported Error: No verification ID returned in user-machine response",
+        {},
+        "go-trader robinhood-login --config",
     ),
 }
 SCRIPTS = {"fetch": (FETCH, []), "close": (CLOSE, ["--symbol=BTC", "--mode=live", "--quantity=0.5"])}
 
 
-def _run_capture(tmp_path, script, args, routes, login=LOGIN_OK, home=None):
+def _default_session(run_dir):
+    return os.path.join(os.path.realpath(run_dir), "robinhood-session")
+
+
+def _run_capture(tmp_path, script, args, routes, login=LOGIN_OK, home=None, session=_default_session):
     run_dir = tmp_path / f"run-{len(list(tmp_path.iterdir()))}"
     site = run_dir / "site"
     site.mkdir(parents=True)
@@ -988,6 +995,7 @@ def _run_capture(tmp_path, script, args, routes, login=LOGIN_OK, home=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith("ROBINHOOD")}
     env.update({
         "HOME": str(home_dir),
+        "GO_TRADER_ROBINHOOD_SESSION_DIR": session(run_dir),
         "PYTHONPATH": os.pathsep.join([str(site)] + [p for p in [os.environ.get("PYTHONPATH")] if p]),
         "PYTHONDONTWRITEBYTECODE": "1",
         "RH_FAKE_FIXTURE": str(fixture),
@@ -1022,32 +1030,38 @@ def _assert_login_refused(proc, payload, made):
     return detail
 
 
-def _home_with_tokens_file(run_dir):
-    home = run_dir / "home"
-    home.mkdir()
-    (home / ".tokens").write_text("")
-    return home
+CACHED_DEVICE = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
 
 
-def _home_under_file(run_dir):
-    blocker = run_dir / "home-blocker"
-    blocker.write_text("")
-    return blocker / "home"
+def _account_key(username):
+    return hashlib.sha256(("go-trader/robinhood-username/v1:" + username.strip().lower()).encode()).hexdigest()[:16]
 
 
-def _home_with_cached_session(run_dir):
-    import pickle
-
-    home = run_dir / "home"
-    (home / ".tokens").mkdir(parents=True)
-    with open(home / ".tokens" / "robinhood.pickle", "wb") as f:
+def _seeded_session(run_dir):
+    folder = _default_session(run_dir)
+    os.mkdir(folder, 0o700)
+    path = os.path.join(folder, "robinhood-%s.pickle" % _account_key("integration-user"))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
         pickle.dump({
             "token_type": "Bearer",
             "access_token": "fake-access-token",
             "refresh_token": "fake-refresh-token",
-            "device_token": "fake-device-token",
+            "device_token": CACHED_DEVICE,
         }, f)
-    return home
+    return folder
+
+
+def _unwritable_session(run_dir):
+    folder = _default_session(run_dir)
+    os.mkdir(folder, 0o500)
+    return folder
+
+
+def _session_under_file(run_dir):
+    blocker = run_dir / "session-blocker"
+    blocker.write_text("")
+    return os.path.join(os.path.realpath(blocker), "robinhood-session")
 
 
 @pytest.mark.parametrize("script_id", sorted(SCRIPTS))
@@ -1058,31 +1072,33 @@ def test_failed_login_stops_script_before_any_account_request(tmp_path, shape, s
     proc, payload, made = _run_capture(tmp_path, script, args, dict(_single([BTC]), **extra_routes), login=login)
     detail = _assert_login_refused(proc, payload, made)
     assert _count(made, TOKEN_URL, "POST") == 1, detail
+    assert _count(made, PATHFINDER, "POST") == 0, detail
     if want_reason is not None:
         assert want_reason in payload["error"], detail
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores folder permissions")
 @pytest.mark.parametrize("script_id", sorted(SCRIPTS))
-def test_token_cache_write_failure_refuses_login(tmp_path, script_id):
+def test_unwritable_session_folder_refuses_login_before_any_request(tmp_path, script_id):
     script, args = SCRIPTS[script_id]
-    proc, payload, made = _run_capture(tmp_path, script, args, _single([BTC]), home=_home_with_tokens_file)
+    proc, payload, made = _run_capture(tmp_path, script, args, _single([BTC]), session=_unwritable_session)
     detail = _assert_login_refused(proc, payload, made)
-    assert "token cache" in payload["error"], detail
-    assert _count(made, TOKEN_URL, "POST") == 1, detail
+    assert "is not writable" in payload["error"], detail
+    assert made == [], detail
 
 
 @pytest.mark.parametrize("script_id", sorted(SCRIPTS))
-def test_token_cache_directory_failure_refuses_login(tmp_path, script_id):
+def test_session_folder_under_a_file_refuses_login_before_any_request(tmp_path, script_id):
     script, args = SCRIPTS[script_id]
-    proc, payload, made = _run_capture(tmp_path, script, args, _single([BTC]), home=_home_under_file)
+    proc, payload, made = _run_capture(tmp_path, script, args, _single([BTC]), session=_session_under_file)
     detail = _assert_login_refused(proc, payload, made)
-    assert "raised NotADirectoryError" in payload["error"], detail
-    assert _count(made, TOKEN_URL, "POST") == 0, detail
+    assert "GO_TRADER_ROBINHOOD_SESSION_DIR" in payload["error"], detail
+    assert made == [], detail
 
 
 def test_cached_session_login_reads_holdings_with_its_token(tmp_path):
     routes = dict(_single([BTC]), **{"GET " + POSITIONS_CHECK: [_page([])]})
-    proc, payload, made = _run_capture(tmp_path, FETCH, [], routes, home=_home_with_cached_session)
+    proc, payload, made = _run_capture(tmp_path, FETCH, [], routes, session=_seeded_session)
     detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\nrequests:\n{made}"
     assert proc.returncode == 0, detail
     assert payload.get("error") is None, detail
@@ -1094,7 +1110,7 @@ def test_cached_session_login_reads_holdings_with_its_token(tmp_path):
 
 def test_rejected_cached_session_falls_back_to_password_login(tmp_path):
     routes = dict(_single([BTC]), **{"GET " + POSITIONS_CHECK: [{"status": 401, "json": {"detail": "expired"}}]})
-    proc, payload, made = _run_capture(tmp_path, FETCH, [], routes, home=_home_with_cached_session)
+    proc, payload, made = _run_capture(tmp_path, FETCH, [], routes, session=_seeded_session)
     detail = f"exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\nrequests:\n{made}"
     assert proc.returncode == 0, detail
     assert payload.get("error") is None, detail
