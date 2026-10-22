@@ -26,7 +26,7 @@ func init() {
 
 func obiParamNumber(params map[string]interface{}, name string, def float64) (float64, bool, error) {
 	raw, ok := params[name]
-	if !ok || raw == nil {
+	if !ok {
 		return def, false, nil
 	}
 	var v float64

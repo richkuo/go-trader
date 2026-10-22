@@ -162,5 +162,48 @@
    "entry_threshold": false
   },
   "valid": false
+ },
+ {
+  "params": {
+   "depth_levels": null
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "entry_threshold": null
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "confirmation_observations": null
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "max_spread_bps": null
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "min_combined_depth_usd": null
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "max_snapshot_age_ms": null
+  },
+  "valid": false
+ },
+ {
+  "params": {
+   "entry_threshold": null,
+   "max_spread_bps": 5
+  },
+  "valid": false
  }
 ]
