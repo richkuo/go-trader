@@ -9,9 +9,8 @@ import (
 )
 
 const (
-	marketSnapshotVersion       = 2
-	marketPayloadVersionPremium = 3
-	marketPayloadMaxBytes       = 8 << 20
+	marketSnapshotVersion = 4
+	marketPayloadMaxBytes = 8 << 20
 )
 
 type marketFrame struct {
@@ -70,6 +69,8 @@ type marketPayload struct {
 	Observations     map[string]marketObservationPayload   `json:"observations,omitempty"`
 	TradeFlows       map[string]marketTradeFlowPayload     `json:"trade_flows,omitempty"`
 	VolumeProfiles   map[string]marketVolumeProfilePayload `json:"volume_profiles,omitempty"`
+	L2Books          map[string]marketL2BookPayload        `json:"l2_books,omitempty"`
+	L2BooksRefused   string                                `json:"l2_books_refused,omitempty"`
 	Premiums         map[string]marketPremiumPayload       `json:"perp_premiums,omitempty"`
 	MacroEvents      map[string]marketMacroEventsPayload   `json:"macro_events,omitempty"`
 	MacroQuotes      map[string]marketMacroQuotesPayload   `json:"macro_quotes,omitempty"`
@@ -101,6 +102,7 @@ type marketSnapshot struct {
 	observations map[feedObservationKey]*marketSnapshotObservation
 	tradeFlows   map[feedObservationKey]*marketSnapshotTradeFlow
 	profiles     map[feedObservationKey]*marketSnapshotProfile
+	books        map[feedObservationKey]*marketSnapshotBook
 	premiums     map[feedObservationKey]*marketSnapshotPremium
 	macro        map[feedMacroKey]*marketSnapshotMacro
 
@@ -119,6 +121,7 @@ type cycleMarketRequirements struct {
 	Observations    map[feedObservationKey]int64
 	AccountingCoins []string
 	Macro           map[feedMacroKey]int64
+	Books           map[feedObservationKey]feedBookNeed
 }
 
 func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMarketRequirements {
@@ -127,6 +130,7 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 	funding := make(map[string]feedFundingNeed)
 	observations := make(map[feedObservationKey]int64)
 	macro := make(map[feedMacroKey]int64)
+	books := make(map[feedObservationKey]feedBookNeed)
 	raise := func(key marketFeedKey, required int) {
 		if existing, ok := need[key]; !ok || required > existing {
 			need[key] = required
@@ -164,11 +168,14 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 				macro[key] = window
 			}
 		}
+		for key, bn := range entry.bookNeeds() {
+			addBookNeed(books, key, bn, nil)
+		}
 	}
 	for _, coin := range req.MidCoins {
 		coins[coin] = true
 	}
-	out := cycleMarketRequirements{Funding: funding, Observations: observations, Macro: macro}
+	out := cycleMarketRequirements{Funding: funding, Observations: observations, Macro: macro, Books: books}
 	out.AccountingCoins = append(out.AccountingCoins, req.AccountingCoins...)
 	for key, required := range need {
 		out.Keys = append(out.Keys, cycleMarketRequirement{Key: key, Required: required})
@@ -255,6 +262,7 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 		observations:     make(map[feedObservationKey]*marketSnapshotObservation, len(reqs.Observations)),
 		tradeFlows:       make(map[feedObservationKey]*marketSnapshotTradeFlow),
 		profiles:         make(map[feedObservationKey]*marketSnapshotProfile),
+		books:            make(map[feedObservationKey]*marketSnapshotBook, len(reqs.Books)),
 		premiums:         make(map[feedObservationKey]*marketSnapshotPremium),
 		macro:            make(map[feedMacroKey]*marketSnapshotMacro, len(reqs.Macro)),
 	}
@@ -314,6 +322,12 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 	}
 	for key, window := range reqs.Macro {
 		snap.macro[key] = freezeMacroLocked(o.macro[key], key, window, cutoff.UTC().UnixMilli())
+	}
+	o.tickBooksLocked(now.UTC().UnixMilli())
+	for key, need := range reqs.Books {
+		if st := o.books[key]; st != nil {
+			snap.books[key] = freezeBook(st, need, o.bookInstance, cutoff.UTC().UnixMilli(), now.UTC().UnixMilli())
+		}
 	}
 	o.freezeAccountingFundingLocked(snap, reqs.AccountingCoins)
 	return snap

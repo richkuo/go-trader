@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -14,6 +15,52 @@ type robinhoodCircuitCloseDeps struct {
 	store   *StateStore
 	prices  map[string]float64
 	resolve func() map[string]error
+	settle  func() robinhoodSettleOutcome
+}
+
+func (d robinhoodCircuitCloseDeps) settleNow(state *AppState, strategies []StrategyConfig, mu *sync.RWMutex) robinhoodSettleOutcome {
+	if d.settle != nil {
+		return d.settle()
+	}
+	if d.store != nil {
+		_, out := settleRobinhoodAttemptsOutcome(robinhoodEmergencyDeps{store: d.store, state: state, mu: mu, cfgs: strategies}, nil, nil)
+		return out
+	}
+	return robinhoodSettleOutcome{SaveErr: fmt.Errorf("no durable settlement is wired, so the remaining book cannot be proven")}
+}
+
+func robinhoodOwnLongBook(ss *StrategyState, coin string) float64 {
+	if ss == nil {
+		return 0
+	}
+	pos := ss.Positions[coin]
+	if pos == nil || pos.Side != "long" || !(pos.Quantity > 0) || !robinhoodFinite(pos.Quantity) {
+		return 0
+	}
+	return pos.Quantity
+}
+
+func formatRobinhoodCBResidueDM(strategyID, coin string, held float64) string {
+	return fmt.Sprintf("Robinhood CB close [%s]: the go-trader book for %s is closed, and the account still holds %.10g %s above every go-trader book. go-trader never sells coin outside its book; that coin is the operator's.", strategyID, coin, held, coin)
+}
+
+func robinhoodOwnLongPositionID(ss *StrategyState, coin string) string {
+	if robinhoodBookFlat(robinhoodOwnLongBook(ss, coin)) {
+		return ""
+	}
+	return ss.Positions[coin].TradePositionID
+}
+
+func robinhoodCBLatched(ss *StrategyState, now time.Time) bool {
+	return ss != nil && ss.RiskState.CircuitBreaker && now.Before(ss.RiskState.CircuitBreakerUntil)
+}
+
+func formatRobinhoodUnlatchedLegacyPendingDM(strategyID, coin string, legacySize, book, held float64) string {
+	return fmt.Sprintf("Robinhood CB close [%s]: a pending close of %.10g %s from an earlier version was sized from the account, and the circuit breaker is no longer latched, so the current %.10g %s book may be a position opened after it fired. No order was sent and the pending close is cleared. The account holds %.10g %s; reconcile it by hand.", strategyID, legacySize, coin, book, coin, held, coin)
+}
+
+func formatRobinhoodLegacyPendingDM(strategyID, coin string, legacySize, held float64) string {
+	return fmt.Sprintf("Robinhood CB close [%s]: a pending close of %.10g %s from an earlier version was sized from the account, and the go-trader book for %s is flat. No order was sent and the pending close is cleared. The account holds %.10g %s; reconcile it by hand.", strategyID, legacySize, coin, coin, held, coin)
 }
 
 func runPendingRobinhoodCircuitCloses(
@@ -43,6 +90,13 @@ func runPendingRobinhoodCircuitCloses(
 		return
 	}
 
+	ownerDM := func(msg string) {
+		fmt.Printf("[CRITICAL] rh-circuit-close: %s\n", msg)
+		if sendOwnerDM != nil {
+			sendOwnerDM(msg)
+		}
+	}
+
 	mu.RLock()
 	hasPending := false
 	hasStuckCB := false
@@ -59,7 +113,7 @@ func runPendingRobinhoodCircuitCloses(
 		if ss == nil {
 			continue
 		}
-		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil && ss.RiskState.CircuitBreaker {
+		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) == nil && ss.RiskState.CircuitBreaker && !robinhoodBookFlat(robinhoodOwnLongBook(ss, robinhoodSymbol(sc.Args))) {
 			hasStuckCB = true
 			break
 		}
@@ -100,6 +154,7 @@ func runPendingRobinhoodCircuitCloses(
 		copy(recoverOrder, rhLiveAll)
 		sort.Slice(recoverOrder, func(i, j int) bool { return recoverOrder[i].ID < recoverOrder[j].ID })
 		var flatCleaned []*StrategyState
+		var dms []string
 		mu.Lock()
 		for _, sc := range recoverOrder {
 			ss := state.Strategies[sc.ID]
@@ -114,6 +169,10 @@ func runPendingRobinhoodCircuitCloses(
 			}
 			coin := robinhoodSymbol(sc.Args)
 			if coin == "" {
+				continue
+			}
+			book := robinhoodOwnLongBook(ss, coin)
+			if robinhoodBookFlat(book) {
 				continue
 			}
 			qty := robinhoodOnAccountSize(coin, positions)
@@ -133,18 +192,15 @@ func runPendingRobinhoodCircuitCloses(
 			}
 			peers := rhLiveStrategiesForCoin(coin, rhLiveAll)
 			if len(peers) > 1 {
-				msg := formatRobinhoodSharedOwnerDM(sc.ID, coin, peers)
-				fmt.Printf("[CRITICAL] rh-circuit-close: %s\n", msg)
-				if sendOwnerDM != nil {
-					sendOwnerDM(msg)
-				}
+				dms = append(dms, formatRobinhoodSharedOwnerDM(sc.ID, coin, peers))
 				continue
 			}
 			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{
-				Symbols: []PendingCircuitCloseSymbol{{Symbol: coin, Size: qty}},
+				Symbols:   []PendingCircuitCloseSymbol{{Symbol: coin, Size: book, PositionID: ensurePositionTradeID(ss.ID, coin, ss.Positions[coin])}},
+				SizeBasis: robinhoodPendingSizeBasisBook,
 			})
-			fmt.Printf("[CRITICAL] rh-circuit-close: recovered pending for strategy %s coin %s size=%.8f (CB latched, RH fetch had failed at fire time)\n",
-				sc.ID, coin, qty)
+			fmt.Printf("[CRITICAL] rh-circuit-close: recovered pending for strategy %s coin %s size=%.10g from the go-trader book (CB latched with no pending close; the account holds %.10g) (#1825)\n",
+				sc.ID, coin, book, qty)
 		}
 		if deps.store != nil {
 			for _, ss := range flatCleaned {
@@ -154,6 +210,9 @@ func runPendingRobinhoodCircuitCloses(
 			}
 		}
 		mu.Unlock()
+		for _, msg := range dms {
+			ownerDM(msg)
+		}
 	}
 
 	type job struct {
@@ -170,7 +229,9 @@ func runPendingRobinhoodCircuitCloses(
 		if p == nil || len(p.Symbols) == 0 {
 			continue
 		}
-		jobs = append(jobs, job{id, *p})
+		cp := *p
+		cp.Symbols = append([]PendingCircuitCloseSymbol(nil), p.Symbols...)
+		jobs = append(jobs, job{id, cp})
 	}
 	mu.RUnlock()
 
@@ -195,11 +256,18 @@ func runPendingRobinhoodCircuitCloses(
 			continue
 		}
 
+		legacy := j.pending.SizeBasis != robinhoodPendingSizeBasisBook
 		allOK := true
 		var failedCoin string
 		var failedSize float64
 		var failedErr error
-		var candidates []string
+		var dms []string
+		type candidate struct {
+			coin string
+			res  *RobinhoodCloseResult
+		}
+		var candidates []candidate
+		closerCalled := false
 		for _, c := range j.pending.Symbols {
 			if held, ok := unresolved[c.Symbol]; ok {
 				fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s waits for an unresolved order: %v\n", j.stratID, c.Symbol, held)
@@ -207,23 +275,66 @@ func runPendingRobinhoodCircuitCloses(
 				continue
 			}
 			onAccount := robinhoodOnAccountSize(c.Symbol, positions)
+			mu.RLock()
+			book := robinhoodOwnLongBook(state.Strategies[j.stratID], c.Symbol)
+			positionID := robinhoodOwnLongPositionID(state.Strategies[j.stratID], c.Symbol)
+			latched := robinhoodCBLatched(state.Strategies[j.stratID], time.Now())
+			mu.RUnlock()
+			target := c.Size
+			if !legacy && c.PositionID != "" && !robinhoodBookFlat(book) && positionID != c.PositionID {
+				fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s: the position %s this pending close was sized from is gone and the book now holds position %s; the pending close is cleared and nothing is sold (#1825)\n", j.stratID, c.Symbol, c.PositionID, positionID)
+				continue
+			}
+			if legacy || c.PositionID == "" {
+				if robinhoodBookFlat(book) {
+					dms = append(dms, formatRobinhoodLegacyPendingDM(j.stratID, c.Symbol, c.Size, onAccount))
+					continue
+				}
+				if !latched {
+					dms = append(dms, formatRobinhoodUnlatchedLegacyPendingDM(j.stratID, c.Symbol, c.Size, book, onAccount))
+					continue
+				}
+				mu.Lock()
+				if ss := state.Strategies[j.stratID]; ss != nil {
+					if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil {
+						p.SizeBasis = robinhoodPendingSizeBasisBook
+						for i := range p.Symbols {
+							if p.Symbols[i].Symbol == c.Symbol {
+								p.Symbols[i].Size = book
+								p.Symbols[i].PositionID = ensurePositionTradeID(ss.ID, c.Symbol, ss.Positions[c.Symbol])
+							}
+						}
+					}
+					if deps.store != nil {
+						if err := deps.store.SaveStrategyBook(ss); err != nil {
+							fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s: saving the book-sized pending close failed: %v — the book still caps the sale\n", j.stratID, err)
+						}
+					}
+				}
+				mu.Unlock()
+				fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s: the earlier account-sized pending close of %.10g now targets the go-trader book %.10g (#1825)\n", j.stratID, c.Symbol, c.Size, book)
+				target = book
+			}
+			if robinhoodBookFlat(book) {
+				if onAccount > 0 {
+					dms = append(dms, formatRobinhoodCBResidueDM(j.stratID, c.Symbol, onAccount))
+				}
+				fmt.Printf("[INFO] rh-circuit-close: strategy %s coin %s has no go-trader book left to sell; no order sent\n", j.stratID, c.Symbol)
+				continue
+			}
 			if onAccount <= 0 {
 				if lag := robinhoodFlatReadLags(c.Symbol, onAccount, freshLongs); lag != nil {
 					fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s: %v — pending close kept\n", j.stratID, c.Symbol, lag)
 					allOK = false
 					continue
 				}
-				candidates = append(candidates, c.Symbol)
+				candidates = append(candidates, candidate{coin: c.Symbol})
 				continue
 			}
 
 			peers := rhLiveStrategiesForCoin(c.Symbol, rhLiveAll)
 			if len(peers) > 1 {
-				msg := formatRobinhoodSharedOwnerDM(j.stratID, c.Symbol, peers)
-				fmt.Printf("[CRITICAL] rh-circuit-close: %s\n", msg)
-				if sendOwnerDM != nil {
-					sendOwnerDM(msg)
-				}
+				dms = append(dms, formatRobinhoodSharedOwnerDM(j.stratID, c.Symbol, peers))
 				allOK = false
 				continue
 			}
@@ -233,77 +344,110 @@ func runPendingRobinhoodCircuitCloses(
 				break
 			}
 
-			result, err := closer(c.Symbol)
+			ask := math.Min(target, book)
+			closerCalled = true
+			result, err := closer(RobinhoodCloseRequest{Symbol: c.Symbol, Quantity: ask})
 			if err != nil {
-				fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s failed: %v\n", j.stratID, c.Symbol, err)
+				fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s asking %.10g failed: %v\n", j.stratID, c.Symbol, ask, err)
 				allOK = false
 				failedCoin = c.Symbol
-				failedSize = c.Size
+				failedSize = ask
 				failedErr = err
 				break
 			}
-			if result != nil && result.Close != nil && result.Close.AlreadyFlat {
+			switch {
+			case result != nil && result.NoBook:
+				fmt.Printf("[INFO] rh-circuit-close: strategy %s coin %s has no go-trader book left to sell; no order sent\n", j.stratID, c.Symbol)
+				if onAccount > 0 {
+					dms = append(dms, formatRobinhoodCBResidueDM(j.stratID, c.Symbol, onAccount))
+				}
+				continue
+			case result != nil && result.Close != nil && result.Close.AlreadyFlat:
 				fmt.Printf("[INFO] rh-circuit-close: strategy %s coin %s already flat on-account (no-op)\n", j.stratID, c.Symbol)
-			} else {
-				fmt.Printf("[INFO] rh-circuit-close: strategy %s coin %s confirmed venue sell of size=%.8f\n",
-					j.stratID, c.Symbol, onAccount)
+			default:
+				sent := 0.0
+				if result != nil {
+					sent = result.RequestedQuantity
+				}
+				fmt.Printf("[INFO] rh-circuit-close: strategy %s coin %s confirmed venue sell: asked %.10g, sent %.10g, account held %.10g\n",
+					j.stratID, c.Symbol, ask, sent, onAccount)
 			}
-			candidates = append(candidates, c.Symbol)
+			candidates = append(candidates, candidate{coin: c.Symbol, res: result})
 		}
 
-		if allOK && len(candidates) > 0 {
-			var post []RobinhoodPosition
-			var verifyErr error
+		var verifiedFlat map[string]bool
+		remainders := map[string]float64{}
+		verify := allOK && len(candidates) > 0
+		var post []RobinhoodPosition
+		var verifyErr error
+		if verify {
 			if fetcher == nil {
 				verifyErr = fmt.Errorf("no strict holdings fetcher is wired")
 			} else {
 				post, verifyErr = fetcher()
 			}
-			for _, coin := range candidates {
+		}
+		var outcome robinhoodSettleOutcome
+		if closerCalled || len(candidates) > 0 {
+			outcome = deps.settleNow(state, strategies, mu)
+		}
+		if verify {
+			verifiedFlat = map[string]bool{}
+			mu.RLock()
+			ss := state.Strategies[j.stratID]
+			for _, cand := range candidates {
+				coin := cand.coin
+				remaining := robinhoodOwnLongBook(ss, coin)
+				q := robinhoodOnAccountSize(coin, post)
+				var reason error
 				switch {
 				case verifyErr != nil:
-					fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s: post-close holdings read failed: %v — pending close kept\n", j.stratID, coin, verifyErr)
+					reason = fmt.Errorf("post-close holdings read failed: %v", verifyErr)
+				case outcome.SaveErr != nil:
+					reason = fmt.Errorf("settlement is not saved: %v", outcome.SaveErr)
+				case outcome.Unresolved[coin] != nil:
+					reason = fmt.Errorf("an order for this coin is still unresolved after settlement: %v", outcome.Unresolved[coin])
+				case robinhoodBookFlat(remaining):
+					if q > 0 {
+						dms = append(dms, formatRobinhoodCBResidueDM(j.stratID, coin, q))
+					}
+				case q <= 0:
+					if lag := robinhoodFlatReadLags(coin, q, freshLongs); lag != nil {
+						reason = lag
+					} else {
+						verifiedFlat[coin] = true
+					}
+				default:
+					reason = fmt.Errorf("%s", robinhoodUnsoldReason(coin, remaining, q, cand.res))
+				}
+				if reason != nil {
+					fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s: %v — pending close kept\n", j.stratID, coin, reason)
 					allOK = false
-					failedCoin, failedErr = coin, fmt.Errorf("post-close holdings read failed: %v", verifyErr)
-				case robinhoodOnAccountSize(coin, post) > 0:
-					q := robinhoodOnAccountSize(coin, post)
-					fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s still held %.8f after close — pending close kept\n", j.stratID, coin, q)
-					allOK = false
-					failedCoin, failedSize, failedErr = coin, q, fmt.Errorf("still held %.8f after close", q)
+					failedCoin, failedSize, failedErr = coin, remaining, reason
+					remainders[coin] = remaining
 				}
 			}
-		}
-
-		if deps.store != nil {
-			settleRobinhoodAttempts(robinhoodEmergencyDeps{store: deps.store, state: state, mu: mu, cfgs: strategies}, nil, nil)
+			mu.RUnlock()
 		}
 
 		if allOK {
 			mu.Lock()
 			if ss := state.Strategies[j.stratID]; ss != nil {
-				stillUnresolved := false
-				for _, coin := range candidates {
-					if robinhoodUnresolvedForCoinLocked(state, "", coin) != nil {
-						stillUnresolved = true
-					}
+				if len(verifiedFlat) > 0 {
+					fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s: the account is flat on a fresh read with no unresolved order; closing the unsold book for %v as verified flat\n", j.stratID, sortedBoolKeys(verifiedFlat))
+					closeRobinhoodBookVerifiedFlat(ss, *sc, deps.prices, verifiedFlat, robinhoodVerifiedFlatCircuitBreaker, nil)
 				}
-				if stillUnresolved {
-					fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s pending close kept: a confirmed fill still waits for settlement\n", j.stratID)
-				} else {
-					coins := map[string]bool{}
-					for _, coin := range candidates {
-						coins[coin] = true
-					}
-					closeRobinhoodBookVerifiedFlat(ss, *sc, deps.prices, coins, robinhoodVerifiedFlatCircuitBreaker, nil)
-					ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
-					if deps.store != nil {
-						if err := deps.store.SaveStrategyBook(ss); err != nil {
-							fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s pending close cleared in memory but the save failed: %v — it retries with the next save\n", j.stratID, err)
-						}
+				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
+				if deps.store != nil {
+					if err := deps.store.SaveStrategyBook(ss); err != nil {
+						fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s pending close cleared in memory but the save failed: %v — it retries with the next save\n", j.stratID, err)
 					}
 				}
 			}
 			mu.Unlock()
+			for _, msg := range dms {
+				ownerDM(msg)
+			}
 			continue
 		}
 
@@ -322,8 +466,13 @@ func runPendingRobinhoodCircuitCloses(
 			}
 			if sharedOnly {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
-			} else if failedErr != nil {
-				if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil {
+			} else if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil {
+				for i := range p.Symbols {
+					if r, ok := remainders[p.Symbols[i].Symbol]; ok && !robinhoodBookFlat(r) {
+						p.Symbols[i].Size = r
+					}
+				}
+				if failedErr != nil {
 					p.ConsecutiveFailures++
 					failCount = p.ConsecutiveFailures
 					if shouldNotifyDrainFailure(p.ConsecutiveFailures, p.LastNotifiedAt, now) {
@@ -331,14 +480,31 @@ func runPendingRobinhoodCircuitCloses(
 						shouldAlert = true
 					}
 				}
+				if len(remainders) > 0 && deps.store != nil {
+					if err := deps.store.SaveStrategyBook(ss); err != nil {
+						fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s: saving the pending close remainder failed: %v — the book still caps the next sale\n", j.stratID, err)
+					}
+				}
 			}
 		}
 		mu.Unlock()
 
+		for _, msg := range dms {
+			ownerDM(msg)
+		}
 		if shouldAlert && sendOwnerDM != nil {
 			sendOwnerDM(formatDrainFailureAlert("robinhood", j.stratID, failedCoin, failedSize, failedErr.Error(), failCount))
 		}
 	}
+}
+
+func sortedBoolKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func rhLiveStrategiesForCoin(coin string, rhLiveAll []StrategyConfig) []StrategyConfig {

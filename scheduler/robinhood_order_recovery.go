@@ -45,7 +45,7 @@ func robinhoodResolveRequestFor(a *robinhoodOrderAttempt, orderID string, cancel
 		Side:              a.Side,
 		RefID:             a.RefID,
 		OrderID:           orderID,
-		RequestedQuantity: robinhoodRequestedQty(a, nil),
+		RequestedQuantity: robinhoodVenueOrderQty(a),
 		SubmittedAfterMs:  a.CreatedAtMs,
 		SubmittedBeforeMs: a.CreatedAtMs + budget + robinhoodSubmitWindowMargin.Milliseconds(),
 		ExpectedAccountID: a.VenueAccountID,
@@ -94,7 +94,7 @@ func resolveOneRobinhoodAttempt(d robinhoodEmergencyDeps, strategyID, attemptID,
 		d.mu.Unlock()
 		return robinhoodResolveVerdict{Unresolved: current.unresolved(), Reason: "the attempt changed during resolution"}
 	}
-	recordErr := recordRobinhoodOrderOutcomeLocked(d.store, s, current, res, class, detail, time.Now())
+	recordErr := recordRobinhoodOrderOutcomeLocked(d.store, s, current, res, class, detail, nil, time.Now())
 	var after robinhoodOrderAttempt
 	after = *current
 	d.mu.Unlock()
@@ -121,9 +121,44 @@ type robinhoodRecoveredTrades struct {
 	trades int
 }
 
+type robinhoodSettleOutcome struct {
+	SaveErr    error
+	Unresolved map[string]error
+}
+
+func robinhoodUnresolvedByCoinLocked(state *AppState) map[string]error {
+	out := map[string]error{}
+	for _, a := range robinhoodUnresolvedAttemptsLocked(state) {
+		if out[a.Symbol] != nil {
+			continue
+		}
+		reason := a.HoldReason
+		if reason == "" {
+			reason = "status " + a.Status
+		}
+		out[a.Symbol] = fmt.Errorf("attempt %s (%s %s): %s", a.AttemptID, a.Origin, a.Side, reason)
+	}
+	return out
+}
+
 func settleRobinhoodAttempts(d robinhoodEmergencyDeps, cfg *Config, logMgr *LogManager) []robinhoodRecoveredTrades {
+	out, _ := settleRobinhoodAttemptsOutcome(d, cfg, logMgr)
+	return out
+}
+
+func robinhoodDurableSettler(d robinhoodEmergencyDeps, cfg *Config, logMgr *LogManager) func() robinhoodSettleOutcome {
+	return func() robinhoodSettleOutcome {
+		recovered, outcome := settleRobinhoodAttemptsOutcome(d, cfg, logMgr)
+		sendRobinhoodRecoveredTradeAlerts(d, cfg, recovered)
+		return outcome
+	}
+}
+
+func settleRobinhoodAttemptsOutcome(d robinhoodEmergencyDeps, cfg *Config, logMgr *LogManager) ([]robinhoodRecoveredTrades, robinhoodSettleOutcome) {
+	outcome := robinhoodSettleOutcome{Unresolved: map[string]error{}}
 	if d.store == nil || d.state == nil {
-		return nil
+		outcome.SaveErr = fmt.Errorf("the state store is unavailable, so settlement cannot be saved")
+		return nil, outcome
 	}
 	checks := robinhoodDuplicateOrderIDs(d.store, d.state, d.mu, d.cfgs)
 	byID := make(map[string]StrategyConfig, len(d.cfgs))
@@ -135,7 +170,12 @@ func settleRobinhoodAttempts(d robinhoodEmergencyDeps, cfg *Config, logMgr *LogM
 		attempt    robinhoodOrderAttempt
 		reason     string
 	}
+	type shortfallAlert struct {
+		attemptID string
+		msg       string
+	}
 	var holds []holdAlert
+	var shortfalls []shortfallAlert
 	var out []robinhoodRecoveredTrades
 	d.mu.Lock()
 	for _, a := range robinhoodUnresolvedAttemptsLocked(d.state) {
@@ -161,12 +201,17 @@ func settleRobinhoodAttempts(d robinhoodEmergencyDeps, cfg *Config, logMgr *LogM
 		if res.Hold != "" {
 			holds = append(holds, holdAlert{strategyID: sc.ID, attempt: *a, reason: res.Hold})
 		}
+		if res.Shortfall != "" {
+			shortfalls = append(shortfalls, shortfallAlert{attemptID: a.AttemptID, msg: res.Shortfall})
+		}
 		if res.Settled && res.Trades > 0 {
 			out = append(out, robinhoodRecoveredTrades{sc: sc, state: s, trades: res.Trades})
 		}
 	}
-	if settled := settleRobinhoodEmergencyAttemptsLocked(d.state, d.cfgs, checks, nil); len(settled) > 0 {
+	settled, excess := settleRobinhoodEmergencyAttemptsLocked(d.state, d.cfgs, checks, nil)
+	if len(settled) > 0 {
 		if err := d.store.SavePartition(d.state, livePartition); err != nil {
+			outcome.SaveErr = fmt.Errorf("emergency settlement of %v booked in memory but the live save failed: %w", settled, err)
 			fmt.Printf("[CRITICAL] rh-settle: emergency settlement of %v booked in memory but the live save failed: %v — it retries with the next full save\n", settled, err)
 		}
 	}
@@ -175,12 +220,30 @@ func settleRobinhoodAttempts(d robinhoodEmergencyDeps, cfg *Config, logMgr *LogM
 			holds = append(holds, holdAlert{strategyID: a.StrategyID, attempt: *a, reason: a.HoldReason})
 		}
 	}
+	outcome.Unresolved = robinhoodUnresolvedByCoinLocked(d.state)
 	d.mu.Unlock()
 	for _, h := range holds {
 		a := h.attempt
 		notifyRobinhoodOrderHold(d.notifier, h.strategyID, &a, h.reason, time.Now())
 	}
-	return out
+	for _, sf := range shortfalls {
+		notifyRobinhoodBookShortfall(d.notifier, sf.attemptID, sf.msg)
+	}
+	for _, msg := range excess {
+		notifyRobinhoodOwnerAlert(d.notifier, msg)
+	}
+	return out, outcome
+}
+
+func notifyRobinhoodOwnerAlert(notifier *MultiNotifier, msg string) {
+	if msg == "" {
+		return
+	}
+	fmt.Printf("[CRITICAL] %s\n", msg)
+	if notifier == nil || !notifier.HasOwner() {
+		return
+	}
+	notifier.SendOwnerDM(msg)
 }
 
 func resolveRobinhoodUnresolved(d robinhoodEmergencyDeps, cancelOpen func(a *robinhoodOrderAttempt, now time.Time) bool, now time.Time) map[string]error {
@@ -230,17 +293,9 @@ func robinhoodEmergencyResolver(d robinhoodEmergencyDeps, cfg *Config, logMgr *L
 		resolveRobinhoodUnresolved(d, robinhoodCancelOpenAlways, now)
 		recovered := settleRobinhoodAttempts(d, cfg, logMgr)
 		sendRobinhoodRecoveredTradeAlerts(d, cfg, recovered)
-		out := map[string]error{}
 		d.mu.RLock()
-		for _, a := range robinhoodUnresolvedAttemptsLocked(d.state) {
-			reason := a.HoldReason
-			if reason == "" {
-				reason = "status " + a.Status
-			}
-			out[a.Symbol] = fmt.Errorf("attempt %s (%s %s): %s", a.AttemptID, a.Origin, a.Side, reason)
-		}
-		d.mu.RUnlock()
-		return out
+		defer d.mu.RUnlock()
+		return robinhoodUnresolvedByCoinLocked(d.state)
 	}
 }
 
@@ -405,10 +460,12 @@ func prepareRobinhoodAttestedRelease(d robinhoodEmergencyDeps, lookup func(id st
 	}
 	req := robinhoodResolveRequestFor(&checked, "", false)
 	size := "an unknown quantity"
-	if q := robinhoodRequestedQty(&checked, nil); q > 0 {
+	if q := robinhoodVenueOrderQty(&checked); q > 0 {
 		size = fmt.Sprintf("%.10g %s", q, checked.Symbol)
 	} else if fr, err := parseRobinhoodOrderRequest(&checked); err == nil && fr.AmountUSD > 0 {
 		size = fmt.Sprintf("$%.2f of %s", fr.AmountUSD, checked.Symbol)
+	} else if err == nil && (fr.Version == robinhoodSizedSellRequestVersion || fr.Version == robinhoodEmergencySellRequestVersion) && fr.Quantity > 0 {
+		size = fmt.Sprintf("asked %.10g %s, sent quantity unknown", fr.Quantity, checked.Symbol)
 	}
 	prompt := fmt.Sprintf("Release Robinhood attempt %s of %s as NO FILL on your word?\n"+
 		"Order: %s %s (%s origin), ref_id %s, no venue order id.\n"+
@@ -452,7 +509,8 @@ func releaseRobinhoodAttemptByAttestation(d robinhoodEmergencyDeps, operatorID, 
 	ev := robinhoodOrderEvidenceRecord{
 		Outcome:           robinhoodOutcomeOperatorAttested,
 		Detail:            fmt.Sprintf("operator %s attested that the Robinhood order history shows no %s %s order for ref_id %s in the submit window %s to %s", operatorID, current.Side, current.Symbol, current.RefID, time.UnixMilli(req.SubmittedAfterMs).UTC().Format(time.RFC3339), time.UnixMilli(req.SubmittedBeforeMs).UTC().Format(time.RFC3339)),
-		RequestedQuantity: robinhoodRequestedQty(current, nil),
+		RequestedQuantity: robinhoodVenueOrderQty(current),
+		Sizing:            robinhoodEvidenceSizing(current),
 		ObservedAtMs:      now.UnixMilli(),
 		Operator: &robinhoodOperatorAttestation{
 			OperatorID:      operatorID,

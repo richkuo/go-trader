@@ -6,9 +6,14 @@ import os
 import re
 from typing import Dict, List, Optional
 
+from observation_kinds import v3_kinds_problem, v3_other_kind_records
+
 RUN_SCHEMA_V2 = "go_trader_observation_run/v2"
 SEGMENT_SCHEMA_V2 = "go_trader_observation_segment/v2"
 RECORDING_SCHEMA_V2 = "go_trader_observation_recording/v2"
+RUN_SCHEMA_V3 = "go_trader_observation_run/v3"
+SEGMENT_SCHEMA_V3 = "go_trader_observation_segment/v3"
+RECORDING_SCHEMA_V3 = "go_trader_observation_recording/v3"
 SERIES_SCHEMA = "go_trader_trade_flow_series/v1"
 KIND = "trade_flow"
 
@@ -468,8 +473,14 @@ def load_trade_recording(run_dir: str, attach=None) -> dict:
     run_dir = os.path.abspath(run_dir)
     with open(os.path.join(run_dir, "run.manifest.json")) as fh:
         run = json.load(fh)
-    if run.get("schema") != RUN_SCHEMA_V2:
-        raise TradeRecordingError(f"run manifest schema must be {RUN_SCHEMA_V2!r}")
+    if run.get("schema") not in (RUN_SCHEMA_V2, RUN_SCHEMA_V3):
+        raise TradeRecordingError(f"run manifest schema must be {RUN_SCHEMA_V2!r} or {RUN_SCHEMA_V3!r}")
+    v3 = run.get("schema") == RUN_SCHEMA_V3
+    segment_schema = SEGMENT_SCHEMA_V3 if v3 else SEGMENT_SCHEMA_V2
+    recording_schema = RECORDING_SCHEMA_V3 if v3 else RECORDING_SCHEMA_V2
+    if v3 and v3_kinds_problem(run):
+        raise TradeRecordingError(f"run manifest {v3_kinds_problem(run)}")
+    other_kinds = v3_other_kind_records(run.get("kinds") or []) if v3 else frozenset()
     if KIND not in (run.get("kinds") or []):
         raise TradeRecordingError("the run did not record trade_flow")
     if run.get("trade_contract") != CONTRACT:
@@ -499,7 +510,7 @@ def load_trade_recording(run_dir: str, attach=None) -> dict:
     session = None
     last_frame_by_coin: Dict[str, int] = {}
     for expected_index, seg in enumerate(segments, start=1):
-        if seg.get("schema") != SEGMENT_SCHEMA_V2 or seg.get("index") != expected_index:
+        if seg.get("schema") != segment_schema or seg.get("index") != expected_index:
             raise TradeRecordingError(f"segment manifest {expected_index} is missing or out of order")
         with open(os.path.join(run_dir, seg["file"] + ".manifest.json")) as fh:
             standalone = json.load(fh)
@@ -516,10 +527,12 @@ def load_trade_recording(run_dir: str, attach=None) -> dict:
             raise TradeRecordingError(f"segment {seg['file']} has no header and end record")
         header = json.loads(lines[0])
         end = json.loads(lines[-1])
-        if (header.get("k") != "header" or header.get("schema") != RECORDING_SCHEMA_V2
+        if (header.get("k") != "header" or header.get("schema") != recording_schema
                 or header.get("run_id") != run.get("run_id") or header.get("trade_contract") != CONTRACT
                 or header.get("coins") != coins):
             raise TradeRecordingError(f"segment {seg['file']} header does not match the run")
+        if v3 and (v3_kinds_problem(header) or header.get("kinds") != run.get("kinds")):
+            raise TradeRecordingError(f"segment {seg['file']} header {v3_kinds_problem(header) or 'lists different kinds than the run'}")
         if end.get("k") != "end" or end.get("records") != len(lines) - 2:
             raise TradeRecordingError(f"segment {seg['file']} end record is missing or miscounts its records")
         if not seg.get("complete"):
@@ -570,7 +583,7 @@ def load_trade_recording(run_dir: str, attach=None) -> dict:
             elif kind in ("interval", "invalidate", "cover"):
                 go_events.append(_canon_event(rec))
                 continue
-            elif kind == "obs":
+            elif kind == "obs" or kind in other_kinds:
                 continue
             else:
                 raise TradeRecordingError(f"{seg['file']}:{line_no} has unknown record kind {kind!r}")

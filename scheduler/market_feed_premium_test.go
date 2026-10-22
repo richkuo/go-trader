@@ -12,8 +12,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const pprTestBarMs = int64(60_000)
@@ -75,18 +73,6 @@ func pprDec(v float64) string {
 
 func pprLevel(px string, sz string, n int) any {
 	return map[string]any{"px": px, "sz": sz, "n": n}
-}
-
-func (fs *feedSocketServer) broadcastRaw(t *testing.T, payload []byte) {
-	t.Helper()
-	fs.mu.Lock()
-	conns := append([]*websocket.Conn(nil), fs.conns...)
-	fs.mu.Unlock()
-	for _, c := range conns {
-		if err := c.WriteMessage(websocket.TextMessage, payload); err != nil {
-			t.Fatalf("broadcast raw: %v", err)
-		}
-	}
 }
 
 func TestPremiumObservationPipeline(t *testing.T) {
@@ -523,7 +509,7 @@ func TestPremiumObservationPipeline(t *testing.T) {
 	}
 	pe := payloads["payload_btc_e.json"]
 	pp := pe.Premiums["BTC|perp_premium"]
-	if pe.Version != marketPayloadVersionPremium || !pp.Available || pp.CutoffMs != T(39) || pp.WindowMs != wantWindow || pp.Contract != feedPremiumContract || len(pp.Samples) == 0 {
+	if pe.Version != marketSnapshotVersion || !pp.Available || pp.CutoffMs != T(39) || pp.WindowMs != wantWindow || pp.Contract != feedPremiumContract || len(pp.Samples) == 0 {
 		t.Fatalf("BTC premium payload: v%d %+v", pe.Version, pp)
 	}
 	for _, smp := range pp.Samples {
@@ -650,8 +636,8 @@ func TestPremiumCapacityAtMaximumWindow(t *testing.T) {
 	}
 	attachObservationPayloads(payload, snap, needs, pprTestBarMs)
 	batch, err := marketStdinJSON(payload)
-	if err != nil || len(payload.Premiums) != 4 || payload.Version != marketPayloadVersionPremium {
-		t.Fatalf("a four-coin maximum batch payload must fit the %d-byte cap as version %d: %d bytes, %v", marketPayloadMaxBytes, marketPayloadVersionPremium, len(batch), err)
+	if err != nil || len(payload.Premiums) != 4 || payload.Version != marketSnapshotVersion {
+		t.Fatalf("a four-coin maximum batch payload must fit the %d-byte cap as version %d: %d bytes, %v", marketPayloadMaxBytes, marketSnapshotVersion, len(batch), err)
 	}
 }
 
@@ -697,5 +683,326 @@ func pprWriteHarness(t *testing.T, out, recDir string, base int64, payloads map[
 	}
 	if err := os.WriteFile(filepath.Join(out, "harness.json"), blob, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func pprRecordV3Run(t *testing.T, runID string, kinds []string) string {
+	t.Helper()
+	B := (time.Now().UTC().UnixMilli()/3_600_000)*3_600_000 - 2*3_600_000
+	var clockMs atomic.Int64
+	clockMs.Store(B - 30_000)
+	clock := func() time.Time { return time.UnixMilli(clockMs.Load()).UTC() }
+	fs := newFeedSocketServer(t)
+	hlFeedWebsocketURLOverride = fs.url()
+	defer func() { hlFeedWebsocketURLOverride = "" }()
+	coins := []string{"BTC", "ETH"}
+	has := func(kind string) bool { return recorderKindsInclude(kinds, kind) }
+	recDir := filepath.Join(t.TempDir(), runID)
+	rec, err := newObservationRecorder(recDir, observationRecorderMeta{RunID: runID, Coins: coins, Kinds: kinds,
+		Segment: 3 * time.Minute, WSURL: fs.url(), StartedAt: clock()}, clock, t.Logf)
+	if err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	owner := newMarketFeedOwner(clock, t.Logf)
+	owner.bookTick = l2TestTickPeriod
+	if has(feedObservationOpenInterest) {
+		owner.trackObservations(coins, observationRecorderWindow.Milliseconds())
+	}
+	if has(feedObservationPerpPremium) {
+		owner.trackPremiums(coins, observationRecorderWindow.Milliseconds())
+	}
+	owner.attachRecorder(rec)
+	if has(feedObservationL2Book) {
+		owner.trackBooks(coins, recorderBookNeed())
+	}
+	recCtx, stopRec := context.WithCancel(context.Background())
+	go rec.run(recCtx)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go owner.Run(ctx)
+	waitFor(t, "connected", owner.Connected)
+	waitFor(t, "every subscription", func() bool {
+		subs := strings.Join(fs.subscriptions(), " ")
+		for _, c := range coins {
+			want := []string{}
+			if has(feedObservationOpenInterest) || has(feedObservationPerpPremium) {
+				want = append(want, `"coin":"`+c+`","type":"activeAssetCtx"`)
+			}
+			if has(feedObservationPerpPremium) {
+				want = append(want, `"coin":"`+c+`","type":"bbo"`)
+			}
+			if has(feedObservationL2Book) {
+				want = append(want, `"coin":"`+c+`","fast":false,"type":"l2Book"`)
+			}
+			for _, w := range want {
+				if !strings.Contains(subs, w) {
+					return false
+				}
+			}
+		}
+		return true
+	})
+	counts := func() uint64 {
+		owner.feedMu.Lock()
+		defer owner.feedMu.Unlock()
+		var n uint64
+		for _, c := range coins {
+			if st := owner.observations[openInterestKeyFor(c)]; st != nil {
+				n += st.Stats.Received
+			}
+			if st := owner.premiums[premiumKeyFor(c)]; st != nil {
+				n += st.Stats.QuoteFrames + st.Stats.CtxFrames
+			}
+			if st := owner.books[l2BookKeyFor(c)]; st != nil {
+				n += st.Stats.Frames
+			}
+		}
+		return n
+	}
+	perStep := uint64(0)
+	if has(feedObservationOpenInterest) {
+		perStep++
+	}
+	if has(feedObservationPerpPremium) {
+		perStep += 2
+	}
+	if has(feedObservationL2Book) {
+		perStep++
+		clockMs.Store(B - 20_000)
+		for _, c := range coins {
+			fs.broadcast(t, l2TestAck(c, nil))
+		}
+		waitFor(t, "book acknowledgements", func() bool {
+			owner.feedMu.Lock()
+			defer owner.feedMu.Unlock()
+			for _, c := range coins {
+				if !owner.books[l2BookKeyFor(c)].Covered {
+					return false
+				}
+			}
+			return true
+		})
+	}
+	tag := 0
+	for t0 := B - 15_000; t0 <= B+6*60_000; t0 += 5_000 {
+		for i, c := range coins {
+			recv := t0 + int64(i)*100
+			before := counts()
+			mid := 100 + 0.01*float64((t0/5_000)%3)
+			if c == "ETH" {
+				mid = 2000 + 0.2*float64((t0/5_000)%3)
+			}
+			h := pprTestHalfSpread(c)
+			clockMs.Store(recv)
+			if has(feedObservationOpenInterest) || has(feedObservationPerpPremium) {
+				fs.broadcast(t, map[string]any{"channel": "activeAssetCtx", "data": map[string]any{"coin": c, "ctx": map[string]any{
+					"oraclePx": pprTestOracle(c), "markPx": pprDec(mid), "midPx": pprDec(mid), "openInterest": fmt.Sprintf("%d.5", 5000+t0%7),
+					"funding": "0.0000125", "premium": "0.0001", "impactPxs": []string{pprDec(mid), pprDec(mid)}}}})
+			}
+			if has(feedObservationPerpPremium) {
+				fs.broadcast(t, map[string]any{"channel": "bbo", "data": map[string]any{"coin": c, "time": recv - 200,
+					"bbo": []any{pprLevel(pprDec(mid-h), "1.5", 3), pprLevel(pprDec(mid+h), "2.25", 4)}}})
+			}
+			if has(feedObservationL2Book) {
+				fs.broadcast(t, l2TestBook(c, recv-300, tag))
+				tag++
+			}
+			waitFor(t, fmt.Sprintf("%s frames at %d", c, recv), func() bool { return counts() >= before+perStep })
+		}
+		owner.AdvancePremiums(clock())
+	}
+	clockMs.Store(B + 6*60_000 + 30_000)
+	owner.AdvancePremiums(clock())
+	cancel()
+	waitFor(t, "disconnect", func() bool { return !owner.Connected() })
+	owner.attachRecorder(nil)
+	stopRec()
+	if err := rec.wait(); err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	if !rec.manifest.Closed || rec.manifest.DroppedTotal != 0 {
+		t.Fatalf("recorder manifest: closed=%t dropped=%d", rec.manifest.Closed, rec.manifest.DroppedTotal)
+	}
+	return recDir
+}
+
+func TestV3RecordingSchemaTypesEachKind(t *testing.T) {
+	cases := []struct {
+		name  string
+		kinds []string
+	}{
+		{"premium", []string{feedObservationPerpPremium}},
+		{"book", []string{feedObservationL2Book}},
+		{"mixed", []string{feedObservationL2Book, feedObservationOpenInterest, feedObservationPerpPremium}},
+	}
+	out := os.Getenv("GO_TRADER_V3_KINDS_OUT")
+	for _, tc := range cases {
+		dir := pprRecordV3Run(t, "v3-"+tc.name, tc.kinds)
+		wantBook, wantPremium := recorderKindsInclude(tc.kinds, feedObservationL2Book), recorderKindsInclude(tc.kinds, feedObservationPerpPremium)
+		check := func(label string, blob []byte) {
+			var doc map[string]json.RawMessage
+			if err := json.Unmarshal(blob, &doc); err != nil {
+				t.Fatalf("%s %s: %v", tc.name, label, err)
+			}
+			_, book := doc["book_contract"]
+			_, premium := doc["premium_contract"]
+			var kinds []string
+			_ = json.Unmarshal(doc["kinds"], &kinds)
+			if book != wantBook || premium != wantPremium || strings.Join(kinds, ",") != strings.Join(tc.kinds, ",") {
+				t.Fatalf("%s %s must carry exactly the typed contract blocks its kinds need (book=%t premium=%t kinds=%v): %s",
+					tc.name, label, wantBook, wantPremium, tc.kinds, blob)
+			}
+		}
+		runBlob, err := os.ReadFile(filepath.Join(dir, "run.manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var run observationRunManifestV2
+		if err := json.Unmarshal(runBlob, &run); err != nil || run.Schema != observationRunSchemaV3 || len(run.Segments) < 2 {
+			t.Fatalf("%s run manifest must be schema v3 with several segments: %s (%v)", tc.name, runBlob, err)
+		}
+		check("run manifest", runBlob)
+		for _, seg := range run.Segments {
+			if seg.Schema != observationSegmentSchemaV3 {
+				t.Fatalf("%s segment %s schema %q", tc.name, seg.File, seg.Schema)
+			}
+			blob, err := os.ReadFile(filepath.Join(dir, seg.File))
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, _, _ := bytes.Cut(blob, []byte("\n"))
+			check("segment "+seg.File+" header", first)
+		}
+		if out != "" {
+			dst := filepath.Join(out, tc.name)
+			if err := os.MkdirAll(dst, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				blob, err := os.ReadFile(filepath.Join(dir, e.Name()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dst, e.Name()), blob, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+}
+
+func TestSealWithBooksAndPremiumsIsV8AndPayloadV4CarriesBoth(t *testing.T) {
+	l2RegisterFixture(t)
+	B := (time.Now().UTC().UnixMilli()/3_600_000)*3_600_000 - 2*3_600_000
+	var clockMs atomic.Int64
+	clockMs.Store(B - 20*60_000)
+	clock := func() time.Time { return time.UnixMilli(clockMs.Load()).UTC() }
+	l2StubCandles(t, &clockMs)
+	book := l2TestStrategyConfig("l2-btc", "BTC", map[string]interface{}{"window_ms": float64(60_000), "capacity": float64(64), "depth": float64(5)})
+	prem := pprTestStrategy("ppr-btc", "BTC")
+	req, err := deriveFeedRequirements(&Config{Strategies: []StrategyConfig{book, prem}})
+	if err != nil {
+		t.Fatalf("derive requirements: %v", err)
+	}
+	req.AccountingCoins = nil
+	if len(req.Books) != 1 || req.Observations[premiumKeyFor("BTC")] == 0 {
+		t.Fatalf("the union must need one book and one premium key: books=%v observations=%v", req.Books, req.Observations)
+	}
+	fs := newFeedSocketServer(t)
+	hlFeedWebsocketURLOverride = fs.url()
+	defer func() { hlFeedWebsocketURLOverride = "" }()
+	owner := newMarketFeedOwner(clock, t.Logf)
+	owner.corrOffsets = nil
+	owner.bookTick = l2TestTickPeriod
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	select {
+	case <-owner.ApplyGeneration(ctx, req):
+	case <-time.After(5 * time.Second):
+		t.Fatal("generation did not publish")
+	}
+	go owner.Run(ctx)
+	waitFor(t, "connected", owner.Connected)
+	waitFor(t, "book and premium subscriptions", func() bool {
+		subs := strings.Join(fs.subscriptions(), " ")
+		return strings.Contains(subs, `"coin":"BTC","type":"bbo"`) && strings.Contains(subs, `"coin":"BTC","type":"activeAssetCtx"`) &&
+			strings.Contains(subs, `"coin":"BTC","fast":false,"type":"l2Book"`)
+	})
+	clockMs.Store(B - 15*60_000)
+	fs.broadcast(t, l2TestAck("BTC", nil))
+	waitFor(t, "book acknowledgement", func() bool {
+		owner.feedMu.Lock()
+		defer owner.feedMu.Unlock()
+		return owner.books[l2BookKeyFor("BTC")].Covered
+	})
+	frames := func() uint64 {
+		owner.feedMu.Lock()
+		defer owner.feedMu.Unlock()
+		p := owner.premiums[premiumKeyFor("BTC")]
+		return owner.books[l2BookKeyFor("BTC")].Stats.Frames + p.Stats.QuoteFrames + p.Stats.CtxFrames
+	}
+	tag := 0
+	for t0 := B - 14*60_000; t0 <= B; t0 += 5_000 {
+		before := frames()
+		mid := 100 + 0.01*float64((t0/5_000)%3)
+		clockMs.Store(t0)
+		fs.broadcast(t, map[string]any{"channel": "activeAssetCtx", "data": map[string]any{"coin": "BTC", "ctx": map[string]any{
+			"oraclePx": pprTestOracle("BTC"), "markPx": pprDec(mid), "midPx": pprDec(mid), "openInterest": "5000.5"}}})
+		fs.broadcast(t, map[string]any{"channel": "bbo", "data": map[string]any{"coin": "BTC", "time": t0 - 200,
+			"bbo": []any{pprLevel(pprDec(mid-0.005), "1.5", 3), pprLevel(pprDec(mid+0.005), "2.25", 4)}}})
+		fs.broadcast(t, l2TestBook("BTC", t0-300, tag))
+		tag++
+		waitFor(t, fmt.Sprintf("frames at %d", t0), func() bool { return frames() >= before+3 })
+		owner.AdvancePremiums(clock())
+	}
+	sealer := newFeedSealer(owner, feedSourceWebsocket, "inst-mix", clock, t.Logf)
+	sealer.settle = 0
+	sealer.prepare = time.Hour
+	sealer.prepareFn = websocketFeedPrepare(owner)
+	sealer.setGeneration(req, []int{60}, time.UnixMilli(B-3_600_000))
+	sealer.startServing(time.UnixMilli(B - 3_600_000))
+	key := B / 1000
+	clockMs.Store(B + 1_500)
+	owner.AdvancePremiums(clock())
+	sealer.sealOne(ctx, key)
+	blob := append([]byte(nil), sealer.sealBytes(key)...)
+	if len(blob) == 0 {
+		t.Fatalf("no seal for key %d: %+v", key, sealer.lookup(key))
+	}
+	doc, err := decodeFeedSeal(blob, key)
+	if err != nil {
+		t.Fatalf("decode the combined seal: %v", err)
+	}
+	if doc.V != feedSealVersionPremium || len(doc.L2Books) != 1 || len(doc.Premiums) != 1 {
+		t.Fatalf("a seal with l2_books and perp_premiums must be v%d and keep both sections: v%d books=%d premiums=%d",
+			feedSealVersionPremium, doc.V, len(doc.L2Books), len(doc.Premiums))
+	}
+	for name, mutate := range map[string]func(*feedSealDoc){
+		"relabeled as the book version": func(d *feedSealDoc) { d.V = feedSealVersionBooks },
+		"premium section stripped":      func(d *feedSealDoc) { d.Premiums = nil },
+	} {
+		cp, _ := decodeFeedSeal(blob, key)
+		mutate(cp)
+		if enc, _, err := encodeFeedSeal(cp); err == nil {
+			if _, err := decodeFeedSeal(enc, key); err == nil {
+				t.Fatalf("a combined seal with its %s decoded", name)
+			}
+		}
+	}
+	feed := &marketFeedContext{Enabled: true, Requirements: req, Snapshot: doc.snapshot(), SharedKey: key}
+	bp := oiTestPayload(t, feed, book)
+	pp := oiTestPayload(t, feed, prem)
+	if bp.Version != marketSnapshotVersion || pp.Version != marketSnapshotVersion || marketSnapshotVersion != 4 {
+		t.Fatalf("both payloads must declare payload version 4: book v%d premium v%d const %d", bp.Version, pp.Version, marketSnapshotVersion)
+	}
+	if _, ok := bp.L2Books["BTC|l2_book"]; !ok || bp.Premiums != nil {
+		t.Fatalf("the book strategy payload must carry its l2_books section and no premium section: books=%v premiums=%v", bp.L2Books, bp.Premiums)
+	}
+	if p, ok := pp.Premiums["BTC|perp_premium"]; !ok || len(p.Samples) == 0 || pp.L2Books != nil {
+		t.Fatalf("the premium strategy payload must carry its perp_premiums section and no book section: premiums=%v books=%v", pp.Premiums, pp.L2Books)
 	}
 }

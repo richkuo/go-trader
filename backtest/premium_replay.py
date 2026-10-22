@@ -7,6 +7,8 @@ import os
 import re
 from typing import Dict, List, Optional
 
+from observation_kinds import BOOK_RECORD_KINDS, L2_BOOK, v3_kinds_problem
+
 RUN_SCHEMA_V3 = "go_trader_observation_run/v3"
 SEGMENT_SCHEMA_V3 = "go_trader_observation_segment/v3"
 RECORDING_SCHEMA_V3 = "go_trader_observation_recording/v3"
@@ -468,6 +470,9 @@ def load_premium_recording(run_dir: str, keep_quotes: bool = False) -> dict:
         run = json.load(fh)
     if run.get("schema") != RUN_SCHEMA_V3:
         raise PremiumRecordingError(f"run manifest schema must be {RUN_SCHEMA_V3!r}")
+    if v3_kinds_problem(run):
+        raise PremiumRecordingError(f"run manifest {v3_kinds_problem(run)}")
+    book_kinds = BOOK_RECORD_KINDS if L2_BOOK in run["kinds"] else ()
     if KIND not in (run.get("kinds") or []):
         raise PremiumRecordingError("the run did not record perp_premium")
     if run.get("premium_contract") != CONTRACT:
@@ -513,6 +518,8 @@ def load_premium_recording(run_dir: str, keep_quotes: bool = False) -> dict:
             raise PremiumRecordingError(f"segment {seg['file']} has no header and end record")
         header = json.loads(lines[0])
         end = json.loads(lines[-1])
+        if v3_kinds_problem(header) or header.get("kinds") != run.get("kinds"):
+            raise PremiumRecordingError(f"segment {seg['file']} header {v3_kinds_problem(header) or 'lists different kinds than the run'}")
         if (header.get("k") != "header" or header.get("schema") != RECORDING_SCHEMA_V3
                 or header.get("run_id") != run.get("run_id") or header.get("premium_contract") != CONTRACT
                 or header.get("coins") != coins):
@@ -593,7 +600,7 @@ def load_premium_recording(run_dir: str, keep_quotes: bool = False) -> dict:
             elif kind in ("psample", "pinvalidate"):
                 go_events.append(_canon_event(rec))
                 continue
-            elif kind in ("obs", "trades", "sub", "cover", "interval", "invalidate", "tick"):
+            elif kind in ("obs", "trades", "sub", "cover", "interval", "invalidate", "tick") or kind in book_kinds:
                 continue
             else:
                 raise PremiumRecordingError(f"{seg['file']}:{line_no} has unknown record kind {kind!r}")

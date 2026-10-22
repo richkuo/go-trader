@@ -45,6 +45,8 @@ type KillSwitchCloseInputs struct {
 	RHFetcher           RobinhoodPositionsFetcher
 	RHResolveUnresolved func() map[string]error
 	RHFreshLongs        func() map[string]float64
+	RHBookSnapshot      func() robinhoodBookSnapshot
+	RHSettle            func() robinhoodSettleOutcome
 
 	TSLiveAll []StrategyConfig
 	TSCloser  TopStepLiveCloser
@@ -434,6 +436,10 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 		plan.LogLines = append(plan.LogLines,
 			"[CRITICAL] rh-close: Robinhood live crypto strategies configured but RHFetcher unwired — cannot confirm flat (kill switch will retry next cycle)")
 		plan.OnChainConfirmedFlat = false
+	case len(in.RHLiveCrypto) > 0 && (in.RHBookSnapshot == nil || in.RHSettle == nil):
+		plan.LogLines = append(plan.LogLines,
+			"[CRITICAL] rh-close: Robinhood live crypto strategies configured but the book snapshot or durable settlement is unwired — no Robinhood order is sent and flat is not confirmed (kill switch will retry next cycle)")
+		plan.OnChainConfirmedFlat = false
 	case len(in.RHLiveCrypto) > 0:
 		var rhUnresolved map[string]error
 		if in.RHResolveUnresolved != nil {
@@ -443,6 +449,7 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 		if in.RHFreshLongs != nil {
 			rhFreshLongs = in.RHFreshLongs()
 		}
+		rhBook := in.RHBookSnapshot()
 		rhPositions, err := in.RHFetcher()
 		if err != nil {
 			plan.LogLines = append(plan.LogLines,
@@ -450,7 +457,15 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 			plan.OnChainConfirmedFlat = false
 		} else {
 			ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.RHCloseTimeout))
-			plan.RHCloseReport = forceCloseRobinhoodLive(ctx, rhPositions, in.RHLiveCrypto, in.RHCloser, in.RHFetcher, rhUnresolved, rhFreshLongs)
+			plan.RHCloseReport = forceCloseRobinhoodLive(ctx, rhPositions, in.RHLiveCrypto, robinhoodKillSwitchCloseDeps{
+				Closer:     in.RHCloser,
+				Fetcher:    in.RHFetcher,
+				Unresolved: rhUnresolved,
+				FreshLongs: rhFreshLongs,
+				Book:       rhBook,
+				BookAfter:  in.RHBookSnapshot,
+				Settle:     in.RHSettle,
+			})
 			cancel()
 			if !plan.RHCloseReport.ConfirmedFlat() {
 				plan.OnChainConfirmedFlat = false
@@ -466,6 +481,10 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 			for _, coin := range plan.RHCloseReport.SortedErrorCoins() {
 				plan.LogLines = append(plan.LogLines,
 					fmt.Sprintf("[CRITICAL] rh-close: %s failed: %v (kill switch will retry next cycle)", coin, plan.RHCloseReport.Errors[coin]))
+			}
+			for _, p := range plan.RHCloseReport.Residue {
+				plan.LogLines = append(plan.LogLines,
+					fmt.Sprintf("[CRITICAL] rh-close: %s holdings %.10g are above every go-trader book and were not sold; they are the operator's (#1825)", p.Coin, p.Size))
 			}
 
 			plan.RHUnconfigured = plan.RHCloseReport.Unconfigured
@@ -564,6 +583,9 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 		if len(plan.RHCloseReport.ClosedCoins) > 0 {
 			parts = append(parts, fmt.Sprintf("Robinhood closes: %v", plan.RHCloseReport.ClosedCoins))
 		}
+		if residue := formatRobinhoodResidue(plan.RHCloseReport.Residue); residue != "" {
+			parts = append(parts, residue)
+		}
 		if len(plan.TSCloseReport.ClosedCoins) > 0 {
 			parts = append(parts, fmt.Sprintf("TopStep closes: %v", plan.TSCloseReport.ClosedCoins))
 		}
@@ -631,6 +653,9 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 		}
 		segments = append(segments, "Robinhood live close errors — "+strings.Join(parts, "; "))
 	}
+	if residue := formatRobinhoodResidue(plan.RHCloseReport.Residue); residue != "" {
+		segments = append(segments, residue)
+	}
 	if len(plan.RHUnconfigured) > 0 {
 		names := make([]string, 0, len(plan.RHUnconfigured))
 		for _, p := range plan.RHUnconfigured {
@@ -665,6 +690,18 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 	}
 
 	return fmt.Sprintf("**PORTFOLIO KILL SWITCH (LATCHED, RETRYING)**\n%s\n%s. Virtual state preserved. Next cycle will retry.", portfolioReason, strings.Join(segments, " | "))
+}
+
+func formatRobinhoodResidue(residue []RobinhoodPosition) string {
+	if len(residue) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(residue))
+	for _, p := range residue {
+		names = append(names, fmt.Sprintf("%s %.10g", p.Coin, p.Size))
+	}
+	sort.Strings(names)
+	return "Robinhood holdings above every go-trader book, not sold (the operator's coin) — " + strings.Join(names, "; ")
 }
 
 func killSwitchInstanceLabel(configPath string) string {

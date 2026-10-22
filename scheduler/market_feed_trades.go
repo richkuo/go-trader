@@ -68,6 +68,9 @@ func feedObservationSourceFor(kind string) string {
 	case feedObservationPerpPremium:
 		return feedPremiumSourceHLWS
 	}
+	if kind == feedObservationL2Book {
+		return feedBookSource
+	}
 	return feedObservationSourceHLWS
 }
 

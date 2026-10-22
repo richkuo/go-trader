@@ -39,7 +39,7 @@ def _market():
             "side_evidence": "hyperliquid-trades-side-aggressor/1638-v1", "interval_ms": 60_000,
             "reorder_grace_ms": 5_000, "max_event_gap_ms": 30_000, "decimal_scale": 8, "window_ms": 15_000_000,
             "cutoff_ms": rows[-1][0] + 1, "bar_interval_ms": STEP, "snapshot_id": "300s/1", "intervals": [], "gaps": []}
-    return {"version": 2, "snapshot_id": "300s/1", "generation": 1, "sealed_at_ms": rows[-1][0],
+    return {"version": 4, "snapshot_id": "300s/1", "generation": 1, "sealed_at_ms": rows[-1][0],
             "frames": {"BTC|5m": {"rows": rows, "required": 200, "bars": len(rows), "coverage_short": False,
                                   "first_open_ms": T0, "last_open_ms": rows[-1][0] - STEP + 1,
                                   "last_close_ms": rows[-1][0], "last_recv_at_ms": rows[-1][0], "source": "ws",

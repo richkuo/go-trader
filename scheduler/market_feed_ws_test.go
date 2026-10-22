@@ -52,6 +52,7 @@ type feedSocketServer struct {
 	server   *httptest.Server
 	mu       sync.Mutex
 	subs     []string
+	unsubs   []string
 	sessions int
 	conns    []*websocket.Conn
 	ready    chan struct{}
@@ -91,6 +92,12 @@ func newFeedSocketServer(t *testing.T) *feedSocketServer {
 				blob, _ := json.Marshal(msg["subscription"])
 				fs.mu.Lock()
 				fs.subs = append(fs.subs, string(blob))
+				fs.mu.Unlock()
+			}
+			if msg["method"] == "unsubscribe" {
+				blob, _ := json.Marshal(msg["subscription"])
+				fs.mu.Lock()
+				fs.unsubs = append(fs.unsubs, string(blob))
 				fs.mu.Unlock()
 			}
 		}

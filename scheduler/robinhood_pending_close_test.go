@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestRunPendingRobinhoodCircuitCloses_RecoversStuckCB(t *testing.T) {
+func TestRunPendingRobinhoodCircuitCloses_FlatBookLatchedCBSellsNothing(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
 			"rh-sma-btc": {
@@ -27,9 +27,9 @@ func TestRunPendingRobinhoodCircuitCloses_RecoversStuckCB(t *testing.T) {
 	}
 	var mu sync.RWMutex
 	var calls []string
-	closer := func(sym string) (*RobinhoodCloseResult, error) {
-		calls = append(calls, sym)
-		return &RobinhoodCloseResult{Close: &RobinhoodClose{Symbol: sym}, Platform: "robinhood"}, nil
+	closer := func(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error) {
+		calls = append(calls, req.Symbol)
+		return &RobinhoodCloseResult{Close: &RobinhoodClose{Symbol: req.Symbol}, Platform: "robinhood"}, nil
 	}
 
 	runPendingRobinhoodCircuitCloses(
@@ -46,11 +46,11 @@ func TestRunPendingRobinhoodCircuitCloses_RecoversStuckCB(t *testing.T) {
 		robinhoodCircuitCloseDeps{},
 	)
 
-	if len(calls) != 1 || calls[0] != "BTC" {
-		t.Errorf("expected recovered close for BTC, got %v", calls)
+	if len(calls) != 0 {
+		t.Errorf("a latched CB with a flat book must sell nothing from the account, got closer calls %v", calls)
 	}
-	if state.Strategies["rh-sma-btc"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood) != nil {
-		t.Error("expected pending cleared after recovered close")
+	if p := state.Strategies["rh-sma-btc"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil {
+		t.Errorf("a latched CB with a flat book must create no pending close, got %+v", p)
 	}
 }
 
@@ -58,11 +58,13 @@ func TestRunPendingRobinhoodCircuitCloses_SubmitErrorRetainsPending(t *testing.T
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
 			"rh-sma-btc": {
-				ID: "rh-sma-btc",
+				ID:        "rh-sma-btc",
+				Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 0.02, Side: "long", TradePositionID: "rh-sma-btc:BTC:1"}},
 				RiskState: RiskState{
 					PendingCircuitCloses: map[string]*PendingCircuitClose{
 						PlatformPendingCloseRobinhood: {
-							Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.02}},
+							Symbols:   []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.02, PositionID: "rh-sma-btc:BTC:1"}},
+							SizeBasis: robinhoodPendingSizeBasisBook,
 						},
 					},
 				},
@@ -74,7 +76,7 @@ func TestRunPendingRobinhoodCircuitCloses_SubmitErrorRetainsPending(t *testing.T
 			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
 	}
 	var mu sync.RWMutex
-	closer := func(sym string) (*RobinhoodCloseResult, error) {
+	closer := func(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error) {
 		return nil, fmt.Errorf("robin_stocks 503")
 	}
 

@@ -349,6 +349,9 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 		for key, window := range c.Req.Observations {
 			union.addObservation(key, window)
 		}
+		for _, key := range sortedBookNeedKeys(c.Req.Books) {
+			union.addBook(key, c.Req.Books[key])
+		}
 		for _, coin := range c.Req.AccountingCoins {
 			accounting[coin] = true
 		}
@@ -426,6 +429,9 @@ func estimateFeedSealBytes(union feedRequirements) int {
 		total += feedEstimateCoinBytes + int(feedAccountingWindow/time.Hour+1)*feedEstimateAccountingRecordBytes
 	}
 	total += estimateMacroSealBytes(union)
+	for _, key := range sortedBookNeedKeys(union.Books) {
+		total += feedBookSectionBytes(union.Books[key])
+	}
 	total += estimateVolumeProfileSealBytes(union)
 	return total
 }
@@ -575,7 +581,11 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	}
 	union := unionFeedRequirements(consumers)
 	cadences := unionFeedCadences(consumers)
-	if perr := volumeProfileUnionError(union); perr != nil {
+	perr := volumeProfileUnionError(union)
+	if perr == nil {
+		perr = bookUnionError(union)
+	}
+	if perr != nil {
 		msg := fmt.Sprintf("the consumer union is refused: %v", perr)
 		fmt.Fprintf(os.Stderr, "[feed] CRITICAL: %s (exit %d)\n", msg, ExitProbeFailure)
 		sendStartupRefusalDM(notifier, "Feed startup", msg)
@@ -790,6 +800,10 @@ func (rt *feedRuntime) reload() {
 		fmt.Fprintf(os.Stderr, "[reload] ERROR: reload rejected; keeping the previous feed generation: %v\n", perr)
 		return
 	}
+	if perr := bookUnionError(union); perr != nil {
+		fmt.Fprintf(os.Stderr, "[reload] ERROR: reload rejected; keeping the previous feed generation: %v\n", perr)
+		return
+	}
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		fmt.Fprintf(os.Stderr, "[reload] ERROR: the new union needs about %d bytes per seal, over the %d-byte cap; keeping the previous feed generation\n", est, feedSealMaxBytes)
 		return
@@ -935,6 +949,14 @@ func runFeedProbe(configPath string) int {
 		fmt.Fprintf(os.Stderr, "probe: %v\n", perr)
 		return ExitProbeFailure
 	}
+	if perr := bookUnionError(union); perr != nil {
+		fmt.Fprintf(os.Stderr, "probe: %v\n", perr)
+		return ExitProbeFailure
+	}
+	for _, key := range sortedBookNeedKeys(union.Books) {
+		n := union.Books[key]
+		fmt.Printf("probe: l2_book %s window_ms=%d capacity=%d depth=%d source=%s contract=%s\n", key.PayloadID(), n.WindowMs, n.Capacity, n.Depth, n.Source, n.Contract)
+	}
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		fmt.Fprintf(os.Stderr, "probe: the consumer union needs about %d bytes per seal, over the %d-byte cap\n", est, feedSealMaxBytes)
 		return ExitProbeFailure
@@ -957,16 +979,21 @@ func dropUncollectableObservations(source string, consumers []feedConsumer) []fe
 	}
 	for i := range consumers {
 		c := &consumers[i]
-		if !c.Loaded || len(c.Req.Observations) == 0 {
+		if !c.Loaded || (len(c.Req.Observations) == 0 && len(c.Req.Books) == 0) {
 			continue
 		}
 		keys := c.Req.observationKeys()
-		names := make([]string, 0, len(keys))
+		names := make([]string, 0, len(keys)+len(c.Req.Books))
 		for _, k := range keys {
+			names = append(names, k.PayloadID())
+		}
+		for _, k := range sortedBookNeedKeys(c.Req.Books) {
 			names = append(names, k.PayloadID())
 		}
 		req := c.Req
 		req.Observations = nil
+		req.Books = nil
+		req.BookConflicts = nil
 		req.Strategies = make(map[string]feedStrategyRequirement, len(c.Req.Strategies))
 		for id, entry := range c.Req.Strategies {
 			entry.OpenInterest = false
@@ -974,12 +1001,13 @@ func dropUncollectableObservations(source string, consumers []feedConsumer) []fe
 			entry.TradeFlow = false
 			entry.TradeWindowMs = 0
 			entry.VolumeProfile = false
+			entry.Book = nil
 			entry.Premium = false
 			entry.PremiumWindow = 0
 			req.Strategies[id] = entry
 		}
 		c.Req = req
-		c.Notice = fmt.Sprintf("feed.source=%q cannot collect observations %s; only feed.source=%q subscribes to the venue open-interest, trade and quote/oracle streams, so this feed serves the consumer's candle, mid and funding keys without them and its observation strategies hold entries",
+		c.Notice = fmt.Sprintf("feed.source=%q cannot collect observations %s; only feed.source=%q subscribes to the venue open-interest, trade, l2Book and quote/oracle streams, so this feed serves the consumer's candle, mid and funding keys without them, never advertises them, and its observation strategies hold entries",
 			source, strings.Join(names, ", "), feedSourceWebsocket)
 	}
 	return consumers

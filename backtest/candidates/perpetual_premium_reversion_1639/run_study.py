@@ -53,6 +53,7 @@ SOURCE_FILES = (
     "backtest/eval_windows.py",
     "backtest/offline_manifest.py",
     "backtest/premium_replay.py",
+    "backtest/observation_kinds.py",
     "backtest/observation_replay.py",
     "backtest/optimizer.py",
     "backtest/candidates/perpetual_premium_reversion_1639/run_study.py",
@@ -117,6 +118,17 @@ def _iso(ms: int) -> str:
 
 MIN_TEST_HOURS = 2
 TRAIN_SHARE = 0.6
+EARLY_STOP_FLOOR_HOURS = 12
+
+
+def _recording_length_deviation(r: dict) -> list:
+    hours = (r["closed_ms"] - r["started_ms"]) / 3_600_000
+    if hours >= EARLY_STOP_FLOOR_HOURS:
+        return []
+    return [f"- Deviation from the frozen specification: the recording ran {hours:.2f} h, {EARLY_STOP_FLOOR_HOURS - hours:.2f} h "
+            f"below the {EARLY_STOP_FLOOR_HOURS} h early-stop floor in `candidate_spec.json` `data_plan.planned_length`; the stop "
+            "came before any scoring, because the windows derive from the close time, and the frozen window rule ran unchanged "
+            "on the recorded start and close times."]
 
 
 def plan_windows(start_ms: int, close_ms: int) -> tuple:
@@ -655,6 +667,7 @@ def render(result: dict) -> str:
         f"- Run `{r['run_id']}` (recorder `{r['recorder_version']}`), {_ts(r['started_ms'])} to {_ts(r['closed_ms'])}: "
         f"{len(r['segments'])} hashed segments, {r['quote_frames']} bbo frames, {r['context_frames']} activeAssetCtx frames, "
         f"{r['malformed_frames']} malformed frames, {r['dropped']} dropped records, sessions {r['sessions']}.",
+        *_recording_length_deviation(r),
         f"- Independent Python replay reproduced every frame outcome and all {r['events_compared']} recorder sample and "
         f"revocation events. Economic evidence: {_fmt(r['economic_evidence'])}"
         + (f" ({'; '.join(r['refusals'])})" if r["refusals"] else "") + ".",

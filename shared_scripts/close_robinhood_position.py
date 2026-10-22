@@ -19,6 +19,21 @@ _BUDGET_MIN_MS = 2000
 _BUDGET_MAX_MS = 120000
 _DEFAULT_BUDGET_MS = 50000
 _CONFIRMED_FILL_OUTCOMES = ("filled", "partially_filled")
+_CLOSE_KIND_EMERGENCY = "emergency"
+_SIZING_NUMBER_KEYS = (
+    "asked_quantity", "account_quantity", "account_available", "sent_quantity", "min_order_size",
+    "quantity_increment", "max_order_size", "residue_quantity",
+)
+_SIZING_BOOL_KEYS = ("sole_owner", "swept", "capped", "account_short")
+
+
+class _ArgvError(Exception):
+    pass
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise _ArgvError(message)
 
 
 def _finite_or_none(value):
@@ -28,17 +43,64 @@ def _finite_or_none(value):
     return value if math.isfinite(value) else None
 
 
+def _clean_sizing(sizing):
+    if not isinstance(sizing, dict):
+        return None
+    clean = {key: _finite_or_none(sizing.get(key)) for key in _SIZING_NUMBER_KEYS}
+    for key in _SIZING_BOOL_KEYS:
+        clean[key] = sizing.get(key) is True
+    kind = sizing.get("close_kind")
+    clean["close_kind"] = kind if kind in ("whole", "partial", _CLOSE_KIND_EMERGENCY) else None
+    return clean
+
+
+def _parse_args(argv):
+    parser = _Parser()
+    parser.add_argument("--symbol", required=True)
+    parser.add_argument("--mode", default="live")
+    parser.add_argument("--quantity", default=None)
+    parser.add_argument("--ref-id", default="")
+    parser.add_argument("--budget-ms", type=int, default=_DEFAULT_BUDGET_MS)
+    parser.add_argument("--probe-only", action="store_true")
+    return parser.parse_args(argv)
+
+
+def _argv_symbol(argv):
+    for i, arg in enumerate(argv):
+        if arg.startswith("--symbol="):
+            return arg.split("=", 1)[1]
+        if arg == "--symbol" and i + 1 < len(argv):
+            return argv[i + 1]
+    return ""
+
+
+def _parse_quantity(text):
+    from adapter import _parse_exact_decimal
+
+    if text is None:
+        raise ValueError("--quantity is required: the emergency close sells at most the go-trader book quantity")
+    asked = _parse_exact_decimal(text)
+    if asked is None or asked <= 0:
+        raise ValueError(f"--quantity {text!r} is not a bounded finite positive decimal")
+    return asked
+
+
 def main():
     with json_stdout() as emit:
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--symbol", required=True)
-        parser.add_argument("--mode", default="live")
-        parser.add_argument("--ref-id", default="")
-        parser.add_argument("--budget-ms", type=int, default=_DEFAULT_BUDGET_MS)
-        parser.add_argument("--probe-only", action="store_true")
-        args = parser.parse_args()
+        argv = sys.argv[1:]
+        try:
+            args = _parse_args(argv)
+        except _ArgvError as e:
+            _emit(emit, _argv_symbol(argv), {"outcome": "not_sent", "detail": f"invalid arguments: {e}"})
+            return
         if args.probe_only:
             sys.exit(0)
+
+        try:
+            asked = _parse_quantity(args.quantity)
+        except Exception as e:
+            _emit(emit, args.symbol, {"outcome": "not_sent", "detail": str(e)})
+            return
 
         if args.mode != "live":
             _emit(emit, args.symbol, {"outcome": "not_sent", "detail": "--mode=live required for emergency close"})
@@ -54,53 +116,41 @@ def main():
             adapter = RobinhoodExchangeAdapter(mode="live", login_deadline=deadline)
             if not adapter.is_live:
                 raise RuntimeError("Robinhood adapter not live — set ROBINHOOD_USERNAME / ROBINHOOD_PASSWORD / ROBINHOOD_TOTP_SECRET")
-
-            positions = adapter.get_crypto_positions_strict(deadline=deadline)
-            if not isinstance(positions, list):
-                raise RuntimeError(f"Robinhood holdings read returned {type(positions).__name__}, expected list")
-            qty = 0.0
-            for pos in positions:
-                if not isinstance(pos, dict):
-                    raise RuntimeError("Robinhood holdings read returned a non-object row")
-                if (pos.get("symbol") or "").strip().upper() == args.symbol.strip().upper():
-                    raw_qty = pos.get("quantity")
-                    if isinstance(raw_qty, bool):
-                        raise RuntimeError(f"Robinhood holding for {args.symbol} has a malformed quantity")
-                    try:
-                        qty = float(raw_qty)
-                    except (TypeError, ValueError) as e:
-                        raise RuntimeError(f"Robinhood holding for {args.symbol} has a malformed quantity") from e
-                    if not math.isfinite(qty) or qty < 0:
-                        raise RuntimeError(f"Robinhood holding for {args.symbol} has a non-finite or negative quantity")
-                    break
+            holding = adapter.holding_quantities(args.symbol, deadline)
+            held, available = holding["quantity"], holding["available"]
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             _emit(emit, args.symbol, {"outcome": "not_sent", "detail": str(e)})
             return
 
-        if qty == 0:
-            _emit(emit, args.symbol, {"outcome": "already_flat", "detail": ""}, held_qty=0.0)
+        if held == 0:
+            _emit(emit, args.symbol, {"outcome": "already_flat", "detail": ""}, held_qty=0.0, available_qty=0.0)
             return
 
         if not args.ref_id:
-            _emit(emit, args.symbol, {"outcome": "not_sent", "detail": f"--ref-id is required to sell the held {args.symbol}"}, held_qty=qty)
+            _emit(emit, args.symbol, {"outcome": "not_sent", "detail": f"--ref-id is required to sell the held {args.symbol}"}, held_qty=held, available_qty=available)
             return
 
         try:
-            result = adapter.place_market_order(args.symbol, "sell", ref_id=args.ref_id, deadline=deadline, quantity=qty)
+            result = adapter.place_market_order(
+                args.symbol, "sell", ref_id=args.ref_id, deadline=deadline, quantity=float(asked),
+                sell_policy={"asked": asked, "close_kind": _CLOSE_KIND_EMERGENCY, "sole_owner": False},
+            )
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             result = {"outcome": "not_sent", "detail": str(e), "ref_id": args.ref_id}
         if result.get("detail"):
             print(f"[robinhood] close {result.get('outcome')}: {result['detail']}", file=sys.stderr)
-        _emit(emit, args.symbol, result, held_qty=qty)
+        _emit(emit, args.symbol, result, held_qty=held, available_qty=available)
 
 
-def _emit(emit, symbol, result, held_qty=None):
+def _emit(emit, symbol, result, held_qty=None, available_qty=None):
     outcome = result.get("outcome") or "unknown"
     close = {"symbol": symbol}
     if held_qty is not None:
-        close["held_qty"] = _finite_or_none(held_qty)
+        close["held_qty"] = _finite_or_none(float(held_qty))
+    if available_qty is not None:
+        close["available_qty"] = _finite_or_none(float(available_qty))
     payload = {
         "close": close,
         "order_outcome": outcome,
@@ -112,6 +162,9 @@ def _emit(emit, symbol, result, held_qty=None):
         "platform": "robinhood",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    sizing = _clean_sizing(result.get("sizing"))
+    if sizing is not None:
+        payload["sizing"] = sizing
     fill = result.get("fill")
     if outcome == "already_flat":
         close["already_flat"] = True

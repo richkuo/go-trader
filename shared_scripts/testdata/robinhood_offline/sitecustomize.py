@@ -116,7 +116,8 @@ def _install():
         path = request.url.split("?", 1)[0]
         if request.method == "GET" and path == "https://nummus.robinhood.com/currency_pairs/":
             return response(request, 200, {"next": None, "results": [
-                {"id": _PAIR_ID, "symbol": "BTC-USD", "asset_currency": {"code": "BTC"}},
+                {"id": _PAIR_ID, "symbol": "BTC-USD", "asset_currency": {"code": "BTC"},
+                 "min_order_size": "0.000001", "min_order_quantity_increment": "0.00000001", "max_order_size": "20"},
             ]})
         if request.method == "GET" and path == "https://api.robinhood.com/marketdata/forex/quotes/%s/" % _PAIR_ID:
             return response(request, 200, {"id": _PAIR_ID, "ask_price": "100.00", "bid_price": "99.00", "mark_price": "99.50"})
@@ -124,7 +125,7 @@ def _install():
             return response(request, 200, {"next": None, "results": [{"id": "offline-account"}]})
         if request.method == "GET" and path == "https://nummus.robinhood.com/holdings/":
             return response(request, 200, {"next": None, "results": [
-                {"quantity": "0.5", "currency": {"code": "BTC"}, "cost_bases": [{"direct_cost_basis": "50.00"}]},
+                {"quantity": "0.5", "quantity_available": "0.5", "currency": {"code": "BTC"}, "cost_bases": [{"direct_cost_basis": "50.00"}]},
             ]})
         if request.method == "POST" and path == "https://nummus.robinhood.com/orders/":
             if _MODE == "order_rejected":

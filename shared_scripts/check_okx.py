@@ -875,11 +875,28 @@ def main():
             help="#1712: decide signals and entry ATR on the last closed bar; protection keeps current inputs.")
         parser.add_argument("--decision-regime-timeframe", default="",
             help="#1712: regime timeframe for the closed-bar decision view; defaults to the strategy timeframe.")
+        parser.add_argument("--basket-member", action="store_true", default=False,
+            help="#1781: accepted for argv-shape compatibility with the startup probe; basket members run only on Hyperliquid, so this platform refuses it.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
+        if args.basket_member:
+            print(json.dumps({
+                "strategy": args.strategy,
+                "symbol": args.symbol,
+                "timeframe": args.timeframe,
+                "signal": 0,
+                "price": 0,
+                "indicators": {},
+                "regime": None,
+                "mode": args.mode,
+                "platform": "okx",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": "basket members are not supported on okx: the basket coordinator runs only Hyperliquid members",
+            }))
+            sys.exit(1)
         from strategy_composition import parse_allow_no_edge_tokens, parse_raw_gate_mode, parse_strategy_refs_arg
         refs = parse_strategy_refs_arg(args.strategy_refs)
         open_strategy_name = refs["open_name"] if refs else args.open_strategy

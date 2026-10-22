@@ -78,5 +78,17 @@ makes no network request. The freezing steps that produced the inputs were
   scoring, because the windows are derived from the close time. The frozen
   window rule ran unchanged on the recorded start and close times: warm-up
   04:00 to 05:00, train 05:00 to 10:00, test 10:00 to 14:00. The specification
-  file and its hash are unchanged. `REPORT.md` and `results.json` are as
-  scored, and they do not repeat this note.
+  file and its hash are unchanged. `run_study.py` renders the same deviation
+  line into `REPORT.md` (Recording and replay section).
+- Provenance re-run. After #1837 (l2_book, seal v7, payload v3) merged, this
+  branch moved to seal v8 and market payload v4, and recording schema v3
+  became one shared schema with a typed contract block per kind. That changed
+  hash-pinned sources (`shared_tools/market_payload.py`,
+  `backtest/observation_replay.py`, `backtest/premium_replay.py`,
+  `scheduler/market_feed_premium.go`, `scheduler/market_feed_recorder.go`,
+  `scheduler/market_feed_ws.go`, `run_study.py`) and added
+  `backtest/observation_kinds.py`, which `premium_replay.py` now imports. One
+  `run_study.py run` re-ran the study with every frozen rule unchanged: in
+  `results.json` only `source_sha256` changed (the new pin included), and in
+  `REPORT.md` only the deviation line and the source hashes changed. No
+  recorded byte changed.

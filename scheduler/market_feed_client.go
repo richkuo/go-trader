@@ -447,6 +447,7 @@ func degradedSharedSnapshot(key int64, now time.Time) *marketSnapshot {
 		observations:      map[feedObservationKey]*marketSnapshotObservation{},
 		tradeFlows:        map[feedObservationKey]*marketSnapshotTradeFlow{},
 		profiles:          map[feedObservationKey]*marketSnapshotProfile{},
+		books:             map[feedObservationKey]*marketSnapshotBook{},
 		premiums:          map[feedObservationKey]*marketSnapshotPremium{},
 		macro:             map[feedMacroKey]*marketSnapshotMacro{},
 	}
@@ -529,6 +530,7 @@ func applySealCoverage(snap *marketSnapshot, reqs cycleMarketRequirements) []str
 		}
 	}
 	gaps = append(gaps, applyMacroSealCoverage(snap, reqs)...)
+	gaps = append(gaps, applyBookSealCoverage(snap, reqs)...)
 	return gaps
 }
 
@@ -616,6 +618,7 @@ func sharedFeedCompatibilityLines(prefix string, descs []feedEndpointDescription
 			}
 		}
 		gaps = append(gaps, macroCoverageGaps(req, desc.Macro)...)
+		gaps = append(gaps, describeBookCoverageGaps(req, desc.Books)...)
 		accountingServed := make(map[string]bool, len(desc.AccountingFunding))
 		for _, coin := range desc.AccountingFunding {
 			accountingServed[coin] = true

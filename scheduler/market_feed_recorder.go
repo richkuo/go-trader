@@ -114,6 +114,8 @@ type observationSegmentManifest struct {
 	TradeFrames  int      `json:"trade_frames,omitempty"`
 	TradeRecords int      `json:"trade_records,omitempty"`
 	Intervals    int      `json:"intervals,omitempty"`
+	BookFrames   int      `json:"book_frames,omitempty"`
+	BookMarkers  int      `json:"book_markers,omitempty"`
 	QuoteFrames  int      `json:"quote_frames,omitempty"`
 	CtxFrames    int      `json:"context_frames,omitempty"`
 	PremiumRows  int      `json:"premium_samples,omitempty"`
@@ -143,6 +145,40 @@ func currentTradeContract() observationTradeContract {
 	}
 }
 
+type observationBookContract struct {
+	Source            string `json:"source"`
+	Contract          string `json:"contract"`
+	TimeSemantics     string `json:"time_semantics"`
+	IdentitySemantics string `json:"identity_semantics"`
+	IdentityTag       string `json:"identity_tag"`
+	MaxLevels         int    `json:"max_levels"`
+	MaxObservations   int    `json:"max_observations"`
+	MaxWindowMs       int64  `json:"max_window_ms"`
+	MaxMarkers        int    `json:"max_markers"`
+	MaxFutureSkewMs   int64  `json:"max_future_skew_ms"`
+	MaxLagMs          int64  `json:"max_lag_ms"`
+	MaxGapMs          int64  `json:"max_gap_ms"`
+	MaxFrameBytes     int    `json:"max_frame_bytes"`
+	DecimalMaxLen     int    `json:"decimal_max_len"`
+	DecimalMaxFrac    int    `json:"decimal_max_frac"`
+	MaxOrders         uint64 `json:"max_orders"`
+	RetainSlackMs     int64  `json:"retain_slack_ms"`
+	Subscription      string `json:"subscription"`
+}
+
+func currentBookContract() observationBookContract {
+	return observationBookContract{Source: feedBookSource, Contract: feedBookContract, TimeSemantics: feedBookTimeSemantics,
+		IdentitySemantics: feedBookIdentitySemantics, IdentityTag: feedBookIdentityTag, MaxLevels: feedBookMaxLevels,
+		MaxObservations: feedBookMaxObservations, MaxWindowMs: feedBookMaxWindowMs, MaxMarkers: feedBookMaxMarkers,
+		MaxFutureSkewMs: feedBookMaxFutureSkewMs, MaxLagMs: feedBookMaxLagMs, MaxGapMs: feedBookMaxGapMs, MaxFrameBytes: feedBookMaxFrameBytes,
+		DecimalMaxLen: feedBookDecimalMaxLen, DecimalMaxFrac: feedBookDecimalMaxFrac, MaxOrders: feedBookMaxOrders,
+		RetainSlackMs: feedBookRetainSlackMs, Subscription: `{"type":"l2Book","coin":"<coin>","fast":false}`}
+}
+
+func recorderBookNeed() feedBookNeed {
+	return contractBookNeed(feedBookMaxWindowMs, feedBookMaxObservations, feedBookMaxLevels)
+}
+
 type observationPremiumContract struct {
 	Source          string `json:"source"`
 	Contract        string `json:"contract"`
@@ -167,6 +203,7 @@ type observationRunManifestV2 struct {
 	Kinds           []string                     `json:"kinds"`
 	Sources         map[string]string            `json:"sources"`
 	TradeContract   *observationTradeContract    `json:"trade_contract,omitempty"`
+	BookContract    *observationBookContract     `json:"book_contract,omitempty"`
 	PremiumContract *observationPremiumContract  `json:"premium_contract,omitempty"`
 	Host            string                       `json:"host"`
 	WSURL           string                       `json:"ws_url"`
@@ -177,6 +214,15 @@ type observationRunManifestV2 struct {
 	DroppedTotal    uint64                       `json:"dropped_total"`
 	RecorderVers    string                       `json:"recorder_version"`
 	Segments        []observationSegmentManifest `json:"segments"`
+}
+
+func recorderKindsHaveBooks(kinds []string) bool {
+	for _, k := range kinds {
+		if k == feedObservationL2Book {
+			return true
+		}
+	}
+	return false
 }
 
 func recorderKindsHaveTrades(kinds []string) bool {
@@ -220,6 +266,8 @@ type observationSegment struct {
 	frames   int
 	trades   int
 	ivs      int
+	books    int
+	markers  int
 	quotes   int
 	ctxs     int
 	prows    int
@@ -420,6 +468,15 @@ func (r *observationRecorder) handle(rec observationRecord) {
 	if rec.Kind == "interval" {
 		seg.ivs++
 	}
+	if rec.Kind == "book" {
+		seg.books++
+		if oc, _ := rec.Extra["outcome"].(string); oc == feedBookOutcomeRejected {
+			seg.rejected++
+		}
+	}
+	if rec.Kind == "book_marker" {
+		seg.markers++
+	}
 	switch rec.Kind {
 	case "bbo":
 		seg.quotes++
@@ -486,14 +543,20 @@ func (r *observationRecorder) openSegment(atMs int64) error {
 	seg.buf = bufio.NewWriter(io.MultiWriter(f, h))
 	r.segment = seg
 	if r.v3() {
-		r.writeLine(seg, map[string]any{
+		header := map[string]any{
 			"k": "header", "schema": observationRecordingSchemaV3, "run_id": r.meta.RunID, "index": seg.index,
 			"recv_ms": atMs, "kinds": r.meta.Kinds, "sources": r.sources(), "trade_contract": currentTradeContract(),
-			"premium_contract": currentPremiumContract(),
 			"open_interest_contract": map[string]any{"source": feedObservationSourceHLWS, "units": feedObservationUnitsBase,
 				"time_basis": feedObservationTimeReceipt, "cadence_ms": feedObservationCadenceMs},
 			"host": hlMainnetURL, "ws_url": r.meta.WSURL, "coins": r.meta.Coins, "recorder_version": Version,
-		})
+		}
+		if recorderKindsHaveBooks(r.meta.Kinds) {
+			header["book_contract"] = currentBookContract()
+		}
+		if recorderKindsInclude(r.meta.Kinds, feedObservationPerpPremium) {
+			header["premium_contract"] = currentPremiumContract()
+		}
+		r.writeLine(seg, header)
 		return r.writeError
 	}
 	if r.v2() {
@@ -566,6 +629,9 @@ func (r *observationRecorder) closeSegment(reason string) {
 	} else if r.v2() {
 		schema = observationSegmentSchemaV2
 	}
+	if r.v3() {
+		schema = observationSegmentSchemaV3
+	}
 	m := observationSegmentManifest{
 		Schema:       schema,
 		RunID:        r.meta.RunID,
@@ -589,6 +655,8 @@ func (r *observationRecorder) closeSegment(reason string) {
 		TradeFrames:  seg.frames,
 		TradeRecords: seg.trades,
 		Intervals:    seg.ivs,
+		BookFrames:   seg.books,
+		BookMarkers:  seg.markers,
 		QuoteFrames:  seg.quotes,
 		CtxFrames:    seg.ctxs,
 		PremiumRows:  seg.prows,
@@ -605,11 +673,11 @@ func (r *observationRecorder) closeSegment(reason string) {
 }
 
 func (r *observationRecorder) v2() bool {
-	return recorderKindsHaveTrades(r.meta.Kinds)
+	return recorderKindsHaveTrades(r.meta.Kinds) && !r.v3()
 }
 
 func (r *observationRecorder) v3() bool {
-	return recorderKindsInclude(r.meta.Kinds, feedObservationPerpPremium)
+	return recorderKindsHaveBooks(r.meta.Kinds) || recorderKindsInclude(r.meta.Kinds, feedObservationPerpPremium)
 }
 
 func (r *observationRecorder) sources() map[string]string {
@@ -621,7 +689,7 @@ func (r *observationRecorder) sources() map[string]string {
 }
 
 func (r *observationRecorder) writeRunManifest() error {
-	if !r.v2() {
+	if !r.v2() && !r.v3() {
 		return writeJSONAtomic(filepath.Join(r.dir, "run.manifest.json"), r.manifest)
 	}
 	contract := currentTradeContract()
@@ -633,8 +701,14 @@ func (r *observationRecorder) writeRunManifest() error {
 	}
 	if r.v3() {
 		m.Schema = observationRunSchemaV3
-		pc := currentPremiumContract()
-		m.PremiumContract = &pc
+		if recorderKindsHaveBooks(r.meta.Kinds) {
+			book := currentBookContract()
+			m.BookContract = &book
+		}
+		if recorderKindsInclude(r.meta.Kinds, feedObservationPerpPremium) {
+			pc := currentPremiumContract()
+			m.PremiumContract = &pc
+		}
 	}
 	return writeJSONAtomic(filepath.Join(r.dir, "run.manifest.json"), m)
 }
@@ -706,8 +780,8 @@ func parseRecorderKinds(raw string) ([]string, error) {
 		if k == "" {
 			continue
 		}
-		if k != feedObservationOpenInterest && k != feedObservationTradeFlow && k != feedObservationPerpPremium {
-			return nil, fmt.Errorf("kind %q is not %q, %q or %q", k, feedObservationOpenInterest, feedObservationTradeFlow, feedObservationPerpPremium)
+		if k != feedObservationOpenInterest && k != feedObservationTradeFlow && k != feedObservationL2Book && k != feedObservationPerpPremium {
+			return nil, fmt.Errorf("kind %q is not %q, %q, %q or %q", k, feedObservationOpenInterest, feedObservationTradeFlow, feedObservationL2Book, feedObservationPerpPremium)
 		}
 		if seen[k] {
 			return nil, fmt.Errorf("kind %q is listed twice", k)
@@ -734,7 +808,7 @@ func recorderKindsInclude(kinds []string, kind string) bool {
 func runRecordObservations(args []string) int {
 	fs := flag.NewFlagSet("record-observations", flag.ContinueOnError)
 	coinsFlag := fs.String("coins", "", "Comma-separated Hyperliquid perpetual coins to record (e.g. BTC,ETH)")
-	kindsFlag := fs.String("kinds", feedObservationOpenInterest, "Comma-separated observation kinds to record: open_interest, trade_flow, perp_premium")
+	kindsFlag := fs.String("kinds", feedObservationOpenInterest, "Comma-separated observation kinds to record: open_interest, trade_flow, l2_book, perp_premium")
 	outDir := fs.String("out-dir", "", "Empty directory for the research recording (never a state or config directory)")
 	duration := fs.Duration("duration", 0, "Stop after this long (0 = until SIGINT or SIGTERM)")
 	segment := fs.Duration("segment", observationDefaultSegment, "Rotate to a new hashed segment after this long")
@@ -780,6 +854,11 @@ func runRecordObservations(args []string) int {
 		fmt.Printf("[recorder] run=%s coins=%s kinds=%s out=%s ws=%s segment=%s duration=%s\n",
 			runID, strings.Join(coins, ","), strings.Join(kinds, ","), *outDir, hlFeedWebsocketURL(), *segment, *duration)
 	}
+	if recorderKindsInclude(kinds, feedObservationL2Book) {
+		c := currentBookContract()
+		fmt.Printf("[recorder] l2_book source=%s contract=%s subscription=%s max_levels=%d max_future_skew_ms=%d max_lag_ms=%d max_gap_ms=%d\n",
+			c.Source, c.Contract, c.Subscription, c.MaxLevels, c.MaxFutureSkewMs, c.MaxLagMs, c.MaxGapMs)
+	}
 	if recorderKindsInclude(kinds, feedObservationTradeFlow) {
 		c := currentTradeContract()
 		fmt.Printf("[recorder] trade_flow source=%s identity=%s side_evidence=%s interval_ms=%d reorder_grace_ms=%d max_event_gap_ms=%d decimal_scale=%d\n",
@@ -821,6 +900,9 @@ func runRecordObservations(args []string) int {
 		owner.trackPremiums(coins, observationRecorderWindow.Milliseconds())
 	}
 	owner.attachRecorder(rec)
+	if recorderKindsInclude(kinds, feedObservationL2Book) {
+		owner.trackBooks(coins, recorderBookNeed())
+	}
 	recCtx, stopRec := context.WithCancel(context.Background())
 	go rec.run(recCtx)
 	ownerDone := make(chan struct{})
@@ -841,6 +923,11 @@ loop:
 			owner.AdvanceTradeFlows(time.Now().UTC())
 			owner.AdvancePremiums(time.Now().UTC())
 		case <-ticker.C:
+			for _, rd := range owner.BookReadiness() {
+				fmt.Printf("[recorder] %s status=%s observations=%d markers=%d frames=%d accepted=%d duplicates=%d conflicts=%d out_of_order=%d rejected=%d uncovered=%d evicted=%d covered_ms=%d detail=%q\n",
+					rd.Key.PayloadID(), rd.Status, rd.Observations, rd.Markers, rd.Stats.Frames, rd.Stats.Accepted, rd.Stats.Duplicates,
+					rd.Stats.Conflicts, rd.Stats.OutOfOrder, rd.Stats.Rejected, rd.Stats.Uncovered, rd.Stats.Evicted, rd.CoveredMs, rd.Detail)
+			}
 			for _, rd := range owner.TradeFlowReadiness() {
 				fmt.Printf("[recorder] %s status=%s frames=%d received=%d accepted=%d duplicates=%d conflicts=%d late=%d uncovered=%d rejected=%d finalized=%d invalid=%d covered_ms=%d detail=%q\n",
 					rd.Key.PayloadID(), rd.Status, rd.Stats.Frames, rd.Stats.Received, rd.Stats.Accepted, rd.Stats.Duplicates, rd.Stats.Conflicts,

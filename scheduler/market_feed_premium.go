@@ -1027,7 +1027,6 @@ func attachPremiumPayloads(payload *marketPayload, s *marketSnapshot, needs map[
 	for _, k := range keys {
 		payload.Premiums[k.PayloadID()] = s.premiumPayload(k, needs[k], barIntervalMs)
 	}
-	payload.Version = marketPayloadVersionPremium
 }
 
 func perpetualPremiumWindowMs(sc StrategyConfig, intervalMs int64) (int64, error) {

@@ -12,11 +12,14 @@ func TestForceCloseRobinhoodLive_CloseErrorLatches(t *testing.T) {
 			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
 	}
 	positions := []RobinhoodPosition{{Coin: "BTC", Size: 0.01}}
-	closer := func(sym string) (*RobinhoodCloseResult, error) {
+	closer := func(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error) {
 		return nil, fmt.Errorf("robin_stocks 503")
 	}
 
-	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, closer, nil, nil, nil)
+	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, robinhoodKillSwitchCloseDeps{
+		Closer: closer,
+		Book:   robinhoodBookSnapshot{Targets: map[string]float64{"BTC": 0.01}},
+	})
 
 	if report.ConfirmedFlat() {
 		t.Fatal("expected NOT ConfirmedFlat on close error")
@@ -36,13 +39,20 @@ func TestForceCloseRobinhoodLive_NegativeSizeNotTraded(t *testing.T) {
 		{Coin: "DOGE", Size: -100},
 	}
 	var calls []string
-	closer := func(sym string) (*RobinhoodCloseResult, error) {
-		calls = append(calls, sym)
+	closer := func(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error) {
+		calls = append(calls, req.Symbol)
 		return &RobinhoodCloseResult{}, nil
 	}
 
 	flat := func() ([]RobinhoodPosition, error) { return nil, nil }
-	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, closer, flat, nil, nil)
+	book := robinhoodBookSnapshot{Targets: map[string]float64{"BTC": 0.01}}
+	report := forceCloseRobinhoodLive(context.Background(), positions, rhLive, robinhoodKillSwitchCloseDeps{
+		Closer:    closer,
+		Fetcher:   flat,
+		Book:      book,
+		BookAfter: func() robinhoodBookSnapshot { return book },
+		Settle:    func() robinhoodSettleOutcome { return robinhoodSettleOutcome{} },
+	})
 
 	if len(calls) != 0 {
 		t.Errorf("negative-size position must NOT trigger close, got calls=%v", calls)

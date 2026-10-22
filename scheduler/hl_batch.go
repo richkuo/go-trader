@@ -523,6 +523,13 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 			logf("[WARN] hl-batch %s: marshal slots: %v; falling back to per-strategy checks", in.Key, err)
 			continue
 		}
+		if len(stdin) > marketPayloadMaxBytes && refuseAllL2BookSections(req.Market, feedBookRefusedCapacity+": the complete batch request is over the byte cap") {
+			logf("[WARN] hl-batch %s: request is %d bytes, over the %d-byte cap; its l2_book sections are refused so entries hold and candle and protection inputs stay usable", in.Key, len(stdin), marketPayloadMaxBytes)
+			if stdin, err = json.Marshal(req); err != nil {
+				logf("[WARN] hl-batch %s: marshal slots: %v; falling back to per-strategy checks", in.Key, err)
+				continue
+			}
+		}
 		if len(stdin) > marketPayloadMaxBytes {
 			logf("[WARN] hl-batch %s: request is %d bytes, over the %d-byte cap; members fall back to their own sealed-snapshot checks", in.Key, len(stdin), marketPayloadMaxBytes)
 			continue

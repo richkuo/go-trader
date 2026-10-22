@@ -231,10 +231,16 @@ jobs:
             --marker 'PASS: volume-profile replay harness (sealed profile sessions, hand-calculated value areas and decisions match the independent recording replay; tampered, truncated, contradicted and unclosed recordings refused)' \
             -- bash scripts/test_volume_profile_replay.sh
 
+      - name: Order-book replay suite
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'PASS: l2_book replay harness (sealed book payloads match the independent recording replay; mixed v3 runs keep every importer; tampered, truncated, unclosed, dropped, mislabeled and contradicted recordings refused)' \
+            -- bash scripts/test_book_replay.sh
+
       - name: Premium replay suite
         run: |
           bash scripts/run_ci_shell_suite.sh \
-            --marker 'PASS: premium replay harness (sealed quote/oracle payloads and decisions match the independent recording replay; tampered, truncated and contradicted recordings refused)' \
+            --marker 'PASS: premium replay harness (sealed quote/oracle payloads and decisions match the independent recording replay; premium-only, book-only and mixed v3 runs import by their typed contracts and kind/contract mismatches are refused; tampered, truncated and contradicted recordings refused)' \
             -- bash scripts/test_premium_replay.sh
 
       - name: Allow unprivileged user namespaces for the ledger capture worker

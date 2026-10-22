@@ -158,7 +158,7 @@ func TestHyperliquidKillSwitchClose_UsesRealFillBeforeMark(t *testing.T) {
 			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long", Multiplier: 1, Leverage: 5},
 		},
 	}
-	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"BTC": 48000}, plan.CloseReport.Fills, hlLive, nil, nil)
+	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"BTC": 48000}, plan.CloseReport.Fills, hlLive, nil, nil, nil)
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected 1 trade, got %d", len(s.TradeHistory))
@@ -254,7 +254,7 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatRecoversRecentUserFill(t *testing
 			"ETH": {Symbol: "ETH", Quantity: 0.588, AvgCost: 1754.10, Side: "long", Multiplier: 1, Leverage: 5},
 		},
 	}
-	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"ETH": 1700}, plan.CloseReport.Fills, hlLive, nil, nil)
+	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"ETH": 1700}, plan.CloseReport.Fills, hlLive, nil, nil, nil)
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected 1 trade, got %d", len(s.TradeHistory))
 	}
@@ -409,8 +409,8 @@ func TestHyperliquidKillSwitchClose_SharedCoinSplitsFillByVirtualQuantity(t *tes
 		"hl-b": stateB,
 	}, hlLive)
 
-	forceCloseKillSwitchPositions(stateA, hlLive[0], prices, fills, hlLive, hlVirtualQty, nil)
-	forceCloseKillSwitchPositions(stateB, hlLive[1], prices, fills, hlLive, hlVirtualQty, nil)
+	forceCloseKillSwitchPositions(stateA, hlLive[0], prices, fills, hlLive, hlVirtualQty, nil, nil)
+	forceCloseKillSwitchPositions(stateB, hlLive[1], prices, fills, hlLive, hlVirtualQty, nil, nil)
 
 	if len(stateA.TradeHistory) != 1 || len(stateB.TradeHistory) != 1 {
 		t.Fatalf("expected 1 trade per peer, got %d / %d",
@@ -556,7 +556,8 @@ func TestPlanKillSwitchClose_UnconfiguredPositionBlocksReset(t *testing.T) {
 
 func stubRHLiveCloser(errs map[string]error) (RobinhoodLiveCloser, *[]string) {
 	var calls []string
-	closer := func(symbol string) (*RobinhoodCloseResult, error) {
+	closer := func(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error) {
+		symbol := req.Symbol
 		calls = append(calls, symbol)
 		if err, ok := errs[symbol]; ok && err != nil {
 			return nil, err
@@ -567,6 +568,25 @@ func stubRHLiveCloser(errs map[string]error) (RobinhoodLiveCloser, *[]string) {
 		}, nil
 	}
 	return closer, &calls
+}
+
+func stubRHBookSnapshot(targets map[string]float64, heldElsewhere ...string) func() robinhoodBookSnapshot {
+	calls := 0
+	return func() robinhoodBookSnapshot {
+		calls++
+		snap := robinhoodBookSnapshot{Targets: map[string]float64{}, Held: map[string]bool{}}
+		for _, coin := range heldElsewhere {
+			snap.Held[coin] = true
+		}
+		if calls > 1 {
+			return snap
+		}
+		for coin, qty := range targets {
+			snap.Targets[coin] = qty
+			snap.Held[coin] = true
+		}
+		return snap
+	}
 }
 
 func stubRHPositionsFetcher(positions []RobinhoodPosition, err error) (RobinhoodPositionsFetcher, *int) {
@@ -664,6 +684,8 @@ func killSwitchPlatformHarnesses() []killSwitchPlatformHarness {
 						Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}}},
 					RHCloser:        closer,
 					RHFetcher:       fetcher,
+					RHBookSnapshot:  stubRHBookSnapshot(map[string]float64{"BTC": 0.01}, "DOGE"),
+					RHSettle:        func() robinhoodSettleOutcome { return robinhoodSettleOutcome{} },
 					PortfolioReason: "drawdown reason",
 					CloseTimeout:    time.Second,
 				}, calls, fetchCalls
@@ -804,6 +826,8 @@ func TestPlanKillSwitchClose_PeerPlatformFailureStillLatches(t *testing.T) {
 					Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}}}
 				in.RHCloser, _ = stubRHLiveCloser(map[string]error{"BTC": fmt.Errorf("rh err")})
 				in.RHFetcher, _ = stubRHPositionsFetcher([]RobinhoodPosition{{Coin: "BTC", Size: 0.01}}, nil)
+				in.RHBookSnapshot = stubRHBookSnapshot(map[string]float64{"BTC": 0.01})
+				in.RHSettle = func() robinhoodSettleOutcome { return robinhoodSettleOutcome{} }
 			},
 		},
 		{

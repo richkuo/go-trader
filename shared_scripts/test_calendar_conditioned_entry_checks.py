@@ -60,7 +60,7 @@ def _frame(bars):
 
 def _market(bars, mid=None):
     cutoff = bars[-1]["t"] + H // 2
-    return {"version": 2, "snapshot_id": "3600s/1", "generation": 1, "sealed_at_ms": cutoff,
+    return {"version": 4, "snapshot_id": "3600s/1", "generation": 1, "sealed_at_ms": cutoff,
             "decision_cutoff_ms": cutoff, "frames": {"BTC|1h": _frame(bars)}, "feed_complete": True,
             "mids": {"BTC": {"px": bars[-1]["c"] if mid is None else mid, "recv_at_ms": cutoff, "source": "ws",
                              "age_ms": 0, "stale": False, "confirmed": True}}}

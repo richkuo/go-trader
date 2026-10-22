@@ -252,6 +252,24 @@ def _budget_deadline(budget_ms):
     return _STARTED + budget_ms / 1000.0
 
 
+_SIZING_NUMBER_KEYS = (
+    "asked_quantity", "account_available", "sent_quantity", "min_order_size",
+    "quantity_increment", "max_order_size", "residue_quantity",
+)
+_SIZING_BOOL_KEYS = ("sole_owner", "swept", "capped", "account_short")
+
+
+def _clean_sizing(sizing):
+    if not isinstance(sizing, dict):
+        return None
+    clean = {key: _finite_or_none(sizing.get(key)) for key in _SIZING_NUMBER_KEYS}
+    for key in _SIZING_BOOL_KEYS:
+        clean[key] = sizing.get(key) is True
+    kind = sizing.get("close_kind")
+    clean["close_kind"] = kind if kind in ("whole", "partial") else None
+    return clean
+
+
 def _order_envelope(order_result, action, symbol, amount_usd=None, quantity=None):
     outcome = order_result.get("outcome") or "unknown"
     execution = {"action": action, "symbol": symbol}
@@ -260,6 +278,7 @@ def _order_envelope(order_result, action, symbol, amount_usd=None, quantity=None
     if action == "sell" and quantity is not None:
         execution["quantity"] = _finite_or_none(quantity)
     fill = order_result.get("fill")
+    sizing = _clean_sizing(order_result.get("sizing"))
     payload = {
         "execution": execution,
         "order_outcome": outcome,
@@ -271,6 +290,8 @@ def _order_envelope(order_result, action, symbol, amount_usd=None, quantity=None
         "platform": "robinhood",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    if sizing is not None:
+        payload["sizing"] = sizing
     if outcome in _CONFIRMED_FILL_OUTCOMES and isinstance(fill, dict):
         clean = {
             "avg_px": _finite_or_none(fill.get("avg_px")),
@@ -306,9 +327,34 @@ def _emit_order(emit, payload):
         sys.exit(1)
 
 
-def run_execute(symbol, side, amount_usd, quantity, mode, ref_id=None, budget_ms=None):
+def _parse_sell_ask(quantity_text):
+    from adapter import _parse_exact_decimal
+
+    asked = _parse_exact_decimal(quantity_text)
+    if asked is None or asked <= 0:
+        raise ValueError(f"--quantity {quantity_text!r} is not a bounded finite positive decimal")
+    return asked
+
+
+def _float_ask(quantity_text):
+    try:
+        value = float(quantity_text)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def run_execute(symbol, side, amount_usd, quantity_text, mode, ref_id=None, budget_ms=None, close_kind="partial", sole_owner=False):
     with json_stdout() as emit:
         action = (side or "").lower()
+        quantity = _float_ask(quantity_text) if action == "sell" else None
+        asked = None
+        if action == "sell":
+            try:
+                asked = _parse_sell_ask(quantity_text)
+            except Exception as e:
+                _emit_order(emit, _order_envelope(_not_sent(str(e), ref_id), action, symbol, amount_usd, quantity))
+                return
         if mode != "live":
             _emit_order(emit, _order_envelope(_not_sent("--execute requires --mode=live", ref_id), action, symbol, amount_usd, quantity))
             return
@@ -325,7 +371,10 @@ def run_execute(symbol, side, amount_usd, quantity, mode, ref_id=None, budget_ms
             if action == "buy":
                 result = adapter.place_market_order(symbol, "buy", ref_id=ref_id, deadline=deadline, amount_usd=amount_usd)
             else:
-                result = adapter.place_market_order(symbol, "sell", ref_id=ref_id, deadline=deadline, quantity=quantity)
+                result = adapter.place_market_order(
+                    symbol, "sell", ref_id=ref_id, deadline=deadline, quantity=float(asked),
+                    sell_policy={"asked": asked, "close_kind": close_kind, "sole_owner": sole_owner is True},
+                )
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             result = _not_sent(str(e), ref_id)
@@ -393,7 +442,9 @@ def main():
             parser.add_argument("--symbol", required=True)
             parser.add_argument("--side", required=True, choices=["buy", "sell"])
             parser.add_argument("--amount_usd", type=float, default=0)
-            parser.add_argument("--quantity", type=float, default=0)
+            parser.add_argument("--quantity", type=str, default="0")
+            parser.add_argument("--close-kind", choices=["whole", "partial"], default="partial")
+            parser.add_argument("--sole-owner", action="store_true")
             parser.add_argument("--mode", default="live")
             parser.add_argument("--ref-id", required=True)
             parser.add_argument("--budget-ms", type=int, required=True)
@@ -401,7 +452,8 @@ def main():
             args = parser.parse_args()
             if args.probe_only:
                 sys.exit(0)
-            run_execute(args.symbol, args.side, args.amount_usd, args.quantity, args.mode, args.ref_id, args.budget_ms)
+            run_execute(args.symbol, args.side, args.amount_usd, args.quantity, args.mode, args.ref_id, args.budget_ms,
+                        close_kind=args.close_kind, sole_owner=args.sole_owner)
         else:
             import argparse
             parser = argparse.ArgumentParser()
@@ -434,11 +486,28 @@ def main():
                 help="#1712: accepted for argv-shape compatibility; this platform refuses closed-bar decisions.")
             parser.add_argument("--decision-regime-timeframe", default="",
                 help="#1712: accepted for argv-shape compatibility; this platform refuses closed-bar decisions.")
+            parser.add_argument("--basket-member", action="store_true", default=False,
+                help="#1781: accepted for argv-shape compatibility with the startup probe; basket members run only on Hyperliquid, so this platform refuses it.")
             parser.add_argument("--probe-only", action="store_true",
                 help="Startup compatibility probe (#645): validate argv shape and exit 0.")
             args = parser.parse_args()
             if args.probe_only:
                 sys.exit(0)
+            if args.basket_member:
+                emit({
+                    "strategy": args.strategy,
+                    "symbol": args.symbol,
+                    "timeframe": args.timeframe,
+                    "signal": 0,
+                    "price": 0,
+                    "indicators": {},
+                    "regime": None,
+                    "mode": args.mode,
+                    "platform": "robinhood",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": "basket members are not supported on robinhood: the basket coordinator runs only Hyperliquid members",
+                })
+                sys.exit(1)
             if args.closed_bar_decisions:
                 emit({
                     "strategy": args.strategy,

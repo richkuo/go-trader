@@ -38,7 +38,7 @@ func TestPlanKillSwitchClose_ManualOnlyCoinClosedAndBooked(t *testing.T) {
 			"ETH": {Symbol: "ETH", Quantity: 2.0, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 5},
 		},
 	}
-	forceCloseKillSwitchPositions(s, roster[0], map[string]float64{"ETH": 2800}, plan.CloseReport.Fills, roster, nil, nil)
+	forceCloseKillSwitchPositions(s, roster[0], map[string]float64{"ETH": 2800}, plan.CloseReport.Fills, roster, nil, nil, nil)
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected exactly 1 trade (the real-fill close), got %d", len(s.TradeHistory))
@@ -282,7 +282,7 @@ func TestForceCloseHyperliquidLive_ManualDivergentArgsStaysInCloseScope(t *testi
 		},
 	}
 	virtualQty := snapshotHyperliquidVirtualQuantities(map[string]*StrategyState{"hl-manual-eth-live": state}, roster)
-	forceCloseKillSwitchPositions(state, roster[0], map[string]float64{"ETH": 2100}, plan.CloseReport.Fills, roster, virtualQty, nil)
+	forceCloseKillSwitchPositions(state, roster[0], map[string]float64{"ETH": 2100}, plan.CloseReport.Fills, roster, virtualQty, nil, nil)
 	if len(state.Positions) != 0 {
 		t.Fatalf("positions after apply = %+v; want flat", state.Positions)
 	}
