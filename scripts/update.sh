@@ -1220,12 +1220,12 @@ update_managed_rsync_excludes "$repo_root" \
 
 recovery_root=$(update_recovery_root)
 recovery_key=$(update_recovery_key "$repo_root")
-update_check_incomplete_marker "$recovery_root" "$recovery_key" "$repo_root" \
-    || fail "incomplete recovery marker blocks update of $repo_root; inspect the saved snapshot and run --clear-recovery"
 lock_rc=0
 update_acquire_lock "$recovery_root" "$recovery_key" "$main_shell_pid" "$repo_root" || lock_rc=$?
 if [[ "$lock_rc" -eq 2 ]]; then
     fail "cannot create or access recovery directory $recovery_root"
+elif [[ "$lock_rc" -eq 3 ]]; then
+    fail "incomplete recovery marker blocks update of $repo_root; inspect the saved snapshot and run --clear-recovery"
 elif [[ "$lock_rc" -ne 0 ]]; then
     fail "another update is already in progress for $repo_root"
 fi

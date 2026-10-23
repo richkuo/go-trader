@@ -1878,6 +1878,74 @@ except OSError as e:
 PY
 }
 
+update_current_boot_id() {
+    if [[ -n "${GO_TRADER_UPDATE_BOOT_ID:-}" ]]; then
+        printf '%s' "${GO_TRADER_UPDATE_BOOT_ID}"
+        return 0
+    fi
+    if [[ -r /proc/sys/kernel/random/boot_id ]]; then
+        tr -d '[:space:]' </proc/sys/kernel/random/boot_id 2>/dev/null || true
+        return 0
+    fi
+    if command -v sysctl >/dev/null 2>&1; then
+        sysctl -n kern.bootsessionuuid 2>/dev/null | tr -d '[:space:]' || true
+    fi
+}
+
+update_pid_start_stamp() {
+    local pid="$1"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+    local proot="${GO_TRADER_PROC_ROOT:-/proc}"
+    if [[ -r "$proot/$pid/stat" ]]; then
+        awk '{print $22}' "$proot/$pid/stat" 2>/dev/null || true
+        return 0
+    fi
+    LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true
+}
+
+update_lock_is_live() {
+    local lock_dir="$1" holder_pid="$2"
+    [[ -n "$holder_pid" ]] || return 1
+    update_pid_alive "$holder_pid" || return 1
+    if [[ -f "$lock_dir/boot_id" ]]; then
+        local lock_boot="" cur_boot=""
+        lock_boot=$(cat "$lock_dir/boot_id" 2>/dev/null | tr -d '[:space:]' || true)
+        cur_boot=$(update_current_boot_id)
+        if [[ -n "$lock_boot" && -n "$cur_boot" && "$lock_boot" != "$cur_boot" ]]; then
+            return 1
+        fi
+    fi
+    if [[ -f "$lock_dir/start_stamp" ]]; then
+        local lock_start="" cur_start=""
+        lock_start=$(cat "$lock_dir/start_stamp" 2>/dev/null || true)
+        cur_start=$(update_pid_start_stamp "$holder_pid")
+        if [[ -n "$lock_start" && -n "$cur_start" && "$lock_start" != "$cur_start" ]]; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
+update_write_lock_metadata() {
+    local lock_dir="$1" owner_pid="$2" root_dir="${3:-}"
+    printf '%s\n' "$owner_pid" >"$lock_dir/pid"
+    printf '%s\n' "$EUID" >"$lock_dir/uid"
+    local boot_id start_stamp
+    boot_id=$(update_current_boot_id)
+    start_stamp=$(update_pid_start_stamp "$owner_pid")
+    [[ -n "$boot_id" ]] && printf '%s\n' "$boot_id" >"$lock_dir/boot_id"
+    [[ -n "$start_stamp" ]] && printf '%s\n' "$start_stamp" >"$lock_dir/start_stamp"
+    chmod 0644 "$lock_dir/pid" "$lock_dir/uid" "$lock_dir/boot_id" "$lock_dir/start_stamp" 2>/dev/null || true
+    if [[ "$EUID" == "0" && -n "$root_dir" && -d "$root_dir" ]]; then
+        local r_uid r_gid
+        r_uid=$(update_path_uid "$root_dir" 2>/dev/null || echo "")
+        r_gid=$(update_path_gid "$root_dir" 2>/dev/null || echo "")
+        if [[ -n "$r_uid" && "$r_uid" != "0" ]]; then
+            chown -R "${r_uid}:${r_gid:-$r_uid}" "$lock_dir" 2>/dev/null || true
+        fi
+    fi
+}
+
 update_lock_holder_pid() {
     local lock_dir="$1"
     [[ -d "$lock_dir" ]] || return 1
@@ -1895,11 +1963,19 @@ update_lock_holder_pid() {
 
 update_ensure_recovery_root() {
     local root="$1"
+    if [[ -d "$root" ]]; then
+        [[ -w "$root" ]] || return 1
+        return 0
+    fi
     mkdir -p "$root" 2>/dev/null || return 1
     [[ -d "$root" && -w "$root" ]] || return 1
     chmod 0755 "$root" 2>/dev/null || return 1
     if [[ "$EUID" == "0" ]]; then
-        chown 0:0 "$root" 2>/dev/null || true
+        local own_root
+        own_root=$(update_recovery_root)
+        if [[ "${root%/}" == "/var/lib/go-trader-update" || "${root%/}" == "${own_root%/}" || ( -n "${GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR:-}" && "${root%/}" == "${GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR%/}" ) ]]; then
+            chown 0:0 "$root" 2>/dev/null || true
+        fi
     fi
     return 0
 }
@@ -1912,11 +1988,11 @@ update_acquire_lock() {
         cand_lock="$cand_root/${key}.lock"
         [[ -d "$cand_lock" ]] || continue
         holder_pid=$(update_lock_holder_pid "$cand_lock" || true)
-        if [[ -z "$holder_pid" ]] || update_pid_alive "$holder_pid"; then
-            echo "[update] lock: another update is already running for $deploy_dir (lock $cand_lock held by pid ${holder_pid:-starting})" >&2
+        if [[ -z "$holder_pid" ]] || update_lock_is_live "$cand_lock" "$holder_pid"; then
+            echo "[update] lock: another update is already running for $deploy_dir (lock $cand_lock held by pid ${holder_pid:-starting}; if stale, remove with: rm -rf $cand_lock)" >&2
             return 1
         fi
-        echo "[update] lock: removing stale lock $cand_lock from dead pid $holder_pid" >&2
+        echo "[update] lock: removing stale lock $cand_lock from dead or pre-reboot pid $holder_pid" >&2
         if ! rm -rf "$cand_lock" 2>/dev/null || [[ -d "$cand_lock" ]]; then
             echo "[update] lock: cannot remove stale lock $cand_lock from dead pid $holder_pid; remove it with sudo" >&2
             return 1
@@ -1926,29 +2002,28 @@ update_acquire_lock() {
     update_pause_if_requested lock_before_mkdir
 
     if ! update_ensure_recovery_root "$root"; then
+        if ! update_check_incomplete_marker "$root" "$key" "$deploy_dir"; then
+            return 3
+        fi
         echo "[update] lock: cannot create or access recovery directory $root" >&2
         return 2
     fi
     local lock_dir="$root/${key}.lock"
     if mkdir -m 0755 "$lock_dir" 2>/dev/null; then
-        printf '%s\n' "$owner_pid" >"$lock_dir/pid"
-        printf '%s\n' "$EUID" >"$lock_dir/uid"
-        chmod 0644 "$lock_dir/pid" "$lock_dir/uid" 2>/dev/null || true
+        update_write_lock_metadata "$lock_dir" "$owner_pid" "$root"
     else
         holder_pid=$(update_lock_holder_pid "$lock_dir" || true)
-        if [[ -z "$holder_pid" ]] || update_pid_alive "$holder_pid"; then
-            echo "[update] lock: another update is already running for $deploy_dir (lock $lock_dir held by pid ${holder_pid:-starting})" >&2
+        if [[ -z "$holder_pid" ]] || update_lock_is_live "$lock_dir" "$holder_pid"; then
+            echo "[update] lock: another update is already running for $deploy_dir (lock $lock_dir held by pid ${holder_pid:-starting}; if stale, remove with: rm -rf $lock_dir)" >&2
             return 1
         fi
-        echo "[update] lock: removing stale lock $lock_dir from dead pid $holder_pid" >&2
+        echo "[update] lock: removing stale lock $lock_dir from dead or pre-reboot pid $holder_pid" >&2
         rm -rf "$lock_dir" 2>/dev/null || true
         if ! mkdir -m 0755 "$lock_dir" 2>/dev/null; then
             echo "[update] lock: another update acquired $lock_dir concurrently for $deploy_dir" >&2
             return 1
         fi
-        printf '%s\n' "$owner_pid" >"$lock_dir/pid"
-        printf '%s\n' "$EUID" >"$lock_dir/uid"
-        chmod 0644 "$lock_dir/pid" "$lock_dir/uid" 2>/dev/null || true
+        update_write_lock_metadata "$lock_dir" "$owner_pid" "$root"
     fi
 
     while IFS= read -r cand_root; do
@@ -1957,9 +2032,9 @@ update_acquire_lock() {
         cand_lock="$cand_root/${key}.lock"
         [[ -d "$cand_lock" ]] || continue
         holder_pid=$(update_lock_holder_pid "$cand_lock" || true)
-        if [[ -z "$holder_pid" ]] || ( [[ "$holder_pid" != "$owner_pid" ]] && update_pid_alive "$holder_pid" ); then
+        if [[ -z "$holder_pid" ]] || ( [[ "$holder_pid" != "$owner_pid" ]] && update_lock_is_live "$cand_lock" "$holder_pid" ); then
             rm -rf "$lock_dir"
-            echo "[update] lock: another update is already running for $deploy_dir (lock $cand_lock held by pid ${holder_pid:-starting})" >&2
+            echo "[update] lock: another update is already running for $deploy_dir (lock $cand_lock held by pid ${holder_pid:-starting}; if stale, remove with: rm -rf $cand_lock)" >&2
             return 1
         fi
     done < <(update_candidate_recovery_roots "$deploy_dir" "$root")
@@ -2019,7 +2094,7 @@ update_check_incomplete_marker() {
             local lock_holder="" other_live=0
             if [[ -d "$cand_root/${key}.lock" ]]; then
                 lock_holder=$(update_lock_holder_pid "$cand_root/${key}.lock" || true)
-                if [[ -n "$lock_holder" && "$lock_holder" != "${main_shell_pid:-$$}" ]] && update_pid_alive "$lock_holder"; then
+                if [[ -n "$lock_holder" && "$lock_holder" != "${main_shell_pid:-$$}" ]] && update_lock_is_live "$cand_root/${key}.lock" "$lock_holder"; then
                     other_live=1
                 fi
             fi
@@ -2080,15 +2155,20 @@ update_check_incomplete_marker() {
 update_write_incomplete_marker() {
     local root="$1" key="$2" deploy_dir="$3" snap_dir="$4" reason="$5" stages_summary="$6"
     update_ensure_recovery_root "$root" || return 1
-    local canon dev_ino ts marker_file
+    local canon dev_ino ts marker_file root_uid root_gid marker_owner_uid="$EUID"
     canon=$(update_realpath "$deploy_dir")
     dev_ino=$(update_path_dev_ino "$canon" || true)
     ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    root_uid=$(update_path_uid "$root" 2>/dev/null || echo "")
+    root_gid=$(update_path_gid "$root" 2>/dev/null || echo "")
+    if [[ -n "$root_uid" && "$root_uid" != "$EUID" ]]; then
+        marker_owner_uid="$root_uid"
+    fi
     marker_file="$root/${key}.incomplete"
     {
         printf 'deploy_path=%s\n' "$canon"
         printf 'deploy_dev_ino=%s\n' "$dev_ino"
-        printf 'owner_uid=%s\n' "$EUID"
+        printf 'owner_uid=%s\n' "$marker_owner_uid"
         printf 'snapshot_dir=%s\n' "$snap_dir"
         printf 'manifest_path=%s/manifest.env\n' "$snap_dir"
         printf 'failed_at=%s\n' "$ts"
@@ -2096,6 +2176,9 @@ update_write_incomplete_marker() {
         printf 'stages=%s\n' "$stages_summary"
     } >"$marker_file"
     chmod 0644 "$marker_file" 2>/dev/null || true
+    if [[ "$EUID" == "0" && -n "$root_uid" && "$root_uid" != "0" ]]; then
+        chown "${root_uid}:${root_gid:-$root_uid}" "$marker_file" 2>/dev/null || true
+    fi
     return 0
 }
 
@@ -2111,8 +2194,8 @@ update_clear_recovery() {
         cand_lock="$cand_root/${key}.lock"
         [[ -d "$cand_lock" ]] || continue
         holder_pid=$(update_lock_holder_pid "$cand_lock" || true)
-        if [[ -z "$holder_pid" ]] || update_pid_alive "$holder_pid"; then
-            echo "[update] lock: another update is already running for $deploy_dir (lock $cand_lock held by pid ${holder_pid:-starting})" >&2
+        if [[ -z "$holder_pid" ]] || update_lock_is_live "$cand_lock" "$holder_pid"; then
+            echo "[update] lock: another update is already running for $deploy_dir (lock $cand_lock held by pid ${holder_pid:-starting}; if stale, remove with: rm -rf $cand_lock)" >&2
             return 1
         fi
     done < <(update_candidate_recovery_roots "$deploy_dir" "$root")
@@ -2139,7 +2222,7 @@ update_clear_recovery() {
         return 0
     fi
 
-    local ts cleared_dir="" any_moved=""
+    local ts cleared_dir="" any_moved="" r_uid="" r_gid=""
     ts=$(date -u +%Y%m%dT%H%M%SZ)
     for cand_root in "${target_roots[@]}"; do
         update_acquire_lock "$cand_root" "$key" "$owner_pid" "$deploy_dir" || return 1
@@ -2153,6 +2236,11 @@ update_clear_recovery() {
                 return 1
             }
             rm -f "$cleared_dir/incomplete"
+            r_uid=$(update_path_uid "$cand_root" 2>/dev/null || echo "")
+            r_gid=$(update_path_gid "$cand_root" 2>/dev/null || echo "")
+            if [[ "$EUID" == "0" && -n "$r_uid" && "$r_uid" != "0" ]]; then
+                chown -R "${r_uid}:${r_gid:-$r_uid}" "$cleared_dir" 2>/dev/null || true
+            fi
             any_moved="$cleared_dir"
         fi
         rm -f "$marker_file" "$cand_root/${key}.state"

@@ -1517,3 +1517,221 @@ func TestUpdateShellFreeSpaceCheckIgnoresExcludedLogs(t *testing.T) {
 		t.Fatalf("expected 10 GB sparse custom log_dir file to be ignored by snapshot space check: err=%v\n%s", errB, outB)
 	}
 }
+
+func TestUpdateShellForeignRecoveryRootModePreservationAndPreRebootLock(t *testing.T) {
+	t.Parallel()
+	bash, deploy, _, _, baseEnv := setupUpdateShellTestRepo(t)
+	script := filepath.Join(deploy, "scripts", "update.sh")
+
+	ownerHome := filepath.Join(t.TempDir(), "owner-home")
+	ownerRec := filepath.Join(ownerHome, ".local", "state", "go-trader-update")
+	sysRec := filepath.Join(t.TempDir(), "sys-rec")
+	if err := os.MkdirAll(ownerRec, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ownerRec, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var cleanEnv []string
+	for _, kv := range baseEnv {
+		if strings.HasPrefix(kv, "GO_TRADER_UPDATE_RECOVERY_DIR=") ||
+			strings.HasPrefix(kv, "XDG_STATE_HOME=") ||
+			strings.HasPrefix(kv, "HOME=") {
+			continue
+		}
+		cleanEnv = append(cleanEnv, kv)
+	}
+
+	pauseKill := filepath.Join(t.TempDir(), "pause-owner-kill")
+	ownerKilled := exec.Command(bash, script)
+	ownerKilled.Dir = deploy
+	ownerKilled.Env = append(append([]string{}, cleanEnv...),
+		"HOME="+ownerHome,
+		"GO_TRADER_UPDATE_PAUSE_AT=sync:"+pauseKill,
+	)
+	if err := ownerKilled.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPauseReached(t, pauseKill)
+	_ = ownerKilled.Process.Kill()
+	_ = ownerKilled.Wait()
+
+	fakeUidBin := filepath.Join(t.TempDir(), "fakeuid-bin")
+	if err := os.MkdirAll(fakeUidBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realStat, err := exec.LookPath("stat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	statWrap := "#!/usr/bin/env bash\n" +
+		"if [[ \"$1 $2\" == \"-c %u\" || \"$1 $2\" == \"-f %u\" ]]; then\n" +
+		"  if [[ \"$3\" == \"" + ownerRec + "\" ]]; then echo 99999; exit 0; fi\n" +
+		"fi\n" +
+		"exec " + realStat + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(fakeUidBin, "stat"), []byte(statWrap), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envWithFakeUid := append([]string{"PATH=" + fakeUidBin + string(os.PathListSeparator) + os.Getenv("PATH")}, cleanEnv...)
+	for i, kv := range envWithFakeUid {
+		if i > 0 && strings.HasPrefix(kv, "PATH=") {
+			envWithFakeUid[0] = "PATH=" + fakeUidBin + string(os.PathListSeparator) + strings.TrimPrefix(kv, "PATH=")
+		}
+	}
+
+	rootDetect := exec.Command(bash, script)
+	rootDetect.Dir = deploy
+	rootDetect.Env = append(append([]string{}, envWithFakeUid...),
+		"HOME="+ownerHome,
+		"GO_TRADER_UPDATE_RECOVERY_DIR="+sysRec,
+		"GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR="+sysRec,
+	)
+	detectOut, detectErr := rootDetect.CombinedOutput()
+	if detectErr == nil || !strings.Contains(string(detectOut), "incomplete recovery marker") {
+		t.Fatalf("expected root run to refuse killed owner snapshot: err=%v\n%s", detectErr, detectOut)
+	}
+	infoAfterDetect, err := os.Stat(ownerRec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if infoAfterDetect.Mode().Perm() != 0o700 {
+		t.Fatalf("root killed-run detection changed owner recovery root mode from 0700 to %04o", infoAfterDetect.Mode().Perm())
+	}
+
+	rootClear := exec.Command(bash, script, "--clear-recovery")
+	rootClear.Dir = deploy
+	rootClear.Env = append(append([]string{}, envWithFakeUid...),
+		"HOME="+ownerHome,
+		"GO_TRADER_UPDATE_RECOVERY_DIR="+sysRec,
+		"GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR="+sysRec,
+	)
+	if out, err := rootClear.CombinedOutput(); err != nil {
+		t.Fatalf("root --clear-recovery failed: %v\n%s", err, out)
+	}
+	infoAfterClear, err := os.Stat(ownerRec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if infoAfterClear.Mode().Perm() != 0o700 {
+		t.Fatalf("root --clear-recovery changed owner recovery root mode from 0700 to %04o", infoAfterClear.Mode().Perm())
+	}
+
+	resetV1 := exec.Command("git", "-C", deploy, "reset", "--hard", "HEAD~1")
+	resetV1.Env = cleanEnv
+	if out, err := resetV1.CombinedOutput(); err != nil {
+		t.Fatalf("git reset: %v\n%s", err, out)
+	}
+
+	ownerInc := exec.Command(bash, script)
+	ownerInc.Dir = deploy
+	ownerInc.Env = append(append([]string{}, cleanEnv...),
+		"HOME="+ownerHome,
+		"GO_TRADER_UPDATE_FAIL_AT=build,restore_probe",
+	)
+	if out, err := ownerInc.CombinedOutput(); err == nil || !strings.Contains(string(out), "recovery: INCOMPLETE") {
+		t.Fatalf("expected owner INCOMPLETE run, got err=%v\n%s", err, out)
+	}
+	if err := os.Chmod(ownerRec, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rootClearInc := exec.Command(bash, script, "--clear-recovery")
+	rootClearInc.Dir = deploy
+	rootClearInc.Env = append(append([]string{}, envWithFakeUid...),
+		"HOME="+ownerHome,
+		"GO_TRADER_UPDATE_RECOVERY_DIR="+sysRec,
+		"GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR="+sysRec,
+	)
+	if out, err := rootClearInc.CombinedOutput(); err != nil {
+		t.Fatalf("root --clear-recovery after owner INCOMPLETE failed: %v\n%s", err, out)
+	}
+	infoAfterIncClear, err := os.Stat(ownerRec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if infoAfterIncClear.Mode().Perm() != 0o700 {
+		t.Fatalf("root --clear-recovery after owner INCOMPLETE changed mode from 0700 to %04o", infoAfterIncClear.Mode().Perm())
+	}
+
+	ownerFollowup := exec.Command(bash, script)
+	ownerFollowup.Dir = deploy
+	ownerFollowup.Env = append(append([]string{}, cleanEnv...),
+		"HOME="+ownerHome,
+		"GO_TRADER_UPDATE_FAIL_AT=build",
+	)
+	followOut, _ := ownerFollowup.CombinedOutput()
+	if !strings.Contains(string(followOut), "phase: snapshot") || !strings.Contains(string(followOut), "recovery: complete") {
+		t.Fatalf("expected owner update after root --clear-recovery to reach phase: snapshot and complete recovery:\n%s", followOut)
+	}
+
+	sleepCmd := exec.Command("sleep", "60")
+	if err := sleepCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sleepCmd.Process.Kill() }()
+	go func() { _ = sleepCmd.Wait() }()
+	sleepPid := fmt.Sprintf("%d", sleepCmd.Process.Pid)
+
+	pauseBoot := filepath.Join(t.TempDir(), "pause-boot-kill")
+	killedForBoot := exec.Command(bash, script)
+	killedForBoot.Dir = deploy
+	killedForBoot.Env = append(append([]string{}, cleanEnv...),
+		"HOME="+ownerHome,
+		"GO_TRADER_UPDATE_BOOT_ID=boot-old",
+		"GO_TRADER_UPDATE_PAUSE_AT=sync:"+pauseBoot,
+	)
+	if err := killedForBoot.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForPauseReached(t, pauseBoot)
+	_ = killedForBoot.Process.Kill()
+	_ = killedForBoot.Wait()
+
+	recEntries, err := os.ReadDir(ownerRec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lockDir string
+	for _, e := range recEntries {
+		if strings.HasSuffix(e.Name(), ".lock") {
+			lockDir = filepath.Join(ownerRec, e.Name())
+		}
+	}
+	if lockDir == "" {
+		t.Fatalf("expected lock directory in %s after SIGKILL", ownerRec)
+	}
+	if err := os.WriteFile(filepath.Join(lockDir, "pid"), []byte(sleepPid+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lockDir, "boot_id"), []byte("boot-old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sameBootRun := exec.Command(bash, script)
+	sameBootRun.Dir = deploy
+	sameBootRun.Env = append(append([]string{}, cleanEnv...),
+		"HOME="+ownerHome,
+		"GO_TRADER_UPDATE_BOOT_ID=boot-old",
+	)
+	sameBootOut, sameBootErr := sameBootRun.CombinedOutput()
+	if sameBootErr == nil || !strings.Contains(string(sameBootOut), "held by pid "+sleepPid) {
+		t.Fatalf("expected same-boot live holder to refuse with pid %s, got err=%v:\n%s", sleepPid, sameBootErr, sameBootOut)
+	}
+
+	newBootRun := exec.Command(bash, script)
+	newBootRun.Dir = deploy
+	newBootRun.Env = append(append([]string{}, cleanEnv...),
+		"HOME="+ownerHome,
+		"GO_TRADER_UPDATE_BOOT_ID=boot-new",
+	)
+	newBootOut, newBootErr := newBootRun.CombinedOutput()
+	if newBootErr == nil {
+		t.Fatalf("expected new-boot run to hit killed-run incomplete marker refusal\n%s", newBootOut)
+	}
+	if !strings.Contains(string(newBootOut), "removing stale lock") {
+		t.Fatalf("expected new-boot run to remove stale pre-reboot lock, got:\n%s", newBootOut)
+	}
+	if !strings.Contains(string(newBootOut), "incomplete recovery marker") {
+		t.Fatalf("expected new-boot run to proceed to killed-run check and refuse on incomplete marker, got:\n%s", newBootOut)
+	}
+}
