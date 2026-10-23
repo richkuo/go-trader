@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 )
 
 const (
@@ -11,6 +12,10 @@ const (
 	basketVenuePartial  = "partial"
 	basketVenueRejected = "rejected"
 	basketVenueUnknown  = "unknown"
+
+	pairVenueOpen      = "open"
+	pairVenueNeverSent = "never_sent"
+	pairVenueAbsent    = "absent"
 )
 
 type basketVenueOutcome struct {
@@ -21,6 +26,46 @@ type basketVenueOutcome struct {
 	VenueOrderID string  `json:"venue_order_id,omitempty"`
 	Detail       string  `json:"detail,omitempty"`
 	ObservedAtMs int64   `json:"observed_at_ms"`
+
+	ClientOrderID      string  `json:"client_order_id,omitempty"`
+	AccountKey         string  `json:"account_key,omitempty"`
+	Instrument         string  `json:"instrument,omitempty"`
+	Side               string  `json:"side,omitempty"`
+	CumQty             float64 `json:"cum_qty,omitempty"`
+	CumNotional        float64 `json:"cum_notional,omitempty"`
+	AcceptedAtMs       int64   `json:"accepted_at_ms,omitempty"`
+	Terminal           bool    `json:"terminal,omitempty"`
+	CoverageThroughMs  int64   `json:"coverage_through_ms,omitempty"`
+	CoverageComplete   bool    `json:"coverage_complete,omitempty"`
+	ContraryEvidence   bool    `json:"contrary_evidence,omitempty"`
+	FeePresent         bool    `json:"fee_present,omitempty"`
+	FeeCurrency        string  `json:"fee_currency,omitempty"`
+	FeeAmount          float64 `json:"fee_amount,omitempty"`
+	FeeEvidenceID      string  `json:"fee_evidence_id,omitempty"`
+	FeeEvidenceVersion int64   `json:"fee_evidence_version,omitempty"`
+	FeeFinal           bool    `json:"fee_final,omitempty"`
+}
+
+type pairMemberValuation struct {
+	Mark         float64            `json:"mark"`
+	UpperPx      float64            `json:"upper_px"`
+	LowerPx      float64            `json:"lower_px"`
+	EvidenceMs   int64              `json:"evidence_ms"`
+	MaxAgeMs     int64              `json:"max_age_ms"`
+	ContractSize float64            `json:"contract_size"`
+	Conversions  map[string]float64 `json:"conversions"`
+	FeeRate      float64            `json:"fee_rate"`
+}
+
+func (v pairMemberValuation) conversion(currency string) (float64, bool) {
+	c, ok := v.Conversions[strings.ToUpper(strings.TrimSpace(currency))]
+	return c, ok && basketFinitePositive(c)
+}
+
+type pairVenue interface {
+	basketVenue
+	Virtual() bool
+	Valuation(member pairContractMember, nowMs int64) (pairMemberValuation, error)
 }
 
 type basketVenue interface {
@@ -191,4 +236,98 @@ func bookBasketPaperReduction(sc StrategyConfig, s *StrategyState, coin string, 
 		b.Hold = exec.HoldReason
 	}
 	return b
+}
+
+type pairBookFill struct {
+	Qty float64
+	Px  float64
+	Fee float64
+	OID string
+}
+
+func bookPairFill(sc StrategyConfig, s *StrategyState, cfg *Config, a *basketAction, qty, px, fee float64, obs basketMemberObservation, logger *StrategyLogger) basketBooking {
+	coin := a.Symbol
+	pos := s.Positions[coin]
+	oid := a.VenueOrderID
+	if oid == "" {
+		oid = a.ClientOrderID
+	}
+	from := len(s.TradeHistory)
+	if a.Direction == basketDirectionIncrease {
+		signal := 1
+		if a.PositionSide == entrySideShort {
+			signal = -1
+		}
+		if pos != nil && pos.Quantity > 0 && pos.Side != a.PositionSide {
+			return basketBooking{Hold: fmt.Sprintf("%s holds a %s position; a %s increase needs a flat or same-side book", coin, pos.Side, a.PositionSide)}
+		}
+		switch sc.Platform {
+		case "hyperliquid":
+			var regime *RegimeConfig
+			if cfg != nil {
+				regime = cfg.Regime
+			}
+			result := &HyperliquidResult{
+				StrategyDecisionFields: obs.Fields,
+				Strategy:               pairMemberStrategyToken,
+				Symbol:                 coin,
+				Signal:                 signal,
+				Price:                  px,
+				Indicators:             obs.Indicators,
+				Mode:                   hyperliquidModeFromArgs(sc.Args),
+				Platform:               "hyperliquid",
+				PairFill:               &pairBookFill{Qty: qty, Px: px, Fee: fee, OID: oid},
+			}
+			if pos == nil || pos.Quantity <= 0 {
+				executeHyperliquidResultDeferredOpen(sc, s, result, nil, signalLabel(signal), px, regime, cfg, HurstGateDecision{}, logger)
+			} else {
+				executeHyperliquidScaleInDeferredOpen(sc, s, result, nil, signalLabel(signal), px, qty, logger)
+			}
+		case "okx":
+			if pos == nil || pos.Quantity <= 0 {
+				exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, signal, coin, px, PerpsSizingFor(sc, px, indicatorsATRValue(obs.Indicators)), qty, oid, fee, EffectiveDirection(sc), 0, logger)
+				if err != nil {
+					return basketBooking{Hold: err.Error()}
+				}
+				stampEntryATRIfOpened(s, coin, obs.Indicators)
+				if p := s.Positions[coin]; p != nil {
+					recordPositionOpen(s, sc, exec.OpenTrade, p)
+				}
+			} else {
+				trades, openTrade := applyPerpsScaleIn(s, sc, coin, px, qty, fee, oid, fee > 0, logger)
+				if trades > 0 {
+					if p := s.Positions[coin]; p != nil {
+						recordPositionOpen(s, sc, openTrade, p)
+					}
+				}
+			}
+		default:
+			return basketBooking{Hold: fmt.Sprintf("platform %s has no pair booking owner", sc.Platform)}
+		}
+		orderSide := "buy"
+		if signal < 0 {
+			orderSide = "sell"
+		}
+		return summarizeBasketBooking(s, from, coin, false, orderSide)
+	}
+	if pos == nil || pos.Quantity <= 0 {
+		return basketBooking{Hold: fmt.Sprintf("%s has no position to reduce", coin)}
+	}
+	if pos.Side != a.PositionSide {
+		return basketBooking{Hold: fmt.Sprintf("%s holds a %s position, the reduction names %s", coin, pos.Side, a.PositionSide)}
+	}
+	signal, orderSide := -1, "sell"
+	if pos.Side == entrySideShort {
+		signal, orderSide = 1, "buy"
+	}
+	frac := 1.0
+	if !basketQtyEqual(qty, pos.Quantity) && qty < pos.Quantity {
+		frac = qty / pos.Quantity
+	} else {
+		qty = pos.Quantity
+	}
+	if _, err := executePerpsSignalWithLotPolicyDeferredOpen(s, signal, coin, px, PerpsSizing{}, qty, oid, fee, EffectiveDirection(sc), frac, logger, nil); err != nil {
+		return basketBooking{Hold: err.Error()}
+	}
+	return summarizeBasketBooking(s, from, coin, true, orderSide)
 }

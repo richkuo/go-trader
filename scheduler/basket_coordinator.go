@@ -54,6 +54,8 @@ type basketCoordinator struct {
 	cycle        int
 	critical     map[string]bool
 	outbox       []func()
+
+	pairPolicyRun pairPolicyRunner
 }
 
 func newBasketCoordinator(cfg *Config, state *AppState, store *StateStore, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager, runtimes map[string]*basketRuntime) *basketCoordinator {
@@ -72,13 +74,19 @@ func newBasketCoordinator(cfg *Config, state *AppState, store *StateStore, mu *s
 		venueFor: basketVenueFor,
 		lots:     hlLotMetadata,
 		critical: make(map[string]bool),
+
+		pairPolicyRun: pairPolicyRunFn,
 	}
 	if bc.parent == nil {
 		bc.parent = context.Background()
 	}
 	if cfg != nil {
 		for _, sc := range cfg.Strategies {
-			if rt, ok := runtimes[sc.BasketID]; ok && isBasketMember(sc) {
+			if rt, ok := runtimes[sc.BasketID]; ok && isBasketMember(sc) && !rt.isPair() {
+				bc.byMember[sc.ID] = rt
+				bc.members[sc.ID] = sc
+			}
+			if rt, ok := runtimes[sc.PairID]; ok && isPairMember(sc) && rt.isPair() {
 				bc.byMember[sc.ID] = rt
 				bc.members[sc.ID] = sc
 			}
@@ -93,8 +101,21 @@ func (bc *basketCoordinator) active() bool {
 
 func (bc *basketCoordinator) sortedIDs() []string {
 	ids := make([]string, 0, len(bc.runtimes))
-	for id := range bc.runtimes {
-		ids = append(ids, id)
+	for id, rt := range bc.runtimes {
+		if !rt.isPair() {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (bc *basketCoordinator) sortedPairIDs() []string {
+	ids := make([]string, 0, len(bc.runtimes))
+	for id, rt := range bc.runtimes {
+		if rt.isPair() {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	return ids
@@ -227,6 +248,9 @@ func (bc *basketCoordinator) startupCheck() error {
 			}
 		}
 	}
+	for _, id := range bc.sortedPairIDs() {
+		errs = append(errs, bc.pairStartupErrors(bc.runtimes[id])...)
+	}
 	if len(errs) > 0 {
 		sort.Strings(errs)
 		return fmt.Errorf("basket startup check refused:\n  %s", strings.Join(errs, "\n  "))
@@ -260,6 +284,9 @@ func (bc *basketCoordinator) recoverInterrupted(now time.Time) {
 			}
 		}
 	}
+	for _, id := range bc.sortedPairIDs() {
+		bc.recoverInterruptedPair(bc.runtimes[id], now)
+	}
 }
 
 func (bc *basketCoordinator) observe(sc StrategyConfig, result *HyperliquidResult, price float64) {
@@ -267,7 +294,7 @@ func (bc *basketCoordinator) observe(sc StrategyConfig, result *HyperliquidResul
 		return
 	}
 	rt := bc.byMember[sc.ID]
-	if rt == nil {
+	if rt == nil || rt.isPair() {
 		return
 	}
 	rt.observations[sc.ID] = basketMemberObservation{
@@ -472,6 +499,9 @@ func (bc *basketCoordinator) step(in basketCycleInputs) {
 	bc.mu.Lock()
 	for _, id := range bc.sortedIDs() {
 		bc.stepRuntime(bc.runtimes[id], in)
+	}
+	for _, id := range bc.sortedPairIDs() {
+		bc.stepPair(bc.runtimes[id], in)
 	}
 	bc.mu.Unlock()
 	bc.flushOutbox()
@@ -1805,6 +1835,10 @@ func basketStartupLines(runtimes map[string]*basketRuntime) []string {
 	var out []string
 	for _, id := range ids {
 		rt := runtimes[id]
+		if rt.isPair() {
+			out = append(out, pairStartupLine(rt))
+			continue
+		}
 		line := fmt.Sprintf("[basket] %s (%s): %d members, ranker %s, rebalance every %ds, gross $%.2f, net limit $%.2f, per-coin cap $%.2f",
 			id, partitionLabel(rt.Partition), len(rt.Contract.Members), rt.Contract.Ranker, rt.Contract.RebalanceIntervalSeconds,
 			rt.Contract.GrossBudgetUSD, rt.Contract.MaxTransitionNetUSD, rt.Contract.MaxCoinNotionalUSD)
@@ -1845,6 +1879,9 @@ func (bc *basketCoordinator) memberCoins() []string {
 		return out
 	}
 	for _, rt := range bc.runtimes {
+		if rt.isPair() {
+			continue
+		}
 		for _, m := range rt.Contract.Members {
 			out = append(out, m.Coin)
 		}

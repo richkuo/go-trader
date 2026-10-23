@@ -15,6 +15,11 @@ VALID_CLOSE_OWNERS = {CLOSE_OWNER_ON_CHAIN_TP}
 VALID_POSITION_SIDES = {"", "long", "short"}
 VALID_OPEN_ACTIONS = {"long", "short", "none"}
 BASKET_MEMBER_TOKEN = "basket_member"
+PAIR_MEMBER_TOKEN = "pair_member"
+MANAGEMENT_ONLY_TOKENS = (BASKET_MEMBER_TOKEN, PAIR_MEMBER_TOKEN)
+PAIR_MEMBER_MODE = "management_only"
+PAIR_MEMBER_PROVIDERS = ("hyperliquid", "okx")
+PAIR_MEMBER_KEYS = ("pair_id", "member_id", "provider", "instrument", "mode")
 POSITION_CONTEXT_PARAM_KEYS = {
     "side", "avg_cost", "current_quantity", "initial_quantity", "entry_atr", "regime",
     "risk_anchor_price", "tp_model",
@@ -465,6 +470,64 @@ def resolve_basket_member_close_references(
     return refs
 
 
+def parse_pair_member_request(raw, provider: str) -> dict:
+    if raw is None:
+        raise ValueError("a pair member check needs the typed management request")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError as exc:
+            raise ValueError(f"the pair member request is not JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"the pair member request must be a JSON object, got {type(raw).__name__}")
+    keys = sorted(raw)
+    if keys != sorted(PAIR_MEMBER_KEYS):
+        raise ValueError(f"the pair member request must carry exactly {sorted(PAIR_MEMBER_KEYS)}, got {keys}")
+    out = {}
+    for key in PAIR_MEMBER_KEYS:
+        value = raw[key]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"the pair member request field {key!r} must be a non-empty string, got {value!r}")
+        out[key] = value
+    if out["mode"] != PAIR_MEMBER_MODE:
+        raise ValueError(f"the pair member request mode must be {PAIR_MEMBER_MODE!r}, got {out['mode']!r}")
+    if out["provider"] not in PAIR_MEMBER_PROVIDERS:
+        raise ValueError(f"the pair member request provider must be one of {list(PAIR_MEMBER_PROVIDERS)}, got {out['provider']!r}")
+    if out["provider"] != provider:
+        raise ValueError(f"the pair member request names provider {out['provider']!r}, but this is the {provider} check")
+    return out
+
+
+def resolve_pair_member_close_references(
+    positional_strategy: str,
+    open_strategy: Optional[str],
+    close_strategies: Optional[str | Iterable[str]],
+    close_owner: Optional[str],
+    get_close_strategy: Callable[[str], object],
+) -> list[StrategyReference]:
+    if (positional_strategy or "").strip() != PAIR_MEMBER_TOKEN:
+        raise ValueError(
+            f"a pair member check needs the {PAIR_MEMBER_TOKEN!r} positional strategy, got {positional_strategy!r}")
+    if open_strategy and open_strategy.strip() != PAIR_MEMBER_TOKEN:
+        raise ValueError(f"a pair member has no open strategy; got {open_strategy!r}")
+    names = parse_close_strategies(close_strategies)
+    if not names and close_owner is None:
+        raise ValueError("a pair member needs an explicit close strategy; no entry evaluator runs as a close fallback")
+    refs = []
+    for name in names:
+        resolved = canonical_close_name(name)
+        try:
+            get_close_strategy(resolved)
+        except ValueError as exc:
+            raise ValueError(
+                f"pair member close strategy {name!r} is not a native close strategy; "
+                "an open-strategy close fallback would run an independent entry evaluator") from exc
+        if resolved == "avwap_stop":
+            raise ValueError("pair member close strategy 'avwap_stop' needs an open-strategy avwap column")
+        refs.append(StrategyReference("close", resolved))
+    return refs
+
+
 def check_fixed_interval_timeframe(default_params: Optional[dict], params: Optional[dict], timeframe: str) -> None:
     from closed_bar import FIXED_DURATION_MS, FIXED_INTERVAL_PARAM
     if FIXED_INTERVAL_PARAM not in (default_params or {}):
@@ -597,8 +660,8 @@ def evaluate_open_close(
 ) -> OpenCloseEvaluation:
     open_name = (open_strategy or positional_strategy).strip()
     if management_only:
-        if open_name != BASKET_MEMBER_TOKEN:
-            raise ValueError(f"management-only evaluation needs the {BASKET_MEMBER_TOKEN!r} positional strategy, got {open_name!r}")
+        if open_name not in MANAGEMENT_ONLY_TOKENS:
+            raise ValueError(f"management-only evaluation needs one of the {list(MANAGEMENT_ONLY_TOKENS)} positional strategies, got {open_name!r}")
         if close_owner is None and not parse_close_strategies(close_strategies):
             raise ValueError("management-only evaluation needs an explicit close strategy")
     close_names = effective_close_strategies(

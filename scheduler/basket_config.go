@@ -106,6 +106,9 @@ type basketContract struct {
 	MinHistoryBars           int                        `json:"min_history_bars"`
 	Listings                 map[string]basketListingMs `json:"listings"`
 	Members                  []basketContractMember     `json:"members"`
+	Mode                     string                     `json:"mode,omitempty"`
+	PairVersion              int                        `json:"pair_v,omitempty"`
+	Pair                     *pairContractBody          `json:"pair,omitempty"`
 }
 
 func (c basketContract) member(id string) (basketContractMember, bool) {
@@ -158,6 +161,18 @@ func parseBasketContract(raw string) (basketContract, error) {
 	}
 	if c.Version != basketContractVersion {
 		return c, fmt.Errorf("saved basket contract version %d is not supported", c.Version)
+	}
+	switch c.Mode {
+	case "":
+		if c.Pair != nil || c.PairVersion != 0 {
+			return c, fmt.Errorf("saved basket contract carries pair fields without the pair mode")
+		}
+	case pairGroupMode:
+		if c.Pair == nil || c.PairVersion != pairContractVersion {
+			return c, fmt.Errorf("saved pair contract version %d is not supported", c.PairVersion)
+		}
+	default:
+		return c, fmt.Errorf("saved group contract mode %q is not supported", c.Mode)
 	}
 	return c, nil
 }

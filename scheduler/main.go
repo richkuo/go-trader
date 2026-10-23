@@ -1594,7 +1594,7 @@ func main() {
 					HLPositions:       hlPositions,
 					HLLiveAll:         hlKillSwitchAll,
 					HLHedgeCoins:      hlHedgeCoins,
-					HLCloser:          defaultHyperliquidLiveCloser,
+					HLCloser:          basketCoord.pairKillSwitchHLCloser(defaultHyperliquidLiveCloser),
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
@@ -1636,7 +1636,7 @@ func main() {
 					HLLimitOrderTimeout: 60 * time.Second,
 					OKXLiveAllPerps:     okxLivePerps,
 					OKXLiveAllSpot:      okxLiveSpot,
-					OKXCloser:           defaultOKXLiveCloser,
+					OKXCloser:           basketCoord.pairKillSwitchOKXCloser(defaultOKXLiveCloser),
 					OKXFetcher:          defaultOKXPositionsFetcher,
 					RHLiveCrypto:        rhLiveCrypto,
 					RHLiveOptions:       rhLiveOptions,
@@ -2297,8 +2297,15 @@ func main() {
 				switch sc.Type {
 				case "spot":
 					if sc.Platform == "okx" {
+						if isPairMember(sc) {
+							basketCoord.observePair(sc, StrategyDecisionFields{}, nil, 0, "the management check has not returned a validated pair echo this cycle")
+						}
 						if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 							prices[result.Symbol] = price
+							suppressPairMemberIncrease(sc, &result.Signal, result.CloseFraction, okxPosQty, okxPosSide, signalStr, logger)
+							if isPairMember(sc) {
+								basketCoord.observePair(sc, result.StrategyDecisionFields, result.Indicators, price, "")
+							}
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
@@ -2346,6 +2353,7 @@ func main() {
 							logEntryAdmission(entryAdm, signalStr, logger)
 							applyEntryAdmission(entryAdm, &result.Signal, &result.CloseFraction)
 							result.CloseReduceOnly = entryAdm.CloseOnly
+							suppressPairMemberIncrease(sc, &result.Signal, result.CloseFraction, okxPosQty, okxPosSide, signalStr, logger)
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							mu.Unlock()
@@ -2576,8 +2584,15 @@ func main() {
 							sc.RegimeProfileAllocation.Window, palLabel, hlProfileActive, hlProfileNext.PendingProfile, hlProfileNext.PendingBarsSeen)
 					}
 					if sc.Platform == "okx" {
+						if isPairMember(sc) {
+							basketCoord.observePair(sc, StrategyDecisionFields{}, nil, 0, "the management check has not returned a validated pair echo this cycle")
+						}
 						if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 							prices[result.Symbol] = price
+							suppressPairMemberIncrease(sc, &result.Signal, result.CloseFraction, okxPosQty, okxPosSide, signalStr, logger)
+							if isPairMember(sc) {
+								basketCoord.observePair(sc, result.StrategyDecisionFields, result.Indicators, price, "")
+							}
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
@@ -2625,6 +2640,7 @@ func main() {
 							logEntryAdmission(entryAdm, signalStr, logger)
 							applyEntryAdmission(entryAdm, &result.Signal, &result.CloseFraction)
 							result.CloseReduceOnly = entryAdm.CloseOnly
+							suppressPairMemberIncrease(sc, &result.Signal, result.CloseFraction, okxPosQty, okxPosSide, signalStr, logger)
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							mu.Unlock()
@@ -3782,6 +3798,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	if isBasketMember(*sc) {
 		args = append(args, basketMemberFlag)
 	}
+	args = appendPairMemberArg(args, *sc)
 	if marketStdin != nil {
 		args = append(args, marketStdinFlag)
 	}
@@ -3811,6 +3828,11 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode, sentInvert bool) (*HyperliquidResult, string, float64, bool) {
 	if isBasketMember(*sc) && result != nil && errMsg == "" && result.Degraded == "" && !result.BasketMember {
 		errMsg, mode, result = "the basket member check did not echo the management-only contract; no entry evaluator output is trusted (#1781)", scriptFailureError, nil
+	}
+	if isPairMember(*sc) && result != nil && errMsg == "" && result.Degraded == "" {
+		if msg := pairMemberCheckError(*sc, result.PairMember); msg != "" {
+			errMsg, mode, result = msg+" (#1862)", scriptFailureError, nil
+		}
 	}
 	if result != nil && errMsg == "" && result.Degraded == "" {
 		if want := hlCloseOwnerForCheck(*sc, posCtx); want != "" && result.CloseOwner != want {
@@ -4168,6 +4190,10 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		fillQty = result.BasketOpenQty
 		fillPrice = ApplyAdverseSlippage(price, result.Signal > 0)
 	}
+	if execResult == nil && result.PairFill != nil {
+		fillQty = result.PairFill.Qty
+		fillPrice = result.PairFill.Px
+	}
 
 	sizing := withEntrySizeMult(PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators)), hurst.OpenSizeMult())
 
@@ -4179,6 +4205,10 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 			fillOID = fmt.Sprintf("%d", fill.OID)
 		}
 		fillFee = fill.Fee
+	}
+	if execResult == nil && result.PairFill != nil {
+		fillOID = result.PairFill.OID
+		fillFee = result.PairFill.Fee
 	}
 
 	bookCloseFraction := result.CloseFraction
@@ -4199,7 +4229,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		}
 	}
 
-	lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil)
+	lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil || result.PairFill != nil)
 	exec, err := executePerpsSignalWithLotPolicyDeferredOpen(s, result.Signal, result.Symbol, bookPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), bookCloseFraction, logger, lotPolicy)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
@@ -4911,6 +4941,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 		args = append(args, refsArgs...)
 	}
 	args = appendAllowNoEdgeArg(args, sc)
+	args = appendPairMemberArg(args, sc)
 	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunOKXCheck(sc.Script, args)
@@ -4935,6 +4966,14 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 		logger.Error("Script returned error: %s", msg)
 		notifyScriptFailure(notifier, sc, scriptFailureError, msg)
 		return nil, "", 0, false
+	}
+	if isPairMember(sc) {
+		if msg := pairMemberCheckError(sc, result.PairMember); msg != "" {
+			logger.RunningOnFailure(sc.Script, args)
+			logger.Error("Script returned error: %s (#1862)", msg)
+			notifyScriptFailure(notifier, sc, scriptFailureError, msg)
+			return nil, "", 0, false
+		}
 	}
 	if msg := htfFilterContractError(sc, result.StrategyDecisionFields, htfFilterContext{}); msg != "" {
 		logger.RunningOnFailure(sc.Script, args)

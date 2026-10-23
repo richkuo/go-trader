@@ -72,13 +72,35 @@ const entryIntentColumns = `intent_id, scope, source, strategy_id, symbol, inter
     bar_open_ms, decision_boundary_ms, cutoff_ms, provider, account_key, instrument_type,
     client_order_id, initial_stop_client_id, venue_order_id, status, request_json, evidence_json,
     hold_reason, confirmed_qty, confirmed_notional, confirmed_fee, applied_qty, applied_notional,
+    applied_fee, settlement_seq, replay_payload_json, replay_delivered_seq, created_at_ms, updated_at_ms,
+    decision_kind, quote_event_id, owner_mode, owner_group_id`
+
+const entryIntentBaseColumns = `intent_id, scope, source, strategy_id, symbol, interval_ms, target_side,
+    bar_open_ms, decision_boundary_ms, cutoff_ms, provider, account_key, instrument_type,
+    client_order_id, initial_stop_client_id, venue_order_id, status, request_json, evidence_json,
+    hold_reason, confirmed_qty, confirmed_notional, confirmed_fee, applied_qty, applied_notional,
     applied_fee, settlement_seq, replay_payload_json, replay_delivered_seq, created_at_ms, updated_at_ms`
+
+var entryIntentOwnerColumns = []basketColumnDefault{
+	{"decision_kind", "'candle'"},
+	{"quote_event_id", "''"},
+	{"owner_mode", "CASE WHEN request_json LIKE '%\"kind\":\"basket:%' THEN 'basket' ELSE '' END"},
+	{"owner_group_id", "''"},
+}
+
+func (sdb *StateDB) entryIntentSelect() (string, error) {
+	proj, err := sdb.basketProjection("entry_order_intents", entryIntentOwnerColumns)
+	if err != nil {
+		return "", err
+	}
+	return entryIntentBaseColumns + ", " + proj, nil
+}
 
 func (sdb *StateDB) migrateEntryDecisionSchema() error {
 	if _, err := sdb.db.Exec(entryDecisionSchemaDDL); err != nil {
 		return fmt.Errorf("create entry decision tables: %w", err)
 	}
-	return nil
+	return sdb.migrateEntryIntentOwnerSchema()
 }
 
 func validEntryPartition(p RiskPartition) error {
@@ -130,15 +152,23 @@ func upsertEntryDecisionRow(exec sqlExecer, p RiskPartition, sid string, k entry
 	return nil
 }
 
-func upsertEntryIntentRow(exec sqlExecer, sid string, in *entryIntent) error {
+func upsertEntryIntentRow(exec sqlExecer, sid string, in *entryIntent, withBook bool) error {
 	if in == nil {
 		return nil
 	}
 	if entryIntentStatusRank(in.Status) < 0 {
 		return fmt.Errorf("entry intent %s has unknown status %q", in.IntentID, in.Status)
 	}
+	book := 0
+	if withBook {
+		book = 1
+	}
+	kind := in.DecisionKind
+	if kind == "" {
+		kind = entryDecisionKindCandle
+	}
 	_, err := exec.Exec(`INSERT INTO entry_order_intents (`+entryIntentColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(intent_id) DO UPDATE SET
 		    venue_order_id = CASE WHEN excluded.venue_order_id != '' THEN excluded.venue_order_id ELSE venue_order_id END,
 		    status = excluded.status,
@@ -147,9 +177,9 @@ func upsertEntryIntentRow(exec sqlExecer, sid string, in *entryIntent) error {
 		    confirmed_qty = excluded.confirmed_qty,
 		    confirmed_notional = excluded.confirmed_notional,
 		    confirmed_fee = excluded.confirmed_fee,
-		    applied_qty = excluded.applied_qty,
-		    applied_notional = excluded.applied_notional,
-		    applied_fee = excluded.applied_fee,
+		    applied_qty = CASE WHEN owner_mode != 'pair' OR `+fmt.Sprint(book)+` = 1 THEN excluded.applied_qty ELSE applied_qty END,
+		    applied_notional = CASE WHEN owner_mode != 'pair' OR `+fmt.Sprint(book)+` = 1 THEN excluded.applied_notional ELSE applied_notional END,
+		    applied_fee = CASE WHEN owner_mode != 'pair' OR `+fmt.Sprint(book)+` = 1 THEN excluded.applied_fee ELSE applied_fee END,
 		    settlement_seq = MAX(settlement_seq, excluded.settlement_seq),
 		    replay_payload_json = CASE WHEN excluded.replay_payload_json != '' THEN excluded.replay_payload_json ELSE replay_payload_json END,
 		    replay_delivered_seq = MAX(replay_delivered_seq, excluded.replay_delivered_seq),
@@ -161,7 +191,8 @@ func upsertEntryIntentRow(exec sqlExecer, sid string, in *entryIntent) error {
 		in.BarOpenMs, in.DecisionBoundaryMs, in.CutoffMs, in.Provider, in.AccountKey, in.InstrumentType,
 		in.ClientOrderID, in.InitialStopClientID, in.VenueOrderID, in.Status, in.RequestJSON, in.EvidenceJSON,
 		in.HoldReason, in.ConfirmedQty, in.ConfirmedNotional, in.ConfirmedFee, in.AppliedQty, in.AppliedNotional,
-		in.AppliedFee, in.SettlementSeq, in.ReplayPayloadJSON, in.ReplayDeliveredSeq, in.CreatedAtMs, in.UpdatedAtMs)
+		in.AppliedFee, in.SettlementSeq, in.ReplayPayloadJSON, in.ReplayDeliveredSeq, in.CreatedAtMs, in.UpdatedAtMs,
+		kind, in.QuoteEventID, in.OwnerMode, in.OwnerGroupID)
 	if err != nil {
 		return fmt.Errorf("upsert entry intent %s: %w", in.IntentID, err)
 	}
@@ -193,7 +224,7 @@ func (sdb *StateDB) writeEntryGuardTx(tx *sql.Tx, s *StrategyState, withBook boo
 		if in.Partition != g.Partition {
 			return fmt.Errorf("entry intent %s belongs to the %s partition, the strategy to %s", id, partitionLabel(in.Partition), partitionLabel(g.Partition))
 		}
-		if err := upsertEntryIntentRow(tx, sid, in); err != nil {
+		if err := upsertEntryIntentRow(tx, sid, in, withBook); err != nil {
 			return err
 		}
 	}
@@ -225,7 +256,8 @@ func scanEntryIntent(scan func(dest ...interface{}) error) (*entryIntent, string
 		&in.BarOpenMs, &in.DecisionBoundaryMs, &in.CutoffMs, &in.Provider, &in.AccountKey, &in.InstrumentType,
 		&in.ClientOrderID, &in.InitialStopClientID, &in.VenueOrderID, &in.Status, &in.RequestJSON, &in.EvidenceJSON,
 		&in.HoldReason, &in.ConfirmedQty, &in.ConfirmedNotional, &in.ConfirmedFee, &in.AppliedQty, &in.AppliedNotional,
-		&in.AppliedFee, &in.SettlementSeq, &in.ReplayPayloadJSON, &in.ReplayDeliveredSeq, &in.CreatedAtMs, &in.UpdatedAtMs); err != nil {
+		&in.AppliedFee, &in.SettlementSeq, &in.ReplayPayloadJSON, &in.ReplayDeliveredSeq, &in.CreatedAtMs, &in.UpdatedAtMs,
+		&in.DecisionKind, &in.QuoteEventID, &in.OwnerMode, &in.OwnerGroupID); err != nil {
 		return nil, "", err
 	}
 	in.Partition = RiskPartition{Scope: PortfolioScope(scope), Source: source}
@@ -281,7 +313,11 @@ func (sdb *StateDB) loadEntryGuards(owners map[string]entryGuardLoadOwner) (map[
 		return nil, err
 	}
 	if exists {
-		rows, err := sdb.db.Query(`SELECT ` + entryIntentColumns + ` FROM entry_order_intents
+		cols, err := sdb.entryIntentSelect()
+		if err != nil {
+			return nil, err
+		}
+		rows, err := sdb.db.Query(`SELECT ` + cols + ` FROM entry_order_intents
 			WHERE status IN ('reserved','submitting','settling')
 			   OR (status = 'committed' AND replay_payload_json != '' AND replay_delivered_seq < settlement_seq)
 			ORDER BY created_at_ms, intent_id`)
@@ -366,7 +402,7 @@ func (sdb *StateDB) reserveEntryIntent(s *StrategyState, in *entryIntent) error 
 			return err
 		}
 	}
-	if err := upsertEntryIntentRow(tx, sid, in); err != nil {
+	if err := upsertEntryIntentRow(tx, sid, in, false); err != nil {
 		return err
 	}
 	if storeCommitHook != nil {
@@ -407,7 +443,7 @@ func (sdb *StateDB) transitionEntryIntent(procID string, in *entryIntent, from [
 		venue_order_id = CASE WHEN ? != '' THEN ? ELSE venue_order_id END,
 		request_json = CASE WHEN ? != '' THEN ? ELSE request_json END,
 		confirmed_qty = ?, confirmed_notional = ?, confirmed_fee = ?, updated_at_ms = ?
-		WHERE intent_id = ? AND strategy_id = ? AND status IN (`+strings.Join(marks, ", ")+`)`, args...)
+		WHERE intent_id = ? AND strategy_id = ? AND owner_mode != 'pair' AND decision_kind = 'candle' AND status IN (`+strings.Join(marks, ", ")+`)`, args...)
 	if err != nil {
 		return fmt.Errorf("transition entry intent %s to %s: %w", in.IntentID, to, err)
 	}
@@ -496,6 +532,7 @@ func (sdb *StateDB) releaseEntryIntentByOperator(procID string, prior *entryInte
 	defer tx.Rollback()
 	res, err := tx.Exec(`UPDATE entry_order_intents SET status = 'no_fill', evidence_json = ?, hold_reason = '', updated_at_ms = MAX(updated_at_ms, ?)
 		WHERE intent_id = ? AND scope = ? AND source = ? AND strategy_id = ? AND status = 'submitting'
+		  AND owner_mode != 'pair' AND decision_kind = 'candle'
 		  AND provider = ? AND account_key = ? AND instrument_type = ? AND symbol = ?
 		  AND client_order_id = ? AND initial_stop_client_id = ? AND request_json = ? AND evidence_json = ?
 		  AND venue_order_id = '' AND confirmed_qty = 0 AND confirmed_notional = 0 AND confirmed_fee = 0
@@ -523,7 +560,11 @@ func (sdb *StateDB) releaseEntryIntentByOperator(procID string, prior *entryInte
 }
 
 func (sdb *StateDB) readEntryIntent(intentID string) (*entryIntent, string, error) {
-	row := sdb.db.QueryRow(`SELECT `+entryIntentColumns+` FROM entry_order_intents WHERE intent_id = ?`, intentID)
+	cols, err := sdb.entryIntentSelect()
+	if err != nil {
+		return nil, "", err
+	}
+	row := sdb.db.QueryRow(`SELECT `+cols+` FROM entry_order_intents WHERE intent_id = ?`, intentID)
 	in, sid, err := scanEntryIntent(row.Scan)
 	if err != nil {
 		return nil, "", err

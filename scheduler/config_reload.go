@@ -444,6 +444,7 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	}
 	errs = append(errs, paperSourceReloadErrors(cfg, next)...)
 	errs = append(errs, basketReloadErrors(cfg, next)...)
+	errs = append(errs, pairReloadErrors(cfg, next)...)
 	errs = append(errs, storageIdentityReloadErrors(cfg, next)...)
 	errs = append(errs, macroIdentityReloadErrors(cfg, next)...)
 	errs = append(errs, egressReloadErrors(cfg, next)...)

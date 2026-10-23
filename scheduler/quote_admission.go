@@ -81,7 +81,8 @@ func newQuoteLoadAdmission(kind quoteAdmissionKind, ownerID, stateDir string, co
 }
 
 type configLoadOptions struct {
-	quoteLoad *quoteLoadAdmission
+	quoteLoad     *quoteLoadAdmission
+	pairAdmission *pairResearchAdmission
 }
 
 func loadQuoteAdmittedConfigData(data []byte, adm *quoteLoadAdmission) (*Config, error) {

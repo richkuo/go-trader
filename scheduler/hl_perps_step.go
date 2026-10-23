@@ -178,6 +178,9 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 	var trades int
 	var detail string
 	var hlStep *hlStepTradeAlerts
+	if isPairMember(sc) {
+		basketCoord.observePair(sc, StrategyDecisionFields{}, nil, 0, "the management check has not returned a validated pair echo this cycle")
+	}
 	if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, hlBatchResults, feedCtx); ok {
 		prices[result.Symbol] = price
 		if isBasketMember(sc) {
@@ -186,6 +189,13 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 				result.Signal = 0
 			}
 			basketCoord.observe(sc, result, price)
+		}
+		if isPairMember(sc) {
+			if pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+				logger.Error("Pair member check returned a position-increasing %s signal; only the pair coordinator places member increases, so it is dropped (#1862)", signalStr)
+				result.Signal = 0
+			}
+			basketCoord.observePair(sc, result.StrategyDecisionFields, result.Indicators, price, "")
 		}
 		if hlPosCtx.RestingTP != nil {
 			mu.Lock()
@@ -264,6 +274,10 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 		entryAdm := admitClosedBarEntry(sc, stratState, mu, result.Symbol, result.StrategyDecisionFields, result.Signal, result.CloseFraction, hlPosQty, hlPosSide, tradingNow())
 		logEntryAdmission(entryAdm, signalStr, logger)
 		applyEntryAdmission(entryAdm, &result.Signal, &result.CloseFraction)
+		if isPairMember(sc) && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+			logger.Error("Pair member %s signal would increase the position after management; only the pair coordinator places member increases, so it is dropped (#1862)", signalStr)
+			result.Signal = 0
+		}
 		mu.Lock()
 		syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 		updateStrategyDivergenceState(stratState, result.Divergence)

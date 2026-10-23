@@ -314,6 +314,9 @@ func resolveEntryAttemptByOperator(deps entryOperatorDeps, operatorID, strategyI
 	if isBasketMember(sc) {
 		return refuse("strategy %s is a member of basket %s; the basket coordinator reconciles its entries by client order id.", sc.ID, sc.BasketID)
 	}
+	if isPairMember(sc) {
+		return refuse("strategy %s is a member of pair %s; only the pair coordinator resolves its entries by saved identity.", sc.ID, sc.PairID)
+	}
 	part := partitionFor(sc)
 	if part.Scope != ScopeLive || !isLiveArgs(sc.Args) {
 		return refuse("strategy %s is not live; paper strategies send no live entries.", sc.ID)
@@ -364,6 +367,8 @@ func resolveEntryAttemptByOperator(deps entryOperatorDeps, operatorID, strategyI
 			return refuse("attempt %s cannot be read for strategy %s: %v.", intentID, sc.ID, rerr)
 		case disk.Status == entryIntentNoFill || disk.Status == entryIntentCommitted:
 			return entryOperatorOutcome{Message: fmt.Sprintf("Attempt %s of %s is already resolved (%s); no change was made.", intentID, sc.ID, disk.Status)}
+		case disk.pairOwned():
+			return refuse("attempt %s is owned by pair %s in the saved record; only the pair coordinator resolves it by its saved identity.", intentID, disk.OwnerGroupID)
 		}
 		return refuse("attempt %s is %s in the state file but is not held in memory; a restart reloads it.", intentID, disk.Status)
 	}
@@ -372,6 +377,9 @@ func resolveEntryAttemptByOperator(deps entryOperatorDeps, operatorID, strategyI
 	}
 	if why := entryOperatorRowMismatch(&snap, disk); why != "" {
 		return refuse("the held attempt and the state file disagree (%s).", why)
+	}
+	if snap.pairOwned() || disk.pairOwned() {
+		return refuse("attempt %s is owned by pair %s in the saved record; only the pair coordinator resolves it by its saved identity.", intentID, firstNonEmpty(disk.OwnerGroupID, snap.OwnerGroupID))
 	}
 	if snap.StrategyID != sc.ID || snap.Partition != part || snap.Provider != provider {
 		return refuse("attempt %s does not belong to live %s strategy %s.", intentID, provider, sc.ID)

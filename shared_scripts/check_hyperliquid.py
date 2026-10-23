@@ -196,6 +196,8 @@ def _signal_check_deps():
         parse_raw_gate_mode,
         preflight_reference_params,
         resolve_basket_member_close_references,
+        resolve_pair_member_close_references,
+        parse_pair_member_request,
     )
 
     return SimpleNamespace(
@@ -216,6 +218,8 @@ def _signal_check_deps():
         parse_raw_gate_mode=parse_raw_gate_mode,
         preflight_reference_params=preflight_reference_params,
         resolve_basket_member_close_references=resolve_basket_member_close_references,
+        resolve_pair_member_close_references=resolve_pair_member_close_references,
+        parse_pair_member_request=parse_pair_member_request,
     )
 
 
@@ -345,7 +349,25 @@ def _validate_basket_member_slot(deps, strategy_name, open_strategy, close_strat
         strategy_name, open_strategy, close_strategies, close_owner, deps.get_close_strategy)
 
 
+def _validate_pair_member_slot(deps, strategy_name, open_strategy, close_strategies, close_owner,
+                               htf_filter, invert_present, request):
+    if htf_filter:
+        raise ValueError("a pair member check has no higher-timeframe entry filter")
+    if invert_present:
+        raise ValueError("a pair member check has no open signal to invert")
+    parsed = deps.parse_pair_member_request(request, "hyperliquid")
+    deps.resolve_pair_member_close_references(
+        strategy_name, open_strategy, close_strategies, close_owner, deps.get_close_strategy)
+    return parsed
+
+
 def preflight_signal_slot(slot, deps, timeframe=None):
+    if slot.get("pair_member") is not None:
+        _validate_pair_member_slot(
+            deps, slot["strategy"], slot.get("open_strategy") or None, slot.get("close_strategies") or None,
+            slot.get("close_owner") or None, bool(slot.get("htf_filter")), "invert_open_signal" in slot,
+            slot.get("pair_member"))
+        return
     if slot.get("basket_member") is True:
         _validate_basket_member_slot(
             deps, slot["strategy"], slot.get("open_strategy") or None, slot.get("close_strategies") or None,
@@ -939,7 +961,13 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     invert_open_signal = deps.parse_invert_open_signal(slot.get("invert_open_signal")) if invert_present else False
 
     basket_member = slot.get("basket_member") is True
-    if basket_member:
+    pair_member = None
+    if slot.get("pair_member") is not None:
+        if basket_member:
+            raise ValueError("a check is either a basket member or a pair member, not both")
+        pair_member = _validate_pair_member_slot(deps, strategy_name, open_strategy, close_strategies, close_owner,
+                                                 htf_filter_enabled, invert_present, slot.get("pair_member"))
+    elif basket_member:
         _validate_basket_member_slot(deps, strategy_name, open_strategy, close_strategies, close_owner,
                                      slot.get("closed_bar_decisions") is True, htf_filter_enabled, invert_present)
     else:
@@ -1101,7 +1129,7 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
             close_params_by_name=close_params_by_name,
             close_owner=close_owner,
             invert_open_signal=invert_open_signal,
-            management_only=basket_member,
+            management_only=basket_member or pair_member is not None,
             **({"protection_df": df, "protection_params": protection_params} if closed_bar else {}),
         )
         result_df = evaluation.open_result_df
@@ -1208,6 +1236,8 @@ def evaluate_signal_slot(shared, slot, deps=None, admission=None):
         output["resting_tp_rule"] = _resting_rule_echo(resting_request, resting_obs, decision)
     if basket_member:
         output["basket_member"] = True
+    if pair_member is not None:
+        output["pair_member"] = dict(pair_member)
     if closed_meta is not None:
         output["closed_bar_decision"] = closed_meta
         if decision_regime_payload is not None:
@@ -1231,12 +1261,16 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      closed_bar=False,
                      decision_regime_timeframe="",
                      resting_tp_rule=None,
-                     basket_member=False):
+                     basket_member=False,
+                     pair_member=None):
     try:
         deps = _signal_check_deps()
         from strategy_composition import parse_allow_no_edge_tokens
         admission = (deps.parse_raw_gate_mode(mode_args), parse_allow_no_edge_tokens(mode_args))
-        if basket_member:
+        if pair_member is not None:
+            _validate_pair_member_slot(deps, strategy_name, open_strategy, close_strategies, close_owner,
+                                       htf_filter_enabled, invert_open_signal is not None, pair_member)
+        elif basket_member:
             _validate_basket_member_slot(deps, strategy_name, open_strategy, close_strategies, close_owner,
                                          closed_bar, htf_filter_enabled, invert_open_signal is not None)
         else:
@@ -1286,6 +1320,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             slot["resting_tp_rule"] = resting_tp_rule
         if basket_member:
             slot["basket_member"] = True
+        if pair_member is not None:
+            slot["pair_member"] = pair_member
         output = evaluate_signal_slot(shared, slot, deps=deps, admission=admission)
         print(json.dumps(output, cls=SafeEncoder))
 
@@ -1377,6 +1413,8 @@ def parse_batch_request(raw_stdin):
             raise ValueError(f"slot {slot_id!r} closed_bar_decisions must be a JSON boolean, got {slot['closed_bar_decisions']!r}")
         if "basket_member" in slot and not isinstance(slot["basket_member"], bool):
             raise ValueError(f"slot {slot_id!r} basket_member must be a JSON boolean, got {slot['basket_member']!r}")
+        if "pair_member" in slot and not isinstance(slot["pair_member"], dict):
+            raise ValueError(f"slot {slot_id!r} pair_member must be a JSON object, got {slot['pair_member']!r}")
         if "resting_tp_rule" in slot and not isinstance(slot["resting_tp_rule"], dict):
             raise ValueError(f"slot {slot_id!r} resting_tp_rule must be a JSON object, got {slot['resting_tp_rule']!r}")
         refs = slot.get("strategy_refs")
@@ -4100,6 +4138,8 @@ def main():
             help="#1727: paper-only resting take-profit trade-through rule request from Go; live mode refuses it.")
         parser.add_argument("--basket-member", action="store_true", default=False,
             help="#1781: management-only basket member check; closes, indicators and protection run, no entry evaluator runs.")
+        parser.add_argument("--pair-member-json", default=None,
+            help="#1862: typed management-only pair member request; closes, indicators and protection run, no entry evaluator runs, and the request is echoed.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
@@ -4175,6 +4215,7 @@ def main():
             decision_regime_timeframe=args.decision_regime_timeframe,
             resting_tp_rule=resting_rule,
             basket_member=args.basket_member,
+            pair_member=args.pair_member_json,
         )
 
 
