@@ -4,13 +4,11 @@ package main
 
 func okxGoldenDispatch(h *okxGoldenHarness, prices map[string]float64, in okxGoldenInputs, persistenceHold bool) (int, string) {
 	sc := h.sc
-	stratState := h.env.state.Strategies[sc.ID]
-	stratDB := h.env.fileFor(sc.ID)
-	scope := partitionFor(sc).Scope
-	if sc.Type == "spot" {
-		return okxSpotDispatch(sc, nil, prices, in.PosCtx, h.env.cfg, h.notifier, h.logger, in.PosQty, in.PosSide, stratState, &h.env.mu, h.sr, persistenceHold, scope, h.env.store, in.AvgCost, in.Cash, in.PoolBalanceKnown, in.CashReconcile, in.Leverage, stratDB, h.env.state)
-	}
-	return okxPerpsDispatch(sc, nil, prices, in.PosCtx, h.env.cfg, h.notifier, h.logger, in.PosQty, in.PosSide, stratState, &h.env.mu, h.sr, persistenceHold, scope, h.env.store, in.AvgCost, in.Cash, in.PoolBalanceKnown, in.CashReconcile, in.Leverage, stratDB, h.env.state)
+	out := runOKXStep(okxStepContext{Cfg: h.env.cfg, State: h.env.state, StratState: h.env.state.Strategies[sc.ID], Store: h.env.store, StratDB: h.env.fileFor(sc.ID),
+		Mu: &h.env.mu, Notifier: h.notifier, Logger: h.logger, Prices: prices, Risk: h.sr, Scope: partitionFor(sc).Scope, PersistenceHold: persistenceHold,
+		Pos:  okxStepPosition{Ctx: in.PosCtx, Qty: in.PosQty, Side: in.PosSide, AvgCost: in.AvgCost, Leverage: in.Leverage},
+		Cash: in.Cash, PoolBalanceKnown: in.PoolBalanceKnown, CashReconcile: in.CashReconcile}, sc, okxOrdinaryCheck(prices, h.env.cfg, h.notifier))
+	return out.Trades, out.Detail
 }
 
 var okxGoldenBoth = []string{"spot", "perps"}

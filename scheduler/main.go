@@ -2297,7 +2297,11 @@ func main() {
 				switch sc.Type {
 				case "spot":
 					if sc.Platform == "okx" {
-						trades, detail = okxSpotDispatch(sc, basketCoord, prices, okxPosCtx, cfg, notifier, logger, okxPosQty, okxPosSide, stratState, &mu, sr, persistenceHold, stratScope, store, okxAvgCost, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosLeverage, stratDB, state)
+						okxOut := runOKXStep(okxStepContext{Cfg: cfg, State: state, StratState: stratState, Store: store, StratDB: stratDB, Mu: &mu, Notifier: notifier, Logger: logger,
+							Prices: prices, Risk: sr, Scope: stratScope, PersistenceHold: persistenceHold, Coord: basketCoord,
+							Pos:  okxStepPosition{Ctx: okxPosCtx, Qty: okxPosQty, Side: okxPosSide, AvgCost: okxAvgCost, Leverage: okxPosLeverage},
+							Cash: okxCash, PoolBalanceKnown: okxPoolBalanceKnown, CashReconcile: okxCashReconcile}, sc, okxOrdinaryCheck(prices, cfg, notifier))
+						trades, detail = okxOut.Trades, okxOut.Detail
 					} else if sc.Platform == "robinhood" {
 						if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 							prices[result.Symbol] = price
@@ -2485,7 +2489,11 @@ func main() {
 							sc.RegimeProfileAllocation.Window, palLabel, hlProfileActive, hlProfileNext.PendingProfile, hlProfileNext.PendingBarsSeen)
 					}
 					if sc.Platform == "okx" {
-						trades, detail = okxPerpsDispatch(sc, basketCoord, prices, okxPosCtx, cfg, notifier, logger, okxPosQty, okxPosSide, stratState, &mu, sr, persistenceHold, stratScope, store, okxAvgCost, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosLeverage, stratDB, state)
+						okxOut := runOKXStep(okxStepContext{Cfg: cfg, State: state, StratState: stratState, Store: store, StratDB: stratDB, Mu: &mu, Notifier: notifier, Logger: logger,
+							Prices: prices, Risk: sr, Scope: stratScope, PersistenceHold: persistenceHold, Coord: basketCoord,
+							Pos:  okxStepPosition{Ctx: okxPosCtx, Qty: okxPosQty, Side: okxPosSide, AvgCost: okxAvgCost, Leverage: okxPosLeverage},
+							Cash: okxCash, PoolBalanceKnown: okxPoolBalanceKnown, CashReconcile: okxCashReconcile}, sc, okxOrdinaryCheck(prices, cfg, notifier))
+						trades, detail = okxOut.Trades, okxOut.Detail
 					} else {
 						hlOut := runHyperliquidPerpsStep(&hlPerpsStep{
 							sc:                       sc,
@@ -4747,6 +4755,13 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunOKXCheck(sc.Script, args)
+	return completeOKXCheck(sc, args, result, stderr, err, prices, notifier, logger)
+}
+
+func completeOKXCheck(sc StrategyConfig, args []string, result *OKXResult, stderr string, err error, prices map[string]float64, notifier *MultiNotifier, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
+	if err == nil && result == nil {
+		err = fmt.Errorf("the check returned no result")
+	}
 	if err != nil {
 		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
@@ -4795,12 +4810,12 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%s [%s]", signalStr, result.Symbol, formatSignalPrice(result.Price), result.Mode)
 
 	price := result.Price
-	if price <= 0 {
+	if !okxUsablePrice(price) {
 		if p, ok := prices[result.Symbol]; ok {
 			price = p
 		}
 	}
-	if price <= 0 {
+	if !okxUsablePrice(price) {
 		logger.Error("No price available for %s", result.Symbol)
 		return nil, "", 0, false
 	}

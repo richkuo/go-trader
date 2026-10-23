@@ -685,18 +685,32 @@ type pairManagementInput struct {
 }
 
 func runOKXPairManagementCheck(sc StrategyConfig, posCtx PositionCtx, input pairManagementInput, logger *StrategyLogger) (*OKXResult, string, error) {
+	_, result, stderr, err := runOKXPairManagementCheckRaw(sc, posCtx, input, logger)
+	if err != nil {
+		return nil, stderr, err
+	}
+	if result.Error != "" {
+		return nil, stderr, fmt.Errorf("%s", result.Error)
+	}
+	if msg := pairMemberCheckError(sc, result.PairMember); msg != "" {
+		return nil, stderr, fmt.Errorf("%s", msg)
+	}
+	return result, stderr, nil
+}
+
+func runOKXPairManagementCheckRaw(sc StrategyConfig, posCtx PositionCtx, input pairManagementInput, logger *StrategyLogger) ([]string, *OKXResult, string, error) {
 	if !isPairMember(sc) || sc.Platform != "okx" {
-		return nil, "", fmt.Errorf("strategy %s is not an OKX pair member", sc.ID)
+		return nil, nil, "", fmt.Errorf("strategy %s is not an OKX pair member", sc.ID)
 	}
 	input.V = pairManagementInputVersion
 	stdin, err := json.Marshal(input)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if refsArgs, err := buildStrategyRefsArg(sc, "", false); err != nil {
-		return nil, "", err
+		return args, nil, "", err
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
 	}
@@ -709,18 +723,15 @@ func runOKXPairManagementCheck(sc StrategyConfig, posCtx PositionCtx, input pair
 	var result OKXResult
 	if jsonErr := json.Unmarshal(stdout, &result); jsonErr != nil {
 		if runErr != nil {
-			return nil, string(stderr), fmt.Errorf("script error: %w", runErr)
+			return args, nil, string(stderr), fmt.Errorf("script error: %w", runErr)
 		}
-		return nil, string(stderr), fmt.Errorf("parse output: %w", jsonErr)
+		return args, nil, string(stderr), fmt.Errorf("parse output: %w", jsonErr)
 	}
 	if result.Error != "" {
-		return nil, string(stderr), fmt.Errorf("%s", result.Error)
+		return args, &result, string(stderr), nil
 	}
 	if runErr != nil {
-		return nil, string(stderr), fmt.Errorf("script error: %w", runErr)
+		return args, nil, string(stderr), fmt.Errorf("script error: %w", runErr)
 	}
-	if msg := pairMemberCheckError(sc, result.PairMember); msg != "" {
-		return nil, string(stderr), fmt.Errorf("%s", msg)
-	}
-	return &result, string(stderr), nil
+	return args, &result, string(stderr), nil
 }
