@@ -355,6 +355,7 @@ func checkPendingGroupActionTx(tx *sql.Tx, rt *basketRuntime, a *basketAction) e
 
 type pairFeeFix struct {
 	TradeTsMs        int64   `json:"trade_ts_ms"`
+	TradeTs          string  `json:"trade_ts,omitempty"`
 	Symbol           string  `json:"symbol"`
 	OrderID          string  `json:"order_id"`
 	DeltaUSD         float64 `json:"delta_usd"`
@@ -367,6 +368,7 @@ type pairFeeFix struct {
 
 type pairBookedTrade struct {
 	TradeTsMs        int64   `json:"trade_ts_ms"`
+	TradeTs          string  `json:"trade_ts,omitempty"`
 	Qty              float64 `json:"qty"`
 	Px               float64 `json:"px"`
 	FeeUSD           float64 `json:"fee_usd"`
@@ -385,7 +387,7 @@ func (a *basketAction) bookedTrades() []pairBookedTrade {
 }
 
 func pairActionStatusForWrite(a *basketAction, withBook bool) string {
-	if withBook || a.Status != basketActionCommitted || a.durableStatus == basketActionCommitted {
+	if withBook || a.Status != basketActionCommitted || a.durableStatus == basketActionCommitted || a.recoveryNote().NativeBooked {
 		return a.Status
 	}
 	if a.durableStatus == "" || basketActionRank(a.durableStatus) < basketActionRank(basketActionSettling) {
@@ -913,7 +915,10 @@ func (sdb *StateDB) writePairTx(tx *sql.Tx, rt *basketRuntime, books map[string]
 }
 
 func applyPairFeeFixTx(tx *sql.Tx, sid string, fix *pairFeeFix) error {
-	ts := formatTime(time.UnixMilli(fix.TradeTsMs).UTC())
+	ts := fix.TradeTs
+	if ts == "" {
+		ts = formatTime(time.UnixMilli(fix.TradeTsMs).UTC())
+	}
 	res, err := tx.Exec(`UPDATE trades SET exchange_fee = exchange_fee + ?, fee_source = ?
 		WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND exchange_order_id = ?`,
 		fix.DeltaUSD, FeeSourceUserFills, sid, ts, fix.Symbol, fix.OrderID)
@@ -941,8 +946,8 @@ func applyPairFeeFixTx(tx *sql.Tx, sid string, fix *pairFeeFix) error {
 		return nil
 	}
 	res, err = tx.Exec(`UPDATE closed_positions SET realized_pnl = realized_pnl - ?
-		WHERE strategy_id = ? AND position_id = ? AND symbol = ? AND closed_at = ?`,
-		fix.DeltaUSD, sid, fix.ClosedPositionID, fix.Symbol, ts)
+		WHERE strategy_id = ? AND symbol = ? AND closed_at = ?`,
+		fix.DeltaUSD, sid, fix.Symbol, ts)
 	if err != nil {
 		return err
 	}
@@ -951,7 +956,7 @@ func applyPairFeeFixTx(tx *sql.Tx, sid string, fix *pairFeeFix) error {
 		return err
 	}
 	if n != 1 {
-		return fmt.Errorf("the closed position %s at %s matched %d rows, want exactly 1", fix.ClosedPositionID, ts, n)
+		return fmt.Errorf("the closed position %s %s at %s matched %d rows, want exactly 1", fix.ClosedPositionID, fix.Symbol, ts, n)
 	}
 	return nil
 }

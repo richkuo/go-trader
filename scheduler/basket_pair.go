@@ -450,6 +450,10 @@ func (bc *basketCoordinator) reconcilePairAction(rt *basketRuntime, a *basketAct
 		return false
 	}
 	now := in.Now
+	if a.recoveryNote().NativeBooked && a.Status != basketActionSettling {
+		bc.resolvePairNativeAction(rt, a, now)
+		return !basketActionPending(a.Status)
+	}
 	switch a.Status {
 	case basketActionReserved:
 		a.Status = basketActionNoFill
@@ -923,7 +927,7 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 			if t.Symbol != a.Symbol || t.TradeType == TradeTypeFunding {
 				continue
 			}
-			row := pairBookedTrade{TradeTsMs: t.Timestamp.UTC().UnixMilli(), Qty: t.Quantity, Px: t.Price, FeeUSD: t.ExchangeFee, OrderID: t.ExchangeOrderID, IsClose: t.IsClose}
+			row := pairBookedTrade{TradeTsMs: t.Timestamp.UTC().UnixMilli(), TradeTs: formatTime(t.Timestamp), Qty: t.Quantity, Px: t.Price, FeeUSD: t.ExchangeFee, OrderID: t.ExchangeOrderID, IsClose: t.IsClose}
 			if t.IsClose && s.Positions[a.Symbol] == nil {
 				row.ClosedPositionID = t.PositionID
 			}
@@ -975,7 +979,11 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 		var booked *Trade
 		for i := len(s.TradeHistory) - 1; i >= 0; i-- {
 			t := &s.TradeHistory[i]
-			if t.Symbol == a.Symbol && t.Timestamp.UTC().UnixMilli() == last.TradeTsMs && t.ExchangeOrderID == last.OrderID {
+			sameTs := t.Timestamp.UTC().UnixMilli() == last.TradeTsMs
+			if last.TradeTs != "" {
+				sameTs = formatTime(t.Timestamp) == last.TradeTs
+			}
+			if t.Symbol == a.Symbol && sameTs && t.ExchangeOrderID == last.OrderID {
 				booked = t
 				break
 			}
@@ -990,9 +998,10 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 		}
 		s.Cash -= delta
 		if last.ClosedPositionID != "" {
-			RecordTradeResult(&s.RiskState, -delta)
+			rolloverDailyPnL(&s.RiskState)
+			s.RiskState.DailyPnL -= delta
 		}
-		a.pendingFee = &pairFeeFix{TradeTsMs: last.TradeTsMs, Symbol: a.Symbol, OrderID: last.OrderID, DeltaUSD: delta, Version: a.FeeEvidenceVersion, ClosedPositionID: last.ClosedPositionID, IntentID: a.EntryIntentID, ConfirmedFee: a.FeeAmount, AppliedFeeUSD: feeTotalUSD}
+		a.pendingFee = &pairFeeFix{TradeTsMs: last.TradeTsMs, TradeTs: last.TradeTs, Symbol: a.Symbol, OrderID: last.OrderID, DeltaUSD: delta, Version: a.FeeEvidenceVersion, ClosedPositionID: last.ClosedPositionID, IntentID: a.EntryIntentID, ConfirmedFee: a.FeeAmount, AppliedFeeUSD: feeTotalUSD}
 		if in := bc.intentFor(s, a); in != nil {
 			in.AppliedFee, in.ConfirmedFee = feeTotalUSD, a.FeeAmount
 		}
@@ -2076,7 +2085,7 @@ func (bc *basketCoordinator) beginPairNativeReduction(provider, coin, purpose st
 	}
 	release, locked := tryLockEntryAttempt(m.MemberID)
 	if !locked {
-		return rt, nil, fmt.Errorf("pair member %s has an entry resolution in progress; the %s reduction retries next cycle", m.MemberID, purpose)
+		return rt, nil, fmt.Errorf("pair member %s has an entry resolution in progress, so the native %s close runs without a saved pair action", m.MemberID, purpose)
 	}
 	defer release()
 	if provider == entryProviderHyperliquid {
@@ -2086,8 +2095,16 @@ func (bc *basketCoordinator) beginPairNativeReduction(provider, coin, purpose st
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	rt.clock = now
-	if existing := rt.pairPendingProtective(m.MemberID); existing != nil {
-		return rt, nil, fmt.Errorf("pair %s member %s has an unresolved protective reduction %s (client %s); it is queried by its saved identity before any replacement", rt.Contract.BasketID, m.MemberID, existing.ActionID, existing.ClientOrderID)
+	superseded := false
+	for _, prev := range rt.pairUnresolvedActions() {
+		if prev.StrategyID == m.MemberID && prev.recoveryNote().NativeBooked && prev.Status != basketActionSettling {
+			endPairNativeAction(prev, fmt.Sprintf("a later native %s close for this member supersedes it; the native owner books what each close did and the coordinator compares the book", purpose), now.UnixMilli())
+			superseded = true
+		}
+	}
+	if superseded {
+		rt.touchPairProgress()
+		bc.persistPair(rt)
 	}
 	sc, ok := bc.members[m.MemberID]
 	if !ok {
@@ -2132,7 +2149,7 @@ func (bc *basketCoordinator) beginPairNativeReduction(provider, coin, purpose st
 	}
 	rt.Actions[a.ActionID] = a
 	if err := bc.store.MarkPairActionSubmitting(rt, a, nil); err != nil {
-		a.Status, a.Terminal, a.HoldReason = basketActionNoFill, true, "the submission could not be recorded, so nothing was sent"
+		a.Status, a.Terminal, a.HoldReason = basketActionNoFill, true, "the submission could not be recorded before the native close; the native owner books whatever the close does and the coordinator compares the book"
 		rt.touchPairProgress()
 		bc.persistPair(rt)
 		return rt, nil, fmt.Errorf("pair %s %s reduction for %s could not be marked submitting: %w", rt.Contract.BasketID, purpose, m.MemberID, err)
@@ -2140,13 +2157,50 @@ func (bc *basketCoordinator) beginPairNativeReduction(provider, coin, purpose st
 	return rt, a, nil
 }
 
-func (bc *basketCoordinator) finishPairNativeReduction(rt *basketRuntime, a *basketAction, out basketVenueOutcome, now time.Time) {
-	if rt == nil || a == nil {
+func endPairNativeAction(a *basketAction, reason string, nowMs int64) {
+	if a.Status == basketActionReserved {
+		a.Status = basketActionNoFill
+	} else {
+		a.Status = basketActionCommitted
+	}
+	a.Terminal = true
+	a.HoldReason = reason
+	a.UpdatedAtMs = nowMs
+}
+
+func (bc *basketCoordinator) resolvePairNativeAction(rt *basketRuntime, a *basketAction, now time.Time) bool {
+	nowMs := now.UnixMilli()
+	reason := ""
+	switch {
+	case basketPositionSigned(bc.state.Strategies[a.StrategyID], a.Symbol) == 0:
+		reason = "the native close outcome was not confirmed and the member book is now flat"
+	case pairReached(nowMs, a.AcceptDeadlineMs, entryRecoveryGrace.Milliseconds()):
+		reason = "the native close outcome was not confirmed by the acceptance deadline plus grace"
+	default:
+		return false
+	}
+	endPairNativeAction(a, reason+"; the native owner keeps booking authority and the coordinator compares the book", nowMs)
+	rt.touchPairProgress()
+	bc.pairLogf(rt, "native action %s for %s ends: %s", a.ActionID, a.StrategyID, a.HoldReason)
+	return bc.persistPair(rt)
+}
+
+func (bc *basketCoordinator) finishPairNativeReduction(rt *basketRuntime, a *basketAction, recordErr error, out basketVenueOutcome, now time.Time) {
+	if rt == nil {
 		return
 	}
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	rt.clock = now
+	if recordErr != nil {
+		msg := fmt.Sprintf("a native close for a pair member ran without a complete pair record: %v", recordErr)
+		bc.pairOpenRecovery(rt, msg, now)
+		bc.persistPair(rt)
+		bc.pairAlert(rt, "native-unrecorded|"+recordErr.Error(), msg+"; the close was still sent, the native owner books it, increases are frozen and the coordinator compares the book", true)
+	}
+	if a == nil {
+		return
+	}
 	if rt.Actions[a.ActionID] != a || !basketActionPending(a.Status) {
 		return
 	}
@@ -2186,7 +2240,23 @@ func (bc *basketCoordinator) finishPairNativeReduction(rt *basketRuntime, a *bas
 	bc.persistPair(rt)
 }
 
+func pairNativeFillOutcome(a *basketAction, baseQty, px float64) basketVenueOutcome {
+	q := math.Min(baseQty, a.RequestedQty)
+	outcome := basketVenueFilled
+	if !basketQtyEqual(q, a.RequestedQty) {
+		outcome = basketVenuePartial
+	}
+	accepted := a.SubmittedAtMs
+	if accepted <= 0 {
+		accepted = a.CreatedAtMs
+	}
+	return basketVenueOutcome{Outcome: outcome, CumQty: q, CumNotional: q * px, Terminal: true, AcceptedAtMs: accepted, Detail: "native kill-switch close"}
+}
+
 func pairHLCloseOutcome(a *basketAction, res *HyperliquidCloseResult, err error) basketVenueOutcome {
+	if a == nil {
+		return basketVenueOutcome{}
+	}
 	if err != nil {
 		return basketVenueOutcome{Outcome: basketVenueUnknown, Detail: err.Error()}
 	}
@@ -2197,7 +2267,7 @@ func pairHLCloseOutcome(a *basketAction, res *HyperliquidCloseResult, err error)
 		return basketVenueOutcome{Outcome: basketVenueRejected, Terminal: true, Detail: "the venue reports the position already flat"}
 	}
 	if f := res.Close.Fill; f != nil && f.TotalSz > 0 && f.AvgPx > 0 {
-		return basketVenueOutcome{Outcome: basketVenueFilled, CumQty: math.Min(f.TotalSz, a.RequestedQty), CumNotional: math.Min(f.TotalSz, a.RequestedQty) * f.AvgPx, Terminal: true, AcceptedAtMs: a.SubmittedAtMs, Detail: "native kill-switch close"}
+		return pairNativeFillOutcome(a, f.TotalSz, f.AvgPx)
 	}
 	return basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "the close returned no confirmed fill"}
 }
@@ -2207,15 +2277,9 @@ func (bc *basketCoordinator) pairKillSwitchHLCloser(inner HyperliquidLiveCloser)
 		return inner
 	}
 	return func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
-		now := tradingNow()
-		rt, a, err := bc.beginPairNativeReduction(entryProviderHyperliquid, symbol, pairPurposeKillSwitch, now)
-		if err != nil {
-			return nil, err
-		}
+		rt, a, recordErr := bc.beginPairNativeReduction(entryProviderHyperliquid, symbol, pairPurposeKillSwitch, tradingNow())
 		res, cerr := inner(symbol, partialSz, cancelStopLossOIDs)
-		if a != nil {
-			bc.finishPairNativeReduction(rt, a, pairHLCloseOutcome(a, res, cerr), tradingNow())
-		}
+		bc.finishPairNativeReduction(rt, a, recordErr, pairHLCloseOutcome(a, res, cerr), tradingNow())
 		return res, cerr
 	}
 }
@@ -2225,25 +2289,19 @@ func (bc *basketCoordinator) pairKillSwitchOKXCloser(inner OKXLiveCloser) OKXLiv
 		return inner
 	}
 	return func(symbol string, partialSz *float64) (*OKXCloseResult, error) {
-		now := tradingNow()
-		rt, a, err := bc.beginPairNativeReduction(entryProviderOKX, symbol, pairPurposeKillSwitch, now)
-		if err != nil {
-			return nil, err
-		}
+		rt, a, recordErr := bc.beginPairNativeReduction(entryProviderOKX, symbol, pairPurposeKillSwitch, tradingNow())
 		res, cerr := inner(symbol, partialSz)
-		if a != nil {
-			out := basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "the close returned no confirmed fill"}
-			switch {
-			case cerr != nil:
-				out.Detail = cerr.Error()
-			case res != nil && res.Close != nil && res.Close.AlreadyFlat:
-				out = basketVenueOutcome{Outcome: basketVenueRejected, Terminal: true, Detail: "the venue reports the position already flat"}
-			case res != nil && res.Close != nil && res.Close.Fill != nil && res.Close.Fill.TotalSz > 0 && res.Close.Fill.AvgPx > 0:
-				q := math.Min(res.Close.Fill.TotalSz*a.ContractSize, a.RequestedQty)
-				out = basketVenueOutcome{Outcome: basketVenueFilled, CumQty: q, CumNotional: q * res.Close.Fill.AvgPx, Terminal: true, AcceptedAtMs: a.SubmittedAtMs, Detail: "native kill-switch close"}
-			}
-			bc.finishPairNativeReduction(rt, a, out, tradingNow())
+		out := basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "the close returned no confirmed fill"}
+		switch {
+		case a == nil:
+		case cerr != nil:
+			out.Detail = cerr.Error()
+		case res != nil && res.Close != nil && res.Close.AlreadyFlat:
+			out = basketVenueOutcome{Outcome: basketVenueRejected, Terminal: true, Detail: "the venue reports the position already flat"}
+		case res != nil && res.Close != nil && res.Close.Fill != nil && res.Close.Fill.TotalSz > 0 && res.Close.Fill.AvgPx > 0:
+			out = pairNativeFillOutcome(a, res.Close.Fill.TotalSz*a.ContractSize, res.Close.Fill.AvgPx)
 		}
+		bc.finishPairNativeReduction(rt, a, recordErr, out, tradingNow())
 		return res, cerr
 	}
 }
