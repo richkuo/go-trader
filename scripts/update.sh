@@ -611,8 +611,12 @@ verify_recovery_health() {
     else
         ports+=("${pre_update_status_port:-8099}")
     fi
+    local rec_health_timeout="${RECOVERY_HEALTH_TIMEOUT:-$health_timeout}"
+    if [[ "$rec_health_timeout" -lt 30 ]]; then
+        rec_health_timeout=30
+    fi
     local waited=0 p body cur_main_pid
-    while [[ $waited -lt $health_timeout ]]; do
+    while [[ $waited -lt $rec_health_timeout ]]; do
         for p in "${ports[@]}"; do
             body=$(curl -fsS --max-time 2 "http://localhost:${p}/health" 2>/dev/null || true)
             if [[ -n "$body" ]]; then
@@ -628,7 +632,7 @@ verify_recovery_health() {
         sleep 1
         waited=$((waited + 1))
     done
-    echo "[update] recovery: /health did not report version=${prev_running_version:-unknown} with a fresh PID within ${health_timeout}s" >&2
+    echo "[update] recovery: /health did not report version=${prev_running_version:-unknown} with a fresh PID within ${rec_health_timeout}s" >&2
     return 1
 }
 
@@ -1273,18 +1277,18 @@ if [[ -z "$rsync_from" ]]; then
         uv.lock
     )
 
-    if ! update_git "$repo_root" diff --quiet -- "${build_paths[@]}" || ! update_git "$repo_root" diff --cached --quiet -- "${build_paths[@]}"; then
-        update_git "$repo_root" status --short -- "${build_paths[@]}" >&2
+    if ! update_git "$repo_root" --no-optional-locks diff --quiet -- "${build_paths[@]}" || ! update_git "$repo_root" --no-optional-locks diff --cached --quiet -- "${build_paths[@]}"; then
+        update_git "$repo_root" --no-optional-locks status --short -- "${build_paths[@]}" >&2
         fail "working tree has uncommitted changes in build-input paths; commit, stash, or revert first"
     fi
-    if ! update_git "$repo_root" diff --quiet || ! update_git "$repo_root" diff --cached --quiet; then
+    if ! update_git "$repo_root" --no-optional-locks diff --quiet || ! update_git "$repo_root" --no-optional-locks diff --cached --quiet; then
         echo "[update] warning: uncommitted changes outside build-input paths (will survive git pull):" >&2
-        update_git "$repo_root" status --short >&2
+        update_git "$repo_root" --no-optional-locks status --short >&2
     fi
 
-    untracked=$(update_git "$repo_root" ls-files --others --exclude-standard \
+    untracked=$(update_git "$repo_root" --no-optional-locks ls-files --others --exclude-standard \
         scheduler shared_scripts shared_strategies shared_tools platforms backtest 2>/dev/null || true)
-    untracked_root=$(update_git "$repo_root" ls-files --others --exclude-standard 2>/dev/null | grep -v '/' || true)
+    untracked_root=$(update_git "$repo_root" --no-optional-locks ls-files --others --exclude-standard 2>/dev/null | grep -v '/' || true)
     if [[ -n "$untracked" || -n "$untracked_root" ]]; then
         echo "[update] warning: untracked files (the Go build uses only committed sources; they stay in the tree):" >&2
         [[ -n "$untracked" ]] && echo "$untracked" >&2

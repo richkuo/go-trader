@@ -1326,7 +1326,7 @@ scenario_update_recovery() {
 
     git clone -q --no-hardlinks "$origin" "$rsync_clone"
     echo "v2-source-added" >"$rsync_clone/source_added_v2.py"
-    echo "v2-modified-readme" >>"$rsync_clone/README.md"
+    echo "release v2" >>"$rsync_clone/fixture-update.txt"
     git -C "$rsync_clone" add -A
     git -C "$rsync_clone" -c user.email=fixture@example.invalid -c user.name=fixture commit -qm "release v2"
     git -C "$rsync_clone" push -q origin "$br"
@@ -1338,10 +1338,13 @@ scenario_update_recovery() {
     real_curl=$(command -v curl)
     cat >"$curl_wrap_dir/curl" <<EOS
 #!/usr/bin/env bash
-if [[ -n "\${CURL_FAIL_HEALTH_ONCE_FILE:-}" && "\$*" == *"/health"* && ! -e "\$CURL_FAIL_HEALTH_ONCE_FILE" ]]; then
-    : >"\$CURL_FAIL_HEALTH_ONCE_FILE"
-    printf '{"version":"wrong-version","pid":999999}\n'
-    exit 0
+if [[ -n "\${CURL_FAIL_HEALTH_COUNT_FILE:-}" && "\$*" == *"/health"* ]]; then
+    n=\$(cat "\$CURL_FAIL_HEALTH_COUNT_FILE" 2>/dev/null || echo 0)
+    if [[ "\$n" -lt 3 ]]; then
+        echo \$((n + 1)) >"\$CURL_FAIL_HEALTH_COUNT_FILE"
+        printf '{"version":"wrong-version","pid":999999}\n'
+        exit 0
+    fi
 fi
 exec "$real_curl" "\$@"
 EOS
@@ -1371,8 +1374,7 @@ EOS
     }
 
     note "rsync mode with stale deployment .git HEAD: /health mismatch restores exact pre-update tree, not stale HEAD"
-    root_git "$tree" update-ref "$br" "$stale_sha"
-    root_git "$tree" read-tree "$stale_sha"
+    runuser -u go-trader -- git -C "$tree" reset -q "$stale_sha"
     [[ "$(root_git "$tree" rev-parse HEAD)" == "$stale_sha" ]] || fail "did not set stale HEAD"
     local base_managed base_venv base_bin base_prev base_idx pid_before
     base_managed=$(fixture_managed_manifest "$tree")
@@ -1381,7 +1383,7 @@ EOS
     base_prev=$(file_fp "$tree/go-trader.prev")
     base_idx=$(file_fp "$tree/.git/index")
     sql "$tree/scheduler/state.db" "INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, details) VALUES ('hl-rec-a', '2026-09-05T00:00:00Z', 'ETH', 'buy', 1, 100, 100, 'pre-rsync-$ID')"
-    expect_exit 1 run_update "$tree" PATH="$curl_wrap_dir:$STUBBIN:$PATH" CURL_FAIL_HEALTH_ONCE_FILE="$WORK/fail-health-1" HEALTH_TIMEOUT=1 UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --rsync-from "$rsync_clone" --restart
+    expect_exit 1 run_update "$tree" PATH="$curl_wrap_dir:$STUBBIN:$PATH" CURL_FAIL_HEALTH_COUNT_FILE="$WORK/fail-health-1" HEALTH_TIMEOUT=3 UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --rsync-from "$rsync_clone" --restart
     assert_baseline_restored "rsync-health-mismatch" "$stale_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
     [[ -n "$(sql "$tree/scheduler/state.db" "SELECT 1 FROM trades WHERE details = 'pre-rsync-$ID'")" ]] || fail "rsync recovery lost state.db trade"
 
@@ -1389,24 +1391,21 @@ EOS
     local fstage
     for fstage in rsync_mid sync build probe; do
         pid_before=$(unit_prop "$tunit" MainPID)
-        base_managed=$(fixture_managed_manifest "$tree")
-        base_venv=$(fixture_venv_manifest "$tree")
         expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="$fstage" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-rsync-$fstage" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --rsync-from "$rsync_clone" --restart
         assert_baseline_restored "rsync-$fstage" "$stale_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
         [[ "$(unit_prop "$tunit" MainPID)" == "$pid_before" ]] || fail "rsync-$fstage changed running trader PID ($pid_before -> $(unit_prop "$tunit" MainPID))"
     done
 
     note "git mode with local staged, unstaged, and untracked edits outside build paths"
-    root_git "$tree" update-ref "$br" "$v1_sha"
-    root_git "$tree" read-tree "$v1_sha"
-    runuser -u go-trader -- sh -c "printf 'staged-doc-edit\n' >>'$tree/SKILL.md' && git -C '$tree' add SKILL.md && printf 'unstaged-readme-edit\n' >>'$tree/README.md' && printf 'untracked-local\n' >'$tree/docs/local_untracked.md'"
+    runuser -u go-trader -- git -C "$tree" reset -q "$v1_sha"
+    runuser -u go-trader -- sh -c "printf 'staged-doc-edit\n' >>'$tree/SKILL.md' && git -C '$tree' add SKILL.md && printf 'unstaged-readme-edit\n' >>'$tree/README.md' && printf 'untracked-local\n' >'$tree/docs/local_untracked.md' && (git -C '$tree' update-index -q --refresh || true)"
     base_managed=$(fixture_managed_manifest "$tree")
     base_venv=$(fixture_venv_manifest "$tree")
     base_bin=$(file_fp "$tree/go-trader")
     base_prev=$(file_fp "$tree/go-trader.prev")
     base_idx=$(file_fp "$tree/.git/index")
 
-    expect_exit 1 run_update "$tree" PATH="$curl_wrap_dir:$STUBBIN:$PATH" CURL_FAIL_HEALTH_ONCE_FILE="$WORK/fail-health-git" HEALTH_TIMEOUT=1 UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+    expect_exit 1 run_update "$tree" PATH="$curl_wrap_dir:$STUBBIN:$PATH" CURL_FAIL_HEALTH_COUNT_FILE="$WORK/fail-health-git" HEALTH_TIMEOUT=3 UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
     assert_baseline_restored "git-health-mismatch" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
     grep -q "staged-doc-edit" "$tree/SKILL.md" || fail "git recovery lost staged SKILL.md edit"
     grep -q "unstaged-readme-edit" "$tree/README.md" || fail "git recovery lost unstaged README.md edit"
@@ -1454,7 +1453,7 @@ EOS
         sleep 0.1
     done
     [[ -f "${pause_file}.reached" ]] || fail "update did not reach sync pause"
-    kill -TERM "$upid"
+    kill -TERM "$(cat "${pause_file}.reached")"
     local urc=0
     wait "$upid" || urc=$?
     [[ "$urc" != "0" ]] || fail "SIGTERM update exited 0"
@@ -1489,7 +1488,7 @@ EOS
     expect_exit 0 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" bash scripts/update.sh --clear-recovery
     grep -q "cleared incomplete-recovery marker" "$WORK/last.out" || fail "--clear-recovery did not report cleared marker"
 
-    runuser -u go-trader -- sh -c "git -C '$tree' checkout -q -- README.md SKILL.md && rm -f '$tree/docs/local_untracked.md'"
+    runuser -u go-trader -- sh -c "git -C '$tree' reset -q --hard HEAD && rm -f '$tree/docs/local_untracked.md'"
     expect_exit 0 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
     [[ "$(root_git "$tree" rev-parse HEAD)" == "$v2_sha" ]] || fail "post-clear update did not advance to v2"
     systemctl stop "$tunit"

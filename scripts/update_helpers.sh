@@ -2228,7 +2228,7 @@ update_restore_snapshot_files() {
     fi
     update_managed_rsync_excludes "$deploy_dir" || return 1
     source "$snap_dir/manifest.env"
-    local -a restore_rsync_flags=(-a --delete)
+    local -a restore_rsync_flags=(-a -c --delete)
     if [[ "$EUID" == "0" ]]; then
         restore_rsync_flags+=(--numeric-ids)
     fi
