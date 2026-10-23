@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -363,4 +364,183 @@ func TestQuoteStoredIdentityTranslationStaysInsideTheStateDB(t *testing.T) {
 	if s := e.owner(); s.Quote == nil || s.Quote.Revision != e.contract().Revision || s.Positions["BTC"] == nil {
 		t.Fatalf("the translated owner must reload: %+v", s.Quote)
 	}
+}
+
+func TestQuoteInspectionRefusesAFlatResolvedContractNoAdmittedOwnerRuns(t *testing.T) {
+	e := newQuoteTestEnv(t, quoteTestOptions{})
+	e.mustRun(1, 100, e.pair("", "", ""), quoteExitRequest{})
+	if c := e.contract(); c == nil || mustQuoteRat(c.Book.Qty).Sign() != 0 {
+		t.Fatalf("the fixture needs a flat durable contract: %+v", c)
+	}
+	admittedCfg := *e.cfg
+	e.close()
+	inspect := func(t *testing.T, cfg *Config) storageInspection {
+		t.Helper()
+		layout, err := resolveStorageLayout(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ident, err := buildStorageIdentityMap(cfg, layout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		si, err := inspectStorageOwnership(layout, ident, cfg, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return si
+	}
+	admitted := inspect(t, &admittedCfg)
+	if !admitted.OK() || admitted.Files[0].QuoteOwners != 1 || len(admitted.Files[0].QuotePending) != 0 {
+		t.Fatalf("the admitted owner of a flat resolved contract must inspect cleanly: %+v %v", admitted.Files, admitted.Rejections)
+	}
+	plain := func(id string) StrategyConfig {
+		sc := admittedCfg.Strategies[0]
+		sc.ID = id
+		sc.Quote = nil
+		sc.CloseStrategy = nil
+		return sc
+	}
+	t.Run("the production config omits the owner", func(t *testing.T) {
+		production := admittedCfg
+		production.quoteLoad = nil
+		production.Strategies = []StrategyConfig{plain("hl-other-btc")}
+		si := inspect(t, &production)
+		if si.OK() {
+			t.Fatal("startup must refuse a flat resolved quote contract whose owner the configuration omits")
+		}
+		t.Logf("rejections: %v", si.Rejections)
+	})
+	t.Run("the production config keeps the owner id with no quote block", func(t *testing.T) {
+		production := admittedCfg
+		production.quoteLoad = nil
+		production.Strategies = []StrategyConfig{plain(quoteTestOwner)}
+		si := inspect(t, &production)
+		if si.OK() {
+			t.Fatal("startup must refuse a flat resolved quote contract whose stored id a production strategy reuses")
+		}
+		t.Logf("rejections: %v", si.Rejections)
+	})
+	t.Run("a file with no quote contracts", func(t *testing.T) {
+		production := admittedCfg
+		production.quoteLoad = nil
+		dir := t.TempDir()
+		production.DBFile = filepath.Join(dir, "state.db")
+		production.Strategies = []StrategyConfig{plain("hl-other-btc")}
+		layout, err := resolveStorageLayout(&production)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ident, err := buildStorageIdentityMap(&production, layout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store, err := OpenStateStore(layout, ident)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		state, _, err := LoadStateWithStore(&production, store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Strategies["hl-other-btc"] == nil {
+			state.Strategies["hl-other-btc"] = NewStrategyState(production.Strategies[0])
+		}
+		if err := SaveStateWithStore(state, store); err != nil {
+			t.Fatalf("a file with no quote contracts must save as before: %v", err)
+		}
+		si, err := inspectStorageOwnership(layout, ident, &production, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !si.OK() || si.Files[0].QuoteOwners != 0 {
+			t.Fatalf("a file with no quote contracts must inspect cleanly: %+v %v", si.Files, si.Rejections)
+		}
+	})
+}
+
+func TestQuoteCoordinatorWritesNeverEraseACancelRequestOrLowerAConfirmedQuantity(t *testing.T) {
+	cancelled := func(e *quoteTestEnv, cloid string) bool {
+		e.venue.mu.Lock()
+		defer e.venue.mu.Unlock()
+		for _, c := range e.venue.cancels {
+			if strings.EqualFold(c, cloid) {
+				return true
+			}
+		}
+		return false
+	}
+	requestOnFirstStatus := func(e *quoteTestEnv, cloid string) *bool {
+		done := new(bool)
+		k, err := e.adm.ownerKey()
+		if err != nil {
+			e.t.Fatal(err)
+		}
+		e.venue.statusHook = func(req quoteOrderRequest) (quoteOrderOutcome, bool) {
+			if *done || !strings.EqualFold(req.ClientOrderID, cloid) {
+				return quoteOrderOutcome{}, false
+			}
+			*done = true
+			if n, err := e.db().requestQuoteGenerationCancel(k, 1, e.clock.Now().UnixMilli()); err != nil || n == 0 {
+				e.t.Errorf("the operator cancel request must be saved during the status read: %d %v", n, err)
+			}
+			return quoteOrderOutcome{}, false
+		}
+		return done
+	}
+	t.Run("a cancel request saved during the status read of a resting row survives and is sent", func(t *testing.T) {
+		e := newQuoteTestEnv(t, quoteTestOptions{})
+		pair := e.pair("99", "101", "0.2")
+		e.mustRun(1, 100, pair, quoteExitRequest{})
+		bid := e.sides(1)[quoteRoleBid]
+		done := requestOnFirstStatus(e, bid.ClientOrderID)
+		e.mustRun(2, 100, pair, quoteExitRequest{})
+		if !*done {
+			t.Fatal("the fixture must save the cancel request inside the status read")
+		}
+		if !cancelled(e, bid.ClientOrderID) {
+			t.Fatal("the saved cancel request was erased by the status write: no cancel reached the venue")
+		}
+		if got := e.sides(1)[quoteRoleBid]; got.SubmitState != quoteSubmitCancelled || got.CancelState != quoteCancelConfirmed {
+			t.Fatalf("the requested cancel must finish: %s/%s", got.SubmitState, got.CancelState)
+		}
+	})
+	t.Run("a status write with a lower confirmed quantity keeps the stored one", func(t *testing.T) {
+		e := newQuoteTestEnv(t, quoteTestOptions{})
+		e.mustRun(1, 100, e.pair("99", "101", "0.2"), quoteExitRequest{})
+		bid := e.sides(1)[quoteRoleBid]
+		if _, err := e.db().db.Exec(`UPDATE pending_limit_orders SET confirmed_qty = '1/10' WHERE id = ?`, bid.RowID); err != nil {
+			t.Fatal(err)
+		}
+		k, err := e.adm.ownerKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		bid.ConfirmedQty = "0"
+		if err := e.db().updateQuoteOrder(k, bid, []string{quoteSubmitResting}, e.clock.Now().UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+		ratEq(t, "stored confirmed quantity", e.sides(1)[quoteRoleBid].ConfirmedQty, "0.1")
+		ratEq(t, "in-memory confirmed quantity", bid.ConfirmedQty, "0.1")
+	})
+	t.Run("a cancel request on a row whose status read returns filled ends terminal with no cancel sent", func(t *testing.T) {
+		e := newQuoteTestEnv(t, quoteTestOptions{})
+		pair := e.pair("99", "101", "0.2")
+		e.mustRun(1, 100, pair, quoteExitRequest{})
+		bid := e.sides(1)[quoteRoleBid]
+		e.venue.fill(t, bid.ClientOrderID, "0.2", "99", "0", e.deadlineMs(1)+1000)
+		done := requestOnFirstStatus(e, bid.ClientOrderID)
+		e.mustRun(2, 100, pair, quoteExitRequest{})
+		if !*done {
+			t.Fatal("the fixture must save the cancel request inside the status read")
+		}
+		if cancelled(e, bid.ClientOrderID) {
+			t.Fatal("a filled row must not get a cancel")
+		}
+		got := e.sides(1)[quoteRoleBid]
+		if got.SubmitState != quoteSubmitFilled || got.CancelState != quoteCancelConfirmed || !got.terminal() {
+			t.Fatalf("the filled row must be terminal with its cancel request closed: %s/%s", got.SubmitState, got.CancelState)
+		}
+	})
 }

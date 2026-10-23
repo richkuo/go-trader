@@ -222,6 +222,17 @@ func TestQuoteVenuePythonSavedIdentitiesRecoveryAndProbes(t *testing.T) {
 			t.Fatalf("an unknown client id is absent, never filled or zero: %+v", a)
 		}
 	})
+	for _, tc := range []struct{ orig, remaining, want string }{{"1.1", "0.3", "0.8"}, {"0.3", "0.1", "0.2"}} {
+		t.Run("a partly filled cancelled order with origSz "+tc.orig+" and sz "+tc.remaining+" reports its exact filled quantity", func(t *testing.T) {
+			f := newQuotePyFixture(t, map[string]any{"orders": map[string]any{
+				"0x0000000000000000000000000000abcd": map[string]any{"oid": 901, "status": "canceled", "origSz": tc.orig, "sz": tc.remaining, "timestamp": 1700},
+			}})
+			out, err := f.venue.Status(ctx, quotePyRequest(quoteRoleBid), "901")
+			if err != nil || out.Status != quoteOutcomeCancelled || out.FilledQty != tc.want {
+				t.Fatalf("origSz %s sz %s must report filled %s exactly: %+v %v", tc.orig, tc.remaining, tc.want, out, err)
+			}
+		})
+	}
 	t.Run("the stop role places a reduce-only trigger with its saved identity", func(t *testing.T) {
 		f := newQuotePyFixture(t, map[string]any{})
 		out, err := f.venue.Place(ctx, quotePyRequest(quoteRoleStop))

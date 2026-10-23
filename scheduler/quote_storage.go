@@ -832,7 +832,27 @@ func updateQuoteOrderTx(tx *sql.Tx, k quoteOwnerKey, o *quoteOrderRow, from []st
 	if o.RowID <= 0 {
 		return fmt.Errorf("quote order for %s has no row identity", k.label())
 	}
-	args := []interface{}{o.SubmitState, o.CancelState, o.VenueOrderID, o.VenueOrderID, o.ConfirmedQty, o.AcceptedAtMs, o.TerminalAtMs, o.OutcomeJSON, nowMs,
+	var storedCancel, storedConfirmed string
+	err := tx.QueryRow(`SELECT cancel_state, confirmed_qty FROM pending_limit_orders WHERE id = ? AND owner_kind = 'quote' AND partition_scope = ? AND partition_source = ? AND strategy_id = ?`,
+		o.RowID, string(k.Partition.Scope), k.Partition.Source, k.sid).Scan(&storedCancel, &storedConfirmed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("quote order %d is not owned by %s in the expected state %v", o.RowID, k.label(), from)
+	}
+	if err != nil {
+		return fmt.Errorf("read quote order %d for %s: %w", o.RowID, k.label(), err)
+	}
+	cancel := o.CancelState
+	if cancel == quoteCancelNone && storedCancel != quoteCancelNone {
+		cancel = storedCancel
+		if storedCancel == quoteCancelRequested && quoteSubmitTerminal(o.SubmitState) {
+			cancel = quoteCancelConfirmed
+		}
+	}
+	confirmed, err := quoteLargerQtyText(storedConfirmed, o.ConfirmedQty)
+	if err != nil {
+		return fmt.Errorf("quote order %d confirmed quantity: %w", o.RowID, err)
+	}
+	args := []interface{}{o.SubmitState, cancel, o.VenueOrderID, o.VenueOrderID, confirmed, o.AcceptedAtMs, o.TerminalAtMs, o.OutcomeJSON, nowMs,
 		o.RowID, string(k.Partition.Scope), k.Partition.Source, k.sid}
 	where := ""
 	if len(from) > 0 {
@@ -857,6 +877,8 @@ func updateQuoteOrderTx(tx *sql.Tx, k quoteOwnerKey, o *quoteOrderRow, from []st
 	if n != 1 {
 		return fmt.Errorf("quote order %d is not owned by %s in the expected state %v", o.RowID, k.label(), from)
 	}
+	o.CancelState = cancel
+	o.ConfirmedQty = confirmed
 	o.UpdatedAtMs = nowMs
 	return nil
 }
@@ -959,9 +981,25 @@ func (sdb *StateDB) recordQuoteFundingEvidence(k quoteOwnerKey, provider, accoun
 }
 
 type quoteOrderProgress struct {
-	RowID       int64
-	AppliedQty  string
-	SubmitState string
+	RowID        int64
+	AppliedQty   string
+	ConfirmedQty string
+	SubmitState  string
+}
+
+func quoteLargerQtyText(stored, incoming string) (string, error) {
+	s, err := parseQuoteRat(stored)
+	if err != nil {
+		return "", fmt.Errorf("stored quantity: %w", err)
+	}
+	n, err := parseQuoteRat(incoming)
+	if err != nil {
+		return "", fmt.Errorf("new quantity: %w", err)
+	}
+	if n.Cmp(s) > 0 {
+		return incoming, nil
+	}
+	return stored, nil
 }
 
 type quoteSettlementCommit struct {
@@ -1052,9 +1090,25 @@ func (sdb *StateDB) commitQuoteSettlement(c *quoteSettlementCommit) (*quoteCommi
 			}
 		}
 		for _, p := range c.OrderProgress {
-			r, err := tx.Exec(`UPDATE pending_limit_orders SET applied_qty = ?, submit_state = CASE WHEN ? != '' THEN ? ELSE submit_state END, updated_at_ms = ?
+			var storedConfirmed string
+			err := tx.QueryRow(`SELECT confirmed_qty FROM pending_limit_orders WHERE id = ? AND owner_kind = 'quote' AND partition_scope = ? AND partition_source = ? AND strategy_id = ?`,
+				p.RowID, string(k.Partition.Scope), k.Partition.Source, k.sid).Scan(&storedConfirmed)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("quote order %d is not owned by %s", p.RowID, k.label())
+			}
+			if err != nil {
+				return nil, err
+			}
+			confirmed, err := quoteLargerQtyText(storedConfirmed, p.ConfirmedQty)
+			if err == nil {
+				confirmed, err = quoteLargerQtyText(confirmed, p.AppliedQty)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("quote order %d confirmed quantity: %w", p.RowID, err)
+			}
+			r, err := tx.Exec(`UPDATE pending_limit_orders SET applied_qty = ?, confirmed_qty = ?, submit_state = CASE WHEN ? != '' THEN ? ELSE submit_state END, updated_at_ms = ?
 				WHERE id = ? AND owner_kind = 'quote' AND partition_scope = ? AND partition_source = ? AND strategy_id = ?`,
-				p.AppliedQty, p.SubmitState, p.SubmitState, c.CommittedAtMs, p.RowID, string(k.Partition.Scope), k.Partition.Source, k.sid)
+				p.AppliedQty, confirmed, p.SubmitState, p.SubmitState, c.CommittedAtMs, p.RowID, string(k.Partition.Scope), k.Partition.Source, k.sid)
 			if err != nil {
 				return nil, err
 			}
@@ -1425,6 +1479,9 @@ func inspectQuoteRows(db *StateDB, fi *storageFileInspection, ident storageIdent
 			fi.QuotePending = append(fi.QuotePending, label+": "+p)
 		}
 		if len(o.Pending) == 0 {
+			if !o.Mapped || !admitted[o.ProcessID] {
+				rejections = append(rejections, fmt.Sprintf("%s state file: quote owner %s has a durable quote contract and no admitted quote owner runs it; every full save of this file refuses an unowned quote contract, so startup refuses before any save", fi.Role, label))
+			}
 			continue
 		}
 		if !o.Mapped {

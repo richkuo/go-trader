@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,4 +111,40 @@ func TestQuotePaperFundingSettlesOnlyThroughTheQuoteSettlement(t *testing.T) {
 		e.runWithFunding(33, 100, pair, records)
 		ratEq(t, "funding after a repeat", e.contract().Book.Funding, "-0.001")
 	})
+}
+
+func TestQuoteOwnerPositionAndFundingShareTheQuoteCoin(t *testing.T) {
+	useHLLotMetadataForTest(t, map[string]int{"BTC": 3, "ETH": 4})
+	dir := t.TempDir()
+	for name, symbol := range map[string]string{"another coin": "ETH", "the quote coin in lower case": "btc"} {
+		blob := quoteTestConfigBytes(t, dir, quoteTestOptions{strategy: map[string]any{"symbol": symbol}})
+		l, err := newQuoteFixtureLoadAdmission(quoteTestOwner, dir, blob)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg, err := loadQuoteAdmittedConfigData(blob, l); err == nil || cfg != nil || !strings.Contains(err.Error(), "exactly the quote coin") {
+			t.Fatalf("symbol %q (%s) must be refused next to quote coin BTC: %v", symbol, name, err)
+		}
+	}
+	recordAt := quoteTestStart.Add(30 * time.Minute).UnixMilli()
+	records := []feedFundingRecord{{TimeMs: recordAt, Rate: 0.0001}}
+	for name, symbol := range map[string]string{"an empty symbol": "", "a symbol equal to the quote coin": "BTC"} {
+		t.Run(name, func(t *testing.T) {
+			opts := quoteTestOptions{}
+			if symbol != "" {
+				opts.strategy = map[string]any{"symbol": symbol}
+			}
+			e := newQuoteTestEnv(t, opts)
+			pair := e.pair("99", "", "0.2")
+			e.runWithFunding(1, 100, pair, records)
+			e.venue.fill(t, e.sides(1)[quoteRoleBid].ClientOrderID, "0.1", "99", "0.01", e.deadlineMs(1)+10_000)
+			e.runWithFunding(2, 100, pair, records)
+			e.runWithFunding(31, 100, pair, records)
+			ratEq(t, "funding on held inventory", e.contract().Book.Funding, "-0.001")
+			s := e.owner()
+			if len(s.Positions) != 1 || s.Positions["BTC"] == nil {
+				t.Fatalf("the position must be keyed by the quote coin: %+v", s.Positions)
+			}
+		})
+	}
 }

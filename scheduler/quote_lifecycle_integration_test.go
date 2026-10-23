@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -407,6 +408,137 @@ func TestQuoteRacesRoundTripsAndReconnectsSettleThroughOneSink(t *testing.T) {
 			if n := e.count(`SELECT COUNT(*) FROM closed_positions WHERE strategy_id = ? AND close_reason = ?`, quoteTestOwner, quoteCloseReasonStop); stopFirst && n != 1 {
 				t.Fatalf("a stop that flattens records a stop close: %d", n)
 			}
+		})
+	}
+}
+
+func TestQuoteFeeCorrectionsOfOneFillChainFromThePreviousCorrection(t *testing.T) {
+	setup := func(t *testing.T) (*quoteTestEnv, quoteRawFill, func(...quoteRawFill)) {
+		e := newQuoteTestEnv(t, quoteTestOptions{})
+		bid := quoteRestingBid(t, e)
+		f := e.venue.fill(t, bid.ClientOrderID, "0.1", "99", "1.0", e.deadlineMs(1)+1000)
+		e.mustRun(2, 100, e.pair("99", "101", "0.2"), quoteExitRequest{})
+		ratEq(t, "cash after the fill", e.contract().Book.Cash, "999")
+		base := append([]quoteRawFill(nil), e.venue.fills...)
+		var extra []quoteRawFill
+		e.venue.recoverHook = func(since, until int64) (quoteFillRecovery, error, bool) {
+			fills := append(append([]quoteRawFill(nil), base...), extra...)
+			return quoteFillRecovery{Fills: fills, Coverage: quoteFillCoverage{Complete: true, FromMs: since, ThroughMs: until}}, nil, true
+		}
+		add := func(c ...quoteRawFill) { extra = append(extra, c...) }
+		return e, f, add
+	}
+	corr := func(f quoteRawFill, id, fee string, tMs int64) quoteRawFill {
+		c := f
+		c.Kind, c.CorrectsTrade, c.TradeID, c.Fee, c.TimeMs, c.Raw = "fee_correction", f.TradeID, id, fee, tMs, `{"correction":"`+id+`"}`
+		return c
+	}
+	adjustments := func(e *quoteTestEnv) int {
+		return e.count(`SELECT COUNT(*) FROM trades WHERE trade_type = ?`, quoteFeeAdjustmentType)
+	}
+	t.Run("two corrections in one settlement book only the newest fee", func(t *testing.T) {
+		e, f, add := setup(t)
+		add(corr(f, "corr-a", "1.2", e.deadlineMs(2)+1000), corr(f, "corr-b", "1.5", e.deadlineMs(2)+2000))
+		e.mustRun(3, 100, e.pair("99", "101", "0.2"), quoteExitRequest{})
+		e.mustRun(4, 100, e.pair("99", "101", "0.2"), quoteExitRequest{})
+		if n := e.count(`SELECT COUNT(*) FROM quote_fills WHERE kind = 'fee_correction' AND settlement_id != 0`); n != 2 {
+			t.Fatalf("both corrections must settle in one settlement, applied %d", n)
+		}
+		if n := e.count(`SELECT COUNT(DISTINCT settlement_id) FROM quote_fills WHERE kind = 'fee_correction'`); n != 1 {
+			t.Fatalf("the corrections must share one settlement, got %d", n)
+		}
+		c := e.contract()
+		ratEq(t, "cash after two corrections", c.Book.Cash, "998.5")
+		ratEq(t, "fees after two corrections", c.Book.Fees, "1.5")
+		if n := adjustments(e); n != 2 {
+			t.Fatalf("fee adjustment rows %d, want 2", n)
+		}
+	})
+	t.Run("corrections in two settlements chain from the applied one", func(t *testing.T) {
+		e, f, add := setup(t)
+		add(corr(f, "corr-a", "1.2", e.deadlineMs(2)+1000))
+		e.mustRun(3, 100, e.pair("99", "101", "0.2"), quoteExitRequest{})
+		e.mustRun(4, 100, e.pair("99", "101", "0.2"), quoteExitRequest{})
+		ratEq(t, "cash after the first correction", e.contract().Book.Cash, "998.8")
+		add(corr(f, "corr-b", "1.5", e.deadlineMs(4)+1000))
+		e.mustRun(5, 100, e.pair("99", "101", "0.2"), quoteExitRequest{})
+		e.mustRun(6, 100, e.pair("99", "101", "0.2"), quoteExitRequest{})
+		c := e.contract()
+		ratEq(t, "cash after the second correction", c.Book.Cash, "998.5")
+		ratEq(t, "fees after the second correction", c.Book.Fees, "1.5")
+		var second float64
+		if err := e.db().db.QueryRow(`SELECT exchange_fee FROM trades WHERE trade_type = ? ORDER BY rowid DESC LIMIT 1`, quoteFeeAdjustmentType).Scan(&second); err != nil {
+			t.Fatal(err)
+		}
+		if second < 0.3-1e-12 || second > 0.3+1e-12 {
+			t.Fatalf("the second correction delta is %v, want 0.3", second)
+		}
+	})
+	t.Run("corrections in reverse row id order hold", func(t *testing.T) {
+		e, f, add := setup(t)
+		add(corr(f, "corr-b", "1.5", e.deadlineMs(2)+2000), corr(f, "corr-a", "1.2", e.deadlineMs(2)+1000))
+		var held bool
+		for n := 3; n <= 4; n++ {
+			res := e.mustRun(n, 100, e.pair("99", "101", "0.2"), quoteExitRequest{})
+			if len(res.SettlementHold) > 0 {
+				held = true
+			}
+		}
+		if !held {
+			t.Fatal("corrections whose row ids run against their order must hold the settlement")
+		}
+		c := e.contract()
+		ratEq(t, "cash with held corrections", c.Book.Cash, "999")
+		ratEq(t, "fees with held corrections", c.Book.Fees, "1")
+		if n := adjustments(e); n != 0 {
+			t.Fatalf("a held settlement books no fee adjustment, got %d", n)
+		}
+	})
+}
+
+func TestQuotePartlyFilledCancelledOrderResolvesOnceItsFillsSettle(t *testing.T) {
+	cases := []struct {
+		name, size, filled string
+		fills              []string
+		restart            bool
+	}{
+		{name: "origSz 1.1 and sz 0.3 report the exact filled text", size: "1.1", filled: "0.8", fills: []string{"0.5", "0.3"}},
+		{name: "origSz 0.3 and sz 0.1 report the exact filled text", size: "0.3", filled: "0.2", fills: []string{"0.2"}},
+		{name: "a float-noisy low filled text is raised to the applied quantity", size: "0.3", filled: "0.19999999999999998", fills: []string{"0.2"}},
+		{name: "a cancel outcome with no filled quantity stays resolved after a restart", size: "0.3", filled: "", fills: []string{"0.2"}, restart: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newQuoteTestEnv(t, quoteTestOptions{quote: map[string]any{"max_order_qty": 2}})
+			pair := e.pair("99", "", tc.size)
+			e.mustRun(1, 100, pair, quoteExitRequest{})
+			bid := e.sides(1)[quoteRoleBid]
+			if bid == nil || bid.SubmitState != quoteSubmitResting {
+				t.Fatalf("bid %+v", bid)
+			}
+			for i, sz := range tc.fills {
+				e.venue.fill(t, bid.ClientOrderID, sz, "99", "0", e.deadlineMs(1)+int64(1000*(i+1)))
+			}
+			e.venue.statusHook = func(req quoteOrderRequest) (quoteOrderOutcome, bool) {
+				if !strings.EqualFold(req.ClientOrderID, bid.ClientOrderID) {
+					return quoteOrderOutcome{}, false
+				}
+				return quoteOrderOutcome{Status: quoteOutcomeCancelled, VenueOrderID: bid.VenueOrderID, VenueTimeMs: e.deadlineMs(1) + 5000, FilledQty: tc.filled, Detail: "canceled"}, true
+			}
+			e.mustRun(2, 100, e.pair("", "", ""), quoteExitRequest{})
+			e.mustRun(3, 100, e.pair("", "", ""), quoteExitRequest{})
+			if tc.restart {
+				e.reopen()
+			}
+			got := e.sides(1)[quoteRoleBid]
+			if got.SubmitState != quoteSubmitCancelled || !got.resolved() {
+				t.Fatalf("the cancelled bid must be resolved once its fills settle: state %s confirmed %s applied %s", got.SubmitState, got.ConfirmedQty, got.AppliedQty)
+			}
+			want := "0"
+			for _, sz := range tc.fills {
+				want = quoteRatString(quoteRatAdd(mustQuoteRat(want), mustQuoteRat(sz)))
+			}
+			ratEq(t, "settled inventory", e.contract().Book.Qty, want)
 		})
 	}
 }

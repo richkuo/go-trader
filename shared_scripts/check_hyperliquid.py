@@ -7,6 +7,7 @@ import math
 import time
 import traceback
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 
 class SafeEncoder(json.JSONEncoder):
@@ -3331,6 +3332,26 @@ QUOTE_REJECTED_STATUSES = ("rejected", "perpMarginRejected", "reduceOnlyRejected
                            "openInterestIncreaseRejected", "insufficientSpotBalanceRejected", "oracleRejected", "perpMaxPositionRejected")
 
 
+def _quote_exact_decimal(value, label):
+    _recovery_float(value, label)
+    try:
+        out = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"{label} is not a number: {value!r}")
+    if not out.is_finite():
+        raise ValueError(f"{label} is not finite: {value!r}")
+    return out
+
+
+def _quote_decimal_text(value):
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    if text in ("", "-0"):
+        return "0"
+    return text
+
+
 def _quote_print(out, code=0):
     print(json.dumps(out, cls=SafeEncoder))
     if code:
@@ -3351,12 +3372,12 @@ def quote_status_outcome(resp, now_ms):
     order = wrapper["order"]
     status = str(wrapper.get("status") or "")
     try:
-        orig = _recovery_float(order.get("origSz", order.get("sz")), "origSz")
-        remaining = _recovery_float(order.get("sz"), "sz")
+        orig = _quote_exact_decimal(order.get("origSz", order.get("sz")), "origSz")
+        remaining = _quote_exact_decimal(order.get("sz"), "sz")
     except ValueError as e:
         return {"status": "unknown", "venue_time_ms": now_ms, "detail": str(e)}
-    executed = orig if status == "filled" else max(orig - remaining, 0.0)
-    filled_text = str(order.get("origSz")) if status == "filled" and order.get("origSz") not in (None, "") else repr(executed)
+    executed = orig if status == "filled" else max(orig - remaining, Decimal(0))
+    filled_text = _quote_decimal_text(executed)
     try:
         ts = int(wrapper.get("statusTimestamp") or order.get("timestamp") or now_ms)
     except (TypeError, ValueError):

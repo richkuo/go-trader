@@ -452,10 +452,7 @@ func quoteSideSign(side string) int {
 }
 
 func (a *quoteAdmission) projectQuoteBook(s *StrategyState, l *quoteLedger) error {
-	coin := a.sc.Symbol
-	if coin == "" {
-		coin = quoteCoinOf(a.sc)
-	}
+	coin := quoteCoinOf(a.sc)
 	s.Cash = quoteRatFloat(l.cash)
 	if !quoteProjectionOK(l.cash, s.Cash) {
 		return fmt.Errorf("cash projection %v does not match the exact cash %s", s.Cash, quoteRatString(l.cash))
@@ -517,10 +514,7 @@ func (a *quoteAdmission) bookQuoteFill(s *StrategyState, l *quoteLedger, ev *quo
 	if err != nil {
 		return err
 	}
-	coin := a.sc.Symbol
-	if coin == "" {
-		coin = quoteCoinOf(a.sc)
-	}
+	coin := quoteCoinOf(a.sc)
 	t := time.UnixMilli(f.TimeMs).UTC()
 	dir := quoteSideSign(f.Side)
 	sign := l.qty.Sign()
@@ -857,8 +851,9 @@ func (a *quoteAdmission) stageSettlement(ctx context.Context, deadlineMs int64, 
 			}
 		}
 		if len(st.Holds) == 0 {
+			batch := map[int64]quoteAppliedCorrection{}
 			for _, row := range corrections {
-				delta, err := a.applyFeeCorrection(staged, ledger, row, owner)
+				delta, err := a.applyFeeCorrection(staged, ledger, row, batch)
 				if errors.Is(err, errQuoteCorrectionPending) {
 					continue
 				}
@@ -918,7 +913,7 @@ func (a *quoteAdmission) stageSettlement(ctx context.Context, deadlineMs int64, 
 					o.ConfirmedQty = quoteRatString(applied[id])
 				}
 				o.AppliedQty = quoteRatString(applied[id])
-				st.OrderProgress = append(st.OrderProgress, quoteOrderProgress{RowID: id, AppliedQty: o.AppliedQty})
+				st.OrderProgress = append(st.OrderProgress, quoteOrderProgress{RowID: id, AppliedQty: o.AppliedQty, ConfirmedQty: o.ConfirmedQty})
 			}
 		}
 	}
@@ -963,7 +958,12 @@ func stagedBaseline(a *quoteAdmission, staged *StrategyState) *StrategyState {
 
 var errQuoteCorrectionPending = errors.New("the corrected fill is not applied yet")
 
-func (a *quoteAdmission) applyFeeCorrection(s *StrategyState, l *quoteLedger, row *quoteFillRow, owner *quoteOwnerState) (float64, error) {
+type quoteAppliedCorrection struct {
+	rowID int64
+	fee   *big.Rat
+}
+
+func (a *quoteAdmission) applyFeeCorrection(s *StrategyState, l *quoteLedger, row *quoteFillRow, batch map[int64]quoteAppliedCorrection) (float64, error) {
 	key, err := a.ownerKey()
 	if err != nil {
 		return 0, err
@@ -989,18 +989,29 @@ func (a *quoteAdmission) applyFeeCorrection(s *StrategyState, l *quoteLedger, ro
 		return 0, fmt.Errorf("fee correction %s changes the fee asset from %s to %s", row.Key, orig.Fill.FeeAsset, row.Fill.FeeAsset)
 	}
 	prior = mustQuoteRat(orig.Fill.Fee)
+	var priorID int64
 	for _, f := range all {
 		if f.Kind == "fee_correction" && f.CorrectsID == orig.ID && f.SettlementID != 0 && f.ID != row.ID {
 			if f.ID > row.ID {
 				return 0, fmt.Errorf("fee correction %s is older than an applied correction of the same fill", row.Key)
 			}
-			prior = mustQuoteRat(f.Fill.Fee)
+			if f.ID > priorID {
+				priorID = f.ID
+				prior = mustQuoteRat(f.Fill.Fee)
+			}
 		}
+	}
+	if done, ok := batch[orig.ID]; ok {
+		if done.rowID > row.ID {
+			return 0, fmt.Errorf("fee correction %s is older than a correction of the same fill applied earlier in this settlement", row.Key)
+		}
+		prior = done.fee
 	}
 	newFee, err := quoteFeeRat(row.Fill)
 	if err != nil {
 		return 0, err
 	}
+	batch[orig.ID] = quoteAppliedCorrection{rowID: row.ID, fee: newFee}
 	delta := quoteRatSub(newFee, prior)
 	l.cash = quoteRatSub(l.cash, delta)
 	l.fees = quoteRatAdd(l.fees, delta)

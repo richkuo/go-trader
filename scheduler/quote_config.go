@@ -219,6 +219,9 @@ func quoteOwnerConfigErrors(sc StrategyConfig) []string {
 	} else if sym := strings.ToUpper(strings.TrimSpace(hyperliquidSymbol(sc.Args))); sym != coin {
 		add("quote.coin %q must equal the strategy symbol %q", coin, sym)
 	}
+	if sc.Symbol != "" && sc.Symbol != coin {
+		add("symbol %q must be empty or exactly the quote coin %q", sc.Symbol, coin)
+	}
 	if !(q.MaxInventoryUSD > 0) || math.IsInf(q.MaxInventoryUSD, 0) {
 		add("quote.max_inventory_usd must be > 0, got %g", q.MaxInventoryUSD)
 	}
