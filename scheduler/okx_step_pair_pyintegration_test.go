@@ -367,7 +367,7 @@ func TestOKXSharedStepPairAdmissionRefusesIndependentEntryFeatures(t *testing.T)
 			registerPairTestPolicy(t)
 			dir := filepath.Join(t.TempDir(), "run")
 			doc := pairTestDoc(t, dir, func(root map[string]interface{}) { pairTestStrategy(root, pairTestOKX)[tc.key] = tc.value })
-			adm, _, err := newPairResearchAdmission(doc, "run-1", dir, false, pairResearchDeps{VenueFor: newPairTestVenues(false).factory()})
+			adm, _, err := newPairResearchAdmission(doc, "run-1", dir, false, pairTestDeps(t, doc, newPairTestVenues(false)))
 			if adm != nil {
 				adm.release()
 			}
