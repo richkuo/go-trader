@@ -156,6 +156,36 @@ var syncProtectionProbeArgv = []string{
 	"--probe-only",
 }
 
+var quotePlaceProbeArgv = []string{
+	"--quote-place", "--symbol=BTC", "--side=buy", "--size=0.01", "--limit-price=1", "--tif=Alo",
+	"--cloid=0x00000000000000000000000000000004", "--role=bid", "--expires-at-ms=1", "--reduce-only",
+	"--mode=live", "--probe-only",
+}
+
+var quoteStopPlaceProbeArgv = []string{
+	"--quote-place", "--symbol=BTC", "--side=sell", "--size=0.01", "--trigger-px=1",
+	"--cloid=0x00000000000000000000000000000005", "--role=stop", "--expires-at-ms=1", "--reduce-only",
+	"--mode=live", "--probe-only",
+}
+
+var quoteCancelProbeArgv = []string{
+	"--quote-cancel", "--symbol=BTC", "--cloid=0x00000000000000000000000000000004", "--oid=1", "--mode=live", "--probe-only",
+}
+
+var quoteStatusProbeArgv = []string{
+	"--quote-status", "--symbol=BTC", "--cloid=0x00000000000000000000000000000004", "--mode=live", "--probe-only",
+}
+
+var quoteRecoverProbeArgv = []string{
+	"--quote-recover", "--symbol=BTC", "--since-ms=1", "--until-ms=2", "--mode=live", "--probe-only",
+}
+
+var quotePositionProbeArgv = []string{
+	"--quote-position", "--symbol=BTC", "--mode=live", "--probe-only",
+}
+
+var quoteProbeArgvs = [][]string{quotePlaceProbeArgv, quoteStopPlaceProbeArgv, quoteCancelProbeArgv, quoteStatusProbeArgv, quoteRecoverProbeArgv, quotePositionProbeArgv}
+
 var cancelOrderProbeArgv = []string{
 	"--cancel-order", "--symbol=BTC", "--oid=1", "--probe-only",
 }
@@ -270,6 +300,11 @@ func probeCheckScripts(cfg *Config) error {
 			}
 			if err := probeOneCheckScriptFn(script, recoverEntryProbeArgv); err != nil {
 				return err
+			}
+			for _, argv := range quoteProbeArgvs {
+				if err := probeOneCheckScriptFn(script, argv); err != nil {
+					return err
+				}
 			}
 		}
 		if filepath.Base(script) == "check_robinhood.py" {

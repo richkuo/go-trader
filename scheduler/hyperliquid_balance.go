@@ -909,6 +909,10 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 }
 
 func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, rc *RegimeConfig, positions []HLPosition, prices map[string]float64, accountAddress string, notifier ownerDMSender, notifyTPSLFills bool) (bool, []HyperliquidProtectionFillHint, []RegimeDirectionOrphanCloseJob) {
+	mu.RLock()
+	dueStrategies = withoutQuoteOwned(dueStrategies, state)
+	allStrategies = withoutQuoteOwned(allStrategies, state)
+	mu.RUnlock()
 	resolveFee, fillHints := buildCachedHyperliquidReconcileFillResolver(accountAddress, allStrategies, state, mu, positions)
 
 	var pendingAlerts []ProtectionFillAlert
@@ -2189,6 +2193,9 @@ func runPendingHyperliquidCircuitCloses(
 
 	var hlLiveAll []StrategyConfig
 	var hlCircuitPeerAll []StrategyConfig
+	mu.RLock()
+	strategies = withoutQuoteOwned(strategies, state)
+	mu.RUnlock()
 	for _, sc := range strategies {
 		if sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
 			hlLiveAll = append(hlLiveAll, sc)
@@ -2524,6 +2531,10 @@ func hyperliquidOnChainCloseTradeLabel(closeReason string) string {
 }
 
 func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee, onChainSigned float64, fillOID int64, closeReason string) {
+	if s != nil && s.Quote != nil {
+		fmt.Printf("[CRITICAL] [quote] %s: a generic circuit-breaker close fill on %s is refused; quote-owned fills settle only through the quote settlement\n", s.ID, symbol)
+		return
+	}
 	if closeReason == "" {
 		closeReason = "circuit_breaker"
 	}

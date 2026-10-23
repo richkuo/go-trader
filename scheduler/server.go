@@ -249,6 +249,9 @@ func (ss *StatusServer) Start(host string, port int) {
 	mux.HandleFunc("/api/config/notifications", ss.handleAPIConfigNotifications)
 	mux.HandleFunc("/api/confirm", ss.handleAPIConfirm)
 	mux.HandleFunc("/api/config/add-strategy", ss.handleAPIAddStrategy)
+	mux.HandleFunc("/api/quotes", ss.handleAPIQuotes)
+	mux.HandleFunc("/api/quotes/cancel", ss.handleAPIQuoteCancel)
+	mux.HandleFunc("/api/quotes/hold", ss.handleAPIQuoteHold)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
 	attempts := statusPortMaxAttempts

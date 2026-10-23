@@ -346,6 +346,9 @@ func (sdb *StateDB) ApplyTradeLedgerPlan(plan TradeLedgerPlan) error {
 	if err != nil {
 		return err
 	}
+	if err := sdb.refuseQuoteOwnedStorageID(sid); err != nil {
+		return err
+	}
 	tx, err := sdb.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)

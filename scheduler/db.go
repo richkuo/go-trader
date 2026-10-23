@@ -682,6 +682,9 @@ func (sdb *StateDB) migrateSchema() error {
 	if err := sdb.migrateBasketSchema(); err != nil {
 		return err
 	}
+	if err := sdb.migrateQuoteSchema(); err != nil {
+		return err
+	}
 	return sdb.backfillTradeCloseFlags()
 }
 
@@ -1141,6 +1144,9 @@ func (sdb *StateDB) UpdateTradeStampedFields(strategyID string, ts time.Time, en
 	if err != nil {
 		return err
 	}
+	if err := sdb.refuseQuoteOwnedStorageID(sid); err != nil {
+		return err
+	}
 	_, err = sdb.db.Exec(
 		`UPDATE trades SET entry_atr = ?, stop_loss_oid = ?, stop_loss_trigger_px = ?, tp_oids_json = ?, stop_loss_atr_mult = ?, tp_tiers_json = ? WHERE strategy_id = ? AND timestamp = ?`,
 		entryATR, stopLossOID, stopLossTriggerPx, marshalTPOIDsJSON(tpOIDs), nullableFloat64(stopLossATRMult), tpTiersJSON, sid, formatTime(ts),
@@ -1154,6 +1160,9 @@ func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 	}
 	sid, err := sdb.toStorageID(u.StrategyID)
 	if err != nil {
+		return err
+	}
+	if err := sdb.refuseQuoteOwnedStorageID(sid); err != nil {
 		return err
 	}
 	tx, err := sdb.db.Begin()
@@ -1476,6 +1485,10 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		return fmt.Errorf("iterate existing initial_capital: %w", err)
 	}
 	existingRows.Close()
+
+	if err := sdb.guardQuoteOwnersTx(tx, req.Strategies, storageIDs, req.FullFile); err != nil {
+		return err
+	}
 
 	if req.FullFile {
 		if _, err := tx.Exec("DELETE FROM strategies"); err != nil {
@@ -1950,197 +1963,10 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 		return fmt.Errorf("ensure app_state: %w", err)
 	}
 
-	var existingInitCap float64
-	err = tx.QueryRow("SELECT initial_capital FROM strategies WHERE id = ?", sid).Scan(&existingInitCap)
-	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("read existing initial_capital for %s: %w", s.ID, err)
+	if err := sdb.guardQuoteOwnersTx(tx, []*StrategyState{s}, []string{sid}, false); err != nil {
+		return err
 	}
-	if err == nil {
-		applyInitialCapitalGuard(s, existingInitCap)
-	}
-
-	cbInt := 0
-	if s.RiskState.CircuitBreaker {
-		cbInt = 1
-	}
-	cashReconcileInt := 0
-	if s.CashReconcileRequired {
-		cashReconcileInt = 1
-	}
-	poolBudgetInt := 0
-	if s.SharedWalletPoolBudget {
-		poolBudgetInt = 1
-	}
-	paperFundingJSON, pfErr := marshalPaperFundingState(s)
-	if pfErr != nil {
-		return pfErr
-	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO strategies (id, type, platform, cash, initial_capital,
-		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
-		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
-		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
-		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source,
-		paper_funding_state, quote_precision_rebaselined)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sid, s.Type, s.Platform, s.Cash, s.InitialCapital,
-		s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
-		s.RiskState.DailyPnL, s.RiskState.DailyPnLDate, s.RiskState.ConsecutiveLosses,
-		cbInt, formatTime(s.RiskState.CircuitBreakerUntil),
-		s.RiskState.MarshalPendingCircuitClosesJSON(),
-		strategyActiveProfile(s),
-		cashReconcileInt,
-		poolBudgetInt,
-		marshalHurstGateStateJSON(s.HurstGate),
-		s.ReplayMirrorWatermark,
-		s.ReplayMirrorWatermarkSource,
-		paperFundingJSON,
-		boolToInt(s.RiskState.QuotePrecisionRebaselined),
-	); err != nil {
-		return fmt.Errorf("insert strategy %s: %w", s.ID, err)
-	}
-
-	if _, err := tx.Exec(`DELETE FROM positions WHERE strategy_id = ?`, sid); err != nil {
-		return fmt.Errorf("delete positions for %s: %w", s.ID, err)
-	}
-	if _, err := tx.Exec(`DELETE FROM option_positions WHERE strategy_id = ?`, sid); err != nil {
-		return fmt.Errorf("delete option_positions for %s: %w", s.ID, err)
-	}
-
-	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, ratchet_fallback_normalize_pending, open_profile, direction_certified_at_open, direction_certified_states_json, llm_analysis_requested, llm_verdict, atr_method_at_open, hedge_for, hedge_primary_qty_basis, hurst_at_open, hurst_size_mult, shared_close_hold_usd, shared_close_hold_reason, sl_after_moved, tp_consumptions_json, sl_after_trigger_px, resting_tp_scanned_open_ms, resting_tp_reach_px, resting_tp_stop_trigger_px)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare position insert: %w", err)
-	}
-	defer stmtPos.Close()
-	for _, sym := range sortedPositionSymbols(s.Positions) {
-		pos := s.Positions[sym]
-		positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
-		tp1OID, tp2OID := firstTwoTPOIDs(pos.TPOIDs)
-		scaleInResizePending := 0
-		if pos.ScaleInResizePending {
-			scaleInResizePending = 1
-		}
-		ratchetFallbackNormalizePending := 0
-		if pos.RatchetFallbackNormalizePending {
-			ratchetFallbackNormalizePending = 1
-		}
-		directionCertifiedAtOpen := 0
-		if pos.DirectionCertifiedAtOpen {
-			directionCertifiedAtOpen = 1
-		}
-		llmAnalysisRequested := 0
-		if pos.LLMAnalysisRequested {
-			llmAnalysisRequested = 1
-		}
-		if _, err := stmtPos.Exec(sid, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, sdb.toStorageOwnerID(pos.OwnerStrategyID), formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen), llmAnalysisRequested, pos.LLMVerdict, pos.ATRMethodAtOpen, pos.HedgeFor, pos.HedgePrimaryQtyBasis, pos.HurstAtOpen, pos.HurstSizeMult, pos.SharedCloseHoldUSD, pos.SharedCloseHoldReason, boolToInt(pos.SLAfterMoved), marshalTPConsumptionsJSON(pos.TPConsumptions), pos.SLAfterTriggerPx, pos.RestingTPScannedOpenMs, pos.RestingTPReachPx, pos.RestingTPStopTriggerPx); err != nil {
-			return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
-		}
-	}
-
-	if len(s.OptionPositions) > 0 {
-		stmtOpt, err := tx.Prepare(`INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte,
-			action, quantity, entry_premium, entry_premium_usd, current_value_usd,
-			delta, gamma, theta, vega, opened_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-		if err != nil {
-			return fmt.Errorf("prepare option_position insert: %w", err)
-		}
-		defer stmtOpt.Close()
-		for _, key := range sortedOptionKeys(s.OptionPositions) {
-			opt := s.OptionPositions[key]
-			positionID := ensureOptionTradeID(s.ID, opt)
-			if _, err := stmtOpt.Exec(
-				sid, key, positionID, opt.Underlying, opt.OptionType, opt.Strike, opt.Expiry, opt.DTE,
-				opt.Action, opt.Quantity, opt.EntryPremium, opt.EntryPremiumUSD, opt.CurrentValueUSD,
-				opt.Greeks.Delta, opt.Greeks.Gamma, opt.Greeks.Theta, opt.Greeks.Vega,
-				formatTime(opt.OpenedAt),
-			); err != nil {
-				return fmt.Errorf("insert option_position %s/%s: %w", s.ID, key, err)
-			}
-		}
-	}
-
-	type trackedFlush struct {
-		index int
-	}
-	var flushed []trackedFlush
-	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json, pnl_gross, fee_source, cost_model_version, cost_policy_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare trade insert: %w", err)
-	}
-	defer stmtTrade.Close()
-	for i := range s.TradeHistory {
-		if s.TradeHistory[i].persisted {
-			continue
-		}
-		t := s.TradeHistory[i]
-		isClose := 0
-		if t.IsClose {
-			isClose = 1
-		}
-		isManual := 0
-		if t.Manual {
-			isManual = 1
-		}
-		if _, err := stmtTrade.Exec(sid, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, marshalTPOIDsJSON(t.TPOIDs), isManual, nullableFloat64(t.StopLossATRMult), t.TPTiersJSON, boolToInt(t.PnLGross), t.FeeSource, t.CostModelVersion, t.CostPolicyID); err != nil {
-			return fmt.Errorf("insert trade for %s: %w", s.ID, err)
-		}
-		flushed = append(flushed, trackedFlush{index: i})
-	}
-
-	if len(s.ClosedPositions) > 0 {
-		stmtClosed, err := tx.Prepare(`INSERT INTO closed_positions
-			(strategy_id, symbol, quantity, avg_cost, side, multiplier,
-			 opened_at, closed_at, close_price, realized_pnl, close_reason, duration_seconds)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-		if err != nil {
-			return fmt.Errorf("prepare closed_position insert: %w", err)
-		}
-		defer stmtClosed.Close()
-		for _, cp := range s.ClosedPositions {
-			closedSID, err := sdb.toStorageID(cp.StrategyID)
-			if err != nil {
-				return err
-			}
-			if _, err := stmtClosed.Exec(
-				closedSID, cp.Symbol, cp.Quantity, cp.AvgCost, cp.Side, cp.Multiplier,
-				formatTime(cp.OpenedAt), formatTime(cp.ClosedAt),
-				cp.ClosePrice, cp.RealizedPnL, cp.CloseReason, cp.DurationSeconds,
-			); err != nil {
-				return fmt.Errorf("insert closed_position %s/%s: %w", cp.StrategyID, cp.Symbol, err)
-			}
-		}
-	}
-
-	if len(s.ClosedOptionPositions) > 0 {
-		stmtClosedOpt, err := tx.Prepare(`INSERT INTO closed_option_positions
-			(strategy_id, position_id, underlying, option_type, strike, expiry,
-			 action, quantity, entry_premium_usd, close_price_usd, realized_pnl,
-			 opened_at, closed_at, close_reason, duration_seconds)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-		if err != nil {
-			return fmt.Errorf("prepare closed_option_position insert: %w", err)
-		}
-		defer stmtClosedOpt.Close()
-		for _, cop := range s.ClosedOptionPositions {
-			closedSID, err := sdb.toStorageID(cop.StrategyID)
-			if err != nil {
-				return err
-			}
-			if _, err := stmtClosedOpt.Exec(
-				closedSID, cop.PositionID, cop.Underlying, cop.OptionType,
-				cop.Strike, cop.Expiry, cop.Action, cop.Quantity,
-				cop.EntryPremiumUSD, cop.ClosePriceUSD, cop.RealizedPnL,
-				formatTime(cop.OpenedAt), formatTime(cop.ClosedAt),
-				cop.CloseReason, cop.DurationSeconds,
-			); err != nil {
-				return fmt.Errorf("insert closed_option_position %s/%s: %w", cop.StrategyID, cop.PositionID, err)
-			}
-		}
-	}
-
-	flushedDiags, err := sdb.flushPendingDiagnosticsFor(tx, s, sid, scope)
+	flushed, flushedDiags, err := sdb.writeOneStrategyBookTx(tx, s, sid, scope)
 	if err != nil {
 		return err
 	}
@@ -2192,8 +2018,8 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 	s.ClosedPositions = nil
 	s.ClosedOptionPositions = nil
 	s.pendingTradeDiagnostics = nil
-	for _, f := range flushed {
-		s.TradeHistory[f.index].persisted = true
+	for _, idx := range flushed {
+		s.TradeHistory[idx].persisted = true
 	}
 	pruneEntryGuardAfterCommit(s)
 	pruneRobinhoodOrderGuardAfterCommit(s, false)
@@ -2202,6 +2028,201 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 	}
 	enqueueFlushedDiagnostics(flushedDiags)
 	return nil
+}
+
+func (sdb *StateDB) writeOneStrategyBookTx(tx *sql.Tx, s *StrategyState, sid string, scope PortfolioScope) ([]int, []TradeDiagnosticsRow, error) {
+	var existingInitCap float64
+	err := tx.QueryRow("SELECT initial_capital FROM strategies WHERE id = ?", sid).Scan(&existingInitCap)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, nil, fmt.Errorf("read existing initial_capital for %s: %w", s.ID, err)
+	}
+	if err == nil {
+		applyInitialCapitalGuard(s, existingInitCap)
+	}
+
+	cbInt := 0
+	if s.RiskState.CircuitBreaker {
+		cbInt = 1
+	}
+	cashReconcileInt := 0
+	if s.CashReconcileRequired {
+		cashReconcileInt = 1
+	}
+	poolBudgetInt := 0
+	if s.SharedWalletPoolBudget {
+		poolBudgetInt = 1
+	}
+	paperFundingJSON, pfErr := marshalPaperFundingState(s)
+	if pfErr != nil {
+		return nil, nil, pfErr
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO strategies (id, type, platform, cash, initial_capital,
+		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
+		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
+		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
+		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source,
+		paper_funding_state, quote_precision_rebaselined)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sid, s.Type, s.Platform, s.Cash, s.InitialCapital,
+		s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
+		s.RiskState.DailyPnL, s.RiskState.DailyPnLDate, s.RiskState.ConsecutiveLosses,
+		cbInt, formatTime(s.RiskState.CircuitBreakerUntil),
+		s.RiskState.MarshalPendingCircuitClosesJSON(),
+		strategyActiveProfile(s),
+		cashReconcileInt,
+		poolBudgetInt,
+		marshalHurstGateStateJSON(s.HurstGate),
+		s.ReplayMirrorWatermark,
+		s.ReplayMirrorWatermarkSource,
+		paperFundingJSON,
+		boolToInt(s.RiskState.QuotePrecisionRebaselined),
+	); err != nil {
+		return nil, nil, fmt.Errorf("insert strategy %s: %w", s.ID, err)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM positions WHERE strategy_id = ?`, sid); err != nil {
+		return nil, nil, fmt.Errorf("delete positions for %s: %w", s.ID, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM option_positions WHERE strategy_id = ?`, sid); err != nil {
+		return nil, nil, fmt.Errorf("delete option_positions for %s: %w", s.ID, err)
+	}
+
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, ratchet_fallback_normalize_pending, open_profile, direction_certified_at_open, direction_certified_states_json, llm_analysis_requested, llm_verdict, atr_method_at_open, hedge_for, hedge_primary_qty_basis, hurst_at_open, hurst_size_mult, shared_close_hold_usd, shared_close_hold_reason, sl_after_moved, tp_consumptions_json, sl_after_trigger_px, resting_tp_scanned_open_ms, resting_tp_reach_px, resting_tp_stop_trigger_px)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("prepare position insert: %w", err)
+	}
+	defer stmtPos.Close()
+	for _, sym := range sortedPositionSymbols(s.Positions) {
+		pos := s.Positions[sym]
+		positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
+		tp1OID, tp2OID := firstTwoTPOIDs(pos.TPOIDs)
+		scaleInResizePending := 0
+		if pos.ScaleInResizePending {
+			scaleInResizePending = 1
+		}
+		ratchetFallbackNormalizePending := 0
+		if pos.RatchetFallbackNormalizePending {
+			ratchetFallbackNormalizePending = 1
+		}
+		directionCertifiedAtOpen := 0
+		if pos.DirectionCertifiedAtOpen {
+			directionCertifiedAtOpen = 1
+		}
+		llmAnalysisRequested := 0
+		if pos.LLMAnalysisRequested {
+			llmAnalysisRequested = 1
+		}
+		if _, err := stmtPos.Exec(sid, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, sdb.toStorageOwnerID(pos.OwnerStrategyID), formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen), llmAnalysisRequested, pos.LLMVerdict, pos.ATRMethodAtOpen, pos.HedgeFor, pos.HedgePrimaryQtyBasis, pos.HurstAtOpen, pos.HurstSizeMult, pos.SharedCloseHoldUSD, pos.SharedCloseHoldReason, boolToInt(pos.SLAfterMoved), marshalTPConsumptionsJSON(pos.TPConsumptions), pos.SLAfterTriggerPx, pos.RestingTPScannedOpenMs, pos.RestingTPReachPx, pos.RestingTPStopTriggerPx); err != nil {
+			return nil, nil, fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
+		}
+	}
+
+	if len(s.OptionPositions) > 0 {
+		stmtOpt, err := tx.Prepare(`INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte,
+			action, quantity, entry_premium, entry_premium_usd, current_value_usd,
+			delta, gamma, theta, vega, opened_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return nil, nil, fmt.Errorf("prepare option_position insert: %w", err)
+		}
+		defer stmtOpt.Close()
+		for _, key := range sortedOptionKeys(s.OptionPositions) {
+			opt := s.OptionPositions[key]
+			positionID := ensureOptionTradeID(s.ID, opt)
+			if _, err := stmtOpt.Exec(
+				sid, key, positionID, opt.Underlying, opt.OptionType, opt.Strike, opt.Expiry, opt.DTE,
+				opt.Action, opt.Quantity, opt.EntryPremium, opt.EntryPremiumUSD, opt.CurrentValueUSD,
+				opt.Greeks.Delta, opt.Greeks.Gamma, opt.Greeks.Theta, opt.Greeks.Vega,
+				formatTime(opt.OpenedAt),
+			); err != nil {
+				return nil, nil, fmt.Errorf("insert option_position %s/%s: %w", s.ID, key, err)
+			}
+		}
+	}
+
+	var flushed []int
+	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json, pnl_gross, fee_source, cost_model_version, cost_policy_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("prepare trade insert: %w", err)
+	}
+	defer stmtTrade.Close()
+	for i := range s.TradeHistory {
+		if s.TradeHistory[i].persisted {
+			continue
+		}
+		t := s.TradeHistory[i]
+		isClose := 0
+		if t.IsClose {
+			isClose = 1
+		}
+		isManual := 0
+		if t.Manual {
+			isManual = 1
+		}
+		if _, err := stmtTrade.Exec(sid, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, marshalTPOIDsJSON(t.TPOIDs), isManual, nullableFloat64(t.StopLossATRMult), t.TPTiersJSON, boolToInt(t.PnLGross), t.FeeSource, t.CostModelVersion, t.CostPolicyID); err != nil {
+			return nil, nil, fmt.Errorf("insert trade for %s: %w", s.ID, err)
+		}
+		flushed = append(flushed, i)
+	}
+
+	if len(s.ClosedPositions) > 0 {
+		stmtClosed, err := tx.Prepare(`INSERT INTO closed_positions
+			(strategy_id, symbol, quantity, avg_cost, side, multiplier,
+			 opened_at, closed_at, close_price, realized_pnl, close_reason, duration_seconds)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return nil, nil, fmt.Errorf("prepare closed_position insert: %w", err)
+		}
+		defer stmtClosed.Close()
+		for _, cp := range s.ClosedPositions {
+			closedSID, err := sdb.toStorageID(cp.StrategyID)
+			if err != nil {
+				return nil, nil, err
+			}
+			if _, err := stmtClosed.Exec(
+				closedSID, cp.Symbol, cp.Quantity, cp.AvgCost, cp.Side, cp.Multiplier,
+				formatTime(cp.OpenedAt), formatTime(cp.ClosedAt),
+				cp.ClosePrice, cp.RealizedPnL, cp.CloseReason, cp.DurationSeconds,
+			); err != nil {
+				return nil, nil, fmt.Errorf("insert closed_position %s/%s: %w", cp.StrategyID, cp.Symbol, err)
+			}
+		}
+	}
+
+	if len(s.ClosedOptionPositions) > 0 {
+		stmtClosedOpt, err := tx.Prepare(`INSERT INTO closed_option_positions
+			(strategy_id, position_id, underlying, option_type, strike, expiry,
+			 action, quantity, entry_premium_usd, close_price_usd, realized_pnl,
+			 opened_at, closed_at, close_reason, duration_seconds)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return nil, nil, fmt.Errorf("prepare closed_option_position insert: %w", err)
+		}
+		defer stmtClosedOpt.Close()
+		for _, cop := range s.ClosedOptionPositions {
+			closedSID, err := sdb.toStorageID(cop.StrategyID)
+			if err != nil {
+				return nil, nil, err
+			}
+			if _, err := stmtClosedOpt.Exec(
+				closedSID, cop.PositionID, cop.Underlying, cop.OptionType,
+				cop.Strike, cop.Expiry, cop.Action, cop.Quantity,
+				cop.EntryPremiumUSD, cop.ClosePriceUSD, cop.RealizedPnL,
+				formatTime(cop.OpenedAt), formatTime(cop.ClosedAt),
+				cop.CloseReason, cop.DurationSeconds,
+			); err != nil {
+				return nil, nil, fmt.Errorf("insert closed_option_position %s/%s: %w", cop.StrategyID, cop.PositionID, err)
+			}
+		}
+	}
+
+	flushedDiags, err := sdb.flushPendingDiagnosticsFor(tx, s, sid, scope)
+	if err != nil {
+		return nil, nil, err
+	}
+	return flushed, flushedDiags, nil
 }
 
 func (sdb *StateDB) QueryClosedPositions(strategyID, symbol string, since, until time.Time, limit, offset int) ([]ClosedPosition, int, error) {
@@ -2766,7 +2787,7 @@ func sortedCorrelationPartitions(m map[RiskPartition]*CorrelationSnapshot) []Ris
 	return out
 }
 
-const tradeStatsExcludedTypesSQL = `('scale_in', 'funding', 'hedge')`
+const tradeStatsExcludedTypesSQL = `('scale_in', 'funding', 'hedge', 'fee_adjustment')`
 
 type LifetimeTradeStats struct {
 	PositionsOpened int `json:"positions_opened"`
@@ -3170,8 +3191,8 @@ func (sdb *StateDB) InsertPendingLimitOrder(o PendingLimitOrder) (int64, error) 
 		return 0, err
 	}
 	res, err := sdb.db.Exec(`INSERT INTO pending_limit_orders
-		(strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, expires_at, created_at, owner_kind, partition_scope, partition_source)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'live', '')`,
 		sid, o.Symbol, o.Side, o.OrderOID, o.LimitPrice, o.OrderSize, o.TIF,
 		o.FilledSize, o.AvgFillPrice, o.FillFee, o.EntryATR, boolToInt(o.CancelRequested),
 		expiresStr, formatTime(o.CreatedAt.UTC()))
@@ -3185,7 +3206,11 @@ func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, nil
 	}
-	rows, err := sdb.db.Query(`SELECT id, strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, operator_required_since, expires_at, created_at FROM pending_limit_orders ORDER BY id`)
+	filter, err := sdb.manualPendingFilter("WHERE")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := sdb.db.Query(`SELECT id, strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, operator_required_since, expires_at, created_at FROM pending_limit_orders ` + filter + ` ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load pending limit orders: %w", err)
 	}
@@ -3217,7 +3242,7 @@ func (sdb *StateDB) UpdatePendingLimitOrderFill(id int64, filledSize, avgFillPri
 		return nil
 	}
 	_, err := sdb.db.Exec(
-		"UPDATE pending_limit_orders SET filled_size = ?, avg_fill_price = ?, fill_fee = ? WHERE id = ?",
+		"UPDATE pending_limit_orders SET filled_size = ?, avg_fill_price = ?, fill_fee = ? WHERE id = ? AND owner_kind = 'manual'",
 		filledSize, avgFillPrice, fillFee, id)
 	return err
 }
@@ -3231,7 +3256,7 @@ func (sdb *StateDB) MarkPendingLimitOrderCancelRequested(strategyID, symbol stri
 		return 0, err
 	}
 	res, err := sdb.db.Exec(
-		"UPDATE pending_limit_orders SET cancel_requested = 1 WHERE strategy_id = ? AND symbol = ?",
+		"UPDATE pending_limit_orders SET cancel_requested = 1 WHERE strategy_id = ? AND symbol = ? AND owner_kind = 'manual'",
 		sid, symbol)
 	if err != nil {
 		return 0, err
@@ -3244,7 +3269,7 @@ func (sdb *StateDB) MarkPendingLimitOrderOperatorRequired(id int64, at time.Time
 		return nil
 	}
 	_, err := sdb.db.Exec(
-		"UPDATE pending_limit_orders SET operator_required_since = ? WHERE id = ?",
+		"UPDATE pending_limit_orders SET operator_required_since = ? WHERE id = ? AND owner_kind = 'manual'",
 		formatTime(at.UTC()), id)
 	return err
 }
@@ -3254,7 +3279,7 @@ func (sdb *StateDB) ClearPendingLimitOrderOperatorRequired(id int64) error {
 		return nil
 	}
 	_, err := sdb.db.Exec(
-		"UPDATE pending_limit_orders SET operator_required_since = '' WHERE id = ?", id)
+		"UPDATE pending_limit_orders SET operator_required_since = '' WHERE id = ? AND owner_kind = 'manual'", id)
 	return err
 }
 
@@ -3262,7 +3287,7 @@ func (sdb *StateDB) DeletePendingLimitOrder(id int64) error {
 	if sdb == nil || sdb.db == nil {
 		return nil
 	}
-	_, err := sdb.db.Exec("DELETE FROM pending_limit_orders WHERE id = ?", id)
+	_, err := sdb.db.Exec("DELETE FROM pending_limit_orders WHERE id = ? AND owner_kind = 'manual'", id)
 	return err
 }
 
@@ -3274,9 +3299,13 @@ func (sdb *StateDB) CountPendingLimitOrders(strategyID, symbol string) (int, err
 	if err != nil {
 		return 0, err
 	}
+	filter, err := sdb.manualPendingFilter("AND")
+	if err != nil {
+		return 0, err
+	}
 	var n int
 	err = sdb.db.QueryRow(
-		"SELECT COUNT(*) FROM pending_limit_orders WHERE strategy_id = ? AND symbol = ?",
+		"SELECT COUNT(*) FROM pending_limit_orders WHERE strategy_id = ? AND symbol = ? "+filter,
 		sid, symbol).Scan(&n)
 	return n, err
 }
@@ -3391,6 +3420,9 @@ func (sdb *StateDB) ApplyBackfillPlan(plan BackfillPlan) error {
 	}
 	sid, err := sdb.resolvePlanStorageID(plan.Role, plan.StorageStrategyID, plan.StrategyID)
 	if err != nil {
+		return err
+	}
+	if err := sdb.refuseQuoteOwnedStorageID(sid); err != nil {
 		return err
 	}
 	tx, err := sdb.db.Begin()

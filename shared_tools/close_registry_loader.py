@@ -36,19 +36,23 @@ def build_close_registry(platform: str):
     return _load_registry().build_close_registry(platform)
 
 
+def _discoverable() -> dict:
+    return {name: entry for name, entry in _load_registry().STRATEGIES.items() if not entry.get("research_only")}
+
+
 def get_strategy(name: str) -> dict:
-    registry = _load_registry().STRATEGIES
+    registry = _discoverable()
     if name not in registry:
         raise ValueError(f"Unknown close strategy: {name}. Available: {list(registry.keys())}")
     return registry[name]
 
 
 def list_strategies() -> list[str]:
-    return list(_load_registry().STRATEGIES.keys())
+    return list(_discoverable().keys())
 
 
 def list_strategies_detailed() -> list[dict]:
-    registry = _load_registry().STRATEGIES
+    registry = _discoverable()
     return [
         {
             "name": name,

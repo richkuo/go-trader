@@ -30,6 +30,7 @@ type KillSwitchCloseInputs struct {
 	HLStopLossOIDs    map[string][]int64
 
 	HLLimitOrderLoader  func() ([]PendingLimitOrder, error)
+	QuoteLane           func(budget time.Duration) killSwitchQuoteReport
 	HLLimitOrderRoster  []StrategyConfig
 	HLLimitOrderDeps    killSwitchLimitOrderDeps
 	HLLimitOrderTimeout time.Duration
@@ -273,7 +274,7 @@ func applyKillSwitchSettledLegsWhileLatched(strategies map[string]*StrategyState
 	hasHLFills := len(plan.CloseReport.Fills) > 0
 	for _, sc := range cfgs {
 		s, ok := strategies[sc.ID]
-		if !ok || s == nil {
+		if !ok || s == nil || quoteFundingOwned(sc, s) {
 			continue
 		}
 		if hasHLFills {
@@ -293,6 +294,13 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	plan.LogLines = append(plan.LogLines, plan.LimitOrderReport.LogLines...)
 	if !plan.LimitOrderReport.ConfirmedClear() {
 		plan.OnChainConfirmedFlat = false
+	}
+	if in.QuoteLane != nil {
+		qr := in.QuoteLane(in.platformCloseBudget(in.HLLimitOrderTimeout))
+		plan.LogLines = append(plan.LogLines, qr.LogLines...)
+		if !qr.Clear {
+			plan.OnChainConfirmedFlat = false
+		}
 	}
 
 	hlPositions := in.HLPositions

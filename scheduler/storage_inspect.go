@@ -48,6 +48,8 @@ type storageFileInspection struct {
 	BasketRebalances int                  `json:"basket_rebalance_rows"`
 	BasketPending    []string             `json:"pending_basket_recovery"`
 	ReplayRuns       []string             `json:"basket_replay_runs,omitempty"`
+	QuoteOwners      int                  `json:"quote_owner_contracts"`
+	QuotePending     []string             `json:"pending_quote_recovery"`
 	FillCostPolicies []string             `json:"fill_cost_policies,omitempty"`
 }
 
@@ -68,6 +70,10 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 	out := storageInspection{Split: layout.Split, Layout: layout.describe()}
 	hasLive := cfg != nil && HasLiveStrategy(cfg.Strategies)
 	liveRH := map[string]bool{}
+	admittedQuote := map[string]bool{}
+	if cfg != nil && cfg.quoteLoad != nil {
+		admittedQuote[cfg.quoteLoad.ownerID] = true
+	}
 	if cfg != nil {
 		for _, sc := range cfg.Strategies {
 			if isRobinhoodLiveSpot(sc) {
@@ -104,7 +110,7 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 		if err != nil {
 			return storageInspection{}, fmt.Errorf("read-only open of the %s state file %q: %w", spec.Role, spec.Path, err)
 		}
-		rejections, err := inspectOneStorageFile(db, &fi, layout, ident, hasLive, liveRH)
+		rejections, err := inspectOneStorageFile(db, &fi, layout, ident, hasLive, liveRH, admittedQuote)
 		db.Close()
 		if err != nil {
 			return storageInspection{}, err
@@ -116,7 +122,7 @@ func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap,
 	return out, nil
 }
 
-func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storageLayout, ident storageIdentityMap, hasLive bool, liveRH map[string]bool) ([]string, error) {
+func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storageLayout, ident storageIdentityMap, hasLive bool, liveRH map[string]bool, admittedQuote map[string]bool) ([]string, error) {
 	var rejections []string
 	owned := make(map[PortfolioScope]bool, len(fi.ScopesOwned))
 	for _, scope := range fi.ScopesOwned {
@@ -277,6 +283,12 @@ func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storag
 	}
 	rejections = append(rejections, replayRejections...)
 
+	quoteRejections, err := inspectQuoteRows(db, fi, ident, admittedQuote)
+	if err != nil {
+		return nil, err
+	}
+	rejections = append(rejections, quoteRejections...)
+
 	if fi.LegacyUnscoped && layout.Split && fi.Role == storageRolePrimary && !hasLive {
 		rejections = append(rejections,
 			fmt.Sprintf("%s state file: an unscoped legacy portfolio_risk row cannot be placed — the split layout has no live strategy, so the row's historic mode is unknown; resolve it by hand", fi.Role))
@@ -385,6 +397,10 @@ func formatStorageInspection(si storageInspection) string {
 		fmt.Fprintf(&b, "  basket rebalance records: %d\n", fi.BasketRebalances)
 		for _, line := range fi.BasketPending {
 			fmt.Fprintf(&b, "    PENDING BASKET RECOVERY %s\n", line)
+		}
+		fmt.Fprintf(&b, "  quote owner contracts: %d\n", fi.QuoteOwners)
+		for _, line := range fi.QuotePending {
+			fmt.Fprintf(&b, "    PENDING QUOTE RECOVERY %s\n", line)
 		}
 		for _, line := range fi.ReplayRuns {
 			fmt.Fprintf(&b, "  OFFLINE BASKET REPLAY RUN %s\n", line)

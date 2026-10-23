@@ -368,6 +368,9 @@ func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev h
 	amount := parseHLFloat(ev.Delta.USDC)
 	coin := strings.ToUpper(strings.TrimSpace(ev.Delta.Coin))
 	dedupID := fundingDedupID(ev)
+	if owner := quoteFundingOwnerFor(state, key, coin); owner != nil {
+		return recordQuoteFundingEvent(sdb, owner, ev, coin, dedupID)
+	}
 
 	owners := virtualQty[coin]
 	sumQty := 0.0

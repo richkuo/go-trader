@@ -37,12 +37,15 @@ def register(
     description: str,
     default_params: dict,
     platforms: Tuple[str, ...] = VALID_PLATFORMS,
+    research_only: bool = False,
 ) -> Callable:
     if name in STRATEGIES:
         raise ValueError(f"Close strategy '{name}' is already registered")
     platforms = tuple(platforms)
     if not platforms:
         raise ValueError(f"{name}: platforms must be non-empty")
+    if not isinstance(research_only, bool):
+        raise ValueError(f"{name}: research_only must be a bool")
     bad = set(platforms) - set(VALID_PLATFORMS)
     if bad:
         raise ValueError(
@@ -56,6 +59,7 @@ def register(
             "description": description,
             "default_params": dict(default_params),
             "platforms": platforms,
+            "research_only": research_only,
         }
         return fn
 
@@ -74,8 +78,12 @@ def build_close_registry(platform: str) -> Dict[str, Dict[str, Any]]:
             "default_params": dict(entry["default_params"]),
         }
         for name, entry in STRATEGIES.items()
-        if platform in entry["platforms"]
+        if platform in entry["platforms"] and not entry["research_only"]
     }
+
+
+def research_only_close_names() -> set:
+    return {name for name, entry in STRATEGIES.items() if entry["research_only"]}
 
 
 def _normalize_result(name: str, result: Optional[dict]) -> dict:
@@ -121,6 +129,8 @@ def evaluate(name: str, position: dict, market: dict, params: Optional[dict] = N
     if name not in STRATEGIES:
         raise ValueError(f"Unknown close strategy: {name}. Available: {list(STRATEGIES.keys())}")
     entry = STRATEGIES[name]
+    if entry["research_only"]:
+        raise ValueError(f"Close strategy {name} is research-only: the admitted quote coordinator owns it, and ordinary evaluation and close fallback refuse it")
     merged = {**entry["default_params"], **(params or {})}
     return _normalize_result(name, entry["fn"](position or {}, market or {}, merged))
 
@@ -196,3 +206,16 @@ register(
     "AVWAP loss-of-line exit — full close when the mark breaches the anchored VWAP by buffer_atr_mult ATR (needs market avwap context; atr_source: live|entry)",
     {"buffer_atr_mult": 0.25, "atr_source": "live"},
 )(avwap_stop_evaluate)
+
+
+def _inventory_quote_exit_evaluate(position, market, params):
+    raise ValueError("inventory_quote_exit is research-only and is never evaluated by the scalar close path")
+
+
+register(
+    "inventory_quote_exit",
+    "Research-only native close owned by the quote coordinator: elective reducing quotes and inventory age or cap exits (issue 1860); production refuses it",
+    {},
+    platforms=("futures",),
+    research_only=True,
+)(_inventory_quote_exit_evaluate)

@@ -3321,6 +3321,324 @@ def run_cancel_order(symbol, oid, mode):
         sys.exit(1)
 
 
+QUOTE_LIVE_STATUSES = ("open", "resting")
+QUOTE_CANCELLED_STATUSES = ("canceled", "cancelled", "marginCanceled", "vaultWithdrawalCanceled", "openInterestCapCanceled",
+                            "selfTradeCanceled", "reduceOnlyCanceled", "siblingFilledCanceled", "delistedCanceled",
+                            "liquidatedCanceled", "scheduledCancel", "tickRejected", "minTradeNtlRejected")
+QUOTE_REJECTED_STATUSES = ("rejected", "perpMarginRejected", "reduceOnlyRejected", "badAloPxRejected", "iocCancelRejected",
+                           "badTriggerPxRejected", "marketOrderNoLiquidityRejected", "positionIncreaseAtOpenInterestCapRejected",
+                           "positionFlipAtOpenInterestCapRejected", "tooAggressiveAtOpenInterestCapRejected",
+                           "openInterestIncreaseRejected", "insufficientSpotBalanceRejected", "oracleRejected", "perpMaxPositionRejected")
+
+
+def _quote_print(out, code=0):
+    print(json.dumps(out, cls=SafeEncoder))
+    if code:
+        sys.exit(code)
+
+
+def quote_status_outcome(resp, now_ms):
+    if not isinstance(resp, dict):
+        return {"status": "unknown", "venue_time_ms": now_ms, "detail": f"orderStatus returned no object: {resp!r}"}
+    top = resp.get("status")
+    if top == "unknownOid":
+        return {"status": "absent", "venue_time_ms": now_ms, "detail": "the venue does not know this client id"}
+    if top != "order":
+        return {"status": "unknown", "venue_time_ms": now_ms, "detail": f"orderStatus returned status {top!r}"}
+    wrapper = resp.get("order")
+    if not isinstance(wrapper, dict) or not isinstance(wrapper.get("order"), dict):
+        return {"status": "unknown", "venue_time_ms": now_ms, "detail": "orderStatus returned no order body"}
+    order = wrapper["order"]
+    status = str(wrapper.get("status") or "")
+    try:
+        orig = _recovery_float(order.get("origSz", order.get("sz")), "origSz")
+        remaining = _recovery_float(order.get("sz"), "sz")
+    except ValueError as e:
+        return {"status": "unknown", "venue_time_ms": now_ms, "detail": str(e)}
+    executed = orig if status == "filled" else max(orig - remaining, 0.0)
+    filled_text = str(order.get("origSz")) if status == "filled" and order.get("origSz") not in (None, "") else repr(executed)
+    try:
+        ts = int(wrapper.get("statusTimestamp") or order.get("timestamp") or now_ms)
+    except (TypeError, ValueError):
+        ts = now_ms
+    try:
+        accepted = int(order.get("timestamp") or 0)
+    except (TypeError, ValueError):
+        accepted = 0
+    out = {"venue_order_id": str(order.get("oid", "")), "venue_time_ms": ts, "filled_qty": filled_text}
+    if status in QUOTE_LIVE_STATUSES:
+        out.update({"status": "resting", "accepted_at_ms": accepted})
+    elif status == "triggered":
+        out.update({"status": "triggered", "accepted_at_ms": accepted})
+    elif status == "filled":
+        out.update({"status": "filled"})
+    elif status in QUOTE_CANCELLED_STATUSES:
+        out.update({"status": "cancelled", "detail": status})
+    elif status in QUOTE_REJECTED_STATUSES:
+        out.update({"status": "rejected", "detail": status})
+    else:
+        out.update({"status": "unknown", "detail": f"unfamiliar order state {status!r}"})
+    return out
+
+
+def quote_place_outcome(resp, now_ms):
+    if isinstance(resp, dict) and resp.get("status") == "err":
+        return {"status": "rejected", "venue_time_ms": now_ms, "detail": f"the venue refused the action: {resp.get('response')}"}
+    kind, payload = _classify_sl_response(resp)
+    if kind == "resting":
+        return {"status": "resting", "venue_order_id": str(payload), "venue_time_ms": now_ms, "accepted_at_ms": now_ms}
+    if kind == "filled":
+        filled = ""
+        try:
+            st = resp["response"]["data"]["statuses"][0]["filled"]
+            filled = str(st.get("totalSz") or "")
+        except Exception:
+            filled = ""
+        out = {"status": "filled", "venue_order_id": str(payload), "venue_time_ms": now_ms}
+        if filled:
+            out["filled_qty"] = filled
+        return out
+    if kind == "error":
+        return {"status": "rejected", "venue_time_ms": now_ms, "detail": str(payload)}
+    return {"status": "unknown", "venue_time_ms": now_ms, "detail": f"the placement returned no usable status: {resp!r}"}
+
+
+def run_quote_place(symbol, side, size, limit_price, trigger_px, tif, cloid, role, expires_at_ms, reduce_only, mode):
+    now_ms = int(time.time() * 1000)
+    out = {"platform": "hyperliquid", "symbol": symbol, "client_order_id": cloid, "checked_at_ms": now_ms}
+    if mode != "live":
+        out["error"] = "--quote-place requires --mode=live"
+        out["outcome"] = {"status": "rejected", "venue_time_ms": now_ms, "detail": out["error"]}
+        _quote_print(out, 1)
+    if now_ms >= int(expires_at_ms):
+        out["outcome"] = {"status": "rejected", "venue_time_ms": now_ms, "detail": "the request expired before submission; nothing was sent"}
+        _quote_print(out)
+        return
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+        out["account"] = hyperliquid_account_key(adapter.account_address)
+        adapter.set_order_expiry(int(expires_at_ms))
+        is_buy = side == "buy"
+        if role == "stop":
+            adapter.check_quote_request(symbol, size, trigger_px)
+        elif role in ("bid", "ask", "close"):
+            adapter.check_quote_request(symbol, size, limit_price)
+        else:
+            raise ValueError(f"unknown quote role {role!r}")
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        out["outcome"] = {"status": "rejected", "venue_time_ms": now_ms, "detail": f"refused before submission: {e}"}
+        _quote_print(out)
+        return
+    try:
+        if role == "stop":
+            resp = adapter.place_stop_loss(symbol, float(size), float(trigger_px), is_buy, cloid=cloid, require_exact=True)
+        else:
+            resp = adapter.limit_open(symbol, is_buy, float(size), float(limit_price), tif=tif, cloid=cloid,
+                                      reduce_only=bool(reduce_only), require_exact=True)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        out["error"] = f"quote placement outcome is unknown: {e}"
+        out["outcome"] = {"status": "unknown", "venue_time_ms": int(time.time() * 1000), "detail": out["error"]}
+        _quote_print(out, 1)
+    out["outcome"] = quote_place_outcome(resp, int(time.time() * 1000))
+    _quote_print(out)
+
+
+def run_quote_cancel(symbol, cloid, oid, mode):
+    now_ms = int(time.time() * 1000)
+    out = {"platform": "hyperliquid", "symbol": symbol, "client_order_id": cloid, "checked_at_ms": now_ms}
+    if mode != "live":
+        out["error"] = "--quote-cancel requires --mode=live"
+        _quote_print(out, 1)
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+        out["account"] = hyperliquid_account_key(adapter.account_address)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        out["error"] = f"adapter construction failed before the cancel was sent: {e}"
+        out["outcome"] = {"status": "unknown", "venue_time_ms": now_ms, "detail": out["error"]}
+        _quote_print(out, 1)
+    cancel_detail = ""
+    try:
+        resp = adapter.cancel_by_cloid(symbol, cloid)
+        cancel_detail = json.dumps(resp, sort_keys=True, default=str)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        cancel_detail = f"cancel request failed: {e}"
+    try:
+        status = quote_status_outcome(adapter.query_order_by_cloid(cloid), int(time.time() * 1000))
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        status = {"status": "unknown", "venue_time_ms": int(time.time() * 1000), "detail": f"the post-cancel status read failed: {e}"}
+    status["detail"] = (status.get("detail", "") + " | cancel: " + cancel_detail).strip(" |")
+    out["outcome"] = status
+    _quote_print(out)
+
+
+def run_quote_status(symbol, cloid, mode):
+    now_ms = int(time.time() * 1000)
+    out = {"platform": "hyperliquid", "symbol": symbol, "client_order_id": cloid, "checked_at_ms": now_ms}
+    if mode != "live":
+        out["error"] = "--quote-status requires --mode=live"
+        _quote_print(out, 1)
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+        out["account"] = hyperliquid_account_key(adapter.account_address)
+        out["outcome"] = quote_status_outcome(adapter.query_order_by_cloid(cloid), int(time.time() * 1000))
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        out["error"] = f"quote status read failed: {e}"
+        _quote_print(out, 1)
+    _quote_print(out)
+
+
+def _quote_fill_key(f):
+    return (str(f.get("coin")), str(f.get("oid")), str(f.get("time")), str(f.get("tid")))
+
+
+def _quote_canonical_fill(f, account):
+    side = f.get("side")
+    if side == "B":
+        side = "buy"
+    elif side == "A":
+        side = "sell"
+    cloid = f.get("cloid")
+    return {
+        "account": account,
+        "namespace": "",
+        "coin": str(f.get("coin") or ""),
+        "side": str(side or ""),
+        "px": str(f.get("px") if f.get("px") is not None else ""),
+        "size": str(f.get("sz") if f.get("sz") is not None else ""),
+        "fee": str(f.get("fee") if f.get("fee") is not None else ""),
+        "fee_asset": str(f.get("feeToken") or "USDC"),
+        "start_position": "" if f.get("startPosition") in (None, "") else str(f.get("startPosition")),
+        "time_ms": int(f.get("time")),
+        "trade_id": "" if f.get("tid") is None else str(f.get("tid")),
+        "order_id": "" if f.get("oid") is None else str(f.get("oid")),
+        "client_order_id": str(cloid).lower() if cloid else "",
+        "raw": json.dumps(f, sort_keys=True, separators=(",", ":"), default=str),
+    }
+
+
+def scan_quote_fills(adapter, coin, since_ms, until_ms, account):
+    start = int(since_ms)
+    until = int(until_ms or 0)
+    kept = {}
+    order = []
+    conflicts = []
+    pages = 0
+    max_pages = HL_FILLS_RECENT_LIMIT // HL_FILLS_MIN_PAGE + 1
+    coverage = {"complete": False, "from_ms": int(since_ms), "through_ms": 0, "reason": "", "pages": 0}
+    while True:
+        if pages >= max_pages:
+            coverage["reason"] = f"the fill history needs more than {max_pages} pages"
+            break
+        requested_at = int(time.time() * 1000)
+        page = adapter.user_fills_since(start)
+        pages += 1
+        coverage["pages"] = pages
+        if not isinstance(page, list):
+            raise ValueError(f"userFillsByTime returned no list: {page!r}")
+        added = 0
+        times = []
+        malformed = ""
+        for f in page:
+            if not isinstance(f, dict):
+                malformed = f"a fill page carries a non-object fill: {f!r}"
+                break
+            t = _recovery_fill_time(f)
+            if t is None or f.get("tid") is None or f.get("oid") is None:
+                malformed = "a fill page carries a fill with no time, trade id or order id"
+                break
+            times.append(t)
+            key = _quote_fill_key(f)
+            body = json.dumps(f, sort_keys=True, separators=(",", ":"), default=str)
+            if key in kept:
+                if kept[key][1] != body:
+                    conflicts.append(f"fill {'|'.join(key)} was returned twice with different bodies")
+                continue
+            kept[key] = (f, body)
+            order.append(key)
+            added += 1
+        if malformed:
+            coverage["reason"] = malformed
+            break
+        if len(order) >= HL_FILLS_RECENT_LIMIT:
+            coverage["reason"] = f"{len(order)} fills reach the {HL_FILLS_RECENT_LIMIT} fills the venue retains"
+            break
+        if added == 0 and len(page) >= HL_FILLS_MIN_PAGE:
+            coverage["reason"] = "a full fill page did not advance in time"
+            break
+        if len(page) < HL_FILLS_MIN_PAGE:
+            coverage["complete"] = True
+            coverage["through_ms"] = min(until, requested_at) if until > 0 else requested_at
+            break
+        if times != sorted(times):
+            coverage["reason"] = "a full fill page is not in time order"
+            break
+        if times[-1] <= start:
+            coverage["reason"] = "a full fill page did not advance in time"
+            break
+        start = times[-1]
+    fills = []
+    for key in order:
+        f = kept[key][0]
+        if str(f.get("coin")) != coin:
+            continue
+        t = _recovery_fill_time(f)
+        if until > 0 and t > until:
+            continue
+        fills.append(_quote_canonical_fill(f, account))
+    return {"fills": fills, "coverage": coverage, "conflicts": conflicts}
+
+
+def run_quote_recover(symbol, since_ms, until_ms, mode):
+    now_ms = int(time.time() * 1000)
+    out = {"platform": "hyperliquid", "symbol": symbol, "checked_at_ms": now_ms}
+    if mode != "live":
+        out["error"] = "--quote-recover requires --mode=live"
+        _quote_print(out, 1)
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+        account = hyperliquid_account_key(adapter.account_address)
+        out["account"] = account
+        out["recovery"] = scan_quote_fills(adapter, symbol, since_ms, until_ms, account)
+        out["checked_at_ms"] = int(time.time() * 1000)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        out["error"] = f"quote fill recovery failed: {e}"
+        _quote_print(out, 1)
+    _quote_print(out)
+
+
+def run_quote_position(symbol, mode):
+    now_ms = int(time.time() * 1000)
+    out = {"platform": "hyperliquid", "symbol": symbol, "checked_at_ms": now_ms}
+    if mode != "live":
+        out["error"] = "--quote-position requires --mode=live"
+        _quote_print(out, 1)
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+        account = hyperliquid_account_key(adapter.account_address)
+        read_at = int(time.time() * 1000)
+        pos = adapter.strict_position(symbol)
+        out["account"] = account
+        out["position"] = {"account": account, "coin": symbol, "size": pos["size"], "liquidation_px": pos["liquidation_px"],
+                           "free_margin": pos["free_margin"], "read_at_ms": read_at}
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        out["error"] = f"strict position read failed: {e}"
+        _quote_print(out, 1)
+    _quote_print(out)
+
+
 def main():
     if "--batch-check" in sys.argv:
         import argparse
@@ -3569,6 +3887,85 @@ def main():
                     stop_cloid=args.stop_cloid,
                     expires_after_ms=args.expires_after_ms,
                     stop_expires_after_ms=args.stop_expires_after_ms)
+    elif "--quote-place" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--quote-place", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--side", required=True, choices=["buy", "sell"])
+        parser.add_argument("--size", required=True)
+        parser.add_argument("--limit-price", default="")
+        parser.add_argument("--trigger-px", default="")
+        parser.add_argument("--tif", default="Alo", choices=["Alo", "Gtc", "Ioc"])
+        parser.add_argument("--cloid", required=True)
+        parser.add_argument("--role", required=True, choices=["bid", "ask", "stop", "close"])
+        parser.add_argument("--expires-at-ms", type=int, required=True)
+        parser.add_argument("--reduce-only", action="store_true")
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#1860): validate argv shape and exit 0 without trading.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        if args.role == "stop" and not args.trigger_px:
+            _quote_print({"error": "--role=stop needs --trigger-px", "outcome": {"status": "rejected", "detail": "no trigger price"}}, 1)
+        if args.role != "stop" and not args.limit_price:
+            _quote_print({"error": "a quote order needs --limit-price", "outcome": {"status": "rejected", "detail": "no limit price"}}, 1)
+        run_quote_place(args.symbol, args.side, args.size, args.limit_price, args.trigger_px, args.tif, args.cloid,
+                        args.role, args.expires_at_ms, args.reduce_only, args.mode)
+    elif "--quote-cancel" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--quote-cancel", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--cloid", required=True)
+        parser.add_argument("--oid", default="")
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#1860): validate argv shape and exit 0 without trading.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        run_quote_cancel(args.symbol, args.cloid, args.oid, args.mode)
+    elif "--quote-status" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--quote-status", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--cloid", required=True)
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#1860): validate argv shape and exit 0 without reading the venue.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        run_quote_status(args.symbol, args.cloid, args.mode)
+    elif "--quote-recover" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--quote-recover", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--since-ms", type=int, required=True)
+        parser.add_argument("--until-ms", type=int, required=True)
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#1860): validate argv shape and exit 0 without reading the venue.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        run_quote_recover(args.symbol, args.since_ms, args.until_ms, args.mode)
+    elif "--quote-position" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--quote-position", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#1860): validate argv shape and exit 0 without reading the venue.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        run_quote_position(args.symbol, args.mode)
     elif "--limit-open" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
