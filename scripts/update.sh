@@ -849,7 +849,10 @@ update_exit_coordinator() {
 
     local had_go_trader_snap=0
     if [[ -f "$recovery_dir/manifest.env" ]]; then
-        had_go_trader_snap=$(sed -n 's/^had_go_trader=//p' "$recovery_dir/manifest.env" | tr -d "'\"\\" | head -n 1)
+        had_go_trader_snap=$(
+            source "$recovery_dir/manifest.env" 2>/dev/null || true
+            printf '%s' "${had_go_trader:-0}"
+        )
     fi
 
     if [[ "$stage_stop_service" == "failed" || "$stage_restore_files" != "ok" || "$stage_restore_venv" != "ok" || "$stage_restore_binaries" != "ok" || "$stage_restore_external" == "failed" || "$stage_restore_ownership" == "failed" ]]; then
@@ -1277,11 +1280,11 @@ if [[ -z "$rsync_from" ]]; then
         uv.lock
     )
 
-    if ! update_git "$repo_root" --no-optional-locks diff --quiet -- "${build_paths[@]}" || ! update_git "$repo_root" --no-optional-locks diff --cached --quiet -- "${build_paths[@]}"; then
+    if [[ -n "$(update_git "$repo_root" --no-optional-locks status --porcelain --untracked-files=no -- "${build_paths[@]}")" ]]; then
         update_git "$repo_root" --no-optional-locks status --short -- "${build_paths[@]}" >&2
         fail "working tree has uncommitted changes in build-input paths; commit, stash, or revert first"
     fi
-    if ! update_git "$repo_root" --no-optional-locks diff --quiet || ! update_git "$repo_root" --no-optional-locks diff --cached --quiet; then
+    if [[ -n "$(update_git "$repo_root" --no-optional-locks status --porcelain --untracked-files=no)" ]]; then
         echo "[update] warning: uncommitted changes outside build-input paths (will survive git pull):" >&2
         update_git "$repo_root" --no-optional-locks status --short >&2
     fi

@@ -1374,7 +1374,7 @@ EOS
     }
 
     note "rsync mode with stale deployment .git HEAD: /health mismatch restores exact pre-update tree, not stale HEAD"
-    runuser -u go-trader -- git -C "$tree" reset -q "$stale_sha"
+    runuser -u go-trader -- env HOME="$WORK" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" git -C "$tree" reset -q "$stale_sha"
     [[ "$(root_git "$tree" rev-parse HEAD)" == "$stale_sha" ]] || fail "did not set stale HEAD"
     local base_managed base_venv base_bin base_prev base_idx pid_before
     base_managed=$(fixture_managed_manifest "$tree")
@@ -1397,8 +1397,8 @@ EOS
     done
 
     note "git mode with local staged, unstaged, and untracked edits outside build paths"
-    runuser -u go-trader -- git -C "$tree" reset -q "$v1_sha"
-    runuser -u go-trader -- sh -c "printf 'staged-doc-edit\n' >>'$tree/SKILL.md' && git -C '$tree' add SKILL.md && printf 'unstaged-readme-edit\n' >>'$tree/README.md' && printf 'untracked-local\n' >'$tree/docs/local_untracked.md' && (git -C '$tree' update-index -q --refresh || true)"
+    runuser -u go-trader -- env HOME="$WORK" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" git -C "$tree" reset -q "$v1_sha"
+    runuser -u go-trader -- env HOME="$WORK" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" sh -c "printf 'staged-doc-edit\n' >>'$tree/SKILL.md' && git -C '$tree' add SKILL.md && printf 'unstaged-readme-edit\n' >>'$tree/README.md' && printf 'untracked-local\n' >'$tree/docs/local_untracked.md' && (git -C '$tree' update-index -q --refresh || true)"
     base_managed=$(fixture_managed_manifest "$tree")
     base_venv=$(fixture_venv_manifest "$tree")
     base_bin=$(file_fp "$tree/go-trader")
@@ -1488,7 +1488,7 @@ EOS
     expect_exit 0 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" bash scripts/update.sh --clear-recovery
     grep -q "cleared incomplete-recovery marker" "$WORK/last.out" || fail "--clear-recovery did not report cleared marker"
 
-    runuser -u go-trader -- sh -c "git -C '$tree' reset -q --hard HEAD && rm -f '$tree/docs/local_untracked.md'"
+    runuser -u go-trader -- env HOME="$WORK" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" sh -c "git -C '$tree' reset -q --hard HEAD && rm -f '$tree/docs/local_untracked.md'"
     expect_exit 0 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
     [[ "$(root_git "$tree" rev-parse HEAD)" == "$v2_sha" ]] || fail "post-clear update did not advance to v2"
     systemctl stop "$tunit"
