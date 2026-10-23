@@ -62,6 +62,9 @@ prev_pid_was_alive=0
 prev_running_version=""
 pre_update_status_port=""
 active_child_pid=""
+declare -a tracked_child_pids=()
+signal_wrapper_pid=""
+proc_root="${GO_TRADER_PROC_ROOT:-/proc}"
 all_child_pid=""
 swap_stage="none"
 unit_mutated=0
@@ -249,30 +252,47 @@ fail() {
 run_tracked_child() {
     "$@" &
     active_child_pid=$!
+    tracked_child_pids+=("$active_child_pid")
     local rc=0
     wait "$active_child_pid" || rc=$?
     active_child_pid=""
     return "$rc"
 }
 
-stop_update_children() {
-    local -a pids_to_stop=()
-    if [[ -n "$active_child_pid" ]] && kill -0 "$active_child_pid" 2>/dev/null; then
-        if command -v pgrep >/dev/null 2>&1; then
-            local gpid
-            while IFS= read -r gpid; do
-                [[ -n "$gpid" ]] && pids_to_stop+=("$gpid")
-            done < <(pgrep -P "$active_child_pid" 2>/dev/null || true)
-        fi
-        pids_to_stop+=("$active_child_pid")
-    fi
+collect_descendant_pids() {
+    local parent_pid="$1" child_pid
+    [[ -n "$parent_pid" ]] || return 0
     if command -v pgrep >/dev/null 2>&1; then
-        local cpid
-        while IFS= read -r cpid; do
-            [[ -n "$cpid" ]] && pids_to_stop+=("$cpid")
-        done < <(pgrep -P "$main_shell_pid" 2>/dev/null || true)
+        while IFS= read -r child_pid; do
+            [[ -n "$child_pid" ]] || continue
+            [[ -n "$signal_wrapper_pid" && "$child_pid" == "$signal_wrapper_pid" ]] && continue
+            collect_descendant_pids "$child_pid"
+            printf '%s\n' "$child_pid"
+        done < <(pgrep -P "$parent_pid" 2>/dev/null || true)
     fi
-    local p
+}
+
+stop_update_children() {
+    local -a roots=() pids_to_stop=()
+    local tpid dpid p seen=" "
+    [[ -n "$active_child_pid" ]] && roots+=("$active_child_pid")
+    for tpid in ${tracked_child_pids[@]+"${tracked_child_pids[@]}"}; do
+        [[ -n "$tpid" ]] && roots+=("$tpid")
+    done
+    for tpid in ${roots[@]+"${roots[@]}"}; do
+        [[ -n "$signal_wrapper_pid" && "$tpid" == "$signal_wrapper_pid" ]] && continue
+        while IFS= read -r dpid; do
+            [[ -n "$dpid" ]] || continue
+            if [[ "$seen" != *" $dpid "* ]]; then
+                seen="${seen}${dpid} "
+                pids_to_stop+=("$dpid")
+            fi
+        done < <(collect_descendant_pids "$tpid")
+        if kill -0 "$tpid" 2>/dev/null && [[ "$seen" != *" $tpid "* ]]; then
+            seen="${seen}${tpid} "
+            pids_to_stop+=("$tpid")
+        fi
+    done
     for p in ${pids_to_stop[@]+"${pids_to_stop[@]}"}; do
         kill -TERM "$p" 2>/dev/null || true
     done
@@ -297,6 +317,7 @@ stop_update_children() {
         wait "$active_child_pid" 2>/dev/null || true
     fi
     active_child_pid=""
+    tracked_child_pids=()
 }
 
 update_record_intent() {
@@ -330,10 +351,10 @@ signal_read_pidfile() {
 
 signal_log_proc_snapshot() {
     local pid="$1"
-    [[ -d "/proc/$pid" ]] || return 0
+    [[ -d "$proc_root/$pid" ]] || return 0
     local cwd_line cmd_line
-    cwd_line=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || echo "<unread>")
-    cmd_line=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || echo "<unread>")
+    cwd_line=$(readlink -f "$proc_root/$pid/cwd" 2>/dev/null || echo "<unread>")
+    cmd_line=$(tr '\0' ' ' <"$proc_root/$pid/cmdline" 2>/dev/null || echo "<unread>")
     echo "[update] signal: pre-kill snapshot pid=$pid cwd=$cwd_line cmdline=${cmd_line:0:500}"
 }
 
@@ -362,6 +383,7 @@ signal_launch_wrapper() {
         fail "GO_TRADER_RUN_SH ($run_sh) is not executable"
     fi
     setsid nohup bash "$run_sh" >>"$signal_log_out" 2>&1 &
+    signal_wrapper_pid=$!
     sleep 1
 }
 
@@ -376,6 +398,7 @@ signal_launch_wrapper_nonfatal() {
         return 1
     fi
     setsid nohup bash "$run_sh" >>"$signal_log_out" 2>&1 &
+    signal_wrapper_pid=$!
     sleep 1
     return 0
 }
@@ -385,7 +408,7 @@ restart_uses_signal_pid() {
 }
 
 require_signal_restart_prereqs() {
-    if [[ ! -d /proc/self ]]; then
+    if [[ ! -d "$proc_root/self" ]]; then
         fail "systemd unit missing and signal fallback requires Linux (/proc); install the unit or use --restart-mode signal on Linux with pidfile+run.sh"
     fi
     if [[ ! -f "$go_trader_pidfile" ]]; then
@@ -550,16 +573,17 @@ systemd_unit_manages_this_instance() {
 }
 
 signal_sweep_stray_instance_procs() {
-    [[ -d /proc ]] || return 0
+    [[ -d "$proc_root" ]] || return 0
     local repo_abs
     repo_abs=$(update_canonicalize_path "$(pwd)")
     [[ -n "$repo_abs" ]] || return 0
     local entry pid comm pid_cwd
-    for entry in /proc/[0-9]*; do
-        pid="${entry#/proc/}"
+    for entry in "$proc_root"/[0-9]*; do
+        [[ -e "$entry" ]] || continue
+        pid="${entry#"$proc_root"/}"
         kill -0 "$pid" 2>/dev/null || continue
-        comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
-        pid_cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)
+        comm=$(cat "$proc_root/$pid/comm" 2>/dev/null || true)
+        pid_cwd=$(readlink -f "$proc_root/$pid/cwd" 2>/dev/null || true)
         [[ "$(update_should_sweep_proc "$comm" "$pid_cwd" "$repo_abs")" == "sweep" ]] || continue
         echo "[update] rollback: sweeping stray go-trader pid=$pid (cwd=$pid_cwd) sharing this instance's state DB" >&2
         kill -TERM "$pid" 2>/dev/null || true
@@ -655,7 +679,7 @@ start_and_verify_recovered_service() {
     sudo systemctl restart "$service_unit" || rb_rc=$?
     if [[ $rb_rc -eq 5 ]]; then
         echo "[update] recovery: systemd unit $service_unit not found — trying signal respawn" >&2
-        if [[ ! -d /proc/self ]] || [[ ! -f "$go_trader_pidfile" ]]; then
+        if [[ ! -d "$proc_root/self" ]] || [[ ! -f "$go_trader_pidfile" ]]; then
             echo "[update] recovery: signal fallback unavailable (need Linux + pidfile)" >&2
             return 1
         fi
@@ -693,6 +717,7 @@ on_update_signal() {
     if [[ "$BASHPID" != "$main_shell_pid" ]]; then
         return 0
     fi
+    IFS=$' \t\n'
     caught_signal="$sig"
     failure_reason="interrupted by SIG${sig} in phase=${phase_name:-unknown}"
     echo "[update] interrupted by SIG${sig} in phase=${phase_name:-unknown}" >&2
@@ -714,10 +739,9 @@ update_exit_coordinator() {
     fi
     coordinator_done=1
     coordinator_active=1
+    IFS=$' \t\n'
     set +e
     trap '' TERM INT HUP EXIT
-
-    stop_update_children
 
     if [[ "$update_succeeded" == "1" && "$exit_rc" -eq 0 ]]; then
         if [[ -n "$tree_owner" ]]; then
@@ -735,6 +759,8 @@ update_exit_coordinator() {
         fi
         exit 0
     fi
+
+    stop_update_children
 
     [[ "$exit_rc" -eq 0 ]] && exit_rc=1
     if [[ -z "$failure_reason" && -n "$recovery_dir" && -f "$recovery_dir/subshell_failure_reason" ]]; then
@@ -1256,7 +1282,7 @@ if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
         echo "[update] signal: systemd unit '$service_unit' is active and its ExecStart runs this binary ($(pwd)/go-trader) — routing restart through systemctl to avoid spawning an out-of-cgroup duplicate (#850). Set GO_TRADER_SERVICE to target a different unit, or stop the unit to use signal mode." >&2
         restart_mode="systemd"
     else
-        if [[ ! -d /proc/self ]]; then
+        if [[ ! -d "$proc_root/self" ]]; then
             fail "RESTART_MODE=signal requires Linux (/proc); use systemd mode on other OSes"
         fi
         if [[ ! -f "$go_trader_pidfile" ]]; then
@@ -1339,7 +1365,7 @@ if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
     fi
     signal_log_proc_snapshot "$prev_main_pid"
     repo_abs=$(update_canonicalize_path "$(pwd)")
-    proc_cwd=$(readlink -f "/proc/$prev_main_pid/cwd" 2>/dev/null || true)
+    proc_cwd=$(readlink -f "$proc_root/$prev_main_pid/cwd" 2>/dev/null || true)
     if [[ -n "$proc_cwd" && -n "$repo_abs" && "$proc_cwd" != "$repo_abs" ]]; then
         echo "[update] signal: warning: process cwd ($proc_cwd) != repo root ($repo_abs)" >&2
     fi
@@ -1356,18 +1382,7 @@ else
     fi
 fi
 
-pre_update_status_port=$(python3 - "$repo_root/scheduler/config.json" <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    cfg = json.load(open(sys.argv[1]))
-    p = cfg.get("status_port") or 0
-    if isinstance(p, (int, float)) and int(p) > 0:
-        print(int(p))
-except Exception:
-    pass
-PY
-)
-pre_update_status_port="${pre_update_status_port:-8099}"
+pre_update_status_port="${UPDATE_CONFIG_STATUS_PORT:-8099}"
 
 end_phase
 
@@ -1395,7 +1410,7 @@ else
         printf '\n# partial-pull-mutation\n' >>"$repo_root/README.md"
         fail "forced git pull failure in $repo_root"
     fi
-    update_git "$repo_root" pull --ff-only || fail "git pull --ff-only failed in $repo_root (see the git error above)"
+    run_tracked_child update_git "$repo_root" pull --ff-only || fail "git pull --ff-only failed in $repo_root (see the git error above)"
     post_pull_sha=$(update_git "$repo_root" rev-parse HEAD 2>/dev/null || echo "")
     end_phase
 fi
@@ -1429,11 +1444,11 @@ if update_should_fail_at build; then
 fi
 if [[ -n "$build_export_tree" ]]; then
     echo "[update] build: Go sources of $build_export_commit exported from $build_export_tree (untracked files are never built)"
-    update_build_go_export "$build_export_tree" "$build_export_commit" "$go_bin" "$ver" "$repo_root/go-trader.new" \
+    run_tracked_child update_build_go_export "$build_export_tree" "$build_export_commit" "$go_bin" "$ver" "$repo_root/go-trader.new" \
         || fail "go build of the exported sources failed"
 else
     echo "[update] build: Go sources of the root-owned --rsync-from source $rsync_from/scheduler (never the deployment's scheduler/, which its service can write)"
-    GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$rsync_from/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver" -o "$repo_root/go-trader.new" . \
+    run_tracked_child env GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$rsync_from/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver" -o "$repo_root/go-trader.new" . \
         || fail "go build of $rsync_from/scheduler failed"
 fi
 if [[ ! -s ./go-trader.new ]]; then

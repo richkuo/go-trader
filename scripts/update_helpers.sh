@@ -959,16 +959,23 @@ update_build_go_export() {
     local tree="$1" commit="$2" go_bin="$3" ver="$4" out="$5" pkg="${6:-.}" work full rc=0
     full=$(update_git "$tree" rev-parse --verify "$commit^{commit}") || return 1
     work=$(mktemp -d "${TMPDIR:-/tmp}/go-trader-build.XXXXXX") || return 1
-    if ! update_git "$tree" archive --format=tar -o "$work/src.tar" "$full" scheduler || ! tar -x -f "$work/src.tar" -C "$work"; then
-        rm -rf "$work"
-        return 1
-    fi
-    GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$work/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver -X main.SourceCommit=$full" -o "$out" "$pkg" || rc=$?
+    (
+        trap 'rm -rf "$work"' EXIT TERM INT HUP
+        if ! update_git "$tree" archive --format=tar -o "$work/src.tar" "$full" scheduler || ! tar -x -f "$work/src.tar" -C "$work"; then
+            exit 1
+        fi
+        GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$work/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver -X main.SourceCommit=$full" -o "$out" "$pkg"
+    ) || rc=$?
     rm -rf "$work"
     return "$rc"
 }
 
 update_realpath() {
+    local phys
+    if [[ -d "$1" ]] && phys=$(cd "$1" 2>/dev/null && pwd -P); then
+        printf '%s\n' "$phys"
+        return 0
+    fi
     python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
 }
 
@@ -1498,7 +1505,13 @@ update_unit_owner() {
 }
 
 update_relpath_in_tree() {
-    python3 - "$1" "$2" <<'PY'
+    local tree="$1" raw="$2"
+    [[ -n "$raw" ]] || return 0
+    if [[ "$raw" != /* && "$raw" != *..* ]]; then
+        printf '%s\n' "${raw#./}"
+        return 0
+    fi
+    python3 - "$tree" "$raw" <<'PY'
 import os, sys
 tree = os.path.realpath(sys.argv[1])
 raw = sys.argv[2]
@@ -1580,7 +1593,14 @@ elif cfg_dir.startswith(deploy.rstrip("/") + "/"):
     print("CFG_DIR_REL=" + cfg_dir[len(deploy.rstrip("/")) + 1:])
 role = cfg.get("role")
 is_feed = isinstance(role, str) and role.strip() == "feed"
-if not is_feed:
+if is_feed:
+    print("DB_EXCL=scheduler/state.db")
+else:
+    p = cfg.get("db_file") or ""
+    print("DB_EXCL=" + (p.strip() if isinstance(p, str) and p.strip() else "scheduler/state.db"))
+    q = cfg.get("paper_db_file") or ""
+    if isinstance(q, str) and q.strip():
+        print("DB_EXCL=" + q.strip())
     for key in ("db_file", "paper_db_file", "replay_log_path"):
         v = cfg.get(key)
         r = rel_inside(v)
@@ -1588,7 +1608,10 @@ if not is_feed:
             print("DB_REL=" + r)
     for src in cfg.get("paper_sources") or []:
         if isinstance(src, dict):
-            r = rel_inside(src.get("db_file"))
+            s = src.get("db_file") or ""
+            if isinstance(s, str) and s.strip():
+                print("DB_EXCL=" + s.strip())
+            r = rel_inside(s)
             if r:
                 print("DB_REL=" + r)
 log_dir = cfg.get("log_dir")
@@ -1604,11 +1627,15 @@ if isinstance(log_dir, str) and log_dir.strip():
             sys.exit(1)
         if full_ld.startswith(deploy.rstrip("/") + "/"):
             print("LOG_REL=" + full_ld[len(deploy.rstrip("/")) + 1:])
+sp = cfg.get("status_port") or 0
+if isinstance(sp, (int, float)) and int(sp) > 0:
+    print("STATUS_PORT=%d" % int(sp))
 PY
     ); then
         return 1
     fi
 
+    UPDATE_CONFIG_STATUS_PORT="8099"
     UPDATE_MANAGED_EXCLUDES=(
         --exclude='.git/'
         --exclude='.env'
@@ -1645,21 +1672,24 @@ PY
             DB_REL=*)
                 UPDATE_MANAGED_EXCLUDES+=(--exclude="/${line#DB_REL=}*" --exclude="${line#DB_REL=}*")
                 ;;
+            DB_EXCL=*)
+                db_excl="${line#DB_EXCL=}"
+                if [[ -n "$db_excl" ]]; then
+                    UPDATE_MANAGED_EXCLUDES+=(--exclude="${db_excl}*")
+                    rel_p=$(update_relpath_in_tree "$deploy_dir" "$db_excl" || true)
+                    if [[ -n "$rel_p" && "$rel_p" != "." ]]; then
+                        UPDATE_MANAGED_EXCLUDES+=(--exclude="/${rel_p}*")
+                    fi
+                fi
+                ;;
             LOG_REL=*)
                 UPDATE_MANAGED_EXCLUDES+=(--exclude="/${line#LOG_REL=}/")
                 ;;
+            STATUS_PORT=*)
+                UPDATE_CONFIG_STATUS_PORT="${line#STATUS_PORT=}"
+                ;;
         esac
     done <<<"$parsed_meta"
-
-    while IFS= read -r db_excl; do
-        if [[ -n "$db_excl" ]]; then
-            UPDATE_MANAGED_EXCLUDES+=(--exclude="${db_excl}*")
-            rel_p=$(update_relpath_in_tree "$deploy_dir" "$db_excl" || true)
-            if [[ -n "$rel_p" && "$rel_p" != "." ]]; then
-                UPDATE_MANAGED_EXCLUDES+=(--exclude="/${rel_p}*")
-            fi
-        fi
-    done < <(GO_TRADER_UPDATE_CONFIG="$cfg_path" update_resolve_db_exclude)
 
     while IFS= read -r db_glob; do
         [[ -n "$db_glob" ]] && UPDATE_MANAGED_EXCLUDES+=(--exclude="$db_glob")
@@ -1754,8 +1784,17 @@ update_candidate_recovery_roots() {
     if [[ -n "${GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR:-}" ]]; then
         raw_roots+=("${GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR%/}")
     fi
-    local owner_homes
-    owner_homes=$(python3 - "$deploy_dir" "${SUDO_USER:-}" <<'PY' 2>/dev/null || true
+    if [[ -z "${GO_TRADER_UPDATE_RECOVERY_DIR:-}" || -n "${GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR:-}" ]]; then
+        if [[ -n "${XDG_STATE_HOME:-}" ]]; then
+            raw_roots+=("${XDG_STATE_HOME%/}/go-trader-update")
+        fi
+        if [[ -n "${HOME:-}" && "${HOME:-}" != "/nonexistent" ]]; then
+            raw_roots+=("${HOME%/}/.local/state/go-trader-update")
+        fi
+    fi
+    local owner_homes=""
+    if [[ "$EUID" == "0" || -n "${SUDO_USER:-}" ]]; then
+        owner_homes=$(python3 - "$deploy_dir" "${SUDO_USER:-}" <<'PY' 2>/dev/null || true
 import os, pwd, sys
 deploy = sys.argv[1]
 sudo_user = sys.argv[2]
@@ -1782,7 +1821,8 @@ if sudo_user:
     except KeyError:
         pass
 PY
-    )
+        )
+    fi
     local line seen=$'\n' r
     while IFS= read -r line; do
         [[ -n "$line" ]] && raw_roots+=("${line%/}")
@@ -1810,11 +1850,12 @@ PY
 }
 
 update_path_dev_ino() {
-    python3 - "$1" <<'PY' 2>/dev/null
-import os, sys
-st = os.stat(sys.argv[1])
-print("%d:%d" % (st.st_dev, st.st_ino))
-PY
+    stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1" 2>/dev/null
+}
+
+update_dev_ino_inode() {
+    local val="$1"
+    printf '%s' "${val#*:}"
 }
 
 update_pid_alive() {
@@ -1882,6 +1923,8 @@ update_acquire_lock() {
         fi
     done < <(update_candidate_recovery_roots "$deploy_dir" "$root")
 
+    update_pause_if_requested lock_before_mkdir
+
     if ! update_ensure_recovery_root "$root"; then
         echo "[update] lock: cannot create or access recovery directory $root" >&2
         return 2
@@ -1891,22 +1934,35 @@ update_acquire_lock() {
         printf '%s\n' "$owner_pid" >"$lock_dir/pid"
         printf '%s\n' "$EUID" >"$lock_dir/uid"
         chmod 0644 "$lock_dir/pid" "$lock_dir/uid" 2>/dev/null || true
-        return 0
+    else
+        holder_pid=$(update_lock_holder_pid "$lock_dir" || true)
+        if [[ -z "$holder_pid" ]] || update_pid_alive "$holder_pid"; then
+            echo "[update] lock: another update is already running for $deploy_dir (lock $lock_dir held by pid ${holder_pid:-starting})" >&2
+            return 1
+        fi
+        echo "[update] lock: removing stale lock $lock_dir from dead pid $holder_pid" >&2
+        rm -rf "$lock_dir" 2>/dev/null || true
+        if ! mkdir -m 0755 "$lock_dir" 2>/dev/null; then
+            echo "[update] lock: another update acquired $lock_dir concurrently for $deploy_dir" >&2
+            return 1
+        fi
+        printf '%s\n' "$owner_pid" >"$lock_dir/pid"
+        printf '%s\n' "$EUID" >"$lock_dir/uid"
+        chmod 0644 "$lock_dir/pid" "$lock_dir/uid" 2>/dev/null || true
     fi
-    holder_pid=$(update_lock_holder_pid "$lock_dir" || true)
-    if [[ -z "$holder_pid" ]] || update_pid_alive "$holder_pid"; then
-        echo "[update] lock: another update is already running for $deploy_dir (lock $lock_dir held by pid ${holder_pid:-starting})" >&2
-        return 1
-    fi
-    echo "[update] lock: removing stale lock $lock_dir from dead pid $holder_pid" >&2
-    rm -rf "$lock_dir" 2>/dev/null || true
-    if ! mkdir -m 0755 "$lock_dir" 2>/dev/null; then
-        echo "[update] lock: another update acquired $lock_dir concurrently for $deploy_dir" >&2
-        return 1
-    fi
-    printf '%s\n' "$owner_pid" >"$lock_dir/pid"
-    printf '%s\n' "$EUID" >"$lock_dir/uid"
-    chmod 0644 "$lock_dir/pid" "$lock_dir/uid" 2>/dev/null || true
+
+    while IFS= read -r cand_root; do
+        [[ -n "$cand_root" ]] || continue
+        [[ "${cand_root%/}" == "${root%/}" ]] && continue
+        cand_lock="$cand_root/${key}.lock"
+        [[ -d "$cand_lock" ]] || continue
+        holder_pid=$(update_lock_holder_pid "$cand_lock" || true)
+        if [[ -z "$holder_pid" ]] || ( [[ "$holder_pid" != "$owner_pid" ]] && update_pid_alive "$holder_pid" ); then
+            rm -rf "$lock_dir"
+            echo "[update] lock: another update is already running for $deploy_dir (lock $cand_lock held by pid ${holder_pid:-starting})" >&2
+            return 1
+        fi
+    done < <(update_candidate_recovery_roots "$deploy_dir" "$root")
     return 0
 }
 
@@ -1927,11 +1983,12 @@ update_release_lock() {
 
 update_check_incomplete_marker() {
     local root="$1" key="$2" deploy_dir="$3"
-    local cur_canon cur_dev_ino
+    local cur_canon cur_dev_ino cur_ino
     cur_canon=$(update_realpath "$deploy_dir")
     cur_dev_ino=$(update_path_dev_ino "$cur_canon" || true)
+    cur_ino=$(update_dev_ino_inode "$cur_dev_ino")
 
-    local cand_root mfile m_path m_dev_ino m_snap m_uid ts stale_dest
+    local cand_root mfile m_path m_dev_ino m_ino m_snap m_uid
     while IFS= read -r cand_root; do
         [[ -n "$cand_root" && -d "$cand_root" ]] || continue
 
@@ -1942,24 +1999,17 @@ update_check_incomplete_marker() {
             [[ -f "$mfile" ]] || continue
             m_path=$(sed -n 's/^deploy_path=//p' "$mfile" | head -n 1)
             m_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$mfile" | head -n 1)
+            m_ino=$(update_dev_ino_inode "$m_dev_ino")
             m_snap=$(sed -n 's/^snapshot_dir=//p' "$mfile" | head -n 1)
             if [[ -z "$m_path" || ! -d "$m_path" ]]; then
                 echo "[update] recovery: stale incomplete-recovery marker $mfile for missing directory ${m_path:-<unknown>} (snapshot: ${m_snap:-none}; does not block)" >&2
                 continue
             fi
-            local actual_dev_ino
+            local actual_dev_ino actual_ino
             actual_dev_ino=$(update_path_dev_ino "$m_path" || true)
-            if [[ -n "$m_dev_ino" && -n "$actual_dev_ino" && "$m_dev_ino" != "$actual_dev_ino" ]]; then
-                echo "[update] recovery: stale incomplete-recovery marker $mfile for replaced directory $m_path (recorded $m_dev_ino != current $actual_dev_ino; snapshot: ${m_snap:-none}; does not block)" >&2
-                if [[ "$mfile" == "$cand_root/${key}.incomplete" && -w "$cand_root" ]]; then
-                    ts=$(date -u +%Y%m%dT%H%M%SZ)
-                    stale_dest="$cand_root/${key}.cleared-${ts}-stale-$$"
-                    if [[ -d "$cand_root/$key" ]]; then
-                        mv -f "$cand_root/$key" "$stale_dest"
-                        echo "[update] recovery: moved stale snapshot $cand_root/$key to $stale_dest" >&2
-                    fi
-                    rm -f "$mfile" "$cand_root/${key}.state"
-                fi
+            actual_ino=$(update_dev_ino_inode "$actual_dev_ino")
+            if [[ -n "$m_ino" && -n "$actual_ino" && "$m_ino" != "$actual_ino" ]]; then
+                echo "[update] recovery: stale incomplete-recovery marker $mfile for replaced directory $m_path (recorded inode $m_ino != current $actual_ino; snapshot: ${m_snap:-none}; does not block)" >&2
                 continue
             fi
         done
@@ -1974,7 +2024,7 @@ update_check_incomplete_marker() {
                 fi
             fi
             if [[ "$other_live" == "0" ]]; then
-                local is_killed_mutated=0 snap_dev_ino="" intents_list=""
+                local is_killed_mutated=0 snap_dev_ino="" snap_ino="" intents_list=""
                 if [[ -f "$cand_root/$key/COMPLETE" && -s "$cand_root/$key/intents.log" ]]; then
                     is_killed_mutated=1
                     snap_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$cand_root/$key/manifest.env" 2>/dev/null | tr -d "'\"\\" | head -n 1)
@@ -1988,14 +2038,10 @@ update_check_incomplete_marker() {
                     snap_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$cand_root/$key/manifest.env" 2>/dev/null | tr -d "'\"\\" | head -n 1)
                     intents_list="recovery_venv"
                 fi
+                snap_ino=$(update_dev_ino_inode "$snap_dev_ino")
                 if [[ "$is_killed_mutated" == "1" ]]; then
-                    if [[ -n "$snap_dev_ino" && -n "$cur_dev_ino" && "$snap_dev_ino" != "$cur_dev_ino" ]]; then
-                        if [[ -w "$cand_root" ]]; then
-                            ts=$(date -u +%Y%m%dT%H%M%SZ)
-                            stale_dest="$cand_root/${key}.cleared-${ts}-stale-$$"
-                            [[ -d "$cand_root/$key" ]] && mv -f "$cand_root/$key" "$stale_dest"
-                            rm -f "$cand_root/${key}.state"
-                        fi
+                    if [[ -n "$snap_ino" && -n "$cur_ino" && "$snap_ino" != "$cur_ino" ]]; then
+                        echo "[update] recovery: stale unfinished snapshot $cand_root/$key for replaced directory $cur_canon (recorded inode $snap_ino != current $cur_ino; does not block)" >&2
                     else
                         if [[ -w "$cand_root" ]]; then
                             update_write_incomplete_marker "$cand_root" "$key" "$deploy_dir" "$cand_root/$key" "previous update was killed or lost power after mutation started (${intents_list:-unknown})" "interrupted=killed" || true
@@ -2015,9 +2061,10 @@ update_check_incomplete_marker() {
 
         if [[ -f "$own_marker" ]]; then
             m_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$own_marker" | head -n 1)
+            m_ino=$(update_dev_ino_inode "$m_dev_ino")
             m_snap=$(sed -n 's/^snapshot_dir=//p' "$own_marker" | head -n 1)
             m_uid=$(sed -n 's/^owner_uid=//p' "$own_marker" | head -n 1)
-            if [[ -z "$m_dev_ino" || "$m_dev_ino" == "$cur_dev_ino" ]]; then
+            if [[ -z "$m_ino" || "$m_ino" == "$cur_ino" ]]; then
                 local clear_cmd="bash scripts/update.sh --clear-recovery"
                 if [[ "${m_uid:-}" == "0" || "$(update_path_uid "$own_marker" 2>/dev/null || echo "")" == "0" ]]; then
                     clear_cmd="sudo bash scripts/update.sh --clear-recovery"
@@ -2123,9 +2170,10 @@ update_pause_if_requested() {
     local want="$1"
     local spec="${GO_TRADER_UPDATE_PAUSE_AT:-}"
     [[ -n "$spec" ]] || return 0
+    local -a entries=()
     local entry stage sentinel
-    local IFS=','
-    for entry in $spec; do
+    IFS=',' read -r -a entries <<<"$spec"
+    for entry in ${entries[@]+"${entries[@]}"}; do
         stage="${entry%%:*}"
         sentinel="${entry#*:}"
         if [[ "$stage" == "$want" && -n "$sentinel" && ! -e "$sentinel" ]]; then
@@ -2144,9 +2192,10 @@ update_should_fail_at() {
     local want="$1"
     local spec="${GO_TRADER_UPDATE_FAIL_AT:-${UPDATE_FAIL_AFTER:-}}"
     [[ -n "$spec" ]] || return 1
+    local -a entries=()
     local tok
-    local IFS=','
-    for tok in $spec; do
+    IFS=',' read -r -a entries <<<"$spec"
+    for tok in ${entries[@]+"${entries[@]}"}; do
         if [[ "$tok" == "$want" ]]; then
             if [[ -n "${GO_TRADER_UPDATE_FAIL_ONCE_DIR:-}" ]]; then
                 mkdir -p "$GO_TRADER_UPDATE_FAIL_ONCE_DIR"
@@ -2162,11 +2211,22 @@ update_should_fail_at() {
 }
 
 update_compute_tree_manifest() {
-    local root_dir="$1" out_file="$2"
-    python3 - "$root_dir" "$out_file" <<'PY'
+    local root_dir="$1" out_file="$2" live_check_dir="${3:-}"
+    python3 - "$root_dir" "$out_file" "$live_check_dir" <<'PY'
 import hashlib, os, stat, sys
 root = os.path.abspath(sys.argv[1])
 out_path = sys.argv[2]
+live_dir = os.path.abspath(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else ""
+live_inodes = set()
+if live_dir:
+    for cur, dirs, files in os.walk(live_dir, topdown=True, followlinks=False):
+        for name in files:
+            try:
+                st = os.lstat(os.path.join(cur, name))
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                live_inodes.add((st.st_dev, st.st_ino))
 rows = []
 for cur, dirs, files in os.walk(root, topdown=True, followlinks=False):
     dirs.sort()
@@ -2185,6 +2245,9 @@ for cur, dirs, files in os.walk(root, topdown=True, followlinks=False):
         elif stat.S_ISDIR(st.st_mode):
             rows.append("D\t%s\t%04o\t%d:%d\t-" % (rel, mode, st.st_uid, st.st_gid))
         elif stat.S_ISREG(st.st_mode):
+            if live_inodes and (st.st_dev, st.st_ino) in live_inodes:
+                sys.stderr.write("[update] snapshot: %s shares inode with live deployment file\n" % full)
+                sys.exit(1)
             h = hashlib.sha256()
             with open(full, "rb") as f:
                 while True:
@@ -2230,34 +2293,39 @@ PY
 
 update_check_snapshot_space() {
     local deploy_dir="$1" recovery_root="$2"
-    python3 - "$deploy_dir" "$recovery_root" <<'PY'
-import os, stat, sys
+    update_managed_rsync_excludes "$deploy_dir" || return 1
+    local empty_dir stats_out
+    empty_dir=$(mktemp -d "${TMPDIR:-/tmp}/go-trader-space-check.XXXXXX") || return 1
+    if ! stats_out=$(rsync -a --dry-run --stats "${UPDATE_MANAGED_EXCLUDES[@]}" "$deploy_dir/" "$empty_dir/" 2>/dev/null); then
+        rm -rf "$empty_dir"
+        return 1
+    fi
+    rm -rf "$empty_dir"
+    python3 - "$deploy_dir" "$recovery_root" "$stats_out" <<'PY'
+import os, re, stat, sys
 deploy = os.path.abspath(sys.argv[1])
 rec_root = os.path.abspath(sys.argv[2])
-skip_top = {".git", "logs", "robinhood-session", "node_modules"}
-total = 0
-for cur, dirs, files in os.walk(deploy, topdown=True, followlinks=False):
-    rel_cur = os.path.relpath(cur, deploy)
-    if rel_cur == ".":
-        dirs[:] = [d for d in dirs if d not in skip_top and d != "__pycache__" and d != "tuning_runs"]
-    else:
-        dirs[:] = [d for d in dirs if d != "__pycache__" and d != "tuning_runs"]
-    for name in files:
-        if name.endswith((".db", ".db-wal", ".db-shm", ".db.lock", ".db.manual-action.lock")):
-            continue
-        if name.startswith("trading_bot.db") or name.startswith("ohlcv_cache.sqlite3"):
-            continue
-        full = os.path.join(cur, name)
-        try:
-            st = os.lstat(full)
-        except OSError:
-            continue
+stats_text = sys.argv[3]
+m = re.search(r"Total file size:\s*([0-9,]+)", stats_text)
+if not m:
+    m = re.search(r"total size is\s*([0-9,]+)", stats_text)
+total = int(m.group(1).replace(",", "")) if m else 0
+venv_dir = os.path.join(deploy, ".venv")
+if os.path.isdir(venv_dir) and not os.path.islink(venv_dir):
+    for cur, dirs, files in os.walk(venv_dir, topdown=True, followlinks=False):
+        for name in files:
+            try:
+                st = os.lstat(os.path.join(cur, name))
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+                total += st.st_size
+for extra in ("go-trader", "go-trader.prev", os.path.join(".git", "index")):
+    p = os.path.join(deploy, extra)
+    try:
+        st = os.lstat(p)
         if stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
             total += st.st_size
-git_idx = os.path.join(deploy, ".git", "index")
-if os.path.exists(git_idx):
-    try:
-        total += os.lstat(git_idx).st_size
     except OSError:
         pass
 required = total + (total + 9) // 10
@@ -2313,9 +2381,26 @@ update_take_snapshot() {
     fi
     update_check_snapshot_space "$deploy_dir" "$rec_root" || return 1
 
-    if [[ -f "${snap_dir}.incomplete" ]] || ( [[ -f "$snap_dir/COMPLETE" && -s "$snap_dir/intents.log" ]] ); then
-        echo "[update] snapshot: refusing to overwrite unfinished snapshot at $snap_dir" >&2
-        return 1
+    local deploy_dev_ino="" deploy_ino=""
+    deploy_dev_ino=$(update_path_dev_ino "$deploy_dir" || true)
+    deploy_ino=$(update_dev_ino_inode "$deploy_dev_ino")
+    if [[ -f "${snap_dir}.incomplete" ]]; then
+        local inc_dev_ino inc_ino
+        inc_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "${snap_dir}.incomplete" 2>/dev/null | head -n 1)
+        inc_ino=$(update_dev_ino_inode "$inc_dev_ino")
+        if [[ -z "$inc_ino" || "$inc_ino" == "$deploy_ino" ]]; then
+            echo "[update] snapshot: refusing to overwrite unfinished snapshot at $snap_dir" >&2
+            return 1
+        fi
+    fi
+    if [[ -f "$snap_dir/COMPLETE" && -s "$snap_dir/intents.log" ]]; then
+        local s_dev_ino s_ino
+        s_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$snap_dir/manifest.env" 2>/dev/null | tr -d "'\"\\" | head -n 1)
+        s_ino=$(update_dev_ino_inode "$s_dev_ino")
+        if [[ -z "$s_ino" || "$s_ino" == "$deploy_ino" ]]; then
+            echo "[update] snapshot: refusing to overwrite unfinished snapshot at $snap_dir" >&2
+            return 1
+        fi
     fi
     rm -rf "$snap_dir" "${snap_dir}.state"
     mkdir -p "$snap_dir/managed" "$snap_dir/binaries" "$snap_dir/git" "$snap_dir/external" || return 1
@@ -2326,7 +2411,7 @@ update_take_snapshot() {
         snap_rsync_flags+=(--numeric-ids)
     fi
     rsync "${snap_rsync_flags[@]}" "${UPDATE_MANAGED_EXCLUDES[@]}" "$deploy_dir/" "$snap_dir/managed/" || return 1
-    update_compute_tree_manifest "$snap_dir/managed" "$snap_dir/managed.manifest" || return 1
+    update_compute_tree_manifest "$snap_dir/managed" "$snap_dir/managed.manifest" "$deploy_dir" || return 1
 
     local had_go_trader=0 had_go_trader_prev=0
     if [[ -e "$deploy_dir/go-trader" || -L "$deploy_dir/go-trader" ]]; then
@@ -2343,14 +2428,12 @@ update_take_snapshot() {
         had_venv=1
         mkdir -p "$snap_dir/venv" || return 1
         rsync "${snap_rsync_flags[@]}" "$deploy_dir/.venv/" "$snap_dir/venv/" || return 1
-        update_compute_tree_manifest "$snap_dir/venv" "$snap_dir/venv.manifest" || return 1
+        update_compute_tree_manifest "$snap_dir/venv" "$snap_dir/venv.manifest" "$deploy_dir" || return 1
         if [[ -x "$deploy_dir/.venv/bin/python3" ]]; then
             venv_exec=$("$deploy_dir/.venv/bin/python3" -c 'import sys; print(sys.version.split()[0])' 2>/dev/null || true)
             printf '%s\n' "$venv_exec" >"$snap_dir/venv.exec"
         fi
     fi
-
-    update_verify_no_hardlinks_to_live "$deploy_dir" "$snap_dir" || return 1
 
     local git_head_sha="" git_head_ref="" git_head_symbolic=0 had_git_index=0 git_index_path="" git_head_path=""
     if update_git_top "$deploy_dir" >/dev/null 2>&1; then
@@ -2416,27 +2499,12 @@ update_take_snapshot() {
         fi
     fi
 
-    local cfg_status_port=""
-    cfg_status_port=$(python3 - "$deploy_dir/scheduler/config.json" <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    cfg = json.load(open(sys.argv[1]))
-    p = cfg.get("status_port") or 0
-    if isinstance(p, (int, float)) and int(p) > 0:
-        print(int(p))
-except Exception:
-    pass
-PY
-    )
-    cfg_status_port="${cfg_status_port:-8099}"
+    local cfg_status_port="${UPDATE_CONFIG_STATUS_PORT:-8099}"
 
     if update_should_fail_at snapshot_copy; then
         echo "[update] snapshot: forced snapshot_copy failure" >&2
         return 1
     fi
-
-    local deploy_dev_ino=""
-    deploy_dev_ino=$(update_path_dev_ino "$deploy_dir" || true)
 
     {
         printf 'deploy_dev_ino=%q\n' "$deploy_dev_ino"
