@@ -43,7 +43,7 @@ useradd --system --no-create-home --shell /usr/sbin/nologin "$USER_NAME"
 mkdir -p "$DEPLOY/scheduler" "$DEPLOY/logs" "$DEPLOY/shared_scripts" "$DEPLOY/.venv/bin" "$STATE_BASE/live" "$STATE_BASE/paper" "$STATE_BASE/btc"
 cp "$GO_TRADER_BIN" "$DEPLOY/go-trader"
 ln -s "$PY3" "$DEPLOY/.venv/bin/python3"
-for stub in check_hyperliquid.py fetch_candles.py strategy_tuner_schema.py check_regime.py simulate_strategy.py; do
+for stub in check_hyperliquid.py fetch_candles.py strategy_tuner_schema.py check_regime.py simulate_strategy.py fetch_pair_evidence.py; do
     cat > "$DEPLOY/shared_scripts/$stub" <<'PYSTUB'
 import json
 import sys

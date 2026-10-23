@@ -2106,7 +2106,7 @@ Go (`pairValidateWireMeta`, `pairExpectedWireMeta`, `pairCapabilityMatches`) and
 
 **Canonical writer (#1869).** Go `pairCanonicalJSON(v interface{}) ([]byte, error)`; Python `canonical_bytes(obj) -> bytes`, `evidence_hash(record) -> str`, `seal_record`, `document_bytes` and `normalize_decimal`.
 Output is compact UTF-8 with every object's keys sorted byte-wise (Go struct fields included); integers keep full precision (`-0` is written `0`); a non-integer number or a binary float is refused, so schema decimals are strings; booleans stay booleans.
-Strings escape `"`, `\`, `\n`, `\r` and `\t` in short form, other control characters as `\u00xx`, `<`, `>` and `&` as `<`, `>` and `&`, and U+2028 and U+2029 as ` ` and ` `; all other characters stay raw UTF-8.
+Strings escape `"`, `\`, `\n`, `\r` and `\t` in short form, other control characters as `\u00xx`, `<`, `>` and `&` as `\u003c`, `\u003e` and `\u0026`, and U+2028 and U+2029 as `\u2028` and `\u2029`; all other characters stay raw UTF-8.
 A canonical decimal matches `^-?(0|[1-9][0-9]*)(\.[0-9]*[1-9])?$` and is never `-0`; writers normalize schema decimals from plain or exponent input with redundant zeros, and only schema decimals are normalized (identifiers, provenance and step text keep their content).
 A record hash is the lowercase SHA-256 of the canonical record with `evidence_hash` present as `""`; verification repeats it.
 `pairEvidenceDocumentBytes` sorts fee currencies, capabilities and accounts by key (partition, provider, account_key, instrument, member_id, each compared byte-wise), first receipt, observation and evidence id, and conversions by key, currency, first receipt, observation and evidence id; other consumer schemas order their own arrays before calling the writer.

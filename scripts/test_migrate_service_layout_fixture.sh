@@ -156,7 +156,7 @@ file_fp() {
 
 write_stubs() {
     local dir="$1" stub
-    for stub in check_hyperliquid.py fetch_candles.py strategy_tuner_schema.py check_regime.py simulate_strategy.py; do
+    for stub in check_hyperliquid.py fetch_candles.py strategy_tuner_schema.py check_regime.py simulate_strategy.py fetch_pair_evidence.py; do
         cat > "$dir/shared_scripts/$stub" <<'PYSTUB'
 import json
 import sys
