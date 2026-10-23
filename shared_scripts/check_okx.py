@@ -400,6 +400,147 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         sys.exit(1)
 
 
+PAIR_MANAGEMENT_INPUT_VERSION = 1
+
+
+def parse_pair_management_input(raw):
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("the frozen management input must be a JSON object")
+    if payload.get("v") != PAIR_MANAGEMENT_INPUT_VERSION:
+        raise ValueError(f"the frozen management input needs version {PAIR_MANAGEMENT_INPUT_VERSION}, got {payload.get('v')!r}")
+    candles = payload.get("candles")
+    if not isinstance(candles, list) or len(candles) < 30:
+        raise ValueError(f"the frozen management input needs at least 30 candles, got {len(candles) if isinstance(candles, list) else 0}")
+    rows = []
+    for i, row in enumerate(candles):
+        if not isinstance(row, list) or len(row) != 6:
+            raise ValueError(f"candle {i} must be [open_ms, open, high, low, close, volume]")
+        try:
+            vals = [float(v) for v in row]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"candle {i} is not numeric: {exc}") from exc
+        if not all(math.isfinite(v) for v in vals):
+            raise ValueError(f"candle {i} is not finite")
+        rows.append([int(row[0])] + vals[1:])
+    for a, b in zip(rows, rows[1:]):
+        if b[0] <= a[0]:
+            raise ValueError("frozen candles must be strictly increasing by open time")
+    mark = payload.get("mark_price")
+    if not isinstance(mark, (int, float)) or isinstance(mark, bool) or not math.isfinite(float(mark)) or float(mark) <= 0:
+        raise ValueError("the frozen management input needs a finite positive mark_price")
+    return {"candles": rows, "mark_price": float(mark)}
+
+
+def run_pair_member_check(strategy_name, symbol, timeframe, mode, inst_type, pair_member,
+                          open_strategy=None, close_strategies=None, close_params_by_name=None,
+                          position_side="", position_ctx=None, ohlcv_limit=200, atr_method="simple",
+                          htf_filter_enabled=False, invert_present=False, frozen_input=None):
+    try:
+        from close_registry_loader import evaluate as close_evaluate, get_strategy as get_close_strategy
+        from strategy_composition import (
+            evaluate_open_close,
+            finalize_decision,
+            parse_close_strategies,
+            parse_pair_member_request,
+            resolve_pair_member_close_references,
+        )
+        request = parse_pair_member_request(pair_member, "okx")
+        if inst_type != "swap":
+            raise ValueError("a pair member check runs only on the OKX swap instrument type")
+        if htf_filter_enabled:
+            raise ValueError("a pair member check has no higher-timeframe entry filter")
+        if invert_present:
+            raise ValueError("a pair member check has no open signal to invert")
+        resolve_pair_member_close_references(strategy_name, open_strategy, close_strategies, None, get_close_strategy)
+        if frozen_input is not None:
+            candles = frozen_input["candles"][-ohlcv_limit:]
+            mark = frozen_input["mark_price"]
+        else:
+            from adapter import OKXExchangeAdapter
+            adapter = OKXExchangeAdapter()
+            candles = adapter.get_perp_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
+            mark = 0.0
+            try:
+                mark = float(adapter.get_perp_price(symbol))
+            except Exception:
+                mark = 0.0
+        if not candles or len(candles) < 30:
+            raise ValueError(f"Insufficient data: {len(candles) if candles else 0} candles")
+        df = _make_dataframe(candles)
+        if not mark or mark <= 0:
+            mark = float(df["close"].iloc[-1])
+        market_ctx = {"mark_price": mark}
+        atr_now = latest_atr(df, method=atr_method)
+        if atr_now > 0:
+            market_ctx["atr"] = atr_now
+
+        def _no_open(*_args, **_kwargs):
+            raise ValueError("a pair member runs no entry evaluator")
+
+        evaluation = evaluate_open_close(
+            _no_open,
+            _no_open,
+            df,
+            strategy_name,
+            open_strategy,
+            parse_close_strategies(close_strategies),
+            position_side,
+            None,
+            position_ctx,
+            close_evaluate=close_evaluate,
+            market_ctx=market_ctx,
+            close_params_by_name=close_params_by_name,
+            management_only=True,
+        )
+        decision = finalize_decision(evaluation, position_side, 0)
+        result_df = df.copy()
+        ensure_atr_indicator(result_df, method=atr_method)
+        indicators = {}
+        last = result_df.iloc[-1]
+        for col in result_df.columns:
+            if col in ("open", "high", "low", "close", "volume", "timestamp", "datetime"):
+                continue
+            try:
+                fval = float(last.get(col))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(fval):
+                indicators[col] = round(fval, 6)
+        output = {
+            "strategy": strategy_name,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "signal": decision["signal"],
+            "price": mark,
+            "indicators": indicators,
+            "regime": None,
+            "mode": mode,
+            "platform": "okx",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "pair_member": dict(request),
+        }
+        output.update(decision)
+        output["signal"] = decision["signal"]
+        print(json.dumps(output))
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        print(json.dumps({
+            "strategy": strategy_name,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "signal": 0,
+            "price": 0,
+            "indicators": {},
+            "regime": None,
+            "mode": mode,
+            "platform": "okx",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e),
+        }))
+        sys.exit(1)
+
+
 OKX_ENTRY_TERMINAL_STATUSES = ("closed", "canceled", "cancelled", "expired", "rejected")
 
 
@@ -891,11 +1032,50 @@ def main():
             help="#1712: regime timeframe for the closed-bar decision view; defaults to the strategy timeframe.")
         parser.add_argument("--basket-member", action="store_true", default=False,
             help="#1781: accepted for argv-shape compatibility with the startup probe; basket members run only on Hyperliquid, so this platform refuses it.")
+        parser.add_argument("--pair-member-json", default=None,
+            help="#1862: typed management-only pair member request; native closes, indicators and protection run, no entry evaluator runs, and the request is echoed.")
+        parser.add_argument("--management-stdin", action="store_true", default=False,
+            help="#1862: read frozen pair member management input (candles and mark) from stdin; no exchange client is constructed.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
+        if args.pair_member_json is not None or args.management_stdin:
+            from strategy_composition import parse_strategy_refs_arg
+            frozen = None
+            error = ""
+            if args.pair_member_json is None:
+                error = "--management-stdin is accepted only with a pair member request"
+            elif args.basket_member:
+                error = "a check is either a basket member or a pair member, not both"
+            elif args.management_stdin:
+                try:
+                    frozen = parse_pair_management_input(sys.stdin.read())
+                except Exception as e:
+                    error = f"invalid frozen management input: {e}"
+            if error:
+                print(json.dumps({
+                    "strategy": args.strategy, "symbol": args.symbol, "timeframe": args.timeframe,
+                    "signal": 0, "price": 0, "indicators": {}, "regime": None, "mode": args.mode,
+                    "platform": "okx", "timestamp": datetime.now(timezone.utc).isoformat(), "error": error,
+                }))
+                sys.exit(1)
+            refs = parse_strategy_refs_arg(args.strategy_refs)
+            run_pair_member_check(
+                args.strategy, args.symbol, args.timeframe, args.mode, args.inst_type, args.pair_member_json,
+                open_strategy=refs["open_name"] if refs else args.open_strategy,
+                close_strategies=refs["close_csv"] if refs else args.close_strategies,
+                close_params_by_name=refs["close_params_by_name"] if refs else None,
+                position_side=args.position_side,
+                position_ctx=_position_ctx_from_args(args),
+                ohlcv_limit=args.ohlcv_limit,
+                atr_method=args.atr_method,
+                htf_filter_enabled=args.htf_filter,
+                invert_present=bool(refs and "invert_open_signal" in refs),
+                frozen_input=frozen,
+            )
+            return
         if args.basket_member:
             print(json.dumps({
                 "strategy": args.strategy,

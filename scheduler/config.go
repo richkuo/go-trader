@@ -310,6 +310,7 @@ type Config struct {
 	LeaderboardPostTime      string                     `json:"leaderboard_post_time,omitempty"`
 	Strategies               []StrategyConfig           `json:"strategies"`
 	Baskets                  []BasketConfig             `json:"baskets,omitempty"`
+	Pairs                    []PairConfig               `json:"pairs,omitempty"`
 	PortfolioRisk            *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
 	Correlation              *CorrelationConfig         `json:"correlation,omitempty"`
 	Regime                   *RegimeConfig              `json:"regime,omitempty"`
@@ -335,6 +336,7 @@ type Config struct {
 	migrationBaseVersion    int
 	migrationBaseVersionSet bool
 	noEdgeMigration         *noEdgeMigrationReport
+	pairAdmission           *pairResearchAdmission
 }
 
 func (c *Config) NoEdgeMigrationReport() *noEdgeMigrationReport {
@@ -691,6 +693,8 @@ type StrategyConfig struct {
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`
 	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`
 	BasketID                    string                   `json:"basket_id,omitempty"`
+	PairID                      string                   `json:"pair_id,omitempty"`
+	pairMember                  *pairMemberRequest       `json:"-"`
 }
 
 type HedgeConfig struct {
@@ -985,6 +989,17 @@ func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Con
 }
 
 func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, readOnly bool) (*Config, error) {
+	return loadConfigDataWith(path, data, skipLiveCredentialChecks, readOnly, nil)
+}
+
+func loadConfigDataWith(path string, data []byte, skipLiveCredentialChecks bool, readOnly bool, pairAdm *pairResearchAdmission) (*Config, error) {
+	if pairAdm == nil {
+		if errs := pairOrdinaryRefusals(data); len(errs) > 0 {
+			return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
+		}
+	} else if !pairAdm.valid() || !readOnly || path != "" {
+		return nil, fmt.Errorf("pair activation needs the internal research admission on an in-memory read-only load")
+	}
 	var noEdgeReport *noEdgeMigrationReport
 	keepNoEdgeReport := func(report *noEdgeMigrationReport) {
 		if noEdgeReport == nil && report != nil && report.Applied {
@@ -1093,6 +1108,7 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 	for i := range cfg.Strategies {
 		cfg.Strategies[i].PaperSource = strings.TrimSpace(cfg.Strategies[i].PaperSource)
 		cfg.Strategies[i].BasketID = strings.TrimSpace(cfg.Strategies[i].BasketID)
+		cfg.Strategies[i].PairID = strings.TrimSpace(cfg.Strategies[i].PairID)
 	}
 	for i := range cfg.Baskets {
 		cfg.Baskets[i].ID = strings.TrimSpace(cfg.Baskets[i].ID)
@@ -1298,6 +1314,27 @@ func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, rea
 
 	if basketErrs := basketConfigErrors(&cfg); len(basketErrs) > 0 {
 		return nil, fmt.Errorf("basket config validation errors:\n  %s", strings.Join(basketErrs, "\n  "))
+	}
+
+	if pairAdm == nil {
+		for _, sc := range cfg.Strategies {
+			if len(cfg.Pairs) > 0 || isPairMember(sc) {
+				return nil, fmt.Errorf("config validation errors:\n  pair activation is refused outside the internal research admission")
+			}
+		}
+	} else {
+		if pairErrs := pairResearchConfigErrors(&cfg, pairAdm); len(pairErrs) > 0 {
+			return nil, fmt.Errorf("pair config validation errors:\n  %s", strings.Join(pairErrs, "\n  "))
+		}
+		cfg.pairAdmission = pairAdm
+		for i := range cfg.Strategies {
+			for _, m := range pairAdm.pair.Members {
+				if cfg.Strategies[i].ID == m.StrategyID {
+					req := pairMemberRequest{PairID: pairAdm.pair.ID, MemberID: m.StrategyID, Provider: pairProviderPlatforms[cfg.Strategies[i].Platform], Instrument: m.Instrument, Mode: pairManagementOnlyMode}
+					cfg.Strategies[i].pairMember = &req
+				}
+			}
+		}
 	}
 
 	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {

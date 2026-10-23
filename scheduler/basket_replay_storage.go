@@ -589,7 +589,7 @@ func (sdb *StateDB) basketReplayTouchedRows(atMs int64) (map[basketKey]map[int64
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	proj, err := sdb.basketProjection("basket_member_actions", basketActionLifecycleColumns)
+	proj, err := sdb.basketProjection("basket_member_actions", basketActionProjectedColumns())
 	if err != nil {
 		return nil, nil, err
 	}

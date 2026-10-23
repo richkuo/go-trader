@@ -71,6 +71,8 @@ type HyperliquidResult struct {
 	EntrySubmitGate                 hlEntrySubmitGate      `json:"-"`
 	BasketMember                    bool                   `json:"basket_member,omitempty"`
 	BasketOpenQty                   float64                `json:"-"`
+	PairMember                      *pairMemberRequest     `json:"pair_member,omitempty"`
+	PairFill                        *pairBookFill          `json:"-"`
 }
 
 type hlEntryOrderTags struct {
@@ -1445,6 +1447,7 @@ type OKXResult struct {
 	EntrySubmitGate okxEntrySubmitGate     `json:"-"`
 	CloseReduceOnly bool                   `json:"-"`
 	OrderSubmitted  bool                   `json:"-"`
+	PairMember      *pairMemberRequest     `json:"pair_member,omitempty"`
 }
 
 type okxEntrySubmitGate func(side string, size float64) (okxEntryOrderTags, error)

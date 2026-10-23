@@ -646,11 +646,28 @@ def main():
                 help="#1712: regime timeframe for the closed-bar decision frame.")
             parser.add_argument("--basket-member", action="store_true", default=False,
                 help="#1781: accepted for argv-shape compatibility with the startup probe; basket members run only on Hyperliquid, so this platform refuses it.")
+            parser.add_argument("--pair-member-json", default=None,
+                help="#1862: accepted for argv-shape compatibility with the startup probe; pair members run only on Hyperliquid and OKX, so this platform refuses it.")
             parser.add_argument("--probe-only", action="store_true",
                 help="Startup compatibility probe (#645): validate argv shape and exit 0.")
             args = parser.parse_args()
             if args.probe_only:
                 sys.exit(0)
+            if args.pair_member_json is not None:
+                emit({
+                    "strategy": args.strategy,
+                    "symbol": args.symbol,
+                    "timeframe": args.timeframe,
+                    "signal": 0,
+                    "price": 0,
+                    "indicators": {},
+                    "regime": None,
+                    "mode": args.mode,
+                    "platform": "robinhood",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": "pair members are not supported on robinhood: the pair coordinator runs only Hyperliquid and OKX members",
+                })
+                sys.exit(1)
             if args.basket_member:
                 emit({
                     "strategy": args.strategy,

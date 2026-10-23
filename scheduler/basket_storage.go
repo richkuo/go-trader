@@ -232,7 +232,38 @@ type basketAction struct {
 	ExpiryMs            int64
 	LifecycleAttempt    int
 
-	durableStatus string
+	GroupMode          string
+	Instrument         string
+	NativeQty          float64
+	ContractSize       float64
+	RequestJSON        string
+	QuoteEventID       string
+	PriceBound         float64
+	AcceptDeadlineMs   int64
+	SubmittedAtMs      int64
+	ConfirmedNotional  float64
+	FeePresent         bool
+	FeeCurrency        string
+	FeeAmount          float64
+	FeeEvidenceID      string
+	FeeEvidenceVersion int64
+	AppliedNotional    float64
+	AppliedFeeVersion  int64
+	Terminal           bool
+	CoverageThroughMs  int64
+	RetryCount         int
+	RetryAtMs          int64
+	RecoveryJSON       string
+	BookedJSON         string
+
+	durableStatus  string
+	durableApplied float64
+	pendingFee     *pairFeeFix
+	feeFinal       bool
+}
+
+func (a *basketAction) pair() bool {
+	return a != nil && a.GroupMode == pairGroupMode
 }
 
 func (a *basketAction) expiry() bool {
@@ -271,6 +302,11 @@ type basketRuntime struct {
 	Actions       map[string]*basketAction
 	Expected      map[string]float64
 	Lifecycle     map[string]basketLifecycle
+
+	Pair *pairRuntimeState
+
+	pairEchoFailures map[string]string
+	pairLastInputs   *pairStepInputs
 
 	expectedDurable map[string]float64
 	needsDurable    bool
@@ -526,7 +562,10 @@ func (sdb *StateDB) migrateBasketSchema() error {
 	if _, err := sdb.db.Exec(basketSchemaDDL); err != nil {
 		return fmt.Errorf("create basket tables: %w", err)
 	}
-	return sdb.migrateBasketLifecycleColumns()
+	if err := sdb.migrateBasketLifecycleColumns(); err != nil {
+		return err
+	}
+	return sdb.migratePairSchema()
 }
 
 func validBasketPartition(p RiskPartition) error {
@@ -587,6 +626,9 @@ func upsertBasketRebalanceRow(exec sqlExecer, rb *basketRebalance, status string
 }
 
 func upsertBasketActionRow(exec sqlExecer, sid string, a *basketAction) error {
+	if a.pair() {
+		return fmt.Errorf("basket action %s is a pair action; the pair writer owns it", a.ActionID)
+	}
 	if basketActionRank(a.Status) < 0 {
 		return fmt.Errorf("basket action %s has unknown status %q", a.ActionID, a.Status)
 	}
@@ -607,6 +649,7 @@ func upsertBasketActionRow(exec sqlExecer, sid string, a *basketAction) error {
 		    hold_reason = excluded.hold_reason,
 		    updated_at_ms = MAX(updated_at_ms, excluded.updated_at_ms)
 		WHERE `+rankNew+` >= `+rankOld+`
+		  AND group_mode = 'basket'
 		  AND (status NOT IN ('committed','no_fill') OR status = excluded.status)`,
 		a.ActionID, string(a.Partition.Scope), a.Partition.Source, a.BasketID, a.DeadlineMs, sid, a.Symbol, a.Direction, a.Seq,
 		a.OrderSide, a.PositionSide, a.Status, a.RequestedQty, a.PreQty, a.PreNotionalUSD, a.MarkPx, a.ProtectionJSON,
@@ -659,6 +702,9 @@ func (rt *basketRuntime) savesAllMembers(books map[string]*StrategyState) bool {
 func (sdb *StateDB) writeBasketTx(tx *sql.Tx, rt *basketRuntime, books map[string]*StrategyState, nowMs int64) (map[string]basketLifecycle, error) {
 	if rt == nil {
 		return nil, nil
+	}
+	if rt.isPair() {
+		return sdb.writePairTx(tx, rt, books, nowMs)
 	}
 	sids, err := sdb.checkBasketOwnership(rt)
 	if err != nil {
@@ -716,6 +762,26 @@ func markBasketDurable(rt *basketRuntime, books map[string]*StrategyState, next 
 		return
 	}
 	full := rt.savesAllMembers(books)
+	if rt.isPair() {
+		markPairDurable(rt, books)
+		for _, rb := range rt.Rebalances {
+			if full || rb.Status != basketRebalanceCompleted || rb.Outcome.Result == "evidence_only" {
+				rb.durableStatus = rb.Status
+			}
+		}
+		for id := range books {
+			if q, ok := rt.Expected[id]; ok {
+				rt.expectedDurable[id] = q
+			} else {
+				delete(rt.expectedDurable, id)
+			}
+		}
+		if full {
+			rt.needsDurable = false
+		}
+		rt.prunePair()
+		return
+	}
 	for _, rb := range rt.Rebalances {
 		if full || rb.Status != basketRebalanceCompleted {
 			rb.durableStatus = rb.Status
@@ -833,13 +899,8 @@ func (sdb *StateDB) reserveBasketActionRow(rt *basketRuntime, a *basketAction) e
 		return fmt.Errorf("begin basket action reservation: %w", err)
 	}
 	defer tx.Rollback()
-	var pending int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM basket_member_actions WHERE scope = ? AND source = ? AND basket_id = ?
-		AND status IN ('reserved','submitting','unresolved','settling')`, string(a.Partition.Scope), a.Partition.Source, a.BasketID).Scan(&pending); err != nil {
-		return fmt.Errorf("read pending basket actions: %w", err)
-	}
-	if pending > 0 {
-		return fmt.Errorf("basket %s already has an unresolved member action", a.BasketID)
+	if err := checkPendingGroupActionTx(tx, rt, a); err != nil {
+		return err
 	}
 	seq, err := nextBasketActionSeqTx(tx, a, sid)
 	if err != nil {
@@ -903,6 +964,8 @@ type basketFileRecords struct {
 	Actions    map[basketKey][]*basketAction
 	Expected   map[basketKey]map[string]float64
 	Lifecycle  map[basketKey]map[string]basketLifecycle
+	Uses       map[basketKey][]*pairQuoteEventUse
+	Progress   map[basketKey]string
 	Unmapped   []string
 }
 
@@ -934,15 +997,22 @@ func scanBasketRebalance(scan func(dest ...interface{}) error) (*basketRebalance
 func scanBasketAction(scan func(dest ...interface{}) error) (*basketAction, string, error) {
 	var a basketAction
 	var scope, source, sid string
+	var feePresent, terminal int
 	if err := scan(&a.ActionID, &scope, &source, &a.BasketID, &a.DeadlineMs, &sid, &a.Symbol, &a.Direction, &a.Seq,
 		&a.OrderSide, &a.PositionSide, &a.Status, &a.RequestedQty, &a.PreQty, &a.PreNotionalUSD, &a.MarkPx, &a.ProtectionJSON,
 		&a.Provider, &a.AccountKey, &a.ClientOrderID, &a.VenueOrderID, &a.EntryIntentID, &a.DecisionBarOpenMs,
 		&a.ConfirmedQty, &a.ConfirmedAvgPx, &a.ConfirmedFee, &a.AppliedQty, &a.AppliedFee, &a.EvidenceJSON, &a.HoldReason,
-		&a.CreatedAtMs, &a.UpdatedAtMs, &a.Purpose, &a.LifecyclePositionID, &a.ExpiryMs, &a.LifecycleAttempt); err != nil {
+		&a.CreatedAtMs, &a.UpdatedAtMs, &a.Purpose, &a.LifecyclePositionID, &a.ExpiryMs, &a.LifecycleAttempt,
+		&a.GroupMode, &a.Instrument, &a.NativeQty, &a.ContractSize, &a.RequestJSON, &a.QuoteEventID, &a.PriceBound,
+		&a.AcceptDeadlineMs, &a.SubmittedAtMs, &a.ConfirmedNotional, &feePresent, &a.FeeCurrency, &a.FeeAmount,
+		&a.FeeEvidenceID, &a.FeeEvidenceVersion, &a.AppliedNotional, &a.AppliedFeeVersion, &terminal,
+		&a.CoverageThroughMs, &a.RetryCount, &a.RetryAtMs, &a.RecoveryJSON, &a.BookedJSON); err != nil {
 		return nil, "", err
 	}
 	a.Partition = RiskPartition{Scope: PortfolioScope(scope), Source: source}
+	a.FeePresent, a.Terminal = feePresent != 0, terminal != 0
 	a.durableStatus = a.Status
+	a.durableApplied = a.AppliedQty
 	return &a, sid, nil
 }
 
@@ -958,7 +1028,7 @@ func (sdb *StateDB) loadBasketRecords() (*basketFileRecords, error) {
 	if err != nil || !exists {
 		return out, err
 	}
-	actionProj, err := sdb.basketProjection("basket_member_actions", basketActionLifecycleColumns)
+	actionProj, err := sdb.basketProjection("basket_member_actions", basketActionProjectedColumns())
 	if err != nil {
 		return nil, err
 	}
@@ -1081,7 +1151,13 @@ func (sdb *StateDB) loadBasketRecords() (*basketFileRecords, error) {
 		out.Lifecycle[k][procID] = l
 	}
 	rows.Close()
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := sdb.loadPairRecordsInto(out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (r *basketFileRecords) pendingFor(k basketKey) []string {
@@ -1155,7 +1231,32 @@ func (st *StateStore) LoadBaskets(state *AppState, cfg *Config) (map[string]*bas
 		}
 		records[role] = r
 	}
+	pairAdmitted := cfg.pairAdmission.valid()
+	if !pairAdmitted && len(cfg.Pairs) > 0 {
+		return nil, fmt.Errorf("pair activation needs the internal research admission")
+	}
+	for _, role := range st.order {
+		r := records[role]
+		if r == nil || pairAdmitted {
+			continue
+		}
+		keys := make([]basketKey, 0, len(r.Contracts))
+		for k := range r.Contracts {
+			if r.pairContract(k) {
+				keys = append(keys, k)
+			}
+		}
+		sort.Slice(keys, func(i, j int) bool { return keys[i].BasketID < keys[j].BasketID })
+		for _, k := range keys {
+			return nil, fmt.Errorf("the %s state file holds research pair records for %s (%s); an ordinary load never activates or adopts a pair: %s", role, k.BasketID, partitionLabel(k.Partition), strings.Join(append([]string{"contract saved"}, r.pairPendingFor(k)...), "; "))
+		}
+	}
 	configured := make(map[basketKey]storageRole)
+	if pairAdmitted {
+		if err := st.loadPairRuntimes(state, cfg, records, configured, out); err != nil {
+			return nil, err
+		}
+	}
 	for _, b := range cfg.Baskets {
 		contract, err := buildBasketContract(cfg, b)
 		if err != nil {
@@ -1331,7 +1432,7 @@ func inspectBasketRows(db *StateDB, fi *storageFileInspection, ident storageIden
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	actionProj, err := db.basketProjection("basket_member_actions", basketActionLifecycleColumns)
+	actionProj, err := db.basketProjection("basket_member_actions", basketActionProjectedColumns())
 	if err != nil {
 		return nil, err
 	}

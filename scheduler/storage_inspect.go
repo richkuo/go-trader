@@ -457,7 +457,11 @@ func inspectEntryDecisionRows(db *StateDB, fi *storageFileInspection, layout sto
 	if ok, err := tableExists(db, "entry_order_intents"); err != nil {
 		return nil, err
 	} else if ok {
-		rows, err := db.db.Query(`SELECT ` + entryIntentColumns + ` FROM entry_order_intents
+		cols, err := db.entryIntentSelect()
+		if err != nil {
+			return nil, err
+		}
+		rows, err := db.db.Query(`SELECT ` + cols + ` FROM entry_order_intents
 			WHERE status IN ('reserved','submitting','settling') ORDER BY created_at_ms, intent_id`)
 		if err != nil {
 			return nil, fmt.Errorf("read entry intents in the %s state file: %w", fi.Role, err)

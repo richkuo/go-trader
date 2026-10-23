@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -75,8 +76,37 @@ type entryIntent struct {
 	ReplayDeliveredSeq  int64
 	CreatedAtMs         int64
 	UpdatedAtMs         int64
+	DecisionKind        string
+	QuoteEventID        string
+	OwnerMode           string
+	OwnerGroupID        string
 
 	durableStatus string
+}
+
+const (
+	entryDecisionKindCandle = "candle"
+	entryDecisionKindQuote  = "quote"
+)
+
+func (in *entryIntent) pairOwned() bool {
+	if in == nil {
+		return false
+	}
+	return in.OwnerMode == pairGroupMode || in.DecisionKind == entryDecisionKindQuote || strings.HasPrefix(entryIntentRequestKind(in), "pair:")
+}
+
+func entryIntentRequestKind(in *entryIntent) string {
+	if in == nil || strings.TrimSpace(in.RequestJSON) == "" {
+		return ""
+	}
+	var req struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal([]byte(in.RequestJSON), &req) != nil {
+		return ""
+	}
+	return req.Kind
 }
 
 func (in *entryIntent) unresolved() bool {

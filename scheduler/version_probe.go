@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const pairMemberProbeRequestJSON = `{"pair_id":"probe","member_id":"probe","provider":"hyperliquid","instrument":"BTC","mode":"management_only"}`
+
 var probeArgv = []string{
 	"probe", "BTC", "1h",
 	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
@@ -32,6 +34,7 @@ var probeArgv = []string{
 	closedBarDecisionsFlag,
 	decisionRegimeTimeframeFlag + "=1h",
 	basketMemberFlag,
+	pairMemberFlag + "=" + pairMemberProbeRequestJSON,
 	"--probe-only",
 }
 
@@ -55,6 +58,7 @@ var probeCompositeArgv = []string{
 	closedBarDecisionsFlag,
 	decisionRegimeTimeframeFlag + "=1h",
 	basketMemberFlag,
+	pairMemberFlag + "=" + pairMemberProbeRequestJSON,
 	"--probe-only",
 }
 

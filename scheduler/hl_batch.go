@@ -168,6 +168,7 @@ type hlBatchSlot struct {
 	ClosedBar       bool            `json:"closed_bar_decisions,omitempty"`
 	RestingTPRule   json.RawMessage `json:"resting_tp_rule,omitempty"`
 	BasketMember    bool            `json:"basket_member,omitempty"`
+	PairMember      json.RawMessage `json:"pair_member,omitempty"`
 }
 
 type hlBatchRequest struct {
@@ -204,6 +205,13 @@ func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *Re
 		RegimeATRWindow: hlBatchRegimeATRWindow(sc, regime),
 		ClosedBar:       sc.ClosedBarDecisions,
 		BasketMember:    isBasketMember(sc),
+	}
+	if isPairMember(sc) {
+		req, ok := pairMemberRequestOf(sc)
+		if !ok {
+			return hlBatchSlot{}, fmt.Errorf("pair member %s has no admitted pair contract", sc.ID)
+		}
+		slot.PairMember = json.RawMessage(req.JSON())
 	}
 	refsArgs, err := buildStrategyRefsArg(sc, hlCloseOwnerForCheck(sc, posCtx), hlInvertOpenSignalForCheck(sc, posCtx, regime))
 	if err != nil {
