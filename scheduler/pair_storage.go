@@ -274,7 +274,7 @@ func (sdb *StateDB) migrateEntryIntentOwnerSchema() error {
 		copySQL := `INSERT INTO entry_order_intents_v2 (` + entryIntentBaseColumns + `, decision_kind, quote_event_id, owner_mode, owner_group_id)
 			SELECT ` + entryIntentBaseColumns + `, 'candle', '',
 			    CASE WHEN request_json LIKE '%"kind":"basket:%' THEN 'basket' ELSE '' END, ''
-			FROM entry_order_intents`
+			FROM entry_order_intents ORDER BY rowid`
 		if err := sdb.rebuildTableTx("entry_order_intents", entryIntentsV2DDL, copySQL, entryIntentIndexDDL); err != nil {
 			return err
 		}
@@ -301,7 +301,7 @@ func (sdb *StateDB) migratePairSchema() error {
 	after := append([]string{`DROP INDEX IF EXISTS idx_basket_actions_one_pending`}, basketActionIndexDDL...)
 	if !has {
 		copySQL := `INSERT INTO basket_member_actions_v2 (` + basketActionsLegacyCopyColumns + `)
-			SELECT ` + basketActionsLegacyCopyColumns + ` FROM basket_member_actions`
+			SELECT ` + basketActionsLegacyCopyColumns + ` FROM basket_member_actions ORDER BY rowid`
 		if err := sdb.rebuildTableTx("basket_member_actions", basketActionsV2DDL, copySQL, after); err != nil {
 			return err
 		}

@@ -342,7 +342,7 @@ type xsrevAction struct {
 
 func xsrevActions(t *testing.T, env *basketTestEnv, deadline time.Time) []xsrevAction {
 	t.Helper()
-	rows, err := env.store.primary().db.Query(`SELECT seq, strategy_id, direction, order_side, position_side, status FROM basket_member_actions WHERE deadline_ms = ? ORDER BY seq`, deadline.UnixMilli())
+	rows, err := env.store.primary().db.Query(`SELECT seq, strategy_id, direction, order_side, position_side, status FROM basket_member_actions WHERE deadline_ms = ? ORDER BY seq, rowid`, deadline.UnixMilli())
 	if err != nil {
 		t.Fatal(err)
 	}
