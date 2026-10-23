@@ -502,3 +502,75 @@ func TestOKXSharedStepSimulatedClockDrivesAdmissionBookingAndReminder(t *testing
 		}
 	})
 }
+
+func TestOKXSharedStepSplitLayoutRoutesEachPartitionToItsOwnFile(t *testing.T) {
+	root := basketPyRoot(t)
+	okxGoldenResetTrackers(t)
+	t.Setenv("OKX_API_KEY", "synthetic-okx-step-fixture-key")
+	t.Chdir(root)
+	dir := t.TempDir()
+	mk := func(id, mode, source string) StrategyConfig {
+		return StrategyConfig{ID: id, Type: "spot", Platform: "okx", Script: okxGoldenCheckScript, Args: []string{"fixture", "BTC", "1h", "--mode=" + mode, "--inst-type=spot"},
+			ClosedBarDecisions: true, Direction: DirectionLong, Capital: 1000, Leverage: 1, SizingLeverage: 1, PaperSource: source}
+	}
+	live, paper, sourced := mk("okx-split-live", "live", ""), mk("okx-split-paper", "paper", ""), mk("okx-split-s1", "paper", "s1")
+	cfg := &Config{DBFile: filepath.Join(dir, "live.db"), PaperDBFile: filepath.Join(dir, "paper.db"),
+		PaperSources: []PaperSourceConfig{{ID: "s1", DBFile: filepath.Join(dir, "s1.db")}}, Strategies: []StrategyConfig{live, paper, sourced}}
+	env := openEntryTestEnv(t, cfg)
+	useEntryTradeRecorder(t, env.store)
+	bar, cutoff := okxGoldenTimes()
+	for _, sc := range []StrategyConfig{live, paper, sourced} {
+		sdir := t.TempDir()
+		rec := &okxGoldenRecNotifier{}
+		h := &okxGoldenHarness{t: t, env: env, sc: sc, rec: rec, notifier: NewMultiNotifier(notifierBackend{notifier: rec, channels: map[string]string{"okx": "chan-okx"}, ownerID: "owner-1"}),
+			logBuf: &bytes.Buffer{}, dir: sdir, spec: filepath.Join(sdir, "spec.json"), argvLog: filepath.Join(sdir, "argv.jsonl"), barMs: bar.UnixMilli(), cutoffMs: cutoff.UnixMilli()}
+		h.logger = &StrategyLogger{stratID: sc.ID, writer: io.MultiWriter(os.Stdout, h.logBuf)}
+		part := partitionFor(sc)
+		h.sr = &scopeCycleRisk{Partition: part, Config: partitionRiskConfig(cfg, part)}
+		t.Setenv("OKX_STEP_CHECK_FIXTURE", h.spec)
+		h.installVenue()
+		h.venue = []okxGoldenVenue{okxGoldenFill(1)}
+		if !okxIsLive(sc.Args) {
+			h.venue = nil
+		}
+		h.writeSpec(okxGoldenBuy(100))
+		out, _ := okxGoldenDispatch(h, okxGoldenPx(100), h.captureInputs(okxGoldenPx(100)), env.store.persistenceHoldsPartition(part))
+		if out != 1 {
+			t.Fatalf("%s booked %d trades\n%s", sc.ID, out, h.logBuf.String())
+		}
+	}
+	for _, line := range (&okxGoldenHarness{t: t, env: env}).save(false) {
+		if !strings.HasSuffix(line, ": ok") {
+			t.Fatalf("cycle save: %s", line)
+		}
+	}
+	owners := func(path string) map[string]bool {
+		db, err := openStateDBReadOnly(path)
+		if err != nil {
+			t.Fatalf("open %s: %v", path, err)
+		}
+		defer db.Close()
+		out := map[string]bool{}
+		for _, q := range []string{`SELECT strategy_id FROM trades`, `SELECT strategy_id FROM positions`, `SELECT strategy_id FROM entry_decision_state WHERE consumed_through_bar_ms > 0`} {
+			rows, err := db.db.Query(q)
+			if err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				out[id] = true
+			}
+			rows.Close()
+		}
+		return out
+	}
+	for path, want := range map[string]string{cfg.DBFile: live.ID, cfg.PaperDBFile: paper.ID, filepath.Join(dir, "s1.db"): sourced.ID} {
+		got := owners(path)
+		if len(got) != 1 || !got[want] {
+			t.Fatalf("%s holds trade, position or entry rows for %v, want only %s", filepath.Base(path), got, want)
+		}
+	}
+}
