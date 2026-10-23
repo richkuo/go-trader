@@ -1672,6 +1672,8 @@ func TestUpdateShellForeignRecoveryRootModePreservationAndPreRebootLock(t *testi
 	go func() { _ = sleepCmd.Wait() }()
 	sleepPid := fmt.Sprintf("%d", sleepCmd.Process.Pid)
 
+	time.Sleep(1100 * time.Millisecond)
+
 	pauseBoot := filepath.Join(t.TempDir(), "pause-boot-kill")
 	killedForBoot := exec.Command(bash, script)
 	killedForBoot.Dir = deploy
@@ -1686,6 +1688,17 @@ func TestUpdateShellForeignRecoveryRootModePreservationAndPreRebootLock(t *testi
 	waitForPauseReached(t, pauseBoot)
 	_ = killedForBoot.Process.Kill()
 	_ = killedForBoot.Wait()
+
+	stampCmd := exec.Command(bash, "-c", `source "$1"; update_pid_start_stamp "$2"`, "_", filepath.Join(deploy, "scripts", "update_helpers.sh"), sleepPid)
+	stampCmd.Env = cleanEnv
+	stampOut, err := stampCmd.Output()
+	if err != nil {
+		t.Fatalf("update_pid_start_stamp failed: %v", err)
+	}
+	sleepStartStamp := strings.TrimSpace(string(stampOut))
+	if sleepStartStamp == "" {
+		t.Fatalf("expected non-empty start_stamp for sleep pid %s", sleepPid)
+	}
 
 	recEntries, err := os.ReadDir(ownerRec)
 	if err != nil {
@@ -1704,6 +1717,9 @@ func TestUpdateShellForeignRecoveryRootModePreservationAndPreRebootLock(t *testi
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(lockDir, "boot_id"), []byte("boot-old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lockDir, "start_stamp"), []byte(sleepStartStamp+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1733,5 +1749,44 @@ func TestUpdateShellForeignRecoveryRootModePreservationAndPreRebootLock(t *testi
 	}
 	if !strings.Contains(string(newBootOut), "incomplete recovery marker") {
 		t.Fatalf("expected new-boot run to proceed to killed-run check and refuse on incomplete marker, got:\n%s", newBootOut)
+	}
+
+	recEntriesAfterBoot, err := os.ReadDir(ownerRec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range recEntriesAfterBoot {
+		if strings.HasSuffix(e.Name(), ".incomplete") {
+			_ = os.Remove(filepath.Join(ownerRec, e.Name()))
+		}
+	}
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lockDir, "pid"), []byte(sleepPid+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lockDir, "boot_id"), []byte("boot-new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lockDir, "start_stamp"), []byte("mismatched-start-stamp-0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	recycledPidRun := exec.Command(bash, script)
+	recycledPidRun.Dir = deploy
+	recycledPidRun.Env = append(append([]string{}, cleanEnv...),
+		"HOME="+ownerHome,
+		"GO_TRADER_UPDATE_BOOT_ID=boot-new",
+	)
+	recycledOut, recycledErr := recycledPidRun.CombinedOutput()
+	if recycledErr == nil {
+		t.Fatalf("expected recycled-pid run to hit killed-run incomplete marker refusal\n%s", recycledOut)
+	}
+	if !strings.Contains(string(recycledOut), "removing stale lock") {
+		t.Fatalf("expected recycled-pid run with mismatched start_stamp to remove stale lock, got:\n%s", recycledOut)
+	}
+	if !strings.Contains(string(recycledOut), "incomplete recovery marker") {
+		t.Fatalf("expected recycled-pid run to proceed to killed-run check and refuse on incomplete marker, got:\n%s", recycledOut)
 	}
 }

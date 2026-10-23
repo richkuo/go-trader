@@ -1517,28 +1517,28 @@ EOS
     mkdir -p "$owner_rec"
     chown -R go-trader:go-trader "$owner_home"
     chmod 0700 "$owner_rec"
-    local owner_pause="$WORK/pause-owner-kill"
-    run_update "$tree" runuser -u go-trader -- env -u GO_TRADER_UPDATE_RECOVERY_DIR HOME="$owner_home" PATH="$STUBBIN:$PATH" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" GO_TRADER_UPDATE_PAUSE_AT="sync:$owner_pause" bash scripts/update.sh >"$WORK/owner-kill.out" 2>&1 &
+    local owner_pause="$owner_home/pause-owner-kill"
+    run_update "$tree" runuser -u go-trader -- env -u GO_TRADER_UPDATE_RECOVERY_DIR TMPDIR=/tmp HOME="$owner_home" PATH="$STUBBIN:$PATH" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" GO_TRADER_UPDATE_PAUSE_AT="sync:$owner_pause" bash scripts/update.sh >"$WORK/owner-kill.out" 2>&1 &
     local okpid=$!
     for i in $(seq 1 100); do
         [[ -f "${owner_pause}.reached" ]] && break
         sleep 0.1
     done
-    [[ -f "${owner_pause}.reached" ]] || fail "owner killed-run holder did not reach sync pause"
+    [[ -f "${owner_pause}.reached" ]] || { cat "$WORK/owner-kill.out" >&2 || true; fail "owner killed-run holder did not reach sync pause"; }
     kill -KILL "$(cat "${owner_pause}.reached")" 2>/dev/null || true
     kill -KILL "$okpid" 2>/dev/null || true
     wait "$okpid" 2>/dev/null || true
-    expect_exit 1 run_update "$tree" env -u GO_TRADER_UPDATE_RECOVERY_DIR HOME="$owner_home" GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+    expect_exit 1 run_update "$tree" env GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" HOME="$owner_home" GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
     [[ "$(stat -c '%U:%G %a' "$owner_rec")" == "go-trader:go-trader 700" ]] || fail "root killed-run detection changed owner recovery root: $(stat -c '%U:%G %a' "$owner_rec")"
-    expect_exit 0 run_update "$tree" env -u GO_TRADER_UPDATE_RECOVERY_DIR HOME="$owner_home" GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR="$rec_root" bash scripts/update.sh --clear-recovery
+    expect_exit 0 run_update "$tree" env GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" HOME="$owner_home" GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR="$rec_root" bash scripts/update.sh --clear-recovery
     [[ "$(stat -c '%U:%G %a' "$owner_rec")" == "go-trader:go-trader 700" ]] || fail "root --clear-recovery changed owner recovery root: $(stat -c '%U:%G %a' "$owner_rec")"
     runuser -u go-trader -- env HOME="$WORK" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" git -C "$tree" reset -q --hard "$v1_sha"
 
-    expect_exit 1 run_update "$tree" runuser -u go-trader -- env -u GO_TRADER_UPDATE_RECOVERY_DIR HOME="$owner_home" PATH="$STUBBIN:$PATH" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" GO_TRADER_UPDATE_FAIL_AT="build,restore_probe" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-owner-inc" bash scripts/update.sh
-    expect_exit 0 run_update "$tree" env -u GO_TRADER_UPDATE_RECOVERY_DIR HOME="$owner_home" GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR="$rec_root" bash scripts/update.sh --clear-recovery
+    expect_exit 1 run_update "$tree" runuser -u go-trader -- env -u GO_TRADER_UPDATE_RECOVERY_DIR TMPDIR=/tmp HOME="$owner_home" PATH="$STUBBIN:$PATH" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" GO_TRADER_UPDATE_FAIL_AT="build,restore_probe" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$owner_home/once-owner-inc" bash scripts/update.sh
+    expect_exit 0 run_update "$tree" env GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" HOME="$owner_home" GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR="$rec_root" bash scripts/update.sh --clear-recovery
     [[ "$(stat -c '%U:%G %a' "$owner_rec")" == "go-trader:go-trader 700" ]] || fail "root --clear-recovery after owner INCOMPLETE changed owner recovery root"
     runuser -u go-trader -- env HOME="$WORK" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" git -C "$tree" reset -q --hard "$v1_sha"
-    expect_exit 1 run_update "$tree" runuser -u go-trader -- env -u GO_TRADER_UPDATE_RECOVERY_DIR HOME="$owner_home" PATH="$STUBBIN:$PATH" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" GO_TRADER_UPDATE_FAIL_AT="build" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-owner-after-clear" bash scripts/update.sh
+    expect_exit 1 run_update "$tree" runuser -u go-trader -- env -u GO_TRADER_UPDATE_RECOVERY_DIR TMPDIR=/tmp HOME="$owner_home" PATH="$STUBBIN:$PATH" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" GO_TRADER_UPDATE_FAIL_AT="build" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$owner_home/once-owner-after-clear" bash scripts/update.sh
     grep -q "phase: snapshot" "$WORK/last.out" || fail "owner update after root --clear-recovery did not reach phase: snapshot"
     grep -q "recovery: complete" "$WORK/last.out" || fail "owner update after root --clear-recovery did not finish recovery: complete"
 
