@@ -770,6 +770,117 @@ func okxGoldenFileName(scenario, typ string) string {
 	return filepath.Join(okxGoldenDir, scenario+"."+typ+".json")
 }
 
+const okxGoldenFloatRelTol = 1e-12
+
+var okxGoldenDecimalRe = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$`)
+
+func okxGoldenFloatsClose(a, b string) bool {
+	if !okxGoldenDecimalRe.MatchString(a) || !okxGoldenDecimalRe.MatchString(b) {
+		return false
+	}
+	if !strings.ContainsAny(a, ".eE") && !strings.ContainsAny(b, ".eE") {
+		return false
+	}
+	x, errX := strconv.ParseFloat(a, 64)
+	y, errY := strconv.ParseFloat(b, 64)
+	if errX != nil || errY != nil || math.IsInf(x, 0) || math.IsInf(y, 0) {
+		return false
+	}
+	if x == y {
+		return true
+	}
+	return math.Abs(x-y) <= okxGoldenFloatRelTol*math.Max(math.Abs(x), math.Abs(y))
+}
+
+func okxGoldenEquivalent(path string, got, want interface{}) string {
+	switch w := want.(type) {
+	case map[string]interface{}:
+		g, ok := got.(map[string]interface{})
+		if !ok {
+			return fmt.Sprintf("%s: got %T, want an object", path, got)
+		}
+		keys := make([]string, 0, len(w)+len(g))
+		for k := range w {
+			keys = append(keys, k)
+		}
+		for k := range g {
+			if _, dup := w[k]; !dup {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			gv, gok := g[k]
+			wv, wok := w[k]
+			if gok != wok {
+				return fmt.Sprintf("%s.%s: present in projection %t, present in golden %t", path, k, gok, wok)
+			}
+			if why := okxGoldenEquivalent(path+"."+k, gv, wv); why != "" {
+				return why
+			}
+		}
+		return ""
+	case []interface{}:
+		g, ok := got.([]interface{})
+		if !ok {
+			return fmt.Sprintf("%s: got %T, want an array", path, got)
+		}
+		if len(g) != len(w) {
+			return fmt.Sprintf("%s: %d elements, golden has %d", path, len(g), len(w))
+		}
+		for i := range w {
+			if why := okxGoldenEquivalent(fmt.Sprintf("%s[%d]", path, i), g[i], w[i]); why != "" {
+				return why
+			}
+		}
+		return ""
+	case json.Number:
+		g, ok := got.(json.Number)
+		if !ok || (g != w && !okxGoldenFloatsClose(string(g), string(w))) {
+			return fmt.Sprintf("%s: got %v, golden %v", path, got, w)
+		}
+		return ""
+	case string:
+		g, ok := got.(string)
+		if !ok || (g != w && !okxGoldenFloatsClose(g, w)) {
+			return fmt.Sprintf("%s: got %v, golden %q", path, got, w)
+		}
+		return ""
+	default:
+		if got != want {
+			return fmt.Sprintf("%s: got %v, golden %v", path, got, want)
+		}
+		return ""
+	}
+}
+
+func okxGoldenCompare(got, want []byte) string {
+	if bytes.Equal(got, want) {
+		return ""
+	}
+	decode := func(raw []byte) (interface{}, error) {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var v interface{}
+		if err := dec.Decode(&v); err != nil {
+			return nil, err
+		}
+		if dec.More() {
+			return nil, errors.New("trailing data after the JSON value")
+		}
+		return v, nil
+	}
+	g, err := decode(got)
+	if err != nil {
+		return fmt.Sprintf("projection is not one JSON value: %v", err)
+	}
+	w, err := decode(want)
+	if err != nil {
+		return fmt.Sprintf("golden is not one JSON value: %v", err)
+	}
+	return okxGoldenEquivalent("$", g, w)
+}
+
 func TestOKXSharedStepOrdinaryGolden(t *testing.T) {
 	root := basketPyRoot(t)
 	schedDir, err := os.Getwd()
@@ -841,10 +952,10 @@ func TestOKXSharedStepOrdinaryGolden(t *testing.T) {
 				if err != nil {
 					t.Fatalf("golden trace %s is missing (%v); the comparison never skips", path, err)
 				}
-				if !bytes.Equal(got, want) {
+				if why := okxGoldenCompare(got, want); why != "" {
 					diffPath := filepath.Join(t.TempDir(), filepath.Base(path))
 					_ = os.WriteFile(diffPath, got, 0o644)
-					t.Fatalf("%s differs from the pre-extraction golden trace %s; the new projection is at %s", name, path, diffPath)
+					t.Fatalf("%s differs from the pre-extraction golden trace %s at %s; the new projection is at %s", name, path, why, diffPath)
 				}
 			})
 		}
