@@ -1,0 +1,784 @@
+{
+  "final_db": {
+    "app_state": [
+      {
+        "cycle_count": "0",
+        "id": "1",
+        "last_cycle": "",
+        "last_leaderboard_post_date": "",
+        "last_leaderboard_summaries": "",
+        "last_summary_post": ""
+      }
+    ],
+    "closed_positions": [
+      {
+        "avg_cost": "100.05",
+        "close_price": "100.9495",
+        "close_reason": "signal",
+        "closed_at": "\u003ctime\u003e",
+        "duration_seconds": "0",
+        "id": "1",
+        "multiplier": "0",
+        "opened_at": "\u003ctime\u003e",
+        "quantity": "9.995002498750624",
+        "realized_pnl": "7.981514242878642",
+        "side": "long",
+        "strategy_id": "okx-spot-closed_bar_same_candle",
+        "symbol": "BTC"
+      }
+    ],
+    "entry_decision_state": [
+      {
+        "bootstrap_through_bar_ms": "0",
+        "consumed_through_bar_ms": "0",
+        "interval_ms": "3600000",
+        "latest_observed_bar_ms": "\u003cbar\u003e",
+        "scope": "paper",
+        "source": "",
+        "strategy_id": "okx-spot-closed_bar_same_candle",
+        "symbol": "BTC",
+        "target_side": "short",
+        "updated_at_ms": "\u003cms\u003e"
+      },
+      {
+        "bootstrap_through_bar_ms": "0",
+        "consumed_through_bar_ms": "\u003cbar\u003e",
+        "interval_ms": "3600000",
+        "latest_observed_bar_ms": "\u003cbar\u003e",
+        "scope": "paper",
+        "source": "",
+        "strategy_id": "okx-spot-closed_bar_same_candle",
+        "symbol": "BTC",
+        "target_side": "long",
+        "updated_at_ms": "\u003cms\u003e"
+      }
+    ],
+    "strategies": [
+      {
+        "active_profile": "",
+        "cash": "1006.9815142428787",
+        "cash_reconcile_required": "0",
+        "hurst_gate_state": "",
+        "id": "okx-spot-closed_bar_same_candle",
+        "initial_capital": "1000",
+        "paper_funding_state": "",
+        "platform": "okx",
+        "quote_precision_rebaselined": "0",
+        "replay_mirror_watermark": "0",
+        "replay_mirror_watermark_source": "",
+        "risk_circuit_breaker": "0",
+        "risk_circuit_breaker_until": "",
+        "risk_consecutive_losses": "0",
+        "risk_current_drawdown_pct": "0",
+        "risk_daily_pnl": "7.981514242878642",
+        "risk_daily_pnl_date": "2026-10-23",
+        "risk_max_drawdown_pct": "0",
+        "risk_peak_value": "1000",
+        "risk_pending_circuit_closes_json": "",
+        "shared_wallet_pool_budget": "0",
+        "type": "spot"
+      }
+    ],
+    "trades": [
+      {
+        "cost_model_version": "1",
+        "cost_policy_id": "",
+        "details": "Close long, PnL: $7.98 (fee $1.01)",
+        "entry_atr": "2",
+        "exchange_fee": "1.0089905047476262",
+        "exchange_order_id": "",
+        "fee_source": "modeled",
+        "is_close": "1",
+        "manual": "0",
+        "pnl_gross": "1",
+        "position_id": "\u003cpos-1\u003e",
+        "price": "100.9495",
+        "quantity": "9.995002498750624",
+        "realized_pnl": "8.990504747626268",
+        "regime": "",
+        "rowid": "2",
+        "side": "sell",
+        "stop_loss_atr_mult": "\u003cnull\u003e",
+        "stop_loss_oid": "0",
+        "stop_loss_trigger_px": "0",
+        "strategy_id": "okx-spot-closed_bar_same_candle",
+        "symbol": "BTC",
+        "timestamp": "\u003ctime\u003e",
+        "tp_oids_json": "",
+        "tp_tiers_json": "",
+        "trade_type": "spot",
+        "value": "1007.9815142428786"
+      },
+      {
+        "cost_model_version": "1",
+        "cost_policy_id": "",
+        "details": "Open long 9.995002 @ $100.05 (fee $1.00)",
+        "entry_atr": "2",
+        "exchange_fee": "0.9999999999999999",
+        "exchange_order_id": "",
+        "fee_source": "modeled",
+        "is_close": "0",
+        "manual": "0",
+        "pnl_gross": "1",
+        "position_id": "\u003cpos-1\u003e",
+        "price": "100.05",
+        "quantity": "9.995002498750624",
+        "realized_pnl": "0",
+        "regime": "",
+        "rowid": "1",
+        "side": "buy",
+        "stop_loss_atr_mult": "\u003cnull\u003e",
+        "stop_loss_oid": "0",
+        "stop_loss_trigger_px": "0",
+        "strategy_id": "okx-spot-closed_bar_same_candle",
+        "symbol": "BTC",
+        "timestamp": "\u003ctime\u003e",
+        "tp_oids_json": "",
+        "tp_tiers_json": "",
+        "trade_type": "spot",
+        "value": "1000.9999999999999"
+      }
+    ]
+  },
+  "mode": "paper",
+  "scenario": "closed_bar_same_candle",
+  "steps": [
+    {
+      "alerts": null,
+      "book": {
+        "cash": -0.9999999999998863,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {
+          "BTC": {
+            "atr_method_at_open": "simple",
+            "avg_cost": 100.05,
+            "entry_atr": 2,
+            "initial_quantity": 9.995002498750624,
+            "opened_at": "\u003ctime\u003e",
+            "owner_strategy_id": "okx-spot-closed_bar_same_candle",
+            "position_id": "\u003cpos-1\u003e",
+            "quantity": 9.995002498750624,
+            "side": "long",
+            "symbol": "BTC"
+          }
+        },
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 0,
+          "daily_pnl_date": "",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": [
+          {
+            "cost_model_version": 1,
+            "details": "Open long 9.995002 @ $100.05 (fee $1.00)",
+            "entry_atr": 2,
+            "exchange_fee": 0.9999999999999999,
+            "fee_source": "modeled",
+            "pnl_gross": true,
+            "position_id": "\u003cpos-1\u003e",
+            "price": 100.05,
+            "quantity": 9.995002498750624,
+            "side": "buy",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "spot",
+            "value": 1000.9999999999999
+          }
+        ]
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=paper",
+          "--inst-type=spot",
+          "--atr-method=simple",
+          "--closed-bar-decisions",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: ok",
+        "paper: ok"
+      ],
+      "db": {
+        "entry_decision_state": [
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "0",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "paper",
+            "source": "",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "target_side": "short",
+            "updated_at_ms": "\u003cms\u003e"
+          },
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "\u003cbar\u003e",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "paper",
+            "source": "",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e"
+          }
+        ],
+        "trades": [
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Open long 9.995002 @ $100.05 (fee $1.00)",
+            "entry_atr": "2",
+            "exchange_fee": "0.9999999999999999",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "0",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-1\u003e",
+            "price": "100.05",
+            "quantity": "9.995002498750624",
+            "realized_pnl": "0",
+            "regime": "",
+            "rowid": "1",
+            "side": "buy",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "spot",
+            "value": "1000.9999999999999"
+          }
+        ]
+      },
+      "detail": "[okx-spot-closed_bar_same_candle] BUY BTC @ $100.00",
+      "inputs": {
+        "AvgCost": 0,
+        "Cash": 0,
+        "CashReconcile": false,
+        "Leverage": 0,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 0,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 0,
+          "InitialQuantity": 0,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 0,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 0,
+        "PosSide": ""
+      },
+      "log": [
+        "[okx-spot-closed_bar_same_candle] [INFO] Signal: BUY | BTC @ $100.00 [paper]",
+        "[okx-spot-closed_bar_same_candle] [INFO] Closed-bar decisions active: signal, entry ATR and sizing use the bar closed at \u003cboundary-rfc3339\u003e (#1712)",
+        "[okx-spot-closed_bar_same_candle] [INFO] BUY BTC: 9.995002 @ $100.05 (fee $1.00, total $1001.00)"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 100
+      },
+      "reminder_sig": "",
+      "sends": null,
+      "step": "buy admitted",
+      "trade_alert_tail": [
+        {
+          "content": "🟢 **TRADE EXECUTED - PAPER**\nStrategy: okx-spot-closed_bar_same_candle (Okx spot)\nBTC — LONG 9.995 @ $100 | Value: $1,000\nATR: $2.00",
+          "kind": "channel",
+          "target": "chan-okx"
+        }
+      ],
+      "trades": 1
+    },
+    {
+      "alerts": null,
+      "book": {
+        "cash": 1006.9815142428787,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {},
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 7.981514242878642,
+          "daily_pnl_date": "2026-10-23",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": [
+          {
+            "cost_model_version": 1,
+            "details": "Open long 9.995002 @ $100.05 (fee $1.00)",
+            "entry_atr": 2,
+            "exchange_fee": 0.9999999999999999,
+            "fee_source": "modeled",
+            "pnl_gross": true,
+            "position_id": "\u003cpos-1\u003e",
+            "price": 100.05,
+            "quantity": 9.995002498750624,
+            "side": "buy",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "spot",
+            "value": 1000.9999999999999
+          },
+          {
+            "cost_model_version": 1,
+            "details": "Close long, PnL: $7.98 (fee $1.01)",
+            "entry_atr": 2,
+            "exchange_fee": 1.0089905047476262,
+            "fee_source": "modeled",
+            "is_close": true,
+            "pnl_gross": true,
+            "position_id": "\u003cpos-1\u003e",
+            "price": 100.9495,
+            "quantity": 9.995002498750624,
+            "realized_pnl": 8.990504747626268,
+            "side": "sell",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "spot",
+            "value": 1007.9815142428786
+          }
+        ]
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=paper",
+          "--inst-type=spot",
+          "--atr-method=simple",
+          "--closed-bar-decisions",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: ok",
+        "paper: ok"
+      ],
+      "db": {
+        "entry_decision_state": [
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "0",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "paper",
+            "source": "",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "target_side": "short",
+            "updated_at_ms": "\u003cms\u003e"
+          },
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "\u003cbar\u003e",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "paper",
+            "source": "",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e"
+          }
+        ],
+        "trades": [
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Close long, PnL: $7.98 (fee $1.01)",
+            "entry_atr": "2",
+            "exchange_fee": "1.0089905047476262",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "1",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-1\u003e",
+            "price": "100.9495",
+            "quantity": "9.995002498750624",
+            "realized_pnl": "8.990504747626268",
+            "regime": "",
+            "rowid": "2",
+            "side": "sell",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "spot",
+            "value": "1007.9815142428786"
+          },
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Open long 9.995002 @ $100.05 (fee $1.00)",
+            "entry_atr": "2",
+            "exchange_fee": "0.9999999999999999",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "0",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-1\u003e",
+            "price": "100.05",
+            "quantity": "9.995002498750624",
+            "realized_pnl": "0",
+            "regime": "",
+            "rowid": "1",
+            "side": "buy",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "spot",
+            "value": "1000.9999999999999"
+          }
+        ]
+      },
+      "detail": "[okx-spot-closed_bar_same_candle] SELL BTC @ $101.00",
+      "inputs": {
+        "AvgCost": 100.05,
+        "Cash": 0,
+        "CashReconcile": false,
+        "Leverage": 0,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 100.05,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 2,
+          "InitialQuantity": 9.995002498750624,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 9.995002498750624,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "long",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 9.995002498750624,
+        "PosSide": "long"
+      },
+      "log": [
+        "[okx-spot-closed_bar_same_candle] [INFO] Signal: SELL | BTC @ $101.00 [paper]",
+        "[okx-spot-closed_bar_same_candle] [INFO] SELL BTC: 9.995002 @ $100.95 (fee $1.01) | PnL: $7.98"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 101
+      },
+      "reminder_sig": "",
+      "sends": null,
+      "step": "sell closes",
+      "trade_alert_tail": [
+        {
+          "content": "🔴 **TRADE CLOSED - PAPER**\nStrategy: okx-spot-closed_bar_same_candle (Okx spot)\nBTC — LONG 9.995 @ $100 | Value: $1,007\nSource: close-strategy exit | PnL: $7.98",
+          "kind": "channel",
+          "target": "chan-okx"
+        }
+      ],
+      "trades": 1
+    },
+    {
+      "alerts": null,
+      "book": {
+        "cash": 1006.9815142428787,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {},
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 7.981514242878642,
+          "daily_pnl_date": "2026-10-23",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": [
+          {
+            "cost_model_version": 1,
+            "details": "Open long 9.995002 @ $100.05 (fee $1.00)",
+            "entry_atr": 2,
+            "exchange_fee": 0.9999999999999999,
+            "fee_source": "modeled",
+            "pnl_gross": true,
+            "position_id": "\u003cpos-1\u003e",
+            "price": 100.05,
+            "quantity": 9.995002498750624,
+            "side": "buy",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "spot",
+            "value": 1000.9999999999999
+          },
+          {
+            "cost_model_version": 1,
+            "details": "Close long, PnL: $7.98 (fee $1.01)",
+            "entry_atr": 2,
+            "exchange_fee": 1.0089905047476262,
+            "fee_source": "modeled",
+            "is_close": true,
+            "pnl_gross": true,
+            "position_id": "\u003cpos-1\u003e",
+            "price": 100.9495,
+            "quantity": 9.995002498750624,
+            "realized_pnl": 8.990504747626268,
+            "side": "sell",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "spot",
+            "value": 1007.9815142428786
+          }
+        ]
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=paper",
+          "--inst-type=spot",
+          "--atr-method=simple",
+          "--closed-bar-decisions",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: ok",
+        "paper: ok"
+      ],
+      "db": {
+        "entry_decision_state": [
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "0",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "paper",
+            "source": "",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "target_side": "short",
+            "updated_at_ms": "\u003cms\u003e"
+          },
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "\u003cbar\u003e",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "paper",
+            "source": "",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e"
+          }
+        ],
+        "trades": [
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Close long, PnL: $7.98 (fee $1.01)",
+            "entry_atr": "2",
+            "exchange_fee": "1.0089905047476262",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "1",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-1\u003e",
+            "price": "100.9495",
+            "quantity": "9.995002498750624",
+            "realized_pnl": "8.990504747626268",
+            "regime": "",
+            "rowid": "2",
+            "side": "sell",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "spot",
+            "value": "1007.9815142428786"
+          },
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Open long 9.995002 @ $100.05 (fee $1.00)",
+            "entry_atr": "2",
+            "exchange_fee": "0.9999999999999999",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "0",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-1\u003e",
+            "price": "100.05",
+            "quantity": "9.995002498750624",
+            "realized_pnl": "0",
+            "regime": "",
+            "rowid": "1",
+            "side": "buy",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-spot-closed_bar_same_candle",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "spot",
+            "value": "1000.9999999999999"
+          }
+        ]
+      },
+      "detail": "",
+      "inputs": {
+        "AvgCost": 0,
+        "Cash": 0,
+        "CashReconcile": false,
+        "Leverage": 0,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 0,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 0,
+          "InitialQuantity": 0,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 0,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 0,
+        "PosSide": ""
+      },
+      "log": [
+        "[okx-spot-closed_bar_same_candle] [INFO] Signal: BUY | BTC @ $102.00 [paper]",
+        "[okx-spot-closed_bar_same_candle] [WARN] Closed-bar entry: BUY open held — the long entry for the candle opened \u003cbar-rfc3339\u003e was already taken; exits, stops and protection continue (#1769)"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 102
+      },
+      "reminder_sig": "",
+      "sends": null,
+      "step": "same candle re-entry held",
+      "trade_alert_tail": null,
+      "trades": 0
+    }
+  ],
+  "strategy": {
+    "args": [
+      "fixture",
+      "BTC",
+      "1h",
+      "--mode=paper",
+      "--inst-type=spot"
+    ],
+    "capital": 1000,
+    "closed_bar_decisions": true,
+    "direction": "long",
+    "id": "okx-spot-closed_bar_same_candle",
+    "leverage": 1,
+    "max_drawdown_pct": 0,
+    "open_strategy": {
+      "name": ""
+    },
+    "platform": "okx",
+    "script": "scheduler/testdata/okx_step/check_fixture.py",
+    "sizing_leverage": 1,
+    "type": "spot"
+  },
+  "type": "spot"
+}

@@ -1,0 +1,980 @@
+{
+  "final_db": {
+    "app_state": [
+      {
+        "cycle_count": "0",
+        "id": "1",
+        "last_cycle": "",
+        "last_leaderboard_post_date": "",
+        "last_leaderboard_summaries": "",
+        "last_summary_post": ""
+      }
+    ],
+    "closed_positions": [
+      {
+        "avg_cost": "100.05",
+        "close_price": "101.94900000000001",
+        "close_reason": "signal",
+        "closed_at": "\u003ctime\u003e",
+        "duration_seconds": "0",
+        "id": "1",
+        "multiplier": "1",
+        "opened_at": "\u003ctime\u003e",
+        "quantity": "9.995002498750624",
+        "realized_pnl": "18.471019490255024",
+        "side": "long",
+        "strategy_id": "okx-perps-gate_persistence",
+        "symbol": "BTC"
+      }
+    ],
+    "positions": [
+      {
+        "added_notional_usd": "0",
+        "atr_method_at_open": "simple",
+        "avg_cost": "103.05149999999999",
+        "direction_certified_at_open": "0",
+        "direction_certified_states_json": "",
+        "entry_atr": "2",
+        "hedge_for": "",
+        "hedge_primary_qty_basis": "0",
+        "hurst_at_open": "0",
+        "hurst_size_mult": "0",
+        "initial_quantity": "9.878274644136718",
+        "last_add_price": "0",
+        "llm_analysis_requested": "0",
+        "llm_verdict": "",
+        "multiplier": "1",
+        "open_profile": "",
+        "opened_at": "\u003ctime\u003e",
+        "owner_strategy_id": "okx-perps-gate_persistence",
+        "position_id": "\u003cpos-1\u003e",
+        "post_tp_trailing_atr_mult": "\u003cnull\u003e",
+        "quantity": "9.878274644136718",
+        "ratchet_fallback_normalize_pending": "0",
+        "regime": "",
+        "regime_applied_label": "",
+        "regime_pending_count": "0",
+        "regime_pending_label": "",
+        "regime_windows_json": "",
+        "resting_tp_reach_px": "0",
+        "resting_tp_scanned_open_ms": "0",
+        "resting_tp_stop_trigger_px": "0",
+        "risk_anchor_price": "0",
+        "scale_in_count": "0",
+        "scale_in_resize_pending": "0",
+        "shared_close_hold_reason": "",
+        "shared_close_hold_usd": "0",
+        "side": "long",
+        "sl_adjusted_tiers_processed": "0",
+        "sl_after_moved": "0",
+        "sl_after_trigger_px": "0",
+        "stop_loss_atr_mult": "\u003cnull\u003e",
+        "stop_loss_high_water_px": "0",
+        "stop_loss_oid": "0",
+        "stop_loss_trigger_px": "0",
+        "strategy_id": "okx-perps-gate_persistence",
+        "symbol": "BTC",
+        "tp1_oid": "0",
+        "tp2_oid": "0",
+        "tp_armed_tiers_json": "",
+        "tp_consumptions_json": "",
+        "tp_oids_json": "",
+        "tp_tiers_json": ""
+      }
+    ],
+    "strategies": [
+      {
+        "active_profile": "",
+        "cash": "1017.4620339805099",
+        "cash_reconcile_required": "0",
+        "hurst_gate_state": "",
+        "id": "okx-perps-gate_persistence",
+        "initial_capital": "1000",
+        "paper_funding_state": "",
+        "platform": "okx",
+        "quote_precision_rebaselined": "0",
+        "replay_mirror_watermark": "0",
+        "replay_mirror_watermark_source": "",
+        "risk_circuit_breaker": "0",
+        "risk_circuit_breaker_until": "",
+        "risk_consecutive_losses": "0",
+        "risk_current_drawdown_pct": "0",
+        "risk_daily_pnl": "18.471019490255024",
+        "risk_daily_pnl_date": "2026-10-23",
+        "risk_max_drawdown_pct": "0",
+        "risk_peak_value": "1000",
+        "risk_pending_circuit_closes_json": "",
+        "shared_wallet_pool_budget": "0",
+        "type": "perps"
+      }
+    ],
+    "trades": [
+      {
+        "cost_model_version": "1",
+        "cost_policy_id": "",
+        "details": "Close long, PnL: $18.47 (fee $0.51)",
+        "entry_atr": "2",
+        "exchange_fee": "0.5094902548725637",
+        "exchange_order_id": "",
+        "fee_source": "modeled",
+        "is_close": "1",
+        "manual": "0",
+        "pnl_gross": "1",
+        "position_id": "\u003cpos-2\u003e",
+        "price": "101.94900000000001",
+        "quantity": "9.995002498750624",
+        "realized_pnl": "18.980509745127588",
+        "regime": "",
+        "rowid": "2",
+        "side": "sell",
+        "stop_loss_atr_mult": "\u003cnull\u003e",
+        "stop_loss_oid": "0",
+        "stop_loss_trigger_px": "0",
+        "strategy_id": "okx-perps-gate_persistence",
+        "symbol": "BTC",
+        "timestamp": "\u003ctime\u003e",
+        "tp_oids_json": "",
+        "tp_tiers_json": "",
+        "trade_type": "perps",
+        "value": "1018.9805097451275"
+      },
+      {
+        "cost_model_version": "1",
+        "cost_policy_id": "",
+        "details": "Open long 9.878275 @ $103.05 (1.0x, fee $0.51)",
+        "entry_atr": "2",
+        "exchange_fee": "0.5089855097451275",
+        "exchange_order_id": "",
+        "fee_source": "modeled",
+        "is_close": "0",
+        "manual": "0",
+        "pnl_gross": "1",
+        "position_id": "\u003cpos-1\u003e",
+        "price": "103.05149999999999",
+        "quantity": "9.878274644136718",
+        "realized_pnl": "0",
+        "regime": "",
+        "rowid": "3",
+        "side": "buy",
+        "stop_loss_atr_mult": "\u003cnull\u003e",
+        "stop_loss_oid": "0",
+        "stop_loss_trigger_px": "0",
+        "strategy_id": "okx-perps-gate_persistence",
+        "symbol": "BTC",
+        "timestamp": "\u003ctime\u003e",
+        "tp_oids_json": "",
+        "tp_tiers_json": "",
+        "trade_type": "perps",
+        "value": "1017.9710194902549"
+      },
+      {
+        "cost_model_version": "1",
+        "cost_policy_id": "",
+        "details": "Open long 9.995002 @ $100.05 (1.0x, fee $0.50)",
+        "entry_atr": "2",
+        "exchange_fee": "0.49999999999999994",
+        "exchange_order_id": "",
+        "fee_source": "modeled",
+        "is_close": "0",
+        "manual": "0",
+        "pnl_gross": "1",
+        "position_id": "\u003cpos-2\u003e",
+        "price": "100.05",
+        "quantity": "9.995002498750624",
+        "realized_pnl": "0",
+        "regime": "",
+        "rowid": "1",
+        "side": "buy",
+        "stop_loss_atr_mult": "\u003cnull\u003e",
+        "stop_loss_oid": "0",
+        "stop_loss_trigger_px": "0",
+        "strategy_id": "okx-perps-gate_persistence",
+        "symbol": "BTC",
+        "timestamp": "\u003ctime\u003e",
+        "tp_oids_json": "",
+        "tp_tiers_json": "",
+        "trade_type": "perps",
+        "value": "999.9999999999999"
+      }
+    ]
+  },
+  "mode": "paper",
+  "scenario": "gate_persistence",
+  "steps": [
+    {
+      "alerts": null,
+      "book": {
+        "cash": 999.5,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {
+          "BTC": {
+            "atr_method_at_open": "simple",
+            "avg_cost": 100.05,
+            "entry_atr": 2,
+            "initial_quantity": 9.995002498750624,
+            "leverage": 1,
+            "multiplier": 1,
+            "opened_at": "\u003ctime\u003e",
+            "owner_strategy_id": "okx-perps-gate_persistence",
+            "position_id": "\u003cpos-2\u003e",
+            "quantity": 9.995002498750624,
+            "side": "long",
+            "symbol": "BTC"
+          }
+        },
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 0,
+          "daily_pnl_date": "",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": [
+          {
+            "cost_model_version": 1,
+            "details": "Open long 9.995002 @ $100.05 (1.0x, fee $0.50)",
+            "entry_atr": 2,
+            "exchange_fee": 0.49999999999999994,
+            "fee_source": "modeled",
+            "pnl_gross": true,
+            "position_id": "\u003cpos-2\u003e",
+            "price": 100.05,
+            "quantity": 9.995002498750624,
+            "side": "buy",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "perps",
+            "value": 999.9999999999999
+          }
+        ]
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=paper",
+          "--inst-type=swap",
+          "--atr-method=simple",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: commit hook (primary): injected cycle save failure",
+        "paper: commit hook (primary): injected cycle save failure"
+      ],
+      "db": {
+        "trades": [
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Open long 9.995002 @ $100.05 (1.0x, fee $0.50)",
+            "entry_atr": "2",
+            "exchange_fee": "0.49999999999999994",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "0",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-2\u003e",
+            "price": "100.05",
+            "quantity": "9.995002498750624",
+            "realized_pnl": "0",
+            "regime": "",
+            "rowid": "1",
+            "side": "buy",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "perps",
+            "value": "999.9999999999999"
+          }
+        ]
+      },
+      "detail": "[okx-perps-gate_persistence] BUY BTC @ $100.00",
+      "inputs": {
+        "AvgCost": 0,
+        "Cash": 0,
+        "CashReconcile": false,
+        "Leverage": 0,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 0,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 0,
+          "InitialQuantity": 0,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 0,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 0,
+        "PosSide": ""
+      },
+      "log": [
+        "[okx-perps-gate_persistence] [INFO] Signal: BUY | BTC @ $100.00 [paper]",
+        "[okx-perps-gate_persistence] [INFO] BUY BTC: 9.995002 @ $100.05 (1.0x, notional $1000.00, fee $0.50)"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 100
+      },
+      "reminder_sig": "",
+      "sends": null,
+      "step": "buy opens and the cycle save fails",
+      "trade_alert_tail": [
+        {
+          "content": "🟢 **TRADE EXECUTED - PAPER**\nStrategy: okx-perps-gate_persistence (Okx perps)\nBTC — LONG 9.995 @ $100 | Value: $999\nATR: $2.00",
+          "kind": "channel",
+          "target": "chan-okx"
+        }
+      ],
+      "trades": 1
+    },
+    {
+      "alerts": null,
+      "book": {
+        "cash": 999.5,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {
+          "BTC": {
+            "atr_method_at_open": "simple",
+            "avg_cost": 100.05,
+            "entry_atr": 2,
+            "initial_quantity": 9.995002498750624,
+            "leverage": 1,
+            "multiplier": 1,
+            "opened_at": "\u003ctime\u003e",
+            "owner_strategy_id": "okx-perps-gate_persistence",
+            "position_id": "\u003cpos-2\u003e",
+            "quantity": 9.995002498750624,
+            "side": "long",
+            "symbol": "BTC"
+          }
+        },
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 0,
+          "daily_pnl_date": "",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": [
+          {
+            "cost_model_version": 1,
+            "details": "Open long 9.995002 @ $100.05 (1.0x, fee $0.50)",
+            "entry_atr": 2,
+            "exchange_fee": 0.49999999999999994,
+            "fee_source": "modeled",
+            "pnl_gross": true,
+            "position_id": "\u003cpos-2\u003e",
+            "price": 100.05,
+            "quantity": 9.995002498750624,
+            "side": "buy",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "perps",
+            "value": 999.9999999999999
+          }
+        ]
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=paper",
+          "--inst-type=swap",
+          "--atr-method=simple",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: commit hook (primary): injected cycle save failure",
+        "paper: commit hook (primary): injected cycle save failure"
+      ],
+      "db": {
+        "trades": [
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Open long 9.995002 @ $100.05 (1.0x, fee $0.50)",
+            "entry_atr": "2",
+            "exchange_fee": "0.49999999999999994",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "0",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-2\u003e",
+            "price": "100.05",
+            "quantity": "9.995002498750624",
+            "realized_pnl": "0",
+            "regime": "",
+            "rowid": "1",
+            "side": "buy",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "perps",
+            "value": "999.9999999999999"
+          }
+        ]
+      },
+      "detail": "",
+      "inputs": {
+        "AvgCost": 100.05,
+        "Cash": 0,
+        "CashReconcile": false,
+        "Leverage": 1,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 100.05,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 2,
+          "InitialQuantity": 9.995002498750624,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 9.995002498750624,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "long",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 9.995002498750624,
+        "PosSide": "long"
+      },
+      "log": [
+        "[okx-perps-gate_persistence] [INFO] Signal: BUY | BTC @ $101.00 [paper]",
+        "[okx-perps-gate_persistence] [WARN] Persistence hold: BUY signal suppressed — the paper scope has an unacknowledged state save failure, so no new exposure is taken; exits, stops, ratchet and protection continue (#1523)"
+      ],
+      "persistence_hold_before": true,
+      "prices_after": {
+        "BTC": 101
+      },
+      "reminder_sig": "",
+      "sends": null,
+      "step": "add held by the persistence hold",
+      "trade_alert_tail": null,
+      "trades": 0
+    },
+    {
+      "alerts": null,
+      "book": {
+        "cash": 1017.971019490255,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {},
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 18.471019490255024,
+          "daily_pnl_date": "2026-10-23",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": [
+          {
+            "cost_model_version": 1,
+            "details": "Open long 9.995002 @ $100.05 (1.0x, fee $0.50)",
+            "entry_atr": 2,
+            "exchange_fee": 0.49999999999999994,
+            "fee_source": "modeled",
+            "pnl_gross": true,
+            "position_id": "\u003cpos-2\u003e",
+            "price": 100.05,
+            "quantity": 9.995002498750624,
+            "side": "buy",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "perps",
+            "value": 999.9999999999999
+          },
+          {
+            "cost_model_version": 1,
+            "details": "Close long, PnL: $18.47 (fee $0.51)",
+            "entry_atr": 2,
+            "exchange_fee": 0.5094902548725637,
+            "fee_source": "modeled",
+            "is_close": true,
+            "pnl_gross": true,
+            "position_id": "\u003cpos-2\u003e",
+            "price": 101.94900000000001,
+            "quantity": 9.995002498750624,
+            "realized_pnl": 18.980509745127588,
+            "side": "sell",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "perps",
+            "value": 1018.9805097451275
+          }
+        ]
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=paper",
+          "--inst-type=swap",
+          "--atr-method=simple",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: ok",
+        "paper: ok"
+      ],
+      "db": {
+        "trades": [
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Close long, PnL: $18.47 (fee $0.51)",
+            "entry_atr": "2",
+            "exchange_fee": "0.5094902548725637",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "1",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-2\u003e",
+            "price": "101.94900000000001",
+            "quantity": "9.995002498750624",
+            "realized_pnl": "18.980509745127588",
+            "regime": "",
+            "rowid": "2",
+            "side": "sell",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "perps",
+            "value": "1018.9805097451275"
+          },
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Open long 9.995002 @ $100.05 (1.0x, fee $0.50)",
+            "entry_atr": "2",
+            "exchange_fee": "0.49999999999999994",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "0",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-2\u003e",
+            "price": "100.05",
+            "quantity": "9.995002498750624",
+            "realized_pnl": "0",
+            "regime": "",
+            "rowid": "1",
+            "side": "buy",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "perps",
+            "value": "999.9999999999999"
+          }
+        ]
+      },
+      "detail": "[okx-perps-gate_persistence] SELL BTC @ $102.00",
+      "inputs": {
+        "AvgCost": 100.05,
+        "Cash": 0,
+        "CashReconcile": false,
+        "Leverage": 1,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 100.05,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 2,
+          "InitialQuantity": 9.995002498750624,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 9.995002498750624,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "long",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 9.995002498750624,
+        "PosSide": "long"
+      },
+      "log": [
+        "[okx-perps-gate_persistence] [INFO] Signal: SELL | BTC @ $102.00 [paper]",
+        "[okx-perps-gate_persistence] [INFO] SELL BTC: 9.995002 @ $101.95 (fee $0.51) | PnL: $18.47"
+      ],
+      "persistence_hold_before": true,
+      "prices_after": {
+        "BTC": 102
+      },
+      "reminder_sig": "",
+      "sends": null,
+      "step": "sell closes under the hold",
+      "trade_alert_tail": [
+        {
+          "content": "🔴 **TRADE CLOSED - PAPER**\nStrategy: okx-perps-gate_persistence (Okx perps)\nBTC — LONG 9.995 @ $101 | Value: $1,018\nSource: close-strategy exit | PnL: $18.47",
+          "kind": "channel",
+          "target": "chan-okx"
+        }
+      ],
+      "trades": 1
+    },
+    {
+      "alerts": null,
+      "book": {
+        "cash": 1017.4620339805099,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {
+          "BTC": {
+            "atr_method_at_open": "simple",
+            "avg_cost": 103.05149999999999,
+            "entry_atr": 2,
+            "initial_quantity": 9.878274644136718,
+            "leverage": 1,
+            "multiplier": 1,
+            "opened_at": "\u003ctime\u003e",
+            "owner_strategy_id": "okx-perps-gate_persistence",
+            "position_id": "\u003cpos-1\u003e",
+            "quantity": 9.878274644136718,
+            "side": "long",
+            "symbol": "BTC"
+          }
+        },
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 18.471019490255024,
+          "daily_pnl_date": "2026-10-23",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": [
+          {
+            "cost_model_version": 1,
+            "details": "Open long 9.995002 @ $100.05 (1.0x, fee $0.50)",
+            "entry_atr": 2,
+            "exchange_fee": 0.49999999999999994,
+            "fee_source": "modeled",
+            "pnl_gross": true,
+            "position_id": "\u003cpos-2\u003e",
+            "price": 100.05,
+            "quantity": 9.995002498750624,
+            "side": "buy",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "perps",
+            "value": 999.9999999999999
+          },
+          {
+            "cost_model_version": 1,
+            "details": "Close long, PnL: $18.47 (fee $0.51)",
+            "entry_atr": 2,
+            "exchange_fee": 0.5094902548725637,
+            "fee_source": "modeled",
+            "is_close": true,
+            "pnl_gross": true,
+            "position_id": "\u003cpos-2\u003e",
+            "price": 101.94900000000001,
+            "quantity": 9.995002498750624,
+            "realized_pnl": 18.980509745127588,
+            "side": "sell",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "perps",
+            "value": 1018.9805097451275
+          },
+          {
+            "cost_model_version": 1,
+            "details": "Open long 9.878275 @ $103.05 (1.0x, fee $0.51)",
+            "entry_atr": 2,
+            "exchange_fee": 0.5089855097451275,
+            "fee_source": "modeled",
+            "pnl_gross": true,
+            "position_id": "\u003cpos-1\u003e",
+            "price": 103.05149999999999,
+            "quantity": 9.878274644136718,
+            "side": "buy",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "perps",
+            "value": 1017.9710194902549
+          }
+        ]
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=paper",
+          "--inst-type=swap",
+          "--atr-method=simple",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: ok",
+        "paper: ok"
+      ],
+      "db": {
+        "trades": [
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Close long, PnL: $18.47 (fee $0.51)",
+            "entry_atr": "2",
+            "exchange_fee": "0.5094902548725637",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "1",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-2\u003e",
+            "price": "101.94900000000001",
+            "quantity": "9.995002498750624",
+            "realized_pnl": "18.980509745127588",
+            "regime": "",
+            "rowid": "2",
+            "side": "sell",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "perps",
+            "value": "1018.9805097451275"
+          },
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Open long 9.878275 @ $103.05 (1.0x, fee $0.51)",
+            "entry_atr": "2",
+            "exchange_fee": "0.5089855097451275",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "0",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-1\u003e",
+            "price": "103.05149999999999",
+            "quantity": "9.878274644136718",
+            "realized_pnl": "0",
+            "regime": "",
+            "rowid": "3",
+            "side": "buy",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "perps",
+            "value": "1017.9710194902549"
+          },
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Open long 9.995002 @ $100.05 (1.0x, fee $0.50)",
+            "entry_atr": "2",
+            "exchange_fee": "0.49999999999999994",
+            "exchange_order_id": "",
+            "fee_source": "modeled",
+            "is_close": "0",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-2\u003e",
+            "price": "100.05",
+            "quantity": "9.995002498750624",
+            "realized_pnl": "0",
+            "regime": "",
+            "rowid": "1",
+            "side": "buy",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-perps-gate_persistence",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "perps",
+            "value": "999.9999999999999"
+          }
+        ]
+      },
+      "detail": "[okx-perps-gate_persistence] BUY BTC @ $103.00",
+      "inputs": {
+        "AvgCost": 0,
+        "Cash": 0,
+        "CashReconcile": false,
+        "Leverage": 0,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 0,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 0,
+          "InitialQuantity": 0,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 0,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 0,
+        "PosSide": ""
+      },
+      "log": [
+        "[okx-perps-gate_persistence] [INFO] Signal: BUY | BTC @ $103.00 [paper]",
+        "[okx-perps-gate_persistence] [INFO] BUY BTC: 9.878275 @ $103.05 (1.0x, notional $1017.97, fee $0.51)"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 103
+      },
+      "reminder_sig": "",
+      "sends": null,
+      "step": "buy after the save recovered",
+      "trade_alert_tail": [
+        {
+          "content": "🟢 **TRADE EXECUTED - PAPER**\nStrategy: okx-perps-gate_persistence (Okx perps)\nBTC — LONG 9.878 @ $103 | Value: $1,017\nATR: $2.00",
+          "kind": "channel",
+          "target": "chan-okx"
+        }
+      ],
+      "trades": 1
+    }
+  ],
+  "strategy": {
+    "args": [
+      "fixture",
+      "BTC",
+      "1h",
+      "--mode=paper",
+      "--inst-type=swap"
+    ],
+    "capital": 1000,
+    "direction": "long",
+    "id": "okx-perps-gate_persistence",
+    "leverage": 1,
+    "max_drawdown_pct": 0,
+    "open_strategy": {
+      "name": ""
+    },
+    "platform": "okx",
+    "script": "scheduler/testdata/okx_step/check_fixture.py",
+    "sizing_leverage": 1,
+    "type": "perps"
+  },
+  "type": "perps"
+}

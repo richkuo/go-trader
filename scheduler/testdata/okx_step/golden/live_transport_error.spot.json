@@ -1,0 +1,177 @@
+{
+  "final_db": {
+    "app_state": [
+      {
+        "cycle_count": "0",
+        "id": "1",
+        "last_cycle": "",
+        "last_leaderboard_post_date": "",
+        "last_leaderboard_summaries": "",
+        "last_summary_post": ""
+      }
+    ],
+    "strategies": [
+      {
+        "active_profile": "",
+        "cash": "1000",
+        "cash_reconcile_required": "0",
+        "hurst_gate_state": "",
+        "id": "okx-spot-live_transport_error",
+        "initial_capital": "1000",
+        "paper_funding_state": "",
+        "platform": "okx",
+        "quote_precision_rebaselined": "0",
+        "replay_mirror_watermark": "0",
+        "replay_mirror_watermark_source": "",
+        "risk_circuit_breaker": "0",
+        "risk_circuit_breaker_until": "",
+        "risk_consecutive_losses": "0",
+        "risk_current_drawdown_pct": "0",
+        "risk_daily_pnl": "0",
+        "risk_daily_pnl_date": "",
+        "risk_max_drawdown_pct": "0",
+        "risk_peak_value": "1000",
+        "risk_pending_circuit_closes_json": "",
+        "shared_wallet_pool_budget": "0",
+        "type": "spot"
+      }
+    ]
+  },
+  "mode": "live",
+  "scenario": "live_transport_error",
+  "steps": [
+    {
+      "alerts": [
+        {
+          "content": "**LIVE ORDER FAILED** [okx-spot-live_transport_error] okx open BTC: fixture connection reset",
+          "kind": "channel",
+          "target": "chan-okx"
+        },
+        {
+          "content": "**LIVE ORDER FAILED** [okx-spot-live_transport_error] okx open BTC: fixture connection reset",
+          "kind": "dm",
+          "target": "owner-1"
+        }
+      ],
+      "book": {
+        "cash": 1000,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {},
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 0,
+          "daily_pnl_date": "",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": []
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=live",
+          "--inst-type=spot",
+          "--atr-method=simple",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: ok",
+        "paper: ok"
+      ],
+      "db": {},
+      "detail": "",
+      "inputs": {
+        "AvgCost": 0,
+        "Cash": 1000,
+        "CashReconcile": false,
+        "Leverage": 0,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 0,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 0,
+          "InitialQuantity": 0,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 0,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 0,
+        "PosSide": ""
+      },
+      "log": [
+        "[okx-spot-live_transport_error] [INFO] Signal: BUY | BTC @ $100.00 [live]",
+        "[okx-spot-live_transport_error] [INFO] Placing live buy BTC size=10.000000 inst_type=spot",
+        "[okx-spot-live_transport_error] [ERROR] Live execute failed: fixture connection reset"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 100
+      },
+      "reminder_sig": "",
+      "sends": [
+        {
+          "client_order_id": "",
+          "expires_after_ms": 0,
+          "guarded": false,
+          "inst_type": "spot",
+          "reduce_only": false,
+          "response": "error: fixture connection reset",
+          "side": "buy",
+          "size": 10,
+          "symbol": "BTC"
+        }
+      ],
+      "step": "plain send fails",
+      "trade_alert_tail": null,
+      "trades": 0
+    }
+  ],
+  "strategy": {
+    "args": [
+      "fixture",
+      "BTC",
+      "1h",
+      "--mode=live",
+      "--inst-type=spot"
+    ],
+    "capital": 1000,
+    "direction": "long",
+    "id": "okx-spot-live_transport_error",
+    "leverage": 1,
+    "max_drawdown_pct": 0,
+    "open_strategy": {
+      "name": ""
+    },
+    "platform": "okx",
+    "script": "scheduler/testdata/okx_step/check_fixture.py",
+    "sizing_leverage": 1,
+    "type": "spot"
+  },
+  "type": "spot"
+}
