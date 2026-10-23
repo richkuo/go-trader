@@ -107,15 +107,15 @@ func TestBasketPairAdmitsIsolatedPaperContracts(t *testing.T) {
 				t.Fatalf("the research manifest must bind the run and contract: %s", blob)
 			}
 			e.store.Close()
-			adm, _, err := newPairResearchAdmission(e.doc, "run-1", e.dir, true, pairResearchDeps{VenueFor: e.venues.factory()})
+			adm, _, err := newPairResearchAdmission(e.doc, "run-1", e.dir, true, pairTestDeps(t, e.doc, e.venues))
 			if err != nil {
 				t.Fatalf("a resume of the same run and contract must be admitted: %v", err)
 			}
 			adm.release()
-			if _, _, err := newPairResearchAdmission(e.doc, "run-2", e.dir, true, pairResearchDeps{VenueFor: e.venues.factory()}); err == nil {
+			if _, _, err := newPairResearchAdmission(e.doc, "run-2", e.dir, true, pairTestDeps(t, e.doc, e.venues)); err == nil {
 				t.Fatal("a resume under another run id must be refused")
 			}
-			if _, _, err := newPairResearchAdmission(e.doc, "run-1", e.dir, false, pairResearchDeps{VenueFor: e.venues.factory()}); err == nil {
+			if _, _, err := newPairResearchAdmission(e.doc, "run-1", e.dir, false, pairTestDeps(t, e.doc, e.venues)); err == nil {
 				t.Fatal("a new run in a used state directory must be refused")
 			}
 		})
@@ -128,7 +128,7 @@ func pairAdmitRefused(t *testing.T, mutate func(root map[string]interface{}), wa
 	dir := filepath.Join(t.TempDir(), "run")
 	doc := pairTestDoc(t, dir, mutate)
 	venues := newPairTestVenues(false)
-	_, _, err := newPairResearchAdmission(doc, "run-1", dir, false, pairResearchDeps{VenueFor: venues.factory()})
+	_, _, err := newPairResearchAdmission(doc, "run-1", dir, false, pairTestDeps(t, doc, venues))
 	if err == nil {
 		t.Fatalf("the research admission accepted a contract that must be refused (%s)", want)
 	}
@@ -260,7 +260,8 @@ func TestBasketPairConfigLimitRulesAtTheirBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			registerPairTestPolicy(t)
 			dir := filepath.Join(t.TempDir(), "run")
-			adm, _, err := newPairResearchAdmission(pairTestDoc(t, dir, tc.mutate), "run-1", dir, false, pairResearchDeps{VenueFor: newPairTestVenues(false).factory()})
+			doc := pairTestDoc(t, dir, tc.mutate)
+			adm, _, err := newPairResearchAdmission(doc, "run-1", dir, false, pairTestDeps(t, doc, newPairTestVenues(false)))
 			if err != nil {
 				t.Fatalf("the boundary value must pass: %v", err)
 			}
@@ -283,7 +284,7 @@ func TestBasketPairConfigLimitRulesAtTheirBoundaries(t *testing.T) {
 		{"string", setRaw("unmatched_cap_usd", `"100"`), "unmatched_cap_usd must be a JSON number, got string"},
 		{"fraction", setRaw("acceptance_deadline_ms", "1.5"), "acceptance_deadline_ms must be an integer number of milliseconds"},
 		{"exponent", setRaw("decision_cadence_ms", "1e3"), "decision_cadence_ms must be an integer number of milliseconds"},
-		{"unknown key", set("quote_age_ms", 100), `unknown field "quote_age_ms"`},
+		{"unknown key", set("quote_age_seconds", 100), `unknown field "quote_age_seconds"`},
 		{"missing field", func(r map[string]interface{}) {
 			delete(pairTestPair(r)["limits"].(map[string]interface{}), "retry_max_ms")
 		}, "retry_max_ms is missing"},

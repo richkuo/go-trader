@@ -51,7 +51,120 @@ func pairTestLimits() map[string]interface{} {
 		"max_hold_age_ms":              3600000,
 		"retry_initial_ms":             5000,
 		"retry_max_ms":                 40000,
+		"quote_age_ms":                 5000,
+		"collection_timeout_ms":        2000,
+		"receive_skew_ms":              250,
+		"envelope_max_bytes":           1048576,
+		"protective_width_bps":         50,
 	}
+}
+
+func pairTestCostPolicy() map[string]interface{} {
+	return map[string]interface{}{"taker_fee_pct": 0.00045, "slippage_pct": 0.0005, "fill_role": "taker_all", "spread": "inside_slippage"}
+}
+
+func pairTestEvidenceBytes(t *testing.T, doc []byte, mutate func(d *pairEvidenceDocument)) []byte {
+	t.Helper()
+	var root struct {
+		Strategies []struct {
+			ID          string   `json:"id"`
+			Platform    string   `json:"platform"`
+			Args        []string `json:"args"`
+			Leverage    float64  `json:"leverage"`
+			PaperSource string   `json:"paper_source"`
+		} `json:"strategies"`
+		Pairs []struct {
+			Members []struct {
+				StrategyID string          `json:"strategy_id"`
+				AccountKey string          `json:"account_key"`
+				Instrument string          `json:"instrument"`
+				Meta       json.RawMessage `json:"meta"`
+			} `json:"members"`
+		} `json:"pairs"`
+	}
+	_ = json.Unmarshal(doc, &root)
+	d := pairEvidenceDocument{V: pairEvidenceVersion, Capabilities: []pairCapabilityEvidence{}, Accounts: []pairAccountEvidence{}, Conversions: []pairConversionEvidence{}}
+	stamp := func(k pairEvidenceKey, id, provenance string) pairEvidenceStamp {
+		return pairEvidenceStamp{V: pairEvidenceVersion, Key: k, EvidenceID: id, ObservedMs: 1_700_000_000_000, FirstReceiptMs: 1_700_000_000_500,
+			ValidFromMs: 1_700_000_000_500, ValidThroughMs: 4_102_444_800_000, Provenance: provenance}
+	}
+	if len(root.Pairs) > 0 {
+		seen := map[string]bool{}
+		for _, m := range root.Pairs[0].Members {
+			var meta pairInstrumentMeta
+			if json.Unmarshal(m.Meta, &meta) != nil || seen[m.StrategyID] {
+				continue
+			}
+			seen[m.StrategyID] = true
+			partition, provider, leverage := "paper", "", 1.0
+			for _, sc := range root.Strategies {
+				if sc.ID != m.StrategyID {
+					continue
+				}
+				provider = pairProviderPlatforms[sc.Platform]
+				if sc.Leverage > 0 {
+					leverage = sc.Leverage
+				}
+				for _, a := range sc.Args {
+					if a == "--mode=live" {
+						partition = "live"
+					}
+				}
+				if sc.PaperSource != "" {
+					partition = "paper:" + sc.PaperSource
+				}
+			}
+			if provider == "" {
+				continue
+			}
+			member := pairContractMember{MemberID: m.StrategyID, Provider: provider, AccountKey: m.AccountKey, Instrument: m.Instrument, Meta: meta, Leverage: leverage}
+			k := pairEvidenceKey{Partition: partition, Provider: provider, AccountKey: m.AccountKey, Instrument: m.Instrument, MemberID: m.StrategyID}
+			wire, err := pairExpectedWireMeta(member)
+			if err != nil {
+				continue
+			}
+			d.Capabilities = append(d.Capabilities, pairCapabilityEvidence{pairEvidenceStamp: stamp(k, "cap-"+m.StrategyID, pairDerivationIDs[provider]), Meta: wire, MetadataGeneration: 1})
+			lev, _ := pairDecimalFromFloat(leverage)
+			d.Accounts = append(d.Accounts, pairAccountEvidence{pairEvidenceStamp: stamp(k, "acct-"+m.StrategyID, "research-schedule:fixture"),
+				PositionMode: meta.PositionMode, MarginMode: meta.MarginMode, Leverage: lev, CollateralCurrency: meta.SettlementCurrency,
+				Equity: "6000", FreeCollateral: "6000", MarginUsed: "0"})
+			for _, cur := range pairRequiredConversionCurrencies(member) {
+				d.Conversions = append(d.Conversions, pairConversionEvidence{pairEvidenceStamp: stamp(k, "conv-"+m.StrategyID+"-"+cur, "research-schedule:fixture"), Currency: cur, RateUSD: "1"})
+			}
+		}
+	}
+	if mutate != nil {
+		mutate(&d)
+	}
+	for i := range d.Capabilities {
+		d.Capabilities[i], _ = d.Capabilities[i].sealed()
+	}
+	for i := range d.Accounts {
+		d.Accounts[i], _ = d.Accounts[i].sealed()
+	}
+	for i := range d.Conversions {
+		d.Conversions[i], _ = d.Conversions[i].sealed()
+	}
+	blob, err := pairEvidenceDocumentBytes(d)
+	if err != nil {
+		t.Fatalf("pair evidence fixture: %v", err)
+	}
+	return blob
+}
+
+func pairTestEvidence(t *testing.T, doc []byte, mutate func(d *pairEvidenceDocument)) *pairFrozenEvidenceSource {
+	t.Helper()
+	blob := pairTestEvidenceBytes(t, doc, mutate)
+	src, err := newPairFrozenEvidenceSource(blob, sha256Hex(blob))
+	if err != nil {
+		t.Fatalf("pair evidence fixture source: %v", err)
+	}
+	return src
+}
+
+func pairTestDeps(t *testing.T, doc []byte, venues *pairTestVenues) pairResearchDeps {
+	t.Helper()
+	return pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc, nil)}
 }
 
 func pairTestDoc(t *testing.T, dir string, mutate func(root map[string]interface{})) []byte {
@@ -95,27 +208,36 @@ func pairTestDoc(t *testing.T, dir string, mutate func(root map[string]interface
 			"params":     map[string]interface{}{"entry_bps": 5},
 			"members": []interface{}{
 				map[string]interface{}{
-					"strategy_id": pairTestHL,
-					"account_key": "synthetic:hl-research",
-					"instrument":  "BTC",
+					"strategy_id":         pairTestHL,
+					"account_key":         "synthetic:hl-research",
+					"instrument":          "BTC",
+					"source":              "sealed_feed",
+					"modeled_delivery_ms": 0,
+					"cost_policy":         pairTestCostPolicy(),
 					"meta": map[string]interface{}{
-						"native_unit": "base", "base_asset": "BTC", "contract_size": 1, "quote_currency": "USD", "settlement_currency": "USDC",
-						"tick_step": 1, "lot_step": 0.001, "min_qty": 0.001, "min_notional": 10, "trading_status": "live", "linear": true,
+						"native_unit": "base", "base_asset": "BTC", "contract_size": 1, "quote_currency": "USDC", "settlement_currency": "USDC", "price_currency": "USDC",
+						"tick_step": 0.001, "lot_step": 0.001, "min_qty": 0.001, "min_notional": 10, "trading_status": "live", "linear": true,
 						"position_mode": "one_way", "margin_mode": "cross", "max_leverage": 20, "initial_margin_rate": 0.05, "maintenance_margin_rate": 0.02,
+						"price_rule": "hyperliquid_perps_v1", "sz_decimals": 3, "tick_step_text": "", "lot_step_text": "", "fee_currencies": []interface{}{"USDC"},
 					},
 				},
 				map[string]interface{}{
-					"strategy_id": pairTestOKX,
-					"account_key": "synthetic:okx-research",
-					"instrument":  "BTC-USDT-SWAP",
+					"strategy_id":         pairTestOKX,
+					"account_key":         "synthetic:okx-research",
+					"instrument":          "BTC-USDT-SWAP",
+					"source":              "public_snapshot",
+					"modeled_delivery_ms": 0,
+					"cost_policy":         pairTestCostPolicy(),
 					"meta": map[string]interface{}{
-						"native_unit": "contract", "base_asset": "BTC", "contract_size": 0.01, "quote_currency": "USDT", "settlement_currency": "USDT",
+						"native_unit": "contract", "base_asset": "BTC", "contract_size": 0.01, "quote_currency": "USDT", "settlement_currency": "USDT", "price_currency": "USDT",
 						"tick_step": 0.1, "lot_step": 1, "min_qty": 1, "min_notional": 0, "trading_status": "live", "linear": true,
 						"position_mode": "net", "margin_mode": "cross", "max_leverage": 20, "initial_margin_rate": 0.05, "maintenance_margin_rate": 0.02,
+						"price_rule": "fixed_tick_v1", "sz_decimals": 0, "tick_step_text": "0.1", "lot_step_text": "1", "fee_currencies": []interface{}{"USDT"},
 					},
 				},
 			},
-			"limits": pairTestLimits(),
+			"limits":    pairTestLimits(),
+			"book_need": map[string]interface{}{"depth": 5, "window_ms": 60000, "capacity": 256},
 		}},
 	}
 	if mutate != nil {
@@ -390,7 +512,7 @@ func newPairTestEnv(t *testing.T, mutate func(root map[string]interface{})) *pai
 	dir := filepath.Join(t.TempDir(), "run")
 	doc := pairTestDoc(t, dir, mutate)
 	venues := newPairTestVenues(false)
-	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, pairResearchDeps{VenueFor: venues.factory()})
+	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, pairTestDeps(t, doc, venues))
 	if err != nil {
 		t.Fatalf("newPairResearchAdmission: %v", err)
 	}

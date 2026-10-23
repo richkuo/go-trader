@@ -168,8 +168,20 @@ func parseBasketContract(raw string) (basketContract, error) {
 			return c, fmt.Errorf("saved basket contract carries pair fields without the pair mode")
 		}
 	case pairGroupMode:
-		if c.Pair == nil || c.PairVersion != pairContractVersion {
-			return c, fmt.Errorf("saved pair contract version %d is not supported", c.PairVersion)
+		if c.PairVersion != pairContractVersion {
+			return c, fmt.Errorf("saved pair contract version %d is not supported by this build (version %d); the saved research state is kept unchanged and needs a new research run", c.PairVersion, pairContractVersion)
+		}
+		if c.Pair == nil {
+			return c, fmt.Errorf("saved pair contract has no pair body")
+		}
+		if _, err := pairStrictParse([]byte(raw)); err != nil {
+			return c, fmt.Errorf("saved pair contract is refused: %w", err)
+		}
+		var strict basketContract
+		dec := json.NewDecoder(strings.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&strict); err != nil {
+			return c, fmt.Errorf("saved pair contract is refused: %w", err)
 		}
 	default:
 		return c, fmt.Errorf("saved group contract mode %q is not supported", c.Mode)

@@ -258,6 +258,10 @@ var robinhoodCloseProbeArgv = []string{
 	"--ref-id=00000000-0000-4000-8000-000000000000", "--probe-only",
 }
 
+var pairEvidenceHyperliquidProbeArgv = []string{"--provider=hyperliquid", "--instrument=BTC", "--probe-only"}
+
+var pairEvidenceOKXProbeArgv = []string{"--provider=okx", "--instrument=BTC-USDT-SWAP", "--probe-only"}
+
 const probeTimeout = 15 * time.Second
 
 var probeOneCheckScriptFn = probeOneCheckScript
@@ -347,6 +351,17 @@ func probeCheckScripts(cfg *Config) error {
 			return err
 		}
 	}
+	hlPerps, okxSwap := pairEvidenceProbeProviders(cfg)
+	if hlPerps {
+		if err := probeOneCheckScriptFn(pairEvidenceReaderScript, pairEvidenceHyperliquidProbeArgv); err != nil {
+			return err
+		}
+	}
+	if okxSwap {
+		if err := probeOneCheckScriptFn(pairEvidenceReaderScript, pairEvidenceOKXProbeArgv); err != nil {
+			return err
+		}
+	}
 	if len(cfg.Baskets) > 0 {
 		if err := probeOneCheckScriptFn(basketRankerScript, basketRankerProbeArgv); err != nil {
 			return err
@@ -375,6 +390,18 @@ func probeCheckScripts(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+func pairEvidenceProbeProviders(cfg *Config) (hlPerps, okxSwap bool) {
+	for _, sc := range cfg.Strategies {
+		switch {
+		case sc.Platform == "hyperliquid" && sc.Type == "perps":
+			hlPerps = true
+		case sc.Platform == "okx" && sc.Type == "perps" && okxInstType(sc.Args) == "swap":
+			okxSwap = true
+		}
+	}
+	return hlPerps, okxSwap
 }
 
 func anyHLLiveReconcilable(cfg *Config) bool {

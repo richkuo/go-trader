@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -20,7 +20,7 @@ const (
 	pairMemberFlag          = "--pair-member-json"
 	okxCheckScriptPath      = "shared_scripts/check_okx.py"
 
-	pairContractVersion = 1
+	pairContractVersion = 2
 
 	basketGroupMode = "basket"
 	pairGroupMode   = "pair"
@@ -30,6 +30,9 @@ const (
 	pairSyntheticAccountPrefix = "synthetic:"
 
 	pairMaxIntervalMs int64 = 2_147_483_647
+
+	pairMaxEnvelopeBytes   = 4 << 20
+	pairMaxProtectiveWidth = 10000.0
 
 	pairResearchManifestName  = "pair-research.json"
 	pairResearchManifestOwner = "go-trader pair research run"
@@ -45,22 +48,34 @@ var pairProviderPlatforms = map[string]string{
 }
 
 type pairInstrumentMeta struct {
-	NativeUnit            string  `json:"native_unit"`
-	BaseAsset             string  `json:"base_asset"`
-	ContractSize          float64 `json:"contract_size"`
-	QuoteCurrency         string  `json:"quote_currency"`
-	SettlementCurrency    string  `json:"settlement_currency"`
-	TickStep              float64 `json:"tick_step"`
-	LotStep               float64 `json:"lot_step"`
-	MinQty                float64 `json:"min_qty"`
-	MinNotional           float64 `json:"min_notional"`
-	TradingStatus         string  `json:"trading_status"`
-	Linear                bool    `json:"linear"`
-	PositionMode          string  `json:"position_mode"`
-	MarginMode            string  `json:"margin_mode"`
-	MaxLeverage           float64 `json:"max_leverage"`
-	InitialMarginRate     float64 `json:"initial_margin_rate"`
-	MaintenanceMarginRate float64 `json:"maintenance_margin_rate"`
+	NativeUnit            string   `json:"native_unit"`
+	BaseAsset             string   `json:"base_asset"`
+	ContractSize          float64  `json:"contract_size"`
+	QuoteCurrency         string   `json:"quote_currency"`
+	SettlementCurrency    string   `json:"settlement_currency"`
+	TickStep              float64  `json:"tick_step"`
+	LotStep               float64  `json:"lot_step"`
+	MinQty                float64  `json:"min_qty"`
+	MinNotional           float64  `json:"min_notional"`
+	TradingStatus         string   `json:"trading_status"`
+	Linear                bool     `json:"linear"`
+	PositionMode          string   `json:"position_mode"`
+	MarginMode            string   `json:"margin_mode"`
+	MaxLeverage           float64  `json:"max_leverage"`
+	InitialMarginRate     float64  `json:"initial_margin_rate"`
+	MaintenanceMarginRate float64  `json:"maintenance_margin_rate"`
+	PriceCurrency         string   `json:"price_currency"`
+	PriceRule             string   `json:"price_rule"`
+	SzDecimals            int      `json:"sz_decimals"`
+	TickStepText          string   `json:"tick_step_text"`
+	LotStepText           string   `json:"lot_step_text"`
+	FeeCurrencies         []string `json:"fee_currencies"`
+}
+
+type pairBookNeed struct {
+	Depth    int   `json:"depth"`
+	WindowMs int64 `json:"window_ms"`
+	Capacity int   `json:"capacity"`
 }
 
 type pairOperationalLimits struct {
@@ -74,6 +89,11 @@ type pairOperationalLimits struct {
 	MaxHoldAgeMs              int64   `json:"max_hold_age_ms"`
 	RetryInitialMs            int64   `json:"retry_initial_ms"`
 	RetryMaxMs                int64   `json:"retry_max_ms"`
+	QuoteAgeMs                int64   `json:"quote_age_ms"`
+	CollectionTimeoutMs       int64   `json:"collection_timeout_ms"`
+	ReceiveSkewMs             int64   `json:"receive_skew_ms"`
+	EnvelopeMaxBytes          int     `json:"envelope_max_bytes"`
+	ProtectiveWidthBps        float64 `json:"protective_width_bps"`
 }
 
 func (l pairOperationalLimits) venueCapUSD(provider string) float64 {
@@ -88,13 +108,16 @@ func (l pairOperationalLimits) venueCapUSD(provider string) float64 {
 
 var pairLimitDollarFields = []string{"gross_budget_usd", "hyperliquid_notional_cap_usd", "okx_notional_cap_usd", "unmatched_cap_usd"}
 
-var pairLimitTimingFields = []string{"decision_cadence_ms", "acceptance_deadline_ms", "recovery_age_ms", "max_hold_age_ms", "retry_initial_ms", "retry_max_ms"}
+var pairLimitTimingFields = []string{"decision_cadence_ms", "acceptance_deadline_ms", "recovery_age_ms", "max_hold_age_ms", "retry_initial_ms", "retry_max_ms", "quote_age_ms", "collection_timeout_ms", "receive_skew_ms"}
 
 type PairMemberConfig struct {
-	StrategyID string             `json:"strategy_id"`
-	AccountKey string             `json:"account_key"`
-	Instrument string             `json:"instrument"`
-	Meta       pairInstrumentMeta `json:"meta"`
+	StrategyID        string             `json:"strategy_id"`
+	AccountKey        string             `json:"account_key"`
+	Instrument        string             `json:"instrument"`
+	Meta              pairInstrumentMeta `json:"meta"`
+	Source            string             `json:"source"`
+	ModeledDeliveryMs int64              `json:"modeled_delivery_ms"`
+	CostPolicy        fillCostPolicy     `json:"cost_policy"`
 }
 
 type PairConfig struct {
@@ -104,19 +127,24 @@ type PairConfig struct {
 	Params     map[string]interface{} `json:"params,omitempty"`
 	Members    []PairMemberConfig     `json:"members"`
 	Limits     json.RawMessage        `json:"limits"`
+	BookNeed   pairBookNeed           `json:"book_need"`
 }
 
 type pairContractMember struct {
-	MemberID      string             `json:"member_id"`
-	Platform      string             `json:"platform"`
-	Type          string             `json:"type"`
-	Provider      string             `json:"provider"`
-	AccountKey    string             `json:"account_key"`
-	Instrument    string             `json:"instrument"`
-	Symbol        string             `json:"symbol"`
-	Timeframe     string             `json:"timeframe"`
-	CloseStrategy string             `json:"close_strategy"`
-	Meta          pairInstrumentMeta `json:"meta"`
+	MemberID          string             `json:"member_id"`
+	Platform          string             `json:"platform"`
+	Type              string             `json:"type"`
+	Provider          string             `json:"provider"`
+	AccountKey        string             `json:"account_key"`
+	Instrument        string             `json:"instrument"`
+	Symbol            string             `json:"symbol"`
+	Timeframe         string             `json:"timeframe"`
+	CloseStrategy     string             `json:"close_strategy"`
+	Meta              pairInstrumentMeta `json:"meta"`
+	Source            string             `json:"source"`
+	ModeledDeliveryMs int64              `json:"modeled_delivery_ms"`
+	CostPolicy        fillCostPolicy     `json:"cost_policy"`
+	Leverage          float64            `json:"leverage"`
 }
 
 type pairContractBody struct {
@@ -124,6 +152,7 @@ type pairContractBody struct {
 	Policy     string                 `json:"policy"`
 	Params     map[string]interface{} `json:"params,omitempty"`
 	Limits     pairOperationalLimits  `json:"limits"`
+	BookNeed   pairBookNeed           `json:"book_need"`
 	Members    []pairContractMember   `json:"members"`
 }
 
@@ -329,6 +358,9 @@ func pairOperationalLimitErrors(raw json.RawMessage) (pairOperationalLimits, []s
 		"max_hold_age_ms":        &out.MaxHoldAgeMs,
 		"retry_initial_ms":       &out.RetryInitialMs,
 		"retry_max_ms":           &out.RetryMaxMs,
+		"quote_age_ms":           &out.QuoteAgeMs,
+		"collection_timeout_ms":  &out.CollectionTimeoutMs,
+		"receive_skew_ms":        &out.ReceiveSkewMs,
 	}
 	timingOK := map[string]bool{}
 	for _, name := range pairLimitTimingFields {
@@ -341,20 +373,8 @@ func pairOperationalLimitErrors(raw json.RawMessage) (pairOperationalLimits, []s
 			add("%s must be an integer number of milliseconds, got %s %s", name, kind, strings.TrimSpace(string(v)))
 			continue
 		}
-		dec := json.NewDecoder(bytes.NewReader(v))
-		dec.UseNumber()
-		var parsed interface{}
-		if err := dec.Decode(&parsed); err != nil {
-			add("%s is unreadable: %v", name, err)
-			continue
-		}
-		n, ok := parsed.(json.Number)
+		i, ok := pairRawInteger(v)
 		if !ok {
-			add("%s must be an integer number of milliseconds, got %s", name, strings.TrimSpace(string(v)))
-			continue
-		}
-		i, err := n.Int64()
-		if err != nil {
 			add("%s must be an integer number of milliseconds in [1, %d], got %s", name, pairMaxIntervalMs, strings.TrimSpace(string(v)))
 			continue
 		}
@@ -375,7 +395,186 @@ func pairOperationalLimitErrors(raw json.RawMessage) (pairOperationalLimits, []s
 			add("recovery_age_ms %d is below acceptance_deadline_ms %d plus the %d ms absence grace", out.RecoveryAgeMs, out.AcceptanceDeadlineMs, grace)
 		}
 	}
+	for _, name := range []string{"collection_timeout_ms", "receive_skew_ms"} {
+		if timingOK[name] && timingOK["quote_age_ms"] && *timings[name] > out.QuoteAgeMs {
+			add("%s %d exceeds quote_age_ms %d", name, *timings[name], out.QuoteAgeMs)
+		}
+	}
+	if v, ok := fields["envelope_max_bytes"]; !ok {
+		add("envelope_max_bytes is missing")
+	} else if i, isInt := pairRawInteger(v); pairRawJSONKind(v) != "number" || !isInt {
+		add("envelope_max_bytes must be an integer number of bytes in [1, %d], got %s %s", pairMaxEnvelopeBytes, pairRawJSONKind(v), strings.TrimSpace(string(v)))
+	} else if i < 1 || i > pairMaxEnvelopeBytes {
+		add("envelope_max_bytes must be in [1, %d], got %d", pairMaxEnvelopeBytes, i)
+	} else {
+		out.EnvelopeMaxBytes = int(i)
+	}
+	if v, ok := fields["protective_width_bps"]; !ok {
+		add("protective_width_bps is missing")
+	} else if kind := pairRawJSONKind(v); kind != "number" {
+		add("protective_width_bps must be a JSON number, got %s %s", kind, strings.TrimSpace(string(v)))
+	} else {
+		var f float64
+		if err := json.Unmarshal(v, &f); err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 || f >= pairMaxProtectiveWidth {
+			add("protective_width_bps must be finite, above 0 and below %v, got %s", pairMaxProtectiveWidth, strings.TrimSpace(string(v)))
+		} else {
+			out.ProtectiveWidthBps = f
+		}
+	}
 	return out, errs
+}
+
+func pairRawInteger(v json.RawMessage) (int64, bool) {
+	text := strings.TrimSpace(string(v))
+	if !pairIntegerPattern.MatchString(text) {
+		return 0, false
+	}
+	i, err := strconv.ParseInt(text, 10, 64)
+	return i, err == nil
+}
+
+type pairRawField struct {
+	name     string
+	kind     string
+	optional bool
+}
+
+var pairRawPairFields = []pairRawField{
+	{"id", "string", false}, {"underlying", "string", false}, {"policy", "string", false}, {"params", "object", true},
+	{"members", "array", false}, {"limits", "object", false}, {"book_need", "object", false},
+}
+
+var pairRawMemberFields = []pairRawField{
+	{"strategy_id", "string", false}, {"account_key", "string", false}, {"instrument", "string", false}, {"meta", "object", false},
+	{"source", "string", false}, {"modeled_delivery_ms", "integer", false}, {"cost_policy", "object", false},
+}
+
+var pairRawMetaFields = []pairRawField{
+	{"native_unit", "string", false}, {"base_asset", "string", false}, {"contract_size", "number", false},
+	{"quote_currency", "string", false}, {"settlement_currency", "string", false}, {"price_currency", "string", false},
+	{"tick_step", "number", false}, {"lot_step", "number", false}, {"min_qty", "number", false}, {"min_notional", "number", false},
+	{"trading_status", "string", false}, {"linear", "boolean", false}, {"position_mode", "string", false}, {"margin_mode", "string", false},
+	{"max_leverage", "number", false}, {"initial_margin_rate", "number", false}, {"maintenance_margin_rate", "number", false},
+	{"price_rule", "string", false}, {"sz_decimals", "integer", false}, {"tick_step_text", "string", false}, {"lot_step_text", "string", false},
+	{"fee_currencies", "string_array", false},
+}
+
+var pairRawCostPolicyFields = []pairRawField{
+	{"taker_fee_pct", "number", false}, {"slippage_pct", "number", false}, {"fill_role", "string", false}, {"spread", "string", false},
+}
+
+var pairRawBookNeedFields = []pairRawField{
+	{"depth", "integer", false}, {"window_ms", "integer", false}, {"capacity", "integer", false},
+}
+
+func pairRawObjectErrors(path string, raw json.RawMessage, schema []pairRawField) (map[string]json.RawMessage, []string) {
+	var errs []string
+	if kind := pairRawJSONKind(raw); kind != "object" {
+		return nil, []string{fmt.Sprintf("%s: must be a JSON object, got %s", path, kind)}
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, []string{fmt.Sprintf("%s: is unreadable: %v", path, err)}
+	}
+	known := map[string]bool{}
+	for _, f := range schema {
+		known[f.name] = true
+		v, ok := fields[f.name]
+		if !ok {
+			if !f.optional {
+				errs = append(errs, fmt.Sprintf("%s: %s is missing", path, f.name))
+			}
+			continue
+		}
+		if msg := pairRawKindError(v, f.kind); msg != "" {
+			errs = append(errs, fmt.Sprintf("%s: %s %s", path, f.name, msg))
+		}
+	}
+	var unknown []string
+	for k := range fields {
+		if !known[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	for _, k := range unknown {
+		errs = append(errs, fmt.Sprintf("%s: unknown field %q", path, k))
+	}
+	return fields, errs
+}
+
+func pairRawKindError(v json.RawMessage, want string) string {
+	kind := pairRawJSONKind(v)
+	text := strings.TrimSpace(string(v))
+	switch want {
+	case "integer":
+		if kind != "number" {
+			return fmt.Sprintf("must be a JSON integer, got %s %s", kind, text)
+		}
+		if _, ok := pairRawInteger(v); !ok {
+			return fmt.Sprintf("must be a JSON integer (no fraction or exponent), got %s", text)
+		}
+	case "number":
+		if kind != "number" {
+			return fmt.Sprintf("must be a JSON number, got %s %s", kind, text)
+		}
+		var f float64
+		if err := json.Unmarshal(v, &f); err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return fmt.Sprintf("must be a finite number, got %s", text)
+		}
+	case "string_array":
+		if kind != "array" {
+			return fmt.Sprintf("must be a JSON array of strings, got %s %s", kind, text)
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(v, &items); err != nil {
+			return fmt.Sprintf("is unreadable: %v", err)
+		}
+		for i, it := range items {
+			if k := pairRawJSONKind(it); k != "string" {
+				return fmt.Sprintf("[%d] must be a JSON string, got %s", i, k)
+			}
+		}
+	default:
+		if kind != want {
+			return fmt.Sprintf("must be a JSON %s, got %s %s", want, kind, text)
+		}
+	}
+	return ""
+}
+
+func pairRawPairErrors(raw json.RawMessage) []string {
+	fields, errs := pairRawObjectErrors("pairs[0]", raw, pairRawPairFields)
+	if fields == nil {
+		return errs
+	}
+	if v, ok := fields["book_need"]; ok && pairRawJSONKind(v) == "object" {
+		_, e := pairRawObjectErrors("pairs[0].book_need", v, pairRawBookNeedFields)
+		errs = append(errs, e...)
+	}
+	if v, ok := fields["members"]; ok && pairRawJSONKind(v) == "array" {
+		var members []json.RawMessage
+		if err := json.Unmarshal(v, &members); err != nil {
+			return append(errs, fmt.Sprintf("pairs[0].members: is unreadable: %v", err))
+		}
+		for i, m := range members {
+			mp := fmt.Sprintf("pairs[0].members[%d]", i)
+			mf, e := pairRawObjectErrors(mp, m, pairRawMemberFields)
+			errs = append(errs, e...)
+			if mf == nil {
+				continue
+			}
+			if mv, ok := mf["meta"]; ok && pairRawJSONKind(mv) == "object" {
+				_, e := pairRawObjectErrors(mp+".meta", mv, pairRawMetaFields)
+				errs = append(errs, e...)
+			}
+			if cv, ok := mf["cost_policy"]; ok && pairRawJSONKind(cv) == "object" {
+				_, e := pairRawObjectErrors(mp+".cost_policy", cv, pairRawCostPolicyFields)
+				errs = append(errs, e...)
+			}
+		}
+	}
+	return errs
 }
 
 func pairInstrumentMetaErrors(prefix, provider, underlying string, m PairMemberConfig, sc StrategyConfig) []string {
@@ -404,8 +603,24 @@ func pairInstrumentMetaErrors(prefix, provider, underlying string, m PairMemberC
 	if meta.TradingStatus != "live" {
 		add("meta.trading_status must be \"live\" (an active instrument), got %q", meta.TradingStatus)
 	}
-	if strings.TrimSpace(meta.QuoteCurrency) == "" || strings.TrimSpace(meta.SettlementCurrency) == "" {
-		add("meta.quote_currency and meta.settlement_currency must be set")
+	if strings.TrimSpace(meta.QuoteCurrency) == "" || strings.TrimSpace(meta.SettlementCurrency) == "" || strings.TrimSpace(meta.PriceCurrency) == "" {
+		add("meta.quote_currency, meta.settlement_currency and meta.price_currency must be set")
+	}
+	if len(meta.FeeCurrencies) == 0 {
+		add("meta.fee_currencies must list at least one currency")
+	}
+	seenFee := map[string]bool{}
+	for _, c := range meta.FeeCurrencies {
+		if !pairCurrencyPattern.MatchString(c) {
+			add("meta.fee_currencies entry %q must be an upper-case currency code", c)
+		}
+		if seenFee[c] {
+			add("meta.fee_currencies lists %q twice", c)
+		}
+		seenFee[c] = true
+	}
+	if want := pairPriceRules[provider]; meta.PriceRule != want {
+		add("meta.price_rule must be %q for a %s member, got %q", want, provider, meta.PriceRule)
 	}
 	if !strings.EqualFold(strings.TrimSpace(meta.BaseAsset), underlying) {
 		add("meta.base_asset %q must equal the pair underlying %q", meta.BaseAsset, underlying)
@@ -435,6 +650,20 @@ func pairInstrumentMetaErrors(prefix, provider, underlying string, m PairMemberC
 		if m.Instrument != underlying {
 			add("instrument %q must be the bare Hyperliquid coin %q", m.Instrument, underlying)
 		}
+		if meta.SzDecimals < 0 || meta.SzDecimals > hlLotMetadataMaxSzDecimals {
+			add("meta.sz_decimals must be an integer in [0, %d], got %d", hlLotMetadataMaxSzDecimals, meta.SzDecimals)
+		}
+		if meta.TickStepText != "" || meta.LotStepText != "" {
+			add("meta.tick_step_text and meta.lot_step_text are OKX-only and must be empty for a Hyperliquid member (prices round through verified sz_decimals)")
+		}
+		for _, c := range [][2]string{{"meta.quote_currency", meta.QuoteCurrency}, {"meta.settlement_currency", meta.SettlementCurrency}, {"meta.price_currency", meta.PriceCurrency}} {
+			if c[1] != pairHyperliquidCurrency {
+				add("%s must be %q: a Hyperliquid perpetual is quoted, priced and settled in USDC, got %q", c[0], pairHyperliquidCurrency, c[1])
+			}
+		}
+		if meta.MarginMode != "cross" && meta.MarginMode != "isolated" {
+			add("meta.margin_mode must be \"cross\" or \"isolated\" for a Hyperliquid member, got %q", meta.MarginMode)
+		}
 	case entryProviderOKX:
 		if meta.NativeUnit != "contract" {
 			add("an OKX swap trades contracts: meta.native_unit must be \"contract\", got %q", meta.NativeUnit)
@@ -445,10 +674,60 @@ func pairInstrumentMetaErrors(prefix, provider, underlying string, m PairMemberC
 		if meta.MarginMode != "cross" {
 			add("initial OKX support uses the existing cross-margin transport: meta.margin_mode must be \"cross\", got %q", meta.MarginMode)
 		}
-		want := underlying + "-" + strings.ToUpper(strings.TrimSpace(meta.QuoteCurrency)) + "-SWAP"
-		if m.Instrument != want {
-			add("instrument %q must be the OKX linear swap %q", m.Instrument, want)
+		for _, c := range [][2]string{{"meta.quote_currency", meta.QuoteCurrency}, {"meta.settlement_currency", meta.SettlementCurrency}, {"meta.price_currency", meta.PriceCurrency}} {
+			if c[1] != pairOKXCurrency {
+				add("%s must be %q: the OKX order, close, query, candle, funding and balance routes all select USDT swaps, got %q", c[0], pairOKXCurrency, c[1])
+			}
 		}
+		want := underlying + "-" + pairOKXCurrency + "-SWAP"
+		if m.Instrument != want {
+			add("instrument %q must be the OKX linear swap %q (the USDT swap)", m.Instrument, want)
+		}
+		if meta.SzDecimals != 0 {
+			add("meta.sz_decimals must be explicit 0 for an OKX member (the fixed tick rule uses tick_step_text), got %d", meta.SzDecimals)
+		}
+		for _, f := range []struct {
+			name, text string
+			v          float64
+		}{{"tick_step", meta.TickStepText, meta.TickStep}, {"lot_step", meta.LotStepText, meta.LotStep}} {
+			text, err := pairParseDecimalInput(f.text)
+			if !pairPlainDecimalPattern.MatchString(f.text) || err != nil || text.Sign() <= 0 {
+				add("meta.%s_text must be a positive plain decimal string, got %q", f.name, f.text)
+				continue
+			}
+			num, err := quoteRatFromFloatDecimal(f.v)
+			if err != nil || num.Cmp(text) != 0 {
+				add("meta.%s_text %q differs from meta.%s %v as an exact decimal", f.name, f.text, f.name, f.v)
+			}
+		}
+	}
+	return errs
+}
+
+func pairMemberContractErrors(prefix, provider string, m PairMemberConfig) []string {
+	var errs []string
+	add := func(format string, a ...interface{}) {
+		errs = append(errs, prefix+": "+fmt.Sprintf(format, a...))
+	}
+	allowed := pairMemberSources[provider]
+	okSource := false
+	for _, s := range allowed {
+		if m.Source == s {
+			okSource = true
+		}
+	}
+	if !okSource {
+		add("source %q is not supported for a %s member (allowed: %s)", m.Source, provider, strings.Join(allowed, ", "))
+	}
+	if m.Source == pairSourceArchive {
+		if m.ModeledDeliveryMs < 1 || m.ModeledDeliveryMs > pairMaxIntervalMs {
+			add("modeled_delivery_ms must be in [1, %d] for the archive source, got %d", pairMaxIntervalMs, m.ModeledDeliveryMs)
+		}
+	} else if m.ModeledDeliveryMs != 0 {
+		add("modeled_delivery_ms must be explicit 0 for the %q source, got %d", m.Source, m.ModeledDeliveryMs)
+	}
+	if err := validateFillCostRates(m.CostPolicy); err != nil {
+		add("cost_policy: %v", err)
 	}
 	return errs
 }
@@ -587,45 +866,11 @@ func pairParamErrors(prefix string, p PairConfig) []string {
 func pairConfigErrors(cfg *Config, raw json.RawMessage, liveShapedFixture bool) (PairConfig, pairOperationalLimits, []string) {
 	var p PairConfig
 	var limits pairOperationalLimits
+	if rawErrs := pairRawPairErrors(raw); len(rawErrs) > 0 {
+		sort.Strings(rawErrs)
+		return p, limits, dedupeSortedStrings(rawErrs)
+	}
 	var errs []string
-	if kind := pairRawJSONKind(raw); kind != "object" {
-		return p, limits, []string{fmt.Sprintf("pairs[0]: must be a JSON object, got %s", kind)}
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return p, limits, []string{fmt.Sprintf("pairs[0]: is unreadable: %v", err)}
-	}
-	known := knownJSONKeys(reflect.TypeOf(PairConfig{}))
-	var unknown []string
-	for k := range fields {
-		if !known[k] {
-			unknown = append(unknown, k)
-		}
-	}
-	sort.Strings(unknown)
-	for _, k := range unknown {
-		errs = append(errs, fmt.Sprintf("pairs[0]: unknown field %q", k))
-	}
-	if rawMembers, ok := fields["members"]; ok {
-		var members []map[string]json.RawMessage
-		if json.Unmarshal(rawMembers, &members) == nil {
-			memberKnown := knownJSONKeys(reflect.TypeOf(PairMemberConfig{}))
-			metaKnown := knownJSONKeys(reflect.TypeOf(pairInstrumentMeta{}))
-			for i, m := range members {
-				var mk []string
-				for k := range m {
-					if !memberKnown[k] {
-						mk = append(mk, k)
-					}
-				}
-				sort.Strings(mk)
-				for _, k := range mk {
-					errs = append(errs, fmt.Sprintf("pairs[0].members[%d]: unknown field %q", i, k))
-				}
-				errs = append(errs, nestedObjectUnknownKeyErrors(m, "meta", metaKnown, fmt.Sprintf("pairs[0].members[%d]", i))...)
-			}
-		}
-	}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		errs = append(errs, fmt.Sprintf("pairs[0]: %v", err))
 		return p, limits, errs
@@ -656,6 +901,9 @@ func pairConfigErrors(cfg *Config, raw json.RawMessage, liveShapedFixture bool) 
 		add("policy %q is not a registered pair policy", p.Policy)
 	}
 	errs = append(errs, pairParamErrors(prefix, p)...)
+	if err := contractBookNeed(p.BookNeed.WindowMs, p.BookNeed.Capacity, p.BookNeed.Depth).validate(); err != nil {
+		add("book_need: %v", err)
+	}
 	if cfg == nil {
 		return p, limits, errs
 	}
@@ -712,6 +960,7 @@ func pairConfigErrors(cfg *Config, raw json.RawMessage, liveShapedFixture bool) 
 			errs = append(errs, mp+": instrument is missing")
 		}
 		errs = append(errs, pairInstrumentMetaErrors(mp, provider, p.Underlying, m, sc)...)
+		errs = append(errs, pairMemberContractErrors(mp, provider, m)...)
 		part := partitionFor(sc)
 		if part.IsLive() != liveShapedFixture {
 			if liveShapedFixture {
@@ -774,6 +1023,7 @@ func buildPairContract(cfg *Config, p PairConfig, limits pairOperationalLimits) 
 			Policy:     p.Policy,
 			Params:     p.Params,
 			Limits:     limits,
+			BookNeed:   p.BookNeed,
 		},
 	}
 	var members []StrategyConfig
@@ -788,17 +1038,24 @@ func buildPairContract(cfg *Config, p PairConfig, limits pairOperationalLimits) 
 		if sc.CloseStrategy != nil {
 			closeName = canonicalCloseStrategyName(sc.CloseStrategy.Name)
 		}
+		meta := m.Meta
+		meta.FeeCurrencies = append([]string{}, m.Meta.FeeCurrencies...)
+		sort.Strings(meta.FeeCurrencies)
 		c.Pair.Members = append(c.Pair.Members, pairContractMember{
-			MemberID:      sc.ID,
-			Platform:      sc.Platform,
-			Type:          sc.Type,
-			Provider:      pairProviderPlatforms[sc.Platform],
-			AccountKey:    m.AccountKey,
-			Instrument:    m.Instrument,
-			Symbol:        symbol,
-			Timeframe:     timeframe,
-			CloseStrategy: closeName,
-			Meta:          m.Meta,
+			MemberID:          sc.ID,
+			Platform:          sc.Platform,
+			Type:              sc.Type,
+			Provider:          pairProviderPlatforms[sc.Platform],
+			AccountKey:        m.AccountKey,
+			Instrument:        m.Instrument,
+			Symbol:            symbol,
+			Timeframe:         timeframe,
+			CloseStrategy:     closeName,
+			Meta:              meta,
+			Source:            m.Source,
+			ModeledDeliveryMs: m.ModeledDeliveryMs,
+			CostPolicy:        m.CostPolicy.rates(),
+			Leverage:          EffectiveExchangeLeverage(sc),
 		})
 	}
 	if len(members) == 0 {
@@ -831,6 +1088,9 @@ func pairReloadErrors(cfg, next *Config) []string {
 		if strings.TrimSpace(sc.PairID) != strings.TrimSpace(ns.PairID) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] pair_id changed (%q -> %q; restart required)", sc.ID, sc.PairID, ns.PairID))
 		}
+		if isPairMember(sc) && EffectiveExchangeLeverage(sc) != EffectiveExchangeLeverage(ns) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] leverage changed (%v -> %v); the pair contract freezes the selected leverage (restart required)", sc.ID, EffectiveExchangeLeverage(sc), EffectiveExchangeLeverage(ns)))
+		}
 	}
 	return errs
 }
@@ -842,6 +1102,7 @@ const (
 
 type pairResearchDeps struct {
 	VenueFor func(StrategyConfig) (basketVenue, error)
+	Evidence pairEvidenceSource
 }
 
 type pairResearchAdmission struct {
@@ -855,6 +1116,14 @@ type pairResearchAdmission struct {
 	limits   pairOperationalLimits
 	raw      json.RawMessage
 	contract string
+	evidence *pairFrozenEvidenceSource
+}
+
+func (a *pairResearchAdmission) evidenceSource() pairEvidenceSource {
+	if a == nil || a.evidence == nil {
+		return nil
+	}
+	return a.evidence
 }
 
 var pairAdmissionRegistry sync.Map
@@ -882,14 +1151,19 @@ func (a *pairResearchAdmission) release() {
 }
 
 type pairResearchManifest struct {
-	Owner      string `json:"owner"`
-	RunID      string `json:"run_id"`
-	PairID     string `json:"pair_id"`
-	ContractFP string `json:"contract_fingerprint"`
-	UID        int    `json:"uid"`
+	Owner          string `json:"owner"`
+	RunID          string `json:"run_id"`
+	PairID         string `json:"pair_id"`
+	ContractFP     string `json:"contract_fingerprint"`
+	PairVersion    int    `json:"pair_v"`
+	EvidenceDigest string `json:"evidence_digest"`
+	UID            int    `json:"uid"`
 }
 
 func pairResearchRawPair(doc []byte) (json.RawMessage, error) {
+	if _, err := pairStrictParse(doc); err != nil {
+		return nil, fmt.Errorf("research config is refused before decoding: %w", err)
+	}
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(doc, &root); err != nil {
 		return nil, fmt.Errorf("research config is unreadable: %w", err)
@@ -905,6 +1179,10 @@ func pairResearchRawPair(doc []byte) (json.RawMessage, error) {
 	if len(pairs) != 1 {
 		return nil, fmt.Errorf("a research run admits exactly one pair, got %d", len(pairs))
 	}
+	if errs := pairRawPairErrors(pairs[0]); len(errs) > 0 {
+		sort.Strings(errs)
+		return nil, fmt.Errorf("pair config validation errors:\n  %s", strings.Join(dedupeSortedStrings(errs), "\n  "))
+	}
 	return pairs[0], nil
 }
 
@@ -915,6 +1193,9 @@ func newPairResearchAdmission(doc []byte, runID, stateDir string, resume bool, d
 	}
 	if deps.VenueFor == nil {
 		return nil, nil, fmt.Errorf("pair research needs a virtual transport")
+	}
+	if _, ok := deps.Evidence.(*pairFrozenEvidenceSource); !ok || deps.Evidence.(*pairFrozenEvidenceSource) == nil {
+		return nil, nil, fmt.Errorf("pair research needs the immutable frozen evidence source (newPairFrozenEvidenceSource)")
 	}
 	if !filepath.IsAbs(stateDir) {
 		return nil, nil, fmt.Errorf("pair research state directory %q must be absolute", stateDir)
@@ -939,9 +1220,6 @@ func newPairResearchAdmission(doc []byte, runID, stateDir string, resume bool, d
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := adm.checkStateDir(cfg); err != nil {
-		return nil, nil, err
-	}
 	for _, sc := range cfg.Strategies {
 		if !isPairMember(sc) {
 			continue
@@ -957,6 +1235,9 @@ func newPairResearchAdmission(doc []byte, runID, stateDir string, resume bool, d
 		if !strings.HasPrefix(v.AccountKey(partitionFor(sc)), pairSyntheticAccountPrefix) {
 			return nil, nil, fmt.Errorf("pair research member %s transport does not bind a synthetic account", sc.ID)
 		}
+	}
+	if err := adm.checkStateDir(cfg); err != nil {
+		return nil, nil, err
 	}
 	ok = true
 	return adm, cfg, nil
@@ -974,7 +1255,15 @@ func loadPairResearchConfig(adm *pairResearchAdmission, doc []byte) (*Config, er
 	if err != nil {
 		return nil, err
 	}
+	src, isFrozen := adm.deps.Evidence.(*pairFrozenEvidenceSource)
+	if !isFrozen || src == nil {
+		return nil, fmt.Errorf("pair activation needs the immutable frozen evidence source")
+	}
+	if err := src.bind(contract); err != nil {
+		return nil, fmt.Errorf("pair research evidence is refused: %w", err)
+	}
 	adm.contract = contract.Fingerprint()
+	adm.evidence = src
 	return cfg, nil
 }
 
@@ -998,8 +1287,18 @@ func (a *pairResearchAdmission) checkStateDir(cfg *Config) error {
 		if err := json.Unmarshal(blob, &saved); err != nil {
 			return fmt.Errorf("pair research manifest is unreadable: %w", err)
 		}
+		savedVersion := saved.PairVersion
+		if savedVersion == 0 {
+			savedVersion = 1
+		}
+		if saved.Owner == pairResearchManifestOwner && savedVersion != pairContractVersion {
+			return fmt.Errorf("pair research resume refused: the saved run %q uses pair contract version %d, which this build does not support (version %d); its state is kept unchanged and needs a new research run in a fresh directory", saved.RunID, savedVersion, pairContractVersion)
+		}
 		if saved.Owner != pairResearchManifestOwner || saved.RunID != a.runID || saved.PairID != a.pair.ID || saved.ContractFP != a.contract {
 			return fmt.Errorf("pair research resume refused: the saved run %q (pair %s, contract %s) is not this run %q (pair %s, contract %s)", saved.RunID, saved.PairID, shortFingerprint(saved.ContractFP), a.runID, a.pair.ID, shortFingerprint(a.contract))
+		}
+		if saved.EvidenceDigest != a.evidence.Digest() {
+			return fmt.Errorf("pair research resume refused: the evidence document digest %s is not the saved run's %s", shortFingerprint(a.evidence.Digest()), shortFingerprint(saved.EvidenceDigest))
 		}
 		if saved.UID != os.Getuid() {
 			return fmt.Errorf("pair research state directory belongs to uid %d", saved.UID)
@@ -1016,7 +1315,7 @@ func (a *pairResearchAdmission) checkStateDir(cfg *Config) error {
 	if err := os.MkdirAll(a.stateDir, 0o700); err != nil {
 		return fmt.Errorf("create pair research state directory: %w", err)
 	}
-	blob, err := json.Marshal(pairResearchManifest{Owner: pairResearchManifestOwner, RunID: a.runID, PairID: a.pair.ID, ContractFP: a.contract, UID: os.Getuid()})
+	blob, err := json.Marshal(pairResearchManifest{Owner: pairResearchManifestOwner, RunID: a.runID, PairID: a.pair.ID, ContractFP: a.contract, PairVersion: pairContractVersion, EvidenceDigest: a.evidence.Digest(), UID: os.Getuid()})
 	if err != nil {
 		return err
 	}

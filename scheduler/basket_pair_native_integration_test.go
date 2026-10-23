@@ -46,7 +46,7 @@ func newPairLiveShapedAdmission(t *testing.T, doc []byte, dir string, deps pairL
 	if err != nil {
 		return nil, nil, err
 	}
-	adm := &pairResearchAdmission{nonce: nonce, kind: pairAdmissionLiveShapedFixture, runID: "fixture", stateDir: dir, deps: pairResearchDeps{VenueFor: deps.VenueFor}, raw: raw}
+	adm := &pairResearchAdmission{nonce: nonce, kind: pairAdmissionLiveShapedFixture, runID: "fixture", stateDir: dir, deps: pairResearchDeps{VenueFor: deps.VenueFor, Evidence: pairTestEvidence(t, doc, nil)}, raw: raw}
 	pairAdmissionRegistry.Store(nonce, adm)
 	t.Cleanup(adm.release)
 	cfg, err := loadPairResearchConfig(adm, doc)
@@ -153,7 +153,7 @@ func TestBasketPairLiveShapedFactoryRefusesUncontrolledDependencies(t *testing.T
 			t.Fatalf("a refused fixture wrote state for the missing %s dependency", name)
 		}
 	}
-	if _, _, err := newPairResearchAdmission(doc, "run-live", filepath.Join(t.TempDir(), "r"), false, pairResearchDeps{VenueFor: venues.factory()}); err == nil {
+	if _, _, err := newPairResearchAdmission(doc, "run-live", filepath.Join(t.TempDir(), "r"), false, pairTestDeps(t, doc, venues)); err == nil {
 		t.Fatal("the research admission must refuse a live-partition pair")
 	}
 }
