@@ -337,7 +337,10 @@ func TestOKXSharedStepPairRiskHoldsKeepNativeReductions(t *testing.T) {
 			tc.mutate(&c)
 			out := runOKXStep(c, sc, okxPairInjected(1, 0))
 			if out.Trades != 0 || p.e.signed(pairTestOKX) != 0.02 {
-				t.Fatalf("a held member increase booked %+v", out)
+				t.Fatalf("a member increase under the %s hold booked %+v", tc.name, out)
+			}
+			if !strings.Contains(p.logs.String(), "only the pair coordinator places member increases") {
+				t.Fatalf("under the %s hold the member increase must still be dropped by the pair suppression, which runs before every risk gate:\n%s", tc.name, p.logs.String())
 			}
 			p.setPosition(entrySideLong, 0.02, 90000)
 			c = p.context(sc)
