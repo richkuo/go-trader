@@ -322,14 +322,15 @@ def _fetch_raw_meta(base_url: str):
 
 class HyperliquidExchangeAdapter:
 
-    def __init__(self):
+    def __init__(self, public_only: bool = False):
         if not _SDK_AVAILABLE:
             raise ImportError(
                 "hyperliquid-python-sdk not installed. Run: uv sync --no-dev (service host) or uv sync (development)"
             )
 
-        secret = os.environ.get("HYPERLIQUID_SECRET_KEY", "")
-        addr = os.environ.get("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+        self._public_only = bool(public_only)
+        secret = "" if self._public_only else os.environ.get("HYPERLIQUID_SECRET_KEY", "")
+        addr = "" if self._public_only else os.environ.get("HYPERLIQUID_ACCOUNT_ADDRESS", "")
         testnet = os.environ.get("HYPERLIQUID_TESTNET", "") == "1"
         base_url = TESTNET_URL if testnet else MAINNET_URL
         self._base_url = base_url
@@ -343,7 +344,7 @@ class HyperliquidExchangeAdapter:
         self._cached_meta = None
         self._sz_decimals_misses: set[str] = set()
 
-        self._info = self._build_info(base_url, allow_cache=True)
+        self._info = self._build_info(base_url, allow_cache=not self._public_only)
         self._account_address = addr
 
         if secret:
@@ -361,12 +362,15 @@ class HyperliquidExchangeAdapter:
                            spot_meta=_normalize_spot_meta(spot_meta))
         try:
             spot_meta, meta = _fetch_raw_meta(base_url)
-            _save_meta_cache(spot_meta, meta)
+            if not self._public_only:
+                _save_meta_cache(spot_meta, meta)
             self._cached_spot_meta, self._cached_meta = spot_meta, meta
             return _HLInfo(base_url=base_url, skip_ws=True, meta=meta,
                            spot_meta=_normalize_spot_meta(spot_meta))
         except Exception as exc:
             self._cached_spot_meta, self._cached_meta = None, None
+            if self._public_only:
+                raise
             print(f"[WARN] hl meta fetch failed ({exc}); falling back to SDK init", file=sys.stderr)
             return _HLInfo(base_url=base_url, skip_ws=True)
 
@@ -469,6 +473,35 @@ class HyperliquidExchangeAdapter:
             if isinstance(asset, int) and asset in sz_by_asset:
                 return sz_by_asset[asset]
         return None
+
+    def public_instrument_rules(self, symbol: str) -> dict:
+        if not self._public_only:
+            raise RuntimeError("public instrument rules need the public-only reader")
+        meta = self._cached_meta
+        universe = meta.get("universe") if isinstance(meta, dict) else None
+        if not isinstance(universe, list):
+            raise RuntimeError("Hyperliquid meta has no perpetual universe")
+        try:
+            asset = self._info.name_to_asset(symbol)
+        except Exception as exc:
+            raise RuntimeError(f"Hyperliquid meta does not resolve {symbol}: {exc!r}") from exc
+        if isinstance(asset, bool) or not isinstance(asset, int) or not 0 <= asset < len(universe):
+            raise RuntimeError(f"{symbol} resolves to asset {asset!r}, which is not a main-universe perpetual")
+        entry = universe[asset]
+        if not isinstance(entry, dict) or entry.get("name") != symbol:
+            raise RuntimeError(f"Hyperliquid meta entry {asset} does not name {symbol}")
+        sz = entry.get("szDecimals")
+        if isinstance(sz, bool) or not isinstance(sz, int):
+            raise RuntimeError(f"Hyperliquid szDecimals for {symbol} is not an integer: {sz!r}")
+        if self._info.asset_to_sz_decimals.get(asset) != sz:
+            raise RuntimeError(f"Hyperliquid szDecimals for {symbol} disagrees with the resolved asset")
+        lev = entry.get("maxLeverage")
+        if isinstance(lev, bool) or not isinstance(lev, int) or lev <= 0:
+            raise RuntimeError(f"Hyperliquid maxLeverage for {symbol} is not a positive integer: {lev!r}")
+        delisted = entry.get("isDelisted", False)
+        if not isinstance(delisted, bool):
+            raise RuntimeError(f"Hyperliquid isDelisted for {symbol} is not a boolean: {delisted!r}")
+        return {"name": symbol, "asset": asset, "sz_decimals": sz, "max_leverage": lev, "is_delisted": delisted}
 
     @property
     def is_live(self) -> bool:

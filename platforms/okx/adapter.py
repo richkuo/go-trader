@@ -53,10 +53,11 @@ def _normalize_okx_bill(entry: dict) -> dict:
 
 class OKXExchangeAdapter:
 
-    def __init__(self):
-        api_key = os.environ.get("OKX_API_KEY", "")
-        api_secret = os.environ.get("OKX_API_SECRET", "")
-        passphrase = os.environ.get("OKX_PASSPHRASE", "")
+    def __init__(self, public_only: bool = False):
+        self._public_only = bool(public_only)
+        api_key = "" if self._public_only else os.environ.get("OKX_API_KEY", "")
+        api_secret = "" if self._public_only else os.environ.get("OKX_API_SECRET", "")
+        passphrase = "" if self._public_only else os.environ.get("OKX_PASSPHRASE", "")
         sandbox = os.environ.get("OKX_SANDBOX", "") == "1"
 
         config = {
@@ -86,6 +87,29 @@ class OKXExchangeAdapter:
     def name(self) -> str:
         return "okx"
 
+
+    PUBLIC_INSTRUMENT_FIELDS = ("instId", "instType", "instFamily", "ctValCcy", "settleCcy", "ctVal", "ctType", "tickSz", "lotSz", "minSz", "lever", "state")
+
+    def public_instrument_rules(self, inst_id: str) -> dict:
+        if not self._public_only:
+            raise RuntimeError("public instrument rules need the public-only reader")
+        resp = self._exchange.publicGetPublicInstruments({"instType": "SWAP", "instId": inst_id})
+        if not isinstance(resp, dict) or str(resp.get("code")) != "0":
+            msg = resp.get("msg") if isinstance(resp, dict) else resp
+            raise RuntimeError(f"OKX public instruments refused {inst_id}: {msg!r}")
+        data = resp.get("data")
+        if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
+            raise RuntimeError(f"OKX public instruments returned {len(data) if isinstance(data, list) else 'no'} records for {inst_id}")
+        record = data[0]
+        out = {}
+        for field in self.PUBLIC_INSTRUMENT_FIELDS:
+            value = record.get(field)
+            if not isinstance(value, str):
+                raise RuntimeError(f"OKX instrument {inst_id} field {field} is not a string: {value!r}")
+            out[field] = value
+        if out["instId"] != inst_id:
+            raise RuntimeError(f"OKX public instruments returned {out['instId']} for {inst_id}")
+        return out
 
     def _load_markets(self):
         if not self._markets_loaded:
