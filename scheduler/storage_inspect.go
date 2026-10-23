@@ -48,6 +48,7 @@ type storageFileInspection struct {
 	BasketRebalances int                  `json:"basket_rebalance_rows"`
 	BasketPending    []string             `json:"pending_basket_recovery"`
 	ReplayRuns       []string             `json:"basket_replay_runs,omitempty"`
+	QuoteReplayRuns  []string             `json:"quote_replay_runs,omitempty"`
 	QuoteOwners      int                  `json:"quote_owner_contracts"`
 	QuotePending     []string             `json:"pending_quote_recovery"`
 	FillCostPolicies []string             `json:"fill_cost_policies,omitempty"`
@@ -283,6 +284,12 @@ func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storag
 	}
 	rejections = append(rejections, replayRejections...)
 
+	quoteReplayRejections, err := inspectQuoteReplayRows(db, fi)
+	if err != nil {
+		return nil, err
+	}
+	rejections = append(rejections, quoteReplayRejections...)
+
 	quoteRejections, err := inspectQuoteRows(db, fi, ident, admittedQuote)
 	if err != nil {
 		return nil, err
@@ -404,6 +411,9 @@ func formatStorageInspection(si storageInspection) string {
 		}
 		for _, line := range fi.ReplayRuns {
 			fmt.Fprintf(&b, "  OFFLINE BASKET REPLAY RUN %s\n", line)
+		}
+		for _, line := range fi.QuoteReplayRuns {
+			fmt.Fprintf(&b, "  OFFLINE QUOTE REPLAY RUN %s\n", line)
 		}
 		for _, line := range fi.FillCostPolicies {
 			fmt.Fprintf(&b, "  fill cost policy evidence: %s\n", line)

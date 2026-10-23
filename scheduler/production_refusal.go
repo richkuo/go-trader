@@ -12,6 +12,7 @@ var productionRefusedStrategies = map[string]string{
 	volumeProfileReclaimStrategyName:  "backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
 	"perpetual_premium_reversion":     "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
 	"order_book_imbalance":            "backtest/candidates/order_book_imbalance_1635/REPORT.md",
+	"inventory_market_making":         "backtest/candidates/inventory_market_making_1636/REPORT.md",
 }
 
 func productionRefusedReferences(sc StrategyConfig) []edgeReference {

@@ -1,7 +1,9 @@
 import copy
 import importlib.util
+import json
 import os
 import re
+import sys
 
 import pytest
 
@@ -126,7 +128,7 @@ def mapping_mismatches(go, py):
 
 def test_go_no_edge_metadata_equals_python_registry():
     go, py = go_no_edge_metadata(), python_no_edge_metadata()
-    assert len(py) == 72
+    assert len(py) == 73
     assert mapping_mismatches(go, py) == []
     assert OPEN_REGISTRY.DISCOVERY_HIDDEN_STRATEGIES == frozenset(py)
     for source, ref in py.values():
@@ -177,6 +179,7 @@ def test_go_production_refusal_equals_python_registry():
         "volume_profile_reclaim": "backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
         "perpetual_premium_reversion": "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
         "order_book_imbalance": "backtest/candidates/order_book_imbalance_1635/REPORT.md",
+        "inventory_market_making": "backtest/candidates/inventory_market_making_1636/REPORT.md",
     }
     assert go == py
     for name in py:
@@ -346,6 +349,86 @@ def test_go_research_only_closes_equal_python_close_registry():
             assert name not in CLOSE_REGISTRY.build_close_registry(platform)
         with pytest.raises(ValueError, match="research-only"):
             CLOSE_REGISTRY.evaluate(name, {}, {}, {})
+
+
+def go_quote_capabilities():
+    block = _go_block(_go_source("quote_config.go"), "var quoteCapabilityStrategies = map[string]quoteCapabilitySpec{")
+    out = {}
+    for line in block.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r'^"(\w+)":\s*\{Version:\s*(\w+),\s*Validate:\s*(\w+)\},$', line)
+        assert m, f"unparsed line in quoteCapabilityStrategies: {line!r}"
+        out[m.group(1)] = (m.group(2), m.group(3))
+    return out
+
+
+def go_quote_policy_spec():
+    source = _go_source("quote_policy_spec.go")
+    blocks = re.findall(r"^const quotePolicySpecJSON = `([^`]*)`$", source, re.M | re.S)
+    assert len(blocks) == 1, "quotePolicySpecJSON must be declared exactly once"
+    return json.loads(blocks[0])
+
+
+def test_go_quote_capabilities_equal_python_registry():
+    go = go_quote_capabilities()
+    py = OPEN_REGISTRY.quote_capabilities()
+    assert set(go) == set(py) == {"inventory_market_making"}
+    assert go["inventory_market_making"] == ("quotePolicySpecVersion", "validateInventoryMarketMakingParams")
+    version = re.search(r"^\s*quotePolicySpecVersion\s*=\s*(\d+)\s*$", _go_source("quote_policy_spec.go"), re.M)
+    spec = go_quote_policy_spec()
+    for name, entry in py.items():
+        assert entry["spec"] == spec
+        assert entry["spec_version"] == spec["version"] == int(version.group(1))
+        assert entry["quote"] == OPEN_REGISTRY.QUOTE_CONTRACT == spec["capability"]
+        assert entry["platforms"] == ["futures"] and entry["production_refused"] is True
+        assert entry["default_params"] == {f["name"]: f["default"] for f in spec["params"]}
+        assert name in OPEN_REGISTRY.build_registry("futures", include_hidden=True)
+        assert name not in OPEN_REGISTRY.build_registry("futures")
+        assert name not in OPEN_REGISTRY.build_registry("spot", include_hidden=True)
+        assert name not in OPEN_REGISTRY.short_entry_strategies() and name not in OPEN_REGISTRY.basket_rankers()
+
+
+def test_quote_capabilities_refuse_every_scalar_path():
+    loader = _load("_parity_quote_registry_loader", "backtest", "registry_loader.py")
+    shim = loader.load_registry("futures")
+    if os.path.join(REPO, "shared_tools") not in sys.path:
+        sys.path.insert(0, os.path.join(REPO, "shared_tools"))
+    composition = importlib.import_module("strategy_composition")
+    for name in sorted(OPEN_REGISTRY.quote_capabilities()):
+        with pytest.raises(ValueError, match="quote capability"):
+            OPEN_REGISTRY.STRATEGIES[name]["fn"](None)
+        with pytest.raises(ValueError, match="quote capability"):
+            loader.refuse_quote_capability(shim, name)
+        with pytest.raises(ValueError, match="quote capability"):
+            loader.refuse_basket_evaluator(shim, name)
+        entry = dict(OPEN_REGISTRY.STRATEGIES[name], production_refused=False)
+        with pytest.raises(ValueError, match="quote capability"):
+            composition.admit_strategy_references([composition.StrategyReference("open", name)],
+                                                  composition.GateMode(composition.GATE_MODE_PAPER, ""),
+                                                  composition.Acknowledgement(None, None), lambda _n: entry)
+
+
+@pytest.mark.parametrize("kwargs, match", [
+    ({"quote": {"input": "deadline_book_evidence"}}, "quote must be exactly"),
+    ({"quote_spec": {}}, "quote_spec applies only"),
+    ({"platforms": ("spot", "futures")}, "platforms"),
+    ({"production_refused": False, "edge_status": None, "edge_source": None, "edge_ref": None}, "production_refused"),
+    ({"param_validator": None}, "param_validator"),
+])
+def test_register_rejects_malformed_quote_metadata(scratch_registry, kwargs, match):
+    base = {"default_params": {}, "short_entries": False, "platforms": ("futures",), "edge_status": "no_edge",
+            "edge_source": "unvalidated", "edge_ref": "x.md", "production_refused": True,
+            "param_validator": lambda p: None, "quote": dict(OPEN_REGISTRY.QUOTE_CONTRACT),
+            "quote_spec": {"strategy": "_scratch_quote"}}
+    if "quote_spec" in kwargs and kwargs["quote_spec"] == {}:
+        base.pop("quote")
+    kwargs = {**base, **kwargs}
+    before = set(scratch_registry.STRATEGIES)
+    with pytest.raises(ValueError, match=match):
+        scratch_registry.register("_scratch_quote", "scratch", **kwargs)(_noop)
+    assert set(scratch_registry.STRATEGIES) == before
 
 
 def go_basket_rankers():

@@ -1,0 +1,6 @@
+{
+ "funding": null,
+ "note": "no l2Book plus raw-trade recording is pinned; add each bounded public recording (path relative to the repository or absolute, coin, run.manifest.json sha256) and one pinned fundingHistory file (path, sha256) before scoring",
+ "recordings": [],
+ "schema": "go-trader.quote-study-data/v1"
+}

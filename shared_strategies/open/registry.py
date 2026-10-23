@@ -114,6 +114,14 @@ from order_book_imbalance import (
     obi_param_validator,
     order_book_imbalance_core,
 )
+from inventory_market_making import (
+    QUOTE_CONTRACT,
+    QUOTE_POLICY_SPEC,
+    default_params as inventory_market_making_default_params,
+    inventory_market_making_param_validator,
+    inventory_market_making_scalar_refusal,
+    spec_sha256 as quote_policy_spec_sha256,
+)
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -165,6 +173,53 @@ def _validate_basket(name: str, basket, platforms: Tuple[str, ...], short_entrie
         raise ValueError(f"{name}: a basket evaluator registers for platforms ('futures',) only, got {platforms!r}")
     if short_entries:
         raise ValueError(f"{name}: a basket evaluator has no single-symbol entries; declare short_entries=False")
+
+
+def quote_capabilities() -> Dict[str, Dict[str, Any]]:
+    return {
+        name: {"quote": dict(entry["quote"]), "spec": entry["quote_spec"], "spec_sha256": quote_policy_spec_sha256(entry["quote_spec"]),
+               "spec_version": entry["quote_spec"]["version"], "platforms": list(entry["platforms"]),
+               "edge_status": entry["edge_status"], "edge_source": entry["edge_source"], "edge_ref": entry["edge_ref"],
+               "production_refused": entry["production_refused"], "default_params": dict(entry["default_params"])}
+        for name, entry in sorted(STRATEGIES.items()) if entry.get("quote")
+    }
+
+
+def get_quote_capability(name: str) -> Dict[str, Any]:
+    entry = STRATEGIES.get(name)
+    if entry is None or not entry.get("quote"):
+        raise ValueError(f"{name!r} is not a registered quote capability; registered: {sorted(quote_capabilities())}")
+    return entry
+
+
+def _quote_scalar_refusal(name: str, refusal):
+    def refuse(*args, **kwargs):
+        return refusal(*args, **kwargs)
+    refuse.__name__ = f"{name}_scalar_refusal"
+    return refuse
+
+
+def _validate_quote(name: str, quote, quote_spec, platforms: Tuple[str, ...], short_entries: bool, basket,
+                    production_refused: bool, param_validator) -> None:
+    if quote is None:
+        if quote_spec is not None:
+            raise ValueError(f"{name}: quote_spec applies only to a quote capability")
+        return
+    if not isinstance(quote, dict) or quote != QUOTE_CONTRACT:
+        raise ValueError(f"{name}: quote must be exactly {QUOTE_CONTRACT!r}, got {quote!r}")
+    if basket is not None:
+        raise ValueError(f"{name}: a quote capability carries no basket metadata")
+    if tuple(platforms) != ("futures",):
+        raise ValueError(f"{name}: a quote capability registers for platforms ('futures',) only, got {platforms!r}")
+    if short_entries:
+        raise ValueError(f"{name}: a quote capability has no scalar entries; signed inventory belongs to the quote contract, "
+                         "so declare short_entries=False")
+    if not production_refused:
+        raise ValueError(f"{name}: a quote capability is research-only and needs production_refused=True")
+    if not callable(param_validator):
+        raise ValueError(f"{name}: a quote capability needs a param_validator")
+    if not isinstance(quote_spec, dict) or quote_spec.get("strategy") != name:
+        raise ValueError(f"{name}: a quote capability needs its versioned quote_spec")
 
 
 def no_edge_strategies() -> frozenset:
@@ -367,6 +422,8 @@ def register(
     basket=None,
     production_refused: bool = False,
     basket_preflight=None,
+    quote=None,
+    quote_spec=None,
 ):
     if name in STRATEGIES:
         raise ValueError(f"Strategy '{name}' is already registered")
@@ -377,6 +434,7 @@ def register(
         raise ValueError(f"{name}: production_refused=True requires edge_status={EDGE_STATUS_NO_EDGE!r}")
     platforms = tuple(platforms)
     _validate_basket(name, basket, platforms, short_entries)
+    _validate_quote(name, quote, quote_spec, platforms, short_entries, basket, production_refused, param_validator)
     if not platforms:
         raise ValueError(f"{name}: platforms must be non-empty")
     bad = set(platforms) - set(VALID_PLATFORMS)
@@ -415,7 +473,7 @@ def register(
     def decorator(fn):
         wrapped = _validated(name, fn, default_params, constraint_list) if constraint_list else fn
         STRATEGIES[name] = {
-            "fn": _basket_single_symbol_refusal(name) if basket else wrapped,
+            "fn": _basket_single_symbol_refusal(name) if basket else (_quote_scalar_refusal(name, fn) if quote else wrapped),
             "basket": dict(basket) if basket else None,
             "basket_fn": fn if basket else None,
             "basket_preflight": basket_preflight,
@@ -430,6 +488,8 @@ def register(
             "short_entries": short_entries,
             "param_validator": param_validator,
             "production_refused": production_refused,
+            "quote": dict(quote) if quote else None,
+            "quote_spec": quote_spec if quote else None,
         }
         return fn
 
@@ -475,6 +535,7 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
             "edge_ref": entry.get("edge_ref"),
             "param_validator": entry.get("param_validator"),
             "production_refused": entry.get("production_refused", False),
+            "quote": dict(entry["quote"]) if entry.get("quote") else None,
         }
     return out
 
@@ -2984,6 +3045,24 @@ def order_book_imbalance_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return order_book_imbalance_core(df, **params)
 
 
+@register(
+    "inventory_market_making",
+    "RESEARCH, production-refused quote capability (#1861, parent #1636): inventory-aware two-sided post-only market making on Hyperliquid perps. At each due deadline the pure Go quote policy (scheduler/quote_policy.go) reads the frozen deadline book evidence and the settled quote snapshot: normalized inventory x = clamp((q x m - target) / cap, -1, 1), per-second log-return variance over the volatility window, s = sqrt(v x max(lifetime, cycle)), skew a = clamp(risk_aversion x x x s, +/- max_skew), reservation r = m x (1 - a), half-spread h = max(min_spread / 2, fee and reserve floor, volatility_multiplier x s); quotes r -/+ m x h rounded to the native grid, the inventory-increasing side tapered near the cap and held above half the maximum spread, the reducing side reduce-only, and an inventory-age exit through inventory_quote_exit. It has no scalar candle signal: scalar checks, candle backtests, the optimizer and parity runs refuse it, and only the internally admitted quote-replay runner evaluates it; every production config, mode and allow_no_edge acknowledgement is refused until a separate reviewed promotion",
+    inventory_market_making_default_params(),
+    platforms=("futures",),
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/inventory_market_making_1636/REPORT.md",
+    short_entries=False,
+    param_validator=inventory_market_making_param_validator,
+    production_refused=True,
+    quote=dict(QUOTE_CONTRACT),
+    quote_spec=QUOTE_POLICY_SPEC,
+)
+def inventory_market_making_strategy(*args, **kwargs):
+    return inventory_market_making_scalar_refusal(*args, **kwargs)
+
+
 PLATFORM_ORDER: Dict[str, List[str]] = {
     "spot": [
         "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
@@ -3040,6 +3119,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "volume_profile_reclaim",
         "perpetual_premium_reversion",
         "order_book_imbalance",
+        "inventory_market_making",
         "hold",
     ],
 }

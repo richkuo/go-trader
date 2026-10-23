@@ -387,6 +387,10 @@ def admit_strategy_references(
             raise ValueError(
                 f"{ref.role} strategy '{ref.name}' is a basket evaluator; "
                 "it ranks a basket universe and cannot run on one symbol")
+        if isinstance(entry, dict) and entry.get("quote"):
+            raise ValueError(
+                f"{ref.role} strategy '{ref.name}' is a quote capability; "
+                "it has no scalar signal and only the admitted quote coordinator runs it")
         if not isinstance(entry, dict) or entry.get("edge_status") != EDGE_STATUS_NO_EDGE:
             continue
         source = entry.get("edge_source") or "unknown"
