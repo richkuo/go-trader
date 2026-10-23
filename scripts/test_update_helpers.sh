@@ -1711,4 +1711,125 @@ else
     echo "note: go or git not installed; the export build case is skipped"
 fi
 
+rec_test=$(mktemp -d)
+mkdir -p "$rec_test/deploy/scheduler" "$rec_test/deploy/sub/nested" "$rec_test/deploy/logs" "$rec_test/src/scheduler" "$rec_test/rec" "$rec_test/etc" "$rec_test/libexec/main"
+printf '{\n  "db_file": "sub/nested/primary.db",\n  "paper_db_file": "scheduler/paper.db",\n  "paper_sources": [{"id": "btc", "db_file": "sub/nested/btc.db"}],\n  "log_dir": "custom_logs",\n  "status_port": 8123\n}\n' >"$rec_test/deploy/scheduler/real_config.json"
+ln -s "$rec_test/deploy/scheduler/real_config.json" "$rec_test/deploy/scheduler/config.json"
+mkdir -p "$rec_test/deploy/custom_logs"
+printf 'secret=1\n' >"$rec_test/deploy/.env"
+printf 'db1\n' >"$rec_test/deploy/sub/nested/primary.db"
+printf 'wal1\n' >"$rec_test/deploy/sub/nested/primary.db-wal"
+printf 'db2\n' >"$rec_test/deploy/scheduler/paper.db"
+printf 'db3\n' >"$rec_test/deploy/sub/nested/btc.db"
+printf 'log1\n' >"$rec_test/deploy/logs/app.log"
+printf 'log2\n' >"$rec_test/deploy/custom_logs/app.log"
+printf 'sig1\n' >"$rec_test/deploy/custom-signal.log"
+printf 'code-v1\n' >"$rec_test/deploy/README.md"
+printf 'untracked-v1\n' >"$rec_test/deploy/local_note.txt"
+printf 'bin-v1\n' >"$rec_test/deploy/go-trader"
+chmod +x "$rec_test/deploy/go-trader"
+mkdir -p "$rec_test/deploy/.venv/bin" "$rec_test/deploy/.venv/pkg"
+printf '#!/bin/sh\necho "Python 3.12.9"\n' >"$rec_test/deploy/.venv/bin/python3"
+chmod +x "$rec_test/deploy/.venv/bin/python3"
+printf 'pkg-v1\n' >"$rec_test/deploy/.venv/pkg/mod.py"
+git -C "$rec_test/deploy" init -q
+git -C "$rec_test/deploy" -c user.email=t@example.invalid -c user.name=t add README.md
+git -C "$rec_test/deploy" -c user.email=t@example.invalid -c user.name=t commit -qm v1
+printf 'staged-v1\n' >"$rec_test/deploy/staged.txt"
+git -C "$rec_test/deploy" add staged.txt
+printf 'unstaged-v1\n' >"$rec_test/deploy/README.md"
+pre_head=$(git -C "$rec_test/deploy" rev-parse HEAD)
+pre_idx_fp=$(update_file_fingerprint "$rec_test/deploy/.git/index")
+
+UPDATE_NO_FREEZE_EXCLUDES=1 GO_TRADER_SIGNAL_LOG="$rec_test/deploy/custom-signal.log" update_managed_rsync_excludes "$rec_test/deploy"
+excl_joined=$(printf '%s\n' "${UPDATE_MANAGED_EXCLUDES[@]}")
+for want_excl in "--exclude=/scheduler/real_config.json" "--exclude=/sub/nested/primary.db*" "--exclude=/sub/nested/btc.db*" "--exclude=/custom_logs/" "--exclude=/custom-signal.log"; do
+    if [[ "$excl_joined" != *"$want_excl"* ]]; then
+        echo "FAIL: managed excludes missing $want_excl: $excl_joined" >&2
+        exit 1
+    fi
+done
+
+rkey=$(update_recovery_key "$rec_test/deploy")
+update_acquire_lock "$rec_test/rec" "$rkey" "$$" "$rec_test/deploy" || { echo "FAIL: lock acquire failed" >&2; exit 1; }
+if update_acquire_lock "$rec_test/rec" "$rkey" "99999999" "$rec_test/deploy" 2>/dev/null; then
+    echo "FAIL: concurrent lock acquire succeeded while live pid holds lock" >&2
+    exit 1
+fi
+printf '99999998\n' >"$rec_test/rec/${rkey}.lock/pid"
+update_acquire_lock "$rec_test/rec" "$rkey" "$$" "$rec_test/deploy" 2>/dev/null || { echo "FAIL: stale lock was not reclaimed" >&2; exit 1; }
+update_release_lock "$rec_test/rec" "$rkey" "$$"
+
+if GO_TRADER_UPDATE_FAKE_FREE_BYTES=100 UPDATE_NO_FREEZE_EXCLUDES=1 update_take_snapshot "$rec_test/deploy" "$rec_test/rec/$rkey" "" "" "" 2>/dev/null; then
+    echo "FAIL: snapshot succeeded with insufficient free space" >&2
+    exit 1
+fi
+
+ln -s /tmp "$rec_test/deploy/.venv-link"
+mv "$rec_test/deploy/.venv" "$rec_test/deploy/.venv-real"
+mv "$rec_test/deploy/.venv-link" "$rec_test/deploy/.venv"
+if UPDATE_NO_FREEZE_EXCLUDES=1 update_take_snapshot "$rec_test/deploy" "$rec_test/rec/$rkey" "" "" "" 2>/dev/null; then
+    echo "FAIL: snapshot accepted a symlinked .venv" >&2
+    exit 1
+fi
+rm -f "$rec_test/deploy/.venv"
+mv "$rec_test/deploy/.venv-real" "$rec_test/deploy/.venv"
+
+UPDATE_NO_FREEZE_EXCLUDES=1 GO_TRADER_SIGNAL_LOG="$rec_test/deploy/custom-signal.log" update_take_snapshot "$rec_test/deploy" "$rec_test/rec/$rkey" "" "" "" \
+    || { echo "FAIL: update_take_snapshot failed" >&2; exit 1; }
+
+printf 'mutated-readme\n' >"$rec_test/deploy/README.md"
+printf 'added-by-failed-update\n' >"$rec_test/deploy/added_new.py"
+rm -f "$rec_test/deploy/local_note.txt"
+printf 'pkg-v2\n' >"$rec_test/deploy/.venv/pkg/mod.py"
+printf 'extra-pkg\n' >"$rec_test/deploy/.venv/pkg/extra.py"
+printf 'bin-v2\n' >"$rec_test/deploy/go-trader"
+printf 'bin-prev\n' >"$rec_test/deploy/go-trader.prev"
+printf 'db1-runtime-write\n' >"$rec_test/deploy/sub/nested/primary.db"
+git -C "$rec_test/deploy" -c user.email=t@example.invalid -c user.name=t commit -am "bad-commit" -q
+
+UPDATE_NO_FREEZE_EXCLUDES=1 GO_TRADER_SIGNAL_LOG="$rec_test/deploy/custom-signal.log" update_restore_snapshot_files "$rec_test/deploy" "$rec_test/rec/$rkey" "" \
+    || { echo "FAIL: update_restore_snapshot_files failed" >&2; exit 1; }
+update_restore_snapshot_venv "$rec_test/deploy" "$rec_test/rec/$rkey" \
+    || { echo "FAIL: update_restore_snapshot_venv failed" >&2; exit 1; }
+update_restore_snapshot_binaries "$rec_test/deploy" "$rec_test/rec/$rkey" \
+    || { echo "FAIL: update_restore_snapshot_binaries failed" >&2; exit 1; }
+
+assert_eq "$(cat "$rec_test/deploy/README.md")" "unstaged-v1" "unstaged working-tree edit restored"
+assert_eq "$(cat "$rec_test/deploy/local_note.txt")" "untracked-v1" "deleted untracked file restored"
+[[ ! -e "$rec_test/deploy/added_new.py" ]] || { echo "FAIL: added file was not removed by restore" >&2; exit 1; }
+assert_eq "$(git -C "$rec_test/deploy" rev-parse HEAD)" "$pre_head" "git HEAD restored"
+assert_eq "$(update_file_fingerprint "$rec_test/deploy/.git/index")" "$pre_idx_fp" "git index restored with staged edit intact"
+assert_eq "$(cat "$rec_test/deploy/.venv/pkg/mod.py")" "pkg-v1" ".venv modified file restored"
+[[ ! -e "$rec_test/deploy/.venv/pkg/extra.py" ]] || { echo "FAIL: .venv added file was not removed" >&2; exit 1; }
+assert_eq "$(cat "$rec_test/deploy/go-trader")" "bin-v1" "binary restored from snapshot"
+[[ ! -e "$rec_test/deploy/go-trader.prev" ]] || { echo "FAIL: absent go-trader.prev was not removed" >&2; exit 1; }
+assert_eq "$(cat "$rec_test/deploy/sub/nested/primary.db")" "db1-runtime-write" "excluded nested runtime DB write survived restore"
+assert_eq "$(cat "$rec_test/deploy/custom_logs/app.log")" "log2" "custom log_dir survived restore"
+assert_eq "$(cat "$rec_test/deploy/custom-signal.log")" "sig1" "custom signal log survived restore"
+
+update_write_incomplete_marker "$rec_test/rec" "$rkey" "$rec_test/deploy" "$rec_test/rec/$rkey" "forced test failure" "files=ok probe=failed"
+if update_check_incomplete_marker "$rec_test/rec" "$rkey" "$rec_test/deploy" 2>/dev/null; then
+    echo "FAIL: incomplete marker did not block same directory" >&2
+    exit 1
+fi
+GO_TRADER_UPDATE_RECOVERY_DIR="$rec_test/rec" update_clear_recovery "$rec_test/deploy" "$$" >/dev/null
+update_check_incomplete_marker "$rec_test/rec" "$rkey" "$rec_test/deploy" || { echo "FAIL: cleared marker still blocked update" >&2; exit 1; }
+cleared_count=$(find "$rec_test/rec" -maxdepth 1 -name "${rkey}.cleared-*" | wc -l | tr -d '[:space:]')
+assert_eq "$cleared_count" "1" "--clear-recovery moved snapshot to .cleared-<UTC>"
+
+mkdir -p "$rec_test/rec/$rkey"
+update_write_incomplete_marker "$rec_test/rec" "$rkey" "$rec_test/deploy" "$rec_test/rec/$rkey" "forced test failure 2" "files=failed"
+mv "$rec_test/deploy" "$rec_test/deploy.moved"
+mkdir -p "$rec_test/deploy"
+update_check_incomplete_marker "$rec_test/rec" "$rkey" "$rec_test/deploy" 2>/dev/null || { echo "FAIL: stale marker on replaced directory inode blocked update" >&2; exit 1; }
+
+mkdir -p "$rec_test/unit-test"
+printf 'unit-v1\n' >"$rec_test/unit-test/go-trader.service"
+printf 'unit-v2\n' >"$rec_test/unit-test/shipped.service"
+chmod 0500 "$rec_test/unit-test"
+UPDATE_UNIT_SUDO="" update_unit_install_with_backup "$rec_test/unit-test/go-trader.service" "$rec_test/unit-test/shipped.service" 2>/dev/null && u_rc=0 || u_rc=$?
+chmod 0700 "$rec_test/unit-test"
+rm -rf "$rec_test"
+
 echo "OK: update_helpers tests passed"

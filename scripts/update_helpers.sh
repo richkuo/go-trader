@@ -105,17 +105,17 @@ update_unit_sudo() {
 }
 
 update_unit_install_with_backup() {
-    local installed="$1" source_path="$2"
+    local installed="$1" source_path="$2" record_file="${3:-}"
     [[ -n "$installed" && -n "$source_path" && -f "$source_path" ]] || return 1
+    if [[ -n "$record_file" ]]; then
+        printf 'unit_installed_path=%s\n' "$installed" >"$record_file"
+    fi
     local backup=""
     if [[ -f "$installed" ]]; then
         backup="${installed}.prev"
         update_unit_sudo cp -p "$installed" "$backup" || return 1
     fi
     if ! update_unit_sudo install -m 0644 "$source_path" "$installed"; then
-        if [[ -n "$backup" ]]; then
-            update_unit_sudo rm -f "$backup" || true
-        fi
         return 1
     fi
     printf '%s' "$backup"
@@ -174,7 +174,7 @@ update_journalctl_unit_command() {
 }
 
 update_sync_journal_namespace() {
-    local repo_root="${1%/}" unit_source="$2" etc_dir="${3:-/etc/systemd}"
+    local repo_root="${1%/}" unit_source="$2" etc_dir="${3:-/etc/systemd}" record_file="${4:-}"
     local namespace
     namespace=$(update_unit_log_namespace "$unit_source")
     if [[ -z "$namespace" ]]; then
@@ -203,6 +203,9 @@ update_sync_journal_namespace() {
     decision=$(update_unit_sync_decision "$dest" "$source_conf" no)
     case "$decision" in
         install)
+            if [[ -n "$record_file" ]]; then
+                printf 'journal_dest=%s\njournal_namespace=%s\n' "$dest" "$namespace" >"$record_file"
+            fi
             backup=$(update_unit_install_with_backup "$dest" "$source_conf") || {
                 echo "[journal] could not install $source_conf as $dest" >&2
                 return 1
@@ -478,14 +481,19 @@ update_db_rsync_excludes() {
 # Prints every configured state-file path, one per line: db_file first, then
 # paper_db_file when the split live/paper layout is configured (#1523).
 update_resolve_db_exclude() {
+    local cfg_path="${GO_TRADER_UPDATE_CONFIG:-scheduler/config.json}"
     local db_paths="scheduler/state.db"
-    if [[ "$(update_deployment_role_for_config "${GO_TRADER_UPDATE_CONFIG:-scheduler/config.json}")" == "feed" ]]; then
+    if [[ "$(update_deployment_role_for_config "$cfg_path")" == "feed" ]]; then
         printf '%s\n' "$db_paths"
         return 0
     fi
-    if [[ -f ${GO_TRADER_UPDATE_CONFIG:-scheduler/config.json} && -x "${GO_TRADER_UPDATE_PYTHON:-.venv/bin/python3}" ]]; then
+    local py_bin="${GO_TRADER_UPDATE_PYTHON:-}"
+    if [[ -z "$py_bin" || ! -x "$py_bin" ]]; then
+        py_bin=$(command -v python3 2>/dev/null || printf '.venv/bin/python3')
+    fi
+    if [[ -f "$cfg_path" && -x "$py_bin" ]]; then
         local custom
-        custom=$("${GO_TRADER_UPDATE_PYTHON:-.venv/bin/python3}" -c '
+        custom=$(GO_TRADER_UPDATE_CONFIG="$cfg_path" "$py_bin" -c '
 import json, os
 try:
     cfg = json.load(open(os.environ.get("GO_TRADER_UPDATE_CONFIG", "scheduler/config.json")))
@@ -1304,19 +1312,32 @@ update_probe_as_owner() {
 }
 
 update_owner_runs_venv() {
+    local status
+    status=$(update_owner_runs_venv_status "$1") || return 1
+    return 0
+}
+
+update_owner_runs_venv_status() {
     local tree="$1" name py
     py="${tree%/}/.venv/bin/python3"
-    [[ -e "$py" ]] || return 0
+    [[ -e "$py" ]] || { printf 'skipped'; return 0; }
     name=$(update_path_owner_name "$tree")
     if [[ "$name" == "unknown" || "$name" == "UNKNOWN" ]]; then
         echo "[update] warning: $tree has no named owner; skipping the venv check as the owner" >&2
+        printf 'skipped'
         return 0
     fi
     if ! command -v runuser >/dev/null 2>&1; then
         echo "[update] warning: runuser is not installed; skipping the venv check as $name" >&2
+        printf 'skipped'
         return 0
     fi
-    runuser -u "$name" -- "$py" -c 'import encodings, sqlite3' >/dev/null 2>&1
+    if runuser -u "$name" -- "$py" -c 'import encodings, sqlite3' >/dev/null 2>&1; then
+        printf 'ok'
+        return 0
+    fi
+    printf 'failed'
+    return 1
 }
 
 UPDATE_EGRESS_LIBEXEC_ROOT="${UPDATE_EGRESS_LIBEXEC_ROOT:-/usr/local/libexec/go-trader-egress}"
@@ -1400,20 +1421,27 @@ update_egress_restart_controller() {
 }
 
 update_egress_switch_controller() {
-    local deployment="$1" staged="$2" cur
+    local deployment="$1" staged="$2" state_file="${3:-}" cur
     cur=$(update_egress_controller_path "$deployment")
     if [[ -f "$cur" ]] && cmp -s "$staged" "$cur"; then
         echo "[update] egress: controller for $deployment is unchanged"
         rm -rf "$(dirname "$staged")"
         return 2
     fi
-    rm -f "$cur.prev"
+    if [[ -n "$state_file" ]]; then
+        printf 'installed=1\nrestarted=0\n' >"$state_file"
+    fi
     if [[ -f "$cur" ]]; then
         echo "[update] egress: controller protocol $(update_egress_protocol "$cur") -> $(update_egress_protocol "$staged")"
-        cp -p "$cur" "$cur.prev" || return 1
+        cp -p "$cur" "$cur.prev.tmp" && mv -f "$cur.prev.tmp" "$cur.prev" || return 1
+    else
+        rm -f "$cur.prev"
     fi
     install -o root -g root -m 0755 "$staged" "$cur.tmp" && mv -f "$cur.tmp" "$cur" || return 1
     rm -rf "$(dirname "$staged")"
+    if [[ -n "$state_file" ]]; then
+        printf 'installed=1\nrestarted=1\n' >"$state_file"
+    fi
     update_egress_restart_controller "$deployment" || return 1
     if ! update_egress_wait_ready "$deployment" 30; then
         echo "[update] egress: controller for $deployment did not report ready within 30s" >&2
@@ -1424,11 +1452,22 @@ update_egress_switch_controller() {
 }
 
 update_egress_restore_controller() {
-    local deployment="$1" cur
+    local deployment="$1" snap_cur="${2:-}" snap_prev="${3:-}" need_restart="${4:-1}" cur
     cur=$(update_egress_controller_path "$deployment")
-    [[ -f "$cur.prev" ]] || return 1
-    mv -f "$cur.prev" "$cur" || return 1
-    update_egress_restart_controller "$deployment" || return 1
+    if [[ -n "$snap_cur" && -f "$snap_cur" ]]; then
+        cp -p "$snap_cur" "$cur.restore.tmp" && mv -f "$cur.restore.tmp" "$cur" || return 1
+        if [[ -n "$snap_prev" && -f "$snap_prev" ]]; then
+            cp -p "$snap_prev" "$cur.prev.restore.tmp" && mv -f "$cur.prev.restore.tmp" "$cur.prev" || return 1
+        else
+            rm -f "$cur.prev"
+        fi
+    else
+        [[ -f "$cur.prev" ]] || return 1
+        mv -f "$cur.prev" "$cur" || return 1
+    fi
+    if [[ "$need_restart" == "1" ]]; then
+        update_egress_restart_controller "$deployment" || return 1
+    fi
     update_egress_wait_ready "$deployment" 30
 }
 
@@ -1456,4 +1495,918 @@ update_unit_owner() {
         gid=$(id -g "$user" 2>/dev/null) || return 1
     fi
     printf '%s:%s' "$uid" "$gid"
+}
+
+update_relpath_in_tree() {
+    python3 - "$1" "$2" <<'PY'
+import os, sys
+tree = os.path.realpath(sys.argv[1])
+raw = sys.argv[2]
+if not raw:
+    sys.exit(0)
+if os.path.isabs(raw):
+    parent = os.path.realpath(os.path.dirname(raw))
+    cand = os.path.join(parent, os.path.basename(raw))
+else:
+    cand = os.path.normpath(os.path.join(tree, raw))
+if cand == tree:
+    print(".")
+elif cand.startswith(tree.rstrip("/") + "/"):
+    print(cand[len(tree.rstrip("/")) + 1:])
+PY
+}
+
+update_managed_rsync_excludes() {
+    if [[ "${UPDATE_MANAGED_EXCLUDES_FROZEN:-0}" == "1" ]]; then
+        return 0
+    fi
+    local deploy_dir="${1:-$PWD}"
+    local cfg_path="${GO_TRADER_UPDATE_CONFIG:-$deploy_dir/scheduler/config.json}"
+    if [[ "$cfg_path" != /* ]]; then
+        cfg_path="$deploy_dir/$cfg_path"
+    fi
+    local signal_log_excl="${GO_TRADER_SIGNAL_LOG:-./go-trader-signal.log}"
+    local pidfile_excl="${GO_TRADER_PIDFILE:-./go-trader.pid}"
+    local parsed_meta
+    if ! parsed_meta=$(python3 - "$deploy_dir" "$cfg_path" <<'PY'
+import json, os, sys
+deploy = os.path.realpath(sys.argv[1])
+cfg_path = sys.argv[2]
+if not os.path.exists(cfg_path):
+    sys.stderr.write("[update] config missing: %s\n" % cfg_path)
+    sys.exit(1)
+try:
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+except Exception as exc:
+    sys.stderr.write("[update] invalid config JSON in %s: %s\n" % (cfg_path, exc))
+    sys.exit(1)
+if not isinstance(cfg, dict):
+    sys.stderr.write("[update] config root in %s must be a JSON object\n" % cfg_path)
+    sys.exit(1)
+def rel_inside(p):
+    if not p or not isinstance(p, str):
+        return ""
+    p = p.strip()
+    if not p:
+        return ""
+    if os.path.isabs(p):
+        parent = os.path.realpath(os.path.dirname(p))
+        full = os.path.join(parent, os.path.basename(p))
+    else:
+        full = os.path.normpath(os.path.join(deploy, p))
+    if full == deploy:
+        sys.stderr.write("[update] unsafe path resolves to deployment root: %s\n" % p)
+        sys.exit(1)
+    if os.path.isdir(full) and not os.path.islink(full):
+        sys.stderr.write("[update] unsafe state path is a directory: %s\n" % p)
+        sys.exit(1)
+    if full.startswith(deploy.rstrip("/") + "/"):
+        return full[len(deploy.rstrip("/")) + 1:]
+    return ""
+if os.path.islink(cfg_path):
+    real_cfg = os.path.realpath(cfg_path)
+    if real_cfg == deploy or (os.path.isdir(real_cfg)):
+        sys.stderr.write("[update] unsafe config symlink target: %s -> %s\n" % (cfg_path, real_cfg))
+        sys.exit(1)
+    if real_cfg.startswith(deploy.rstrip("/") + "/"):
+        print("CFG_TARGET=" + real_cfg[len(deploy.rstrip("/")) + 1:])
+role = cfg.get("role")
+is_feed = isinstance(role, str) and role.strip() == "feed"
+if not is_feed:
+    for key in ("db_file", "paper_db_file", "replay_log_path"):
+        v = cfg.get(key)
+        r = rel_inside(v)
+        if r:
+            print("DB_REL=" + r)
+    for src in cfg.get("paper_sources") or []:
+        if isinstance(src, dict):
+            r = rel_inside(src.get("db_file"))
+            if r:
+                print("DB_REL=" + r)
+log_dir = cfg.get("log_dir")
+if isinstance(log_dir, str) and log_dir.strip():
+    ld = log_dir.strip().rstrip("/")
+    if ld and ld != "logs" and ld != "./logs":
+        if os.path.isabs(ld):
+            full_ld = os.path.realpath(ld)
+        else:
+            full_ld = os.path.normpath(os.path.join(deploy, ld))
+        if full_ld == deploy:
+            sys.stderr.write("[update] unsafe log_dir resolves to deployment root: %s\n" % ld)
+            sys.exit(1)
+        if full_ld.startswith(deploy.rstrip("/") + "/"):
+            print("LOG_REL=" + full_ld[len(deploy.rstrip("/")) + 1:])
+PY
+    ); then
+        return 1
+    fi
+
+    UPDATE_MANAGED_EXCLUDES=(
+        --exclude='.git/'
+        --exclude='.env'
+        --exclude='scheduler/config.json'
+        --exclude='trading_bot.db*'
+        --exclude='scheduler/ohlcv_cache.sqlite3*'
+    )
+    local line db_excl db_glob rel_p
+    while IFS= read -r line; do
+        case "$line" in
+            CFG_TARGET=*)
+                UPDATE_MANAGED_EXCLUDES+=(--exclude="/${line#CFG_TARGET=}")
+                ;;
+            DB_REL=*)
+                UPDATE_MANAGED_EXCLUDES+=(--exclude="/${line#DB_REL=}*" --exclude="${line#DB_REL=}*")
+                ;;
+            LOG_REL=*)
+                UPDATE_MANAGED_EXCLUDES+=(--exclude="/${line#LOG_REL=}/")
+                ;;
+        esac
+    done <<<"$parsed_meta"
+
+    while IFS= read -r db_excl; do
+        if [[ -n "$db_excl" ]]; then
+            UPDATE_MANAGED_EXCLUDES+=(--exclude="${db_excl}*")
+            rel_p=$(update_relpath_in_tree "$deploy_dir" "$db_excl" || true)
+            if [[ -n "$rel_p" && "$rel_p" != "." ]]; then
+                UPDATE_MANAGED_EXCLUDES+=(--exclude="/${rel_p}*")
+            fi
+        fi
+    done < <(GO_TRADER_UPDATE_CONFIG="$cfg_path" update_resolve_db_exclude)
+
+    while IFS= read -r db_glob; do
+        [[ -n "$db_glob" ]] && UPDATE_MANAGED_EXCLUDES+=(--exclude="$db_glob")
+    done < <(update_db_rsync_excludes)
+    UPDATE_MANAGED_EXCLUDES+=(
+        --exclude='*.db.manual-action.lock'
+        --exclude='.venv/'
+        --exclude='.venv.restore-new/'
+        --exclude='.venv.restore-old/'
+        --exclude='robinhood-session/'
+        --exclude='/logs/'
+        --exclude='node_modules/'
+        --exclude='__pycache__/'
+        --exclude='go-trader'
+        --exclude='go-trader.new'
+        --exclude='go-trader.prev'
+        --exclude='go-trader.restore-tmp'
+        --exclude='go-trader.prev.restore-tmp'
+        --exclude='go-trader.pid'
+        --exclude='go-trader-signal.log'
+    )
+    if [[ "$signal_log_excl" != "./go-trader-signal.log" && "$signal_log_excl" != "go-trader-signal.log" ]]; then
+        UPDATE_MANAGED_EXCLUDES+=(--exclude="$signal_log_excl")
+        rel_p=$(update_relpath_in_tree "$deploy_dir" "$signal_log_excl" || true)
+        if [[ -n "$rel_p" && "$rel_p" != "." ]]; then
+            UPDATE_MANAGED_EXCLUDES+=(--exclude="/$rel_p")
+        fi
+    fi
+    if [[ "$pidfile_excl" != "./go-trader.pid" && "$pidfile_excl" != "go-trader.pid" ]]; then
+        UPDATE_MANAGED_EXCLUDES+=(--exclude="$pidfile_excl")
+        rel_p=$(update_relpath_in_tree "$deploy_dir" "$pidfile_excl" || true)
+        if [[ -n "$rel_p" && "$rel_p" != "." ]]; then
+            UPDATE_MANAGED_EXCLUDES+=(--exclude="/$rel_p")
+        fi
+    fi
+    if [[ "${UPDATE_NO_FREEZE_EXCLUDES:-0}" != "1" ]]; then
+        readonly -a UPDATE_MANAGED_EXCLUDES
+        readonly UPDATE_MANAGED_EXCLUDES_FROZEN=1
+    fi
+    return 0
+}
+
+update_preflight_rsync() {
+    if ! command -v rsync >/dev/null 2>&1; then
+        echo "[update] rsync not on PATH — install rsync (SKILL.md → Prerequisites)" >&2
+        return 1
+    fi
+    local probe_dir
+    probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/go-trader-rsync-probe.XXXXXX") || return 1
+    mkdir -p "$probe_dir/src" "$probe_dir/dst"
+    printf 'ok\n' >"$probe_dir/src/f"
+    local -a owner_flags=()
+    if [[ "$EUID" == "0" ]]; then
+        owner_flags=(--no-owner --no-group)
+    fi
+    if ! rsync -a ${owner_flags[@]+"${owner_flags[@]}"} --delete --exclude='.git/' "$probe_dir/src/" "$probe_dir/dst/" >/dev/null 2>&1; then
+        rm -rf "$probe_dir"
+        echo "[update] rsync failed flag compatibility check (-a --delete --exclude)" >&2
+        return 1
+    fi
+    rm -rf "$probe_dir"
+    return 0
+}
+
+update_recovery_root() {
+    if [[ -n "${GO_TRADER_UPDATE_RECOVERY_DIR:-}" ]]; then
+        printf '%s' "${GO_TRADER_UPDATE_RECOVERY_DIR%/}"
+        return 0
+    fi
+    if [[ "$EUID" == "0" ]]; then
+        printf '/var/lib/go-trader-update'
+        return 0
+    fi
+    local state_home="${XDG_STATE_HOME:-}"
+    if [[ -z "$state_home" ]]; then
+        state_home="${HOME:-/var/tmp}/.local/state"
+    fi
+    printf '%s/go-trader-update' "${state_home%/}"
+}
+
+update_recovery_key() {
+    local canon
+    canon=$(update_realpath "$1")
+    python3 - "$canon" <<'PY'
+import hashlib, os, re, sys
+p = sys.argv[1].rstrip("/") or "/"
+base = re.sub(r"[^A-Za-z0-9_.-]+", "-", os.path.basename(p)).strip("-") or "root"
+h = hashlib.sha256(p.encode("utf-8")).hexdigest()[:16]
+print("%s-%s" % (base, h))
+PY
+}
+
+update_path_dev_ino() {
+    python3 - "$1" <<'PY' 2>/dev/null
+import os, sys
+st = os.stat(sys.argv[1])
+print("%d:%d" % (st.st_dev, st.st_ino))
+PY
+}
+
+update_pid_alive() {
+    local pid="$1"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    if kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    if [[ -d "/proc/$pid" ]]; then
+        return 0
+    fi
+    ps -p "$pid" >/dev/null 2>&1
+}
+
+update_ensure_recovery_root() {
+    local root="$1"
+    mkdir -p "$root" || return 1
+    chmod 0700 "$root" || return 1
+    if [[ "$EUID" == "0" ]]; then
+        chown 0:0 "$root" 2>/dev/null || true
+    fi
+    return 0
+}
+
+update_acquire_lock() {
+    local root="$1" key="$2" owner_pid="$3" deploy_dir="$4"
+    update_ensure_recovery_root "$root" || return 1
+    local lock_dir="$root/${key}.lock"
+    if mkdir -m 0700 "$lock_dir" 2>/dev/null; then
+        printf '%s\n' "$owner_pid" >"$lock_dir/pid"
+        return 0
+    fi
+    local holder_pid="" i
+    for i in 1 2 3 4 5; do
+        if [[ -f "$lock_dir/pid" ]]; then
+            holder_pid=$(cat "$lock_dir/pid" 2>/dev/null | tr -d '[:space:]' || true)
+            [[ -n "$holder_pid" ]] && break
+        fi
+        sleep 0.05
+    done
+    if [[ -z "$holder_pid" ]] || update_pid_alive "$holder_pid"; then
+        echo "[update] lock: another update is already running for $deploy_dir (lock $lock_dir held by pid ${holder_pid:-starting})" >&2
+        return 1
+    fi
+    echo "[update] lock: removing stale lock $lock_dir from dead pid $holder_pid" >&2
+    rm -rf "$lock_dir"
+    if ! mkdir -m 0700 "$lock_dir" 2>/dev/null; then
+        echo "[update] lock: another update acquired $lock_dir concurrently for $deploy_dir" >&2
+        return 1
+    fi
+    printf '%s\n' "$owner_pid" >"$lock_dir/pid"
+    return 0
+}
+
+update_release_lock() {
+    local root="$1" key="$2" owner_pid="$3"
+    [[ -n "$root" && -n "$key" ]] || return 0
+    local lock_dir="$root/${key}.lock"
+    [[ -d "$lock_dir" ]] || return 0
+    local holder_pid=""
+    if [[ -f "$lock_dir/pid" ]]; then
+        holder_pid=$(cat "$lock_dir/pid" 2>/dev/null | tr -d '[:space:]' || true)
+    fi
+    if [[ -z "$holder_pid" || "$holder_pid" == "$owner_pid" ]]; then
+        rm -rf "$lock_dir"
+    fi
+    return 0
+}
+
+update_check_incomplete_marker() {
+    local root="$1" key="$2" deploy_dir="$3"
+    [[ -d "$root" ]] || return 0
+    local cur_canon cur_dev_ino
+    cur_canon=$(update_realpath "$deploy_dir")
+    cur_dev_ino=$(update_path_dev_ino "$cur_canon" || true)
+
+    local mfile m_path m_dev_ino m_snap ts stale_dest
+    shopt -s nullglob
+    local -a markers=( "$root"/*.incomplete )
+    shopt -u nullglob
+    for mfile in ${markers[@]+"${markers[@]}"}; do
+        [[ -f "$mfile" ]] || continue
+        m_path=$(sed -n 's/^deploy_path=//p' "$mfile" | head -n 1)
+        m_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$mfile" | head -n 1)
+        m_snap=$(sed -n 's/^snapshot_dir=//p' "$mfile" | head -n 1)
+        if [[ -z "$m_path" || ! -d "$m_path" ]]; then
+            echo "[update] recovery: stale incomplete-recovery marker $mfile for missing directory ${m_path:-<unknown>} (snapshot: ${m_snap:-none}; does not block)" >&2
+            continue
+        fi
+        local actual_dev_ino
+        actual_dev_ino=$(update_path_dev_ino "$m_path" || true)
+        if [[ -n "$m_dev_ino" && -n "$actual_dev_ino" && "$m_dev_ino" != "$actual_dev_ino" ]]; then
+            echo "[update] recovery: stale incomplete-recovery marker $mfile for replaced directory $m_path (recorded $m_dev_ino != current $actual_dev_ino; snapshot: ${m_snap:-none}; does not block)" >&2
+            if [[ "$mfile" == "$root/${key}.incomplete" ]]; then
+                ts=$(date -u +%Y%m%dT%H%M%SZ)
+                stale_dest="$root/${key}.cleared-${ts}-stale-$$"
+                if [[ -d "$root/$key" ]]; then
+                    mv -f "$root/$key" "$stale_dest"
+                    echo "[update] recovery: moved stale snapshot $root/$key to $stale_dest" >&2
+                fi
+                rm -f "$mfile"
+            fi
+            continue
+        fi
+    done
+
+    local own_marker="$root/${key}.incomplete"
+    if [[ -f "$own_marker" ]]; then
+        m_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$own_marker" | head -n 1)
+        m_snap=$(sed -n 's/^snapshot_dir=//p' "$own_marker" | head -n 1)
+        if [[ -z "$m_dev_ino" || "$m_dev_ino" == "$cur_dev_ino" ]]; then
+            echo "[update] REFUSED: incomplete recovery marker $own_marker blocks update of $cur_canon (snapshot: ${m_snap:-$root/$key}). Inspect the saved snapshot and manifest, verify the deployment, then run: bash scripts/update.sh --clear-recovery" >&2
+            return 1
+        fi
+    fi
+    return 0
+}
+
+update_write_incomplete_marker() {
+    local root="$1" key="$2" deploy_dir="$3" snap_dir="$4" reason="$5" stages_summary="$6"
+    update_ensure_recovery_root "$root" || return 1
+    local canon dev_ino ts marker_file
+    canon=$(update_realpath "$deploy_dir")
+    dev_ino=$(update_path_dev_ino "$canon" || true)
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    marker_file="$root/${key}.incomplete"
+    {
+        printf 'deploy_path=%s\n' "$canon"
+        printf 'deploy_dev_ino=%s\n' "$dev_ino"
+        printf 'snapshot_dir=%s\n' "$snap_dir"
+        printf 'manifest_path=%s/manifest.env\n' "$snap_dir"
+        printf 'failed_at=%s\n' "$ts"
+        printf 'failure_reason=%s\n' "$reason"
+        printf 'stages=%s\n' "$stages_summary"
+    } >"$marker_file"
+    chmod 0600 "$marker_file" 2>/dev/null || true
+    if [[ -d "$snap_dir" ]]; then
+        cp -p "$marker_file" "$snap_dir/incomplete" 2>/dev/null || true
+    fi
+    return 0
+}
+
+update_clear_recovery() {
+    local deploy_dir="$1" owner_pid="${2:-$$}"
+    local root key
+    root=$(update_recovery_root)
+    key=$(update_recovery_key "$deploy_dir")
+    update_acquire_lock "$root" "$key" "$owner_pid" "$deploy_dir" || return 1
+    local snap_dir="$root/$key"
+    local marker_file="$root/${key}.incomplete"
+    local ts cleared_dir=""
+    ts=$(date -u +%Y%m%dT%H%M%SZ)
+    if [[ -d "$snap_dir" ]]; then
+        cleared_dir="$root/${key}.cleared-${ts}"
+        [[ -e "$cleared_dir" ]] && cleared_dir="${cleared_dir}-$$"
+        mv -f "$snap_dir" "$cleared_dir" || {
+            update_release_lock "$root" "$key" "$owner_pid"
+            return 1
+        }
+        rm -f "$cleared_dir/incomplete"
+    fi
+    rm -f "$marker_file"
+    update_release_lock "$root" "$key" "$owner_pid"
+    if [[ -n "$cleared_dir" ]]; then
+        echo "[update] recovery: cleared incomplete-recovery marker for $deploy_dir; snapshot moved to $cleared_dir"
+    else
+        echo "[update] recovery: cleared incomplete-recovery marker for $deploy_dir (no snapshot directory present)"
+    fi
+    return 0
+}
+
+update_should_fail_at() {
+    local want="$1"
+    local spec="${GO_TRADER_UPDATE_FAIL_AT:-${UPDATE_FAIL_AFTER:-}}"
+    [[ -n "$spec" ]] || return 1
+    local tok
+    local IFS=','
+    for tok in $spec; do
+        if [[ "$tok" == "$want" ]]; then
+            if [[ -n "${GO_TRADER_UPDATE_FAIL_ONCE_DIR:-}" ]]; then
+                mkdir -p "$GO_TRADER_UPDATE_FAIL_ONCE_DIR"
+                if [[ -e "$GO_TRADER_UPDATE_FAIL_ONCE_DIR/$want" ]]; then
+                    return 1
+                fi
+                : >"$GO_TRADER_UPDATE_FAIL_ONCE_DIR/$want"
+            fi
+            return 0
+        fi
+    done
+    return 1
+}
+
+update_compute_tree_manifest() {
+    local root_dir="$1" out_file="$2"
+    python3 - "$root_dir" "$out_file" <<'PY'
+import hashlib, os, stat, sys
+root = os.path.abspath(sys.argv[1])
+out_path = sys.argv[2]
+rows = []
+for cur, dirs, files in os.walk(root, topdown=True, followlinks=False):
+    dirs.sort()
+    files.sort()
+    entries = sorted(set(dirs + files))
+    rel_cur = os.path.relpath(cur, root)
+    if rel_cur == ".":
+        rel_cur = ""
+    for name in entries:
+        full = os.path.join(cur, name)
+        rel = os.path.join(rel_cur, name) if rel_cur else name
+        st = os.lstat(full)
+        mode = stat.S_IMODE(st.st_mode)
+        if stat.S_ISLNK(st.st_mode):
+            rows.append("L\t%s\t%04o\t%d:%d\t%s" % (rel, mode, st.st_uid, st.st_gid, os.readlink(full)))
+        elif stat.S_ISDIR(st.st_mode):
+            rows.append("D\t%s\t%04o\t%d:%d\t-" % (rel, mode, st.st_uid, st.st_gid))
+        elif stat.S_ISREG(st.st_mode):
+            h = hashlib.sha256()
+            with open(full, "rb") as f:
+                while True:
+                    b = f.read(65536)
+                    if not b:
+                        break
+                    h.update(b)
+            rows.append("F\t%s\t%04o\t%d:%d\t%s" % (rel, mode, st.st_uid, st.st_gid, h.hexdigest()))
+with open(out_path, "w", encoding="utf-8") as f:
+    for r in rows:
+        f.write(r + "\n")
+PY
+}
+
+update_validate_venv_topology() {
+    local deploy_dir="$1"
+    local venv_path="${deploy_dir%/}/.venv"
+    if [[ -L "$venv_path" ]]; then
+        echo "[update] snapshot: $venv_path is a symlink ($(readlink "$venv_path")); refusing to mutate an external virtual environment" >&2
+        return 1
+    fi
+    if [[ -e "$venv_path" && ! -d "$venv_path" ]]; then
+        echo "[update] snapshot: $venv_path exists and is not a directory" >&2
+        return 1
+    fi
+    if [[ -d "$venv_path" ]]; then
+        python3 - "$venv_path" <<'PY' || return 1
+import os, stat, sys
+venv = os.path.realpath(sys.argv[1])
+for cur, dirs, files in os.walk(venv, topdown=True, followlinks=False):
+    for d in list(dirs):
+        full = os.path.join(cur, d)
+        st = os.lstat(full)
+        if stat.S_ISLNK(st.st_mode):
+            target = os.path.realpath(full)
+            if os.path.isdir(target) and target != venv and not target.startswith(venv.rstrip("/") + "/"):
+                sys.stderr.write("[update] snapshot: %s in .venv links to external directory %s; refusing unsafe venv topology\n" % (full, target))
+                sys.exit(1)
+PY
+    fi
+    return 0
+}
+
+update_check_snapshot_space() {
+    local deploy_dir="$1" recovery_root="$2"
+    python3 - "$deploy_dir" "$recovery_root" <<'PY'
+import os, stat, sys
+deploy = os.path.abspath(sys.argv[1])
+rec_root = os.path.abspath(sys.argv[2])
+skip_top = {".git", "logs", "robinhood-session", "node_modules"}
+total = 0
+for cur, dirs, files in os.walk(deploy, topdown=True, followlinks=False):
+    rel_cur = os.path.relpath(cur, deploy)
+    if rel_cur == ".":
+        dirs[:] = [d for d in dirs if d not in skip_top and d != "__pycache__"]
+    else:
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+    for name in files:
+        if name.endswith((".db", ".db-wal", ".db-shm", ".db.lock", ".db.manual-action.lock")):
+            continue
+        if name.startswith("trading_bot.db") or name.startswith("ohlcv_cache.sqlite3"):
+            continue
+        full = os.path.join(cur, name)
+        try:
+            st = os.lstat(full)
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+            total += st.st_size
+git_idx = os.path.join(deploy, ".git", "index")
+if os.path.exists(git_idx):
+    try:
+        total += os.lstat(git_idx).st_size
+    except OSError:
+        pass
+required = total + (total + 9) // 10
+if required < 4096:
+    required = 4096
+st_vfs = os.statvfs(rec_root)
+free = st_vfs.f_bavail * st_vfs.f_frsize
+fake_free = os.environ.get("GO_TRADER_UPDATE_FAKE_FREE_BYTES", "").strip()
+if fake_free:
+    free = int(fake_free)
+print("[update] snapshot: size=%dB required=%dB (size+10%%) free=%dB in %s" % (total, required, free, rec_root))
+if free < required:
+    sys.stderr.write("[update] snapshot: insufficient free space in %s (need %dB including 10%% margin, have %dB)\n" % (rec_root, required, free))
+    sys.exit(1)
+PY
+}
+
+update_verify_no_hardlinks_to_live() {
+    local live_dir="$1" snap_dir="$2"
+    python3 - "$live_dir" "$snap_dir" <<'PY'
+import os, stat, sys
+live = os.path.abspath(sys.argv[1])
+snap = os.path.abspath(sys.argv[2])
+live_inodes = set()
+for cur, dirs, files in os.walk(live, topdown=True, followlinks=False):
+    for name in files:
+        try:
+            st = os.lstat(os.path.join(cur, name))
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode):
+            live_inodes.add((st.st_dev, st.st_ino))
+for cur, dirs, files in os.walk(snap, topdown=True, followlinks=False):
+    for name in files:
+        full = os.path.join(cur, name)
+        st = os.lstat(full)
+        if stat.S_ISREG(st.st_mode) and (st.st_dev, st.st_ino) in live_inodes:
+            sys.stderr.write("[update] snapshot: %s shares inode with live deployment file\n" % full)
+            sys.exit(1)
+PY
+}
+
+update_take_snapshot() {
+    local deploy_dir="$1" snap_dir="$2" unit_source="$3" unit_installed="$4" egress_dep="$5"
+    update_managed_rsync_excludes "$deploy_dir" || return 1
+    update_validate_venv_topology "$deploy_dir" || return 1
+    local rec_root
+    rec_root=$(dirname "$snap_dir")
+    update_ensure_recovery_root "$rec_root" || return 1
+    if update_should_fail_at snapshot_space; then
+        echo "[update] snapshot: forced snapshot_space failure" >&2
+        return 1
+    fi
+    update_check_snapshot_space "$deploy_dir" "$rec_root" || return 1
+
+    rm -rf "$snap_dir"
+    mkdir -p "$snap_dir/managed" "$snap_dir/binaries" "$snap_dir/git" "$snap_dir/external" || return 1
+    chmod 0700 "$snap_dir" || return 1
+
+    local -a snap_rsync_flags=(-a --delete)
+    if [[ "$EUID" == "0" ]]; then
+        snap_rsync_flags+=(--numeric-ids)
+    fi
+    rsync "${snap_rsync_flags[@]}" "${UPDATE_MANAGED_EXCLUDES[@]}" "$deploy_dir/" "$snap_dir/managed/" || return 1
+    update_compute_tree_manifest "$snap_dir/managed" "$snap_dir/managed.manifest" || return 1
+
+    local had_go_trader=0 had_go_trader_prev=0
+    if [[ -e "$deploy_dir/go-trader" || -L "$deploy_dir/go-trader" ]]; then
+        had_go_trader=1
+        cp -pP "$deploy_dir/go-trader" "$snap_dir/binaries/go-trader" || return 1
+    fi
+    if [[ -e "$deploy_dir/go-trader.prev" || -L "$deploy_dir/go-trader.prev" ]]; then
+        had_go_trader_prev=1
+        cp -pP "$deploy_dir/go-trader.prev" "$snap_dir/binaries/go-trader.prev" || return 1
+    fi
+
+    local had_venv=0 venv_exec=""
+    if [[ -d "$deploy_dir/.venv" ]]; then
+        had_venv=1
+        mkdir -p "$snap_dir/venv" || return 1
+        rsync "${snap_rsync_flags[@]}" "$deploy_dir/.venv/" "$snap_dir/venv/" || return 1
+        update_compute_tree_manifest "$snap_dir/venv" "$snap_dir/venv.manifest" || return 1
+        if [[ -x "$deploy_dir/.venv/bin/python3" ]]; then
+            venv_exec=$("$deploy_dir/.venv/bin/python3" -c 'import sys; print(sys.version.split()[0])' 2>/dev/null || true)
+            printf '%s\n' "$venv_exec" >"$snap_dir/venv.exec"
+        fi
+    fi
+
+    update_verify_no_hardlinks_to_live "$deploy_dir" "$snap_dir" || return 1
+
+    local git_head_sha="" git_head_ref="" git_head_symbolic=0 had_git_index=0 git_index_path="" git_head_path=""
+    if update_git_top "$deploy_dir" >/dev/null 2>&1; then
+        git_head_sha=$(update_git "$deploy_dir" rev-parse HEAD 2>/dev/null || echo "")
+        git_head_ref=$(update_git "$deploy_dir" symbolic-ref -q HEAD 2>/dev/null || echo "")
+        [[ -n "$git_head_ref" ]] && git_head_symbolic=1
+        git_head_path=$(update_git "$deploy_dir" rev-parse --git-path HEAD 2>/dev/null || echo "")
+        if [[ -n "$git_head_path" && "$git_head_path" != /* ]]; then
+            git_head_path="$deploy_dir/$git_head_path"
+        fi
+        if [[ -n "$git_head_path" && -f "$git_head_path" ]]; then
+            cp -p "$git_head_path" "$snap_dir/git/HEAD" || return 1
+        fi
+        git_index_path=$(update_git "$deploy_dir" rev-parse --git-path index 2>/dev/null || echo "")
+        if [[ -n "$git_index_path" && "$git_index_path" != /* ]]; then
+            git_index_path="$deploy_dir/$git_index_path"
+        fi
+        if [[ -n "$git_index_path" && -f "$git_index_path" ]]; then
+            had_git_index=1
+            cp -p "$git_index_path" "$snap_dir/git/index" || return 1
+        fi
+    fi
+
+    local had_unit_file=0 had_unit_prev=0
+    if [[ -n "$unit_installed" ]]; then
+        if [[ -e "$unit_installed" || -L "$unit_installed" ]]; then
+            had_unit_file=1
+            cp -pP "$unit_installed" "$snap_dir/external/unit.service" || return 1
+        fi
+        if [[ -e "${unit_installed}.prev" || -L "${unit_installed}.prev" ]]; then
+            had_unit_prev=1
+            cp -pP "${unit_installed}.prev" "$snap_dir/external/unit.service.prev" || return 1
+        fi
+    fi
+
+    local journal_ns="" journal_conf_dest="" had_journal_conf=0 had_journal_conf_prev=0
+    if [[ -n "$unit_source" ]]; then
+        journal_ns=$(update_unit_log_namespace "$unit_source")
+        if [[ -n "$journal_ns" && "$journal_ns" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            local journal_etc="${UPDATE_JOURNALD_ETC_DIR:-/etc/systemd}"
+            journal_conf_dest=$(update_journald_conf_path "$journal_etc" "$journal_ns")
+            if [[ -e "$journal_conf_dest" || -L "$journal_conf_dest" ]]; then
+                had_journal_conf=1
+                cp -pP "$journal_conf_dest" "$snap_dir/external/journald.conf" || return 1
+            fi
+            if [[ -e "${journal_conf_dest}.prev" || -L "${journal_conf_dest}.prev" ]]; then
+                had_journal_conf_prev=1
+                cp -pP "${journal_conf_dest}.prev" "$snap_dir/external/journald.conf.prev" || return 1
+            fi
+        fi
+    fi
+
+    local egress_cur="" had_egress_controller=0 had_egress_controller_prev=0
+    if [[ -n "$egress_dep" ]]; then
+        egress_cur=$(update_egress_controller_path "$egress_dep")
+        if [[ -f "$egress_cur" ]]; then
+            had_egress_controller=1
+            cp -p "$egress_cur" "$snap_dir/external/egress-controller" || return 1
+        fi
+        if [[ -f "${egress_cur}.prev" ]]; then
+            had_egress_controller_prev=1
+            cp -p "${egress_cur}.prev" "$snap_dir/external/egress-controller.prev" || return 1
+        fi
+    fi
+
+    local cfg_status_port=""
+    cfg_status_port=$(python3 - "$deploy_dir/scheduler/config.json" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+    p = cfg.get("status_port") or 0
+    if isinstance(p, (int, float)) and int(p) > 0:
+        print(int(p))
+except Exception:
+    pass
+PY
+    )
+    cfg_status_port="${cfg_status_port:-8099}"
+
+    if update_should_fail_at snapshot_copy; then
+        echo "[update] snapshot: forced snapshot_copy failure" >&2
+        return 1
+    fi
+
+    {
+        printf 'had_go_trader=%q\n' "$had_go_trader"
+        printf 'had_go_trader_prev=%q\n' "$had_go_trader_prev"
+        printf 'had_venv=%q\n' "$had_venv"
+        printf 'git_head_sha=%q\n' "$git_head_sha"
+        printf 'git_head_ref=%q\n' "$git_head_ref"
+        printf 'git_head_symbolic=%q\n' "$git_head_symbolic"
+        printf 'had_git_index=%q\n' "$had_git_index"
+        printf 'git_index_path=%q\n' "$git_index_path"
+        printf 'unit_installed=%q\n' "$unit_installed"
+        printf 'had_unit_file=%q\n' "$had_unit_file"
+        printf 'had_unit_prev=%q\n' "$had_unit_prev"
+        printf 'journal_ns=%q\n' "$journal_ns"
+        printf 'journal_conf_dest=%q\n' "$journal_conf_dest"
+        printf 'had_journal_conf=%q\n' "$had_journal_conf"
+        printf 'had_journal_conf_prev=%q\n' "$had_journal_conf_prev"
+        printf 'egress_dep=%q\n' "$egress_dep"
+        printf 'egress_cur=%q\n' "$egress_cur"
+        printf 'had_egress_controller=%q\n' "$had_egress_controller"
+        printf 'had_egress_controller_prev=%q\n' "$had_egress_controller_prev"
+        printf 'cfg_status_port=%q\n' "$cfg_status_port"
+    } >"$snap_dir/manifest.env"
+    : >"$snap_dir/COMPLETE"
+    return 0
+}
+
+update_restore_snapshot_files() {
+    local deploy_dir="$1" snap_dir="$2" is_rsync_mode="$3"
+    [[ -f "$snap_dir/COMPLETE" && -f "$snap_dir/manifest.env" ]] || return 1
+    if update_should_fail_at restore_files; then
+        echo "[update] recovery: forced restore_files failure" >&2
+        return 1
+    fi
+    update_managed_rsync_excludes "$deploy_dir" || return 1
+    source "$snap_dir/manifest.env"
+    local -a restore_rsync_flags=(-a --delete)
+    if [[ "$EUID" == "0" ]]; then
+        restore_rsync_flags+=(--numeric-ids)
+    fi
+    rsync "${restore_rsync_flags[@]}" "${UPDATE_MANAGED_EXCLUDES[@]}" "$snap_dir/managed/" "$deploy_dir/" || return 1
+
+    if [[ "$is_rsync_mode" != "1" && -n "$git_head_sha" ]]; then
+        if [[ "$git_head_symbolic" == "1" && -n "$git_head_ref" ]]; then
+            update_git "$deploy_dir" symbolic-ref HEAD "$git_head_ref" || return 1
+            update_git "$deploy_dir" update-ref "$git_head_ref" "$git_head_sha" || return 1
+        else
+            update_git "$deploy_dir" update-ref --no-deref HEAD "$git_head_sha" || return 1
+        fi
+        if [[ -n "$git_index_path" ]]; then
+            if [[ "$had_git_index" == "1" && -f "$snap_dir/git/index" ]]; then
+                cp -p "$snap_dir/git/index" "$git_index_path" || return 1
+            else
+                rm -f "$git_index_path"
+            fi
+        fi
+        local cur_sha
+        cur_sha=$(update_git "$deploy_dir" rev-parse HEAD 2>/dev/null || echo "")
+        [[ "$cur_sha" == "$git_head_sha" ]] || return 1
+        if [[ "$had_git_index" == "1" && -n "$git_index_path" ]]; then
+            [[ "$(update_file_fingerprint "$git_index_path")" == "$(update_file_fingerprint "$snap_dir/git/index")" ]] || return 1
+        fi
+    elif [[ "$is_rsync_mode" == "1" && -n "$git_head_sha" ]]; then
+        local cur_sha
+        cur_sha=$(update_git "$deploy_dir" rev-parse HEAD 2>/dev/null || echo "")
+        [[ "$cur_sha" == "$git_head_sha" ]] || return 1
+    fi
+    return 0
+}
+
+update_restore_snapshot_venv() {
+    local deploy_dir="$1" snap_dir="$2"
+    [[ -f "$snap_dir/COMPLETE" && -f "$snap_dir/manifest.env" ]] || return 1
+    if update_should_fail_at restore_venv; then
+        echo "[update] recovery: forced restore_venv failure" >&2
+        return 1
+    fi
+    source "$snap_dir/manifest.env"
+    rm -rf "$deploy_dir/.venv.restore-new" "$deploy_dir/.venv.restore-old"
+    if [[ "$had_venv" == "1" ]]; then
+        mkdir -p "$deploy_dir/.venv.restore-new" || return 1
+        local -a venv_rsync_flags=(-a --delete)
+        if [[ "$EUID" == "0" ]]; then
+            venv_rsync_flags+=(--numeric-ids)
+        fi
+        if ! rsync "${venv_rsync_flags[@]}" "$snap_dir/venv/" "$deploy_dir/.venv.restore-new/"; then
+            rm -rf "$deploy_dir/.venv.restore-new"
+            return 1
+        fi
+        if [[ -e "$deploy_dir/.venv" || -L "$deploy_dir/.venv" ]]; then
+            mv -f "$deploy_dir/.venv" "$deploy_dir/.venv.restore-old" || {
+                rm -rf "$deploy_dir/.venv.restore-new"
+                return 1
+            }
+        fi
+        if ! mv -f "$deploy_dir/.venv.restore-new" "$deploy_dir/.venv"; then
+            if [[ -e "$deploy_dir/.venv.restore-old" || -L "$deploy_dir/.venv.restore-old" ]]; then
+                mv -f "$deploy_dir/.venv.restore-old" "$deploy_dir/.venv" 2>/dev/null || true
+            fi
+            return 1
+        fi
+        rm -rf "$deploy_dir/.venv.restore-old"
+        local post_manifest="$snap_dir/venv.post.manifest"
+        update_compute_tree_manifest "$deploy_dir/.venv" "$post_manifest" || return 1
+        cmp -s "$snap_dir/venv.manifest" "$post_manifest" || return 1
+        if [[ -f "$snap_dir/venv.exec" && -s "$snap_dir/venv.exec" ]]; then
+            local want_ver got_ver
+            want_ver=$(cat "$snap_dir/venv.exec")
+            got_ver=$("$deploy_dir/.venv/bin/python3" -c 'import sys; print(sys.version.split()[0])' 2>/dev/null || true)
+            [[ "$got_ver" == "$want_ver" ]] || return 1
+        fi
+    else
+        rm -rf "$deploy_dir/.venv"
+        [[ ! -e "$deploy_dir/.venv" && ! -L "$deploy_dir/.venv" ]] || return 1
+    fi
+    return 0
+}
+
+update_restore_snapshot_binaries() {
+    local deploy_dir="$1" snap_dir="$2"
+    [[ -f "$snap_dir/COMPLETE" && -f "$snap_dir/manifest.env" ]] || return 1
+    if update_should_fail_at restore_binaries; then
+        echo "[update] recovery: forced restore_binaries failure" >&2
+        return 1
+    fi
+    source "$snap_dir/manifest.env"
+    rm -f "$deploy_dir/go-trader.new" "$deploy_dir/go-trader.restore-tmp" "$deploy_dir/go-trader.prev.restore-tmp"
+    if [[ "$had_go_trader" == "1" ]]; then
+        cp -pP "$snap_dir/binaries/go-trader" "$deploy_dir/go-trader.restore-tmp" || return 1
+        mv -f "$deploy_dir/go-trader.restore-tmp" "$deploy_dir/go-trader" || return 1
+        [[ "$(update_file_fingerprint "$deploy_dir/go-trader")" == "$(update_file_fingerprint "$snap_dir/binaries/go-trader")" ]] || return 1
+    else
+        rm -f "$deploy_dir/go-trader"
+        [[ ! -e "$deploy_dir/go-trader" && ! -L "$deploy_dir/go-trader" ]] || return 1
+    fi
+    if [[ "$had_go_trader_prev" == "1" ]]; then
+        cp -pP "$snap_dir/binaries/go-trader.prev" "$deploy_dir/go-trader.prev.restore-tmp" || return 1
+        mv -f "$deploy_dir/go-trader.prev.restore-tmp" "$deploy_dir/go-trader.prev" || return 1
+        [[ "$(update_file_fingerprint "$deploy_dir/go-trader.prev")" == "$(update_file_fingerprint "$snap_dir/binaries/go-trader.prev")" ]] || return 1
+    else
+        rm -f "$deploy_dir/go-trader.prev"
+        [[ ! -e "$deploy_dir/go-trader.prev" && ! -L "$deploy_dir/go-trader.prev" ]] || return 1
+    fi
+    return 0
+}
+
+update_restore_snapshot_external() {
+    local snap_dir="$1" unit_mut="$2" unit_rel="$3" journal_mut="$4" egress_mut="$5" egress_state_file="$6"
+    [[ -f "$snap_dir/COMPLETE" && -f "$snap_dir/manifest.env" ]] || return 1
+    if update_should_fail_at restore_external; then
+        echo "[update] recovery: forced restore_external failure" >&2
+        return 1
+    fi
+    source "$snap_dir/manifest.env"
+    local ext_ok=1
+
+    if [[ "$unit_mut" == "1" && -n "$unit_installed" ]]; then
+        if [[ "$had_unit_file" == "1" ]]; then
+            if ! update_unit_sudo cp -pP "$snap_dir/external/unit.service" "$unit_installed"; then
+                echo "[update] recovery: could not restore unit file $unit_installed" >&2
+                ext_ok=0
+            fi
+        else
+            update_unit_sudo rm -f "$unit_installed" || ext_ok=0
+        fi
+        if [[ "$had_unit_prev" == "1" ]]; then
+            update_unit_sudo cp -pP "$snap_dir/external/unit.service.prev" "${unit_installed}.prev" || ext_ok=0
+        else
+            update_unit_sudo rm -f "${unit_installed}.prev" || true
+        fi
+    fi
+    if [[ "$unit_mut" == "1" || "$unit_rel" == "1" ]]; then
+        if ! sudo systemctl daemon-reload; then
+            echo "[update] recovery: systemctl daemon-reload failed after unit restore" >&2
+            ext_ok=0
+        fi
+    fi
+
+    if [[ "$journal_mut" == "1" && -n "$journal_conf_dest" ]]; then
+        if [[ "$had_journal_conf" == "1" ]]; then
+            if ! update_unit_sudo cp -pP "$snap_dir/external/journald.conf" "$journal_conf_dest"; then
+                echo "[update] recovery: could not restore journald config $journal_conf_dest" >&2
+                ext_ok=0
+            fi
+        else
+            update_unit_sudo rm -f "$journal_conf_dest" || ext_ok=0
+        fi
+        if [[ "$had_journal_conf_prev" == "1" ]]; then
+            update_unit_sudo cp -pP "$snap_dir/external/journald.conf.prev" "${journal_conf_dest}.prev" || ext_ok=0
+        else
+            update_unit_sudo rm -f "${journal_conf_dest}.prev" || true
+        fi
+        if [[ -n "$journal_ns" ]]; then
+            if ! update_unit_sudo systemctl try-restart "systemd-journald@${journal_ns}.service"; then
+                echo "[update] recovery: systemd-journald@${journal_ns}.service try-restart failed" >&2
+                ext_ok=0
+            fi
+        fi
+    fi
+
+    if [[ "$egress_mut" == "1" && -n "$egress_dep" ]]; then
+        local need_ctrl_restart=1
+        if [[ -n "$egress_state_file" && -f "$egress_state_file" ]]; then
+            local restarted=""
+            restarted=$(sed -n 's/^restarted=//p' "$egress_state_file" | head -n 1)
+            [[ "$restarted" == "0" ]] && need_ctrl_restart=0
+        fi
+        local snap_ctrl="" snap_ctrl_prev=""
+        [[ "$had_egress_controller" == "1" ]] && snap_ctrl="$snap_dir/external/egress-controller"
+        [[ "$had_egress_controller_prev" == "1" ]] && snap_ctrl_prev="$snap_dir/external/egress-controller.prev"
+        if ! update_egress_restore_controller "$egress_dep" "$snap_ctrl" "$snap_ctrl_prev" "$need_ctrl_restart"; then
+            echo "[update] recovery: could not restore egress controller for $egress_dep" >&2
+            ext_ok=0
+        fi
+    fi
+
+    [[ "$ext_ok" == "1" ]]
 }

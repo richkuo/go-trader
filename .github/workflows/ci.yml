@@ -381,6 +381,26 @@ jobs:
             --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='refuse plan confirm apply latch conflict resume signal fold newtarget' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
+  shell-suites-migrate-4:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - name: Build
+        run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
+
+      - name: Service layout migration fixture (root, systemd)
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'OK: migrate-service-layout fixture passed (update_recovery)' \
+            --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='update_recovery' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
+
   python-collect:
     runs-on: ubuntu-latest
     steps:

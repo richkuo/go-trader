@@ -411,13 +411,14 @@ the state DB; never blocks or alters a close.
 
 ## Build & Deploy
 
-Canonical path: `scripts/update.sh` — `git pull --ff-only` → `uv sync --no-dev` → version-stamped `go build` → atomic binary swap → optional restart with `/health` verify and rollback on failure. Startup probe refuses Go/Python version mismatch — prefer the script over hand-rolled rebuilds.
+Canonical path: `scripts/update.sh` — pre-update snapshot → `git pull --ff-only` (or `--rsync-from`, which keeps the deployment `.git` frozen) → `uv sync --no-dev` → version-stamped `go build` → pre-swap `probe` → atomic binary swap → optional restart with `/health` verify and full snapshot recovery (code, git HEAD and index, `.venv`, binary, unit, journal, and egress controller, followed by an owner `probe` and `/health` check) on failure at any phase. Startup `probe` checks script CLI argument compatibility only and does not detect a Go/Python release mismatch — always deploy with `scripts/update.sh` rather than hand-rolled rebuilds.
 
 ```bash
 sudo bash scripts/update.sh --restart                              # systemd (default)
 bash scripts/update.sh --restart --restart-mode signal             # bare-process (pidfile + run.sh)
 bash scripts/update.sh --rsync-from /path/to/staged-build --restart
 bash scripts/update.sh --all --restart                             # batch all instances
+sudo bash scripts/update.sh --clear-recovery                       # clear an incomplete-recovery marker after inspection
 ```
 
 When your own account owns the deployment tree, run `bash scripts/update.sh --restart` without `sudo`; the script calls `sudo` itself only for the systemd steps. As root, the update refuses a tree whose owning account runs any unit without the `go-trader@.service` sandbox (SKILL.md § Auto-Update, "Root on a tree another account owns").

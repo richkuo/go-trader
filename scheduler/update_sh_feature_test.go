@@ -6,8 +6,22 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
+
+type updateDMRecorder struct {
+	dms []string
+}
+
+func (r *updateDMRecorder) SendMessage(string, string) error { return nil }
+func (r *updateDMRecorder) SendDM(_ string, content string) error {
+	r.dms = append(r.dms, content)
+	return nil
+}
+func (r *updateDMRecorder) AskDM(string, string, time.Duration) (string, error) { return "", nil }
+func (r *updateDMRecorder) Close()                                              {}
 
 func updateShellScriptPath(t *testing.T) string {
 	t.Helper()
@@ -379,5 +393,230 @@ func TestUpdateShellJournalSyncFailureLeavesBinaryUnswapped(t *testing.T) {
 		if _, statErr := os.Stat(filepath.Join(deploy, leftover)); !os.IsNotExist(statErr) {
 			t.Fatalf("%s must not exist after a journal-phase failure (stat err: %v)\n%s", leftover, statErr, text)
 		}
+	}
+}
+
+func TestApplyUpgradeTimeoutSendsSIGTERMAndRecoversWithoutOrphans(t *testing.T) {
+	bash := updateShellBash(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skipf("rsync not available: %v", err)
+	}
+	scriptsDir := filepath.Dir(updateShellScriptPath(t))
+	parent := t.TempDir()
+	origin := filepath.Join(parent, "origin.git")
+	deploy := filepath.Join(parent, "deploy")
+	recRoot := filepath.Join(parent, "recovery")
+	gitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+	)
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init", "--bare", "-b", "main", origin)
+	runGit("clone", origin, deploy)
+	for _, name := range []string{"update.sh", "update_helpers.sh"} {
+		body, err := os.ReadFile(filepath.Join(scriptsDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(deploy, "scripts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(deploy, "scripts", name), body, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(deploy, "scheduler"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploy, "README.md"), []byte("baseline\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploy, ".gitignore"), []byte("go-trader\ngo-trader.*\nscheduler/config.json\n.venv/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("-C", deploy, "add", ".")
+	runGit("-C", deploy, "commit", "-m", "v1")
+	runGit("-C", deploy, "push", "-u", "origin", "HEAD:main")
+
+	work := filepath.Join(parent, "work")
+	runGit("clone", origin, work)
+	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("updated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("-C", work, "add", ".")
+	runGit("-C", work, "commit", "-m", "v2")
+	runGit("-C", work, "push", "origin", "HEAD:main")
+
+	if err := os.WriteFile(filepath.Join(deploy, "scheduler", "config.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploy, "go-trader"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	uvPidFile := filepath.Join(parent, "uv.pid")
+	uvStub := "#!/usr/bin/env bash\n" +
+		"if [[ \"$1\" == \"--version\" ]]; then echo 'uv 0.0.0'; exit 0; fi\n" +
+		"echo $$ > " + uvPidFile + "\n" +
+		"mkdir -p .venv/bin\n" +
+		"echo mutated > .venv/mutated.txt\n" +
+		"sleep 30 &\n" +
+		"spid=$!\n" +
+		"trap 'kill -TERM $spid 2>/dev/null || true; exit 143' TERM\n" +
+		"wait $spid\n"
+	if err := os.WriteFile(filepath.Join(binDir, "uv"), []byte(uvStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "go"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bashDir := filepath.Dir(bash)
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(deploy); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(origWD) }()
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+bashDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GO_TRADER_UPDATE_RECOVERY_DIR", recRoot)
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	origTimeout := applyUpgradeTimeout
+	applyUpgradeTimeout = 3 * time.Second
+	defer func() { applyUpgradeTimeout = origTimeout }()
+
+	rec := &updateDMRecorder{}
+	mn := NewMultiNotifier(notifierBackend{notifier: rec, ownerID: "owner-1"})
+	var mu sync.RWMutex
+	applyUpgrade(mn, &mu, nil, nil, nil)
+
+	if len(rec.dms) < 2 {
+		t.Fatalf("expected Starting upgrade and failure DMs, got %v", rec.dms)
+	}
+	lastDM := rec.dms[len(rec.dms)-1]
+	for _, want := range []string{"**update.sh failed**", "interrupted by SIGTERM", "recovery: complete"} {
+		if !strings.Contains(lastDM, want) {
+			t.Fatalf("expected DM to contain %q, got:\n%s", want, lastDM)
+		}
+	}
+	readme, err := os.ReadFile(filepath.Join(deploy, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(readme) != "baseline\n" {
+		t.Fatalf("expected README.md restored to baseline, got %q", string(readme))
+	}
+	if _, statErr := os.Stat(filepath.Join(deploy, ".venv")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected .venv absence restored, stat err=%v", statErr)
+	}
+	if pidBytes, err := os.ReadFile(uvPidFile); err == nil {
+		pidStr := strings.TrimSpace(string(pidBytes))
+		if exec.Command("kill", "-0", pidStr).Run() == nil {
+			t.Fatalf("uv child pid %s is still alive after applyUpgrade timeout recovery", pidStr)
+		}
+	}
+}
+
+func TestUpdateShellGitModeRefusesMissingRsyncBeforeWrite(t *testing.T) {
+	t.Parallel()
+	bash := updateShellBash(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	scriptsDir := filepath.Dir(updateShellScriptPath(t))
+	parent := t.TempDir()
+	origin := filepath.Join(parent, "origin.git")
+	deploy := filepath.Join(parent, "deploy")
+	gitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+	)
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init", "--bare", "-b", "main", origin)
+	runGit("clone", origin, deploy)
+	for _, name := range []string{"update.sh", "update_helpers.sh"} {
+		body, err := os.ReadFile(filepath.Join(scriptsDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(deploy, "scripts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(deploy, "scripts", name), body, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(deploy, "scheduler"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploy, "README.md"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("-C", deploy, "add", ".")
+	runGit("-C", deploy, "commit", "-m", "v1")
+	runGit("-C", deploy, "push", "-u", "origin", "HEAD:main")
+	if err := os.WriteFile(filepath.Join(deploy, "scheduler", "config.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	for _, tool := range []string{"git", "python3", "tr", "dirname", "basename", "id", "stat", "mktemp", "rm", "mkdir"} {
+		src, err := exec.LookPath(tool)
+		if err != nil {
+			t.Skipf("required tool %q not found: %v", tool, err)
+		}
+		if err := os.Symlink(src, filepath.Join(binDir, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, stub := range []string{"uv", "go"} {
+		if err := os.WriteFile(filepath.Join(binDir, stub), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cmd := exec.Command(bash, filepath.Join(deploy, "scripts", "update.sh"))
+	cmd.Dir = deploy
+	cmd.Env = []string{
+		"PATH=" + binDir,
+		"HOME=" + t.TempDir(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+	}
+	out, err := cmd.CombinedOutput()
+	text := string(out)
+	if err == nil {
+		t.Fatalf("expected non-zero exit when rsync is missing in git mode\n%s", text)
+	}
+	if !strings.Contains(text, "rsync preflight failed") {
+		t.Fatalf("expected rsync preflight failure message, got:\n%s", text)
+	}
+	if strings.Contains(text, "phase: pull") {
+		t.Fatalf("must refuse before pull phase when rsync is missing\n%s", text)
 	}
 }

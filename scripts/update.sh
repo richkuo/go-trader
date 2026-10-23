@@ -19,6 +19,7 @@ restart_mode="$(trim_space "${RESTART_MODE:-systemd}")"
 restart_mode=$(printf '%s' "$restart_mode" | tr '[:upper:]' '[:lower:]')
 restart_uses_signal=0
 update_all=0
+clear_recovery=0
 service_unit="$(trim_space "${GO_TRADER_SERVICE:-}")"
 if [[ -z "$service_unit" ]]; then
     service_unit="go-trader"
@@ -42,6 +43,32 @@ build_export_commit=""
 egress_deployment=""
 egress_staged=""
 egress_switched=0
+main_shell_pid="$BASHPID"
+coordinator_active=0
+coordinator_done=0
+update_succeeded=0
+mutation_started=0
+snapshot_ready=0
+recovery_root=""
+recovery_key=""
+recovery_dir=""
+update_lock_held=0
+failure_reason=""
+caught_signal=""
+pre_pull_sha=""
+prev_main_pid=""
+prev_pid_was_alive=0
+prev_running_version=""
+pre_update_status_port=""
+active_child_pid=""
+all_child_pid=""
+swap_stage="none"
+unit_mutated=0
+unit_reloaded=0
+journal_mutated=0
+egress_controller_mutated=0
+egress_state_file=""
+restart_attempted=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -109,13 +136,20 @@ while [[ $# -gt 0 ]]; do
             service_unit="$unit_arg"
             shift
             ;;
+        --clear-recovery)
+            clear_recovery=1
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [--restart] [--restart-mode systemd|signal] [--unit <systemd-unit>]"
             echo "       $0 [--restart] [--service <systemd-unit>]"
             echo "       $0 [--rsync-from <source-dir>] [--restart] ..."
             echo "       $0 --all [--restart] [--restart-mode systemd|signal] [--update-all-root <dir>] [...]"
+            echo "       $0 --clear-recovery"
             echo "  --rsync-from <dir>  rsync code from a source clone into this deployment (skips git pull;"
             echo "                      hardcoded exclusions protect .env, config, state DB, venv, binaries)."
+            echo "  --clear-recovery    move an incomplete recovery snapshot aside to <key>.cleared-<UTC> and"
+            echo "                      remove the incomplete-recovery marker blocking updates of this tree."
             echo "  --all               update+restart every deployment. Batch = union of ACTIVE go-trader"
             echo "                      systemd units' WorkingDirectory (layout-independent), ENABLED units whose"
             echo "                      --config sets role=feed, and the <root>/go-trader-*/ glob. A stopped or"
@@ -180,6 +214,11 @@ if [[ -n "$rsync_from" && ( "$rsync_from" == --* || ! -d "$rsync_from" ) ]]; the
     exit 2
 fi
 
+if [[ "$clear_recovery" == "1" && ( "$update_all" == "1" || "$restart" == "1" || -n "$rsync_from" ) ]]; then
+    echo "--clear-recovery cannot be combined with --all, --restart, or --rsync-from" >&2
+    exit 2
+fi
+
 active_timeout="${ACTIVE_TIMEOUT:-30}"
 health_timeout="${HEALTH_TIMEOUT:-60}"
 signal_log_out="${GO_TRADER_SIGNAL_LOG:-./go-trader-signal.log}"
@@ -196,8 +235,69 @@ end_phase() {
     echo "[update] phase: $phase_name done (${elapsed}s)"
 }
 fail() {
-    echo "[update] FAIL phase=$phase_name: $*" >&2
+    local msg="$*"
+    echo "[update] FAIL phase=$phase_name: $msg" >&2
+    if [[ "$BASHPID" == "$main_shell_pid" ]]; then
+        failure_reason="phase=$phase_name: $msg"
+    elif [[ -n "$recovery_dir" && -d "$recovery_dir" ]]; then
+        printf 'phase=%s: %s\n' "$phase_name" "$msg" >"$recovery_dir/subshell_failure_reason" 2>/dev/null || true
+    fi
     exit 1
+}
+
+run_tracked_child() {
+    "$@" &
+    active_child_pid=$!
+    local rc=0
+    wait "$active_child_pid" || rc=$?
+    active_child_pid=""
+    return "$rc"
+}
+
+stop_update_children() {
+    if [[ -n "$active_child_pid" ]] && kill -0 "$active_child_pid" 2>/dev/null; then
+        if command -v pgrep >/dev/null 2>&1; then
+            local gpid
+            while IFS= read -r gpid; do
+                [[ -n "$gpid" ]] || continue
+                kill -TERM "$gpid" 2>/dev/null || true
+            done < <(pgrep -P "$active_child_pid" 2>/dev/null || true)
+        fi
+        kill -TERM "$active_child_pid" 2>/dev/null || true
+        wait "$active_child_pid" 2>/dev/null || true
+    fi
+    active_child_pid=""
+    if command -v pgrep >/dev/null 2>&1; then
+        local cpid
+        while IFS= read -r cpid; do
+            [[ -n "$cpid" ]] || continue
+            kill -TERM "$cpid" 2>/dev/null || true
+        done < <(pgrep -P "$main_shell_pid" 2>/dev/null || true)
+    fi
+}
+
+update_pause_if_requested() {
+    local want="$1"
+    local spec="${GO_TRADER_UPDATE_PAUSE_AT:-}"
+    [[ -n "$spec" ]] || return 0
+    local stage="${spec%%:*}"
+    local sentinel="${spec#*:}"
+    [[ "$stage" == "$want" && -n "$sentinel" ]] || return 0
+    printf '%s\n' "$main_shell_pid" >"${sentinel}.reached"
+    while [[ ! -e "$sentinel" ]]; do
+        sleep 0.1 &
+        active_child_pid=$!
+        wait "$active_child_pid" 2>/dev/null || true
+        active_child_pid=""
+    done
+}
+
+update_record_intent() {
+    local stage="$1"
+    mutation_started=1
+    if [[ -n "$recovery_dir" && -d "$recovery_dir" ]]; then
+        printf '%s\n' "$stage" >>"$recovery_dir/intents.log" 2>/dev/null || true
+    fi
 }
 
 signal_read_pidfile() {
@@ -257,6 +357,21 @@ signal_launch_wrapper() {
     sleep 1
 }
 
+signal_launch_wrapper_nonfatal() {
+    local run_sh="$1"
+    if [[ ! -f "$run_sh" ]]; then
+        echo "[update] recovery: GO_TRADER_RUN_SH ($run_sh) does not exist" >&2
+        return 1
+    fi
+    if [[ ! -x "$run_sh" ]]; then
+        echo "[update] recovery: GO_TRADER_RUN_SH ($run_sh) is not executable" >&2
+        return 1
+    fi
+    setsid nohup bash "$run_sh" >>"$signal_log_out" 2>&1 &
+    sleep 1
+    return 0
+}
+
 restart_uses_signal_pid() {
     [[ "$restart_mode" == "signal" || "$restart_uses_signal" == 1 ]]
 }
@@ -314,9 +429,8 @@ rollback_wait_signal_pidfile() {
     return 1
 }
 
-signal_kill_pidfile_process_then_respawn() {
+signal_stop_pidfile_and_stray() {
     local pidfile="$1"
-    local run_sh="$2"
     local cur=""
     cur=$(signal_read_pidfile "$pidfile" || true)
     if [[ -n "$cur" ]] && kill -0 "$cur" 2>/dev/null; then
@@ -324,10 +438,16 @@ signal_kill_pidfile_process_then_respawn() {
         kill -TERM "$cur" 2>/dev/null || true
         signal_wait_pid_exit "$cur" "rollback-stop"
     else
-        echo "[update] signal: no live pid in $pidfile (cur=${cur:-empty}) — starting wrapper anyway" >&2
+        echo "[update] signal: no live pid in $pidfile (cur=${cur:-empty})" >&2
     fi
     signal_sweep_stray_instance_procs
-    signal_launch_wrapper "$run_sh"
+}
+
+signal_kill_pidfile_process_then_respawn() {
+    local pidfile="$1"
+    local run_sh="$2"
+    signal_stop_pidfile_and_stray "$pidfile"
+    signal_launch_wrapper_nonfatal "$run_sh"
 }
 
 execstart_main_binary() {
@@ -367,48 +487,23 @@ update_canonicalize_path() {
 run_rsync_from() {
     local src="$1"
     local dest="$2"
-    local db_excl signal_log_excl
-    local -a rsync_excludes
     if ! command -v rsync >/dev/null 2>&1; then
         fail "rsync not on PATH — install rsync or omit --rsync-from"
     fi
-    signal_log_excl="${GO_TRADER_SIGNAL_LOG:-./go-trader-signal.log}"
-    rsync_excludes=(
-        --exclude='.git/'
-        --exclude='.env'
-        --exclude='scheduler/config.json'
-        --exclude='trading_bot.db*'
-    )
-    while IFS= read -r db_excl; do
-        if [[ -n "$db_excl" ]]; then
-            rsync_excludes+=(--exclude="${db_excl}*")
-        fi
-    done < <(update_resolve_db_exclude)
-    local db_glob
-    while IFS= read -r db_glob; do
-        [[ -n "$db_glob" ]] && rsync_excludes+=(--exclude="$db_glob")
-    done < <(update_db_rsync_excludes)
-    rsync_excludes+=(
-        --exclude='.venv/'
-        --exclude='robinhood-session/'
-        --exclude='/logs/'
-        --exclude='node_modules/'
-        --exclude='__pycache__/'
-        --exclude='go-trader'
-        --exclude='go-trader.new'
-        --exclude='go-trader.prev'
-        --exclude='go-trader.pid'
-        --exclude='go-trader-signal.log'
-    )
-    if [[ "$signal_log_excl" != "./go-trader-signal.log" && "$signal_log_excl" != "go-trader-signal.log" ]]; then
-        rsync_excludes+=(--exclude="$signal_log_excl")
-    fi
+    update_managed_rsync_excludes "$dest" || fail "could not build managed-set exclusions for $dest"
     local -a rsync_owner=()
     if [[ "$EUID" == "0" ]]; then
         rsync_owner=(--no-owner --no-group)
     fi
     echo "[update] rsync: $src/ -> $dest/ (excludes deployment .git, secrets, state DB, venv, binaries, signal log)"
-    rsync -a ${rsync_owner[@]+"${rsync_owner[@]}"} --delete "${rsync_excludes[@]}" "$src/" "$dest/"
+    run_tracked_child rsync -a ${rsync_owner[@]+"${rsync_owner[@]}"} --delete "${UPDATE_MANAGED_EXCLUDES[@]}" "$src/" "$dest/" \
+        || fail "rsync from $src to $dest failed"
+    update_pause_if_requested rsync_mid
+    if update_should_fail_at rsync_mid; then
+        printf 'partial-rsync\n' >"$dest/.update-partial-rsync"
+        rm -f "$dest/README.md"
+        fail "forced mid-rsync failure after partial transfer"
+    fi
 }
 
 warn_execstart_vs_swap() {
@@ -465,100 +560,6 @@ signal_sweep_stray_instance_procs() {
     return 0
 }
 
-do_rollback() {
-    local reason="$1"
-    echo "[update] rollback: $reason" >&2
-
-    if [[ -n "$unit_sync_backup_path" ]]; then
-        if update_unit_restore_backup "$unit_sync_installed_path" "$unit_sync_backup_path"; then
-            unit_sync_backup_path=""
-            echo "[update] rollback: restored previous unit file $unit_sync_installed_path" >&2
-            if ! sudo systemctl daemon-reload; then
-                echo "[update] rollback: systemctl daemon-reload failed after restoring $unit_sync_installed_path — the old unit is on disk but systemd still holds the new one" >&2
-            fi
-        else
-            echo "[update] rollback: could not restore $unit_sync_installed_path from $unit_sync_backup_path — the service stays on the newly installed unit" >&2
-        fi
-    fi
-
-    if [[ "$egress_switched" == "1" ]]; then
-        if update_egress_restore_controller "$egress_deployment"; then
-            egress_switched=0
-            echo "[update] rollback: restored the previous egress controller for $egress_deployment" >&2
-        else
-            echo "[update] rollback: could not restore the previous egress controller for $egress_deployment; the namespace rules stay installed, so the service stays fail-closed" >&2
-        fi
-    fi
-
-    if [[ ! -x ./go-trader.prev ]]; then
-        echo "[update] rollback: no go-trader.prev to restore — service stays on broken binary" >&2
-        return
-    fi
-    mv -f ./go-trader.prev ./go-trader
-
-    if [[ "$tree_mutated" == "1" && -n "$pre_pull_sha" ]]; then
-        echo "[update] rollback: reverting git tree to $pre_pull_sha" >&2
-        if update_git "$repo_root" reset --hard "$pre_pull_sha" >&2; then
-            if ! env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync "${uv_sync_flags[@]}" >&2; then
-                echo "[update] rollback: uv sync FAILED — Python tree may be inconsistent with .prev binary" >&2
-            fi
-        else
-            echo "[update] rollback: git reset --hard FAILED — Python tree still on new SHA, .prev binary may probe-fail" >&2
-        fi
-    fi
-
-    if restart_uses_signal_pid; then
-        signal_kill_pidfile_process_then_respawn "$go_trader_pidfile" "$go_trader_run_sh"
-        rollback_wait_signal_pidfile || true
-        return
-    fi
-
-    local rb_rc=0
-    set +e
-    sudo systemctl restart "$service_unit"
-    rb_rc=$?
-    set -e
-    if [[ $rb_rc -eq 5 ]]; then
-        echo "[update] rollback: systemd unit $service_unit not found — trying signal respawn" >&2
-        if [[ ! -d /proc/self ]] || [[ ! -f "$go_trader_pidfile" ]]; then
-            echo "[update] rollback: signal fallback unavailable (need Linux + pidfile)" >&2
-            return
-        fi
-        if [[ ! -f "$go_trader_run_sh" ]] || [[ ! -x "$go_trader_run_sh" ]]; then
-            echo "[update] rollback: signal fallback unavailable (missing executable $go_trader_run_sh)" >&2
-            return
-        fi
-        restart_uses_signal=1
-        signal_kill_pidfile_process_then_respawn "$go_trader_pidfile" "$go_trader_run_sh"
-        rollback_wait_signal_pidfile || true
-        return
-    fi
-    if [[ $rb_rc -ne 0 ]]; then
-        echo "[update] rollback: systemctl restart failed with exit $rb_rc" >&2
-        return
-    fi
-
-    local rb_waited=0
-    while [[ $rb_waited -lt $active_timeout ]]; do
-        if systemctl is-active --quiet "$service_unit"; then
-            echo "[update] rollback: previous binary active again (${prev_running_version:-unknown})"
-            return
-        fi
-        sleep 1
-        rb_waited=$((rb_waited + 1))
-    done
-    echo "[update] rollback: previous binary did not reach active within ${active_timeout}s" >&2
-}
-
-restore_tree_owner_on_exit() {
-    local rc=$?
-    if ! update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot"; then
-        echo "[update] WARNING: files this update wrote under $owner_scope may still be owned by root; check with: find $owner_scope -xdev -user root" >&2
-    fi
-    rm -f "$tree_owner_snapshot"
-    exit "$rc"
-}
-
 verify_cur_restart_pid() {
     if restart_uses_signal_pid; then
         signal_read_pidfile "$go_trader_pidfile" || true
@@ -573,13 +574,382 @@ verify_cur_restart_pid() {
     fi
 }
 
+run_recovery_probe() {
+    if update_should_fail_at restore_probe; then
+        echo "[update] recovery: forced restore_probe failure" >&2
+        return 1
+    fi
+    if [[ -n "$egress_deployment" ]]; then
+        local ep_owner="$probe_owner" line
+        [[ -n "$ep_owner" ]] || ep_owner=$(update_unit_owner "$service_unit" 2>/dev/null || true)
+        [[ -n "$ep_owner" ]] || return 1
+        local -a ep_args=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && ep_args+=("$line")
+        done < <(update_egress_probe_args "$service_unit" "$egress_deployment")
+        update_probe_as_owner "$repo_root" "$ep_owner" "$repo_root/go-trader" scheduler/config.json "${ep_args[@]}"
+        return $?
+    fi
+    if [[ -n "$probe_owner" ]]; then
+        update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader" scheduler/config.json
+        return $?
+    fi
+    ./go-trader probe
+}
+
+verify_recovery_health() {
+    if update_should_fail_at restore_health; then
+        echo "[update] recovery: forced restore_health failure" >&2
+        return 1
+    fi
+    local -a ports=()
+    if [[ -n "${STATUS_PORT:-}" ]]; then
+        ports+=("$STATUS_PORT")
+        if [[ -n "$pre_update_status_port" && "$pre_update_status_port" != "$STATUS_PORT" ]]; then
+            ports+=("$pre_update_status_port")
+        fi
+    else
+        ports+=("${pre_update_status_port:-8099}")
+    fi
+    local waited=0 p body cur_main_pid
+    while [[ $waited -lt $health_timeout ]]; do
+        for p in "${ports[@]}"; do
+            body=$(curl -fsS --max-time 2 "http://localhost:${p}/health" 2>/dev/null || true)
+            if [[ -n "$body" ]]; then
+                if [[ -z "$prev_running_version" || "$body" == *"\"version\":\"$prev_running_version\""* ]]; then
+                    cur_main_pid=$(verify_cur_restart_pid)
+                    if [[ -n "$cur_main_pid" && ( -z "$prev_main_pid" || "$prev_main_pid" != "$cur_main_pid" ) ]]; then
+                        echo "[update] recovery: /health version=${prev_running_version:-unknown} OK on port $p (pid ${prev_main_pid:-<none>} -> $cur_main_pid)" >&2
+                        return 0
+                    fi
+                fi
+            fi
+        done
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "[update] recovery: /health did not report version=${prev_running_version:-unknown} with a fresh PID within ${health_timeout}s" >&2
+    return 1
+}
+
+start_and_verify_recovered_service() {
+    if restart_uses_signal_pid; then
+        signal_launch_wrapper_nonfatal "$go_trader_run_sh" || return 1
+        rollback_wait_signal_pidfile || return 1
+        verify_recovery_health || return 1
+        return 0
+    fi
+    local rb_rc=0
+    sudo systemctl restart "$service_unit" || rb_rc=$?
+    if [[ $rb_rc -eq 5 ]]; then
+        echo "[update] recovery: systemd unit $service_unit not found — trying signal respawn" >&2
+        if [[ ! -d /proc/self ]] || [[ ! -f "$go_trader_pidfile" ]]; then
+            echo "[update] recovery: signal fallback unavailable (need Linux + pidfile)" >&2
+            return 1
+        fi
+        if [[ ! -f "$go_trader_run_sh" ]] || [[ ! -x "$go_trader_run_sh" ]]; then
+            echo "[update] recovery: signal fallback unavailable (missing executable $go_trader_run_sh)" >&2
+            return 1
+        fi
+        restart_uses_signal=1
+        signal_stop_pidfile_and_stray "$go_trader_pidfile"
+        signal_launch_wrapper_nonfatal "$go_trader_run_sh" || return 1
+        rollback_wait_signal_pidfile || return 1
+        verify_recovery_health || return 1
+        return 0
+    fi
+    if [[ $rb_rc -ne 0 ]]; then
+        echo "[update] recovery: systemctl restart failed with exit $rb_rc" >&2
+        return 1
+    fi
+    local rb_waited=0
+    while [[ $rb_waited -lt $active_timeout ]]; do
+        if systemctl is-active --quiet "$service_unit"; then
+            echo "[update] recovery: previous binary active again (${prev_running_version:-unknown})"
+            verify_recovery_health || return 1
+            return 0
+        fi
+        sleep 1
+        rb_waited=$((rb_waited + 1))
+    done
+    echo "[update] recovery: previous binary did not reach active within ${active_timeout}s" >&2
+    return 1
+}
+
+on_update_signal() {
+    local sig="$1"
+    if [[ "$BASHPID" != "$main_shell_pid" ]]; then
+        return 0
+    fi
+    caught_signal="$sig"
+    failure_reason="interrupted by SIG${sig} in phase=${phase_name:-unknown}"
+    echo "[update] interrupted by SIG${sig} in phase=${phase_name:-unknown}" >&2
+    stop_update_children
+    case "$sig" in
+        INT) exit 130 ;;
+        HUP) exit 129 ;;
+        *) exit 143 ;;
+    esac
+}
+
+update_exit_coordinator() {
+    local exit_rc=$?
+    if [[ "$BASHPID" != "$main_shell_pid" ]]; then
+        return "$exit_rc"
+    fi
+    if [[ "$coordinator_done" == "1" ]]; then
+        return "$exit_rc"
+    fi
+    coordinator_done=1
+    coordinator_active=1
+    set +e
+    trap '' TERM INT HUP EXIT
+
+    stop_update_children
+
+    if [[ "$update_succeeded" == "1" && "$exit_rc" -eq 0 ]]; then
+        if [[ -n "$tree_owner" ]]; then
+            if ! update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot"; then
+                echo "[update] WARNING: files this update wrote under $owner_scope may still be owned by root; check with: find $owner_scope -xdev -user root" >&2
+            fi
+        fi
+        rm -f "$tree_owner_snapshot" "$egress_state_file"
+        if [[ -n "$recovery_dir" && -d "$recovery_dir" ]]; then
+            rm -rf "$recovery_dir"
+        fi
+        if [[ "$update_lock_held" == "1" ]]; then
+            update_release_lock "$recovery_root" "$recovery_key" "$main_shell_pid"
+            update_lock_held=0
+        fi
+        exit 0
+    fi
+
+    [[ "$exit_rc" -eq 0 ]] && exit_rc=1
+    if [[ -z "$failure_reason" && -n "$recovery_dir" && -f "$recovery_dir/subshell_failure_reason" ]]; then
+        failure_reason=$(cat "$recovery_dir/subshell_failure_reason" 2>/dev/null || true)
+    fi
+    [[ -n "$failure_reason" ]] || failure_reason="command exited with status $exit_rc in phase=${phase_name:-unknown}"
+
+    if [[ "$mutation_started" != "1" ]]; then
+        rm -f ./go-trader.new "$egress_state_file"
+        if [[ -n "$egress_staged" ]]; then
+            rm -rf "$(dirname "$egress_staged")" 2>/dev/null || true
+        fi
+        if [[ -n "$tree_owner" && -n "$tree_owner_snapshot" && -f "$tree_owner_snapshot" ]]; then
+            update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot" >/dev/null 2>&1 || true
+        fi
+        rm -f "$tree_owner_snapshot"
+        if [[ -n "$recovery_dir" && -d "$recovery_dir" && ! -f "$recovery_dir/incomplete" ]]; then
+            rm -rf "$recovery_dir"
+        fi
+        if [[ "$update_lock_held" == "1" ]]; then
+            update_release_lock "$recovery_root" "$recovery_key" "$main_shell_pid"
+            update_lock_held=0
+        fi
+        exit "$exit_rc"
+    fi
+
+    echo "[update] recovery: starting recovery after failure ($failure_reason)" >&2
+
+    local stage_stop_service="skipped"
+    local stage_restore_files="pending"
+    local stage_restore_venv="pending"
+    local stage_restore_binaries="pending"
+    local stage_restore_external="skipped"
+    local stage_restore_ownership="skipped"
+    local venv_owner_status="skipped"
+    local stage_recovery_probe="skipped"
+    local stage_recovery_service="skipped"
+
+    if [[ "$restart_attempted" == "1" ]]; then
+        if restart_uses_signal_pid; then
+            signal_stop_pidfile_and_stray "$go_trader_pidfile"
+            stage_stop_service="ok"
+        else
+            local pre_stop_state pre_stop_pid stop_waited=0 cur_stop_pid=""
+            pre_stop_state=$(systemctl show -p ActiveState --value "$service_unit" 2>/dev/null || true)
+            pre_stop_pid=$(systemctl show -p MainPID --value "$service_unit" 2>/dev/null || true)
+            echo "[update] recovery: stopping $service_unit before file restore (ActiveState=${pre_stop_state:-unknown} MainPID=${pre_stop_pid:-0})" >&2
+            sudo systemctl stop "$service_unit" >/dev/null 2>&1 || true
+            while [[ $stop_waited -lt $active_timeout ]]; do
+                cur_stop_pid=$(systemctl show -p MainPID --value "$service_unit" 2>/dev/null || echo "0")
+                if [[ -z "$cur_stop_pid" || "$cur_stop_pid" == "0" ]]; then
+                    break
+                fi
+                sleep 1
+                stop_waited=$((stop_waited + 1))
+            done
+            cur_stop_pid=$(systemctl show -p MainPID --value "$service_unit" 2>/dev/null || echo "0")
+            if [[ -z "$cur_stop_pid" || "$cur_stop_pid" == "0" ]]; then
+                stage_stop_service="ok"
+            else
+                echo "[update] recovery: $service_unit MainPID=$cur_stop_pid still running after stop" >&2
+                stage_stop_service="failed"
+            fi
+        fi
+    fi
+
+    if update_restore_snapshot_files "$repo_root" "$recovery_dir" "${rsync_from:+1}"; then
+        stage_restore_files="ok"
+    else
+        stage_restore_files="failed"
+        echo "[update] recovery: failed to restore managed files and git state from $recovery_dir" >&2
+    fi
+
+    if update_restore_snapshot_venv "$repo_root" "$recovery_dir"; then
+        stage_restore_venv="ok"
+    else
+        stage_restore_venv="failed"
+        echo "[update] recovery: failed to restore .venv from $recovery_dir" >&2
+    fi
+
+    if update_restore_snapshot_binaries "$repo_root" "$recovery_dir"; then
+        stage_restore_binaries="ok"
+    else
+        stage_restore_binaries="failed"
+        echo "[update] recovery: failed to restore binaries from $recovery_dir" >&2
+    fi
+
+    if [[ -n "$egress_staged" ]]; then
+        rm -rf "$(dirname "$egress_staged")" 2>/dev/null || true
+    fi
+    if [[ "$unit_mutated" == "1" || "$unit_reloaded" == "1" || "$journal_mutated" == "1" || "$egress_controller_mutated" == "1" ]]; then
+        if update_restore_snapshot_external "$recovery_dir" "$unit_mutated" "$unit_reloaded" "$journal_mutated" "$egress_controller_mutated" "$egress_state_file"; then
+            stage_restore_external="ok"
+        else
+            stage_restore_external="failed"
+        fi
+    fi
+
+    if update_should_fail_at restore_ownership; then
+        stage_restore_ownership="failed"
+        venv_owner_status="failed"
+        echo "[update] recovery: forced restore_ownership failure" >&2
+    elif [[ -n "$tree_owner" ]]; then
+        if update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot"; then
+            stage_restore_ownership="ok"
+        else
+            stage_restore_ownership="failed"
+            echo "[update] recovery: failed to restore tree ownership under $owner_scope to $tree_owner" >&2
+        fi
+        if [[ "$owner_scope" == "$repo_root" ]]; then
+            if venv_owner_status=$(update_owner_runs_venv_status "$repo_root"); then
+                :
+            else
+                venv_owner_status="failed"
+                stage_restore_ownership="failed"
+                echo "[update] recovery: owner $(update_path_owner_name "$repo_root") cannot run restored .venv/bin/python3" >&2
+            fi
+        fi
+    fi
+
+    local had_go_trader_snap=0
+    if [[ -f "$recovery_dir/manifest.env" ]]; then
+        had_go_trader_snap=$(sed -n 's/^had_go_trader=//p' "$recovery_dir/manifest.env" | tr -d "'\"\\" | head -n 1)
+    fi
+
+    if [[ "$stage_stop_service" == "failed" || "$stage_restore_files" != "ok" || "$stage_restore_venv" != "ok" || "$stage_restore_binaries" != "ok" || "$stage_restore_external" == "failed" || "$stage_restore_ownership" == "failed" ]]; then
+        stage_recovery_probe="blocked"
+        stage_recovery_service="blocked"
+        echo "[update] recovery: probe=blocked service=blocked (earlier recovery stage failed)" >&2
+    else
+        if [[ "$had_go_trader_snap" == "1" && -x "$repo_root/go-trader" ]]; then
+            if run_recovery_probe; then
+                stage_recovery_probe="ok"
+                echo "[update] recovery: probe=ok" >&2
+            else
+                stage_recovery_probe="failed"
+                echo "[update] recovery: probe=failed (restored binary probe failed; not starting trader)" >&2
+            fi
+            if [[ -n "$tree_owner" ]]; then
+                if ! update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot"; then
+                    stage_restore_ownership="failed"
+                fi
+            fi
+        else
+            stage_recovery_probe="skipped"
+            echo "[update] recovery: probe=skipped (no pre-update binary)" >&2
+        fi
+
+        if [[ "$stage_recovery_probe" == "failed" || "$stage_restore_ownership" == "failed" ]]; then
+            stage_recovery_service="blocked"
+            echo "[update] recovery: service=blocked (probe or post-probe ownership failed)" >&2
+        elif [[ "$restart_attempted" == "1" ]]; then
+            if start_and_verify_recovered_service; then
+                stage_recovery_service="ok"
+            else
+                stage_recovery_service="failed"
+            fi
+        elif [[ "$restart" == "1" && "$prev_pid_was_alive" == "1" && -n "$prev_main_pid" ]]; then
+            local check_cur_pid=""
+            check_cur_pid=$(verify_cur_restart_pid)
+            if update_pid_alive "$prev_main_pid" && [[ -z "$check_cur_pid" || "$check_cur_pid" == "$prev_main_pid" ]]; then
+                stage_recovery_service="ok"
+                echo "[update] recovery: service=ok (original trader pid=$prev_main_pid unchanged)" >&2
+            else
+                stage_recovery_service="failed"
+                echo "[update] recovery: service=failed (original trader pid=$prev_main_pid changed or exited; cur=${check_cur_pid:-none})" >&2
+            fi
+        else
+            stage_recovery_service="skipped"
+        fi
+    fi
+
+    local stages_summary="stop_service=$stage_stop_service files=$stage_restore_files venv=$stage_restore_venv binaries=$stage_restore_binaries external=$stage_restore_external ownership=$stage_restore_ownership venv_owner=$venv_owner_status probe=$stage_recovery_probe service=$stage_recovery_service"
+    local any_failed=0
+    case " $stages_summary " in
+        *"=failed "*|*"=blocked "*) any_failed=1 ;;
+    esac
+
+    rm -f "$tree_owner_snapshot" "$egress_state_file"
+    if [[ "$any_failed" == "0" ]]; then
+        echo "[update] recovery: complete ($stages_summary)" >&2
+        if [[ -n "$recovery_dir" && -d "$recovery_dir" ]]; then
+            rm -rf "$recovery_dir"
+        fi
+    else
+        update_write_incomplete_marker "$recovery_root" "$recovery_key" "$repo_root" "$recovery_dir" "$failure_reason" "$stages_summary"
+        echo "[update] recovery: INCOMPLETE ($stages_summary)" >&2
+        echo "[update] recovery: snapshot retained at $recovery_dir (manifest: $recovery_dir/manifest.env, marker: $recovery_root/${recovery_key}.incomplete)" >&2
+        echo "[update] recovery: ACTION REQUIRED: inspect $recovery_dir, repair the deployment, then run: bash scripts/update.sh --clear-recovery" >&2
+    fi
+
+    if [[ "$update_lock_held" == "1" ]]; then
+        update_release_lock "$recovery_root" "$recovery_key" "$main_shell_pid"
+        update_lock_held=0
+    fi
+    exit "$exit_rc"
+}
+
 
 begin_phase preflight
 
 repo_root=$(update_git "$PWD" rev-parse --show-toplevel) || fail "$PWD is not inside a git checkout that git can read (see the git error above)"
 cd "$repo_root"
 
+if [[ "$clear_recovery" == "1" ]]; then
+    update_clear_recovery "$repo_root" "$main_shell_pid" || exit 1
+    end_phase
+    exit 0
+fi
+
 if [[ "$update_all" == "1" ]]; then
+    forward_all_signal() {
+        local sig="$1"
+        if [[ -n "$all_child_pid" ]] && kill -0 "$all_child_pid" 2>/dev/null; then
+            kill "-$sig" "$all_child_pid" 2>/dev/null || true
+            wait "$all_child_pid" 2>/dev/null || true
+        fi
+        case "$sig" in
+            INT) exit 130 ;;
+            HUP) exit 129 ;;
+            *) exit 143 ;;
+        esac
+    }
+    trap 'forward_all_signal TERM' TERM
+    trap 'forward_all_signal INT' INT
+    trap 'forward_all_signal HUP' HUP
+
     scan_root="$(trim_space "${GO_TRADER_UPDATE_ALL_ROOT:-}")"
     scan_root_explicit=0
     if [[ -n "$scan_root" ]]; then
@@ -700,9 +1070,16 @@ if [[ "$update_all" == "1" ]]; then
         else
             echo "[update] --all: $(cd "$d" && pwd) -> unit $resolved_unit (no active systemd unit; falling back)"
         fi
-        if (cd "$d" && GO_TRADER_SERVICE="$resolved_unit" bash "$THIS_SCRIPT" "${resolved_child_args[@]}"); then
-            :
+        child_rc=0
+        if [[ "$(type -t bash 2>/dev/null || true)" == "function" ]]; then
+            (cd "$d" && GO_TRADER_SERVICE="$resolved_unit" bash "$THIS_SCRIPT" "${resolved_child_args[@]}") || child_rc=$?
         else
+            (cd "$d" && GO_TRADER_SERVICE="$resolved_unit" exec bash "$THIS_SCRIPT" "${resolved_child_args[@]}") &
+            all_child_pid=$!
+            wait "$all_child_pid" || child_rc=$?
+            all_child_pid=""
+        fi
+        if [[ "$child_rc" -ne 0 ]]; then
             echo "[update] --all: FAILED in $d" >&2
             fail_count=$((fail_count + 1))
         fi
@@ -716,6 +1093,11 @@ if [[ "$update_all" == "1" ]]; then
     echo "[update] --all: all instances OK ($update_count updated, $skip_count skipped of ${#all_dirs[@]} discovered)"
     exit 0
 fi
+
+trap 'on_update_signal TERM' TERM
+trap 'on_update_signal INT' INT
+trap 'on_update_signal HUP' HUP
+trap update_exit_coordinator EXIT
 
 refuse_unconfined_tree() {
     local tree="$1" role="$2" issues owners
@@ -731,6 +1113,10 @@ refuse_unconfined_tree() {
 
 give_back_tree_owner() {
     [[ -n "$tree_owner" ]] || return 0
+    if update_should_fail_at give_back_owner; then
+        rm -f ./go-trader.new
+        fail "forced give_back_owner failure $1; the binary and the running service are unchanged"
+    fi
     update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot" && return 0
     rm -f ./go-trader.new
     fail "could not give the root-written files under $owner_scope back to $(update_path_owner_name "$owner_scope") $1; the binary and the running service are unchanged"
@@ -752,9 +1138,9 @@ if [[ -n "$tree_owner" ]]; then
     tree_owner_snapshot=$(mktemp "${TMPDIR:-/tmp}/go-trader-owner.XXXXXX") || fail "could not create a temporary file for the ownership list"
     if ! update_owner_snapshot "$owner_scope" "$tree_owner_snapshot"; then
         rm -f "$tree_owner_snapshot"
+        tree_owner_snapshot=""
         fail "could not list the root-owned paths under $owner_scope before the update; nothing changed"
     fi
-    trap restore_tree_owner_on_exit EXIT
 fi
 
 uv_bin=$(update_resolve_tool uv) \
@@ -765,6 +1151,9 @@ fi
 
 go_bin=$(update_resolve_tool go) \
     || fail "go not on PATH and not found at $(update_tool_fixed_text go)"
+
+update_preflight_rsync \
+    || fail "rsync preflight failed — install a working rsync on PATH (SKILL.md → Prerequisites)"
 
 if [[ ! -f scheduler/config.json ]]; then
     cat >&2 <<EOF
@@ -786,6 +1175,20 @@ source repo and run scripts/update.sh from each deployment instance.
 EOF
     fail "scheduler/config.json missing — refusing to mutate tree from a non-deployment directory"
 fi
+
+update_managed_rsync_excludes "$repo_root" \
+    || fail "could not establish managed-set exclusions for $repo_root; refusing to mutate deployment"
+
+recovery_root=$(update_recovery_root)
+recovery_key=$(update_recovery_key "$repo_root")
+recovery_dir="$recovery_root/$recovery_key"
+update_acquire_lock "$recovery_root" "$recovery_key" "$main_shell_pid" "$repo_root" \
+    || fail "another update is already in progress for $repo_root"
+update_lock_held=1
+
+update_check_incomplete_marker "$recovery_root" "$recovery_key" "$repo_root" \
+    || fail "incomplete recovery marker blocks update of $repo_root; inspect the saved snapshot and run: bash scripts/update.sh --clear-recovery"
+update_pause_if_requested locked
 
 if [[ -n "$rsync_from" ]]; then
     rsync_from=$(cd "$rsync_from" && pwd)
@@ -896,10 +1299,13 @@ fi
 echo "[update] previous binary version: ${prev_running_version:-<none>}"
 
 prev_main_pid=""
+prev_pid_was_alive=0
 if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
     prev_main_pid=$(signal_read_pidfile "$go_trader_pidfile") || fail "signal mode: could not read valid pid from $go_trader_pidfile"
     if ! kill -0 "$prev_main_pid" 2>/dev/null; then
         echo "[update] signal: warning: pid $prev_main_pid from pidfile is not running — capture is for bookkeeping only" >&2
+    else
+        prev_pid_was_alive=1
     fi
     signal_log_proc_snapshot "$prev_main_pid"
     repo_abs=$(update_canonicalize_path "$(pwd)")
@@ -915,27 +1321,61 @@ else
     if [[ -z "$prev_main_pid" && "$restart" == "1" ]]; then
         prev_main_pid=$(signal_read_pidfile "$go_trader_pidfile" || true)
     fi
+    if [[ -n "$prev_main_pid" ]] && update_pid_alive "$prev_main_pid"; then
+        prev_pid_was_alive=1
+    fi
 fi
 
+pre_update_status_port=$(python3 - "$repo_root/scheduler/config.json" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+    p = cfg.get("status_port") or 0
+    if isinstance(p, (int, float)) and int(p) > 0:
+        print(int(p))
+except Exception:
+    pass
+PY
+)
+pre_update_status_port="${pre_update_status_port:-8099}"
+
+end_phase
+
+begin_phase snapshot
+update_take_snapshot "$repo_root" "$recovery_dir" "$unit_sync_source_path" "$unit_sync_installed_path" "$egress_deployment" \
+    || fail "pre-update snapshot failed in $recovery_dir; nothing in $repo_root was modified"
+snapshot_ready=1
+echo "[update] snapshot: saved pre-update state in $recovery_dir"
 end_phase
 
 if [[ -n "$rsync_from" ]]; then
     begin_phase rsync
-    run_rsync_from "$rsync_from" "$(pwd)"
+    update_record_intent rsync
     tree_mutated=1
+    run_rsync_from "$rsync_from" "$(pwd)"
     end_phase
 else
     begin_phase pull
+    update_record_intent pull
+    tree_mutated=1
+    update_pause_if_requested pull
+    if update_should_fail_at pull; then
+        printf '\n# partial-pull-mutation\n' >>"$repo_root/README.md"
+        fail "forced git pull failure in $repo_root"
+    fi
     update_git "$repo_root" pull --ff-only || fail "git pull --ff-only failed in $repo_root (see the git error above)"
     post_pull_sha=$(update_git "$repo_root" rev-parse HEAD 2>/dev/null || echo "")
-    if [[ -n "$pre_pull_sha" && -n "$post_pull_sha" && "$pre_pull_sha" != "$post_pull_sha" ]]; then
-        tree_mutated=1
-    fi
     end_phase
 fi
 
 begin_phase sync
-env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync "${uv_sync_flags[@]}"
+update_record_intent sync
+run_tracked_child env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync "${uv_sync_flags[@]}" \
+    || fail "uv sync failed in $repo_root"
+update_pause_if_requested sync
+if update_should_fail_at sync; then
+    fail "forced uv sync failure after dependency mutation"
+fi
 give_back_tree_owner "after uv sync"
 if [[ "$owner_scope" == "$repo_root" && -n "$tree_owner" ]] && ! update_owner_runs_venv "$repo_root"; then
     fail "after uv sync, $(update_path_owner_name "$repo_root") cannot run $repo_root/.venv/bin/python3 ($(readlink -f .venv/bin/python3 2>/dev/null || echo unresolved)); the service runs as that account. Install a Python every account can read, then rebuild the venv"
@@ -943,6 +1383,7 @@ fi
 end_phase
 
 begin_phase build
+update_record_intent build
 if [[ -z "$rsync_from" ]]; then
     ver=$(update_git_version "$repo_root") \
         || fail "could not read the version of $repo_root (see the git error above); refusing to stamp the build as dev"
@@ -951,6 +1392,9 @@ if [[ -z "$rsync_from" ]]; then
         || fail "could not read HEAD of $repo_root (see the git error above)"
 fi
 rm -f ./go-trader.new
+if update_should_fail_at build; then
+    fail "forced go build failure"
+fi
 if [[ -n "$build_export_tree" ]]; then
     echo "[update] build: Go sources of $build_export_commit exported from $build_export_tree (untracked files are never built)"
     update_build_go_export "$build_export_tree" "$build_export_commit" "$go_bin" "$ver" "$repo_root/go-trader.new" \
@@ -977,6 +1421,7 @@ fi
 end_phase
 
 begin_phase probe
+update_record_intent probe
 give_back_tree_owner "before the probe"
 if [[ -n "$egress_deployment" ]]; then
     egress_probe_owner="$probe_owner"
@@ -996,6 +1441,9 @@ else
     probe_ok=0
     ./go-trader.new probe && probe_ok=1
 fi
+if update_should_fail_at probe; then
+    probe_ok=0
+fi
 if [[ "$probe_ok" != 1 ]]; then
     rm -f ./go-trader.new
     fail "go-trader.new probe rejected the freshly synced Python — refusing to swap"
@@ -1004,7 +1452,8 @@ end_phase
 
 if [[ -n "$tree_owner" ]]; then
     begin_phase ownership
-    if ! update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot"; then
+    update_record_intent ownership
+    if update_should_fail_at ownership || ! update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot"; then
         rm -f ./go-trader.new
         fail "could not give the root-written files under $owner_scope back to $(update_path_owner_name "$owner_scope"); the binary and the running service are unchanged"
     fi
@@ -1013,7 +1462,9 @@ fi
 
 if [[ "$restart" == "1" && "$restart_mode" == "systemd" && -n "$unit_sync_source_path" && -n "$unit_sync_installed_path" ]]; then
     begin_phase journal
-    if ! update_sync_journal_namespace "$repo_root" "$unit_sync_source_path"; then
+    update_record_intent journal
+    journal_mutated=1
+    if update_should_fail_at journal || ! update_sync_journal_namespace "$repo_root" "$unit_sync_source_path" "${UPDATE_JOURNALD_ETC_DIR:-/etc/systemd}" "$recovery_dir/journal_mutation.env"; then
         rm -f ./go-trader.new
         fail "journald namespace config for $unit_sync_source_path could not be installed; the go-trader binary, the unit and the running service were left unchanged"
     fi
@@ -1021,11 +1472,25 @@ if [[ "$restart" == "1" && "$restart_mode" == "systemd" && -n "$unit_sync_source
 fi
 
 begin_phase swap
+update_record_intent swap_prev
+swap_stage="before_prev"
 rm -f ./go-trader.prev
 if [[ -e ./go-trader ]]; then
+    if update_should_fail_at swap_before_prev; then
+        fail "forced failure before moving go-trader to go-trader.prev"
+    fi
     mv -f ./go-trader ./go-trader.prev
 fi
+swap_stage="between_renames"
+if update_should_fail_at swap_between_renames; then
+    fail "forced failure between swap renames (go-trader moved to go-trader.prev, go-trader.new not yet moved)"
+fi
+update_record_intent swap_new
 mv -f ./go-trader.new ./go-trader
+swap_stage="swapped"
+if update_should_fail_at swap_after_new; then
+    fail "forced failure immediately after binary swap"
+fi
 end_phase
 
 begin_phase agent-info
@@ -1043,22 +1508,14 @@ if [[ "$restart" != "1" ]]; then
         rm -rf "$(dirname "$egress_staged")"
         echo "[update] egress: the staged controller was discarded; it is installed only with --restart"
     fi
+    update_succeeded=1
     echo "[update] build OK at $ver (skipping restart; pass --restart to enable)"
     exit 0
 fi
 
 status_port="${STATUS_PORT:-}"
-if [[ -z "$status_port" && -f scheduler/config.json && -x .venv/bin/python3 ]]; then
-    status_port=$(.venv/bin/python3 -c '
-import json, sys
-try:
-    cfg = json.load(open("scheduler/config.json"))
-    p = cfg.get("status_port") or 0
-    if isinstance(p, (int, float)) and int(p) > 0:
-        print(int(p))
-except Exception:
-    pass
-' 2>/dev/null || true)
+if [[ -z "$status_port" && -f scheduler/config.json ]]; then
+    status_port="${pre_update_status_port:-8099}"
 fi
 status_port="${status_port:-8099}"
 
@@ -1073,17 +1530,20 @@ if [[ "$restart_mode" == "systemd" ]]; then
         unit_decision=$(update_unit_sync_decision "$unit_sync_installed_path" "$unit_sync_source_path" "$unit_needs_reload")
         case "$unit_decision" in
             install)
-                unit_sync_backup_path=$(update_unit_install_with_backup "$unit_sync_installed_path" "$unit_sync_source_path") \
+                update_record_intent unit_install
+                unit_mutated=1
+                if update_should_fail_at unit_install; then
+                    fail "forced unit install failure for $unit_sync_installed_path"
+                fi
+                unit_sync_backup_path=$(update_unit_install_with_backup "$unit_sync_installed_path" "$unit_sync_source_path" "$recovery_dir/unit_mutation.env") \
                     || fail "could not install $unit_sync_source_path over $unit_sync_installed_path"
                 echo "[update] unit: installed $unit_sync_installed_path from $unit_sync_source_path"
                 if [[ -n "$unit_sync_backup_path" ]]; then
                     echo "[update] unit: previous unit retained as $unit_sync_backup_path"
                 fi
-                if ! sudo systemctl daemon-reload; then
-                    if [[ -n "$unit_sync_backup_path" ]] && update_unit_restore_backup "$unit_sync_installed_path" "$unit_sync_backup_path"; then
-                        unit_sync_backup_path=""
-                        echo "[update] unit: restored $unit_sync_installed_path after the failed daemon-reload" >&2
-                    fi
+                update_record_intent unit_daemon_reload_install
+                unit_reloaded=1
+                if update_should_fail_at daemon_reload_install || ! sudo systemctl daemon-reload; then
                     fail "systemctl daemon-reload failed after installing $unit_sync_installed_path"
                 fi
                 ;;
@@ -1092,7 +1552,11 @@ if [[ "$restart_mode" == "systemd" ]]; then
                 ;;
             reload)
                 echo "[update] unit: $unit_sync_installed_path already matches $unit_sync_source_path but systemd needs a reload"
-                sudo systemctl daemon-reload || fail "systemctl daemon-reload failed for $service_unit"
+                update_record_intent unit_daemon_reload_only
+                unit_reloaded=1
+                if update_should_fail_at daemon_reload_only || ! sudo systemctl daemon-reload; then
+                    fail "systemctl daemon-reload failed for $service_unit"
+                fi
                 ;;
             *)
                 echo "[update] unit: $unit_sync_installed_path already matches $unit_sync_source_path"
@@ -1106,14 +1570,22 @@ if [[ "$restart_mode" == "systemd" ]]; then
 
     if [[ -n "$egress_staged" ]]; then
         begin_phase egress
+        update_record_intent egress_switch
+        egress_state_file="$recovery_dir/egress_state.env"
         egress_rc=0
-        update_egress_switch_controller "$egress_deployment" "$egress_staged" || egress_rc=$?
+        if update_should_fail_at egress_switch; then
+            egress_controller_mutated=1
+            egress_rc=1
+        else
+            update_egress_switch_controller "$egress_deployment" "$egress_staged" "$egress_state_file" || egress_rc=$?
+            if [[ -f "$egress_state_file" ]]; then
+                egress_controller_mutated=1
+            fi
+        fi
         case "$egress_rc" in
             0) egress_switched=1 ;;
             2) ;;
             *)
-                egress_switched=1
-                do_rollback "the egress controller for $egress_deployment did not switch cleanly"
                 fail "egress controller switch failed for $egress_deployment"
                 ;;
         esac
@@ -1121,16 +1593,24 @@ if [[ "$restart_mode" == "systemd" ]]; then
     fi
 
     begin_phase restart
+    update_record_intent restart
+    restart_attempted=1
     restart_rc=0
-    set +e
-    sudo systemctl restart "$service_unit"
-    restart_rc=$?
-    set -e
+    if update_should_fail_at restart_cmd; then
+        restart_rc=1
+    else
+        set +e
+        sudo systemctl restart "$service_unit"
+        restart_rc=$?
+        set -e
+    fi
     if [[ $restart_rc -eq 0 ]]; then
+        if update_should_fail_at is_active_timeout; then
+            fail "service did not reach active state within ${active_timeout}s (forced is_active_timeout)"
+        fi
         waited=0
         until systemctl is-active --quiet "$service_unit"; do
             if [[ $waited -ge $active_timeout ]]; then
-                do_rollback "systemctl is-active timeout after ${active_timeout}s"
                 fail "service did not reach active state within ${active_timeout}s"
             fi
             sleep 1
@@ -1148,11 +1628,16 @@ if [[ "$restart_mode" == "systemd" ]]; then
     end_phase
 else
     begin_phase restart
+    update_record_intent restart
+    restart_attempted=1
     run_signal_restart
     end_phase
 fi
 
 begin_phase verify
+if update_should_fail_at verify_health; then
+    fail "/health verify failed (forced verify_health)"
+fi
 url="http://localhost:${status_port}/health"
 waited=0
 verified=0
@@ -1176,9 +1661,9 @@ while [[ $waited -lt $health_timeout ]]; do
     waited=$((waited + 1))
 done
 if [[ $verified -ne 1 ]]; then
-    do_rollback "/health did not report version=$ver with a fresh PID within ${health_timeout}s (last body: ${body:-<empty>}, prev_pid=${prev_main_pid:-<none>})"
-    fail "/health verify failed — expected version=$ver and PID != ${prev_main_pid:-<none>}"
+    fail "/health verify failed — expected version=$ver and PID != ${prev_main_pid:-<none>} (last body: ${body:-<empty>})"
 fi
 end_phase
 
+update_succeeded=1
 echo "[update] done: $ver running, previous=${prev_running_version:-<none>} retained as go-trader.prev"

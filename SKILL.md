@@ -30,9 +30,10 @@ python3 --version
 uv --version 2>/dev/null || /usr/local/bin/uv --version 2>/dev/null || /opt/homebrew/bin/uv --version 2>/dev/null || echo "NOT_INSTALLED"
 go version 2>/dev/null || /usr/local/go/bin/go version 2>/dev/null || /opt/homebrew/bin/go version 2>/dev/null || echo "NOT_INSTALLED"
 git --version
+rsync --version
 ```
 
-Requirements: Python 3.12+, `uv`, Go 1.26.2, Git.
+Requirements: Python 3.12+, `uv`, Go 1.26.2, Git, `rsync`.
 
 ```bash
 # Linux: system-wide, so root and the service account both find them
@@ -545,7 +546,20 @@ The build version comes from the tree, or from the `--rsync-from` source when th
 A git failure names the tree, its owner, the account that ran git, and the git error.
 `scripts/test_migrate_service_layout_fixture.sh` (scenario `update`; Linux systemd host, run by a `shell-suites-migrate-<n>` CI job) proves the update, the rollback, the feed build and `--all` on such trees.
 
-**`--rsync-from <src>`** replaces `git pull --ff-only` with an rsync from a source clone. It preserves `.git/`, `scheduler/config.json` (or its transition symlink), `state.db` and its WAL sidecars, `.venv/`, the top-level `logs/` directory (the systemd unit's `ReadWritePaths` needs it), and the live binary. Use it when the deployment directory has local changes or was not cloned from origin. Before the restart it warns on stderr about any required `EnvironmentFile=` the unit declares but the disk does not have; optional entries prefixed with `-` are skipped silently.
+**`--rsync-from <src>`** replaces `git pull --ff-only` with an rsync from a source clone.
+It keeps the deployment `.git/` frozen, and one shared exclusion builder (`update_managed_rsync_excludes`) protects `.git/`, `.env`, `scheduler/config.json` (and any in-tree symlink target), configured state DBs (`db_file`, `paper_db_file`, `paper_sources[].db_file`, `replay_log_path`) and their WAL/lock sidecars, `.venv/`, `logs/` (and any custom `log_dir`), `robinhood-session/`, binaries, and the signal log across forward rsync, snapshot, and restore.
+Use it when the deployment directory has local changes or was not cloned from origin.
+Before the restart it warns on stderr about any required `EnvironmentFile=` the unit declares but the disk does not have; optional entries prefixed with `-` are skipped silently.
+
+**Pre-update snapshot recovery.** Both git mode and `--rsync-from` mode recover from a protected pre-update snapshot taken before any write (`update_take_snapshot`), never from `git reset --hard` or from the deployment's `.git/` commit.
+- The recovery root is `/var/lib/go-trader-update/<key>/` (0700, root-owned) when run as root, or `${XDG_STATE_HOME:-$HOME/.local/state}/go-trader-update/<key>/` (0700) when run as non-root (`GO_TRADER_UPDATE_RECOVERY_DIR` overrides it for tests), where `<key>` is derived from the canonical deployment path.
+- Before any write, `update.sh` checks that `rsync` is installed and compatible, verifies that free space in the recovery root exceeds the snapshot size (managed set, `.venv`, binaries, git index) plus 10 percent, and acquires a per-deployment lock directory `<recovery-root>/<key>.lock` holding its PID (taken after the `--all` dispatch so a batch parent never blocks its children; a live holder refuses a concurrent update, and a dead holder's lock is reclaimed).
+- The snapshot copies the managed code set (tracked edits and untracked files, without hard-linking to live files), the complete `.venv/` (or records its absence), `go-trader` and `go-trader.prev` (independent of `go-trader.prev` during the swap), git `HEAD` (symbolic or detached) and `.git/index` in git mode, and the installed systemd unit, journald namespace config, and egress controller files before any mutation.
+- One exit coordinator (`update_exit_coordinator`) owns every failure after mutation starts (explicit `fail`, non-zero exit under `set -euo pipefail`, and catchable `SIGTERM`, `SIGINT`, `SIGHUP`, including Discord auto-update timeouts which send `SIGTERM` before `WaitDelay`).
+- On failure, the coordinator stops any running transfer or dependency child, stops the service first only if a restart was already attempted (leaving a healthy running trader untouched on pre-swap failures and on post-swap failures before the restart step), restores managed files with `rsync -a --delete` using the frozen exclusion list, restores git `HEAD` and `.git/index` in git mode while keeping staged and unstaged edits, atomically swaps the saved `.venv/` back in place via a sibling directory on the same filesystem, restores the binaries and any modified unit, journald, or egress controller files, restores file ownership, runs the restored binary's `probe` as the service owner under the unit sandbox, restarts the trader if it was stopped, and verifies `/health` for the previous version.
+- The snapshot is removed only after file, `.venv`, ownership, probe, and service checks all pass; a recovered failed update still exits non-zero.
+- If any recovery stage fails (including a failed post-recovery probe, which blocks starting the trader), the snapshot and `manifest.env` are kept, an incomplete-recovery marker `<recovery-root>/<key>.incomplete` recording the deployment directory's device and inode is written, and later updates of that directory are refused until an operator inspects the deployment and runs `bash scripts/update.sh --clear-recovery` (which moves the snapshot to `<key>.cleared-<UTC timestamp>` and removes the marker; a marker whose recorded directory no longer exists at that path or inode does not block and prints its location).
+- Automatic recovery covers failures and catchable signals (`SIGTERM`, `SIGINT`, `SIGHUP`); `SIGKILL` and power loss get no automatic recovery, and the preserved snapshot and marker remain on disk for operator inspection.
 
 **Signal mode** (`--restart-mode signal` or `RESTART_MODE=signal`) SIGTERMs the PID in `GO_TRADER_PIDFILE` (default `./go-trader.pid`), respawns through `GO_TRADER_RUN_SH` (default `./run.sh`), then polls `/health` and PID freshness with the same verify-and-rollback flow as systemd mode. Generate a starter `run.sh` with `bash scripts/create-run-sh.sh`. Other signal-mode variables: `GO_TRADER_SIGNAL_LOG`. When systemd mode meets a missing unit (systemctl exit 5), update.sh retries in signal mode automatically if `go-trader.pid` and an executable `run.sh` are present.
 

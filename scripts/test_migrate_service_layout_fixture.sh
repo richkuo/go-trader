@@ -21,7 +21,7 @@ for t in systemd-run python3 rsync git runuser flock; do
     command -v "$t" >/dev/null 2>&1 || skip "$t required"
 done
 PY3=$(command -v python3)
-SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget}"
+SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget update_recovery}"
 HELPERS="$SCRIPT_DIR/update_helpers.sh"
 FIXTURE_GO="${FIXTURE_GO:-$(command -v go || true)}"
 
@@ -812,6 +812,14 @@ case "$1" in
     --version) echo "uv 0.0.0 (go-trader fixture stub)" ;;
     sync)
         mkdir -p .venv/fixture-uv && date >.venv/fixture-uv/stamp
+        if [ -n "${UV_STUB_MUTATE_VENV:-}" ]; then
+            mkdir -p .venv/fixture-uv
+            printf 'mutated-by-uv\n' >.venv/fixture-uv/added_pkg.py
+            if [ -f .venv/fixture-uv/replace_me.py ]; then
+                printf 'replaced-by-uv\n' >.venv/fixture-uv/replace_me.py
+            fi
+            rm -f .venv/fixture-uv/remove_me.py
+        fi
         if [ -n "${UV_STUB_CACHE:-}" ]; then
             if [ "${UV_LINK_MODE:-}" = copy ]; then
                 cp -f "$UV_STUB_CACHE" .venv/fixture-uv/pkg
@@ -1000,7 +1008,8 @@ UNIT
     old_version=$(health_field "$port" version)
     new1=$(advance_origin "$origin" "fixture update 1")
     expect_exit 1 run_update "$tree" GO_TRADER_SERVICE="$tunit" STATUS_PORT=1 HEALTH_TIMEOUT=5 bash scripts/update.sh --restart
-    grep -q "rollback: reverting git tree to $pre" "$WORK/last.out" || fail "the failed update did not revert the tree"
+    grep -q "recovery: complete" "$WORK/last.out" || fail "the failed update did not complete snapshot recovery"
+    [[ ! -e "$tree/fixture-update.txt" ]] || fail "the rollback left fixture-update.txt from the failed update"
     [[ "$(root_git "$tree" rev-parse HEAD)" == "$pre" ]] || fail "the rollback left $tree off $pre"
     [[ -z "$(root_owned "$tree")" ]] || { root_owned "$tree" >&2; fail "root-owned files in $tree after the rollback"; }
     wait_health "$tunit" "$port"
@@ -1218,6 +1227,273 @@ EOS
     wait_health "go-trader@$binst.service" "$bport"
     systemctl stop "go-trader@$ainst.service" "go-trader@$binst.service"
     echo "newtarget OK"
+}
+
+fixture_managed_manifest() {
+    "$PY3" - "$1" <<'PY'
+import hashlib, os, stat, sys
+root = os.path.realpath(sys.argv[1])
+skip_top = {".git", ".venv", "logs", "robinhood-session", "node_modules", "__pycache__"}
+skip_names = {".env", "go-trader", "go-trader.new", "go-trader.prev", "go-trader.pid", "go-trader-signal.log"}
+rows = []
+for cur, dirs, files in os.walk(root, topdown=True, followlinks=False):
+    rel_cur = os.path.relpath(cur, root)
+    if rel_cur == ".":
+        rel_cur = ""
+        dirs[:] = sorted(d for d in dirs if d not in skip_top)
+    else:
+        dirs[:] = sorted(d for d in dirs if d != "__pycache__")
+    entries = sorted(set(dirs + files))
+    for name in entries:
+        rel = os.path.join(rel_cur, name) if rel_cur else name
+        if rel == "scheduler/config.json" or name in skip_names:
+            continue
+        if name.endswith((".db", ".db-wal", ".db-shm", ".db.lock", ".db.manual-action.lock")):
+            continue
+        if name.startswith("trading_bot.db") or name.startswith("ohlcv_cache.sqlite3"):
+            continue
+        full = os.path.join(cur, name)
+        st = os.lstat(full)
+        mode = stat.S_IMODE(st.st_mode)
+        if stat.S_ISLNK(st.st_mode):
+            rows.append("L\t%s\t%04o\t%d:%d\t%s" % (rel, mode, st.st_uid, st.st_gid, os.readlink(full)))
+        elif stat.S_ISDIR(st.st_mode):
+            rows.append("D\t%s\t%04o\t%d:%d\t-" % (rel, mode, st.st_uid, st.st_gid))
+        elif stat.S_ISREG(st.st_mode):
+            h = hashlib.sha256(open(full, "rb").read()).hexdigest()
+            rows.append("F\t%s\t%04o\t%d:%d\t%s" % (rel, mode, st.st_uid, st.st_gid, h))
+print("\n".join(rows))
+PY
+}
+
+fixture_venv_manifest() {
+    "$PY3" - "$1/.venv" <<'PY'
+import hashlib, os, stat, sys
+root = os.path.abspath(sys.argv[1])
+if not os.path.exists(root):
+    print("ABSENT")
+    sys.exit(0)
+rows = []
+for cur, dirs, files in os.walk(root, topdown=True, followlinks=False):
+    dirs.sort()
+    files.sort()
+    rel_cur = os.path.relpath(cur, root)
+    if rel_cur == ".":
+        rel_cur = ""
+    for name in sorted(set(dirs + files)):
+        rel = os.path.join(rel_cur, name) if rel_cur else name
+        full = os.path.join(cur, name)
+        st = os.lstat(full)
+        mode = stat.S_IMODE(st.st_mode)
+        if stat.S_ISLNK(st.st_mode):
+            rows.append("L\t%s\t%04o\t%d:%d\t%s" % (rel, mode, st.st_uid, st.st_gid, os.readlink(full)))
+        elif stat.S_ISDIR(st.st_mode):
+            rows.append("D\t%s\t%04o\t%d:%d\t-" % (rel, mode, st.st_uid, st.st_gid))
+        elif stat.S_ISREG(st.st_mode):
+            h = hashlib.sha256(open(full, "rb").read()).hexdigest()
+            rows.append("F\t%s\t%04o\t%d:%d\t%s" % (rel, mode, st.st_uid, st.st_gid, h))
+print("\n".join(rows))
+PY
+}
+
+scenario_update_recovery() {
+    note "snapshot recovery across rsync and git modes, pre-swap, mid-swap, post-swap, signal interruption, and incomplete marker (#1865)"
+    local port=$((BASE_PORT + 20)) unit="go-trader-$ID-rec.service" inst="rec-$ID" src="/root/gt-$ID-rec"
+    local origin="$WORK/rec-origin.git" rsync_clone="$WORK/rec-rsync-src" rec_root="$WORK/rec-state"
+    local br tree tunit stale_sha v1_sha v2_sha v1_ver
+    INSTANCES+=("$inst")
+    mkdir -p "$rec_root"
+    make_deployment rec "$port" split
+    br=$(git -C "$src" symbolic-ref --short HEAD)
+    git init -q --bare -b "$br" "$origin"
+    git -C "$src" remote add origin "$origin"
+    git -C "$src" push -q -u origin "$br"
+
+    expect_exit 0 tool apply --unit "$unit" --instance "$inst"
+    tree="/opt/go-trader-$inst"
+    tunit="go-trader@$inst.service"
+    wait_health "$tunit" "$port"
+
+    stale_sha=$(root_git "$tree" rev-parse HEAD)
+    v1_sha=$(advance_origin "$origin" "release v1")
+    expect_exit 0 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+    wait_health "$tunit" "$port"
+    v1_ver=$(health_field "$port" version)
+    [[ "$(root_git "$tree" rev-parse HEAD)" == "$v1_sha" ]] || fail "tree did not advance to v1"
+
+    runuser -u go-trader -- mkdir -p "$tree/.venv/fixture-uv"
+    runuser -u go-trader -- sh -c "printf 'baseline-replace\n' >'$tree/.venv/fixture-uv/replace_me.py' && printf 'baseline-remove\n' >'$tree/.venv/fixture-uv/remove_me.py' && rm -f '$tree/.venv/fixture-uv/added_pkg.py'"
+
+    git clone -q --no-hardlinks "$origin" "$rsync_clone"
+    echo "v2-source-added" >"$rsync_clone/source_added_v2.py"
+    echo "v2-modified-readme" >>"$rsync_clone/README.md"
+    git -C "$rsync_clone" add -A
+    git -C "$rsync_clone" -c user.email=fixture@example.invalid -c user.name=fixture commit -qm "release v2"
+    git -C "$rsync_clone" push -q origin "$br"
+    v2_sha=$(git -C "$rsync_clone" rev-parse HEAD)
+
+    local curl_wrap_dir="$WORK/curlwrap"
+    mkdir -p "$curl_wrap_dir"
+    local real_curl
+    real_curl=$(command -v curl)
+    cat >"$curl_wrap_dir/curl" <<EOS
+#!/usr/bin/env bash
+if [[ -n "\${CURL_FAIL_HEALTH_ONCE_FILE:-}" && "\$*" == *"/health"* && ! -e "\$CURL_FAIL_HEALTH_ONCE_FILE" ]]; then
+    : >"\$CURL_FAIL_HEALTH_ONCE_FILE"
+    printf '{"version":"wrong-version","pid":999999}\n'
+    exit 0
+fi
+exec "$real_curl" "\$@"
+EOS
+    chmod 0755 "$curl_wrap_dir/curl"
+
+    assert_baseline_restored() {
+        local label="$1" want_head="$2" want_idx="$3" want_managed="$4" want_venv="$5" want_bin="$6" want_prev="$7"
+        [[ "$(grep -c 'recovery: starting recovery' "$WORK/last.out" || true)" == "1" ]] || fail "$label: coordinator did not run exactly once"
+        grep -q "recovery: probe=ok" "$WORK/last.out" || fail "$label: recovery probe did not report ok"
+        grep -q "recovery: complete" "$WORK/last.out" || fail "$label: recovery did not report complete"
+        [[ "$(root_git "$tree" rev-parse HEAD)" == "$want_head" ]] || fail "$label: git HEAD $(root_git "$tree" rev-parse HEAD) != $want_head"
+        [[ "$(file_fp "$tree/.git/index")" == "$want_idx" ]] || fail "$label: git index changed"
+        [[ "$(fixture_managed_manifest "$tree")" == "$want_managed" ]] || {
+            diff <(printf '%s\n' "$want_managed") <(fixture_managed_manifest "$tree") >&2 || true
+            fail "$label: managed set differs from pre-update baseline"
+        }
+        [[ "$(fixture_venv_manifest "$tree")" == "$want_venv" ]] || {
+            diff <(printf '%s\n' "$want_venv") <(fixture_venv_manifest "$tree") >&2 || true
+            fail "$label: .venv manifest differs from pre-update baseline"
+        }
+        [[ "$(file_fp "$tree/go-trader")" == "$want_bin" ]] || fail "$label: go-trader binary hash differs"
+        [[ "$(file_fp "$tree/go-trader.prev")" == "$want_prev" ]] || fail "$label: go-trader.prev hash differs"
+        [[ ! -e "$tree/source_added_v2.py" && ! -e "$tree/fixture-update.txt.v2" ]] || fail "$label: added source file remained"
+        [[ -z "$(root_owned "$tree")" ]] || { root_owned "$tree" >&2; fail "$label: root-owned files in $tree"; }
+        wait_health "$tunit" "$port"
+        [[ "$(health_field "$port" version)" == "$v1_ver" ]] || fail "$label: /health version $(health_field "$port" version) != $v1_ver"
+    }
+
+    note "rsync mode with stale deployment .git HEAD: /health mismatch restores exact pre-update tree, not stale HEAD"
+    root_git "$tree" update-ref "$br" "$stale_sha"
+    root_git "$tree" read-tree "$stale_sha"
+    [[ "$(root_git "$tree" rev-parse HEAD)" == "$stale_sha" ]] || fail "did not set stale HEAD"
+    local base_managed base_venv base_bin base_prev base_idx pid_before
+    base_managed=$(fixture_managed_manifest "$tree")
+    base_venv=$(fixture_venv_manifest "$tree")
+    base_bin=$(file_fp "$tree/go-trader")
+    base_prev=$(file_fp "$tree/go-trader.prev")
+    base_idx=$(file_fp "$tree/.git/index")
+    sql "$tree/scheduler/state.db" "INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, details) VALUES ('hl-rec-a', '2026-09-05T00:00:00Z', 'ETH', 'buy', 1, 100, 100, 'pre-rsync-$ID')"
+    expect_exit 1 run_update "$tree" PATH="$curl_wrap_dir:$STUBBIN:$PATH" CURL_FAIL_HEALTH_ONCE_FILE="$WORK/fail-health-1" HEALTH_TIMEOUT=1 UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --rsync-from "$rsync_clone" --restart
+    assert_baseline_restored "rsync-health-mismatch" "$stale_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+    [[ -n "$(sql "$tree/scheduler/state.db" "SELECT 1 FROM trades WHERE details = 'pre-rsync-$ID'")" ]] || fail "rsync recovery lost state.db trade"
+
+    note "rsync mode pre-swap failures (partial rsync, uv sync, build, probe): trader PID unchanged"
+    local fstage
+    for fstage in rsync_mid sync build probe; do
+        pid_before=$(unit_prop "$tunit" MainPID)
+        base_managed=$(fixture_managed_manifest "$tree")
+        base_venv=$(fixture_venv_manifest "$tree")
+        expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="$fstage" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-rsync-$fstage" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --rsync-from "$rsync_clone" --restart
+        assert_baseline_restored "rsync-$fstage" "$stale_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+        [[ "$(unit_prop "$tunit" MainPID)" == "$pid_before" ]] || fail "rsync-$fstage changed running trader PID ($pid_before -> $(unit_prop "$tunit" MainPID))"
+    done
+
+    note "git mode with local staged, unstaged, and untracked edits outside build paths"
+    root_git "$tree" update-ref "$br" "$v1_sha"
+    root_git "$tree" read-tree "$v1_sha"
+    runuser -u go-trader -- sh -c "printf 'staged-doc-edit\n' >>'$tree/SKILL.md' && git -C '$tree' add SKILL.md && printf 'unstaged-readme-edit\n' >>'$tree/README.md' && printf 'untracked-local\n' >'$tree/docs/local_untracked.md'"
+    base_managed=$(fixture_managed_manifest "$tree")
+    base_venv=$(fixture_venv_manifest "$tree")
+    base_bin=$(file_fp "$tree/go-trader")
+    base_prev=$(file_fp "$tree/go-trader.prev")
+    base_idx=$(file_fp "$tree/.git/index")
+
+    expect_exit 1 run_update "$tree" PATH="$curl_wrap_dir:$STUBBIN:$PATH" CURL_FAIL_HEALTH_ONCE_FILE="$WORK/fail-health-git" HEALTH_TIMEOUT=1 UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+    assert_baseline_restored "git-health-mismatch" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+    grep -q "staged-doc-edit" "$tree/SKILL.md" || fail "git recovery lost staged SKILL.md edit"
+    grep -q "unstaged-readme-edit" "$tree/README.md" || fail "git recovery lost unstaged README.md edit"
+    [[ -f "$tree/docs/local_untracked.md" ]] || fail "git recovery lost untracked file"
+
+    note "git mode pre-swap and mid-swap failures (failed pull, uv sync, build, probe, ownership, journal, swap_between_renames): trader PID unchanged"
+    for fstage in pull sync build probe ownership journal swap_between_renames; do
+        pid_before=$(unit_prop "$tunit" MainPID)
+        expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="$fstage" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-git-$fstage" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+        assert_baseline_restored "git-$fstage" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+        [[ "$(unit_prop "$tunit" MainPID)" == "$pid_before" ]] || fail "git-$fstage changed running trader PID ($pid_before -> $(unit_prop "$tunit" MainPID))"
+    done
+
+    note "post-swap unit install and daemon-reload failures keep running PID; restart_cmd and is_active_timeout recover service"
+    local tpl_file="/etc/systemd/system/go-trader@.service"
+    local tpl_orig
+    tpl_orig=$(cat "$tpl_file")
+    printf '\n# fixture-custom-comment\n' >>"$tpl_file"
+    systemctl daemon-reload
+    local tpl_custom_fp
+    tpl_custom_fp=$(file_fp "$tpl_file")
+
+    for fstage in unit_install daemon_reload_install; do
+        pid_before=$(unit_prop "$tunit" MainPID)
+        expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="$fstage" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-post-$fstage" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+        assert_baseline_restored "post-$fstage" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+        [[ "$(file_fp "$tpl_file")" == "$tpl_custom_fp" ]] || fail "post-$fstage did not restore $tpl_file"
+        [[ "$(unit_prop "$tunit" MainPID)" == "$pid_before" ]] || fail "post-$fstage changed running trader PID"
+    done
+    printf '%s\n' "$tpl_orig" >"$tpl_file"
+    systemctl daemon-reload
+
+    for fstage in restart_cmd is_active_timeout; do
+        expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="$fstage" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-post-$fstage" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+        assert_baseline_restored "post-$fstage" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+    done
+
+    note "catchable SIGTERM during update recovers cleanly, including through --all"
+    local pause_file="$WORK/pause-sync"
+    run_update "$tree" GO_TRADER_UPDATE_PAUSE_AT="sync:$pause_file" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart >"$WORK/last.out" 2>&1 &
+    local upid=$!
+    local i
+    for i in $(seq 1 100); do
+        [[ -f "${pause_file}.reached" ]] && break
+        sleep 0.1
+    done
+    [[ -f "${pause_file}.reached" ]] || fail "update did not reach sync pause"
+    kill -TERM "$upid"
+    local urc=0
+    wait "$upid" || urc=$?
+    [[ "$urc" != "0" ]] || fail "SIGTERM update exited 0"
+    assert_baseline_restored "sigterm-direct" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+
+    local all_rec_root="$WORK/all-rec-root"
+    mkdir -p "$all_rec_root"
+    ln -s "$tree" "$all_rec_root/go-trader-rec"
+    expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="build" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-all-build" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" bash scripts/update.sh --all --restart --update-all-root "$all_rec_root"
+    assert_baseline_restored "all-build-fail" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
+
+    note "concurrent second update refuses before any write"
+    local lock_pause="$WORK/pause-locked"
+    run_update "$tree" GO_TRADER_UPDATE_PAUSE_AT="locked:$lock_pause" GO_TRADER_UPDATE_FAIL_AT="build" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-lock-holder" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart >"$WORK/holder.out" 2>&1 &
+    local hpid=$!
+    for i in $(seq 1 100); do
+        [[ -f "${lock_pause}.reached" ]] && break
+        sleep 0.1
+    done
+    [[ -f "${lock_pause}.reached" ]] || fail "holder did not reach locked pause"
+    expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+    grep -q "another update is already" "$WORK/last.out" || fail "concurrent update did not report lock contention"
+    touch "$lock_pause"
+    wait "$hpid" || true
+
+    note "forced restore failure retains snapshot and incomplete marker, blocks next update, and --clear-recovery clears it"
+    expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="build,restore_probe" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-inc" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+    grep -q "recovery: INCOMPLETE" "$WORK/last.out" || fail "incomplete recovery did not print INCOMPLETE"
+    grep -q "snapshot retained at $rec_root/" "$WORK/last.out" || fail "incomplete recovery did not print snapshot path"
+    expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+    grep -q "incomplete recovery marker" "$WORK/last.out" || fail "incomplete marker did not block next update"
+    expect_exit 0 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" bash scripts/update.sh --clear-recovery
+    grep -q "cleared incomplete-recovery marker" "$WORK/last.out" || fail "--clear-recovery did not report cleared marker"
+
+    runuser -u go-trader -- sh -c "git -C '$tree' checkout -q -- README.md SKILL.md && rm -f '$tree/docs/local_untracked.md'"
+    expect_exit 0 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+    [[ "$(root_git "$tree" rev-parse HEAD)" == "$v2_sha" ]] || fail "post-clear update did not advance to v2"
+    systemctl stop "$tunit"
+    echo "update recovery OK"
 }
 
 grep -q "migrate-service-layout" "$SCRIPT_DIR/update.sh" && fail "update.sh must never call the migration"
