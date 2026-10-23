@@ -98,6 +98,18 @@ def _round_perps_px(px: float, sz_decimals: int) -> float:
     return round(px, _perps_px_decimals(px, sz_decimals))
 
 
+def quote_request_unchanged(symbol: str, size, px, sz_decimals: int) -> None:
+    sz_dec = Decimal(str(size))
+    px_dec = Decimal(str(px))
+    if sz_dec <= 0 or px_dec <= 0:
+        raise ValueError(f"quote request for {symbol} needs a positive size and price")
+    if sz_dec != sz_dec.quantize(Decimal("1").scaleb(-max(int(sz_decimals), 0)), rounding=ROUND_DOWN):
+        raise ValueError(f"quote size {size} for {symbol} is not on the {sz_decimals}-decimal lot grid; the saved request would change")
+    decimals = _perps_px_decimals(float(px_dec), sz_decimals)
+    if px_dec != px_dec.quantize(Decimal("1").scaleb(-decimals), rounding=ROUND_DOWN):
+        raise ValueError(f"quote price {px} for {symbol} is not on the {decimals}-decimal price grid; the saved request would change")
+
+
 def floor_lot_size(sz: float, sz_decimals: int) -> float:
     if sz <= 0:
         return 0.0
@@ -701,9 +713,14 @@ class HyperliquidExchangeAdapter:
         size: float,
         limit_px: float,
         tif: str = "Alo",
+        cloid: str | None = None,
+        reduce_only: bool = False,
+        require_exact: bool = False,
     ) -> dict:
         exchange = self._require_exchange("limit_open")
         sz_decimals = self._sz_decimals(symbol)
+        if require_exact:
+            quote_request_unchanged(symbol, size, limit_px, sz_decimals)
         size = round(size, sz_decimals)
         if size <= 0:
             raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
@@ -713,9 +730,48 @@ class HyperliquidExchangeAdapter:
             raise ValueError(f"unsupported tif {tif!r}, expected 'Alo', 'Gtc' or 'Ioc'")
         limit_px = _round_perps_px(limit_px, sz_decimals)
         order_type = {"limit": {"tif": tif}}
+        if cloid:
+            return exchange.order(
+                symbol, is_buy, size, limit_px, order_type, reduce_only=bool(reduce_only), cloid=_to_cloid(cloid)
+            )
         return exchange.order(
-            symbol, is_buy, size, limit_px, order_type, reduce_only=False
+            symbol, is_buy, size, limit_px, order_type, reduce_only=bool(reduce_only)
         )
+
+    def check_quote_request(self, symbol: str, size, px) -> None:
+        sz_decimals = self.lot_size_decimals(symbol)
+        if sz_decimals is None:
+            raise ValueError(f"lot metadata for {symbol} is unknown, so the saved quote request cannot be checked")
+        quote_request_unchanged(symbol, size, px, sz_decimals)
+
+    def cancel_by_cloid(self, symbol: str, cloid: str) -> dict:
+        exchange = self._require_exchange("cancel_by_cloid")
+        return exchange.cancel_by_cloid(symbol, _to_cloid(cloid))
+
+    def strict_position(self, symbol: str) -> dict:
+        if not self._account_address:
+            raise RuntimeError("strict_position requires HYPERLIQUID_ACCOUNT_ADDRESS")
+        user_state = self._info.user_state(self._account_address)
+        if not isinstance(user_state, dict) or not isinstance(user_state.get("assetPositions"), list):
+            raise ValueError(f"user_state returned no position list: {user_state!r}")
+        size = "0"
+        liq = 0.0
+        for asset_pos in user_state["assetPositions"]:
+            pos = asset_pos.get("position") if isinstance(asset_pos, dict) else None
+            if not isinstance(pos, dict) or pos.get("coin") != symbol:
+                continue
+            raw = pos.get("szi")
+            if raw in (None, ""):
+                raise ValueError(f"position for {symbol} carries no size")
+            Decimal(str(raw))
+            size = str(raw)
+            liq_raw = pos.get("liquidationPx")
+            if liq_raw not in (None, ""):
+                liq = float(liq_raw)
+                if not math.isfinite(liq) or liq < 0:
+                    raise ValueError(f"position for {symbol} carries liquidation price {liq_raw!r}")
+        free = user_state.get("withdrawable")
+        return {"size": size, "liquidation_px": liq, "free_margin": "" if free in (None, "") else str(free)}
 
     def market_close(self, symbol: str, sz: float | None = None) -> dict:
         exchange = self._require_exchange("market_close")
@@ -857,9 +913,12 @@ class HyperliquidExchangeAdapter:
         is_buy: bool,
         limit_slippage_pct: float = 5.0,
         cloid: str | None = None,
+        require_exact: bool = False,
     ) -> dict:
         exchange = self._require_exchange("place_stop_loss")
         sz_decimals = self._sz_decimals(symbol)
+        if require_exact:
+            quote_request_unchanged(symbol, sz, trigger_px, sz_decimals)
         sz = floor_lot_size(sz, sz_decimals)
         if sz <= 0:
             raise ValueError(f"Size floored to zero for {symbol} (sz_decimals={sz_decimals})")

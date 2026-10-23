@@ -205,6 +205,9 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 	if evidence, refused := productionRefusedStrategies[name]; refused {
 		return "", nil, fmt.Errorf("strategy %q is production_refused (research-only, evidence %s); no config may reference it until a separate reviewed promotion", name, evidence)
 	}
+	if _, quote := quoteCapabilityStrategies[name]; quote || researchOnlyCloseStrategies[name] {
+		return "", nil, fmt.Errorf("strategy %q is quote-owned and research-only; operator routes cannot add it", name)
+	}
 	registryPlatform := ""
 	switch platform {
 	case "hyperliquid":

@@ -115,6 +115,12 @@ type hlPerpsStepOutcome struct {
 
 func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 	sc := x.sc
+	if why := quoteDispatchRefusal(sc); why != "" || (x.stratState != nil && x.stratState.Quote != nil) {
+		if x.logger != nil {
+			x.logger.Error("quote-owned strategy %s: the scalar perps step, its protection sync and its paper stop owners never run for a quote owner", sc.ID)
+		}
+		return hlPerpsStepOutcome{}
+	}
 	mu := x.mu
 	logger := x.logger
 	stratState := x.stratState

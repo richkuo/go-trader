@@ -713,6 +713,9 @@ func runHyperliquidProtectionSync(
 	guardMode hlProtectionGuardMode,
 	share *hlCycleShare,
 ) (bool, float64) {
+	if quoteOwnedStrategy(sc) || (stratState != nil && stratState.Quote != nil) {
+		return false, 0
+	}
 	stopQty := 0.0
 	if share != nil && stratState != nil && symbol != "" && mu != nil {
 		mu.RLock()

@@ -755,7 +755,7 @@ func manualRecordedStopOwner(sc StrategyConfig, pos *Position) bool {
 }
 
 func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyState, symbol string, prevStopOID int64, prevTriggerPx float64, liqPxByCoin map[string]float64, netSideByCoin map[string]string, stop hlCloseRemainderStop, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string, hlStopRearmResult) {
-	if !hyperliquidIsLive(sc.Args) || stratState == nil || symbol == "" {
+	if !hyperliquidIsLive(sc.Args) || stratState == nil || symbol == "" || quoteOwnedStrategy(sc) || stratState.Quote != nil {
 		return 0, "", hlStopRearmResult{}
 	}
 	mu.RLock()

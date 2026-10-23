@@ -336,6 +336,7 @@ type Config struct {
 	migrationBaseVersion    int
 	migrationBaseVersionSet bool
 	noEdgeMigration         *noEdgeMigrationReport
+	quoteLoad               *quoteLoadAdmission
 	pairAdmission           *pairResearchAdmission
 }
 
@@ -693,6 +694,7 @@ type StrategyConfig struct {
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`
 	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`
 	BasketID                    string                   `json:"basket_id,omitempty"`
+	Quote                       *QuoteConfig             `json:"quote,omitempty"`
 	PairID                      string                   `json:"pair_id,omitempty"`
 	pairMember                  *pairMemberRequest       `json:"-"`
 }
@@ -989,10 +991,21 @@ func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Con
 }
 
 func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, readOnly bool) (*Config, error) {
-	return loadConfigDataWith(path, data, skipLiveCredentialChecks, readOnly, nil)
+	return loadConfigDataOpts(path, data, skipLiveCredentialChecks, readOnly, configLoadOptions{})
 }
 
 func loadConfigDataWith(path string, data []byte, skipLiveCredentialChecks bool, readOnly bool, pairAdm *pairResearchAdmission) (*Config, error) {
+	return loadConfigDataOpts(path, data, skipLiveCredentialChecks, readOnly, configLoadOptions{pairAdmission: pairAdm})
+}
+
+func loadConfigDataOpts(path string, data []byte, skipLiveCredentialChecks bool, readOnly bool, opts configLoadOptions) (*Config, error) {
+	if opts.quoteLoad != nil && opts.pairAdmission != nil {
+		return nil, fmt.Errorf("a configuration load takes at most one internal research admission")
+	}
+	if opts.quoteLoad != nil && (!readOnly || !skipLiveCredentialChecks || path != "") {
+		return nil, fmt.Errorf("a quote-admitted load runs only in the read-only, credential-skip form with no config file")
+	}
+	pairAdm := opts.pairAdmission
 	if pairAdm == nil {
 		if errs := pairOrdinaryRefusals(data); len(errs) > 0 {
 			return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
@@ -1069,7 +1082,7 @@ func loadConfigDataWith(path string, data []byte, skipLiveCredentialChecks bool,
 			fmt.Printf("[migration] %s\n", line)
 		}
 	}
-	if rawErrs := validateBasketRawFields(data); len(rawErrs) > 0 {
+	if rawErrs := append(validateBasketRawFields(data), validateQuoteRawFields(data)...); len(rawErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(rawErrs, "\n  "))
 	}
 	var cfg Config
@@ -1079,6 +1092,7 @@ func loadConfigDataWith(path string, data []byte, skipLiveCredentialChecks bool,
 	cfg.migrationBaseVersion = migrationBaseVersion
 	cfg.migrationBaseVersionSet = true
 	cfg.noEdgeMigration = noEdgeReport
+	cfg.quoteLoad = opts.quoteLoad
 	if err := validateSchedulerRole(&cfg); err != nil {
 		return nil, err
 	}
@@ -1304,7 +1318,7 @@ func loadConfigDataWith(path string, data []byte, skipLiveCredentialChecks bool,
 
 	applyUserCloseDefaultRegimeATRs(&cfg)
 
-	if errs := productionRefusedAdmissionErrors(cfg.Strategies); len(errs) > 0 {
+	if errs := quoteAdmissionErrors(&cfg); len(errs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
 	}
 
@@ -1883,7 +1897,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 
 	errs = append(errs, validateUserDefaults(cfg.UserDefaults)...)
 
-	errs = append(errs, productionRefusedAdmissionErrors(cfg.Strategies)...)
+	errs = append(errs, quoteAdmissionErrors(cfg)...)
 	errs = append(errs, noEdgeAdmissionErrors(cfg.Strategies)...)
 
 	errs = append(errs, fixedIntervalStrategyErrors(cfg.Strategies)...)

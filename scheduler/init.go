@@ -219,6 +219,9 @@ func openStrategyRegisteredFor(name, registryPlatform string) bool {
 	if basketRankerStrategies[name] {
 		return false
 	}
+	if _, quote := quoteCapabilityStrategies[name]; quote {
+		return false
+	}
 	for _, p := range registeredOpenStrategyPlatforms[name] {
 		if p == registryPlatform {
 			return true

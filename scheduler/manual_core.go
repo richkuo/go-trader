@@ -322,6 +322,9 @@ func lookupForceCloseStrategy(cfg *Config, id string) (StrategyConfig, string, e
 		if sc.Platform != "hyperliquid" || sc.Type != "perps" {
 			return StrategyConfig{}, "", manualFailf("error: strategy %q has platform=%q type=%q; force-close only works with live Hyperliquid perps strategies", id, sc.Platform, sc.Type)
 		}
+		if quoteOwnedStrategy(sc) {
+			return StrategyConfig{}, "", manualFailf("error: strategy %q is quote-owned; its inventory exits only through the %s lane of the admitted quote coordinator", id, inventoryQuoteExitCloseName)
+		}
 		if !hyperliquidIsLive(sc.Args) {
 			return StrategyConfig{}, "", manualFailf("error: strategy %q is not live mode; force-close only works with live Hyperliquid perps strategies", id)
 		}

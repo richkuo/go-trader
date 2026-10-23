@@ -402,6 +402,7 @@ var closeStrategyOwnedKeys = map[string]map[string]struct{}{
 	"atr_stop":                          {"atr_mult": {}, "atr_source": {}},
 	"zscore_target":                     {"lookback": {}, "z_target": {}},
 	"avwap_stop":                        {"buffer_atr_mult": {}, "atr_source": {}},
+	"inventory_quote_exit":              {},
 }
 
 func migrateV14Direction(raw map[string]interface{}) {

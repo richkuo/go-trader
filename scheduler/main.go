@@ -473,6 +473,14 @@ func main() {
 		}
 		basketCoord.recoverInterrupted(time.Now())
 	}
+	if !readOnlyReport {
+		if err := quoteStartupRecoveryFor(shutdownReadOnlyCtx, store); err != nil {
+			fmt.Fprintf(os.Stderr, "[quote] CRITICAL: refusing to start: startup quote recovery failed: %v (exit %d)\n", err, ExitStorageOwnership)
+			sendStartupRefusalDM(notifier, "Quote recovery", fmt.Sprintf("%v (exit %d)", err, ExitStorageOwnership))
+			cleanupNotifier()
+			os.Exit(ExitStorageOwnership)
+		}
+	}
 
 	startupPartitions := activePartitions(cfg.Strategies)
 	liveCount, paperCount := scopeStrategyCounts(cfg.Strategies)
@@ -634,6 +642,9 @@ func main() {
 	}
 
 	defer func() {
+		for _, line := range quoteShutdownCleanupFor(store) {
+			fmt.Println("[shutdown] [quote] " + line)
+		}
 		runDrain()
 		mu.Lock()
 		if err := SaveStateWithStore(state, store); err != nil {
@@ -1305,7 +1316,7 @@ func main() {
 					hlReconcileDue = append(hlReconcileDue, sc)
 				}
 			}
-			hlKillSwitchAll := hlReconcileAll
+			hlKillSwitchAll := withoutQuoteOwned(hlReconcileAll, nil)
 
 			var okxLivePerps []StrategyConfig
 			var okxLiveSpot []StrategyConfig
@@ -1592,6 +1603,9 @@ func main() {
 							return nil, nil
 						}
 						return store.LoadPendingLimitOrders()
+					},
+					QuoteLane: func(budget time.Duration) killSwitchQuoteReport {
+						return killSwitchQuoteLane(store, budget)
 					},
 					HLLimitOrderRoster: killSwitchLimitOrderRoster(cfg.Strategies),
 					HLLimitOrderDeps: killSwitchLimitOrderDeps{
@@ -3691,6 +3705,12 @@ var runHyperliquidCheckFn = RunHyperliquidCheck
 var runHyperliquidCheckWithStdinFn = RunHyperliquidCheckWithStdin
 
 func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger, batch *hlBatchCycleResults, feed *marketFeedContext) (*HyperliquidResult, string, float64, bool) {
+	if why := quoteDispatchRefusal(*sc); why != "" {
+		if logger != nil {
+			logger.Error("%s", why)
+		}
+		return nil, "", 0, false
+	}
 	closeOwner := hlCloseOwnerForCheck(*sc, posCtx)
 	sentInvert := hlInvertOpenSignalForCheck(*sc, posCtx, regime)
 	if closeStrategySuppressedByOnChainProtection(*sc) {
@@ -3942,6 +3962,10 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 }
 
 func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash float64, poolBalanceKnown bool, posQty float64, posSide string, avgCost, posLeverage float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, closeCtx hlCloseContext, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+	if why := quoteDispatchRefusal(sc); why != "" {
+		logger.Error("%s", why)
+		return nil, false
+	}
 	if result.Signal == 0 {
 		logger.Info("Skipping live order for %s: no signal", result.Symbol)
 		return nil, false

@@ -344,7 +344,7 @@ func syncPaperFundingEligibility(state *AppState, cfgs []StrategyConfig, now tim
 	var lines []string
 	for _, sc := range cfgs {
 		s := state.Strategies[sc.ID]
-		if s == nil {
+		if s == nil || quoteFundingOwned(sc, s) {
 			continue
 		}
 		if !paperFundingEligible(sc) {
@@ -492,4 +492,8 @@ func validatePaperFundingState(st *paperFundingState) error {
 		}
 	}
 	return nil
+}
+
+func quoteFundingOwned(sc StrategyConfig, s *StrategyState) bool {
+	return quoteOwnedStrategy(sc) || (s != nil && s.Quote != nil)
 }

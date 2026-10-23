@@ -570,6 +570,7 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 
 func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error {
 	var errs []string
+	errs = append(errs, quoteReloadErrors(cfg, next, state)...)
 	nextByID := strategyConfigByID(next.Strategies)
 	for _, sc := range cfg.Strategies {
 		ns, ok := nextByID[sc.ID]

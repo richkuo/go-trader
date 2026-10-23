@@ -1585,7 +1585,7 @@ func forceClosePaperScopePositions(state *AppState, cfg *Config, part RiskPartit
 	var closed []string
 	for _, sc := range strategiesInPartition(cfg.Strategies, part) {
 		s, ok := state.Strategies[sc.ID]
-		if !ok || s == nil {
+		if !ok || s == nil || quoteFundingOwned(sc, s) {
 			continue
 		}
 		if len(s.Positions) == 0 && len(s.OptionPositions) == 0 {

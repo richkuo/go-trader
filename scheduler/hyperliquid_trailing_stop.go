@@ -471,7 +471,7 @@ func runHyperliquidFixedStopLossPaper(sc StrategyConfig, side string, pos *Posit
 }
 
 func applyPaperStopLossBreach(sc StrategyConfig, s *StrategyState, symbol, side string, mark float64, mu *sync.RWMutex, logger *StrategyLogger) (int, string) {
-	if hyperliquidIsLive(sc.Args) || s == nil || mu == nil {
+	if hyperliquidIsLive(sc.Args) || s == nil || mu == nil || quoteOwnedStrategy(sc) || s.Quote != nil {
 		return 0, ""
 	}
 	mu.Lock()
@@ -489,7 +489,7 @@ func applyPaperStopLossBreach(sc StrategyConfig, s *StrategyState, symbol, side 
 }
 
 func armPaperStopLossAtOpen(sc StrategyConfig, s *StrategyState, symbol string, mark float64, logger *StrategyLogger) (breach bool, fillPx float64, reason string) {
-	if hyperliquidIsLive(sc.Args) || s == nil || mark <= 0 {
+	if hyperliquidIsLive(sc.Args) || s == nil || mark <= 0 || quoteOwnedStrategy(sc) || s.Quote != nil {
 		return false, 0, ""
 	}
 	pos, ok := s.Positions[symbol]

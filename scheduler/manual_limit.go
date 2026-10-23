@@ -756,11 +756,15 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 	if store == nil {
 		return nil
 	}
-	orders, err := store.LoadPendingLimitOrders()
+	pending, err := store.LoadPendingOrdersCombined()
 	if err != nil {
 		fmt.Printf("[limit] failed to load pending limit orders: %v\n", err)
 		return nil
 	}
+	for _, line := range dispatchQuotePendingRows(store, pending.Quote) {
+		fmt.Println(line)
+	}
+	orders := pending.Manual
 	if len(orders) == 0 {
 		return nil
 	}

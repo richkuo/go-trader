@@ -110,6 +110,7 @@ type StrategyState struct {
 	EntryGuard                    *entryGuardState     `json:"-"`
 	RobinhoodOrders               *robinhoodOrderGuard `json:"-"`
 	Basket                        *basketRuntime       `json:"-"`
+	Quote                         *quoteOwnerState     `json:"-"`
 	deferTradePersist             bool
 	robinhoodPartitionSavePending bool
 	replayCapture                 *[]ReplayDecision

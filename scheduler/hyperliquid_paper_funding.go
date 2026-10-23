@@ -215,7 +215,7 @@ func planPaperFunding(state *AppState, cfgs []StrategyConfig) map[string]int64 {
 			continue
 		}
 		s := state.Strategies[sc.ID]
-		if s == nil || s.PaperFunding == nil {
+		if s == nil || s.PaperFunding == nil || quoteFundingOwned(sc, s) {
 			continue
 		}
 		symbols := make(map[string]bool)
@@ -563,7 +563,7 @@ func runPaperFundingAccounting(state *AppState, cfgs []StrategyConfig, store pap
 			continue
 		}
 		s := state.Strategies[sc.ID]
-		if s == nil {
+		if s == nil || quoteFundingOwned(sc, s) {
 			continue
 		}
 		part := partitionFor(sc)
@@ -577,18 +577,7 @@ func runPaperFundingAccounting(state *AppState, cfgs []StrategyConfig, store pap
 		if st == nil {
 			continue
 		}
-		observePaperFunding(s, nowMs)
-		syms := make([]string, 0, len(st.Coins))
-		for sym := range st.Coins {
-			syms = append(syms, sym)
-		}
-		sort.Strings(syms)
-		for _, sym := range syms {
-			c := st.Coins[sym]
-			if c.exposureNonzero() || len(c.openGaps()) > 0 {
-				c.maybeSample(marks[sym], nowMs)
-			}
-		}
+		syms := paperFundingSampleCoins(run, marks, true)
 		if blocked != nil && blocked(part) {
 			for _, a := range st.drainAlerts() {
 				run.event(a.Coin, a.Kind, a.Critical, "%s", a.Detail)
@@ -596,21 +585,7 @@ func runPaperFundingAccounting(state *AppState, cfgs []StrategyConfig, store pap
 			continue
 		}
 		processed[sc.ID] = true
-		for _, sym := range syms {
-			c := st.Coins[sym]
-			cov, ok := inputs.Coverage[sym]
-			run.settleCoin(sym, c, cov, ok, inputs.Detail[sym], inputs.NotServed[sym])
-			for _, line := range c.prune(nowMs) {
-				res.Logs = append(res.Logs, fmt.Sprintf("[paper-funding] %s %s: %s", sc.ID, sym, line))
-			}
-			_, hasPos := s.Positions[sym]
-			if !hasPos && c.Anchor.SignedQty == 0 && len(c.Segments) == 0 && len(c.Unknown) == 0 && len(c.Held) == 0 && len(c.Gaps) == 0 {
-				delete(st.Coins, sym)
-			}
-		}
-		for _, a := range st.drainAlerts() {
-			run.event(a.Coin, a.Kind, a.Critical, "%s", a.Detail)
-		}
+		paperFundingSettleCoins(run, syms, inputs)
 	}
 	for key := range paperFundingEpisodes {
 		id := strings.SplitN(key, "|", 2)[0]
@@ -621,6 +596,47 @@ func runPaperFundingAccounting(state *AppState, cfgs []StrategyConfig, store pap
 	}
 	sort.Strings(res.Logs)
 	return res
+}
+
+func paperFundingSampleCoins(run *paperFundingRun, marks map[string]float64, observe bool) []string {
+	s, st := run.s, run.st
+	if observe {
+		observePaperFunding(s, run.nowMs)
+	}
+	syms := make([]string, 0, len(st.Coins))
+	for sym := range st.Coins {
+		syms = append(syms, sym)
+	}
+	sort.Strings(syms)
+	for _, sym := range syms {
+		c := st.Coins[sym]
+		if c.exposureNonzero() || len(c.openGaps()) > 0 {
+			c.maybeSample(marks[sym], run.nowMs)
+		}
+	}
+	return syms
+}
+
+func paperFundingSettleCoins(run *paperFundingRun, syms []string, inputs paperFundingInputs) {
+	s, st, res := run.s, run.st, run.res
+	for _, sym := range syms {
+		c := st.Coins[sym]
+		if c == nil {
+			continue
+		}
+		cov, ok := inputs.Coverage[sym]
+		run.settleCoin(sym, c, cov, ok, inputs.Detail[sym], inputs.NotServed[sym])
+		for _, line := range c.prune(run.nowMs) {
+			res.Logs = append(res.Logs, fmt.Sprintf("[paper-funding] %s %s: %s", run.sc.ID, sym, line))
+		}
+		_, hasPos := s.Positions[sym]
+		if !hasPos && c.Anchor.SignedQty == 0 && len(c.Segments) == 0 && len(c.Unknown) == 0 && len(c.Held) == 0 && len(c.Gaps) == 0 {
+			delete(st.Coins, sym)
+		}
+	}
+	for _, a := range st.drainAlerts() {
+		run.event(a.Coin, a.Kind, a.Critical, "%s", a.Detail)
+	}
 }
 
 func runPaperFundingCycle(ctx context.Context, state *AppState, cfg *Config, store *StateStore, mu *sync.RWMutex, feedMode bool, snap *marketSnapshot, marks map[string]float64, notifier *MultiNotifier) {

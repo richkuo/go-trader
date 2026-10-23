@@ -58,6 +58,9 @@ func hyperliquidBatchEligible(sc StrategyConfig) bool {
 	if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 		return false
 	}
+	if quoteOwnedStrategy(sc) {
+		return false
+	}
 	if strings.TrimSpace(sc.Script) != hyperliquidCheckScript {
 		return false
 	}

@@ -323,6 +323,31 @@ def test_go_native_close_names_mirror_python_close_registry():
     assert set(owned) & set(OPEN_REGISTRY.STRATEGIES) == set()
 
 
+def go_research_only_closes():
+    block = _go_block(_go_source("quote_config.go"), "var researchOnlyCloseStrategies = map[string]bool{")
+    names = set()
+    for line in block.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^(\w+|\"\w+\"):\s*true,$", line)
+        assert m, f"unparsed line in researchOnlyCloseStrategies: {line!r}"
+        names.add(m.group(1).strip('"'))
+    consts = _go_string_consts(_go_source("quote_config.go"))
+    return {consts.get(n, n) for n in names}
+
+
+def test_go_research_only_closes_equal_python_close_registry():
+    go = go_research_only_closes()
+    py = CLOSE_REGISTRY.research_only_close_names()
+    assert go == py == {"inventory_quote_exit"}
+    for name in py:
+        for platform in CLOSE_REGISTRY.VALID_PLATFORMS:
+            assert name not in CLOSE_REGISTRY.build_close_registry(platform)
+        with pytest.raises(ValueError, match="research-only"):
+            CLOSE_REGISTRY.evaluate(name, {}, {}, {})
+
+
 def go_basket_rankers():
     block = _go_block(_go_source("basket_config.go"), "var basketRankerStrategies = map[string]bool{")
     entries = re.findall(r'^\s*"(\w+)":\s*(true|false),\s*$', block, re.M)

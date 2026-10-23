@@ -505,7 +505,7 @@ func collectHLLiquidationAuditCandidates(
 		return nil
 	}
 	var liveHL []StrategyConfig
-	for _, sc := range strategies {
+	for _, sc := range withoutQuoteOwned(strategies, nil) {
 		if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") || !hyperliquidIsLive(sc.Args) {
 			continue
 		}
