@@ -48,6 +48,7 @@ coordinator_active=0
 coordinator_done=0
 update_succeeded=0
 mutation_started=0
+snapshot_started=0
 snapshot_ready=0
 recovery_root=""
 recovery_key=""
@@ -255,41 +256,47 @@ run_tracked_child() {
 }
 
 stop_update_children() {
+    local -a pids_to_stop=()
     if [[ -n "$active_child_pid" ]] && kill -0 "$active_child_pid" 2>/dev/null; then
         if command -v pgrep >/dev/null 2>&1; then
             local gpid
             while IFS= read -r gpid; do
-                [[ -n "$gpid" ]] || continue
-                kill -TERM "$gpid" 2>/dev/null || true
+                [[ -n "$gpid" ]] && pids_to_stop+=("$gpid")
             done < <(pgrep -P "$active_child_pid" 2>/dev/null || true)
         fi
-        kill -TERM "$active_child_pid" 2>/dev/null || true
-        wait "$active_child_pid" 2>/dev/null || true
+        pids_to_stop+=("$active_child_pid")
     fi
-    active_child_pid=""
     if command -v pgrep >/dev/null 2>&1; then
         local cpid
         while IFS= read -r cpid; do
-            [[ -n "$cpid" ]] || continue
-            kill -TERM "$cpid" 2>/dev/null || true
+            [[ -n "$cpid" ]] && pids_to_stop+=("$cpid")
         done < <(pgrep -P "$main_shell_pid" 2>/dev/null || true)
     fi
-}
-
-update_pause_if_requested() {
-    local want="$1"
-    local spec="${GO_TRADER_UPDATE_PAUSE_AT:-}"
-    [[ -n "$spec" ]] || return 0
-    local stage="${spec%%:*}"
-    local sentinel="${spec#*:}"
-    [[ "$stage" == "$want" && -n "$sentinel" ]] || return 0
-    printf '%s\n' "$main_shell_pid" >"${sentinel}.reached"
-    while [[ ! -e "$sentinel" ]]; do
-        sleep 0.1 &
-        active_child_pid=$!
-        wait "$active_child_pid" 2>/dev/null || true
-        active_child_pid=""
+    local p
+    for p in ${pids_to_stop[@]+"${pids_to_stop[@]}"}; do
+        kill -TERM "$p" 2>/dev/null || true
     done
+    local i still_alive=0
+    for i in $(seq 1 20); do
+        still_alive=0
+        for p in ${pids_to_stop[@]+"${pids_to_stop[@]}"}; do
+            if kill -0 "$p" 2>/dev/null; then
+                still_alive=1
+                break
+            fi
+        done
+        [[ "$still_alive" == "0" ]] && break
+        sleep 0.1
+    done
+    if [[ "$still_alive" == "1" ]]; then
+        for p in ${pids_to_stop[@]+"${pids_to_stop[@]}"}; do
+            kill -KILL "$p" 2>/dev/null || true
+        done
+    fi
+    if [[ -n "$active_child_pid" ]]; then
+        wait "$active_child_pid" 2>/dev/null || true
+    fi
+    active_child_pid=""
 }
 
 update_record_intent() {
@@ -297,6 +304,7 @@ update_record_intent() {
     mutation_started=1
     if [[ -n "$recovery_dir" && -d "$recovery_dir" ]]; then
         printf '%s\n' "$stage" >>"$recovery_dir/intents.log" 2>/dev/null || true
+        printf 'intent=%s\n' "$stage" >>"${recovery_dir}.state" 2>/dev/null || true
     fi
 }
 
@@ -718,8 +726,8 @@ update_exit_coordinator() {
             fi
         fi
         rm -f "$tree_owner_snapshot" "$egress_state_file"
-        if [[ -n "$recovery_dir" && -d "$recovery_dir" ]]; then
-            rm -rf "$recovery_dir"
+        if [[ -n "$recovery_dir" ]]; then
+            rm -rf "$recovery_dir" "${recovery_dir}.state"
         fi
         if [[ "$update_lock_held" == "1" ]]; then
             update_release_lock "$recovery_root" "$recovery_key" "$main_shell_pid"
@@ -735,25 +743,28 @@ update_exit_coordinator() {
     [[ -n "$failure_reason" ]] || failure_reason="command exited with status $exit_rc in phase=${phase_name:-unknown}"
 
     if [[ "$mutation_started" != "1" ]]; then
-        rm -f ./go-trader.new "$egress_state_file"
-        if [[ -n "$egress_staged" ]]; then
-            rm -rf "$(dirname "$egress_staged")" 2>/dev/null || true
-        fi
-        if [[ -n "$tree_owner" && -n "$tree_owner_snapshot" && -f "$tree_owner_snapshot" ]]; then
-            update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot" >/dev/null 2>&1 || true
-        fi
-        rm -f "$tree_owner_snapshot"
-        if [[ -n "$recovery_dir" && -d "$recovery_dir" && ! -f "$recovery_dir/incomplete" ]]; then
-            rm -rf "$recovery_dir"
-        fi
         if [[ "$update_lock_held" == "1" ]]; then
+            rm -f ./go-trader.new "$egress_state_file"
+            if [[ -n "$egress_staged" ]]; then
+                rm -rf "$(dirname "$egress_staged")" 2>/dev/null || true
+            fi
+            if [[ -n "$tree_owner" && -n "$tree_owner_snapshot" && -f "$tree_owner_snapshot" ]]; then
+                update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot" >/dev/null 2>&1 || true
+            fi
+            if [[ "$snapshot_started" == "1" && -n "$recovery_dir" && -d "$recovery_dir" && ! -f "$recovery_root/${recovery_key}.incomplete" ]]; then
+                rm -rf "$recovery_dir" "${recovery_dir}.state"
+            fi
             update_release_lock "$recovery_root" "$recovery_key" "$main_shell_pid"
             update_lock_held=0
         fi
+        rm -f "$tree_owner_snapshot"
         exit "$exit_rc"
     fi
 
     echo "[update] recovery: starting recovery after failure ($failure_reason)" >&2
+    if [[ -n "${GO_TRADER_UPDATE_RECOVERY_SLEEP_SEC:-}" ]]; then
+        sleep "${GO_TRADER_UPDATE_RECOVERY_SLEEP_SEC}"
+    fi
 
     local stage_stop_service="skipped"
     local stage_restore_files="pending"
@@ -911,14 +922,16 @@ update_exit_coordinator() {
     rm -f "$tree_owner_snapshot" "$egress_state_file"
     if [[ "$any_failed" == "0" ]]; then
         echo "[update] recovery: complete ($stages_summary)" >&2
-        if [[ -n "$recovery_dir" && -d "$recovery_dir" ]]; then
-            rm -rf "$recovery_dir"
+        if [[ -n "$recovery_dir" ]]; then
+            rm -rf "$recovery_dir" "${recovery_dir}.state"
         fi
     else
         update_write_incomplete_marker "$recovery_root" "$recovery_key" "$repo_root" "$recovery_dir" "$failure_reason" "$stages_summary"
+        local clear_cmd="bash scripts/update.sh --clear-recovery"
+        [[ "$EUID" == "0" ]] && clear_cmd="sudo bash scripts/update.sh --clear-recovery"
         echo "[update] recovery: INCOMPLETE ($stages_summary)" >&2
         echo "[update] recovery: snapshot retained at $recovery_dir (manifest: $recovery_dir/manifest.env, marker: $recovery_root/${recovery_key}.incomplete)" >&2
-        echo "[update] recovery: ACTION REQUIRED: inspect $recovery_dir, repair the deployment, then run: bash scripts/update.sh --clear-recovery" >&2
+        echo "[update] recovery: ACTION REQUIRED: inspect $recovery_dir, repair the deployment, then run: $clear_cmd" >&2
     fi
 
     if [[ "$update_lock_held" == "1" ]]; then
@@ -943,8 +956,10 @@ fi
 if [[ "$update_all" == "1" ]]; then
     forward_all_signal() {
         local sig="$1"
+        local child_sig="$sig"
+        [[ "$sig" == "INT" ]] && child_sig="TERM"
         if [[ -n "$all_child_pid" ]] && kill -0 "$all_child_pid" 2>/dev/null; then
-            kill "-$sig" "$all_child_pid" 2>/dev/null || true
+            kill "-$child_sig" "$all_child_pid" 2>/dev/null || true
             wait "$all_child_pid" 2>/dev/null || true
         fi
         case "$sig" in
@@ -1140,15 +1155,6 @@ if [[ -n "$(update_tree_foreign_accounts "$repo_root")" ]]; then
     probe_owner=$(update_tree_foreign_owner "$repo_root")
     [[ -n "$probe_owner" ]] || probe_owner=$(update_tree_foreign_owner "$repo_root/.git")
 fi
-if [[ -n "$tree_owner" ]]; then
-    echo "[update] $owner_scope belongs to $(update_path_owner_name "$owner_scope"); git trusts only this tree for each command, and files this update writes there are given back to that owner"
-    tree_owner_snapshot=$(mktemp "${TMPDIR:-/tmp}/go-trader-owner.XXXXXX") || fail "could not create a temporary file for the ownership list"
-    if ! update_owner_snapshot "$owner_scope" "$tree_owner_snapshot"; then
-        rm -f "$tree_owner_snapshot"
-        tree_owner_snapshot=""
-        fail "could not list the root-owned paths under $owner_scope before the update; nothing changed"
-    fi
-fi
 
 uv_bin=$(update_resolve_tool uv) \
     || fail "uv not on PATH and not at $(update_tool_fixed_text uv) — install uv system-wide so every account finds it (SKILL.md → Prerequisites)"
@@ -1188,14 +1194,31 @@ update_managed_rsync_excludes "$repo_root" \
 
 recovery_root=$(update_recovery_root)
 recovery_key=$(update_recovery_key "$repo_root")
-recovery_dir="$recovery_root/$recovery_key"
-update_acquire_lock "$recovery_root" "$recovery_key" "$main_shell_pid" "$repo_root" \
-    || fail "another update is already in progress for $repo_root"
+update_check_incomplete_marker "$recovery_root" "$recovery_key" "$repo_root" \
+    || fail "incomplete recovery marker blocks update of $repo_root; inspect the saved snapshot and run --clear-recovery"
+lock_rc=0
+update_acquire_lock "$recovery_root" "$recovery_key" "$main_shell_pid" "$repo_root" || lock_rc=$?
+if [[ "$lock_rc" -eq 2 ]]; then
+    fail "cannot create or access recovery directory $recovery_root"
+elif [[ "$lock_rc" -ne 0 ]]; then
+    fail "another update is already in progress for $repo_root"
+fi
 update_lock_held=1
+recovery_dir="$recovery_root/$recovery_key"
 
 update_check_incomplete_marker "$recovery_root" "$recovery_key" "$repo_root" \
-    || fail "incomplete recovery marker blocks update of $repo_root; inspect the saved snapshot and run: bash scripts/update.sh --clear-recovery"
+    || fail "incomplete recovery marker blocks update of $repo_root; inspect the saved snapshot and run --clear-recovery"
 update_pause_if_requested locked
+
+if [[ -n "$tree_owner" ]]; then
+    echo "[update] $owner_scope belongs to $(update_path_owner_name "$owner_scope"); git trusts only this tree for each command, and files this update writes there are given back to that owner"
+    tree_owner_snapshot=$(mktemp "${TMPDIR:-/tmp}/go-trader-owner.XXXXXX") || fail "could not create a temporary file for the ownership list"
+    if ! update_owner_snapshot "$owner_scope" "$tree_owner_snapshot"; then
+        rm -f "$tree_owner_snapshot"
+        tree_owner_snapshot=""
+        fail "could not list the root-owned paths under $owner_scope before the update; nothing changed"
+    fi
+fi
 
 if [[ -n "$rsync_from" ]]; then
     rsync_from=$(cd "$rsync_from" && pwd)
@@ -1349,10 +1372,12 @@ pre_update_status_port="${pre_update_status_port:-8099}"
 end_phase
 
 begin_phase snapshot
+snapshot_started=1
 update_take_snapshot "$repo_root" "$recovery_dir" "$unit_sync_source_path" "$unit_sync_installed_path" "$egress_deployment" \
     || fail "pre-update snapshot failed in $recovery_dir; nothing in $repo_root was modified"
 snapshot_ready=1
 echo "[update] snapshot: saved pre-update state in $recovery_dir"
+update_pause_if_requested snapshot_done
 end_phase
 
 if [[ -n "$rsync_from" ]]; then
@@ -1448,6 +1473,7 @@ else
     probe_ok=0
     ./go-trader.new probe && probe_ok=1
 fi
+update_pause_if_requested probe
 if update_should_fail_at probe; then
     probe_ok=0
 fi

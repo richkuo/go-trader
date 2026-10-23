@@ -1571,6 +1571,13 @@ if os.path.islink(cfg_path):
         sys.exit(1)
     if real_cfg.startswith(deploy.rstrip("/") + "/"):
         print("CFG_TARGET=" + real_cfg[len(deploy.rstrip("/")) + 1:])
+else:
+    real_cfg = os.path.realpath(cfg_path)
+cfg_dir = os.path.dirname(real_cfg)
+if cfg_dir == deploy:
+    print("CFG_DIR_REL=.")
+elif cfg_dir.startswith(deploy.rstrip("/") + "/"):
+    print("CFG_DIR_REL=" + cfg_dir[len(deploy.rstrip("/")) + 1:])
 role = cfg.get("role")
 is_feed = isinstance(role, str) and role.strip() == "feed"
 if not is_feed:
@@ -1608,12 +1615,32 @@ PY
         --exclude='scheduler/config.json'
         --exclude='trading_bot.db*'
         --exclude='scheduler/ohlcv_cache.sqlite3*'
+        --exclude='/scheduler/tuning_runs/'
+        --exclude='scheduler/tuning_runs/'
     )
-    local line db_excl db_glob rel_p
+    local line db_excl db_glob rel_p cfg_dir_rel
     while IFS= read -r line; do
         case "$line" in
             CFG_TARGET=*)
                 UPDATE_MANAGED_EXCLUDES+=(--exclude="/${line#CFG_TARGET=}")
+                ;;
+            CFG_DIR_REL=*)
+                cfg_dir_rel="${line#CFG_DIR_REL=}"
+                if [[ "$cfg_dir_rel" == "." ]]; then
+                    UPDATE_MANAGED_EXCLUDES+=(
+                        --exclude='/tuning_runs/'
+                        --exclude='tuning_runs/'
+                        --exclude='/ohlcv_cache.sqlite3*'
+                        --exclude='ohlcv_cache.sqlite3*'
+                    )
+                elif [[ -n "$cfg_dir_rel" ]]; then
+                    UPDATE_MANAGED_EXCLUDES+=(
+                        --exclude="/${cfg_dir_rel}/tuning_runs/"
+                        --exclude="${cfg_dir_rel}/tuning_runs/"
+                        --exclude="/${cfg_dir_rel}/ohlcv_cache.sqlite3*"
+                        --exclude="${cfg_dir_rel}/ohlcv_cache.sqlite3*"
+                    )
+                fi
                 ;;
             DB_REL=*)
                 UPDATE_MANAGED_EXCLUDES+=(--exclude="/${line#DB_REL=}*" --exclude="${line#DB_REL=}*")
@@ -1713,6 +1740,63 @@ update_recovery_root() {
     printf '%s/go-trader-update' "${state_home%/}"
 }
 
+update_candidate_recovery_roots() {
+    local deploy_dir="${1:-$PWD}" explicit_root="${2:-}"
+    local -a raw_roots=()
+    if [[ -n "$explicit_root" ]]; then
+        raw_roots+=("${explicit_root%/}")
+    fi
+    if [[ -n "${GO_TRADER_UPDATE_RECOVERY_DIR:-}" ]]; then
+        raw_roots+=("${GO_TRADER_UPDATE_RECOVERY_DIR%/}")
+    fi
+    raw_roots+=("$(update_recovery_root)")
+    raw_roots+=("/var/lib/go-trader-update")
+    if [[ -n "${GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR:-}" ]]; then
+        raw_roots+=("${GO_TRADER_UPDATE_SYSTEM_RECOVERY_DIR%/}")
+    fi
+    local owner_homes
+    owner_homes=$(python3 - "$deploy_dir" "${SUDO_USER:-}" <<'PY' 2>/dev/null || true
+import os, pwd, sys
+deploy = sys.argv[1]
+sudo_user = sys.argv[2]
+uids = set()
+for p in (deploy, os.path.join(deploy, ".git")):
+    try:
+        st = os.lstat(p)
+        if st.st_uid != 0:
+            uids.add(st.st_uid)
+    except OSError:
+        pass
+for uid in sorted(uids):
+    try:
+        h = pwd.getpwuid(uid).pw_dir
+        if h and h != "/nonexistent":
+            print(h.rstrip("/") + "/.local/state/go-trader-update")
+    except KeyError:
+        pass
+if sudo_user:
+    try:
+        h = pwd.getpwnam(sudo_user).pw_dir
+        if h and h != "/nonexistent":
+            print(h.rstrip("/") + "/.local/state/go-trader-update")
+    except KeyError:
+        pass
+PY
+    )
+    local line seen=$'\n' r
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && raw_roots+=("${line%/}")
+    done <<<"$owner_homes"
+    for r in "${raw_roots[@]}"; do
+        [[ -n "$r" ]] || continue
+        case "$seen" in
+            *$'\n'"$r"$'\n'*) continue ;;
+        esac
+        seen="${seen}${r}"$'\n'
+        printf '%s\n' "$r"
+    done
+}
+
 update_recovery_key() {
     local canon
     canon=$(update_realpath "$1")
@@ -1736,33 +1820,26 @@ PY
 update_pid_alive() {
     local pid="$1"
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-    if kill -0 "$pid" 2>/dev/null; then
-        return 0
-    fi
-    if [[ -d "/proc/$pid" ]]; then
-        return 0
-    fi
-    ps -p "$pid" >/dev/null 2>&1
+    python3 - "$pid" <<'PY' 2>/dev/null
+import errno, os, sys
+pid = int(sys.argv[1])
+try:
+    os.kill(pid, 0)
+    sys.exit(0)
+except PermissionError:
+    sys.exit(0)
+except ProcessLookupError:
+    sys.exit(1)
+except OSError as e:
+    if e.errno == errno.EPERM:
+        sys.exit(0)
+    sys.exit(1)
+PY
 }
 
-update_ensure_recovery_root() {
-    local root="$1"
-    mkdir -p "$root" || return 1
-    chmod 0700 "$root" || return 1
-    if [[ "$EUID" == "0" ]]; then
-        chown 0:0 "$root" 2>/dev/null || true
-    fi
-    return 0
-}
-
-update_acquire_lock() {
-    local root="$1" key="$2" owner_pid="$3" deploy_dir="$4"
-    update_ensure_recovery_root "$root" || return 1
-    local lock_dir="$root/${key}.lock"
-    if mkdir -m 0700 "$lock_dir" 2>/dev/null; then
-        printf '%s\n' "$owner_pid" >"$lock_dir/pid"
-        return 0
-    fi
+update_lock_holder_pid() {
+    local lock_dir="$1"
+    [[ -d "$lock_dir" ]] || return 1
     local holder_pid="" i
     for i in 1 2 3 4 5; do
         if [[ -f "$lock_dir/pid" ]]; then
@@ -1771,17 +1848,65 @@ update_acquire_lock() {
         fi
         sleep 0.05
     done
+    printf '%s' "$holder_pid"
+    return 0
+}
+
+update_ensure_recovery_root() {
+    local root="$1"
+    mkdir -p "$root" 2>/dev/null || return 1
+    [[ -d "$root" && -w "$root" ]] || return 1
+    chmod 0755 "$root" 2>/dev/null || return 1
+    if [[ "$EUID" == "0" ]]; then
+        chown 0:0 "$root" 2>/dev/null || true
+    fi
+    return 0
+}
+
+update_acquire_lock() {
+    local root="$1" key="$2" owner_pid="$3" deploy_dir="$4"
+    local cand_root cand_lock holder_pid
+    while IFS= read -r cand_root; do
+        [[ -n "$cand_root" ]] || continue
+        cand_lock="$cand_root/${key}.lock"
+        [[ -d "$cand_lock" ]] || continue
+        holder_pid=$(update_lock_holder_pid "$cand_lock" || true)
+        if [[ -z "$holder_pid" ]] || update_pid_alive "$holder_pid"; then
+            echo "[update] lock: another update is already running for $deploy_dir (lock $cand_lock held by pid ${holder_pid:-starting})" >&2
+            return 1
+        fi
+        echo "[update] lock: removing stale lock $cand_lock from dead pid $holder_pid" >&2
+        if ! rm -rf "$cand_lock" 2>/dev/null || [[ -d "$cand_lock" ]]; then
+            echo "[update] lock: cannot remove stale lock $cand_lock from dead pid $holder_pid; remove it with sudo" >&2
+            return 1
+        fi
+    done < <(update_candidate_recovery_roots "$deploy_dir" "$root")
+
+    if ! update_ensure_recovery_root "$root"; then
+        echo "[update] lock: cannot create or access recovery directory $root" >&2
+        return 2
+    fi
+    local lock_dir="$root/${key}.lock"
+    if mkdir -m 0755 "$lock_dir" 2>/dev/null; then
+        printf '%s\n' "$owner_pid" >"$lock_dir/pid"
+        printf '%s\n' "$EUID" >"$lock_dir/uid"
+        chmod 0644 "$lock_dir/pid" "$lock_dir/uid" 2>/dev/null || true
+        return 0
+    fi
+    holder_pid=$(update_lock_holder_pid "$lock_dir" || true)
     if [[ -z "$holder_pid" ]] || update_pid_alive "$holder_pid"; then
         echo "[update] lock: another update is already running for $deploy_dir (lock $lock_dir held by pid ${holder_pid:-starting})" >&2
         return 1
     fi
     echo "[update] lock: removing stale lock $lock_dir from dead pid $holder_pid" >&2
-    rm -rf "$lock_dir"
-    if ! mkdir -m 0700 "$lock_dir" 2>/dev/null; then
+    rm -rf "$lock_dir" 2>/dev/null || true
+    if ! mkdir -m 0755 "$lock_dir" 2>/dev/null; then
         echo "[update] lock: another update acquired $lock_dir concurrently for $deploy_dir" >&2
         return 1
     fi
     printf '%s\n' "$owner_pid" >"$lock_dir/pid"
+    printf '%s\n' "$EUID" >"$lock_dir/uid"
+    chmod 0644 "$lock_dir/pid" "$lock_dir/uid" 2>/dev/null || true
     return 0
 }
 
@@ -1802,50 +1927,106 @@ update_release_lock() {
 
 update_check_incomplete_marker() {
     local root="$1" key="$2" deploy_dir="$3"
-    [[ -d "$root" ]] || return 0
     local cur_canon cur_dev_ino
     cur_canon=$(update_realpath "$deploy_dir")
     cur_dev_ino=$(update_path_dev_ino "$cur_canon" || true)
 
-    local mfile m_path m_dev_ino m_snap ts stale_dest
-    shopt -s nullglob
-    local -a markers=( "$root"/*.incomplete )
-    shopt -u nullglob
-    for mfile in ${markers[@]+"${markers[@]}"}; do
-        [[ -f "$mfile" ]] || continue
-        m_path=$(sed -n 's/^deploy_path=//p' "$mfile" | head -n 1)
-        m_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$mfile" | head -n 1)
-        m_snap=$(sed -n 's/^snapshot_dir=//p' "$mfile" | head -n 1)
-        if [[ -z "$m_path" || ! -d "$m_path" ]]; then
-            echo "[update] recovery: stale incomplete-recovery marker $mfile for missing directory ${m_path:-<unknown>} (snapshot: ${m_snap:-none}; does not block)" >&2
-            continue
-        fi
-        local actual_dev_ino
-        actual_dev_ino=$(update_path_dev_ino "$m_path" || true)
-        if [[ -n "$m_dev_ino" && -n "$actual_dev_ino" && "$m_dev_ino" != "$actual_dev_ino" ]]; then
-            echo "[update] recovery: stale incomplete-recovery marker $mfile for replaced directory $m_path (recorded $m_dev_ino != current $actual_dev_ino; snapshot: ${m_snap:-none}; does not block)" >&2
-            if [[ "$mfile" == "$root/${key}.incomplete" ]]; then
-                ts=$(date -u +%Y%m%dT%H%M%SZ)
-                stale_dest="$root/${key}.cleared-${ts}-stale-$$"
-                if [[ -d "$root/$key" ]]; then
-                    mv -f "$root/$key" "$stale_dest"
-                    echo "[update] recovery: moved stale snapshot $root/$key to $stale_dest" >&2
-                fi
-                rm -f "$mfile"
-            fi
-            continue
-        fi
-    done
+    local cand_root mfile m_path m_dev_ino m_snap m_uid ts stale_dest
+    while IFS= read -r cand_root; do
+        [[ -n "$cand_root" && -d "$cand_root" ]] || continue
 
-    local own_marker="$root/${key}.incomplete"
-    if [[ -f "$own_marker" ]]; then
-        m_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$own_marker" | head -n 1)
-        m_snap=$(sed -n 's/^snapshot_dir=//p' "$own_marker" | head -n 1)
-        if [[ -z "$m_dev_ino" || "$m_dev_ino" == "$cur_dev_ino" ]]; then
-            echo "[update] REFUSED: incomplete recovery marker $own_marker blocks update of $cur_canon (snapshot: ${m_snap:-$root/$key}). Inspect the saved snapshot and manifest, verify the deployment, then run: bash scripts/update.sh --clear-recovery" >&2
-            return 1
+        shopt -s nullglob
+        local -a markers=( "$cand_root"/*.incomplete )
+        shopt -u nullglob
+        for mfile in ${markers[@]+"${markers[@]}"}; do
+            [[ -f "$mfile" ]] || continue
+            m_path=$(sed -n 's/^deploy_path=//p' "$mfile" | head -n 1)
+            m_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$mfile" | head -n 1)
+            m_snap=$(sed -n 's/^snapshot_dir=//p' "$mfile" | head -n 1)
+            if [[ -z "$m_path" || ! -d "$m_path" ]]; then
+                echo "[update] recovery: stale incomplete-recovery marker $mfile for missing directory ${m_path:-<unknown>} (snapshot: ${m_snap:-none}; does not block)" >&2
+                continue
+            fi
+            local actual_dev_ino
+            actual_dev_ino=$(update_path_dev_ino "$m_path" || true)
+            if [[ -n "$m_dev_ino" && -n "$actual_dev_ino" && "$m_dev_ino" != "$actual_dev_ino" ]]; then
+                echo "[update] recovery: stale incomplete-recovery marker $mfile for replaced directory $m_path (recorded $m_dev_ino != current $actual_dev_ino; snapshot: ${m_snap:-none}; does not block)" >&2
+                if [[ "$mfile" == "$cand_root/${key}.incomplete" && -w "$cand_root" ]]; then
+                    ts=$(date -u +%Y%m%dT%H%M%SZ)
+                    stale_dest="$cand_root/${key}.cleared-${ts}-stale-$$"
+                    if [[ -d "$cand_root/$key" ]]; then
+                        mv -f "$cand_root/$key" "$stale_dest"
+                        echo "[update] recovery: moved stale snapshot $cand_root/$key to $stale_dest" >&2
+                    fi
+                    rm -f "$mfile" "$cand_root/${key}.state"
+                fi
+                continue
+            fi
+        done
+
+        local own_marker="$cand_root/${key}.incomplete"
+        if [[ ! -f "$own_marker" && ( -d "$cand_root/$key" || -f "$cand_root/${key}.state" ) && "${snapshot_started:-0}" != "1" ]]; then
+            local lock_holder="" other_live=0
+            if [[ -d "$cand_root/${key}.lock" ]]; then
+                lock_holder=$(update_lock_holder_pid "$cand_root/${key}.lock" || true)
+                if [[ -n "$lock_holder" && "$lock_holder" != "${main_shell_pid:-$$}" ]] && update_pid_alive "$lock_holder"; then
+                    other_live=1
+                fi
+            fi
+            if [[ "$other_live" == "0" ]]; then
+                local is_killed_mutated=0 snap_dev_ino="" intents_list=""
+                if [[ -f "$cand_root/$key/COMPLETE" && -s "$cand_root/$key/intents.log" ]]; then
+                    is_killed_mutated=1
+                    snap_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$cand_root/$key/manifest.env" 2>/dev/null | tr -d "'\"\\" | head -n 1)
+                    intents_list=$(tr '\n' ',' <"$cand_root/$key/intents.log" 2>/dev/null | sed 's/,$//')
+                elif [[ -f "$cand_root/${key}.state" ]] && grep -q '^complete=1$' "$cand_root/${key}.state" 2>/dev/null && grep -q '^intent=' "$cand_root/${key}.state" 2>/dev/null; then
+                    is_killed_mutated=1
+                    snap_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$cand_root/${key}.state" 2>/dev/null | head -n 1)
+                    intents_list=$(sed -n 's/^intent=//p' "$cand_root/${key}.state" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+                elif [[ -f "$cand_root/$key/COMPLETE" && ( -e "$deploy_dir/.venv.restore-old" || -e "$deploy_dir/.venv.restore-new" ) ]]; then
+                    is_killed_mutated=1
+                    snap_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$cand_root/$key/manifest.env" 2>/dev/null | tr -d "'\"\\" | head -n 1)
+                    intents_list="recovery_venv"
+                fi
+                if [[ "$is_killed_mutated" == "1" ]]; then
+                    if [[ -n "$snap_dev_ino" && -n "$cur_dev_ino" && "$snap_dev_ino" != "$cur_dev_ino" ]]; then
+                        if [[ -w "$cand_root" ]]; then
+                            ts=$(date -u +%Y%m%dT%H%M%SZ)
+                            stale_dest="$cand_root/${key}.cleared-${ts}-stale-$$"
+                            [[ -d "$cand_root/$key" ]] && mv -f "$cand_root/$key" "$stale_dest"
+                            rm -f "$cand_root/${key}.state"
+                        fi
+                    else
+                        if [[ -w "$cand_root" ]]; then
+                            update_write_incomplete_marker "$cand_root" "$key" "$deploy_dir" "$cand_root/$key" "previous update was killed or lost power after mutation started (${intents_list:-unknown})" "interrupted=killed" || true
+                        fi
+                        if [[ ! -f "$own_marker" ]]; then
+                            local clear_killed="bash scripts/update.sh --clear-recovery"
+                            [[ "$(update_path_uid "$cand_root" 2>/dev/null || echo "")" == "0" ]] && clear_killed="sudo bash scripts/update.sh --clear-recovery"
+                            echo "[update] REFUSED: incomplete recovery marker for killed update in $cand_root/$key blocks update of $cur_canon. Inspect $cand_root/$key, verify the deployment, then run: $clear_killed" >&2
+                            return 1
+                        fi
+                    fi
+                elif [[ "${update_lock_held:-0}" == "1" && -w "$cand_root" ]]; then
+                    rm -rf "$cand_root/$key" "$cand_root/${key}.state"
+                fi
+            fi
         fi
-    fi
+
+        if [[ -f "$own_marker" ]]; then
+            m_dev_ino=$(sed -n 's/^deploy_dev_ino=//p' "$own_marker" | head -n 1)
+            m_snap=$(sed -n 's/^snapshot_dir=//p' "$own_marker" | head -n 1)
+            m_uid=$(sed -n 's/^owner_uid=//p' "$own_marker" | head -n 1)
+            if [[ -z "$m_dev_ino" || "$m_dev_ino" == "$cur_dev_ino" ]]; then
+                local clear_cmd="bash scripts/update.sh --clear-recovery"
+                if [[ "${m_uid:-}" == "0" || "$(update_path_uid "$own_marker" 2>/dev/null || echo "")" == "0" ]]; then
+                    clear_cmd="sudo bash scripts/update.sh --clear-recovery"
+                fi
+                echo "[update] REFUSED: incomplete recovery marker $own_marker blocks update of $cur_canon (snapshot: ${m_snap:-$cand_root/$key}). Inspect the saved snapshot and manifest, verify the deployment, then run: $clear_cmd" >&2
+                return 1
+            fi
+        fi
+    done < <(update_candidate_recovery_roots "$deploy_dir" "$root")
     return 0
 }
 
@@ -1860,16 +2041,14 @@ update_write_incomplete_marker() {
     {
         printf 'deploy_path=%s\n' "$canon"
         printf 'deploy_dev_ino=%s\n' "$dev_ino"
+        printf 'owner_uid=%s\n' "$EUID"
         printf 'snapshot_dir=%s\n' "$snap_dir"
         printf 'manifest_path=%s/manifest.env\n' "$snap_dir"
         printf 'failed_at=%s\n' "$ts"
         printf 'failure_reason=%s\n' "$reason"
         printf 'stages=%s\n' "$stages_summary"
     } >"$marker_file"
-    chmod 0600 "$marker_file" 2>/dev/null || true
-    if [[ -d "$snap_dir" ]]; then
-        cp -p "$marker_file" "$snap_dir/incomplete" 2>/dev/null || true
-    fi
+    chmod 0644 "$marker_file" 2>/dev/null || true
     return 0
 }
 
@@ -1878,28 +2057,87 @@ update_clear_recovery() {
     local root key
     root=$(update_recovery_root)
     key=$(update_recovery_key "$deploy_dir")
-    update_acquire_lock "$root" "$key" "$owner_pid" "$deploy_dir" || return 1
-    local snap_dir="$root/$key"
-    local marker_file="$root/${key}.incomplete"
-    local ts cleared_dir=""
-    ts=$(date -u +%Y%m%dT%H%M%SZ)
-    if [[ -d "$snap_dir" ]]; then
-        cleared_dir="$root/${key}.cleared-${ts}"
-        [[ -e "$cleared_dir" ]] && cleared_dir="${cleared_dir}-$$"
-        mv -f "$snap_dir" "$cleared_dir" || {
-            update_release_lock "$root" "$key" "$owner_pid"
+
+    local cand_root cand_lock holder_pid
+    while IFS= read -r cand_root; do
+        [[ -n "$cand_root" ]] || continue
+        cand_lock="$cand_root/${key}.lock"
+        [[ -d "$cand_lock" ]] || continue
+        holder_pid=$(update_lock_holder_pid "$cand_lock" || true)
+        if [[ -z "$holder_pid" ]] || update_pid_alive "$holder_pid"; then
+            echo "[update] lock: another update is already running for $deploy_dir (lock $cand_lock held by pid ${holder_pid:-starting})" >&2
             return 1
-        }
-        rm -f "$cleared_dir/incomplete"
+        fi
+    done < <(update_candidate_recovery_roots "$deploy_dir" "$root")
+
+    local -a target_roots=()
+    local m_uid="" f_uid=""
+    while IFS= read -r cand_root; do
+        [[ -n "$cand_root" && -d "$cand_root" ]] || continue
+        if [[ -f "$cand_root/${key}.incomplete" || -d "$cand_root/$key" || -f "$cand_root/${key}.state" ]]; then
+            m_uid=$(sed -n 's/^owner_uid=//p' "$cand_root/${key}.incomplete" 2>/dev/null | head -n 1)
+            f_uid=$(update_path_uid "$cand_root/${key}.incomplete" 2>/dev/null || update_path_uid "$cand_root/$key" 2>/dev/null || echo "")
+            if [[ "$EUID" != "0" && ( ! -w "$cand_root" || "$m_uid" == "0" || "$f_uid" == "0" ) ]]; then
+                echo "[update] recovery: REFUSED: incomplete recovery marker in $cand_root is owned by root; clear it with: sudo bash scripts/update.sh --clear-recovery" >&2
+                return 1
+            fi
+            target_roots+=("$cand_root")
+        fi
+    done < <(update_candidate_recovery_roots "$deploy_dir" "$root")
+
+    if [[ ${#target_roots[@]} -eq 0 ]]; then
+        update_acquire_lock "$root" "$key" "$owner_pid" "$deploy_dir" || return $?
+        update_release_lock "$root" "$key" "$owner_pid"
+        echo "[update] recovery: cleared incomplete-recovery marker for $deploy_dir (no snapshot directory present)"
+        return 0
     fi
-    rm -f "$marker_file"
-    update_release_lock "$root" "$key" "$owner_pid"
-    if [[ -n "$cleared_dir" ]]; then
-        echo "[update] recovery: cleared incomplete-recovery marker for $deploy_dir; snapshot moved to $cleared_dir"
+
+    local ts cleared_dir="" any_moved=""
+    ts=$(date -u +%Y%m%dT%H%M%SZ)
+    for cand_root in "${target_roots[@]}"; do
+        update_acquire_lock "$cand_root" "$key" "$owner_pid" "$deploy_dir" || return 1
+        local snap_dir="$cand_root/$key"
+        local marker_file="$cand_root/${key}.incomplete"
+        if [[ -d "$snap_dir" ]]; then
+            cleared_dir="$cand_root/${key}.cleared-${ts}"
+            [[ -e "$cleared_dir" ]] && cleared_dir="${cleared_dir}-$$"
+            mv -f "$snap_dir" "$cleared_dir" || {
+                update_release_lock "$cand_root" "$key" "$owner_pid"
+                return 1
+            }
+            rm -f "$cleared_dir/incomplete"
+            any_moved="$cleared_dir"
+        fi
+        rm -f "$marker_file" "$cand_root/${key}.state"
+        update_release_lock "$cand_root" "$key" "$owner_pid"
+    done
+    if [[ -n "$any_moved" ]]; then
+        echo "[update] recovery: cleared incomplete-recovery marker for $deploy_dir; snapshot moved to $any_moved"
     else
         echo "[update] recovery: cleared incomplete-recovery marker for $deploy_dir (no snapshot directory present)"
     fi
     return 0
+}
+
+update_pause_if_requested() {
+    local want="$1"
+    local spec="${GO_TRADER_UPDATE_PAUSE_AT:-}"
+    [[ -n "$spec" ]] || return 0
+    local entry stage sentinel
+    local IFS=','
+    for entry in $spec; do
+        stage="${entry%%:*}"
+        sentinel="${entry#*:}"
+        if [[ "$stage" == "$want" && -n "$sentinel" && ! -e "$sentinel" ]]; then
+            printf '%s\n' "${main_shell_pid:-$BASHPID}" >"${sentinel}.reached"
+            while [[ ! -e "$sentinel" ]]; do
+                sleep 0.1 &
+                active_child_pid=$!
+                wait "$active_child_pid" 2>/dev/null || true
+                active_child_pid=""
+            done
+        fi
+    done
 }
 
 update_should_fail_at() {
@@ -2001,9 +2239,9 @@ total = 0
 for cur, dirs, files in os.walk(deploy, topdown=True, followlinks=False):
     rel_cur = os.path.relpath(cur, deploy)
     if rel_cur == ".":
-        dirs[:] = [d for d in dirs if d not in skip_top and d != "__pycache__"]
+        dirs[:] = [d for d in dirs if d not in skip_top and d != "__pycache__" and d != "tuning_runs"]
     else:
-        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        dirs[:] = [d for d in dirs if d != "__pycache__" and d != "tuning_runs"]
     for name in files:
         if name.endswith((".db", ".db-wal", ".db-shm", ".db.lock", ".db.manual-action.lock")):
             continue
@@ -2075,9 +2313,13 @@ update_take_snapshot() {
     fi
     update_check_snapshot_space "$deploy_dir" "$rec_root" || return 1
 
-    rm -rf "$snap_dir"
+    if [[ -f "${snap_dir}.incomplete" ]] || ( [[ -f "$snap_dir/COMPLETE" && -s "$snap_dir/intents.log" ]] ); then
+        echo "[update] snapshot: refusing to overwrite unfinished snapshot at $snap_dir" >&2
+        return 1
+    fi
+    rm -rf "$snap_dir" "${snap_dir}.state"
     mkdir -p "$snap_dir/managed" "$snap_dir/binaries" "$snap_dir/git" "$snap_dir/external" || return 1
-    chmod 0700 "$snap_dir" || return 1
+    chmod 0700 "$snap_dir" "$snap_dir/managed" "$snap_dir/binaries" "$snap_dir/git" "$snap_dir/external" || return 1
 
     local -a snap_rsync_flags=(-a --delete)
     if [[ "$EUID" == "0" ]]; then
@@ -2193,7 +2435,11 @@ PY
         return 1
     fi
 
+    local deploy_dev_ino=""
+    deploy_dev_ino=$(update_path_dev_ino "$deploy_dir" || true)
+
     {
+        printf 'deploy_dev_ino=%q\n' "$deploy_dev_ino"
         printf 'had_go_trader=%q\n' "$had_go_trader"
         printf 'had_go_trader_prev=%q\n' "$had_go_trader_prev"
         printf 'had_venv=%q\n' "$had_venv"
@@ -2215,7 +2461,14 @@ PY
         printf 'had_egress_controller_prev=%q\n' "$had_egress_controller_prev"
         printf 'cfg_status_port=%q\n' "$cfg_status_port"
     } >"$snap_dir/manifest.env"
+    update_pause_if_requested snapshot_before_complete
     : >"$snap_dir/COMPLETE"
+    {
+        printf 'deploy_dev_ino=%s\n' "$deploy_dev_ino"
+        printf 'owner_uid=%s\n' "$EUID"
+        printf 'complete=1\n'
+    } >"${snap_dir}.state"
+    chmod 0644 "${snap_dir}.state" 2>/dev/null || true
     return 0
 }
 
@@ -2286,6 +2539,7 @@ update_restore_snapshot_venv() {
                 rm -rf "$deploy_dir/.venv.restore-new"
                 return 1
             }
+            update_pause_if_requested restore_venv_moved_old
         fi
         if ! mv -f "$deploy_dir/.venv.restore-new" "$deploy_dir/.venv"; then
             if [[ -e "$deploy_dir/.venv.restore-old" || -L "$deploy_dir/.venv.restore-old" ]]; then

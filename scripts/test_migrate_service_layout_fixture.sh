@@ -1233,7 +1233,7 @@ fixture_managed_manifest() {
     "$PY3" - "$1" <<'PY'
 import hashlib, os, stat, sys
 root = os.path.realpath(sys.argv[1])
-skip_top = {".git", ".venv", "logs", "robinhood-session", "node_modules", "__pycache__"}
+skip_top = {".git", ".venv", "logs", "robinhood-session", "node_modules", "__pycache__", "tuning_runs"}
 skip_names = {".env", "go-trader", "go-trader.new", "go-trader.prev", "go-trader.pid", "go-trader-signal.log"}
 rows = []
 for cur, dirs, files in os.walk(root, topdown=True, followlinks=False):
@@ -1242,7 +1242,7 @@ for cur, dirs, files in os.walk(root, topdown=True, followlinks=False):
         rel_cur = ""
         dirs[:] = sorted(d for d in dirs if d not in skip_top)
     else:
-        dirs[:] = sorted(d for d in dirs if d != "__pycache__")
+        dirs[:] = sorted(d for d in dirs if d not in ("__pycache__", "tuning_runs"))
     entries = sorted(set(dirs + files))
     for name in entries:
         rel = os.path.join(rel_cur, name) if rel_cur else name
@@ -1299,10 +1299,13 @@ PY
 scenario_update_recovery() {
     note "snapshot recovery across rsync and git modes, pre-swap, mid-swap, post-swap, signal interruption, and incomplete marker (#1865)"
     local port=$((BASE_PORT + 20)) unit="go-trader-$ID-rec.service" inst="rec-$ID" src="/root/gt-$ID-rec"
-    local origin="$WORK/rec-origin.git" rsync_clone="$WORK/rec-rsync-src" rec_root="$WORK/rec-state"
+    local origin="$WORK/rec-origin.git" rsync_clone="$WORK/rec-rsync-src" rec_root="/var/lib/go-trader-update-rec-$ID"
     local br tree tunit stale_sha v1_sha v2_sha v1_ver
     INSTANCES+=("$inst")
+    CREATED_DIRS+=("$rec_root")
+    chmod 0755 "$WORK"
     mkdir -p "$rec_root"
+    chmod 0755 "$rec_root"
     make_deployment rec "$port" split
     br=$(git -C "$src" symbolic-ref --short HEAD)
     git init -q --bare -b "$br" "$origin"
@@ -1465,26 +1468,45 @@ EOS
     expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="build" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-all-build" UV_STUB_MUTATE_VENV=1 GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" bash scripts/update.sh --all --restart --update-all-root "$all_rec_root"
     assert_baseline_restored "all-build-fail" "$v1_sha" "$base_idx" "$base_managed" "$base_venv" "$base_bin" "$base_prev"
 
-    note "concurrent second update refuses before any write"
-    local lock_pause="$WORK/pause-locked"
-    run_update "$tree" GO_TRADER_UPDATE_PAUSE_AT="locked:$lock_pause" GO_TRADER_UPDATE_FAIL_AT="build" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-lock-holder" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart >"$WORK/holder.out" 2>&1 &
+    note "concurrent second update (root, --all, and owner account) refuses after snapshot without deleting snapshot or go-trader.new"
+    local rkey
+    rkey=$(helper update_recovery_key "$tree")
+    local snap_pause="$WORK/pause-snap-done"
+    run_update "$tree" GO_TRADER_UPDATE_PAUSE_AT="snapshot_done:$snap_pause" GO_TRADER_UPDATE_FAIL_AT="build" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-lock-holder" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart >"$WORK/holder.out" 2>&1 &
     local hpid=$!
     for i in $(seq 1 100); do
-        [[ -f "${lock_pause}.reached" ]] && break
+        [[ -f "${snap_pause}.reached" ]] && break
         sleep 0.1
     done
-    [[ -f "${lock_pause}.reached" ]] || fail "holder did not reach locked pause"
+    [[ -f "${snap_pause}.reached" ]] || fail "holder did not reach snapshot_done pause"
     expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
-    grep -q "another update is already" "$WORK/last.out" || fail "concurrent update did not report lock contention"
-    touch "$lock_pause"
-    wait "$hpid" || true
+    grep -q "held by pid $(cat "${snap_pause}.reached")" "$WORK/last.out" || fail "concurrent update did not name holder pid"
+    expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" bash scripts/update.sh --all --restart --update-all-root "$all_rec_root"
+    grep -q "another update is already" "$WORK/last.out" || fail "concurrent --all update did not report lock contention"
+    expect_exit 1 run_update "$tree" runuser -u go-trader -- env PATH="$STUBBIN:$PATH" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh
+    grep -q "another update is already" "$WORK/last.out" || fail "owner-account update did not report root lock contention"
+    [[ -f "$rec_root/$rkey/COMPLETE" && -d "$rec_root/$rkey/managed" ]] || fail "refused update deleted holder snapshot"
+    touch "$snap_pause"
+    local hrc=0
+    wait "$hpid" || hrc=$?
+    [[ "$hrc" != "0" ]] || fail "holder build failure exited 0"
+    grep -q "recovery: complete" "$WORK/holder.out" || { cat "$WORK/holder.out" >&2; fail "holder did not complete recovery after refused second runs"; }
 
-    note "forced restore failure retains snapshot and incomplete marker, blocks next update, and --clear-recovery clears it"
+    note "non-root with HOME=/nonexistent and no lock/marker reports unwritable recovery root"
+    expect_exit 1 run_update "$tree" runuser -u go-trader -- env -u XDG_STATE_HOME -u GO_TRADER_UPDATE_RECOVERY_DIR HOME=/nonexistent PATH="$STUBBIN:$PATH" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" bash scripts/update.sh
+    grep -q "cannot create or access recovery directory /nonexistent/.local/state/go-trader-update" "$WORK/last.out" || fail "unwritable recovery root did not name /nonexistent/.local/state/go-trader-update"
+
+    note "forced restore failure retains snapshot and incomplete marker, blocks root and owner updates, refuses non-root --clear-recovery, and clears as root"
     expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_FAIL_AT="build,restore_probe" GO_TRADER_UPDATE_FAIL_ONCE_DIR="$WORK/once-inc" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
     grep -q "recovery: INCOMPLETE" "$WORK/last.out" || fail "incomplete recovery did not print INCOMPLETE"
     grep -q "snapshot retained at $rec_root/" "$WORK/last.out" || fail "incomplete recovery did not print snapshot path"
     expect_exit 1 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
-    grep -q "incomplete recovery marker" "$WORK/last.out" || fail "incomplete marker did not block next update"
+    grep -q "incomplete recovery marker" "$WORK/last.out" || fail "incomplete marker did not block next root update"
+    expect_exit 1 run_update "$tree" runuser -u go-trader -- env PATH="$STUBBIN:$PATH" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" bash scripts/update.sh
+    grep -q "incomplete recovery marker" "$WORK/last.out" || fail "incomplete marker did not block owner-account update"
+    expect_exit 1 run_update "$tree" runuser -u go-trader -- env PATH="$STUBBIN:$PATH" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" bash scripts/update.sh --clear-recovery
+    grep -q "sudo bash scripts/update.sh --clear-recovery" "$WORK/last.out" || fail "non-root --clear-recovery did not instruct sudo"
+    [[ -f "$rec_root/${rkey}.incomplete" ]] || fail "non-root --clear-recovery removed root marker"
     expect_exit 0 run_update "$tree" GO_TRADER_UPDATE_RECOVERY_DIR="$rec_root" bash scripts/update.sh --clear-recovery
     grep -q "cleared incomplete-recovery marker" "$WORK/last.out" || fail "--clear-recovery did not report cleared marker"
 

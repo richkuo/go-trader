@@ -112,7 +112,6 @@ func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cf
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(syscall.SIGTERM)
 	}
-	cmd.WaitDelay = 30 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		notifier.SendOwnerDM(fmt.Sprintf("**update.sh failed**:\n```\n%s\n```\n%v", tailForDM(string(out), 1500), err))
