@@ -286,11 +286,21 @@ type pairScriptedVenue struct {
 	onQuery   func(a *basketAction)
 	queryCnt  map[string]int
 	now       func() int64
+	model     string
 }
 
 func (v *pairScriptedVenue) Name() string     { return "pair-scripted-" + v.provider }
 func (v *pairScriptedVenue) LiveShaped() bool { return v.live }
 func (v *pairScriptedVenue) Virtual() bool    { return v.virtual }
+func (v *pairScriptedVenue) ExecutionModel() string {
+	switch {
+	case v.model != "":
+		return v.model
+	case v.live:
+		return pairExecutionVenueConfirmed
+	}
+	return pairExecutionVirtualIOCAdverseMax
+}
 func (v *pairScriptedVenue) Provider() string { return v.provider }
 func (v *pairScriptedVenue) AccountKey(RiskPartition) string {
 	return v.account

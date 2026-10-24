@@ -3984,6 +3984,22 @@ func paperTierFillQty(pos *Position, closeFraction float64) float64 {
 }
 
 func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
+	var (
+		trades       int
+		detail       string
+		openTrade    *Trade
+		ratchetAlert *RatchetTriggerAlert
+	)
+	if err := withPairDispatchCostScope(sc, s, func() {
+		trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpenScoped(sc, s, result, execResult, signalStr, price, regime, cfg, hurst, logger)
+	}); err != nil {
+		logStrategyCostRefusal(logger, "Hyperliquid "+signalStr, result.Symbol, err)
+		return 0, "", nil, nil
+	}
+	return trades, detail, openTrade, ratchetAlert
+}
+
+func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
 	if execResult != nil {
 		if _, err := confirmHyperliquidExecuteFill(execResult, nil); err != nil {
 			return 0, "", nil, nil
@@ -4092,13 +4108,16 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 			if p, ok := s.Positions[result.Symbol]; ok {
 				pos = p
 			}
+			var costErr error
 			if pos != nil {
-				stopPx = paperStopBookPx(pos.Side, stopPx)
+				stopPx, costErr = paperStopBookPx(sc, s, pos.Side, stopPx)
 			}
 			if recordPositionOpen(s, sc, openTrade, pos) {
 				openTrade = nil
 			}
-			if recordPerpsStopLossClose(s, result.Symbol, stopPx, stopReason, logger) {
+			if costErr != nil {
+				logStrategyCostRefusal(logger, "open-cycle paper stop", result.Symbol, costErr)
+			} else if recordPerpsStopLossClose(s, result.Symbol, stopPx, stopReason, logger) {
 				trades++
 			}
 		}
@@ -4951,6 +4970,18 @@ func confirmOKXEntryFill(res *OKXExecuteResult) error {
 }
 
 func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
+	var trades int
+	var detail, cashAlert string
+	if err := withPairDispatchCostScope(sc, s, func() {
+		trades, detail, cashAlert = executeOKXResultScoped(sc, s, db, result, execResult, signalStr, price, regime, cfg, hurst, logger)
+	}); err != nil {
+		logStrategyCostRefusal(logger, "OKX "+signalStr, result.Symbol, err)
+		return 0, "", ""
+	}
+	return trades, detail, cashAlert
+}
+
+func executeOKXResultScoped(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64

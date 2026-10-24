@@ -24,7 +24,10 @@ const (
 )
 
 func ApplyAdverseSlippage(price float64, isBuy bool) float64 {
-	slip := activeFillCostPolicy().SlippagePct
+	return applySlippageRate(price, isBuy, activeFillCostPolicy().SlippagePct)
+}
+
+func applySlippageRate(price float64, isBuy bool, slip float64) float64 {
 	if isBuy {
 		return price * (1 + slip)
 	}

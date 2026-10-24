@@ -1204,9 +1204,20 @@ func closeRobinhoodBookVerifiedFlat(s *StrategyState, sc StrategyConfig, prices 
 }
 
 func closeVirtualPositionVerifiedFlat(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, reason string, logger *StrategyLogger) {
-	mutatePaperPerpsBook(s, symbol, func() {
-		closeVirtualPositionInner(s, sc, symbol, pos, prices, reason, true, logger)
-	})
+	if err := withVirtualCloseCostScope(s, sc, func() {
+		mutatePaperPerpsBook(s, symbol, func() {
+			closeVirtualPositionInner(s, sc, symbol, pos, prices, reason, true, logger)
+		})
+	}); err != nil {
+		logStrategyCostRefusal(logger, reason+" close", symbol, err)
+	}
+}
+
+func withVirtualCloseCostScope(s *StrategyState, sc *StrategyConfig, fn func()) error {
+	if sc != nil {
+		return withPairDispatchCostScope(*sc, s, fn)
+	}
+	return withStrategyCostScope(s, fn)
 }
 
 func classifyPositionTradeType(s *StrategyState, pos *Position) string {
@@ -1277,9 +1288,13 @@ func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[str
 }
 
 func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {
-	mutatePaperPerpsBook(s, symbol, func() {
-		closeVirtualPositionAtMarkInner(s, sc, symbol, pos, prices, logger)
-	})
+	if err := withVirtualCloseCostScope(s, sc, func() {
+		mutatePaperPerpsBook(s, symbol, func() {
+			closeVirtualPositionAtMarkInner(s, sc, symbol, pos, prices, logger)
+		})
+	}); err != nil {
+		logStrategyCostRefusal(logger, "circuit-breaker close", symbol, err)
+	}
 }
 
 func closeVirtualPositionAtMarkInner(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {

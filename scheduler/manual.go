@@ -515,9 +515,13 @@ func applyManualActionWithCriticals(state *AppState, cfg *Config, scByID map[str
 	if state != nil {
 		ss = state.Strategies[a.StrategyID]
 	}
-	mutatePaperPerpsBook(ss, a.Symbol, func() {
-		criticals, err = applyManualActionWithCriticalsInner(state, cfg, scByID, a)
-	})
+	if scopeErr := withStrategyCostScope(ss, func() {
+		mutatePaperPerpsBook(ss, a.Symbol, func() {
+			criticals, err = applyManualActionWithCriticalsInner(state, cfg, scByID, a)
+		})
+	}); scopeErr != nil {
+		return nil, fmt.Errorf("manual %s for %s/%s refused before any book change: %w", a.Action, a.StrategyID, a.Symbol, scopeErr)
+	}
 	return criticals, err
 }
 

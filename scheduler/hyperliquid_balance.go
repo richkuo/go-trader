@@ -2531,6 +2531,14 @@ func hyperliquidOnChainCloseTradeLabel(closeReason string) string {
 }
 
 func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee, onChainSigned float64, fillOID int64, closeReason string) {
+	if err := withStrategyCostScope(s, func() {
+		applyHyperliquidCircuitCloseFillScoped(s, symbol, fillSz, fillPx, fillFee, onChainSigned, fillOID, closeReason)
+	}); err != nil {
+		fmt.Printf("[CRITICAL] hl-circuit-close: %s/%s confirmed close fill %.6f @ $%.4f (oid %d) is not booked: %v; the pair runtime opens recovery and no legacy stamp is used\n", s.ID, symbol, fillSz, fillPx, fillOID, err)
+	}
+}
+
+func applyHyperliquidCircuitCloseFillScoped(s *StrategyState, symbol string, fillSz, fillPx, fillFee, onChainSigned float64, fillOID int64, closeReason string) {
 	if s != nil && s.Quote != nil {
 		fmt.Printf("[CRITICAL] [quote] %s: a generic circuit-breaker close fill on %s is refused; quote-owned fills settle only through the quote settlement\n", s.ID, symbol)
 		return

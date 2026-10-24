@@ -399,8 +399,16 @@ func paperStopFillPx(side string, mark, trigger float64) float64 {
 	return trigger
 }
 
-func paperStopBookPx(side string, rawFillPx float64) float64 {
-	return ApplyAdverseSlippage(rawFillPx, side == "short")
+func paperStopBookPx(sc StrategyConfig, s *StrategyState, side string, rawFillPx float64) (float64, error) {
+	p, err := pairDispatchCostPolicy(sc, s)
+	if err != nil {
+		noteStrategyCostFault(s, err.Error())
+		return 0, err
+	}
+	if strategyPairCostRequired(s) {
+		return applySlippageRate(rawFillPx, side == "short", p.SlippagePct), nil
+	}
+	return ApplyAdverseSlippage(rawFillPx, side == "short"), nil
 }
 
 func runPaperFixedStopLoss(side string, mark, currentTrigger, armTrigger float64) (newTrigger float64, breach bool, breachPx float64) {
@@ -480,7 +488,11 @@ func applyPaperStopLossBreach(sc StrategyConfig, s *StrategyState, symbol, side 
 	if !ok || pos == nil || pos.Quantity <= 0 || pos.Side != side || !trailingStopBreached(side, mark, pos.StopLossTriggerPx) {
 		return 0, ""
 	}
-	fillPx := paperStopBookPx(side, paperStopFillPx(side, mark, pos.StopLossTriggerPx))
+	fillPx, err := paperStopBookPx(sc, s, side, paperStopFillPx(side, mark, pos.StopLossTriggerPx))
+	if err != nil {
+		logStrategyCostRefusal(logger, "paper stop", symbol, err)
+		return 0, ""
+	}
 	reason := paperStopLossCloseReason(sc, hyperliquidProtectionPositionSnapshot(pos))
 	if !recordPerpsStopLossClose(s, symbol, fillPx, reason, logger) {
 		return 0, ""

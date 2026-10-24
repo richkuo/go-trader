@@ -430,7 +430,7 @@ func (p *pairPlan) reading(fills []pairPendingFill, include []bool) (pairEndpoin
 		}
 		imr := math.Max(l.Member.Meta.InitialMarginRate, 1/lev)
 		conv, _ := l.Val.conversion(l.Member.Meta.SettlementCurrency)
-		feeReserve := feeNotional[id] * conv * math.Max(l.Val.FeeRate, 0)
+		feeReserve := feeNotional[id] * conv * math.Max(math.Max(l.Val.FeeRate, 0), l.Member.CostPolicy.TakerFeePct)
 		r.Required[id] = added[id]*u*imr + feeReserve
 		r.Available[id] = l.Cash
 		r.Liquidity[id] = n * l.Member.Meta.MaintenanceMarginRate
