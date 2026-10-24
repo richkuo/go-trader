@@ -649,6 +649,22 @@ func aggregatePerpsMarginInputsMarked(strategies map[string]*StrategyState, conf
 	return unrealizedLoss, margin, st
 }
 
+func latchPortfolioKillSwitchForPairValuation(prs *PortfolioRiskState, totalValue float64, detail string) string {
+	prs.KillSwitchActive = true
+	prs.KillSwitchAt = tradingNow().UTC()
+	prs.WarningSent = false
+	prs.WarnBandEnteredAt = time.Time{}
+	prs.LastWarningEquityDDPct = 0
+	prs.LastWarningMarginDDPct = 0
+	prs.WarningEquityDeltaPct = 0
+	prs.WarningMarginDeltaPct = 0
+	prs.UntrustedOverLimitSince = time.Time{}
+	r := fmt.Sprintf("pair valuation incomplete longer than %s: %s; the reading counts as over the limit and the portfolio kill switch latches (fail closed)",
+		formatWarningDuration(untrustedEquityLatchDeferral), detail)
+	addKillSwitchEvent(prs, "triggered", "pair_valuation", prs.CurrentDrawdownPct, totalValue, prs.PeakValue, r)
+	return r
+}
+
 func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64) (allowed, notionalBlocked, warning bool, reason string) {
 	return checkPortfolioRiskWithEquityAvailability(prs, cfg, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin, true, true)
 }
@@ -1490,6 +1506,7 @@ const (
 	RiskReasonCircuitBreakerActive = "circuit breaker active"
 	RiskReasonMaxDrawdownExceeded  = "max drawdown exceeded"
 	RiskReasonConsecutiveLosses    = "consecutive losses"
+	RiskReasonPairValuationStale   = "pair valuation incomplete too long"
 )
 
 func circuitBreakerPermitsManagement(reason, platform, stratType string, posQty float64) bool {
@@ -1539,6 +1556,17 @@ func pairMemberRiskInputs(s *StrategyState, pm *pairMarks) (float64, map[string]
 func checkPairMemberRisk(sc *StrategyConfig, s *StrategyState, pm *pairMarks, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string, pairValueStatus) {
 	pv, prices, status := pairMemberRiskInputs(s, pm)
 	ok, reason := checkRiskValued(sc, s, pv, prices, status.complete(), pm, logger, assist)
+	if since, overdue := pm.overdue(status)[s.ID]; ok && overdue && sc != nil && sc.CircuitBreakerEnabled() {
+		r := &s.RiskState
+		r.CircuitBreaker = true
+		r.CircuitBreakerUntil = tradingNow().UTC().Add(sc.CircuitBreakerDrawdownCooldown())
+		why := fmt.Sprintf("%s: %s, longer than %s; the circuit breaker trips (fail closed) and books no close without a checked price",
+			RiskReasonPairValuationStale, pairOverdueDetail(map[string]int64{s.ID: since}, status), formatWarningDuration(untrustedEquityLatchDeferral))
+		if logger != nil {
+			logger.Warn("Circuit breaker: %s", why)
+		}
+		return false, why, status
+	}
 	if !status.complete() && reason == "" {
 		reason = status.label() + "; the circuit-breaker drawdown uses the conservative member value and the peak is not updated this cycle"
 	}

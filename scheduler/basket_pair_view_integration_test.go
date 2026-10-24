@@ -613,3 +613,221 @@ func TestBasketMemberViewManualOpenGatesReadTheView(t *testing.T) {
 		t.Fatalf("an incomplete view must hold the manual open through the exposure gate with its label, got %v %+v", blocked, v.ExposureCap)
 	}
 }
+
+func pairViewSetHL(e *pairTestEnv, px float64) {
+	e.quotes.mu.Lock()
+	defer e.quotes.mu.Unlock()
+	e.quotes.hlBids = [][2]string{{pairViewPx(px - 1), "5"}, {pairViewPx(px - 2), "5"}, {pairViewPx(px - 3), "5"}, {pairViewPx(px - 4), "5"}, {pairViewPx(px - 5), "5"}}
+	e.quotes.hlAsks = [][2]string{{pairViewPx(px + 1), "5"}, {pairViewPx(px + 2), "5"}, {pairViewPx(px + 3), "5"}, {pairViewPx(px + 4), "5"}, {pairViewPx(px + 5), "5"}}
+}
+
+type pairEscalationEnv struct {
+	e       *pairTestEnv
+	h       *pairTestHost
+	reasons []string
+	hlSeal  string
+}
+
+func newPairEscalationEnv(t *testing.T, portfolioDD float64) *pairEscalationEnv {
+	t.Helper()
+	e := newPairTestEnv(t, func(root map[string]interface{}) {
+		if portfolioDD > 0 {
+			root["portfolio_risk"] = map[string]interface{}{"max_drawdown_pct": portfolioDD}
+		}
+		for _, id := range []string{pairTestHL, pairTestOKX} {
+			pairTestStrategy(root, id)["max_drawdown_pct"] = 95
+		}
+		pairTestStrategy(root, pairTestHL)["close_strategy"] = map[string]interface{}{"name": "tiered_tp_pct", "params": map[string]interface{}{"tp_tiers": []interface{}{map[string]interface{}{"profit_pct": 50.0, "close_fraction": 1.0}}}}
+	})
+	clock := "b1876-escalate-" + t.Name()
+	if err := bindTradingClock(clock, func() time.Time { return e.now }); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unbindTradingClock(clock) })
+	pairViewMatched(t, e)
+	e.mu.Lock()
+	pos := e.state.Strategies[pairTestHL].Positions["BTC"]
+	if pos == nil || pos.Side != "long" || !basketQtyEqual(pos.Quantity, 0.06) {
+		e.mu.Unlock()
+		t.Fatalf("setup: the hyperliquid member must be long 0.06 BTC: %+v", pos)
+	}
+	pos.AvgCost = 60000
+	e.mu.Unlock()
+	pairViewSetHL(e, 61000)
+	x := &pairEscalationEnv{e: e, h: newPairTestHost(e, time.Minute)}
+	x.h.prepare = func(in basketCycleInputs) {
+		in.PairSnapshotFor = func(rt *basketRuntime, at time.Time) *marketSnapshot {
+			snap := e.sealFor(rt, at)
+			for _, m := range rt.Contract.pairMembersSorted() {
+				if m.Source != pairSourceSealedFeed {
+					continue
+				}
+				for k := range snap.books {
+					switch x.hlSeal {
+					case "outage":
+						delete(snap.books, k)
+					case "stale":
+						e.quotes.mu.Lock()
+						bids, asks := e.quotes.hlBids, e.quotes.hlAsks
+						e.quotes.mu.Unlock()
+						old := pairFixtureBook(m.Instrument, at.UnixMilli()-50-6000, rt.Contract.Pair.BookNeed, bids, asks)
+						snap.books[k] = old
+					}
+				}
+			}
+			return snap
+		}
+		e.bc.preparePairRisk(in)
+	}
+	x.h.manage = func(time.Time, map[RiskPartition]*scopeCycleRisk) {
+		e.observe("")
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		sc := e.bc.members[pairTestHL]
+		_, why := checkStrategyRiskWithView(&sc, e.state.Strategies[pairTestHL], 0, nil, e.bc.pairMarksLocked(), nil, nil)
+		x.reasons = append(x.reasons, why)
+	}
+	return x
+}
+
+func (x *pairEscalationEnv) outage() {
+	x.hlSeal = "outage"
+}
+
+func (x *pairEscalationEnv) read() (PortfolioRiskState, RiskState) {
+	x.e.mu.RLock()
+	defer x.e.mu.RUnlock()
+	return *x.e.state.partitionRisk(x.e.rt().Partition), x.e.state.Strategies[pairTestHL].RiskState
+}
+
+func (x *pairEscalationEnv) runEvery(from, through time.Time) {
+	for at := from; !at.After(through); at = at.Add(time.Minute) {
+		x.h.run(at)
+	}
+}
+
+func (x *pairEscalationEnv) lostAt() int64 {
+	x.e.mu.RLock()
+	defer x.e.mu.RUnlock()
+	return x.e.rt().pairView[pairTestHL].MarkLostAtMs
+}
+
+func TestBasketMemberViewIncompleteValuationEscalatesAfterTheDeferral(t *testing.T) {
+	limit := untrustedEquityLatchDeferral
+	t.Run("the partition latches after an unbroken outage", func(t *testing.T) {
+		x := newPairEscalationEnv(t, 50)
+		tPre := pairSlotAt(pairTestStart(), 2)
+		x.h.run(tPre)
+		base, _ := x.read()
+		if base.PeakValue <= 0 || base.KillSwitchActive {
+			t.Fatalf("a complete reading must set the peak without a latch: %+v", base)
+		}
+		t0 := tPre.Add(time.Minute)
+		x.outage()
+		pairViewSetHL(x.e, 50000)
+		x.h.marks = map[string]float64{"BTC": 50000}
+		x.runEvery(t0, t0.Add(limit-2*time.Minute))
+		held, hl := x.read()
+		if held.KillSwitchActive || held.PeakValue != base.PeakValue || hl.CircuitBreaker {
+			t.Fatalf("inside the deferral the reading must hold without a latch and keep the peak: %+v %+v", held, hl)
+		}
+		x.h.run(t0.Add(limit + time.Second))
+		latched, _ := x.read()
+		if !latched.KillSwitchActive || latched.PeakValue != base.PeakValue {
+			t.Fatalf("an outage longer than the deferral must latch the partition, got %+v", latched)
+		}
+		last := latched.Events[len(latched.Events)-1]
+		if last.Source != "pair_valuation" || !strings.Contains(last.Details, pairTestHL+" has had no checked mark since") {
+			t.Fatalf("the latch must name the member with no checked mark: %+v", last)
+		}
+	})
+	t.Run("the member circuit breaker trips after an unbroken outage", func(t *testing.T) {
+		x := newPairEscalationEnv(t, 50)
+		tPre := pairSlotAt(pairTestStart(), 2)
+		x.h.run(tPre)
+		t0 := tPre.Add(time.Minute)
+		x.outage()
+		x.runEvery(t0, t0.Add(limit-2*time.Minute))
+		if _, hl := x.read(); hl.CircuitBreaker {
+			t.Fatalf("inside the deferral the member breaker must not trip: %+v (%v)", hl, x.reasons)
+		}
+		tf := t0.Add(limit + time.Second)
+		x.e.now = tf
+		x.h.prepare(basketCycleInputs{Now: tf, Once: true, PairSnapshotFor: x.e.sealFor, PairGeneration: x.e.feedGeneration})
+		x.e.mu.Lock()
+		sc := x.e.bc.members[pairTestHL]
+		hlState := x.e.state.Strategies[pairTestHL]
+		ok, why := checkStrategyRiskWithView(&sc, hlState, 0, nil, x.e.bc.pairMarksLocked(), nil, nil)
+		hl, held := hlState.RiskState, hlState.Positions["BTC"]
+		x.e.mu.Unlock()
+		if ok || !hl.CircuitBreaker || !strings.HasPrefix(why, RiskReasonPairValuationStale) || !strings.Contains(why, pairTestHL+" has had no checked mark since") || !isFreshPerStrategyCircuitBreaker(why) {
+			t.Fatalf("an outage longer than the deferral must trip the member breaker with a missing-mark reason, got %v %+v %q", ok, hl, why)
+		}
+		if held == nil || !basketQtyEqual(held.Quantity, 0.06) {
+			t.Fatalf("the missing-mark breaker must book no close without a checked price, got %+v", held)
+		}
+	})
+	t.Run("a restart with an outage values the member at average cost and escalates", func(t *testing.T) {
+		x := newPairEscalationEnv(t, 50)
+		tPre := pairSlotAt(pairTestStart(), 2)
+		x.h.run(tPre)
+		base, _ := x.read()
+		x.outage()
+		r0 := tPre.Add(time.Minute)
+		x.e.now = r0
+		x.e.restart()
+		x.h.run(r0)
+		x.e.mu.RLock()
+		hl := x.e.state.Strategies[pairTestHL]
+		v, st := portfolioValueMarked(hl, nil, x.e.bc.pairMarksLocked())
+		cash := hl.Cash
+		x.e.mu.RUnlock()
+		if st.Members[pairTestHL] != pairMarkUnavailable || !pairViewNear(v, cash) {
+			t.Fatalf("after a restart with no view the member must be valued at average cost, got %v cash %v (%s)", v, cash, st.label())
+		}
+		if got := x.lostAt(); got != r0.UnixMilli() {
+			t.Fatalf("the incomplete timer must start at the first preparation after the restart, got %d want %d", got, r0.UnixMilli())
+		}
+		x.runEvery(r0.Add(time.Minute), r0.Add(limit-time.Minute))
+		if held, _ := x.read(); held.KillSwitchActive || held.PeakValue != base.PeakValue {
+			t.Fatalf("inside the deferral the restarted reading must hold without a latch: %+v", held)
+		}
+		x.h.run(r0.Add(limit + time.Second))
+		if latched, _ := x.read(); !latched.KillSwitchActive {
+			t.Fatalf("a restarted outage longer than the deferral must latch, got %+v", latched)
+		}
+	})
+	t.Run("a valid mark resets the timer", func(t *testing.T) {
+		x := newPairEscalationEnv(t, 50)
+		tPre := pairSlotAt(pairTestStart(), 2)
+		x.h.run(tPre)
+		lag := func(ms int64) {
+			x.hlSeal = ""
+			if ms > 0 {
+				x.hlSeal = "stale"
+			}
+		}
+		s0 := tPre.Add(time.Minute)
+		lag(6000)
+		x.h.run(s0)
+		if x.lostAt() == 0 {
+			t.Fatal("setup: a reference older than quote_age_ms must start the incomplete timer")
+		}
+		lag(0)
+		x.h.run(s0.Add(time.Minute))
+		if got := x.lostAt(); got != 0 {
+			t.Fatalf("a valid mark must clear the incomplete timer, got %d", got)
+		}
+		lag(6000)
+		x.h.run(s0.Add(limit + 30*time.Second))
+		if got := x.lostAt(); got < s0.Add(time.Minute).UnixMilli() {
+			t.Fatalf("a new stale reading must start a new timer after the valid mark, got %d", got)
+		}
+		lag(0)
+		x.h.run(s0.Add(limit + time.Minute))
+		prs, hl := x.read()
+		if prs.KillSwitchActive || hl.CircuitBreaker {
+			t.Fatalf("a stale reading followed by a valid mark must never latch or trip: %+v %+v (%v)", prs, hl, x.reasons)
+		}
+	})
+}

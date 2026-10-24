@@ -77,6 +77,7 @@ type pairMemberValuation struct {
 	CapabilityValid     bool
 	CollateralValid     bool
 	Substituted         bool
+	MarkLostAtMs        int64
 	MissingReason       string
 }
 

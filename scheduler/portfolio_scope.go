@@ -130,6 +130,7 @@ type scopeCycleRisk struct {
 	Reason                  string
 	CloseApplied            bool
 	PairValuation           pairValueStatus
+	PairValuationOverdue    map[string]int64
 }
 
 func scopeCycleRiskFired(scopeRisk map[RiskPartition]*scopeCycleRisk, part RiskPartition) bool {
@@ -197,6 +198,7 @@ func measureScopeCycleRiskMarked(
 	sr.PerpsLoss, sr.PerpsMargin, ms = aggregatePerpsMarginInputsMarked(scopedStates, scopedCfgs, prices, pm)
 	sr.PairValuation.merge(ns)
 	sr.PairValuation.merge(ms)
+	sr.PairValuationOverdue = pm.overdue(sr.PairValuation)
 	sr.DailyLossStatus = evaluateDailyLossLimit(pr, scopedStates, scopedCfgs, now)
 	sr.ExposureCapStatus = evaluateExposureCapMarked(pr, scopedStates, scopedCfgs, prices, sr.TotalPV, pm)
 	return sr
@@ -212,6 +214,10 @@ func applyScopeCycleRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
 	prevWarningSent := prs.WarningSent
 	allowed, notionalBlocked, warning, reason := checkPortfolioRiskWithEquityAvailability(
 		prs, sr.Config, sr.TotalPV, sr.TotalNotional, sr.PerpsLoss, sr.PerpsMargin, sr.EquityAvailable, sr.EquityTrusted && pairComplete)
+	if allowed && len(sr.PairValuationOverdue) > 0 && sr.Config != nil && sr.Config.MaxDrawdownPct > 0 {
+		allowed, notionalBlocked, warning = false, false, false
+		reason = latchPortfolioKillSwitchForPairValuation(prs, sr.TotalPV, pairOverdueDetail(sr.PairValuationOverdue, sr.PairValuation))
+	}
 	if !pairComplete {
 		if sr.Config != nil && sr.Config.MaxNotionalUSD > 0 {
 			notionalBlocked = true

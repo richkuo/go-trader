@@ -3447,7 +3447,8 @@ func isFreshPerStrategyCircuitBreaker(reason string) bool {
 		return false
 	}
 	return strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) ||
-		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
+		strings.HasPrefix(reason, RiskReasonConsecutiveLosses) ||
+		strings.HasPrefix(reason, RiskReasonPairValuationStale)
 }
 
 func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier tradeAlertRouter, rc *RegimeConfig) {

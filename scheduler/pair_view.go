@@ -532,6 +532,7 @@ func (bc *basketCoordinator) publishPairView(rt *basketRuntime, out pairViewSet,
 	for id, v := range out {
 		v.Generation = rt.pairViewGen
 		v.EvidenceHash = v.computeEvidenceHash()
+		v.MarkLostAtMs = pairMarkLostAt(v, rt.pairView, id, nowMs)
 		switch last, ok := rt.pairLastMark[id]; {
 		case basketFinitePositive(v.MarkUSD) && v.EvidenceMs > 0:
 			rt.pairLastMark[id] = pairLastMark{MarkUSD: v.MarkUSD, LowerUSD: v.LowerUSD, UpperUSD: v.UpperUSD, AtMs: v.EvidenceMs}
@@ -641,6 +642,74 @@ func (pm *pairMarks) markFor(s *StrategyState, sym string) (px float64, state, r
 		return v.MarkUSD, pairMarkSubstituted, why, true
 	}
 	return 0, pairMarkUnavailable, why, true
+}
+
+func pairMarkLostAt(v pairMemberValuation, prev pairViewSet, id string, nowMs int64) int64 {
+	if v.MarkValid {
+		return 0
+	}
+	p, ok := prev[id]
+	switch {
+	case ok && !p.MarkValid && p.MarkLostAtMs > 0:
+		return p.MarkLostAtMs
+	case ok && p.MarkValid:
+		if end, eok := pairAddMs(p.EvidenceMs, p.MaxAgeMs); eok && end < nowMs {
+			return end
+		}
+	}
+	return nowMs
+}
+
+func (pm *pairMarks) incompleteSinceMs(id string) (int64, bool) {
+	if pm == nil {
+		return 0, false
+	}
+	v, ok := pm.views[id]
+	if !ok {
+		return 0, false
+	}
+	if !v.MarkValid {
+		return v.MarkLostAtMs, v.MarkLostAtMs > 0
+	}
+	if _, valid, _ := v.usdMarkAt(pm.nowMs); valid {
+		return 0, false
+	}
+	if end, eok := pairAddMs(v.EvidenceMs, v.MaxAgeMs); eok && end < pm.nowMs {
+		return end, true
+	}
+	return pm.nowMs, true
+}
+
+func (pm *pairMarks) overdue(st pairValueStatus) map[string]int64 {
+	if pm == nil || st.complete() {
+		return nil
+	}
+	limit := untrustedEquityLatchDeferral.Milliseconds()
+	var out map[string]int64
+	for id := range st.Members {
+		since, ok := pm.incompleteSinceMs(id)
+		if !ok || pm.nowMs-since < limit {
+			continue
+		}
+		if out == nil {
+			out = map[string]int64{}
+		}
+		out[id] = since
+	}
+	return out
+}
+
+func pairOverdueDetail(overdue map[string]int64, st pairValueStatus) string {
+	ids := make([]string, 0, len(overdue))
+	for id := range overdue {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, fmt.Sprintf("%s has had no checked mark since %s (%s: %s)", id, time.UnixMilli(overdue[id]).UTC().Format(time.RFC3339), st.Members[id], st.Reasons[id]))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (st *pairValueStatus) note(id, state, reason string) {
