@@ -907,6 +907,28 @@ func (d *DiscordNotifier) handleClearCashReconcile(s discordTransport, i *discor
 	followupText(s, i, msg)
 }
 
+func (d *DiscordNotifier) handleClearOperatorClose(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+	deferAck(s, i)
+	followupText(s, i, d.clearOperatorCloseCommand(interactionUserID(i), i.GuildID, opts))
+}
+
+func (d *DiscordNotifier) clearOperatorCloseCommand(invokerID, guildID string, opts []*discordgo.ApplicationCommandInteractionDataOption) string {
+	if ok, reason := authorizeCommand(operatorCloseCommandName, invokerID, guildID, d.ownerID); !ok {
+		return reason
+	}
+	if d.ss == nil || d.ss.state == nil || d.ss.mu == nil || d.ss.stateDB == nil {
+		return "status server not ready"
+	}
+	ack, msg := prepareOperatorRequiredCloseAck(d.ss.state, d.ss.mu, optionString(opts, "strategy", ""), optionString(opts, "platform", ""))
+	if ack == nil {
+		return msg
+	}
+	if !d.confirmDestructive(invokerID, msg) {
+		return "Cancelled: no confirmation received. The entry stays set and the reminder continues."
+	}
+	return applyOperatorRequiredCloseAck(d.ss.state, d.ss.mu, d.ss.stateDB, invokerID, *ack)
+}
+
 func (d *DiscordNotifier) handleResolveEntry(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	followupText(s, i, d.resolveEntryCommand(interactionUserID(i), i.GuildID, opts))

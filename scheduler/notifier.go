@@ -210,6 +210,11 @@ func (m *MultiNotifier) PostLeaderboardBroadcast(content string) {
 }
 
 func (m *MultiNotifier) SendToAllChannels(content string) {
+	m.SendToAllChannelsDelivered(content)
+}
+
+func (m *MultiNotifier) SendToAllChannelsDelivered(content string) bool {
+	delivered := false
 	for _, b := range m.snapshotBackends() {
 		seen := make(map[string]bool)
 		for _, ch := range b.channels {
@@ -217,10 +222,13 @@ func (m *MultiNotifier) SendToAllChannels(content string) {
 				seen[ch] = true
 				if err := b.notifier.SendMessage(ch, content); err != nil {
 					fmt.Printf("[WARN] Notifier broadcast failed: %v\n", err)
+				} else {
+					delivered = true
 				}
 			}
 		}
 	}
+	return delivered
 }
 
 func (m *MultiNotifier) SendOwnerDM(content string) {

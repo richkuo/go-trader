@@ -628,6 +628,11 @@ Never apply a runtime-default change silently when the operator has not been sho
 
 When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
 
+- **Operator-required circuit-breaker warning is throttled and clearable (#1824, runtime default, no opt-out, no config change, no new column).** When a live OKX spot strategy fires its circuit breaker (or a live Robinhood options strategy did, before #1823 made options paper only), the scheduler cannot close the venue position, so it keeps an operator-required pending entry and warns the operator.
+  Before this change that warning posted to every channel and sent an owner DM on every cycle with due work until a portfolio kill switch fired; circuit-breaker expiry never cleared it.
+  Now the warning repeats once per `alert_throttle_interval` (default 6h) and at once after a new contributing fire; the CRITICAL log line stays on every cycle. A fire with a flat own book adds no leg, and a later fire merges into the earlier entry instead of replacing it. Clear an entry with the new owner-DM command `/go-trader-clear-operator-close <strategy> [platform]` after you flatten it on the venue (§ Operator-Required Circuit Breakers); the command registers at startup.
+  Existing entries send one warning on the first drain after the update and then follow the throttle. Legacy size-0 legs stay until you clear them. The new `episode` and `fired_at` keys live inside `risk_pending_circuit_closes_json`; an older binary ignores them.
+  Go-only change; deploy with `bash scripts/update.sh --restart` as usual. After an update, tell operators with live OKX spot strategies or a saved `robinhood_options` entry; there is nothing to opt out of.
 - **Options strategies run as paper only (#1823, runtime default, operator action required).** A `type: options` strategy with `--mode=live` or `--mode live` used to book simulated option trades in the live scope; no option order reached Robinhood, Deribit, IBKR or OKX, and its P&L fed live portfolio risk.
   Every config load (startup, SIGHUP, `probe`, `inspect`, `storage-inspect`, ledger export and every Discord and dashboard config write) now refuses it on every platform, with or without credentials, and `paper-to-live` refuses every options strategy.
   `check_options.py` refuses the same live forms with a JSON `error` and exit 1, and now reads its stdin positions when the args hold `--mode=paper` or `--mode paper` (before, either form dropped them, so the 4-position cap saw an empty book).
@@ -798,6 +803,7 @@ Global slash commands register at startup, covering every guild the bot is in pl
 | `paper-to-live <strategy>` | Flips `--mode=paper` or `--mode paper` to one `--mode=live` token after a DM confirm. Needs a restart, refuses while the strategy holds an open position, and refuses every `type: options` strategy (options run as paper only) |
 | `apply-regime-gate` | Interactive picker over type-eligible flat strategies, applies a named regime entry-gate preset, then confirms before writing. It refuses a non-flat target both before and after the confirm. The confirm lists any OTHER strategy whose dormant `allowed_regimes` gate the accompanying `regime.enabled` flip would reactivate — read that list first. Applies through a full restart |
 | `clear-cash-reconcile <strategy>` | Clears the cash-reconcile latch after you confirm virtual cash matches the venue. It never invents or adjusts cash; it only drops the block on live spot buys |
+| `clear-operator-close <strategy> [platform]` | Clears one operator-required circuit-breaker entry (`okx_spot` or `robinhood_options`) after you flatten it on the venue (§ Operator-Required Circuit Breakers). It refuses every automatic pending close, an unknown platform, and an omitted platform when the strategy holds both keys. The DM `confirm` prompt shows the strategy, platform, episode and legs; after the confirm it checks them again under the state lock and refuses when a new fire or another clear changed the entry. A failed save restores the entry and refuses. It does not read the venue or change cash, trades, positions or the circuit breaker |
 | `resolve-robinhood-order <strategy> <attempt> [order] [release:attest-no-order]` | Runs a fresh venue check for one held live Robinhood order attempt (`rh-…` id from the alert, the start log or `storage-inspect`). The optional order id is only a lookup key: the order must carry the attempt's `ref_id`, or else match its side, pair, quantity, submit window and account; for a sized sell the quantity is the saved sent quantity, and with no saved sent quantity no field match is tried, so the check never proves that no order exists while a same-pair order without `ref_id` is in the window (#1819). A proven fill moves the attempt to `settling` (the next cycle books it); a proven no-fill releases it. `release:attest-no-order` is the only release without venue proof: it applies only to a `submitting`/`unknown` attempt with no venue order id after its settle window, runs the venue check first, then shows the side, size, `ref_id` and submit window and needs a DM `confirm`; it records `no_fill` with the operator id, prior status, hold reason and evidence. Use it only when the order list cannot be read to its end (more than 20 pages) and the Robinhood order history shows no order. It never sends, cancels or books an order |
 | `resolve-entry <strategy> <attempt>` | Runs a fresh venue check for one held live entry attempt (`ei-…` id from the alert, the start log or `storage-inspect`). It releases a `submitting` attempt as `no_fill` only on complete no-execution evidence and refuses everything else (§ Entry allowance, Operator release). It never sends, cancels or books an order |
 
@@ -3045,8 +3051,15 @@ Some venues have no safe automated close path:
 | OKX | spot | `okx_spot` |
 | Robinhood | options | `robinhood_options` |
 
-When one triggers, the scheduler enqueues `operator_required: true` and emits a CRITICAL warning every cycle until you intervene.
+When one fires and the strategy's own book holds a positive leg (the OKX spot position, or each Robinhood option position), the scheduler records `operator_required: true` under the pending key before it closes the virtual book. A fire with a flat own book adds no leg and logs one `[WARN] operator-required-close:` line; an earlier entry keeps its legs, episode and reminder schedule. A later contributing fire merges into the earlier entry that you did not clear: the union of symbols, the larger size for a symbol in both, sorted by symbol, a new random `episode`, a new `fired_at`, and a reset reminder stamp, even when the legs are the same. Every size is the virtual book at fire time (the largest across fires not cleared). It does not show the current venue position.
 The `robinhood_options` row applies only to a pending close saved before #1823, because an options strategy with a live mode no longer loads; such a saved close still loads, renders and clears through the same paths.
+
+Cadence (#1824):
+
+- At the fire, the per-strategy circuit-breaker alert posts once to the channels and the owner DM and lists the legs as "manual flatten required".
+- The operator-required drain runs before `CheckRisk`, so its first warning follows on a later cycle with due work. It then repeats once per `alert_throttle_interval` (default 6h), and at once after a new contributing fire. The `[CRITICAL] operator-required-close:` log line repeats on every drain, due or not.
+- The drain stamps `last_notified_at` only after a channel post or the owner DM was accepted, and saves it at once. With no notification backend, or when every destination fails, nothing is stamped and the next drain retries. A failed save keeps the stamp in memory and the cycle save retries it; a restart before that save can repeat one warning. A clock that moves backward makes the entry due.
+- The stamp, `episode` and `fired_at` live inside `risk_pending_circuit_closes_json`, so a restart keeps the schedule.
 
 ```bash
 curl -s localhost:8099/status | uv run --no-sync python -c "
@@ -3057,11 +3070,11 @@ for sid, s in d['strategies'].items():
     for platform, p in pc.items():
         if p.get('operator_required'):
             legs = ', '.join(f\"{x['symbol']} size={x['size']}\" for x in p['symbols'])
-            print(f'{sid} [{platform}]: {legs}')
+            print(f\"{sid} [{platform}]: {legs} episode={p.get('episode')} fired_at={p.get('fired_at')} last_notified_at={p.get('last_notified_at')}\")
 "
 ```
 
-Response: open the venue UI, flatten the listed positions, confirm through `/status`, then let the scheduler clear the pending entry on the next circuit-breaker reset — or reset the portfolio kill switch by owner DM if trading must resume sooner.
+Response: open the venue UI, flatten the listed positions, check the venue position, then send `/go-trader-clear-operator-close <strategy> [platform]` in a DM to the bot and reply `confirm`. The command does not read the venue. Only two paths clear an entry: this command, and a portfolio kill-switch fire, which hands the manual check to the kill-switch flow (the kill-switch plan flags OKX spot and Robinhood options and blocks an owner-less auto-reset). Circuit-breaker expiry, a restart and a flat book never clear it. The drain and the command read only the running state, so a `robinhood_options` entry stays shown, reminded and clearable even if the strategy config changes.
 
 This is not the portfolio kill switch. Operator-required is per-strategy and affects only the strategy that breached drawdown.
 
@@ -3269,7 +3282,7 @@ Enabled by `replay_log_path` plus per-strategy `replay_sharing="live_mirror"`. P
 - `agent_info.go`: read-only dump.
 - `logger.go`: `log_level` gate. A new per-cycle or per-check line uses `logger.Debug`/`logDebugf` or an on-change form (`InfoOnChange`, `logOnChangef`, keyed on a stable state value, never on a price or balance); errors, warnings, trades and non-HOLD signals stay unconditional. Event-driven protection sync lines (after a trade, a limit fill, a failed-close re-arm) stay `logger.Info`.
 - `failure_alerts.go`/`script_failure_alerts.go`: primary alert at 3 strikes; transient 429/5xx/timeout stays WARN until 15 strikes or 75 minutes.
-- `discord_commands.go`/`discord_mutating_commands.go`: `/clear-cash-reconcile`, `/resolve-entry` (`entry_operator.go`) and `/resolve-robinhood-order` (`robinhood_order_recovery.go`) mutating, `/closing-strategies` read-only.
+- `discord_commands.go`/`discord_mutating_commands.go`: `/clear-cash-reconcile`, `/clear-operator-close` (`operator_required_close.go`), `/resolve-entry` (`entry_operator.go`) and `/resolve-robinhood-order` (`robinhood_order_recovery.go`) mutating, `/closing-strategies` read-only.
 - `missing_mark_alerts.go`: throttled DM per `(strategy_id, symbol)`. `hl_reconcile_gap_alerts.go`: alerting only. `portfolio_warning.go`, `circuit_breaker_alert.go`: alert routing.
 - `model_only_reconcile.go`: § Model-Only Close Reconciliation. `portfolio.go`: `CashReconcileRequired` (§ Cash Reconcile Latch). `kill_switch_close.go` and `*_close.go`: `type=manual` HL positions join the flatten via `hlKillSwitchAll`.
 
