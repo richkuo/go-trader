@@ -79,6 +79,7 @@ func openStateDBFromTemplate(path string) (*StateDB, error) {
 		if err := os.WriteFile(path, tmpl, 0644); err != nil {
 			return nil, err
 		}
+		return openStateDB(path, false)
 	} else if err != nil {
 		return nil, err
 	}

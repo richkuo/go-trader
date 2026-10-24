@@ -909,7 +909,7 @@ func TestBasketReplayRefusesBeforeOpeningState(t *testing.T) {
 
 func runReplayRaw(t *testing.T, root, specPath string) []byte {
 	t.Helper()
-	bin := replayBinary(t)
+	bin := pyintegrationBinary(t)
 	cmd := exec.Command(bin, "basket-replay", "--spec", specPath)
 	cmd.Dir = root
 	out, _ := cmd.Output()
@@ -946,7 +946,7 @@ func writeReplayCSV(t *testing.T, path, header string, rows [][]float64, format 
 func TestBasketReplayDriverRecordsScoredAndRefusedRuns(t *testing.T) {
 	root := basketPyRoot(t)
 	fx := loadReplayFixture(t)
-	bin := replayBinary(t)
+	bin := pyintegrationBinary(t)
 	work := realTempDir(t)
 	frames := map[string]interface{}{}
 	funding := map[string]interface{}{}
@@ -1377,7 +1377,7 @@ func TestBasketReplayReversalExpiryScenariosMatchThePaperCoordinator(t *testing.
 				}
 			}},
 	}
-	replayBinary(t)
+	pyintegrationBinary(t)
 	t.Chdir(root)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

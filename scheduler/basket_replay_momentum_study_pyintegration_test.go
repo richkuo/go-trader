@@ -74,7 +74,7 @@ func newMomentumStudy(t *testing.T, mutate func(map[string]interface{}), frames 
 	t.Helper()
 	root := basketPyRoot(t)
 	base := realTempDir(t)
-	s := &momentumStudy{t: t, root: root, dir: filepath.Join(base, "study"), bin: replayBinary(t)}
+	s := &momentumStudy{t: t, root: root, dir: filepath.Join(base, "study"), bin: pyintegrationBinary(t)}
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -570,7 +570,7 @@ func newReversalStudy(t *testing.T, mutate func(map[string]interface{}), frames 
 	t.Helper()
 	root := basketPyRoot(t)
 	base := realTempDir(t)
-	inputs := &momentumStudy{t: t, root: root, dir: filepath.Join(base, "inputs"), bin: replayBinary(t)}
+	inputs := &momentumStudy{t: t, root: root, dir: filepath.Join(base, "inputs"), bin: pyintegrationBinary(t)}
 	if err := os.MkdirAll(inputs.dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

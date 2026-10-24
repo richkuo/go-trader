@@ -494,6 +494,10 @@ type StateDB struct {
 }
 
 func OpenStateDB(path string) (*StateDB, error) {
+	return openStateDB(path, true)
+}
+
+func openStateDB(path string, migrate bool) (*StateDB, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
@@ -515,12 +519,14 @@ func OpenStateDB(path string) (*StateDB, error) {
 		}
 	}
 
+	sdb := &StateDB{db: db, path: path, role: storageRolePrimary}
+	if !migrate {
+		return sdb, nil
+	}
 	if _, err := db.Exec(schemaDDL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
-
-	sdb := &StateDB{db: db, path: path, role: storageRolePrimary}
 	if err := sdb.migrateSchema(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)

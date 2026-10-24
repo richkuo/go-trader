@@ -116,13 +116,7 @@ func TestRobinhoodTimeframeTablesMatchThePythonAdapter(t *testing.T) {
 
 func robinhoodTimeframeITBinary(t *testing.T, root string) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "go-trader")
-	build := exec.Command("go", "build", "-o", bin, ".")
-	build.Dir = filepath.Join(root, "scheduler")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
-	return bin
+	return pyintegrationBinary(t)
 }
 
 func robinhoodTimeframeITConfig(t *testing.T, dir, name string, strat map[string]any, regime map[string]any) string {

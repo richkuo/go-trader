@@ -101,7 +101,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
+          cache-dependency-path: |
+            scheduler/go.sum
+            scheduler/go.mod
 
       - name: Basket coordinator race check
         run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestBasket' .
@@ -114,7 +116,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
+          cache-dependency-path: |
+            scheduler/go.sum
+            scheduler/go.mod
 
       - name: Quote coordinator race check
         run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
@@ -132,7 +136,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --compile-bytecode
 
       - name: Python-backed Go integration tests
         run: |
