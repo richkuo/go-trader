@@ -1502,6 +1502,7 @@ func main() {
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhoodOptions)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseTopStep)
+						ss.RiskState.RobinhoodSharedCloseNotice = RobinhoodSharedCloseNotice{}
 					}
 				}
 				if sr.NotionalBlocked {

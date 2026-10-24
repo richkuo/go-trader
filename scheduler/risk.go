@@ -864,6 +864,45 @@ type RiskState struct {
 	PendingCircuitCloses map[string]*PendingCircuitClose `json:"pending_circuit_closes,omitempty"`
 
 	QuotePrecisionRebaselined bool `json:"quote_precision_rebaselined,omitempty"`
+
+	RobinhoodSharedCloseNotice RobinhoodSharedCloseNotice `json:"robinhood_shared_close_notice,omitzero"`
+}
+
+type RobinhoodSharedCloseNotice struct {
+	Coin           string    `json:"coin,omitempty"`
+	CBUntil        time.Time `json:"cb_until"`
+	LastNotifiedAt time.Time `json:"last_notified_at"`
+}
+
+func (n RobinhoodSharedCloseNotice) IsZero() bool {
+	return n.Coin == "" && n.CBUntil.IsZero() && n.LastNotifiedAt.IsZero()
+}
+
+func (r *RiskState) MarshalRobinhoodSharedCloseNoticeJSON() string {
+	if r == nil || r.RobinhoodSharedCloseNotice.IsZero() {
+		return ""
+	}
+	b, err := json.Marshal(r.RobinhoodSharedCloseNotice)
+	if err != nil {
+		fmt.Printf("[CRITICAL] MarshalRobinhoodSharedCloseNoticeJSON: the shared-coin notice marker is not persisted, so the owner DM can repeat once after a restart: %v\n", err)
+		return ""
+	}
+	return string(b)
+}
+
+func (r *RiskState) UnmarshalRobinhoodSharedCloseNoticeJSON(raw string) {
+	if r == nil {
+		return
+	}
+	r.RobinhoodSharedCloseNotice = RobinhoodSharedCloseNotice{}
+	if raw == "" {
+		return
+	}
+	var n RobinhoodSharedCloseNotice
+	if err := json.Unmarshal([]byte(raw), &n); err != nil || n.Coin == "" || n.LastNotifiedAt.IsZero() {
+		return
+	}
+	r.RobinhoodSharedCloseNotice = n
 }
 
 const PlatformPendingCloseHyperliquid = "hyperliquid"
@@ -1521,6 +1560,7 @@ func checkRiskValued(sc *StrategyConfig, s *StrategyState, portfolioValue float6
 		}
 		r.CircuitBreaker = false
 		r.ConsecutiveLosses = 0
+		r.RobinhoodSharedCloseNotice = RobinhoodSharedCloseNotice{}
 	}
 
 	cbEnabled := sc.CircuitBreakerEnabled()
