@@ -308,6 +308,7 @@ type basketRuntime struct {
 	pairEchoFailures map[string]string
 	pairLastInputs   *pairStepInputs
 	pairQuoteNote    string
+	pairLastStepMs   int64
 
 	expectedDurable map[string]float64
 	needsDurable    bool
