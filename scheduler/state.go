@@ -31,11 +31,7 @@ func RecordTrade(s *StrategyState, trade Trade) {
 			trade.PositionID = ensureOptionTradeID(s.ID, opt)
 		}
 	}
-	if trade.CostModelVersion == 0 {
-		policy := activeFillCostPolicy()
-		trade.CostModelVersion = policy.ModelVersion
-		trade.CostPolicyID = policy.PolicyID
-	}
+	stampTradeCostProvenance(s, &trade)
 	s.TradeHistory = append(s.TradeHistory, trade)
 	if tradeRecorder == nil || s.deferTradePersist {
 		return
@@ -115,6 +111,9 @@ type StrategyState struct {
 	robinhoodPartitionSavePending bool
 	replayCapture                 *[]ReplayDecision
 	bookClock                     time.Time
+	pairCostPair                  string
+	costScope                     *fillCostPolicy
+	pairCostFaults                []string
 }
 
 func strategyBookNow(s *StrategyState) time.Time {
@@ -153,6 +152,7 @@ func NewStrategyState(cfg StrategyConfig) *StrategyState {
 			PeakValue:      cfg.Capital,
 			MaxDrawdownPct: cfg.MaxDrawdownPct,
 		},
+		pairCostPair: strings.TrimSpace(cfg.PairID),
 	}
 }
 

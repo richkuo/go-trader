@@ -65,6 +65,7 @@ func (v pairMemberValuation) conversion(currency string) (float64, bool) {
 type pairVenue interface {
 	basketVenue
 	Virtual() bool
+	ExecutionModel() string
 	Valuation(member pairContractMember, nowMs int64) (pairMemberValuation, error)
 }
 
@@ -246,6 +247,19 @@ type pairBookFill struct {
 }
 
 func bookPairFill(sc StrategyConfig, s *StrategyState, cfg *Config, a *basketAction, qty, px, fee float64, obs basketMemberObservation, logger *StrategyLogger) basketBooking {
+	if s == nil || !isPairMember(sc) || a == nil || a.StrategyID != sc.ID {
+		return basketBooking{Hold: "the pair booking owner needs the action's pair member and its book"}
+	}
+	var b basketBooking
+	if err := withPairDispatchCostScope(sc, s, func() {
+		b = bookPairFillScoped(sc, s, cfg, a, qty, px, fee, obs, logger)
+	}); err != nil {
+		return basketBooking{Hold: "the member cost binding refused the booking before any book change: " + err.Error()}
+	}
+	return b
+}
+
+func bookPairFillScoped(sc StrategyConfig, s *StrategyState, cfg *Config, a *basketAction, qty, px, fee float64, obs basketMemberObservation, logger *StrategyLogger) basketBooking {
 	coin := a.Symbol
 	pos := s.Positions[coin]
 	oid := a.VenueOrderID

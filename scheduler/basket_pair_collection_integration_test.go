@@ -220,7 +220,7 @@ func TestBasketPairCollectionSaveFailureSetsDurableGateWithoutRecollection(t *te
 	e.quotes.err = errors.New("book read failed")
 	e.quotes.mu.Unlock()
 	at := pairTestStart().Add(time.Second)
-	f := &pairCommitFault{from: 2}
+	f := &pairCommitFault{from: 3}
 	f.install(t)
 	e.step(at)
 	rb := e.rt().Rebalances[pairTestStart().UnixMilli()]

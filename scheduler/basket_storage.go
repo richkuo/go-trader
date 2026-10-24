@@ -259,6 +259,7 @@ type basketAction struct {
 	durableStatus  string
 	durableApplied float64
 	pendingFee     *pairFeeFix
+	feeFixUndo     *pairFeeFixUndo
 	feeFinal       bool
 }
 
@@ -859,8 +860,18 @@ func (sdb *StateDB) reserveBasketRebalanceRow(rt *basketRuntime, rb *basketRebal
 	if existing > 0 {
 		return errBasketDeadlineTaken
 	}
+	if rt.isPair() {
+		if err := checkSavedPairCostEvidenceTx(tx, rt); err != nil {
+			return err
+		}
+	}
 	if err := upsertBasketContractRow(tx, rt, rt.auditNowMs()); err != nil {
 		return err
+	}
+	if rt.isPair() {
+		if err := writePairProgressTx(tx, rt); err != nil {
+			return err
+		}
 	}
 	if err := upsertBasketRebalanceRow(tx, rb, rb.Status); err != nil {
 		return err
@@ -874,6 +885,9 @@ func (sdb *StateDB) reserveBasketRebalanceRow(rt *basketRuntime, rb *basketRebal
 		return err
 	}
 	rb.durableStatus = rb.Status
+	if rt.isPair() {
+		rt.Pair.admission.markCostDurable(rt.Pair.Progress.CostEvidence)
+	}
 	return nil
 }
 

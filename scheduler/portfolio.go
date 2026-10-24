@@ -148,9 +148,14 @@ func bookPerpsClose(s *StrategyState, symbol string, closePx float64, reason, de
 
 func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
 	var booked bool
-	mutatePaperPerpsBook(s, symbol, func() {
-		booked = bookPerpsCloseWithFillFeeInner(s, symbol, closePx, fillFee, useFillFee, exchangeOrderID, reason, detailsPrefix, logPrefix, logger)
-	})
+	if err := withStrategyCostScope(s, func() {
+		mutatePaperPerpsBook(s, symbol, func() {
+			booked = bookPerpsCloseWithFillFeeInner(s, symbol, closePx, fillFee, useFillFee, exchangeOrderID, reason, detailsPrefix, logPrefix, logger)
+		})
+	}); err != nil {
+		logStrategyCostRefusal(logger, logPrefix, symbol, err)
+		return false
+	}
 	return booked
 }
 
@@ -217,7 +222,7 @@ func bookPerpsCloseWithFillFeeInner(s *StrategyState, symbol string, closePx, fi
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
+	fee := strategyPlatformFee(s, feePlatform, qty*closePx)
 	feeSource := FeeSourceModeled
 	if useFillFee {
 		fee = fillFee
@@ -264,9 +269,14 @@ func bookPerpsCloseWithFillFeeInner(s *StrategyState, symbol string, closePx, fi
 
 func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason, detailsPrefix, logPrefix string, logger *StrategyLogger) bool {
 	var booked bool
-	mutatePaperPerpsBook(s, symbol, func() {
-		booked = bookPerpsPartialCloseWithFillFeeInner(s, symbol, closeQty, closePx, fillFee, useFillFee, exchangeOrderID, reason, detailsPrefix, logPrefix, logger)
-	})
+	if err := withStrategyCostScope(s, func() {
+		mutatePaperPerpsBook(s, symbol, func() {
+			booked = bookPerpsPartialCloseWithFillFeeInner(s, symbol, closeQty, closePx, fillFee, useFillFee, exchangeOrderID, reason, detailsPrefix, logPrefix, logger)
+		})
+	}); err != nil {
+		logStrategyCostRefusal(logger, logPrefix, symbol, err)
+		return false
+	}
 	return booked
 }
 
@@ -301,7 +311,7 @@ func bookPerpsPartialCloseWithFillFeeInner(s *StrategyState, symbol string, clos
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
+	fee := strategyPlatformFee(s, feePlatform, qty*closePx)
 	feeSource := FeeSourceModeled
 	if useFillFee {
 		fee = fillFee
@@ -940,9 +950,21 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		hold   string
 		err    error
 	)
-	mutatePaperPerpsBook(s, symbol, func() {
-		trades, hold, err = executePerpsSignalWithLeverageInner(s, signal, symbol, price, sizing, fillQty, fillOID, fillFee, direction, closeFraction, logger, recordOpen, lot)
-	})
+	if scopeErr := withStrategyCostScope(s, func() {
+		record := recordOpen
+		if s != nil && s.costScope != nil && recordOpen != nil {
+			policy := *s.costScope
+			record = func(t Trade) {
+				t.CostModelVersion, t.CostPolicyID = policy.ModelVersion, policy.PolicyID
+				recordOpen(t)
+			}
+		}
+		mutatePaperPerpsBook(s, symbol, func() {
+			trades, hold, err = executePerpsSignalWithLeverageInner(s, signal, symbol, price, sizing, fillQty, fillOID, fillFee, direction, closeFraction, logger, record, lot)
+		})
+	}); scopeErr != nil {
+		return 0, "", fmt.Errorf("the member cost binding refused the %s booking before any book change: %w", symbol, scopeErr)
+	}
 	return trades, hold, err
 }
 
@@ -1011,7 +1033,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if fillQty > 0 {
 				execPrice = price
 			} else {
-				execPrice = ApplyAdverseSlippage(price, true)
+				execPrice = strategyAdverseSlippage(s, price, true)
 			}
 			pnl := closeQty * (pos.AvgCost - execPrice)
 			terminalClose := closeOnlyAction || !allowsLong
@@ -1020,7 +1042,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if flipCloseQty > 0 && !terminalClose && fillQty > 0 {
 				legFillFee = flipFeeShare(fillFee, closeQty, fillQty)
 			}
-			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), legFillFee, useFillFee)
+			fee := executionFee(strategyPlatformFee(s, feePlatform, closeQty*execPrice), legFillFee, useFillFee)
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
@@ -1095,7 +1117,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				return tradesExecuted, "", nil
 			}
 		} else {
-			execPrice = ApplyAdverseSlippage(price, true)
+			execPrice = strategyAdverseSlippage(s, price, true)
 			if execPrice <= 0 {
 				return tradesExecuted, "", nil
 			}
@@ -1121,7 +1143,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			useFillFee = true
 			legFillFee = flipFeeShare(fillFee, qty, fillQty)
 		}
-		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), legFillFee, useFillFee)
+		fee := executionFee(strategyPlatformFee(s, feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee
 		now := strategyBookNow(s)
 		positionID := newTradePositionID(s.ID, symbol, now)
@@ -1200,7 +1222,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if fillQty > 0 {
 				execPrice = price
 			} else {
-				execPrice = ApplyAdverseSlippage(price, false)
+				execPrice = strategyAdverseSlippage(s, price, false)
 			}
 			pnl := closeQty * (execPrice - pos.AvgCost)
 			terminalClose := closeOnlyAction || !allowsShort
@@ -1209,7 +1231,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if flipCloseQty > 0 && !terminalClose && fillQty > 0 {
 				legFillFee = flipFeeShare(fillFee, closeQty, fillQty)
 			}
-			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), legFillFee, useFillFee)
+			fee := executionFee(strategyPlatformFee(s, feePlatform, closeQty*execPrice), legFillFee, useFillFee)
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
@@ -1284,7 +1306,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				return tradesExecuted, "", nil
 			}
 		} else {
-			execPrice = ApplyAdverseSlippage(price, false)
+			execPrice = strategyAdverseSlippage(s, price, false)
 			if execPrice <= 0 {
 				return tradesExecuted, "", nil
 			}
@@ -1310,7 +1332,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			useFillFee = true
 			legFillFee = flipFeeShare(fillFee, qty, fillQty)
 		}
-		fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), legFillFee, useFillFee)
+		fee := executionFee(strategyPlatformFee(s, feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee
 		now := strategyBookNow(s)
 		positionID := newTradePositionID(s.ID, symbol, now)
