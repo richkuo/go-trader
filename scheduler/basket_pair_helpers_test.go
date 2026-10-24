@@ -165,7 +165,109 @@ func pairTestEvidence(t *testing.T, doc []byte, mutate func(d *pairEvidenceDocum
 
 func pairTestDeps(t *testing.T, doc []byte, venues *pairTestVenues) pairResearchDeps {
 	t.Helper()
-	return pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc, nil), Quotes: newPairFixtureQuotes(t, doc).collector}
+	return pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc, nil), Quotes: newPairFixtureQuotes(t, doc).collector, Funding: pairTestFunding(t, doc, nil)}
+}
+
+const (
+	pairTestFundingFromMs    = 1_700_000_000_000
+	pairTestFundingThroughMs = 4_102_444_800_000
+)
+
+func pairTestMemberKeys(doc []byte) []pairEvidenceKey {
+	var root struct {
+		Strategies []struct {
+			ID          string   `json:"id"`
+			Platform    string   `json:"platform"`
+			Args        []string `json:"args"`
+			PaperSource string   `json:"paper_source"`
+		} `json:"strategies"`
+		Pairs []struct {
+			Members []struct {
+				StrategyID string `json:"strategy_id"`
+				AccountKey string `json:"account_key"`
+				Instrument string `json:"instrument"`
+			} `json:"members"`
+		} `json:"pairs"`
+	}
+	_ = json.Unmarshal(doc, &root)
+	var out []pairEvidenceKey
+	if len(root.Pairs) == 0 {
+		return out
+	}
+	seen := map[string]bool{}
+	for _, m := range root.Pairs[0].Members {
+		if seen[m.StrategyID] {
+			continue
+		}
+		seen[m.StrategyID] = true
+		partition, provider := "paper", ""
+		for _, sc := range root.Strategies {
+			if sc.ID != m.StrategyID {
+				continue
+			}
+			provider = pairProviderPlatforms[sc.Platform]
+			for _, a := range sc.Args {
+				if a == "--mode=live" {
+					partition = "live"
+				}
+			}
+			if sc.PaperSource != "" {
+				partition = "paper:" + sc.PaperSource
+			}
+		}
+		if provider != "" {
+			out = append(out, pairEvidenceKey{Partition: partition, Provider: provider, AccountKey: m.AccountKey, Instrument: m.Instrument, MemberID: m.StrategyID})
+		}
+	}
+	return out
+}
+
+func pairTestFundingDocument(doc []byte) pairFundingDocument {
+	d := pairFundingDocument{V: pairFundingDocumentVersion, SourceID: "fixture-funding", Rates: []pairFundingRate{}, Prices: []pairFundingPrice{}, Coverage: []pairFundingCoverageRecord{}}
+	for _, k := range pairTestMemberKeys(doc) {
+		d.Coverage = append(d.Coverage, pairFundingCoverageRecord{V: pairFundingRecordVersion, Key: k, EvidenceID: "cov-" + k.MemberID,
+			RequestedFromMs: pairTestFundingFromMs, RequestedThroughMs: pairTestFundingThroughMs,
+			Proven: []pairFundingInterval{{FromMs: pairTestFundingFromMs, ThroughMs: pairTestFundingThroughMs}}, Gaps: []pairCoverageGap{},
+			VisibleMs: pairTestFundingFromMs + 500, Provenance: "research-funding:fixture"})
+	}
+	return d
+}
+
+func pairTestFundingSeal(t *testing.T, d *pairFundingDocument) []byte {
+	t.Helper()
+	for i := range d.Rates {
+		d.Rates[i], _ = d.Rates[i].sealed()
+	}
+	for i := range d.Prices {
+		d.Prices[i], _ = d.Prices[i].sealed()
+	}
+	for i := range d.Coverage {
+		d.Coverage[i], _ = d.Coverage[i].sealed()
+	}
+	blob, err := pairFundingDocumentBytes(*d)
+	if err != nil {
+		t.Fatalf("pair funding fixture: %v", err)
+	}
+	return blob
+}
+
+func pairTestFundingBytes(t *testing.T, doc []byte, mutate func(d *pairFundingDocument)) []byte {
+	t.Helper()
+	d := pairTestFundingDocument(doc)
+	if mutate != nil {
+		mutate(&d)
+	}
+	return pairTestFundingSeal(t, &d)
+}
+
+func pairTestFunding(t *testing.T, doc []byte, mutate func(d *pairFundingDocument)) *pairFrozenFundingSource {
+	t.Helper()
+	blob := pairTestFundingBytes(t, doc, mutate)
+	src, err := newPairFrozenFundingSource(blob, sha256Hex(blob))
+	if err != nil {
+		t.Fatalf("pair funding fixture source: %v", err)
+	}
+	return src
 }
 
 type pairFixtureQuotes struct {
@@ -575,6 +677,9 @@ func (v *pairScriptedVenue) fill(a *basketAction, out basketVenueOutcome) basket
 	if out.Side == "" {
 		out.Side = a.OrderSide
 	}
+	if out.FeeEvidenceID == "" && len(out.FeeCoverage) > 0 {
+		out.FeeEvidenceID = pairFeeEvidenceID(a)
+	}
 	if out.AcceptedAtMs == 0 && (out.CumQty > 0 || out.Outcome == pairVenueOpen) {
 		out.AcceptedAtMs = a.SubmittedAtMs
 		if out.AcceptedAtMs == 0 {
@@ -768,11 +873,19 @@ func pairTestStart() time.Time {
 
 func newPairTestEnv(t *testing.T, mutate func(root map[string]interface{})) *pairTestEnv {
 	t.Helper()
+	return newPairTestEnvDeps(t, mutate, nil)
+}
+
+func newPairTestEnvDeps(t *testing.T, mutate func(root map[string]interface{}), depsFor func(doc []byte, venues *pairTestVenues) pairResearchDeps) *pairTestEnv {
+	t.Helper()
 	registerPairTestPolicy(t)
 	dir := filepath.Join(t.TempDir(), "run")
 	doc := pairTestDoc(t, dir, mutate)
 	venues := newPairTestVenues(false)
 	deps := pairTestDeps(t, doc, venues)
+	if depsFor != nil {
+		deps = depsFor(doc, venues)
+	}
 	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, deps)
 	if err != nil {
 		t.Fatalf("newPairResearchAdmission: %v", err)

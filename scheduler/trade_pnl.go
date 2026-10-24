@@ -10,6 +10,7 @@ const TradeTypeFunding = "funding"
 
 const (
 	FeeSourceUserFills           = "userfills"
+	FeeSourceUserFillsPending    = "userfills_pending"
 	FeeSourceModeled             = "modeled"
 	FeeSourceReconcileAdjustment = "reconcile_adjustment"
 )

@@ -294,7 +294,7 @@ func TestBasketPairCollectionAdmissionBindsQuoteSources(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "run")
 	doc2 := pairTestDoc(t, dir, nil)
 	q := newPairFixtureQuotes(t, doc2).collector
-	adm, _, err := newPairResearchAdmission(doc2, "run-1", dir, false, pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc2, nil), Quotes: q})
+	adm, _, err := newPairResearchAdmission(doc2, "run-1", dir, false, pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc2, nil), Quotes: q, Funding: pairTestFunding(t, doc2, nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -728,12 +728,12 @@ func TestBasketPairCollectionNativeReductionReservesWithoutEvidence(t *testing.T
 		}
 		return pairEnterResult(r, 0.06), nil
 	}
-	fill := func(px float64) basketVenueOutcome {
-		return pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * px, Terminal: true}, 1, 1.5, "USDT", true)
+	fill := func(px float64, cur string) basketVenueOutcome {
+		return pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * px, Terminal: true}, 1.5, cur, true)
 	}
-	pairOpenVenue(e, pairTestOKX, fill(59800))
+	pairOpenVenue(e, pairTestOKX, fill(59800, "USDT"))
 	e.slotStep(0)
-	pairOpenVenue(e, pairTestHL, fill(60200))
+	pairOpenVenue(e, pairTestHL, fill(60200, "USDC"))
 	e.slotStep(1)
 	e.assertBooks("matched", 0.06, -0.06)
 	closer := e.bc.pairKillSwitchHLCloser(closers.hl)

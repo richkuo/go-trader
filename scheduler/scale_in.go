@@ -218,7 +218,7 @@ func applyPerpsScaleInInner(s *StrategyState, sc StrategyConfig, symbol string, 
 		feePlatform = "okx-perps"
 	}
 	notional := addQty * addPrice
-	fee := executionFee(strategyPlatformFee(s, feePlatform, notional), fillFee, useFillFee)
+	fee := strategyExecutionFee(s, strategyPlatformFee(s, feePlatform, notional), fillFee, useFillFee)
 	s.Cash -= fee
 	side := "buy"
 	if pos.Side == "short" {
@@ -243,7 +243,7 @@ func applyPerpsScaleInInner(s *StrategyState, sc StrategyConfig, symbol string, 
 		Details:         fmt.Sprintf("Scale-in %s %.6f @ $%.2f (add #%d, new qty %.6f, avg $%.2f, fee $%.2f)", pos.Side, addQty, addPrice, pos.ScaleInCount, pos.Quantity, pos.AvgCost, fee),
 		ExchangeOrderID: oid,
 		ExchangeFee:     fee,
-		FeeSource:       executionFeeSource(fillFee, useFillFee),
+		FeeSource:       strategyExecutionFeeSource(s, fillFee, useFillFee),
 		PnLGross:        true,
 		IsClose:         false,
 	}
@@ -345,8 +345,8 @@ func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, 
 		fillPrice = result.PairFill.Px
 		fillAddQty = result.PairFill.Qty
 		fillOID = result.PairFill.OID
-		fillFee = result.PairFill.Fee
-		useFillFee = fillFee > 0
+		fillFee = result.PairFill.Fee.DeltaUSD
+		useFillFee = result.PairFill.Fee.Present
 	} else if !hyperliquidIsLive(sc.Args) {
 		if pos := s.Positions[result.Symbol]; pos != nil {
 			p, err := pairDispatchCostPolicy(sc, s)
