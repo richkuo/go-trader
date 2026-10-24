@@ -869,6 +869,9 @@ func (sdb *StateDB) reserveBasketRebalanceRow(rt *basketRuntime, rb *basketRebal
 		if err := checkSavedPairCostEvidenceTx(tx, rt); err != nil {
 			return err
 		}
+		if err := checkSavedPairFundingBindingTx(tx, rt); err != nil {
+			return err
+		}
 	}
 	if err := upsertBasketContractRow(tx, rt, rt.auditNowMs()); err != nil {
 		return err
@@ -986,6 +989,7 @@ type basketFileRecords struct {
 	Lifecycle  map[basketKey]map[string]basketLifecycle
 	Uses       map[basketKey][]*pairQuoteEventUse
 	Progress   map[basketKey]string
+	Funding    map[basketKey]*pairFundingFileRows
 	Unmapped   []string
 }
 
@@ -1485,5 +1489,10 @@ func inspectBasketRows(db *StateDB, fi *storageFileInspection, ident storageIden
 	if err != nil {
 		return nil, err
 	}
-	return append(rejections, lifecycleRejections...), nil
+	fundingRejections, err := inspectPairFundingRows(db, fi, ident, ownedScopes, ownedParts)
+	if err != nil {
+		return nil, err
+	}
+	rejections = append(rejections, lifecycleRejections...)
+	return append(rejections, fundingRejections...), nil
 }

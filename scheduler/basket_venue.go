@@ -43,6 +43,8 @@ type basketVenueOutcome struct {
 	FeeEvidenceID      string  `json:"fee_evidence_id,omitempty"`
 	FeeEvidenceVersion int64   `json:"fee_evidence_version,omitempty"`
 	FeeFinal           bool    `json:"fee_final,omitempty"`
+
+	Fills []pairVenueFill `json:"fills,omitempty"`
 }
 
 type pairMemberValuation struct {

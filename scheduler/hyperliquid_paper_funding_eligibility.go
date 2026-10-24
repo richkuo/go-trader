@@ -29,7 +29,7 @@ func paperFundingPrimaryCoin(sc StrategyConfig) string {
 }
 
 func paperFundingCoins(sc StrategyConfig) []string {
-	if !paperFundingEligible(sc) {
+	if !paperFundingEligible(sc) || pairFundingOwned(sc) {
 		return nil
 	}
 	set := make(map[string]bool, 2)

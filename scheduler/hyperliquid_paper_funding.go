@@ -215,7 +215,7 @@ func planPaperFunding(state *AppState, cfgs []StrategyConfig) map[string]int64 {
 			continue
 		}
 		s := state.Strategies[sc.ID]
-		if s == nil || s.PaperFunding == nil || quoteFundingOwned(sc, s) {
+		if s == nil || s.PaperFunding == nil || quoteFundingOwned(sc, s) || pairFundingOwned(sc) {
 			continue
 		}
 		symbols := make(map[string]bool)
@@ -563,7 +563,7 @@ func runPaperFundingAccounting(state *AppState, cfgs []StrategyConfig, store pap
 			continue
 		}
 		s := state.Strategies[sc.ID]
-		if s == nil || quoteFundingOwned(sc, s) {
+		if s == nil || quoteFundingOwned(sc, s) || pairFundingOwned(sc) {
 			continue
 		}
 		part := partitionFor(sc)

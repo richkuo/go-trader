@@ -52,7 +52,7 @@ func pairParsePx(s string) (float64, bool) {
 	return f, err == nil && basketFinitePositive(f)
 }
 
-func pairDecimalFloat(d pairDecimal) (float64, bool) {
+func pairDecimalToFloat(d pairDecimal) (float64, bool) {
 	r, err := d.rat()
 	if err != nil {
 		return 0, false
@@ -101,7 +101,7 @@ func (v pairMemberValuation) conversionAt(currency string, nowMs int64) (float64
 		if !pairEligibleAt(c.pairEvidenceStamp, nowMs) {
 			return 0, fmt.Sprintf("%s %s conversion %s is not valid at %d (valid %d..%d, received %d)", v.Key.MemberID, cur, c.EvidenceID, nowMs, c.ValidFromMs, c.ValidThroughMs, c.FirstReceiptMs)
 		}
-		rate, ok := pairDecimalFloat(c.RateUSD)
+		rate, ok := pairDecimalToFloat(c.RateUSD)
 		if !ok || !basketFinitePositive(rate) {
 			return 0, fmt.Sprintf("%s %s conversion %s has no positive rate", v.Key.MemberID, cur, c.EvidenceID)
 		}
@@ -169,9 +169,9 @@ func (v pairMemberValuation) accountAt(nowMs int64) (pairAccountUSD, string) {
 	if why != "" {
 		return pairAccountUSD{}, why
 	}
-	eq, ok1 := pairDecimalFloat(a.Equity)
-	free, ok2 := pairDecimalFloat(a.FreeCollateral)
-	used, ok3 := pairDecimalFloat(a.MarginUsed)
+	eq, ok1 := pairDecimalToFloat(a.Equity)
+	free, ok2 := pairDecimalToFloat(a.FreeCollateral)
+	used, ok3 := pairDecimalToFloat(a.MarginUsed)
 	if !ok1 || !ok2 || !ok3 {
 		return pairAccountUSD{}, fmt.Sprintf("%s account %s has an unreadable amount", v.Key.MemberID, a.EvidenceID)
 	}
@@ -397,7 +397,7 @@ func pairFillView(v pairMemberValuation, m pairContractMember, partition string,
 				reasons, ok = append(reasons, err.Error()), false
 				continue
 			}
-			rate, rok := pairDecimalFloat(c.RateUSD)
+			rate, rok := pairDecimalToFloat(c.RateUSD)
 			if !rok || !basketFinitePositive(rate) {
 				reasons, ok = append(reasons, fmt.Sprintf("conversion evidence %s has no positive rate", c.EvidenceID)), false
 				continue

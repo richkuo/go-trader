@@ -401,6 +401,7 @@ func (bc *basketCoordinator) stepPair(rt *basketRuntime, in basketCycleInputs) {
 	electiveBlocked := bc.reconcilePairActions(rt, in, inputs)
 	in = bc.refreshPairInputs(rt, in)
 	bc.detectPairExceptions(rt, in)
+	bc.stepPairFunding(rt, in)
 	bc.pairLifecycleChecks(rt, in)
 	bc.executePairProtective(rt, in, inputs)
 	in = bc.refreshPairInputs(rt, in)
@@ -566,7 +567,10 @@ func pairOutcomeError(a *basketAction, out basketVenueOutcome) string {
 			return "fee evidence needs an identity, a version of at least 1 and a finite signed amount"
 		}
 	}
-	return ""
+	if why := pairValidateVenueFills(a, out); why != "" {
+		return why
+	}
+	return pairFillsImmutable(a.EvidenceJSON, out)
 }
 
 func (bc *basketCoordinator) holdPairAction(rt *basketRuntime, a *basketAction, reason string, freeze bool, now time.Time) {
@@ -910,8 +914,11 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 		prevDefer := s.deferTradePersist
 		s.deferTradePersist = true
 		var booked basketBooking
+		fillCtx := bc.pairFillContextFor(rt, a, remaining, now.UnixMilli())
 		withStrategyBookClock(s, now, func() {
-			booked = bookPairFill(sc, s, bc.cfg, a, remaining, px, fee, obs, logger)
+			withPairFillContext(s, fillCtx, func() {
+				booked = bookPairFill(sc, s, bc.cfg, a, remaining, px, fee, obs, logger)
+			})
 		})
 		s.deferTradePersist = prevDefer
 		if !(booked.Qty > 0) {
@@ -1101,9 +1108,12 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 		}
 	}
 	for _, o := range p.Obligations {
-		if o.Kind == "fee_unconfirmed" || o.Kind == "settlement_conversion" {
+		if o.Kind == "fee_unconfirmed" || o.Kind == "settlement_conversion" || pairFundingHoldsAccounting(o.Kind) {
 			accounted = false
 		}
+	}
+	if rt.Pair.funding.hasPending() {
+		accounted = false
 	}
 	changed := false
 	if p.Lifecycle == "" {
@@ -1127,7 +1137,7 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 				rb.Outcome.CompletedAtMs = nowMs
 				rb.UpdatedAtMs = nowMs
 			}
-			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound, CostEvidence: p.CostEvidence}
+			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound, CostEvidence: p.CostEvidence, FundingBinding: p.FundingBinding}
 			changed = true
 		}
 	case pairLifecycleOpening:
@@ -1400,8 +1410,8 @@ func (bc *basketCoordinator) pairFullFillCollateral(rt *basketRuntime, m pairCon
 	if !ok {
 		return fmt.Sprintf("%s has no saved %s conversion for its account collateral", m.MemberID, em.Account.CollateralCurrency)
 	}
-	eq, ok1 := pairDecimalFloat(em.Account.Equity)
-	free, ok2 := pairDecimalFloat(em.Account.FreeCollateral)
+	eq, ok1 := pairDecimalToFloat(em.Account.Equity)
+	free, ok2 := pairDecimalToFloat(em.Account.FreeCollateral)
 	if !ok1 || !ok2 {
 		return m.MemberID + " saved account evidence has an unreadable amount"
 	}

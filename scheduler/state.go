@@ -116,6 +116,7 @@ type StrategyState struct {
 	pairCostPair                  string
 	costScope                     *fillCostPolicy
 	pairCostFaults                []string
+	pairFunding                   *pairFundingMember
 }
 
 func strategyBookNow(s *StrategyState) time.Time {
@@ -368,13 +369,39 @@ func sharedWalletPoolTransitionBlockers(strategies []StrategyConfig, state *AppS
 }
 
 func ValidateState(state *AppState, strategies []StrategyConfig) {
+	ValidateStateWithPairOwner(state, strategies, nil)
+}
+
+func pairFundingCashOwners(owner *pairResearchAdmission, strategies []StrategyConfig) map[string]bool {
+	out := map[string]bool{}
+	if owner == nil || !owner.valid() || owner.kind != pairAdmissionResearch || owner.contract == "" || owner.funding == nil || len(owner.fundingBinding) == 0 {
+		return out
+	}
+	members := map[string]bool{}
+	for _, m := range owner.pair.Members {
+		members[m.StrategyID] = true
+	}
+	for _, sc := range strategies {
+		if !members[sc.ID] || !isPairMember(sc) || strings.TrimSpace(sc.PairID) != owner.pair.ID || partitionFor(sc).IsLive() {
+			continue
+		}
+		if _, err := owner.memberCost(sc.ID); err != nil {
+			continue
+		}
+		out[sc.ID] = true
+	}
+	return out
+}
+
+func ValidateStateWithPairOwner(state *AppState, strategies []StrategyConfig, owner *pairResearchAdmission) {
 	configuredPoolIDs := make(map[string]bool)
 	paperFundingIDs := make(map[string]bool)
+	pairFundingIDs := pairFundingCashOwners(owner, strategies)
 	for _, sc := range strategies {
 		if usesSharedWalletPoolBudget(sc) {
 			configuredPoolIDs[sc.ID] = true
 		}
-		if paperFundingEligible(sc) {
+		if paperFundingEligible(sc) && !pairFundingOwned(sc) {
 			paperFundingIDs[sc.ID] = true
 		}
 	}
@@ -386,6 +413,8 @@ func ValidateState(state *AppState, strategies []StrategyConfig) {
 		if s.Cash < 0 && !s.SharedWalletPoolBudget && !configuredPoolIDs[id] {
 			if paperFundingIDs[id] {
 				fmt.Printf("[INFO] state: paper strategy %s keeps negative cash=%g (paper funding debits are booked cash)\n", id, s.Cash)
+			} else if pairFundingIDs[id] {
+				fmt.Printf("[INFO] state: paper pair member %s keeps negative cash=%g (its admitted pair funding owner books funding debits as cash)\n", id, s.Cash)
 			} else {
 				fmt.Printf("[WARN] state: strategy %s has negative cash=%g, clamping to 0\n", id, s.Cash)
 				s.Cash = 0
