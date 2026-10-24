@@ -213,6 +213,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"volume_profile_reclaim":             {"futures"},
 	"perpetual_premium_reversion":        {"futures"},
 	"order_book_imbalance":               {"futures"},
+	"inventory_market_making":            {"futures"},
 }
 
 func openStrategyRegisteredFor(name, registryPlatform string) bool {

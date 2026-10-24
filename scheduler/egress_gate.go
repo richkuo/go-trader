@@ -23,6 +23,10 @@ var egressNetworkSubcommands = map[string]bool{
 	"record-observations": true, "robinhood-login": true,
 }
 
+var egressOfflineSubcommands = map[string]bool{
+	"quote-replay": true,
+}
+
 var egressLocalSubcommands = map[string]bool{
 	"init": true, "export": true, "inspect": true, "storage-inspect": true, "agent-info": true,
 	"diagnostics": true, "feed-fetch": true, "basket-replay": true,
@@ -51,6 +55,16 @@ func subcommandConfigPath(args []string) string {
 }
 
 func gateSubcommandEgress(sub string, args []string) (int, bool) {
+	if egressOfflineSubcommands[sub] {
+		if os.Getenv(egresspolicy.EnvProxy) == "" {
+			return 0, false
+		}
+		if err := establishProcessEgress(context.Background(), nil, false); err != nil {
+			fmt.Fprintf(os.Stderr, "[egress] CRITICAL: refusing %s: %v\n", sub, err)
+			return 1, true
+		}
+		return 0, false
+	}
 	network := egressNetworkSubcommands[sub]
 	if !network && !egressLocalSubcommands[sub] && sub != "probe" {
 		return 0, false

@@ -520,6 +520,7 @@ func TestBitcoinLeadLagRegistrationTables(t *testing.T) {
 		orderBookImbalanceStrategyName:    "backtest/candidates/order_book_imbalance_1635/REPORT.md",
 		name:                              ref,
 		perpetualPremiumStrategyName:      "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
+		inventoryMarketMakingStrategyName: "backtest/candidates/inventory_market_making_1636/REPORT.md",
 	}
 	if !reflect.DeepEqual(productionRefusedStrategies, want) {
 		t.Fatalf("production-refused table = %v", productionRefusedStrategies)

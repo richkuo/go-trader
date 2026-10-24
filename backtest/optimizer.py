@@ -10,7 +10,7 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
-from registry_loader import load_registry
+from registry_loader import load_registry, refuse_quote_capability
 from backtester import (STOP_OWNERS_NEEDING_ATR, Backtester, CloseCapabilityError,
                         _close_fraction_columns, aggregate_close_validations,
                         charge_funding_rejected)
@@ -408,6 +408,7 @@ def walk_forward_optimize(
     refuse_leader_input_strategy(strategy_name, "walk-forward optimization")
     refuse_volume_profile_strategy(strategy_name, "walk-forward optimization")
     reg = load_registry(registry)
+    refuse_quote_capability(reg, strategy_name)
     apply_strategy = reg.apply_strategy
 
     default_params = reg.STRATEGY_REGISTRY[strategy_name]["default_params"] \
@@ -1175,6 +1176,7 @@ DEFAULT_PARAM_RANGES = {
         "exit_threshold": [0.0, 0.00002, 0.00005],
         "drift_threshold": [1.5, 2.0, 2.5],
     },
+    "inventory_market_making": {},
     "hold": {},
 }
 
