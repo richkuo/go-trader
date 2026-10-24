@@ -214,6 +214,7 @@ var registeredOpenStrategyPlatforms = map[string][]string{
 	"perpetual_premium_reversion":        {"futures"},
 	"order_book_imbalance":               {"futures"},
 	"inventory_market_making":            {"futures"},
+	"cross_exchange_perp_arbitrage":      {"futures"},
 }
 
 func openStrategyRegisteredFor(name, registryPlatform string) bool {
@@ -221,6 +222,9 @@ func openStrategyRegisteredFor(name, registryPlatform string) bool {
 		return false
 	}
 	if _, quote := quoteCapabilityStrategies[name]; quote {
+		return false
+	}
+	if pairPolicyStrategies[name] {
 		return false
 	}
 	for _, p := range registeredOpenStrategyPlatforms[name] {

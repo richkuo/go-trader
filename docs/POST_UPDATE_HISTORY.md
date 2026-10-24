@@ -53,6 +53,36 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   Adding or removing `allow_no_edge` on a live strategy needs a restart.
 
 **Runtime default**
+- **#1823 Options strategies run as paper only (operator action required).** Before this change, a `type: options` strategy with `--mode=live` or `--mode live` booked simulated option trades in the live scope; no option order reached Robinhood, Deribit, IBKR or OKX.
+  Its P&L fed live portfolio risk, the kill switch and the circuit breaker, and alerts asked the operator to flatten positions that no venue held.
+  Now every config load refuses that strategy on every platform with `strategy[<id>]: options strategies run as paper only: no venue order path exists for options on <platform>; remove the strategy, or replace --mode=live (or --mode live) with --mode=paper under a new id`.
+  The refusal applies at startup (exit 1), on SIGHUP reload (the previous config stays), in `probe`, `inspect`, `storage-inspect`, ledger capture and export, and in every Discord and dashboard config write, and it does not depend on credentials.
+  `paper-to-live` (Discord and dashboard) refuses every options strategy before its confirmation.
+  `check_options.py` refuses the same live forms with one JSON document holding `error` and exit 1, before it reads positions or builds an adapter.
+  Options execution stays simulated on every platform, and no option order method is called.
+  The options check now reads its open positions when the args hold `--mode=paper` or `--mode paper`; before, either form dropped them, so the 4-position cap and the trade score saw an empty book.
+  The Robinhood credentials serve live crypto orders; when set, paper Robinhood checks and the options check also log in for authenticated option data (expiry, strikes, premiums, Greeks).
+  Operator action before the update, step (a): list each `type: options` strategy whose `args` hold `--mode=live` or `--mode live`; with none, nothing changes.
+  Step (b): record its book with the current binary: `./go-trader storage-inspect --config <config>`, the SKILL.md Post-Update step 3 `option_positions` query, and `SELECT id, risk_pending_circuit_closes_json FROM strategies WHERE risk_pending_circuit_closes_json != '';`; these positions were never opened at a venue.
+  Step (c): back up every state file (`db_file`, `paper_db_file`, each `paper_sources[].db_file`) before anything prunes, for example `sqlite3 <db> ".backup '<db>.pre-1823'"`.
+  Step (d): edit the config and remove the strategy, or keep it as paper under a fresh identity: set `--mode=paper` (or remove the mode tokens) and give it a new `id` that keeps its platform prefix (such as `rh-`) or sets `platform`, with no `storage_strategy_id` that names the old id.
+  For a clean simulated book that never shares files with the live scope, prefer a separate paper instance with its own state files and a fresh id.
+  Step (e): run `./go-trader storage-inspect --config <config>`; it must exit 0 and list `ORPHAN <old id> (0 position(s))` under the primary state file.
+  The orphan count reads only spot and perps positions, so an options book shows 0 positions and startup prints no stale-position WARN line for it, even while it holds option positions.
+  Step (f): run `bash scripts/update.sh --restart`.
+  Do not keep the old `id` with a paper mode.
+  Split storage (`paper_db_file` set) with the old id: `storage-inspect` exits 1 with `primary state file: stored strategy "<id>" is mapped to the paper state file; move or re-map it by hand`, and startup exits 80, so the service does not start until the config changes.
+  Single-file storage with the old id: the strategy resumes its old simulated cash, option positions and pending closes in the paper scope, and a saved Robinhood options operator-required close keeps its CRITICAL warning.
+  In that case nothing is pruned, so the live portfolio peak keeps the moved book's value while the live portfolio value falls by it; the live drawdown reading rises by that share and can latch the live kill switch, which closes real live positions.
+  Effects of a removal or a fresh id, in both layouts: startup prints `Pruned stale strategy: <old id> [primary state file, 0 position(s)]`, and when a scope peak changes it prints `Portfolio peak rebaselined after prune [<scope>]`; the new live peak is the sum of the remaining live strategies' peaks, at least their capital.
+  The first save deletes the old strategy row and its option positions from the primary file; its trade rows stay there under the old id.
+  A fresh id starts at its configured capital (`Initialized strategy: <id> (type=options, capital=$<capital>)`).
+  To undo, stop the service and restore the backup.
+  Without the config edit, the update's probe refuses the config, and the update stops before the binary swap and the restart.
+  In the container, the scheduler in the new image refuses to start with this config; edit `/data/config.json` before you pull the image.
+  A ledger snapshot captured before the update whose config copy holds such a strategy no longer exports with the new binary.
+  Go and Python change together; deploy only with `bash scripts/update.sh --restart`.
+  After an update, list every options strategy whose args held a live mode and walk the operator through steps (a) to (f).
 - **#1826 Missing higher-timeframe input holds entries.** With `htf_filter: true`, missing, short (fewer than 50), unreadable or non-finite higher-timeframe candles, or a failed fetch, used to return a neutral trend that passed every signal, so entries opened unfiltered with no warning.
   Each successful check now returns an `htf_filter` block (`ok`/`unavailable`/`skipped`/`not_evaluated`); Go treats a missing block or unknown status as a script error, accepts `not_evaluated` only with a held closed-bar decision or TopStep's closed market, and holds position-increasing signals on `unavailable` at all six gate sites while closes and protection continue.
   Repeated unavailable evaluations alert the partition's channels and the owner with the script-failure thresholds (3; 15 or 75 minutes for upstream 429/5xx) and repeat throttle; one recovery message follows the first `ok`. State is in memory only and resets on restart.

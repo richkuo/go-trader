@@ -1492,13 +1492,7 @@ func main() {
 						if ss == nil {
 							continue
 						}
-						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
-						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
-						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKXSpot)
-						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
-						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhoodOptions)
-						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseTopStep)
-						ss.RiskState.RobinhoodSharedCloseNotice = RobinhoodSharedCloseNotice{}
+						ss.RiskState.clearPendingCircuitClosesForKillSwitch()
 					}
 				}
 				if sr.NotionalBlocked {
@@ -1982,7 +1976,7 @@ func main() {
 						},
 					)
 				}
-				drainOperatorRequiredPendingCloses(state, notifier, &mu)
+				drainOperatorRequiredPendingCloses(state, notifier, &mu, store)
 				if len(hlReconcileAll) > 0 && hlStateFetched {
 					_, fillHints, orphanCloseJobs := reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, cfg.Regime, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
 					hlCycle.markReconciled(hlReconcileDue)

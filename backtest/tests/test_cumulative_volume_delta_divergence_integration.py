@@ -128,7 +128,8 @@ def test_registration_is_futures_only_bidirectional_hidden_production_refused_wi
     assert registry.STRATEGIES[NAME]["short_entries"] is True
     assert registry.production_refused_strategies() == frozenset({NAME, "bitcoin_lead_lag", "macro_event_breakout",
                                                                   "volume_profile_reclaim", "perpetual_premium_reversion",
-                                                                  "order_book_imbalance", "inventory_market_making"})
+                                                                  "order_book_imbalance", "inventory_market_making",
+                                                                  "cross_exchange_perp_arbitrage"})
     grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
     assert len(grid) == 216
     for params in grid:

@@ -92,7 +92,7 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since,
                 print(f"  Funding: {have}/{len(out)} bars covered (HL hourly, coin={coin})")
     return out
 from htf_filter import get_default_htf, apply_htf_filter
-from registry_loader import load_registry, refuse_basket_evaluator
+from registry_loader import load_registry, refuse_basket_evaluator, refuse_pair_evaluator
 from lead_lag_history import (LEADER_INPUT_STRATEGIES, LeaderDataUnavailable, cached_leader_params,
                               manifest_leader_params, refuse_leader_input_strategy)
 from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
@@ -1771,6 +1771,7 @@ def run_single_backtest(
     regime_label_plan: Optional[dict] = None,
     resting_tp_trade_through: bool = False,
 ) -> Optional[dict]:
+    refuse_pair_evaluator(load_registry(registry), strategy_name)
     if strategy_name in BOOK_INPUT_STRATEGIES:
         try:
             refuse_book_input_strategy(strategy_name, "run_backtest.py single runs (cached or --manifest)")

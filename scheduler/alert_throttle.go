@@ -14,6 +14,14 @@ func effectiveAlertThrottleInterval() time.Duration {
 	return alertThrottleInterval
 }
 
+func alertThrottleDue(last, now time.Time) bool {
+	if last.IsZero() {
+		return true
+	}
+	elapsed := now.Sub(last)
+	return elapsed < 0 || elapsed >= effectiveAlertThrottleInterval()
+}
+
 func applyAlertThrottleInterval(d time.Duration) {
 	alertThrottleInterval = d
 }

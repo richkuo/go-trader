@@ -41,6 +41,7 @@ var opsCommandNames = map[string]bool{
 	"paper-to-live":           true,
 	"apply-regime-gate":       true,
 	"clear-cash-reconcile":    true,
+	"clear-operator-close":    true,
 	"resolve-entry":           true,
 	"resolve-robinhood-order": true,
 }
@@ -464,6 +465,13 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		{Name: commandPrefix + "clear-cash-reconcile", Description: "Clear CashReconcileRequired after books match the venue (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID whose cash-reconcile latch to clear", Required: true},
 		}},
+		{Name: commandPrefix + operatorCloseCommandName, Description: "Clear an operator-required circuit-breaker close after you flatten it on the venue (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the operator-required entry", Required: true},
+			{Type: discordgo.ApplicationCommandOptionString, Name: "platform", Description: "okx_spot or robinhood_options; needed only when the strategy holds both", Choices: []*discordgo.ApplicationCommandOptionChoice{
+				{Name: PlatformPendingCloseOKXSpot, Value: PlatformPendingCloseOKXSpot},
+				{Name: PlatformPendingCloseRobinhoodOptions, Value: PlatformPendingCloseRobinhoodOptions},
+			}},
+		}},
 		{Name: commandPrefix + "resolve-entry", Description: "Re-check a held live entry; release only on complete no-execution evidence (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID that holds the attempt", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "attempt", Description: "Attempt id (ei-...) from the LIVE ENTRY alert or the startup log", Required: true},
@@ -605,6 +613,8 @@ func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.Int
 		d.handleApplyRegimeGate(s, i, data.Options)
 	case "clear-cash-reconcile":
 		d.handleClearCashReconcile(s, i, data.Options)
+	case operatorCloseCommandName:
+		d.handleClearOperatorClose(s, i, data.Options)
 	case "resolve-entry":
 		d.handleResolveEntry(s, i, data.Options)
 	case "resolve-robinhood-order":

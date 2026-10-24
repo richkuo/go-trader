@@ -297,6 +297,10 @@ func (ss *StatusServer) paperToLiveBlockedReason(id string, afterConfirm bool) s
 			ss.strategiesMu.RUnlock()
 			return fmt.Sprintf("strategy %q is quote-owned — production and live quote dispatch are refused until a separate reviewed promotion", id)
 		}
+		if sc.ID == id && sc.Type == "options" {
+			ss.strategiesMu.RUnlock()
+			return fmt.Sprintf("strategy %q: %s; paper-to-live is refused", id, optionsPaperOnlyReason(sc.Platform))
+		}
 	}
 	ss.strategiesMu.RUnlock()
 	if !ss.strategyHasOpenPosition(id) {

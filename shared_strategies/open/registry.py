@@ -1,5 +1,6 @@
 
 import functools
+import importlib.util
 import inspect
 import os
 import re
@@ -124,6 +125,33 @@ from inventory_market_making import (
 )
 
 
+def _load_pair_registry():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pair_registry.py")
+    module_name = "go_trader_pair_registry"
+    loaded = sys.modules.get(module_name)
+    if loaded is not None:
+        origin = getattr(loaded, "__file__", None) or ""
+        if os.path.realpath(origin) != os.path.realpath(path):
+            raise ImportError(f"module {module_name} is loaded from {origin!r}, not {path!r}")
+        return loaded
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+pair_registry = _load_pair_registry()
+
+PAIR_CONTRACT: Dict[str, str] = dict(pair_registry.PAIR_CONTRACT)
+UnknownPairPolicy = pair_registry.UnknownPairPolicy
+get_pair_evaluator = pair_registry.get_pair_evaluator
+
+
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
 
 STRATEGIES: Dict[str, Dict[str, Any]] = {}
@@ -173,6 +201,59 @@ def _validate_basket(name: str, basket, platforms: Tuple[str, ...], short_entrie
         raise ValueError(f"{name}: a basket evaluator registers for platforms ('futures',) only, got {platforms!r}")
     if short_entries:
         raise ValueError(f"{name}: a basket evaluator has no single-symbol entries; declare short_entries=False")
+
+
+def pair_evaluators() -> frozenset:
+    return frozenset(name for name, entry in STRATEGIES.items() if entry.get("pair"))
+
+
+def _pair_single_symbol_refusal(name: str):
+    def refuse(*_args, **_kwargs):
+        raise ValueError(
+            f"{name} is a pair policy; it decides one cross-venue pair through the research pair coordinator "
+            "and cannot run on one symbol")
+    refuse.__name__ = f"{name}_single_symbol_refusal"
+    return refuse
+
+
+def _lazy_pair_evaluator(name: str):
+    def evaluate(request):
+        return get_pair_evaluator(name)(request)
+    evaluate.__name__ = f"{name}_pair_evaluator"
+    return evaluate
+
+
+def _validate_pair(name: str, pair, description: str, default_params: dict, platforms: Tuple[str, ...],
+                   variants, constraints, edge_status, edge_source, edge_ref, short_entries, param_validator,
+                   basket, production_refused, basket_preflight, quote, quote_spec) -> Optional[Dict[str, Any]]:
+    if pair is None:
+        return None
+    if not isinstance(pair, dict) or pair != PAIR_CONTRACT:
+        raise ValueError(f"{name}: pair must be exactly {PAIR_CONTRACT!r}, got {pair!r}")
+    if basket is not None or basket_preflight is not None:
+        raise ValueError(f"{name}: a pair policy carries no basket metadata")
+    if quote is not None or quote_spec is not None:
+        raise ValueError(f"{name}: a pair policy carries no quote metadata")
+    try:
+        descriptor = pair_registry.pair_descriptor(name)
+    except UnknownPairPolicy as exc:
+        raise ValueError(f"{name}: pair metadata needs a descriptor in shared_strategies/open/pair_registry.py") from exc
+    declared = {
+        "description": description, "platforms": tuple(platforms), "short_entries": short_entries,
+        "edge_status": edge_status, "edge_source": edge_source, "edge_ref": edge_ref,
+        "production_refused": production_refused,
+    }
+    for field, value in declared.items():
+        if value != descriptor[field]:
+            raise ValueError(f"{name}: pair {field} {value!r} differs from the pair_registry descriptor {descriptor[field]!r}")
+    if tuple(platforms) != ("futures",) or short_entries is not False:
+        raise ValueError(f"{name}: a pair policy registers for platforms ('futures',) with short_entries=False only")
+    if edge_status != EDGE_STATUS_NO_EDGE or production_refused is not True:
+        raise ValueError(f"{name}: a pair policy is research-only and needs edge_status='no_edge' and production_refused=True")
+    if default_params or variants or constraints or param_validator is not None:
+        raise ValueError(f"{name}: a pair policy has no single-symbol default_params, variants, constraints or param_validator; "
+                         "its parameters are validated by the pair policy and the Go pair admission")
+    return descriptor
 
 
 def quote_capabilities() -> Dict[str, Dict[str, Any]]:
@@ -424,6 +505,7 @@ def register(
     basket_preflight=None,
     quote=None,
     quote_spec=None,
+    pair=None,
 ):
     if name in STRATEGIES:
         raise ValueError(f"Strategy '{name}' is already registered")
@@ -433,6 +515,9 @@ def register(
     if production_refused and edge_status != EDGE_STATUS_NO_EDGE:
         raise ValueError(f"{name}: production_refused=True requires edge_status={EDGE_STATUS_NO_EDGE!r}")
     platforms = tuple(platforms)
+    pair_descriptor = _validate_pair(name, pair, description, default_params, platforms, variants, constraints,
+                                     edge_status, edge_source, edge_ref, short_entries, param_validator, basket,
+                                     production_refused, basket_preflight, quote, quote_spec)
     _validate_basket(name, basket, platforms, short_entries)
     _validate_quote(name, quote, quote_spec, platforms, short_entries, basket, production_refused, param_validator)
     if not platforms:
@@ -473,7 +558,8 @@ def register(
     def decorator(fn):
         wrapped = _validated(name, fn, default_params, constraint_list) if constraint_list else fn
         STRATEGIES[name] = {
-            "fn": _basket_single_symbol_refusal(name) if basket else (_quote_scalar_refusal(name, fn) if quote else wrapped),
+            "fn": _pair_single_symbol_refusal(name) if pair_descriptor else (
+                _basket_single_symbol_refusal(name) if basket else (_quote_scalar_refusal(name, fn) if quote else wrapped)),
             "basket": dict(basket) if basket else None,
             "basket_fn": fn if basket else None,
             "basket_preflight": basket_preflight,
@@ -490,6 +576,9 @@ def register(
             "production_refused": production_refused,
             "quote": dict(quote) if quote else None,
             "quote_spec": quote_spec if quote else None,
+            "pair": dict(pair) if pair_descriptor else None,
+            "pair_fn": _lazy_pair_evaluator(name) if pair_descriptor else None,
+            "pair_param_keys": tuple(pair_descriptor["param_keys"]) if pair_descriptor else None,
         }
         return fn
 
@@ -502,7 +591,8 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
             f"Unknown platform {platform!r}; expected one of {VALID_PLATFORMS}"
         )
     order = PLATFORM_ORDER[platform]
-    tagged = {n for n, e in STRATEGIES.items() if platform in e["platforms"] and not e.get("basket")}
+    tagged = {n for n, e in STRATEGIES.items()
+              if platform in e["platforms"] and not e.get("basket") and not e.get("pair")}
     expected = set(tagged)
     missing_from_order = expected - set(order)
     if missing_from_order:
@@ -3061,6 +3151,26 @@ def order_book_imbalance_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 )
 def inventory_market_making_strategy(*args, **kwargs):
     return inventory_market_making_scalar_refusal(*args, **kwargs)
+
+
+def _register_pair_policies() -> None:
+    for pair_name in pair_registry.pair_policies():
+        descriptor = pair_registry.pair_descriptor(pair_name)
+        register(
+            pair_name,
+            descriptor["description"],
+            {},
+            platforms=descriptor["platforms"],
+            edge_status=descriptor["edge_status"],
+            edge_source=descriptor["edge_source"],
+            edge_ref=descriptor["edge_ref"],
+            short_entries=descriptor["short_entries"],
+            production_refused=descriptor["production_refused"],
+            pair=descriptor["contract"],
+        )(_pair_single_symbol_refusal(pair_name))
+
+
+_register_pair_policies()
 
 
 PLATFORM_ORDER: Dict[str, List[str]] = {
