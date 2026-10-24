@@ -55,3 +55,13 @@ def refuse_basket_evaluator(reg: ModuleType, name: str) -> None:
     if isinstance(entry, dict) and entry.get("basket"):
         raise ValueError(
             f"{name} is a basket evaluator; a single-asset backtest or parity run cannot evaluate it")
+    refuse_quote_capability(reg, name)
+
+
+def refuse_quote_capability(reg: ModuleType, name: str) -> None:
+    canonical = getattr(reg, "_registry", None)
+    entry = getattr(canonical, "STRATEGIES", {}).get(name)
+    if isinstance(entry, dict) and entry.get("quote"):
+        raise ValueError(
+            f"{name} is a quote capability; it decides two-sided quotes at due deadlines through the quote coordinator, "
+            "so a candle backtest, optimizer or parity run cannot evaluate it (use backtest/quote_replay.py)")

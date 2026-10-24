@@ -94,6 +94,7 @@ var noEdgeStrategies = map[string]noEdgeEvidence{
 	"volume_profile_reclaim":             {"study_inconclusive", "backtest/candidates/volume_profile_reclaim_1665/REPORT.md"},
 	"perpetual_premium_reversion":        {"study_inconclusive", "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md"},
 	"order_book_imbalance":               {"study_fail", "backtest/candidates/order_book_imbalance_1635/REPORT.md"},
+	"inventory_market_making":            {"study_inconclusive", "backtest/candidates/inventory_market_making_1636/REPORT.md"},
 }
 
 func noEdgeEvidenceFor(name string) (noEdgeEvidence, bool) {

@@ -1,0 +1,153 @@
+{
+ "assumptions": {
+  "aggressor_side": "a recorded trade side A is a sell aggressor and B a buy aggressor",
+  "latency": "50 ms place and cancel latency is assumed; production delivery and order latency are not measured",
+  "liquidation": "no liquidation price is modeled (paper venue reports 0 = unknown); free margin falls back to book cash",
+  "maker_fee_bps": "1.5 bps maker rate is the unverified scheduler/fees.go constant (issue 1726 measured no maker fill); no rebate is assumed",
+  "min_order_value_usd": "USD 10 minimum for risk-increasing quotes is an unverified venue rule; reduce-only orders below it are assumed accepted",
+  "slippage_reserve_bps": "5 bps reserve equals the paper SlippagePct constant; it is a reserve, not a measured cost",
+  "stop_reference": "stops trigger on recorded trades and fill against recorded depth less the slippage reserve",
+  "taker_fee_bps": "4.5 bps taker rate is the scheduler/fees.go constant, reported as a conservative upper bound by the private issue 1726 evidence"
+ },
+ "base_params": {
+  "maker_fee_bps": 1.5,
+  "max_input_age_ms": 7500,
+  "max_inventory_age_seconds": 300,
+  "max_skew_bps": 50,
+  "max_spread_bps": 100,
+  "min_order_value_usd": 10,
+  "min_spread_bps": 10,
+  "quote_lifetime_seconds": 30,
+  "quote_notional_usd": 100,
+  "refresh_threshold_bps": 2,
+  "risk_aversion": 1,
+  "round_trip_reserve_bps": 2,
+  "taper_band_pct": 25,
+  "target_inventory_usd": 0,
+  "volatility_multiplier": 1,
+  "volatility_window_seconds": 300
+ },
+ "baseline": {
+  "min_spread_bps_grid": [
+   4,
+   6,
+   10,
+   20,
+   40
+  ],
+  "risk_aversion": 0,
+  "volatility_multiplier": 0
+ },
+ "candidate": "inventory_market_making",
+ "coins": [
+  "BTC"
+ ],
+ "config": {
+  "interval_seconds": 5,
+  "max_inventory_usd": 1000,
+  "stop_loss_pct": 2
+ },
+ "costs": {
+  "maker_fee_bps": "1.5",
+  "min_order_value_usd": "10",
+  "slippage_reserve_bps": "5",
+  "taker_fee_bps": "4.5"
+ },
+ "data_manifest": "backtest/candidates/inventory_market_making_1636/data-manifest.json",
+ "eligibility": {
+  "max_deadlines_per_run": 1440,
+  "min_window_minutes": 60,
+  "rule": "maximal receipt-time windows where raw-trade minutes are complete and valid (one minute trimmed from each end of every run of at least three complete minutes) and no l2Book coverage-break marker occurs; the first deadline is the first whole cycle after the warmup (volatility window + 1 s predecessor + maximum input age) past the window start; windows shorter than the minimum are dropped; each eligible window is cut into bounded runs of at most max_deadlines_per_run deadlines; splits are chronological over the concatenated eligible deadlines, each run starts flat with its own state, and a run never spans a split boundary"
+ },
+ "evidence": {
+  "liquidation_and_margin": {
+   "note": "no liquidation price or venue free margin is modeled; the envelope uses book cash",
+   "verified": false
+  },
+  "maker_fee": {
+   "note": "the Hyperliquid maker rate for this account tier is not measured (issue 1726 found no maker fill); 1.5 bps is an unverified constant and no rebate is assumed",
+   "verified": false
+  },
+  "minimum_order_rule": {
+   "note": "the venue minimum order value and its reduce-only exception are not pinned from venue evidence",
+   "verified": false
+  },
+  "placement_latency": {
+   "note": "production delivery, placement and cancel latency are not measured; the frozen 50 ms is an assumption",
+   "verified": false
+  }
+ },
+ "gates": {
+  "bootstrap": {
+   "block_days": [
+    1,
+    7
+   ],
+   "level": 0.95,
+   "resamples": 10000,
+   "seed": 1636
+  },
+  "max_drawdown_pct_of_initial_equity": 10,
+  "min_round_trips": 200,
+  "min_scored_days": 30
+ },
+ "grid": {
+  "min_spread_bps": [
+   6,
+   10,
+   20
+  ],
+  "risk_aversion": [
+   0.5,
+   1,
+   2
+  ],
+  "volatility_multiplier": [
+   0.5,
+   1,
+   2
+  ]
+ },
+ "issue": 1861,
+ "latency": {
+  "cancel_ms": 50,
+  "place_ms": 50
+ },
+ "lot": {
+  "BTC": 5
+ },
+ "lot_evidence": {
+  "field": "assets.BTC.szDecimals",
+  "note": "pinned Hyperliquid meta snapshot fetched 2026-10-22 for issue 1635; BTC szDecimals 5",
+  "path": "backtest/candidates/order_book_imbalance_1635/data/venue_meta.json"
+ },
+ "parent_issue": 1636,
+ "policy_spec_sha256": "ae70fffa7c988a2ee108670071277fe9e0c916fdf4f2b8d7524fa43856844856",
+ "queue": {
+  "model": "strict_trade_through_v1",
+  "participation": "1/100"
+ },
+ "quote": {
+  "fee_reserve_rate": 0.00045,
+  "margin_price_buffer_pct": 1,
+  "max_order_qty": 0.01,
+  "request_expiry_ms": 2000
+ },
+ "schema": "go-trader.quote-study-protocol",
+ "splits": {
+  "held_out": 0.2,
+  "train": 0.6,
+  "validation": 0.2
+ },
+ "stress_costs": {
+  "maker_fee_bps": "3",
+  "min_order_value_usd": "10",
+  "slippage_reserve_bps": "10",
+  "taker_fee_bps": "9"
+ },
+ "stress_latency": {
+  "cancel_ms": 100,
+  "place_ms": 100
+ },
+ "version": 1
+}

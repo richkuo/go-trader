@@ -38,6 +38,7 @@ var knownSubcommands = []string{
 	"supervise",
 	"healthcheck",
 	"basket-replay",
+	"quote-replay",
 	"robinhood-login",
 	"notify-broker",
 	"egress-anchor",
@@ -118,6 +119,8 @@ func main() {
 			os.Exit(runHealthcheck(os.Args[2:]))
 		case "basket-replay":
 			os.Exit(runBasketReplay(os.Args[2:]))
+		case "quote-replay":
+			os.Exit(runQuoteReplay(os.Args[2:]))
 		case "robinhood-login":
 			os.Exit(runRobinhoodLogin(os.Args[2:]))
 		}

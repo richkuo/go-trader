@@ -87,7 +87,7 @@ jobs:
         run: cd scheduler && go test -race -count=1 -run '^TestBasket' .
 
       - name: Quote coordinator race check
-        run: cd scheduler && go test -race -count=1 -run '^TestQuote' .
+        run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestQuote' .
 
       - name: Format check (every tracked Go file)
         run: |
@@ -117,7 +117,7 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBasketRealRanker[A-Za-z]*|TestBasketMemberRealCheckIsManagementOnly|TestBasketMemberBatched[A-Za-z]*|TestBasketPairMemberReal[A-Za-z]*|TestBasketPairProbeArgvs[A-Za-z]*|TestBasketPairEvidence[A-Za-z]*|TestBasketPairQuote[A-Za-z]*|TestBasketReplay[A-Za-z]*|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestOKXSharedStep[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*)$' -skip '^(TestBasketReplay[A-Za-z]*|TestMergePaperInstance)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBasketRealRanker[A-Za-z]*|TestBasketMemberRealCheckIsManagementOnly|TestBasketMemberBatched[A-Za-z]*|TestBasketPairMemberReal[A-Za-z]*|TestBasketPairProbeArgvs[A-Za-z]*|TestBasketPairEvidence[A-Za-z]*|TestBasketPairQuote[A-Za-z]*|TestBasketReplay[A-Za-z]*|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestOKXSharedStep[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*)$' -skip '^(TestBasketReplay[A-Za-z]*|TestMergePaperInstance)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -280,6 +280,12 @@ jobs:
           bash scripts/run_ci_shell_suite.sh \
             --marker 'PASS: premium replay harness (sealed quote/oracle payloads and decisions match the independent recording replay; premium-only, book-only and mixed v3 runs import by their typed contracts and kind/contract mismatches are refused; tampered, truncated and contradicted recordings refused)' \
             -- bash scripts/test_premium_replay.sh
+
+      - name: Quote replay suite
+        run: |
+          bash scripts/run_ci_shell_suite.sh \
+            --marker 'PASS: quote replay harness (recorder output replays through the real quote coordinator with an equal independent ledger; resume reproduces records; the frozen study scores every split; depth-only, raw-trade-gap, tampered, altered, credentialed and archive-cache inputs refused or unscored; ordinary discovery unchanged)' \
+            -- bash scripts/test_quote_replay.sh
 
       - name: Allow unprivileged user namespaces for the ledger capture worker
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

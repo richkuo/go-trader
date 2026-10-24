@@ -36,7 +36,9 @@ type quoteCapabilitySpec struct {
 	Validate func(params map[string]interface{}) error
 }
 
-var quoteCapabilityStrategies = map[string]quoteCapabilitySpec{}
+var quoteCapabilityStrategies = map[string]quoteCapabilitySpec{
+	"inventory_market_making": {Version: quotePolicySpecVersion, Validate: validateInventoryMarketMakingParams},
+}
 
 type QuoteConfig struct {
 	Coin                 string  `json:"coin"`
