@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -18,12 +21,68 @@ func openSourceStore(t *testing.T, cfg *Config) *StateStore {
 	if err != nil {
 		t.Fatalf("buildStorageIdentityMap: %v", err)
 	}
-	store, err := OpenStateStore(layout, ident)
+	store, err := openStateStoreWith(layout, ident, openStateDBFromTemplate)
 	if err != nil {
 		t.Fatalf("OpenStateStore: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
 	return store
+}
+
+var stateDBTemplate struct {
+	once  sync.Once
+	bytes []byte
+	err   error
+}
+
+func migratedStateDBTemplate() ([]byte, error) {
+	stateDBTemplate.once.Do(func() {
+		dir, err := os.MkdirTemp("", "go-trader-statedb-template-")
+		if err != nil {
+			stateDBTemplate.err = err
+			return
+		}
+		defer os.RemoveAll(dir)
+		path := filepath.Join(dir, "template.db")
+		db, err := OpenStateDB(path)
+		if err != nil {
+			stateDBTemplate.err = err
+			return
+		}
+		if err := db.Close(); err != nil {
+			stateDBTemplate.err = err
+			return
+		}
+		for _, side := range []string{path + "-wal", path + "-shm", path + "-journal"} {
+			if _, err := os.Stat(side); err == nil {
+				stateDBTemplate.err = fmt.Errorf("template state file left %s after close", filepath.Base(side))
+				return
+			}
+		}
+		stateDBTemplate.bytes, stateDBTemplate.err = os.ReadFile(path)
+	})
+	return stateDBTemplate.bytes, stateDBTemplate.err
+}
+
+func openStateDBFromTemplate(path string) (*StateDB, error) {
+	if isInMemoryDBPath(path) {
+		return OpenStateDB(path)
+	}
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		tmpl, err := migratedStateDBTemplate()
+		if err != nil {
+			return nil, fmt.Errorf("state file template: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(path, tmpl, 0644); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	return OpenStateDB(path)
 }
 
 func sourceTestState(cfg *Config) *AppState {

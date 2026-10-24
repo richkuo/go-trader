@@ -272,7 +272,7 @@ func TestBasketOfflineRankClockHoldsLateCancelledAndTimedOutResults(t *testing.T
 		<-ctx.Done()
 		return basketTestRanker(basketTestWeights, "")(context.Background(), stdin, timeout)
 	})
-	nearEnd := windowEnd.Add(-1500 * time.Millisecond)
+	nearEnd := windowEnd.Add(-200 * time.Millisecond)
 	cancelled.offlineStep(nearEnd, deadline, snap, true)
 	if rb := cancelled.rt().Rebalances[deadline.UnixMilli()]; rb == nil || rb.Status != basketRebalanceHeld || rb.TargetsJSON != "" {
 		t.Fatalf("valid JSON from a cancelled run must never freeze targets: %+v", rb)
