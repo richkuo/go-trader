@@ -1,0 +1,728 @@
+{
+  "final_db": {
+    "app_state": [
+      {
+        "cycle_count": "0",
+        "id": "1",
+        "last_cycle": "",
+        "last_leaderboard_post_date": "",
+        "last_leaderboard_summaries": "",
+        "last_summary_post": ""
+      }
+    ],
+    "closed_positions": [
+      {
+        "avg_cost": "100",
+        "close_price": "100",
+        "close_reason": "signal",
+        "closed_at": "\u003ctime\u003e",
+        "duration_seconds": "0",
+        "id": "1",
+        "multiplier": "1",
+        "opened_at": "\u003ctime\u003e",
+        "quantity": "10",
+        "realized_pnl": "-0.01",
+        "side": "long",
+        "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+        "symbol": "BTC"
+      }
+    ],
+    "entry_decision_state": [
+      {
+        "bootstrap_through_bar_ms": "0",
+        "consumed_through_bar_ms": "0",
+        "interval_ms": "3600000",
+        "latest_observed_bar_ms": "\u003cbar\u003e",
+        "scope": "live",
+        "source": "",
+        "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+        "symbol": "BTC",
+        "target_side": "short",
+        "updated_at_ms": "\u003cms\u003e"
+      },
+      {
+        "bootstrap_through_bar_ms": "0",
+        "consumed_through_bar_ms": "\u003cbar\u003e",
+        "interval_ms": "3600000",
+        "latest_observed_bar_ms": "\u003cbar\u003e",
+        "scope": "live",
+        "source": "",
+        "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+        "symbol": "BTC",
+        "target_side": "long",
+        "updated_at_ms": "\u003cms\u003e"
+      }
+    ],
+    "entry_order_intents": [
+      {
+        "account_key": "okx:swap:live:key-8f10ee3b5d60962b",
+        "applied_fee": "0.01",
+        "applied_notional": "1000",
+        "applied_qty": "10",
+        "bar_open_ms": "\u003cbar\u003e",
+        "client_order_id": "\u003ccid-1\u003e",
+        "confirmed_fee": "0.01",
+        "confirmed_notional": "1000",
+        "confirmed_qty": "10",
+        "created_at_ms": "\u003cms\u003e",
+        "cutoff_ms": "\u003ccutoff\u003e",
+        "decision_boundary_ms": "\u003cboundary\u003e",
+        "decision_kind": "candle",
+        "evidence_json": "{\"outcome\":\"filled\",\"venue_order_id\":\"venue-buy\",\"order_status\":\"closed\",\"filled_qty\":10,\"avg_px\":100,\"fee\":0.01,\"observed_at_ms\":\u003cms\u003e}",
+        "hold_reason": "",
+        "initial_stop_client_id": "",
+        "instrument_type": "swap",
+        "intent_id": "\u003cintent-1\u003e",
+        "interval_ms": "3600000",
+        "owner_group_id": "",
+        "owner_mode": "",
+        "provider": "okx",
+        "quote_event_id": "",
+        "replay_delivered_seq": "0",
+        "replay_payload_json": "",
+        "request_json": "{\"version\":1,\"kind\":\"open\",\"signal\":1,\"side\":\"buy\",\"size\":10,\"prev_pos_qty\":0,\"price\":100,\"entry_atr\":2,\"expires_after_ms\":\u003cms\u003e,\"script\":\"scheduler/testdata/okx_step/check_fixture.py\",\"submitted_at_ms\":\u003cms\u003e}",
+        "scope": "live",
+        "settlement_seq": "1",
+        "source": "",
+        "status": "committed",
+        "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+        "symbol": "BTC",
+        "target_side": "long",
+        "updated_at_ms": "\u003cms\u003e",
+        "venue_order_id": "venue-buy"
+      }
+    ],
+    "strategies": [
+      {
+        "active_profile": "",
+        "cash": "999.98",
+        "cash_reconcile_required": "0",
+        "hurst_gate_state": "",
+        "id": "okx-perps-live_perps_reversal_reduce_only",
+        "initial_capital": "1000",
+        "paper_funding_state": "",
+        "platform": "okx",
+        "quote_precision_rebaselined": "0",
+        "replay_mirror_watermark": "0",
+        "replay_mirror_watermark_source": "",
+        "risk_circuit_breaker": "0",
+        "risk_circuit_breaker_until": "",
+        "risk_consecutive_losses": "1",
+        "risk_current_drawdown_pct": "0",
+        "risk_daily_pnl": "-0.01",
+        "risk_daily_pnl_date": "2026-10-23",
+        "risk_max_drawdown_pct": "0",
+        "risk_peak_value": "1000",
+        "risk_pending_circuit_closes_json": "",
+        "shared_wallet_pool_budget": "0",
+        "type": "perps"
+      }
+    ],
+    "trades": [
+      {
+        "cost_model_version": "1",
+        "cost_policy_id": "",
+        "details": "Close long, PnL: $-0.01 (fee $0.01)",
+        "entry_atr": "2",
+        "exchange_fee": "0.01",
+        "exchange_order_id": "venue-sell",
+        "fee_source": "userfills",
+        "is_close": "1",
+        "manual": "0",
+        "pnl_gross": "1",
+        "position_id": "\u003cpos-1\u003e",
+        "price": "100",
+        "quantity": "10",
+        "realized_pnl": "0",
+        "regime": "",
+        "rowid": "2",
+        "side": "sell",
+        "stop_loss_atr_mult": "\u003cnull\u003e",
+        "stop_loss_oid": "0",
+        "stop_loss_trigger_px": "0",
+        "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+        "symbol": "BTC",
+        "timestamp": "\u003ctime\u003e",
+        "tp_oids_json": "",
+        "tp_tiers_json": "",
+        "trade_type": "perps",
+        "value": "1000"
+      },
+      {
+        "cost_model_version": "1",
+        "cost_policy_id": "",
+        "details": "Open long 10.000000 @ $100.00 (1.0x, fee $0.01)",
+        "entry_atr": "2",
+        "exchange_fee": "0.01",
+        "exchange_order_id": "venue-buy",
+        "fee_source": "userfills",
+        "is_close": "0",
+        "manual": "0",
+        "pnl_gross": "1",
+        "position_id": "\u003cpos-1\u003e",
+        "price": "100",
+        "quantity": "10",
+        "realized_pnl": "0",
+        "regime": "",
+        "rowid": "1",
+        "side": "buy",
+        "stop_loss_atr_mult": "\u003cnull\u003e",
+        "stop_loss_oid": "0",
+        "stop_loss_trigger_px": "0",
+        "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+        "symbol": "BTC",
+        "timestamp": "\u003ctime\u003e",
+        "tp_oids_json": "",
+        "tp_tiers_json": "",
+        "trade_type": "perps",
+        "value": "1000"
+      }
+    ]
+  },
+  "mode": "live",
+  "scenario": "live_perps_reversal_reduce_only",
+  "steps": [
+    {
+      "alerts": null,
+      "book": {
+        "cash": 999.99,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {
+          "BTC": {
+            "atr_method_at_open": "simple",
+            "avg_cost": 100,
+            "entry_atr": 2,
+            "initial_quantity": 10,
+            "leverage": 1,
+            "multiplier": 1,
+            "opened_at": "\u003ctime\u003e",
+            "owner_strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "position_id": "\u003cpos-1\u003e",
+            "quantity": 10,
+            "side": "long",
+            "symbol": "BTC"
+          }
+        },
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 0,
+          "daily_pnl_date": "",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": [
+          {
+            "cost_model_version": 1,
+            "details": "Open long 10.000000 @ $100.00 (1.0x, fee $0.01)",
+            "entry_atr": 2,
+            "exchange_fee": 0.01,
+            "exchange_order_id": "venue-buy",
+            "fee_source": "userfills",
+            "pnl_gross": true,
+            "position_id": "\u003cpos-1\u003e",
+            "price": 100,
+            "quantity": 10,
+            "side": "buy",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "perps",
+            "value": 1000
+          }
+        ]
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=live",
+          "--inst-type=swap",
+          "--atr-method=simple",
+          "--closed-bar-decisions",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: ok",
+        "paper: ok"
+      ],
+      "db": {
+        "entry_decision_state": [
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "0",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "live",
+            "source": "",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "target_side": "short",
+            "updated_at_ms": "\u003cms\u003e"
+          },
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "\u003cbar\u003e",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "live",
+            "source": "",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e"
+          }
+        ],
+        "entry_order_intents": [
+          {
+            "account_key": "okx:swap:live:key-8f10ee3b5d60962b",
+            "applied_fee": "0.01",
+            "applied_notional": "1000",
+            "applied_qty": "10",
+            "bar_open_ms": "\u003cbar\u003e",
+            "client_order_id": "\u003ccid-1\u003e",
+            "confirmed_fee": "0.01",
+            "confirmed_notional": "1000",
+            "confirmed_qty": "10",
+            "created_at_ms": "\u003cms\u003e",
+            "cutoff_ms": "\u003ccutoff\u003e",
+            "decision_boundary_ms": "\u003cboundary\u003e",
+            "decision_kind": "candle",
+            "evidence_json": "{\"outcome\":\"filled\",\"venue_order_id\":\"venue-buy\",\"order_status\":\"closed\",\"filled_qty\":10,\"avg_px\":100,\"fee\":0.01,\"observed_at_ms\":\u003cms\u003e}",
+            "hold_reason": "",
+            "initial_stop_client_id": "",
+            "instrument_type": "swap",
+            "intent_id": "\u003cintent-1\u003e",
+            "interval_ms": "3600000",
+            "owner_group_id": "",
+            "owner_mode": "",
+            "provider": "okx",
+            "quote_event_id": "",
+            "replay_delivered_seq": "0",
+            "replay_payload_json": "",
+            "request_json": "{\"version\":1,\"kind\":\"open\",\"signal\":1,\"side\":\"buy\",\"size\":10,\"prev_pos_qty\":0,\"price\":100,\"entry_atr\":2,\"expires_after_ms\":\u003cms\u003e,\"script\":\"scheduler/testdata/okx_step/check_fixture.py\",\"submitted_at_ms\":\u003cms\u003e}",
+            "scope": "live",
+            "settlement_seq": "1",
+            "source": "",
+            "status": "committed",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e",
+            "venue_order_id": "venue-buy"
+          }
+        ],
+        "trades": [
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Open long 10.000000 @ $100.00 (1.0x, fee $0.01)",
+            "entry_atr": "2",
+            "exchange_fee": "0.01",
+            "exchange_order_id": "venue-buy",
+            "fee_source": "userfills",
+            "is_close": "0",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-1\u003e",
+            "price": "100",
+            "quantity": "10",
+            "realized_pnl": "0",
+            "regime": "",
+            "rowid": "1",
+            "side": "buy",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "perps",
+            "value": "1000"
+          }
+        ]
+      },
+      "detail": "[okx-perps-live_perps_reversal_reduce_only] LIVE BUY BTC @ $100.00",
+      "inputs": {
+        "AvgCost": 0,
+        "Cash": 1000,
+        "CashReconcile": false,
+        "Leverage": 0,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 0,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 0,
+          "InitialQuantity": 0,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 0,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 0,
+        "PosSide": ""
+      },
+      "log": [
+        "[okx-perps-live_perps_reversal_reduce_only] [INFO] Signal: BUY | BTC @ $100.00 [live]",
+        "[okx-perps-live_perps_reversal_reduce_only] [INFO] Closed-bar decisions active: signal, entry ATR and sizing use the bar closed at \u003cboundary-rfc3339\u003e (#1712)",
+        "[okx-perps-live_perps_reversal_reduce_only] [INFO] Placing live buy BTC size=10.000000 inst_type=swap",
+        "[okx-perps-live_perps_reversal_reduce_only] [INFO] Live fill at $100.00 qty=10.000000 (mid was $100.00)",
+        "[okx-perps-live_perps_reversal_reduce_only] [INFO] BUY BTC: 10.000000 @ $100.00 (1.0x, notional $1000.00, fee $0.01)",
+        "[okx-perps-live_perps_reversal_reduce_only] [INFO] Live entry \u003cintent-1\u003e committed: 10.000000 long at the candle opened \u003cbar-rfc3339\u003e (#1769)"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 100
+      },
+      "reminder_sig": "",
+      "sends": [
+        {
+          "client_order_id": "\u003ccid-1\u003e",
+          "expires_after_ms": "\u003cms\u003e",
+          "guarded": true,
+          "inst_type": "swap",
+          "reduce_only": false,
+          "response": "filled|",
+          "saved_deadline_ms": 120000,
+          "saved_expiry_matches_sent": true,
+          "saved_intent_found": true,
+          "saved_intent_status": "submitting",
+          "saved_side_size_match": true,
+          "side": "buy",
+          "size": 10,
+          "symbol": "BTC"
+        }
+      ],
+      "step": "buy fills",
+      "trade_alert_tail": [
+        {
+          "content": "🟢 **TRADE EXECUTED - LIVE**\nStrategy: okx-perps-live_perps_reversal_reduce_only (Okx perps)\nBTC — LONG 10.000 @ $100 | Value: $1,000 | OID: venue-buy\nATR: $2.00",
+          "kind": "channel",
+          "target": "chan-okx"
+        }
+      ],
+      "trades": 1
+    },
+    {
+      "alerts": null,
+      "book": {
+        "cash": 999.98,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {},
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 1,
+          "current_drawdown_pct": 0,
+          "daily_pnl": -0.01,
+          "daily_pnl_date": "2026-10-23",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": [
+          {
+            "cost_model_version": 1,
+            "details": "Open long 10.000000 @ $100.00 (1.0x, fee $0.01)",
+            "entry_atr": 2,
+            "exchange_fee": 0.01,
+            "exchange_order_id": "venue-buy",
+            "fee_source": "userfills",
+            "pnl_gross": true,
+            "position_id": "\u003cpos-1\u003e",
+            "price": 100,
+            "quantity": 10,
+            "side": "buy",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "perps",
+            "value": 1000
+          },
+          {
+            "cost_model_version": 1,
+            "details": "Close long, PnL: $-0.01 (fee $0.01)",
+            "entry_atr": 2,
+            "exchange_fee": 0.01,
+            "exchange_order_id": "venue-sell",
+            "fee_source": "userfills",
+            "is_close": true,
+            "pnl_gross": true,
+            "position_id": "\u003cpos-1\u003e",
+            "price": 100,
+            "quantity": 10,
+            "side": "sell",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "trade_type": "perps",
+            "value": 1000
+          }
+        ]
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=live",
+          "--inst-type=swap",
+          "--atr-method=simple",
+          "--closed-bar-decisions",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: ok",
+        "paper: ok"
+      ],
+      "db": {
+        "entry_decision_state": [
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "0",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "live",
+            "source": "",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "target_side": "short",
+            "updated_at_ms": "\u003cms\u003e"
+          },
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "\u003cbar\u003e",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "live",
+            "source": "",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e"
+          }
+        ],
+        "entry_order_intents": [
+          {
+            "account_key": "okx:swap:live:key-8f10ee3b5d60962b",
+            "applied_fee": "0.01",
+            "applied_notional": "1000",
+            "applied_qty": "10",
+            "bar_open_ms": "\u003cbar\u003e",
+            "client_order_id": "\u003ccid-1\u003e",
+            "confirmed_fee": "0.01",
+            "confirmed_notional": "1000",
+            "confirmed_qty": "10",
+            "created_at_ms": "\u003cms\u003e",
+            "cutoff_ms": "\u003ccutoff\u003e",
+            "decision_boundary_ms": "\u003cboundary\u003e",
+            "decision_kind": "candle",
+            "evidence_json": "{\"outcome\":\"filled\",\"venue_order_id\":\"venue-buy\",\"order_status\":\"closed\",\"filled_qty\":10,\"avg_px\":100,\"fee\":0.01,\"observed_at_ms\":\u003cms\u003e}",
+            "hold_reason": "",
+            "initial_stop_client_id": "",
+            "instrument_type": "swap",
+            "intent_id": "\u003cintent-1\u003e",
+            "interval_ms": "3600000",
+            "owner_group_id": "",
+            "owner_mode": "",
+            "provider": "okx",
+            "quote_event_id": "",
+            "replay_delivered_seq": "0",
+            "replay_payload_json": "",
+            "request_json": "{\"version\":1,\"kind\":\"open\",\"signal\":1,\"side\":\"buy\",\"size\":10,\"prev_pos_qty\":0,\"price\":100,\"entry_atr\":2,\"expires_after_ms\":\u003cms\u003e,\"script\":\"scheduler/testdata/okx_step/check_fixture.py\",\"submitted_at_ms\":\u003cms\u003e}",
+            "scope": "live",
+            "settlement_seq": "1",
+            "source": "",
+            "status": "committed",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e",
+            "venue_order_id": "venue-buy"
+          }
+        ],
+        "trades": [
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Close long, PnL: $-0.01 (fee $0.01)",
+            "entry_atr": "2",
+            "exchange_fee": "0.01",
+            "exchange_order_id": "venue-sell",
+            "fee_source": "userfills",
+            "is_close": "1",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-1\u003e",
+            "price": "100",
+            "quantity": "10",
+            "realized_pnl": "0",
+            "regime": "",
+            "rowid": "2",
+            "side": "sell",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "perps",
+            "value": "1000"
+          },
+          {
+            "cost_model_version": "1",
+            "cost_policy_id": "",
+            "details": "Open long 10.000000 @ $100.00 (1.0x, fee $0.01)",
+            "entry_atr": "2",
+            "exchange_fee": "0.01",
+            "exchange_order_id": "venue-buy",
+            "fee_source": "userfills",
+            "is_close": "0",
+            "manual": "0",
+            "pnl_gross": "1",
+            "position_id": "\u003cpos-1\u003e",
+            "price": "100",
+            "quantity": "10",
+            "realized_pnl": "0",
+            "regime": "",
+            "rowid": "1",
+            "side": "buy",
+            "stop_loss_atr_mult": "\u003cnull\u003e",
+            "stop_loss_oid": "0",
+            "stop_loss_trigger_px": "0",
+            "strategy_id": "okx-perps-live_perps_reversal_reduce_only",
+            "symbol": "BTC",
+            "timestamp": "\u003ctime\u003e",
+            "tp_oids_json": "",
+            "tp_tiers_json": "",
+            "trade_type": "perps",
+            "value": "1000"
+          }
+        ]
+      },
+      "detail": "[okx-perps-live_perps_reversal_reduce_only] LIVE SELL BTC @ $100.00",
+      "inputs": {
+        "AvgCost": 100,
+        "Cash": 999.99,
+        "CashReconcile": false,
+        "Leverage": 1,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 100,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 2,
+          "InitialQuantity": 10,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 10,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "long",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 10,
+        "PosSide": "long"
+      },
+      "log": [
+        "[okx-perps-live_perps_reversal_reduce_only] [INFO] Signal: SELL | BTC @ $99.00 [live]",
+        "[okx-perps-live_perps_reversal_reduce_only] [INFO] Closed-bar entry: SELL reversal closes the open position this check; the short entry for the candle opened \u003cbar-rfc3339\u003e waits for the next check from a flat book (#1769)",
+        "[okx-perps-live_perps_reversal_reduce_only] [INFO] Placing live sell BTC size=10.000000 inst_type=swap",
+        "[okx-perps-live_perps_reversal_reduce_only] [INFO] Live fill at $100.00 qty=10.000000 (mid was $99.00)",
+        "[okx-perps-live_perps_reversal_reduce_only] [INFO] SELL BTC: 10.000000 @ $100.00 (fee $0.01) | PnL: $-0.01"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 99
+      },
+      "reminder_sig": "",
+      "sends": [
+        {
+          "client_order_id": "",
+          "expires_after_ms": 0,
+          "guarded": true,
+          "inst_type": "swap",
+          "reduce_only": true,
+          "response": "filled|",
+          "side": "sell",
+          "size": 10,
+          "symbol": "BTC"
+        }
+      ],
+      "step": "reversal closes reduce-only",
+      "trade_alert_tail": [
+        {
+          "content": "🔴 **TRADE CLOSED - LIVE**\nStrategy: okx-perps-live_perps_reversal_reduce_only (Okx perps)\nBTC — LONG 10.000 @ $100 | Value: $1,000 | OID: venue-sell\nSource: close-strategy exit | PnL: $-0.01",
+          "kind": "channel",
+          "target": "chan-okx"
+        }
+      ],
+      "trades": 1
+    }
+  ],
+  "strategy": {
+    "args": [
+      "fixture",
+      "BTC",
+      "1h",
+      "--mode=live",
+      "--inst-type=swap"
+    ],
+    "capital": 1000,
+    "closed_bar_decisions": true,
+    "direction": "both",
+    "id": "okx-perps-live_perps_reversal_reduce_only",
+    "leverage": 1,
+    "max_drawdown_pct": 0,
+    "open_strategy": {
+      "name": ""
+    },
+    "platform": "okx",
+    "script": "scheduler/testdata/okx_step/check_fixture.py",
+    "sizing_leverage": 1,
+    "type": "perps"
+  },
+  "type": "perps"
+}

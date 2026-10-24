@@ -1,0 +1,262 @@
+{
+  "final_db": {
+    "entry_decision_state": [
+      {
+        "bootstrap_through_bar_ms": "0",
+        "consumed_through_bar_ms": "0",
+        "interval_ms": "3600000",
+        "latest_observed_bar_ms": "\u003cbar\u003e",
+        "scope": "live",
+        "source": "",
+        "strategy_id": "okx-spot-live_submit_gate_failure",
+        "symbol": "BTC",
+        "target_side": "long",
+        "updated_at_ms": "\u003cms\u003e"
+      },
+      {
+        "bootstrap_through_bar_ms": "0",
+        "consumed_through_bar_ms": "0",
+        "interval_ms": "3600000",
+        "latest_observed_bar_ms": "\u003cbar\u003e",
+        "scope": "live",
+        "source": "",
+        "strategy_id": "okx-spot-live_submit_gate_failure",
+        "symbol": "BTC",
+        "target_side": "short",
+        "updated_at_ms": "\u003cms\u003e"
+      }
+    ],
+    "entry_order_intents": [
+      {
+        "account_key": "okx:spot:live:key-8f10ee3b5d60962b",
+        "applied_fee": "0",
+        "applied_notional": "0",
+        "applied_qty": "0",
+        "bar_open_ms": "\u003cbar\u003e",
+        "client_order_id": "\u003ccid-1\u003e",
+        "confirmed_fee": "0",
+        "confirmed_notional": "0",
+        "confirmed_qty": "0",
+        "created_at_ms": "\u003cms\u003e",
+        "cutoff_ms": "\u003ccutoff\u003e",
+        "decision_boundary_ms": "\u003cboundary\u003e",
+        "decision_kind": "candle",
+        "evidence_json": "",
+        "hold_reason": "",
+        "initial_stop_client_id": "",
+        "instrument_type": "spot",
+        "intent_id": "\u003cintent-1\u003e",
+        "interval_ms": "3600000",
+        "owner_group_id": "",
+        "owner_mode": "",
+        "provider": "okx",
+        "quote_event_id": "",
+        "replay_delivered_seq": "0",
+        "replay_payload_json": "",
+        "request_json": "{\"version\":1,\"kind\":\"open\",\"signal\":1,\"prev_pos_qty\":0,\"price\":100,\"entry_atr\":2,\"script\":\"scheduler/testdata/okx_step/check_fixture.py\"}",
+        "scope": "live",
+        "settlement_seq": "0",
+        "source": "",
+        "status": "reserved",
+        "strategy_id": "okx-spot-live_submit_gate_failure",
+        "symbol": "BTC",
+        "target_side": "long",
+        "updated_at_ms": "\u003cms\u003e",
+        "venue_order_id": ""
+      }
+    ]
+  },
+  "mode": "live",
+  "scenario": "live_submit_gate_failure",
+  "steps": [
+    {
+      "alerts": null,
+      "book": {
+        "cash": 1000,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [
+          {
+            "bar_open_ms": "\u003cbar\u003e",
+            "client_order_id": "\u003ccid-1\u003e",
+            "hold_reason": "no-fill evidence (not_sent) could not be saved: transition entry intent \u003cintent-1\u003e to no_fill: constraint failed: injected submission write failure (1811)",
+            "intent_id": "\u003cintent-1\u003e",
+            "request": "{\"version\":1,\"kind\":\"open\",\"signal\":1,\"prev_pos_qty\":0,\"price\":100,\"entry_atr\":2,\"script\":\"scheduler/testdata/okx_step/check_fixture.py\"}",
+            "status": "reserved",
+            "target_side": "long"
+          }
+        ],
+        "positions": {},
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 0,
+          "daily_pnl_date": "",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": []
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=live",
+          "--inst-type=spot",
+          "--atr-method=simple",
+          "--closed-bar-decisions",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: upsert entry intent \u003cintent-1\u003e: constraint failed: injected submission write failure (1811)",
+        "paper: upsert entry intent \u003cintent-1\u003e: constraint failed: injected submission write failure (1811)"
+      ],
+      "db": {
+        "entry_decision_state": [
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "0",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "live",
+            "source": "",
+            "strategy_id": "okx-spot-live_submit_gate_failure",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e"
+          },
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "0",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "live",
+            "source": "",
+            "strategy_id": "okx-spot-live_submit_gate_failure",
+            "symbol": "BTC",
+            "target_side": "short",
+            "updated_at_ms": "\u003cms\u003e"
+          }
+        ],
+        "entry_order_intents": [
+          {
+            "account_key": "okx:spot:live:key-8f10ee3b5d60962b",
+            "applied_fee": "0",
+            "applied_notional": "0",
+            "applied_qty": "0",
+            "bar_open_ms": "\u003cbar\u003e",
+            "client_order_id": "\u003ccid-1\u003e",
+            "confirmed_fee": "0",
+            "confirmed_notional": "0",
+            "confirmed_qty": "0",
+            "created_at_ms": "\u003cms\u003e",
+            "cutoff_ms": "\u003ccutoff\u003e",
+            "decision_boundary_ms": "\u003cboundary\u003e",
+            "decision_kind": "candle",
+            "evidence_json": "",
+            "hold_reason": "",
+            "initial_stop_client_id": "",
+            "instrument_type": "spot",
+            "intent_id": "\u003cintent-1\u003e",
+            "interval_ms": "3600000",
+            "owner_group_id": "",
+            "owner_mode": "",
+            "provider": "okx",
+            "quote_event_id": "",
+            "replay_delivered_seq": "0",
+            "replay_payload_json": "",
+            "request_json": "{\"version\":1,\"kind\":\"open\",\"signal\":1,\"prev_pos_qty\":0,\"price\":100,\"entry_atr\":2,\"script\":\"scheduler/testdata/okx_step/check_fixture.py\"}",
+            "scope": "live",
+            "settlement_seq": "0",
+            "source": "",
+            "status": "reserved",
+            "strategy_id": "okx-spot-live_submit_gate_failure",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e",
+            "venue_order_id": ""
+          }
+        ]
+      },
+      "detail": "",
+      "inputs": {
+        "AvgCost": 0,
+        "Cash": 1000,
+        "CashReconcile": false,
+        "Leverage": 0,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 0,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 0,
+          "InitialQuantity": 0,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 0,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 0,
+        "PosSide": ""
+      },
+      "log": [
+        "[okx-spot-live_submit_gate_failure] [INFO] Signal: BUY | BTC @ $100.00 [live]",
+        "[okx-spot-live_submit_gate_failure] [INFO] Closed-bar decisions active: signal, entry ATR and sizing use the bar closed at \u003cboundary-rfc3339\u003e (#1712)",
+        "[okx-spot-live_submit_gate_failure] [ERROR] Live entry BTC not sent: the durable submission record failed: transition entry intent \u003cintent-1\u003e to submitting: constraint failed: injected submission write failure (1811) (#1769)",
+        "[okx-spot-live_submit_gate_failure] [ERROR] CRITICAL: live entry \u003cintent-1\u003e: no-fill evidence (not_sent) could not be saved: transition entry intent \u003cintent-1\u003e to no_fill: constraint failed: injected submission write failure (1811) — new entries stay held (#1769)"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 100
+      },
+      "reminder_sig": "",
+      "sends": null,
+      "step": "submission record fails",
+      "trade_alert_tail": null,
+      "trades": 0
+    }
+  ],
+  "strategy": {
+    "args": [
+      "fixture",
+      "BTC",
+      "1h",
+      "--mode=live",
+      "--inst-type=spot"
+    ],
+    "capital": 1000,
+    "closed_bar_decisions": true,
+    "direction": "long",
+    "id": "okx-spot-live_submit_gate_failure",
+    "leverage": 1,
+    "max_drawdown_pct": 0,
+    "open_strategy": {
+      "name": ""
+    },
+    "platform": "okx",
+    "script": "scheduler/testdata/okx_step/check_fixture.py",
+    "sizing_leverage": 1,
+    "type": "spot"
+  },
+  "type": "spot"
+}

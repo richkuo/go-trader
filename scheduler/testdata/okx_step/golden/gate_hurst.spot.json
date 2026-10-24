@@ -1,0 +1,159 @@
+{
+  "final_db": {
+    "app_state": [
+      {
+        "cycle_count": "0",
+        "id": "1",
+        "last_cycle": "",
+        "last_leaderboard_post_date": "",
+        "last_leaderboard_summaries": "",
+        "last_summary_post": ""
+      }
+    ],
+    "strategies": [
+      {
+        "active_profile": "",
+        "cash": "1000",
+        "cash_reconcile_required": "0",
+        "hurst_gate_state": "{\"key\":\"fa68a71ce8340d83\",\"last_h_at\":\"\u003ctime\u003e\"}",
+        "id": "okx-spot-gate_hurst",
+        "initial_capital": "1000",
+        "paper_funding_state": "",
+        "platform": "okx",
+        "quote_precision_rebaselined": "0",
+        "replay_mirror_watermark": "0",
+        "replay_mirror_watermark_source": "",
+        "risk_circuit_breaker": "0",
+        "risk_circuit_breaker_until": "",
+        "risk_consecutive_losses": "0",
+        "risk_current_drawdown_pct": "0",
+        "risk_daily_pnl": "0",
+        "risk_daily_pnl_date": "",
+        "risk_max_drawdown_pct": "0",
+        "risk_peak_value": "1000",
+        "risk_pending_circuit_closes_json": "",
+        "shared_wallet_pool_budget": "0",
+        "type": "spot"
+      }
+    ]
+  },
+  "mode": "paper",
+  "scenario": "gate_hurst",
+  "steps": [
+    {
+      "alerts": null,
+      "book": {
+        "cash": 1000,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "key": "fa68a71ce8340d83",
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {},
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 0,
+          "daily_pnl_date": "",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": []
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=paper",
+          "--inst-type=spot",
+          "--atr-method=simple",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: ok",
+        "paper: ok"
+      ],
+      "db": {},
+      "detail": "",
+      "inputs": {
+        "AvgCost": 0,
+        "Cash": 0,
+        "CashReconcile": false,
+        "Leverage": 0,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 0,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 0,
+          "InitialQuantity": 0,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 0,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 0,
+        "PosSide": ""
+      },
+      "log": [
+        "[okx-spot-gate_hurst] [INFO] Signal: BUY | BTC @ $100.00 [paper]",
+        "[okx-spot-gate_hurst] [INFO] Hurst gate: BUY signal suppressed — hurst unavailable, fail-closed (window \"default\") (#1411)"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 100
+      },
+      "reminder_sig": "",
+      "sends": null,
+      "step": "buy from flat",
+      "trade_alert_tail": null,
+      "trades": 0
+    }
+  ],
+  "strategy": {
+    "args": [
+      "fixture",
+      "BTC",
+      "1h",
+      "--mode=paper",
+      "--inst-type=spot"
+    ],
+    "capital": 1000,
+    "direction": "long",
+    "hurst_gate": {
+      "enabled": true,
+      "min": 0.55,
+      "on_failure": "closed"
+    },
+    "id": "okx-spot-gate_hurst",
+    "leverage": 1,
+    "max_drawdown_pct": 0,
+    "open_strategy": {
+      "name": ""
+    },
+    "platform": "okx",
+    "script": "scheduler/testdata/okx_step/check_fixture.py",
+    "sizing_leverage": 1,
+    "type": "spot"
+  },
+  "type": "spot"
+}

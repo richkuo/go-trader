@@ -1,0 +1,317 @@
+{
+  "final_db": {
+    "app_state": [
+      {
+        "cycle_count": "0",
+        "id": "1",
+        "last_cycle": "",
+        "last_leaderboard_post_date": "",
+        "last_leaderboard_summaries": "",
+        "last_summary_post": ""
+      }
+    ],
+    "entry_decision_state": [
+      {
+        "bootstrap_through_bar_ms": "0",
+        "consumed_through_bar_ms": "0",
+        "interval_ms": "3600000",
+        "latest_observed_bar_ms": "\u003cbar\u003e",
+        "scope": "live",
+        "source": "",
+        "strategy_id": "okx-spot-live_rejected",
+        "symbol": "BTC",
+        "target_side": "long",
+        "updated_at_ms": "\u003cms\u003e"
+      },
+      {
+        "bootstrap_through_bar_ms": "0",
+        "consumed_through_bar_ms": "0",
+        "interval_ms": "3600000",
+        "latest_observed_bar_ms": "\u003cbar\u003e",
+        "scope": "live",
+        "source": "",
+        "strategy_id": "okx-spot-live_rejected",
+        "symbol": "BTC",
+        "target_side": "short",
+        "updated_at_ms": "\u003cms\u003e"
+      }
+    ],
+    "entry_order_intents": [
+      {
+        "account_key": "okx:spot:live:key-8f10ee3b5d60962b",
+        "applied_fee": "0",
+        "applied_notional": "0",
+        "applied_qty": "0",
+        "bar_open_ms": "\u003cbar\u003e",
+        "client_order_id": "\u003ccid-1\u003e",
+        "confirmed_fee": "0",
+        "confirmed_notional": "0",
+        "confirmed_qty": "0",
+        "created_at_ms": "\u003cms\u003e",
+        "cutoff_ms": "\u003ccutoff\u003e",
+        "decision_boundary_ms": "\u003cboundary\u003e",
+        "decision_kind": "candle",
+        "evidence_json": "{\"outcome\":\"rejected\",\"detail\":\"fixture venue rejected the order\",\"observed_at_ms\":\u003cms\u003e}",
+        "hold_reason": "",
+        "initial_stop_client_id": "",
+        "instrument_type": "spot",
+        "intent_id": "\u003cintent-1\u003e",
+        "interval_ms": "3600000",
+        "owner_group_id": "",
+        "owner_mode": "",
+        "provider": "okx",
+        "quote_event_id": "",
+        "replay_delivered_seq": "0",
+        "replay_payload_json": "",
+        "request_json": "{\"version\":1,\"kind\":\"open\",\"signal\":1,\"side\":\"buy\",\"size\":10,\"prev_pos_qty\":0,\"price\":100,\"entry_atr\":2,\"expires_after_ms\":\u003cms\u003e,\"script\":\"scheduler/testdata/okx_step/check_fixture.py\",\"submitted_at_ms\":\u003cms\u003e}",
+        "scope": "live",
+        "settlement_seq": "0",
+        "source": "",
+        "status": "no_fill",
+        "strategy_id": "okx-spot-live_rejected",
+        "symbol": "BTC",
+        "target_side": "long",
+        "updated_at_ms": "\u003cms\u003e",
+        "venue_order_id": ""
+      }
+    ],
+    "strategies": [
+      {
+        "active_profile": "",
+        "cash": "1000",
+        "cash_reconcile_required": "0",
+        "hurst_gate_state": "",
+        "id": "okx-spot-live_rejected",
+        "initial_capital": "1000",
+        "paper_funding_state": "",
+        "platform": "okx",
+        "quote_precision_rebaselined": "0",
+        "replay_mirror_watermark": "0",
+        "replay_mirror_watermark_source": "",
+        "risk_circuit_breaker": "0",
+        "risk_circuit_breaker_until": "",
+        "risk_consecutive_losses": "0",
+        "risk_current_drawdown_pct": "0",
+        "risk_daily_pnl": "0",
+        "risk_daily_pnl_date": "",
+        "risk_max_drawdown_pct": "0",
+        "risk_peak_value": "1000",
+        "risk_pending_circuit_closes_json": "",
+        "shared_wallet_pool_budget": "0",
+        "type": "spot"
+      }
+    ]
+  },
+  "mode": "live",
+  "scenario": "live_rejected",
+  "steps": [
+    {
+      "alerts": [
+        {
+          "content": "**LIVE ORDER FAILED** [okx-spot-live_rejected] okx open BTC: fixture venue rejected the order",
+          "kind": "channel",
+          "target": "chan-okx"
+        },
+        {
+          "content": "**LIVE ORDER FAILED** [okx-spot-live_rejected] okx open BTC: fixture venue rejected the order",
+          "kind": "dm",
+          "target": "owner-1"
+        }
+      ],
+      "book": {
+        "cash": 1000,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {},
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 0,
+          "daily_pnl_date": "",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": []
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=live",
+          "--inst-type=spot",
+          "--atr-method=simple",
+          "--closed-bar-decisions",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: ok",
+        "paper: ok"
+      ],
+      "db": {
+        "entry_decision_state": [
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "0",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "live",
+            "source": "",
+            "strategy_id": "okx-spot-live_rejected",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e"
+          },
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "0",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "live",
+            "source": "",
+            "strategy_id": "okx-spot-live_rejected",
+            "symbol": "BTC",
+            "target_side": "short",
+            "updated_at_ms": "\u003cms\u003e"
+          }
+        ],
+        "entry_order_intents": [
+          {
+            "account_key": "okx:spot:live:key-8f10ee3b5d60962b",
+            "applied_fee": "0",
+            "applied_notional": "0",
+            "applied_qty": "0",
+            "bar_open_ms": "\u003cbar\u003e",
+            "client_order_id": "\u003ccid-1\u003e",
+            "confirmed_fee": "0",
+            "confirmed_notional": "0",
+            "confirmed_qty": "0",
+            "created_at_ms": "\u003cms\u003e",
+            "cutoff_ms": "\u003ccutoff\u003e",
+            "decision_boundary_ms": "\u003cboundary\u003e",
+            "decision_kind": "candle",
+            "evidence_json": "{\"outcome\":\"rejected\",\"detail\":\"fixture venue rejected the order\",\"observed_at_ms\":\u003cms\u003e}",
+            "hold_reason": "",
+            "initial_stop_client_id": "",
+            "instrument_type": "spot",
+            "intent_id": "\u003cintent-1\u003e",
+            "interval_ms": "3600000",
+            "owner_group_id": "",
+            "owner_mode": "",
+            "provider": "okx",
+            "quote_event_id": "",
+            "replay_delivered_seq": "0",
+            "replay_payload_json": "",
+            "request_json": "{\"version\":1,\"kind\":\"open\",\"signal\":1,\"side\":\"buy\",\"size\":10,\"prev_pos_qty\":0,\"price\":100,\"entry_atr\":2,\"expires_after_ms\":\u003cms\u003e,\"script\":\"scheduler/testdata/okx_step/check_fixture.py\",\"submitted_at_ms\":\u003cms\u003e}",
+            "scope": "live",
+            "settlement_seq": "0",
+            "source": "",
+            "status": "no_fill",
+            "strategy_id": "okx-spot-live_rejected",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e",
+            "venue_order_id": ""
+          }
+        ]
+      },
+      "detail": "",
+      "inputs": {
+        "AvgCost": 0,
+        "Cash": 1000,
+        "CashReconcile": false,
+        "Leverage": 0,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 0,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 0,
+          "InitialQuantity": 0,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 0,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 0,
+        "PosSide": ""
+      },
+      "log": [
+        "[okx-spot-live_rejected] [INFO] Signal: BUY | BTC @ $100.00 [live]",
+        "[okx-spot-live_rejected] [INFO] Closed-bar decisions active: signal, entry ATR and sizing use the bar closed at \u003cboundary-rfc3339\u003e (#1712)",
+        "[okx-spot-live_rejected] [INFO] Placing live buy BTC size=10.000000 inst_type=spot",
+        "[okx-spot-live_rejected] [ERROR] Live execute returned error: fixture venue rejected the order",
+        "[okx-spot-live_rejected] [INFO] Live entry \u003cintent-1\u003e resolved with no fill (rejected): the decision candle stays eligible (#1769)"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 100
+      },
+      "reminder_sig": "",
+      "sends": [
+        {
+          "client_order_id": "\u003ccid-1\u003e",
+          "expires_after_ms": "\u003cms\u003e",
+          "guarded": true,
+          "inst_type": "spot",
+          "reduce_only": false,
+          "response": "rejected|fixture venue rejected the order",
+          "saved_deadline_ms": 120000,
+          "saved_expiry_matches_sent": true,
+          "saved_intent_found": true,
+          "saved_intent_status": "submitting",
+          "saved_side_size_match": true,
+          "side": "buy",
+          "size": 10,
+          "symbol": "BTC"
+        }
+      ],
+      "step": "venue rejects",
+      "trade_alert_tail": null,
+      "trades": 0
+    }
+  ],
+  "strategy": {
+    "args": [
+      "fixture",
+      "BTC",
+      "1h",
+      "--mode=live",
+      "--inst-type=spot"
+    ],
+    "capital": 1000,
+    "closed_bar_decisions": true,
+    "direction": "long",
+    "id": "okx-spot-live_rejected",
+    "leverage": 1,
+    "max_drawdown_pct": 0,
+    "open_strategy": {
+      "name": ""
+    },
+    "platform": "okx",
+    "script": "scheduler/testdata/okx_step/check_fixture.py",
+    "sizing_leverage": 1,
+    "type": "spot"
+  },
+  "type": "spot"
+}

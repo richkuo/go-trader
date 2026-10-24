@@ -1,0 +1,209 @@
+{
+  "final_db": {
+    "app_state": [
+      {
+        "cycle_count": "0",
+        "id": "1",
+        "last_cycle": "",
+        "last_leaderboard_post_date": "",
+        "last_leaderboard_summaries": "",
+        "last_summary_post": ""
+      }
+    ],
+    "entry_decision_state": [
+      {
+        "bootstrap_through_bar_ms": "0",
+        "consumed_through_bar_ms": "0",
+        "interval_ms": "3600000",
+        "latest_observed_bar_ms": "\u003cbar\u003e",
+        "scope": "live",
+        "source": "",
+        "strategy_id": "okx-spot-live_reservation_failure",
+        "symbol": "BTC",
+        "target_side": "long",
+        "updated_at_ms": "\u003cms\u003e"
+      },
+      {
+        "bootstrap_through_bar_ms": "0",
+        "consumed_through_bar_ms": "0",
+        "interval_ms": "3600000",
+        "latest_observed_bar_ms": "\u003cbar\u003e",
+        "scope": "live",
+        "source": "",
+        "strategy_id": "okx-spot-live_reservation_failure",
+        "symbol": "BTC",
+        "target_side": "short",
+        "updated_at_ms": "\u003cms\u003e"
+      }
+    ],
+    "strategies": [
+      {
+        "active_profile": "",
+        "cash": "1000",
+        "cash_reconcile_required": "0",
+        "hurst_gate_state": "",
+        "id": "okx-spot-live_reservation_failure",
+        "initial_capital": "1000",
+        "paper_funding_state": "",
+        "platform": "okx",
+        "quote_precision_rebaselined": "0",
+        "replay_mirror_watermark": "0",
+        "replay_mirror_watermark_source": "",
+        "risk_circuit_breaker": "0",
+        "risk_circuit_breaker_until": "",
+        "risk_consecutive_losses": "0",
+        "risk_current_drawdown_pct": "0",
+        "risk_daily_pnl": "0",
+        "risk_daily_pnl_date": "",
+        "risk_max_drawdown_pct": "0",
+        "risk_peak_value": "1000",
+        "risk_pending_circuit_closes_json": "",
+        "shared_wallet_pool_budget": "0",
+        "type": "spot"
+      }
+    ]
+  },
+  "mode": "live",
+  "scenario": "live_reservation_failure",
+  "steps": [
+    {
+      "alerts": null,
+      "book": {
+        "cash": 1000,
+        "cash_reconcile_required": false,
+        "hurst_gate_state": {
+          "last_h_at": "\u003ctime\u003e"
+        },
+        "memory_intents": [],
+        "positions": {},
+        "regime": "",
+        "risk_state": {
+          "circuit_breaker": false,
+          "circuit_breaker_until": "\u003ctime\u003e",
+          "consecutive_losses": 0,
+          "current_drawdown_pct": 0,
+          "daily_pnl": 0,
+          "daily_pnl_date": "",
+          "max_drawdown_pct": 0,
+          "peak_value": 1000
+        },
+        "trade_history": []
+      },
+      "check_argv": [
+        [
+          "fixture",
+          "BTC",
+          "1h",
+          "--mode=live",
+          "--inst-type=spot",
+          "--atr-method=simple",
+          "--closed-bar-decisions",
+          "--strategy-refs",
+          "{\"open\":{\"name\":\"fixture\"}}"
+        ]
+      ],
+      "cycle_save": [
+        "live: ok",
+        "paper: ok"
+      ],
+      "db": {
+        "entry_decision_state": [
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "0",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "live",
+            "source": "",
+            "strategy_id": "okx-spot-live_reservation_failure",
+            "symbol": "BTC",
+            "target_side": "long",
+            "updated_at_ms": "\u003cms\u003e"
+          },
+          {
+            "bootstrap_through_bar_ms": "0",
+            "consumed_through_bar_ms": "0",
+            "interval_ms": "3600000",
+            "latest_observed_bar_ms": "\u003cbar\u003e",
+            "scope": "live",
+            "source": "",
+            "strategy_id": "okx-spot-live_reservation_failure",
+            "symbol": "BTC",
+            "target_side": "short",
+            "updated_at_ms": "\u003cms\u003e"
+          }
+        ]
+      },
+      "detail": "",
+      "inputs": {
+        "AvgCost": 0,
+        "Cash": 1000,
+        "CashReconcile": false,
+        "Leverage": 0,
+        "PoolBalanceKnown": false,
+        "PosCtx": {
+          "AvgCost": 0,
+          "DirectionCertifiedAtOpen": false,
+          "DirectionCertifiedStatesAtOpen": null,
+          "DirectionalRegime": "",
+          "EntryATR": 0,
+          "InitialQuantity": 0,
+          "OnChainTPBlocked": "",
+          "OnChainTPResting": false,
+          "OpenedAt": "\u003ctime\u003e",
+          "Profile": "",
+          "Quantity": 0,
+          "RatchetFallbackNormalizePending": false,
+          "Regime": "",
+          "RegimeWindows": null,
+          "RestingTP": null,
+          "RestingTPReachPx": 0,
+          "RestingTPScannedOpenMs": 0,
+          "RestingTPStopTriggerPx": 0,
+          "RiskAnchorPrice": 0,
+          "Side": "",
+          "StopLossTriggerPx": 0
+        },
+        "PosQty": 0,
+        "PosSide": ""
+      },
+      "log": [
+        "[okx-spot-live_reservation_failure] [INFO] Signal: BUY | BTC @ $100.00 [live]",
+        "[okx-spot-live_reservation_failure] [INFO] Closed-bar decisions active: signal, entry ATR and sizing use the bar closed at \u003cboundary-rfc3339\u003e (#1712)",
+        "[okx-spot-live_reservation_failure] [WARN] Closed-bar entry: BUY held — the live attempt could not be saved before sending: upsert entry intent \u003cintent-1\u003e: constraint failed: injected reservation write failure (1811) (#1769)"
+      ],
+      "persistence_hold_before": false,
+      "prices_after": {
+        "BTC": 100
+      },
+      "reminder_sig": "",
+      "sends": null,
+      "step": "reservation write fails",
+      "trade_alert_tail": null,
+      "trades": 0
+    }
+  ],
+  "strategy": {
+    "args": [
+      "fixture",
+      "BTC",
+      "1h",
+      "--mode=live",
+      "--inst-type=spot"
+    ],
+    "capital": 1000,
+    "closed_bar_decisions": true,
+    "direction": "long",
+    "id": "okx-spot-live_reservation_failure",
+    "leverage": 1,
+    "max_drawdown_pct": 0,
+    "open_strategy": {
+      "name": ""
+    },
+    "platform": "okx",
+    "script": "scheduler/testdata/okx_step/check_fixture.py",
+    "sizing_leverage": 1,
+    "type": "spot"
+  },
+  "type": "spot"
+}
