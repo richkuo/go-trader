@@ -754,6 +754,15 @@ type pairTestEnv struct {
 	quotes  *pairFixtureQuotes
 	now     time.Time
 	collect bool
+
+	sealMu     sync.Mutex
+	sealCalls  []pairSealCall
+	generation uint64
+}
+
+type pairSealCall struct {
+	AtMs int64
+	ID   string
 }
 
 func pairTestStart() time.Time {
@@ -772,7 +781,7 @@ func newPairTestEnv(t *testing.T, mutate func(root map[string]interface{})) *pai
 		t.Fatalf("newPairResearchAdmission: %v", err)
 	}
 	t.Cleanup(adm.release)
-	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart()}
+	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart(), generation: 1}
 	e.quotes = pairFixtureQuotesOf(deps.Quotes)
 	e.runner = &pairTestRunner{respond: func(req pairPolicyRequest) (pairPolicyResult, error) { return pairHoldResult(req, "no edge"), nil }}
 	e.store = openSourceStore(t, cfg)
@@ -865,14 +874,30 @@ func (e *pairTestEnv) step(at time.Time) {
 	e.now = at
 	e.bc.beginCycle()
 	e.observe("")
+	e.bc.step(e.inputs(at))
+}
+
+func (e *pairTestEnv) inputs(at time.Time) basketCycleInputs {
 	in := basketCycleInputs{Now: at, Once: true}
 	if e.collect {
-		e.mu.Lock()
-		rt := e.rt()
-		in.Snapshot = e.quotes.snapshot(rt.Contract.pairMembersSorted(), rt.Contract.Pair.BookNeed, at.UnixMilli()-50, fmt.Sprintf("feed-%d", at.UnixMilli()))
-		e.mu.Unlock()
+		in.PairSnapshotFor, in.PairGeneration = e.sealFor, e.feedGeneration
 	}
-	e.bc.step(in)
+	return in
+}
+
+func (e *pairTestEnv) sealFor(rt *basketRuntime, at time.Time) *marketSnapshot {
+	snap := e.quotes.snapshot(rt.Contract.pairMembersSorted(), rt.Contract.Pair.BookNeed, at.UnixMilli()-50, fmt.Sprintf("feed-%d", at.UnixMilli()))
+	e.sealMu.Lock()
+	snap.ConfigGeneration = e.generation
+	e.sealCalls = append(e.sealCalls, pairSealCall{AtMs: at.UnixMilli(), ID: snap.EvaluationID})
+	e.sealMu.Unlock()
+	return snap
+}
+
+func (e *pairTestEnv) feedGeneration() uint64 {
+	e.sealMu.Lock()
+	defer e.sealMu.Unlock()
+	return e.generation
 }
 
 func pairFixtureQuotesOf(src pairQuoteSource) *pairFixtureQuotes {
@@ -965,4 +990,144 @@ func pairFileDigest(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return sha256Hex(b)
+}
+
+type pairTestHost struct {
+	e          *pairTestEnv
+	interval   time.Duration
+	nextManage time.Time
+	fund       func(at time.Time)
+	prepare    func(in basketCycleInputs)
+	manage     func(at time.Time, risk map[RiskPartition]*scopeCycleRisk)
+	marks      map[string]float64
+	order      []string
+	runs       []pairHostRun
+	saveErrs   []string
+	nextAt     time.Time
+}
+
+type pairHostRun struct {
+	At      time.Time
+	Managed bool
+	Next    time.Duration
+}
+
+func newPairTestHost(e *pairTestEnv, interval time.Duration) *pairTestHost {
+	h := &pairTestHost{e: e, interval: interval, nextManage: e.now, marks: map[string]float64{"BTC": 60000}}
+	h.manage = func(time.Time, map[RiskPartition]*scopeCycleRisk) { e.observe("") }
+	return h
+}
+
+func (h *pairTestHost) note(phase string) {
+	h.order = append(h.order, phase)
+}
+
+func (h *pairTestHost) run(at time.Time) time.Duration {
+	e := h.e
+	e.t.Helper()
+	e.now = at
+	h.note("evidence")
+	if h.fund != nil {
+		h.fund(at)
+		h.note("funding")
+	}
+	managed := !at.Before(h.nextManage)
+	in := basketCycleInputs{Now: at, Once: true, PairSnapshotFor: e.sealFor, PairGeneration: e.feedGeneration}
+	if h.prepare != nil {
+		h.prepare(in)
+		h.note("prepare_risk")
+	}
+	cfg, state, store := e.cfg, e.state, e.store
+	if allPartitionsSaveBlocked(store, cfg) {
+		in.SaveBlocked = true
+		h.note("save_blocked")
+		managed = false
+	} else {
+		parts := activePartitions(cfg.Strategies)
+		risk := make(map[RiskPartition]*scopeCycleRisk, len(parts))
+		e.mu.RLock()
+		for _, p := range parts {
+			risk[p] = measureScopeCycleRisk(p, partitionRiskConfig(cfg, p), cfg.Strategies, state, h.marks, nil, nil, true, false, at)
+		}
+		e.mu.RUnlock()
+		e.mu.Lock()
+		for _, p := range parts {
+			applyScopeCycleRisk(risk[p], state.partitionRisk(p))
+			if !p.IsLive() && risk[p].KillSwitchFired {
+				applyPaperKillSwitchCycle(state, cfg, h.marks, risk[p], true)
+			}
+		}
+		e.mu.Unlock()
+		h.note("risk")
+		if managed {
+			e.bc.beginCycle()
+			h.manage(at, risk)
+			h.note("manage")
+			h.nextManage = at.Add(h.interval)
+		}
+		in.ScopeRisk = risk
+	}
+	h.note("step")
+	e.bc.step(in)
+	e.mu.Lock()
+	outcomes := store.SaveAll(state)
+	e.mu.Unlock()
+	for _, out := range sortedPartitionErrors(outcomes) {
+		if out.err != nil {
+			h.saveErrs = append(h.saveErrs, fmt.Sprintf("%s: %v", partitionLabel(out.part), out.err))
+		}
+	}
+	h.note("save")
+	fresh := e.bc.pairNow(basketCycleInputs{Now: at})
+	next := h.nextManage.Sub(fresh)
+	if w := e.bc.wakeDelay(fresh); w >= 0 && w < next {
+		next = w
+	}
+	if next < 0 {
+		next = 0
+	}
+	h.runs = append(h.runs, pairHostRun{At: at, Managed: managed, Next: next})
+	h.nextAt = fresh.Add(next)
+	return next
+}
+
+func (h *pairTestHost) runUntil(end time.Time) {
+	e := h.e
+	e.t.Helper()
+	at := h.nextAt
+	if at.IsZero() {
+		at = e.now
+	}
+	zeros := 0
+	for !at.After(end) {
+		d := h.run(at)
+		if d == 0 {
+			zeros++
+			if zeros > 2 {
+				e.t.Fatalf("the host scheduled %d zero-delay wakes in a row at %s; the wake schedule spins", zeros, at.Format(time.RFC3339Nano))
+			}
+		} else {
+			zeros = 0
+		}
+		at = h.nextAt
+	}
+}
+
+func (h *pairTestHost) incomplete() (pairObligation, bool) {
+	h.e.mu.RLock()
+	defer h.e.mu.RUnlock()
+	return pairIncompleteEvidence(h.e.rt())
+}
+
+func (h *pairTestHost) savedIncomplete() bool {
+	h.e.t.Helper()
+	var raw string
+	if err := h.e.db().db.QueryRow(`SELECT progress_json FROM basket_contracts WHERE basket_id = ?`, pairTestID).Scan(&raw); err != nil {
+		h.e.t.Fatalf("read saved pair progress: %v", err)
+	}
+	p, err := parsePairProgress(raw)
+	if err != nil {
+		h.e.t.Fatalf("saved pair progress: %v", err)
+	}
+	return p.obligation(pairObligationPolicyTimeout, "", "") != nil
 }

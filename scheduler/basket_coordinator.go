@@ -19,6 +19,7 @@ const basketHeldWakeRetry = time.Minute
 
 type basketMemberObservation struct {
 	Cycle      int
+	AtMs       int64
 	Fields     StrategyDecisionFields
 	Indicators map[string]interface{}
 	Price      float64
@@ -29,6 +30,10 @@ type basketCycleInputs struct {
 	Snapshot    *marketSnapshot
 	SnapshotFor func(rt *basketRuntime, deadline time.Time) *marketSnapshot
 	ScopeRisk   map[RiskPartition]*scopeCycleRisk
+
+	PairSnapshotFor func(rt *basketRuntime, at time.Time) *marketSnapshot
+	PairGeneration  func() uint64
+
 	SaveBlocked bool
 	Once        bool
 
@@ -368,6 +373,9 @@ func (bc *basketCoordinator) wakeDelay(now time.Time) time.Duration {
 		if d := bc.expiryWakeLocked(rt, now); d >= 0 {
 			consider(d)
 		}
+	}
+	if d := bc.pairWakeDelayLocked(now); d >= 0 {
+		consider(d)
 	}
 	return best
 }
