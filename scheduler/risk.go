@@ -628,11 +628,6 @@ func addKillSwitchEvent(prs *PortfolioRiskState, eventType, source string, drawd
 	}
 }
 
-func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, configs []StrategyConfig, prices map[string]float64) (unrealizedLoss, margin float64) {
-	unrealizedLoss, margin, _ = aggregatePerpsMarginInputsMarked(strategies, configs, prices, nil)
-	return unrealizedLoss, margin
-}
-
 func aggregatePerpsMarginInputsMarked(strategies map[string]*StrategyState, configs []StrategyConfig, prices map[string]float64, pm *pairMarks) (unrealizedLoss, margin float64, st pairValueStatus) {
 	leverageByID := make(map[string]float64, len(configs))
 	for _, sc := range configs {
@@ -822,11 +817,6 @@ func portfolioWarnBandSignals(cfg *PortfolioRiskConfig, prs *PortfolioRiskState,
 	equityInBand = equityAvailable && prs.PeakValue > 0 && prs.CurrentDrawdownPct > warnDrawdownPct
 	marginInBand = prs.CurrentMarginDrawdownPct > warnDrawdownPct
 	return equityInBand, marginInBand
-}
-
-func PortfolioNotional(strategies map[string]*StrategyState, prices map[string]float64) float64 {
-	v, _ := portfolioNotionalMarked(strategies, prices, nil)
-	return v
 }
 
 func portfolioNotionalMarked(strategies map[string]*StrategyState, prices map[string]float64, pm *pairMarks) (float64, pairValueStatus) {
@@ -1419,11 +1409,6 @@ func forceCloseSettledPositions(s *StrategyState, sc StrategyConfig, prices map[
 	}
 }
 
-func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices map[string]float64) (unrealizedLoss, margin float64) {
-	unrealizedLoss, margin, _ = perpsMarginDrawdownInputsMarked(s, configLeverage, prices, nil)
-	return unrealizedLoss, margin
-}
-
 func perpsMarginDrawdownInputsMarked(s *StrategyState, configLeverage float64, prices map[string]float64, pm *pairMarks) (unrealizedLoss, margin float64, st pairValueStatus) {
 	if configLeverage <= 0 {
 		return 0, 0, st
@@ -1474,7 +1459,29 @@ func circuitBreakerPermitsManagement(reason, platform, stratType string, posQty 
 }
 
 func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
+	if strategyPairCostRequired(s) && (sc == nil || sc.Type != "manual") {
+		return checkPairMemberRiskWithoutView(sc, s, logger, assist)
+	}
 	return checkRiskValued(sc, s, portfolioValue, prices, true, nil, logger, assist)
+}
+
+func checkStrategyRiskWithView(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, pm *pairMarks, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
+	if pm != nil && strategyPairCostRequired(s) && (sc == nil || sc.Type != "manual") {
+		ok, reason, _ := checkPairMemberRisk(sc, s, pm, logger, assist)
+		return ok, reason
+	}
+	return CheckRisk(sc, s, portfolioValue, prices, logger, assist)
+}
+
+func checkPairMemberRiskWithoutView(sc *StrategyConfig, s *StrategyState, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
+	pv, prices, status := pairMemberRiskInputs(s, nil)
+	if status.complete() {
+		return checkRiskValued(sc, s, pv, prices, true, nil, logger, assist)
+	}
+	if r := &s.RiskState; r.CircuitBreaker && tradingNow().UTC().Before(r.CircuitBreakerUntil) {
+		return false, RiskReasonCircuitBreakerActive
+	}
+	return false, status.label() + "; this risk reader has no coordinator valuation view, so the strategy holds, the circuit breaker reads nothing and the peak is not updated this cycle"
 }
 
 func pairMemberRiskInputs(s *StrategyState, pm *pairMarks) (float64, map[string]float64, pairValueStatus) {

@@ -79,17 +79,17 @@ type manualStateView struct {
 	PeerShortQty     float64
 }
 
-func manualSubsetStateView(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig, now time.Time) manualStateView {
+func manualSubsetStateView(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig, now time.Time, pm *pairMarks) manualStateView {
 	var v manualStateView
 	if st := evaluateDailyLossLimit(pr, states, cfgs, now); st.Tripped {
 		v.DailyLossHold = true
 		v.DailyLossNote = dailyLossHoldDetail(st)
 	}
-	if held, detail := evaluateNotionalCapHold(pr, states, nil); held {
+	if held, detail := evaluateNotionalCapHoldMarked(pr, states, nil, pm); held {
 		v.NotionalHold = true
 		v.NotionalNote = detail
 	}
-	v.ExposureCap = exposureCapStatusForSubset(pr, states, cfgs)
+	v.ExposureCap = exposureCapStatusForSubset(pr, states, cfgs, pm)
 	return v
 }
 
@@ -100,7 +100,7 @@ func manualScopeStateView(cfg *Config, state *AppState, part RiskPartition, now 
 	}
 	scoped := manualSubsetStateView(partitionRiskConfig(cfg, part),
 		filterStatesByPartition(state.Strategies, cfg.Strategies, part),
-		strategiesInPartition(cfg.Strategies, part), now)
+		strategiesInPartition(cfg.Strategies, part), now, state.pairMarksLocked())
 	scoped.KillSwitch = v.KillSwitch
 	return scoped
 }
@@ -150,7 +150,7 @@ func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *Stat
 	} else {
 		v.KillSwitch = state.anyScopeLatched()
 		if cfg != nil {
-			v = mergeManualStateViews(v, manualSubsetStateView(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, now))
+			v = mergeManualStateViews(v, manualSubsetStateView(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, now, state.pairMarksLocked()))
 			for _, p := range activePartitions(cfg.Strategies) {
 				v = mergeManualStateViews(v, manualScopeStateView(cfg, state, p, now))
 				v.PersistenceHold = v.PersistenceHold || store.persistenceHoldsPartition(p)

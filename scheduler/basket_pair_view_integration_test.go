@@ -493,3 +493,123 @@ func pairViewPx(px float64) string {
 	b, _ := json.Marshal(px)
 	return string(b)
 }
+
+func TestBasketMemberViewNilViewRiskReadersFailClosed(t *testing.T) {
+	e := newPairTestEnv(t, func(root map[string]interface{}) {
+		root["portfolio_risk"] = map[string]interface{}{"max_drawdown_pct": 90, "max_notional_usd": 10000000}
+	})
+	pairViewMatched(t, e)
+	at := pairSlotAt(pairTestStart(), 2)
+	e.now = at
+	e.prepare(at)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	sc := e.bc.members[pairTestHL]
+	hl := e.state.Strategies[pairTestHL]
+	pos := hl.Positions["BTC"]
+	if pos == nil || pos.Side != "long" {
+		t.Fatalf("setup: the hyperliquid member must hold a long book: %+v", pos)
+	}
+	pos.AvgCost = 60000
+	shared := map[string]float64{"BTC": 50000}
+
+	hl.RiskState.PeakValue = 1
+	peak, dd := hl.RiskState.PeakValue, hl.RiskState.CurrentDrawdownPct
+	pv := PortfolioValue(hl, shared)
+	allowed, reason := CheckRisk(&sc, hl, pv, shared, nil, nil)
+	if allowed || !strings.Contains(reason, pairTestHL+" "+pairMarkUnavailable) || !strings.Contains(reason, "no coordinator valuation view") {
+		t.Fatalf("a nil-view risk check of a held pair member must hold with a reason, got %v %q", allowed, reason)
+	}
+	if hl.RiskState.PeakValue != peak || hl.RiskState.CurrentDrawdownPct != dd || hl.RiskState.CircuitBreaker {
+		t.Fatalf("a nil-view risk check must not raise the peak or write a drawdown: %+v", hl.RiskState)
+	}
+	hl.RiskState.CircuitBreaker, hl.RiskState.CircuitBreakerUntil = true, tradingNow().Add(time.Hour)
+	if ok, why := CheckRisk(&sc, hl, pv, shared, nil, nil); ok || why != RiskReasonCircuitBreakerActive {
+		t.Fatalf("an active circuit breaker must keep its own reason without a view, got %v %q", ok, why)
+	}
+	hl.RiskState.CircuitBreaker, hl.RiskState.CircuitBreakerUntil = false, time.Time{}
+
+	pm := e.bc.pairMarksLocked()
+	hlMark := e.bc.pairViewsLocked(at)[pairTestHL].MarkUSD
+	viewPV, _ := portfolioValueMarked(hl, shared, pm)
+	if ok, why := checkStrategyRiskWithView(&sc, hl, viewPV, shared, pm, nil, nil); !ok || why != "" || !pairViewNear(hl.RiskState.PeakValue, pairViewExpected(hl, hlMark)) {
+		t.Fatalf("the host risk check must value the member at its own view mark, got %v %q peak %v want %v", ok, why, hl.RiskState.PeakValue, pairViewExpected(hl, hlMark))
+	}
+
+	states := filterStatesByPartition(e.state.Strategies, e.cfg.Strategies, e.rt().Partition)
+	if _, st := portfolioNotionalMarked(states, shared, nil); st.complete() || st.Members[pairTestHL] != pairMarkUnavailable {
+		t.Fatalf("a nil-view notional over a held member must read incomplete, got %q", st.label())
+	}
+	if _, _, st := aggregatePerpsMarginInputsMarked(states, e.cfg.Strategies, shared, nil); st.complete() {
+		t.Fatal("a nil-view margin reading over a held member must read incomplete")
+	}
+	if held, detail := evaluateNotionalCapHold(partitionRiskConfig(e.cfg, e.rt().Partition), states, shared); !held || !strings.Contains(detail, "incomplete") {
+		t.Fatalf("the nil-view notional cap must hold, got %v %q", held, detail)
+	}
+
+	newOrdinary := func() *StrategyState {
+		return &StrategyState{ID: "ordinary-perps", Type: "perps", Cash: 1000, RiskState: RiskState{MaxDrawdownPct: 50}, Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.01, AvgCost: 60000, Side: "long", Multiplier: 1},
+		}}
+	}
+	ordinaryCfg := StrategyConfig{ID: "ordinary-perps", Type: "perps", Platform: "hyperliquid", Leverage: 2, MaxDrawdownPct: 50}
+	ordinary, twin := newOrdinary(), newOrdinary()
+	wantOK, wantWhy := checkRiskValued(&ordinaryCfg, twin, PortfolioValue(twin, shared), shared, true, nil, nil, nil)
+	gotOK, gotWhy := CheckRisk(&ordinaryCfg, ordinary, PortfolioValue(ordinary, shared), shared, nil, nil)
+	if gotOK != wantOK || gotWhy != wantWhy || ordinary.RiskState.PeakValue != twin.RiskState.PeakValue || ordinary.RiskState.CurrentDrawdownPct != twin.RiskState.CurrentDrawdownPct || ordinary.RiskState.CircuitBreaker != twin.RiskState.CircuitBreaker {
+		t.Fatalf("an ordinary strategy risk check must not change: %v %q %+v vs %v %q %+v", gotOK, gotWhy, ordinary.RiskState, wantOK, wantWhy, twin.RiskState)
+	}
+	if !gotOK || gotWhy != "" || ordinary.RiskState.PeakValue != 900 || !pairViewNear(ordinary.RiskState.CurrentDrawdownPct, 40) {
+		t.Fatalf("an ordinary strategy must keep its symbol-price drawdown, got %v %q %+v", gotOK, gotWhy, ordinary.RiskState)
+	}
+	if v, st := portfolioValueMarked(ordinary, shared, pm); !st.complete() || v != PortfolioValue(ordinary, shared) || !pairViewNear(v, 1000-100) {
+		t.Fatalf("an ordinary strategy value must not change, got %v", v)
+	}
+	if n, st := portfolioNotionalMarked(map[string]*StrategyState{ordinary.ID: ordinary}, shared, pm); !st.complete() || !pairViewNear(n, 500) {
+		t.Fatalf("an ordinary strategy notional must not change, got %v", n)
+	}
+}
+
+func TestBasketMemberViewManualOpenGatesReadTheView(t *testing.T) {
+	e := newPairTestEnv(t, func(root map[string]interface{}) {
+		root["portfolio_risk"] = map[string]interface{}{"max_drawdown_pct": 90, "max_notional_usd": 10000000, "max_same_direction_notional_usd": 10000000}
+		root["strategies"] = append(root["strategies"].([]interface{}), map[string]interface{}{
+			"id": "hl-manual-eth", "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "timeframe": "1h",
+			"args": []interface{}{"hold", "ETH", "1h", "--mode=paper"}, "leverage": 1.0, "capital": 1000.0,
+		})
+	})
+	pairViewMatched(t, e)
+	at := pairSlotAt(pairTestStart(), 2)
+	e.now = at
+	e.prepare(at)
+	manual := func() manualStateView {
+		e.mu.RLock()
+		defer e.mu.RUnlock()
+		return manualStateViewFromStateWithStore(e.cfg, e.state, e.store, "hl-manual-eth", "ETH")
+	}
+	v := manual()
+	if p, ok := partitionOfStrategyID(e.cfg.Strategies, "hl-manual-eth"); !ok || p != e.rt().Partition {
+		t.Fatalf("setup: the manual strategy must share the pair partition, got %v %v", p, ok)
+	}
+	if v.NotionalHold || !v.ExposureCap.Configured || v.ExposureCap.ValuationIncomplete != "" {
+		t.Fatalf("a complete view must not hold the manual open: notional %v %q, exposure %+v", v.NotionalHold, v.NotionalNote, v.ExposureCap)
+	}
+	if blocked, why := exposureCapManualEntryBlock(v.ExposureCap, "ETH", "long"); blocked {
+		t.Fatalf("a complete view must not block a manual ETH open: %s", why)
+	}
+
+	e.quotes.mu.Lock()
+	e.quotes.refErr = errors.New("okx book outage")
+	e.quotes.mu.Unlock()
+	later := at.Add(time.Second)
+	e.now = later
+	e.prepare(later)
+	v = manual()
+	label := pairTestOKX + " " + pairMarkSubstituted
+	if !v.NotionalHold || !strings.Contains(v.NotionalNote, label) {
+		t.Fatalf("an incomplete view must hold the manual open through the notional gate with its label, got %v %q", v.NotionalHold, v.NotionalNote)
+	}
+	if blocked, _ := exposureCapManualEntryBlock(v.ExposureCap, "ETH", "long"); !blocked || !strings.Contains(v.ExposureCap.ValuationIncomplete, label) {
+		t.Fatalf("an incomplete view must hold the manual open through the exposure gate with its label, got %v %+v", blocked, v.ExposureCap)
+	}
+}

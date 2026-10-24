@@ -2097,7 +2097,7 @@ func main() {
 				tsLiveStrategy := sc.Type == "futures" && sc.Platform == "topstep" && topstepIsLive(sc.Args)
 
 				mu.RLock()
-				pv := PortfolioValue(stratState, prices)
+				pv, _ := portfolioValueMarked(stratState, prices, state.pairMarksLocked())
 				var posJSON string
 				if sc.Type == "options" {
 					posJSON = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
@@ -2261,7 +2261,7 @@ func main() {
 					}
 				}
 				mu.Lock()
-				allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, riskAssist)
+				allowed, reason := checkStrategyRiskWithView(&sc, stratState, pv, prices, state.pairMarksLocked(), logger, riskAssist)
 				cbSnapshot := perStrategyCircuitBreakerSnapshot{}
 				if !allowed && isFreshPerStrategyCircuitBreaker(reason) {
 					cbSnapshot = snapshotPerStrategyCircuitBreaker(stratState, prices)

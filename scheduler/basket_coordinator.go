@@ -1039,8 +1039,13 @@ func (bc *basketCoordinator) partitionGate(rt *basketRuntime, sc StrategyConfig,
 	for k, v := range marks {
 		prices[k] = v
 	}
+	pm := bc.pairMarksLocked()
 	if pr != nil && pr.MaxNotionalUSD > 0 {
-		if total := PortfolioNotional(states, prices) + notional; total > pr.MaxNotionalUSD {
+		booked, status := portfolioNotionalMarked(states, prices, pm)
+		if !status.complete() {
+			return fmt.Sprintf("the partition notional is incomplete (%s), so the tranche holds against the $%.2f cap", status.label(), pr.MaxNotionalUSD)
+		}
+		if total := booked + notional; total > pr.MaxNotionalUSD {
 			return fmt.Sprintf("the partition notional would reach $%.2f, above the $%.2f cap", total, pr.MaxNotionalUSD)
 		}
 	}
@@ -1051,9 +1056,15 @@ func (bc *basketCoordinator) partitionGate(rt *basketRuntime, sc StrategyConfig,
 		}
 		hyp := make(map[string]*StrategyState, len(states))
 		var pv float64
+		var pvStatus pairValueStatus
 		for id, st := range states {
 			hyp[id] = st
-			pv += displayStrategyValue(st, nil)
+			v, vs := displayStrategyValueMarked(st, nil, pm)
+			pv += v
+			pvStatus.merge(vs)
+		}
+		if !pvStatus.complete() {
+			return fmt.Sprintf("the partition value is incomplete (%s), so the tranche holds against the exposure cap", pvStatus.label())
 		}
 		clone := *s
 		clone.Positions = make(map[string]*Position, len(s.Positions))
@@ -1068,11 +1079,11 @@ func (bc *basketCoordinator) partitionGate(rt *basketRuntime, sc StrategyConfig,
 			clone.Positions[c.Coin] = &Position{Symbol: c.Coin, Quantity: qty, AvgCost: mark, Side: c.PositionSide, Multiplier: 1}
 		}
 		hyp[s.ID] = &clone
-		before := evaluateExposureCap(pr, states, cfgs, prices, pv)
+		before := evaluateExposureCapMarked(pr, states, cfgs, prices, pv, pm)
 		if blocked, why := exposureCapBlocksSignal(before, c.Coin, signal, 0, math.Abs(c.CurrentQty), c.PositionSide, true, true); blocked {
 			return why
 		}
-		after := evaluateExposureCap(pr, hyp, cfgs, prices, pv)
+		after := evaluateExposureCapMarked(pr, hyp, cfgs, prices, pv, pm)
 		dir := c.PositionSide
 		if (dir == entrySideLong && after.LongBlocked) || (dir == entrySideShort && after.ShortBlocked) {
 			return fmt.Sprintf("the tranche would breach the same-direction exposure cap ($%.2f long, $%.2f short, cap $%.2f)", after.LongUSD, after.ShortUSD, after.CapUSD)

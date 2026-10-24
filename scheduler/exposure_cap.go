@@ -92,10 +92,10 @@ func manualExposureCapStatus(cfg *Config, state *AppState, part RiskPartition) E
 	}
 	return exposureCapStatusForSubset(partitionRiskConfig(cfg, part),
 		filterStatesByPartition(state.Strategies, cfg.Strategies, part),
-		strategiesInPartition(cfg.Strategies, part))
+		strategiesInPartition(cfg.Strategies, part), state.pairMarksLocked())
 }
 
-func exposureCapStatusForSubset(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig) ExposureCapStatus {
+func exposureCapStatusForSubset(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig, pm *pairMarks) ExposureCapStatus {
 	if !exposureCapConfigured(pr) {
 		return ExposureCapStatus{}
 	}
@@ -105,10 +105,18 @@ func exposureCapStatusForSubset(pr *PortfolioRiskConfig, states map[string]*Stra
 	}
 	sort.Strings(ids)
 	var pv float64
+	var pvStatus pairValueStatus
 	for _, id := range ids {
-		pv += displayStrategyValue(states[id], nil)
+		v, vs := displayStrategyValueMarked(states[id], nil, pm)
+		pv += v
+		pvStatus.merge(vs)
 	}
-	return evaluateExposureCap(pr, states, cfgs, nil, pv)
+	st := evaluateExposureCapMarked(pr, states, cfgs, nil, pv, pm)
+	if label := pvStatus.label(); label != "" && st.ValuationIncomplete == "" {
+		st.ValuationIncomplete = label
+		st.LongBlocked, st.ShortBlocked = true, true
+	}
+	return st
 }
 
 func exposureCapManualEntryBlock(st ExposureCapStatus, asset, dir string) (bool, string) {
