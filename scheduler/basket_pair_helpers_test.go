@@ -575,6 +575,9 @@ func (v *pairScriptedVenue) fill(a *basketAction, out basketVenueOutcome) basket
 	if out.Side == "" {
 		out.Side = a.OrderSide
 	}
+	if out.FeeEvidenceID == "" && len(out.FeeCoverage) > 0 {
+		out.FeeEvidenceID = pairFeeEvidenceID(a)
+	}
 	if out.AcceptedAtMs == 0 && (out.CumQty > 0 || out.Outcome == pairVenueOpen) {
 		out.AcceptedAtMs = a.SubmittedAtMs
 		if out.AcceptedAtMs == 0 {

@@ -55,8 +55,9 @@ type basketCoordinator struct {
 	critical     map[string]bool
 	outbox       []func()
 
-	pairPolicyRun pairPolicyRunner
-	pairClock     func() time.Time
+	pairPolicyRun        pairPolicyRunner
+	pairClock            func() time.Time
+	pairConversionLookup func(ctx context.Context, m pairContractMember, currency string, fillAtMs, settlementAtMs int64) (pairConversionEvidence, error)
 }
 
 func newBasketCoordinator(cfg *Config, state *AppState, store *StateStore, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager, runtimes map[string]*basketRuntime) *basketCoordinator {

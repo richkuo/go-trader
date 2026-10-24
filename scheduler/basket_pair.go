@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -495,8 +494,7 @@ func (bc *basketCoordinator) reconcilePairAction(rt *basketRuntime, a *basketAct
 		if bc.settlePairAction(rt, a, in, inputs) {
 			return !basketActionPending(a.Status)
 		}
-		p := &rt.Pair.Progress
-		if p.obligation("fee_unconfirmed", a.StrategyID, a.ActionID) == nil && p.obligation("settlement_conversion", a.StrategyID, a.ActionID) == nil {
+		if !bc.pairHasSettlementObligation(rt, a) {
 			return false
 		}
 	}
@@ -512,7 +510,8 @@ func (bc *basketCoordinator) reconcilePairAction(rt *basketRuntime, a *basketAct
 	var qerr error
 	bc.unlocked(func() { out, qerr = v.Query(&queried) })
 	cur := rt.Actions[snap.ActionID]
-	if cur != ptr || cur.Status != snap.Status || cur.ConfirmedQty != snap.ConfirmedQty || cur.FeeEvidenceVersion != snap.FeeEvidenceVersion || cur.AppliedQty != snap.AppliedQty {
+	if cur != ptr || cur.Status != snap.Status || cur.ConfirmedQty != snap.ConfirmedQty || cur.FeeEvidenceVersion != snap.FeeEvidenceVersion || cur.AppliedQty != snap.AppliedQty ||
+		cur.FillCoverageJSON != snap.FillCoverageJSON || cur.FeeCoverageJSON != snap.FeeCoverageJSON || cur.SettlementJSON != snap.SettlementJSON || cur.FeeFinal != snap.FeeFinal {
 		bc.pairLogf(rt, "action %s changed while its venue query ran; the stale answer is discarded and the next cycle queries again", snap.ActionID)
 		return false
 	}
@@ -535,6 +534,9 @@ func pairOutcomeError(a *basketAction, out basketVenueOutcome) string {
 	}
 	if out.Side != "" && out.Side != a.OrderSide {
 		return fmt.Sprintf("the venue answered for side %s, the action is a %s", out.Side, a.OrderSide)
+	}
+	if out.VenueOrderID != "" && a.VenueOrderID != "" && out.VenueOrderID != a.VenueOrderID {
+		return fmt.Sprintf("the venue answered for venue order %s, the action is bound to venue order %s", out.VenueOrderID, a.VenueOrderID)
 	}
 	switch out.Outcome {
 	case basketVenueUnknown, pairVenueNeverSent, pairVenueAbsent:
@@ -622,7 +624,8 @@ func (bc *basketCoordinator) applyPairOutcome(rt *basketRuntime, a *basketAction
 	if out.CoverageThroughMs > a.CoverageThroughMs {
 		a.CoverageThroughMs = out.CoverageThroughMs
 	}
-	if out.FeePresent || out.FeeEvidenceVersion > 0 {
+	live := bc.pairLiveShaped(a) && !a.recoveryNote().NativeBooked
+	if !live && (out.FeePresent || out.FeeEvidenceVersion > 0) {
 		switch {
 		case out.FeeEvidenceVersion > a.FeeEvidenceVersion:
 			a.FeePresent, a.FeeCurrency, a.FeeAmount = out.FeePresent, strings.ToUpper(strings.TrimSpace(out.FeeCurrency)), out.FeeAmount
@@ -669,8 +672,8 @@ func (bc *basketCoordinator) applyPairOutcome(rt *basketRuntime, a *basketAction
 		out.Terminal = true
 	}
 	terminal := out.Terminal || out.Outcome == basketVenueFilled || out.Outcome == basketVenueRejected
-	if out.FeeFinal {
-		a.feeFinal = true
+	if live && !bc.acceptPairLiveEvidence(rt, a, out, terminal || a.Terminal, now) {
+		return false
 	}
 	a.ConfirmedQty = out.CumQty
 	a.ConfirmedNotional = out.CumNotional
@@ -710,13 +713,22 @@ func (bc *basketCoordinator) pairActionComplete(a *basketAction) bool {
 		return false
 	}
 	if bc.pairLiveShaped(a) && !a.recoveryNote().NativeBooked && a.ConfirmedQty > 0 {
-		return a.feeFinal && !bc.pairFeeDeltaDue(a)
+		return bc.pairLiveComplete(a)
 	}
 	return true
 }
 
 func (bc *basketCoordinator) pairFeeDeltaDue(a *basketAction) bool {
-	return bc.pairLiveShaped(a) && a.FeeEvidenceVersion > a.AppliedFeeVersion && a.AppliedQty > 0 && basketQtyEqual(a.AppliedQty, a.ConfirmedQty)
+	return bc.pairLiveShaped(a) && !a.recoveryNote().NativeBooked && bc.pairLiveFeeDue(a)
+}
+
+func (bc *basketCoordinator) pairHasSettlementObligation(rt *basketRuntime, a *basketAction) bool {
+	for _, o := range rt.Pair.Progress.Obligations {
+		if o.MemberID == a.StrategyID && o.ActionID == a.ActionID && pairSettlementObligationKind(o.Kind) {
+			return true
+		}
+	}
+	return false
 }
 
 func (bc *basketCoordinator) pairLiveShaped(a *basketAction) bool {
@@ -845,7 +857,6 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 		return false
 	}
 	p := &rt.Pair.Progress
-	live := bc.pairLiveShaped(a)
 	remaining := a.ConfirmedQty - a.AppliedQty
 	if a.recoveryNote().NativeBooked {
 		a.AppliedQty, a.AppliedNotional = a.ConfirmedQty, a.ConfirmedNotional
@@ -857,8 +868,10 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 		rt.touchPairProgress()
 		return bc.persistPair(rt)
 	}
-	feeDue := bc.pairFeeDeltaDue(a)
-	if remaining <= 1e-12 && !feeDue {
+	if bc.pairLiveShaped(a) {
+		return bc.settlePairActionLive(rt, a, in)
+	}
+	if remaining <= 1e-12 {
 		if bc.pairActionComplete(a) {
 			a.Status = basketActionCommitted
 		} else {
@@ -881,180 +894,87 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 		if why == "" {
 			why = "no settlement conversion for " + m.Meta.SettlementCurrency
 		}
-		if p.addObligation(pairObligation{Kind: "settlement_conversion", MemberID: a.StrategyID, ActionID: a.ActionID, Detail: "settlement holds: " + why, AtMs: now.UnixMilli()}) {
+		if p.addObligation(pairObligation{Kind: pairObligationSettlementConversion, MemberID: a.StrategyID, ActionID: a.ActionID, Detail: "settlement holds: " + why, AtMs: now.UnixMilli()}) {
 			rt.touchPairProgress()
 			bc.persistPair(rt)
 		}
 		return false
 	}
-	p.clearObligation("settlement_conversion", a.StrategyID, a.ActionID)
-	feeTotalUSD := 0.0
-	if live {
-		feeConv, convOK := val.conversion(a.FeeCurrency)
-		if !a.FeePresent || a.FeeCurrency == "" || !(a.FeeAmount > 0) || !convOK {
-			detail := fmt.Sprintf("confirmed fee evidence is absent, zero, negative, currency-less or has no conversion (present %v, %v %q, version %d); the booking owner cannot keep it until issue 1863, so settlement holds and no modeled fee replaces it", a.FeePresent, a.FeeAmount, a.FeeCurrency, a.FeeEvidenceVersion)
-			changed := p.addObligation(pairObligation{Kind: "fee_unconfirmed", MemberID: a.StrategyID, ActionID: a.ActionID, Detail: detail, AtMs: now.UnixMilli()})
-			if changed {
-				rt.touchPairProgress()
-				bc.persistPair(rt)
-				bc.pairAlert(rt, "fee|"+a.ActionID+fmt.Sprint(a.FeeEvidenceVersion), fmt.Sprintf("%s action %s: %s", a.StrategyID, a.ActionID, detail), false)
-			}
-			return false
-		}
-		p.clearObligation("fee_unconfirmed", a.StrategyID, a.ActionID)
-		feeTotalUSD = a.FeeAmount * feeConv
-	}
+	p.clearObligation(pairObligationSettlementConversion, a.StrategyID, a.ActionID)
 	logger := bc.memberLogger(a.StrategyID)
 	defer logger.Close()
-	if remaining > 1e-12 {
-		dn := a.ConfirmedNotional - a.AppliedNotional
-		px := dn / remaining * settleConv
-		if !basketFinitePositive(px) {
-			bc.holdPairAction(rt, a, fmt.Sprintf("the incremental fill price %v is not finite and positive", px), true, now)
-			return false
+	dn := a.ConfirmedNotional - a.AppliedNotional
+	px := dn / remaining * settleConv
+	if !basketFinitePositive(px) {
+		bc.holdPairAction(rt, a, fmt.Sprintf("the incremental fill price %v is not finite and positive", px), true, now)
+		return false
+	}
+	obs := bc.pairObservation(rt, a.StrategyID, a)
+	from := len(s.TradeHistory)
+	prevDefer := s.deferTradePersist
+	s.deferTradePersist = true
+	var booked basketBooking
+	withStrategyBookClock(s, now, func() {
+		booked = bookPairFill(sc, s, bc.cfg, a, remaining, px, pairConfirmedFee{}, obs, logger)
+	})
+	s.deferTradePersist = prevDefer
+	if !(booked.Qty > 0) {
+		reason := booked.Hold
+		if reason == "" {
+			reason = "the booking owner recorded no fill"
 		}
-		fee := 0.0
-		if live {
-			fee = feeTotalUSD - a.AppliedFee
-			if !(fee > 0) {
-				detail := fmt.Sprintf("the incremental confirmed fee $%.6f for this fill is not positive; the booking owner cannot keep it until issue 1863, so settlement holds", fee)
-				if p.addObligation(pairObligation{Kind: "fee_unconfirmed", MemberID: a.StrategyID, ActionID: a.ActionID, Detail: detail, AtMs: now.UnixMilli()}) {
-					rt.touchPairProgress()
-					bc.persistPair(rt)
-				}
-				return false
-			}
+		bc.holdPairAction(rt, a, "a confirmed fill could not be booked: "+reason, true, now)
+		return false
+	}
+	a.AppliedQty += booked.Qty
+	a.AppliedNotional += dn * booked.Qty / remaining
+	a.AppliedFee += booked.Fee
+	trades := append([]Trade(nil), s.TradeHistory[from:]...)
+	bookedRows := a.bookedTrades()
+	for _, t := range trades {
+		if t.Symbol != a.Symbol || t.TradeType == TradeTypeFunding {
+			continue
 		}
-		obs := bc.pairObservation(rt, a.StrategyID, a)
-		from := len(s.TradeHistory)
-		prevDefer := s.deferTradePersist
-		s.deferTradePersist = true
-		var booked basketBooking
-		withStrategyBookClock(s, now, func() {
-			booked = bookPairFill(sc, s, bc.cfg, a, remaining, px, fee, obs, logger)
-		})
-		s.deferTradePersist = prevDefer
-		if !(booked.Qty > 0) {
-			reason := booked.Hold
-			if reason == "" {
-				reason = "the booking owner recorded no fill"
-			}
-			bc.holdPairAction(rt, a, "a confirmed fill could not be booked: "+reason, true, now)
-			return false
+		row := pairBookedTrade{TradeTsMs: t.Timestamp.UTC().UnixMilli(), TradeTs: formatTime(t.Timestamp), Qty: t.Quantity, Px: t.Price, FeeUSD: t.ExchangeFee, OrderID: t.ExchangeOrderID, IsClose: t.IsClose}
+		if t.IsClose && s.Positions[a.Symbol] == nil {
+			row.ClosedPositionID = t.PositionID
 		}
-		a.AppliedQty += booked.Qty
-		a.AppliedNotional += dn * booked.Qty / remaining
-		a.AppliedFee += booked.Fee
-		if live {
-			a.AppliedFeeVersion = a.FeeEvidenceVersion
+		bookedRows = append(bookedRows, row)
+	}
+	if b, err := json.Marshal(bookedRows); err == nil {
+		a.BookedJSON = string(b)
+	}
+	rt.Expected[a.StrategyID] += a.signedDelta() * booked.Qty
+	if math.Abs(rt.Expected[a.StrategyID]) < 1e-12 {
+		rt.Expected[a.StrategyID] = 0
+	}
+	if a.Direction == basketDirectionIncrease && p.FirstFillMs == 0 {
+		p.FirstFillMs = now.UnixMilli()
+	}
+	for _, u := range rt.Pair.Uses {
+		if u.ActionID == a.ActionID && u.Status == pairUseReserved {
+			u.Status = pairUseConsumed
+			u.UpdatedAtMs = now.UnixMilli()
 		}
-		trades := append([]Trade(nil), s.TradeHistory[from:]...)
-		bookedRows := a.bookedTrades()
-		for _, t := range trades {
-			if t.Symbol != a.Symbol || t.TradeType == TradeTypeFunding {
-				continue
-			}
-			row := pairBookedTrade{TradeTsMs: t.Timestamp.UTC().UnixMilli(), TradeTs: formatTime(t.Timestamp), Qty: t.Quantity, Px: t.Price, FeeUSD: t.ExchangeFee, OrderID: t.ExchangeOrderID, IsClose: t.IsClose}
-			if t.IsClose && s.Positions[a.Symbol] == nil {
-				row.ClosedPositionID = t.PositionID
-			}
-			bookedRows = append(bookedRows, row)
+	}
+	if in := bc.intentFor(s, a); in != nil {
+		in.ConfirmedQty, in.ConfirmedNotional, in.ConfirmedFee = a.ConfirmedQty, a.ConfirmedNotional, a.ConfirmedFee
+		in.AppliedQty, in.AppliedNotional, in.AppliedFee = a.AppliedQty, a.AppliedNotional, a.AppliedFee
+		in.SettlementSeq++
+		in.VenueOrderID = a.VenueOrderID
+		in.EvidenceJSON = a.EvidenceJSON
+		in.HoldReason = ""
+		in.UpdatedAtMs = now.UnixMilli()
+		if a.Terminal && basketQtyEqual(a.AppliedQty, a.ConfirmedQty) {
+			in.Status = entryIntentCommitted
+		} else {
+			in.Status = entryIntentSettling
 		}
-		if b, err := json.Marshal(bookedRows); err == nil {
-			a.BookedJSON = string(b)
-		}
-		rt.Expected[a.StrategyID] += a.signedDelta() * booked.Qty
-		if math.Abs(rt.Expected[a.StrategyID]) < 1e-12 {
-			rt.Expected[a.StrategyID] = 0
-		}
-		if a.Direction == basketDirectionIncrease && p.FirstFillMs == 0 {
-			p.FirstFillMs = now.UnixMilli()
-		}
-		for _, u := range rt.Pair.Uses {
-			if u.ActionID == a.ActionID && u.Status == pairUseReserved {
-				u.Status = pairUseConsumed
-				u.UpdatedAtMs = now.UnixMilli()
-			}
-		}
-		if in := bc.intentFor(s, a); in != nil {
-			in.ConfirmedQty, in.ConfirmedNotional, in.ConfirmedFee = a.ConfirmedQty, a.ConfirmedNotional, a.ConfirmedFee
-			in.AppliedQty, in.AppliedNotional, in.AppliedFee = a.AppliedQty, a.AppliedNotional, a.AppliedFee
-			in.SettlementSeq++
-			in.VenueOrderID = a.VenueOrderID
-			in.EvidenceJSON = a.EvidenceJSON
-			in.HoldReason = ""
-			in.UpdatedAtMs = now.UnixMilli()
-			if a.Terminal && basketQtyEqual(a.AppliedQty, a.ConfirmedQty) {
-				in.Status = entryIntentCommitted
-			} else {
-				in.Status = entryIntentSettling
-			}
-		}
-		bc.pairLogf(rt, "action %s booked %s %.10g %s @ $%.6f (fee $%.6f)", a.ActionID, a.OrderSide, booked.Qty, a.Symbol, booked.Px, booked.Fee)
-		if bc.notifier != nil && len(trades) > 0 {
-			notifier, regime := bc.notifier, bc.cfg.Regime
-			bc.outbox = append(bc.outbox, func() { sendTradeAlertRows(sc, trades, notifier, regime) })
-		}
-	} else if feeDue {
-		delta := feeTotalUSD - a.AppliedFee
-		rows := a.bookedTrades()
-		if len(rows) == 0 {
-			bc.holdPairAction(rt, a, "a fee-only update has no booked trade row to correct", true, now)
-			return false
-		}
-		last := rows[len(rows)-1]
-		var booked *Trade
-		for i := len(s.TradeHistory) - 1; i >= 0; i-- {
-			t := &s.TradeHistory[i]
-			sameTs := t.Timestamp.UTC().UnixMilli() == last.TradeTsMs
-			if last.TradeTs != "" {
-				sameTs = formatTime(t.Timestamp) == last.TradeTs
-			}
-			if t.Symbol == a.Symbol && sameTs && t.ExchangeOrderID == last.OrderID {
-				booked = t
-				break
-			}
-		}
-		if booked != nil && !booked.persisted {
-			bc.pairLogf(rt, "action %s fee-only update waits until its booked trade row is durable", a.ActionID)
-			return false
-		}
-		fix := &pairFeeFix{TradeTsMs: last.TradeTsMs, TradeTs: last.TradeTs, Symbol: a.Symbol, OrderID: last.OrderID, DeltaUSD: delta, Version: a.FeeEvidenceVersion, ClosedPositionID: last.ClosedPositionID, IntentID: a.EntryIntentID, ConfirmedFee: a.FeeAmount, AppliedFeeUSD: feeTotalUSD}
-		stamp, err := bc.pairFeeFixTarget(rt, s, a, fix, booked)
-		if err != nil {
-			if !errors.Is(err, errPairFeeFixProvenance) && !errors.Is(err, errPairCostOwnership) {
-				bc.pairLogf(rt, "action %s fee-only update waits: its saved target row could not be read (%v)", a.ActionID, err)
-				return false
-			}
-			bc.holdPairFeeFixProvenance(rt, a, fmt.Sprintf("the fee correction target row is refused before any change: %v", err), now)
-			return false
-		}
-		fix.TradeRowID, fix.CostModelVersion, fix.CostPolicyID = stamp.RowID, stamp.ModelVersion, stamp.PolicyID
-		undo := &pairFeeFixUndo{delta: delta, prevApplied: a.AppliedFee, prevAppliedVersion: a.AppliedFeeVersion, prevBooked: a.BookedJSON, prevStatus: a.Status, prevHold: a.HoldReason, prevUpdatedAtMs: a.UpdatedAtMs, fix: *fix}
-		if booked != nil {
-			undo.tradeFound, undo.prevFeeSource = true, booked.FeeSource
-			booked.ExchangeFee += delta
-			booked.FeeSource = FeeSourceUserFills
-		}
-		s.Cash -= delta
-		if last.ClosedPositionID != "" {
-			rolloverDailyPnL(&s.RiskState)
-			s.RiskState.DailyPnL -= delta
-			undo.dailyApplied, undo.dailyDate = true, s.RiskState.DailyPnLDate
-		}
-		a.pendingFee = fix
-		a.feeFixUndo = undo
-		if in := bc.intentFor(s, a); in != nil {
-			undo.intentFound, undo.prevIntentApplied, undo.prevIntentConfirmed = true, in.AppliedFee, in.ConfirmedFee
-			in.AppliedFee, in.ConfirmedFee = feeTotalUSD, a.FeeAmount
-		}
-		rows[len(rows)-1].FeeUSD += delta
-		if b, err := json.Marshal(rows); err == nil {
-			a.BookedJSON = string(b)
-		}
-		a.AppliedFee = feeTotalUSD
-		a.AppliedFeeVersion = a.FeeEvidenceVersion
-		bc.pairLogf(rt, "action %s fee evidence %s version %d applied a signed delta of $%.6f once", a.ActionID, a.FeeEvidenceID, a.FeeEvidenceVersion, delta)
+	}
+	bc.pairLogf(rt, "action %s booked %s %.10g %s @ $%.6f (fee $%.6f)", a.ActionID, a.OrderSide, booked.Qty, a.Symbol, booked.Px, booked.Fee)
+	if bc.notifier != nil && len(trades) > 0 {
+		notifier, regime := bc.notifier, bc.cfg.Regime
+		bc.outbox = append(bc.outbox, func() { sendTradeAlertRows(sc, trades, notifier, regime) })
 	}
 	if bc.pairActionComplete(a) {
 		a.Status = basketActionCommitted
@@ -1064,9 +984,6 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 	a.UpdatedAtMs = now.UnixMilli()
 	rt.touchPairProgress()
 	if err := bc.store.SavePartition(bc.state, rt.Partition); err != nil {
-		if bc.rollbackPairFeeFixes(rt, err, now) {
-			return false
-		}
 		rt.needsDurable = true
 		bc.pairLogf(rt, "action %s booked in memory, but the %s state file did not save: %v; no elective order is sent until it does, and a restart books the confirmed delta once from the saved evidence", a.ActionID, partitionLabel(rt.Partition), err)
 		return false
@@ -1121,7 +1038,7 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 		}
 	}
 	for _, o := range p.Obligations {
-		if o.Kind == "fee_unconfirmed" || o.Kind == "settlement_conversion" {
+		if pairSettlementObligationKind(o.Kind) {
 			accounted = false
 		}
 	}
