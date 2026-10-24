@@ -657,6 +657,7 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE positions ADD COLUMN resting_tp_scanned_open_ms INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN resting_tp_reach_px REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN resting_tp_stop_trigger_px REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE strategies ADD COLUMN risk_rh_shared_close_notice_json TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -1511,8 +1512,8 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
 		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source,
-		paper_funding_state, quote_precision_rebaselined)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		paper_funding_state, quote_precision_rebaselined, risk_rh_shared_close_notice_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare strategy insert: %w", err)
 	}
@@ -1570,6 +1571,7 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 			s.ReplayMirrorWatermarkSource,
 			paperFundingJSON,
 			boolToInt(s.RiskState.QuotePrecisionRebaselined),
+			s.RiskState.MarshalRobinhoodSharedCloseNoticeJSON(),
 		); err != nil {
 			return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 		}
@@ -2061,8 +2063,8 @@ func (sdb *StateDB) writeOneStrategyBookTx(tx *sql.Tx, s *StrategyState, sid str
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
 		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source,
-		paper_funding_state, quote_precision_rebaselined)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		paper_funding_state, quote_precision_rebaselined, risk_rh_shared_close_notice_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sid, s.Type, s.Platform, s.Cash, s.InitialCapital,
 		s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
 		s.RiskState.DailyPnL, s.RiskState.DailyPnLDate, s.RiskState.ConsecutiveLosses,
@@ -2076,6 +2078,7 @@ func (sdb *StateDB) writeOneStrategyBookTx(tx *sql.Tx, s *StrategyState, sid str
 		s.ReplayMirrorWatermarkSource,
 		paperFundingJSON,
 		boolToInt(s.RiskState.QuotePrecisionRebaselined),
+		s.RiskState.MarshalRobinhoodSharedCloseNoticeJSON(),
 	); err != nil {
 		return nil, nil, fmt.Errorf("insert strategy %s: %w", s.ID, err)
 	}
@@ -2454,7 +2457,8 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		COALESCE(replay_mirror_watermark, 0) AS replay_mirror_watermark,
 		COALESCE(replay_mirror_watermark_source, '') AS replay_mirror_watermark_source,
 		COALESCE(paper_funding_state, '') AS paper_funding_state,
-		COALESCE(quote_precision_rebaselined, 0) AS quote_precision_rebaselined
+		COALESCE(quote_precision_rebaselined, 0) AS quote_precision_rebaselined,
+		COALESCE(risk_rh_shared_close_notice_json, '') AS risk_rh_shared_close_notice_json
 		FROM strategies`)
 	if err != nil {
 		return nil, fmt.Errorf("load strategies: %w", err)
@@ -2471,6 +2475,7 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		var hurstGateJSON string
 		var paperFundingJSON string
 		var quoteRebaselinedInt int
+		var rhSharedCloseNoticeJSON string
 		if err := rows.Scan(
 			&storedID, &s.Type, &s.Platform, &s.Cash, &s.InitialCapital,
 			&s.RiskState.PeakValue, &s.RiskState.MaxDrawdownPct, &s.RiskState.CurrentDrawdownPct,
@@ -2481,6 +2486,7 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 			&s.ReplayMirrorWatermarkSource,
 			&paperFundingJSON,
 			&quoteRebaselinedInt,
+			&rhSharedCloseNoticeJSON,
 		); err != nil {
 			return nil, fmt.Errorf("scan strategy: %w", err)
 		}
@@ -2495,6 +2501,7 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		s.RiskState.CircuitBreaker = cbInt != 0
 		s.RiskState.CircuitBreakerUntil = parseTime(cbUntilStr)
 		s.RiskState.UnmarshalPendingCircuitClosesJSON(pendingCircuitClosesJSON)
+		s.RiskState.UnmarshalRobinhoodSharedCloseNoticeJSON(rhSharedCloseNoticeJSON)
 		s.CashReconcileRequired = cashReconcileInt != 0
 		s.SharedWalletPoolBudget = poolBudgetInt != 0
 		s.HurstGate = unmarshalHurstGateStateJSON(hurstGateJSON)

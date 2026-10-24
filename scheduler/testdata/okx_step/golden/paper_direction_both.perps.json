@@ -119,6 +119,7 @@
         "risk_max_drawdown_pct": "0",
         "risk_peak_value": "1000",
         "risk_pending_circuit_closes_json": "",
+        "risk_rh_shared_close_notice_json": "",
         "shared_wallet_pool_budget": "0",
         "type": "perps"
       }

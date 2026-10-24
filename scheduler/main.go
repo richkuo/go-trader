@@ -1498,6 +1498,7 @@ func main() {
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhoodOptions)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseTopStep)
+						ss.RiskState.RobinhoodSharedCloseNotice = RobinhoodSharedCloseNotice{}
 					}
 				}
 				if sr.NotionalBlocked {
@@ -4037,7 +4038,7 @@ func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategySt
 	}
 	if execResult == nil && result.PairFill != nil {
 		fillOID = result.PairFill.OID
-		fillFee = result.PairFill.Fee
+		fillFee = result.PairFill.Fee.DeltaUSD
 	}
 
 	bookCloseFraction := result.CloseFraction

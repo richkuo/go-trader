@@ -591,22 +591,32 @@ func logStrategyCostRefusal(logger *StrategyLogger, what, symbol string, err err
 	fmt.Fprintf(os.Stderr, "[CRITICAL] [pair-cost] %s %s refused before any book change: %v\n", what, symbol, err)
 }
 
+type pairFeeFixPart struct {
+	fix           pairFeeFix
+	delta         float64
+	tradeFound    bool
+	prevFeeSource string
+}
+
 type pairFeeFixUndo struct {
-	fix                 pairFeeFix
-	delta               float64
+	parts               []pairFeeFixPart
+	cash                float64
+	daily               float64
 	dailyApplied        bool
 	dailyDate           string
-	tradeFound          bool
-	prevFeeSource       string
 	intentFound         bool
 	prevIntentApplied   float64
 	prevIntentConfirmed float64
 	prevApplied         float64
 	prevAppliedVersion  int64
 	prevBooked          string
+	prevLedger          string
 	prevStatus          string
 	prevHold            string
 	prevUpdatedAtMs     int64
+	stagedStatus        string
+	stagedHold          string
+	stagedUpdatedAtMs   int64
 }
 
 func pairRetainedTrade(s *StrategyState, fix *pairFeeFix) *Trade {
@@ -675,21 +685,27 @@ func (bc *basketCoordinator) undoPairFeeFix(a *basketAction) {
 	u := a.feeFixUndo
 	s := bc.state.Strategies[a.StrategyID]
 	if s != nil {
-		s.Cash += u.delta
+		s.Cash += u.cash
 		if u.dailyApplied && s.RiskState.DailyPnLDate == u.dailyDate {
-			s.RiskState.DailyPnL += u.delta
+			s.RiskState.DailyPnL += u.daily
 		}
-		if u.tradeFound {
-			if t := pairRetainedTrade(s, &u.fix); t != nil {
-				t.ExchangeFee -= u.delta
-				t.FeeSource = u.prevFeeSource
+		for i := range u.parts {
+			part := &u.parts[i]
+			if !part.tradeFound {
+				continue
+			}
+			if t := pairRetainedTrade(s, &part.fix); t != nil {
+				t.ExchangeFee -= part.delta
+				t.FeeSource = part.prevFeeSource
 			}
 		}
 		if in := bc.intentFor(s, a); in != nil && u.intentFound {
 			in.AppliedFee, in.ConfirmedFee = u.prevIntentApplied, u.prevIntentConfirmed
 		}
 	}
-	a.AppliedFee, a.AppliedFeeVersion, a.BookedJSON = u.prevApplied, u.prevAppliedVersion, u.prevBooked
-	a.Status, a.HoldReason, a.UpdatedAtMs = u.prevStatus, u.prevHold, u.prevUpdatedAtMs
+	a.AppliedFee, a.AppliedFeeVersion, a.BookedJSON, a.SettlementJSON = u.prevApplied, u.prevAppliedVersion, u.prevBooked, u.prevLedger
+	if a.Status == u.stagedStatus && a.HoldReason == u.stagedHold && a.UpdatedAtMs == u.stagedUpdatedAtMs {
+		a.Status, a.HoldReason, a.UpdatedAtMs = u.prevStatus, u.prevHold, u.prevUpdatedAtMs
+	}
 	a.pendingFee, a.feeFixUndo = nil, nil
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -149,6 +148,7 @@ func (bc *basketCoordinator) pairAlert(rt *basketRuntime, key, msg string, criti
 }
 
 func (bc *basketCoordinator) persistPair(rt *basketRuntime) bool {
+	bc.clearPairEndedObligations(rt)
 	if err := bc.store.PersistBasketProgress(rt); err != nil {
 		bc.pairLogf(rt, "could not save pair progress: %v; elective work holds until it saves, and queries and protection continue", err)
 		return false
@@ -434,6 +434,7 @@ func (bc *basketCoordinator) stepPair(rt *basketRuntime, in basketCycleInputs) {
 	electiveBlocked := bc.reconcilePairActions(rt, in, inputs)
 	in = bc.refreshPairInputs(rt, in)
 	bc.detectPairExceptions(rt, in)
+	bc.stepPairFunding(rt, in)
 	bc.pairLifecycleChecks(rt, in)
 	bc.executePairProtective(rt, in, inputs)
 	in = bc.refreshPairInputs(rt, in)
@@ -508,8 +509,7 @@ func (bc *basketCoordinator) reconcilePairAction(rt *basketRuntime, a *basketAct
 		if bc.settlePairAction(rt, a, in, inputs) {
 			return !basketActionPending(a.Status)
 		}
-		p := &rt.Pair.Progress
-		if p.obligation("fee_unconfirmed", a.StrategyID, a.ActionID) == nil && p.obligation("settlement_conversion", a.StrategyID, a.ActionID) == nil {
+		if !bc.pairHasSettlementObligation(rt, a) {
 			return false
 		}
 	}
@@ -525,7 +525,8 @@ func (bc *basketCoordinator) reconcilePairAction(rt *basketRuntime, a *basketAct
 	var qerr error
 	bc.unlocked(func() { out, qerr = v.Query(&queried) })
 	cur := rt.Actions[snap.ActionID]
-	if cur != ptr || cur.Status != snap.Status || cur.ConfirmedQty != snap.ConfirmedQty || cur.FeeEvidenceVersion != snap.FeeEvidenceVersion || cur.AppliedQty != snap.AppliedQty {
+	if cur != ptr || cur.Status != snap.Status || cur.ConfirmedQty != snap.ConfirmedQty || cur.FeeEvidenceVersion != snap.FeeEvidenceVersion || cur.AppliedQty != snap.AppliedQty ||
+		cur.FillCoverageJSON != snap.FillCoverageJSON || cur.FeeCoverageJSON != snap.FeeCoverageJSON || cur.SettlementJSON != snap.SettlementJSON || cur.FeeFinal != snap.FeeFinal {
 		bc.pairLogf(rt, "action %s changed while its venue query ran; the stale answer is discarded and the next cycle queries again", snap.ActionID)
 		return false
 	}
@@ -549,6 +550,9 @@ func pairOutcomeError(a *basketAction, out basketVenueOutcome) string {
 	}
 	if out.Side != "" && out.Side != a.OrderSide {
 		return fmt.Sprintf("the venue answered for side %s, the action is a %s", out.Side, a.OrderSide)
+	}
+	if out.VenueOrderID != "" && a.VenueOrderID != "" && out.VenueOrderID != a.VenueOrderID {
+		return fmt.Sprintf("the venue answered for venue order %s, the action is bound to venue order %s", out.VenueOrderID, a.VenueOrderID)
 	}
 	switch out.Outcome {
 	case basketVenueUnknown, pairVenueNeverSent, pairVenueAbsent:
@@ -599,7 +603,10 @@ func pairOutcomeError(a *basketAction, out basketVenueOutcome) string {
 			return "fee evidence needs an identity, a version of at least 1 and a finite signed amount"
 		}
 	}
-	return ""
+	if why := pairValidateVenueFills(a, out); why != "" {
+		return why
+	}
+	return pairFillsImmutable(a.EvidenceJSON, out)
 }
 
 func (bc *basketCoordinator) holdPairAction(rt *basketRuntime, a *basketAction, reason string, freeze bool, now time.Time) {
@@ -636,7 +643,8 @@ func (bc *basketCoordinator) applyPairOutcome(rt *basketRuntime, a *basketAction
 	if out.CoverageThroughMs > a.CoverageThroughMs {
 		a.CoverageThroughMs = out.CoverageThroughMs
 	}
-	if out.FeePresent || out.FeeEvidenceVersion > 0 {
+	live := bc.pairLiveShaped(a) && !a.recoveryNote().NativeBooked
+	if !live && (out.FeePresent || out.FeeEvidenceVersion > 0) {
 		switch {
 		case out.FeeEvidenceVersion > a.FeeEvidenceVersion:
 			a.FeePresent, a.FeeCurrency, a.FeeAmount = out.FeePresent, strings.ToUpper(strings.TrimSpace(out.FeeCurrency)), out.FeeAmount
@@ -683,8 +691,8 @@ func (bc *basketCoordinator) applyPairOutcome(rt *basketRuntime, a *basketAction
 		out.Terminal = true
 	}
 	terminal := out.Terminal || out.Outcome == basketVenueFilled || out.Outcome == basketVenueRejected
-	if out.FeeFinal {
-		a.feeFinal = true
+	if live && !bc.acceptPairLiveEvidence(rt, a, out, terminal || a.Terminal, now) {
+		return false
 	}
 	a.ConfirmedQty = out.CumQty
 	a.ConfirmedNotional = out.CumNotional
@@ -724,13 +732,22 @@ func (bc *basketCoordinator) pairActionComplete(a *basketAction) bool {
 		return false
 	}
 	if bc.pairLiveShaped(a) && !a.recoveryNote().NativeBooked && a.ConfirmedQty > 0 {
-		return a.feeFinal && !bc.pairFeeDeltaDue(a)
+		return bc.pairLiveComplete(a)
 	}
 	return true
 }
 
 func (bc *basketCoordinator) pairFeeDeltaDue(a *basketAction) bool {
-	return bc.pairLiveShaped(a) && a.FeeEvidenceVersion > a.AppliedFeeVersion && a.AppliedQty > 0 && basketQtyEqual(a.AppliedQty, a.ConfirmedQty)
+	return bc.pairLiveShaped(a) && !a.recoveryNote().NativeBooked && bc.pairLiveFeeDue(a)
+}
+
+func (bc *basketCoordinator) pairHasSettlementObligation(rt *basketRuntime, a *basketAction) bool {
+	for _, o := range rt.Pair.Progress.Obligations {
+		if o.MemberID == a.StrategyID && o.ActionID == a.ActionID && pairSettlementObligationKind(o.Kind) {
+			return true
+		}
+	}
+	return false
 }
 
 func (bc *basketCoordinator) pairLiveShaped(a *basketAction) bool {
@@ -859,7 +876,6 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 		return false
 	}
 	p := &rt.Pair.Progress
-	live := bc.pairLiveShaped(a)
 	remaining := a.ConfirmedQty - a.AppliedQty
 	if a.recoveryNote().NativeBooked {
 		a.AppliedQty, a.AppliedNotional = a.ConfirmedQty, a.ConfirmedNotional
@@ -871,8 +887,10 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 		rt.touchPairProgress()
 		return bc.persistPair(rt)
 	}
-	feeDue := bc.pairFeeDeltaDue(a)
-	if remaining <= 1e-12 && !feeDue {
+	if bc.pairLiveShaped(a) {
+		return bc.settlePairActionLive(rt, a, in)
+	}
+	if remaining <= 1e-12 {
 		if bc.pairActionComplete(a) {
 			a.Status = basketActionCommitted
 		} else {
@@ -895,180 +913,90 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 		if why == "" {
 			why = "no settlement conversion for " + m.Meta.SettlementCurrency
 		}
-		if p.addObligation(pairObligation{Kind: "settlement_conversion", MemberID: a.StrategyID, ActionID: a.ActionID, Detail: "settlement holds: " + why, AtMs: now.UnixMilli()}) {
+		if p.addObligation(pairObligation{Kind: pairObligationSettlementConversion, MemberID: a.StrategyID, ActionID: a.ActionID, Detail: "settlement holds: " + why, AtMs: now.UnixMilli()}) {
 			rt.touchPairProgress()
 			bc.persistPair(rt)
 		}
 		return false
 	}
-	p.clearObligation("settlement_conversion", a.StrategyID, a.ActionID)
-	feeTotalUSD := 0.0
-	if live {
-		feeConv, convOK := val.conversion(a.FeeCurrency)
-		if !a.FeePresent || a.FeeCurrency == "" || !(a.FeeAmount > 0) || !convOK {
-			detail := fmt.Sprintf("confirmed fee evidence is absent, zero, negative, currency-less or has no conversion (present %v, %v %q, version %d); the booking owner cannot keep it until issue 1863, so settlement holds and no modeled fee replaces it", a.FeePresent, a.FeeAmount, a.FeeCurrency, a.FeeEvidenceVersion)
-			changed := p.addObligation(pairObligation{Kind: "fee_unconfirmed", MemberID: a.StrategyID, ActionID: a.ActionID, Detail: detail, AtMs: now.UnixMilli()})
-			if changed {
-				rt.touchPairProgress()
-				bc.persistPair(rt)
-				bc.pairAlert(rt, "fee|"+a.ActionID+fmt.Sprint(a.FeeEvidenceVersion), fmt.Sprintf("%s action %s: %s", a.StrategyID, a.ActionID, detail), false)
-			}
-			return false
-		}
-		p.clearObligation("fee_unconfirmed", a.StrategyID, a.ActionID)
-		feeTotalUSD = a.FeeAmount * feeConv
-	}
+	p.clearObligation(pairObligationSettlementConversion, a.StrategyID, a.ActionID)
 	logger := bc.memberLogger(a.StrategyID)
 	defer logger.Close()
-	if remaining > 1e-12 {
-		dn := a.ConfirmedNotional - a.AppliedNotional
-		px := dn / remaining * settleConv
-		if !basketFinitePositive(px) {
-			bc.holdPairAction(rt, a, fmt.Sprintf("the incremental fill price %v is not finite and positive", px), true, now)
-			return false
-		}
-		fee := 0.0
-		if live {
-			fee = feeTotalUSD - a.AppliedFee
-			if !(fee > 0) {
-				detail := fmt.Sprintf("the incremental confirmed fee $%.6f for this fill is not positive; the booking owner cannot keep it until issue 1863, so settlement holds", fee)
-				if p.addObligation(pairObligation{Kind: "fee_unconfirmed", MemberID: a.StrategyID, ActionID: a.ActionID, Detail: detail, AtMs: now.UnixMilli()}) {
-					rt.touchPairProgress()
-					bc.persistPair(rt)
-				}
-				return false
-			}
-		}
-		obs := bc.pairObservation(rt, a.StrategyID, a)
-		from := len(s.TradeHistory)
-		prevDefer := s.deferTradePersist
-		s.deferTradePersist = true
-		var booked basketBooking
-		withStrategyBookClock(s, now, func() {
-			booked = bookPairFill(sc, s, bc.cfg, a, remaining, px, fee, obs, logger)
+	dn := a.ConfirmedNotional - a.AppliedNotional
+	px := dn / remaining * settleConv
+	if !basketFinitePositive(px) {
+		bc.holdPairAction(rt, a, fmt.Sprintf("the incremental fill price %v is not finite and positive", px), true, now)
+		return false
+	}
+	obs := bc.pairObservation(rt, a.StrategyID, a)
+	from := len(s.TradeHistory)
+	prevDefer := s.deferTradePersist
+	s.deferTradePersist = true
+	var booked basketBooking
+	fillCtx := bc.pairFillContextFor(rt, a, remaining, now.UnixMilli())
+	withStrategyBookClock(s, now, func() {
+		withPairFillContext(s, fillCtx, func() {
+			booked = bookPairFill(sc, s, bc.cfg, a, remaining, px, pairConfirmedFee{}, obs, logger)
 		})
-		s.deferTradePersist = prevDefer
-		if !(booked.Qty > 0) {
-			reason := booked.Hold
-			if reason == "" {
-				reason = "the booking owner recorded no fill"
-			}
-			bc.holdPairAction(rt, a, "a confirmed fill could not be booked: "+reason, true, now)
-			return false
+	})
+	s.deferTradePersist = prevDefer
+	if !(booked.Qty > 0) {
+		reason := booked.Hold
+		if reason == "" {
+			reason = "the booking owner recorded no fill"
 		}
-		a.AppliedQty += booked.Qty
-		a.AppliedNotional += dn * booked.Qty / remaining
-		a.AppliedFee += booked.Fee
-		if live {
-			a.AppliedFeeVersion = a.FeeEvidenceVersion
+		bc.holdPairAction(rt, a, "a confirmed fill could not be booked: "+reason, true, now)
+		return false
+	}
+	a.AppliedQty += booked.Qty
+	a.AppliedNotional += dn * booked.Qty / remaining
+	a.AppliedFee += booked.Fee
+	trades := append([]Trade(nil), s.TradeHistory[from:]...)
+	bookedRows := a.bookedTrades()
+	for _, t := range trades {
+		if t.Symbol != a.Symbol || t.TradeType == TradeTypeFunding {
+			continue
 		}
-		trades := append([]Trade(nil), s.TradeHistory[from:]...)
-		bookedRows := a.bookedTrades()
-		for _, t := range trades {
-			if t.Symbol != a.Symbol || t.TradeType == TradeTypeFunding {
-				continue
-			}
-			row := pairBookedTrade{TradeTsMs: t.Timestamp.UTC().UnixMilli(), TradeTs: formatTime(t.Timestamp), Qty: t.Quantity, Px: t.Price, FeeUSD: t.ExchangeFee, OrderID: t.ExchangeOrderID, IsClose: t.IsClose}
-			if t.IsClose && s.Positions[a.Symbol] == nil {
-				row.ClosedPositionID = t.PositionID
-			}
-			bookedRows = append(bookedRows, row)
+		row := pairBookedTrade{TradeTsMs: t.Timestamp.UTC().UnixMilli(), TradeTs: formatTime(t.Timestamp), Qty: t.Quantity, Px: t.Price, FeeUSD: t.ExchangeFee, OrderID: t.ExchangeOrderID, IsClose: t.IsClose}
+		if t.IsClose && s.Positions[a.Symbol] == nil {
+			row.ClosedPositionID = t.PositionID
 		}
-		if b, err := json.Marshal(bookedRows); err == nil {
-			a.BookedJSON = string(b)
+		bookedRows = append(bookedRows, row)
+	}
+	if b, err := json.Marshal(bookedRows); err == nil {
+		a.BookedJSON = string(b)
+	}
+	rt.Expected[a.StrategyID] += a.signedDelta() * booked.Qty
+	if math.Abs(rt.Expected[a.StrategyID]) < 1e-12 {
+		rt.Expected[a.StrategyID] = 0
+	}
+	if a.Direction == basketDirectionIncrease && p.FirstFillMs == 0 {
+		p.FirstFillMs = now.UnixMilli()
+	}
+	for _, u := range rt.Pair.Uses {
+		if u.ActionID == a.ActionID && u.Status == pairUseReserved {
+			u.Status = pairUseConsumed
+			u.UpdatedAtMs = now.UnixMilli()
 		}
-		rt.Expected[a.StrategyID] += a.signedDelta() * booked.Qty
-		if math.Abs(rt.Expected[a.StrategyID]) < 1e-12 {
-			rt.Expected[a.StrategyID] = 0
+	}
+	if in := bc.intentFor(s, a); in != nil {
+		in.ConfirmedQty, in.ConfirmedNotional, in.ConfirmedFee = a.ConfirmedQty, a.ConfirmedNotional, a.ConfirmedFee
+		in.AppliedQty, in.AppliedNotional, in.AppliedFee = a.AppliedQty, a.AppliedNotional, a.AppliedFee
+		in.SettlementSeq++
+		in.VenueOrderID = a.VenueOrderID
+		in.EvidenceJSON = a.EvidenceJSON
+		in.HoldReason = ""
+		in.UpdatedAtMs = now.UnixMilli()
+		if a.Terminal && basketQtyEqual(a.AppliedQty, a.ConfirmedQty) {
+			in.Status = entryIntentCommitted
+		} else {
+			in.Status = entryIntentSettling
 		}
-		if a.Direction == basketDirectionIncrease && p.FirstFillMs == 0 {
-			p.FirstFillMs = now.UnixMilli()
-		}
-		for _, u := range rt.Pair.Uses {
-			if u.ActionID == a.ActionID && u.Status == pairUseReserved {
-				u.Status = pairUseConsumed
-				u.UpdatedAtMs = now.UnixMilli()
-			}
-		}
-		if in := bc.intentFor(s, a); in != nil {
-			in.ConfirmedQty, in.ConfirmedNotional, in.ConfirmedFee = a.ConfirmedQty, a.ConfirmedNotional, a.ConfirmedFee
-			in.AppliedQty, in.AppliedNotional, in.AppliedFee = a.AppliedQty, a.AppliedNotional, a.AppliedFee
-			in.SettlementSeq++
-			in.VenueOrderID = a.VenueOrderID
-			in.EvidenceJSON = a.EvidenceJSON
-			in.HoldReason = ""
-			in.UpdatedAtMs = now.UnixMilli()
-			if a.Terminal && basketQtyEqual(a.AppliedQty, a.ConfirmedQty) {
-				in.Status = entryIntentCommitted
-			} else {
-				in.Status = entryIntentSettling
-			}
-		}
-		bc.pairLogf(rt, "action %s booked %s %.10g %s @ $%.6f (fee $%.6f)", a.ActionID, a.OrderSide, booked.Qty, a.Symbol, booked.Px, booked.Fee)
-		if bc.notifier != nil && len(trades) > 0 {
-			notifier, regime := bc.notifier, bc.cfg.Regime
-			bc.outbox = append(bc.outbox, func() { sendTradeAlertRows(sc, trades, notifier, regime) })
-		}
-	} else if feeDue {
-		delta := feeTotalUSD - a.AppliedFee
-		rows := a.bookedTrades()
-		if len(rows) == 0 {
-			bc.holdPairAction(rt, a, "a fee-only update has no booked trade row to correct", true, now)
-			return false
-		}
-		last := rows[len(rows)-1]
-		var booked *Trade
-		for i := len(s.TradeHistory) - 1; i >= 0; i-- {
-			t := &s.TradeHistory[i]
-			sameTs := t.Timestamp.UTC().UnixMilli() == last.TradeTsMs
-			if last.TradeTs != "" {
-				sameTs = formatTime(t.Timestamp) == last.TradeTs
-			}
-			if t.Symbol == a.Symbol && sameTs && t.ExchangeOrderID == last.OrderID {
-				booked = t
-				break
-			}
-		}
-		if booked != nil && !booked.persisted {
-			bc.pairLogf(rt, "action %s fee-only update waits until its booked trade row is durable", a.ActionID)
-			return false
-		}
-		fix := &pairFeeFix{TradeTsMs: last.TradeTsMs, TradeTs: last.TradeTs, Symbol: a.Symbol, OrderID: last.OrderID, DeltaUSD: delta, Version: a.FeeEvidenceVersion, ClosedPositionID: last.ClosedPositionID, IntentID: a.EntryIntentID, ConfirmedFee: a.FeeAmount, AppliedFeeUSD: feeTotalUSD}
-		stamp, err := bc.pairFeeFixTarget(rt, s, a, fix, booked)
-		if err != nil {
-			if !errors.Is(err, errPairFeeFixProvenance) && !errors.Is(err, errPairCostOwnership) {
-				bc.pairLogf(rt, "action %s fee-only update waits: its saved target row could not be read (%v)", a.ActionID, err)
-				return false
-			}
-			bc.holdPairFeeFixProvenance(rt, a, fmt.Sprintf("the fee correction target row is refused before any change: %v", err), now)
-			return false
-		}
-		fix.TradeRowID, fix.CostModelVersion, fix.CostPolicyID = stamp.RowID, stamp.ModelVersion, stamp.PolicyID
-		undo := &pairFeeFixUndo{delta: delta, prevApplied: a.AppliedFee, prevAppliedVersion: a.AppliedFeeVersion, prevBooked: a.BookedJSON, prevStatus: a.Status, prevHold: a.HoldReason, prevUpdatedAtMs: a.UpdatedAtMs, fix: *fix}
-		if booked != nil {
-			undo.tradeFound, undo.prevFeeSource = true, booked.FeeSource
-			booked.ExchangeFee += delta
-			booked.FeeSource = FeeSourceUserFills
-		}
-		s.Cash -= delta
-		if last.ClosedPositionID != "" {
-			rolloverDailyPnL(&s.RiskState)
-			s.RiskState.DailyPnL -= delta
-			undo.dailyApplied, undo.dailyDate = true, s.RiskState.DailyPnLDate
-		}
-		a.pendingFee = fix
-		a.feeFixUndo = undo
-		if in := bc.intentFor(s, a); in != nil {
-			undo.intentFound, undo.prevIntentApplied, undo.prevIntentConfirmed = true, in.AppliedFee, in.ConfirmedFee
-			in.AppliedFee, in.ConfirmedFee = feeTotalUSD, a.FeeAmount
-		}
-		rows[len(rows)-1].FeeUSD += delta
-		if b, err := json.Marshal(rows); err == nil {
-			a.BookedJSON = string(b)
-		}
-		a.AppliedFee = feeTotalUSD
-		a.AppliedFeeVersion = a.FeeEvidenceVersion
-		bc.pairLogf(rt, "action %s fee evidence %s version %d applied a signed delta of $%.6f once", a.ActionID, a.FeeEvidenceID, a.FeeEvidenceVersion, delta)
+	}
+	bc.pairLogf(rt, "action %s booked %s %.10g %s @ $%.6f (fee $%.6f)", a.ActionID, a.OrderSide, booked.Qty, a.Symbol, booked.Px, booked.Fee)
+	if bc.notifier != nil && len(trades) > 0 {
+		notifier, regime := bc.notifier, bc.cfg.Regime
+		bc.outbox = append(bc.outbox, func() { sendTradeAlertRows(sc, trades, notifier, regime) })
 	}
 	if bc.pairActionComplete(a) {
 		a.Status = basketActionCommitted
@@ -1077,10 +1005,8 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 	}
 	a.UpdatedAtMs = now.UnixMilli()
 	rt.touchPairProgress()
+	bc.clearPairEndedObligations(rt)
 	if err := bc.store.SavePartition(bc.state, rt.Partition); err != nil {
-		if bc.rollbackPairFeeFixes(rt, err, now) {
-			return false
-		}
 		rt.needsDurable = true
 		bc.pairLogf(rt, "action %s booked in memory, but the %s state file did not save: %v; no elective order is sent until it does, and a restart books the confirmed delta once from the saved evidence", a.ActionID, partitionLabel(rt.Partition), err)
 		return false
@@ -1135,9 +1061,12 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 		}
 	}
 	for _, o := range p.Obligations {
-		if o.Kind == "fee_unconfirmed" || o.Kind == "settlement_conversion" {
+		if pairSettlementObligationKind(o.Kind) || pairFundingHoldsAccounting(o.Kind) {
 			accounted = false
 		}
+	}
+	if rt.Pair.funding.hasPending() {
+		accounted = false
 	}
 	changed := false
 	if p.Lifecycle == "" {
@@ -1161,7 +1090,7 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 				rb.Outcome.CompletedAtMs = nowMs
 				rb.UpdatedAtMs = nowMs
 			}
-			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound, CostEvidence: p.CostEvidence}
+			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound, CostEvidence: p.CostEvidence, FundingBinding: p.FundingBinding}
 			changed = true
 		}
 	case pairLifecycleOpening:
@@ -1267,11 +1196,12 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 		} else {
 			t.CoordinatorReason = reason
 		}
-		if err := bc.freezePairTargets(rt, rb, t, reason, now); err != nil {
+		_, saved, err := bc.freezePairTargets(rt, rb, t, reason, now)
+		if err != nil {
 			bc.pairLogf(rt, "slot %s hold could not be saved: %v; a later step decides it again", formatClosedBarMs(rb.DeadlineMs), err)
 			return false
 		}
-		bc.pairLogf(rt, "slot %s held: %s", formatClosedBarMs(rb.DeadlineMs), reason)
+		bc.pairLogf(rt, "slot %s held: %s", formatClosedBarMs(rb.DeadlineMs), saved)
 		return true
 	}
 	env, why := verifyPairEnvelope(rt, rb)
@@ -1344,13 +1274,11 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 	if runErr != nil {
 		return hold("the policy run failed: "+runErr.Error(), false, nil)
 	}
-	var res pairPolicyResult
-	dec := json.NewDecoder(strings.NewReader(string(stdout)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&res); err != nil {
-		return hold("invalid policy output: unreadable result: "+err.Error(), false, nil)
+	res, derr := pairDecodePolicyResult(stdout)
+	if derr != nil {
+		return hold("invalid policy output: unreadable result: "+derr.Error(), false, nil)
 	}
-	reason, verr := validatePairPolicyResult(rt, req, &res)
+	reason, verr := validatePairPolicyResult(rt, req, res)
 	if verr != nil {
 		return hold("invalid policy output: "+verr.Error(), false, &pairTargets{Decision: res.Decision})
 	}
@@ -1363,29 +1291,43 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 	t := &pairTargets{Kind: res.Status, Orientation: res.Orientation, Members: res.Targets, Decision: res.Decision}
 	if res.Status == pairPolicyStatusEnter {
 		t.FirstLeg = pairChooseFirstLeg(rt)
-		if why := bc.pairFullFillCapCheck(rt, res.Targets, in); why != "" {
+		if why := bc.pairFullFillCapCheck(rt, env, res.Targets); why != "" {
 			return hold("the full fill of the frozen targets at their price bounds would break a cap: "+why, false, t)
 		}
 	}
-	if err := bc.freezePairTargets(rt, rb, t, "", now); err != nil {
+	kind, saved, err := bc.freezePairTargets(rt, rb, t, "", now)
+	if err != nil {
 		bc.pairLogf(rt, "slot %s decision could not be saved: %v; a later step decides it again", formatClosedBarMs(rb.DeadlineMs), err)
 		return false
 	}
-	bc.pairLogf(rt, "slot %s: %s decision frozen (%s, input %s)", formatClosedBarMs(rb.DeadlineMs), res.Status, res.Orientation, shortFingerprint(rb.InputFP))
+	if kind == pairPolicyStatusHold {
+		bc.pairLogf(rt, "slot %s held: %s", formatClosedBarMs(rb.DeadlineMs), saved)
+		return true
+	}
+	bc.pairLogf(rt, "slot %s: %s decision frozen (%s, input %s)", formatClosedBarMs(rb.DeadlineMs), kind, t.Orientation, shortFingerprint(rb.InputFP))
 	return true
 }
 
-func (bc *basketCoordinator) pairFullFillCapCheck(rt *basketRuntime, targets map[string]pairPolicyMemberTarget, in basketCycleInputs) string {
+func (bc *basketCoordinator) pairFullFillCapCheck(rt *basketRuntime, env pairQuoteEnvelope, targets map[string]pairPolicyMemberTarget) string {
 	var gross, unmatched, maxPx float64
 	venue := map[string]float64{}
 	for _, m := range rt.Contract.pairMembersSorted() {
 		t := targets[m.MemberID]
-		n := math.Abs(t.TargetBaseQty) * t.PriceBound
+		rates, err := pairConversionRates(env, m.MemberID)
+		if err != nil {
+			return err.Error()
+		}
+		conv, ok := rates[m.Meta.PriceCurrency]
+		if !ok {
+			return fmt.Sprintf("member %s has no saved %s conversion for its price bound", m.MemberID, m.Meta.PriceCurrency)
+		}
+		px := t.PriceBound * conv
+		n := math.Abs(t.TargetBaseQty) * px
 		gross += n
 		venue[m.Provider] += n
 		unmatched += t.TargetBaseQty
-		if t.PriceBound > maxPx {
-			maxPx = t.PriceBound
+		if px > maxPx {
+			maxPx = px
 		}
 	}
 	l := rt.Pair.Limits
@@ -1405,10 +1347,20 @@ func (bc *basketCoordinator) pairFullFillCapCheck(rt *basketRuntime, targets map
 	return strings.Join(bad, "; ")
 }
 
-func (bc *basketCoordinator) freezePairTargets(rt *basketRuntime, rb *basketRebalance, t *pairTargets, holdReason string, now time.Time) error {
+func (bc *basketCoordinator) freezePairTargets(rt *basketRuntime, rb *basketRebalance, t *pairTargets, holdReason string, now time.Time) (string, string, error) {
 	t.Version = pairTargetsVersion
 	t.SlotMs = rb.DeadlineMs
 	t.InputFingerprint = rb.InputFP
+	raw := t.JSON()
+	if raw == "" {
+		return "", "", fmt.Errorf("the decision record could not be encoded")
+	}
+	if len(raw) > pairTargetsMaxBytes {
+		holdReason = fmt.Sprintf("the decision record is %d bytes, above the %d-byte limit; the slot holds without it", len(raw), pairTargetsMaxBytes)
+		t = &pairTargets{Version: pairTargetsVersion, Kind: pairPolicyStatusHold, SlotMs: rb.DeadlineMs, InputFingerprint: rb.InputFP,
+			CoordinatorReason: holdReason, Decision: json.RawMessage(fmt.Sprintf(`{"oversize_bytes":%d}`, len(raw)))}
+		raw = t.JSON()
+	}
 	status := basketRebalanceFrozen
 	next := *rb
 	next.UpdatedAtMs = now.UnixMilli()
@@ -1417,12 +1369,8 @@ func (bc *basketCoordinator) freezePairTargets(rt *basketRuntime, rb *basketReba
 		next.HoldReason = holdReason
 		next.Outcome.Result = "held"
 	}
-	raw := t.JSON()
-	if raw == "" {
-		return fmt.Errorf("the decision record could not be encoded")
-	}
 	if err := bc.store.WritePairDecision(rt, &next, raw, status); err != nil {
-		return err
+		return "", "", err
 	}
 	rb.TargetsJSON, rb.Status, rb.durableStatus = raw, status, status
 	rb.HoldReason, rb.Outcome, rb.UpdatedAtMs = next.HoldReason, next.Outcome, next.UpdatedAtMs
@@ -1443,7 +1391,7 @@ func (bc *basketCoordinator) freezePairTargets(rt *basketRuntime, rb *basketReba
 			bc.persistPair(rt)
 		}
 	}
-	return nil
+	return t.Kind, holdReason, nil
 }
 
 func (bc *basketCoordinator) pairIncreaseHold(rt *basketRuntime, in basketCycleInputs) string {
