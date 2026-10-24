@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"sync"
 	"testing"
@@ -210,30 +211,36 @@ func writeReplaySpec(t *testing.T, spec *basketReplaySpec) string {
 }
 
 var (
-	replayBinOnce sync.Once
-	replayBinPath string
-	replayBinErr  error
+	pyintegrationBinOnce sync.Once
+	pyintegrationBinPath string
+	pyintegrationBinErr  error
 )
 
-func replayBinary(t *testing.T) string {
+func pyintegrationBinary(t *testing.T) string {
 	t.Helper()
-	replayBinOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "basket-replay-bin-")
-		if err != nil {
-			replayBinErr = err
+	pyintegrationBinOnce.Do(func() {
+		_, thisFile, _, ok := runtime.Caller(0)
+		if !ok {
+			pyintegrationBinErr = fmt.Errorf("runtime.Caller failed")
 			return
 		}
-		replayBinPath = filepath.Join(dir, "go-trader")
-		cmd := exec.Command("go", "build", "-o", replayBinPath, ".")
+		dir, err := os.MkdirTemp("", "pyintegration-bin-")
+		if err != nil {
+			pyintegrationBinErr = err
+			return
+		}
+		pyintegrationBinPath = filepath.Join(dir, "go-trader")
+		cmd := exec.Command("go", "build", "-o", pyintegrationBinPath, ".")
+		cmd.Dir = filepath.Dir(thisFile)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			replayBinErr = fmt.Errorf("go build: %v: %s", err, out)
+			pyintegrationBinErr = fmt.Errorf("go build: %v: %s", err, out)
 		}
 	})
-	if replayBinErr != nil {
-		t.Fatal(replayBinErr)
+	if pyintegrationBinErr != nil {
+		t.Fatal(pyintegrationBinErr)
 	}
-	return replayBinPath
+	return pyintegrationBinPath
 }
 
 type replayProcess struct {
@@ -245,7 +252,7 @@ type replayProcess struct {
 
 func runReplayAdapter(t *testing.T, root string, spec *basketReplaySpec, args ...string) replayProcess {
 	t.Helper()
-	bin := replayBinary(t)
+	bin := pyintegrationBinary(t)
 	path := writeReplaySpec(t, spec)
 	cmd := exec.Command(bin, append([]string{"basket-replay", "--spec", path}, args...)...)
 	cmd.Dir = root

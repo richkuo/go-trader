@@ -90,7 +90,7 @@ func newRHLiveEnv(t *testing.T, strategies ...StrategyConfig) *rhLiveEnv {
 	t.Setenv("ROBINHOOD_PASSWORD", "offline-pass")
 	t.Setenv("ROBINHOOD_TOTP_SECRET", "JBSWY3DPEHPK3PXP")
 	origTimeout := robinhoodOrderScriptTimeout
-	robinhoodOrderScriptTimeout = 16 * time.Second
+	robinhoodOrderScriptTimeout = 14 * time.Second
 	t.Cleanup(func() { robinhoodOrderScriptTimeout = origTimeout })
 	e.cfg = &Config{DBFile: filepath.Join(dir, "state.db"), IntervalSeconds: 600, Strategies: strategies}
 	e.setRoutes(rhRoutes{})
@@ -640,7 +640,7 @@ func TestRobinhoodLiveOrderForcedTerminationHoldsAcrossRestartAndRecoverySettles
 	if s := e.state.Strategies["rh-btc"]; s.Cash != 1000 || len(s.Positions) != 0 {
 		t.Fatalf("book changed after a killed order script")
 	}
-	robinhoodOrderScriptTimeout = 16 * time.Second
+	robinhoodOrderScriptTimeout = 14 * time.Second
 
 	e.reopen()
 	held := robinhoodOrderStartupLines(e.state)

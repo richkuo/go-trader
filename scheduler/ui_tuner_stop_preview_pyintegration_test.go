@@ -168,10 +168,14 @@ func tunerHandlerStrategy(mutate func(*StrategyConfig)) StrategyConfig {
 
 func postTunerSimulate(t *testing.T, sc StrategyConfig, regime *RegimeConfig, overrides string) (int, UISimulateResponse) {
 	t.Helper()
+	return postTunerSimulateCandles(t, sc, regime, overrides, tunerHandlerCandles())
+}
+
+func postTunerSimulateCandles(t *testing.T, sc StrategyConfig, regime *RegimeConfig, overrides string, candles []UICandle) (int, UISimulateResponse) {
+	t.Helper()
 	var mu sync.RWMutex
 	ss := NewStatusServer(NewAppState(), &mu, "", []StrategyConfig{sc}, nil)
 	ss.regime = regime
-	candles := tunerHandlerCandles()
 	ss.candleFetcher = func(req UICandleRequest) ([]UICandle, string, error) {
 		return candles, "test", nil
 	}
@@ -211,8 +215,9 @@ func TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm(t *testing.T) {
 	t.Chdir("..")
 	fourHour := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20, Timeframe: "4h"}
 	gated := tunerHandlerStrategy(func(sc *StrategyConfig) { sc.AllowedRegimes = []string{"trending_up"} })
+	refusedCandles := tunerHandlerCandles()[:80]
 
-	code, resp := postTunerSimulate(t, gated, fourHour, "")
+	code, resp := postTunerSimulateCandles(t, gated, fourHour, "", refusedCandles)
 	if code != http.StatusOK {
 		t.Fatalf("gated 1h strategy on a 4h regime: status %d, want 200", code)
 	}
@@ -223,7 +228,7 @@ func TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm(t *testing.T) {
 		t.Fatalf("preview note must quote the refusal, got %q", resp.PreviewNote)
 	}
 
-	code, resp = postTunerSimulate(t, gated, fourHour, `{"stop_loss_pct":10}`)
+	code, resp = postTunerSimulateCandles(t, gated, fourHour, `{"stop_loss_pct":10}`, refusedCandles)
 	if code != http.StatusOK {
 		t.Fatalf("gated strategy with a stop override: status %d, want 200", code)
 	}
