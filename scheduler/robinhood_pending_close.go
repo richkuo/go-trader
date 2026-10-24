@@ -154,7 +154,9 @@ func runPendingRobinhoodCircuitCloses(
 		copy(recoverOrder, rhLiveAll)
 		sort.Slice(recoverOrder, func(i, j int) bool { return recoverOrder[i].ID < recoverOrder[j].ID })
 		var flatCleaned []*StrategyState
+		var noticeStamped []*StrategyState
 		var dms []string
+		noticeNow := tradingNow().UTC()
 		mu.Lock()
 		for _, sc := range recoverOrder {
 			ss := state.Strategies[sc.ID]
@@ -173,6 +175,7 @@ func runPendingRobinhoodCircuitCloses(
 			}
 			book := robinhoodOwnLongBook(ss, coin)
 			if robinhoodBookFlat(book) {
+				ss.RiskState.RobinhoodSharedCloseNotice = RobinhoodSharedCloseNotice{}
 				continue
 			}
 			qty := robinhoodOnAccountSize(coin, positions)
@@ -181,6 +184,7 @@ func runPendingRobinhoodCircuitCloses(
 					fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s: %v — book kept\n", sc.ID, coin, lag)
 					continue
 				}
+				ss.RiskState.RobinhoodSharedCloseNotice = RobinhoodSharedCloseNotice{}
 				if _, held := unresolved[coin]; !held {
 					if pos := ss.Positions[coin]; pos != nil && len(rhLiveStrategiesForCoin(coin, rhLiveAll)) == 1 {
 						fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s is flat on a fresh holdings read with no unresolved order; closing the book's %.8f as verified flat\n", sc.ID, coin, pos.Quantity)
@@ -192,9 +196,16 @@ func runPendingRobinhoodCircuitCloses(
 			}
 			peers := rhLiveStrategiesForCoin(coin, rhLiveAll)
 			if len(peers) > 1 {
-				dms = append(dms, formatRobinhoodSharedOwnerDM(sc.ID, coin, peers))
+				msg := formatRobinhoodSharedOwnerDM(sc.ID, coin, peers)
+				if robinhoodSharedCloseNoticeDueLocked(ss, coin, noticeNow) {
+					dms = append(dms, msg)
+					noticeStamped = append(noticeStamped, ss)
+				} else {
+					logRobinhoodSharedCloseNoticeThrottled(ss, msg)
+				}
 				continue
 			}
+			ss.RiskState.RobinhoodSharedCloseNotice = RobinhoodSharedCloseNotice{}
 			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{
 				Symbols:   []PendingCircuitCloseSymbol{{Symbol: coin, Size: book, PositionID: ensurePositionTradeID(ss.ID, coin, ss.Positions[coin])}},
 				SizeBasis: robinhoodPendingSizeBasisBook,
@@ -207,6 +218,9 @@ func runPendingRobinhoodCircuitCloses(
 				if err := deps.store.SaveStrategyBook(ss); err != nil {
 					fmt.Printf("[CRITICAL] rh-circuit-close: saving the verified-flat close for %s failed: %v — it retries with the next save\n", ss.ID, err)
 				}
+			}
+			for _, ss := range noticeStamped {
+				saveRobinhoodSharedCloseNoticeLocked(deps.store, ss)
 			}
 		}
 		mu.Unlock()
@@ -262,6 +276,7 @@ func runPendingRobinhoodCircuitCloses(
 		var failedSize float64
 		var failedErr error
 		var dms []string
+		var sharedNotices []robinhoodSharedNotice
 		type candidate struct {
 			coin string
 			res  *RobinhoodCloseResult
@@ -334,7 +349,7 @@ func runPendingRobinhoodCircuitCloses(
 
 			peers := rhLiveStrategiesForCoin(c.Symbol, rhLiveAll)
 			if len(peers) > 1 {
-				dms = append(dms, formatRobinhoodSharedOwnerDM(j.stratID, c.Symbol, peers))
+				sharedNotices = append(sharedNotices, robinhoodSharedNotice{coin: c.Symbol, msg: formatRobinhoodSharedOwnerDM(j.stratID, c.Symbol, peers)})
 				allOK = false
 				continue
 			}
@@ -454,8 +469,18 @@ func runPendingRobinhoodCircuitCloses(
 		var failCount int
 		var shouldAlert bool
 		now := time.Now().UTC()
+		noticeNow := tradingNow().UTC()
 		mu.Lock()
 		if ss := state.Strategies[j.stratID]; ss != nil {
+			noticeStamped := false
+			for _, n := range sharedNotices {
+				if robinhoodSharedCloseNoticeDueLocked(ss, n.coin, noticeNow) {
+					dms = append(dms, n.msg)
+					noticeStamped = true
+				} else {
+					logRobinhoodSharedCloseNoticeThrottled(ss, n.msg)
+				}
+			}
 			sharedOnly := true
 			for _, c := range j.pending.Symbols {
 				peers := rhLiveStrategiesForCoin(c.Symbol, rhLiveAll)
@@ -484,7 +509,11 @@ func runPendingRobinhoodCircuitCloses(
 					if err := deps.store.SaveStrategyBook(ss); err != nil {
 						fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s: saving the pending close remainder failed: %v — the book still caps the next sale\n", j.stratID, err)
 					}
+					noticeStamped = false
 				}
+			}
+			if noticeStamped {
+				saveRobinhoodSharedCloseNoticeLocked(deps.store, ss)
 			}
 		}
 		mu.Unlock()
@@ -495,6 +524,42 @@ func runPendingRobinhoodCircuitCloses(
 		if shouldAlert && sendOwnerDM != nil {
 			sendOwnerDM(formatDrainFailureAlert("robinhood", j.stratID, failedCoin, failedSize, failedErr.Error(), failCount))
 		}
+	}
+}
+
+type robinhoodSharedNotice struct {
+	coin string
+	msg  string
+}
+
+func robinhoodSharedCloseNoticeDueLocked(ss *StrategyState, coin string, now time.Time) bool {
+	if ss == nil || coin == "" {
+		return false
+	}
+	n := ss.RiskState.RobinhoodSharedCloseNotice
+	cbUntil := ss.RiskState.CircuitBreakerUntil
+	due := n.LastNotifiedAt.IsZero() || n.Coin != coin || !n.CBUntil.Equal(cbUntil)
+	if !due {
+		elapsed := now.Sub(n.LastNotifiedAt)
+		due = elapsed < 0 || elapsed >= effectiveAlertThrottleInterval()
+	}
+	if due {
+		ss.RiskState.RobinhoodSharedCloseNotice = RobinhoodSharedCloseNotice{Coin: coin, CBUntil: cbUntil, LastNotifiedAt: now}
+	}
+	return due
+}
+
+func logRobinhoodSharedCloseNoticeThrottled(ss *StrategyState, msg string) {
+	fmt.Printf("[CRITICAL] rh-circuit-close: %s (owner DM already sent at %s; the next one waits for the alert throttle)\n",
+		msg, ss.RiskState.RobinhoodSharedCloseNotice.LastNotifiedAt.UTC().Format(time.RFC3339))
+}
+
+func saveRobinhoodSharedCloseNoticeLocked(store *StateStore, ss *StrategyState) {
+	if store == nil || ss == nil {
+		return
+	}
+	if err := store.SaveStrategyBook(ss); err != nil {
+		fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s: saving the shared-coin notice marker failed: %v — the DM is still sent, the marker is kept in memory and the cycle save retries it\n", ss.ID, err)
 	}
 }
 
