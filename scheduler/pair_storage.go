@@ -365,6 +365,9 @@ type pairFeeFix struct {
 	IntentID         string  `json:"intent_id,omitempty"`
 	ConfirmedFee     float64 `json:"confirmed_fee,omitempty"`
 	AppliedFeeUSD    float64 `json:"applied_fee_usd,omitempty"`
+	TradeRowID       int64   `json:"trade_row_id,omitempty"`
+	CostModelVersion int     `json:"cost_model_version,omitempty"`
+	CostPolicyID     string  `json:"cost_policy_id,omitempty"`
 }
 
 type pairBookedTrade struct {
@@ -624,6 +627,7 @@ type pairProgress struct {
 	Obligations        []pairObligation     `json:"obligations,omitempty"`
 	Retries            map[string]pairRetry `json:"retries,omitempty"`
 	LastBound          *pairBoundRecord     `json:"last_bound,omitempty"`
+	CostEvidence       json.RawMessage      `json:"cost_evidence,omitempty"`
 }
 
 func (p *pairProgress) alerted(key string) bool {
@@ -838,6 +842,9 @@ func (sdb *StateDB) writePairTx(tx *sql.Tx, rt *basketRuntime, books map[string]
 		return nil, err
 	}
 	full := rt.savesAllMembers(books)
+	if err := checkSavedPairCostEvidenceTx(tx, rt); err != nil {
+		return nil, err
+	}
 	if err := upsertBasketContractRow(tx, rt, nowMs); err != nil {
 		return nil, err
 	}
@@ -862,7 +869,7 @@ func (sdb *StateDB) writePairTx(tx *sql.Tx, rt *basketRuntime, books map[string]
 		}
 		if withBook && a.pendingFee != nil {
 			if err := applyPairFeeFixTx(tx, sids[a.StrategyID], a.pendingFee); err != nil {
-				return nil, fmt.Errorf("pair action %s fee correction: %w", a.ActionID, err)
+				return nil, &pairFeeFixError{ActionID: a.ActionID, Err: err}
 			}
 		}
 	}
@@ -915,14 +922,28 @@ func (sdb *StateDB) writePairTx(tx *sql.Tx, rt *basketRuntime, books map[string]
 	return next, nil
 }
 
+func (fix *pairFeeFix) tradeTs() string {
+	if fix.TradeTs != "" {
+		return fix.TradeTs
+	}
+	return formatTime(time.UnixMilli(fix.TradeTsMs).UTC())
+}
+
 func applyPairFeeFixTx(tx *sql.Tx, sid string, fix *pairFeeFix) error {
-	ts := fix.TradeTs
-	if ts == "" {
-		ts = formatTime(time.UnixMilli(fix.TradeTsMs).UTC())
+	ts := fix.tradeTs()
+	if fix.TradeRowID <= 0 || fix.CostModelVersion == 0 || fix.CostPolicyID == "" {
+		return fmt.Errorf("%w: the correction for %s %s at %s carries no checked target row and member stamp", errPairFeeFixProvenance, fix.Symbol, fix.OrderID, ts)
+	}
+	var same int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND exchange_order_id = ?`, sid, ts, fix.Symbol, fix.OrderID).Scan(&same); err != nil {
+		return err
+	}
+	if same != 1 {
+		return fmt.Errorf("%w: the booked trade row %s %s at %s matched %d saved rows, want exactly 1", errPairFeeFixProvenance, fix.Symbol, fix.OrderID, ts, same)
 	}
 	res, err := tx.Exec(`UPDATE trades SET exchange_fee = exchange_fee + ?, fee_source = ?
-		WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND exchange_order_id = ?`,
-		fix.DeltaUSD, FeeSourceUserFills, sid, ts, fix.Symbol, fix.OrderID)
+		WHERE rowid = ? AND strategy_id = ? AND timestamp = ? AND symbol = ? AND exchange_order_id = ? AND cost_model_version = ? AND cost_policy_id = ?`,
+		fix.DeltaUSD, FeeSourceUserFills, fix.TradeRowID, sid, ts, fix.Symbol, fix.OrderID, fix.CostModelVersion, fix.CostPolicyID)
 	if err != nil {
 		return err
 	}
@@ -931,7 +952,7 @@ func applyPairFeeFixTx(tx *sql.Tx, sid string, fix *pairFeeFix) error {
 		return err
 	}
 	if n != 1 {
-		return fmt.Errorf("the booked trade row %s %s at %s matched %d rows, want exactly 1", fix.Symbol, fix.OrderID, ts, n)
+		return fmt.Errorf("%w: the booked trade row %s %s at %s no longer has row id %d with member stamp %d/%s", errPairFeeFixProvenance, fix.Symbol, fix.OrderID, ts, fix.TradeRowID, fix.CostModelVersion, fix.CostPolicyID)
 	}
 	if fix.IntentID != "" {
 		res, err := tx.Exec(`UPDATE entry_order_intents SET applied_fee = ?, confirmed_fee = ?
@@ -972,6 +993,7 @@ func markPairDurable(rt *basketRuntime, books map[string]*StrategyState) {
 		if withBook {
 			a.durableApplied = a.AppliedQty
 			a.pendingFee = nil
+			a.feeFixUndo = nil
 		}
 	}
 	for _, u := range rt.Pair.Uses {
@@ -994,6 +1016,7 @@ func markPairDurable(rt *basketRuntime, books map[string]*StrategyState) {
 		}
 	}
 	rt.Pair.durableSeq = rt.Pair.Progress.Seq
+	rt.Pair.admission.markCostDurable(rt.Pair.Progress.CostEvidence)
 }
 
 func (sdb *StateDB) persistPairProgressTx(rt *basketRuntime) error {
@@ -1560,6 +1583,7 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 	role := db.storageRoleOf()
 	k := basketKey{Partition: part, BasketID: p.ID}
 	configured[k] = role
+	progressSaved := false
 	for otherRole, r := range records {
 		if otherRole == role {
 			continue
@@ -1605,14 +1629,20 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 			}
 			rt.Pair.Progress = prog
 			rt.Pair.durableSeq = prog.Seq
+			progressSaved = true
 		}
 	}
 	if _, err := db.checkBasketOwnership(rt); err != nil {
 		return err
 	}
+	saved := progressSaved || pairRunHasSavedState(state, rt, p.ID)
+	if err := bindPairCostEvidence(rt, adm, saved); err != nil {
+		return err
+	}
 	for _, m := range contract.Members {
 		if s := state.Strategies[m.StrategyID]; s != nil {
 			s.Basket = rt
+			s.pairCostPair = p.ID
 			if s.EntryGuard != nil {
 				for id, in := range s.EntryGuard.Intents {
 					if in.OwnerMode == pairGroupMode && in.OwnerGroupID == p.ID {
@@ -1624,4 +1654,99 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 	}
 	out[p.ID] = rt
 	return nil
+}
+
+func pairRunHasSavedState(state *AppState, rt *basketRuntime, pairID string) bool {
+	if rt.SavedContract != nil || len(rt.Rebalances) > 0 || len(rt.Actions) > 0 || len(rt.Expected) > 0 || len(rt.Pair.Uses) > 0 {
+		return true
+	}
+	for _, m := range rt.Contract.Members {
+		s := state.Strategies[m.StrategyID]
+		if s == nil {
+			continue
+		}
+		if len(s.TradeHistory) > 0 || len(s.Positions) > 0 {
+			return true
+		}
+		if s.EntryGuard != nil {
+			for _, in := range s.EntryGuard.Intents {
+				if in.OwnerMode == pairGroupMode && in.OwnerGroupID == pairID {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func bindPairCostEvidence(rt *basketRuntime, adm *pairResearchAdmission, saved bool) error {
+	id := rt.Contract.BasketID
+	want, err := adm.costEvidence()
+	if err != nil {
+		return fmt.Errorf("pair %s: %w", id, err)
+	}
+	if ev := rt.Pair.Progress.CostEvidence; len(ev) > 0 {
+		if err := adm.verifyCostEvidence(ev); err != nil {
+			return fmt.Errorf("pair %s resume refused: %w; the saved state is kept unchanged, and a changed pair identity, cost rate or execution model needs a new research run", id, err)
+		}
+		adm.markCostDurable(ev)
+		return nil
+	}
+	if saved {
+		return fmt.Errorf("pair %s resume refused: the saved run has pair state but no member cost bindings; a pre-binding pair run needs a new research run, and its history is never stamped or converted", id)
+	}
+	rt.Pair.Progress.CostEvidence = want
+	return nil
+}
+
+type pairFeeFixError struct {
+	ActionID string
+	Err      error
+}
+
+func (e *pairFeeFixError) Error() string {
+	return fmt.Sprintf("pair action %s fee correction: %v", e.ActionID, e.Err)
+}
+
+func (e *pairFeeFixError) Unwrap() error { return e.Err }
+
+type pairTradeStamp struct {
+	RowID        int64
+	ModelVersion int
+	PolicyID     string
+}
+
+func (st *StateStore) PairTradeStamp(rt *basketRuntime, strategyID, ts, symbol, orderID string) (pairTradeStamp, error) {
+	db, err := st.basketFile(rt)
+	if err != nil {
+		return pairTradeStamp{}, err
+	}
+	sids, err := db.checkBasketOwnership(rt)
+	if err != nil {
+		return pairTradeStamp{}, err
+	}
+	sid, ok := sids[strategyID]
+	if !ok {
+		return pairTradeStamp{}, fmt.Errorf("%w: pair %s has no member %s", errPairFeeFixProvenance, rt.Contract.BasketID, strategyID)
+	}
+	rows, err := db.db.Query(`SELECT rowid, cost_model_version, cost_policy_id FROM trades WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND exchange_order_id = ?`, sid, ts, symbol, orderID)
+	if err != nil {
+		return pairTradeStamp{}, err
+	}
+	defer rows.Close()
+	var found []pairTradeStamp
+	for rows.Next() {
+		var t pairTradeStamp
+		if err := rows.Scan(&t.RowID, &t.ModelVersion, &t.PolicyID); err != nil {
+			return pairTradeStamp{}, err
+		}
+		found = append(found, t)
+	}
+	if err := rows.Err(); err != nil {
+		return pairTradeStamp{}, err
+	}
+	if len(found) != 1 {
+		return pairTradeStamp{}, fmt.Errorf("%w: the booked trade row %s %s at %s matched %d saved rows, want exactly 1", errPairFeeFixProvenance, symbol, orderID, ts, len(found))
+	}
+	return found[0], nil
 }

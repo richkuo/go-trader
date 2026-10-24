@@ -81,12 +81,16 @@ func runTrailingStopUpdateAfterRatchetTighten(
 		return 0, "", ev
 	}
 	if breach {
+		bookPx, err := paperStopBookPx(sc, stratState, side, breachPx)
+		if err != nil {
+			logStrategyCostRefusal(logger, "ratchet paper trailing stop", symbol, err)
+			return 0, "", ev
+		}
 		if newTrigger > 0 {
 			pos.StopLossTriggerPx = newTrigger
 		}
-		breachPx = paperStopBookPx(side, breachPx)
-		if recordPerpsStopLossClose(stratState, symbol, breachPx, paperStopReasonTrailing, logger) {
-			return 1, fmt.Sprintf("[%s] PAPER TRAILING SL %s @ $%.2f", sc.ID, symbol, breachPx), ev
+		if recordPerpsStopLossClose(stratState, symbol, bookPx, paperStopReasonTrailing, logger) {
+			return 1, fmt.Sprintf("[%s] PAPER TRAILING SL %s @ $%.2f", sc.ID, symbol, bookPx), ev
 		}
 		return 0, "", ev
 	}

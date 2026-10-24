@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -163,6 +164,13 @@ func (bc *basketCoordinator) pairVenueFor(sc StrategyConfig) (pairVenue, error) 
 	pv, ok := v.(pairVenue)
 	if !ok {
 		return nil, fmt.Errorf("strategy %s has no pair venue seam", sc.ID)
+	}
+	rt := bc.byMember[sc.ID]
+	if rt == nil || !rt.isPair() {
+		return nil, fmt.Errorf("strategy %s has no pair runtime, so its transport identity cannot be checked", sc.ID)
+	}
+	if err := rt.Pair.admission.checkTransport(sc, pv); err != nil {
+		return nil, err
 	}
 	return pv, nil
 }
@@ -400,8 +408,16 @@ func (bc *basketCoordinator) stepPair(rt *basketRuntime, in basketCycleInputs) {
 		bc.pairAlert(rt, "refused|"+msg, msg+"; no pair action is dispatched", true)
 		return
 	}
+	if !bc.ensurePairCostEvidence(rt) {
+		return
+	}
+	bc.drainPairCostFaults(rt, in.Now)
 	if rt.needsDurable {
-		if err := bc.store.SavePartition(bc.state, rt.Partition); err != nil {
+		err := bc.store.SavePartition(bc.state, rt.Partition)
+		if err != nil && bc.rollbackPairFeeFixes(rt, err, in.Now) {
+			err = bc.store.SavePartition(bc.state, rt.Partition)
+		}
+		if err != nil {
 			bc.pairLogf(rt, "the last pair settlement is not durable yet (%v); queries, protection and recovery continue, and no elective order is sent", err)
 		} else {
 			rt.needsDurable = false
@@ -1017,7 +1033,20 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 			bc.pairLogf(rt, "action %s fee-only update waits until its booked trade row is durable", a.ActionID)
 			return false
 		}
+		fix := &pairFeeFix{TradeTsMs: last.TradeTsMs, TradeTs: last.TradeTs, Symbol: a.Symbol, OrderID: last.OrderID, DeltaUSD: delta, Version: a.FeeEvidenceVersion, ClosedPositionID: last.ClosedPositionID, IntentID: a.EntryIntentID, ConfirmedFee: a.FeeAmount, AppliedFeeUSD: feeTotalUSD}
+		stamp, err := bc.pairFeeFixTarget(rt, s, a, fix, booked)
+		if err != nil {
+			if !errors.Is(err, errPairFeeFixProvenance) && !errors.Is(err, errPairCostOwnership) {
+				bc.pairLogf(rt, "action %s fee-only update waits: its saved target row could not be read (%v)", a.ActionID, err)
+				return false
+			}
+			bc.holdPairFeeFixProvenance(rt, a, fmt.Sprintf("the fee correction target row is refused before any change: %v", err), now)
+			return false
+		}
+		fix.TradeRowID, fix.CostModelVersion, fix.CostPolicyID = stamp.RowID, stamp.ModelVersion, stamp.PolicyID
+		undo := &pairFeeFixUndo{delta: delta, prevApplied: a.AppliedFee, prevAppliedVersion: a.AppliedFeeVersion, prevBooked: a.BookedJSON, prevStatus: a.Status, prevHold: a.HoldReason, prevUpdatedAtMs: a.UpdatedAtMs, fix: *fix}
 		if booked != nil {
+			undo.tradeFound, undo.prevFeeSource = true, booked.FeeSource
 			booked.ExchangeFee += delta
 			booked.FeeSource = FeeSourceUserFills
 		}
@@ -1025,9 +1054,12 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 		if last.ClosedPositionID != "" {
 			rolloverDailyPnL(&s.RiskState)
 			s.RiskState.DailyPnL -= delta
+			undo.dailyApplied, undo.dailyDate = true, s.RiskState.DailyPnLDate
 		}
-		a.pendingFee = &pairFeeFix{TradeTsMs: last.TradeTsMs, TradeTs: last.TradeTs, Symbol: a.Symbol, OrderID: last.OrderID, DeltaUSD: delta, Version: a.FeeEvidenceVersion, ClosedPositionID: last.ClosedPositionID, IntentID: a.EntryIntentID, ConfirmedFee: a.FeeAmount, AppliedFeeUSD: feeTotalUSD}
+		a.pendingFee = fix
+		a.feeFixUndo = undo
 		if in := bc.intentFor(s, a); in != nil {
+			undo.intentFound, undo.prevIntentApplied, undo.prevIntentConfirmed = true, in.AppliedFee, in.ConfirmedFee
 			in.AppliedFee, in.ConfirmedFee = feeTotalUSD, a.FeeAmount
 		}
 		rows[len(rows)-1].FeeUSD += delta
@@ -1046,6 +1078,9 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 	a.UpdatedAtMs = now.UnixMilli()
 	rt.touchPairProgress()
 	if err := bc.store.SavePartition(bc.state, rt.Partition); err != nil {
+		if bc.rollbackPairFeeFixes(rt, err, now) {
+			return false
+		}
 		rt.needsDurable = true
 		bc.pairLogf(rt, "action %s booked in memory, but the %s state file did not save: %v; no elective order is sent until it does, and a restart books the confirmed delta once from the saved evidence", a.ActionID, partitionLabel(rt.Partition), err)
 		return false
@@ -1126,7 +1161,7 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 				rb.Outcome.CompletedAtMs = nowMs
 				rb.UpdatedAtMs = nowMs
 			}
-			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound}
+			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound, CostEvidence: p.CostEvidence}
 			changed = true
 		}
 	case pairLifecycleOpening:

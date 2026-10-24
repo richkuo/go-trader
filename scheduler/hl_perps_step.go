@@ -320,13 +320,16 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 			mu.Lock()
 			if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
 				if breach {
-					if newTrigger > 0 {
-						pos.StopLossTriggerPx = newTrigger
-					}
-					stopAt := hlStep.historyLenLocked()
-					breachPx = paperStopBookPx(hlPosSide, breachPx)
-					if recordPerpsStopLossClose(stratState, result.Symbol, breachPx, paperStopReasonTrailing, logger) {
-						hlStep.bindWindowLocked(stopAt, fmt.Sprintf("[%s] PAPER TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, breachPx))
+					if bookPx, costErr := paperStopBookPx(sc, stratState, hlPosSide, breachPx); costErr != nil {
+						logStrategyCostRefusal(logger, "paper trailing stop", result.Symbol, costErr)
+					} else {
+						if newTrigger > 0 {
+							pos.StopLossTriggerPx = newTrigger
+						}
+						stopAt := hlStep.historyLenLocked()
+						if recordPerpsStopLossClose(stratState, result.Symbol, bookPx, paperStopReasonTrailing, logger) {
+							hlStep.bindWindowLocked(stopAt, fmt.Sprintf("[%s] PAPER TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, bookPx))
+						}
 					}
 				} else {
 					if newHighWater > 0 {
@@ -379,9 +382,10 @@ func runHyperliquidPerpsStep(x *hlPerpsStep) hlPerpsStepOutcome {
 				}
 				if breach {
 					stopAt := hlStep.historyLenLocked()
-					breachPx = paperStopBookPx(hlPosSide, breachPx)
-					if recordPerpsStopLossClose(stratState, result.Symbol, breachPx, stopReason, logger) {
-						hlStep.bindWindowLocked(stopAt, fmt.Sprintf("[%s] %s %s @ $%.2f", sc.ID, paperStopLossDetailLabel(stopReason), result.Symbol, breachPx))
+					if bookPx, costErr := paperStopBookPx(sc, stratState, hlPosSide, breachPx); costErr != nil {
+						logStrategyCostRefusal(logger, "paper stop", result.Symbol, costErr)
+					} else if recordPerpsStopLossClose(stratState, result.Symbol, bookPx, stopReason, logger) {
+						hlStep.bindWindowLocked(stopAt, fmt.Sprintf("[%s] %s %s @ $%.2f", sc.ID, paperStopLossDetailLabel(stopReason), result.Symbol, bookPx))
 					}
 				}
 			}

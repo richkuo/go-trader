@@ -577,3 +577,40 @@ func TestOKXSharedStepSplitLayoutRoutesEachPartitionToItsOwnFile(t *testing.T) {
 		}
 	}
 }
+
+func TestOKXSharedStepPairNativeReductionChargesTheMemberBinding(t *testing.T) {
+	p := newOKXPairStepEnv(t, pairCostRates)
+	p.setPosition(entrySideLong, 0.02, 90000)
+	s := p.e.state.Strategies[pairTestOKX]
+	p.e.mu.Lock()
+	rt := s.Basket
+	s.Basket = nil
+	cash, trades := s.Cash, len(s.TradeHistory)
+	p.e.mu.Unlock()
+	if out := p.step(nil, nil); out.Trades != 0 || p.e.signed(pairTestOKX) != 0.02 || s.Cash != cash || len(s.TradeHistory) != trades {
+		t.Fatalf("a member without pair ownership must not book through the shared owner: %+v book %v", out, p.e.signed(pairTestOKX))
+	}
+	if len(s.pairCostFaults) == 0 {
+		t.Fatal("the refused native reduction must queue a cost provenance fault")
+	}
+	p.e.mu.Lock()
+	s.Basket = rt
+	s.pairCostFaults = nil
+	p.e.mu.Unlock()
+	out := p.step(nil, nil)
+	if out.Trades != 1 || p.e.signed(pairTestOKX) != 0 {
+		t.Fatalf("the native reduction must book once through the shared owner: %+v\n%s", out, p.logs.String())
+	}
+	tr := s.TradeHistory[len(s.TradeHistory)-1]
+	want := p.e.binding(pairTestOKX)
+	if tr.CostModelVersion != FillCostModelReplayCustomVersion || tr.CostPolicyID != want.PolicyID || !pairCostNear(tr.ExchangeFee, tr.Quantity*tr.Price*0.0007) {
+		t.Fatalf("the native reduction row %+v must carry the member stamp and taker rate", tr)
+	}
+	if err := p.e.store.SavePartition(p.e.state, p.e.rt().Partition); err != nil {
+		t.Fatal(err)
+	}
+	rows := p.e.savedTrades(pairTestOKX)
+	if len(rows) == 0 || rows[len(rows)-1].PolicyID != want.PolicyID {
+		t.Fatalf("the saved native reduction row lost the member stamp: %+v", rows)
+	}
+}

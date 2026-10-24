@@ -188,9 +188,17 @@ func applyPerpsScaleIn(s *StrategyState, sc StrategyConfig, symbol string, addPr
 		n     int
 		trade *Trade
 	)
-	mutatePaperPerpsBook(s, symbol, func() {
-		n, trade = applyPerpsScaleInInner(s, sc, symbol, addPrice, addQty, fillFee, fillOID, useFillFee, logger)
-	})
+	if err := withPairDispatchCostScope(sc, s, func() {
+		mutatePaperPerpsBook(s, symbol, func() {
+			n, trade = applyPerpsScaleInInner(s, sc, symbol, addPrice, addQty, fillFee, fillOID, useFillFee, logger)
+		})
+		if trade != nil && s.costScope != nil {
+			trade.CostModelVersion, trade.CostPolicyID = s.costScope.ModelVersion, s.costScope.PolicyID
+		}
+	}); err != nil {
+		logStrategyCostRefusal(logger, "scale-in", symbol, err)
+		return 0, nil
+	}
 	return n, trade
 }
 
@@ -210,7 +218,7 @@ func applyPerpsScaleInInner(s *StrategyState, sc StrategyConfig, symbol string, 
 		feePlatform = "okx-perps"
 	}
 	notional := addQty * addPrice
-	fee := executionFee(CalculatePlatformSpotFee(feePlatform, notional), fillFee, useFillFee)
+	fee := executionFee(strategyPlatformFee(s, feePlatform, notional), fillFee, useFillFee)
 	s.Cash -= fee
 	side := "buy"
 	if pos.Side == "short" {
@@ -341,7 +349,16 @@ func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, 
 		useFillFee = fillFee > 0
 	} else if !hyperliquidIsLive(sc.Args) {
 		if pos := s.Positions[result.Symbol]; pos != nil {
+			p, err := pairDispatchCostPolicy(sc, s)
+			if err != nil {
+				noteStrategyCostFault(s, err.Error())
+				logStrategyCostRefusal(logger, "scale-in", result.Symbol, err)
+				return 0, "", nil, nil
+			}
 			fillPrice = ApplyAdverseSlippage(price, pos.Side == "long")
+			if strategyPairCostRequired(s) {
+				fillPrice = applySlippageRate(price, pos.Side == "long", p.SlippagePct)
+			}
 		}
 	}
 	if lotPolicy := newHLPaperLotPolicy(sc, result.Symbol, price, execResult != nil || result.PairFill != nil); lotPolicy != nil {

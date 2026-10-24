@@ -1129,6 +1129,8 @@ type pairResearchAdmission struct {
 	raw      json.RawMessage
 	contract string
 	evidence *pairFrozenEvidenceSource
+	costMu   sync.RWMutex
+	costs    *pairAdmissionCosts
 }
 
 func (a *pairResearchAdmission) evidenceSource() pairEvidenceSource {
@@ -1290,6 +1292,9 @@ func loadPairResearchConfig(adm *pairResearchAdmission, doc []byte) (*Config, er
 	}
 	adm.contract = contract.Fingerprint()
 	adm.evidence = src
+	if err := adm.bindCosts(cfg, contract); err != nil {
+		return nil, fmt.Errorf("pair research member cost binding is refused: %w", err)
+	}
 	return cfg, nil
 }
 
