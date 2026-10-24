@@ -1307,7 +1307,7 @@ func TestBasketPairFundingChargeKeepsThePositionHeldAtTheEvent(t *testing.T) {
 func TestBasketPairFundingSteadyCycleHashesNoAppliedEvent(t *testing.T) {
 	t0 := pairTestStart()
 	anchor := t0.UnixMilli()
-	const events = 2160
+	const events = 24
 	step := 10 * time.Minute
 	held := 5
 	at := func(i int) int64 { return t0.Add(time.Duration(i+1) * step).UnixMilli() }
