@@ -1166,7 +1166,7 @@ func TestBasketPairPolicyRealProcessContract(t *testing.T) {
 
 const pairPolicyIsolationPrelude = `import builtins, importlib.abc, io, os, runpy, socket, sys
 preloaded = set(sys.modules)
-allowed = set(sys.stdlib_module_names) | {"pair_evidence", "pair_inputs", "go_trader_pair_policy_cross_exchange_perp_arbitrage", "__main__"}
+allowed = set(sys.stdlib_module_names) | {"pair_evidence", "pair_inputs", "go_trader_pair_registry", "go_trader_pair_policy_cross_exchange_perp_arbitrage", "__main__"}
 class Block(importlib.abc.MetaPathFinder):
     def find_spec(self, name, path=None, target=None):
         if name.split(".")[0] not in allowed:
@@ -1234,7 +1234,7 @@ func TestBasketPairPolicyRealImportBoundaryAndProbe(t *testing.T) {
 		return func() {}
 	})
 	if err != nil || !bytes.Equal(out, want) {
-		t.Fatalf("the evaluator must run with only the standard library and its two helpers and give the same decision: %v %s\n%s\n%s", err, errOut, out, want)
+		t.Fatalf("the evaluator must run with only the standard library, the canonical pair registry and its two helpers and give the same decision: %v %s\n%s\n%s", err, errOut, out, want)
 	}
 	out, errOut, err = run(func(cmd *exec.Cmd) func() {
 		r, w, perr := os.Pipe()
@@ -1324,4 +1324,167 @@ func TestBasketPairPolicyRealParameterRefusals(t *testing.T) {
 			t.Fatalf("boundary parameters must reach the economic stage: %v %v", res["status"], d["stage"])
 		}
 	})
+}
+
+const pairPolicyCanonicalScript = `import importlib.util, json, os, sys
+sys.dont_write_bytecode = True
+root, name = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("go_trader_pair_registry", os.path.join(root, "shared_strategies", "open", "pair_registry.py"))
+pairs = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = pairs
+spec.loader.exec_module(pairs)
+evaluate = pairs.get_pair_evaluator(name)
+request = sys.modules["pair_evidence"].loads_strict(sys.stdin.buffer.read())
+sys.stdout.write(json.dumps(evaluate(request), sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n")
+`
+
+func pairPolicyStoredTargets(t *testing.T, e *pairTestEnv, at time.Time) string {
+	t.Helper()
+	var stored string
+	if err := e.db().db.QueryRow(`SELECT targets_json FROM basket_rebalances WHERE deadline_ms = ?`, at.UnixMilli()).Scan(&stored); err != nil {
+		t.Fatalf("read the saved decision: %v", err)
+	}
+	return stored
+}
+
+func TestBasketPairPolicyRealFrozenRequestIgnoresLaterInputs(t *testing.T) {
+	f := pairPolicyGoodBooks()
+	f.limits = map[string]interface{}{"gross_budget_usd": 7300, "hyperliquid_notional_cap_usd": 7000, "okx_notional_cap_usd": 7000}
+	e, c, root := newPairPolicyEnv(t, f)
+	at0, got, _ := pairPolicyDecide(t, e, 0)
+	if got.Kind != pairPolicyStatusEnter {
+		t.Fatalf("the first slot must enter: %s %q", got.Kind, got.PolicyReason)
+	}
+	req0, out0 := c.last(t)
+	saved0 := pairPolicyStoredTargets(t, e, at0)
+	flat := pairPolicyLevels([]string{"60000", "59999", "59998"}, "100")
+	e.slotStep(1)
+	e.assertBooks("matched", 0.06, -0.06)
+	e.setBooks(flat, pairPolicyLevels([]string{"60000.1", "60000.2", "60000.3"}, "100"), flat, pairPolicyLevels([]string{"60000.1", "60000.2", "60000.3"}, "100"))
+	e.slotStep(2)
+	if len(c.requests) != 2 {
+		t.Fatalf("the policy must run for the flat slot and the later matched slot only, ran %d times", len(c.requests))
+	}
+	req1, out1 := c.last(t)
+	var first, later map[string]interface{}
+	if err := json.Unmarshal(req0, &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(req1, &later); err != nil {
+		t.Fatal(err)
+	}
+	if first["input_fingerprint"] == later["input_fingerprint"] || first["lifecycle"] == later["lifecycle"] || bytes.Equal(out0, out1) {
+		t.Fatalf("the later slot must see changed quote and account inputs and decide differently:\n%s\n%s", out0, out1)
+	}
+	for i := 0; i < 2; i++ {
+		out, errOut, code := pairPolicyPython(t, root, req0, filepath.Join("shared_scripts", "run_pair_policy.py"))
+		if code != 0 || !bytes.Equal(out, out0) {
+			t.Fatalf("replaying the frozen request after later inputs changed must give the saved output (exit %d): %s\n%s\n%s", code, errOut, out, out0)
+		}
+	}
+	out, errOut, code := pairPolicyPython(t, root, req0, "-c", pairPolicyCanonicalScript, root, pairPolicyCrossExchangePerpArbitrage)
+	if code != 0 || !bytes.Equal(out, out0) {
+		t.Fatalf("evaluation through the canonical pair accessor must equal the runner output (exit %d): %s\n%s\n%s", code, errOut, out, out0)
+	}
+	if after := pairPolicyStoredTargets(t, e, at0); after != saved0 {
+		t.Fatalf("a later slot changed the saved decision of an earlier slot:\n%s\n%s", saved0, after)
+	}
+}
+
+var pairPolicyRunnerTree = []string{
+	filepath.Join("shared_scripts", "run_pair_policy.py"),
+	filepath.Join("shared_strategies", "open", "pair_registry.py"),
+	filepath.Join("shared_strategies", "open", "cross_exchange_perp_arbitrage.py"),
+	filepath.Join("shared_tools", "pair_evidence.py"),
+	filepath.Join("shared_tools", "pair_inputs.py"),
+}
+
+func pairPolicyCopyRunnerTree(t *testing.T, root string) string {
+	t.Helper()
+	dst := t.TempDir()
+	for _, rel := range pairPolicyRunnerTree {
+		raw, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dst, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dst, rel), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dst
+}
+
+func TestBasketPairPolicyRealCanonicalLoadFailuresHold(t *testing.T) {
+	f := pairPolicyGoodBooks()
+	f.limits = map[string]interface{}{"gross_budget_usd": 7300, "hyperliquid_notional_cap_usd": 7000, "okx_notional_cap_usd": 7000}
+	e0, c0, root := newPairPolicyEnv(t, f)
+	if _, got, _ := pairPolicyDecide(t, e0, 0); got.Kind != pairPolicyStatusEnter {
+		t.Fatalf("the capture slot must enter: %s %q", got.Kind, got.PolicyReason)
+	}
+	req, want := c0.last(t)
+	intact := filepath.Join(pairPolicyCopyRunnerTree(t, root), "shared_scripts", "run_pair_policy.py")
+	if out, errOut, code := pairPolicyPython(t, root, req, intact); code != 0 || !bytes.Equal(out, want) {
+		t.Fatalf("the intact runner copy must give the same decision (exit %d): %s\n%s\n%s", code, errOut, out, want)
+	}
+	unknown := pairPolicyMutateRequest(t, req, func(r map[string]interface{}) { r["policy"] = "other_policy" })
+	cases := []struct {
+		name            string
+		rel             string
+		content         string
+		unknownSemantic bool
+	}{
+		{name: "missing canonical registry", rel: pairPolicyRunnerTree[1]},
+		{name: "failing canonical registry", rel: pairPolicyRunnerTree[1], content: "raise RuntimeError('b1878 injected canonical registry failure')\n"},
+		{name: "missing evaluator", rel: pairPolicyRunnerTree[2], unknownSemantic: true},
+		{name: "failing evaluator import", rel: pairPolicyRunnerTree[2], content: "raise ImportError('b1878 injected evaluator import failure')\n", unknownSemantic: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tree := pairPolicyCopyRunnerTree(t, root)
+			target := filepath.Join(tree, tc.rel)
+			if tc.content == "" {
+				if err := os.Remove(target); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(target, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			script := filepath.Join(tree, "shared_scripts", "run_pair_policy.py")
+			if out, _, code := pairPolicyPython(t, root, req, script); code != 1 || len(out) != 0 {
+				t.Fatalf("a failed canonical load must exit 1 with no result, got exit %d: %s", code, out)
+			}
+			if out, _, code := pairPolicyPython(t, root, nil, script, "--probe-only"); code != 1 || len(out) != 0 {
+				t.Fatalf("the probe must fail on a failed canonical load, got exit %d: %s", code, out)
+			}
+			out, errOut, code := pairPolicyPython(t, root, unknown, script)
+			if tc.unknownSemantic {
+				var res map[string]interface{}
+				if code != 0 || json.Unmarshal(out, &res) != nil || res["status"] != pairPolicyStatusInvalid {
+					t.Fatalf("an unknown policy stays a semantic invalid result with exit 0 while the evaluator is broken: %d %s %s", code, out, errOut)
+				}
+			} else if code != 1 || len(out) != 0 {
+				t.Fatalf("without the canonical registry an unknown policy cannot be classified and must exit 1, got %d: %s", code, out)
+			}
+			t.Chdir(filepath.Join(root, "scheduler"))
+			e, _, _ := newPairPolicyEnv(t, f)
+			prev := pairPolicyScript
+			pairPolicyScript = script
+			t.Cleanup(func() { pairPolicyScript = prev })
+			e.bc.pairPolicyRun = runPairPolicyProcess
+			at := pairTestStart()
+			e.slot(at, "in-0")
+			e.step(at.Add(time.Second))
+			got, _ := pairPolicyStoredDecision(t, e, at)
+			if got.Kind != pairPolicyStatusHold || !strings.Contains(got.CoordinatorReason, "the policy run failed: exit status 1") {
+				t.Fatalf("a failed canonical load must hold the slot: %s %q", got.Kind, got.CoordinatorReason)
+			}
+			if len(got.Decision) > 0 && string(got.Decision) != "null" {
+				t.Fatalf("a failed run must save no policy decision evidence: %s", got.Decision)
+			}
+			e.assertNoPairAction(tc.name)
+		})
+	}
 }

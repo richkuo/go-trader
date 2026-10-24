@@ -199,11 +199,11 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 	if basketRankerStrategies[name] || name == basketMemberStrategyToken {
 		return "", nil, fmt.Errorf("%q is a basket evaluator or member token; configure it under the baskets block, not as a single-symbol strategy", name)
 	}
-	if name == pairMemberStrategyToken || pairPolicyStrategies[name] {
-		return "", nil, fmt.Errorf("%q is a research-only pair token; no operator command adds a pair member", name)
-	}
 	if evidence, refused := productionRefusedStrategies[name]; refused {
 		return "", nil, fmt.Errorf("strategy %q is production_refused (research-only, evidence %s); no config may reference it until a separate reviewed promotion", name, evidence)
+	}
+	if name == pairMemberStrategyToken || pairPolicyStrategies[name] {
+		return "", nil, fmt.Errorf("%q is a research-only pair token; no operator command adds a pair member", name)
 	}
 	if _, quote := quoteCapabilityStrategies[name]; quote || researchOnlyCloseStrategies[name] {
 		return "", nil, fmt.Errorf("strategy %q is quote-owned and research-only; operator routes cannot add it", name)
