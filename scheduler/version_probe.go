@@ -397,6 +397,9 @@ func probeCheckScripts(cfg *Config) error {
 		if err := probeOneCheckScriptFn("shared_scripts/simulate_strategy.py", simulateStrategyProbeArgv); err != nil {
 			return err
 		}
+		if err := probeOneCheckScriptFn(pairPolicyScript, pairPolicyProbeArgv); err != nil {
+			return err
+		}
 	}
 	return nil
 }
