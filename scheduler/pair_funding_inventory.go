@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"sort"
 	"strings"
@@ -27,6 +28,7 @@ type pairInventoryRow struct {
 	EventLatestMs int64
 	VisibleMs     int64
 	RecordedAtMs  int64
+	qty           *big.Rat
 }
 
 type pairVenueFill struct {
@@ -64,6 +66,11 @@ type pairFundingMember struct {
 	ctx          *pairFillContext
 	maxAppliedMs int64
 	integrity    []string
+	sum          *big.Rat
+	sumRows      int
+	expCache     []pairFundingInterval
+	expRows      int
+	expBuilds    int64
 }
 
 func pairBookRat(s *StrategyState, coin string) *big.Rat {
@@ -109,12 +116,23 @@ func pairDecimalOfRat(r *big.Rat) pairDecimal {
 	return pairDecimal(s)
 }
 
-func (m *pairFundingMember) total() *big.Rat {
-	t := new(big.Rat)
-	for _, r := range m.rows {
-		t.Add(t, pairRatOf(r.Delta))
+func (m *pairFundingMember) rowQty(i int) *big.Rat {
+	r := &m.rows[i]
+	if r.qty == nil {
+		r.qty = pairRatOf(r.Delta)
 	}
-	return t
+	return r.qty
+}
+
+func (m *pairFundingMember) total() *big.Rat {
+	if m.sum == nil || m.sumRows != len(m.rows) {
+		t := new(big.Rat)
+		for i := range m.rows {
+			t.Add(t, m.rowQty(i))
+		}
+		m.sum, m.sumRows = t, len(m.rows)
+	}
+	return new(big.Rat).Set(m.sum)
 }
 
 func (m *pairFundingMember) lastVisibleMs() int64 {
@@ -132,10 +150,12 @@ func (m *pairFundingMember) appendRow(r pairInventoryRow, before *big.Rat, befor
 	if r.ContractSize == "" {
 		r.ContractSize = m.contractSize
 	}
-	post := new(big.Rat).Add(m.total(), pairRatOf(r.Delta))
+	r.qty = pairRatOf(r.Delta)
+	post := new(big.Rat).Add(m.total(), r.qty)
 	r.Post = pairDecimalOfRat(post)
 	r.PositionID = pairRowPositionID(post, before, beforeID, afterID)
 	m.rows = append(m.rows, r)
+	m.sum, m.sumRows = new(big.Rat).Set(post), len(m.rows)
 	if m.maxAppliedMs > 0 && r.EventMs < m.maxAppliedMs {
 		m.integrity = append(m.integrity, fmt.Sprintf("inventory change %d (%s, %s base, possible time [%d, %d]) is earlier than the applied funding event at %d whose inventory completeness was already accepted; the applied charge is kept unchanged", r.Seq, r.Origin, r.Delta, r.EventMs, r.EventLatestMs, m.maxAppliedMs))
 	}
@@ -285,10 +305,10 @@ func pairRowStateAt(r pairInventoryRow, t int64) pairInventoryState {
 func (m *pairFundingMember) qtyBefore(t int64) (*big.Rat, bool) {
 	q := new(big.Rat)
 	amb := false
-	for _, r := range m.rows {
+	for i, r := range m.rows {
 		switch pairRowStateAt(r, t) {
 		case pairInventoryIncluded:
-			q.Add(q, pairRatOf(r.Delta))
+			q.Add(q, m.rowQty(i))
 		case pairInventoryAmbiguous:
 			amb = true
 		}
@@ -310,38 +330,72 @@ func (m *pairFundingMember) windowTouched(t, windowMs int64) bool {
 }
 
 func (m *pairFundingMember) exposure(throughMs int64) []pairFundingInterval {
-	if len(m.rows) == 0 {
-		return nil
+	if m.expCache == nil || m.expRows != len(m.rows) {
+		m.expCache, m.expRows = m.buildExposure(), len(m.rows)
+		m.expBuilds++
 	}
-	set := map[int64]bool{}
-	for _, r := range m.rows {
+	var out []pairFundingInterval
+	for _, iv := range m.expCache {
+		if iv.FromMs >= throughMs {
+			break
+		}
+		if iv.ThroughMs > throughMs {
+			iv.ThroughMs = throughMs
+		}
+		out = append(out, iv)
+	}
+	return out
+}
+
+func (m *pairFundingMember) buildExposure() []pairFundingInterval {
+	n := len(m.rows)
+	if n == 0 {
+		return []pairFundingInterval{}
+	}
+	byStart := make([]int, n)
+	byEnd := make([]int, n)
+	set := make(map[int64]bool, 2*n)
+	for i, r := range m.rows {
+		byStart[i], byEnd[i] = i, i
 		set[r.EventMs] = true
 		set[r.EventLatestMs] = true
 	}
+	sort.Slice(byStart, func(a, b int) bool { return m.rows[byStart[a]].EventMs < m.rows[byStart[b]].EventMs })
+	sort.Slice(byEnd, func(a, b int) bool { return m.rows[byEnd[a]].EventLatestMs < m.rows[byEnd[b]].EventLatestMs })
 	points := make([]int64, 0, len(set))
 	for p := range set {
 		points = append(points, p)
 	}
 	sort.Slice(points, func(i, j int) bool { return points[i] < points[j] })
-	var out []pairFundingInterval
-	add := func(from, through int64) {
-		if through > throughMs {
-			through = throughMs
+	q := new(big.Rat)
+	amb, si, ei := 0, 0, 0
+	out := []pairFundingInterval{}
+	for k, p := range points {
+		for si < n && m.rows[byStart[si]].EventMs <= p {
+			if r := m.rows[byStart[si]]; r.EventMs < r.EventLatestMs {
+				amb++
+			}
+			si++
 		}
-		if from >= through {
-			return
+		for ei < n && m.rows[byEnd[ei]].EventLatestMs <= p {
+			q.Add(q, m.rowQty(byEnd[ei]))
+			if r := m.rows[byEnd[ei]]; r.EventMs < r.EventLatestMs {
+				amb--
+			}
+			ei++
 		}
-		probe := from + 1
-		q, amb := m.qtyBefore(probe)
-		if amb || q.Sign() != 0 {
-			out = append(out, pairFundingInterval{FromMs: from, ThroughMs: through})
+		next := int64(math.MaxInt64)
+		if k+1 < len(points) {
+			next = points[k+1]
+		}
+		if amb > 0 || q.Sign() != 0 {
+			out = append(out, pairFundingInterval{FromMs: p, ThroughMs: next})
 		}
 	}
-	for i := 0; i+1 < len(points); i++ {
-		add(points[i], points[i+1])
+	if merged := pairFundingNormalize(out); merged != nil {
+		return merged
 	}
-	add(points[len(points)-1], throughMs)
-	return pairFundingNormalize(out)
+	return []pairFundingInterval{}
 }
 
 func (m *pairFundingMember) stretchStart(t int64) int64 {

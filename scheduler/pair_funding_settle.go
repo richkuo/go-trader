@@ -386,8 +386,8 @@ func (m *pairFundingMember) qtyRangeAt(t, windowMs int64) (*big.Rat, *big.Rat) {
 	if windowMs > 0 {
 		end = t + windowMs
 	}
-	for _, r := range m.rows {
-		d := pairRatOf(r.Delta)
+	for i, r := range m.rows {
+		d := m.rowQty(i)
 		switch {
 		case r.EventLatestMs < t:
 			lo.Add(lo, d)

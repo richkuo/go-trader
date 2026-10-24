@@ -1387,3 +1387,141 @@ func TestBasketPairFundingSteadyCycleHashesNoAppliedEvent(t *testing.T) {
 		t.Fatalf("each event writes one saved row, got %d", n)
 	}
 }
+
+func pairExposureFullRebuild(m *pairFundingMember, throughMs int64) []pairFundingInterval {
+	if len(m.rows) == 0 {
+		return nil
+	}
+	set := map[int64]bool{}
+	for _, r := range m.rows {
+		set[r.EventMs] = true
+		set[r.EventLatestMs] = true
+	}
+	points := make([]int64, 0, len(set))
+	for p := range set {
+		points = append(points, p)
+	}
+	sort.Slice(points, func(i, j int) bool { return points[i] < points[j] })
+	var out []pairFundingInterval
+	add := func(from, through int64) {
+		if through > throughMs {
+			through = throughMs
+		}
+		if from >= through {
+			return
+		}
+		q, amb := m.qtyBefore(from + 1)
+		if amb || q.Sign() != 0 {
+			out = append(out, pairFundingInterval{FromMs: from, ThroughMs: through})
+		}
+	}
+	for i := 0; i+1 < len(points); i++ {
+		add(points[i], points[i+1])
+	}
+	add(points[len(points)-1], throughMs)
+	return pairFundingNormalize(out)
+}
+
+func pairStretchFullRebuild(m *pairFundingMember, t int64) int64 {
+	for _, iv := range pairExposureFullRebuild(m, t) {
+		if iv.FromMs < t && t <= iv.ThroughMs {
+			return iv.FromMs
+		}
+	}
+	return t - 1
+}
+
+func TestPairFundingExposureCacheMatchesAFullRebuild(t *testing.T) {
+	t0 := pairTestStart()
+	e := newPairFundingEnv(t, func(d *pairFundingDocument, k map[string]pairEvidenceKey) {
+		d.Rates, d.Prices = []pairFundingRate{}, []pairFundingPrice{}
+		pairFundingAutoCoverage(d, k)
+	}, nil)
+	e.openMatched(0.05)
+	base := pairSlotAt(t0, 2).UnixMilli()
+	const total = 5000
+	deltas := []string{"0.02", "-0.01", "-0.01"}
+	for len(deltas) < total-1 {
+		deltas = append(deltas, "0.01", "-0.01")
+	}
+	post := new(big.Rat)
+	post.SetString("-0.05")
+	tx, err := e.db().db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, d := range deltas {
+		seq := int64(i + 2)
+		ev := base + int64(i)*1000
+		latest := ev
+		if i%10 == 0 {
+			latest = ev + 1500
+		}
+		dr, _ := new(big.Rat).SetString(d)
+		post.Add(post, dr)
+		if _, err := tx.Exec(`INSERT INTO pair_funding_inventory (scope, source, pair_id, strategy_id, seq, origin, delta_base_qty, post_base_qty, contract_size, event_ms, event_latest_ms, visible_ms, recorded_at_ms)
+			VALUES ('paper', '', ?, ?, ?, 'native', ?, ?, '0.01', ?, ?, ?, ?)`, pairTestID, pairTestOKX, seq, d, string(pairDecimalOfRat(post)), ev, latest, latest, latest); err != nil {
+			t.Fatalf("seed inventory row %d: %v", seq, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if string(pairDecimalOfRat(post)) != "-0.05" {
+		t.Fatalf("the seeded history must still sum to the saved book, got %s", pairDecimalOfRat(post))
+	}
+	now := time.UnixMilli(base + int64(total)*1000 + 600000)
+	e.now = now
+	e.restart()
+	m := e.rt().Pair.funding.members[pairTestOKX]
+	if len(m.rows) != total {
+		t.Fatalf("load reads every saved inventory row, got %d", len(m.rows))
+	}
+	cov := []pairFundingCoverageRecord{{Proven: []pairFundingInterval{{FromMs: base - 1, ThroughMs: base + 900000}, {FromMs: base + 1800000, ThroughMs: base + 3000000}}}}
+	same := func(label string, at int64) {
+		t.Helper()
+		got, want := m.exposure(at), pairExposureFullRebuild(m, at)
+		if len(got) != len(want) {
+			t.Fatalf("%s: the cached exposure has %d intervals, a full rebuild %d", label, len(got), len(want))
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Fatalf("%s: cached exposure interval %d is %+v, a full rebuild gives %+v", label, i, got[i], want[i])
+			}
+		}
+		_, gotGaps := pairFundingCoverageGaps(cov, got)
+		_, wantGaps := pairFundingCoverageGaps(cov, want)
+		if len(gotGaps) != len(wantGaps) {
+			t.Fatalf("%s: the cached exposure gives %d funding gaps, a full rebuild %d", label, len(gotGaps), len(wantGaps))
+		}
+		for i := range gotGaps {
+			if gotGaps[i] != wantGaps[i] {
+				t.Fatalf("%s: funding gap %d is %+v, a full rebuild gives %+v", label, i, gotGaps[i], wantGaps[i])
+			}
+		}
+		for _, probe := range []int64{base + 500, base + 2000500, at} {
+			if g, w := m.stretchStart(probe), pairStretchFullRebuild(m, probe); g != w {
+				t.Fatalf("%s: stretchStart(%d) is %d, a full rebuild gives %d", label, probe, g, w)
+			}
+		}
+	}
+	e.step(now)
+	same("after the restart", now.UnixMilli())
+	builds, rows := m.expBuilds, len(m.rows)
+	e.step(now.Add(time.Minute))
+	if len(m.rows) != rows {
+		t.Fatalf("no book change happened, but the history grew from %d to %d rows", rows, len(m.rows))
+	}
+	if m.expBuilds != builds {
+		t.Fatalf("a cycle with no new inventory rows rebuilt the exposure %d time(s)", m.expBuilds-builds)
+	}
+	e.mu.Lock()
+	late := base + 500
+	m.appendRow(pairInventoryRow{Origin: pairInventoryOriginCoordinator, ActionID: "late-action", FillID: "late-1", Delta: "0.01", EventMs: late, EventLatestMs: late, VisibleMs: now.Add(time.Minute).UnixMilli(), RecordedAtMs: now.Add(time.Minute).UnixMilli()}, m.total(), "", "")
+	e.mu.Unlock()
+	e.step(now.Add(2 * time.Minute))
+	if m.expBuilds == builds {
+		t.Fatal("a late earlier row must rebuild the cached exposure")
+	}
+	same("after a late earlier row", now.Add(2*time.Minute).UnixMilli())
+}
