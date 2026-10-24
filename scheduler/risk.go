@@ -1474,7 +1474,7 @@ func circuitBreakerPermitsManagement(reason, platform, stratType string, posQty 
 }
 
 func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
-	return checkRiskValued(sc, s, portfolioValue, prices, true, logger, assist)
+	return checkRiskValued(sc, s, portfolioValue, prices, true, nil, logger, assist)
 }
 
 func pairMemberRiskInputs(s *StrategyState, pm *pairMarks) (float64, map[string]float64, pairValueStatus) {
@@ -1492,14 +1492,14 @@ func pairMemberRiskInputs(s *StrategyState, pm *pairMarks) (float64, map[string]
 
 func checkPairMemberRisk(sc *StrategyConfig, s *StrategyState, pm *pairMarks, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string, pairValueStatus) {
 	pv, prices, status := pairMemberRiskInputs(s, pm)
-	ok, reason := checkRiskValued(sc, s, pv, prices, status.complete(), logger, assist)
+	ok, reason := checkRiskValued(sc, s, pv, prices, status.complete(), pm, logger, assist)
 	if !status.complete() && reason == "" {
 		reason = status.label() + "; the circuit-breaker drawdown uses the conservative member value and the peak is not updated this cycle"
 	}
 	return ok, reason, status
 }
 
-func checkRiskValued(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, valued bool, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
+func checkRiskValued(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, valued bool, pm *pairMarks, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
 	if sc != nil && sc.Type == "manual" {
 		return true, ""
 	}
@@ -1535,7 +1535,7 @@ func checkRiskValued(sc *StrategyConfig, s *StrategyState, portfolioValue float6
 		if sc != nil {
 			configLev = sc.Leverage
 		}
-		if pnlLoss, margin := perpsMarginDrawdownInputs(s, configLev, prices); margin > 0 {
+		if pnlLoss, margin, _ := perpsMarginDrawdownInputsMarked(s, configLev, prices, pm); margin > 0 {
 			loss = pnlLoss
 			denom = margin
 			denomLabel = "margin"
