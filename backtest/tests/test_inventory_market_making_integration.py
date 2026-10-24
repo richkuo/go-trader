@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -16,6 +17,7 @@ for _p in (_BACKTEST, os.path.join(_ROOT, "shared_strategies", "open")):
 import optimizer
 import quote_replay
 import run_backtest
+from inventory_market_making import spec_sha256
 from registry_loader import load_registry
 
 NAME = "inventory_market_making"
@@ -86,7 +88,11 @@ def test_the_committed_report_is_what_the_frozen_invocation_writes_without_a_pin
     assert got["verdict"] == committed["verdict"] == "INCONCLUSIVE"
     assert got["edge_source"] == "study_inconclusive"
     assert got["protocol_sha256"] == committed["protocol_sha256"]
-    assert got["audit"]["sources"] == committed["audit"]["sources"]
+    assert sorted(got["audit"]["sources"]) == sorted(committed["audit"]["sources"])
+    with open(os.path.join(_ROOT, "scheduler", "quote_policy_spec.go")) as fh:
+        go_spec = re.findall(r"^const quotePolicySpecJSON = `([^`]*)`$", fh.read(), re.M | re.S)
+    assert len(go_spec) == 1
+    assert spec_sha256(json.loads(go_spec[0])) == got["audit"]["policy_spec_sha256"] == committed["audit"]["policy_spec_sha256"]
     want = [r for r in committed["missing_inputs"] if "binary" not in r]
     assert [r for r in got["missing_inputs"] if "binary" not in r] == want
     assert any("no go-trader binary was supplied" in r for r in got["missing_inputs"])

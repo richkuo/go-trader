@@ -47,7 +47,7 @@ No variant was scored: no eligible input. The executable study, the integration 
 - `backtest/quote_replay.py` `a4199b77d7cb1c60c321d40f9431bd166b7499652e59c0f82251d5a4800d2972`
 - `backtest/trade_flow_replay.py` `badd02d175995110d694845e45ce58611df002b80f3660f5ad62b24a61dc79b4`
 - `scheduler/quote_coordinator.go` `8a45fcfe6e60a14109d234e846d3bdd25e3d4f2f7c283a7f5c779f30a7072c96`
-- `scheduler/quote_paper_venue.go` `8650df105c110edf472169b7f7334210e6fc3c5fda2572cab1c9e74ceed2b779`
+- `scheduler/quote_paper_venue.go` `182a279a4a77c9fda0c4ec6e2d828f0c9bbcbea79b0ab18913632043d92df047`
 - `scheduler/quote_policy.go` `d1207988915684b02b094010f3cefb8560242c48b9ef49bad952826a3c036ce7`
 - `scheduler/quote_policy_spec.go` `52554e741ad1c7c077420865b3b7874af9c1f5d65f883ec14edf1fd368a09346`
 - `scheduler/quote_replay.go` `bff54ef22b956bf1063fcb00c88b41f2ad92916ab0c9b080dc8c2138b50c63e6`

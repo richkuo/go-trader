@@ -253,13 +253,28 @@ func (v *quotePaperVenue) firstUncoveredAfter(p int64) int64 {
 	return p + 1
 }
 
-func (v *quotePaperVenue) anyRests() bool {
+func (v *quotePaperVenue) live() []*quotePaperOrder {
+	n := 0
 	for _, o := range v.byOrder {
 		if o.rests() || o.Status == quoteOutcomeTriggered {
-			return true
+			n++
 		}
 	}
-	return false
+	if n == len(v.byOrder) {
+		return v.byOrder
+	}
+	kept := make([]*quotePaperOrder, 0, n)
+	for _, o := range v.byOrder {
+		if o.rests() || o.Status == quoteOutcomeTriggered {
+			kept = append(kept, o)
+		}
+	}
+	v.byOrder = kept
+	return kept
+}
+
+func (v *quotePaperVenue) anyRests() bool {
+	return len(v.live()) > 0
 }
 
 func (v *quotePaperVenue) advanceTo(t int64) error {
@@ -289,7 +304,7 @@ func (v *quotePaperVenue) advanceTo(t int64) error {
 
 func (v *quotePaperVenue) onBook(b *quoteReplayBook) {
 	v.cur = b
-	for _, o := range v.byOrder {
+	for _, o := range v.live() {
 		if !o.rests() || (o.Req.Role != quoteRoleBid && o.Req.Role != quoteRoleAsk) || o.qa == nil {
 			continue
 		}
@@ -303,7 +318,7 @@ func (v *quotePaperVenue) onBook(b *quoteReplayBook) {
 
 func (v *quotePaperVenue) sortedResting(side string) []*quotePaperOrder {
 	var out []*quotePaperOrder
-	for _, o := range v.byOrder {
+	for _, o := range v.live() {
 		if o.rests() && o.Req.Side == side && (o.Req.Role == quoteRoleBid || o.Req.Role == quoteRoleAsk) {
 			out = append(out, o)
 		}
@@ -335,7 +350,7 @@ func (v *quotePaperVenue) reduceCap(side string) *big.Rat {
 }
 
 func (v *quotePaperVenue) cancelReduceOnlyAtFlat(atMs int64) error {
-	for _, o := range v.byOrder {
+	for _, o := range v.live() {
 		if !(o.rests() || o.Status == quoteOutcomeTriggered) || !o.Req.ReduceOnly {
 			continue
 		}
@@ -387,7 +402,7 @@ func (v *quotePaperVenue) bookFill(o *quotePaperOrder, size, px *big.Rat, atMs i
 }
 
 func (v *quotePaperVenue) onTrade(t *quoteReplayTrade) error {
-	for _, o := range append([]*quotePaperOrder(nil), v.byOrder...) {
+	for _, o := range append([]*quotePaperOrder(nil), v.live()...) {
 		if !o.rests() || o.Req.Role != quoteRoleStop || o.AcceptedAtMs >= t.RecvMs {
 			continue
 		}
@@ -792,7 +807,7 @@ type quotePaperCheckpoint struct {
 
 func (v *quotePaperVenue) checkpoint() quotePaperCheckpoint {
 	cp := quotePaperCheckpoint{ProcessedMs: v.processed, Seq: v.seq, IssueSeq: v.idSeq, Position: quoteDecimalText(v.position), BrokenAtMs: v.brokenAt}
-	for _, o := range v.byOrder {
+	for _, o := range v.live() {
 		if !o.rests() && o.Status != quoteOutcomeTriggered {
 			continue
 		}
