@@ -339,7 +339,7 @@ func (sdb *StateDB) migratePairSchema() error {
 	if _, err := sdb.db.Exec(pairQuoteUseDDL); err != nil {
 		return fmt.Errorf("create pair quote event uses: %w", err)
 	}
-	return nil
+	return sdb.migratePairFundingSchema()
 }
 
 func checkPendingGroupActionTx(tx *sql.Tx, rt *basketRuntime, a *basketAction) error {
@@ -668,6 +668,7 @@ type pairProgress struct {
 	Retries            map[string]pairRetry `json:"retries,omitempty"`
 	LastBound          *pairBoundRecord     `json:"last_bound,omitempty"`
 	CostEvidence       json.RawMessage      `json:"cost_evidence,omitempty"`
+	FundingBinding     json.RawMessage      `json:"funding_binding,omitempty"`
 }
 
 func (p *pairProgress) alerted(key string) bool {
@@ -751,6 +752,7 @@ type pairRuntimeState struct {
 	Uses      map[string]*pairQuoteEventUse
 	Intents   map[string]*entryIntent
 	admission *pairResearchAdmission
+	funding   *pairFundingRuntime
 
 	durableSeq int64
 }
@@ -885,6 +887,9 @@ func (sdb *StateDB) writePairTx(tx *sql.Tx, rt *basketRuntime, books map[string]
 	if err := checkSavedPairCostEvidenceTx(tx, rt); err != nil {
 		return nil, err
 	}
+	if err := checkSavedPairFundingBindingTx(tx, rt); err != nil {
+		return nil, err
+	}
 	if err := upsertBasketContractRow(tx, rt, nowMs); err != nil {
 		return nil, err
 	}
@@ -948,6 +953,9 @@ func (sdb *StateDB) writePairTx(tx *sql.Tx, rt *basketRuntime, books map[string]
 		if err := upsertEntryIntentRow(tx, sids[in.StrategyID], &write, withBook); err != nil {
 			return nil, err
 		}
+	}
+	if err := sdb.writePairFundingTx(tx, rt, sids, books, nowMs); err != nil {
+		return nil, err
 	}
 	if err := writePairProgressTx(tx, rt); err != nil {
 		return nil, err
@@ -1067,6 +1075,7 @@ func markPairDurable(rt *basketRuntime, books map[string]*StrategyState) {
 	}
 	rt.Pair.durableSeq = rt.Pair.Progress.Seq
 	rt.Pair.admission.markCostDurable(rt.Pair.Progress.CostEvidence)
+	markPairFundingDurable(rt, books)
 }
 
 func (sdb *StateDB) persistPairProgressTx(rt *basketRuntime) error {
@@ -1479,7 +1488,10 @@ func (sdb *StateDB) loadPairRecordsInto(out *basketFileRecords) error {
 		}
 		out.Progress[basketKey{Partition: RiskPartition{Scope: PortfolioScope(scope), Source: source}, BasketID: id}] = raw
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return sdb.loadPairFundingRecordsInto(out)
 }
 
 func (r *basketFileRecords) pairContract(k basketKey) bool {
@@ -1515,6 +1527,7 @@ func (r *basketFileRecords) pairPendingFor(k basketKey) []string {
 			}
 		}
 	}
+	out = append(out, r.Funding[k].open()...)
 	return out
 }
 
@@ -1643,6 +1656,9 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 				return fmt.Errorf("pair %s recovery evidence sits in the %s state file, but its members are owned by the %s file: %s", p.ID, otherRole, role, strings.Join(pending, "; "))
 			}
 		}
+		if r.Funding[k].any() {
+			return fmt.Errorf("pair %s funding records sit in the %s state file, but its members are owned by the %s file; funding evidence is never adopted from another file", p.ID, otherRole, role)
+		}
 	}
 	if r := records[role]; r != nil {
 		if raw, ok := r.Contracts[k]; ok {
@@ -1685,9 +1701,23 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 	if _, err := db.checkBasketOwnership(rt); err != nil {
 		return err
 	}
-	saved := progressSaved || pairRunHasSavedState(state, rt, p.ID)
+	var fundingRows *pairFundingFileRows
+	if r := records[role]; r != nil {
+		fundingRows = r.Funding[k]
+	}
+	saved := progressSaved || fundingRows.any() || pairRunHasSavedState(state, rt, p.ID)
 	if err := bindPairCostEvidence(rt, adm, saved); err != nil {
 		return err
+	}
+	if adm.kind == pairAdmissionResearch {
+		if err := bindPairFundingBinding(rt, adm, saved); err != nil {
+			return err
+		}
+		if err := st.loadPairFunding(state, rt, adm, fundingRows); err != nil {
+			return err
+		}
+	} else if fundingRows.any() || len(rt.Pair.Progress.FundingBinding) > 0 {
+		return fmt.Errorf("pair %s holds research funding records, but the %s admission has no funding owner", p.ID, adm.kind)
 	}
 	for _, m := range contract.Members {
 		if s := state.Strategies[m.StrategyID]; s != nil {

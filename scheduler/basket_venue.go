@@ -47,6 +47,7 @@ type basketVenueOutcome struct {
 
 	FillCoverage []pairConfirmedFill `json:"fill_coverage,omitempty"`
 	FeeCoverage  []pairFeeFill       `json:"fee_coverage,omitempty"`
+	Fills        []pairVenueFill     `json:"fills,omitempty"`
 }
 
 type pairMemberValuation struct {

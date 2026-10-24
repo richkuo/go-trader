@@ -446,7 +446,7 @@ func TestBasketPairContractEvidenceSelectionAtExplicitReference(t *testing.T) {
 		t.Fatalf("the scheduled evidence document must load: %v", err)
 	}
 	venues := newPairTestVenues(false)
-	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, pairResearchDeps{VenueFor: venues.factory(), Evidence: src, Quotes: newPairFixtureQuotes(t, doc).collector})
+	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, pairResearchDeps{VenueFor: venues.factory(), Evidence: src, Quotes: newPairFixtureQuotes(t, doc).collector, Funding: pairTestFunding(t, doc, nil)})
 	if err != nil {
 		t.Fatalf("admission with scheduled evidence: %v", err)
 	}
@@ -581,7 +581,7 @@ func TestBasketPairContractVersionOneAndEvidenceDigestResume(t *testing.T) {
 
 	before := dirDigest(t, e.dir)
 	changed := pairTestEvidence(t, e.doc, func(d *pairEvidenceDocument) { pairFindAcct(d, pairTestOKX).Equity = "6001" })
-	if _, _, err := resume(pairResearchDeps{VenueFor: e.venues.factory(), Evidence: changed, Quotes: newPairFixtureQuotes(t, e.doc).collector}); err == nil || !strings.Contains(err.Error(), "evidence document digest") {
+	if _, _, err := resume(pairResearchDeps{VenueFor: e.venues.factory(), Evidence: changed, Quotes: newPairFixtureQuotes(t, e.doc).collector, Funding: pairTestFunding(t, e.doc, nil)}); err == nil || !strings.Contains(err.Error(), "evidence document digest") {
 		t.Fatalf("a resume with a changed evidence document must be refused, got %v", err)
 	}
 	if dirDigest(t, e.dir) != before {

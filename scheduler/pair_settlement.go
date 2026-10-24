@@ -1252,8 +1252,11 @@ func (bc *basketCoordinator) bookPairLiveQuantity(rt *basketRuntime, a *basketAc
 	prevDefer := s.deferTradePersist
 	s.deferTradePersist = true
 	var booked basketBooking
+	fillCtx := bc.pairFillContextFor(rt, a, remaining, now.UnixMilli())
 	withStrategyBookClock(s, now, func() {
-		booked = bookPairFill(sc, s, bc.cfg, a, remaining, px, fee, obs, logger)
+		withPairFillContext(s, fillCtx, func() {
+			booked = bookPairFill(sc, s, bc.cfg, a, remaining, px, fee, obs, logger)
+		})
 	})
 	s.deferTradePersist = prevDefer
 	if !(booked.Qty > 0) {
