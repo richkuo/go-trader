@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 )
+
+const pairPolicyEscapedName = `"cross\u005fexchange\u005fperp\u005farbitrage"`
 
 func pairPolicyAdmissionDoc(t *testing.T, dir string, mutate func(p map[string]interface{})) []byte {
 	t.Helper()
@@ -32,6 +35,7 @@ func TestBasketPairPolicyParamsRefusedBeforeTypedDecode(t *testing.T) {
 		name   string
 		mutate func(p map[string]interface{})
 		want   []string
+		docHas string
 	}{
 		{name: "params absent", mutate: func(p map[string]interface{}) { delete(p, "params") }, want: []string{
 			"pairs[0].params: adverse_band_bps is missing", "pairs[0].params: entry_threshold_bps is missing",
@@ -55,9 +59,9 @@ func TestBasketPairPolicyParamsRefusedBeforeTypedDecode(t *testing.T) {
 			delete(p, "params")
 		}, want: []string{"pairs[0].params: entry_threshold_bps is missing"}},
 		{name: "escaped policy spelling with a bad value", mutate: func(p map[string]interface{}) {
-			p["policy"] = json.RawMessage(`"cross_exchange_perp_arbitrage"`)
+			p["policy"] = json.RawMessage(pairPolicyEscapedName)
 			p["params"].(map[string]interface{})["entry_threshold_bps"] = "5"
-		}, want: []string{"entry_threshold_bps must be a finite JSON number, got string"}},
+		}, want: []string{"entry_threshold_bps must be a finite JSON number, got string"}, docHas: pairPolicyEscapedName},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,6 +70,9 @@ func TestBasketPairPolicyParamsRefusedBeforeTypedDecode(t *testing.T) {
 				p["underlying"] = "btc"
 				tc.mutate(p)
 			})
+			if tc.docHas != "" && !bytes.Contains(doc, []byte(tc.docHas)) {
+				t.Fatalf("the research document must carry the raw spelling %s: %s", tc.docHas, doc)
+			}
 			venues := newPairTestVenues(false)
 			_, _, err := newPairResearchAdmission(doc, "run-1", dir, false, pairTestDeps(t, doc, venues))
 			if err == nil {
@@ -90,6 +97,9 @@ func TestBasketPairPolicyParamsRefusedBeforeTypedDecode(t *testing.T) {
 				p["params"] = map[string]interface{}{"entry_threshold_bps": 5, "exit_threshold_bps": 1, "adverse_band_bps": 0, "funding_allowance_bps": 0}
 				tc.mutate(p)
 			})
+			if tc.docHas != "" && !bytes.Contains(fixtureDoc, []byte(tc.docHas)) {
+				t.Fatalf("the controlled fixture must carry the raw spelling %s: %s", tc.docHas, fixtureDoc)
+			}
 			deps := pairLiveShapedDeps{
 				VenueFor:     newPairTestVenues(true).factory(),
 				HLCloser:     func(string, *float64, []int64) (*HyperliquidCloseResult, error) { return nil, fmt.Errorf("no close") },
@@ -123,5 +133,23 @@ func TestBasketPairPolicyParamsBoundaryValuesAreAdmitted(t *testing.T) {
 	}
 	if _, _, err := buildAddStrategyEntry(pairPolicyCrossExchangePerpArbitrage, "hyperliquid", "BTC"); err == nil || !strings.Contains(err.Error(), "research-only pair token") {
 		t.Fatalf("the add-strategy command must refuse the production pair policy name: %v", err)
+	}
+}
+
+func TestBasketPairPolicyEscapedPolicySpellingIsAdmitted(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "run")
+	doc := pairPolicyAdmissionDoc(t, dir, func(p map[string]interface{}) {
+		p["policy"] = json.RawMessage(pairPolicyEscapedName)
+	})
+	if !bytes.Contains(doc, []byte(pairPolicyEscapedName)) {
+		t.Fatalf("the research document must carry the escaped spelling: %s", doc)
+	}
+	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, pairTestDeps(t, doc, newPairTestVenues(false)))
+	if err != nil {
+		t.Fatalf("the escaped spelling with four valid parameters must be admitted: %v", err)
+	}
+	defer adm.release()
+	if cfg.Pairs[0].Policy != pairPolicyCrossExchangePerpArbitrage || len(cfg.Pairs[0].Params) != 4 {
+		t.Fatalf("the admitted pair must carry the plain policy name and its four parameters: %+v", cfg.Pairs[0])
 	}
 }

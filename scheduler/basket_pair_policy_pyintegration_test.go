@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -782,6 +783,13 @@ elif mode == "oversize_decision":
 elif mode == "escaped_decision":
     res["decision"] = {"pad": "<" * (60 << 10)}
     print(json.dumps(res))
+elif mode == "escaped_hold":
+    for k in ("targets", "orientation"):
+        res.pop(k)
+    res["status"] = "hold"
+    res["hold_reason"] = "stub policy hold"
+    res["decision"] = {"pad": "<" * (60 << 10)}
+    print(json.dumps(res))
 elif mode == "stdout_overflow":
     sys.stdout.write("x" * (300 << 10))
     sys.stdout.flush()
@@ -807,6 +815,33 @@ func pairPolicyUseStub(t *testing.T) {
 	t.Cleanup(func() { pairPolicyScript = prev })
 }
 
+func pairCaptureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(done)
+	}()
+	defer func() {
+		os.Stdout = orig
+		w.Close()
+		<-done
+		r.Close()
+	}()
+	fn()
+	os.Stdout = orig
+	w.Close()
+	<-done
+	return buf.String()
+}
+
 func (e *pairTestEnv) assertNoPairAction(label string) {
 	e.t.Helper()
 	if n := e.count(`SELECT COUNT(*) FROM basket_member_actions`); n != 0 {
@@ -822,8 +857,10 @@ func TestBasketPairPolicyRealProcessFailuresHold(t *testing.T) {
 		kind     string
 		reason   string
 		decision bool
+		logHas   []string
+		logNot   []string
 	}{
-		{mode: "valid", at: time.Second, kind: pairPolicyStatusEnter, decision: true},
+		{mode: "valid", at: time.Second, kind: pairPolicyStatusEnter, decision: true, logHas: []string{"enter decision frozen (long_hyperliquid_short_okx"}, logNot: []string{" held: "}},
 		{mode: "exit1", at: time.Second, kind: pairPolicyStatusHold, reason: "the policy run failed: exit status 1"},
 		{mode: "duplicate", at: time.Second, kind: pairPolicyStatusHold, reason: "duplicate object key"},
 		{mode: "trailing", at: time.Second, kind: pairPolicyStatusHold, reason: "trailing value"},
@@ -831,7 +868,10 @@ func TestBasketPairPolicyRealProcessFailuresHold(t *testing.T) {
 		{mode: "malformed", at: time.Second, kind: pairPolicyStatusHold, reason: "invalid policy output: unreadable result"},
 		{mode: "null_decision", at: time.Second, kind: pairPolicyStatusHold, reason: "decision must be a JSON object"},
 		{mode: "oversize_decision", at: time.Second, kind: pairPolicyStatusHold, reason: "above the 65536-byte limit"},
-		{mode: "escaped_decision", at: time.Second, kind: pairPolicyStatusHold, reason: "above the 98304-byte limit", decision: true},
+		{mode: "escaped_decision", at: time.Second, kind: pairPolicyStatusHold, reason: "above the 98304-byte limit", decision: true,
+			logHas: []string{"held: the decision record is", "above the 98304-byte limit"}, logNot: []string{"decision frozen"}},
+		{mode: "escaped_hold", at: time.Second, kind: pairPolicyStatusHold, reason: "above the 98304-byte limit", decision: true,
+			logHas: []string{"held: the decision record is", "above the 98304-byte limit"}, logNot: []string{"stub policy hold", "decision frozen"}},
 		{mode: "stdout_overflow", at: time.Second, kind: pairPolicyStatusHold, reason: "script stdout exceeded the 262144 byte output limit"},
 		{mode: "stderr_overflow", at: time.Second, kind: pairPolicyStatusHold, reason: "script stderr exceeded the 65536 byte output limit"},
 		{mode: "sleep", at: 59 * time.Second, kind: pairPolicyStatusHold, reason: "timed out"},
@@ -846,7 +886,17 @@ func TestBasketPairPolicyRealProcessFailuresHold(t *testing.T) {
 			e.bc.pairPolicyRun = runPairPolicyProcess
 			at := pairTestStart()
 			e.slot(at, "in-0")
-			e.step(at.Add(tc.at))
+			logged := pairCaptureStdout(t, func() { e.step(at.Add(tc.at)) })
+			for _, w := range tc.logHas {
+				if !strings.Contains(logged, w) {
+					t.Fatalf("the slot log must name %q, the saved decision:\n%s", w, logged)
+				}
+			}
+			for _, w := range tc.logNot {
+				if strings.Contains(logged, w) {
+					t.Fatalf("the slot log must not name %q, a decision that was never saved:\n%s", w, logged)
+				}
+			}
 			got, _ := pairPolicyStoredDecision(t, e, at)
 			if got.Kind != tc.kind || !strings.Contains(got.CoordinatorReason, tc.reason) {
 				t.Fatalf("decision %s %q, want %s naming %q", got.Kind, got.CoordinatorReason, tc.kind, tc.reason)
