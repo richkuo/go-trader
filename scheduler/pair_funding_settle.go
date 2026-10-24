@@ -14,15 +14,26 @@ const (
 	pairObligationFundingGap        = "funding_gap"
 	pairObligationFundingIntegrity  = "funding_integrity"
 
-	pairFundingStatusIncomplete = "incomplete"
-	pairFundingStatusApplied    = "applied"
-	pairFundingStatusVoid       = "void"
+	pairFundingStatusIncomplete   = "incomplete"
+	pairFundingStatusApplied      = "applied"
+	pairFundingStatusVoid         = "void"
+	pairFundingStatusUnresolvable = "unresolvable"
 
 	pairFundingOrderIDPrefix = "pair_funding:"
 )
 
 func pairFundingObligation(kind string) bool {
 	return kind == pairObligationFundingIncomplete || kind == pairObligationFundingGap || kind == pairObligationFundingIntegrity
+}
+
+func pairFundingHoldsAccounting(kind string) bool {
+	return kind == pairObligationFundingIncomplete || kind == pairObligationFundingGap
+}
+
+type pairFundingHashMemo struct {
+	eventMs int64
+	rate    pairDecimal
+	hash    string
 }
 
 type pairFundingAppliedRef struct {
@@ -70,6 +81,22 @@ type pairFundingRuntime struct {
 	incomplete map[string]*pairFundingIncomplete
 	chainHead  int64
 	chainSaved []pairFundingChainRow
+	hashes     map[string]pairFundingHashMemo
+	hashMisses int64
+}
+
+func (f *pairFundingRuntime) sourceHash(r pairFundingRate) (string, error) {
+	id := pairFundingIdentity(r.Key, r.EventID, r.RuleVersion)
+	if m, ok := f.hashes[id]; ok && m.eventMs == r.EventMs && m.rate == r.Rate {
+		return m.hash, nil
+	}
+	f.hashMisses++
+	sh, err := pairFundingSourceHash(r)
+	if err != nil {
+		return "", err
+	}
+	f.hashes[id] = pairFundingHashMemo{eventMs: r.EventMs, rate: r.Rate, hash: sh}
+	return sh, nil
 }
 
 func pairFundingKeyOf(memberID, eventID, rule string) string {
@@ -78,7 +105,8 @@ func pairFundingKeyOf(memberID, eventID, rule string) string {
 
 func newPairFundingRuntime(adm *pairResearchAdmission, c basketContract) *pairFundingRuntime {
 	f := &pairFundingRuntime{source: adm.funding, binding: append([]byte(nil), adm.fundingBinding...), contract: c.Fingerprint(),
-		members: map[string]*pairFundingMember{}, applied: map[string]pairFundingAppliedRef{}, pending: map[string]*pairFundingApplication{}, incomplete: map[string]*pairFundingIncomplete{}}
+		members: map[string]*pairFundingMember{}, applied: map[string]pairFundingAppliedRef{}, pending: map[string]*pairFundingApplication{}, incomplete: map[string]*pairFundingIncomplete{},
+		hashes: map[string]pairFundingHashMemo{}}
 	coins := map[string]string{}
 	for _, m := range c.Members {
 		coins[m.StrategyID] = m.Coin
@@ -261,13 +289,13 @@ func (bc *basketCoordinator) stepPairFunding(rt *basketRuntime, in basketCycleIn
 	}
 }
 
-func pairFundingDedupeRates(rates []pairFundingRate) ([]pairFundingRate, map[string]string) {
+func pairFundingDedupeRates(rates []pairFundingRate, hash func(pairFundingRate) (string, error)) ([]pairFundingRate, map[string]string) {
 	out := []pairFundingRate{}
 	seen := map[string]string{}
 	conflicts := map[string]string{}
 	for _, r := range rates {
 		id := pairFundingIdentity(r.Key, r.EventID, r.RuleVersion)
-		sh, err := pairFundingSourceHash(r)
+		sh, err := hash(r)
 		if err != nil {
 			conflicts[id] = err.Error()
 			continue
@@ -332,6 +360,86 @@ func (bc *basketCoordinator) voidFundingIncomplete(rt *basketRuntime, f *pairFun
 	return true
 }
 
+func (bc *basketCoordinator) noteFundingUnresolvable(rt *basketRuntime, f *pairFundingRuntime, m *pairFundingMember, r pairFundingRate, sourceHash, reason, detail string, now time.Time) bool {
+	key := pairFundingKeyOf(m.memberID, r.EventID, r.RuleVersion)
+	nowMs := now.UnixMilli()
+	cur := f.incomplete[key]
+	if cur != nil && cur.Status == pairFundingStatusUnresolvable {
+		return false
+	}
+	if cur == nil {
+		cur = &pairFundingIncomplete{MemberID: m.memberID, EventID: r.EventID, RuleVersion: r.RuleVersion, EventMs: r.EventMs, CreatedMs: nowMs}
+		f.incomplete[key] = cur
+	}
+	if cur.SourceHash == "" {
+		cur.SourceHash = sourceHash
+	}
+	cur.Status, cur.Reason, cur.Detail, cur.UpdatedMs, cur.dirty = pairFundingStatusUnresolvable, reason, detail, nowMs, true
+	rt.Pair.Progress.clearObligation(pairObligationFundingIncomplete, m.memberID, r.EventID+"|"+r.RuleVersion)
+	bc.pairAlert(rt, "funding-unresolvable|"+key, fmt.Sprintf("CRITICAL pair %s member %s funding event %s (%s) can never settle from the saved inventory history: %s: %s; no charge is booked, the event is saved as unresolvable with this detail, and it does not hold pair completion", rt.Contract.BasketID, m.memberID, r.EventID, r.RuleVersion, reason, detail), true)
+	return true
+}
+
+func (m *pairFundingMember) qtyRangeAt(t, windowMs int64) (*big.Rat, *big.Rat) {
+	lo, hi := new(big.Rat), new(big.Rat)
+	end := t
+	if windowMs > 0 {
+		end = t + windowMs
+	}
+	for _, r := range m.rows {
+		d := pairRatOf(r.Delta)
+		switch {
+		case r.EventLatestMs < t:
+			lo.Add(lo, d)
+			hi.Add(hi, d)
+		case r.EventMs < end:
+			if d.Sign() < 0 {
+				lo.Add(lo, d)
+			} else {
+				hi.Add(hi, d)
+			}
+		}
+	}
+	return lo, hi
+}
+
+func (m *pairFundingMember) positionBefore(t int64) string {
+	var best *pairInventoryRow
+	for i := range m.rows {
+		r := &m.rows[i]
+		if r.EventLatestMs >= t {
+			continue
+		}
+		if best == nil || r.EventLatestMs > best.EventLatestMs || (r.EventLatestMs == best.EventLatestMs && r.Seq > best.Seq) {
+			best = r
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return best.PositionID
+}
+
+func pairFundingUnknownAmount(lo, hi *big.Rat, rule pairFundingRule, ruleOK bool, rate pairDecimal, prices []pairFundingPrice, t int64) string {
+	out := fmt.Sprintf("the signed base position before %d lies between %s and %s", t, pairDecimalOfRat(lo), pairDecimalOfRat(hi))
+	if !ruleOK {
+		return out + "; the charge is unknown"
+	}
+	price, why := pairFundingPriceFor(prices, rule.PriceKind, t)
+	rateRat, rerr := rate.rat()
+	if why != "" || price.EvidenceID == "" || rerr != nil {
+		return out + "; the charge is unknown"
+	}
+	pxRat, _ := price.Price.rat()
+	one := big.NewRat(1, 1)
+	a, _, err1 := pairFundingAmounts(lo, pxRat, rateRat, one)
+	b, _, err2 := pairFundingAmounts(hi, pxRat, rateRat, one)
+	if err1 != nil || err2 != nil {
+		return out + "; the charge is unknown"
+	}
+	return fmt.Sprintf("%s; the unknown native charge lies between %s and %s %s (rate %s, %s price %s)", out, a, b, rule.Currency, rate, rule.PriceKind, price.Price)
+}
+
 func pairFundingPriceFor(prices []pairFundingPrice, kind string, atMs int64) (pairFundingPrice, string) {
 	var best *pairFundingPrice
 	for i := range prices {
@@ -384,7 +492,7 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 		return 0, false
 	}
 	hInv := bc.pairInventoryThrough(rt, m)
-	rates, conflicts := pairFundingDedupeRates(got.Rates)
+	rates, conflicts := pairFundingDedupeRates(got.Rates, f.sourceHash)
 	for _, r := range got.Rates {
 		id := pairFundingIdentity(r.Key, r.EventID, r.RuleVersion)
 		if why, bad := conflicts[id]; bad {
@@ -394,7 +502,7 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 	}
 	for idx, r := range rates {
 		key := pairFundingKeyOf(m.memberID, r.EventID, r.RuleVersion)
-		sh, _ := pairFundingSourceHash(r)
+		sh, _ := f.sourceHash(r)
 		if ref, ok := f.applied[key]; ok {
 			if ref.SourceHash != sh {
 				m.integrity = append(m.integrity, fmt.Sprintf("funding event %s was applied from source %s, but the input now carries source %s for the same identity", r.EventID, shortFingerprint(ref.SourceHash), shortFingerprint(sh)))
@@ -404,6 +512,12 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 		if app, ok := f.pending[key]; ok {
 			if app.Event.SourceHash != sh {
 				m.integrity = append(m.integrity, fmt.Sprintf("funding event %s is staged from source %s, but the input now carries source %s", r.EventID, shortFingerprint(app.Event.SourceHash), shortFingerprint(sh)))
+			}
+			continue
+		}
+		if cur := f.incomplete[key]; cur != nil && cur.Status == pairFundingStatusUnresolvable {
+			if cur.SourceHash != "" && cur.SourceHash != sh {
+				m.integrity = append(m.integrity, fmt.Sprintf("funding event %s was saved as unresolvable from source %s, but the input now carries source %s for the same identity", r.EventID, shortFingerprint(cur.SourceHash), shortFingerprint(sh)))
 			}
 			continue
 		}
@@ -434,15 +548,22 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 		}
 		q, amb := m.qtyBefore(t)
 		if amb {
-			changed = bc.noteFundingIncomplete(rt, f, m, r, sh, pairFundingReasonFillTime, fmt.Sprintf("a saved inventory change has an unknown time around %d", t), now) || changed
+			lo, hi := m.qtyRangeAt(t, 0)
+			changed = bc.noteFundingUnresolvable(rt, f, m, r, sh, pairFundingReasonFillTime, fmt.Sprintf("a saved inventory change has an unknown time around %d; %s", t, pairFundingUnknownAmount(lo, hi, rule, ruleOK, r.Rate, got.Prices, t)), now) || changed
 			continue
 		}
 		if window > 0 && m.windowTouched(t, window) {
-			changed = bc.noteFundingIncomplete(rt, f, m, r, sh, pairFundingReasonAssessment, fmt.Sprintf("an inventory change may lie inside the venue assessment window [%d, %d)", t, t+window), now) || changed
+			lo, hi := m.qtyRangeAt(t, window)
+			changed = bc.noteFundingUnresolvable(rt, f, m, r, sh, pairFundingReasonAssessment, fmt.Sprintf("an inventory change may lie inside the venue assessment window [%d, %d); %s", t, t+window, pairFundingUnknownAmount(lo, hi, rule, ruleOK, r.Rate, got.Prices, t)), now) || changed
 			continue
 		}
 		if q.Sign() == 0 {
 			changed = bc.voidFundingIncomplete(rt, f, m, r, fmt.Sprintf("the inventory before %d is proven zero", t), now) || changed
+			continue
+		}
+		positionID := m.positionBefore(t)
+		if positionID == "" {
+			changed = bc.noteFundingUnresolvable(rt, f, m, r, sh, pairFundingReasonPositionUnknown, fmt.Sprintf("the saved inventory history holds %s base before %d but names no position identity; %s", pairDecimalOfRat(q), t, pairFundingUnknownAmount(q, q, rule, ruleOK, r.Rate, got.Prices, t)), now) || changed
 			continue
 		}
 		if !ruleOK {
@@ -527,7 +648,7 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 			changed = bc.noteFundingIncomplete(rt, f, m, r, sh, pairFundingReasonArithmetic, "the USD amount has no finite float projection", now) || changed
 			continue
 		}
-		bc.stagePairFunding(rt, f, m, s, sealed, raw, amount, now)
+		bc.stagePairFunding(rt, f, m, s, sealed, raw, amount, positionID, now)
 		applied++
 		changed = true
 	}
@@ -535,7 +656,7 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 	return applied, changed
 }
 
-func (bc *basketCoordinator) stagePairFunding(rt *basketRuntime, f *pairFundingRuntime, m *pairFundingMember, s *StrategyState, ev pairFundingEvent, raw []byte, amount float64, now time.Time) {
+func (bc *basketCoordinator) stagePairFunding(rt *basketRuntime, f *pairFundingRuntime, m *pairFundingMember, s *StrategyState, ev pairFundingEvent, raw []byte, amount float64, positionID string, now time.Time) {
 	key := pairFundingKeyOf(m.memberID, ev.EventID, ev.RuleVersion)
 	delete(f.incomplete, key)
 	rt.Pair.Progress.clearObligation(pairObligationFundingIncomplete, m.memberID, ev.EventID+"|"+ev.RuleVersion)
@@ -547,6 +668,7 @@ func (bc *basketCoordinator) stagePairFunding(rt *basketRuntime, f *pairFundingR
 			Timestamp:       time.UnixMilli(ev.EventMs).UTC(),
 			StrategyID:      s.ID,
 			Symbol:          m.coin,
+			PositionID:      positionID,
 			Side:            "funding",
 			TradeType:       TradeTypeFunding,
 			Details:         fmt.Sprintf("Pair funding %s on %s %s: -(qty %s x %s price %s x rate %s) = %s %s x %s USD/%s = $%s (rule %s)", ev.EventID, m.key.Provider, m.key.Instrument, ev.SignedBaseQty, pairFundingPriceKindOf(ev.RuleVersion), ev.NativeMark, ev.Rate, ev.NativeAmount, ev.Currency, ev.Conversion.RateUSD, ev.Currency, ev.USDAmount, ev.RuleVersion),

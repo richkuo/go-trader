@@ -27,35 +27,36 @@ type storageRiskRow struct {
 }
 
 type storageFileInspection struct {
-	Role                 storageRole          `json:"role"`
-	Path                 string               `json:"path"`
-	Canonical            string               `json:"canonical_path"`
-	Present              bool                 `json:"present"`
-	LockHeld             bool                 `json:"lock_held"`
-	LockHolderPID        int                  `json:"lock_holder_pid,omitempty"`
-	ScopesOwned          []PortfolioScope     `json:"scopes_owned"`
-	PartitionsOwned      []string             `json:"partitions_owned"`
-	Strategies           []storageStrategyRow `json:"strategies"`
-	Orphans              []storageStrategyRow `json:"orphans"`
-	PendingActions       int                  `json:"pending_manual_actions"`
-	RiskRows             []storageRiskRow     `json:"portfolio_risk_rows"`
-	LegacyUnscoped       bool                 `json:"legacy_unscoped_risk_row"`
-	EntryDecisions       int                  `json:"entry_decision_rows"`
-	EntryUnmapped        int                  `json:"entry_unmapped_rows"`
-	EntryHeld            []string             `json:"unresolved_entry_intents"`
-	RobinhoodRows        int                  `json:"robinhood_order_attempt_rows"`
-	RobinhoodHeld        []string             `json:"unresolved_robinhood_order_attempts"`
-	BasketRebalances     int                  `json:"basket_rebalance_rows"`
-	BasketPending        []string             `json:"pending_basket_recovery"`
-	PairFunding          int                  `json:"pair_funding_event_rows"`
-	PairFundingApplied   int                  `json:"pair_funding_applied_rows"`
-	PairFundingInventory int                  `json:"pair_funding_inventory_rows"`
-	PairFundingPending   []string             `json:"pending_pair_funding"`
-	ReplayRuns           []string             `json:"basket_replay_runs,omitempty"`
-	QuoteReplayRuns      []string             `json:"quote_replay_runs,omitempty"`
-	QuoteOwners          int                  `json:"quote_owner_contracts"`
-	QuotePending         []string             `json:"pending_quote_recovery"`
-	FillCostPolicies     []string             `json:"fill_cost_policies,omitempty"`
+	Role                    storageRole          `json:"role"`
+	Path                    string               `json:"path"`
+	Canonical               string               `json:"canonical_path"`
+	Present                 bool                 `json:"present"`
+	LockHeld                bool                 `json:"lock_held"`
+	LockHolderPID           int                  `json:"lock_holder_pid,omitempty"`
+	ScopesOwned             []PortfolioScope     `json:"scopes_owned"`
+	PartitionsOwned         []string             `json:"partitions_owned"`
+	Strategies              []storageStrategyRow `json:"strategies"`
+	Orphans                 []storageStrategyRow `json:"orphans"`
+	PendingActions          int                  `json:"pending_manual_actions"`
+	RiskRows                []storageRiskRow     `json:"portfolio_risk_rows"`
+	LegacyUnscoped          bool                 `json:"legacy_unscoped_risk_row"`
+	EntryDecisions          int                  `json:"entry_decision_rows"`
+	EntryUnmapped           int                  `json:"entry_unmapped_rows"`
+	EntryHeld               []string             `json:"unresolved_entry_intents"`
+	RobinhoodRows           int                  `json:"robinhood_order_attempt_rows"`
+	RobinhoodHeld           []string             `json:"unresolved_robinhood_order_attempts"`
+	BasketRebalances        int                  `json:"basket_rebalance_rows"`
+	BasketPending           []string             `json:"pending_basket_recovery"`
+	PairFunding             int                  `json:"pair_funding_event_rows"`
+	PairFundingApplied      int                  `json:"pair_funding_applied_rows"`
+	PairFundingInventory    int                  `json:"pair_funding_inventory_rows"`
+	PairFundingPending      []string             `json:"pending_pair_funding"`
+	PairFundingUnresolvable []string             `json:"unresolvable_pair_funding,omitempty"`
+	ReplayRuns              []string             `json:"basket_replay_runs,omitempty"`
+	QuoteReplayRuns         []string             `json:"quote_replay_runs,omitempty"`
+	QuoteOwners             int                  `json:"quote_owner_contracts"`
+	QuotePending            []string             `json:"pending_quote_recovery"`
+	FillCostPolicies        []string             `json:"fill_cost_policies,omitempty"`
 }
 
 type storageInspection struct {
@@ -414,6 +415,9 @@ func formatStorageInspection(si storageInspection) string {
 		}
 		for _, line := range fi.PairFundingPending {
 			fmt.Fprintf(&b, "    PENDING PAIR FUNDING %s\n", line)
+		}
+		for _, line := range fi.PairFundingUnresolvable {
+			fmt.Fprintf(&b, "    UNRESOLVABLE PAIR FUNDING %s\n", line)
 		}
 		fmt.Fprintf(&b, "  quote owner contracts: %d\n", fi.QuoteOwners)
 		for _, line := range fi.QuotePending {

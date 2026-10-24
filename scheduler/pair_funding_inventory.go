@@ -19,6 +19,7 @@ type pairInventoryRow struct {
 	FillID        string
 	Origin        string
 	ActionID      string
+	PositionID    string
 	Delta         pairDecimal
 	Post          pairDecimal
 	ContractSize  pairDecimal
@@ -82,6 +83,24 @@ func pairRatOf(d pairDecimal) *big.Rat {
 	return r
 }
 
+func pairBookPositionID(s *StrategyState, coin string) string {
+	pos := s.Positions[coin]
+	if pos == nil || pos.Quantity == 0 {
+		return ""
+	}
+	return ensurePositionTradeID(s.ID, coin, pos)
+}
+
+func pairRowPositionID(post, before *big.Rat, beforeID, afterID string) string {
+	if post.Sign() == 0 {
+		return ""
+	}
+	if beforeID != "" && before.Sign() == post.Sign() {
+		return beforeID
+	}
+	return afterID
+}
+
 func pairDecimalOfRat(r *big.Rat) pairDecimal {
 	s, err := pairRatDecimal(r)
 	if err != nil {
@@ -108,21 +127,23 @@ func (m *pairFundingMember) lastVisibleMs() int64 {
 	return v
 }
 
-func (m *pairFundingMember) appendRow(r pairInventoryRow) {
+func (m *pairFundingMember) appendRow(r pairInventoryRow, before *big.Rat, beforeID, afterID string) {
 	r.Seq = int64(len(m.rows)) + 1
 	if r.ContractSize == "" {
 		r.ContractSize = m.contractSize
 	}
 	post := new(big.Rat).Add(m.total(), pairRatOf(r.Delta))
 	r.Post = pairDecimalOfRat(post)
+	r.PositionID = pairRowPositionID(post, before, beforeID, afterID)
 	m.rows = append(m.rows, r)
 	if m.maxAppliedMs > 0 && r.EventMs < m.maxAppliedMs {
 		m.integrity = append(m.integrity, fmt.Sprintf("inventory change %d (%s, %s base, possible time [%d, %d]) is earlier than the applied funding event at %d whose inventory completeness was already accepted; the applied charge is kept unchanged", r.Seq, r.Origin, r.Delta, r.EventMs, r.EventLatestMs, m.maxAppliedMs))
 	}
 }
 
-func (m *pairFundingMember) reconcile(book *big.Rat, nowMs int64) {
-	diff := new(big.Rat).Sub(book, m.total())
+func (m *pairFundingMember) reconcile(book *big.Rat, positionID string, nowMs int64) {
+	before := m.total()
+	diff := new(big.Rat).Sub(book, before)
 	if diff.Sign() == 0 {
 		return
 	}
@@ -136,24 +157,24 @@ func (m *pairFundingMember) reconcile(book *big.Rat, nowMs int64) {
 	if lo < 1 {
 		lo = 1
 	}
-	m.appendRow(pairInventoryRow{Origin: pairInventoryOriginUnexplained, Delta: pairDecimalOfRat(diff), EventMs: lo, EventLatestMs: nowMs, VisibleMs: nowMs, RecordedAtMs: nowMs})
+	m.appendRow(pairInventoryRow{Origin: pairInventoryOriginUnexplained, Delta: pairDecimalOfRat(diff), EventMs: lo, EventLatestMs: nowMs, VisibleMs: nowMs, RecordedAtMs: nowMs}, before, "", positionID)
 }
 
 func (m *pairFundingMember) observe(s *StrategyState, nowMs int64) {
-	m.reconcile(pairBookRat(s, m.coin), nowMs)
+	m.reconcile(pairBookRat(s, m.coin), pairBookPositionID(s, m.coin), nowMs)
 	if nowMs > m.observedMs {
 		m.observedMs = nowMs
 	}
 }
 
-func (m *pairFundingMember) recordChange(before, after *big.Rat, nowMs int64) {
+func (m *pairFundingMember) recordChange(before, after *big.Rat, beforeID, afterID string, nowMs int64) {
 	delta := new(big.Rat).Sub(after, before)
 	if delta.Sign() == 0 {
 		return
 	}
 	ctx := m.ctx
 	if ctx == nil {
-		m.appendRow(pairInventoryRow{Origin: pairInventoryOriginNative, Delta: pairDecimalOfRat(delta), EventMs: nowMs, EventLatestMs: nowMs, VisibleMs: nowMs, RecordedAtMs: nowMs})
+		m.appendRow(pairInventoryRow{Origin: pairInventoryOriginNative, Delta: pairDecimalOfRat(delta), EventMs: nowMs, EventLatestMs: nowMs, VisibleMs: nowMs, RecordedAtMs: nowMs}, before, beforeID, afterID)
 		return
 	}
 	abs := new(big.Rat).Abs(delta)
@@ -179,7 +200,7 @@ func (m *pairFundingMember) recordChange(before, after *big.Rat, nowMs int64) {
 			if delta.Sign() < 0 {
 				d.Neg(d)
 			}
-			m.appendRow(pairInventoryRow{FillID: p.FillID, Origin: pairInventoryOriginCoordinator, ActionID: ctx.ActionID, Delta: pairDecimalOfRat(d), EventMs: p.EventMs, EventLatestMs: p.EventMs, VisibleMs: p.VisibleMs, RecordedAtMs: nowMs})
+			m.appendRow(pairInventoryRow{FillID: p.FillID, Origin: pairInventoryOriginCoordinator, ActionID: ctx.ActionID, Delta: pairDecimalOfRat(d), EventMs: p.EventMs, EventLatestMs: p.EventMs, VisibleMs: p.VisibleMs, RecordedAtMs: nowMs}, before, beforeID, afterID)
 		}
 		return
 	}
@@ -201,7 +222,7 @@ func (m *pairFundingMember) recordChange(before, after *big.Rat, nowMs int64) {
 	if vis < hi {
 		vis = hi
 	}
-	m.appendRow(pairInventoryRow{Origin: pairInventoryOriginCoordinator, ActionID: ctx.ActionID, Delta: pairDecimalOfRat(delta), EventMs: lo, EventLatestMs: hi, VisibleMs: vis, RecordedAtMs: nowMs})
+	m.appendRow(pairInventoryRow{Origin: pairInventoryOriginCoordinator, ActionID: ctx.ActionID, Delta: pairDecimalOfRat(delta), EventMs: lo, EventLatestMs: hi, VisibleMs: vis, RecordedAtMs: nowMs}, before, beforeID, afterID)
 }
 
 func pairInventoryTrack(s *StrategyState, symbols []string, run func()) bool {
@@ -225,9 +246,10 @@ func pairInventoryTrack(s *StrategyState, symbols []string, run func()) bool {
 	defer func() { m.active = false }()
 	nowMs := strategyBookNow(s).UnixMilli()
 	before := pairBookRat(s, m.coin)
-	m.reconcile(before, nowMs)
+	beforeID := pairBookPositionID(s, m.coin)
+	m.reconcile(before, beforeID, nowMs)
 	run()
-	m.recordChange(before, pairBookRat(s, m.coin), nowMs)
+	m.recordChange(before, pairBookRat(s, m.coin), beforeID, pairBookPositionID(s, m.coin), nowMs)
 	return true
 }
 

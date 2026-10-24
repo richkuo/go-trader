@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS pair_funding_events (
     event_id TEXT NOT NULL,
     rule_version TEXT NOT NULL,
     event_ms INTEGER NOT NULL CHECK (event_ms > 0),
-    status TEXT NOT NULL CHECK (status IN ('incomplete','applied','void')),
+    status TEXT NOT NULL CHECK (status IN ('incomplete','applied','void','unresolvable')),
     reason TEXT NOT NULL DEFAULT '',
     detail TEXT NOT NULL DEFAULT '',
     source_hash TEXT NOT NULL DEFAULT '',
@@ -44,15 +44,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_pair_funding_one_applied
     ON pair_funding_events(scope, source, strategy_id, provider, account_key, instrument, event_ms) WHERE status = 'applied';
 CREATE TRIGGER IF NOT EXISTS trg_pair_funding_events_applied_immutable
     BEFORE UPDATE ON pair_funding_events
-    WHEN OLD.status = 'applied'
+    WHEN OLD.status IN ('applied','unresolvable')
       OR NEW.pair_id != OLD.pair_id OR NEW.contract_fingerprint != OLD.contract_fingerprint OR NEW.provider != OLD.provider
       OR NEW.account_key != OLD.account_key OR NEW.instrument != OLD.instrument OR NEW.event_ms != OLD.event_ms
       OR (OLD.source_hash != '' AND NEW.source_hash != OLD.source_hash)
-    BEGIN SELECT RAISE(ABORT, 'an applied pair funding event and every event identity are immutable'); END;
+    BEGIN SELECT RAISE(ABORT, 'an applied or unresolvable pair funding event and every event identity are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS trg_pair_funding_events_applied_kept
     BEFORE DELETE ON pair_funding_events
-    WHEN OLD.status = 'applied'
-    BEGIN SELECT RAISE(ABORT, 'an applied pair funding event is never deleted'); END;
+    WHEN OLD.status IN ('applied','unresolvable')
+    BEGIN SELECT RAISE(ABORT, 'an applied or unresolvable pair funding event is never deleted'); END;
 CREATE TABLE IF NOT EXISTS pair_funding_inventory (
     scope TEXT NOT NULL CHECK (scope IN ('live','paper')),
     source TEXT NOT NULL DEFAULT '',
@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS pair_funding_inventory (
     fill_id TEXT NOT NULL DEFAULT '',
     origin TEXT NOT NULL CHECK (origin IN ('coordinator','native','unexplained')),
     action_id TEXT NOT NULL DEFAULT '',
+    position_id TEXT NOT NULL DEFAULT '',
     delta_base_qty TEXT NOT NULL,
     post_base_qty TEXT NOT NULL,
     contract_size TEXT NOT NULL,
@@ -206,7 +207,7 @@ func (sdb *StateDB) loadPairFundingRecordsInto(out *basketFileRecords) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	rows, err = sdb.db.Query(`SELECT scope, source, pair_id, strategy_id, seq, fill_id, origin, action_id, delta_base_qty, post_base_qty, contract_size,
+	rows, err = sdb.db.Query(`SELECT scope, source, pair_id, strategy_id, seq, fill_id, origin, action_id, position_id, delta_base_qty, post_base_qty, contract_size,
 		    event_ms, event_latest_ms, visible_ms, recorded_at_ms FROM pair_funding_inventory ORDER BY scope, source, pair_id, strategy_id, seq`)
 	if err != nil {
 		return fmt.Errorf("read pair funding inventory in the %s state file: %w", sdb.storageRoleOf(), err)
@@ -214,7 +215,7 @@ func (sdb *StateDB) loadPairFundingRecordsInto(out *basketFileRecords) error {
 	for rows.Next() {
 		var row pairInventoryRow
 		var scope, source, pairID, sid, delta, post, cs string
-		if err := rows.Scan(&scope, &source, &pairID, &sid, &row.Seq, &row.FillID, &row.Origin, &row.ActionID, &delta, &post, &cs,
+		if err := rows.Scan(&scope, &source, &pairID, &sid, &row.Seq, &row.FillID, &row.Origin, &row.ActionID, &row.PositionID, &delta, &post, &cs,
 			&row.EventMs, &row.EventLatestMs, &row.VisibleMs, &row.RecordedAtMs); err != nil {
 			rows.Close()
 			return err
@@ -325,11 +326,17 @@ func (st *StateStore) loadPairFunding(state *AppState, rt *basketRuntime, adm *p
 			if e.ContractFP == rt.Contract.Fingerprint() && !adm.evidence.hasConversion(ev.Conversion) {
 				return fmt.Errorf("pair %s applied funding event %s uses conversion %s, which is not a record of the bound evidence document", id, e.EventID, ev.Conversion.EvidenceID)
 			}
+			rate := pairFundingRate{Key: ev.Key, EventID: ev.EventID, RuleVersion: ev.RuleVersion, EventMs: ev.EventMs, Rate: ev.Rate}
+			sh, err := pairFundingSourceHash(rate)
+			if err != nil || sh != e.SourceHash {
+				return fmt.Errorf("pair %s applied funding event %s source hash %s is not the hash of its saved rate record; the saved state is kept unchanged", id, e.EventID, shortFingerprint(e.SourceHash))
+			}
+			f.hashes[pairFundingIdentity(ev.Key, ev.EventID, ev.RuleVersion)] = pairFundingHashMemo{eventMs: ev.EventMs, rate: ev.Rate, hash: sh}
 			f.applied[key] = pairFundingAppliedRef{EventMs: e.EventMs, SourceHash: e.SourceHash, EvidenceHash: e.EvidenceHash}
 			if e.EventMs > m.maxAppliedMs {
 				m.maxAppliedMs = e.EventMs
 			}
-		case pairFundingStatusIncomplete, pairFundingStatusVoid:
+		case pairFundingStatusIncomplete, pairFundingStatusVoid, pairFundingStatusUnresolvable:
 			f.incomplete[key] = &pairFundingIncomplete{MemberID: e.StrategyID, EventID: e.EventID, RuleVersion: e.RuleVersion, EventMs: e.EventMs, Status: e.Status, Reason: e.Reason, Detail: e.Detail, SourceHash: e.SourceHash, CreatedMs: e.CreatedMs, UpdatedMs: e.UpdatedMs}
 		default:
 			return fmt.Errorf("pair %s funding event %s has unknown status %q", id, e.EventID, e.Status)
@@ -470,15 +477,15 @@ func (sdb *StateDB) writePairFundingTx(tx *sql.Tx, rt *basketRuntime, sids map[s
 			continue
 		}
 		m := f.members[id]
-		m.reconcile(pairBookRat(s, m.coin), nowMs)
+		m.reconcile(pairBookRat(s, m.coin), pairBookPositionID(s, m.coin), nowMs)
 		for _, r := range m.rows {
 			if r.Seq <= m.durableSeq {
 				continue
 			}
-			res, err := tx.Exec(`INSERT INTO pair_funding_inventory (scope, source, pair_id, strategy_id, seq, fill_id, origin, action_id, delta_base_qty, post_base_qty,
-				    contract_size, event_ms, event_latest_ms, visible_ms, recorded_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			res, err := tx.Exec(`INSERT INTO pair_funding_inventory (scope, source, pair_id, strategy_id, seq, fill_id, origin, action_id, position_id, delta_base_qty, post_base_qty,
+				    contract_size, event_ms, event_latest_ms, visible_ms, recorded_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(scope, source, pair_id, strategy_id, seq) DO NOTHING`,
-				scope, source, pairID, sids[id], r.Seq, r.FillID, r.Origin, r.ActionID, string(r.Delta), string(r.Post), string(r.ContractSize),
+				scope, source, pairID, sids[id], r.Seq, r.FillID, r.Origin, r.ActionID, r.PositionID, string(r.Delta), string(r.Post), string(r.ContractSize),
 				r.EventMs, r.EventLatestMs, r.VisibleMs, r.RecordedAtMs)
 			if err != nil {
 				return fmt.Errorf("record pair %s member %s inventory change %d: %w", pairID, id, r.Seq, err)
@@ -516,14 +523,14 @@ func (sdb *StateDB) writePairFundingTx(tx *sql.Tx, rt *basketRuntime, sids map[s
 			    status = excluded.status, reason = excluded.reason, detail = excluded.detail,
 			    source_hash = CASE WHEN source_hash = '' THEN excluded.source_hash ELSE source_hash END,
 			    updated_at_ms = MAX(updated_at_ms, excluded.updated_at_ms)
-			WHERE status != 'applied'`,
+			WHERE status NOT IN ('applied','unresolvable')`,
 			scope, source, pairID, rt.Contract.Fingerprint(), sids[in.MemberID], m.key.Provider, m.key.AccountKey, m.key.Instrument, in.EventID,
 			in.RuleVersion, in.EventMs, in.Status, in.Reason, in.Detail, in.SourceHash, in.CreatedMs, in.UpdatedMs)
 		if err != nil {
 			return fmt.Errorf("record pair %s funding event %s for %s: %w", pairID, in.EventID, in.MemberID, err)
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
-			return fmt.Errorf("pair %s funding event %s for %s is already applied: %w", pairID, in.EventID, in.MemberID, errPairGuardMiss)
+			return fmt.Errorf("pair %s funding event %s for %s is already applied or unresolvable: %w", pairID, in.EventID, in.MemberID, errPairGuardMiss)
 		}
 	}
 	pkeys := make([]string, 0, len(f.pending))
@@ -544,7 +551,7 @@ func (sdb *StateDB) writePairFundingTx(tx *sql.Tx, rt *basketRuntime, sids map[s
 			ON CONFLICT(scope, source, strategy_id, event_id, rule_version) DO UPDATE SET
 			    status = 'applied', reason = '', detail = '', source_hash = excluded.source_hash, evidence_hash = excluded.evidence_hash,
 			    usd_amount = excluded.usd_amount, event_json = excluded.event_json, updated_at_ms = MAX(updated_at_ms, excluded.updated_at_ms)
-			WHERE status != 'applied' AND (source_hash = '' OR source_hash = excluded.source_hash)`,
+			WHERE status NOT IN ('applied','unresolvable') AND (source_hash = '' OR source_hash = excluded.source_hash)`,
 			scope, source, pairID, rt.Contract.Fingerprint(), sids[app.MemberID], m.key.Provider, m.key.AccountKey, m.key.Instrument, ev.EventID,
 			ev.RuleVersion, ev.EventMs, ev.SourceHash, ev.EvidenceHash, string(ev.USDAmount), string(app.JSON), app.AtMs, app.AtMs)
 		if err != nil {
@@ -643,6 +650,8 @@ func inspectPairFundingRows(db *StateDB, fi *storageFileInspection, ident storag
 			fi.PairFundingPending = append(fi.PairFundingPending, fmt.Sprintf("%s %s member %s funding event %s (%s): incomplete, %s", partitionLabel(part), pairID, owner, eventID, rule, reason))
 		case pairFundingStatusApplied:
 			fi.PairFundingApplied++
+		case pairFundingStatusUnresolvable:
+			fi.PairFundingUnresolvable = append(fi.PairFundingUnresolvable, fmt.Sprintf("%s %s member %s funding event %s (%s): unresolvable, %s", partitionLabel(part), pairID, owner, eventID, rule, reason))
 		}
 	}
 	rows.Close()

@@ -444,8 +444,11 @@ func TestBasketPairFundingUsesEventTimeInventory(t *testing.T) {
 	if err != nil || ev.SignedBaseQty != "-0.05" || ev.NativeAmount != "0.3" {
 		t.Fatalf("funding uses the inventory at the event time, not the receipt time: %+v %v", ev, err)
 	}
-	if status, reason, _ := e.fundingRow(pairTestOKX, pairFundingEventID("okx", "BTC-USDT-SWAP", tWindow)); status != pairFundingStatusIncomplete || reason != pairFundingReasonAssessment {
-		t.Fatalf("a fill inside the okx assessment window holds the event, got %q %q", status, reason)
+	if status, reason, _ := e.fundingRow(pairTestOKX, pairFundingEventID("okx", "BTC-USDT-SWAP", tWindow)); status != pairFundingStatusUnresolvable || reason != pairFundingReasonAssessment {
+		t.Fatalf("a fill inside the okx assessment window makes the event unresolvable, got %q %q", status, reason)
+	}
+	if n := len(e.fundingTrades(pairTestOKX)); n != 1 {
+		t.Fatalf("only the later event is charged; the unresolvable event books nothing, got %d rows", n)
 	}
 }
 
@@ -513,6 +516,18 @@ func TestBasketPairFundingContradictedCompletenessHolds(t *testing.T) {
 	}
 	if len(e.fundingTrades(pairTestOKX)) != 1 {
 		t.Fatalf("no second charge is booked (cash was %v)", cash)
+	}
+	pairQueryVenue(e, a, basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.05, CumNotional: 0.02*59800 + 0.03*59800, Terminal: true, CoverageThroughMs: t0.Add(10 * time.Minute).UnixMilli(),
+		Fills: []pairVenueFill{{FillID: "f1", BaseQty: 0.02, EventMs: a.SubmittedAtMs, VisibleMs: a.SubmittedAtMs}, {FillID: "f2", BaseQty: 0.03, EventMs: t0.Add(time.Minute).UnixMilli(), VisibleMs: t0.Add(4 * time.Minute).UnixMilli()}}})
+	for i := 5; i <= 9; i++ {
+		e.step(t0.Add(time.Duration(i) * time.Minute))
+	}
+	e.assertBooks("flattened after the integrity hold", 0, 0)
+	if e.lifecycle() != pairLifecycleFlat {
+		t.Fatalf("a recorded integrity fault must not hold completion forever once the pair is flat and resolved, got %s", e.lifecycle())
+	}
+	if !e.hasObligation(pairObligationFundingIntegrity, pairTestOKX) {
+		t.Fatal("the integrity fault stays saved after completion")
 	}
 }
 
@@ -1016,5 +1031,359 @@ func TestBasketPairFundingHyperliquidCoverageEndsAtTheLastRecord(t *testing.T) {
 	}
 	if e.hasObligation(pairObligationFundingGap, pairTestOKX) || len(e.fundingTrades(pairTestOKX)) != 0 {
 		t.Fatal("hyperliquid coverage never proves or charges okx funding")
+	}
+}
+
+func (e *pairTestEnv) memberAction(id, purpose string) *basketAction {
+	e.t.Helper()
+	for _, a := range e.actionsByPurpose(purpose) {
+		if a.StrategyID == id {
+			return a
+		}
+	}
+	e.t.Fatalf("no %s action for %s", purpose, id)
+	return nil
+}
+
+func (e *pairTestEnv) alertedPrefix(prefix string) bool {
+	for _, k := range e.rt().Pair.Progress.Alerts {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBasketPairFundingUnresolvableEventNeverTrapsTheLifecycle(t *testing.T) {
+	t0 := pairTestStart()
+	cases := []struct {
+		name   string
+		member string
+		event  int64
+		reason string
+		open   func(e *pairTestEnv)
+	}{
+		{name: "okx fill inside the assessment window", member: pairTestOKX, event: t0.UnixMilli(), reason: pairFundingReasonAssessment, open: func(e *pairTestEnv) {
+			at := t0.Add(time.Second).UnixMilli()
+			pairOpenVenue(e, pairTestOKX, basketVenueOutcome{Outcome: basketVenueFilled, Fills: []pairVenueFill{{FillID: "okx-open-1", BaseQty: 0.05, EventMs: at, VisibleMs: at}}})
+			e.openMatched(0.05)
+		}},
+		{name: "hyperliquid fill time spans the event", member: pairTestHL, event: pairSlotAt(t0, 1).Add(30 * time.Second).UnixMilli(), reason: pairFundingReasonFillTime, open: func(e *pairTestEnv) {
+			pairEnterHoldRunner(e, 0.05)
+			pairOpenVenue(e, pairTestHL, basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "no answer yet"})
+			e.slotStep(0)
+			e.slotStep(1)
+			hedge := e.memberAction(pairTestHL, pairPurposeEntry)
+			e.step(pairSlotAt(t0, 1).Add(50 * time.Second))
+			if status, reason, _ := e.fundingRow(pairTestHL, pairFundingEventID("hyperliquid", "BTC", pairSlotAt(t0, 1).Add(30*time.Second).UnixMilli())); status == pairFundingStatusUnresolvable || (status != "" && reason != pairFundingReasonInventory) {
+				t.Fatalf("while the hedge is unresolved the event only waits for inventory, got %q %q", status, reason)
+			}
+			pairQueryVenue(e, hedge, basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.05, CumNotional: 0.05 * 60000, Terminal: true})
+			e.step(pairSlotAt(t0, 2).Add(30 * time.Second))
+			e.assertBooks("matched after the late hedge answer", 0.05, -0.05)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eventID := pairFundingEventID("hyperliquid", "BTC", tc.event)
+			rule, kind, px := pairFundingRuleHyperliquid, pairFundingPriceOracle, "60000"
+			if tc.member == pairTestOKX {
+				eventID = pairFundingEventID("okx", "BTC-USDT-SWAP", tc.event)
+				rule, kind = pairFundingRuleOKX, pairFundingPriceMark
+			}
+			e := newPairFundingEnv(t, func(d *pairFundingDocument, k map[string]pairEvidenceKey) {
+				d.Rates = []pairFundingRate{pfRate(k[tc.member], rule, tc.event, "0.0001")}
+				d.Prices = []pairFundingPrice{pfPrice(k[tc.member], kind, tc.event, px)}
+				pairFundingAutoCoverage(d, k)
+			}, nil)
+			tc.open(e)
+			pairEnterExitRunner(e, 0.05)
+			e.slotStep(5)
+			e.assertBooks("exited", 0, 0)
+			e.step(pairSlotAt(t0, 6))
+			status, reason, _ := e.fundingRow(tc.member, eventID)
+			if status != pairFundingStatusUnresolvable || reason != tc.reason {
+				t.Fatalf("the event can never settle from the saved history, so it is saved unresolvable with %s, got %q %q", tc.reason, status, reason)
+			}
+			if n := len(e.fundingTrades(tc.member)); n != 0 {
+				t.Fatalf("an unresolvable event books no charge and no zero row, got %d rows", n)
+			}
+			if e.hasObligation(pairObligationFundingIncomplete, tc.member) {
+				t.Fatal("an unresolvable event leaves no open funding obligation")
+			}
+			if !e.alertedPrefix("funding-unresolvable|") {
+				t.Fatal("an unresolvable event raises one critical alert")
+			}
+			var detail string
+			if err := e.db().db.QueryRow(`SELECT detail FROM pair_funding_events WHERE strategy_id = ? AND event_id = ?`, tc.member, eventID).Scan(&detail); err != nil || !strings.Contains(detail, "lies between") {
+				t.Fatalf("the saved detail reports the unknown position and charge range, got %q %v", detail, err)
+			}
+			if e.lifecycle() != pairLifecycleFlat {
+				t.Fatalf("the exit filled flat with only an unresolvable funding event, so the lifecycle must leave exiting, got %s", e.lifecycle())
+			}
+			if _, err := e.db().db.Exec(`UPDATE pair_funding_events SET status = 'incomplete' WHERE event_id = ?`, eventID); err == nil {
+				t.Fatal("an unresolvable event is immutable")
+			}
+			e.restart()
+			e.step(pairSlotAt(t0, 7))
+			if status, _, _ := e.fundingRow(tc.member, eventID); status != pairFundingStatusUnresolvable || len(e.fundingTrades(tc.member)) != 0 {
+				t.Fatalf("a restart keeps the event unresolvable with no charge, got %q", status)
+			}
+			if e.lifecycle() != pairLifecycleFlat || e.hasObligation(pairObligationFundingIncomplete, tc.member) {
+				t.Fatalf("after a restart the pair stays flat with no funding hold, got %s", e.lifecycle())
+			}
+		})
+	}
+}
+
+func TestBasketPairFundingEvidenceHoldBlocksCompletionAndKeepsTheHeldPosition(t *testing.T) {
+	t0 := pairTestStart()
+	tOKX := pairSlotAt(t0, 2).UnixMilli()
+	receipt := pairSlotAt(t0, 10).UnixMilli()
+	event := pairFundingEventID("okx", "BTC-USDT-SWAP", tOKX)
+	e := newPairFundingEnv(t, func(d *pairFundingDocument, k map[string]pairEvidenceKey) {
+		d.Rates = []pairFundingRate{pfRate(k[pairTestOKX], pairFundingRuleOKX, tOKX, "0.0002")}
+		d.Prices = []pairFundingPrice{pfPrice(k[pairTestOKX], pairFundingPriceMark, tOKX, "60100")}
+		pairFundingAutoCoverage(d, k)
+	}, func(d *pairEvidenceDocument) {
+		for i := range d.Conversions {
+			c := d.Conversions[i]
+			if c.Key.MemberID != pairTestOKX || c.Currency != "USDT" {
+				continue
+			}
+			d.Conversions[i].ValidThroughMs = tOKX - 1
+			late := c
+			late.EvidenceID = "conv-okx-usdt-at-event"
+			late.ObservedMs, late.FirstReceiptMs = receipt, receipt
+			late.ValidFromMs, late.ValidThroughMs = tOKX, tOKX
+			late.RateUSD = "0.999"
+			after := c
+			after.EvidenceID = "conv-okx-usdt-after-event"
+			after.ValidFromMs = tOKX + 1
+			d.Conversions = append(d.Conversions, late, after)
+			return
+		}
+	})
+	e.openMatched(0.05)
+	pid := e.state.Strategies[pairTestOKX].Positions["BTC"].TradePositionID
+	if pid == "" {
+		t.Fatal("the okx member position needs an identity")
+	}
+	pairEnterExitRunner(e, 0.05)
+	e.slotStep(3)
+	e.assertBooks("exited", 0, 0)
+	e.step(pairSlotAt(t0, 4))
+	if status, reason, _ := e.fundingRow(pairTestOKX, event); status != pairFundingStatusIncomplete || reason != pairFundingReasonConversionCutoff {
+		t.Fatalf("a conversion received after the cutoff holds the event, got %q %q", status, reason)
+	}
+	if len(e.fundingTrades(pairTestOKX)) != 0 || !e.hasObligation(pairObligationFundingIncomplete, pairTestOKX) {
+		t.Fatal("a held event books nothing, not even zero, and keeps its obligation")
+	}
+	if e.lifecycle() != pairLifecycleExiting {
+		t.Fatalf("an event that waits for evidence still blocks completion, got %s", e.lifecycle())
+	}
+	e.restart()
+	e.step(pairSlotAt(t0, 5))
+	if e.lifecycle() != pairLifecycleExiting || len(e.fundingTrades(pairTestOKX)) != 0 {
+		t.Fatalf("a restart keeps the evidence hold, got %s", e.lifecycle())
+	}
+	e.step(time.UnixMilli(receipt))
+	if status, _, _ := e.fundingRow(pairTestOKX, event); status != pairFundingStatusApplied {
+		t.Fatalf("the event settles once the conversion is received, got %q", status)
+	}
+	rows := e.fundingTrades(pairTestOKX)
+	if len(rows) != 1 || rows[0].PositionID != pid {
+		t.Fatalf("the late charge carries the closed position %s that held the inventory at the event, got %+v", pid, rows)
+	}
+	var saved string
+	if err := e.db().db.QueryRow(`SELECT position_id FROM trades WHERE exchange_order_id = ?`, pairFundingOrderIDPrefix+pairFundingRuleOKX+":"+event).Scan(&saved); err != nil || saved != pid {
+		t.Fatalf("the saved funding row carries %s, got %q %v", pid, saved, err)
+	}
+	e.step(time.UnixMilli(receipt).Add(time.Minute))
+	if e.lifecycle() != pairLifecycleFlat {
+		t.Fatalf("with the evidence settled the lifecycle completes, got %s", e.lifecycle())
+	}
+}
+
+func TestBasketPairFundingChargeKeepsThePositionHeldAtTheEvent(t *testing.T) {
+	t0 := pairTestStart()
+	submit := pairSlotAt(t0, 3).Add(time.Second)
+	tHL := submit.Add(10 * time.Second).UnixMilli()
+	fillAt := tHL + 20000
+	event := pairFundingEventID("hyperliquid", "BTC", tHL)
+	t.Run("exit fill after the event", func(t *testing.T) {
+		e := newPairFundingEnv(t, func(d *pairFundingDocument, k map[string]pairEvidenceKey) {
+			d.Rates = []pairFundingRate{pfRate(k[pairTestHL], pairFundingRuleHyperliquid, tHL, "0.0001")}
+			d.Prices = []pairFundingPrice{pfPrice(k[pairTestHL], pairFundingPriceOracle, tHL, "60000")}
+			pairFundingAutoCoverage(d, k)
+		}, nil)
+		e.openMatched(0.05)
+		pid := e.state.Strategies[pairTestHL].Positions["BTC"].TradePositionID
+		pairEnterExitRunner(e, 0.05)
+		pairOpenVenue(e, pairTestHL, basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "no answer yet"})
+		e.slotStep(3)
+		exit := e.memberAction(pairTestHL, pairPurposeExit)
+		if exit.SubmittedAtMs >= tHL {
+			t.Fatalf("the exit must be submitted before the event (%d >= %d)", exit.SubmittedAtMs, tHL)
+		}
+		e.step(time.UnixMilli(tHL + 5000))
+		if status, reason, _ := e.fundingRow(pairTestHL, event); status != pairFundingStatusIncomplete || reason != pairFundingReasonInventory {
+			t.Fatalf("the pending exit holds the event as inventory incomplete, got %q %q", status, reason)
+		}
+		pairQueryVenue(e, exit, basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.05, CumNotional: 0.05 * 60000, Terminal: true,
+			Fills: []pairVenueFill{{FillID: "hl-exit-1", BaseQty: 0.05, EventMs: fillAt, VisibleMs: fillAt}}})
+		e.step(time.UnixMilli(fillAt + 10000))
+		e.assertBooks("exited", 0, 0)
+		if status, _, _ := e.fundingRow(pairTestHL, event); status != pairFundingStatusApplied {
+			t.Fatalf("the exit fill after the event completes the inventory, got %q", status)
+		}
+		rows := e.fundingTrades(pairTestHL)
+		if len(rows) != 1 || rows[0].PositionID != pid || pid == "" {
+			t.Fatalf("the charge settled after the close carries the closed position %s, got %+v", pid, rows)
+		}
+		e.restart()
+		e.step(time.UnixMilli(fillAt + 70000))
+		var saved string
+		if err := e.db().db.QueryRow(`SELECT position_id FROM trades WHERE exchange_order_id = ?`, pairFundingOrderIDPrefix+pairFundingRuleHyperliquid+":"+event).Scan(&saved); err != nil || saved != pid {
+			t.Fatalf("the saved funding row keeps %s across a restart, got %q %v", pid, saved, err)
+		}
+		if n := len(e.fundingTrades(pairTestHL)); n != 1 {
+			t.Fatalf("a restart books no second charge, got %d", n)
+		}
+	})
+	t.Run("close and reopen before the evidence arrives", func(t *testing.T) {
+		tOKX := pairSlotAt(t0, 2).UnixMilli()
+		receipt := pairSlotAt(t0, 10).UnixMilli()
+		okxEvent := pairFundingEventID("okx", "BTC-USDT-SWAP", tOKX)
+		e := newPairFundingEnv(t, func(d *pairFundingDocument, k map[string]pairEvidenceKey) {
+			d.Rates = []pairFundingRate{pfRate(k[pairTestOKX], pairFundingRuleOKX, tOKX, "0.0002")}
+			d.Prices = []pairFundingPrice{pfPrice(k[pairTestOKX], pairFundingPriceMark, tOKX, "60100")}
+			pairFundingAutoCoverage(d, k)
+		}, func(d *pairEvidenceDocument) {
+			for i := range d.Conversions {
+				c := d.Conversions[i]
+				if c.Key.MemberID != pairTestOKX || c.Currency != "USDT" {
+					continue
+				}
+				d.Conversions[i].ValidThroughMs = tOKX - 1
+				late := c
+				late.EvidenceID = "conv-okx-usdt-at-event"
+				late.ObservedMs, late.FirstReceiptMs = receipt, receipt
+				late.ValidFromMs, late.ValidThroughMs = tOKX, tOKX
+				after := c
+				after.EvidenceID = "conv-okx-usdt-after-event"
+				after.ValidFromMs = tOKX + 1
+				d.Conversions = append(d.Conversions, late, after)
+				return
+			}
+		})
+		e.openMatched(0.05)
+		pid := e.state.Strategies[pairTestOKX].Positions["BTC"].TradePositionID
+		e.step(pairSlotAt(t0, 3))
+		e.now = pairSlotAt(t0, 4)
+		e.rt().clock = e.now
+		e.externalBookChange(pairTestOKX, 0)
+		e.step(pairSlotAt(t0, 4).Add(time.Second))
+		e.now = pairSlotAt(t0, 5)
+		e.rt().clock = e.now
+		e.externalBookChange(pairTestOKX, -0.05)
+		reopened := e.state.Strategies[pairTestOKX].Positions["BTC"].TradePositionID
+		e.step(pairSlotAt(t0, 5).Add(time.Second))
+		if reopened == "" || reopened == pid {
+			t.Fatalf("the reopened position needs a new identity, got %q (closed %q)", reopened, pid)
+		}
+		if status, reason, _ := e.fundingRow(pairTestOKX, okxEvent); status != pairFundingStatusIncomplete || reason != pairFundingReasonConversionCutoff {
+			t.Fatalf("the event still waits for its conversion, got %q %q", status, reason)
+		}
+		e.restart()
+		e.step(time.UnixMilli(receipt))
+		rows := e.fundingTrades(pairTestOKX)
+		if len(rows) != 1 || rows[0].PositionID != pid {
+			t.Fatalf("the late charge after a close, a reopen and a restart carries the position %s held at the event, got %+v (open now %s)", pid, rows, reopened)
+		}
+	})
+}
+
+func TestBasketPairFundingSteadyCycleHashesNoAppliedEvent(t *testing.T) {
+	t0 := pairTestStart()
+	anchor := t0.UnixMilli()
+	const events = 2160
+	step := 10 * time.Minute
+	held := 5
+	at := func(i int) int64 { return t0.Add(time.Duration(i+1) * step).UnixMilli() }
+	price := func(k pairEvidenceKey, ms int64) pairFundingPrice {
+		p := pfPrice(k, pairFundingPriceOracle, ms, "60000")
+		p.EvidenceID = "oracle-hl-" + time.UnixMilli(ms).UTC().Format("20060102150405")
+		return p
+	}
+	var keys map[string]pairEvidenceKey
+	var rec *pairRecordedFundingSource
+	var h1 string
+	e := newPairTestEnvDeps(t, pairSetLimit("max_hold_age_ms", 2147483647), func(doc []byte, venues *pairTestVenues) pairResearchDeps {
+		keys = pairFundingTestKeys(doc)
+		src, err := newPairRecordedFundingSource("paper-recorder-steady", anchor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hl, okx := keys[pairTestHL], keys[pairTestOKX]
+		var rates []pairFundingRate
+		var prices []pairFundingPrice
+		for i := 0; i < events; i++ {
+			rates = append(rates, pfRate(hl, pairFundingRuleHyperliquid, at(i), "0.00001"))
+			if i != held {
+				prices = append(prices, price(hl, at(i)))
+			}
+		}
+		cov := func(k pairEvidenceKey, id string, through, visible int64) pairFundingCoverageRecord {
+			return pairFundingCoverageRecord{V: pairFundingRecordVersion, Key: k, EvidenceID: id, RequestedFromMs: anchor - 1, RequestedThroughMs: through,
+				Proven: []pairFundingInterval{{FromMs: anchor - 1, ThroughMs: through}}, Gaps: []pairCoverageGap{}, VisibleMs: visible, Provenance: "research-funding:recorded"}
+		}
+		var raw []byte
+		raw, h1 = pairTestBatch(t, "paper-recorder-steady", 1, "", rates, prices, []pairFundingCoverageRecord{cov(hl, "hl-all", at(events-1), at(events-1)+1000), cov(okx, "okx-all", pairFundingFarMs, anchor)})
+		if err := src.Append(raw); err != nil {
+			t.Fatalf("batch 1: %v", err)
+		}
+		rec = src
+		return pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc, nil), Quotes: newPairFixtureQuotes(t, doc).collector, Funding: rec}
+	})
+	e.openMatched(0.05)
+	end := time.UnixMilli(at(events - 1)).Add(time.Hour)
+	e.step(end)
+	if n := e.count(`SELECT COUNT(*) FROM pair_funding_events WHERE status = 'applied'`); n != events-1 {
+		t.Fatalf("every event with its price settles, got %d applied", n)
+	}
+	heldID := pairFundingEventID("hyperliquid", "BTC", at(held))
+	if status, reason, _ := e.fundingRow(pairTestHL, heldID); status != pairFundingStatusIncomplete || reason != pairFundingReasonPriceMissing {
+		t.Fatalf("the event without a price waits, got %q %q", status, reason)
+	}
+	misses := func() int64 { return e.rt().Pair.funding.hashMisses }
+	before := misses()
+	e.step(end.Add(time.Minute))
+	if d := misses() - before; d != 0 {
+		t.Fatalf("a cycle with no new records computes no source hash, got %d", d)
+	}
+	e.restart()
+	if n := len(e.rt().Pair.funding.hashes); n != events-1 {
+		t.Fatalf("load seeds the source hash of every applied event, got %d", n)
+	}
+	before = misses()
+	e.step(end.Add(2 * time.Minute))
+	if d := misses() - before; d != 1 {
+		t.Fatalf("after a restart only the held event's source hash is computed, got %d", d)
+	}
+	raw2, _ := pairTestBatch(t, "paper-recorder-steady", 2, h1, nil, []pairFundingPrice{price(keys[pairTestHL], at(held))}, nil)
+	if err := rec.Append(raw2); err != nil {
+		t.Fatalf("batch 2: %v", err)
+	}
+	before = misses()
+	e.step(end.Add(3 * time.Minute))
+	if status, _, _ := e.fundingRow(pairTestHL, heldID); status != pairFundingStatusApplied {
+		t.Fatalf("the held event earlier than the newest applied event settles after a restart once its price arrives, got %q", status)
+	}
+	if d := misses() - before; d != 0 {
+		t.Fatalf("settling the held event reuses its remembered source hash, got %d", d)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM trades WHERE exchange_order_id LIKE 'pair_funding:%'`); n != events {
+		t.Fatalf("each event writes one saved row, got %d", n)
 	}
 }

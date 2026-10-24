@@ -1128,7 +1128,7 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 		}
 	}
 	for _, o := range p.Obligations {
-		if o.Kind == "fee_unconfirmed" || o.Kind == "settlement_conversion" || pairFundingObligation(o.Kind) {
+		if o.Kind == "fee_unconfirmed" || o.Kind == "settlement_conversion" || pairFundingHoldsAccounting(o.Kind) {
 			accounted = false
 		}
 	}
