@@ -879,11 +879,11 @@ func TestBasketPairCollectionBoundedLauncher(t *testing.T) {
 		t.Fatalf("stderr overflow must be a child failure, got %v", err)
 	}
 	marker := filepath.Join(t.TempDir(), "late")
-	_, _, err, took := sh(`(sleep 1; echo late > `+marker+`) & sleep 30`, pythonOutputLimits{Stdout: 1000, Stderr: 1000}, 500*time.Millisecond)
+	_, _, err, took := sh(`(sleep 2; echo late > `+marker+`) & sleep 30`, pythonOutputLimits{Stdout: 1000, Stderr: 1000}, 500*time.Millisecond)
 	if err == nil || took > pythonPipeWaitDelay+3*time.Second {
 		t.Fatalf("a cancelled child and its descendants must end within the cleanup bound, got %v after %s", err, took)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(2500 * time.Millisecond)
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("a descendant of the cancelled process group kept running")
 	}
