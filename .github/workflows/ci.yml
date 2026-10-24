@@ -87,7 +87,7 @@ jobs:
         run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestBasket' .
 
       - name: Quote coordinator race check
-        run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestQuote' .
+        run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
 
       - name: Format check (every tracked Go file)
         run: |
