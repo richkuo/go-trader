@@ -901,7 +901,7 @@ func pairConfigErrors(cfg *Config, raw json.RawMessage, liveShapedFixture bool) 
 		add("policy %q is not a registered pair policy", p.Policy)
 	}
 	errs = append(errs, pairParamErrors(prefix, p)...)
-	if err := contractBookNeed(p.BookNeed.WindowMs, p.BookNeed.Capacity, p.BookNeed.Depth).validate(); err != nil {
+	if err := p.BookNeed.validate(); err != nil {
 		add("book_need: %v", err)
 	}
 	if cfg == nil {
@@ -983,6 +983,17 @@ func pairConfigErrors(cfg *Config, raw json.RawMessage, liveShapedFixture bool) 
 	}
 	if len(p.Members) == 2 && (!seenProvider[entryProviderHyperliquid] || !seenProvider[entryProviderOKX]) {
 		add("needs one Hyperliquid perpetual member and one OKX linear swap member")
+	}
+	if len(errs) == 0 && partitionSet {
+		var ms []pairContractMember
+		for _, m := range p.Members {
+			sc := byID[strings.TrimSpace(m.StrategyID)]
+			ms = append(ms, pairContractMember{MemberID: sc.ID, Provider: pairProviderPlatforms[sc.Platform], AccountKey: m.AccountKey, Instrument: m.Instrument,
+				Meta: m.Meta, Source: m.Source, ModeledDeliveryMs: m.ModeledDeliveryMs})
+		}
+		if worst := pairEnvelopeWorstCaseBytes(partition.String(), p.ID, strings.Repeat("0", 64), ms, p.BookNeed); worst > limits.EnvelopeMaxBytes {
+			add("limits.envelope_max_bytes %d is below the %d-byte worst-case quote envelope for book_need %d levels, %d observations and these member sources; no cadence slot could ever freeze", limits.EnvelopeMaxBytes, worst, p.BookNeed.Depth, p.BookNeed.Capacity)
+		}
 	}
 	for _, sc := range cfg.Strategies {
 		if seenMember[sc.ID] {
@@ -1103,6 +1114,7 @@ const (
 type pairResearchDeps struct {
 	VenueFor func(StrategyConfig) (basketVenue, error)
 	Evidence pairEvidenceSource
+	Quotes   pairQuoteSource
 }
 
 type pairResearchAdmission struct {
@@ -1124,6 +1136,13 @@ func (a *pairResearchAdmission) evidenceSource() pairEvidenceSource {
 		return nil
 	}
 	return a.evidence
+}
+
+func (a *pairResearchAdmission) quoteSource() pairQuoteSource {
+	if a == nil {
+		return nil
+	}
+	return a.deps.Quotes
 }
 
 var pairAdmissionRegistry sync.Map
@@ -1219,6 +1238,13 @@ func newPairResearchAdmission(doc []byte, runID, stateDir string, resume bool, d
 	cfg, err := loadPairResearchConfig(adm, doc)
 	if err != nil {
 		return nil, nil, err
+	}
+	contract, err := buildPairContract(cfg, adm.pair, adm.limits)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := pairQuoteSourceErrors(contract, deps.Quotes); err != nil {
+		return nil, nil, fmt.Errorf("pair research quote source is refused: %w", err)
 	}
 	for _, sc := range cfg.Strategies {
 		if !isPairMember(sc) {

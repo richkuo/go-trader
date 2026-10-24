@@ -99,7 +99,7 @@ func newPairLiveShapedEnv(t *testing.T, closers *pairNativeClosers) *pairTestEnv
 	if err != nil {
 		t.Fatalf("live-shaped admission: %v", err)
 	}
-	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart()}
+	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart(), quotes: newPairFixtureQuotes(t, doc)}
 	e.runner = &pairTestRunner{respond: func(req pairPolicyRequest) (pairPolicyResult, error) { return pairEnterResult(req, 0.06), nil }}
 	e.store = openSourceStore(t, cfg)
 	e.state = NewAppState()

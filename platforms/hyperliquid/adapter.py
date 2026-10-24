@@ -503,6 +503,43 @@ class HyperliquidExchangeAdapter:
             raise RuntimeError(f"Hyperliquid isDelisted for {symbol} is not a boolean: {delisted!r}")
         return {"name": symbol, "asset": asset, "sz_decimals": sz, "max_leverage": lev, "is_delisted": delisted}
 
+    def public_host(self) -> str:
+        return self._base_url
+
+    def public_l2_snapshot(self, symbol: str, depth: int) -> dict:
+        if not self._public_only:
+            raise RuntimeError("public depth reads need the public-only reader")
+        if isinstance(depth, bool) or not isinstance(depth, int) or not 1 <= depth <= 20:
+            raise RuntimeError(f"Hyperliquid l2 depth {depth!r} is outside [1, 20]")
+        rules = self.public_instrument_rules(symbol)
+        if rules["is_delisted"]:
+            raise RuntimeError(f"{symbol} is delisted")
+        resp = self._info.l2_snapshot(symbol)
+        if not isinstance(resp, dict):
+            raise RuntimeError(f"Hyperliquid l2Book for {symbol} is not an object")
+        if resp.get("coin") != symbol:
+            raise RuntimeError(f"Hyperliquid l2Book answered for {resp.get('coin')!r}, not {symbol}")
+        ts = resp.get("time")
+        if isinstance(ts, bool) or not isinstance(ts, int) or ts <= 0:
+            raise RuntimeError(f"Hyperliquid l2Book time {ts!r} is not a positive integer")
+        levels = resp.get("levels")
+        if not isinstance(levels, list) or len(levels) != 2:
+            raise RuntimeError("Hyperliquid l2Book levels are not two sides")
+        sides = []
+        for side in levels:
+            if not isinstance(side, list):
+                raise RuntimeError("Hyperliquid l2Book side is not a list")
+            out = []
+            for level in side[:depth]:
+                if not isinstance(level, dict):
+                    raise RuntimeError("Hyperliquid l2Book level is not an object")
+                px, sz, n = level.get("px"), level.get("sz"), level.get("n")
+                if not isinstance(px, str) or not isinstance(sz, str) or isinstance(n, bool) or not isinstance(n, int):
+                    raise RuntimeError(f"Hyperliquid l2Book level {level!r} is not px/sz text with an integer order count")
+                out.append({"n": n, "px": px, "sz": sz})
+            sides.append(out)
+        return {"request": {"coin": symbol, "type": "l2Book"}, "response": {"coin": symbol, "levels": sides, "time": ts}}
+
     @property
     def is_live(self) -> bool:
         return self._wallet is not None

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1041,6 +1042,10 @@ func (sdb *StateDB) reservePairActionTx(rt *basketRuntime, a *basketAction, inte
 	if a.Direction == basketDirectionReduce && intent != nil {
 		return fmt.Errorf("pair reduction %s takes no entry intent", a.ActionID)
 	}
+	req, err := pairValidateActionRequest(rt, a, use, rt.auditNowMs())
+	if err != nil {
+		return err
+	}
 	sids, err := sdb.checkBasketOwnership(rt)
 	if err != nil {
 		return err
@@ -1067,6 +1072,11 @@ func (sdb *StateDB) reservePairActionTx(rt *basketRuntime, a *basketAction, inte
 	}
 	if err := checkPendingGroupActionTx(tx, rt, a); err != nil {
 		return err
+	}
+	if use != nil {
+		if err := checkPairIncreaseBindingTx(tx, rt, req, use); err != nil {
+			return err
+		}
 	}
 	seq, err := nextBasketActionSeqTx(tx, a, sid)
 	if err != nil {
@@ -1136,6 +1146,47 @@ func (sdb *StateDB) reservePairActionTx(rt *basketRuntime, a *basketAction, inte
 	}
 	if use != nil {
 		use.durableStatus = use.Status
+	}
+	return nil
+}
+
+func checkPairIncreaseBindingTx(tx *sql.Tx, rt *basketRuntime, req pairActionRequest, use *pairQuoteEventUse) error {
+	ev := use.Event
+	var status, fp, input, evidence, snapshotID string
+	var cutoff, generation int64
+	err := tx.QueryRow(`SELECT status, contract_fingerprint, input_fingerprint, evidence_json, cutoff_ms, snapshot_id, generation FROM basket_rebalances
+		WHERE scope = ? AND source = ? AND basket_id = ? AND deadline_ms = ?`,
+		string(rt.Partition.Scope), rt.Partition.Source, rt.Contract.BasketID, ev.SlotMs).Scan(&status, &fp, &input, &evidence, &cutoff, &snapshotID, &generation)
+	if err != nil {
+		return fmt.Errorf("read the selected quote event %s slot before reservation: %w", use.EventID, err)
+	}
+	if fp != rt.Contract.Fingerprint() || fp != ev.ContractFingerprint || input != ev.InputFingerprint || cutoff != ev.CutoffMs || input != req.EvidenceHash {
+		return fmt.Errorf("the saved slot for quote event %s no longer matches the event and the request (contract, cutoff or input fingerprint)", use.EventID)
+	}
+	if pairSHA256([]byte(evidence)) != input {
+		return fmt.Errorf("the saved envelope for quote event %s does not match its input fingerprint", use.EventID)
+	}
+	env, err := pairCheckEnvelope(pairEnvelopeExpectFor(rt), []byte(evidence))
+	if err != nil {
+		return fmt.Errorf("the saved envelope for quote event %s fails verification: %w", use.EventID, err)
+	}
+	if env.SlotMs != ev.SlotMs || env.CutoffMs != ev.CutoffMs || env.SnapshotID != snapshotID || uint64(generation) != env.Generation {
+		return fmt.Errorf("the saved envelope for quote event %s disagrees with its slot row", use.EventID)
+	}
+	em, ok := env.member(use.StrategyID)
+	if !ok {
+		return fmt.Errorf("the saved envelope for quote event %s has no member %s", use.EventID, use.StrategyID)
+	}
+	if em.Capability.EvidenceHash != req.CapabilityHash {
+		return fmt.Errorf("the request capability hash is not the selected envelope's %s capability", use.StrategyID)
+	}
+	want, err := pairCanonicalJSON(em.Conversions)
+	if err != nil {
+		return err
+	}
+	got, err := pairCanonicalJSON(req.Conversions)
+	if err != nil || !bytes.Equal(want, got) {
+		return fmt.Errorf("the request conversions are not the selected envelope's %s conversions", use.StrategyID)
 	}
 	return nil
 }

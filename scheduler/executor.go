@@ -194,11 +194,75 @@ func spawnPythonProcess(parentCtx context.Context, script string, args []string,
 }
 
 func spawnPythonProcessWithEnv(parentCtx context.Context, script string, args []string, stdinData []byte, timeout time.Duration, envOverrides map[string]string) ([]byte, []byte, error) {
-	stdout, stderr, err := spawnPythonProcessRaw(parentCtx, ".venv/bin/python3", egressPythonArgv(script, args), stdinData, timeout, egressChildEnvironment(envOverrides))
+	return spawnPythonProcessWithEnvLimited(parentCtx, script, args, stdinData, timeout, envOverrides, pythonOutputLimits{})
+}
+
+type pythonOutputLimits struct {
+	Stdout int
+	Stderr int
+}
+
+type pythonOutputOverflowError struct {
+	Stream string
+	Limit  int
+}
+
+func (e *pythonOutputOverflowError) Error() string {
+	return fmt.Sprintf("script %s exceeded the %d byte output limit; the process group was cancelled", e.Stream, e.Limit)
+}
+
+type pythonBoundedBuffer struct {
+	stream   string
+	limit    int
+	buf      bytes.Buffer
+	overflow bool
+	cancel   context.CancelFunc
+}
+
+func (b *pythonBoundedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		return b.buf.Write(p)
+	}
+	if b.overflow {
+		return len(p), nil
+	}
+	if room := b.limit - b.buf.Len(); len(p) > room {
+		if room > 0 {
+			b.buf.Write(p[:room])
+		}
+		b.overflow = true
+		b.cancel()
+		return len(p), nil
+	}
+	return b.buf.Write(p)
+}
+
+func acquirePythonSlot(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case pythonSemaphore <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		<-pythonSemaphore
+		return nil, err
+	}
+	return func() { <-pythonSemaphore }, nil
+}
+
+func spawnPythonProcessWithEnvLimited(parentCtx context.Context, script string, args []string, stdinData []byte, timeout time.Duration, envOverrides map[string]string, limits pythonOutputLimits) ([]byte, []byte, error) {
+	stdout, stderr, err := spawnPythonProcessRawLimited(parentCtx, ".venv/bin/python3", egressPythonArgv(script, args), stdinData, timeout, egressChildEnvironment(envOverrides), limits)
 	return stdout, processEgress.recordChildOutcome(stderr), err
 }
 
 func spawnPythonProcessRaw(parentCtx context.Context, python string, cmdArgs []string, stdinData []byte, timeout time.Duration, env []string) ([]byte, []byte, error) {
+	return spawnPythonProcessRawLimited(parentCtx, python, cmdArgs, stdinData, timeout, env, pythonOutputLimits{})
+}
+
+func spawnPythonProcessRawLimited(parentCtx context.Context, python string, cmdArgs []string, stdinData []byte, timeout time.Duration, env []string, limits pythonOutputLimits) ([]byte, []byte, error) {
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if timeout > 0 {
@@ -227,9 +291,10 @@ func spawnPythonProcessRaw(parentCtx context.Context, python string, cmdArgs []s
 		cmd.Stdin = bytes.NewReader(stdinData)
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &pythonBoundedBuffer{stream: "stdout", limit: limits.Stdout, cancel: cancel}
+	stderr := &pythonBoundedBuffer{stream: "stderr", limit: limits.Stderr, cancel: cancel}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	err := cmd.Run()
 	if ctx.Err() != nil {
@@ -237,10 +302,15 @@ func spawnPythonProcessRaw(parentCtx context.Context, python string, cmdArgs []s
 			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
 	}
-	if ctx.Err() == context.DeadlineExceeded {
-		return stdout.Bytes(), stderr.Bytes(), &pythonScriptTimeoutError{d: timeout}
+	for _, b := range []*pythonBoundedBuffer{stdout, stderr} {
+		if b.overflow {
+			return stdout.buf.Bytes(), stderr.buf.Bytes(), &pythonOutputOverflowError{Stream: b.stream, Limit: b.limit}
+		}
 	}
-	return stdout.Bytes(), stderr.Bytes(), err
+	if ctx.Err() == context.DeadlineExceeded {
+		return stdout.buf.Bytes(), stderr.buf.Bytes(), &pythonScriptTimeoutError{d: timeout}
+	}
+	return stdout.buf.Bytes(), stderr.buf.Bytes(), err
 }
 
 func processEnvironment(overrides map[string]string) []string {

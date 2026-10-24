@@ -111,6 +111,46 @@ class OKXExchangeAdapter:
             raise RuntimeError(f"OKX public instruments returned {out['instId']} for {inst_id}")
         return out
 
+    def public_host(self) -> str:
+        rest = ((self._exchange.urls or {}).get("api") or {}).get("rest")
+        if not isinstance(rest, str):
+            raise RuntimeError("OKX public REST host is unknown")
+        return rest.replace("{hostname}", str(getattr(self._exchange, "hostname", "")))
+
+    def public_order_book(self, inst_id: str, depth: int) -> dict:
+        if not self._public_only:
+            raise RuntimeError("public depth reads need the public-only reader")
+        if isinstance(depth, bool) or not isinstance(depth, int) or not 1 <= depth <= 20:
+            raise RuntimeError(f"OKX book depth {depth!r} is outside [1, 20]")
+        request = {"instId": inst_id, "sz": str(depth)}
+        resp = self._exchange.publicGetMarketBooks(dict(request))
+        if not isinstance(resp, dict) or str(resp.get("code")) != "0" or not isinstance(resp.get("code"), str):
+            msg = resp.get("msg") if isinstance(resp, dict) else resp
+            raise RuntimeError(f"OKX public books refused {inst_id}: {msg!r}")
+        msg = resp.get("msg", "")
+        if not isinstance(msg, str):
+            raise RuntimeError("OKX public books msg is not text")
+        data = resp.get("data")
+        if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
+            raise RuntimeError(f"OKX public books returned {len(data) if isinstance(data, list) else 'no'} books for {inst_id}")
+        book = data[0]
+        out = {}
+        for name in ("asks", "bids"):
+            side = book.get(name)
+            if not isinstance(side, list):
+                raise RuntimeError(f"OKX public books {name} is not a list")
+            levels = []
+            for level in side:
+                if not isinstance(level, list) or len(level) != 4 or not all(isinstance(x, str) for x in level):
+                    raise RuntimeError(f"OKX public books level {level!r} is not four text fields")
+                levels.append(list(level))
+            out[name] = levels
+        ts = book.get("ts")
+        if not isinstance(ts, str):
+            raise RuntimeError("OKX public books ts is not text")
+        out["ts"] = ts
+        return {"request": request, "response": {"code": "0", "data": [out], "msg": msg}}
+
     def _load_markets(self):
         if not self._markets_loaded:
             self._exchange.load_markets()

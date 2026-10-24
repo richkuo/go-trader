@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const pairActionRequestVersion = 1
+const pairActionRequestVersion = 2
 
 const pairMaxActionsPerStep = 16
 
@@ -34,6 +34,13 @@ type pairActionRequest struct {
 	QuoteEventID     string  `json:"quote_event_id,omitempty"`
 	OriginSlotMs     int64   `json:"origin_slot_ms"`
 	ReduceOnly       bool    `json:"reduce_only"`
+
+	ContractFingerprint string                   `json:"contract_fingerprint"`
+	Conversions         []pairConversionEvidence `json:"conversions,omitempty"`
+	CapabilityHash      string                   `json:"capability_hash,omitempty"`
+	EvidenceHash        string                   `json:"evidence_hash,omitempty"`
+	Reference           *pairObservation         `json:"reference,omitempty"`
+	NativeBooked        bool                     `json:"native_booked,omitempty"`
 }
 
 type pairRecoveryNote struct {
@@ -400,10 +407,14 @@ func (bc *basketCoordinator) stepPair(rt *basketRuntime, in basketCycleInputs) {
 	electiveBlocked := bc.reconcilePairActions(rt, in, inputs)
 	bc.detectPairExceptions(rt, in)
 	bc.pairLifecycleChecks(rt, in)
-	if !in.SaveBlocked && !rt.needsDurable {
-		bc.decidePendingPairSlots(rt, in)
-	}
 	bc.executePairProtective(rt, in, inputs)
+	if !in.SaveBlocked && !rt.needsDurable {
+		in = bc.collectPairSlot(rt, in)
+		if !rt.needsDurable {
+			bc.decidePendingPairSlots(rt, in)
+		}
+		in = bc.refreshPairInputs(rt, in)
+	}
 	if electiveBlocked || in.SaveBlocked || rt.needsDurable {
 		return
 	}
@@ -1141,7 +1152,8 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 func (bc *basketCoordinator) pairPolicyMembers(rt *basketRuntime) []pairPolicyMember {
 	var out []pairPolicyMember
 	for _, m := range rt.Contract.pairMembersSorted() {
-		pm := pairPolicyMember{MemberID: m.MemberID, Provider: m.Provider, AccountKey: m.AccountKey, Instrument: m.Instrument, Meta: m.Meta}
+		pm := pairPolicyMember{MemberID: m.MemberID, Provider: m.Provider, AccountKey: m.AccountKey, Instrument: m.Instrument, Meta: m.Meta,
+			CostPolicy: m.CostPolicy.rates(), Source: m.Source, SourceContract: pairSourceContractFor(m.Provider, m.Source), ModeledDeliveryMs: m.ModeledDeliveryMs, Leverage: m.Leverage}
 		if s := bc.state.Strategies[m.MemberID]; s != nil {
 			pm.BookedBaseQty = basketPositionSigned(s, m.Symbol)
 			if pos := s.Positions[m.Symbol]; pos != nil {
@@ -1212,6 +1224,9 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 		bc.pairLogf(rt, "slot %s held: %s", formatClosedBarMs(rb.DeadlineMs), reason)
 		return true
 	}
+	if _, why := verifyPairEnvelope(rt, rb); why != "" {
+		return hold("the frozen quote envelope fails verification ("+why+"); no policy runs on unverified evidence and no input is refetched", false, nil)
+	}
 	if bc.pairPolicyRun == nil {
 		return hold("no pair policy runner is wired; the slot holds and existing positions, stops and recovery continue", false, nil)
 	}
@@ -1238,6 +1253,7 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 		Policy:              rt.Contract.Pair.Policy,
 		Params:              rt.Contract.Pair.Params,
 		Limits:              rt.Pair.Limits,
+		BookNeed:            rt.Contract.Pair.BookNeed,
 		Lifecycle:           p.Lifecycle,
 		Members:             bc.pairPolicyMembers(rt),
 		Envelope:            json.RawMessage(rb.EvidenceJSON),
@@ -1689,6 +1705,15 @@ func (bc *basketCoordinator) executePairEntry(rt *basketRuntime, origin pairOrig
 		bc.pairLogf(rt, "%s increase waits for a fresh quote event the member has not consumed", c.MemberID)
 		return false
 	}
+	bind, why := bc.pairBindIncrease(rt, c.MemberID, ev, now)
+	if why != "" {
+		if len(rt.actionsFor(origin.slot.DeadlineMs)) == 0 {
+			bc.endPairOrigin(rt, origin.slot, "held", "the selected quote event cannot authorize the first dispatch: "+why, now)
+			return false
+		}
+		bc.pairLogf(rt, "%s increase holds: %s", c.MemberID, why)
+		return false
+	}
 	if c.MemberID == other {
 		confirmed := math.Abs(fLeg.exposure())
 		if c.FullQty > confirmed+1e-12 {
@@ -1706,7 +1731,7 @@ func (bc *basketCoordinator) executePairEntry(rt *basketRuntime, origin pairOrig
 		return false
 	}
 	bc.recordPairBound(rt, proof, []string{"independent no-fill and full-fill endpoints for every unresolved request", "conservative upper valuation per member with settlement conversion", "saved request price bounds widen the upper valuation"}, now)
-	return bc.runPairAction(rt, origin.slot, *c, qty, ev, in)
+	return bc.runPairAction(rt, origin.slot, *c, qty, ev, bind, in)
 }
 
 func (bc *basketCoordinator) pairPartitionGate(rt *basketRuntime, c pairCandidate, qty float64, plan *pairPlan) string {
@@ -1850,7 +1875,7 @@ func (bc *basketCoordinator) executePairExit(rt *basketRuntime, origin pairOrigi
 		if slot == nil {
 			slot = rt.latest()
 		}
-		return bc.runPairAction(rt, slot, c, qty, pairQuoteEvent{}, in)
+		return bc.runPairAction(rt, slot, c, qty, pairQuoteEvent{}, nil, in)
 	}
 	bc.pairLogf(rt, "no legal exit tranche this step: %s; protection stays active", strings.Join(reasons, "; "))
 	bc.noteDeviationPair(rt, origin.slot, "no_legal_reduction", strings.Join(reasons, "; "), now)
@@ -1884,11 +1909,11 @@ func (bc *basketCoordinator) executePairProtective(rt *basketRuntime, in basketC
 		if slot == nil {
 			slot = rt.latest()
 		}
-		bc.runPairAction(rt, slot, c, math.Abs(e), pairQuoteEvent{}, in)
+		bc.runPairAction(rt, slot, c, math.Abs(e), pairQuoteEvent{}, nil, in)
 	}
 }
 
-func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketRebalance, c pairCandidate, qty float64, ev pairQuoteEvent, in basketCycleInputs) bool {
+func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketRebalance, c pairCandidate, qty float64, ev pairQuoteEvent, bind *pairIncreaseBinding, in basketCycleInputs) bool {
 	now := in.Now
 	nowMs := now.UnixMilli()
 	sc, ok := bc.members[c.MemberID]
@@ -1904,7 +1929,7 @@ func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketReba
 		bc.pairAlert(rt, "account|"+c.MemberID, fmt.Sprintf("%s venue binds account %s, the contract names %s; nothing is sent", c.MemberID, v.AccountKey(rt.Partition), c.Member.AccountKey), true)
 		return false
 	}
-	if c.Direction == basketDirectionIncrease && !ev.valid() {
+	if c.Direction == basketDirectionIncrease && (!ev.valid() || bind == nil) {
 		return false
 	}
 	deadline, ok := pairAddMs(nowMs, rt.Pair.Limits.AcceptanceDeadlineMs)
@@ -1962,7 +1987,10 @@ func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketReba
 	req := pairActionRequest{V: pairActionRequestVersion, PairID: a.BasketID, Partition: rt.Partition.String(), MemberID: a.StrategyID, Provider: a.Provider,
 		AccountKey: a.AccountKey, Instrument: a.Instrument, ClientOrderID: cloid, Purpose: a.Purpose, OrderSide: a.OrderSide, PositionSide: a.PositionSide,
 		BaseQty: qty, NativeQty: native, ContractSize: a.ContractSize, PriceBound: a.PriceBound, AcceptDeadlineMs: deadline, QuoteEventID: a.QuoteEventID,
-		OriginSlotMs: slotMs, ReduceOnly: c.Direction == basketDirectionReduce}
+		OriginSlotMs: slotMs, ReduceOnly: c.Direction == basketDirectionReduce, ContractFingerprint: rt.Contract.Fingerprint()}
+	if c.Direction == basketDirectionIncrease {
+		req.Conversions, req.CapabilityHash, req.EvidenceHash = bind.Conversions, bind.CapabilityHash, bind.EvidenceHash
+	}
 	a.RequestJSON = marshalEntryJSON(req)
 	var intent *entryIntent
 	var use *pairQuoteEventUse
@@ -2143,7 +2171,8 @@ func (bc *basketCoordinator) beginPairNativeReduction(provider, coin, purpose st
 	}
 	a.RequestJSON = marshalEntryJSON(pairActionRequest{V: pairActionRequestVersion, PairID: a.BasketID, Partition: rt.Partition.String(), MemberID: a.StrategyID, Provider: a.Provider,
 		AccountKey: a.AccountKey, Instrument: a.Instrument, ClientOrderID: cloid, Purpose: purpose, OrderSide: os, PositionSide: ps, BaseQty: qty,
-		NativeQty: a.NativeQty, ContractSize: a.ContractSize, AcceptDeadlineMs: deadline, OriginSlotMs: slotMs, ReduceOnly: true})
+		NativeQty: a.NativeQty, ContractSize: a.ContractSize, AcceptDeadlineMs: deadline, OriginSlotMs: slotMs, ReduceOnly: true,
+		ContractFingerprint: rt.Contract.Fingerprint(), NativeBooked: true})
 	if err := bc.store.ReservePairAction(rt, a, nil, nil); err != nil {
 		return rt, nil, fmt.Errorf("pair %s %s reduction for %s could not be reserved before transport: %w", rt.Contract.BasketID, purpose, m.MemberID, err)
 	}
