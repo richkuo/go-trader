@@ -1072,11 +1072,18 @@ func (a *quoteAdmission) envelope(q *quoteOwnerState, s *StrategyState, proposed
 	a.mu.RLock()
 	states := filterStatesByPartition(a.state.Strategies, a.cfg.Strategies, a.partition)
 	cfgs := strategiesInPartition(a.cfg.Strategies, a.partition)
+	pm := a.state.pairMarksLocked()
 	var pv float64
+	var pvStatus pairValueStatus
 	for _, st := range states {
-		pv += displayStrategyValue(st, nil)
+		v, vs := displayStrategyValueMarked(st, nil, pm)
+		pv += v
+		pvStatus.merge(vs)
 	}
 	a.mu.RUnlock()
+	if label := pvStatus.label(); label != "" {
+		env.Refusals = append(env.Refusals, "the partition value is incomplete: "+label)
+	}
 	prices := map[string]float64{a.coin(): px}
 	for _, extreme := range []float64{env.MinQty, env.MaxQty} {
 		notional := math.Abs(extreme) * px
@@ -1102,12 +1109,15 @@ func (a *quoteAdmission) envelope(q *quoteOwnerState, s *StrategyState, proposed
 		}
 		hyp[s.ID] = &clone
 		if pr != nil && pr.MaxNotionalUSD > 0 {
-			if held, detail := evaluateNotionalCapHold(pr, hyp, prices); held {
+			if held, detail := evaluateNotionalCapHoldMarked(pr, hyp, prices, pm); held {
 				env.Refusals = append(env.Refusals, "notional cap: "+detail)
 			}
 		}
 		if exposureCapConfigured(pr) {
-			st := evaluateExposureCap(pr, hyp, cfgs, prices, pv)
+			st := evaluateExposureCapMarked(pr, hyp, cfgs, prices, pv, pm)
+			if st.ValuationIncomplete != "" {
+				env.Refusals = append(env.Refusals, "exposure cap: "+exposureCapHoldDetail(st))
+			}
 			if extreme > 0 && st.LongBlocked {
 				env.Refusals = append(env.Refusals, fmt.Sprintf("the long extreme would breach the same-direction exposure cap ($%.2f, cap $%.2f)", st.LongUSD, st.CapUSD))
 			}

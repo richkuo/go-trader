@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"strings"
 )
 
 const (
@@ -51,26 +50,41 @@ type basketVenueOutcome struct {
 }
 
 type pairMemberValuation struct {
-	Mark         float64            `json:"mark"`
-	UpperPx      float64            `json:"upper_px"`
-	LowerPx      float64            `json:"lower_px"`
-	EvidenceMs   int64              `json:"evidence_ms"`
-	MaxAgeMs     int64              `json:"max_age_ms"`
-	ContractSize float64            `json:"contract_size"`
-	Conversions  map[string]float64 `json:"conversions"`
-	FeeRate      float64            `json:"fee_rate"`
-}
-
-func (v pairMemberValuation) conversion(currency string) (float64, bool) {
-	c, ok := v.Conversions[strings.ToUpper(strings.TrimSpace(currency))]
-	return c, ok && basketFinitePositive(c)
+	Key                 pairMemberKey
+	Symbol              string
+	ContractFingerprint string
+	EvidenceHash        string
+	Generation          uint64
+	Mark                float64
+	UpperPx             float64
+	LowerPx             float64
+	EvidenceMs          int64
+	MaxAgeMs            int64
+	ContractSize        float64
+	Conversions         map[string]float64
+	FeeRate             float64
+	PriceCurrency       string
+	SettlementCurrency  string
+	MarkUSD             float64
+	LowerUSD            float64
+	UpperUSD            float64
+	Observation         pairObservation
+	Capability          pairCapabilityEvidence
+	ConversionEvidence  []pairConversionEvidence
+	Account             pairAccountEvidence
+	MarkValid           bool
+	ConversionValid     bool
+	CapabilityValid     bool
+	CollateralValid     bool
+	Substituted         bool
+	MarkLostAtMs        int64
+	MissingReason       string
 }
 
 type pairVenue interface {
 	basketVenue
 	Virtual() bool
 	ExecutionModel() string
-	Valuation(member pairContractMember, nowMs int64) (pairMemberValuation, error)
 }
 
 type basketVenue interface {

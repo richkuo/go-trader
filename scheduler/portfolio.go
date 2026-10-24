@@ -588,9 +588,19 @@ func formatStatusLine(cash float64, posCount int, value float64, trades int, reg
 }
 
 func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
+	v, _ := portfolioValueMarked(s, prices, nil)
+	return v
+}
+
+func portfolioValueMarked(s *StrategyState, prices map[string]float64, pm *pairMarks) (float64, pairValueStatus) {
+	var st pairValueStatus
 	total := s.Cash
 	for sym, pos := range s.Positions {
 		price, ok := prices[sym]
+		if mark, state, why, pair := pm.markFor(s, sym); pair {
+			st.note(s.ID, state, why)
+			price, ok = pairConservativePx(pos, state, mark), true
+		}
 		if !ok {
 			price = pos.AvgCost
 		}
@@ -609,7 +619,7 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 	for _, opt := range s.OptionPositions {
 		total += opt.CurrentValueUSD
 	}
-	return total
+	return total, st
 }
 
 func PerpsOrderSkipReason(signal int, posSide, direction string) string {

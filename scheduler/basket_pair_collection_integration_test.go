@@ -249,6 +249,7 @@ func TestBasketPairCollectionSaveFailureSetsDurableGateWithoutRecollection(t *te
 func TestBasketPairCollectionNilOrMismatchedSourceHolds(t *testing.T) {
 	closers := &pairNativeClosers{}
 	e := newPairLiveShapedEnv(t, closers)
+	e.adm.deps.Quotes = nil
 	e.collect = true
 	e.step(pairTestStart().Add(time.Second))
 	if len(e.rt().Rebalances) != 0 {

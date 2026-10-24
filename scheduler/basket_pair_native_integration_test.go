@@ -19,6 +19,7 @@ type pairLiveShapedDeps struct {
 	HLFetcher    HLStateFetcher
 	OKXFetcher   OKXPositionsFetcher
 	EntryQueries func(*entryIntent) error
+	Quotes       pairQuoteSource
 	Evidence     func(d *pairEvidenceDocument)
 }
 
@@ -48,7 +49,7 @@ func newPairLiveShapedAdmission(t *testing.T, doc []byte, dir string, deps pairL
 	if err != nil {
 		return nil, nil, err
 	}
-	adm := &pairResearchAdmission{nonce: nonce, kind: pairAdmissionLiveShapedFixture, runID: "fixture", stateDir: dir, deps: pairResearchDeps{VenueFor: deps.VenueFor, Evidence: pairTestEvidence(t, doc, deps.Evidence)}, raw: raw}
+	adm := &pairResearchAdmission{nonce: nonce, kind: pairAdmissionLiveShapedFixture, runID: "fixture", stateDir: dir, deps: pairResearchDeps{VenueFor: deps.VenueFor, Evidence: pairTestEvidence(t, doc, deps.Evidence), Quotes: deps.Quotes}, raw: raw}
 	pairAdmissionRegistry.Store(nonce, adm)
 	t.Cleanup(adm.release)
 	cfg, err := loadPairResearchConfig(adm, doc)
@@ -94,6 +95,7 @@ func newPairLiveShapedEnvWithEvidence(t *testing.T, closers *pairNativeClosers, 
 			return nil, fmt.Errorf("the controlled fixture sends no okx close")
 		}
 	}
+	quotes := newPairFixtureQuotes(t, doc)
 	deps := pairLiveShapedDeps{
 		VenueFor:     venues.factory(),
 		HLCloser:     closers.hl,
@@ -101,13 +103,14 @@ func newPairLiveShapedEnvWithEvidence(t *testing.T, closers *pairNativeClosers, 
 		HLFetcher:    func(string) ([]HLPosition, error) { return nil, nil },
 		OKXFetcher:   func() ([]OKXPosition, error) { return nil, nil },
 		EntryQueries: func(*entryIntent) error { return fmt.Errorf("no live entry query is permitted") },
+		Quotes:       quotes.collector,
 		Evidence:     evidence,
 	}
 	adm, cfg, err := newPairLiveShapedAdmission(t, doc, dir, deps)
 	if err != nil {
 		t.Fatalf("live-shaped admission: %v", err)
 	}
-	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart(), quotes: newPairFixtureQuotes(t, doc)}
+	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart(), quotes: quotes, generation: 1}
 	e.runner = &pairTestRunner{respond: func(req pairPolicyRequest) (pairPolicyResult, error) { return pairEnterResult(req, 0.06), nil }}
 	e.store = openSourceStore(t, cfg)
 	e.state = NewAppState()

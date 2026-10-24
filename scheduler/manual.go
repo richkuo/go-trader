@@ -108,7 +108,7 @@ func runManualOpen(args []string) int {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)\n", dailyLossHoldDetail(st))
 					return 1
 				}
-				if held, detail := evaluateNotionalCapHold(scopedPR, scopedStates, nil); held {
+				if held, detail := evaluateNotionalCapHoldMarked(scopedPR, scopedStates, nil, state.pairMarksLocked()); held {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked (closes and SL edits are unaffected)\n", detail)
 					return 1
 				}

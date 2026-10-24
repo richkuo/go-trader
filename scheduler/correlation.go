@@ -31,6 +31,12 @@ type CorrelationSnapshot struct {
 }
 
 func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []StrategyConfig, prices map[string]float64) (map[string]*AssetExposure, []string) {
+	assets, skipped, _ := computeAssetDeltasMarked(strategies, cfgStrategies, prices, nil)
+	return assets, skipped
+}
+
+func computeAssetDeltasMarked(strategies map[string]*StrategyState, cfgStrategies []StrategyConfig, prices map[string]float64, pm *pairMarks) (map[string]*AssetExposure, []string, pairValueStatus) {
+	var status pairValueStatus
 	cfgMap := make(map[string]StrategyConfig)
 	for _, sc := range cfgStrategies {
 		cfgMap[sc.ID] = sc
@@ -83,6 +89,14 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 					continue
 				}
 				px := spotPrice
+				if mark, state, why, pair := pm.markFor(ss, pos.Symbol); pair {
+					status.note(id, state, why)
+					if state == pairMarkUnavailable {
+						skipped = append(skipped, fmt.Sprintf("%s/%s: pair valuation unavailable", id, pos.Symbol))
+						continue
+					}
+					px = mark
+				}
 				if px <= 0 {
 					px = pos.AvgCost
 				}
@@ -153,14 +167,22 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 	}
 
 	sort.Strings(skipped)
-	return assets, skipped
+	return assets, skipped, status
 }
 
 func ComputeCorrelation(strategies map[string]*StrategyState, cfgStrategies []StrategyConfig, prices map[string]float64, corrCfg *CorrelationConfig) *CorrelationSnapshot {
+	return computeCorrelationMarked(strategies, cfgStrategies, prices, corrCfg, nil)
+}
+
+func computeCorrelationMarked(strategies map[string]*StrategyState, cfgStrategies []StrategyConfig, prices map[string]float64, corrCfg *CorrelationConfig, pm *pairMarks) *CorrelationSnapshot {
 	snap := &CorrelationSnapshot{
 		Timestamp: time.Now().UTC(),
 	}
-	snap.Assets, _ = computeAssetDeltas(strategies, cfgStrategies, prices)
+	var status pairValueStatus
+	snap.Assets, _, status = computeAssetDeltasMarked(strategies, cfgStrategies, prices, pm)
+	if label := status.label(); label != "" {
+		snap.Warnings = append(snap.Warnings, label)
+	}
 
 	for _, ae := range snap.Assets {
 		snap.PortfolioGrossUSD += ae.GrossDeltaUSD

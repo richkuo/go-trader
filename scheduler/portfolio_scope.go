@@ -129,6 +129,10 @@ type scopeCycleRisk struct {
 	WarnBandEntered         bool
 	Reason                  string
 	CloseApplied            bool
+	PairValuation           pairValueStatus
+	PairValuationOverdue    map[string]int64
+	PairValuationSince      map[string]int64
+	pairMarked              bool
 }
 
 func scopeCycleRiskFired(scopeRisk map[RiskPartition]*scopeCycleRisk, part RiskPartition) bool {
@@ -159,33 +163,98 @@ func measureScopeCycleRisk(
 	usedStaleRiskBalance bool,
 	now time.Time,
 ) *scopeCycleRisk {
+	return measureScopeCycleRiskMarked(part, pr, cfgStrategies, state, prices, riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, now, nil)
+}
+
+func measureScopeCycleRiskMarked(
+	part RiskPartition,
+	pr *PortfolioRiskConfig,
+	cfgStrategies []StrategyConfig,
+	state *AppState,
+	prices map[string]float64,
+	riskWalletBalances map[SharedWalletKey]float64,
+	sharedWallets map[SharedWalletKey][]string,
+	pooledEquityComplete bool,
+	usedStaleRiskBalance bool,
+	now time.Time,
+	pm *pairMarks,
+) *scopeCycleRisk {
 	sr := &scopeCycleRisk{Partition: part, Config: pr}
 	scopedCfgs := strategiesInPartition(cfgStrategies, part)
 	scopedStates := filterStatesByPartition(state.Strategies, cfgStrategies, part)
+	var status pairValueStatus
 	if part.IsLive() {
-		sr.TotalPV, sr.UsedPVFallback = computeSubsetPortfolioValue(scopedCfgs, state, prices, riskWalletBalances, sharedWallets)
+		sr.TotalPV, sr.UsedPVFallback, status = computeSubsetPortfolioValueMarked(scopedCfgs, state, prices, riskWalletBalances, sharedWallets, pm)
 		sr.EquityAvailable = pooledEquityComplete
 		sr.EquityTrusted = pooledEquityComplete && !sr.UsedPVFallback && !usedStaleRiskBalance
 		sr.PeakRebaselineAvailable = portfolioPeakRebaselineAvailable(sr.UsedPVFallback, usedStaleRiskBalance, pooledEquityComplete)
 	} else {
-		sr.TotalPV, _ = computeSubsetPortfolioValue(scopedCfgs, state, prices, nil, sharedWallets)
+		sr.TotalPV, _, status = computeSubsetPortfolioValueMarked(scopedCfgs, state, prices, nil, sharedWallets, pm)
 		sr.EquityAvailable = true
 		sr.EquityTrusted = true
 		sr.PeakRebaselineAvailable = true
 	}
-	sr.TotalNotional = PortfolioNotional(scopedStates, prices)
-	sr.PerpsLoss, sr.PerpsMargin = AggregatePerpsMarginInputs(scopedStates, scopedCfgs, prices)
+	sr.PairValuation.merge(status)
+	var ns, ms pairValueStatus
+	sr.TotalNotional, ns = portfolioNotionalMarked(scopedStates, prices, pm)
+	sr.PerpsLoss, sr.PerpsMargin, ms = aggregatePerpsMarginInputsMarked(scopedStates, scopedCfgs, prices, pm)
+	sr.PairValuation.merge(ns)
+	sr.PairValuation.merge(ms)
+	sr.PairValuationOverdue = pm.overdue(sr.PairValuation)
+	sr.PairValuationSince = pm.sinces(sr.PairValuation)
+	sr.pairMarked = pm != nil
 	sr.DailyLossStatus = evaluateDailyLossLimit(pr, scopedStates, scopedCfgs, now)
-	sr.ExposureCapStatus = evaluateExposureCap(pr, scopedStates, scopedCfgs, prices, sr.TotalPV)
+	sr.ExposureCapStatus = evaluateExposureCapMarked(pr, scopedStates, scopedCfgs, prices, sr.TotalPV, pm)
 	return sr
+}
+
+func recordPairValuationIncompleteSince(prs *PortfolioRiskState, complete bool, since map[string]int64) {
+	if complete {
+		prs.PairValuationIncompleteSince = time.Time{}
+		return
+	}
+	var earliest int64
+	for _, ms := range since {
+		if ms > 0 && (earliest == 0 || ms < earliest) {
+			earliest = ms
+		}
+	}
+	if earliest == 0 {
+		return
+	}
+	if t := time.UnixMilli(earliest).UTC(); prs.PairValuationIncompleteSince.IsZero() || t.Before(prs.PairValuationIncompleteSince) {
+		prs.PairValuationIncompleteSince = t
+	}
 }
 
 func applyScopeCycleRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
 	sr.Prs = prs
+	pairComplete := sr.PairValuation.complete()
+	if !pairComplete {
+		sr.PeakRebaselineAvailable = false
+	}
+	if sr.pairMarked {
+		recordPairValuationIncompleteSince(prs, pairComplete, sr.PairValuationSince)
+	}
 	origPeak := prs.PeakValue
 	prevWarningSent := prs.WarningSent
 	allowed, notionalBlocked, warning, reason := checkPortfolioRiskWithEquityAvailability(
-		prs, sr.Config, sr.TotalPV, sr.TotalNotional, sr.PerpsLoss, sr.PerpsMargin, sr.EquityAvailable, sr.EquityTrusted)
+		prs, sr.Config, sr.TotalPV, sr.TotalNotional, sr.PerpsLoss, sr.PerpsMargin, sr.EquityAvailable, sr.EquityTrusted && pairComplete)
+	if allowed && len(sr.PairValuationOverdue) > 0 && sr.Config != nil && sr.Config.MaxDrawdownPct > 0 {
+		allowed, notionalBlocked, warning = false, false, false
+		reason = latchPortfolioKillSwitchForPairValuation(prs, sr.TotalPV, pairOverdueDetail(sr.PairValuationOverdue, sr.PairValuation))
+	}
+	if !pairComplete {
+		if sr.Config != nil && sr.Config.MaxNotionalUSD > 0 {
+			notionalBlocked = true
+		}
+		note := sr.PairValuation.label() + "; the reading values those members conservatively, never raises the peak and goes through the untrusted over-limit deferral, and new opens hold"
+		if reason == "" {
+			reason = note
+		} else {
+			reason += "; " + note
+		}
+	}
 	sr.Warning = warning
 	sr.WarnBandEntered = warning && !prevWarningSent
 	sr.Reason = reason

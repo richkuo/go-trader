@@ -170,6 +170,7 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 			}
 		}
 	}
+	pm := state.pairMarksLocked()
 	totalNegative := 0.0
 	out := make([]portfolioWarningContributor, 0, len(scoped))
 	ids := make([]string, 0, len(scoped))
@@ -187,11 +188,11 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 			excludedFlatPaused++
 			continue
 		}
-		pv := PortfolioValue(ss, prices)
+		pv, status := portfolioValueMarked(ss, prices, pm)
 		initCap := ss.InitialCapital
 		pnlLabel := "P&L"
 		if ss.SharedWalletPoolBudget || ss.SharedWalletPerformanceOnly {
-			pv = displayStrategyValue(ss, prices)
+			pv, status = displayStrategyValueMarked(ss, prices, pm)
 			initCap = 0
 			pnlLabel = "net P&L"
 		} else if initCap <= 0 {
@@ -199,7 +200,9 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 			pnlLabel = "daily P&L"
 		}
 		pnl := pv - initCap
-		if pnl < 0 {
+		if !status.complete() {
+			pnlLabel = "incomplete"
+		} else if pnl < 0 {
 			totalNegative += -pnl
 		}
 		out = append(out, portfolioWarningContributor{
@@ -207,12 +210,12 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 			PnLLabel:     pnlLabel,
 			PnL:          pnl,
 			DrawdownPct:  ss.RiskState.CurrentDrawdownPct,
-			PositionLine: formatPortfolioWarningPosition(ss, prices),
+			PositionLine: formatPortfolioWarningPositionMarked(ss, prices, pm),
 		})
 	}
 	if totalNegative > 0 {
 		for i := range out {
-			if out[i].PnL < 0 {
+			if out[i].PnL < 0 && out[i].PnLLabel != "incomplete" {
 				out[i].NegativeWeight = -out[i].PnL / totalNegative
 			}
 		}
@@ -265,6 +268,10 @@ func formatPortfolioWarningTrend(prs PortfolioRiskState, includeEquity, includeM
 }
 
 func formatPortfolioWarningPosition(ss *StrategyState, prices map[string]float64) string {
+	return formatPortfolioWarningPositionMarked(ss, prices, nil)
+}
+
+func formatPortfolioWarningPositionMarked(ss *StrategyState, prices map[string]float64, pm *pairMarks) string {
 	if ss == nil {
 		return "(flat)"
 	}
@@ -281,11 +288,25 @@ func formatPortfolioWarningPosition(ss *StrategyState, prices map[string]float64
 	sym := symbols[0]
 	pos := ss.Positions[sym]
 	price := prices[sym]
+	markNote := ""
+	if mark, state, _, pair := pm.markFor(ss, sym); pair {
+		price = mark
+		if state != "" {
+			markNote = " " + state + " mark"
+		}
+		if state == pairMarkUnavailable {
+			line := fmt.Sprintf("pos: %s %s %s @ $%s (unrealized unavailable: no checked pair mark)", pos.Side, formatWarningQty(pos.Quantity), sym, formatWarningPrice(pos.AvgCost))
+			if len(symbols) > 1 {
+				line += fmt.Sprintf(" +%d more", len(symbols)-1)
+			}
+			return line
+		}
+	}
 	if price <= 0 {
 		price = pos.AvgCost
 	}
 	pnl := positionUnrealizedPnL(pos, price)
-	line := fmt.Sprintf("pos: %s %s %s @ $%s (%s unrealized)", pos.Side, formatWarningQty(pos.Quantity), sym, formatWarningPrice(pos.AvgCost), formatSignedDollar(pnl))
+	line := fmt.Sprintf("pos: %s %s %s @ $%s (%s unrealized%s)", pos.Side, formatWarningQty(pos.Quantity), sym, formatWarningPrice(pos.AvgCost), formatSignedDollar(pnl), markNote)
 	if len(symbols) > 1 {
 		line += fmt.Sprintf(" +%d more", len(symbols)-1)
 	}

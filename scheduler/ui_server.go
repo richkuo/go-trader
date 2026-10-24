@@ -54,6 +54,8 @@ type UIStrategyOverview struct {
 
 	Partition   string `json:"partition"`
 	PaperSource string `json:"paper_source,omitempty"`
+
+	PairValuation string `json:"pair_valuation,omitempty"`
 }
 
 type UIStrategyStatus struct {
@@ -489,14 +491,17 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 	var snapshot StrategyState
 	if strat != nil {
 		snapshot = *strat
+		snapshot.Positions = cloneUIPositions(strat.Positions)
+		snapshot.OptionPositions = cloneUIOptionPositions(strat.OptionPositions)
 	}
+	pm := ss.state.pairMarksLocked()
 	ss.mu.RUnlock()
 	if strat == nil {
 		return UIStrategyOverview{}, LifetimeTradeStats{}, false
 	}
 
 	prices := ss.fetchLiveMarkPrices()
-	pv := displayStrategyValue(&snapshot, prices)
+	pv, pvStatus := displayStrategyValueMarked(&snapshot, prices, pm)
 	initCap := EffectiveInitialCapital(sc, &snapshot)
 	pnl := pv - initCap
 	pnlPct := 0.0
@@ -542,6 +547,8 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 
 		Partition:   partitionFor(sc).String(),
 		PaperSource: partitionFor(sc).Source,
+
+		PairValuation: pvStatus.label(),
 	}, lifetime, true
 }
 
@@ -627,6 +634,7 @@ func (ss *StatusServer) handleAPIStrategyEquity(w http.ResponseWriter, r *http.R
 		snapshot.Positions = cloneUIPositions(strat.Positions)
 		snapshot.OptionPositions = cloneUIOptionPositions(strat.OptionPositions)
 	}
+	pm := ss.state.pairMarksLocked()
 	ss.mu.RUnlock()
 	if strat == nil {
 		writeJSONError(w, http.StatusNotFound, "strategy state not found")
@@ -634,7 +642,7 @@ func (ss *StatusServer) handleAPIStrategyEquity(w http.ResponseWriter, r *http.R
 	}
 
 	initCap := EffectiveInitialCapital(sc, &snapshot)
-	pv := displayStrategyValue(&snapshot, map[string]float64{})
+	pv, pvStatus := displayStrategyValueMarked(&snapshot, map[string]float64{}, pm)
 
 	var closed []ClosedPosition
 	if ss.stateDB != nil {
@@ -648,10 +656,14 @@ func (ss *StatusServer) handleAPIStrategyEquity(w http.ResponseWriter, r *http.R
 
 	limit := parseUIEquityLimit(r)
 	points := buildEquityCurvePoints(initCap, closed, pv, limit)
-	writeJSON(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"strategy_id": id,
 		"points":      points,
-	})
+	}
+	if label := pvStatus.label(); label != "" {
+		resp["pair_valuation"] = label
+	}
+	writeJSON(w, resp)
 }
 
 func buildEquityCurvePoints(initCap float64, closed []ClosedPosition, currentPV float64, limit int) []UIEquityPoint {

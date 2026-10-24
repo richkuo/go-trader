@@ -1438,15 +1438,19 @@ func main() {
 			}
 
 			sharedWalletRiskGeneration++
+			if basketCoord != nil {
+				basketCoord.preparePairRisk(basketCycleInputs{Now: time.Now().UTC()})
+			}
 			mu.RLock()
+			riskPairMarks := state.pairMarksLocked()
 			riskWalletBalances, usedStaleRiskBalance, pooledEquityComplete := resolveSharedWalletRiskBalances(
 				cfg.Strategies, state.Strategies, sharedWallets, walletBalances,
 				sharedWalletRiskBalances, sharedWalletRiskGeneration)
 			riskOpenSymbols := snapshotOpenSymbolsByStrategy(state)
 			totalPV = 0
 			for _, part := range cyclePartitions {
-				sr := measureScopeCycleRisk(part, scopeRisk[part].Config, cfg.Strategies, state, prices,
-					riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, time.Now().UTC())
+				sr := measureScopeCycleRiskMarked(part, scopeRisk[part].Config, cfg.Strategies, state, prices,
+					riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, time.Now().UTC(), riskPairMarks)
 				scopeRisk[part] = sr
 				totalPV += sr.TotalPV
 			}
@@ -2088,7 +2092,7 @@ func main() {
 				tsLiveStrategy := sc.Type == "futures" && sc.Platform == "topstep" && topstepIsLive(sc.Args)
 
 				mu.RLock()
-				pv := PortfolioValue(stratState, prices)
+				pv, _ := portfolioValueMarked(stratState, prices, state.pairMarksLocked())
 				var posJSON string
 				if sc.Type == "options" {
 					posJSON = EncodeAllPositionsJSON(stratState.OptionPositions, stratState.Positions)
@@ -2252,7 +2256,7 @@ func main() {
 					}
 				}
 				mu.Lock()
-				allowed, reason := CheckRisk(&sc, stratState, pv, prices, logger, riskAssist)
+				allowed, reason := checkStrategyRiskWithView(&sc, stratState, pv, prices, state.pairMarksLocked(), logger, riskAssist)
 				cbSnapshot := perStrategyCircuitBreakerSnapshot{}
 				if !allowed && isFreshPerStrategyCircuitBreaker(reason) {
 					cbSnapshot = snapshotPerStrategyCircuitBreaker(stratState, prices)
@@ -2968,7 +2972,7 @@ func main() {
 						detailKey = chKey + "|" + assetKeys[0]
 					}
 					chDetails := channelTradeDetails[detailKey]
-					chAdj, _ := computeSubsetDisplayValue(chStrats, state, prices, walletBalances, sharedWallets)
+					chAdj, _, _ := computeSubsetDisplayValueMarked(chStrats, state, prices, walletBalances, sharedWallets, state.pairMarksLocked())
 					chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
 					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chAdj, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
 					for _, msg := range msgs {
@@ -2978,7 +2982,7 @@ func main() {
 					for _, asset := range assetKeys {
 						assetStrats := assetGroups[asset]
 						assetDetails := channelTradeDetails[chKey+"|"+asset]
-						assetAdj, _ := computeSubsetDisplayValue(assetStrats, state, prices, walletBalances, sharedWallets)
+						assetAdj, _, _ := computeSubsetDisplayValueMarked(assetStrats, state, prices, walletBalances, sharedWallets, state.pairMarksLocked())
 						assetTrades := len(assetDetails)
 						assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
 						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetAdj, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
@@ -3152,7 +3156,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	lifetimeStats := loadLifetimeStatsBestEffort(sdb, "[summary]")
 	assetGroups, assetKeys := groupByAsset(chStrats)
 	if len(assetKeys) <= 1 {
-		chAdj, _ := computeSubsetDisplayValue(chStrats, state, prices, summaryWalletBalances, summaryAccountShared)
+		chAdj, _, _ := computeSubsetDisplayValueMarked(chStrats, state, prices, summaryWalletBalances, summaryAccountShared, state.pairMarksLocked())
 		chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
 		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chAdj, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
 		for _, msg := range msgs {
@@ -3162,7 +3166,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	} else {
 		for _, asset := range assetKeys {
 			assetStrats := assetGroups[asset]
-			assetAdj, _ := computeSubsetDisplayValue(assetStrats, state, prices, summaryWalletBalances, summaryAccountShared)
+			assetAdj, _, _ := computeSubsetDisplayValueMarked(assetStrats, state, prices, summaryWalletBalances, summaryAccountShared, state.pairMarksLocked())
 			assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
 			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetAdj, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds, assetSharpe, lifetimeStats, cfg.Regime)
 			for _, msg := range msgs {
@@ -3437,7 +3441,8 @@ func isFreshPerStrategyCircuitBreaker(reason string) bool {
 		return false
 	}
 	return strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) ||
-		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
+		strings.HasPrefix(reason, RiskReasonConsecutiveLosses) ||
+		strings.HasPrefix(reason, RiskReasonPairValuationStale)
 }
 
 func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier tradeAlertRouter, rc *RegimeConfig) {

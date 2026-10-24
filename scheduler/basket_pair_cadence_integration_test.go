@@ -796,41 +796,24 @@ func TestBasketPairSimulatedClockPolicyBudget(t *testing.T) {
 	})
 }
 
-type pairClockVenue struct {
-	*pairScriptedVenue
-	onValuation func()
-}
-
-func (v pairClockVenue) Valuation(m pairContractMember, nowMs int64) (pairMemberValuation, error) {
-	if v.onValuation != nil {
-		v.onValuation()
-	}
-	return v.pairScriptedVenue.Valuation(m, nowMs)
-}
-
 func TestBasketPairClockAdvanceCannotAuthorizeStaleActions(t *testing.T) {
 	at := pairTestStart()
 	t.Run("valuation", func(t *testing.T) {
 		e := newPairTestEnv(t, nil)
 		pairEnterHoldRunner(e, 0.06)
 		once := false
-		base := e.venues.factory()
-		e.bc.venueFor = func(sc StrategyConfig) (basketVenue, error) {
-			v, err := base(sc)
-			if err != nil {
-				return nil, err
-			}
-			return pairClockVenue{pairScriptedVenue: v.(*pairScriptedVenue), onValuation: func() {
-				if !once {
-					once = true
-					e.now = e.now.Add(4 * time.Second)
-				}
-			}}, nil
-		}
 		e.slot(at, "in-0")
+		e.quotes.mu.Lock()
+		e.quotes.onRead = func(r pairMemberRead) {
+			if r.Side != "" && !once {
+				once = true
+				e.now = e.now.Add(4 * time.Second)
+			}
+		}
+		e.quotes.mu.Unlock()
 		e.step(at.Add(time.Second))
-		if e.runner.calls != 0 || len(e.rt().Actions) != 0 {
-			t.Fatalf("time spent in the valuations must count against the policy budget, got %d calls and %d actions", e.runner.calls, len(e.rt().Actions))
+		if !once || e.runner.calls != 0 || len(e.rt().Actions) != 0 {
+			t.Fatalf("time spent preparing the valuation view must count against the policy budget, got read=%v, %d calls and %d actions", once, e.runner.calls, len(e.rt().Actions))
 		}
 	})
 	t.Run("policy", func(t *testing.T) {
@@ -989,9 +972,9 @@ func TestBasketPairExitLegsKeepTheStepStartValuationClock(t *testing.T) {
 		e.slotStep(0)
 		e.slotStep(1)
 		e.assertBooks("matched", 0.06, -0.06)
-		e.venues.okx.mu.Lock()
-		e.venues.okx.valErr = errors.New("quote outage")
-		e.venues.okx.mu.Unlock()
+		e.quotes.mu.Lock()
+		e.quotes.refErr = errors.New("quote outage")
+		e.quotes.mu.Unlock()
 		slot2 := e.slotStep(2)
 		if exits := e.actionsByPurpose(pairPurposeExit); len(exits) != 0 {
 			t.Fatalf("an exit without a valuation at step start must hold, got %d exit actions", len(exits))
@@ -1023,7 +1006,6 @@ func TestBasketPairHostOrderDrivesWakeOnlySteps(t *testing.T) {
 	pairHostRunner(e, 2)
 	h := newPairTestHost(e, time.Minute)
 	h.fund = func(time.Time) {}
-	h.prepare = func(basketCycleInputs) {}
 	if h.interval <= time.Duration(e.rt().Pair.Limits.QuoteAgeMs)*time.Millisecond {
 		t.Fatal("the host cycle gap must exceed quote_age_ms for this proof")
 	}
@@ -1070,9 +1052,19 @@ func TestBasketPairHostOrderDrivesWakeOnlySteps(t *testing.T) {
 		}
 	}
 	e.assertBooks("matched from wake-only steps", 0.06, -0.06)
-	for i, r := range h.runs {
-		if i >= len(e.sealCalls) || e.sealCalls[i].AtMs != r.At.UnixMilli() {
-			t.Fatalf("each run must read its own seal at its collection time, got %+v", e.sealCalls)
+	perRun := map[int64]int{}
+	for _, r := range h.runs {
+		perRun[r.At.UnixMilli()] = 0
+	}
+	for _, c := range e.sealCalls {
+		if _, ok := perRun[c.AtMs]; !ok {
+			t.Fatalf("a seal was read at %d, which is no run's read time: %+v", c.AtMs, e.sealCalls)
+		}
+		perRun[c.AtMs]++
+	}
+	for _, r := range h.runs {
+		if perRun[r.At.UnixMilli()] < 2 {
+			t.Fatalf("each run must read its own seal once for the valuation view and once for collection, got %d at %d", perRun[r.At.UnixMilli()], r.At.UnixMilli())
 		}
 	}
 	if len(h.saveErrs) != 0 {

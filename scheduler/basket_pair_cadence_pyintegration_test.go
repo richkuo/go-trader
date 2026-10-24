@@ -52,8 +52,8 @@ func TestBasketPairCadenceRealHostDispatchesInAWakeOnlyStep(t *testing.T) {
 		}
 	}
 	e.assertBooks("matched on real management output", 0.06, -0.06)
-	if strings.Join(h.order[:5], ",") != "evidence,risk,manage,step,save" || strings.Join(h.order[5:9], ",") != "evidence,risk,step,save" {
-		t.Fatalf("the host must follow the documented order, got %v", h.order[:9])
+	if strings.Join(h.order[:6], ",") != "evidence,prepare_risk,risk,manage,step,save" || strings.Join(h.order[6:11], ",") != "evidence,prepare_risk,risk,step,save" {
+		t.Fatalf("the host must follow the documented order, got %v", h.order[:11])
 	}
 }
 
