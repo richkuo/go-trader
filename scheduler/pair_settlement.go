@@ -88,6 +88,7 @@ func (f pairFeeFill) sameExecution(e pairConfirmedFill) bool {
 
 type pairConfirmedFee struct {
 	Present         bool
+	Covered         bool
 	Currency        string
 	Amount          float64
 	Conversion      pairConversionEvidence
@@ -887,6 +888,32 @@ func (bc *basketCoordinator) clearPairQuantityHolds(rt *basketRuntime, a *basket
 	return changed
 }
 
+func (bc *basketCoordinator) clearPairEndedObligations(rt *basketRuntime) bool {
+	if rt.Pair == nil {
+		return false
+	}
+	p := &rt.Pair.Progress
+	changed := false
+	for _, a := range rt.Actions {
+		if a.Status != basketActionCommitted && a.Status != basketActionNoFill {
+			continue
+		}
+		keepLegacy := pairLiveLegacyReason(a) != ""
+		for _, k := range append([]string{pairObligationFeeInvalid, pairObligationFeeIncomplete}, pairQuantityHoldKinds...) {
+			if k == pairObligationLegacySettlement && keepLegacy {
+				continue
+			}
+			if p.clearObligation(k, a.StrategyID, a.ActionID) {
+				changed = true
+			}
+		}
+	}
+	if changed {
+		rt.touchPairProgress()
+	}
+	return changed
+}
+
 func (bc *basketCoordinator) refreshPairFeeIncomplete(rt *basketRuntime, a *basketAction, now time.Time) bool {
 	p := &rt.Pair.Progress
 	exec, err1 := pairParseFills(a.FillCoverageJSON)
@@ -1008,8 +1035,8 @@ func pairLedgerRowFor(s *StrategyState, t Trade, symbol string) pairLedgerRow {
 	return row
 }
 
-func pairConfirmedFeeOf(a *basketAction, parts []pairLedgerFee) pairConfirmedFee {
-	f := pairConfirmedFee{Present: true, EvidenceID: a.FeeEvidenceID, EvidenceVersion: a.FeeEvidenceVersion, Parts: parts}
+func pairConfirmedFeeOf(a *basketAction, parts []pairLedgerFee, covered bool) pairConfirmedFee {
+	f := pairConfirmedFee{Present: true, Covered: covered, EvidenceID: a.FeeEvidenceID, EvidenceVersion: a.FeeEvidenceVersion, Parts: parts}
 	sum := new(big.Rat)
 	usd := 0.0
 	cur := ""
@@ -1063,7 +1090,10 @@ func strategyExecutionFee(s *StrategyState, modeledFee, fillFee float64, useFill
 
 func strategyExecutionFeeSource(s *StrategyState, fillFee float64, useFillFee bool) string {
 	if useFillFee && s != nil && s.confirmedFee != nil && s.confirmedFee.Present {
-		return FeeSourceUserFills
+		if s.confirmedFee.Covered {
+			return FeeSourceUserFills
+		}
+		return FeeSourceUserFillsPending
 	}
 	return executionFeeSource(fillFee, useFillFee)
 }
@@ -1205,7 +1235,11 @@ func (bc *basketCoordinator) bookPairLiveQuantity(rt *basketRuntime, a *basketAc
 			SettlementAtMs: settleAt, FeeCurrency: f.FeeCurrency, FeeAmount: f.FeeAmount, Conversion: c.Evidence, RateUSD: c.RateText,
 			FeeUSD: pairRatFloat(new(big.Rat).Mul(amt, c.Rate)), Mode: pairFeeModeQuantity})
 	}
-	fee := pairConfirmedFeeOf(a, parts)
+	covered := len(parts) == len(pl.dueFills)
+	if pl.remainder {
+		covered = pairFeeCoversAll(pl.fees, pl.exec)
+	}
+	fee := pairConfirmedFeeOf(a, parts, covered)
 	logger := bc.memberLogger(a.StrategyID)
 	defer logger.Close()
 	obs := bc.pairObservation(rt, a.StrategyID, a)
@@ -1328,9 +1362,30 @@ func (bc *basketCoordinator) correctPairLiveFees(rt *basketRuntime, a *basketAct
 		total += v
 	}
 	newApplied := a.AppliedFee + total
+	charged := map[string]bool{}
+	for _, f := range pl.ledger.Fees {
+		charged[f.FillID] = true
+	}
+	for _, f := range parts {
+		charged[f.FillID] = true
+	}
+	rowCovered := map[string]bool{}
+	for _, key := range order {
+		rowCovered[key] = true
+	}
+	for _, lf := range pl.ledger.Fills {
+		key := fmt.Sprintf("%d|%s|%s", lf.Booking.TradeTsMs, lf.Booking.TradeTs, lf.Booking.OrderID)
+		if _, ok := rowCovered[key]; ok && !charged[lf.FillID] {
+			rowCovered[key] = false
+		}
+	}
 	for _, key := range order {
 		g := groups[key]
-		fix := &pairFeeFix{TradeTsMs: g.row.TradeTsMs, TradeTs: g.row.TradeTs, Symbol: a.Symbol, OrderID: g.row.OrderID, DeltaUSD: g.delta, Version: a.FeeEvidenceVersion,
+		source := FeeSourceUserFillsPending
+		if rowCovered[key] {
+			source = FeeSourceUserFills
+		}
+		fix := &pairFeeFix{FeeSource: source, TradeTsMs: g.row.TradeTsMs, TradeTs: g.row.TradeTs, Symbol: a.Symbol, OrderID: g.row.OrderID, DeltaUSD: g.delta, Version: a.FeeEvidenceVersion,
 			ClosedPositionID: g.row.ClosedPositionID, IsClose: g.row.IsClose, IntentID: a.EntryIntentID, ConfirmedFee: a.ConfirmedFee, AppliedFeeUSD: newApplied}
 		retained := pairRetainedTrade(s, fix)
 		if retained != nil && !retained.persisted {
@@ -1358,7 +1413,7 @@ func (bc *basketCoordinator) correctPairLiveFees(rt *basketRuntime, a *basketAct
 		if g.trade != nil {
 			part.tradeFound, part.prevFeeSource = true, g.trade.FeeSource
 			g.trade.ExchangeFee += g.delta
-			g.trade.FeeSource = FeeSourceUserFills
+			g.trade.FeeSource = g.fix.FeeSource
 		}
 		s.Cash -= g.delta
 		undo.cash += g.delta
@@ -1416,6 +1471,7 @@ func (bc *basketCoordinator) savePairLiveSettlement(rt *basketRuntime, a *basket
 		u.stagedStatus, u.stagedHold, u.stagedUpdatedAtMs = a.Status, a.HoldReason, a.UpdatedAtMs
 	}
 	rt.touchPairProgress()
+	bc.clearPairEndedObligations(rt)
 	if err := bc.store.SavePartition(bc.state, rt.Partition); err != nil {
 		if bc.rollbackPairFeeFixes(rt, err, now) {
 			if err2 := bc.store.SavePartition(bc.state, rt.Partition); err2 != nil {

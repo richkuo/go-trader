@@ -392,6 +392,7 @@ type pairFeeFix struct {
 	TradeRowID       int64   `json:"trade_row_id,omitempty"`
 	CostModelVersion int     `json:"cost_model_version,omitempty"`
 	CostPolicyID     string  `json:"cost_policy_id,omitempty"`
+	FeeSource        string  `json:"fee_source,omitempty"`
 }
 
 type pairBookedTrade struct {
@@ -978,6 +979,9 @@ func applyPairFeeFixTx(tx *sql.Tx, sid string, fix *pairFeeFix) error {
 	if fix.TradeRowID <= 0 || fix.CostModelVersion == 0 || fix.CostPolicyID == "" {
 		return fmt.Errorf("%w: the correction for %s %s at %s carries no checked target row and member stamp", errPairFeeFixProvenance, fix.Symbol, fix.OrderID, ts)
 	}
+	if fix.FeeSource != FeeSourceUserFills && fix.FeeSource != FeeSourceUserFillsPending {
+		return fmt.Errorf("%w: the correction for %s %s at %s carries fee source %q", errPairFeeFixProvenance, fix.Symbol, fix.OrderID, ts, fix.FeeSource)
+	}
 	var same int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND exchange_order_id = ?`, sid, ts, fix.Symbol, fix.OrderID).Scan(&same); err != nil {
 		return err
@@ -987,7 +991,7 @@ func applyPairFeeFixTx(tx *sql.Tx, sid string, fix *pairFeeFix) error {
 	}
 	res, err := tx.Exec(`UPDATE trades SET exchange_fee = exchange_fee + ?, fee_source = ?
 		WHERE rowid = ? AND strategy_id = ? AND timestamp = ? AND symbol = ? AND exchange_order_id = ? AND cost_model_version = ? AND cost_policy_id = ?`,
-		fix.DeltaUSD, FeeSourceUserFills, fix.TradeRowID, sid, ts, fix.Symbol, fix.OrderID, fix.CostModelVersion, fix.CostPolicyID)
+		fix.DeltaUSD, fix.FeeSource, fix.TradeRowID, sid, ts, fix.Symbol, fix.OrderID, fix.CostModelVersion, fix.CostPolicyID)
 	if err != nil {
 		return err
 	}

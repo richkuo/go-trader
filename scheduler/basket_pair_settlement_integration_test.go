@@ -533,7 +533,7 @@ func TestBasketPairSettlementBookingOwnersKeepExplicitFees(t *testing.T) {
 				book := func(dir, side string, qty, px float64, oid string) Trade {
 					t.Helper()
 					a := &basketAction{StrategyID: member, Symbol: "BTC", Direction: dir, PositionSide: side, ClientOrderID: oid}
-					f := pairConfirmedFee{Present: true, Currency: "USD", Amount: fee, EvidenceID: "pfe-test", EvidenceVersion: 1, DeltaUSD: fee}
+					f := pairConfirmedFee{Present: true, Covered: true, Currency: "USD", Amount: fee, EvidenceID: "pfe-test", EvidenceVersion: 1, DeltaUSD: fee}
 					from := len(s.TradeHistory)
 					cash := s.Cash
 					logger := e.bc.memberLogger(member)
@@ -760,5 +760,152 @@ func TestBasketPairSettlementCorrectionTargetsEachBookingRow(t *testing.T) {
 	e.step(e.now.Add(time.Second))
 	if math.Abs(e.state.Strategies[pairTestOKX].Cash-cash) > 1e-9 {
 		t.Fatal("a restart charged a correction again")
+	}
+}
+
+func TestBasketPairSettlementEndedActionsKeepNoSettlementHold(t *testing.T) {
+	t0 := pairTestStart()
+	receipt := t0.Add(time.Hour)
+	mutate, times := pairHistoricalEvidence(t0)
+	delayed := func(d *pairEvidenceDocument) {
+		mutate(d)
+		for _, c := range d.Conversions {
+			if c.Key.MemberID == pairTestOKX && c.Currency == "USDT" {
+				c.EvidenceID, c.RateUSD = "conv-delayed-gap", pairDecimal("1")
+				c.ObservedMs, c.FirstReceiptMs, c.ValidFromMs, c.ValidThroughMs = times["gap"]-1000, receipt.UnixMilli(), times["gap"]-1000, times["gap"]+1000
+				d.Conversions = append(d.Conversions, c)
+				break
+			}
+		}
+	}
+	e := newPairLiveShapedEnvWithEvidence(t, &pairNativeClosers{}, delayed)
+	pairEnterExitRunner(e, 0.06)
+	gap := pairWithFills(basketVenueOutcome{Outcome: basketVenueFilled, Terminal: true}, pairTestFill{id: "z", qty: "0.06", notional: "3618", atMs: times["gap"]})
+	_, exit := e.runOKXExit(t, pairWithFees(gap, true, pairTestFeeRec{"z", "1.8", "USDT"}))
+	if exit.AppliedQty != 0 || !exit.FeeFinal || e.rt().Pair.Progress.obligation(pairObligationSettlementConversion, pairTestOKX, exit.ActionID) == nil {
+		t.Fatalf("setup: a final complete fee set must be accepted while the fill-time rate is not yet received: %+v %+v", exit, e.rt().Pair.Progress.Obligations)
+	}
+	bad := pairWithFees(gap, true, pairTestFeeRec{"z", "1.8", "USDT"})
+	bad.FeeEvidenceVersion = 2
+	pairAnswerVenue(e, exit, bad)
+	e.step(e.now.Add(time.Second))
+	if exit.Status == basketActionCommitted || e.rt().Pair.Progress.obligation(pairObligationFeeInvalid, pairTestOKX, exit.ActionID) == nil {
+		t.Fatalf("a malformed fee answer on an action that is not complete must keep fee_invalid visible: %+v %+v", exit, e.rt().Pair.Progress.Obligations)
+	}
+	e.step(receipt.Add(time.Second))
+	e.step(e.now.Add(time.Second))
+	if exit.Status != basketActionCommitted || !basketQtyEqual(exit.AppliedQty, 0.06) {
+		t.Fatalf("the exit must book and commit once the fill-time rate is received: %+v %+v", exit, e.rt().Pair.Progress.Obligations)
+	}
+	for _, o := range e.rt().Pair.Progress.Obligations {
+		if o.ActionID == exit.ActionID {
+			t.Fatalf("a committed action must keep no settlement obligation: %+v", o)
+		}
+	}
+	e.step(e.now.Add(time.Second))
+	if e.lifecycle() != pairLifecycleFlat {
+		t.Fatalf("a flat pair with terminal actions and no settlement obligation must end the exit lifecycle, got %s %+v", e.lifecycle(), e.rt().Pair.Progress.Obligations)
+	}
+	e.restart()
+	if o := e.rt().Pair.Progress.obligation(pairObligationFeeInvalid, pairTestOKX, exit.ActionID); o != nil {
+		t.Fatalf("the cleared obligation must stay cleared after a restart: %+v", o)
+	}
+
+	e2 := newPairLiveShapedEnv(t, &pairNativeClosers{})
+	pairEnterHoldRunner(e2, 0.06)
+	pairOpenVenue(e2, pairTestOKX, pairWithFees(basketVenueOutcome{Outcome: pairVenueOpen}, false, pairTestFeeRec{"ghost", "0.1", "USDT"}))
+	e2.slotStep(0)
+	a := e2.okxEntry()
+	if a.ConfirmedQty != 0 || e2.rt().Pair.Progress.obligation(pairObligationFeeInvalid, pairTestOKX, a.ActionID) == nil {
+		t.Fatalf("setup: an open zero-fill answer with a fee record that matches no execution record must keep fee_invalid: %+v %+v", a, e2.rt().Pair.Progress.Obligations)
+	}
+	pairAnswerVenue(e2, a, basketVenueOutcome{Outcome: basketVenueRejected, Detail: "post-only would cross"})
+	e2.step(e2.now.Add(time.Second))
+	if a.Status != basketActionNoFill || len(e2.rt().Pair.Progress.Obligations) != 0 {
+		t.Fatalf("a terminal zero-fill must keep no fee_invalid obligation: %+v %+v", a, e2.rt().Pair.Progress.Obligations)
+	}
+	e2.restart()
+	if len(e2.rt().Pair.Progress.Obligations) != 0 {
+		t.Fatalf("the saved progress must keep no obligation after a restart: %+v", e2.rt().Pair.Progress.Obligations)
+	}
+}
+
+func (e *pairTestEnv) savedFeeRows(oid string) ([]float64, []string) {
+	e.t.Helper()
+	q, err := e.db().db.Query(`SELECT exchange_fee, fee_source FROM trades WHERE symbol = 'BTC' AND exchange_order_id = ? ORDER BY rowid`, oid)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer q.Close()
+	var fees []float64
+	var sources []string
+	for q.Next() {
+		var f float64
+		var s string
+		if err := q.Scan(&f, &s); err != nil {
+			e.t.Fatal(err)
+		}
+		fees, sources = append(fees, f), append(sources, s)
+	}
+	return fees, sources
+}
+
+func TestBasketPairSettlementFeeSourceStaysPendingUntilEveryFillIsCovered(t *testing.T) {
+	e := newPairLiveShapedEnv(t, &pairNativeClosers{})
+	pairEnterHoldRunner(e, 0.06)
+	fills := func(n int) basketVenueOutcome {
+		var fs []pairTestFill
+		for _, id := range []string{"a", "b", "c"}[:n] {
+			fs = append(fs, pairTestFill{id: id, qty: "0.02", notional: "1196"})
+		}
+		out := pairWithFills(basketVenueOutcome{Outcome: pairVenueOpen}, fs...)
+		if n == 3 {
+			out.Outcome, out.Terminal = basketVenueFilled, true
+		}
+		return out
+	}
+	pairOpenVenue(e, pairTestOKX, pairWithFees(fills(2), false, pairFeeRecs("0.4", "a")...))
+	e.slotStep(0)
+	a := e.okxEntry()
+	fees, sources := e.savedFeeRows(a.ClientOrderID)
+	if !basketQtyEqual(a.AppliedQty, 0.04) || len(fees) != 1 || math.Abs(fees[0]-0.4) > 1e-9 || sources[0] != FeeSourceUserFillsPending {
+		t.Fatalf("one row booking fills a and b with only a's fee must keep the confirmed amount and a pending source: %v %v %+v", fees, sources, a)
+	}
+	pairAnswerVenue(e, a, pairWithFees(fills(3), false, pairFeeRecs("0.4", "a")...))
+	e.step(e.now.Add(time.Second))
+	e.step(e.now.Add(time.Second))
+	fees, sources = e.savedFeeRows(a.ClientOrderID)
+	if !basketQtyEqual(a.AppliedQty, 0.06) || len(fees) != 2 || fees[1] != 0 || sources[1] != FeeSourceUserFillsPending || sources[0] != FeeSourceUserFillsPending {
+		t.Fatalf("fill c booked while the fee set is still {a} must not claim a confirmed zero fee: %v %v %+v", fees, sources, a)
+	}
+	pairAnswerVenue(e, a, pairWithFees(fills(3), false, pairFeeRecs("0.4", "a", "b")...))
+	e.step(e.now.Add(time.Second))
+	e.step(e.now.Add(time.Second))
+	fees, sources = e.savedFeeRows(a.ClientOrderID)
+	if len(fees) != 2 || math.Abs(fees[0]-0.8) > 1e-9 || sources[0] != FeeSourceUserFills || fees[1] != 0 || sources[1] != FeeSourceUserFillsPending {
+		t.Fatalf("the correction that covers every fill of the first row must confirm only that row: %v %v", fees, sources)
+	}
+	pairAnswerVenue(e, a, pairWithFees(fills(3), true, pairFeeRecs("0.4", "a", "b", "c")...))
+	e.step(e.now.Add(time.Second))
+	e.step(e.now.Add(time.Second))
+	fees, sources = e.savedFeeRows(a.ClientOrderID)
+	if a.Status != basketActionCommitted || len(fees) != 2 || math.Abs(fees[1]-0.4) > 1e-9 || sources[0] != FeeSourceUserFills || sources[1] != FeeSourceUserFills {
+		t.Fatalf("complete coverage must confirm every row: %v %v %+v", fees, sources, a)
+	}
+	for _, tr := range e.state.Strategies[pairTestOKX].TradeHistory {
+		if tr.Symbol == "BTC" && tr.TradeType != TradeTypeFunding && (tr.FeeSource != FeeSourceUserFills || tr.ExchangeOrderID != a.ClientOrderID) {
+			t.Fatalf("the in-memory rows must match the saved rows: %+v", tr)
+		}
+	}
+
+	e2 := newPairLiveShapedEnv(t, &pairNativeClosers{})
+	pairEnterHoldRunner(e2, 0.06)
+	two := pairWithFills(basketVenueOutcome{Outcome: basketVenueFilled, Terminal: true}, pairTestFill{id: "a", qty: "0.03", notional: "1794"}, pairTestFill{id: "b", qty: "0.03", notional: "1794"})
+	pairOpenVenue(e2, pairTestOKX, pairWithFees(two, true, pairTestFeeRec{"a", "0", "USDT"}, pairTestFeeRec{"b", "-0.1", "USDT"}))
+	e2.slotStep(0)
+	b := e2.okxEntry()
+	fees, sources = e2.savedFeeRows(b.ClientOrderID)
+	if b.Status != basketActionCommitted || len(fees) != 1 || math.Abs(fees[0]+0.1) > 1e-9 || sources[0] != FeeSourceUserFills {
+		t.Fatalf("a row whose every fill has a fee record, with a zero fee and a rebate, keeps the confirmed source and order id: %v %v %+v", fees, sources, b)
 	}
 }

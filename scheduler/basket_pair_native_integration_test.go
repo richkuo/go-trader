@@ -284,8 +284,8 @@ func TestBasketPairFeeEvidenceAppliesOnceByVersion(t *testing.T) {
 	if a.AppliedFee != 0 || a.AppliedFeeVersion != 1 || a.Status != basketActionUnresolved || okx.Cash != cash {
 		t.Fatalf("a known zero fee must book as confirmed evidence with no modeled cost: cash %v->%v %+v", cash, okx.Cash, a)
 	}
-	if fee, source := e.savedTradeFee(a.ClientOrderID); fee != 0 || source != FeeSourceUserFills {
-		t.Fatalf("the trade row must keep the confirmed zero fee and its confirmed source, got %v %q", fee, source)
+	if fee, source := e.savedTradeFee(a.ClientOrderID); fee != 0 || source != FeeSourceUserFillsPending {
+		t.Fatalf("the trade row must keep the confirmed zero fee with a pending source while fills b and c have no fee record, got %v %q", fee, source)
 	}
 	if e.rt().Pair.Progress.obligation(pairObligationFeeIncomplete, pairTestOKX, a.ActionID) == nil || e.rt().Pair.Progress.obligation(pairObligationFeeUnconfirmed, pairTestOKX, a.ActionID) != nil {
 		t.Fatalf("partial fee coverage must keep fee_incomplete visible and clear the quantity hold: %+v", e.rt().Pair.Progress.Obligations)

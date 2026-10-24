@@ -148,6 +148,7 @@ func (bc *basketCoordinator) pairAlert(rt *basketRuntime, key, msg string, criti
 }
 
 func (bc *basketCoordinator) persistPair(rt *basketRuntime) bool {
+	bc.clearPairEndedObligations(rt)
 	if err := bc.store.PersistBasketProgress(rt); err != nil {
 		bc.pairLogf(rt, "could not save pair progress: %v; elective work holds until it saves, and queries and protection continue", err)
 		return false
@@ -983,6 +984,7 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 	}
 	a.UpdatedAtMs = now.UnixMilli()
 	rt.touchPairProgress()
+	bc.clearPairEndedObligations(rt)
 	if err := bc.store.SavePartition(bc.state, rt.Partition); err != nil {
 		rt.needsDurable = true
 		bc.pairLogf(rt, "action %s booked in memory, but the %s state file did not save: %v; no elective order is sent until it does, and a restart books the confirmed delta once from the saved evidence", a.ActionID, partitionLabel(rt.Partition), err)
