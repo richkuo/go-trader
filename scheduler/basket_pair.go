@@ -1233,11 +1233,12 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 		} else {
 			t.CoordinatorReason = reason
 		}
-		if err := bc.freezePairTargets(rt, rb, t, reason, now); err != nil {
+		_, saved, err := bc.freezePairTargets(rt, rb, t, reason, now)
+		if err != nil {
 			bc.pairLogf(rt, "slot %s hold could not be saved: %v; a later step decides it again", formatClosedBarMs(rb.DeadlineMs), err)
 			return false
 		}
-		bc.pairLogf(rt, "slot %s held: %s", formatClosedBarMs(rb.DeadlineMs), reason)
+		bc.pairLogf(rt, "slot %s held: %s", formatClosedBarMs(rb.DeadlineMs), saved)
 		return true
 	}
 	env, why := verifyPairEnvelope(rt, rb)
@@ -1310,13 +1311,11 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 	if runErr != nil {
 		return hold("the policy run failed: "+runErr.Error(), false, nil)
 	}
-	var res pairPolicyResult
-	dec := json.NewDecoder(strings.NewReader(string(stdout)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&res); err != nil {
-		return hold("invalid policy output: unreadable result: "+err.Error(), false, nil)
+	res, derr := pairDecodePolicyResult(stdout)
+	if derr != nil {
+		return hold("invalid policy output: unreadable result: "+derr.Error(), false, nil)
 	}
-	reason, verr := validatePairPolicyResult(rt, req, &res)
+	reason, verr := validatePairPolicyResult(rt, req, res)
 	if verr != nil {
 		return hold("invalid policy output: "+verr.Error(), false, &pairTargets{Decision: res.Decision})
 	}
@@ -1333,22 +1332,17 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 			return hold("the full fill of the frozen targets at their price bounds would break a cap: "+why, false, t)
 		}
 	}
-	if err := bc.freezePairTargets(rt, rb, t, "", now); err != nil {
+	kind, saved, err := bc.freezePairTargets(rt, rb, t, "", now)
+	if err != nil {
 		bc.pairLogf(rt, "slot %s decision could not be saved: %v; a later step decides it again", formatClosedBarMs(rb.DeadlineMs), err)
 		return false
 	}
-	bc.pairLogf(rt, "slot %s: %s decision frozen (%s, input %s)", formatClosedBarMs(rb.DeadlineMs), res.Status, res.Orientation, shortFingerprint(rb.InputFP))
-	return true
-}
-
-func pairEnvelopeRates(em pairEnvelopeMember) map[string]float64 {
-	out := map[string]float64{pairUSD: 1}
-	for _, c := range em.Conversions {
-		if rate, ok := pairDecimalFloat(c.RateUSD); ok && basketFinitePositive(rate) {
-			out[c.Currency] = rate
-		}
+	if kind == pairPolicyStatusHold {
+		bc.pairLogf(rt, "slot %s held: %s", formatClosedBarMs(rb.DeadlineMs), saved)
+		return true
 	}
-	return out
+	bc.pairLogf(rt, "slot %s: %s decision frozen (%s, input %s)", formatClosedBarMs(rb.DeadlineMs), kind, t.Orientation, shortFingerprint(rb.InputFP))
+	return true
 }
 
 func (bc *basketCoordinator) pairFullFillCapCheck(rt *basketRuntime, env pairQuoteEnvelope, targets map[string]pairPolicyMemberTarget) string {
@@ -1361,7 +1355,10 @@ func (bc *basketCoordinator) pairFullFillCapCheck(rt *basketRuntime, env pairQuo
 		if !ok {
 			return fmt.Sprintf("the verified envelope has no member %s", m.MemberID)
 		}
-		rates := pairEnvelopeRates(em)
+		rates, err := pairConversionRates(env, m.MemberID)
+		if err != nil {
+			return err.Error()
+		}
 		conv, ok := rates[m.Meta.PriceCurrency]
 		if !ok {
 			return fmt.Sprintf("member %s has no saved %s conversion for its price bound", m.MemberID, m.Meta.PriceCurrency)
@@ -1441,10 +1438,20 @@ func (bc *basketCoordinator) pairFullFillCollateral(rt *basketRuntime, m pairCon
 	return ""
 }
 
-func (bc *basketCoordinator) freezePairTargets(rt *basketRuntime, rb *basketRebalance, t *pairTargets, holdReason string, now time.Time) error {
+func (bc *basketCoordinator) freezePairTargets(rt *basketRuntime, rb *basketRebalance, t *pairTargets, holdReason string, now time.Time) (string, string, error) {
 	t.Version = pairTargetsVersion
 	t.SlotMs = rb.DeadlineMs
 	t.InputFingerprint = rb.InputFP
+	raw := t.JSON()
+	if raw == "" {
+		return "", "", fmt.Errorf("the decision record could not be encoded")
+	}
+	if len(raw) > pairTargetsMaxBytes {
+		holdReason = fmt.Sprintf("the decision record is %d bytes, above the %d-byte limit; the slot holds without it", len(raw), pairTargetsMaxBytes)
+		t = &pairTargets{Version: pairTargetsVersion, Kind: pairPolicyStatusHold, SlotMs: rb.DeadlineMs, InputFingerprint: rb.InputFP,
+			CoordinatorReason: holdReason, Decision: json.RawMessage(fmt.Sprintf(`{"oversize_bytes":%d}`, len(raw)))}
+		raw = t.JSON()
+	}
 	status := basketRebalanceFrozen
 	next := *rb
 	next.UpdatedAtMs = now.UnixMilli()
@@ -1453,12 +1460,8 @@ func (bc *basketCoordinator) freezePairTargets(rt *basketRuntime, rb *basketReba
 		next.HoldReason = holdReason
 		next.Outcome.Result = "held"
 	}
-	raw := t.JSON()
-	if raw == "" {
-		return fmt.Errorf("the decision record could not be encoded")
-	}
 	if err := bc.store.WritePairDecision(rt, &next, raw, status); err != nil {
-		return err
+		return "", "", err
 	}
 	rb.TargetsJSON, rb.Status, rb.durableStatus = raw, status, status
 	rb.HoldReason, rb.Outcome, rb.UpdatedAtMs = next.HoldReason, next.Outcome, next.UpdatedAtMs
@@ -1479,7 +1482,7 @@ func (bc *basketCoordinator) freezePairTargets(rt *basketRuntime, rb *basketReba
 			bc.persistPair(rt)
 		}
 	}
-	return nil
+	return t.Kind, holdReason, nil
 }
 
 func (bc *basketCoordinator) pairIncreaseHold(rt *basketRuntime, in basketCycleInputs) string {
