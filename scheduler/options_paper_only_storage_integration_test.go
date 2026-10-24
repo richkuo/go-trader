@@ -163,7 +163,7 @@ func TestOptionsLiveModeMigrationSingleFileSameIdentity(t *testing.T) {
 	if pending == nil || !pending.OperatorRequired || len(pending.Symbols) != 2 {
 		t.Errorf("pending close = %+v, want the saved operator-required robinhood_options close", pending)
 	}
-	if !planOperatorRequiredWarning(state).HasEntries() {
+	if !planOperatorRequiredWarning(state, tradingNow().UTC()).HasEntries() {
 		t.Error("the saved operator-required close no longer produces a warning")
 	}
 	if p := partitionFor(after.Strategies[0]); p != defaultPaperPartition {

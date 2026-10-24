@@ -514,13 +514,14 @@ func TestBitcoinLeadLagRegistrationTables(t *testing.T) {
 		t.Fatalf("no-edge evidence = %+v, %v", ev, ok)
 	}
 	want := map[string]string{
-		cumulativeVolumeDeltaStrategyName: "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md",
-		macroEventBreakoutStrategyName:    "backtest/candidates/macro_event_breakout_1654/REPORT.md",
-		volumeProfileReclaimStrategyName:  "backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
-		orderBookImbalanceStrategyName:    "backtest/candidates/order_book_imbalance_1635/REPORT.md",
-		name:                              ref,
-		perpetualPremiumStrategyName:      "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
-		inventoryMarketMakingStrategyName: "backtest/candidates/inventory_market_making_1636/REPORT.md",
+		cumulativeVolumeDeltaStrategyName:    "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md",
+		macroEventBreakoutStrategyName:       "backtest/candidates/macro_event_breakout_1654/REPORT.md",
+		volumeProfileReclaimStrategyName:     "backtest/candidates/volume_profile_reclaim_1665/REPORT.md",
+		orderBookImbalanceStrategyName:       "backtest/candidates/order_book_imbalance_1635/REPORT.md",
+		name:                                 ref,
+		perpetualPremiumStrategyName:         "backtest/candidates/perpetual_premium_reversion_1639/REPORT.md",
+		inventoryMarketMakingStrategyName:    "backtest/candidates/inventory_market_making_1636/REPORT.md",
+		pairPolicyCrossExchangePerpArbitrage: "backtest/candidates/cross_exchange_perp_arbitrage_1655/REPORT.md",
 	}
 	if !reflect.DeepEqual(productionRefusedStrategies, want) {
 		t.Fatalf("production-refused table = %v", productionRefusedStrategies)

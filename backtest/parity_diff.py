@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from atr import ensure_atr_indicator, latest_atr
 from regime import prepare_check_regime
-from registry_loader import load_registry, refuse_basket_evaluator
+from registry_loader import load_registry, refuse_basket_evaluator, refuse_pair_evaluator
 from strategy_composition import (
     compose_signal,
     evaluate_open_close,
@@ -1106,6 +1106,12 @@ def main(argv: Optional[list] = None) -> int:
         except ValueError as e:
             print(f"parity: {e}", file=sys.stderr)
             return 2
+
+    try:
+        refuse_pair_evaluator(load_registry(cfg.registry), cfg.strategy_name)
+    except ValueError as e:
+        print(f"parity: {e}", file=sys.stderr)
+        return 2
 
     from data_fetcher import load_cached_data
     df = load_cached_data(symbol, timeframe, start_date=args.since)

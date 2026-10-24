@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -940,6 +941,8 @@ type PendingCircuitClose struct {
 	ConsecutiveFailures int                         `json:"consecutive_failures,omitempty"`
 	LastNotifiedAt      time.Time                   `json:"last_notified_at,omitempty"`
 	SizeBasis           string                      `json:"size_basis,omitempty"`
+	Episode             string                      `json:"episode,omitempty"`
+	FiredAt             time.Time                   `json:"fired_at,omitzero"`
 }
 
 const robinhoodPendingSizeBasisBook = "book"
@@ -1052,6 +1055,19 @@ func (r *RiskState) clearPendingCircuitClose(platform string) {
 	}
 }
 
+func (r *RiskState) clearPendingCircuitClosesForKillSwitch() {
+	if r == nil {
+		return
+	}
+	r.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	r.clearPendingCircuitClose(PlatformPendingCloseOKX)
+	r.clearPendingCircuitClose(PlatformPendingCloseOKXSpot)
+	r.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
+	r.clearPendingCircuitClose(PlatformPendingCloseRobinhoodOptions)
+	r.clearPendingCircuitClose(PlatformPendingCloseTopStep)
+	r.RobinhoodSharedCloseNotice = RobinhoodSharedCloseNotice{}
+}
+
 func (r *RiskState) getPendingCircuitClose(platform string) *PendingCircuitClose {
 	if r == nil {
 		return nil
@@ -1132,45 +1148,81 @@ func shouldForceCloseAllPositionsOnCircuitBreaker(sc *StrategyConfig, assist *Pl
 	return !hyperliquidCircuitBreakerHasSharedCoin(sc, assist)
 }
 
-func setOperatorRequiredCircuitBreakerPending(sc *StrategyConfig, s *StrategyState) {
-	if sc == nil || s == nil {
-		return
-	}
+func newOperatorRequiredEpisodeID() string {
+	return "orc-" + strings.ToLower(rand.Text())
+}
+
+func operatorRequiredFreshLegs(sc *StrategyConfig, s *StrategyState) (string, []PendingCircuitCloseSymbol) {
 	switch {
 	case sc.Platform == "okx" && sc.Type == "spot" && okxIsLive(sc.Args):
 		sym := okxSymbol(sc.Args)
 		if sym == "" {
-			return
+			return PlatformPendingCloseOKXSpot, nil
 		}
-		var size float64
-		if pos, ok := s.Positions[sym]; ok {
-			size = pos.Quantity
+		if pos := s.Positions[sym]; pos != nil && finitePositive(pos.Quantity) {
+			return PlatformPendingCloseOKXSpot, []PendingCircuitCloseSymbol{{Symbol: sym, Size: pos.Quantity}}
 		}
-		s.RiskState.setPendingCircuitClose(PlatformPendingCloseOKXSpot, &PendingCircuitClose{
-			Symbols:          []PendingCircuitCloseSymbol{{Symbol: sym, Size: size}},
-			OperatorRequired: true,
-		})
+		return PlatformPendingCloseOKXSpot, nil
 	case sc.Platform == "robinhood" && sc.Type == "options" && robinhoodIsLive(sc.Args):
-		symbols := make([]PendingCircuitCloseSymbol, 0, len(s.OptionPositions))
+		var legs []PendingCircuitCloseSymbol
 		for id, op := range s.OptionPositions {
-			if op == nil {
+			if op == nil || !finitePositive(op.Quantity) {
 				continue
 			}
-			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: id, Size: op.Quantity})
+			legs = append(legs, PendingCircuitCloseSymbol{Symbol: id, Size: op.Quantity})
 		}
-		if len(symbols) == 0 {
-			sym := robinhoodSymbol(sc.Args)
-			if sym == "" {
-				return
-			}
-			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: 0})
-		}
-		sort.Slice(symbols, func(i, j int) bool { return symbols[i].Symbol < symbols[j].Symbol })
-		s.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhoodOptions, &PendingCircuitClose{
-			Symbols:          symbols,
-			OperatorRequired: true,
-		})
+		return PlatformPendingCloseRobinhoodOptions, legs
 	}
+	return "", nil
+}
+
+func mergeOperatorRequiredLegs(prior *PendingCircuitClose, fresh []PendingCircuitCloseSymbol) []PendingCircuitCloseSymbol {
+	var merged []PendingCircuitCloseSymbol
+	if prior != nil && prior.OperatorRequired {
+		merged = append(merged, prior.Symbols...)
+	}
+	for _, leg := range fresh {
+		found := false
+		for i := range merged {
+			if merged[i].Symbol != leg.Symbol {
+				continue
+			}
+			found = true
+			stored := merged[i].Size
+			if math.IsNaN(stored) || math.IsInf(stored, 0) || stored < 0 {
+				merged[i].Size = leg.Size
+			} else {
+				merged[i].Size = stored + leg.Size
+			}
+			break
+		}
+		if !found {
+			merged = append(merged, leg)
+		}
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].Symbol < merged[j].Symbol })
+	return merged
+}
+
+func setOperatorRequiredCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, now time.Time) {
+	if sc == nil || s == nil {
+		return
+	}
+	platform, fresh := operatorRequiredFreshLegs(sc, s)
+	if platform == "" {
+		return
+	}
+	if len(fresh) == 0 {
+		fmt.Printf("[WARN] operator-required-close: strategy %s platform %s: circuit breaker fired with a flat own book; no new leg was added (an earlier entry keeps its legs and reminder schedule)\n", s.ID, platform)
+		return
+	}
+	merged := mergeOperatorRequiredLegs(s.RiskState.getPendingCircuitClose(platform), fresh)
+	s.RiskState.setPendingCircuitClose(platform, &PendingCircuitClose{
+		Symbols:          merged,
+		OperatorRequired: true,
+		Episode:          newOperatorRequiredEpisodeID(),
+		FiredAt:          now.UTC(),
+	})
 }
 
 func setRobinhoodCircuitBreakerPending(sc *StrategyConfig, s *StrategyState) {
@@ -1632,7 +1684,7 @@ func checkRiskValued(sc *StrategyConfig, s *StrategyState, portfolioValue float6
 			setOKXCircuitBreakerPending(sc, s, assist)
 			setRobinhoodCircuitBreakerPending(sc, s)
 			setTopStepCircuitBreakerPending(sc, s, assist)
-			setOperatorRequiredCircuitBreakerPending(sc, s)
+			setOperatorRequiredCircuitBreakerPending(sc, s, now)
 			if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
 				forceCloseAllPositions(s, sc, prices, logger)
 			}
@@ -1651,7 +1703,7 @@ func checkRiskValued(sc *StrategyConfig, s *StrategyState, portfolioValue float6
 		setOKXCircuitBreakerPending(sc, s, assist)
 		setRobinhoodCircuitBreakerPending(sc, s)
 		setTopStepCircuitBreakerPending(sc, s, assist)
-		setOperatorRequiredCircuitBreakerPending(sc, s)
+		setOperatorRequiredCircuitBreakerPending(sc, s, now)
 		if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
 			forceCloseAllPositions(s, sc, prices, logger)
 		}

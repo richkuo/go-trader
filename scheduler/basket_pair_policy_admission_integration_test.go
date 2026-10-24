@@ -131,8 +131,8 @@ func TestBasketPairPolicyParamsBoundaryValuesAreAdmitted(t *testing.T) {
 	if cfg.Pairs[0].Policy != pairPolicyCrossExchangePerpArbitrage || len(cfg.Pairs[0].Params) != 4 {
 		t.Fatalf("the admitted pair must carry the production policy and its four parameters: %+v", cfg.Pairs[0])
 	}
-	if _, _, err := buildAddStrategyEntry(pairPolicyCrossExchangePerpArbitrage, "hyperliquid", "BTC"); err == nil || !strings.Contains(err.Error(), "research-only pair token") {
-		t.Fatalf("the add-strategy command must refuse the production pair policy name: %v", err)
+	if _, _, err := buildAddStrategyEntry(pairPolicyCrossExchangePerpArbitrage, "hyperliquid", "BTC"); err == nil || !strings.Contains(err.Error(), "is production_refused (research-only, evidence backtest/candidates/cross_exchange_perp_arbitrage_1655/REPORT.md)") {
+		t.Fatalf("the add-strategy command must refuse the production pair policy name as production_refused: %v", err)
 	}
 }
 

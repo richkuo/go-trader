@@ -25,6 +25,7 @@ SKIP_STRATEGIES = {
     "cross_sectional_reversal": "basket evaluator: it ranks a symbol-keyed universe and refuses one-symbol evaluation by contract (#1781); its post-deadline invariance runs through the real basket runner (#1793)",
     "order_book_imbalance": "book evaluator: it decides once, at the deadline of the supplied l2Book section, and never per candle row (#1635); its post-deadline invariance runs through the evaluator and study-path parity in test_order_book_imbalance_integration.py",
     "inventory_market_making": "quote capability: it has no scalar candle signal and refuses scalar evaluation by contract (#1861); its post-deadline invariance runs through the real quote coordinator in the TestQuoteReplay integration cases (later receipts leave past decisions unchanged)",
+    "cross_exchange_perp_arbitrage": "pair policy: it decides one cross-venue pair from a frozen two-venue request and refuses one-symbol evaluation by contract (#1878); its post-deadline invariance runs through the real pair runner in TestBasketPairPolicyRealFrozenRequestIgnoresLaterInputs (identical frozen request bytes give identical output after later quote and account inputs change)",
 }
 
 EXPECTED_ALL_ZERO_SIGNAL = {

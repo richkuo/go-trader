@@ -1,8 +1,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import inspect
+import os
 import sys
 from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
@@ -213,6 +215,47 @@ def _safe_list_strategy_names(list_fn: Optional[Callable[[], Iterable[str]]]) ->
         return []
 
 
+_CANONICAL_OPEN_REGISTRY_MODULE = "_go_trader_composer_open_registry"
+_CANONICAL_OPEN_REGISTRY_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared_strategies", "open", "registry.py")
+
+
+def _canonical_open_registry():
+    loaded = sys.modules.get(_CANONICAL_OPEN_REGISTRY_MODULE)
+    if loaded is not None:
+        origin = getattr(loaded, "__file__", None) or ""
+        if os.path.realpath(origin) != os.path.realpath(_CANONICAL_OPEN_REGISTRY_PATH):
+            raise ImportError(f"module {_CANONICAL_OPEN_REGISTRY_MODULE} is loaded from {origin!r}, "
+                              f"not {_CANONICAL_OPEN_REGISTRY_PATH!r}")
+        return loaded
+    spec = importlib.util.spec_from_file_location(_CANONICAL_OPEN_REGISTRY_MODULE, _CANONICAL_OPEN_REGISTRY_PATH)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_CANONICAL_OPEN_REGISTRY_MODULE] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(_CANONICAL_OPEN_REGISTRY_MODULE, None)
+        raise
+    return module
+
+
+def _canonical_production_refused_entry(name: str) -> Optional[dict]:
+    entry = _canonical_open_registry().STRATEGIES.get(name)
+    if isinstance(entry, dict) and entry.get("production_refused"):
+        return entry
+    return None
+
+
+def _strategy_or_production_refused(get_strategy: Callable[[str], object], name: str) -> object:
+    try:
+        return get_strategy(name)
+    except ValueError:
+        refused = _canonical_production_refused_entry(name)
+        if refused is None:
+            raise
+        return refused
+
+
 _DEPRECATED_CLOSE_NAMES = {"tp_at_pct": "tiered_tp_pct"}
 
 
@@ -358,6 +401,9 @@ def resolve_strategy_references(
         try:
             get_open_strategy(resolved)
         except ValueError as exc:
+            if _canonical_production_refused_entry(resolved) is not None:
+                refs.append(StrategyReference("close", resolved))
+                continue
             raise ValueError(
                 f"Unknown close strategy: {name}. "
                 f"Available close strategies: {_safe_list_strategy_names(list_close_strategies)}; "
@@ -375,7 +421,7 @@ def admit_strategy_references(
 ) -> None:
     references = list(references)
     for ref in references:
-        entry = get_strategy(ref.name)
+        entry = _strategy_or_production_refused(get_strategy, ref.name)
         if isinstance(entry, dict) and entry.get("production_refused"):
             raise ValueError(
                 f"{ref.role} strategy '{ref.name}' is production_refused: it is research-only "
@@ -387,6 +433,10 @@ def admit_strategy_references(
             raise ValueError(
                 f"{ref.role} strategy '{ref.name}' is a basket evaluator; "
                 "it ranks a basket universe and cannot run on one symbol")
+        if isinstance(entry, dict) and entry.get("pair"):
+            raise ValueError(
+                f"{ref.role} strategy '{ref.name}' is a pair policy; "
+                "it decides one cross-venue pair and only the admitted research pair coordinator runs it")
         if isinstance(entry, dict) and entry.get("quote"):
             raise ValueError(
                 f"{ref.role} strategy '{ref.name}' is a quote capability; "
@@ -437,7 +487,7 @@ def admit_configured_strategies(
         try:
             entry = get_open_strategy(positional)
         except ValueError:
-            entry = None
+            entry = _canonical_production_refused_entry(positional)
         if isinstance(entry, dict) and entry.get("production_refused"):
             extra.append(StrategyReference("open", positional))
     admit_strategy_references(extra + references, gate_mode, acknowledgement, get_open_strategy)

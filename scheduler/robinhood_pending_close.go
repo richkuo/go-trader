@@ -540,8 +540,7 @@ func robinhoodSharedCloseNoticeDueLocked(ss *StrategyState, coin string, now tim
 	cbUntil := ss.RiskState.CircuitBreakerUntil
 	due := n.LastNotifiedAt.IsZero() || n.Coin != coin || !n.CBUntil.Equal(cbUntil)
 	if !due {
-		elapsed := now.Sub(n.LastNotifiedAt)
-		due = elapsed < 0 || elapsed >= effectiveAlertThrottleInterval()
+		due = alertThrottleDue(n.LastNotifiedAt, now)
 	}
 	if due {
 		ss.RiskState.RobinhoodSharedCloseNotice = RobinhoodSharedCloseNotice{Coin: coin, CBUntil: cbUntil, LastNotifiedAt: now}

@@ -12,12 +12,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 REQUEST_VERSION = 2
 RESULT_VERSION = 2
 MAX_REASON_BYTES = 1024
-_PAIR_POLICIES = {
-    "cross_exchange_perp_arbitrage": (
-        "go_trader_pair_policy_cross_exchange_perp_arbitrage",
-        os.path.join("shared_strategies", "open", "cross_exchange_perp_arbitrage.py"),
-    ),
-}
+_PAIR_REGISTRY = ("go_trader_pair_registry", os.path.join("shared_strategies", "open", "pair_registry.py"))
 _CODEC = ("pair_evidence", os.path.join("shared_tools", "pair_evidence.py"))
 
 
@@ -38,11 +33,6 @@ def _load(module_name, rel):
         sys.modules.pop(module_name, None)
         raise
     return module
-
-
-def load_policy(name):
-    module_name, rel = _PAIR_POLICIES[name]
-    return _load(module_name, rel)
 
 
 def _clip(text):
@@ -78,6 +68,7 @@ def _invalid(codec, request, reason):
 
 
 def run(data):
+    pairs = _load(*_PAIR_REGISTRY)
     codec = _load(*_CODEC)
     try:
         request = codec.loads_strict(data)
@@ -90,9 +81,10 @@ def run(data):
         shown = version.text if isinstance(version, codec.JSONNumber) else type(version).__name__
         return _invalid(codec, request, f"request version {shown} is not {REQUEST_VERSION}")
     policy = request.get("policy")
-    if not isinstance(policy, str) or policy not in _PAIR_POLICIES:
-        return _invalid(codec, request, f"policy {policy!r} is not a known pair policy (known: {', '.join(sorted(_PAIR_POLICIES))})")
-    return load_policy(policy).evaluate_pair(request)
+    known = pairs.pair_policies()
+    if not isinstance(policy, str) or policy not in known:
+        return _invalid(codec, request, f"policy {policy!r} is not a known pair policy (known: {', '.join(known)})")
+    return pairs.get_pair_evaluator(policy)(request)
 
 
 def _emit(obj):
@@ -111,9 +103,11 @@ def main(argv):
             return 2
     try:
         if probe:
-            for name in sorted(_PAIR_POLICIES):
-                load_policy(name)
-            _emit({"ok": True, "probe": True, "policies": sorted(_PAIR_POLICIES)})
+            pairs = _load(*_PAIR_REGISTRY)
+            known = list(pairs.pair_policies())
+            for name in known:
+                pairs.get_pair_evaluator(name)
+            _emit({"ok": True, "probe": True, "policies": known})
             return 0
         _emit(run(sys.stdin.buffer.read()))
         return 0

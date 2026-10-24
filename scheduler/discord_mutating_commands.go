@@ -199,11 +199,11 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 	if basketRankerStrategies[name] || name == basketMemberStrategyToken {
 		return "", nil, fmt.Errorf("%q is a basket evaluator or member token; configure it under the baskets block, not as a single-symbol strategy", name)
 	}
-	if name == pairMemberStrategyToken || pairPolicyStrategies[name] {
-		return "", nil, fmt.Errorf("%q is a research-only pair token; no operator command adds a pair member", name)
-	}
 	if evidence, refused := productionRefusedStrategies[name]; refused {
 		return "", nil, fmt.Errorf("strategy %q is production_refused (research-only, evidence %s); no config may reference it until a separate reviewed promotion", name, evidence)
+	}
+	if name == pairMemberStrategyToken || pairPolicyStrategies[name] {
+		return "", nil, fmt.Errorf("%q is a research-only pair token; no operator command adds a pair member", name)
 	}
 	if _, quote := quoteCapabilityStrategies[name]; quote || researchOnlyCloseStrategies[name] {
 		return "", nil, fmt.Errorf("strategy %q is quote-owned and research-only; operator routes cannot add it", name)
@@ -905,6 +905,28 @@ func (d *DiscordNotifier) handleClearCashReconcile(s discordTransport, i *discor
 		msg += " WARNING: in-memory clear succeeded but SaveState failed (" + saveErr.Error() + ") — latch may return on restart until the next successful save."
 	}
 	followupText(s, i, msg)
+}
+
+func (d *DiscordNotifier) handleClearOperatorClose(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+	deferAck(s, i)
+	followupText(s, i, d.clearOperatorCloseCommand(interactionUserID(i), i.GuildID, opts))
+}
+
+func (d *DiscordNotifier) clearOperatorCloseCommand(invokerID, guildID string, opts []*discordgo.ApplicationCommandInteractionDataOption) string {
+	if ok, reason := authorizeCommand(operatorCloseCommandName, invokerID, guildID, d.ownerID); !ok {
+		return reason
+	}
+	if d.ss == nil || d.ss.state == nil || d.ss.mu == nil || d.ss.stateDB == nil {
+		return "status server not ready"
+	}
+	ack, msg := prepareOperatorRequiredCloseAck(d.ss.state, d.ss.mu, optionString(opts, "strategy", ""), optionString(opts, "platform", ""))
+	if ack == nil {
+		return msg
+	}
+	if !d.confirmDestructive(invokerID, msg) {
+		return "Cancelled: no confirmation received. The entry stays set and the reminder continues."
+	}
+	return applyOperatorRequiredCloseAck(d.ss.state, d.ss.mu, d.ss.stateDB, invokerID, *ack)
 }
 
 func (d *DiscordNotifier) handleResolveEntry(s discordTransport, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
