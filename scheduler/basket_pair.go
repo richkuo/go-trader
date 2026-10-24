@@ -1620,6 +1620,7 @@ func (bc *basketCoordinator) executePair(rt *basketRuntime, in basketCycleInputs
 	if p.Lifecycle == pairLifecycleRecovery || p.Lifecycle == pairLifecycleOperatorHeld {
 		return
 	}
+	entryNow := in.Now
 	for n := 0; n < pairMaxActionsPerStep; n++ {
 		if rt.pairPendingElective() != nil || rt.needsDurable {
 			return
@@ -1643,7 +1644,11 @@ func (bc *basketCoordinator) executePair(rt *basketRuntime, in basketCycleInputs
 			bc.endPairOrigin(rt, origin.slot, "held", "an entry decision needs a flat or opening pair, the lifecycle is "+p.Lifecycle, now)
 			return
 		}
-		if why := bc.pairDispatchFresh(rt, inputs, now); why != "" {
+		freshAt := now
+		if exiting || origin.targets.Kind == pairPolicyStatusExit {
+			freshAt = entryNow
+		}
+		if why := bc.pairDispatchFresh(rt, inputs, freshAt); why != "" {
 			if origin.slot != nil && len(rt.actionsFor(origin.slot.DeadlineMs)) == 0 {
 				bc.endPairOrigin(rt, origin.slot, "held", "the frozen decision's quotes failed the freshness check at its first dispatch: "+why, now)
 				return

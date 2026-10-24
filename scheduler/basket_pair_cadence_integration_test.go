@@ -946,6 +946,60 @@ func TestBasketPairClockAdvanceCannotAuthorizeStaleActions(t *testing.T) {
 	})
 }
 
+func TestBasketPairExitLegsKeepTheStepStartValuationClock(t *testing.T) {
+	t.Run("a slow first exit leg still sends the second leg", func(t *testing.T) {
+		e := newPairTestEnv(t, nil)
+		pairEnterExitRunner(e, 0.06)
+		e.slotStep(0)
+		e.slotStep(1)
+		e.assertBooks("matched", 0.06, -0.06)
+		slot2 := pairSlotAt(pairTestStart(), 2)
+		stepAt := slot2.Add(time.Second)
+		advanced := false
+		slow := func(a *basketAction) {
+			if a.Purpose == pairPurposeExit && !advanced {
+				advanced = true
+				e.now = stepAt.Add(5001 * time.Millisecond)
+			}
+		}
+		for _, v := range []*pairScriptedVenue{e.venues.hl, e.venues.okx} {
+			v.mu.Lock()
+			v.onSubmit = slow
+			v.mu.Unlock()
+		}
+		e.slot(slot2, "in-2")
+		e.step(stepAt)
+		if !advanced {
+			t.Fatal("the first exit leg must reach the venue")
+		}
+		if exits := e.actionsByPurpose(pairPurposeExit); len(exits) != 2 {
+			t.Fatalf("both exit legs must be sent in the same step after the clock passed the valuation age, got %d", len(exits))
+		}
+		if e.rt().Pair.Progress.obligation("bounds_unavailable", "", "") != nil {
+			t.Fatal("a reduction must not save a bounds_unavailable obligation from a clock refresh inside its step")
+		}
+		e.assertBooks("exited", 0, 0)
+	})
+	t.Run("an exit with a valuation unavailable at step start holds", func(t *testing.T) {
+		e := newPairTestEnv(t, nil)
+		pairEnterExitRunner(e, 0.06)
+		e.slotStep(0)
+		e.slotStep(1)
+		e.assertBooks("matched", 0.06, -0.06)
+		e.venues.okx.mu.Lock()
+		e.venues.okx.valErr = errors.New("quote outage")
+		e.venues.okx.mu.Unlock()
+		slot2 := e.slotStep(2)
+		if exits := e.actionsByPurpose(pairPurposeExit); len(exits) != 0 {
+			t.Fatalf("an exit without a valuation at step start must hold, got %d exit actions", len(exits))
+		}
+		if rb := e.rt().Rebalances[slot2.UnixMilli()]; rb == nil || rb.Status != basketRebalanceHeld || !strings.Contains(rb.HoldReason, "valuation is unavailable") {
+			t.Fatalf("the exit decision must end held on the unavailable valuation, got %+v", rb)
+		}
+		e.assertBooks("still matched", 0.06, -0.06)
+	})
+}
+
 func pairHostRunner(e *pairTestEnv, holds int) {
 	n := 0
 	e.runner.respond = func(r pairPolicyRequest) (pairPolicyResult, error) {
