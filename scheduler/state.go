@@ -113,6 +113,7 @@ type StrategyState struct {
 	bookClock                     time.Time
 	pairCostPair                  string
 	costScope                     *fillCostPolicy
+	confirmedFee                  *pairConfirmedFee
 	pairCostFaults                []string
 	pairFunding                   *pairFundingMember
 }

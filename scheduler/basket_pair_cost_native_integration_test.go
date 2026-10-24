@@ -198,14 +198,19 @@ func pairCostFeeEnv(t *testing.T) (*pairTestEnv, *basketAction, basketVenueOutco
 		}
 		return pairEnterResult(r, 0.06), nil
 	}
-	fill := basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * 59800, Terminal: true}
-	pairOpenVenue(e, pairTestOKX, pairFee(fill, 1, 1.80, "USDT", false))
+	fill := pairThreeFills()
+	pairOpenVenue(e, pairTestOKX, pairCostFees(fill, 1, false))
 	e.slotStep(0)
 	a := e.actionsByPurpose(pairPurposeEntry)[0]
 	if !basketQtyEqual(a.AppliedQty, 0.06) || a.AppliedFeeVersion != 1 {
 		t.Fatalf("setup: the entry must book with fee version 1: %+v", a)
 	}
 	return e, a, fill
+}
+
+func pairCostFees(fill basketVenueOutcome, n int, final bool) basketVenueOutcome {
+	recs := []pairTestFeeRec{{"a", "1.8", "USDT"}, {"b", "0.3", "USDT"}, {"c", "0.3", "USDT"}}
+	return pairWithFees(fill, final, recs[:n]...)
 }
 
 func (e *pairTestEnv) savedFeeRow(a *basketAction) (float64, int, string) {
@@ -242,7 +247,7 @@ func TestBasketPairCostFeeCorrectionChecksTheSavedMemberStamp(t *testing.T) {
 	okx.TradeHistory = nil
 	e.mu.Unlock()
 	cash := okx.Cash
-	pairAnswerVenue(e, a, pairFee(fill, 2, 2.10, "USDT", false))
+	pairAnswerVenue(e, a, pairCostFees(fill, 2, false))
 	e.step(e.now.Add(time.Second))
 	e.step(e.now.Add(time.Second))
 	fee, v, p := e.savedFeeRow(a)
@@ -255,7 +260,7 @@ func TestBasketPairCostFeeCorrectionChecksTheSavedMemberStamp(t *testing.T) {
 	}
 	cash = okx.Cash
 	intentFee := e.savedIntentFee(a)
-	pairAnswerVenue(e, a, pairFee(fill, 3, 2.40, "USDT", true))
+	pairAnswerVenue(e, a, pairCostFees(fill, 3, true))
 	e.step(e.now.Add(time.Second))
 	e.step(e.now.Add(time.Second))
 	fee, _, p = e.savedFeeRow(a)
@@ -280,7 +285,7 @@ func TestBasketPairCostFeeCorrectionRefusedInTheSaveRollsBack(t *testing.T) {
 	}
 	f := &pairCommitFault{from: 2, to: 2}
 	f.install(t)
-	pairAnswerVenue(e, a, pairFee(fill, 2, 2.10, "USDT", false))
+	pairAnswerVenue(e, a, pairCostFees(fill, 2, false))
 	e.step(e.now.Add(time.Second))
 	if !e.rt().needsDurable || a.pendingFee == nil || !pairCostNear(cash-okx.Cash, 0.30) {
 		t.Fatalf("setup: the correction must sit in memory behind a failed save: needsDurable %v pending %+v cash delta %v (commits %d)", e.rt().needsDurable, a.pendingFee, cash-okx.Cash, f.n)

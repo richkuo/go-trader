@@ -62,6 +62,19 @@ var basketActionPairColumns = []basketColumnDefault{
 	{"retry_at_ms", "0"},
 	{"recovery_json", "''"},
 	{"booked_json", "''"},
+	{"accepted_at_ms", "0"},
+	{"fill_coverage_json", "''"},
+	{"fee_coverage_json", "''"},
+	{"fee_final", "0"},
+	{"settlement_json", "''"},
+}
+
+var basketActionSettlementMigrations = []string{
+	"ALTER TABLE basket_member_actions ADD COLUMN accepted_at_ms INTEGER NOT NULL DEFAULT 0",
+	"ALTER TABLE basket_member_actions ADD COLUMN fill_coverage_json TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE basket_member_actions ADD COLUMN fee_coverage_json TEXT NOT NULL DEFAULT ''",
+	"ALTER TABLE basket_member_actions ADD COLUMN fee_final INTEGER NOT NULL DEFAULT 0",
+	"ALTER TABLE basket_member_actions ADD COLUMN settlement_json TEXT NOT NULL DEFAULT ''",
 }
 
 func basketActionProjectedColumns() []basketColumnDefault {
@@ -129,6 +142,11 @@ const basketActionsV2DDL = `CREATE TABLE basket_member_actions_v2 (
     retry_at_ms INTEGER NOT NULL DEFAULT 0,
     recovery_json TEXT NOT NULL DEFAULT '',
     booked_json TEXT NOT NULL DEFAULT '',
+    accepted_at_ms INTEGER NOT NULL DEFAULT 0,
+    fill_coverage_json TEXT NOT NULL DEFAULT '',
+    fee_coverage_json TEXT NOT NULL DEFAULT '',
+    fee_final INTEGER NOT NULL DEFAULT 0,
+    settlement_json TEXT NOT NULL DEFAULT '',
     CHECK (group_mode = 'pair' OR purpose IN ('rebalance','expiry')),
     CHECK (group_mode = 'basket' OR purpose IN ('pair_entry','pair_exit','pair_protective','pair_kill_switch','pair_operator')),
     CHECK (group_mode = 'basket' OR (request_json != '' AND instrument != '')),
@@ -313,6 +331,11 @@ func (sdb *StateDB) migratePairSchema() error {
 			}
 		}
 	}
+	for _, ddl := range basketActionSettlementMigrations {
+		if _, err := sdb.db.Exec(ddl); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("migrate pair settlement columns: %w", err)
+		}
+	}
 	if _, err := sdb.db.Exec(pairQuoteUseDDL); err != nil {
 		return fmt.Errorf("create pair quote event uses: %w", err)
 	}
@@ -362,12 +385,14 @@ type pairFeeFix struct {
 	DeltaUSD         float64 `json:"delta_usd"`
 	Version          int64   `json:"version"`
 	ClosedPositionID string  `json:"closed_position_id,omitempty"`
+	IsClose          bool    `json:"is_close,omitempty"`
 	IntentID         string  `json:"intent_id,omitempty"`
 	ConfirmedFee     float64 `json:"confirmed_fee,omitempty"`
 	AppliedFeeUSD    float64 `json:"applied_fee_usd,omitempty"`
 	TradeRowID       int64   `json:"trade_row_id,omitempty"`
 	CostModelVersion int     `json:"cost_model_version,omitempty"`
 	CostPolicyID     string  `json:"cost_policy_id,omitempty"`
+	FeeSource        string  `json:"fee_source,omitempty"`
 }
 
 type pairBookedTrade struct {
@@ -420,19 +445,22 @@ func upsertPairActionRow(exec sqlExecer, sid string, a *basketAction, withBook b
 	if withBook {
 		book = 1
 	}
-	feePresent, terminal := 0, 0
+	feePresent, terminal, feeFinal := 0, 0, 0
 	if a.FeePresent {
 		feePresent = 1
 	}
 	if a.Terminal {
 		terminal = 1
 	}
+	if a.FeeFinal {
+		feeFinal = 1
+	}
 	res, err := exec.Exec(`INSERT INTO basket_member_actions (`+basketActionColumns+`, group_mode, instrument, native_qty, contract_size,
 		    request_json, quote_event_id, price_bound, accept_deadline_ms, submitted_at_ms, confirmed_notional, fee_present, fee_currency,
 		    fee_amount, fee_evidence_id, fee_evidence_version, applied_notional, applied_fee_version, terminal, coverage_through_ms,
-		    retry_count, retry_at_ms, recovery_json, booked_json)
+		    retry_count, retry_at_ms, recovery_json, booked_json, accepted_at_ms, fill_coverage_json, fee_coverage_json, fee_final, settlement_json)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-		        'pair', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		        'pair', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(action_id) DO UPDATE SET
 		    status = excluded.status,
 		    venue_order_id = CASE WHEN excluded.venue_order_id != '' THEN excluded.venue_order_id ELSE venue_order_id END,
@@ -452,6 +480,11 @@ func upsertPairActionRow(exec sqlExecer, sid string, a *basketAction, withBook b
 		    applied_fee = CASE WHEN `+fmt.Sprint(book)+` = 1 THEN excluded.applied_fee ELSE applied_fee END,
 		    applied_fee_version = CASE WHEN `+fmt.Sprint(book)+` = 1 THEN excluded.applied_fee_version ELSE applied_fee_version END,
 		    booked_json = CASE WHEN `+fmt.Sprint(book)+` = 1 THEN excluded.booked_json ELSE booked_json END,
+		    settlement_json = CASE WHEN `+fmt.Sprint(book)+` = 1 THEN excluded.settlement_json ELSE settlement_json END,
+		    accepted_at_ms = CASE WHEN accepted_at_ms = 0 THEN excluded.accepted_at_ms ELSE accepted_at_ms END,
+		    fill_coverage_json = excluded.fill_coverage_json,
+		    fee_coverage_json = excluded.fee_coverage_json,
+		    fee_final = MAX(fee_final, excluded.fee_final),
 		    terminal = MAX(terminal, excluded.terminal),
 		    coverage_through_ms = MAX(coverage_through_ms, excluded.coverage_through_ms),
 		    retry_count = MAX(retry_count, excluded.retry_count),
@@ -467,7 +500,12 @@ func upsertPairActionRow(exec sqlExecer, sid string, a *basketAction, withBook b
 		  AND excluded.confirmed_notional >= confirmed_notional * (1 - 1e-12) - 1e-12
 		  AND (`+fmt.Sprint(book)+` = 0 OR (excluded.applied_qty >= applied_qty AND excluded.applied_qty <= excluded.confirmed_qty * (1 + 1e-9) + 1e-12))
 		  AND NOT (excluded.fee_evidence_version = fee_evidence_version AND fee_evidence_version > 0
-		           AND (excluded.fee_evidence_id != fee_evidence_id OR excluded.fee_amount != fee_amount OR excluded.fee_currency != fee_currency OR excluded.fee_present != fee_present))`,
+		           AND (excluded.fee_evidence_id != fee_evidence_id OR excluded.fee_amount != fee_amount OR excluded.fee_currency != fee_currency OR excluded.fee_present != fee_present))
+		  AND (fill_coverage_json = excluded.fill_coverage_json OR fill_coverage_json = ?)
+		  AND (fee_coverage_json = excluded.fee_coverage_json OR (fee_coverage_json = ? AND excluded.fee_evidence_version > fee_evidence_version))
+		  AND excluded.fee_final >= fee_final
+		  AND (accepted_at_ms = 0 OR excluded.accepted_at_ms IN (0, accepted_at_ms))
+		  AND (`+fmt.Sprint(book)+` = 0 OR settlement_json = excluded.settlement_json OR settlement_json = ?)`,
 		a.ActionID, string(a.Partition.Scope), a.Partition.Source, a.BasketID, a.DeadlineMs, sid, a.Symbol, a.Direction, a.Seq,
 		a.OrderSide, a.PositionSide, status, a.RequestedQty, a.PreQty, a.PreNotionalUSD, a.MarkPx, a.ProtectionJSON,
 		a.Provider, a.AccountKey, a.ClientOrderID, a.VenueOrderID, a.EntryIntentID, a.DecisionBarOpenMs,
@@ -475,7 +513,9 @@ func upsertPairActionRow(exec sqlExecer, sid string, a *basketAction, withBook b
 		a.CreatedAtMs, a.UpdatedAtMs, a.Purpose, a.LifecyclePositionID, a.ExpiryMs, a.LifecycleAttempt,
 		a.Instrument, a.NativeQty, a.ContractSize, a.RequestJSON, a.QuoteEventID, a.PriceBound, a.AcceptDeadlineMs,
 		a.SubmittedAtMs, a.ConfirmedNotional, feePresent, a.FeeCurrency, a.FeeAmount, a.FeeEvidenceID, a.FeeEvidenceVersion,
-		a.AppliedNotional, a.AppliedFeeVersion, terminal, a.CoverageThroughMs, a.RetryCount, a.RetryAtMs, a.RecoveryJSON, a.BookedJSON)
+		a.AppliedNotional, a.AppliedFeeVersion, terminal, a.CoverageThroughMs, a.RetryCount, a.RetryAtMs, a.RecoveryJSON, a.BookedJSON,
+		a.AcceptedAtMs, a.FillCoverageJSON, a.FeeCoverageJSON, feeFinal, a.SettlementJSON,
+		a.durableFills, a.durableFees, a.durableLedger)
 	if err != nil {
 		return fmt.Errorf("upsert pair action %s: %w", a.ActionID, err)
 	}
@@ -870,11 +910,16 @@ func (sdb *StateDB) writePairTx(tx *sql.Tx, rt *basketRuntime, books map[string]
 		a := rt.Actions[id]
 		withBook := books[a.StrategyID] != nil
 		if err := upsertPairActionRow(tx, sids[a.StrategyID], a, withBook); err != nil {
+			if withBook && len(a.pendingFee) > 0 && errors.Is(err, errPairGuardMiss) {
+				return nil, &pairFeeFixError{ActionID: a.ActionID, Err: fmt.Errorf("%w: the saved action row refused the staged fee correction: %w", errPairFeeFixProvenance, err)}
+			}
 			return nil, err
 		}
-		if withBook && a.pendingFee != nil {
-			if err := applyPairFeeFixTx(tx, sids[a.StrategyID], a.pendingFee); err != nil {
-				return nil, &pairFeeFixError{ActionID: a.ActionID, Err: err}
+		if withBook {
+			for _, fix := range a.pendingFee {
+				if err := applyPairFeeFixTx(tx, sids[a.StrategyID], fix); err != nil {
+					return nil, &pairFeeFixError{ActionID: a.ActionID, Err: err}
+				}
 			}
 		}
 	}
@@ -942,6 +987,9 @@ func applyPairFeeFixTx(tx *sql.Tx, sid string, fix *pairFeeFix) error {
 	if fix.TradeRowID <= 0 || fix.CostModelVersion == 0 || fix.CostPolicyID == "" {
 		return fmt.Errorf("%w: the correction for %s %s at %s carries no checked target row and member stamp", errPairFeeFixProvenance, fix.Symbol, fix.OrderID, ts)
 	}
+	if fix.FeeSource != FeeSourceUserFills && fix.FeeSource != FeeSourceUserFillsPending {
+		return fmt.Errorf("%w: the correction for %s %s at %s carries fee source %q", errPairFeeFixProvenance, fix.Symbol, fix.OrderID, ts, fix.FeeSource)
+	}
 	var same int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM trades WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND exchange_order_id = ?`, sid, ts, fix.Symbol, fix.OrderID).Scan(&same); err != nil {
 		return err
@@ -951,7 +999,7 @@ func applyPairFeeFixTx(tx *sql.Tx, sid string, fix *pairFeeFix) error {
 	}
 	res, err := tx.Exec(`UPDATE trades SET exchange_fee = exchange_fee + ?, fee_source = ?
 		WHERE rowid = ? AND strategy_id = ? AND timestamp = ? AND symbol = ? AND exchange_order_id = ? AND cost_model_version = ? AND cost_policy_id = ?`,
-		fix.DeltaUSD, FeeSourceUserFills, fix.TradeRowID, sid, ts, fix.Symbol, fix.OrderID, fix.CostModelVersion, fix.CostPolicyID)
+		fix.DeltaUSD, fix.FeeSource, fix.TradeRowID, sid, ts, fix.Symbol, fix.OrderID, fix.CostModelVersion, fix.CostPolicyID)
 	if err != nil {
 		return err
 	}
@@ -998,8 +1046,10 @@ func markPairDurable(rt *basketRuntime, books map[string]*StrategyState) {
 	for _, a := range rt.Actions {
 		withBook := books[a.StrategyID] != nil
 		a.durableStatus = pairActionStatusForWrite(a, withBook)
+		a.durableFills, a.durableFees = a.FillCoverageJSON, a.FeeCoverageJSON
 		if withBook {
 			a.durableApplied = a.AppliedQty
+			a.durableLedger = a.SettlementJSON
 			a.pendingFee = nil
 			a.feeFixUndo = nil
 		}
