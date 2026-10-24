@@ -5,5 +5,5 @@ func optionsPaperOnlyReason(platform string) string {
 }
 
 func optionsLiveModeConfigError(platform string) string {
-	return optionsPaperOnlyReason(platform) + "; remove --mode=live (or --mode live) or use --mode=paper"
+	return optionsPaperOnlyReason(platform) + "; remove the strategy, or replace --mode=live (or --mode live) with --mode=paper under a new id"
 }

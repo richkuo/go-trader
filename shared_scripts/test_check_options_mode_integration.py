@@ -24,7 +24,7 @@ CAP_REASON = "Max positions reached (4/4)"
 def _expected_error(platform):
     return (
         "options strategies run as paper only: no venue order path exists for options on "
-        f"{platform}; remove --mode=live (or --mode live) or use --mode=paper"
+        f"{platform}; remove the strategy, or replace --mode=live (or --mode live) with --mode=paper under a new id"
     )
 
 

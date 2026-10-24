@@ -55,7 +55,7 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
 **Runtime default**
 - **#1823 Options strategies run as paper only (operator action required).** Before this change, a `type: options` strategy with `--mode=live` or `--mode live` booked simulated option trades in the live scope; no option order reached Robinhood, Deribit, IBKR or OKX.
   Its P&L fed live portfolio risk, the kill switch and the circuit breaker, and alerts asked the operator to flatten positions that no venue held.
-  Now every config load refuses that strategy on every platform with `strategy[<id>]: options strategies run as paper only: no venue order path exists for options on <platform>; remove --mode=live (or --mode live) or use --mode=paper`.
+  Now every config load refuses that strategy on every platform with `strategy[<id>]: options strategies run as paper only: no venue order path exists for options on <platform>; remove the strategy, or replace --mode=live (or --mode live) with --mode=paper under a new id`.
   The refusal applies at startup (exit 1), on SIGHUP reload (the previous config stays), in `probe`, `inspect`, `storage-inspect`, ledger capture and export, and in every Discord and dashboard config write, and it does not depend on credentials.
   `paper-to-live` (Discord and dashboard) refuses every options strategy before its confirmation.
   `check_options.py` refuses the same live forms with one JSON document holding `error` and exit 1, before it reads positions or builds an adapter.
