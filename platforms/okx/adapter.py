@@ -1,5 +1,6 @@
 
 import os
+import re
 import sys
 import math
 import time
@@ -224,6 +225,136 @@ class OKXExchangeAdapter:
         except Exception:
             return []
 
+    FUNDING_PAGE_MAX = 400
+    FUNDING_REQUESTS_MAX = 64
+    FUNDING_INST = re.compile(r"^[A-Z0-9]+-USDT-SWAP$")
+    FUNDING_DECIMAL = re.compile(r"^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]{1,4})?$")
+
+    @classmethod
+    def funding_inst_id(cls, symbol: str) -> str:
+        if not isinstance(symbol, str) or not symbol.strip() or symbol != symbol.strip():
+            raise ValueError(f"OKX funding symbol {symbol!r} must be a trimmed coin or a <COIN>-USDT-SWAP instrument")
+        inst = symbol if symbol.endswith("-USDT-SWAP") else f"{symbol.upper()}-USDT-SWAP"
+        if not cls.FUNDING_INST.match(inst):
+            raise ValueError(f"OKX funding instrument {inst!r} is not a <COIN>-USDT-SWAP perpetual")
+        return inst
+
+    def get_funding_history_range(self, symbol: str, start_ms: int, end_ms: int, page_limit: int = 100,
+                                  max_requests: int = 16, deadline_ms: int = 30000) -> dict:
+        for name, value in (("start_ms", start_ms), ("end_ms", end_ms), ("page_limit", page_limit),
+                            ("max_requests", max_requests), ("deadline_ms", deadline_ms)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"OKX funding range {name} must be an integer, got {value!r}")
+        if start_ms < 0 or start_ms >= end_ms:
+            raise ValueError(f"OKX funding range ({start_ms}, {end_ms}] is empty or negative")
+        if not 1 <= page_limit <= self.FUNDING_PAGE_MAX:
+            raise ValueError(f"OKX funding page_limit {page_limit} is outside [1, {self.FUNDING_PAGE_MAX}]")
+        if not 1 <= max_requests <= self.FUNDING_REQUESTS_MAX:
+            raise ValueError(f"OKX funding max_requests {max_requests} is outside [1, {self.FUNDING_REQUESTS_MAX}]")
+        if deadline_ms <= 0:
+            raise ValueError("OKX funding deadline_ms must be above zero")
+        inst = self.funding_inst_id(symbol)
+        stop_at = time.monotonic() + deadline_ms / 1000.0
+        events = {}
+        cursor = end_ms + 1
+        requests = 0
+        reached_start = False
+        stop_reason = ""
+        error = ""
+        while True:
+            if requests >= max_requests:
+                stop_reason = "request_limit"
+                break
+            if time.monotonic() >= stop_at:
+                stop_reason = "deadline"
+                break
+            requests += 1
+            try:
+                resp = self._exchange.publicGetPublicFundingRateHistory({"instId": inst, "after": str(cursor), "limit": str(page_limit)})
+            except ccxt.NetworkError as exc:
+                stop_reason, error = "transport_error", f"{type(exc).__name__}: {exc}"
+                break
+            except Exception as exc:
+                stop_reason, error = "venue_error", f"{type(exc).__name__}: {exc}"
+                break
+            if not isinstance(resp, dict) or not isinstance(resp.get("code"), str) or resp.get("code") != "0":
+                msg = resp.get("msg") if isinstance(resp, dict) else resp
+                stop_reason, error = "venue_error", f"OKX funding history refused {inst}: {msg!r}"
+                break
+            data = resp.get("data")
+            if not isinstance(data, list):
+                stop_reason, error = "malformed_response", "OKX funding history data is not a list"
+                break
+            if len(data) > page_limit:
+                stop_reason, error = "truncation", f"OKX funding history returned {len(data)} rows for a page limit of {page_limit}"
+                break
+            if not data:
+                stop_reason = "history_exhausted"
+                break
+            page_min = None
+            bad = ""
+            for row in data:
+                if not isinstance(row, dict):
+                    bad = "a funding history row is not an object"
+                    break
+                if row.get("instId") != inst:
+                    bad = f"a funding history row is for {row.get('instId')!r}, not {inst}"
+                    break
+                ft, rate = row.get("fundingTime"), row.get("realizedRate")
+                if not isinstance(ft, str) or not ft.isdigit() or not isinstance(rate, str) or not self.FUNDING_DECIMAL.match(rate):
+                    bad = f"a funding history row has fundingTime {ft!r} and realizedRate {rate!r}"
+                    break
+                t = int(ft)
+                if t >= cursor:
+                    bad = f"funding time {t} is not earlier than the cursor {cursor}; the cursor made no progress"
+                    break
+                if t in events and events[t]["realized_rate"] != rate:
+                    bad = f"funding time {t} carries conflicting realized rates {events[t]['realized_rate']!r} and {rate!r}"
+                    break
+                if start_ms < t <= end_ms:
+                    events[t] = {"event_ms": t, "inst_id": inst, "realized_rate": rate,
+                                 "funding_rate": row.get("fundingRate") if isinstance(row.get("fundingRate"), str) else "",
+                                 "method": row.get("method") if isinstance(row.get("method"), str) else "",
+                                 "formula_type": row.get("formulaType") if isinstance(row.get("formulaType"), str) else ""}
+                if t <= start_ms:
+                    reached_start = True
+                page_min = t if page_min is None else min(page_min, t)
+            if bad:
+                stop_reason, error = "malformed_response", bad
+                break
+            if reached_start:
+                break
+            if len(data) < page_limit:
+                stop_reason = "history_exhausted"
+                break
+            cursor = page_min
+        ordered = [] if error else [events[t] for t in sorted(events)]
+        proven, gaps = [], []
+        if error:
+            gaps.append({"from_ms": start_ms, "through_ms": end_ms, "reason": stop_reason})
+        elif not ordered:
+            gaps.append({"from_ms": start_ms, "through_ms": end_ms, "reason": "after_last_record" if reached_start else stop_reason})
+        else:
+            newest = ordered[-1]["event_ms"]
+            lower = start_ms if reached_start else ordered[0]["event_ms"] - 1
+            proven.append({"from_ms": lower, "through_ms": newest})
+            if lower > start_ms:
+                gaps.append({"from_ms": start_ms, "through_ms": lower, "reason": stop_reason})
+            if newest < end_ms:
+                gaps.append({"from_ms": newest, "through_ms": end_ms, "reason": "after_last_record"})
+        return {
+            "provider": "okx",
+            "inst_id": inst,
+            "rate_field": "realizedRate",
+            "requested": {"from_ms": start_ms, "through_ms": end_ms},
+            "events": ordered,
+            "proven": proven,
+            "gaps": gaps,
+            "complete": bool(proven) and not gaps,
+            "requests": requests,
+            "stop_reason": stop_reason,
+            "error": error,
+        }
 
     def fetch_open_positions(self) -> list:
         if not self._is_live:

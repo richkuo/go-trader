@@ -1115,6 +1115,7 @@ type pairResearchDeps struct {
 	VenueFor func(StrategyConfig) (basketVenue, error)
 	Evidence pairEvidenceSource
 	Quotes   pairQuoteSource
+	Funding  pairFundingSource
 }
 
 type pairResearchAdmission struct {
@@ -1131,6 +1132,10 @@ type pairResearchAdmission struct {
 	evidence *pairFrozenEvidenceSource
 	costMu   sync.RWMutex
 	costs    *pairAdmissionCosts
+
+	funding        pairFundingSource
+	fundingBinding []byte
+	fundingPart    string
 }
 
 func (a *pairResearchAdmission) evidenceSource() pairEvidenceSource {
@@ -1172,13 +1177,14 @@ func (a *pairResearchAdmission) release() {
 }
 
 type pairResearchManifest struct {
-	Owner          string `json:"owner"`
-	RunID          string `json:"run_id"`
-	PairID         string `json:"pair_id"`
-	ContractFP     string `json:"contract_fingerprint"`
-	PairVersion    int    `json:"pair_v"`
-	EvidenceDigest string `json:"evidence_digest"`
-	UID            int    `json:"uid"`
+	Owner          string          `json:"owner"`
+	RunID          string          `json:"run_id"`
+	PairID         string          `json:"pair_id"`
+	ContractFP     string          `json:"contract_fingerprint"`
+	PairVersion    int             `json:"pair_v"`
+	EvidenceDigest string          `json:"evidence_digest"`
+	UID            int             `json:"uid"`
+	FundingBinding json.RawMessage `json:"funding_binding,omitempty"`
 }
 
 func pairResearchRawPair(doc []byte) (json.RawMessage, error) {
@@ -1248,6 +1254,9 @@ func newPairResearchAdmission(doc []byte, runID, stateDir string, resume bool, d
 	if err := pairQuoteSourceErrors(contract, deps.Quotes); err != nil {
 		return nil, nil, fmt.Errorf("pair research quote source is refused: %w", err)
 	}
+	if err := adm.bindFunding(contract, deps.Funding); err != nil {
+		return nil, nil, fmt.Errorf("pair research funding input is refused: %w", err)
+	}
 	for _, sc := range cfg.Strategies {
 		if !isPairMember(sc) {
 			continue
@@ -1286,6 +1295,9 @@ func loadPairResearchConfig(adm *pairResearchAdmission, doc []byte) (*Config, er
 	src, isFrozen := adm.deps.Evidence.(*pairFrozenEvidenceSource)
 	if !isFrozen || src == nil {
 		return nil, fmt.Errorf("pair activation needs the immutable frozen evidence source")
+	}
+	if adm.kind == pairAdmissionLiveShapedFixture && adm.deps.Funding != nil {
+		return nil, fmt.Errorf("pair live-shaped funding evidence has no owner in this build: a confirmed venue funding charge never receives an additional modeled paper charge, and attributed live funding ingestion is refused")
 	}
 	if err := src.bind(contract); err != nil {
 		return nil, fmt.Errorf("pair research evidence is refused: %w", err)
@@ -1331,6 +1343,15 @@ func (a *pairResearchAdmission) checkStateDir(cfg *Config) error {
 		if saved.EvidenceDigest != a.evidence.Digest() {
 			return fmt.Errorf("pair research resume refused: the evidence document digest %s is not the saved run's %s", shortFingerprint(a.evidence.Digest()), shortFingerprint(saved.EvidenceDigest))
 		}
+		if len(saved.FundingBinding) == 0 {
+			return fmt.Errorf("pair research resume refused: the saved run %q has no funding binding; a pre-funding run needs a new research run, and its history is never charged retroactively", saved.RunID)
+		}
+		if err := pairFundingCompareBinding(a.fundingBinding, saved.FundingBinding); err != nil {
+			return fmt.Errorf("pair research resume refused: %w; the saved state is kept unchanged", err)
+		}
+		if err := a.checkSavedFundingChain(layout); err != nil {
+			return fmt.Errorf("pair research resume refused: %w; the saved state is kept unchanged", err)
+		}
 		if saved.UID != os.Getuid() {
 			return fmt.Errorf("pair research state directory belongs to uid %d", saved.UID)
 		}
@@ -1346,11 +1367,67 @@ func (a *pairResearchAdmission) checkStateDir(cfg *Config) error {
 	if err := os.MkdirAll(a.stateDir, 0o700); err != nil {
 		return fmt.Errorf("create pair research state directory: %w", err)
 	}
-	blob, err := json.Marshal(pairResearchManifest{Owner: pairResearchManifestOwner, RunID: a.runID, PairID: a.pair.ID, ContractFP: a.contract, PairVersion: pairContractVersion, EvidenceDigest: a.evidence.Digest(), UID: os.Getuid()})
+	blob, err := json.Marshal(pairResearchManifest{Owner: pairResearchManifestOwner, RunID: a.runID, PairID: a.pair.ID, ContractFP: a.contract, PairVersion: pairContractVersion, EvidenceDigest: a.evidence.Digest(), UID: os.Getuid(), FundingBinding: json.RawMessage(a.fundingBinding)})
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(manifestPath, blob, 0o600)
+}
+
+func (a *pairResearchAdmission) bindFunding(c basketContract, src pairFundingSource) error {
+	switch s := src.(type) {
+	case *pairFrozenFundingSource:
+		if s == nil {
+			src = nil
+		}
+	case *pairRecordedFundingSource:
+		if s == nil {
+			src = nil
+		}
+	case nil:
+	default:
+		return fmt.Errorf("pair research accepts only the immutable frozen funding source (newPairFrozenFundingSource) or the append-only recorded funding source (newPairRecordedFundingSource)")
+	}
+	if src == nil {
+		return fmt.Errorf("pair research needs a funding source (newPairFrozenFundingSource or newPairRecordedFundingSource); missing funding input is never settled as zero")
+	}
+	_, raw, err := pairFundingBindingFor(c, src)
+	if err != nil {
+		return err
+	}
+	a.funding, a.fundingBinding, a.fundingPart = src, raw, c.Partition
+	return nil
+}
+
+func (a *pairResearchAdmission) fundingSource() pairFundingSource {
+	if a == nil {
+		return nil
+	}
+	return a.funding
+}
+
+func (a *pairResearchAdmission) checkSavedFundingChain(layout storageLayout) error {
+	rs, recorded := a.funding.(*pairRecordedFundingSource)
+	part, err := parseRiskPartition(a.fundingPart)
+	if err != nil {
+		return err
+	}
+	for _, f := range layout.Files {
+		saved, err := pairFundingReadSavedChain(f.Path, part, a.pair.ID)
+		if err != nil {
+			return fmt.Errorf("read the saved funding chain in %s: %w", f.Path, err)
+		}
+		if len(saved) == 0 {
+			continue
+		}
+		if !recorded {
+			return fmt.Errorf("the saved run holds %d recorded funding batches, but this run uses a %s funding source", len(saved), a.funding.Kind())
+		}
+		if err := pairFundingCheckChain(rs, saved); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func pairResearchConfigErrors(cfg *Config, adm *pairResearchAdmission) []string {

@@ -294,7 +294,7 @@ func TestBasketPairCollectionAdmissionBindsQuoteSources(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "run")
 	doc2 := pairTestDoc(t, dir, nil)
 	q := newPairFixtureQuotes(t, doc2).collector
-	adm, _, err := newPairResearchAdmission(doc2, "run-1", dir, false, pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc2, nil), Quotes: q})
+	adm, _, err := newPairResearchAdmission(doc2, "run-1", dir, false, pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc2, nil), Quotes: q, Funding: pairTestFunding(t, doc2, nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
