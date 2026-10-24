@@ -449,3 +449,133 @@ func TestBasketPairCostTransportIdentityIsFrozen(t *testing.T) {
 	e.slotStep(2)
 	e.assertBooks("restored transport", 0, -0.06)
 }
+
+func (e *pairTestEnv) savedCostEvidence() string {
+	e.t.Helper()
+	var prog struct {
+		CostEvidence json.RawMessage `json:"cost_evidence"`
+	}
+	if err := json.Unmarshal([]byte(e.savedProgress()), &prog); err != nil {
+		e.t.Fatal(err)
+	}
+	if len(prog.CostEvidence) == 0 {
+		e.t.Fatal("the saved pair progress has no cost evidence")
+	}
+	return string(prog.CostEvidence)
+}
+
+func (e *pairTestEnv) assertFlatResetKeepsCostEvidence(label, want string) {
+	e.t.Helper()
+	if e.lifecycle() != pairLifecycleFlat {
+		e.t.Fatalf("%s: the pair lifecycle is %s, want flat after the reset", label, e.lifecycle())
+	}
+	saved, err := parsePairProgress(e.savedProgress())
+	if err != nil || saved.Lifecycle != pairLifecycleFlat {
+		e.t.Fatalf("%s: the reset write is not durable: lifecycle %q (%v)", label, saved.Lifecycle, err)
+	}
+	if got := e.savedCostEvidence(); got != want {
+		e.t.Fatalf("%s: the saved cost evidence changed across the reset:\n got %s\nwant %s", label, got, want)
+	}
+	if err := e.store.SavePartition(e.state, e.rt().Partition); err != nil {
+		e.t.Fatalf("%s: SavePartition after the reset: %v", label, err)
+	}
+	if err := e.store.PersistBasketProgress(e.rt()); err != nil {
+		e.t.Fatalf("%s: PersistBasketProgress after the reset: %v", label, err)
+	}
+	if got := e.savedCostEvidence(); got != want {
+		e.t.Fatalf("%s: the saved cost evidence changed after the post-reset saves:\n got %s\nwant %s", label, got, want)
+	}
+}
+
+func TestBasketPairCostEvidenceSurvivesTheFlatReset(t *testing.T) {
+	t.Run("elective exit then a second entry", func(t *testing.T) {
+		e := newPairTestEnv(t, pairCostRates)
+		pairEnterExitRunner(e, 0.06)
+		e.slotStep(0)
+		e.slotStep(1)
+		e.assertBooks("hedged", 0.06, -0.06)
+		want := e.savedCostEvidence()
+		hl, okx := e.binding(pairTestHL), e.binding(pairTestOKX)
+		e.slotStep(2)
+		e.assertBooks("exited", 0, 0)
+		e.step(pairSlotAt(pairTestStart(), 2).Add(30 * time.Second))
+		e.assertFlatResetKeepsCostEvidence("elective exit", want)
+		okxRows := len(e.savedTrades(pairTestOKX))
+		e.slotStep(3)
+		e.assertBooks("second entry first leg", 0, -0.06)
+		rows := e.savedTrades(pairTestOKX)
+		if len(rows) != okxRows+1 {
+			t.Fatalf("the second entry saved %d okx rows, want %d", len(rows), okxRows+1)
+		}
+		for id, want := range map[string]fillCostPolicy{pairTestHL: hl, pairTestOKX: okx} {
+			for i, tr := range e.savedTrades(id) {
+				if tr.Version != FillCostModelReplayCustomVersion || tr.PolicyID != want.PolicyID {
+					t.Fatalf("%s row %d carries %d/%q, want the unchanged member binding %d/%q", id, i, tr.Version, tr.PolicyID, want.ModelVersion, want.PolicyID)
+				}
+			}
+			if got := e.binding(id); got.PolicyID != want.PolicyID {
+				t.Fatalf("%s binding changed across the reset: %q, want %q", id, got.PolicyID, want.PolicyID)
+			}
+		}
+		if got := e.savedCostEvidence(); got != want {
+			t.Fatalf("the second entry changed the saved cost evidence:\n got %s\nwant %s", got, want)
+		}
+	})
+	t.Run("recovery reset then restart", func(t *testing.T) {
+		e := newPairTestEnv(t, nil)
+		pairEnterExitRunner(e, 0.06)
+		e.slotStep(0)
+		e.slotStep(1)
+		e.assertBooks("matched", 0.06, -0.06)
+		want := e.savedCostEvidence()
+		e.externalBookChange(pairTestHL, 0)
+		e.step(pairSlotAt(pairTestStart(), 2))
+		if e.lifecycle() != pairLifecycleRecovery {
+			t.Fatalf("a unilateral close must open recovery, got %s", e.lifecycle())
+		}
+		e.step(pairSlotAt(pairTestStart(), 3))
+		e.assertBooks("survivor flat", 0, 0)
+		e.step(pairSlotAt(pairTestStart(), 4))
+		e.assertFlatResetKeepsCostEvidence("recovery", want)
+		e.restart()
+		if e.lifecycle() != pairLifecycleFlat {
+			t.Fatalf("the restarted pair lifecycle is %s, want flat", e.lifecycle())
+		}
+		if pairCostBindings(e.adm) == nil {
+			t.Fatal("the restarted pair resumed without durable member cost bindings")
+		}
+		if got := string(e.rt().Pair.Progress.CostEvidence); got != want {
+			t.Fatalf("the restarted pair holds different cost evidence:\n got %s\nwant %s", got, want)
+		}
+		e.slotStep(5)
+		e.assertBooks("entry after the restart", 0, -0.06)
+		if got := e.savedCostEvidence(); got != want {
+			t.Fatalf("the entry after the restart changed the saved cost evidence")
+		}
+	})
+	t.Run("operator held reset", func(t *testing.T) {
+		e := newPairTestEnv(t, nil)
+		pairEnterExitRunner(e, 0.06)
+		e.slotStep(0)
+		want := e.savedCostEvidence()
+		pairOpenVenue(e, pairTestOKX, basketVenueOutcome{Outcome: basketVenueRejected, Terminal: true, Detail: "reduce-only rejected"})
+		e.externalBookChange(pairTestHL, 0.01)
+		e.step(pairSlotAt(pairTestStart(), 1))
+		start := e.rt().Pair.Progress.RecoveryStartMs
+		if e.lifecycle() != pairLifecycleRecovery || start == 0 {
+			t.Fatalf("an unexplained book change must open recovery, got %s", e.lifecycle())
+		}
+		pairOpenVenue(e, pairTestOKX, basketVenueOutcome{Outcome: basketVenueRejected, Terminal: true, Detail: "reduce-only rejected"})
+		pairOpenVenue(e, pairTestHL, basketVenueOutcome{Outcome: basketVenueRejected, Terminal: true, Detail: "reduce-only rejected"})
+		at := time.UnixMilli(start + e.rt().Pair.Limits.RecoveryAgeMs).UTC()
+		e.step(at)
+		if e.lifecycle() != pairLifecycleOperatorHeld {
+			t.Fatalf("at the recovery age the pair must be operator held, got %s", e.lifecycle())
+		}
+		for i := 1; i <= 6 && (e.lifecycle() != pairLifecycleFlat); i++ {
+			e.step(at.Add(time.Duration(i) * time.Minute))
+		}
+		e.assertBooks("operator held flat", 0, 0)
+		e.assertFlatResetKeepsCostEvidence("operator held", want)
+	})
+}

@@ -1136,7 +1136,7 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 				rb.Outcome.CompletedAtMs = nowMs
 				rb.UpdatedAtMs = nowMs
 			}
-			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound}
+			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound, CostEvidence: p.CostEvidence}
 			changed = true
 		}
 	case pairLifecycleOpening:
