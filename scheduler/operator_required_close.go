@@ -162,7 +162,7 @@ func formatOperatorRequiredWarningMessage(entries []OperatorRequiredEntry) strin
 			e.StrategyID, operatorRequiredPlatformLabel(e.Platform),
 			formatOperatorRequiredLegs(e.Symbols), e.DrawdownPct, cbSuffix, detail))
 	}
-	b.WriteString("Sizes are the virtual book at fire time (the largest across fires not cleared); they do not show the current venue position. No automated close will be attempted.\n")
+	b.WriteString("Sizes are the virtual book at fire time, summed across the fires not cleared; they do not show the current venue position. No automated close will be attempted.\n")
 	fmt.Fprintf(&b, "After you flatten the position on the venue, run `%s` in a DM to the bot to clear the entry.\n", operatorCloseCommandUsage())
 	fmt.Fprintf(&b, "Until then this warning repeats every %s (`alert_throttle_interval`) and at once on a new circuit-breaker fire; the CRITICAL log line repeats every cycle. Circuit-breaker expiry does not clear the entry.",
 		effectiveAlertThrottleInterval())
@@ -355,7 +355,7 @@ func formatOperatorCloseAckPrompt(ack operatorCloseAck) string {
 	fmt.Fprintf(&b, "• Episode: %s\n", operatorCloseEpisodeLabel(ack.Episode))
 	fmt.Fprintf(&b, "• Last fire: %s\n", operatorCloseFiredLabel(ack.FiredAt))
 	fmt.Fprintf(&b, "• Legs: %s\n", formatOperatorRequiredLegs(ack.Legs))
-	b.WriteString("This command does NOT read the venue. Flatten these positions on the venue and check the venue first. The sizes are the virtual book at fire time and do not show the venue position.\n")
+	b.WriteString("This command does NOT read the venue. Flatten these positions on the venue and check the venue first. The sizes are the virtual book at fire time, summed across the fires not cleared, and do not show the venue position.\n")
 	b.WriteString("Confirming deletes this record and stops its reminder. It sends no order and changes no cash, trade, position or circuit-breaker state.")
 	return b.String()
 }

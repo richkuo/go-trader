@@ -419,7 +419,7 @@ func TestOperatorRequiredCloseMixedDueEntriesListOnlyTheDueOne(t *testing.T) {
 func TestOperatorRequiredCloseNewFireSendsAtOnceAndKeepsEarlierLegs(t *testing.T) {
 	t.Run("okx_spot", func(t *testing.T) {
 		f := newORCFixture(t, orcOKXSpot("okx-a"))
-		f.openSpot("okx-a", 0.5)
+		f.openSpot("okx-a", 1.0)
 		f.fireLossStreak("okx-a")
 		f.drainExpect("first fire", 1, 1)
 		first := f.entry("okx-a", PlatformPendingCloseOKXSpot)
@@ -429,32 +429,52 @@ func TestOperatorRequiredCloseNewFireSendsAtOnceAndKeepsEarlierLegs(t *testing.T
 		f.fireLossStreak("okx-a")
 		second := f.entry("okx-a", PlatformPendingCloseOKXSpot)
 		if second.Episode == first.Episode || !second.LastNotifiedAt.IsZero() || !second.FiredAt.Equal(f.clock()) {
-			t.Fatalf("a fire with identical legs must write a new episode and reset the stamp: first %+v second %+v", first, second)
+			t.Fatalf("a contributing fire must write a new episode and reset the stamp: first %+v second %+v", first, second)
 		}
-		if len(second.Symbols) != 1 || second.Symbols[0].Size != 0.5 {
-			t.Fatalf("identical legs must merge to one leg: %+v", second.Symbols)
+		if len(second.Symbols) != 1 || second.Symbols[0].Size != 1.5 {
+			t.Fatalf("a re-buy of 0.5 after an uncleared 1.0 fire must show 1.5: %+v", second.Symbols)
+		}
+		f.drainExpect("drain after the second fire inside the window", 1, 1)
+		if !strings.Contains(f.rec.lastChannel(), "BTC (virtual size at fire 1.500000)") || !strings.Contains(f.rec.lastChannel(), "summed across the fires not cleared") {
+			t.Fatalf("the warning must show the summed size:\n%s", f.rec.lastChannel())
+		}
+
+		f.advance(2 * time.Hour)
+		f.openSpot("okx-a", 0.5)
+		f.fireLossStreak("okx-a")
+		third := f.entry("okx-a", PlatformPendingCloseOKXSpot)
+		if third.Episode == second.Episode || !third.LastNotifiedAt.IsZero() || len(third.Symbols) != 1 || third.Symbols[0].Size != 2.0 {
+			t.Fatalf("a fire with the same fresh leg must add it, write a new episode and reset the stamp: %+v", third)
 		}
 		f.drainExpect("drain after an identical-leg fire inside the window", 1, 1)
+		stamped := f.entry("okx-a", PlatformPendingCloseOKXSpot)
 
 		f.advance(2 * time.Hour)
-		f.openSpot("okx-a", 0.8)
 		f.fireLossStreak("okx-a")
-		if got := f.entry("okx-a", PlatformPendingCloseOKXSpot).Symbols; len(got) != 1 || got[0].Size != 0.8 {
-			t.Fatalf("a larger fire must keep the larger size: %+v", got)
+		after := f.entry("okx-a", PlatformPendingCloseOKXSpot)
+		if after.Episode != stamped.Episode || !after.LastNotifiedAt.Equal(stamped.LastNotifiedAt) || !operatorCloseLegsEqual(after.Symbols, stamped.Symbols) {
+			t.Fatalf("a flat-book fire must leave the summed entry unchanged: before %+v after %+v", stamped, after)
 		}
-		f.drainExpect("drain after a larger fire", 1, 1)
-
-		f.advance(2 * time.Hour)
-		f.openSpot("okx-a", 0.3)
-		f.fireLossStreak("okx-a")
-		if got := f.entry("okx-a", PlatformPendingCloseOKXSpot).Symbols; len(got) != 1 || got[0].Size != 0.8 {
-			t.Fatalf("a smaller fire must keep the earlier larger size: %+v", got)
-		}
-		f.drainExpect("drain after a smaller fire", 1, 1)
-		if !strings.Contains(f.rec.lastChannel(), "virtual size at fire 0.800000") {
-			t.Fatalf("the warning must show the historical size:\n%s", f.rec.lastChannel())
-		}
+		f.drainExpect("drain inside the window after a flat-book fire", 0, 0)
 		f.assertNoLockedSends()
+	})
+	t.Run("okx_spot_clear_between_fires", func(t *testing.T) {
+		f := newORCFixture(t, orcOKXSpot("okx-a"))
+		f.openSpot("okx-a", 1.0)
+		f.fireLossStreak("okx-a")
+		ack, prompt := prepareOperatorRequiredCloseAck(f.env.state, &f.env.mu, "okx-a", "")
+		if ack == nil {
+			t.Fatalf("prepare refused: %s", prompt)
+		}
+		if msg := applyOperatorRequiredCloseAck(f.env.state, &f.env.mu, f.env.store, orcOwnerID, *ack); !strings.HasPrefix(msg, "Cleared") {
+			t.Fatalf("the clear must succeed, got %q", msg)
+		}
+		f.advance(2 * time.Hour)
+		f.openSpot("okx-a", 0.5)
+		f.fireLossStreak("okx-a")
+		if got := f.entry("okx-a", PlatformPendingCloseOKXSpot); got == nil || len(got.Symbols) != 1 || got.Symbols[0].Size != 0.5 {
+			t.Fatalf("a fire after a clear must show only its own leg: %+v", got)
+		}
 	})
 	t.Run("robinhood_options", func(t *testing.T) {
 		f := newORCFixture(t, orcRobinhoodOptions("rh-opt"))
@@ -472,9 +492,9 @@ func TestOperatorRequiredCloseNewFireSendsAtOnceAndKeepsEarlierLegs(t *testing.T
 		f.openOption("rh-opt", "opt-b", 3)
 		f.fireLossStreak("rh-opt")
 		got := f.entry("rh-opt", PlatformPendingCloseRobinhoodOptions)
-		want := []PendingCircuitCloseSymbol{{Symbol: "opt-a", Size: 1}, {Symbol: "opt-b", Size: 3}, {Symbol: "opt-c", Size: 1}}
+		want := []PendingCircuitCloseSymbol{{Symbol: "opt-a", Size: 1}, {Symbol: "opt-b", Size: 5}, {Symbol: "opt-c", Size: 1}}
 		if !operatorCloseLegsEqual(got.Symbols, want) || got.Episode == first.Episode || !got.LastNotifiedAt.IsZero() {
-			t.Fatalf("the second fire must merge the union with the larger size in symbol order: %+v", got)
+			t.Fatalf("the second fire must merge the union with summed sizes in symbol order: %+v", got)
 		}
 		f.drainExpect("drain after the second options fire", 1, 1)
 		msg := f.rec.lastChannel()

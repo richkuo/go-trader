@@ -1164,8 +1164,10 @@ func mergeOperatorRequiredLegs(prior *PendingCircuitClose, fresh []PendingCircui
 			}
 			found = true
 			stored := merged[i].Size
-			if math.IsNaN(stored) || math.IsInf(stored, 0) || leg.Size > stored {
+			if math.IsNaN(stored) || math.IsInf(stored, 0) || stored < 0 {
 				merged[i].Size = leg.Size
+			} else {
+				merged[i].Size = stored + leg.Size
 			}
 			break
 		}
