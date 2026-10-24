@@ -968,3 +968,68 @@ func TestBasketMemberViewPreparationNamesMissingHostSealInputs(t *testing.T) {
 		t.Fatalf("a host that passes its seal inputs again must raise nothing, got %q", out)
 	}
 }
+
+func TestBasketMemberViewBreakerUsesEachMemberOwnStart(t *testing.T) {
+	limit := untrustedEquityLatchDeferral
+	okxStale := func(x *pairEscalationEnv, on bool) {
+		x.e.quotes.mu.Lock()
+		defer x.e.quotes.mu.Unlock()
+		x.e.quotes.receiptLagMs = 0
+		if on {
+			x.e.quotes.receiptLagMs = 6000
+		}
+	}
+	check := func(x *pairEscalationEnv, at time.Time) (map[string]string, map[string]bool) {
+		x.e.now = at
+		x.h.prepare(basketCycleInputs{Now: at, Once: true, PairSnapshotFor: x.e.sealFor, PairGeneration: x.e.feedGeneration})
+		x.e.mu.Lock()
+		defer x.e.mu.Unlock()
+		pm := x.e.bc.pairMarksLocked()
+		reasons, tripped := map[string]string{}, map[string]bool{}
+		for _, id := range []string{pairTestHL, pairTestOKX} {
+			sc := x.e.bc.members[id]
+			s := x.e.state.Strategies[id]
+			if s.Positions["BTC"] == nil {
+				panic("setup: both members must hold a position")
+			}
+			_, reasons[id] = checkStrategyRiskWithView(&sc, s, 0, nil, pm, nil, nil)
+			tripped[id] = s.RiskState.CircuitBreaker
+		}
+		return reasons, tripped
+	}
+	run := func(t *testing.T, restartAt time.Duration, final time.Duration) {
+		x := newPairEscalationEnv(t, 50)
+		tPre := pairSlotAt(pairTestStart(), 2)
+		x.h.run(tPre)
+		t0 := tPre.Add(time.Minute)
+		x.outage()
+		if restartAt > 0 {
+			x.runEvery(t0, t0.Add(restartAt-time.Minute))
+			x.restartAt(t0.Add(restartAt))
+			x.runEvery(t0.Add(restartAt), t0.Add(limit-2*time.Minute))
+		} else {
+			x.runEvery(t0, t0.Add(limit-2*time.Minute))
+		}
+		okxStale(x, true)
+		reasons, tripped := check(x, t0.Add(final))
+		if tripped[pairTestOKX] || strings.HasPrefix(reasons[pairTestOKX], RiskReasonPairValuationStale) {
+			t.Fatalf("one stale okx preparation must not trip its breaker from the other member's start, got %q", reasons[pairTestOKX])
+		}
+		if !strings.Contains(reasons[pairTestOKX], "pair valuation incomplete: "+pairTestOKX+" ") {
+			t.Fatalf("setup: the okx preparation must be stale, got %q", reasons[pairTestOKX])
+		}
+		if !tripped[pairTestHL] || !strings.HasPrefix(reasons[pairTestHL], RiskReasonPairValuationStale) {
+			t.Fatalf("the hyperliquid breaker must trip after its own outage passes the deferral, got %q", reasons[pairTestHL])
+		}
+		x.h.run(t0.Add(final))
+		if latched, _ := x.read(); !latched.KillSwitchActive {
+			t.Fatalf("the partition must latch from its continuous incomplete start, got %+v", latched)
+		}
+	}
+	t.Run("one stale okx preparation after a long hyperliquid outage", func(t *testing.T) {
+		run(t, 0, 16*time.Minute)
+	})
+	t.Run("the same after a restart inside the outage", func(t *testing.T) {
+		run(t, 10*time.Minute, limit+time.Second)
+	})
+}

@@ -563,7 +563,7 @@ func (bc *basketCoordinator) publishPairView(rt *basketRuntime, out pairViewSet,
 	for id, v := range out {
 		v.Generation = rt.pairViewGen
 		v.EvidenceHash = v.computeEvidenceHash()
-		v.MarkLostAtMs = pairMarkLostAt(v, rt.pairView, id, nowMs)
+		v.MarkLostAtMs, v.MarkLostAtRestart = pairMarkLostAt(v, rt.pairView, id, nowMs)
 		switch last, ok := rt.pairLastMark[id]; {
 		case basketFinitePositive(v.MarkUSD) && v.EvidenceMs > 0:
 			rt.pairLastMark[id] = pairLastMark{MarkUSD: v.MarkUSD, LowerUSD: v.LowerUSD, UpperUSD: v.UpperUSD, AtMs: v.EvidenceMs}
@@ -682,51 +682,74 @@ func (pm *pairMarks) markFor(s *StrategyState, sym string) (px float64, state, r
 	return 0, pairMarkUnavailable, why, true
 }
 
-func pairMarkLostAt(v pairMemberValuation, prev pairViewSet, id string, nowMs int64) int64 {
+func pairMarkLostAt(v pairMemberValuation, prev pairViewSet, id string, nowMs int64) (int64, bool) {
 	if v.MarkValid {
-		return 0
+		return 0, false
 	}
 	p, ok := prev[id]
 	switch {
-	case ok && !p.MarkValid && p.MarkLostAtMs > 0:
-		return p.MarkLostAtMs
-	case ok && p.MarkValid:
+	case !ok:
+		return nowMs, true
+	case !p.MarkValid && p.MarkLostAtMs > 0:
+		return p.MarkLostAtMs, p.MarkLostAtRestart
+	case p.MarkValid:
 		if end, eok := pairAddMs(p.EvidenceMs, p.MaxAgeMs); eok && end < nowMs {
-			return end
+			return end, false
 		}
+		return nowMs, false
 	}
-	return nowMs
+	return nowMs, true
 }
 
-func (pm *pairMarks) incompleteSinceMs(id string) (int64, bool) {
+func (pm *pairMarks) incompleteSinceMs(id string) (since int64, known, priorUnknown bool) {
 	if pm == nil {
-		return 0, false
+		return 0, false, true
 	}
 	v, ok := pm.views[id]
 	if !ok {
-		return 0, false
+		return 0, false, true
 	}
 	if !v.MarkValid {
-		return v.MarkLostAtMs, v.MarkLostAtMs > 0
+		return v.MarkLostAtMs, v.MarkLostAtMs > 0, v.MarkLostAtRestart || v.MarkLostAtMs <= 0
 	}
 	if _, valid, _ := v.usdMarkAt(pm.nowMs); valid {
-		return 0, false
+		return 0, false, false
 	}
 	if end, eok := pairAddMs(v.EvidenceMs, v.MaxAgeMs); eok && end < pm.nowMs {
-		return end, true
+		return end, true, false
 	}
-	return pm.nowMs, true
+	return pm.nowMs, true, false
 }
 
 func (pm *pairMarks) sinceFor(id string) int64 {
-	since, ok := pm.incompleteSinceMs(id)
-	if saved := pm.saved[id]; saved > 0 && (!ok || saved < since) {
+	since, known, priorUnknown := pm.incompleteSinceMs(id)
+	if saved := pm.saved[id]; saved > 0 && priorUnknown && (!known || saved < since) {
 		return saved
 	}
-	if !ok {
+	if !known {
 		return pm.nowMs
 	}
 	return since
+}
+
+func (pm *pairMarks) partitionOverdue(st pairValueStatus) (int64, map[string]int64) {
+	if pm == nil || st.complete() {
+		return 0, nil
+	}
+	members := pm.sinces(st)
+	var start int64
+	for id, since := range members {
+		if start == 0 || since < start {
+			start = since
+		}
+		if saved := pm.saved[id]; saved > 0 && saved < start {
+			start = saved
+		}
+	}
+	if start == 0 || pm.nowMs-start < untrustedEquityLatchDeferral.Milliseconds() {
+		return 0, nil
+	}
+	return start, members
 }
 
 func (pm *pairMarks) sinces(st pairValueStatus) map[string]int64 {

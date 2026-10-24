@@ -78,6 +78,7 @@ type pairMemberValuation struct {
 	CollateralValid     bool
 	Substituted         bool
 	MarkLostAtMs        int64
+	MarkLostAtRestart   bool
 	MissingReason       string
 }
 

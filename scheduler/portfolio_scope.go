@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sort"
 	"time"
 )
@@ -131,6 +132,7 @@ type scopeCycleRisk struct {
 	CloseApplied            bool
 	PairValuation           pairValueStatus
 	PairValuationOverdue    map[string]int64
+	PairValuationOverdueMs  int64
 	PairValuationSince      map[string]int64
 	pairMarked              bool
 }
@@ -200,7 +202,7 @@ func measureScopeCycleRiskMarked(
 	sr.PerpsLoss, sr.PerpsMargin, ms = aggregatePerpsMarginInputsMarked(scopedStates, scopedCfgs, prices, pm)
 	sr.PairValuation.merge(ns)
 	sr.PairValuation.merge(ms)
-	sr.PairValuationOverdue = pm.overdue(sr.PairValuation)
+	sr.PairValuationOverdueMs, sr.PairValuationOverdue = pm.partitionOverdue(sr.PairValuation)
 	sr.PairValuationSince = pm.sinces(sr.PairValuation)
 	sr.pairMarked = pm != nil
 	sr.DailyLossStatus = evaluateDailyLossLimit(pr, scopedStates, scopedCfgs, now)
@@ -242,7 +244,8 @@ func applyScopeCycleRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
 		prs, sr.Config, sr.TotalPV, sr.TotalNotional, sr.PerpsLoss, sr.PerpsMargin, sr.EquityAvailable, sr.EquityTrusted && pairComplete)
 	if allowed && len(sr.PairValuationOverdue) > 0 && sr.Config != nil && sr.Config.MaxDrawdownPct > 0 {
 		allowed, notionalBlocked, warning = false, false, false
-		reason = latchPortfolioKillSwitchForPairValuation(prs, sr.TotalPV, pairOverdueDetail(sr.PairValuationOverdue, sr.PairValuation))
+		reason = latchPortfolioKillSwitchForPairValuation(prs, sr.TotalPV, fmt.Sprintf("the partition valuation has been incomplete without a break since %s; %s",
+			time.UnixMilli(sr.PairValuationOverdueMs).UTC().Format(time.RFC3339), pairOverdueDetail(sr.PairValuationOverdue, sr.PairValuation)))
 	}
 	if !pairComplete {
 		if sr.Config != nil && sr.Config.MaxNotionalUSD > 0 {
