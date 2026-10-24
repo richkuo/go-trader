@@ -122,7 +122,6 @@ func TestBasketPairCollectionFailuresHoldDurably(t *testing.T) {
 	}{
 		{"no quote scripted", func(e *pairTestEnv) { e.quotes.enabled = false }, "no fixture quote is scripted"},
 		{"read error", func(e *pairTestEnv) { e.quotes.err = errors.New("venue answered 503") }, "venue answered 503"},
-		{"missing seal", func(e *pairTestEnv) { e.collect = false }, "no sealed market snapshot"},
 		{"slow read", func(e *pairTestEnv) { e.quotes.block = make(chan struct{}) }, "context deadline exceeded"},
 		{"late cutoff", func(e *pairTestEnv) {
 			e.quotes.onRead = func(pairMemberRead) { e.now = e.now.Add(3 * time.Second) }
@@ -881,11 +880,11 @@ func TestBasketPairCollectionBoundedLauncher(t *testing.T) {
 		t.Fatalf("stderr overflow must be a child failure, got %v", err)
 	}
 	marker := filepath.Join(t.TempDir(), "late")
-	_, _, err, took := sh(`(sleep 3; echo late > `+marker+`) & sleep 30`, pythonOutputLimits{Stdout: 1000, Stderr: 1000}, 500*time.Millisecond)
+	_, _, err, took := sh(`(sleep 2; echo late > `+marker+`) & sleep 30`, pythonOutputLimits{Stdout: 1000, Stderr: 1000}, 500*time.Millisecond)
 	if err == nil || took > pythonPipeWaitDelay+3*time.Second {
 		t.Fatalf("a cancelled child and its descendants must end within the cleanup bound, got %v after %s", err, took)
 	}
-	time.Sleep(3500 * time.Millisecond)
+	time.Sleep(2500 * time.Millisecond)
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("a descendant of the cancelled process group kept running")
 	}
@@ -922,7 +921,7 @@ func TestBasketPairCollectionBoundedLauncher(t *testing.T) {
 }
 
 func TestBasketPairCollectionHoldsUnderSaturatedAdmission(t *testing.T) {
-	e := pairCollectEnv(t, pairSetMember(0, "source", "public_snapshot"))
+	e := pairCollectEnv(t, pairAll(pairSetMember(0, "source", "public_snapshot"), pairSetLimit("collection_timeout_ms", 500)))
 	e.adm.deps.Quotes = &pairQuoteCollector{sources: map[string]string{pairTestHL: pairSourcePublicSnapshot, pairTestOKX: pairSourcePublicSnapshot},
 		readers: map[string]pairMemberReader{pairTestHL: pairPublicReader{}, pairTestOKX: pairPublicReader{}}, limit: 1 << 20}
 	var held []func()

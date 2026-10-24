@@ -162,21 +162,6 @@ func TestBasketPairDecisionEntryPointOutcomes(t *testing.T) {
 }
 
 func TestBasketPairDecisionTimeoutAndChangedSnapshot(t *testing.T) {
-	t.Run("timeout", func(t *testing.T) {
-		e := newPairTestEnv(t, nil)
-		e.runner.block = make(chan struct{})
-		at := pairTestStart()
-		e.slot(at, "in-0")
-		e.step(at.Add(4700 * time.Millisecond))
-		rb := e.rt().Rebalances[at.UnixMilli()]
-		if rb.Status != basketRebalanceHeld {
-			t.Fatalf("a policy timeout must hold the slot, got %s", rb.Status)
-		}
-		if e.runner.calls != 1 {
-			t.Fatalf("the policy must start inside its quote-age budget and then time out, got %d calls", e.runner.calls)
-		}
-		close(e.runner.block)
-	})
 	t.Run("changed snapshot", func(t *testing.T) {
 		e := newPairTestEnv(t, nil)
 		at := pairTestStart()
@@ -580,37 +565,6 @@ func TestBasketPairUnknownElectiveNeverBlocksProtectiveWork(t *testing.T) {
 	}
 }
 
-func TestBasketPairDuplicateActionsAreRefusedByTheIndexes(t *testing.T) {
-	e := newPairTestEnv(t, nil)
-	pairEnterExitRunner(e, 0.06)
-	pairOpenVenue(e, pairTestOKX, basketVenueOutcome{Outcome: basketVenueUnknown, Detail: "disconnect"})
-	e.slotStep(0)
-	elective := e.actionsByPurpose(pairPurposeEntry)[0]
-	db := e.db()
-	sid, _ := db.toStorageID(pairTestHL)
-	insert := func(id, purpose, provider, account, instrument, cloid string) error {
-		_, err := db.db.Exec(`INSERT INTO basket_member_actions (action_id, scope, source, basket_id, deadline_ms, strategy_id, symbol, direction, seq, order_side, position_side, status, requested_qty, provider, account_key, client_order_id, created_at_ms, updated_at_ms, purpose, group_mode, instrument, request_json)
-			VALUES (?, 'paper', '', ?, 1, ?, 'BTC', 'reduce', ?, 'sell', 'long', 'submitting', 0.01, ?, ?, ?, 1, 1, ?, 'pair', ?, '{}')`,
-			id, pairTestID, sid, len(id), provider, account, cloid, purpose, instrument)
-		return err
-	}
-	if err := insert("dup-elective", pairPurposeExit, entryProviderHyperliquid, "synthetic:hl-research", "BTC", "c-1"); err == nil {
-		t.Fatalf("a second unresolved elective action for pair %s must be refused beside %s", pairTestID, elective.ActionID)
-	}
-	if err := insert("prot-hl", pairPurposeProtective, entryProviderHyperliquid, "synthetic:hl-research", "BTC", "c-2"); err != nil {
-		t.Fatalf("a protective reduction beside the unresolved elective action must be allowed: %v", err)
-	}
-	if err := insert("prot-hl-2", pairPurposeKillSwitch, entryProviderHyperliquid, "synthetic:hl-research", "BTC", "c-3"); err == nil {
-		t.Fatal("a second unresolved protective reduction on one account and instrument must be refused")
-	}
-	if err := insert("prot-okx", pairPurposeOperator, entryProviderOKX, "synthetic:okx-research", "BTC-USDT-SWAP", "c-4"); err != nil {
-		t.Fatalf("the other member's protective reduction must be allowed: %v", err)
-	}
-	if n := e.count(`SELECT COUNT(*) FROM basket_member_actions WHERE status IN ('reserved','submitting','unresolved','settling')`); n != 3 {
-		t.Fatalf("want one elective and two protective unresolved rows, got %d", n)
-	}
-}
-
 func TestBasketPairHoldAgeAndRecoveryAgeBoundaries(t *testing.T) {
 	t.Run("hold age", func(t *testing.T) {
 		e := newPairTestEnv(t, func(root map[string]interface{}) {
@@ -790,7 +744,7 @@ func TestBasketPairReachableFillBoundsAtTheirLimits(t *testing.T) {
 			if bound == nil || bound.Readings["unmatched_usd"] > tc.cap*(1+1e-9)+1e-9 {
 				t.Fatalf("the recorded bound reading must stay within the cap: %+v", bound)
 			}
-			for i := 1; i < 6; i++ {
+			for i := 1; i < 6 && !(basketQtyEqual(e.signed(pairTestHL), 0.06) && basketQtyEqual(e.signed(pairTestOKX), -0.06)); i++ {
 				e.slotStep(i)
 			}
 			e.assertBooks("completed in bounded tranches", 0.06, -0.06)

@@ -1983,6 +1983,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		if sc.Type == "options" && len(sc.AllowedRegimes) > 0 {
 			errs = append(errs, fmt.Sprintf("%s: allowed_regimes is not enforced for type=options (gate not wired at options dispatch; see issue #553)", prefix))
 		}
+		if sc.Type == "options" && isLiveArgs(sc.Args) {
+			errs = append(errs, fmt.Sprintf("%s: %s", prefix, optionsLiveModeConfigError(sc.Platform)))
+		}
 
 		if _, err := parseRegimeGateOnFailure(sc.RegimeGateOnFailure); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", prefix, err))

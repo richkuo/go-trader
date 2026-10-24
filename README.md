@@ -4,9 +4,9 @@
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/44BykmWZsP)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A Go + Python hybrid trading system. A single Go binary (~8MB idle RAM) orchestrates 50+ strategies across spot, options, perpetual futures, and CME futures by spawning short-lived Python scripts. Both paper and live execution are supported per strategy.
+A Go + Python hybrid trading system. A single Go binary (~8MB idle RAM) orchestrates 50+ strategies across spot, options, perpetual futures, and CME futures by spawning short-lived Python scripts. Both paper and live execution are supported per strategy for spot, perps and futures. Options strategies run as paper only on every platform: no venue order path exists for options, so config load refuses a `type: options` strategy with `--mode=live`.
 
-Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood (crypto + stock options), OKX (spot + perps + options), Luno. Per-platform Discord/Telegram channels post hourly summaries plus immediate trade alerts. When a new release ships, a host deployment DMs the configured owner — reply **yes** and it pulls, rebuilds, and restarts itself. A Docker deployment updates by pulling a new image instead.
+Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood (crypto + paper stock options), OKX (spot + perps + paper options), Luno. Per-platform Discord/Telegram channels post hourly summaries plus immediate trade alerts. When a new release ships, a host deployment DMs the configured owner — reply **yes** and it pulls, rebuilds, and restarts itself. A Docker deployment updates by pulling a new image instead.
 
 Join the Discord: [https://discord.gg/46d7Fa2dXz](https://discord.gg/46d7Fa2dXz)
 
@@ -162,13 +162,13 @@ Strategies are auto-discovered from `shared_strategies/` at `go-trader init` tim
 | Platform | Type | Assets | Live env vars | Paper data |
 |---|---|---|---|---|
 | Binance US | Spot | BTC, ETH, SOL | — | CCXT public |
-| Deribit | Options | BTC, ETH | — | Live quotes |
-| IBKR/CME | Options | BTC, ETH | IBKR creds | Black-Scholes |
+| Deribit | Options | BTC, ETH | — (paper only) | Live quotes |
+| IBKR/CME | Options | BTC, ETH | — (paper only) | Black-Scholes |
 | Hyperliquid | Perps | any HL-listed | `HYPERLIQUID_SECRET_KEY` | SDK public |
 | TopStep | Futures | ES, NQ, MES, MNQ, CL, GC | `TOPSTEP_API_KEY` / `_SECRET` / `_ACCOUNT_ID` | yfinance |
 | Robinhood | Crypto | BTC, ETH, SOL, DOGE, … | `ROBINHOOD_USERNAME` / `_PASSWORD` / `_TOTP_SECRET` | yfinance; timeframes `1m`, `2m`, `5m`, `15m`, `30m`, `1h`/`60m`, `90m`, `2h`, `4h`, `6h`, `8h`, `12h` (from Yahoo `1h`), `1d`, `1w`, `1M`/`1mo` |
-| Robinhood | Stock options | SPY, QQQ, AAPL, … | (same as above) | Black-Scholes |
-| OKX | Spot + Perps + Options | BTC, ETH, SOL | `OKX_API_KEY` / `_SECRET` / `_PASSPHRASE` (`OKX_SANDBOX=1` for demo) | CCXT public |
+| Robinhood | Stock options | SPY, QQQ, AAPL, … | — (paper only) | Black-Scholes; when the Robinhood credentials are set, the check logs in for authenticated option data (expiry, strikes, premiums, Greeks) |
+| OKX | Spot + Perps + Options | BTC, ETH, SOL | `OKX_API_KEY` / `_SECRET` / `_PASSPHRASE` (`OKX_SANDBOX=1` for demo); options paper only | CCXT public |
 | Luno | Spot | BTC, ETH, … | Luno creds | CCXT public |
 
 **Hyperliquid perps direction** — per-strategy `direction: "long" | "short" | "both"`. `long` (default) opens longs only; `short` opens shorts only; `both` flips on reversals. Bidirectional/short-focused strategies (`triple_ema_bidir`, `bear_pullback_st`, `vwap_rejection_st`, `chart_pattern`, `anchored_vwap`, `anchored_vwap_channel`, `anchored_vwap_reversion`, `liquidity_sweeps`, `momentum_pro`, `mean_reversion_pro`, `rsi_bb_combo`, `consolidation_range`, `atr_band_revert`, `mtf_confluence`, `funding_skew`, `regime_adaptive`) require `"short"` or `"both"`. Legacy `allow_shorts` migrates automatically. `donchian_breakout` is deprecated (hidden from discovery, still loadable via explicit config).
@@ -479,7 +479,7 @@ Open `https://<node>.tailnet.ts.net:8443/dashboard`. `status_token` still applie
 ## Risk Management
 
 - **Portfolio kill switch** — halts at `portfolio_risk.max_drawdown_pct` (default 25); submits real closes on HL / OKX perps / Robinhood crypto / TopStep. Robinhood closes sell at most the go-trader book for each coin; coin above the book in the same account is the operator's, is reported and is never sold. Owner-DM reset confirmation wait is tunable via `kill_switch_reset_dm_timeout` (Go duration string, e.g. `"6h"`; default 6h).
-- **Per-strategy circuit breakers** — max-drawdown (24h cooldown) or consecutive losses (default 5, 1h cooldown); threshold and both cooldowns tunable per strategy via `cb_drawdown_cooldown_minutes` / `cb_loss_streak_threshold` / `cb_loss_streak_cooldown_minutes`. HL/OKX perps, Robinhood crypto (at most the strategy's own book; holdings above it are reported, not sold), TopStep auto-close; OKX spot and Robinhood options need manual flatten. Latched HL perps CB still permits trailing-SL management. `circuit_breaker: false` disables firing.
+- **Per-strategy circuit breakers** — max-drawdown (24h cooldown) or consecutive losses (default 5, 1h cooldown); threshold and both cooldowns tunable per strategy via `cb_drawdown_cooldown_minutes` / `cb_loss_streak_threshold` / `cb_loss_streak_cooldown_minutes`. HL/OKX perps, Robinhood crypto (at most the strategy's own book; holdings above it are reported, not sold), TopStep auto-close; OKX spot needs manual flatten. Latched HL perps CB still permits trailing-SL management. `circuit_breaker: false` disables firing.
 - **Hyperliquid stop-loss** — one positive field among seven mutually-exclusive stop owners (`stop_loss_pct`, `stop_loss_margin_pct`, `stop_loss_atr_mult`, `stop_loss_atr_mult_regime`, `trailing_stop_pct`, `trailing_stop_atr_mult`, `trailing_stop_atr_mult_regime`); all omitted → `default_stop_loss_atr_mult × entry_atr` (1.0); `0` opts out. A stop past the Hyperliquid liquidation price is clamped, never left unreachable.
 - **On-chain N-tier TP/SL** — `tiered_tp_atr` / `tiered_tp_atr_live` (default tiers `[{1.5×, 0.4}, {3×, 0.8}, {5×, 1.0}]`).
 - **Trailing-ratchet close** — `trailing_tp_ratchet` / `trailing_tp_ratchet_regime`: cleared tiers tighten a single trailing stop; no fixed on-chain TPs. HL perps + `manual`.

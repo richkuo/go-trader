@@ -116,7 +116,7 @@ Write one value per line as `NAME=value`, with no quotes and no spaces around `=
 | `STATUS_AUTH_TOKEN` | Required. The dashboard and every status request need it. |
 | `DISCORD_BOT_TOKEN`, `DISCORD_OWNER_ID` | Discord notifications and owner commands. |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_CHAT_ID` | Telegram notifications. |
-| `HYPERLIQUID_SECRET_KEY`, `HYPERLIQUID_ACCOUNT_ADDRESS`, `OKX_*`, `TOPSTEP_*`, `ROBINHOOD_*`, `LUNO_*` | Exchange keys for live trading only. Paper trading needs none. |
+| `HYPERLIQUID_SECRET_KEY`, `HYPERLIQUID_ACCOUNT_ADDRESS`, `OKX_*`, `TOPSTEP_*`, `ROBINHOOD_*`, `LUNO_*` | Exchange keys for live trading only. Paper trading needs none. When the `ROBINHOOD_*` credentials are set, paper Robinhood checks and the options check also log in for authenticated data (option expiry, strikes, premiums, Greeks). Options run as paper only on every platform. |
 | `ANTHROPIC_API_KEY` | The optional LLM entry analysis. |
 
 On macOS and Linux, make the file private: `chmod 600 go-trader.env`.

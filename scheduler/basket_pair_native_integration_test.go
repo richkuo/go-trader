@@ -614,17 +614,14 @@ func TestBasketPairKillSwitchNeverGatesTheNativeClose(t *testing.T) {
 
 func TestBasketPairKillSwitchPartialNativeFillIsConfirmedPartial(t *testing.T) {
 	cases := []struct {
-		name   string
-		hlSz   float64
-		okxSz  float64
-		member string
-		want   float64
-		status string
+		name  string
+		hlSz  float64
+		okxSz float64
+		want  map[string]float64
 	}{
-		{name: "hyperliquid partial", hlSz: 0.03, okxSz: 6, member: pairTestHL, want: 0.03},
-		{name: "okx partial", hlSz: 0.06, okxSz: 3, member: pairTestOKX, want: 0.03},
-		{name: "hyperliquid full", hlSz: 0.06, okxSz: 6, member: pairTestHL, want: 0.06},
-		{name: "okx full", hlSz: 0.06, okxSz: 6, member: pairTestOKX, want: 0.06},
+		{name: "hyperliquid partial", hlSz: 0.03, okxSz: 6, want: map[string]float64{pairTestHL: 0.03}},
+		{name: "okx partial", hlSz: 0.06, okxSz: 3, want: map[string]float64{pairTestOKX: 0.03}},
+		{name: "both full", hlSz: 0.06, okxSz: 6, want: map[string]float64{pairTestHL: 0.06, pairTestOKX: 0.06}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -636,13 +633,19 @@ func TestBasketPairKillSwitchPartialNativeFillIsConfirmedPartial(t *testing.T) {
 				return &OKXCloseResult{Close: &OKXClose{Symbol: "BTC", Fill: &OKXCloseFill{AvgPx: 60050, TotalSz: tc.okxSz}}}, nil
 			}
 			f.fire()
-			acts := f.killSwitchActions(tc.member)
-			if len(acts) != 1 {
-				t.Fatalf("one native action expected: %+v", acts)
-			}
-			a := acts[0]
-			if a.Status != basketActionCommitted || !basketQtyEqual(a.ConfirmedQty, tc.want) || strings.Contains(a.HoldReason, "inconsistent") {
-				t.Fatalf("the native close must save %v confirmed with no inconsistency hold: %+v", tc.want, a)
+			for _, member := range []string{pairTestHL, pairTestOKX} {
+				want, ok := tc.want[member]
+				if !ok {
+					continue
+				}
+				acts := f.killSwitchActions(member)
+				if len(acts) != 1 {
+					t.Fatalf("one native action expected for %s: %+v", member, acts)
+				}
+				a := acts[0]
+				if a.Status != basketActionCommitted || !basketQtyEqual(a.ConfirmedQty, want) || strings.Contains(a.HoldReason, "inconsistent") {
+					t.Fatalf("the native close must save %v confirmed for %s with no inconsistency hold: %+v", want, member, a)
+				}
 			}
 			if p := f.env.rt().Pair.Progress; strings.Contains(p.FreezeReason, "inconsistent") {
 				t.Fatalf("the native fill must not freeze increases as inconsistent evidence: %s", p.FreezeReason)

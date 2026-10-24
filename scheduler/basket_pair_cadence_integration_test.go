@@ -620,6 +620,9 @@ func TestBasketPairPolicyTimeoutMarksTheRunIncomplete(t *testing.T) {
 		if took := time.Since(start); took > 5*time.Second {
 			t.Fatalf("the quote-age budget must end the run near 100ms, took %s", took)
 		}
+		if e.runner.calls != 1 {
+			t.Fatalf("the policy must start inside its quote-age budget and then time out, got %d calls", e.runner.calls)
+		}
 		e.runner.block = nil
 		rb := e.rt().Rebalances[at.UnixMilli()]
 		if rb.Status != basketRebalanceHeld {
