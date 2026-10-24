@@ -257,3 +257,67 @@ func TestBasketPairPositionReachableUnresolvedFillsMatchWithoutAdoption(t *testi
 	}
 	e.assertBooks("still never adopted", 0, 0)
 }
+
+func pairLiveFirstLeg(t *testing.T, e *pairTestEnv) time.Time {
+	t.Helper()
+	pairEnterExitRunner(e, 0.06)
+	pairOpenVenue(e, pairTestOKX, pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * 59700, Terminal: true}, 1.5, "USDT", true))
+	at := e.slotStep(0)
+	e.assertBooks("first leg", 0, -0.06)
+	if a := e.actionsByPurpose(pairPurposeEntry); len(a) != 1 || a[0].Status != basketActionCommitted || !a[0].FeeFinal {
+		t.Fatalf("a fully covered first-leg answer must commit in the submit step: %+v", a)
+	}
+	return at
+}
+
+func TestBasketPairPositionLiveProtectiveReductionHoldsWithoutAReferenceBound(t *testing.T) {
+	e := newPairLiveShapedEnv(t, &pairNativeClosers{})
+	at := pairLiveFirstLeg(t, e)
+	e.externalBookChange(pairTestOKX, -0.03)
+	e.step(at.Add(2 * time.Minute))
+	if e.lifecycle() != pairLifecycleRecovery {
+		t.Fatalf("lifecycle %s, want recovery after the outside reduction", e.lifecycle())
+	}
+	if n := len(e.actionsByPurpose(pairPurposeProtective)); n != 0 {
+		t.Fatalf("a live-shaped protective reduction without a reference bound reserved %d actions", n)
+	}
+	p := e.rt().Pair.Progress
+	o := p.obligation(pairObligationProtectiveBound, pairTestOKX, "")
+	r, ok := p.Retries[pairTestOKX]
+	if o == nil || !ok || r.Count != 1 || r.RetryAtMs != at.Add(2*time.Minute).UnixMilli()+5000 {
+		t.Fatalf("the hold needs a visible obligation and the first backoff, got %+v %+v", o, r)
+	}
+	e.step(at.Add(2*time.Minute + 2*time.Second))
+	if r := e.rt().Pair.Progress.Retries[pairTestOKX]; r.Count != 1 {
+		t.Fatalf("the hold must wait for its backoff, got %+v", r)
+	}
+	e.step(at.Add(2*time.Minute + 6*time.Second))
+	if r := e.rt().Pair.Progress.Retries[pairTestOKX]; r.Count != 2 || r.RetryAtMs != at.Add(2*time.Minute+6*time.Second).UnixMilli()+10000 {
+		t.Fatalf("the retry backoff must double, got %+v", r)
+	}
+	if n := e.alertsWithPrefix("protective_bound|"); n != 1 {
+		t.Fatalf("one recovery episode must send one protective-bound alert, got %d", n)
+	}
+}
+
+func TestBasketPairPositionBarrierOpensRecoveryForAHeldOneSidedOpening(t *testing.T) {
+	e := newPairLiveShapedEnv(t, &pairNativeClosers{})
+	at := pairLiveFirstLeg(t, e)
+	e.venues.hl.position = func(pairContractMember, int64) (pairVenuePosition, error) {
+		return pairVenuePosition{}, fmt.Errorf("venue unreachable")
+	}
+	e.slotStep(1)
+	if e.lifecycle() != pairLifecycleOpening {
+		t.Fatalf("lifecycle %s, want opening while the barrier holds the hedge", e.lifecycle())
+	}
+	held := e.rt().Pair.Progress.PositionMatch.HeldSinceMs
+	e.step(time.UnixMilli(held + 149999).UTC())
+	if e.lifecycle() != pairLifecycleOpening {
+		t.Fatalf("lifecycle %s before the horizon, want opening", e.lifecycle())
+	}
+	e.step(time.UnixMilli(held + 150000 + 60000).UTC())
+	if e.lifecycle() != pairLifecycleRecovery {
+		t.Fatalf("a one-sided opening held past the acceptance deadline plus the grace must open recovery, got %s", e.lifecycle())
+	}
+	_ = at
+}
