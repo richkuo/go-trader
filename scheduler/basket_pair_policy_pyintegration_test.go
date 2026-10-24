@@ -123,7 +123,7 @@ func newPairPolicyEnv(t *testing.T, f pairPolicyFixture) (*pairTestEnv, *pairPol
 			*s.dst = s.src
 		}
 	}
-	deps := pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc, f.evidence), Quotes: q.collector}
+	deps := pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc, f.evidence), Quotes: q.collector, Funding: pairTestFunding(t, doc, nil)}
 	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, deps)
 	if err != nil {
 		t.Fatalf("newPairResearchAdmission: %v", err)
