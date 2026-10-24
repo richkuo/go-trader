@@ -599,7 +599,7 @@ func portfolioValueMarked(s *StrategyState, prices map[string]float64, pm *pairM
 		price, ok := prices[sym]
 		if mark, state, why, pair := pm.markFor(s, sym); pair {
 			st.note(s.ID, state, why)
-			price, ok = mark, state != pairMarkUnavailable
+			price, ok = pairConservativePx(pos, state, mark), true
 		}
 		if !ok {
 			price = pos.AvgCost

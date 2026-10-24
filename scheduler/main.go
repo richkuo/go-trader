@@ -1438,15 +1438,19 @@ func main() {
 			}
 
 			sharedWalletRiskGeneration++
+			if basketCoord != nil {
+				basketCoord.preparePairRisk(basketCycleInputs{Now: time.Now().UTC()})
+			}
 			mu.RLock()
+			riskPairMarks := state.pairMarksLocked()
 			riskWalletBalances, usedStaleRiskBalance, pooledEquityComplete := resolveSharedWalletRiskBalances(
 				cfg.Strategies, state.Strategies, sharedWallets, walletBalances,
 				sharedWalletRiskBalances, sharedWalletRiskGeneration)
 			riskOpenSymbols := snapshotOpenSymbolsByStrategy(state)
 			totalPV = 0
 			for _, part := range cyclePartitions {
-				sr := measureScopeCycleRisk(part, scopeRisk[part].Config, cfg.Strategies, state, prices,
-					riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, time.Now().UTC())
+				sr := measureScopeCycleRiskMarked(part, scopeRisk[part].Config, cfg.Strategies, state, prices,
+					riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, time.Now().UTC(), riskPairMarks)
 				scopeRisk[part] = sr
 				totalPV += sr.TotalPV
 			}

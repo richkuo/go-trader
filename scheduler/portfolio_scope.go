@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"sort"
 	"time"
 )
@@ -203,30 +202,27 @@ func measureScopeCycleRiskMarked(
 	return sr
 }
 
-func applyIncompletePairScopeRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
-	sr.PeakRebaselineAvailable = false
-	prs.DrawdownReadingSubstituted = true
-	sr.EquityGuardArmed = sr.EquityAvailable && prs.PeakValue > 0
-	sr.KillSwitchFired = prs.KillSwitchActive
-	sr.NotionalBlocked = sr.Config != nil && sr.Config.MaxNotionalUSD > 0
-	sr.DailyLossEntriesHeld = sr.DailyLossStatus.Tripped
-	sr.Warning, sr.WarnBandEntered = false, false
-	sr.Reason = sr.PairValuation.label() + "; the peak, drawdown latch and warning band are not evaluated this cycle, the prior drawdown reading is kept and labelled substituted, and new opens hold"
-	if prs.KillSwitchActive {
-		sr.Reason = fmt.Sprintf("portfolio kill switch is latched (triggered at %s, manual reset required); %s", prs.KillSwitchAt.Format("2006-01-02 15:04:05 UTC"), sr.Reason)
-	}
-}
-
 func applyScopeCycleRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
 	sr.Prs = prs
-	if !sr.PairValuation.complete() {
-		applyIncompletePairScopeRisk(sr, prs)
-		return
+	pairComplete := sr.PairValuation.complete()
+	if !pairComplete {
+		sr.PeakRebaselineAvailable = false
 	}
 	origPeak := prs.PeakValue
 	prevWarningSent := prs.WarningSent
 	allowed, notionalBlocked, warning, reason := checkPortfolioRiskWithEquityAvailability(
-		prs, sr.Config, sr.TotalPV, sr.TotalNotional, sr.PerpsLoss, sr.PerpsMargin, sr.EquityAvailable, sr.EquityTrusted)
+		prs, sr.Config, sr.TotalPV, sr.TotalNotional, sr.PerpsLoss, sr.PerpsMargin, sr.EquityAvailable, sr.EquityTrusted && pairComplete)
+	if !pairComplete {
+		if sr.Config != nil && sr.Config.MaxNotionalUSD > 0 {
+			notionalBlocked = true
+		}
+		note := sr.PairValuation.label() + "; the reading values those members conservatively, never raises the peak and goes through the untrusted over-limit deferral, and new opens hold"
+		if reason == "" {
+			reason = note
+		} else {
+			reason += "; " + note
+		}
+	}
 	sr.Warning = warning
 	sr.WarnBandEntered = warning && !prevWarningSent
 	sr.Reason = reason

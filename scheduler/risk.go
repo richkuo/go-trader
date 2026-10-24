@@ -1435,10 +1435,7 @@ func perpsMarginDrawdownInputsMarked(s *StrategyState, configLeverage float64, p
 		price, ok := prices[sym]
 		if mark, state, why, pair := pm.markFor(s, sym); pair {
 			st.note(s.ID, state, why)
-			if state == pairMarkUnavailable {
-				continue
-			}
-			price, ok = mark, true
+			price, ok = pairConservativePx(pos, state, mark), true
 		}
 		if !ok || price <= 0 {
 			price = pos.AvgCost
@@ -1483,9 +1480,11 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 func pairMemberRiskInputs(s *StrategyState, pm *pairMarks) (float64, map[string]float64, pairValueStatus) {
 	pv, status := portfolioValueMarked(s, nil, pm)
 	prices := map[string]float64{}
-	for sym := range s.Positions {
-		if px, state, _, pair := pm.markFor(s, sym); pair && state == "" {
-			prices[sym] = px
+	for sym, pos := range s.Positions {
+		if px, state, _, pair := pm.markFor(s, sym); pair {
+			if c := pairConservativePx(pos, state, px); basketFinitePositive(c) {
+				prices[sym] = c
+			}
 		}
 	}
 	return pv, prices, status
@@ -1495,7 +1494,7 @@ func checkPairMemberRisk(sc *StrategyConfig, s *StrategyState, pm *pairMarks, lo
 	pv, prices, status := pairMemberRiskInputs(s, pm)
 	ok, reason := checkRiskValued(sc, s, pv, prices, status.complete(), logger, assist)
 	if !status.complete() && reason == "" {
-		reason = status.label() + "; the circuit-breaker drawdown keeps its prior reading and the peak is not updated this cycle"
+		reason = status.label() + "; the circuit-breaker drawdown uses the conservative member value and the peak is not updated this cycle"
 	}
 	return ok, reason, status
 }
@@ -1546,9 +1545,6 @@ func checkRiskValued(sc *StrategyConfig, s *StrategyState, portfolioValue float6
 		loss = r.PeakValue - portfolioValue
 		denom = r.PeakValue
 	}
-	if !valued {
-		denom = -1
-	}
 	if denom > 0 {
 		if loss < 0 {
 			loss = 0
@@ -1568,7 +1564,7 @@ func checkRiskValued(sc *StrategyConfig, s *StrategyState, portfolioValue float6
 			return false, fmt.Sprintf("%s (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				RiskReasonMaxDrawdownExceeded, r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
 		}
-	} else if valued {
+	} else {
 		r.CurrentDrawdownPct = 0
 	}
 

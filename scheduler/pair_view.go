@@ -759,3 +759,19 @@ func pairAccountDisplays(pm *pairMarks) []pairAccountDisplay {
 	}
 	return out
 }
+
+func pairConservativePx(pos *Position, state string, mark float64) float64 {
+	if state == "" {
+		return mark
+	}
+	if pos == nil {
+		return mark
+	}
+	if !basketFinitePositive(mark) {
+		return pos.AvgCost
+	}
+	if pos.Side == entrySideShort {
+		return math.Max(mark, pos.AvgCost)
+	}
+	return math.Min(mark, pos.AvgCost)
+}
