@@ -1067,7 +1067,7 @@ func TestBasketPairCollectionSealedCoverageFailuresHold(t *testing.T) {
 			e.now = at
 			e.bc.beginCycle()
 			e.observe("")
-			e.bc.step(basketCycleInputs{Now: at, Once: true, Snapshot: snap})
+			e.bc.step(basketCycleInputs{Now: at, Once: true, PairSnapshotFor: func(*basketRuntime, time.Time) *marketSnapshot { return snap }, PairGeneration: e.feedGeneration})
 			status, hold, _, evidence := e.slotRow(pairTestStart().UnixMilli())
 			if status != basketRebalanceHeld || evidence != "" || !strings.Contains(hold, tc.want) {
 				t.Fatalf("a failed seal must hold without a public substitute, got %s %q", status, hold)

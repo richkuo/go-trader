@@ -38,9 +38,111 @@ const (
 	pairResearchManifestOwner = "go-trader pair research run"
 )
 
-var pairPolicyStrategies = map[string]bool{}
+const pairPolicyCrossExchangePerpArbitrage = "cross_exchange_perp_arbitrage"
 
-var pairPolicyParamKeys = map[string][]string{}
+var pairPolicyStrategies = map[string]bool{pairPolicyCrossExchangePerpArbitrage: true}
+
+var pairPolicyParamKeys = map[string][]string{
+	pairPolicyCrossExchangePerpArbitrage: {"adverse_band_bps", "entry_threshold_bps", "exit_threshold_bps", "funding_allowance_bps"},
+}
+
+var pairPolicyParamValidators = map[string]func(path string, params map[string]json.RawMessage) []string{
+	pairPolicyCrossExchangePerpArbitrage: pairCrossExchangeParamErrors,
+}
+
+const pairMaxThresholdBps = 10000.0
+
+func pairCrossExchangeParamErrors(path string, params map[string]json.RawMessage) []string {
+	var errs []string
+	add := func(format string, a ...interface{}) {
+		errs = append(errs, path+": "+fmt.Sprintf(format, a...))
+	}
+	keys := pairPolicyParamKeys[pairPolicyCrossExchangePerpArbitrage]
+	known := make(map[string]bool, len(keys))
+	vals := map[string]float64{}
+	for _, k := range keys {
+		known[k] = true
+		v, ok := params[k]
+		if !ok {
+			add("%s is missing; policy %s has no parameter defaults", k, pairPolicyCrossExchangePerpArbitrage)
+			continue
+		}
+		text := strings.TrimSpace(string(v))
+		if kind := pairRawJSONKind(v); kind != "number" {
+			add("%s must be a finite JSON number, got %s %s", k, kind, text)
+			continue
+		}
+		var f float64
+		if err := json.Unmarshal(v, &f); err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			add("%s must be a finite number, got %s", k, text)
+			continue
+		}
+		vals[k] = f
+	}
+	var unknown []string
+	for k := range params {
+		if !known[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	for _, k := range unknown {
+		add("unknown field %q in params for policy %s", k, pairPolicyCrossExchangePerpArbitrage)
+	}
+	entry, entryOK := vals["entry_threshold_bps"]
+	exit, exitOK := vals["exit_threshold_bps"]
+	if exitOK && exit < 0 {
+		add("exit_threshold_bps %v must be at least 0", exit)
+	}
+	if entryOK && entry > pairMaxThresholdBps {
+		add("entry_threshold_bps %v must not exceed %v", entry, pairMaxThresholdBps)
+	}
+	if entryOK && exitOK && !(exit < entry) {
+		add("exit_threshold_bps %v must be below entry_threshold_bps %v", exit, entry)
+	}
+	if v, ok := vals["adverse_band_bps"]; ok && !(v >= 0 && v < pairMaxThresholdBps) {
+		add("adverse_band_bps %v must be at least 0 and below %v", v, pairMaxThresholdBps)
+	}
+	if v, ok := vals["funding_allowance_bps"]; ok && v < 0 {
+		add("funding_allowance_bps %v must be at least 0", v)
+	}
+	return errs
+}
+
+func pairRawPolicyName(fields map[string]json.RawMessage) (string, bool) {
+	v, ok := fields["policy"]
+	if !ok || pairRawJSONKind(v) != "string" {
+		return "", false
+	}
+	var name string
+	if err := json.Unmarshal(v, &name); err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(name), true
+}
+
+func pairRawParamErrors(fields map[string]json.RawMessage) []string {
+	name, ok := pairRawPolicyName(fields)
+	if !ok {
+		return nil
+	}
+	validate := pairPolicyParamValidators[name]
+	if validate == nil {
+		return nil
+	}
+	raw, present := fields["params"]
+	if !present {
+		return validate("pairs[0].params", map[string]json.RawMessage{})
+	}
+	if pairRawJSONKind(raw) != "object" {
+		return nil
+	}
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return []string{fmt.Sprintf("pairs[0].params: is unreadable: %v", err)}
+	}
+	return validate("pairs[0].params", params)
+}
 
 var pairProviderPlatforms = map[string]string{
 	"hyperliquid": entryProviderHyperliquid,
@@ -548,6 +650,7 @@ func pairRawPairErrors(raw json.RawMessage) []string {
 	if fields == nil {
 		return errs
 	}
+	errs = append(errs, pairRawParamErrors(fields)...)
 	if v, ok := fields["book_need"]; ok && pairRawJSONKind(v) == "object" {
 		_, e := pairRawObjectErrors("pairs[0].book_need", v, pairRawBookNeedFields)
 		errs = append(errs, e...)
