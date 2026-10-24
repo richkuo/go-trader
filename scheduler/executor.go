@@ -1686,6 +1686,11 @@ type OKXPositionJSON struct {
 	EntryPrice    float64 `json:"entry_price"`
 	Side          string  `json:"side"`
 	UnrealizedPnL float64 `json:"unrealized_pnl"`
+	InstID        string  `json:"inst_id,omitempty"`
+	Contracts     float64 `json:"contracts,omitempty"`
+	ContractSize  float64 `json:"contract_size,omitempty"`
+	MarginMode    string  `json:"margin_mode,omitempty"`
+	Account       string  `json:"account,omitempty"`
 }
 
 func RunOKXFetchPositions(script string) (*OKXPositionsResult, string, error) {

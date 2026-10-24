@@ -1527,6 +1527,9 @@ func pairValidateActionRequest(rt *basketRuntime, a *basketAction, use *pairQuot
 		if req.Reference != nil {
 			return req, fmt.Errorf("pair increase %s binds its quote event, not a reference", a.ActionID)
 		}
+		if err := pairCheckLiveRequest(rt, m, a, req); err != nil {
+			return req, err
+		}
 	case "coordinator_reduction":
 		if a.Direction != basketDirectionReduce || !req.ReduceOnly || req.NativeBooked || a.recoveryNote().NativeBooked || req.QuoteEventID != "" {
 			return req, fmt.Errorf("pair reduction %s must be a reduce-only coordinator request with no quote event", a.ActionID)
@@ -1538,6 +1541,9 @@ func pairValidateActionRequest(rt *basketRuntime, a *basketAction, use *pairQuot
 			if err := pairCheckReference(rt, m, req.Reference, req.OrderSide, nowMs); err != nil {
 				return req, fmt.Errorf("pair reduction %s reference: %w", a.ActionID, err)
 			}
+		}
+		if err := pairCheckLiveRequest(rt, m, a, req); err != nil {
+			return req, err
 		}
 	case "native_booked":
 		if a.Direction != basketDirectionReduce || !req.ReduceOnly || !req.NativeBooked || !a.recoveryNote().NativeBooked {

@@ -1056,8 +1056,8 @@ func pairConfigErrors(cfg *Config, raw json.RawMessage, liveShapedFixture bool) 
 			errs = append(errs, fmt.Sprintf("%s: two members use the %s venue; a pair needs one member on each of two native venues", mp, provider))
 		}
 		seenProvider[provider] = true
-		if !strings.HasPrefix(m.AccountKey, pairSyntheticAccountPrefix) || len(m.AccountKey) == len(pairSyntheticAccountPrefix) {
-			errs = append(errs, fmt.Sprintf("%s: account_key %q must name an explicit synthetic research account (%s<name>)", mp, m.AccountKey, pairSyntheticAccountPrefix))
+		if why := pairAccountKeyError(provider, m.AccountKey, liveShapedFixture); why != "" {
+			errs = append(errs, fmt.Sprintf("%s: %s", mp, why))
 		}
 		if strings.TrimSpace(m.Instrument) == "" {
 			errs = append(errs, mp+": instrument is missing")
@@ -1219,6 +1219,7 @@ type pairResearchDeps struct {
 	Evidence pairEvidenceSource
 	Quotes   pairQuoteSource
 	Funding  pairFundingSource
+	Account  pairAccountReader
 }
 
 type pairResearchAdmission struct {
@@ -1244,6 +1245,9 @@ type pairResearchAdmission struct {
 func (a *pairResearchAdmission) evidenceSource() pairEvidenceSource {
 	if a == nil || a.evidence == nil {
 		return nil
+	}
+	if a.kind == pairAdmissionLiveShapedFixture && a.deps.Account != nil {
+		return &pairLiveShapedEvidenceSource{frozen: a.evidence, accounts: a.deps.Account}
 	}
 	return a.evidence
 }
@@ -1323,6 +1327,9 @@ func newPairResearchAdmission(doc []byte, runID, stateDir string, resume bool, d
 	}
 	if deps.VenueFor == nil {
 		return nil, nil, fmt.Errorf("pair research needs a virtual transport")
+	}
+	if deps.Account != nil {
+		return nil, nil, fmt.Errorf("pair research has no private account reader; only the controlled live-shaped fixture substitutes account evidence")
 	}
 	if _, ok := deps.Evidence.(*pairFrozenEvidenceSource); !ok || deps.Evidence.(*pairFrozenEvidenceSource) == nil {
 		return nil, nil, fmt.Errorf("pair research needs the immutable frozen evidence source (newPairFrozenEvidenceSource)")

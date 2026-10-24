@@ -123,6 +123,9 @@ func pairStartupLine(rt *basketRuntime) string {
 	for _, a := range rt.pairUnresolvedActions() {
 		line += fmt.Sprintf("; PENDING %s action %s (%s %s %s, client %s)", a.Purpose, a.ActionID, a.StrategyID, a.Direction, a.Status, a.ClientOrderID)
 	}
+	if pm := rt.Pair.Progress.PositionMatch; pm != nil && pm.Status != pairPositionMatched {
+		line += fmt.Sprintf("; POSITION MATCH %s at %s: %s (a new venue read is required before any increase)", pm.Status, formatClosedBarMs(pm.CheckedAtMs), pm.Reason)
+	}
 	return line
 }
 
@@ -436,6 +439,9 @@ func (bc *basketCoordinator) stepPair(rt *basketRuntime, in basketCycleInputs) {
 	bc.detectPairExceptions(rt, in)
 	bc.stepPairFunding(rt, in)
 	bc.pairLifecycleChecks(rt, in)
+	if !in.SaveBlocked {
+		in = bc.stepPairPositions(rt, in)
+	}
 	bc.executePairProtective(rt, in, inputs)
 	in = bc.refreshPairInputs(rt, in)
 	if !in.SaveBlocked && !rt.needsDurable {
@@ -1073,12 +1079,23 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 		p.Lifecycle = pairLifecycleFlat
 		changed = true
 	}
+	if flat && p.clearObligation(pairObligationReductionMinimum, "", "") {
+		changed = true
+	}
+	for _, id := range rt.memberIDs() {
+		if bc.pairExposure(rt, id) == 0 && p.clearObligation(pairObligationProtectiveBound, id, "") {
+			changed = true
+		}
+	}
 	originOpen := false
 	if rb := rt.Rebalances[p.OriginSlotMs]; rb != nil && !basketRebalanceTerminal(rb.Status) {
 		originOpen = true
 	}
 	switch p.Lifecycle {
 	case pairLifecycleRecovery, pairLifecycleOperatorHeld, pairLifecycleExiting:
+		if pm := p.PositionMatch; pm != nil && pm.Status == pairPositionMismatch {
+			accounted = false
+		}
 		if flat && resolved && accounted {
 			bc.pairLogf(rt, "the pair is flat with terminal actions and complete accounting; the %s lifecycle ends", p.Lifecycle)
 			if rb := rt.Rebalances[p.OriginSlotMs]; rb != nil && !basketRebalanceTerminal(rb.Status) {
@@ -1090,7 +1107,7 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 				rb.Outcome.CompletedAtMs = nowMs
 				rb.UpdatedAtMs = nowMs
 			}
-			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound, CostEvidence: p.CostEvidence, FundingBinding: p.FundingBinding}
+			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound, CostEvidence: p.CostEvidence, FundingBinding: p.FundingBinding, PositionMatch: p.PositionMatch}
 			changed = true
 		}
 	case pairLifecycleOpening:
@@ -1288,12 +1305,16 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 	if why := window.eligible(now.UnixMilli(), rt.Pair.Limits.QuoteAgeMs); why != "" {
 		return hold(fmt.Sprintf("the %s result returned after its useful decision window (%s); a late result never authorizes an action", res.Status, why), false, &pairTargets{Decision: res.Decision})
 	}
-	t := &pairTargets{Kind: res.Status, Orientation: res.Orientation, Members: res.Targets, Decision: res.Decision}
+	rounded, evidence, rerr := bc.pairRoundTargets(rt, env, res)
+	if rerr != nil {
+		return hold("invalid policy output: "+rerr.Error(), false, &pairTargets{Decision: res.Decision})
+	}
+	t := &pairTargets{Kind: res.Status, Orientation: res.Orientation, Members: rounded, Decision: res.Decision, BoundEvidence: evidence}
 	if res.Status == pairPolicyStatusEnter {
 		t.FirstLeg = pairChooseFirstLeg(rt)
-		if why := bc.pairFullFillCapCheck(rt, env, res.Targets); why != "" {
-			return hold("the full fill of the frozen targets at their price bounds would break a cap: "+why, false, t)
-		}
+	}
+	if why := bc.pairRoundedEconomics(rt, env, res.Status, rounded, evidence); why != "" {
+		return hold("the rounded decision fails its post-rounding checks: "+why, false, &pairTargets{Decision: res.Decision})
 	}
 	kind, saved, err := bc.freezePairTargets(rt, rb, t, "", now)
 	if err != nil {
@@ -1445,6 +1466,20 @@ func (bc *basketCoordinator) pairIncreaseHold(rt *basketRuntime, in basketCycleI
 			return id + " management output carries no ATR for the native stop"
 		}
 	}
+	if pm := rt.Pair.Progress.PositionMatch; pm != nil && pm.Status == pairPositionMismatch {
+		return "the venue position does not match the pair records: " + pm.Reason
+	}
+	if ms, _, err := bc.pairLiveMembers(rt); err != nil {
+		return err.Error()
+	} else if len(ms) > 0 {
+		if st := rt.pairPositions; st == nil || st.auth == nil {
+			why := "no venue position read has matched the pair records since startup"
+			if pm := rt.Pair.Progress.PositionMatch; pm != nil && pm.Reason != "" {
+				why = "the last venue position read did not authorize increases: " + pm.Reason
+			}
+			return why
+		}
+	}
 	return ""
 }
 
@@ -1474,7 +1509,7 @@ func (bc *basketCoordinator) pairPlanFor(rt *basketRuntime, inputs pairStepInput
 			leg.Unapplied += a.signedDelta() * d
 		}
 		if rem := a.RequestedQty - a.ConfirmedQty; rem > 1e-12 {
-			plan.Pending = append(plan.Pending, pairPendingFill{ActionID: a.ActionID, MemberID: a.StrategyID, Signed: a.signedDelta() * rem, PriceBound: a.PriceBound, Elective: pairElectivePurpose(a.Purpose)})
+			plan.Pending = append(plan.Pending, pairPendingFill{ActionID: a.ActionID, MemberID: a.StrategyID, Signed: a.signedDelta() * rem, PriceBound: bc.pairRiskBound(rt, a), Elective: pairElectivePurpose(a.Purpose)})
 		}
 	}
 	return plan
@@ -1492,6 +1527,7 @@ func (bc *basketCoordinator) recordPairBound(rt *basketRuntime, proof pairEndpoi
 type pairOrigin struct {
 	slot    *basketRebalance
 	targets *pairTargets
+	legacy  bool
 }
 
 func (bc *basketCoordinator) pairOriginSlot(rt *basketRuntime) (pairOrigin, error) {
@@ -1505,8 +1541,14 @@ func (bc *basketCoordinator) pairOriginSlot(rt *basketRuntime) (pairOrigin, erro
 		if err != nil {
 			return pairOrigin{slot: rb}, err
 		}
-		if t == nil || (t.Kind != pairPolicyStatusEnter && t.Kind != pairPolicyStatusExit) {
+		if !t.actionable() {
 			continue
+		}
+		if t.legacy() {
+			return pairOrigin{slot: rb, targets: t, legacy: true}, nil
+		}
+		if err := pairCheckSavedTargets(rt, t); err != nil {
+			return pairOrigin{slot: rb}, err
 		}
 		return pairOrigin{slot: rb, targets: t}, nil
 	}
@@ -1580,6 +1622,10 @@ func (bc *basketCoordinator) executePair(rt *basketRuntime, in basketCycleInputs
 			bc.pairAlert(rt, "targets-unreadable|"+fmt.Sprint(origin.slot.DeadlineMs), fmt.Sprintf("slot %s decision is unreadable (%v); no elective order runs", formatClosedBarMs(origin.slot.DeadlineMs), err), true)
 			return
 		}
+		if origin.legacy {
+			bc.holdPairLegacyOrigin(rt, origin.slot, now)
+			return
+		}
 		exiting := p.Lifecycle == pairLifecycleExiting
 		if origin.slot == nil && !exiting {
 			return
@@ -1618,6 +1664,19 @@ func (bc *basketCoordinator) executePair(rt *basketRuntime, in basketCycleInputs
 			return
 		}
 	}
+}
+
+func (bc *basketCoordinator) holdPairLegacyOrigin(rt *basketRuntime, rb *basketRebalance, now time.Time) {
+	reason := fmt.Sprintf("slot %s holds a version-1 decision record without saved bound evidence; it authorizes no further order, and saved actions keep their queries and settlement", formatClosedBarMs(rb.DeadlineMs))
+	if len(rt.pairUnresolvedActions()) == 0 && bc.pairExposureTotal(rt) == 0 {
+		bc.endPairOrigin(rt, rb, "held", reason, now)
+		return
+	}
+	if rt.Pair.Progress.Lifecycle == pairLifecycleRecovery || rt.Pair.Progress.Lifecycle == pairLifecycleOperatorHeld {
+		return
+	}
+	bc.pairOpenRecovery(rt, reason, now)
+	bc.persistPair(rt)
 }
 
 func (bc *basketCoordinator) endPairOrigin(rt *basketRuntime, rb *basketRebalance, result, reason string, now time.Time) {
@@ -1678,10 +1737,10 @@ func (bc *basketCoordinator) executePairEntry(rt *basketRuntime, origin pairOrig
 	case math.Abs(u) >= lotO*(1-1e-9) && math.Abs(remO) >= lotO*(1-1e-9) && (u > 0) != (to > 0):
 		qty := math.Min(math.Abs(u), math.Abs(remO))
 		os, ps := pairSideFor(basketDirectionIncrease, to, eo)
-		c = &pairCandidate{MemberID: other, Member: oLeg.Member, Purpose: pairPurposeEntry, Direction: basketDirectionIncrease, OrderSide: os, PositionSide: ps, FullQty: qty, PriceBound: t.Members[other].PriceBound, Current: eo, Target: to}
+		c = &pairCandidate{MemberID: other, Member: oLeg.Member, Purpose: pairPurposeEntry, Direction: basketDirectionIncrease, OrderSide: os, PositionSide: ps, FullQty: qty, PriceBound: t.Members[other].PriceBound, Current: eo, Target: to, ProposedBound: t.BoundEvidence[other].ProposedBound}
 	case math.Abs(remF) >= lotF*(1-1e-9) && (remF > 0) == (tf > 0):
 		os, ps := pairSideFor(basketDirectionIncrease, tf, ef)
-		c = &pairCandidate{MemberID: first, Member: fLeg.Member, Purpose: pairPurposeEntry, Direction: basketDirectionIncrease, OrderSide: os, PositionSide: ps, FullQty: math.Abs(remF), PriceBound: t.Members[first].PriceBound, Current: ef, Target: tf}
+		c = &pairCandidate{MemberID: first, Member: fLeg.Member, Purpose: pairPurposeEntry, Direction: basketDirectionIncrease, OrderSide: os, PositionSide: ps, FullQty: math.Abs(remF), PriceBound: t.Members[first].PriceBound, Current: ef, Target: tf, ProposedBound: t.BoundEvidence[first].ProposedBound}
 	default:
 		if len(rt.pairUnresolvedActions()) > 0 {
 			return false
@@ -1745,6 +1804,25 @@ func (bc *basketCoordinator) executePairEntry(rt *basketRuntime, origin pairOrig
 	}
 	if gate := bc.pairPartitionGate(rt, *c, qty, plan); gate != "" {
 		bc.pairLogf(rt, "%s increase holds: %s", c.MemberID, gate)
+		return false
+	}
+	exact, err := pairExactOrderQty(c.Member, qty)
+	why = ""
+	if err != nil {
+		why = "the tranche has no exact venue quantity: " + err.Error()
+	} else {
+		why = bc.pairDispatchBookCheck(rt, c.Member, ev, c.OrderSide, c.PriceBound, exact.Base)
+	}
+	if why != "" {
+		switch {
+		case len(rt.actionsFor(origin.slot.DeadlineMs)) == 0:
+			bc.endPairOrigin(rt, origin.slot, "held", fmt.Sprintf("the first leg %s cannot dispatch: %s", c.MemberID, why), now)
+		case c.MemberID == other:
+			bc.pairOpenRecovery(rt, fmt.Sprintf("the %s hedge cannot dispatch after the first-leg fill: %s", c.MemberID, why), now)
+			bc.persistPair(rt)
+		default:
+			bc.pairLogf(rt, "%s increase holds: %s", c.MemberID, why)
+		}
 		return false
 	}
 	bc.recordPairBound(rt, proof, []string{"independent no-fill and full-fill endpoints for every unresolved request", "conservative upper valuation per member with settlement conversion", "saved request price bounds widen the upper valuation"}, now)
@@ -1841,24 +1919,41 @@ func (bc *basketCoordinator) executePairExit(rt *basketRuntime, origin pairOrigi
 		if e == 0 {
 			continue
 		}
-		bound := 0.0
+		bound, proposed := 0.0, 0.0
 		os, ps := pairSideFor(basketDirectionReduce, 0, e)
 		if origin.targets != nil && origin.targets.Kind == pairPolicyStatusExit {
-			bound = origin.targets.Members[id].PriceBound
+			ev := origin.targets.BoundEvidence[id]
+			if ev.Side != os {
+				bc.noteUnavailableBounds(rt, fmt.Sprintf("%s exit bound evidence is a %s bound, the reduction is a %s", id, ev.Side, os), now)
+				return false
+			}
+			bound, proposed = origin.targets.Members[id].PriceBound, ev.ProposedBound
 		} else if leg.ValOK {
 			if os == "buy" {
-				bound = leg.Val.UpperPx
+				proposed = leg.Val.UpperPx
 			} else {
-				bound = leg.Val.LowerPx
+				proposed = leg.Val.LowerPx
+			}
+			meta, err := pairExpectedWireMeta(leg.Member)
+			if err == nil {
+				bound, err = pairRoundBoundRule(leg.Member.Instrument, meta, os, proposed)
+			}
+			if err != nil {
+				bc.noteUnavailableBounds(rt, fmt.Sprintf("%s conservative exit bound %v cannot be rounded safe-side to the venue grid: %v", id, proposed, err), now)
+				return false
 			}
 		}
 		if !basketFinitePositive(bound) {
 			bc.noteUnavailableBounds(rt, id+" has no conservative exit price bound", now)
 			return false
 		}
-		cands = append(cands, pairCandidate{MemberID: id, Member: leg.Member, Purpose: pairPurposeExit, Direction: basketDirectionReduce, OrderSide: os, PositionSide: ps, FullQty: math.Abs(e), PriceBound: bound, Current: e})
+		cands = append(cands, pairCandidate{MemberID: id, Member: leg.Member, Purpose: pairPurposeExit, Direction: basketDirectionReduce, OrderSide: os, PositionSide: ps, FullQty: math.Abs(e), PriceBound: bound, Current: e, ProposedBound: proposed})
 	}
 	if len(cands) == 0 {
+		if rt.Pair.Progress.clearObligation(pairObligationReductionMinimum, "", "") {
+			rt.touchPairProgress()
+			bc.persistPair(rt)
+		}
 		if len(rt.pairUnresolvedActions()) == 0 && origin.slot != nil && !basketRebalanceTerminal(origin.slot.Status) {
 			bc.endPairOrigin(rt, origin.slot, "completed", "", now)
 		}
@@ -1873,13 +1968,16 @@ func (bc *basketCoordinator) executePairExit(rt *basketRuntime, origin pairOrigi
 		return cands[i].MemberID < cands[j].MemberID
 	})
 	var reasons []string
+	minimum := false
 	for _, c := range cands {
 		qty, proof, why := plan.legalTranche(c)
 		if why != "" {
 			reasons = append(reasons, why)
+			minimum = minimum || strings.Contains(why, "below the venue minimum")
 			continue
 		}
 		bc.recordPairBound(rt, proof, []string{"elective exit tranches stay within each cap or do not worsen an existing breach at every reachable endpoint"}, now)
+		rt.Pair.Progress.clearObligation(pairObligationReductionMinimum, "", "")
 		if origin.slot != nil && rt.Pair.Progress.Lifecycle == pairLifecycleMatched {
 			rt.Pair.Progress.Lifecycle = pairLifecycleExiting
 			rt.Pair.Progress.OriginSlotMs = origin.slot.DeadlineMs
@@ -1896,6 +1994,14 @@ func (bc *basketCoordinator) executePairExit(rt *basketRuntime, origin pairOrigi
 	}
 	bc.pairLogf(rt, "no legal exit tranche this step: %s; protection stays active", strings.Join(reasons, "; "))
 	bc.noteDeviationPair(rt, origin.slot, "no_legal_reduction", strings.Join(reasons, "; "), now)
+	if minimum {
+		detail := "a nonzero exit remainder is below the venue minimum after rounding and stays unreduced by the coordinator: " + strings.Join(reasons, "; ")
+		if rt.Pair.Progress.addObligation(pairObligation{Kind: pairObligationReductionMinimum, Detail: detail, AtMs: now.UnixMilli()}) {
+			rt.touchPairProgress()
+			bc.persistPair(rt)
+		}
+		bc.pairAlert(rt, "reduction_minimum|"+strings.Join(reasons, "|"), fmt.Sprintf("%s: %s; native protection stays active and an operator must review the remainder", rt.Contract.BasketID, detail), true)
+	}
 	return false
 }
 
@@ -1923,12 +2029,43 @@ func (bc *basketCoordinator) executePairProtective(rt *basketRuntime, in basketC
 		m, _ := rt.Contract.pairMember(id)
 		os, ps := pairSideFor(basketDirectionReduce, 0, e)
 		c := pairCandidate{MemberID: id, Member: m, Purpose: pairPurposeProtective, Direction: basketDirectionReduce, OrderSide: os, PositionSide: ps, FullQty: math.Abs(e), Current: e}
+		if sc, ok := bc.members[id]; ok {
+			if v, err := bc.pairVenueFor(sc); err == nil && v.LiveShaped() {
+				bc.holdPairLiveProtective(rt, id, e, now)
+				continue
+			}
+		}
 		slot := rt.Rebalances[p.OriginSlotMs]
 		if slot == nil {
 			slot = rt.latest()
 		}
 		bc.runPairAction(rt, slot, c, math.Abs(e), pairQuoteEvent{}, nil, in)
 	}
+}
+
+func (bc *basketCoordinator) holdPairLiveProtective(rt *basketRuntime, id string, exposure float64, now time.Time) {
+	p := &rt.Pair.Progress
+	r := p.Retries[id]
+	backoff := rt.Pair.Limits.RetryInitialMs
+	for i := 0; i < r.Count && backoff < rt.Pair.Limits.RetryMaxMs; i++ {
+		backoff *= 2
+	}
+	if backoff > rt.Pair.Limits.RetryMaxMs {
+		backoff = rt.Pair.Limits.RetryMaxMs
+	}
+	at, ok := pairAddMs(now.UnixMilli(), backoff)
+	if !ok {
+		at = math.MaxInt64
+	}
+	if p.Retries == nil {
+		p.Retries = map[string]pairRetry{}
+	}
+	p.Retries[id] = pairRetry{Count: r.Count + 1, RetryAtMs: at}
+	detail := fmt.Sprintf("the live-shaped protective reduction of %.10g base holds: it has no required reduction reference bound (#1879), and the pair never sends an uncapped or market reduction; native protection stays active and the check repeats at %s", math.Abs(exposure), formatClosedBarMs(at))
+	p.addObligation(pairObligation{Kind: pairObligationProtectiveBound, MemberID: id, Detail: detail, AtMs: now.UnixMilli()})
+	rt.touchPairProgress()
+	bc.persistPair(rt)
+	bc.pairAlert(rt, "protective_bound|"+id+"|"+fmt.Sprint(p.RecoveryStartMs), fmt.Sprintf("%s %s: %s", rt.Contract.BasketID, id, detail), true)
 }
 
 func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketRebalance, c pairCandidate, qty float64, ev pairQuoteEvent, bind *pairIncreaseBinding, in basketCycleInputs) bool {
@@ -1950,6 +2087,19 @@ func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketReba
 	}
 	if c.Direction == basketDirectionIncrease && (!ev.valid() || bind == nil) {
 		return false
+	}
+	exact, err := pairExactOrderQty(c.Member, qty)
+	if err != nil {
+		bc.pairLogf(rt, "%s %s %.10g held before reservation: %v", c.MemberID, c.Purpose, qty, err)
+		return false
+	}
+	qty = exact.Base
+	live := v.LiveShaped()
+	if live {
+		if err := pairBoundOnGrid(c.Member, c.OrderSide, c.PriceBound); err != nil {
+			bc.noteUnavailableBounds(rt, fmt.Sprintf("%s %s holds before reservation: the live-shaped transport needs a finite positive bound on the venue grid: %v", c.MemberID, c.Purpose, err), now)
+			return false
+		}
 	}
 	deadline, ok := pairAddMs(nowMs, rt.Pair.Limits.AcceptanceDeadlineMs)
 	if !ok {
@@ -1973,7 +2123,7 @@ func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketReba
 	}
 	val := 0.0
 	pre := basketPositionSigned(s, c.Member.Symbol)
-	native := pairNativeQty(c.Member, qty)
+	native := exact.Native
 	a := &basketAction{
 		GroupMode:        pairGroupMode,
 		Partition:        rt.Partition,
@@ -2086,6 +2236,24 @@ func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketReba
 	if staleIncrease() {
 		return false
 	}
+	if live && c.Direction == basketDirectionIncrease {
+		if why := bc.pairPositionAuthorized(rt, "", in.Now.UnixMilli()); why != "" {
+			var rwhy string
+			in, rwhy = bc.pairReadPositions(rt, in, "")
+			if rwhy == "" {
+				why = bc.pairPositionAuthorized(rt, "", in.Now.UnixMilli())
+			} else {
+				why = rwhy
+			}
+			if why == "" && staleIncrease() {
+				return false
+			}
+		}
+		if why := bc.pairPositionAuthorized(rt, "", in.Now.UnixMilli()); why != "" {
+			bc.pairLogf(rt, "%s increase holds before reservation: the venue position barrier: %s", c.MemberID, why)
+			return false
+		}
+	}
 	if err := bc.store.ReservePairAction(rt, a, intent, use); err != nil {
 		bc.pairLogf(rt, "%s %s %.10g held: the action could not be reserved before sending: %v", c.MemberID, c.Purpose, qty, err)
 		return false
@@ -2112,8 +2280,21 @@ func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketReba
 		if why := bc.pairIncreaseStillFresh(rt, c.MemberID, ev, bind, in.Now); why != "" {
 			return bc.finishPairNoFill(rt, a, "the selected quote evidence expired after reservation, so nothing was sent: "+why, "", in)
 		}
+		if live {
+			if why := bc.pairPositionAuthorized(rt, a.ActionID, in.Now.UnixMilli()); why != "" {
+				return bc.finishPairNoFill(rt, a, "the venue position barrier no longer authorizes the increase after reservation, so nothing was sent: "+why, "", in)
+			}
+		}
 	}
 	proof := bc.pairTransportProofFor(rt, a, bind, c.Direction == basketDirectionIncrease)
+	if c.Direction == basketDirectionIncrease {
+		proof.book = bc.pairDispatchBookCheck(rt, c.Member, ev, c.OrderSide, a.PriceBound, a.RequestedQty)
+		if live && rt.pairPositions != nil && rt.pairPositions.auth != nil {
+			proof.positionLimitMs = rt.pairPositions.auth.LimitMs
+		} else if live {
+			proof.positionLimitMs = -1
+		}
+	}
 	clock, floor := bc.pairClock, in.Now
 	if clock == nil {
 		clock = tradingNow
@@ -2168,6 +2349,11 @@ type pairTransportProof struct {
 	receiptMs  int64
 	quoteAgeMs int64
 	valuations []pairValuationProof
+
+	requestDeadlineMs int64
+	requestReadable   bool
+	book              string
+	positionLimitMs   int64
 }
 
 type pairValuationProof struct {
@@ -2178,6 +2364,10 @@ type pairValuationProof struct {
 
 func (bc *basketCoordinator) pairTransportProofFor(rt *basketRuntime, a *basketAction, bind *pairIncreaseBinding, increase bool) pairTransportProof {
 	pr := pairTransportProof{deadlineMs: a.AcceptDeadlineMs, increase: increase, quoteAgeMs: rt.Pair.Limits.QuoteAgeMs}
+	var req pairActionRequest
+	if err := json.Unmarshal([]byte(a.RequestJSON), &req); err == nil {
+		pr.requestDeadlineMs, pr.requestReadable = req.AcceptDeadlineMs, true
+	}
 	if !increase {
 		return pr
 	}
@@ -2200,8 +2390,17 @@ func (pr pairTransportProof) refusal(nowMs int64) string {
 	if !pairBeforeDeadline(nowMs, pr.deadlineMs) {
 		return fmt.Sprintf("the transport time %d is at or after the acceptance deadline %d", nowMs, pr.deadlineMs)
 	}
+	if !pr.requestReadable || pr.requestDeadlineMs != pr.deadlineMs {
+		return fmt.Sprintf("the saved request deadline %d the child checks is not the action deadline %d", pr.requestDeadlineMs, pr.deadlineMs)
+	}
 	if !pr.increase {
 		return ""
+	}
+	if pr.book != "" {
+		return pr.book
+	}
+	if pr.positionLimitMs < 0 || (pr.positionLimitMs > 0 && nowMs > pr.positionLimitMs) {
+		return fmt.Sprintf("the matching venue position read is valid through %d, before the transport time %d", pr.positionLimitMs, nowMs)
 	}
 	if pr.receiptMs <= 0 || !pairAgeWithin(nowMs, pr.receiptMs, pr.quoteAgeMs) {
 		return fmt.Sprintf("the selected quote received at %d is outside quote_age_ms %d of the transport time %d", pr.receiptMs, pr.quoteAgeMs, nowMs)

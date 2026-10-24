@@ -2,7 +2,6 @@
 
 import sys
 import os
-import hashlib
 import json
 import math
 import time
@@ -801,15 +800,10 @@ OKX_FILLS_MAX_PAGES = 50
 
 
 def okx_account_key(inst_type):
-    api_key = os.environ.get("OKX_API_KEY", "").strip()
-    if not api_key:
-        return ""
-    network = "sandbox" if os.environ.get("OKX_SANDBOX", "") == "1" else "live"
-    fingerprint = hashlib.sha256(("go-trader/okx-api-key/v1:" + api_key).encode()).hexdigest()[:16]
-    return f"okx:{inst_type}:{network}:key-{fingerprint}"
+    return _pair_orders().okx_account_key(inst_type)
 
 
-def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms, until_ms=0):
+def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms, until_ms=0, rows=None):
     coverage = {
         "complete": False,
         "reason": "",
@@ -833,7 +827,7 @@ def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms,
     notional = 0.0
     fee = 0.0
     try:
-        return _scan_okx_client_fill_pages(adapter, inst_type, client_order_id, since_ms, end_ms, history, coverage)
+        return _scan_okx_client_fill_pages(adapter, inst_type, client_order_id, since_ms, end_ms, history, coverage, rows)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         coverage["complete"] = False
@@ -843,7 +837,7 @@ def scan_okx_client_fills(adapter, inst_type, client_order_id, since_ms, now_ms,
         return coverage, notional, fee
 
 
-def _scan_okx_client_fill_pages(adapter, inst_type, client_order_id, since_ms, end_ms, history, coverage):
+def _scan_okx_client_fill_pages(adapter, inst_type, client_order_id, since_ms, end_ms, history, coverage, rows=None):
     notional = 0.0
     fee = 0.0
     after = ""
@@ -870,6 +864,8 @@ def _scan_okx_client_fill_pages(adapter, inst_type, client_order_id, since_ms, e
                 raise ValueError(f"a matching fill carries no usable size or price: {row!r}")
             coverage["matched_count"] += 1
             coverage["matched_qty"] += sz
+            if rows is not None:
+                rows.append(dict(row))
             notional += sz * px
             row_fee = _okx_order_float(row, "fee")
             if row_fee is not None:
@@ -957,8 +953,255 @@ def run_recover_entry(symbol, inst_type, client_order_id, mode, since_ms=0, unti
         sys.exit(1)
 
 
+PAIR_FILL_MARGIN_MS = 60000
+PAIR_CONFIRM_ATTEMPTS = 3
+PAIR_CONFIRM_DELAY_S = 0.25
+PAIR_OKX_LIVE_STATES = ("live", "partially_filled")
+PAIR_OKX_TERMINAL_STATES = ("filled", "canceled", "mmp_canceled")
+
+
+def _pair_orders():
+    import importlib.util
+    name = "go_trader_pair_orders"
+    mod = sys.modules.get(name)
+    if mod is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared_tools", "pair_orders.py")
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
+def _pair_okx_fills(po, rows, order_id):
+    by_bill = {}
+    order = []
+    for row in rows:
+        if order_id and str(row.get("ordId") or "") != order_id:
+            continue
+        bill = row.get("billId")
+        if bill in (None, ""):
+            raise ValueError("a matching fill row carries no bill id")
+        key = str(bill)
+        body = json.dumps(row, sort_keys=True, separators=(",", ":"), default=str)
+        if key in by_bill:
+            if by_bill[key][1] != body:
+                raise ValueError(f"fill {key} was returned twice with different bodies")
+            continue
+        by_bill[key] = (row, body)
+        order.append(key)
+    out = []
+    for key in order:
+        row = by_bill[key][0]
+        raw_fee = row.get("fee")
+        fee_ccy = str(row.get("feeCcy") or "").strip()
+        fee_known = raw_fee not in (None, "") and bool(fee_ccy)
+        fee = ""
+        if fee_known:
+            fee = po.decimal_text(-po.exact_decimal(raw_fee, f"fill {key} fee", allow_negative=True))
+        when = row.get("fillTime") or row.get("ts")
+        out.append(po.fill_record(key, when, row.get("fillSz"), row.get("fillPx"), fee, fee_ccy, fee_known,
+                                  order_id=row.get("ordId"), side=row.get("side")))
+    out.sort(key=lambda r: (r["venue_time_ms"], r["fill_id"]))
+    return out
+
+
+def pair_okx_outcome(adapter, po, req, mode, account, since_ms, inst=None, refusal=""):
+    import ccxt
+    inst_id, cid = req["instrument"], req["client_order_id"]
+    venue = {"account_key": account, "price_currency": "USDT", "native_unit": "contract"}
+    try:
+        if inst is None:
+            inst = adapter.pair_instrument(inst_id)
+        venue["contract_size"] = po.decimal_text(po.exact_decimal(inst["ctVal"], "ctVal", positive=True))
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        return po.outcome(mode, "unknown", f"the instrument read failed: {e}", req, venue=venue)
+    try:
+        order = adapter.fetch_pair_order(inst_id, cid)
+    except ccxt.OrderNotFound:
+        order = None
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        return po.outcome(mode, "unknown", f"the order read failed: {e}", req, venue=venue)
+    rows = []
+    now = po.now_ms()
+    coverage, _, _ = scan_okx_client_fills(adapter, "swap", cid, int(since_ms), now, 0, rows=rows)
+    cov = {"complete": bool(coverage["complete"]), "reason": coverage["reason"], "from_ms": int(coverage["from_ms"]),
+           "through_ms": int(coverage["through_ms"] if coverage["complete"] else 0), "pages": int(coverage["pages"])}
+    try:
+        if order is None:
+            if rows:
+                return po.outcome(mode, "unknown", "fills name this client order id, but the venue holds no order record for it", req,
+                                  venue=venue, fill_coverage=cov, contrary_evidence=True)
+            if mode == "order":
+                if refusal:
+                    return po.outcome(mode, "rejected", f"the venue refused the order with no fill: {refusal}", req, venue=venue, fill_coverage=cov, terminal=True)
+                return po.outcome(mode, "unknown", "the venue returned no order record after the placement", req, venue=venue, fill_coverage=cov)
+            return po.outcome(mode, "absent", "the venue holds no order record for this client order id", req, venue=venue, fill_coverage=cov)
+        state = str(order.get("state") or "")
+        oid = str(order.get("ordId") or "")
+        size = po.exact_decimal(order.get("sz"), "sz", positive=True)
+        executed = po.exact_decimal(order.get("accFillSz") or "0", "accFillSz")
+        venue.update({
+            "instrument": str(order.get("instId") or ""),
+            "client_order_id": str(order.get("clOrdId") or ""),
+            "venue_order_id": oid,
+            "side": str(order.get("side") or ""),
+            "native_qty": po.decimal_text(size),
+            "price": po.decimal_text(po.exact_decimal(order.get("px"), "px", positive=True)),
+            "tif": str(order.get("ordType") or ""),
+            "status": state,
+        })
+        ro = order.get("reduceOnly")
+        if ro in ("true", "false"):
+            venue["reduce_only"] = ro == "true"
+        accepted = int(order.get("cTime") or 0)
+        fills = _pair_okx_fills(po, rows, oid)
+    except (ValueError, TypeError, po.PairOrderError) as e:
+        traceback.print_exc(file=sys.stderr)
+        return po.outcome(mode, "unknown", f"the venue evidence is malformed: {e}", req, venue=venue, fill_coverage=cov)
+    qty, notional = po.sum_fills(fills)
+    base = {"venue": venue, "fill_coverage": cov, "accepted_at_ms": accepted, "fills": fills}
+    if qty > executed:
+        return po.outcome(mode, "unknown", f"the fills sum to {qty}, above the executed size {executed}", req, **base)
+    cum = {"cum_native_qty": po.decimal_text(qty), "cum_native_notional": po.decimal_text(notional)}
+    if state in PAIR_OKX_LIVE_STATES:
+        return po.outcome(mode, "open", f"the order is {state}", req, **base, **cum)
+    if state not in PAIR_OKX_TERMINAL_STATES:
+        return po.outcome(mode, "unknown", f"unfamiliar order state {state!r}", req, **base)
+    if executed == 0:
+        if qty > 0:
+            return po.outcome(mode, "unknown", "fills exist for an order the venue reports unfilled", req, **base)
+        return po.outcome(mode, "rejected", f"the order ended {state} with no fill", req, terminal=True, **base)
+    if not (cov["complete"] and qty == executed):
+        return po.outcome(mode, "partial" if qty > 0 else "unknown", f"the order ended {state}; {qty} of {executed} executed are visible", req, **base, **cum)
+    return po.outcome(mode, "filled" if executed == size else "partial", f"the order ended {state} with {executed} of {size} executed", req, terminal=True, **base, **cum)
+
+
+def run_pair_order(raw, mode, probe_only=False):
+    po = _pair_orders()
+    try:
+        req = po.parse_request(raw, "okx")
+    except po.PairOrderError as e:
+        po.finish({"platform": "okx", "error": str(e), "pair_outcome": po.never_sent("order", f"the request was refused before any adapter or venue call: {e}")}, 1)
+        return
+    if probe_only:
+        sys.exit(0)
+    if mode != "live":
+        po.finish({"platform": "okx", "error": "--pair-order-json requires --mode=live", "pair_outcome": po.never_sent("order", "--pair-order-json requires --mode=live", req)}, 1)
+        return
+    deadline = req["accept_deadline_ms"]
+    if po.now_ms() >= deadline:
+        po.finish({"platform": "okx", "pair_outcome": po.never_sent("order", "the acceptance deadline passed before the adapter was built; nothing was sent", req)})
+        return
+    try:
+        from adapter import OKXExchangeAdapter
+        adapter = OKXExchangeAdapter()
+        account = okx_account_key("swap")
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        po.finish({"platform": "okx", "error": str(e), "pair_outcome": po.never_sent("order", f"the adapter could not be built, so nothing was sent: {e}", req)}, 1)
+        return
+    if account != req["account_key"]:
+        po.finish({"platform": "okx", "account": account, "pair_outcome": po.never_sent("order", f"the credentials answer for account {account!r}, the request is bound to {req['account_key']!r}; nothing was sent", req)})
+        return
+    native_text, bound_text = po.decimal_text(req["native_qty"]), po.decimal_text(req["price_bound"])
+    try:
+        check = adapter.pair_order_check(req["instrument"], native_text, bound_text)
+        if po.exact_decimal(check["contract_size"], "ctVal", positive=True) != req["contract_size"]:
+            raise ValueError(f"the venue contract size {check['contract_size']} is not the request's {po.decimal_text(req['contract_size'])}")
+        if check["state"] != "live":
+            raise ValueError(f"the instrument state is {check['state']!r}")
+        lot = po.exact_decimal(check["lot"], "lotSz", positive=True)
+        tick = po.exact_decimal(check["tick"], "tickSz", positive=True)
+        if req["native_qty"] % lot != 0 or req["native_qty"] < po.exact_decimal(check["min"], "minSz"):
+            raise ValueError(f"native quantity {native_text} is not a legal multiple of lotSz {check['lot']} at or above minSz {check['min']}")
+        if req["price_bound"] % tick != 0:
+            raise ValueError(f"price bound {bound_text} is not on the tickSz {check['tick']} grid")
+        if po.exact_decimal(check["amount_text"], "serialized size", positive=True) != req["native_qty"]:
+            raise ValueError(f"the SDK would serialize the size {native_text} as {check['amount_text']}")
+        if po.exact_decimal(check["price_text"], "serialized price", positive=True) != req["price_bound"]:
+            raise ValueError(f"the SDK would serialize the price {bound_text} as {check['price_text']}")
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        po.finish({"platform": "okx", "account": account, "pair_outcome": po.never_sent("order", f"the saved request does not survive the venue precision check, so nothing was sent: {e}", req)})
+        return
+    if po.now_ms() >= deadline:
+        po.finish({"platform": "okx", "account": account, "pair_outcome": po.never_sent("order", "the acceptance deadline passed immediately before the order call; nothing was sent", req)})
+        return
+    since = po.now_ms() - PAIR_FILL_MARGIN_MS
+    refusal = ""
+    try:
+        adapter.pair_limit_ioc(req["instrument"], req["order_side"], native_text, bound_text, req["client_order_id"], req["reduce_only"], deadline)
+    except Exception as ce:
+        traceback.print_exc(file=sys.stderr)
+        kind = _okx_entry_create_error_outcome(ce)
+        if kind == "rejected":
+            refusal = str(ce)
+        elif kind == "unknown":
+            po.finish({"platform": "okx", "account": account, "pair_outcome": po.outcome("order", "unknown", f"the placement outcome is unknown: {ce}", req,
+                                                                                         venue={"account_key": account, "price_currency": "USDT", "native_unit": "contract"})})
+            return
+    inst = {"ctVal": check["contract_size"]}
+    out = None
+    for attempt in range(PAIR_CONFIRM_ATTEMPTS):
+        out = pair_okx_outcome(adapter, po, req, "order", account, since, inst=inst, refusal=refusal)
+        if out["terminal"] and out["status"] != "unknown":
+            break
+        if attempt + 1 < PAIR_CONFIRM_ATTEMPTS:
+            time.sleep(PAIR_CONFIRM_DELAY_S)
+    po.finish({"platform": "okx", "account": account, "pair_outcome": out})
+
+
+def run_pair_query(raw, since_ms, mode, probe_only=False):
+    po = _pair_orders()
+    try:
+        req = po.parse_request(raw, "okx")
+    except po.PairOrderError as e:
+        po.finish({"platform": "okx", "error": str(e)}, 1)
+        return
+    if probe_only:
+        sys.exit(0)
+    if mode != "live":
+        po.finish({"platform": "okx", "error": "--pair-query-json requires --mode=live"}, 1)
+        return
+    try:
+        from adapter import OKXExchangeAdapter
+        adapter = OKXExchangeAdapter()
+        account = okx_account_key("swap")
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        po.finish({"platform": "okx", "error": f"the adapter could not be built: {e}"}, 1)
+        return
+    if account != req["account_key"]:
+        po.finish({"platform": "okx", "account": account, "error": f"the credentials answer for account {account!r}, the request is bound to {req['account_key']!r}"}, 1)
+        return
+    po.finish({"platform": "okx", "account": account, "pair_outcome": pair_okx_outcome(adapter, po, req, "query", account, int(since_ms))})
+
+
 def main():
-    if "--recover-entry" in sys.argv:
+    if any(a.startswith("--pair-order-json") or a.startswith("--pair-query-json") for a in sys.argv[1:]):
+        import argparse
+        parser = argparse.ArgumentParser()
+        group = parser.add_mutually_exclusive_group(required=True)
+        group.add_argument("--pair-order-json", default=None)
+        group.add_argument("--pair-query-json", default=None)
+        parser.add_argument("--since-ms", type=int, default=None)
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--inst-type", default="swap", choices=["swap"])
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#1877): parse the strict request and exit 0 before any adapter, clock or venue call.")
+        args = parser.parse_args()
+        if args.pair_query_json is not None:
+            if args.since_ms is None or args.since_ms <= 0:
+                parser.error("--pair-query-json needs --since-ms above zero")
+            run_pair_query(args.pair_query_json, args.since_ms, args.mode, probe_only=args.probe_only)
+        else:
+            if args.since_ms is not None:
+                parser.error("--since-ms applies to --pair-query-json only")
+            run_pair_order(args.pair_order_json, args.mode, probe_only=args.probe_only)
+    elif "--recover-entry" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
         parser.add_argument("--recover-entry", action="store_true")

@@ -317,6 +317,7 @@ type basketRuntime struct {
 	pairLastInputs   *pairStepInputs
 	pairQuoteNote    string
 	pairLastStepMs   int64
+	pairPositions    *pairPositionState
 
 	expectedDurable map[string]float64
 	needsDurable    bool

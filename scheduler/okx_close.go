@@ -16,6 +16,11 @@ type OKXPosition struct {
 	EntryPrice    float64
 	Side          string
 	UnrealizedPnL float64
+	InstID        string
+	Contracts     float64
+	ContractSize  float64
+	MarginMode    string
+	Account       string
 }
 
 var okxLiveCloseScript = "shared_scripts/close_okx_position.py"
@@ -50,6 +55,11 @@ func defaultOKXPositionsFetcher() ([]OKXPosition, error) {
 			EntryPrice:    p.EntryPrice,
 			Side:          p.Side,
 			UnrealizedPnL: p.UnrealizedPnL,
+			InstID:        p.InstID,
+			Contracts:     p.Contracts,
+			ContractSize:  p.ContractSize,
+			MarginMode:    p.MarginMode,
+			Account:       p.Account,
 		})
 	}
 	return positions, nil

@@ -13,7 +13,7 @@ import (
 )
 
 const pairPolicyRequestVersion = 2
-const pairTargetsVersion = 1
+const pairTargetsVersion = 2
 const pairPolicyMaxTimeout = 30 * time.Second
 
 const (
@@ -332,6 +332,7 @@ type pairTargets struct {
 	CoordinatorReason string                            `json:"coordinator_reason,omitempty"`
 	Decision          json.RawMessage                   `json:"decision"`
 	FirstLeg          string                            `json:"first_leg,omitempty"`
+	BoundEvidence     map[string]pairBoundEvidence      `json:"bound_evidence,omitempty"`
 }
 
 func (t pairTargets) JSON() string {
@@ -350,8 +351,11 @@ func parsePairTargets(raw string) (*pairTargets, error) {
 	if err := json.Unmarshal([]byte(raw), &t); err != nil {
 		return nil, fmt.Errorf("pair decision record is unreadable: %w", err)
 	}
-	if t.Version != pairTargetsVersion {
+	if t.Version != pairTargetsVersion && t.Version != pairTargetsLegacyVersion {
 		return nil, fmt.Errorf("pair decision record version %d is not supported", t.Version)
+	}
+	if t.Version == pairTargetsLegacyVersion && len(t.BoundEvidence) > 0 {
+		return nil, fmt.Errorf("a version-1 pair decision record carries bound evidence, which only version 2 defines")
 	}
 	return &t, nil
 }
@@ -409,6 +413,9 @@ func pairFloorLots(qty, lot float64) float64 {
 func pairNativeQty(m pairContractMember, baseQty float64) float64 {
 	if !(m.Meta.ContractSize > 0) {
 		return 0
+	}
+	if q, err := pairExactOrderQty(m, baseQty); err == nil {
+		return q.Native
 	}
 	n := baseQty / m.Meta.ContractSize
 	lots := math.Round(n / m.Meta.LotStep)
@@ -496,7 +503,7 @@ func validatePairPolicyResult(rt *basketRuntime, req pairPolicyRequest, res *pai
 		if t.TargetBaseQty == 0 {
 			return "", fmt.Errorf("an entry decision needs a nonzero target for member %s", m.MemberID)
 		}
-		if !pairLegalLot(m, math.Abs(t.TargetBaseQty), t.PriceBound) {
+		if !pairLegalLot(m, math.Abs(t.TargetBaseQty), 0) {
 			return "", fmt.Errorf("member %s target %v is not a legal lot quantity after native conversion (lot %v base, minimum %v native, minimum notional %v)", m.MemberID, t.TargetBaseQty, pairLotBase(m), m.Meta.MinQty, m.Meta.MinNotional)
 		}
 		switch m.Provider {
@@ -698,6 +705,16 @@ type pairCandidate struct {
 	PriceBound   float64
 	Current      float64
 	Target       float64
+
+	ProposedBound float64
+}
+
+func (c pairCandidate) riskBound() float64 {
+	return pairMaxBound(c.ProposedBound, c.PriceBound)
+}
+
+func (c pairCandidate) minBound() float64 {
+	return pairMinBound(c.ProposedBound, c.PriceBound)
 }
 
 func (c pairCandidate) signed(qty float64) float64 {
@@ -803,11 +820,11 @@ func (p *pairPlan) legalTranche(c pairCandidate) (float64, pairEndpointProof, st
 	}
 	increase := c.Direction == basketDirectionIncrease
 	try := func(q float64) pairEndpointProof {
-		f := pairPendingFill{ActionID: "candidate", MemberID: c.MemberID, Signed: c.signed(q), PriceBound: c.PriceBound, Elective: true}
+		f := pairPendingFill{ActionID: "candidate", MemberID: c.MemberID, Signed: c.signed(q), PriceBound: c.riskBound(), Elective: true}
 		return p.proveEndpoints(&f, increase)
 	}
 	if proof := try(full); proof.Legal {
-		if increase && !pairLegalLot(c.Member, full, c.PriceBound) {
+		if !pairLegalLot(c.Member, full, c.minBound()) {
 			return 0, proof, fmt.Sprintf("%s %s %.10g is below the venue minimum", c.MemberID, c.Direction, full)
 		}
 		return full, proof, ""
@@ -832,7 +849,7 @@ func (p *pairPlan) legalTranche(c pairCandidate) (float64, pairEndpointProof, st
 	if !proof.Legal {
 		return 0, proof, fmt.Sprintf("%s %s: the floored tranche %.10g is not legal (%s)", c.MemberID, c.Direction, qty, proof.Detail)
 	}
-	if increase && !pairLegalLot(c.Member, qty, c.PriceBound) {
+	if !pairLegalLot(c.Member, qty, c.minBound()) {
 		return 0, proof, fmt.Sprintf("%s %s %.10g is below the venue minimum", c.MemberID, c.Direction, qty)
 	}
 	return qty, proof, ""
