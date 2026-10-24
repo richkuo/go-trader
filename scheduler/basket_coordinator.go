@@ -56,6 +56,7 @@ type basketCoordinator struct {
 	outbox       []func()
 
 	pairPolicyRun pairPolicyRunner
+	pairClock     func() time.Time
 }
 
 func newBasketCoordinator(cfg *Config, state *AppState, store *StateStore, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager, runtimes map[string]*basketRuntime) *basketCoordinator {
@@ -76,6 +77,7 @@ func newBasketCoordinator(cfg *Config, state *AppState, store *StateStore, mu *s
 		critical: make(map[string]bool),
 
 		pairPolicyRun: pairPolicyRunFn,
+		pairClock:     tradingNow,
 	}
 	if bc.parent == nil {
 		bc.parent = context.Background()

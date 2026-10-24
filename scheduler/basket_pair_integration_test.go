@@ -148,7 +148,7 @@ func TestBasketPairDecisionEntryPointOutcomes(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, err := parsePairTargets(stored)
-			if err != nil || got == nil || got.Kind != tc.kind || got.SlotMs != at.UnixMilli() || got.InputFingerprint != "in-0" {
+			if err != nil || got == nil || got.Kind != tc.kind || got.SlotMs != at.UnixMilli() || got.InputFingerprint != rb.InputFP || rb.InputFP != pairSHA256([]byte(rb.EvidenceJSON)) {
 				t.Fatalf("stored decision %q (%v), want kind %s bound to the slot", stored, err, tc.kind)
 			}
 			if tc.kind == pairPolicyStatusHold {
@@ -206,7 +206,8 @@ func TestBasketPairDecisionTimeoutAndChangedSnapshot(t *testing.T) {
 			t.Fatalf("the restarted slot was not decided from its saved envelope")
 		}
 		req := e.runner.requests[len(e.runner.requests)-1]
-		if req.InputFingerprint != "in-0" || string(req.Envelope) != `{"quotes":"in-0"}` || req.CutoffMs != at.UnixMilli()+500 {
+		saved := e.rt().Rebalances[at.UnixMilli()]
+		if req.InputFingerprint != saved.InputFP || string(req.Envelope) != saved.EvidenceJSON || req.CutoffMs != at.UnixMilli()+500 || req.V != 2 || req.BookNeed != e.rt().Contract.Pair.BookNeed {
 			t.Fatalf("the decision request does not carry the saved envelope: %+v", req)
 		}
 	})

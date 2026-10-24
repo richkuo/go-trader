@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import math
@@ -23,6 +24,8 @@ HL_MAX_SZ_DECIMALS = 12
 MAX_ID_LEN = 128
 MAX_PROVENANCE_LEN = 256
 MAX_DOCUMENT_BYTES = 16 << 20
+MAX_ENVELOPE_BYTES = 4 << 20
+MAX_BASE64_TEXT = ((MAX_ENVELOPE_BYTES + 2) // 3) * 4
 
 _CANONICAL_DECIMAL = re.compile(r"^-?(0|[1-9][0-9]*)(\.[0-9]*[1-9])?$")
 _DECIMAL_INPUT = re.compile(r"^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]{1,4})?$")
@@ -303,6 +306,22 @@ def _shape(node, schema, path, normalize):
         return _int_value(node, path)
     if schema == "uint":
         return _int_value(node, path, unsigned=True)
+    if schema == "nullable_int":
+        if node is None:
+            return None
+        return _int_value(node, path)
+    if schema == "bytes":
+        if not isinstance(node, str):
+            raise PairEvidenceError(f"{path} must be a JSON string of standard padded base64")
+        if len(node) > MAX_BASE64_TEXT:
+            raise PairEvidenceError(f"{path} base64 text is {len(node)} bytes, above the {MAX_BASE64_TEXT} byte bound")
+        try:
+            raw = base64.b64decode(node.encode("ascii"), validate=True)
+        except (ValueError, UnicodeEncodeError) as exc:
+            raise PairEvidenceError(f"{path} is not standard padded base64: {exc}") from exc
+        if base64.b64encode(raw).decode("ascii") != node:
+            raise PairEvidenceError(f"{path} is not canonical standard padded base64")
+        return node
     if schema == "decimal":
         if not isinstance(node, str):
             raise PairEvidenceError(f"{path} must be a decimal string")
@@ -611,10 +630,7 @@ def expected_wire_meta(member):
 def capability_matches(member, capability):
     rec = _shape(capability, CAPABILITY_FIELDS, "capability", False)
     validate_stamp(rec, "capability")
-    key = rec["key"]
-    for name in ("provider", "account_key", "instrument", "member_id"):
-        if key[name] != member[name]:
-            raise PairEvidenceError(f"capability evidence key {name} {key[name]!r} does not name member {member['member_id']}")
+    _check_member_key(rec["key"], member, "capability", rec["evidence_id"])
     if rec["provenance"] != DERIVATIONS.get(member["provider"]):
         raise PairEvidenceError(f"capability evidence provenance {rec['provenance']!r} is not the {member['provider']} derivation")
     if rec["metadata_generation"] < 1:
@@ -625,6 +641,59 @@ def capability_matches(member, capability):
         if rec["meta"][name] != want[name]:
             raise PairEvidenceError(f"capability evidence meta.{name} {rec['meta'][name]!r} differs from the frozen contract {want[name]!r}")
     return rec
+
+
+def required_conversion_currencies(member):
+    m = member["meta"]
+    out = {m["settlement_currency"], m["price_currency"], *m["fee_currencies"]}
+    out.discard(USD)
+    return sorted(out, key=lambda k: k.encode("utf-8"))
+
+
+def _check_member_key(key, member, what, ident):
+    for name in ("provider", "account_key", "instrument", "member_id"):
+        if key[name] != member[name]:
+            raise PairEvidenceError(f"{what} evidence {ident} key {name} {key[name]!r} does not name member {member['member_id']}")
+
+
+def account_matches(member, account):
+    rec = _shape(account, ACCOUNT_FIELDS, "account", False)
+    validate_stamp(rec, "account")
+    _check_member_key(rec["key"], member, "account", rec["evidence_id"])
+    m = member["meta"]
+    if rec["position_mode"] != m["position_mode"]:
+        raise PairEvidenceError(f"account evidence {rec['evidence_id']} position_mode {rec['position_mode']!r} differs from the required {m['position_mode']!r}")
+    if rec["margin_mode"] != m["margin_mode"]:
+        raise PairEvidenceError(f"account evidence {rec['evidence_id']} margin_mode {rec['margin_mode']!r} differs from the required {m['margin_mode']!r}")
+    lev = decimal_fraction(rec["leverage"], "leverage")
+    if lev <= 0:
+        raise PairEvidenceError(f"account evidence {rec['evidence_id']} leverage must be above zero")
+    if lev != Fraction(float_decimal(member["leverage"])):
+        raise PairEvidenceError(f"account evidence {rec['evidence_id']} leverage {rec['leverage']} differs from the frozen selected leverage {member['leverage']!r}")
+    if rec["collateral_currency"] != m["settlement_currency"]:
+        raise PairEvidenceError(f"account evidence {rec['evidence_id']} collateral_currency differs from the settlement currency")
+    decimal_fraction(rec["equity"], "equity")
+    for name in ("free_collateral", "margin_used"):
+        if decimal_fraction(rec[name], name) < 0:
+            raise PairEvidenceError(f"account evidence {rec['evidence_id']} {name} {rec[name]} must not be negative")
+    return rec
+
+
+def conversion_matches(member, conversion):
+    rec = _shape(conversion, CONVERSION_FIELDS, "conversion", False)
+    validate_stamp(rec, "conversion")
+    _check_member_key(rec["key"], member, "conversion", rec["evidence_id"])
+    if not _CURRENCY.match(rec["currency"]) or rec["currency"] == USD:
+        raise PairEvidenceError(f"conversion evidence {rec['evidence_id']} currency {rec['currency']!r} must be an upper-case currency other than USD")
+    if rec["currency"] not in required_conversion_currencies(member):
+        raise PairEvidenceError(f"conversion evidence {rec['evidence_id']} currency {rec['currency']} is not a settlement, price or fee currency of member {member['member_id']}")
+    if decimal_fraction(rec["rate_usd"], "rate_usd") <= 0:
+        raise PairEvidenceError(f"conversion evidence {rec['evidence_id']} rate_usd must be above zero")
+    return rec
+
+
+def eligible_at(rec, ref_ms):
+    return rec["observed_ms"] <= ref_ms and rec["first_receipt_ms"] <= ref_ms and rec["valid_from_ms"] <= ref_ms <= rec["valid_through_ms"]
 
 
 def _log10_floor(px):

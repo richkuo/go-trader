@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const pairPolicyRequestVersion = 1
+const pairPolicyRequestVersion = 2
 const pairTargetsVersion = 1
 const pairPolicyMaxTimeout = 30 * time.Second
 
@@ -81,13 +81,18 @@ func pairMemberEchoError(sc StrategyConfig, want pairMemberRequest, wantOK bool,
 }
 
 type pairPolicyMember struct {
-	MemberID      string             `json:"member_id"`
-	Provider      string             `json:"provider"`
-	AccountKey    string             `json:"account_key"`
-	Instrument    string             `json:"instrument"`
-	Meta          pairInstrumentMeta `json:"meta"`
-	BookedBaseQty float64            `json:"booked_base_qty"`
-	BookedAvgPx   float64            `json:"booked_avg_px"`
+	MemberID          string             `json:"member_id"`
+	Provider          string             `json:"provider"`
+	AccountKey        string             `json:"account_key"`
+	Instrument        string             `json:"instrument"`
+	Meta              pairInstrumentMeta `json:"meta"`
+	BookedBaseQty     float64            `json:"booked_base_qty"`
+	BookedAvgPx       float64            `json:"booked_avg_px"`
+	CostPolicy        fillCostPolicy     `json:"cost_policy"`
+	Source            string             `json:"source"`
+	SourceContract    string             `json:"source_contract"`
+	ModeledDeliveryMs int64              `json:"modeled_delivery_ms"`
+	Leverage          float64            `json:"leverage"`
 }
 
 type pairPolicyRequest struct {
@@ -101,6 +106,7 @@ type pairPolicyRequest struct {
 	Policy              string                 `json:"policy"`
 	Params              map[string]interface{} `json:"params"`
 	Limits              pairOperationalLimits  `json:"limits"`
+	BookNeed            pairBookNeed           `json:"book_need"`
 	Lifecycle           string                 `json:"lifecycle"`
 	Members             []pairPolicyMember     `json:"members"`
 	Envelope            json.RawMessage        `json:"envelope"`

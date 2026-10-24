@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -682,7 +683,19 @@ func pairCheckShape(node interface{}, t reflect.Type, path string) error {
 		if _, err := strconv.ParseUint(string(n), 10, t.Bits()); err != nil {
 			return fmt.Errorf("%s integer %s is out of range", path, n)
 		}
+	case reflect.Ptr:
+		switch t.Elem().Kind() {
+		case reflect.Int, reflect.Int64, reflect.Int32:
+			if node == nil {
+				return nil
+			}
+			return pairCheckShape(node, t.Elem(), path)
+		}
+		return fmt.Errorf("%s has unsupported nullable schema kind %s", path, t.Elem().Kind())
 	case reflect.Slice:
+		if t.Elem().Kind() == reflect.Uint8 {
+			return pairCheckBytesNode(node, path)
+		}
 		arr, ok := node.([]interface{})
 		if !ok {
 			return fmt.Errorf("%s must be a JSON array, got %s", path, pairNodeKind(node))
@@ -694,6 +707,24 @@ func pairCheckShape(node interface{}, t reflect.Type, path string) error {
 		}
 	default:
 		return fmt.Errorf("%s has unsupported schema kind %s", path, t.Kind())
+	}
+	return nil
+}
+
+func pairCheckBytesNode(node interface{}, path string) error {
+	s, ok := node.(string)
+	if !ok {
+		return fmt.Errorf("%s must be a JSON string of standard padded base64, got %s", path, pairNodeKind(node))
+	}
+	if len(s) > base64.StdEncoding.EncodedLen(pairMaxEnvelopeBytes) {
+		return fmt.Errorf("%s base64 text is %d bytes, above the %d byte bound", path, len(s), base64.StdEncoding.EncodedLen(pairMaxEnvelopeBytes))
+	}
+	raw, err := base64.StdEncoding.Strict().DecodeString(s)
+	if err != nil {
+		return fmt.Errorf("%s is not standard padded base64: %v", path, err)
+	}
+	if base64.StdEncoding.EncodeToString(raw) != s {
+		return fmt.Errorf("%s is not canonical standard padded base64", path)
 	}
 	return nil
 }

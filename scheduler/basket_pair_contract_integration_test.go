@@ -89,11 +89,11 @@ func TestBasketPairContractNewFieldsAtTheirLimits(t *testing.T) {
 		mutate pairMutation
 	}{
 		{"book depth 1", pairSetBook("depth", 1)},
-		{"book depth 20", pairSetBook("depth", 20)},
+		{"book depth 20", pairAll(pairSetBook("depth", 20), pairSetLimit("envelope_max_bytes", 4194304))},
 		{"book window 1", pairSetBook("window_ms", 1)},
 		{"book window 900000", pairSetBook("window_ms", 900000)},
 		{"book capacity 1", pairSetBook("capacity", 1)},
-		{"book capacity 4096", pairSetBook("capacity", 4096)},
+		{"book capacity 4096", pairAll(pairSetBook("capacity", 4096), pairSetMember(0, "source", "public_snapshot"))},
 		{"archive delivery 1", pairAll(pairSetMember(0, "source", "archive"), pairSetMember(0, "modeled_delivery_ms", 1))},
 		{"archive delivery at the maximum", pairAll(pairSetMember(0, "source", "archive"), pairSetMember(0, "modeled_delivery_ms", maxMs))},
 		{"hyperliquid public snapshot", pairSetMember(0, "source", "public_snapshot")},
@@ -102,7 +102,6 @@ func TestBasketPairContractNewFieldsAtTheirLimits(t *testing.T) {
 		{"quote age 1 with timeout and skew 1", pairAll(pairSetLimit("quote_age_ms", 1), pairSetLimit("collection_timeout_ms", 1), pairSetLimit("receive_skew_ms", 1))},
 		{"quote age at the maximum", pairSetLimit("quote_age_ms", maxMs)},
 		{"timeout and skew equal to the quote age", pairAll(pairSetLimit("collection_timeout_ms", 5000), pairSetLimit("receive_skew_ms", 5000))},
-		{"envelope 1 byte", pairSetLimit("envelope_max_bytes", 1)},
 		{"envelope at the maximum", pairSetLimit("envelope_max_bytes", 4194304)},
 		{"protective width just above zero", pairSetLimit("protective_width_bps", 1e-9)},
 		{"protective width just below 10000", pairSetLimit("protective_width_bps", 9999.999999)},
@@ -141,6 +140,8 @@ func TestBasketPairContractNewFieldsAtTheirLimits(t *testing.T) {
 		{"timeout above the quote age", pairSetLimit("collection_timeout_ms", 5001), "collection_timeout_ms 5001 exceeds quote_age_ms 5000"},
 		{"skew above the quote age", pairSetLimit("receive_skew_ms", 5001), "receive_skew_ms 5001 exceeds quote_age_ms 5000"},
 		{"envelope 0", pairSetLimit("envelope_max_bytes", 0), "envelope_max_bytes must be in [1, 4194304]"},
+		{"envelope 1 byte", pairSetLimit("envelope_max_bytes", 1), "is below the"},
+		{"sealed capacity 4096", pairAll(pairSetBook("capacity", 4096), pairSetLimit("envelope_max_bytes", 4194304)), "worst-case quote envelope"},
 		{"envelope above the maximum", pairSetLimit("envelope_max_bytes", 4194305), "envelope_max_bytes must be in [1, 4194304]"},
 		{"protective width 0", pairSetLimit("protective_width_bps", 0), "protective_width_bps must be finite, above 0 and below 10000"},
 		{"protective width 10000", pairSetLimit("protective_width_bps", 10000), "protective_width_bps must be finite, above 0 and below 10000"},
@@ -445,7 +446,7 @@ func TestBasketPairContractEvidenceSelectionAtExplicitReference(t *testing.T) {
 		t.Fatalf("the scheduled evidence document must load: %v", err)
 	}
 	venues := newPairTestVenues(false)
-	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, pairResearchDeps{VenueFor: venues.factory(), Evidence: src})
+	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, pairResearchDeps{VenueFor: venues.factory(), Evidence: src, Quotes: newPairFixtureQuotes(t, doc).collector})
 	if err != nil {
 		t.Fatalf("admission with scheduled evidence: %v", err)
 	}
@@ -580,7 +581,7 @@ func TestBasketPairContractVersionOneAndEvidenceDigestResume(t *testing.T) {
 
 	before := dirDigest(t, e.dir)
 	changed := pairTestEvidence(t, e.doc, func(d *pairEvidenceDocument) { pairFindAcct(d, pairTestOKX).Equity = "6001" })
-	if _, _, err := resume(pairResearchDeps{VenueFor: e.venues.factory(), Evidence: changed}); err == nil || !strings.Contains(err.Error(), "evidence document digest") {
+	if _, _, err := resume(pairResearchDeps{VenueFor: e.venues.factory(), Evidence: changed, Quotes: newPairFixtureQuotes(t, e.doc).collector}); err == nil || !strings.Contains(err.Error(), "evidence document digest") {
 		t.Fatalf("a resume with a changed evidence document must be refused, got %v", err)
 	}
 	if dirDigest(t, e.dir) != before {
@@ -649,7 +650,7 @@ func TestBasketPairContractChangesAreRestartRequired(t *testing.T) {
 		"quote age":        pairSetLimit("quote_age_ms", 6000),
 		"timeout":          pairSetLimit("collection_timeout_ms", 2500),
 		"skew":             pairSetLimit("receive_skew_ms", 300),
-		"envelope":         pairSetLimit("envelope_max_bytes", 2048),
+		"envelope":         pairSetLimit("envelope_max_bytes", 2097152),
 		"protective width": pairSetLimit("protective_width_bps", 75),
 		"selected leverage": func(r map[string]interface{}) {
 			pairTestStrategy(r, pairTestOKX)["leverage"] = 3

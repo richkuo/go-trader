@@ -356,9 +356,18 @@ func probeCheckScripts(cfg *Config) error {
 		if err := probeOneCheckScriptFn(pairEvidenceReaderScript, pairEvidenceHyperliquidProbeArgv); err != nil {
 			return err
 		}
+		if err := probeOneCheckScriptFn(pairQuoteReaderScript, pairQuoteHLPublicProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn(pairQuoteReaderScript, pairQuoteHLArchiveProbeArgv); err != nil {
+			return err
+		}
 	}
 	if okxSwap {
 		if err := probeOneCheckScriptFn(pairEvidenceReaderScript, pairEvidenceOKXProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn(pairQuoteReaderScript, pairQuoteOKXPublicProbeArgv); err != nil {
 			return err
 		}
 	}

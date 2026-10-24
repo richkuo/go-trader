@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -164,7 +165,245 @@ func pairTestEvidence(t *testing.T, doc []byte, mutate func(d *pairEvidenceDocum
 
 func pairTestDeps(t *testing.T, doc []byte, venues *pairTestVenues) pairResearchDeps {
 	t.Helper()
-	return pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc, nil)}
+	return pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc, nil), Quotes: newPairFixtureQuotes(t, doc).collector}
+}
+
+type pairFixtureQuotes struct {
+	mu           sync.Mutex
+	enabled      bool
+	err          error
+	receiptLagMs int64
+	reads        int
+	block        chan struct{}
+	onRead       func(r pairMemberRead)
+	okxBids      [][2]string
+	okxAsks      [][2]string
+	hlBids       [][2]string
+	hlAsks       [][2]string
+	collector    *pairQuoteCollector
+}
+
+func newPairFixtureQuotes(t *testing.T, doc []byte) *pairFixtureQuotes {
+	t.Helper()
+	var root struct {
+		Pairs []struct {
+			Members []struct {
+				StrategyID string `json:"strategy_id"`
+				Source     string `json:"source"`
+			} `json:"members"`
+		} `json:"pairs"`
+	}
+	_ = json.Unmarshal(doc, &root)
+	q := &pairFixtureQuotes{receiptLagMs: 200,
+		okxBids: [][2]string{{"60099.9", "3"}, {"60099.8", "4"}, {"60099.7", "5"}, {"60099.6", "6"}, {"60099.5", "7"}, {"60099.4", "8"}},
+		okxAsks: [][2]string{{"60100.1", "3"}, {"60100.2", "4"}, {"60100.3", "5"}, {"60100.4", "6"}, {"60100.5", "7"}, {"60100.6", "8"}},
+		hlBids:  [][2]string{{"59999", "0.5"}, {"59998", "0.6"}, {"59997", "0.7"}, {"59996", "0.8"}, {"59995", "0.9"}, {"59994", "1"}},
+		hlAsks:  [][2]string{{"60001", "0.5"}, {"60002", "0.6"}, {"60003", "0.7"}, {"60004", "0.8"}, {"60005", "0.9"}, {"60006", "1"}}}
+	c := &pairQuoteCollector{sources: map[string]string{}, readers: map[string]pairMemberReader{}, limit: pairMaxEnvelopeBytes}
+	if len(root.Pairs) > 0 {
+		for _, m := range root.Pairs[0].Members {
+			c.sources[m.StrategyID] = m.Source
+			if m.Source == pairSourceSealedFeed {
+				c.readers[m.StrategyID] = pairSealedReader{}
+			} else {
+				c.readers[m.StrategyID] = q
+			}
+		}
+	}
+	q.collector = c
+	return q
+}
+
+func (q *pairFixtureQuotes) enable() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.enabled, q.err = true, nil
+}
+
+func (q *pairFixtureQuotes) readQuote(ctx context.Context, r pairMemberRead) (pairObservation, error) {
+	q.mu.Lock()
+	q.reads++
+	enabled, err, lag, block, onRead := q.enabled, q.err, q.receiptLagMs, q.block, q.onRead
+	okxBids, okxAsks, hlBids, hlAsks := q.okxBids, q.okxAsks, q.hlBids, q.hlAsks
+	q.mu.Unlock()
+	if onRead != nil {
+		onRead(r)
+	}
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return pairObservation{}, ctx.Err()
+		}
+	}
+	if err != nil {
+		return pairObservation{}, err
+	}
+	if !enabled {
+		return pairObservation{}, fmt.Errorf("no fixture quote is scripted for %s", r.Member.MemberID)
+	}
+	receipt := r.StartMs - lag
+	var payload []byte
+	switch {
+	case r.Member.Provider == entryProviderOKX:
+		payload = pairFixtureOKXPayload(r.Member.Instrument, r.BookNeed.Depth, receipt-20, okxBids, okxAsks)
+	case r.Member.Source == pairSourcePublicSnapshot:
+		payload = pairFixtureHLPublicPayload(r.Member.Instrument, r.BookNeed.Depth, receipt-20, hlBids, hlAsks)
+	case r.Member.Source == pairSourceArchive:
+		receipt = 0
+		payload = pairFixtureArchivePayload(r.Member, r.BookNeed, r.StartMs-r.Member.ModeledDeliveryMs, hlBids, hlAsks)
+	default:
+		return pairObservation{}, fmt.Errorf("no fixture reader for %s", r.Member.Source)
+	}
+	return pairObservationFromPayloadSide(r.Member, r.Partition.String(), r.BookNeed, payload, receipt, 0, r.Side)
+}
+
+func pairFixtureCanonical(v interface{}) []byte {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	tree, err := pairStrictParse(raw)
+	if err != nil {
+		panic(err)
+	}
+	var buf bytes.Buffer
+	if err := pairWriteCanonical(&buf, tree); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+func pairFixtureOKXPayload(inst string, depth int, venueMs int64, bids, asks [][2]string) []byte {
+	side := func(levels [][2]string) []interface{} {
+		out := []interface{}{}
+		for i := 0; i < depth && i < len(levels); i++ {
+			out = append(out, []interface{}{levels[i][0], levels[i][1], "0", "2"})
+		}
+		return out
+	}
+	return pairFixtureCanonical(map[string]interface{}{
+		"request":  map[string]interface{}{"instId": inst, "sz": fmt.Sprint(depth)},
+		"response": map[string]interface{}{"code": "0", "msg": "", "data": []interface{}{map[string]interface{}{"bids": side(bids), "asks": side(asks), "ts": fmt.Sprint(venueMs)}}},
+	})
+}
+
+func pairFixtureHLPublicPayload(coin string, depth int, venueMs int64, bids, asks [][2]string) []byte {
+	side := func(levels [][2]string) []interface{} {
+		out := []interface{}{}
+		for i := 0; i < depth && i < len(levels); i++ {
+			out = append(out, map[string]interface{}{"px": levels[i][0], "sz": levels[i][1], "n": 1})
+		}
+		return out
+	}
+	return pairFixtureCanonical(map[string]interface{}{
+		"request":  map[string]interface{}{"coin": coin, "type": "l2Book"},
+		"response": map[string]interface{}{"coin": coin, "time": venueMs, "levels": []interface{}{side(bids), side(asks)}},
+	})
+}
+
+func pairFixtureBookLevels(levels [][2]string, depth int) []feedBookLevel {
+	out := []feedBookLevel{}
+	for i := 0; i < depth && i < len(levels); i++ {
+		out = append(out, feedBookLevel{Px: levels[i][0], Sz: levels[i][1], N: 1})
+	}
+	return out
+}
+
+func pairFixtureBook(coin string, cutoffMs int64, need pairBookNeed, bids, asks [][2]string) *marketSnapshotBook {
+	key := l2BookKeyFor(coin)
+	b := &marketSnapshotBook{Key: key, Need: contractBookNeed(need.WindowMs, need.Capacity, need.Depth), Instance: "fixture-feed", CutoffMs: cutoffMs,
+		CoverageFromMs: cutoffMs - 2*need.WindowMs, Obs: []feedBookObservation{}, Markers: []feedBookMarker{}}
+	var recvs []int64
+	for r := cutoffMs - 100; r >= cutoffMs-need.WindowMs; r -= 1000 {
+		recvs = append(recvs, r)
+	}
+	sort.Slice(recvs, func(i, j int) bool { return recvs[i] < recvs[j] })
+	for i, r := range recvs {
+		bl, al := pairFixtureBookLevels(bids, need.Depth), pairFixtureBookLevels(asks, need.Depth)
+		b.Obs = append(b.Obs, feedBookObservation{Seq: uint64(i + 1), EventMs: r - 50, RecvMs: r, Session: 1, Identity: bookIdentity(key, r-50, bl, al),
+			BidDepth: len(bl), AskDepth: len(al), Bids: bl, Asks: al})
+	}
+	return b
+}
+
+func (q *pairFixtureQuotes) snapshot(members []pairContractMember, need pairBookNeed, cutoffMs int64, id string) *marketSnapshot {
+	q.mu.Lock()
+	bids, asks := q.hlBids, q.hlAsks
+	q.mu.Unlock()
+	snap := &marketSnapshot{EvaluationID: id, ConfigGeneration: 1, Deadline: time.UnixMilli(cutoffMs).UTC(), books: map[feedObservationKey]*marketSnapshotBook{}}
+	for _, m := range members {
+		if m.Source == pairSourceSealedFeed {
+			b := pairFixtureBook(m.Instrument, cutoffMs, need, bids, asks)
+			snap.books[b.Key] = b
+		}
+	}
+	return snap
+}
+
+func pairFixtureArchivePayload(m pairContractMember, need pairBookNeed, sourceCutoffMs int64, bids, asks [][2]string) []byte {
+	b := pairFixtureBook(m.Instrument, sourceCutoffMs, need, bids, asks)
+	snap := &marketSnapshot{EvaluationID: "archive", Deadline: time.UnixMilli(sourceCutoffMs).UTC(), books: map[feedObservationKey]*marketSnapshotBook{b.Key: b}}
+	p := snap.l2BookPayload(b.Key, b.Need)
+	p.TimeSemantics, p.SnapshotID, p.Instance, p.FeedStatus = pairArchivePayloadTimeBasis, "", "hyperliquid-archive", ""
+	return pairFixtureCanonical(p)
+}
+
+func (e *pairTestEnv) fixtureEnvelope(rt *basketRuntime, slotMs, cutoffMs int64, snapshotID string) pairEnvelope {
+	e.t.Helper()
+	members := rt.Contract.pairMembersSorted()
+	need := rt.Contract.Pair.BookNeed
+	start := slotMs
+	deadline := start + rt.Pair.Limits.CollectionTimeoutMs
+	snap := e.quotes.snapshot(members, need, start-50, snapshotID)
+	sealed := false
+	for _, m := range members {
+		sealed = sealed || m.Source == pairSourceSealedFeed
+	}
+	gen := uint64(0)
+	if !sealed {
+		snapshotID = ""
+	} else {
+		gen = 1
+	}
+	e.quotes.mu.Lock()
+	wasOn := e.quotes.enabled
+	e.quotes.enabled = true
+	e.quotes.mu.Unlock()
+	obs, err := e.quotes.collector.Collect(context.Background(), pairCollectRequest{Partition: rt.Partition, PairID: rt.Contract.BasketID, ContractFingerprint: rt.Contract.Fingerprint(),
+		SlotMs: slotMs, StartMs: start, DeadlineMs: deadline, Members: members, BookNeed: need, SourceContracts: pairSourceContractMap(members), Snapshot: snap, SnapshotID: snapshotID, Generation: gen})
+	e.quotes.mu.Lock()
+	e.quotes.enabled = wasOn
+	e.quotes.mu.Unlock()
+	if err != nil {
+		e.t.Fatalf("fixture quotes: %v", err)
+	}
+	ev := e.adm.evidenceSource()
+	var caps []pairCapabilityEvidence
+	var accts []pairAccountEvidence
+	var convs []pairConversionEvidence
+	for _, m := range members {
+		c, err := ev.Capability(context.Background(), m, cutoffMs)
+		if err != nil {
+			e.t.Fatal(err)
+		}
+		a, err := ev.Account(context.Background(), m, cutoffMs)
+		if err != nil {
+			e.t.Fatal(err)
+		}
+		cs, err := ev.Conversions(context.Background(), m, cutoffMs)
+		if err != nil {
+			e.t.Fatal(err)
+		}
+		caps, accts, convs = append(caps, c), append(accts, a), append(convs, cs...)
+	}
+	env, why := buildPairEnvelope(pairEnvelopeInputs{Partition: rt.Partition, PairID: rt.Contract.BasketID, ContractFingerprint: rt.Contract.Fingerprint(),
+		SlotMs: slotMs, StartMs: start, DeadlineMs: deadline, CutoffMs: cutoffMs, Members: members, BookNeed: need, SourceContracts: pairSourceContractMap(members),
+		Observations: obs, Capabilities: caps, Conversions: convs, Accounts: accts, SnapshotID: snapshotID, Generation: gen, Limits: rt.Pair.Limits})
+	if why != "" {
+		e.t.Fatalf("fixture envelope: %s", why)
+	}
+	return env
 }
 
 func pairTestDoc(t *testing.T, dir string, mutate func(root map[string]interface{})) []byte {
@@ -498,18 +737,20 @@ func pairHoldResult(req pairPolicyRequest, why string) pairPolicyResult {
 }
 
 type pairTestEnv struct {
-	t      *testing.T
-	dir    string
-	doc    []byte
-	adm    *pairResearchAdmission
-	cfg    *Config
-	store  *StateStore
-	state  *AppState
-	mu     *sync.RWMutex
-	bc     *basketCoordinator
-	venues *pairTestVenues
-	runner *pairTestRunner
-	now    time.Time
+	t       *testing.T
+	dir     string
+	doc     []byte
+	adm     *pairResearchAdmission
+	cfg     *Config
+	store   *StateStore
+	state   *AppState
+	mu      *sync.RWMutex
+	bc      *basketCoordinator
+	venues  *pairTestVenues
+	runner  *pairTestRunner
+	quotes  *pairFixtureQuotes
+	now     time.Time
+	collect bool
 }
 
 func pairTestStart() time.Time {
@@ -522,12 +763,14 @@ func newPairTestEnv(t *testing.T, mutate func(root map[string]interface{})) *pai
 	dir := filepath.Join(t.TempDir(), "run")
 	doc := pairTestDoc(t, dir, mutate)
 	venues := newPairTestVenues(false)
-	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, pairTestDeps(t, doc, venues))
+	deps := pairTestDeps(t, doc, venues)
+	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, deps)
 	if err != nil {
 		t.Fatalf("newPairResearchAdmission: %v", err)
 	}
 	t.Cleanup(adm.release)
 	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart()}
+	e.quotes = pairFixtureQuotesOf(deps.Quotes)
 	e.runner = &pairTestRunner{respond: func(req pairPolicyRequest) (pairPolicyResult, error) { return pairHoldResult(req, "no edge"), nil }}
 	e.store = openSourceStore(t, cfg)
 	e.state = NewAppState()
@@ -557,6 +800,7 @@ func (e *pairTestEnv) reopen(persisted bool) {
 	e.bc.parent = context.Background()
 	e.bc.venueFor = e.venues.factory()
 	e.bc.pairPolicyRun = e.runner.run
+	e.bc.pairClock = func() time.Time { return e.now }
 	if err := e.bc.startupCheck(); err != nil {
 		e.t.Fatalf("startupCheck: %v", err)
 	}
@@ -606,7 +850,7 @@ func (e *pairTestEnv) slot(at time.Time, input string) *basketRebalance {
 	if err := e.bc.recheckPairSlot(rt, at.UnixMilli(), rt.Contract.Fingerprint()); err != nil {
 		e.t.Fatalf("recheckPairSlot: %v", err)
 	}
-	env := pairEnvelope{CutoffMs: at.UnixMilli() + 500, InputFP: input, EvidenceJSON: fmt.Sprintf(`{"quotes":"%s"}`, input), SnapshotID: "snap-" + input, Generation: 1}
+	env := e.fixtureEnvelope(rt, at.UnixMilli(), at.UnixMilli()+500, "snap-"+input)
 	if err := e.bc.freezePairEnvelope(rt, at.UnixMilli(), env, at); err != nil {
 		e.t.Fatalf("freezePairEnvelope: %v", err)
 	}
@@ -618,7 +862,27 @@ func (e *pairTestEnv) step(at time.Time) {
 	e.now = at
 	e.bc.beginCycle()
 	e.observe("")
-	e.bc.step(basketCycleInputs{Now: at, Once: true})
+	in := basketCycleInputs{Now: at, Once: true}
+	if e.collect {
+		e.mu.Lock()
+		rt := e.rt()
+		in.Snapshot = e.quotes.snapshot(rt.Contract.pairMembersSorted(), rt.Contract.Pair.BookNeed, at.UnixMilli()-50, fmt.Sprintf("feed-%d", at.UnixMilli()))
+		e.mu.Unlock()
+	}
+	e.bc.step(in)
+}
+
+func pairFixtureQuotesOf(src pairQuoteSource) *pairFixtureQuotes {
+	c, ok := src.(*pairQuoteCollector)
+	if !ok {
+		return nil
+	}
+	for _, r := range c.readers {
+		if q, ok := r.(*pairFixtureQuotes); ok {
+			return q
+		}
+	}
+	return nil
 }
 
 func (e *pairTestEnv) externalBookChange(id string, qty float64) {
