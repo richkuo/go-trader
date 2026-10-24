@@ -874,7 +874,7 @@ func TestBasketPairPolicyRealProcessFailuresHold(t *testing.T) {
 			logHas: []string{"held: the decision record is", "above the 98304-byte limit"}, logNot: []string{"stub policy hold", "decision frozen"}},
 		{mode: "stdout_overflow", at: time.Second, kind: pairPolicyStatusHold, reason: "script stdout exceeded the 262144 byte output limit"},
 		{mode: "stderr_overflow", at: time.Second, kind: pairPolicyStatusHold, reason: "script stderr exceeded the 65536 byte output limit"},
-		{mode: "sleep", at: 59 * time.Second, kind: pairPolicyStatusHold, reason: "timed out"},
+		{mode: "sleep", at: 4 * time.Second, kind: pairPolicyStatusHold, reason: "the policy run ended by its context (context deadline exceeded)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.mode, func(t *testing.T) {
@@ -911,6 +911,9 @@ func TestBasketPairPolicyRealProcessFailuresHold(t *testing.T) {
 				e.assertNoPairAction(tc.mode)
 			}
 			if tc.mode == "sleep" {
+				if _, ok := pairIncompleteEvidence(e.rt()); !ok {
+					t.Fatal("the timed-out policy run must save the policy_infrastructure_timeout marker")
+				}
 				raw, err := os.ReadFile(pidFile)
 				if err != nil {
 					t.Fatalf("the sleeping policy never started: %v", err)
@@ -933,13 +936,16 @@ func TestBasketPairPolicyRealProcessFailuresHold(t *testing.T) {
 		}
 		at := pairTestStart()
 		e.slot(at, "in-0")
-		e.step(at.Add(59*time.Second + 500*time.Millisecond))
+		e.step(at.Add(4 * time.Second))
 		for i := 0; i < cap(pythonSemaphore); i++ {
 			<-pythonSemaphore
 		}
 		got, _ := pairPolicyStoredDecision(t, e, at)
-		if got.Kind != pairPolicyStatusHold || !strings.Contains(got.CoordinatorReason, "waiting for a script slot") {
+		if got.Kind != pairPolicyStatusHold || !strings.Contains(got.CoordinatorReason, "the policy run ended by its context (context deadline exceeded)") {
 			t.Fatalf("saturated admission must hold inside the policy budget: %s %q", got.Kind, got.CoordinatorReason)
+		}
+		if _, ok := pairIncompleteEvidence(e.rt()); !ok {
+			t.Fatal("a saturated admission that used up the policy budget must save the policy_infrastructure_timeout marker")
 		}
 		e.assertNoPairAction("saturated")
 	})
