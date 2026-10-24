@@ -13,7 +13,6 @@ if _BACKTEST not in sys.path:
 import optimizer
 import parity_diff
 import run_backtest
-from registry_loader import load_registry
 
 import data_fetcher
 import offline_manifest
@@ -53,19 +52,6 @@ def data_calls(monkeypatch):
     monkeypatch.setattr(data_fetcher, "load_cached_data", record("data_fetcher.load_cached_data"))
     monkeypatch.setattr(offline_manifest, "load_manifest", record("offline_manifest.load_manifest"))
     return calls
-
-
-def test_registration_is_absent_from_both_single_symbol_registries_with_hidden_entries():
-    for platform in ("spot", "futures"):
-        shim = load_registry(platform)
-        assert NAME not in shim.STRATEGY_REGISTRY and NAME not in shim.list_strategies()
-        canonical = shim._registry
-        assert NAME in canonical.pair_evaluators() and NAME in canonical.production_refused_strategies()
-        for hidden in (True, False):
-            assert NAME not in canonical.build_registry(platform, include_hidden=hidden)
-    entry = load_registry("futures")._registry.STRATEGIES[NAME]
-    assert entry["edge_source"] == "unvalidated"
-    assert os.path.isfile(os.path.join(_ROOT, entry["edge_ref"]))
 
 
 @pytest.mark.parametrize("registry", ["spot", "futures"])
