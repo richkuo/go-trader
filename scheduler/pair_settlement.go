@@ -660,7 +660,7 @@ func (bc *basketCoordinator) pairCaptureSettleRev(rt *basketRuntime, a *basketAc
 func (bc *basketCoordinator) pairResolveConversions(rt *basketRuntime, a *basketAction, m pairContractMember, needs []pairConvNeed, in basketCycleInputs) (map[pairConvNeed]pairResolvedConv, map[pairConvNeed]string, int64, bool) {
 	resolved := map[pairConvNeed]pairResolvedConv{}
 	missing := map[pairConvNeed]string{}
-	settleAt := in.Now.UnixMilli()
+	settleAt := bc.pairNow(in).UnixMilli()
 	reqConvs := pairRequestConversions(a)
 	var pending []pairConvNeed
 	seen := map[pairConvNeed]bool{}
@@ -710,19 +710,24 @@ func (bc *basketCoordinator) pairResolveConversions(rt *basketRuntime, a *basket
 	}
 	got := make([]pairConversionEvidence, len(pending))
 	errs := make([]error, len(pending))
+	lookupAt := settleAt
 	bc.unlocked(func() {
-		if fresh := clock().UnixMilli(); fresh > settleAt {
-			settleAt = fresh
+		if fresh := clock().UnixMilli(); fresh > lookupAt {
+			lookupAt = fresh
 		}
 		ctx, cancel := context.WithTimeout(parent, budget)
 		defer cancel()
 		for i, n := range pending {
-			got[i], errs[i] = lookup(ctx, m, n.Currency, n.AtMs, settleAt)
+			got[i], errs[i] = lookup(ctx, m, n.Currency, n.AtMs, lookupAt)
 		}
 	})
 	if bc.pairCaptureSettleRev(rt, a) != rev || rt.Actions[a.ActionID] != a {
 		bc.pairLogf(rt, "action %s changed while its settlement conversions were looked up; the stale result is discarded and the next cycle settles again", a.ActionID)
 		return nil, nil, 0, false
+	}
+	settleAt = lookupAt
+	if after := bc.pairNow(in).UnixMilli(); after > settleAt {
+		settleAt = after
 	}
 	for i, n := range pending {
 		if errs[i] != nil {
