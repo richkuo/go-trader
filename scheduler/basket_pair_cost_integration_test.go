@@ -579,3 +579,82 @@ func TestBasketPairCostEvidenceSurvivesTheFlatReset(t *testing.T) {
 		e.assertFlatResetKeepsCostEvidence("operator held", want)
 	})
 }
+
+func (e *pairTestEnv) resumeWithFreshAdmission() {
+	e.t.Helper()
+	e.adm.release()
+	fresh, freshCfg, err := newPairResearchAdmission(e.doc, "run-1", e.dir, true, pairTestDeps(e.t, e.doc, e.venues))
+	if err != nil {
+		e.t.Fatalf("resume admission: %v", err)
+	}
+	e.t.Cleanup(fresh.release)
+	e.adm, e.cfg = fresh, freshCfg
+	e.restart()
+}
+
+func TestBasketPairCostResumeWithNothingSavedStagesFreshEvidence(t *testing.T) {
+	e := newPairTestEnv(t, pairCostRates)
+	pairEnterHoldRunner(e, 0.06)
+	f := &pairCommitFault{from: 1}
+	f.install(t)
+	e.step(pairSlotAt(pairTestStart(), 0).Add(time.Second))
+	if e.adm.costDurable() {
+		t.Fatal("setup: the failed first commit made the bindings durable")
+	}
+	if n := e.count(`SELECT COUNT(*) FROM basket_contracts`); n != 0 {
+		t.Fatalf("setup: the failed first commit left %d contract rows", n)
+	}
+	f.to = f.n
+	e.resumeWithFreshAdmission()
+	if e.adm.costDurable() {
+		t.Fatal("a resume with nothing saved must stage the bindings, not mark them durable")
+	}
+	want, err := e.adm.costEvidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(e.rt().Pair.Progress.CostEvidence); got != string(want) {
+		t.Fatalf("the resume staged %s, want the canonical bindings %s", got, want)
+	}
+	e.slotStep(1)
+	e.assertBooks("first leg after the resume", 0, -0.06)
+	if got := e.savedCostEvidence(); got != string(want) {
+		t.Fatalf("the first commit after the resume saved %s, want %s", got, want)
+	}
+	okx := e.binding(pairTestOKX)
+	rows := e.savedTrades(pairTestOKX)
+	if len(rows) != 1 || rows[0].Version != FillCostModelReplayCustomVersion || rows[0].PolicyID != okx.PolicyID {
+		t.Fatalf("the first booking after the resume must carry %d/%q: %+v", FillCostModelReplayCustomVersion, okx.PolicyID, rows)
+	}
+
+	e.store.Close()
+	e.adm.release()
+	again, againCfg, err := newPairResearchAdmission(e.doc, "run-1", e.dir, true, pairTestDeps(t, e.doc, e.venues))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.release()
+	store := openSourceStore(t, againCfg)
+	defer store.Close()
+	state, _, err := LoadStateWithStore(againCfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sc := range againCfg.Strategies {
+		if state.Strategies[sc.ID] == nil {
+			state.Strategies[sc.ID] = NewStrategyState(sc)
+		}
+	}
+	if err := store.LoadEntryGuards(state, againCfg.Strategies, map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadBaskets(state, againCfg); err != nil {
+		t.Fatalf("a resume with valid saved evidence must bind: %v", err)
+	}
+	if !again.costDurable() {
+		t.Fatal("a resume with valid saved evidence must be durable before the first step")
+	}
+	if got := pairCostBindings(again)[pairTestOKX]; got.PolicyID != okx.PolicyID {
+		t.Fatalf("the resumed binding is %q, want %q", got.PolicyID, okx.PolicyID)
+	}
+}

@@ -1530,6 +1530,7 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 	role := db.storageRoleOf()
 	k := basketKey{Partition: part, BasketID: p.ID}
 	configured[k] = role
+	progressSaved := false
 	for otherRole, r := range records {
 		if otherRole == role {
 			continue
@@ -1575,12 +1576,14 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 			}
 			rt.Pair.Progress = prog
 			rt.Pair.durableSeq = prog.Seq
+			progressSaved = true
 		}
 	}
 	if _, err := db.checkBasketOwnership(rt); err != nil {
 		return err
 	}
-	if err := bindPairCostEvidence(rt, adm); err != nil {
+	saved := progressSaved || pairRunHasSavedState(state, rt, p.ID)
+	if err := bindPairCostEvidence(rt, adm, saved); err != nil {
 		return err
 	}
 	for _, m := range contract.Members {
@@ -1600,21 +1603,44 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 	return nil
 }
 
-func bindPairCostEvidence(rt *basketRuntime, adm *pairResearchAdmission) error {
+func pairRunHasSavedState(state *AppState, rt *basketRuntime, pairID string) bool {
+	if rt.SavedContract != nil || len(rt.Rebalances) > 0 || len(rt.Actions) > 0 || len(rt.Expected) > 0 || len(rt.Pair.Uses) > 0 {
+		return true
+	}
+	for _, m := range rt.Contract.Members {
+		s := state.Strategies[m.StrategyID]
+		if s == nil {
+			continue
+		}
+		if len(s.TradeHistory) > 0 || len(s.Positions) > 0 {
+			return true
+		}
+		if s.EntryGuard != nil {
+			for _, in := range s.EntryGuard.Intents {
+				if in.OwnerMode == pairGroupMode && in.OwnerGroupID == pairID {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func bindPairCostEvidence(rt *basketRuntime, adm *pairResearchAdmission, saved bool) error {
 	id := rt.Contract.BasketID
 	want, err := adm.costEvidence()
 	if err != nil {
 		return fmt.Errorf("pair %s: %w", id, err)
 	}
-	if saved := rt.Pair.Progress.CostEvidence; len(saved) > 0 {
-		if err := adm.verifyCostEvidence(saved); err != nil {
+	if ev := rt.Pair.Progress.CostEvidence; len(ev) > 0 {
+		if err := adm.verifyCostEvidence(ev); err != nil {
 			return fmt.Errorf("pair %s resume refused: %w; the saved state is kept unchanged, and a changed pair identity, cost rate or execution model needs a new research run", id, err)
 		}
-		adm.markCostDurable(saved)
+		adm.markCostDurable(ev)
 		return nil
 	}
-	if adm.resume || rt.SavedContract != nil {
-		return fmt.Errorf("pair %s resume refused: the saved run has no member cost bindings; a pre-binding pair run needs a new research run, and its history is never stamped or converted", id)
+	if saved {
+		return fmt.Errorf("pair %s resume refused: the saved run has pair state but no member cost bindings; a pre-binding pair run needs a new research run, and its history is never stamped or converted", id)
 	}
 	rt.Pair.Progress.CostEvidence = want
 	return nil
