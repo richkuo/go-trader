@@ -167,10 +167,13 @@ func TestBasketPairDecisionTimeoutAndChangedSnapshot(t *testing.T) {
 		e.runner.block = make(chan struct{})
 		at := pairTestStart()
 		e.slot(at, "in-0")
-		e.step(at.Add(60*time.Second - 50*time.Millisecond))
+		e.step(at.Add(4700 * time.Millisecond))
 		rb := e.rt().Rebalances[at.UnixMilli()]
 		if rb.Status != basketRebalanceHeld {
 			t.Fatalf("a policy timeout must hold the slot, got %s", rb.Status)
+		}
+		if e.runner.calls != 1 {
+			t.Fatalf("the policy must start inside its quote-age budget and then time out, got %d calls", e.runner.calls)
 		}
 		close(e.runner.block)
 	})
