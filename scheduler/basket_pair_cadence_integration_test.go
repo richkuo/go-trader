@@ -1023,6 +1023,70 @@ func TestBasketPairHostOrderDrivesWakeOnlySteps(t *testing.T) {
 	}
 }
 
+func TestBasketPairHostCycleAdvancesOnlyOnManagementRuns(t *testing.T) {
+	t0 := pairTestStart()
+	e := pairCollectEnv(t, pairSetLimit("decision_cadence_ms", 500))
+	e.quotes.mu.Lock()
+	e.quotes.err = errors.New("book outage")
+	e.quotes.mu.Unlock()
+	failing := true
+	prev := storeCommitHook
+	storeCommitHook = func(storageRole) error {
+		if failing {
+			return errors.New("injected commit fault")
+		}
+		return nil
+	}
+	t.Cleanup(func() { storeCommitHook = prev })
+	for i := 0; i < 3; i++ {
+		e.mu.Lock()
+		e.store.SaveAll(e.state)
+		e.mu.Unlock()
+	}
+	if !allPartitionsSaveBlocked(e.store, e.cfg) {
+		t.Fatal("three failed saves must block every partition before the host runs")
+	}
+	h := newPairTestHost(e, time.Minute)
+	var seen []int
+	h.prepare = func(basketCycleInputs) { seen = append(seen, e.bc.cycle) }
+	start := e.bc.cycle
+	for i := 0; i < 3; i++ {
+		h.run(t0.Add(time.Duration(i) * 500 * time.Millisecond))
+	}
+	if e.bc.cycle != start {
+		t.Fatalf("save-blocked runs with management due must not advance the cycle, got %d from %d", e.bc.cycle, start)
+	}
+	blocked := strings.Join(h.order, ",")
+	want := strings.Repeat("evidence,prepare_risk,save_blocked,step,save,", 3)
+	if blocked+"," != want {
+		t.Fatalf("save-blocked runs must skip risk and management, got %s", blocked)
+	}
+	failing = false
+	e.mu.Lock()
+	e.store.SaveAll(e.state)
+	e.mu.Unlock()
+	h.run(t0.Add(1500 * time.Millisecond))
+	if e.bc.cycle != start+1 {
+		t.Fatalf("one unblocked management run must advance the cycle by exactly one, got %d from %d", e.bc.cycle, start)
+	}
+	if got := strings.Join(h.order[15:], ","); got != "evidence,prepare_risk,risk,manage,step,save" {
+		t.Fatalf("the unblocked run must manage after risk, got %s", got)
+	}
+	for i, r := range h.runs {
+		if r.Managed != (i == 3) {
+			t.Fatalf("run %d managed=%v; only the unblocked run manages", i, r.Managed)
+		}
+	}
+	if len(seen) != 4 {
+		t.Fatalf("the prepare hook must run on every host cycle, got %d calls", len(seen))
+	}
+	for i, c := range seen {
+		if c != start {
+			t.Fatalf("prepare call %d saw cycle %d; risk preparation must see the cycle from before the management increment %d", i, c, start)
+		}
+	}
+}
+
 func TestBasketPairHostManagementFreshnessGatesIncreases(t *testing.T) {
 	t0 := pairTestStart()
 	t.Run("no management before the step holds every increase", func(t *testing.T) {

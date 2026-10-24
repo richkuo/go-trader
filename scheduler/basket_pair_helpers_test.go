@@ -1029,9 +1029,6 @@ func (h *pairTestHost) run(at time.Time) time.Duration {
 		h.note("funding")
 	}
 	managed := !at.Before(h.nextManage)
-	if managed {
-		e.bc.beginCycle()
-	}
 	in := basketCycleInputs{Now: at, Once: true, PairSnapshotFor: e.sealFor, PairGeneration: e.feedGeneration}
 	if h.prepare != nil {
 		h.prepare(in)
@@ -1060,6 +1057,7 @@ func (h *pairTestHost) run(at time.Time) time.Duration {
 		e.mu.Unlock()
 		h.note("risk")
 		if managed {
+			e.bc.beginCycle()
 			h.manage(at, risk)
 			h.note("manage")
 			h.nextManage = at.Add(h.interval)
