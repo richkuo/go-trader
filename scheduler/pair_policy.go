@@ -823,8 +823,12 @@ func (p *pairPlan) legalTranche(c pairCandidate) (float64, pairEndpointProof, st
 		f := pairPendingFill{ActionID: "candidate", MemberID: c.MemberID, Signed: c.signed(q), PriceBound: c.riskBound(), Elective: true}
 		return p.proveEndpoints(&f, increase)
 	}
+	minimum := pairLegalLot
+	if !increase {
+		minimum = pairReductionMinimum
+	}
 	if proof := try(full); proof.Legal {
-		if !pairLegalLot(c.Member, full, c.minBound()) {
+		if !minimum(c.Member, full, c.minBound()) {
 			return 0, proof, fmt.Sprintf("%s %s %.10g is below the venue minimum", c.MemberID, c.Direction, full)
 		}
 		return full, proof, ""
@@ -849,7 +853,7 @@ func (p *pairPlan) legalTranche(c pairCandidate) (float64, pairEndpointProof, st
 	if !proof.Legal {
 		return 0, proof, fmt.Sprintf("%s %s: the floored tranche %.10g is not legal (%s)", c.MemberID, c.Direction, qty, proof.Detail)
 	}
-	if !pairLegalLot(c.Member, qty, c.minBound()) {
+	if !minimum(c.Member, qty, c.minBound()) {
 		return 0, proof, fmt.Sprintf("%s %s %.10g is below the venue minimum", c.MemberID, c.Direction, qty)
 	}
 	return qty, proof, ""

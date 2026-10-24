@@ -304,7 +304,11 @@ func (bc *basketCoordinator) pairRoundedEconomics(rt *basketRuntime, env pairQuo
 		if kind == pairPolicyStatusExit {
 			qty = math.Abs(bc.pairExposure(rt, m.MemberID))
 		}
-		if !pairLegalLot(m, qty, minPx) {
+		legal := pairLegalLot(m, qty, minPx)
+		if kind == pairPolicyStatusExit {
+			legal = pairReductionMinimum(m, qty, minPx)
+		}
+		if !legal {
 			what := "target"
 			if kind == pairPolicyStatusExit {
 				what = "close tranche"
@@ -474,4 +478,14 @@ func pairRealAccountFormat(provider string) string {
 		return "okx:swap:<network>:key-<16 hex>"
 	}
 	return "hyperliquid:<network>:<address>"
+}
+
+func pairReductionMinimum(m pairContractMember, baseQty, px float64) bool {
+	if !(baseQty > 0) || !(m.Meta.ContractSize > 0) {
+		return false
+	}
+	if baseQty/m.Meta.ContractSize+1e-12 < m.Meta.MinQty {
+		return false
+	}
+	return !(px > 0 && baseQty*px+1e-9 < m.Meta.MinNotional)
 }

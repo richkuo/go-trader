@@ -2088,13 +2088,16 @@ func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketReba
 	if c.Direction == basketDirectionIncrease && (!ev.valid() || bind == nil) {
 		return false
 	}
+	live := v.LiveShaped()
 	exact, err := pairExactOrderQty(c.Member, qty)
 	if err != nil {
-		bc.pairLogf(rt, "%s %s %.10g held before reservation: %v", c.MemberID, c.Purpose, qty, err)
-		return false
+		if live || c.Direction == basketDirectionIncrease {
+			bc.pairLogf(rt, "%s %s %.10g held before reservation: %v", c.MemberID, c.Purpose, qty, err)
+			return false
+		}
+		exact = pairOrderQty{Native: pairNativeQty(c.Member, qty), Base: qty}
 	}
 	qty = exact.Base
-	live := v.LiveShaped()
 	if live {
 		if err := pairBoundOnGrid(c.Member, c.OrderSide, c.PriceBound); err != nil {
 			bc.noteUnavailableBounds(rt, fmt.Sprintf("%s %s holds before reservation: the live-shaped transport needs a finite positive bound on the venue grid: %v", c.MemberID, c.Purpose, err), now)
