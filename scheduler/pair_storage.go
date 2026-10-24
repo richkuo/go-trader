@@ -1459,7 +1459,9 @@ func (r *basketFileRecords) pairPendingFor(k basketKey) []string {
 				out = append(out, fmt.Sprintf("pair lifecycle is %s", p.Lifecycle))
 			}
 			for _, o := range p.Obligations {
-				out = append(out, fmt.Sprintf("open %s obligation: %s", o.Kind, o.Detail))
+				if pairRecoveryObligation(o) {
+					out = append(out, fmt.Sprintf("open %s obligation: %s", o.Kind, o.Detail))
+				}
 			}
 		}
 	}
