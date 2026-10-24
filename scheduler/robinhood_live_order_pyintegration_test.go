@@ -2118,3 +2118,179 @@ func TestRobinhoodLiveOrderCircuitBreakerNeverSellsAPositionOpenedAfterItsTarget
 		}
 	})
 }
+
+func (e *rhLiveEnv) runCBSharedCycle(holdings rhRoutes) {
+	e.t.Helper()
+	dm := func(msg string) {
+		if !e.mu.TryLock() {
+			e.t.Errorf("owner DM sent while the state lock is held: %s", msg)
+		} else {
+			e.mu.Unlock()
+		}
+		e.notifier.SendOwnerDM(msg)
+	}
+	closer := func(req RobinhoodCloseRequest) (*RobinhoodCloseResult, error) {
+		e.t.Errorf("no close may run for a shared coin, got %+v", req)
+		return nil, fmt.Errorf("unexpected close")
+	}
+	runPendingRobinhoodCircuitCloses(context.Background(), e.state, e.cfg.Strategies, nil, false, e.phasedFetcher(holdings),
+		closer, dm, 2*time.Minute, &e.mu,
+		robinhoodCircuitCloseDeps{store: e.store, prices: map[string]float64{"BTC": 50}, resolve: robinhoodEmergencyResolver(e.deps(), e.cfg, nil), settle: robinhoodDurableSettler(e.deps(), e.cfg, nil)})
+}
+
+func (e *rhLiveEnv) sharedCloseDMs(id string) int {
+	e.mock.mu.Lock()
+	defer e.mock.mu.Unlock()
+	n := 0
+	for _, dm := range e.mock.dms {
+		if strings.Contains(dm.content, "Robinhood CB close skipped: strategy "+id+" ") {
+			n++
+		}
+	}
+	return n
+}
+
+func (e *rhLiveEnv) sharedCloseNotice(id string) RobinhoodSharedCloseNotice {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.state.Strategies[id].RiskState.RobinhoodSharedCloseNotice
+}
+
+func TestRobinhoodLiveOrderCircuitBreakerSharedCoinOwnerDMIsThrottledAcrossRestart(t *testing.T) {
+	clk := &simulatedClock{now: time.Now().UTC().Truncate(time.Second)}
+	if err := bindTradingClock(t.Name(), clk.Now); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unbindTradingClock(t.Name()) })
+	advance := func(d time.Duration) {
+		t.Helper()
+		if err := clk.Set(clk.Now().Add(d)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	throttle := effectiveAlertThrottleInterval()
+
+	e := newRHLiveEnv(t, rhLiveSpot("rh-a", "BTC", 1000), rhLiveSpot("rh-b", "BTC", 1000), rhLiveSpot("rh-c", "BTC", 1000))
+	e.setPosition("rh-a", "BTC", 0.3, 90)
+	e.setPosition("rh-b", "BTC", 0.2, 90)
+	e.ageBook("rh-a", "BTC")
+	e.ageBook("rh-b", "BTC")
+	e.latchCB("rh-c")
+	e.tripCB("rh-a")
+	if p := e.pendingRH("rh-a"); p == nil {
+		t.Fatal("the fire must set a book-sized pending close")
+	}
+	held := rhHoldingsPhase(rhHeld("BTC", "1.0"))
+
+	e.runCBSharedCycle(held)
+	if got := e.sharedCloseDMs("rh-a"); got != 1 {
+		t.Fatalf("first drain after the fire: shared-coin DMs = %d, want 1", got)
+	}
+	if p := e.pendingRH("rh-a"); p != nil {
+		t.Fatalf("the shared-only branch must clear the pending close, got %+v", p)
+	}
+	n := e.sharedCloseNotice("rh-a")
+	if n.Coin != "BTC" || !n.LastNotifiedAt.Equal(clk.Now()) {
+		t.Fatalf("the first drain must stamp the marker, got %+v", n)
+	}
+
+	for i := 0; i < 2; i++ {
+		advance(time.Minute)
+		e.runCBSharedCycle(held)
+	}
+	if got := e.sharedCloseDMs("rh-a"); got != 1 {
+		t.Fatalf("recovery cycles inside the window: shared-coin DMs = %d, want 1 (the first drain counts as the first send)", got)
+	}
+
+	e.reopen()
+	if got := e.sharedCloseNotice("rh-a"); got.Coin != "BTC" || !got.LastNotifiedAt.Equal(n.LastNotifiedAt) || !got.CBUntil.Equal(n.CBUntil) {
+		t.Fatalf("the marker must survive a save and load, got %+v want %+v", got, n)
+	}
+	advance(time.Minute)
+	e.runCBSharedCycle(held)
+	if got := e.sharedCloseDMs("rh-a"); got != 1 {
+		t.Fatalf("after a restart inside the window: shared-coin DMs = %d, want 1", got)
+	}
+
+	advance(throttle)
+	e.runCBSharedCycle(held)
+	if got := e.sharedCloseDMs("rh-a"); got != 2 {
+		t.Fatalf("after the throttle interval: shared-coin DMs = %d, want 2", got)
+	}
+	advance(time.Minute)
+	e.runCBSharedCycle(held)
+	if got := e.sharedCloseDMs("rh-a"); got != 2 {
+		t.Fatalf("right after the repeat: shared-coin DMs = %d, want 2", got)
+	}
+
+	e.mu.Lock()
+	e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil = e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil.Add(time.Hour)
+	e.mu.Unlock()
+	advance(time.Minute)
+	e.runCBSharedCycle(held)
+	if got := e.sharedCloseDMs("rh-a"); got != 3 {
+		t.Fatalf("a new CB episode inside the window: shared-coin DMs = %d, want 3", got)
+	}
+
+	e.mu.Lock()
+	e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil = e.state.Strategies["rh-a"].RiskState.CircuitBreakerUntil.Add(time.Hour)
+	e.state.Strategies["rh-a"].robinhoodPartitionSavePending = true
+	e.mu.Unlock()
+	advance(time.Minute)
+	e.runCBSharedCycle(held)
+	if got := e.sharedCloseDMs("rh-a"); got != 4 {
+		t.Fatalf("a failed marker save must still send the DM: shared-coin DMs = %d, want 4", got)
+	}
+	stamped := e.sharedCloseNotice("rh-a")
+	if !stamped.LastNotifiedAt.Equal(clk.Now()) {
+		t.Fatalf("a failed marker save must keep the in-memory stamp, got %+v", stamped)
+	}
+	advance(time.Minute)
+	e.runCBSharedCycle(held)
+	if got := e.sharedCloseDMs("rh-a"); got != 4 {
+		t.Fatalf("the in-memory marker must still throttle after a failed save: shared-coin DMs = %d, want 4", got)
+	}
+	e.mu.Lock()
+	e.state.Strategies["rh-a"].robinhoodPartitionSavePending = false
+	e.mu.Unlock()
+
+	if got := e.sharedCloseDMs("rh-c"); got != 0 {
+		t.Fatalf("a latched strategy with a flat own book must get no shared-coin DM, got %d", got)
+	}
+	if got := e.sharedCloseDMs("rh-b"); got != 0 {
+		t.Fatalf("an unlatched peer must get no shared-coin DM, got %d", got)
+	}
+	if posts := e.allPostQuantities(); len(posts) != 0 {
+		t.Fatalf("no Robinhood order may be sent for a shared coin, got %v", posts)
+	}
+	if got := e.bookQty("rh-a", "BTC"); got != 0.3 {
+		t.Fatalf("book = %v, want 0.3 kept", got)
+	}
+
+	sc := e.sc("rh-a")
+	e.mu.Lock()
+	s := e.state.Strategies["rh-a"]
+	advanceTo := s.RiskState.CircuitBreakerUntil.Add(time.Minute).Sub(clk.Now())
+	e.mu.Unlock()
+	advance(advanceTo)
+	e.mu.Lock()
+	s.RiskState.PeakValue = 1000
+	s.RiskState.MaxDrawdownPct = 50
+	allowed, reason := CheckRisk(&sc, s, 1000, map[string]float64{"BTC": 50}, nil, nil)
+	cleared := s.RiskState.RobinhoodSharedCloseNotice
+	err := e.store.SaveStrategyBook(s)
+	e.mu.Unlock()
+	if !allowed || s.RiskState.CircuitBreaker {
+		t.Fatalf("the CB must unlatch after its cooldown, got allowed=%v reason=%q", allowed, reason)
+	}
+	if !cleared.IsZero() {
+		t.Fatalf("unlatching the CB must clear the marker, got %+v", cleared)
+	}
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	e.reopen()
+	if got := e.sharedCloseNotice("rh-a"); !got.IsZero() {
+		t.Fatalf("the cleared marker must load as no marker, got %+v", got)
+	}
+}
