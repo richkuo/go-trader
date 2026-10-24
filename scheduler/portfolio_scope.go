@@ -131,6 +131,8 @@ type scopeCycleRisk struct {
 	CloseApplied            bool
 	PairValuation           pairValueStatus
 	PairValuationOverdue    map[string]int64
+	PairValuationSince      map[string]int64
+	pairMarked              bool
 }
 
 func scopeCycleRiskFired(scopeRisk map[RiskPartition]*scopeCycleRisk, part RiskPartition) bool {
@@ -199,9 +201,30 @@ func measureScopeCycleRiskMarked(
 	sr.PairValuation.merge(ns)
 	sr.PairValuation.merge(ms)
 	sr.PairValuationOverdue = pm.overdue(sr.PairValuation)
+	sr.PairValuationSince = pm.sinces(sr.PairValuation)
+	sr.pairMarked = pm != nil
 	sr.DailyLossStatus = evaluateDailyLossLimit(pr, scopedStates, scopedCfgs, now)
 	sr.ExposureCapStatus = evaluateExposureCapMarked(pr, scopedStates, scopedCfgs, prices, sr.TotalPV, pm)
 	return sr
+}
+
+func recordPairValuationIncompleteSince(prs *PortfolioRiskState, complete bool, since map[string]int64) {
+	if complete {
+		prs.PairValuationIncompleteSince = time.Time{}
+		return
+	}
+	var earliest int64
+	for _, ms := range since {
+		if ms > 0 && (earliest == 0 || ms < earliest) {
+			earliest = ms
+		}
+	}
+	if earliest == 0 {
+		return
+	}
+	if t := time.UnixMilli(earliest).UTC(); prs.PairValuationIncompleteSince.IsZero() || t.Before(prs.PairValuationIncompleteSince) {
+		prs.PairValuationIncompleteSince = t
+	}
 }
 
 func applyScopeCycleRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
@@ -209,6 +232,9 @@ func applyScopeCycleRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
 	pairComplete := sr.PairValuation.complete()
 	if !pairComplete {
 		sr.PeakRebaselineAvailable = false
+	}
+	if sr.pairMarked {
+		recordPairValuationIncompleteSince(prs, pairComplete, sr.PairValuationSince)
 	}
 	origPeak := prs.PeakValue
 	prevWarningSent := prs.WarningSent

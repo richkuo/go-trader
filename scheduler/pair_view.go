@@ -32,6 +32,7 @@ type pairViewSource interface {
 type pairMarks struct {
 	nowMs int64
 	views pairViewSet
+	saved map[string]int64
 }
 
 type pairAccountUSD struct {
@@ -286,7 +287,37 @@ func (bc *basketCoordinator) preparePairRisk(in basketCycleInputs) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	for _, id := range bc.sortedPairIDs() {
-		bc.preparePairRiskFor(bc.runtimes[id], in)
+		rt := bc.runtimes[id]
+		bc.notePairPrepHostInputs(rt, in)
+		bc.preparePairRiskFor(rt, in)
+	}
+}
+
+func (bc *basketCoordinator) notePairPrepHostInputs(rt *basketRuntime, in basketCycleInputs) {
+	var missing []string
+	if in.PairSnapshotFor == nil {
+		missing = append(missing, "PairSnapshotFor")
+	}
+	if in.PairGeneration == nil {
+		missing = append(missing, "PairGeneration")
+	}
+	var sealed []string
+	for _, m := range rt.Contract.pairMembersSorted() {
+		if m.Source == pairSourceSealedFeed {
+			sealed = append(sealed, m.MemberID)
+		}
+	}
+	note := ""
+	if len(missing) > 0 && len(sealed) > 0 {
+		note = fmt.Sprintf("the host calls preparePairRisk without %s, so sealed member %s has no checked reference: every valuation of it holds and the incomplete-valuation time limit latches; the host must pass its sealed snapshot callback and feed generation",
+			strings.Join(missing, " and "), strings.Join(sealed, ", "))
+	}
+	if note == rt.pairPrepHostNote {
+		return
+	}
+	rt.pairPrepHostNote = note
+	if note != "" {
+		bc.emit(rt, note, true)
 	}
 }
 
@@ -598,12 +629,19 @@ func (bc *basketCoordinator) pairMarksLocked() *pairMarks {
 	}
 	now := bc.pairReaderNow()
 	views := pairViewSet{}
+	saved := map[string]int64{}
 	for _, id := range bc.sortedPairIDs() {
-		for mid, v := range bc.runtimes[id].pairView {
+		rt := bc.runtimes[id]
+		for mid, v := range rt.pairView {
 			views[mid] = v.clone()
 		}
+		if prs := bc.state.partitionRiskIfPresent(rt.Partition); prs != nil && !prs.PairValuationIncompleteSince.IsZero() {
+			for _, mid := range rt.memberIDs() {
+				saved[mid] = prs.PairValuationIncompleteSince.UnixMilli()
+			}
+		}
 	}
-	return &pairMarks{nowMs: now.UnixMilli(), views: views}
+	return &pairMarks{nowMs: now.UnixMilli(), views: views, saved: saved}
 }
 
 func newPairMarks(nowMs int64, views pairViewSet) *pairMarks {
@@ -680,6 +718,28 @@ func (pm *pairMarks) incompleteSinceMs(id string) (int64, bool) {
 	return pm.nowMs, true
 }
 
+func (pm *pairMarks) sinceFor(id string) int64 {
+	since, ok := pm.incompleteSinceMs(id)
+	if saved := pm.saved[id]; saved > 0 && (!ok || saved < since) {
+		return saved
+	}
+	if !ok {
+		return pm.nowMs
+	}
+	return since
+}
+
+func (pm *pairMarks) sinces(st pairValueStatus) map[string]int64 {
+	if pm == nil || st.complete() {
+		return nil
+	}
+	out := make(map[string]int64, len(st.Members))
+	for id := range st.Members {
+		out[id] = pm.sinceFor(id)
+	}
+	return out
+}
+
 func (pm *pairMarks) overdue(st pairValueStatus) map[string]int64 {
 	if pm == nil || st.complete() {
 		return nil
@@ -687,8 +747,8 @@ func (pm *pairMarks) overdue(st pairValueStatus) map[string]int64 {
 	limit := untrustedEquityLatchDeferral.Milliseconds()
 	var out map[string]int64
 	for id := range st.Members {
-		since, ok := pm.incompleteSinceMs(id)
-		if !ok || pm.nowMs-since < limit {
+		since := pm.sinceFor(id)
+		if pm.nowMs-since < limit {
 			continue
 		}
 		if out == nil {

@@ -321,6 +321,7 @@ type basketRuntime struct {
 	pairPrepSeq      uint64
 	pairLastMark     map[string]pairLastMark
 	pairViewNote     string
+	pairPrepHostNote string
 
 	expectedDurable map[string]float64
 	needsDurable    bool

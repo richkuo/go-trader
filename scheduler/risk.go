@@ -446,20 +446,21 @@ type KillSwitchEvent struct {
 }
 
 type PortfolioRiskState struct {
-	PeakValue                  float64           `json:"peak_value"`
-	CurrentDrawdownPct         float64           `json:"current_drawdown_pct"`
-	CurrentMarginDrawdownPct   float64           `json:"current_margin_drawdown_pct,omitempty"`
-	DrawdownReadingSubstituted bool              `json:"drawdown_reading_substituted,omitempty"`
-	UntrustedOverLimitSince    time.Time         `json:"untrusted_over_limit_since,omitempty"`
-	KillSwitchActive           bool              `json:"kill_switch_active"`
-	KillSwitchAt               time.Time         `json:"kill_switch_at,omitempty"`
-	WarningSent                bool              `json:"warning_sent,omitempty"`
-	WarnBandEnteredAt          time.Time         `json:"warn_band_entered_at,omitempty"`
-	LastWarningEquityDDPct     float64           `json:"last_warning_equity_dd_pct,omitempty"`
-	LastWarningMarginDDPct     float64           `json:"last_warning_margin_dd_pct,omitempty"`
-	WarningEquityDeltaPct      float64           `json:"warning_equity_delta_pct,omitempty"`
-	WarningMarginDeltaPct      float64           `json:"warning_margin_delta_pct,omitempty"`
-	Events                     []KillSwitchEvent `json:"events,omitempty"`
+	PeakValue                    float64           `json:"peak_value"`
+	CurrentDrawdownPct           float64           `json:"current_drawdown_pct"`
+	CurrentMarginDrawdownPct     float64           `json:"current_margin_drawdown_pct,omitempty"`
+	DrawdownReadingSubstituted   bool              `json:"drawdown_reading_substituted,omitempty"`
+	UntrustedOverLimitSince      time.Time         `json:"untrusted_over_limit_since,omitempty"`
+	PairValuationIncompleteSince time.Time         `json:"pair_valuation_incomplete_since,omitempty"`
+	KillSwitchActive             bool              `json:"kill_switch_active"`
+	KillSwitchAt                 time.Time         `json:"kill_switch_at,omitempty"`
+	WarningSent                  bool              `json:"warning_sent,omitempty"`
+	WarnBandEnteredAt            time.Time         `json:"warn_band_entered_at,omitempty"`
+	LastWarningEquityDDPct       float64           `json:"last_warning_equity_dd_pct,omitempty"`
+	LastWarningMarginDDPct       float64           `json:"last_warning_margin_dd_pct,omitempty"`
+	WarningEquityDeltaPct        float64           `json:"warning_equity_delta_pct,omitempty"`
+	WarningMarginDeltaPct        float64           `json:"warning_margin_delta_pct,omitempty"`
+	Events                       []KillSwitchEvent `json:"events,omitempty"`
 
 	ManualMarkBasisRebaselined bool `json:"manual_mark_basis_rebaselined,omitempty"`
 	QuotePrecisionRebaselined  bool `json:"quote_precision_rebaselined,omitempty"`

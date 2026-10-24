@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -830,4 +831,140 @@ func TestBasketMemberViewIncompleteValuationEscalatesAfterTheDeferral(t *testing
 			t.Fatalf("a stale reading followed by a valid mark must never latch or trip: %+v %+v (%v)", prs, hl, x.reasons)
 		}
 	})
+}
+
+func (x *pairEscalationEnv) savedSince() time.Time {
+	x.e.mu.RLock()
+	defer x.e.mu.RUnlock()
+	if prs := x.e.state.partitionRiskIfPresent(x.e.rt().Partition); prs != nil {
+		return prs.PairValuationIncompleteSince
+	}
+	return time.Time{}
+}
+
+func (x *pairEscalationEnv) restartAt(at time.Time) {
+	x.e.now = at
+	x.e.restart()
+}
+
+func TestBasketMemberViewIncompleteValuationTimerSurvivesRestarts(t *testing.T) {
+	limit := untrustedEquityLatchDeferral
+	t.Run("restarts inside the deferral do not move the start", func(t *testing.T) {
+		x := newPairEscalationEnv(t, 50)
+		tPre := pairSlotAt(pairTestStart(), 2)
+		x.h.run(tPre)
+		t0 := tPre.Add(time.Minute)
+		x.outage()
+		x.runEvery(t0, t0.Add(4*time.Minute))
+		start := x.savedSince()
+		if start.IsZero() || start.After(t0) {
+			t.Fatalf("the outage start must be saved with the partition risk, got %v (t0 %v)", start, t0)
+		}
+		x.restartAt(t0.Add(5 * time.Minute))
+		x.runEvery(t0.Add(5*time.Minute), t0.Add(9*time.Minute))
+		x.restartAt(t0.Add(10 * time.Minute))
+		x.runEvery(t0.Add(10*time.Minute), t0.Add(13*time.Minute))
+		if got := x.savedSince(); !got.Equal(start) {
+			t.Fatalf("a restart must keep the saved start %v, got %v", start, got)
+		}
+		if held, _ := x.read(); held.KillSwitchActive {
+			t.Fatalf("inside the deferral the reading must not latch: %+v", held)
+		}
+		x.h.run(t0.Add(limit + time.Second))
+		latched, _ := x.read()
+		if !latched.KillSwitchActive {
+			t.Fatalf("an outage longer than the deferral across two restarts must latch, got %+v", latched)
+		}
+		if last := latched.Events[len(latched.Events)-1]; last.Source != "pair_valuation" || !strings.Contains(last.Details, pairTestHL+" has had no checked mark since") {
+			t.Fatalf("the latch must come from the pair valuation timer: %+v", last)
+		}
+	})
+	t.Run("a valid mark after a restart clears the saved start", func(t *testing.T) {
+		x := newPairEscalationEnv(t, 50)
+		tPre := pairSlotAt(pairTestStart(), 2)
+		x.h.run(tPre)
+		t0 := tPre.Add(time.Minute)
+		x.outage()
+		x.runEvery(t0, t0.Add(4*time.Minute))
+		x.restartAt(t0.Add(5 * time.Minute))
+		x.runEvery(t0.Add(5*time.Minute), t0.Add(6*time.Minute))
+		if x.savedSince().IsZero() {
+			t.Fatal("setup: the restarted outage must keep a saved start")
+		}
+		x.hlSeal = ""
+		x.h.run(t0.Add(7 * time.Minute))
+		if got := x.savedSince(); !got.IsZero() {
+			t.Fatalf("a valid mark must clear the saved start, got %v", got)
+		}
+		x.runEvery(t0.Add(8*time.Minute), t0.Add(limit+time.Minute))
+		prs, hl := x.read()
+		if prs.KillSwitchActive || hl.CircuitBreaker {
+			t.Fatalf("a cleared outage must never latch or trip: %+v %+v (%v)", prs, hl, x.reasons)
+		}
+	})
+	t.Run("a saved start left by a lost save clears on the first valid mark", func(t *testing.T) {
+		x := newPairEscalationEnv(t, 50)
+		tPre := pairSlotAt(pairTestStart(), 2)
+		x.h.run(tPre)
+		t0 := tPre.Add(time.Minute)
+		x.outage()
+		x.runEvery(t0, t0.Add(4*time.Minute))
+		if x.savedSince().IsZero() {
+			t.Fatal("setup: the outage start must be saved")
+		}
+		x.hlSeal = ""
+		x.restartAt(t0.Add(limit + time.Minute))
+		if x.savedSince().IsZero() {
+			t.Fatal("setup: the restart must load the old saved start")
+		}
+		x.h.nextManage = t0.Add(limit + time.Minute)
+		x.h.run(t0.Add(limit + time.Minute))
+		prs, hl := x.read()
+		if prs.KillSwitchActive || hl.CircuitBreaker || !prs.PairValuationIncompleteSince.IsZero() {
+			t.Fatalf("a valid first preparation must not latch or trip and must clear the saved start: %+v %+v (%v)", prs, hl, x.reasons)
+		}
+		x.restartAt(t0.Add(limit + 2*time.Minute))
+		if got := x.savedSince(); !got.IsZero() {
+			t.Fatalf("the cleared start must be saved, got %v", got)
+		}
+	})
+}
+
+func TestBasketMemberViewPreparationNamesMissingHostSealInputs(t *testing.T) {
+	idle := newBasketCoordinator(&Config{}, NewAppState(), nil, &sync.RWMutex{}, nil, nil, map[string]*basketRuntime{})
+	if out := captureORCStdout(t, func() { idle.preparePairRisk(basketCycleInputs{Now: pairTestStart()}) }); out != "" {
+		t.Fatalf("a coordinator with no pair must log nothing, got %q", out)
+	}
+
+	e := newPairTestEnv(t, nil)
+	pairViewMatched(t, e)
+	at := pairSlotAt(pairTestStart(), 2)
+	e.now = at
+	e.prepare(at)
+	e.mu.RLock()
+	healthy := e.bc.pairViewsLocked(at)[pairTestHL]
+	e.mu.RUnlock()
+	if !healthy.MarkValid {
+		t.Fatalf("a host with seal inputs must publish a valid sealed mark: %s", healthy.MissingReason)
+	}
+	bare := func(when time.Time) string {
+		return captureORCStdout(t, func() { e.bc.preparePairRisk(basketCycleInputs{Now: when, Once: true}) })
+	}
+	first := bare(at.Add(time.Second))
+	second := bare(at.Add(2 * time.Second))
+	if strings.Count(first, "[CRITICAL]") != 1 || !strings.Contains(first, "without PairSnapshotFor and PairGeneration") || !strings.Contains(first, pairTestHL) {
+		t.Fatalf("a host without seal inputs must raise one CRITICAL that names them, got %q", first)
+	}
+	if strings.Contains(second, "PairSnapshotFor") {
+		t.Fatalf("the missing host input must be reported once, got %q", second)
+	}
+	e.mu.RLock()
+	missing := e.bc.pairViewsLocked(at.Add(2 * time.Second))[pairTestHL]
+	e.mu.RUnlock()
+	if missing.MarkValid || !strings.Contains(missing.MissingReason, "PairSnapshotFor") {
+		t.Fatalf("the sealed member must hold with the missing host input as its reason: %+v", missing.MissingReason)
+	}
+	if out := captureORCStdout(t, func() { e.prepare(at.Add(3 * time.Second)) }); strings.Contains(out, "[CRITICAL]") {
+		t.Fatalf("a host that passes its seal inputs again must raise nothing, got %q", out)
+	}
 }
