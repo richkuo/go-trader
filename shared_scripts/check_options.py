@@ -377,6 +377,22 @@ STRATEGY_MAP = {
 }
 
 
+def _is_live_args(args):
+    for i, arg in enumerate(args):
+        if arg == "--mode=live":
+            return True
+        if arg == "--mode" and i + 1 < len(args) and args[i + 1] == "live":
+            return True
+    return False
+
+
+def _options_live_mode_error(platform):
+    return (
+        "options strategies run as paper only: no venue order path exists for options on "
+        f"{platform}; remove --mode=live (or --mode live) or use --mode=paper"
+    )
+
+
 def main():
     if "--probe-only" in sys.argv:
         sys.exit(0)
@@ -384,8 +400,15 @@ def main():
     platform = "deribit"
     regime_payload_json = None
     remaining = []
-    for arg in args:
-        if arg.startswith("--platform="):
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg.startswith("--mode="):
+            pass
+        elif arg == "--mode":
+            if i + 1 < len(args) and not args[i + 1].startswith("--"):
+                i += 1
+        elif arg.startswith("--platform="):
             platform = arg.split("=", 1)[1]
         elif arg.startswith("--platform"):
             pass
@@ -395,6 +418,22 @@ def main():
             regime_payload_json = ""
         else:
             remaining.append(arg)
+        i += 1
+
+    if _is_live_args(args):
+        print(json.dumps({
+            "strategy": remaining[0] if remaining else "",
+            "underlying": remaining[1].upper() if len(remaining) > 1 else "",
+            "signal": 0,
+            "spot_price": 0,
+            "actions": [],
+            "iv_rank": 0,
+            "regime": None,
+            "platform": platform,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": _options_live_mode_error(platform),
+        }))
+        sys.exit(1)
 
     if len(remaining) < 2:
         print(json.dumps({

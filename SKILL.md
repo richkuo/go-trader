@@ -227,7 +227,7 @@ Set in systemd overrides or exported environment variables before installation:
 | `BINANCE_API_KEY`, `BINANCE_API_SECRET` | Binance live |
 | `HYPERLIQUID_SECRET_KEY`, `HYPERLIQUID_ACCOUNT_ADDRESS` | Hyperliquid live |
 | `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` | TopStep live |
-| `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` | Robinhood live; the login session is kept in `<config folder>/robinhood-session` (see Robinhood session below) |
+| `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` | Robinhood live crypto orders; when set, paper Robinhood checks and the options check also log in for authenticated option data (expiry, strikes, premiums, Greeks); options run as paper only and place no order; the login session is kept in `<config folder>/robinhood-session` (see Robinhood session below) |
 | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE`, `OKX_SANDBOX` | OKX live/demo |
 | `LUNO_API_KEY_ID`, `LUNO_API_KEY_SECRET` | Luno live |
 | `GO_TRADER_ALLOW_MISSING_STATE` | `1` only for a genuine first-run live deployment |
@@ -608,7 +608,7 @@ Run when ANY of:
 3. **Read current state.** Load the config and query the state DB:
    ```sql
    SELECT strategy_id, symbol, quantity, side FROM positions WHERE quantity > 0;
-   SELECT strategy_id, symbol, contracts, action FROM option_positions WHERE contracts > 0;
+   SELECT strategy_id, id, underlying, option_type, strike, expiry, action, quantity FROM option_positions WHERE quantity > 0;
    ```
 4. **Prompt per item.** Default to no change if declined. For runtime defaults, also offer to write the explicit opt-out value.
 5. **Apply through SIGHUP-safe edits** when the field supports it (see Reconfiguration); otherwise require a full restart.
@@ -628,6 +628,11 @@ Never apply a runtime-default change silently when the operator has not been sho
 
 When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
 
+- **Options strategies run as paper only (#1823, runtime default, operator action required).** A `type: options` strategy with `--mode=live` or `--mode live` used to book simulated option trades in the live scope; no option order reached Robinhood, Deribit, IBKR or OKX, and its P&L fed live portfolio risk.
+  Every config load (startup, SIGHUP, `probe`, `inspect`, `storage-inspect`, ledger export and every Discord and dashboard config write) now refuses it on every platform, with or without credentials, and `paper-to-live` refuses every options strategy.
+  `check_options.py` refuses the same live forms with a JSON `error` and exit 1, and now reads its stdin positions when the args hold `--mode=paper` or `--mode paper` (before, either form dropped them, so the 4-position cap saw an empty book).
+  Operator action: list each options strategy with a live mode, back up every state file, then remove it or give it a fresh `id` on `--mode=paper`; never keep the old `id` (split storage then exits 80, single-file storage resumes the phantom book in the paper scope and leaves the live peak unchanged).
+  Full steps and effects: docs/POST_UPDATE_HISTORY.md, Runtime default, #1823.
 - **Robinhood candles follow one timeframe table (#1822, runtime default, no opt-out).** Robinhood strategies now get Yahoo candles through one table (§ Robinhood candles): `2h`, `4h`, `6h`, `8h` and `12h` are built from Yahoo `1h` rows in UTC buckets, `1w` and `1M` map to `1wk` and `1mo`, and the Yahoo range follows `--ohlcv-limit`.
   Startup, SIGHUP and `probe` now refuse a Robinhood strategy whose `args` timeframe, HTF interval or `regime.timeframe` is not in the table, a `2h`, `6h`, `8h` or `12h` `args` timeframe or `regime.timeframe` for a symbol that is not a Yahoo crypto pair, and a `regime.timeframe` of `1M` when a Robinhood spot strategy uses the regime. Before updating, list every Robinhood strategy with its `args` timeframe, HTF (`htf_filter`) and `regime.timeframe`, and fix any refused value first; run `./go-trader probe --config <config>` to check.
   Effects: a Robinhood `1h` or `30m` strategy with `htf_filter` that held every entry since #1826 (its `4h` HTF had no rows) now filters on a real `4h` trend; `60m`, `1wk` and `1mo` strategies get more history (`60m` had a 5-day range), so paper results before and after are not comparable; an unsupported timeframe in the chart shows an error instead of an empty chart. The Robinhood options regime keeps its `4h` Yahoo series for stock underlyings.
@@ -785,7 +790,7 @@ Global slash commands register at startup, covering every guild the bot is in pl
 | `add-strategy <name> <platform> <asset>` | Generates a Hyperliquid perps (always paper) or BinanceUS spot entry. The name must be a known short name. An entry-only candidate listed in `addStrategyEntryOnlyCandidates` also gets its explicit `close_strategy` (with tier params where listed) and `closed_bar_decisions: true`, so it decides on the closed bars its study used, plus `stop_loss_atr_mult` where listed (for example `mass_index_reversal`: `tiered_tp_pct` +3%, `stop_loss_atr_mult: 1.0`); otherwise the stop stays the loader default |
 | `remove-strategy <id>` | Removes a strategy after an out-of-band DM confirm. Needs a restart |
 | `add-platform <name>` | Emits a setup checklist. Secrets go in the environment file, never the config |
-| `paper-to-live <strategy>` | Flips `--mode=paper` or `--mode paper` to one `--mode=live` token after a DM confirm. Needs a restart, and refuses while the strategy holds an open position |
+| `paper-to-live <strategy>` | Flips `--mode=paper` or `--mode paper` to one `--mode=live` token after a DM confirm. Needs a restart, refuses while the strategy holds an open position, and refuses every `type: options` strategy (options run as paper only) |
 | `apply-regime-gate` | Interactive picker over type-eligible flat strategies, applies a named regime entry-gate preset, then confirms before writing. It refuses a non-flat target both before and after the confirm. The confirm lists any OTHER strategy whose dormant `allowed_regimes` gate the accompanying `regime.enabled` flip would reactivate — read that list first. Applies through a full restart |
 | `clear-cash-reconcile <strategy>` | Clears the cash-reconcile latch after you confirm virtual cash matches the venue. It never invents or adjusts cash; it only drops the block on live spot buys |
 | `resolve-robinhood-order <strategy> <attempt> [order] [release:attest-no-order]` | Runs a fresh venue check for one held live Robinhood order attempt (`rh-…` id from the alert, the start log or `storage-inspect`). The optional order id is only a lookup key: the order must carry the attempt's `ref_id`, or else match its side, pair, quantity, submit window and account; for a sized sell the quantity is the saved sent quantity, and with no saved sent quantity no field match is tried, so the check never proves that no order exists while a same-pair order without `ref_id` is in the window (#1819). A proven fill moves the attempt to `settling` (the next cycle books it); a proven no-fill releases it. `release:attest-no-order` is the only release without venue proof: it applies only to a `submitting`/`unknown` attempt with no venue order id after its settle window, runs the venue check first, then shows the side, size, `ref_id` and submit window and needs a DM `confirm`; it records `no_fill` with the operator id, prior status, hold reason and evidence. Use it only when the order list cannot be read to its end (more than 20 pages) and the Robinhood order history shows no order. It never sends, cancels or books an order |
@@ -1612,6 +1617,9 @@ Platform conventions:
 | Deribit options | `deribit-` | `check_options.py --platform=deribit` |
 | IBKR options | `ibkr-` | `check_options.py --platform=ibkr` |
 | Luno | `luno-` | Luno adapter and scripts |
+
+Options on every platform run as paper only (#1823): no venue order path exists for options, so `validateConfig` refuses a `type: options` strategy whose args `isLiveArgs` classifies as live, and `check_options.py` refuses the same forms with a JSON `error` and exit 1.
+The `rh-ccall-spy` example below carries no `--mode`, so it runs as paper.
 
 ID conventions: `ts-{strategy}-{symbol}`, `rh-{strategy_short}-{asset_or_symbol}`, `okx-{strategy_short}-{asset}` for spot and options, `okx-{strategy_short}-{asset}-perp` for perps. Options short names: `vol_mean_reversion → vol`, `momentum_options → momentum`, `protective_puts → puts`, `covered_calls → calls`, `wheel`, `butterfly`.
 
@@ -2800,6 +2808,7 @@ Some venues have no safe automated close path:
 | Robinhood | options | `robinhood_options` |
 
 When one triggers, the scheduler enqueues `operator_required: true` and emits a CRITICAL warning every cycle until you intervene.
+The `robinhood_options` row applies only to a pending close saved before #1823, because an options strategy with a live mode no longer loads; such a saved close still loads, renders and clears through the same paths.
 
 ```bash
 curl -s localhost:8099/status | uv run --no-sync python -c "
@@ -2882,6 +2891,7 @@ Per-subsystem mechanism notes for coding agents. `CLAUDE.md` keeps only the guar
 
 ### Config and close defaults (`config.go`, `config_migration.go`, `close_defaults.go`)
 
+- Options paper-only gate (#1823): `validateConfig` appends `strategy[<id>]: ` plus `optionsLiveModeConfigError(<inferred platform>)` (`options_paper_only.go`) for `type: options` with `isLiveArgs`, in the per-strategy loop outside the `skipLiveCredentialChecks` block, so every loader refuses it; `paperToLiveBlockedReason` uses `optionsPaperOnlyReason`, and `check_options.py` ports `isLiveArgs` and emits the same text.
 - v20 (#1681) removes `allow_deprecated` and stamps `allow_no_edge: true` only on explicitly live pre-v20 strategies whose whole effective reference set ran live before; `migrateConfigDataReport` returns the stamp list, the loader keeps the first applied report on `Config` (non-JSON), and `runConfigMigrationDM` delivers it when v20 changed legacy input (versionless included). `LoadConfigForProbe` migrates in memory like `LoadConfigReadOnly`.
 - v19 renames the per-regime stop fields to `*_atr_mult_regime`; legacy-key presence gates the boot rewrite. The seven HL stop owners are mutually exclusive and all-omitted resolves to `DefaultStopLossATRMult=1.0`. A single `*StrategyRef` is accepted, `close_strategy` canonical.
 - `portfolio_risk.paper` is an optional override block with the parent's fields. `scopeRiskConfig(cfg, scope)` merges non-zero override fields over a clone of the parent (zero = inherit). `paper.max_notional_usd` is restart-required like the parent; the other override fields hot-reload.
