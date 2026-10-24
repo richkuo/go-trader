@@ -255,12 +255,19 @@ type basketAction struct {
 	RetryAtMs          int64
 	RecoveryJSON       string
 	BookedJSON         string
+	AcceptedAtMs       int64
+	FillCoverageJSON   string
+	FeeCoverageJSON    string
+	FeeFinal           bool
+	SettlementJSON     string
 
 	durableStatus  string
 	durableApplied float64
-	pendingFee     *pairFeeFix
+	durableFills   string
+	durableFees    string
+	durableLedger  string
+	pendingFee     []*pairFeeFix
 	feeFixUndo     *pairFeeFixUndo
-	feeFinal       bool
 }
 
 func (a *basketAction) pair() bool {
@@ -1021,7 +1028,7 @@ func scanBasketRebalance(scan func(dest ...interface{}) error) (*basketRebalance
 func scanBasketAction(scan func(dest ...interface{}) error) (*basketAction, string, error) {
 	var a basketAction
 	var scope, source, sid string
-	var feePresent, terminal int
+	var feePresent, terminal, feeFinal int
 	if err := scan(&a.ActionID, &scope, &source, &a.BasketID, &a.DeadlineMs, &sid, &a.Symbol, &a.Direction, &a.Seq,
 		&a.OrderSide, &a.PositionSide, &a.Status, &a.RequestedQty, &a.PreQty, &a.PreNotionalUSD, &a.MarkPx, &a.ProtectionJSON,
 		&a.Provider, &a.AccountKey, &a.ClientOrderID, &a.VenueOrderID, &a.EntryIntentID, &a.DecisionBarOpenMs,
@@ -1030,13 +1037,15 @@ func scanBasketAction(scan func(dest ...interface{}) error) (*basketAction, stri
 		&a.GroupMode, &a.Instrument, &a.NativeQty, &a.ContractSize, &a.RequestJSON, &a.QuoteEventID, &a.PriceBound,
 		&a.AcceptDeadlineMs, &a.SubmittedAtMs, &a.ConfirmedNotional, &feePresent, &a.FeeCurrency, &a.FeeAmount,
 		&a.FeeEvidenceID, &a.FeeEvidenceVersion, &a.AppliedNotional, &a.AppliedFeeVersion, &terminal,
-		&a.CoverageThroughMs, &a.RetryCount, &a.RetryAtMs, &a.RecoveryJSON, &a.BookedJSON); err != nil {
+		&a.CoverageThroughMs, &a.RetryCount, &a.RetryAtMs, &a.RecoveryJSON, &a.BookedJSON,
+		&a.AcceptedAtMs, &a.FillCoverageJSON, &a.FeeCoverageJSON, &feeFinal, &a.SettlementJSON); err != nil {
 		return nil, "", err
 	}
 	a.Partition = RiskPartition{Scope: PortfolioScope(scope), Source: source}
-	a.FeePresent, a.Terminal = feePresent != 0, terminal != 0
+	a.FeePresent, a.Terminal, a.FeeFinal = feePresent != 0, terminal != 0, feeFinal != 0
 	a.durableStatus = a.Status
 	a.durableApplied = a.AppliedQty
+	a.durableFills, a.durableFees, a.durableLedger = a.FillCoverageJSON, a.FeeCoverageJSON, a.SettlementJSON
 	return &a, sid, nil
 }
 

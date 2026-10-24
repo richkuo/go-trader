@@ -44,7 +44,9 @@ type basketVenueOutcome struct {
 	FeeEvidenceVersion int64   `json:"fee_evidence_version,omitempty"`
 	FeeFinal           bool    `json:"fee_final,omitempty"`
 
-	Fills []pairVenueFill `json:"fills,omitempty"`
+	FillCoverage []pairConfirmedFill `json:"fill_coverage,omitempty"`
+	FeeCoverage  []pairFeeFill       `json:"fee_coverage,omitempty"`
+	Fills        []pairVenueFill     `json:"fills,omitempty"`
 }
 
 type pairMemberValuation struct {
@@ -257,24 +259,30 @@ func bookBasketPaperReduction(sc StrategyConfig, s *StrategyState, coin string, 
 type pairBookFill struct {
 	Qty float64
 	Px  float64
-	Fee float64
+	Fee pairConfirmedFee
 	OID string
 }
 
-func bookPairFill(sc StrategyConfig, s *StrategyState, cfg *Config, a *basketAction, qty, px, fee float64, obs basketMemberObservation, logger *StrategyLogger) basketBooking {
+func bookPairFill(sc StrategyConfig, s *StrategyState, cfg *Config, a *basketAction, qty, px float64, fee pairConfirmedFee, obs basketMemberObservation, logger *StrategyLogger) basketBooking {
 	if s == nil || !isPairMember(sc) || a == nil || a.StrategyID != sc.ID {
 		return basketBooking{Hold: "the pair booking owner needs the action's pair member and its book"}
 	}
 	var b basketBooking
+	var feeErr error
 	if err := withPairDispatchCostScope(sc, s, func() {
-		b = bookPairFillScoped(sc, s, cfg, a, qty, px, fee, obs, logger)
+		feeErr = withPairConfirmedFeeScope(s, fee, func() {
+			b = bookPairFillScoped(sc, s, cfg, a, qty, px, fee, obs, logger)
+		})
 	}); err != nil {
 		return basketBooking{Hold: "the member cost binding refused the booking before any book change: " + err.Error()}
+	}
+	if feeErr != nil {
+		return basketBooking{Hold: "the confirmed fee was refused before any book change: " + feeErr.Error()}
 	}
 	return b
 }
 
-func bookPairFillScoped(sc StrategyConfig, s *StrategyState, cfg *Config, a *basketAction, qty, px, fee float64, obs basketMemberObservation, logger *StrategyLogger) basketBooking {
+func bookPairFillScoped(sc StrategyConfig, s *StrategyState, cfg *Config, a *basketAction, qty, px float64, fee pairConfirmedFee, obs basketMemberObservation, logger *StrategyLogger) basketBooking {
 	coin := a.Symbol
 	pos := s.Positions[coin]
 	oid := a.VenueOrderID
@@ -314,7 +322,7 @@ func bookPairFillScoped(sc StrategyConfig, s *StrategyState, cfg *Config, a *bas
 			}
 		case "okx":
 			if pos == nil || pos.Quantity <= 0 {
-				exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, signal, coin, px, PerpsSizingFor(sc, px, indicatorsATRValue(obs.Indicators)), qty, oid, fee, EffectiveDirection(sc), 0, logger)
+				exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, signal, coin, px, PerpsSizingFor(sc, px, indicatorsATRValue(obs.Indicators)), qty, oid, fee.DeltaUSD, EffectiveDirection(sc), 0, logger)
 				if err != nil {
 					return basketBooking{Hold: err.Error()}
 				}
@@ -323,7 +331,7 @@ func bookPairFillScoped(sc StrategyConfig, s *StrategyState, cfg *Config, a *bas
 					recordPositionOpen(s, sc, exec.OpenTrade, p)
 				}
 			} else {
-				trades, openTrade := applyPerpsScaleIn(s, sc, coin, px, qty, fee, oid, fee > 0, logger)
+				trades, openTrade := applyPerpsScaleIn(s, sc, coin, px, qty, fee.DeltaUSD, oid, fee.Present, logger)
 				if trades > 0 {
 					if p := s.Positions[coin]; p != nil {
 						recordPositionOpen(s, sc, openTrade, p)
@@ -355,7 +363,7 @@ func bookPairFillScoped(sc StrategyConfig, s *StrategyState, cfg *Config, a *bas
 	} else {
 		qty = pos.Quantity
 	}
-	if _, err := executePerpsSignalWithLotPolicyDeferredOpen(s, signal, coin, px, PerpsSizing{}, qty, oid, fee, EffectiveDirection(sc), frac, logger, nil); err != nil {
+	if _, err := executePerpsSignalWithLotPolicyDeferredOpen(s, signal, coin, px, PerpsSizing{}, qty, oid, fee.DeltaUSD, EffectiveDirection(sc), frac, logger, nil); err != nil {
 		return basketBooking{Hold: err.Error()}
 	}
 	return summarizeBasketBooking(s, from, coin, true, orderSide)

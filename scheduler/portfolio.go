@@ -1052,7 +1052,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if flipCloseQty > 0 && !terminalClose && fillQty > 0 {
 				legFillFee = flipFeeShare(fillFee, closeQty, fillQty)
 			}
-			fee := executionFee(strategyPlatformFee(s, feePlatform, closeQty*execPrice), legFillFee, useFillFee)
+			fee := strategyExecutionFee(s, strategyPlatformFee(s, feePlatform, closeQty*execPrice), legFillFee, useFillFee)
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
@@ -1079,7 +1079,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				Details:         details,
 				ExchangeOrderID: closeOID,
 				ExchangeFee:     fee,
-				FeeSource:       executionFeeSource(legFillFee, useFillFee),
+				FeeSource:       strategyExecutionFeeSource(s, legFillFee, useFillFee),
 				IsClose:         true,
 				RealizedPnL:     grossPnL,
 				PnLGross:        true,
@@ -1153,7 +1153,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			useFillFee = true
 			legFillFee = flipFeeShare(fillFee, qty, fillQty)
 		}
-		fee := executionFee(strategyPlatformFee(s, feePlatform, notional), legFillFee, useFillFee)
+		fee := strategyExecutionFee(s, strategyPlatformFee(s, feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee
 		now := strategyBookNow(s)
 		positionID := newTradePositionID(s.ID, symbol, now)
@@ -1186,7 +1186,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			Details:         fmt.Sprintf("Open long %.6f @ $%s (%s, fee $%.2f)", qty, formatSignalPrice(execPrice), leverageLabel, fee),
 			ExchangeOrderID: openOID,
 			ExchangeFee:     fee,
-			FeeSource:       executionFeeSource(legFillFee, useFillFee),
+			FeeSource:       strategyExecutionFeeSource(s, legFillFee, useFillFee),
 			PnLGross:        true,
 		}
 		trade.Regime = s.Regime
@@ -1241,7 +1241,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			if flipCloseQty > 0 && !terminalClose && fillQty > 0 {
 				legFillFee = flipFeeShare(fillFee, closeQty, fillQty)
 			}
-			fee := executionFee(strategyPlatformFee(s, feePlatform, closeQty*execPrice), legFillFee, useFillFee)
+			fee := strategyExecutionFee(s, strategyPlatformFee(s, feePlatform, closeQty*execPrice), legFillFee, useFillFee)
 			grossPnL := pnl
 			pnl -= fee
 			s.Cash += pnl
@@ -1268,7 +1268,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 				Details:         details,
 				ExchangeOrderID: closeOID,
 				ExchangeFee:     fee,
-				FeeSource:       executionFeeSource(legFillFee, useFillFee),
+				FeeSource:       strategyExecutionFeeSource(s, legFillFee, useFillFee),
 				IsClose:         true,
 				RealizedPnL:     grossPnL,
 				PnLGross:        true,
@@ -1342,7 +1342,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			useFillFee = true
 			legFillFee = flipFeeShare(fillFee, qty, fillQty)
 		}
-		fee := executionFee(strategyPlatformFee(s, feePlatform, notional), legFillFee, useFillFee)
+		fee := strategyExecutionFee(s, strategyPlatformFee(s, feePlatform, notional), legFillFee, useFillFee)
 		s.Cash -= fee
 		now := strategyBookNow(s)
 		positionID := newTradePositionID(s.ID, symbol, now)
@@ -1375,7 +1375,7 @@ func executePerpsSignalWithLeverageInner(s *StrategyState, signal int, symbol st
 			Details:         fmt.Sprintf("Open short %.6f @ $%s (%s, fee $%.2f)", qty, formatSignalPrice(execPrice), leverageLabel, fee),
 			ExchangeOrderID: openOID,
 			ExchangeFee:     fee,
-			FeeSource:       executionFeeSource(legFillFee, useFillFee),
+			FeeSource:       strategyExecutionFeeSource(s, legFillFee, useFillFee),
 			PnLGross:        true,
 		}
 		trade.Regime = s.Regime

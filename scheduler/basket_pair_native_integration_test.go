@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/big"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ type pairLiveShapedDeps struct {
 	OKXFetcher   OKXPositionsFetcher
 	EntryQueries func(*entryIntent) error
 	Quotes       pairQuoteSource
+	Evidence     func(d *pairEvidenceDocument)
 }
 
 func newPairLiveShapedAdmission(t *testing.T, doc []byte, dir string, deps pairLiveShapedDeps) (*pairResearchAdmission, *Config, error) {
@@ -47,7 +49,7 @@ func newPairLiveShapedAdmission(t *testing.T, doc []byte, dir string, deps pairL
 	if err != nil {
 		return nil, nil, err
 	}
-	adm := &pairResearchAdmission{nonce: nonce, kind: pairAdmissionLiveShapedFixture, runID: "fixture", stateDir: dir, deps: pairResearchDeps{VenueFor: deps.VenueFor, Evidence: pairTestEvidence(t, doc, nil), Quotes: deps.Quotes}, raw: raw}
+	adm := &pairResearchAdmission{nonce: nonce, kind: pairAdmissionLiveShapedFixture, runID: "fixture", stateDir: dir, deps: pairResearchDeps{VenueFor: deps.VenueFor, Evidence: pairTestEvidence(t, doc, deps.Evidence), Quotes: deps.Quotes}, raw: raw}
 	pairAdmissionRegistry.Store(nonce, adm)
 	t.Cleanup(adm.release)
 	cfg, err := loadPairResearchConfig(adm, doc)
@@ -74,6 +76,11 @@ func pairLiveShapedMutate(root map[string]interface{}) {
 
 func newPairLiveShapedEnv(t *testing.T, closers *pairNativeClosers) *pairTestEnv {
 	t.Helper()
+	return newPairLiveShapedEnvWithEvidence(t, closers, nil)
+}
+
+func newPairLiveShapedEnvWithEvidence(t *testing.T, closers *pairNativeClosers, evidence func(d *pairEvidenceDocument)) *pairTestEnv {
+	t.Helper()
 	registerPairTestPolicy(t)
 	dir := filepath.Join(t.TempDir(), "fixture")
 	doc := pairTestDoc(t, dir, pairLiveShapedMutate)
@@ -97,6 +104,7 @@ func newPairLiveShapedEnv(t *testing.T, closers *pairNativeClosers) *pairTestEnv
 		OKXFetcher:   func() ([]OKXPosition, error) { return nil, nil },
 		EntryQueries: func(*entryIntent) error { return fmt.Errorf("no live entry query is permitted") },
 		Quotes:       quotes.collector,
+		Evidence:     evidence,
 	}
 	adm, cfg, err := newPairLiveShapedAdmission(t, doc, dir, deps)
 	if err != nil {
@@ -118,19 +126,74 @@ type pairNativeClosers struct {
 	okx OKXLiveCloser
 }
 
-func pairHLFee(out basketVenueOutcome) basketVenueOutcome {
-	out.FeeCurrency = "USDC"
+type pairTestFill struct {
+	id       string
+	qty      string
+	notional string
+	atMs     int64
+}
+
+type pairTestFeeRec struct {
+	id       string
+	amount   string
+	currency string
+}
+
+func pairTestDecimal(f float64) string {
+	d, err := pairDecimalFromFloat(f)
+	if err != nil {
+		panic(err)
+	}
+	return string(d)
+}
+
+func pairWithFills(out basketVenueOutcome, fills ...pairTestFill) basketVenueOutcome {
+	out.FillCoverage = nil
+	q, n := new(big.Rat), new(big.Rat)
+	for _, f := range fills {
+		rec, err := pairConfirmedFill{FillID: f.id, VenueTimeMs: f.atMs, BaseQty: f.qty, NativeNotional: f.notional}.sealed()
+		if err != nil {
+			panic(err)
+		}
+		out.FillCoverage = append(out.FillCoverage, rec)
+		rq, _ := new(big.Rat).SetString(f.qty)
+		rn, _ := new(big.Rat).SetString(f.notional)
+		q.Add(q, rq)
+		n.Add(n, rn)
+	}
+	out.CumQty, out.CumNotional = pairRatFloat(q), pairRatFloat(n)
 	return out
 }
 
-func pairFee(out basketVenueOutcome, version int64, amount float64, currency string, final bool) basketVenueOutcome {
-	out.FeePresent = true
-	out.FeeCurrency = currency
-	out.FeeAmount = amount
-	out.FeeEvidenceID = "fee-1"
-	out.FeeEvidenceVersion = version
+func pairWithFees(out basketVenueOutcome, final bool, fees ...pairTestFeeRec) basketVenueOutcome {
+	byID := map[string]pairConfirmedFill{}
+	for _, f := range out.FillCoverage {
+		byID[f.FillID] = f
+	}
+	out.FeeCoverage = nil
+	for _, f := range fees {
+		e, ok := byID[f.id]
+		if !ok {
+			e = pairConfirmedFill{FillID: f.id, BaseQty: "0.01", NativeNotional: "600"}
+		}
+		rec, err := pairFeeFill{FillID: e.FillID, VenueTimeMs: e.VenueTimeMs, BaseQty: e.BaseQty, NativeNotional: e.NativeNotional, FeeCurrency: f.currency, FeeAmount: f.amount}.sealed()
+		if err != nil {
+			panic(err)
+		}
+		out.FeeCoverage = append(out.FeeCoverage, rec)
+	}
+	out.FeePresent = len(fees) > 0
+	out.FeeEvidenceVersion = int64(len(fees))
+	out.FeeCurrency, out.FeeAmount, out.FeeEvidenceID = "", 0, ""
 	out.FeeFinal = final
 	return out
+}
+
+func pairFee(out basketVenueOutcome, amount float64, currency string, final bool) basketVenueOutcome {
+	if len(out.FillCoverage) == 0 {
+		out = pairWithFills(out, pairTestFill{id: "f1", qty: pairTestDecimal(out.CumQty), notional: pairTestDecimal(out.CumNotional)})
+	}
+	return pairWithFees(out, final, pairTestFeeRec{id: out.FillCoverage[0].FillID, amount: pairTestDecimal(amount), currency: currency})
 }
 
 func TestBasketPairLiveShapedFactoryRefusesUncontrolledDependencies(t *testing.T) {
@@ -166,6 +229,21 @@ func TestBasketPairLiveShapedFactoryRefusesUncontrolledDependencies(t *testing.T
 	}
 }
 
+func pairThreeFills() basketVenueOutcome {
+	return pairWithFills(basketVenueOutcome{Outcome: basketVenueFilled, Terminal: true},
+		pairTestFill{id: "a", qty: "0.02", notional: "1196"}, pairTestFill{id: "b", qty: "0.02", notional: "1196"}, pairTestFill{id: "c", qty: "0.02", notional: "1196"})
+}
+
+func (e *pairTestEnv) savedTradeFee(orderID string) (float64, string) {
+	e.t.Helper()
+	var fee float64
+	var source string
+	if err := e.db().db.QueryRow(`SELECT exchange_fee, fee_source FROM trades WHERE symbol = 'BTC' AND exchange_order_id = ? ORDER BY rowid DESC LIMIT 1`, orderID).Scan(&fee, &source); err != nil {
+		e.t.Fatal(err)
+	}
+	return fee, source
+}
+
 func TestBasketPairFeeEvidenceAppliesOnceByVersion(t *testing.T) {
 	e := newPairLiveShapedEnv(t, &pairNativeClosers{})
 	e.runner.respond = func(r pairPolicyRequest) (pairPolicyResult, error) {
@@ -174,99 +252,104 @@ func TestBasketPairFeeEvidenceAppliesOnceByVersion(t *testing.T) {
 		}
 		return pairEnterResult(r, 0.06), nil
 	}
-	fill := basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * 59800, Terminal: true}
+	fill := pairThreeFills()
 	pairOpenVenue(e, pairTestOKX, fill)
 	e.slotStep(0)
 	a := e.actionsByPurpose(pairPurposeEntry)[0]
 	if a.AppliedQty != 0 || a.Status != basketActionUnresolved && a.Status != basketActionSettling {
-		t.Fatalf("a live-shaped fill without fee evidence must hold settlement: %+v", a)
+		t.Fatalf("complete execution evidence without a fee record must hold settlement: %+v", a)
 	}
-	if o := e.rt().Pair.Progress.obligation("fee_unconfirmed", pairTestOKX, a.ActionID); o == nil {
+	if o := e.rt().Pair.Progress.obligation(pairObligationFeeUnconfirmed, pairTestOKX, a.ActionID); o == nil {
 		t.Fatal("the held settlement must keep a visible fee obligation")
 	}
+	if got := e.bc.pairExposure(e.rt(), pairTestOKX); !basketQtyEqual(got, -0.06) {
+		t.Fatalf("the confirmed unapplied fill must stay visible to risk and recovery, exposure %v", got)
+	}
+	if plan := e.bc.pairPlanFor(e.rt(), e.bc.pairValuationsLocked(e.rt())); !basketQtyEqual(plan.Legs[pairTestOKX].Unapplied, -0.06) {
+		t.Fatalf("the pair risk plan must count the confirmed unapplied fill, got %v", plan.Legs[pairTestOKX].Unapplied)
+	}
 	e.assertBooks("held for fee evidence", 0, 0)
-	for _, bad := range []basketVenueOutcome{pairFee(fill, 1, 0, "USDT", false), pairFee(fill, 2, -0.5, "USDT", false), pairFee(fill, 3, 1.2, "", false)} {
-		pairAnswerVenue(e, a, bad)
-		e.step(e.now.Add(time.Second))
-		if a.AppliedQty != 0 {
-			t.Fatalf("zero, negative or currency-less fee evidence version %d booked a fill", bad.FeeEvidenceVersion)
-		}
+	pairAnswerVenue(e, a, pairWithFees(fill, false, pairTestFeeRec{id: "a", amount: "1.2"}))
+	e.step(e.now.Add(time.Second))
+	if a.AppliedQty != 0 || e.rt().Pair.Progress.obligation(pairObligationFeeInvalid, pairTestOKX, a.ActionID) == nil || e.rt().Pair.Progress.IncreasesFrozen {
+		t.Fatalf("a currency-less fee record must hold visibly without booking or freezing: %+v %+v", a, e.rt().Pair.Progress)
 	}
 	e.restart()
 	a = e.actionsByPurpose(pairPurposeEntry)[0]
-	if e.rt().Pair.Progress.obligation("fee_unconfirmed", pairTestOKX, a.ActionID) == nil || a.AppliedQty != 0 {
-		t.Fatal("the interim fee hold must persist unchanged across a restart")
+	if e.rt().Pair.Progress.obligation(pairObligationFeeUnconfirmed, pairTestOKX, a.ActionID) == nil || a.AppliedQty != 0 {
+		t.Fatal("the fee hold must persist unchanged across a restart")
 	}
-	pairAnswerVenue(e, a, pairFee(fill, 4, 1.80, "USDT", false))
+	okx := e.state.Strategies[pairTestOKX]
+	cash := okx.Cash
+	pairAnswerVenue(e, a, pairWithFees(fill, false, pairTestFeeRec{id: "a", amount: "0", currency: "USDT"}))
 	e.step(e.now.Add(time.Second))
-	e.assertBooks("booked with the confirmed fee", 0, -0.06)
-	if math.Abs(a.AppliedFee-1.80) > 1e-9 || a.AppliedFeeVersion != 4 || a.Status != basketActionUnresolved {
-		t.Fatalf("the booking must apply fee version 4 and stay queryable until the fee is final: %+v", a)
+	e.assertBooks("booked with a known zero fee", 0, -0.06)
+	if a.AppliedFee != 0 || a.AppliedFeeVersion != 1 || a.Status != basketActionUnresolved || okx.Cash != cash {
+		t.Fatalf("a known zero fee must book as confirmed evidence with no modeled cost: cash %v->%v %+v", cash, okx.Cash, a)
 	}
-	var tradeFee float64
-	if err := e.db().db.QueryRow(`SELECT exchange_fee FROM trades WHERE symbol = 'BTC' AND exchange_order_id = ?`, a.ClientOrderID).Scan(&tradeFee); err != nil {
-		t.Fatal(err)
+	if fee, source := e.savedTradeFee(a.ClientOrderID); fee != 0 || source != FeeSourceUserFillsPending {
+		t.Fatalf("the trade row must keep the confirmed zero fee with a pending source while fills b and c have no fee record, got %v %q", fee, source)
 	}
-	if math.Abs(tradeFee-1.80) > 1e-9 {
-		t.Fatalf("the trade row fee is %v, want 1.80", tradeFee)
+	if e.rt().Pair.Progress.obligation(pairObligationFeeIncomplete, pairTestOKX, a.ActionID) == nil || e.rt().Pair.Progress.obligation(pairObligationFeeUnconfirmed, pairTestOKX, a.ActionID) != nil {
+		t.Fatalf("partial fee coverage must keep fee_incomplete visible and clear the quantity hold: %+v", e.rt().Pair.Progress.Obligations)
 	}
-	prevFee := 1.80
+	prev := 0.0
 	for _, step := range []struct {
-		version int64
-		amount  float64
-		final   bool
-	}{{5, 2.10, false}, {6, 1.95, true}} {
-		cash := e.state.Strategies[pairTestOKX].Cash
-		pairAnswerVenue(e, a, pairFee(fill, step.version, step.amount, "USDT", step.final))
+		fees  []pairTestFeeRec
+		total float64
+		final bool
+	}{
+		{[]pairTestFeeRec{{"a", "0", "USDT"}, {"b", "-0.5", "USDT"}}, -0.5, false},
+		{[]pairTestFeeRec{{"a", "0", "USDT"}, {"b", "-0.5", "USDT"}, {"c", "1.95", "USDT"}}, 1.45, true},
+	} {
+		before := okx.Cash
+		pairAnswerVenue(e, a, pairWithFees(fill, step.final, step.fees...))
 		e.step(e.now.Add(time.Second))
 		e.step(e.now.Add(time.Second))
-		if got := e.state.Strategies[pairTestOKX].Cash; math.Abs((cash-got)-(step.amount-prevFee)) > 1e-9 {
-			t.Fatalf("fee version %d moved cash by %v, want the signed delta %v once", step.version, cash-got, step.amount-prevFee)
+		if got := before - okx.Cash; math.Abs(got-(step.total-prev)) > 1e-9 {
+			t.Fatalf("fee version %d moved cash by %v, want the newly covered signed delta %v once", len(step.fees), got, step.total-prev)
 		}
-		prevFee = step.amount
-		if math.Abs(a.AppliedFee-step.amount) > 1e-9 || a.AppliedFeeVersion != step.version {
-			t.Fatalf("fee version %d must apply its signed delta once: %+v", step.version, a)
+		prev = step.total
+		if math.Abs(a.AppliedFee-step.total) > 1e-9 || a.AppliedFeeVersion != int64(len(step.fees)) {
+			t.Fatalf("fee version %d must apply its newly covered fee once: %+v", len(step.fees), a)
 		}
-		if err := e.db().db.QueryRow(`SELECT exchange_fee FROM trades WHERE symbol = 'BTC' AND exchange_order_id = ?`, a.ClientOrderID).Scan(&tradeFee); err != nil {
-			t.Fatal(err)
-		}
-		if math.Abs(tradeFee-step.amount) > 1e-9 {
-			t.Fatalf("after fee version %d the trade row fee is %v", step.version, tradeFee)
+		if fee, _ := e.savedTradeFee(a.ClientOrderID); math.Abs(fee-step.total) > 1e-9 {
+			t.Fatalf("after fee version %d the trade row fee is %v", len(step.fees), fee)
 		}
 	}
-	if a.Status != basketActionCommitted {
-		t.Fatalf("final fee evidence must commit the action, got %s", a.Status)
+	if a.Status != basketActionCommitted || !a.FeeFinal || e.rt().Pair.Progress.obligation(pairObligationFeeIncomplete, pairTestOKX, a.ActionID) != nil {
+		t.Fatalf("final complete fee evidence must commit the action and clear fee_incomplete: %+v", a)
 	}
-	gotCash := e.state.Strategies[pairTestOKX].Cash
+	gotCash := okx.Cash
 	e.restart()
 	if math.Abs(e.state.Strategies[pairTestOKX].Cash-gotCash) > 1e-9 {
 		t.Fatalf("a restart changed the cash after the fee deltas: %v -> %v", gotCash, e.state.Strategies[pairTestOKX].Cash)
 	}
 	var appliedFee float64
-	var version int64
-	if err := e.db().db.QueryRow(`SELECT applied_fee, applied_fee_version FROM basket_member_actions WHERE action_id = ?`, a.ActionID).Scan(&appliedFee, &version); err != nil {
+	var version, final int64
+	if err := e.db().db.QueryRow(`SELECT applied_fee, applied_fee_version, fee_final FROM basket_member_actions WHERE action_id = ?`, a.ActionID).Scan(&appliedFee, &version, &final); err != nil {
 		t.Fatal(err)
 	}
-	if math.Abs(appliedFee-1.95) > 1e-9 || version != 6 {
-		t.Fatalf("the saved applied fee is %v at version %d", appliedFee, version)
+	if math.Abs(appliedFee-1.45) > 1e-9 || version != 3 || final != 1 {
+		t.Fatalf("the saved applied fee is %v at version %d with finality %d", appliedFee, version, final)
 	}
 	var intentFee float64
 	if err := e.db().db.QueryRow(`SELECT applied_fee FROM entry_order_intents WHERE intent_id = ?`, a.EntryIntentID).Scan(&intentFee); err != nil {
 		t.Fatal(err)
 	}
-	if math.Abs(intentFee-1.95) > 1e-9 {
+	if math.Abs(intentFee-1.45) > 1e-9 {
 		t.Fatalf("the linked intent applied fee is %v", intentFee)
 	}
-	conflict := pairFee(fill, 6, 9.99, "USDT", true)
 	e2 := newPairLiveShapedEnv(t, &pairNativeClosers{})
-	pairOpenVenue(e2, pairTestOKX, pairFee(fill, 1, 1.5, "USDT", false))
+	single := basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * 59800, Terminal: true}
+	pairOpenVenue(e2, pairTestOKX, pairFee(single, 1.5, "USDT", false))
 	e2.slotStep(0)
 	b := e2.actionsByPurpose(pairPurposeEntry)[0]
-	conflict.FeeEvidenceVersion = 1
-	pairAnswerVenue(e2, b, conflict)
+	pairAnswerVenue(e2, b, pairFee(single, 9.99, "USDT", true))
 	e2.step(e2.now.Add(time.Second))
-	if math.Abs(b.AppliedFee-1.5) > 1e-9 || !e2.rt().Pair.Progress.IncreasesFrozen {
-		t.Fatalf("conflicting content at one fee identity and version must hold without applying: %+v", b)
+	p := e2.rt().Pair.Progress
+	if math.Abs(b.AppliedFee-1.5) > 1e-9 || !p.IncreasesFrozen || p.obligation(pairObligationFeeConflict, pairTestOKX, b.ActionID) == nil || !p.alerted("fee_conflict|"+b.ActionID) || b.FeeFinal {
+		t.Fatalf("conflicting content at one fee identity and version must freeze increases with one CRITICAL alert and no charge: %+v %+v", b, p)
 	}
 }
 
@@ -302,12 +385,12 @@ func TestBasketPairKillSwitchRostersResolveBothLegs(t *testing.T) {
 		}
 		return pairEnterResult(r, 0.06), nil
 	}
-	fill := func(px float64) basketVenueOutcome {
-		return pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * px, Terminal: true}, 1, 1.5, "USDT", true)
+	fill := func(px float64, cur string) basketVenueOutcome {
+		return pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * px, Terminal: true}, 1.5, cur, true)
 	}
-	pairOpenVenue(env, pairTestOKX, fill(59800))
+	pairOpenVenue(env, pairTestOKX, fill(59800, "USDT"))
 	env.slotStep(0)
-	pairOpenVenue(env, pairTestHL, pairHLFee(fill(60200)))
+	pairOpenVenue(env, pairTestHL, fill(60200, "USDC"))
 	env.slotStep(1)
 	env.assertBooks("matched live-shaped pair", 0.06, -0.06)
 	env.mu.Lock()
@@ -405,12 +488,12 @@ func newPairKillSwitchFixture(t *testing.T) *pairKillSwitchFixture {
 		}
 		return pairEnterResult(r, 0.06), nil
 	}
-	fill := func(px float64) basketVenueOutcome {
-		return pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * px, Terminal: true}, 1, 1.5, "USDT", true)
+	fill := func(px float64, cur string) basketVenueOutcome {
+		return pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * px, Terminal: true}, 1.5, cur, true)
 	}
-	pairOpenVenue(f.env, pairTestOKX, fill(59800))
+	pairOpenVenue(f.env, pairTestOKX, fill(59800, "USDT"))
 	f.env.slotStep(0)
-	pairOpenVenue(f.env, pairTestHL, pairHLFee(fill(60200)))
+	pairOpenVenue(f.env, pairTestHL, fill(60200, "USDC"))
 	f.env.slotStep(1)
 	f.env.assertBooks("matched live-shaped pair", 0.06, -0.06)
 	return f
@@ -571,25 +654,24 @@ func TestBasketPairKillSwitchPartialNativeFillIsConfirmedPartial(t *testing.T) {
 func TestBasketPairFeeCorrectionOnCloseKeepsTheLossStreak(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		v2   float64
-	}{{"fee raised", 2.30}, {"fee lowered", 1.30}} {
+		yFee string
+		dy   float64
+	}{{"added positive fee", "1.4", 1.40}, {"added rebate", "-0.5", -0.50}} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newPairLiveShapedEnv(t, &pairNativeClosers{})
 			pairEnterExitRunner(e, 0.06)
-			open := func(px float64) basketVenueOutcome {
-				return pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * px, Terminal: true}, 1, 1.5, "USDT", true)
+			open := func(px float64, cur string) basketVenueOutcome {
+				return pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * px, Terminal: true}, 1.5, cur, true)
 			}
-			pairOpenVenue(e, pairTestOKX, open(59800))
+			pairOpenVenue(e, pairTestOKX, open(59800, "USDT"))
 			e.slotStep(0)
-			pairOpenVenue(e, pairTestHL, pairHLFee(open(60200)))
+			pairOpenVenue(e, pairTestHL, open(60200, "USDC"))
 			e.slotStep(1)
 			e.assertBooks("matched", 0.06, -0.06)
-			exitFill := func(px float64) basketVenueOutcome {
-				return pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * px, Terminal: true}, 1, 1.80, "USDT", false)
-			}
-			hlExit := pairHLFee(exitFill(59600))
-			hlExit.FeeFinal = true
-			pairOpenVenue(e, pairTestOKX, exitFill(60300))
+			okxExit := pairWithFills(basketVenueOutcome{Outcome: basketVenueFilled, Terminal: true},
+				pairTestFill{id: "x", qty: "0.03", notional: "1809"}, pairTestFill{id: "y", qty: "0.03", notional: "1809"})
+			hlExit := pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * 59600, Terminal: true}, 1.80, "USDC", true)
+			pairOpenVenue(e, pairTestOKX, pairWithFees(okxExit, false, pairTestFeeRec{"x", "0.9", "USDT"}))
 			pairOpenVenue(e, pairTestHL, hlExit)
 			for i := 2; i < 8 && e.signed(pairTestOKX) != 0; i++ {
 				at := pairSlotAt(pairTestStart(), i)
@@ -605,8 +687,8 @@ func TestBasketPairFeeCorrectionOnCloseKeepsTheLossStreak(t *testing.T) {
 					exit = a
 				}
 			}
-			if exit == nil || exit.Status != basketActionUnresolved || !basketQtyEqual(exit.AppliedQty, 0.06) {
-				t.Fatalf("setup: the okx exit must be booked and wait for final fee evidence: %+v", exit)
+			if exit == nil || exit.Status != basketActionUnresolved || !basketQtyEqual(exit.AppliedQty, 0.06) || math.Abs(exit.AppliedFee-0.9) > 1e-9 {
+				t.Fatalf("setup: the okx exit must book with its covered fee and wait for the remaining fee evidence: %+v", exit)
 			}
 			rows := exit.bookedTrades()
 			if len(rows) == 0 || rows[len(rows)-1].ClosedPositionID == "" {
@@ -621,13 +703,13 @@ func TestBasketPairFeeCorrectionOnCloseKeepsTheLossStreak(t *testing.T) {
 			if err := e.store.SavePartition(e.state, e.rt().Partition); err != nil {
 				t.Fatal(err)
 			}
-			pairAnswerVenue(e, exit, pairFee(exitFill(60300), 2, tc.v2, "USDT", true))
+			pairAnswerVenue(e, exit, pairWithFees(okxExit, true, pairTestFeeRec{"x", "0.9", "USDT"}, pairTestFeeRec{"y", tc.yFee, "USDT"}))
 			e.step(e.now.Add(time.Second))
 			e.step(e.now.Add(time.Second))
-			if exit.AppliedFeeVersion != 2 {
-				t.Fatalf("fee version 2 must apply: %+v", exit)
+			if exit.AppliedFeeVersion != 2 || exit.Status != basketActionCommitted {
+				t.Fatalf("fee version 2 must apply the added fill's fee and commit: %+v", exit)
 			}
-			want := daily - (tc.v2 - 1.80)
+			want := daily - tc.dy
 			check := func(label string) {
 				t.Helper()
 				r := e.state.Strategies[pairTestOKX].RiskState
@@ -646,8 +728,8 @@ func TestBasketPairFeeCorrectionOnCloseKeepsTheLossStreak(t *testing.T) {
 			if err := e.db().db.QueryRow(`SELECT exchange_fee FROM trades WHERE symbol = 'BTC' AND is_close = 1 AND exchange_order_id = ?`, exit.ClientOrderID).Scan(&tradeFee); err != nil {
 				t.Fatal(err)
 			}
-			if math.Abs(closedPnL-(-31.80-(tc.v2-1.80))) > 1e-6 || math.Abs(tradeFee-tc.v2) > 1e-9 {
-				t.Fatalf("the saved close must carry the corrected fee once: realized %v fee %v", closedPnL, tradeFee)
+			if math.Abs(closedPnL-(-30.90-tc.dy)) > 1e-6 || math.Abs(tradeFee-(0.9+tc.dy)) > 1e-9 {
+				t.Fatalf("the saved close must carry the added fee once: realized %v fee %v", closedPnL, tradeFee)
 			}
 			e.restart()
 			check("after a restart")
