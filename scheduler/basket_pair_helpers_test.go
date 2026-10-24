@@ -172,6 +172,9 @@ type pairFixtureQuotes struct {
 	mu           sync.Mutex
 	enabled      bool
 	err          error
+	refDisabled  bool
+	refErr       error
+	refReads     int
 	receiptLagMs int64
 	reads        int
 	block        chan struct{}
@@ -224,6 +227,10 @@ func (q *pairFixtureQuotes) readQuote(ctx context.Context, r pairMemberRead) (pa
 	q.mu.Lock()
 	q.reads++
 	enabled, err, lag, block, onRead := q.enabled, q.err, q.receiptLagMs, q.block, q.onRead
+	if r.Side != "" {
+		q.refReads++
+		enabled, err = !q.refDisabled, q.refErr
+	}
 	okxBids, okxAsks, hlBids, hlAsks := q.okxBids, q.okxAsks, q.hlBids, q.hlAsks
 	q.mu.Unlock()
 	if onRead != nil {
@@ -515,8 +522,7 @@ type pairScriptedVenue struct {
 	live      bool
 	virtual   bool
 	seq       *int
-	val       pairMemberValuation
-	valErr    error
+	fillMark  float64
 	submits   []basketAction
 	queries   map[string][]basketVenueOutcome
 	outcomes  []basketVenueOutcome
@@ -549,18 +555,6 @@ func (v *pairScriptedVenue) NewClientOrderID() (string, error) {
 	defer v.mu.Unlock()
 	*v.seq++
 	return fmt.Sprintf("%s-%06d", v.provider, *v.seq), nil
-}
-func (v *pairScriptedVenue) Valuation(m pairContractMember, nowMs int64) (pairMemberValuation, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.valErr != nil {
-		return pairMemberValuation{}, v.valErr
-	}
-	out := v.val
-	if out.EvidenceMs == 0 {
-		out.EvidenceMs = nowMs
-	}
-	return out, nil
 }
 func (v *pairScriptedVenue) fill(a *basketAction, out basketVenueOutcome) basketVenueOutcome {
 	if out.ClientOrderID == "" {
@@ -603,7 +597,7 @@ func (v *pairScriptedVenue) Submit(a *basketAction) (basketVenueOutcome, error) 
 		if out.Outcome == basketVenueFilled && out.CumQty == 0 {
 			px := a.PriceBound
 			if px <= 0 {
-				px = v.val.Mark
+				px = v.fillMark
 			}
 			out.CumQty, out.CumNotional, out.Terminal = a.RequestedQty, a.RequestedQty*px, true
 		}
@@ -611,7 +605,7 @@ func (v *pairScriptedVenue) Submit(a *basketAction) (basketVenueOutcome, error) 
 	}
 	px := a.PriceBound
 	if px <= 0 {
-		px = v.val.Mark
+		px = v.fillMark
 	}
 	return v.fill(a, basketVenueOutcome{Outcome: basketVenueFilled, CumQty: a.RequestedQty, CumNotional: a.RequestedQty * px, Terminal: true}), nil
 }
@@ -645,11 +639,10 @@ type pairTestVenues struct {
 
 func newPairTestVenues(live bool) *pairTestVenues {
 	v := &pairTestVenues{}
-	conv := map[string]float64{"USD": 1, "USDC": 1, "USDT": 1}
 	v.hl = &pairScriptedVenue{mu: &v.mu, seq: &v.seq, member: pairTestHL, provider: entryProviderHyperliquid, account: "synthetic:hl-research", live: live, virtual: !live,
-		val: pairMemberValuation{Mark: 60000, UpperPx: 60300, LowerPx: 59700, MaxAgeMs: 5000, ContractSize: 1, Conversions: conv, FeeRate: 0.00045}, queries: map[string][]basketVenueOutcome{}}
+		fillMark: 60000, queries: map[string][]basketVenueOutcome{}}
 	v.okx = &pairScriptedVenue{mu: &v.mu, seq: &v.seq, member: pairTestOKX, provider: entryProviderOKX, account: "synthetic:okx-research", live: live, virtual: !live,
-		val: pairMemberValuation{Mark: 60100, UpperPx: 60400, LowerPx: 59800, MaxAgeMs: 5000, ContractSize: 0.01, Conversions: conv, FeeRate: 0.0005}, queries: map[string][]basketVenueOutcome{}}
+		fillMark: 60100, queries: map[string][]basketVenueOutcome{}}
 	return v
 }
 
@@ -768,11 +761,19 @@ func pairTestStart() time.Time {
 
 func newPairTestEnv(t *testing.T, mutate func(root map[string]interface{})) *pairTestEnv {
 	t.Helper()
+	return newPairTestEnvEvidence(t, mutate, nil)
+}
+
+func newPairTestEnvEvidence(t *testing.T, mutate func(root map[string]interface{}), evidence func(d *pairEvidenceDocument)) *pairTestEnv {
+	t.Helper()
 	registerPairTestPolicy(t)
 	dir := filepath.Join(t.TempDir(), "run")
 	doc := pairTestDoc(t, dir, mutate)
 	venues := newPairTestVenues(false)
 	deps := pairTestDeps(t, doc, venues)
+	if evidence != nil {
+		deps.Evidence = pairTestEvidence(t, doc, evidence)
+	}
 	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, deps)
 	if err != nil {
 		t.Fatalf("newPairResearchAdmission: %v", err)
@@ -871,7 +872,12 @@ func (e *pairTestEnv) step(at time.Time) {
 	e.now = at
 	e.bc.beginCycle()
 	e.observe("")
+	e.prepare(at)
 	e.bc.step(e.inputs(at))
+}
+
+func (e *pairTestEnv) prepare(at time.Time) {
+	e.bc.preparePairRisk(basketCycleInputs{Now: at, Once: true, PairSnapshotFor: e.sealFor, PairGeneration: e.feedGeneration})
 }
 
 func (e *pairTestEnv) inputs(at time.Time) basketCycleInputs {
@@ -1012,6 +1018,7 @@ type pairHostRun struct {
 func newPairTestHost(e *pairTestEnv, interval time.Duration) *pairTestHost {
 	h := &pairTestHost{e: e, interval: interval, nextManage: e.now, marks: map[string]float64{"BTC": 60000}}
 	h.manage = func(time.Time, map[RiskPartition]*scopeCycleRisk) { e.observe("") }
+	h.prepare = func(in basketCycleInputs) { e.bc.preparePairRisk(in) }
 	return h
 }
 
@@ -1043,8 +1050,9 @@ func (h *pairTestHost) run(at time.Time) time.Duration {
 		parts := activePartitions(cfg.Strategies)
 		risk := make(map[RiskPartition]*scopeCycleRisk, len(parts))
 		e.mu.RLock()
+		pm := e.bc.pairMarksLocked()
 		for _, p := range parts {
-			risk[p] = measureScopeCycleRisk(p, partitionRiskConfig(cfg, p), cfg.Strategies, state, h.marks, nil, nil, true, false, at)
+			risk[p] = measureScopeCycleRiskMarked(p, partitionRiskConfig(cfg, p), cfg.Strategies, state, h.marks, nil, nil, true, false, at, pm)
 		}
 		e.mu.RUnlock()
 		e.mu.Lock()

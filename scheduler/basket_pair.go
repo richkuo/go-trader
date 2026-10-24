@@ -66,30 +66,50 @@ type pairEnvelope struct {
 }
 
 type pairStepInputs struct {
-	vals   map[string]pairMemberValuation
-	valErr map[string]string
+	views pairViewSet
+	nowMs int64
+}
+
+func (in pairStepInputs) view(id string) (pairMemberValuation, bool) {
+	v, ok := in.views[id]
+	return v, ok
+}
+
+func (in pairStepInputs) at(now time.Time) pairStepInputs {
+	in.nowMs = now.UnixMilli()
+	return in
 }
 
 type pairStepSnapshot struct {
 	slots     map[int64]string
 	actions   map[string]string
 	confirmed map[string]float64
-	books     map[string]float64
+	progress  map[string]string
+	books     map[string]string
 	lifecycle string
 	seq       int64
 }
 
 func (bc *basketCoordinator) pairSnapshot(rt *basketRuntime) pairStepSnapshot {
-	s := pairStepSnapshot{slots: map[int64]string{}, actions: map[string]string{}, confirmed: map[string]float64{}, books: map[string]float64{}}
+	s := pairStepSnapshot{slots: map[int64]string{}, actions: map[string]string{}, confirmed: map[string]float64{}, progress: map[string]string{}, books: map[string]string{}}
 	for d, rb := range rt.Rebalances {
 		s.slots[d] = rb.Status + "|" + rb.TargetsJSON
 	}
 	for id, a := range rt.Actions {
 		s.actions[id] = a.Status
 		s.confirmed[id] = a.ConfirmedQty
+		s.progress[id] = fmt.Sprintf("%v|%v|%v|%d|%v", a.AppliedQty, a.AppliedNotional, a.AppliedFee, a.AppliedFeeVersion, a.ConfirmedNotional)
 	}
 	for _, m := range rt.Contract.Members {
-		s.books[m.StrategyID] = basketPositionSigned(bc.state.Strategies[m.StrategyID], m.Coin)
+		st := bc.state.Strategies[m.StrategyID]
+		book := fmt.Sprintf("%v", basketPositionSigned(st, m.Coin))
+		if st != nil {
+			book += fmt.Sprintf("|%v", st.Cash)
+			if pos := st.Positions[m.Coin]; pos != nil {
+				book += fmt.Sprintf("|%v", pos.AvgCost)
+			}
+		}
+		s.books[m.StrategyID] = book
 	}
 	s.lifecycle = rt.Pair.Progress.Lifecycle
 	s.seq = rt.Pair.Progress.Seq
@@ -106,7 +126,7 @@ func (a pairStepSnapshot) same(b pairStepSnapshot) bool {
 		}
 	}
 	for k, v := range a.actions {
-		if b.actions[k] != v || b.confirmed[k] != a.confirmed[k] {
+		if b.actions[k] != v || b.confirmed[k] != a.confirmed[k] || b.progress[k] != a.progress[k] {
 			return false
 		}
 	}
@@ -354,53 +374,6 @@ func (bc *basketCoordinator) freezePairEnvelope(rt *basketRuntime, slotMs int64,
 	return nil
 }
 
-func (bc *basketCoordinator) pairValuations(rt *basketRuntime, in basketCycleInputs) pairStepInputs {
-	out := pairStepInputs{vals: map[string]pairMemberValuation{}, valErr: map[string]string{}}
-	type req struct {
-		m pairContractMember
-		v pairVenue
-	}
-	var reqs []req
-	for _, m := range rt.Contract.pairMembersSorted() {
-		sc, ok := bc.members[m.MemberID]
-		if !ok {
-			out.valErr[m.MemberID] = "no member configuration"
-			continue
-		}
-		v, err := bc.pairVenueFor(sc)
-		if err != nil {
-			out.valErr[m.MemberID] = err.Error()
-			continue
-		}
-		reqs = append(reqs, req{m: m, v: v})
-	}
-	nowMs := in.Now.UnixMilli()
-	got := make([]pairMemberValuation, len(reqs))
-	errs := make([]error, len(reqs))
-	bc.unlocked(func() {
-		for i, r := range reqs {
-			got[i], errs[i] = r.v.Valuation(r.m, nowMs)
-		}
-	})
-	for i, r := range reqs {
-		if errs[i] != nil {
-			out.valErr[r.m.MemberID] = errs[i].Error()
-			continue
-		}
-		val := got[i]
-		if !basketFinitePositive(val.Mark) || val.MaxAgeMs < 0 || val.EvidenceMs <= 0 {
-			out.valErr[r.m.MemberID] = "the valuation has no finite mark with an evidence time"
-			continue
-		}
-		if !basketFinitePositive(val.ContractSize) || math.Abs(val.ContractSize-r.m.Meta.ContractSize) > 1e-12*math.Max(1, r.m.Meta.ContractSize) {
-			out.valErr[r.m.MemberID] = fmt.Sprintf("the venue contract size %v differs from the saved contract size %v", val.ContractSize, r.m.Meta.ContractSize)
-			continue
-		}
-		out.vals[r.m.MemberID] = val
-	}
-	return out
-}
-
 func (bc *basketCoordinator) stepPair(rt *basketRuntime, in basketCycleInputs) {
 	rt.clock = in.Now
 	bc.notePairStep(rt, in)
@@ -423,14 +396,8 @@ func (bc *basketCoordinator) stepPair(rt *basketRuntime, in basketCycleInputs) {
 			rt.needsDurable = false
 		}
 	}
-	snapBefore := bc.pairSnapshot(rt)
-	inputs := bc.pairValuations(rt, in)
-	rt.pairLastInputs = &inputs
-	if !snapBefore.same(bc.pairSnapshot(rt)) {
-		bc.pairLogf(rt, "the pair records changed while the valuations were collected; this step re-reads them next cycle")
-		return
-	}
 	in = bc.refreshPairInputs(rt, in)
+	inputs := bc.pairValuationsLocked(rt)
 	electiveBlocked := bc.reconcilePairActions(rt, in, inputs)
 	in = bc.refreshPairInputs(rt, in)
 	bc.detectPairExceptions(rt, in)
@@ -881,20 +848,18 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 		rt.touchPairProgress()
 		return bc.persistPair(rt)
 	}
-	val, valOK := inputs.vals[a.StrategyID]
+	val, valOK := inputs.view(a.StrategyID)
 	settleConv := 1.0
+	why := "the coordinator has published no valuation view for this member, so no " + m.Meta.PriceCurrency + " conversion is checked"
 	if valOK {
-		if c, ok := val.conversion(m.Meta.SettlementCurrency); ok {
+		c, cwhy := val.conversionAt(m.Meta.PriceCurrency, now.UnixMilli())
+		if cwhy == "" {
 			settleConv = c
 		} else {
-			valOK = false
+			valOK, why = false, cwhy
 		}
 	}
 	if !valOK {
-		why := inputs.valErr[a.StrategyID]
-		if why == "" {
-			why = "no settlement conversion for " + m.Meta.SettlementCurrency
-		}
 		if p.addObligation(pairObligation{Kind: "settlement_conversion", MemberID: a.StrategyID, ActionID: a.ActionID, Detail: "settlement holds: " + why, AtMs: now.UnixMilli()}) {
 			rt.touchPairProgress()
 			bc.persistPair(rt)
@@ -904,7 +869,8 @@ func (bc *basketCoordinator) settlePairAction(rt *basketRuntime, a *basketAction
 	p.clearObligation("settlement_conversion", a.StrategyID, a.ActionID)
 	feeTotalUSD := 0.0
 	if live {
-		feeConv, convOK := val.conversion(a.FeeCurrency)
+		feeConv, feeWhy := val.conversionAt(a.FeeCurrency, now.UnixMilli())
+		convOK := feeWhy == ""
 		if !a.FeePresent || a.FeeCurrency == "" || !(a.FeeAmount > 0) || !convOK {
 			detail := fmt.Sprintf("confirmed fee evidence is absent, zero, negative, currency-less or has no conversion (present %v, %v %q, version %d); the booking owner cannot keep it until issue 1863, so settlement holds and no modeled fee replaces it", a.FeePresent, a.FeeAmount, a.FeeCurrency, a.FeeEvidenceVersion)
 			changed := p.addObligation(pairObligation{Kind: "fee_unconfirmed", MemberID: a.StrategyID, ActionID: a.ActionID, Detail: detail, AtMs: now.UnixMilli()})
@@ -1363,7 +1329,7 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 	t := &pairTargets{Kind: res.Status, Orientation: res.Orientation, Members: res.Targets, Decision: res.Decision}
 	if res.Status == pairPolicyStatusEnter {
 		t.FirstLeg = pairChooseFirstLeg(rt)
-		if why := bc.pairFullFillCapCheck(rt, res.Targets, in); why != "" {
+		if why := bc.pairFullFillCapCheck(rt, env, res.Targets); why != "" {
 			return hold("the full fill of the frozen targets at their price bounds would break a cap: "+why, false, t)
 		}
 	}
@@ -1375,21 +1341,44 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 	return true
 }
 
-func (bc *basketCoordinator) pairFullFillCapCheck(rt *basketRuntime, targets map[string]pairPolicyMemberTarget, in basketCycleInputs) string {
+func pairEnvelopeRates(em pairEnvelopeMember) map[string]float64 {
+	out := map[string]float64{pairUSD: 1}
+	for _, c := range em.Conversions {
+		if rate, ok := pairDecimalFloat(c.RateUSD); ok && basketFinitePositive(rate) {
+			out[c.Currency] = rate
+		}
+	}
+	return out
+}
+
+func (bc *basketCoordinator) pairFullFillCapCheck(rt *basketRuntime, env pairQuoteEnvelope, targets map[string]pairPolicyMemberTarget) string {
 	var gross, unmatched, maxPx float64
 	venue := map[string]float64{}
+	var bad []string
 	for _, m := range rt.Contract.pairMembersSorted() {
 		t := targets[m.MemberID]
-		n := math.Abs(t.TargetBaseQty) * t.PriceBound
+		em, ok := env.member(m.MemberID)
+		if !ok {
+			return fmt.Sprintf("the verified envelope has no member %s", m.MemberID)
+		}
+		rates := pairEnvelopeRates(em)
+		conv, ok := rates[m.Meta.PriceCurrency]
+		if !ok {
+			return fmt.Sprintf("member %s has no saved %s conversion for its price bound", m.MemberID, m.Meta.PriceCurrency)
+		}
+		px := t.PriceBound * conv
+		n := math.Abs(t.TargetBaseQty) * px
 		gross += n
 		venue[m.Provider] += n
 		unmatched += t.TargetBaseQty
-		if t.PriceBound > maxPx {
-			maxPx = t.PriceBound
+		if px > maxPx {
+			maxPx = px
+		}
+		if why := bc.pairFullFillCollateral(rt, m, em, rates, t.TargetBaseQty, px); why != "" {
+			bad = append(bad, why)
 		}
 	}
 	l := rt.Pair.Limits
-	var bad []string
 	if !basketWithin(gross, l.GrossBudgetUSD) {
 		bad = append(bad, fmt.Sprintf("gross $%.2f > budget $%.2f", gross, l.GrossBudgetUSD))
 	}
@@ -1403,6 +1392,53 @@ func (bc *basketCoordinator) pairFullFillCapCheck(rt *basketRuntime, targets map
 	}
 	sort.Strings(bad)
 	return strings.Join(bad, "; ")
+}
+
+func (bc *basketCoordinator) pairFullFillCollateral(rt *basketRuntime, m pairContractMember, em pairEnvelopeMember, rates map[string]float64, target, pxUSD float64) string {
+	s := bc.state.Strategies[m.MemberID]
+	if s == nil {
+		return m.MemberID + " has no book for the collateral check"
+	}
+	collConv, ok := rates[em.Account.CollateralCurrency]
+	if !ok {
+		return fmt.Sprintf("%s has no saved %s conversion for its account collateral", m.MemberID, em.Account.CollateralCurrency)
+	}
+	eq, ok1 := pairDecimalFloat(em.Account.Equity)
+	free, ok2 := pairDecimalFloat(em.Account.FreeCollateral)
+	if !ok1 || !ok2 {
+		return m.MemberID + " saved account evidence has an unreadable amount"
+	}
+	leg := pairLeg{Member: m, Leverage: EffectiveExchangeLeverage(bc.members[m.MemberID]), Val: pairMemberValuation{FeeRate: m.CostPolicy.TakerFeePct}}
+	posted, bookedCosts, upnl := 0.0, 0.0, 0.0
+	if pos := s.Positions[m.Symbol]; pos != nil && pos.Quantity > 0 {
+		posted = pos.Quantity * pos.AvgCost * leg.imr()
+	}
+	if s.InitialCapital > s.Cash {
+		bookedCosts = s.InitialCapital - s.Cash
+	}
+	priceConv := rates[m.Meta.PriceCurrency]
+	bid, okb := pairTopPx(em.Observation.NativeBids)
+	ask, oka := pairTopPx(em.Observation.NativeAsks)
+	if !okb || !oka {
+		return m.MemberID + " saved observation has no best bid and ask for the adverse valuation"
+	}
+	if target > 0 {
+		upnl = target * (bid*priceConv - pxUSD)
+	} else {
+		upnl = -target * (pxUSD - ask*priceConv)
+	}
+	n := math.Abs(target) * pxUSD
+	fee := n * leg.feeRate()
+	required := n*leg.imr() + fee
+	effFree := math.Min(s.Cash-posted, free*collConv-posted-bookedCosts)
+	if effFree < required {
+		return fmt.Sprintf("%s free collateral $%.2f (smaller of book and saved account evidence) is below the $%.2f margin and fee reserve of the full target", m.MemberID, effFree, required)
+	}
+	effEquity := math.Min(s.Cash, eq*collConv-bookedCosts) + upnl - fee
+	if maint := n * m.Meta.MaintenanceMarginRate; effEquity < maint {
+		return fmt.Sprintf("%s equity $%.2f is below the $%.2f maintenance margin of the full target", m.MemberID, effEquity, maint)
+	}
+	return ""
 }
 
 func (bc *basketCoordinator) freezePairTargets(rt *basketRuntime, rb *basketRebalance, t *pairTargets, holdReason string, now time.Time) error {
@@ -1501,7 +1537,7 @@ func (bc *basketCoordinator) pairIncreaseHold(rt *basketRuntime, in basketCycleI
 }
 
 func (bc *basketCoordinator) pairPlanFor(rt *basketRuntime, inputs pairStepInputs) *pairPlan {
-	plan := &pairPlan{Limits: rt.Pair.Limits, Legs: map[string]*pairLeg{}}
+	plan := &pairPlan{Limits: rt.Pair.Limits, Legs: map[string]*pairLeg{}, NowMs: inputs.nowMs, Views: inputs.views}
 	for _, m := range rt.Contract.pairMembersSorted() {
 		sc := bc.members[m.MemberID]
 		s := bc.state.Strategies[m.MemberID]
@@ -1509,11 +1545,37 @@ func (bc *basketCoordinator) pairPlanFor(rt *basketRuntime, inputs pairStepInput
 		if s != nil {
 			leg.Booked = basketPositionSigned(s, m.Symbol)
 			leg.Cash = s.Cash
-			if pos := s.Positions[m.Symbol]; pos != nil && leg.Leverage > 0 {
-				leg.Posted = pos.Quantity * pos.AvgCost / leg.Leverage
+			if pos := s.Positions[m.Symbol]; pos != nil && pos.Quantity > 0 {
+				leg.AvgCostUSD = pos.AvgCost
+				leg.Posted = pos.Quantity * pos.AvgCost * leg.imr()
+			}
+			if s.InitialCapital > s.Cash {
+				leg.BookedCosts = s.InitialCapital - s.Cash
 			}
 		}
-		leg.Val, leg.ValOK = inputs.vals[m.MemberID]
+		v, ok := inputs.view(m.MemberID)
+		switch {
+		case !ok:
+			leg.ValWhy = "the coordinator has published no valuation view for this member"
+			leg.AccountWhy = leg.ValWhy
+		default:
+			leg.Val = v
+			if rate, why := v.conversionAt(m.Meta.PriceCurrency, inputs.nowMs); why == "" {
+				leg.PriceRate = rate
+			}
+			if lo, hi, okb, why := v.usdBoundsAt(inputs.nowMs); okb && basketFinitePositive(leg.PriceRate) {
+				leg.ValOK = true
+				leg.LowerUSD, leg.UpperUSD = lo, hi
+				leg.MarkUSD, _, _ = v.usdMarkAt(inputs.nowMs)
+			} else {
+				leg.ValWhy = why
+			}
+			if acct, why := v.accountAt(inputs.nowMs); why == "" {
+				leg.Account = acct
+			} else {
+				leg.AccountWhy = why
+			}
+		}
 		plan.Legs[m.MemberID] = leg
 		plan.Order = append(plan.Order, m.MemberID)
 	}
@@ -1524,6 +1586,11 @@ func (bc *basketCoordinator) pairPlanFor(rt *basketRuntime, inputs pairStepInput
 		}
 		if d := a.ConfirmedQty - a.AppliedQty; d > 1e-12 && !a.recoveryNote().NativeBooked {
 			leg.Unapplied += a.signedDelta() * d
+			px := a.ConfirmedAvgPx
+			if dn := a.ConfirmedNotional - a.AppliedNotional; dn > 0 {
+				px = dn / d
+			}
+			leg.UnappliedFills = append(leg.UnappliedFills, pairPendingFill{ActionID: a.ActionID, MemberID: a.StrategyID, Signed: a.signedDelta() * d, PriceBound: px, Elective: a.Direction == basketDirectionIncrease})
 		}
 		if rem := a.RequestedQty - a.ConfirmedQty; rem > 1e-12 {
 			plan.Pending = append(plan.Pending, pairPendingFill{ActionID: a.ActionID, MemberID: a.StrategyID, Signed: a.signedDelta() * rem, PriceBound: a.PriceBound, Elective: pairElectivePurpose(a.Purpose)})
@@ -1587,18 +1654,21 @@ func (bc *basketCoordinator) pairFreshEvent(rt *basketRuntime, memberID string, 
 	return pairQuoteEvent{}, false
 }
 
-func (bc *basketCoordinator) pairDispatchFresh(rt *basketRuntime, inputs pairStepInputs, now time.Time) string {
+func (bc *basketCoordinator) pairDispatchFresh(rt *basketRuntime, inputs pairStepInputs, now time.Time, increase bool) string {
+	nowMs := now.UnixMilli()
 	for _, id := range rt.memberIDs() {
-		v, ok := inputs.vals[id]
+		v, ok := inputs.view(id)
 		if !ok {
-			why := inputs.valErr[id]
-			if why == "" {
-				why = "no valuation"
-			}
-			return id + " valuation is unavailable: " + why
+			return id + " valuation is unavailable: the coordinator has published no valuation view for this member"
 		}
-		if !pairAgeWithin(now.UnixMilli(), v.EvidenceMs, v.MaxAgeMs) {
-			return fmt.Sprintf("%s quote evidence at %d is not within %d ms of the step clock %d", id, v.EvidenceMs, v.MaxAgeMs, now.UnixMilli())
+		why := ""
+		if increase {
+			why = v.increaseReasonAt(nowMs)
+		} else if _, valid, w := v.usdMarkAt(nowMs); !valid {
+			why = w
+		}
+		if why != "" {
+			return id + " valuation is unavailable: " + why
 		}
 	}
 	return ""
@@ -1648,7 +1718,7 @@ func (bc *basketCoordinator) executePair(rt *basketRuntime, in basketCycleInputs
 		if exiting || origin.targets.Kind == pairPolicyStatusExit {
 			freshAt = entryNow
 		}
-		if why := bc.pairDispatchFresh(rt, inputs, freshAt); why != "" {
+		if why := bc.pairDispatchFresh(rt, inputs, freshAt, !(exiting || origin.targets.Kind == pairPolicyStatusExit)); why != "" {
 			if origin.slot != nil && len(rt.actionsFor(origin.slot.DeadlineMs)) == 0 {
 				bc.endPairOrigin(rt, origin.slot, "held", "the frozen decision's quotes failed the freshness check at its first dispatch: "+why, now)
 				return
@@ -1659,7 +1729,7 @@ func (bc *basketCoordinator) executePair(rt *basketRuntime, in basketCycleInputs
 		if rt.Pair.Progress.clearObligation("bounds_unavailable", "", "") {
 			rt.touchPairProgress()
 		}
-		plan := bc.pairPlanFor(rt, inputs)
+		plan := bc.pairPlanFor(rt, inputs.at(freshAt))
 		var acted bool
 		if exiting || origin.targets.Kind == pairPolicyStatusExit {
 			acted = bc.executePairExit(rt, origin, plan, in, inputs)
@@ -1799,7 +1869,7 @@ func (bc *basketCoordinator) executePairEntry(rt *basketRuntime, origin pairOrig
 		bc.pairLogf(rt, "%s increase holds: %s", c.MemberID, gate)
 		return false
 	}
-	bc.recordPairBound(rt, proof, []string{"independent no-fill and full-fill endpoints for every unresolved request", "conservative upper valuation per member with settlement conversion", "saved request price bounds widen the upper valuation"}, now)
+	bc.recordPairBound(rt, proof, []string{"independent no-fill and full-fill endpoints for every unresolved request", "each member's own best ask from its checked reference, converted with its price currency", "saved request price bounds widen the upper valuation", "free collateral is the smaller of book and account evidence, posted margin counted once"}, now)
 	return bc.runPairAction(rt, origin.slot, *c, qty, ev, bind, in)
 }
 
@@ -1809,19 +1879,19 @@ func (bc *basketCoordinator) pairPartitionGate(rt *basketRuntime, c pairCandidat
 		return ""
 	}
 	leg := plan.Legs[c.MemberID]
-	if leg == nil || !leg.ValOK {
-		return "no valuation for the partition gates"
+	if leg == nil || !leg.ValOK || !basketFinitePositive(leg.MarkUSD) {
+		return "no own valuation for the partition gates"
 	}
-	conv, ok := leg.Val.conversion(leg.Member.Meta.SettlementCurrency)
-	if !ok {
-		return "no settlement conversion for the partition gates"
-	}
-	mark := leg.Val.Mark * conv
+	mark := leg.MarkUSD
+	pm := newPairMarks(plan.NowMs, plan.Views)
 	states := filterStatesByPartition(bc.state.Strategies, bc.cfg.Strategies, rt.Partition)
 	cfgs := strategiesInPartition(bc.cfg.Strategies, rt.Partition)
-	prices := map[string]float64{c.Member.Symbol: mark}
 	if pr.MaxNotionalUSD > 0 {
-		if total := PortfolioNotional(states, prices) + qty*mark; total > pr.MaxNotionalUSD {
+		notional, st := portfolioNotionalMarked(states, nil, pm)
+		if !st.complete() {
+			return "the partition notional is incomplete (" + st.label() + ")"
+		}
+		if total := notional + qty*mark; total > pr.MaxNotionalUSD {
 			return fmt.Sprintf("the partition notional would reach $%.2f, above the $%.2f cap", total, pr.MaxNotionalUSD)
 		}
 	}
@@ -1829,8 +1899,14 @@ func (bc *basketCoordinator) pairPartitionGate(rt *basketRuntime, c pairCandidat
 		return ""
 	}
 	var pv float64
+	var pvStatus pairValueStatus
 	for _, st := range states {
-		pv += displayStrategyValue(st, nil)
+		v, vs := displayStrategyValueMarked(st, nil, pm)
+		pv += v
+		pvStatus.merge(vs)
+	}
+	if !pvStatus.complete() {
+		return "the partition value is incomplete (" + pvStatus.label() + ")"
 	}
 	s := bc.state.Strategies[c.MemberID]
 	if s == nil {
@@ -1853,8 +1929,11 @@ func (bc *basketCoordinator) pairPartitionGate(rt *basketRuntime, c pairCandidat
 		clone.Positions[c.Member.Symbol] = &Position{Symbol: c.Member.Symbol, Quantity: qty, AvgCost: mark, Side: c.PositionSide, Multiplier: 1}
 	}
 	hyp[c.MemberID] = &clone
-	before := evaluateExposureCap(pr, states, cfgs, prices, pv)
-	after := evaluateExposureCap(pr, hyp, cfgs, prices, pv)
+	before := evaluateExposureCapMarked(pr, states, cfgs, nil, pv, pm)
+	after := evaluateExposureCapMarked(pr, hyp, cfgs, nil, pv, pm)
+	if after.ValuationIncomplete != "" {
+		return "the partition exposure is incomplete (" + after.ValuationIncomplete + ")"
+	}
 	if c.PositionSide == entrySideLong && after.LongBlocked && after.LongUSD > before.LongUSD {
 		return fmt.Sprintf("the tranche would raise same-direction long exposure to $%.2f above the $%.2f cap", after.LongUSD, after.CapUSD)
 	}
@@ -1898,14 +1977,10 @@ func (bc *basketCoordinator) executePairExit(rt *basketRuntime, origin pairOrigi
 		if origin.targets != nil && origin.targets.Kind == pairPolicyStatusExit {
 			bound = origin.targets.Members[id].PriceBound
 		} else if leg.ValOK {
-			if os == "buy" {
-				bound = leg.Val.UpperPx
-			} else {
-				bound = leg.Val.LowerPx
-			}
+			bound, _ = leg.Val.depthBound(os, math.Abs(e))
 		}
 		if !basketFinitePositive(bound) {
-			bc.noteUnavailableBounds(rt, id+" has no conservative exit price bound", now)
+			bc.noteUnavailableBounds(rt, id+" has no exit price bound from its own checked reference depth", now)
 			return false
 		}
 		cands = append(cands, pairCandidate{MemberID: id, Member: leg.Member, Purpose: pairPurposeExit, Direction: basketDirectionReduce, OrderSide: os, PositionSide: ps, FullQty: math.Abs(e), PriceBound: bound, Current: e})
@@ -1917,8 +1992,8 @@ func (bc *basketCoordinator) executePairExit(rt *basketRuntime, origin pairOrigi
 		return false
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
-		ni := cands[i].FullQty * plan.Legs[cands[i].MemberID].Val.Mark
-		nj := cands[j].FullQty * plan.Legs[cands[j].MemberID].Val.Mark
+		ni := cands[i].FullQty * plan.Legs[cands[i].MemberID].MarkUSD
+		nj := cands[j].FullQty * plan.Legs[cands[j].MemberID].MarkUSD
 		if ni != nj {
 			return ni > nj
 		}
@@ -2211,7 +2286,7 @@ func (bc *basketCoordinator) pairIncreaseStillFresh(rt *basketRuntime, memberID 
 	if again.EvidenceHash != bind.EvidenceHash || again.CapabilityHash != bind.CapabilityHash || again.ReceiptMs != bind.ReceiptMs {
 		return "the selected quote event no longer binds the same saved envelope"
 	}
-	return bc.pairDispatchFresh(rt, bc.pairValuationsLocked(rt), now)
+	return bc.pairDispatchFresh(rt, bc.pairValuationsLocked(rt), now, true)
 }
 
 type pairTransportProof struct {
@@ -2223,9 +2298,8 @@ type pairTransportProof struct {
 }
 
 type pairValuationProof struct {
-	memberID   string
-	evidenceMs int64
-	maxAgeMs   int64
+	memberID string
+	limitMs  int64
 }
 
 func (bc *basketCoordinator) pairTransportProofFor(rt *basketRuntime, a *basketAction, bind *pairIncreaseBinding, increase bool) pairTransportProof {
@@ -2238,12 +2312,12 @@ func (bc *basketCoordinator) pairTransportProofFor(rt *basketRuntime, a *basketA
 	}
 	inputs := bc.pairValuationsLocked(rt)
 	for _, id := range rt.memberIDs() {
-		v, ok := inputs.vals[id]
-		if !ok {
-			pr.valuations = append(pr.valuations, pairValuationProof{memberID: id, maxAgeMs: -1})
-			continue
+		v, ok := inputs.view(id)
+		limit := int64(0)
+		if ok && v.CapabilityValid && v.CollateralValid && v.ConversionValid {
+			limit = v.evidenceLimitMs()
 		}
-		pr.valuations = append(pr.valuations, pairValuationProof{memberID: id, evidenceMs: v.EvidenceMs, maxAgeMs: v.MaxAgeMs})
+		pr.valuations = append(pr.valuations, pairValuationProof{memberID: id, limitMs: limit})
 	}
 	return pr
 }
@@ -2259,18 +2333,15 @@ func (pr pairTransportProof) refusal(nowMs int64) string {
 		return fmt.Sprintf("the selected quote received at %d is outside quote_age_ms %d of the transport time %d", pr.receiptMs, pr.quoteAgeMs, nowMs)
 	}
 	for _, v := range pr.valuations {
-		if v.maxAgeMs < 0 || !pairAgeWithin(nowMs, v.evidenceMs, v.maxAgeMs) {
-			return fmt.Sprintf("%s valuation evidence at %d is not within %d ms of the transport time %d", v.memberID, v.evidenceMs, v.maxAgeMs, nowMs)
+		if v.limitMs <= 0 || nowMs > v.limitMs {
+			return fmt.Sprintf("%s valuation evidence (mark, conversion, capability and account) is valid only through %d, before the transport time %d", v.memberID, v.limitMs, nowMs)
 		}
 	}
 	return ""
 }
 
 func (bc *basketCoordinator) pairValuationsLocked(rt *basketRuntime) pairStepInputs {
-	if rt.pairLastInputs != nil {
-		return *rt.pairLastInputs
-	}
-	return pairStepInputs{vals: map[string]pairMemberValuation{}, valErr: map[string]string{}}
+	return pairStepInputs{views: rt.pairView.clone(), nowMs: rt.clock.UnixMilli()}
 }
 
 func (bc *basketCoordinator) pairRuntimeForMember(provider, instrumentOrSymbol string) (*basketRuntime, pairContractMember, bool) {

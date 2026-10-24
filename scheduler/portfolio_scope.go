@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sort"
 	"time"
 )
@@ -129,6 +130,7 @@ type scopeCycleRisk struct {
 	WarnBandEntered         bool
 	Reason                  string
 	CloseApplied            bool
+	PairValuation           pairValueStatus
 }
 
 func scopeCycleRiskFired(scopeRisk map[RiskPartition]*scopeCycleRisk, part RiskPartition) bool {
@@ -159,29 +161,68 @@ func measureScopeCycleRisk(
 	usedStaleRiskBalance bool,
 	now time.Time,
 ) *scopeCycleRisk {
+	return measureScopeCycleRiskMarked(part, pr, cfgStrategies, state, prices, riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, now, nil)
+}
+
+func measureScopeCycleRiskMarked(
+	part RiskPartition,
+	pr *PortfolioRiskConfig,
+	cfgStrategies []StrategyConfig,
+	state *AppState,
+	prices map[string]float64,
+	riskWalletBalances map[SharedWalletKey]float64,
+	sharedWallets map[SharedWalletKey][]string,
+	pooledEquityComplete bool,
+	usedStaleRiskBalance bool,
+	now time.Time,
+	pm *pairMarks,
+) *scopeCycleRisk {
 	sr := &scopeCycleRisk{Partition: part, Config: pr}
 	scopedCfgs := strategiesInPartition(cfgStrategies, part)
 	scopedStates := filterStatesByPartition(state.Strategies, cfgStrategies, part)
+	var status pairValueStatus
 	if part.IsLive() {
-		sr.TotalPV, sr.UsedPVFallback = computeSubsetPortfolioValue(scopedCfgs, state, prices, riskWalletBalances, sharedWallets)
+		sr.TotalPV, sr.UsedPVFallback, status = computeSubsetPortfolioValueMarked(scopedCfgs, state, prices, riskWalletBalances, sharedWallets, pm)
 		sr.EquityAvailable = pooledEquityComplete
 		sr.EquityTrusted = pooledEquityComplete && !sr.UsedPVFallback && !usedStaleRiskBalance
 		sr.PeakRebaselineAvailable = portfolioPeakRebaselineAvailable(sr.UsedPVFallback, usedStaleRiskBalance, pooledEquityComplete)
 	} else {
-		sr.TotalPV, _ = computeSubsetPortfolioValue(scopedCfgs, state, prices, nil, sharedWallets)
+		sr.TotalPV, _, status = computeSubsetPortfolioValueMarked(scopedCfgs, state, prices, nil, sharedWallets, pm)
 		sr.EquityAvailable = true
 		sr.EquityTrusted = true
 		sr.PeakRebaselineAvailable = true
 	}
-	sr.TotalNotional = PortfolioNotional(scopedStates, prices)
-	sr.PerpsLoss, sr.PerpsMargin = AggregatePerpsMarginInputs(scopedStates, scopedCfgs, prices)
+	sr.PairValuation.merge(status)
+	var ns, ms pairValueStatus
+	sr.TotalNotional, ns = portfolioNotionalMarked(scopedStates, prices, pm)
+	sr.PerpsLoss, sr.PerpsMargin, ms = aggregatePerpsMarginInputsMarked(scopedStates, scopedCfgs, prices, pm)
+	sr.PairValuation.merge(ns)
+	sr.PairValuation.merge(ms)
 	sr.DailyLossStatus = evaluateDailyLossLimit(pr, scopedStates, scopedCfgs, now)
-	sr.ExposureCapStatus = evaluateExposureCap(pr, scopedStates, scopedCfgs, prices, sr.TotalPV)
+	sr.ExposureCapStatus = evaluateExposureCapMarked(pr, scopedStates, scopedCfgs, prices, sr.TotalPV, pm)
 	return sr
+}
+
+func applyIncompletePairScopeRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
+	sr.PeakRebaselineAvailable = false
+	prs.DrawdownReadingSubstituted = true
+	sr.EquityGuardArmed = sr.EquityAvailable && prs.PeakValue > 0
+	sr.KillSwitchFired = prs.KillSwitchActive
+	sr.NotionalBlocked = sr.Config != nil && sr.Config.MaxNotionalUSD > 0
+	sr.DailyLossEntriesHeld = sr.DailyLossStatus.Tripped
+	sr.Warning, sr.WarnBandEntered = false, false
+	sr.Reason = sr.PairValuation.label() + "; the peak, drawdown latch and warning band are not evaluated this cycle, the prior drawdown reading is kept and labelled substituted, and new opens hold"
+	if prs.KillSwitchActive {
+		sr.Reason = fmt.Sprintf("portfolio kill switch is latched (triggered at %s, manual reset required); %s", prs.KillSwitchAt.Format("2006-01-02 15:04:05 UTC"), sr.Reason)
+	}
 }
 
 func applyScopeCycleRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
 	sr.Prs = prs
+	if !sr.PairValuation.complete() {
+		applyIncompletePairScopeRisk(sr, prs)
+		return
+	}
 	origPeak := prs.PeakValue
 	prevWarningSent := prs.WarningSent
 	allowed, notionalBlocked, warning, reason := checkPortfolioRiskWithEquityAvailability(

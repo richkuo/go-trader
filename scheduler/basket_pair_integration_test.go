@@ -705,9 +705,9 @@ func TestBasketPairProtectiveExceptionRecoversThroughFaults(t *testing.T) {
 	e.slotStep(1)
 	e.assertBooks("matched", 0.06, -0.06)
 	e.externalBookChange(pairTestHL, 0)
-	e.venues.okx.mu.Lock()
-	e.venues.okx.valErr = errors.New("quote outage")
-	e.venues.okx.mu.Unlock()
+	e.quotes.mu.Lock()
+	e.quotes.refErr = errors.New("quote outage")
+	e.quotes.mu.Unlock()
 	for _, id := range []string{pairTestHL, pairTestOKX} {
 		sc := e.bc.members[id]
 		sc.Paused = true
@@ -729,9 +729,9 @@ func TestBasketPairProtectiveExceptionRecoversThroughFaults(t *testing.T) {
 	}
 	survivor := e.actionsByPurpose(pairPurposeProtective)[0]
 	pairQueryVenue(e, survivor, basketVenueOutcome{Outcome: basketVenueFilled, CumQty: survivor.RequestedQty, CumNotional: survivor.RequestedQty * 60100, Terminal: true})
-	e.venues.okx.mu.Lock()
-	e.venues.okx.valErr = nil
-	e.venues.okx.mu.Unlock()
+	e.quotes.mu.Lock()
+	e.quotes.refErr = nil
+	e.quotes.mu.Unlock()
 	e.step(pairSlotAt(pairTestStart(), 3))
 	e.assertBooks("survivor flat", 0, 0)
 	e.step(pairSlotAt(pairTestStart(), 4))
@@ -767,8 +767,8 @@ func TestBasketPairReachableFillBoundsAtTheirLimits(t *testing.T) {
 		cap      float64
 		firstQty float64
 	}{
-		{"unmatched cap equality passes the whole first leg", 0.06 * 60400, 0.06},
-		{"one dollar below cuts the first leg to the legal lot", 0.06*60400 - 1, 0.05},
+		{"unmatched cap equality passes the whole first leg", 0.06 * 60100.1, 0.06},
+		{"one dollar below cuts the first leg to the legal lot", 0.06*60100.1 - 1, 0.05},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -808,11 +808,15 @@ func TestBasketPairReachableFillBoundsAtTheirLimits(t *testing.T) {
 	})
 	t.Run("no conservative upper valuation holds", func(t *testing.T) {
 		e := newPairTestEnv(t, nil)
-		e.venues.okx.val.UpperPx = 0
 		pairEnterExitRunner(e, 0.06)
-		e.slotStep(0)
+		at := pairTestStart()
+		e.slot(at, "in-0")
+		e.quotes.mu.Lock()
+		e.quotes.okxAsks = nil
+		e.quotes.mu.Unlock()
+		e.step(at.Add(time.Second))
 		if n := len(e.actionsByPurpose(pairPurposeEntry)); n != 0 {
-			t.Fatalf("a missing upper valuation must hold every elective action, got %d", n)
+			t.Fatalf("a reference with no ask depth has no upper valuation and must hold every elective action, got %d", n)
 		}
 	})
 	t.Run("stale quote at dispatch holds", func(t *testing.T) {
@@ -821,7 +825,9 @@ func TestBasketPairReachableFillBoundsAtTheirLimits(t *testing.T) {
 		at := pairTestStart()
 		e.slot(at, "in-0")
 		now := at.Add(time.Second)
-		e.venues.okx.val.EvidenceMs = now.UnixMilli() - 5000
+		e.quotes.mu.Lock()
+		e.quotes.receiptLagMs = 5000
+		e.quotes.mu.Unlock()
 		e.step(now)
 		if n := len(e.actionsByPurpose(pairPurposeEntry)); n != 1 {
 			t.Fatalf("a quote exactly at its maximum age must pass, got %d actions", n)
@@ -829,7 +835,9 @@ func TestBasketPairReachableFillBoundsAtTheirLimits(t *testing.T) {
 		e2 := newPairTestEnv(t, nil)
 		pairEnterExitRunner(e2, 0.06)
 		e2.slot(at, "in-0")
-		e2.venues.okx.val.EvidenceMs = now.UnixMilli() - 5001
+		e2.quotes.mu.Lock()
+		e2.quotes.receiptLagMs = 5001
+		e2.quotes.mu.Unlock()
 		e2.step(now)
 		if n := len(e2.actionsByPurpose(pairPurposeEntry)); n != 0 {
 			t.Fatalf("a quote one millisecond older than its maximum age must hold, got %d actions", n)
@@ -839,8 +847,13 @@ func TestBasketPairReachableFillBoundsAtTheirLimits(t *testing.T) {
 		}
 	})
 	t.Run("settlement conversion and contract multiplier", func(t *testing.T) {
-		e := newPairTestEnv(t, nil)
-		e.venues.okx.val.Conversions = map[string]float64{"USDT": 0.999}
+		e := newPairTestEnvEvidence(t, nil, func(d *pairEvidenceDocument) {
+			for i := range d.Conversions {
+				if d.Conversions[i].Currency == "USDT" {
+					d.Conversions[i].RateUSD = "0.999"
+				}
+			}
+		})
 		pairEnterExitRunner(e, 0.06)
 		e.slotStep(0)
 		var px float64
@@ -944,7 +957,7 @@ func TestBasketPairConcurrentSavesKeepRecoveryDurable(t *testing.T) {
 }
 
 func TestBasketPairCollateralAndPartitionGatesAtTheirLimits(t *testing.T) {
-	qty, upper, imr, feeRate := 0.06, 60400.0, 0.5, 0.0005
+	qty, upper, imr, feeRate := 0.06, 60100.1, 0.5, 0.00045
 	required := qty*upper*imr + qty*upper*1*feeRate
 	for _, tc := range []struct {
 		name    string

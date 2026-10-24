@@ -250,6 +250,7 @@ func TestBasketPairCollectionSaveFailureSetsDurableGateWithoutRecollection(t *te
 func TestBasketPairCollectionNilOrMismatchedSourceHolds(t *testing.T) {
 	closers := &pairNativeClosers{}
 	e := newPairLiveShapedEnv(t, closers)
+	e.adm.deps.Quotes = nil
 	e.collect = true
 	e.step(pairTestStart().Add(time.Second))
 	if len(e.rt().Rebalances) != 0 {
@@ -733,7 +734,7 @@ func TestBasketPairCollectionNativeReductionReservesWithoutEvidence(t *testing.T
 	}
 	pairOpenVenue(e, pairTestOKX, fill(59800))
 	e.slotStep(0)
-	pairOpenVenue(e, pairTestHL, fill(60200))
+	pairOpenVenue(e, pairTestHL, pairHLFee(fill(60200)))
 	e.slotStep(1)
 	e.assertBooks("matched", 0.06, -0.06)
 	closer := e.bc.pairKillSwitchHLCloser(closers.hl)

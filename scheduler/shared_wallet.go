@@ -32,6 +32,9 @@ var walletKeyRegistry = []struct {
 }
 
 func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
+	if isPairMember(sc) {
+		return SharedWalletKey{}, false
+	}
 	for _, entry := range walletKeyRegistry {
 		if sc.Platform != entry.platform || sc.Type != entry.instrument {
 			continue
@@ -49,6 +52,9 @@ func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
 }
 
 func configuredWalletKeyFor(sc StrategyConfig) (configuredWalletKey, bool) {
+	if isPairMember(sc) {
+		return configuredWalletKey{}, false
+	}
 	for _, entry := range walletKeyRegistry {
 		if sc.Platform != entry.platform || sc.Type != entry.instrument {
 			continue
@@ -337,6 +343,19 @@ func computeSubsetPortfolioValue(
 	walletBalances map[SharedWalletKey]float64,
 	accountShared map[SharedWalletKey][]string,
 ) (float64, bool) {
+	v, fallback, _ := computeSubsetPortfolioValueMarked(subset, state, prices, walletBalances, accountShared, nil)
+	return v, fallback
+}
+
+func computeSubsetPortfolioValueMarked(
+	subset []StrategyConfig,
+	state *AppState,
+	prices map[string]float64,
+	walletBalances map[SharedWalletKey]float64,
+	accountShared map[SharedWalletKey][]string,
+	pm *pairMarks,
+) (float64, bool, pairValueStatus) {
+	var status pairValueStatus
 	if accountShared == nil {
 		accountShared = detectSharedWallets(subset)
 	}
@@ -361,7 +380,9 @@ func computeSubsetPortfolioValue(
 			continue
 		}
 		if s, ok := state.Strategies[sc.ID]; ok {
-			total += PortfolioValue(s, prices)
+			v, vs := portfolioValueMarked(s, prices, pm)
+			total += v
+			status.merge(vs)
 		}
 	}
 
@@ -375,7 +396,9 @@ func computeSubsetPortfolioValue(
 		sumPV := 0.0
 		for _, id := range riskPathWalletMemberIDs(key, subShared[key], subset) {
 			if s, ok := state.Strategies[id]; ok {
-				sumPV += PortfolioValue(s, prices)
+				v, vs := portfolioValueMarked(s, prices, pm)
+				sumPV += v
+				status.merge(vs)
 			}
 		}
 		fmt.Printf("[WARN] shared-wallet %s/%s: balance fetch missing, falling back to sum(member PV)=$%.2f (peak will NOT be updated this cycle)\n",
@@ -383,7 +406,7 @@ func computeSubsetPortfolioValue(
 		total += sumPV
 	}
 
-	return total, usedFallback
+	return total, usedFallback, status
 }
 
 func computeTotalPortfolioValue(
@@ -393,10 +416,22 @@ func computeTotalPortfolioValue(
 	walletBalances map[SharedWalletKey]float64,
 	sharedWallets map[SharedWalletKey][]string,
 ) (float64, bool) {
+	v, fallback, _ := computeTotalPortfolioValueMarked(strategies, state, prices, walletBalances, sharedWallets, nil)
+	return v, fallback
+}
+
+func computeTotalPortfolioValueMarked(
+	strategies []StrategyConfig,
+	state *AppState,
+	prices map[string]float64,
+	walletBalances map[SharedWalletKey]float64,
+	sharedWallets map[SharedWalletKey][]string,
+	pm *pairMarks,
+) (float64, bool, pairValueStatus) {
 	if sharedWallets == nil {
 		sharedWallets = detectSharedWallets(strategies)
 	}
-	return computeSubsetPortfolioValue(strategies, state, prices, walletBalances, sharedWallets)
+	return computeSubsetPortfolioValueMarked(strategies, state, prices, walletBalances, sharedWallets, pm)
 }
 
 func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBalanceFetcher) float64 {

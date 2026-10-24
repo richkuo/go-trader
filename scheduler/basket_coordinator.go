@@ -99,6 +99,9 @@ func newBasketCoordinator(cfg *Config, state *AppState, store *StateStore, mu *s
 			}
 		}
 	}
+	if state != nil && len(bc.sortedPairIDs()) > 0 {
+		state.pairViews = bc
+	}
 	return bc
 }
 

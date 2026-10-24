@@ -18,6 +18,7 @@ type pairLiveShapedDeps struct {
 	HLFetcher    HLStateFetcher
 	OKXFetcher   OKXPositionsFetcher
 	EntryQueries func(*entryIntent) error
+	Quotes       pairQuoteSource
 }
 
 func newPairLiveShapedAdmission(t *testing.T, doc []byte, dir string, deps pairLiveShapedDeps) (*pairResearchAdmission, *Config, error) {
@@ -46,7 +47,7 @@ func newPairLiveShapedAdmission(t *testing.T, doc []byte, dir string, deps pairL
 	if err != nil {
 		return nil, nil, err
 	}
-	adm := &pairResearchAdmission{nonce: nonce, kind: pairAdmissionLiveShapedFixture, runID: "fixture", stateDir: dir, deps: pairResearchDeps{VenueFor: deps.VenueFor, Evidence: pairTestEvidence(t, doc, nil)}, raw: raw}
+	adm := &pairResearchAdmission{nonce: nonce, kind: pairAdmissionLiveShapedFixture, runID: "fixture", stateDir: dir, deps: pairResearchDeps{VenueFor: deps.VenueFor, Evidence: pairTestEvidence(t, doc, nil), Quotes: deps.Quotes}, raw: raw}
 	pairAdmissionRegistry.Store(nonce, adm)
 	t.Cleanup(adm.release)
 	cfg, err := loadPairResearchConfig(adm, doc)
@@ -87,6 +88,7 @@ func newPairLiveShapedEnv(t *testing.T, closers *pairNativeClosers) *pairTestEnv
 			return nil, fmt.Errorf("the controlled fixture sends no okx close")
 		}
 	}
+	quotes := newPairFixtureQuotes(t, doc)
 	deps := pairLiveShapedDeps{
 		VenueFor:     venues.factory(),
 		HLCloser:     closers.hl,
@@ -94,12 +96,13 @@ func newPairLiveShapedEnv(t *testing.T, closers *pairNativeClosers) *pairTestEnv
 		HLFetcher:    func(string) ([]HLPosition, error) { return nil, nil },
 		OKXFetcher:   func() ([]OKXPosition, error) { return nil, nil },
 		EntryQueries: func(*entryIntent) error { return fmt.Errorf("no live entry query is permitted") },
+		Quotes:       quotes.collector,
 	}
 	adm, cfg, err := newPairLiveShapedAdmission(t, doc, dir, deps)
 	if err != nil {
 		t.Fatalf("live-shaped admission: %v", err)
 	}
-	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart(), quotes: newPairFixtureQuotes(t, doc)}
+	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart(), quotes: quotes, generation: 1}
 	e.runner = &pairTestRunner{respond: func(req pairPolicyRequest) (pairPolicyResult, error) { return pairEnterResult(req, 0.06), nil }}
 	e.store = openSourceStore(t, cfg)
 	e.state = NewAppState()
@@ -113,6 +116,11 @@ func newPairLiveShapedEnv(t *testing.T, closers *pairNativeClosers) *pairTestEnv
 type pairNativeClosers struct {
 	hl  HyperliquidLiveCloser
 	okx OKXLiveCloser
+}
+
+func pairHLFee(out basketVenueOutcome) basketVenueOutcome {
+	out.FeeCurrency = "USDC"
+	return out
 }
 
 func pairFee(out basketVenueOutcome, version int64, amount float64, currency string, final bool) basketVenueOutcome {
@@ -299,7 +307,7 @@ func TestBasketPairKillSwitchRostersResolveBothLegs(t *testing.T) {
 	}
 	pairOpenVenue(env, pairTestOKX, fill(59800))
 	env.slotStep(0)
-	pairOpenVenue(env, pairTestHL, fill(60200))
+	pairOpenVenue(env, pairTestHL, pairHLFee(fill(60200)))
 	env.slotStep(1)
 	env.assertBooks("matched live-shaped pair", 0.06, -0.06)
 	env.mu.Lock()
@@ -402,7 +410,7 @@ func newPairKillSwitchFixture(t *testing.T) *pairKillSwitchFixture {
 	}
 	pairOpenVenue(f.env, pairTestOKX, fill(59800))
 	f.env.slotStep(0)
-	pairOpenVenue(f.env, pairTestHL, fill(60200))
+	pairOpenVenue(f.env, pairTestHL, pairHLFee(fill(60200)))
 	f.env.slotStep(1)
 	f.env.assertBooks("matched live-shaped pair", 0.06, -0.06)
 	return f
@@ -573,13 +581,13 @@ func TestBasketPairFeeCorrectionOnCloseKeepsTheLossStreak(t *testing.T) {
 			}
 			pairOpenVenue(e, pairTestOKX, open(59800))
 			e.slotStep(0)
-			pairOpenVenue(e, pairTestHL, open(60200))
+			pairOpenVenue(e, pairTestHL, pairHLFee(open(60200)))
 			e.slotStep(1)
 			e.assertBooks("matched", 0.06, -0.06)
 			exitFill := func(px float64) basketVenueOutcome {
 				return pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * px, Terminal: true}, 1, 1.80, "USDT", false)
 			}
-			hlExit := exitFill(59600)
+			hlExit := pairHLFee(exitFill(59600))
 			hlExit.FeeFinal = true
 			pairOpenVenue(e, pairTestOKX, exitFill(60300))
 			pairOpenVenue(e, pairTestHL, hlExit)

@@ -68,6 +68,8 @@ type AppState struct {
 	LastLeaderboardPostDate    string                                 `json:"last_leaderboard_post_date,omitempty"`
 	LastLeaderboardSummaries   map[string]time.Time                   `json:"last_leaderboard_summaries,omitempty"`
 	LastSummaryPost            map[string]time.Time                   `json:"last_summary_post,omitempty"`
+
+	pairViews pairViewSource
 }
 
 type StrategyState struct {
