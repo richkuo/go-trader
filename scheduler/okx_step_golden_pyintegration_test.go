@@ -42,6 +42,7 @@ type okxGoldenManifestFile struct {
 	SourceCommit      string   `json:"source_commit"`
 	SourceFile        string   `json:"source_file"`
 	SourceSHA256      string   `json:"source_sha256"`
+	CaptureDate       string   `json:"capture_date"`
 	CaptureInvocation string   `json:"capture_invocation"`
 	Scenarios         []string `json:"scenarios"`
 }
@@ -792,7 +793,55 @@ func okxGoldenFloatsClose(a, b string) bool {
 	return math.Abs(x-y) <= okxGoldenFloatRelTol*math.Max(math.Abs(x), math.Abs(y))
 }
 
-func okxGoldenEquivalent(path string, got, want interface{}) string {
+const okxGoldenDateLayout = "2006-01-02"
+
+var okxGoldenDateKeys = map[string]bool{"daily_pnl_date": true, "risk_daily_pnl_date": true}
+
+type okxGoldenDates struct {
+	capture string
+	run     map[string]bool
+}
+
+func okxGoldenParseDate(label, s string) (time.Time, error) {
+	d, err := time.Parse(okxGoldenDateLayout, s)
+	if err != nil || d.Format(okxGoldenDateLayout) != s {
+		return time.Time{}, fmt.Errorf("%s %q is not a %s date", label, s, okxGoldenDateLayout)
+	}
+	return d, nil
+}
+
+func newOKXGoldenDates(capture string, run ...string) (okxGoldenDates, error) {
+	captured, err := okxGoldenParseDate("the golden capture date", capture)
+	if err != nil {
+		return okxGoldenDates{}, err
+	}
+	dates := okxGoldenDates{capture: capture, run: map[string]bool{}}
+	for _, r := range run {
+		d, err := okxGoldenParseDate("the run date", r)
+		if err != nil {
+			return okxGoldenDates{}, err
+		}
+		if d.Before(captured) {
+			return okxGoldenDates{}, fmt.Errorf("the run date %s is before the golden capture date %s", r, capture)
+		}
+		dates.run[r] = true
+	}
+	return dates, nil
+}
+
+func okxGoldenDateEquivalent(path string, got, want interface{}, dates okxGoldenDates) string {
+	g, gok := got.(string)
+	w, wok := want.(string)
+	if !gok || !wok {
+		return okxGoldenEquivalent(path, got, want, dates)
+	}
+	if g == w || (w == dates.capture && dates.run[g]) {
+		return ""
+	}
+	return fmt.Sprintf("%s: got %q, golden %q; a date field may differ only as the golden capture date %s against this run's date", path, g, w, dates.capture)
+}
+
+func okxGoldenEquivalent(path string, got, want interface{}, dates okxGoldenDates) string {
 	switch w := want.(type) {
 	case map[string]interface{}:
 		g, ok := got.(map[string]interface{})
@@ -815,7 +864,11 @@ func okxGoldenEquivalent(path string, got, want interface{}) string {
 			if gok != wok {
 				return fmt.Sprintf("%s.%s: present in projection %t, present in golden %t", path, k, gok, wok)
 			}
-			if why := okxGoldenEquivalent(path+"."+k, gv, wv); why != "" {
+			check := okxGoldenEquivalent
+			if okxGoldenDateKeys[k] {
+				check = okxGoldenDateEquivalent
+			}
+			if why := check(path+"."+k, gv, wv, dates); why != "" {
 				return why
 			}
 		}
@@ -829,7 +882,7 @@ func okxGoldenEquivalent(path string, got, want interface{}) string {
 			return fmt.Sprintf("%s: %d elements, golden has %d", path, len(g), len(w))
 		}
 		for i := range w {
-			if why := okxGoldenEquivalent(fmt.Sprintf("%s[%d]", path, i), g[i], w[i]); why != "" {
+			if why := okxGoldenEquivalent(fmt.Sprintf("%s[%d]", path, i), g[i], w[i], dates); why != "" {
 				return why
 			}
 		}
@@ -854,7 +907,7 @@ func okxGoldenEquivalent(path string, got, want interface{}) string {
 	}
 }
 
-func okxGoldenCompare(got, want []byte) string {
+func okxGoldenCompare(got, want []byte, dates okxGoldenDates) string {
 	if bytes.Equal(got, want) {
 		return ""
 	}
@@ -878,7 +931,7 @@ func okxGoldenCompare(got, want []byte) string {
 	if err != nil {
 		return fmt.Sprintf("golden is not one JSON value: %v", err)
 	}
-	return okxGoldenEquivalent("$", g, w)
+	return okxGoldenEquivalent("$", g, w, dates)
 }
 
 func TestOKXSharedStepOrdinaryGolden(t *testing.T) {
@@ -888,6 +941,7 @@ func TestOKXSharedStepOrdinaryGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	capture := os.Getenv(okxGoldenCaptureEnv) == "1"
+	captureDate := tradingNow().UTC().Format(okxGoldenDateLayout)
 	manifestPath := filepath.Join(schedDir, okxGoldenManifest)
 	digest := okxGoldenSourceDigest(t)
 	var manifest okxGoldenManifestFile
@@ -902,6 +956,9 @@ func TestOKXSharedStepOrdinaryGolden(t *testing.T) {
 		}
 		if capture && manifest.SourceSHA256 != digest {
 			t.Fatalf("refusing to recapture: %s no longer matches the pre-extraction source %s (sha256 %s) recorded in the manifest; the golden traces are the baseline for the extracted owner", okxGoldenSourceFile, manifest.SourceCommit, manifest.SourceSHA256)
+		}
+		if _, err := okxGoldenParseDate("the golden manifest capture_date", manifest.CaptureDate); err != nil && !capture {
+			t.Fatalf("golden manifest: %v", err)
 		}
 	case errors.Is(readErr, os.ErrNotExist) && capture:
 		src, err := os.ReadFile(okxGoldenSourceFile)
@@ -930,7 +987,9 @@ func TestOKXSharedStepOrdinaryGolden(t *testing.T) {
 			names = append(names, name)
 			t.Run(name, func(t *testing.T) {
 				okxGoldenResetTrackers(t)
+				runStart := tradingNow().UTC().Format(okxGoldenDateLayout)
 				raw, logs, barMs, cutoffMs := okxGoldenRun(t, sc, typ, okxGoldenDispatch)
+				runEnd := tradingNow().UTC().Format(okxGoldenDateLayout)
 				joined := strings.Join(logs, "\n")
 				for _, want := range append(sc.Expect["*"], sc.Expect[typ]...) {
 					if !strings.Contains(joined, want) {
@@ -952,7 +1011,11 @@ func TestOKXSharedStepOrdinaryGolden(t *testing.T) {
 				if err != nil {
 					t.Fatalf("golden trace %s is missing (%v); the comparison never skips", path, err)
 				}
-				if why := okxGoldenCompare(got, want); why != "" {
+				dates, err := newOKXGoldenDates(manifest.CaptureDate, runStart, runEnd)
+				if err != nil {
+					t.Fatalf("golden dates: %v", err)
+				}
+				if why := okxGoldenCompare(got, want, dates); why != "" {
 					diffPath := filepath.Join(t.TempDir(), filepath.Base(path))
 					_ = os.WriteFile(diffPath, got, 0o644)
 					t.Fatalf("%s differs from the pre-extraction golden trace %s at %s; the new projection is at %s", name, path, why, diffPath)
@@ -969,7 +1032,7 @@ func TestOKXSharedStepOrdinaryGolden(t *testing.T) {
 			return
 		}
 		m := okxGoldenManifestFile{ProjectionVersion: okxGoldenProjectionVersion, BaseCommit: os.Getenv("OKX_STEP_CAPTURE_BASE"), SourceCommit: os.Getenv("OKX_STEP_CAPTURE_SOURCE_COMMIT"),
-			SourceFile: "scheduler/" + okxGoldenSourceFile, SourceSHA256: digest,
+			SourceFile: "scheduler/" + okxGoldenSourceFile, SourceSHA256: digest, CaptureDate: captureDate,
 			CaptureInvocation: "OKX_STEP_CAPTURE_GOLDEN=1 OKX_STEP_CAPTURE_BASE=<base> OKX_STEP_CAPTURE_SOURCE_COMMIT=<commit> go -C scheduler test -tags pyintegration -run '^TestOKXSharedStepOrdinaryGolden$' -count=1 ./...",
 			Scenarios:         names}
 		if m.BaseCommit == "" || m.SourceCommit == "" {

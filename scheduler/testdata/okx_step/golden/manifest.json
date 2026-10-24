@@ -4,6 +4,7 @@
   "source_commit": "0ac022ead08eeb0ac2d46ee867a7f14c9bb38685",
   "source_file": "scheduler/okx_step.go",
   "source_sha256": "ac20c234fc686de83544db44fa05090c2dfcf958f020f273f5dc52bc3831c969",
+  "capture_date": "2026-10-23",
   "capture_invocation": "OKX_STEP_CAPTURE_GOLDEN=1 OKX_STEP_CAPTURE_BASE=\u003cbase\u003e OKX_STEP_CAPTURE_SOURCE_COMMIT=\u003ccommit\u003e go -C scheduler test -tags pyintegration -run '^TestOKXSharedStepOrdinaryGolden$' -count=1 ./...",
   "scenarios": [
     "check_closed_bar_contract.perps",
