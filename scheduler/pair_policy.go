@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,7 +28,195 @@ const (
 
 type pairPolicyRunner func(ctx context.Context, stdin []byte, timeout time.Duration) (stdout, stderr []byte, err error)
 
-var pairPolicyRunFn pairPolicyRunner
+var pairPolicyRunFn pairPolicyRunner = runPairPolicyProcess
+
+var pairPolicyScript = "shared_scripts/run_pair_policy.py"
+
+var pairPolicyProbeArgv = []string{"--probe-only"}
+
+const (
+	pairPolicyMaxStdoutBytes   = 256 << 10
+	pairPolicyMaxStderrBytes   = 64 << 10
+	pairPolicyMaxDecisionBytes = 64 << 10
+	pairPolicyMaxReasonBytes   = 2048
+	pairTargetsMaxBytes        = 96 << 10
+)
+
+func runPairPolicyProcess(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
+	if timeout <= 0 {
+		return nil, nil, fmt.Errorf("the policy run has no time left")
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	release, err := acquirePythonSlot(runCtx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("waiting for a script slot: %w", err)
+	}
+	defer release()
+	env := map[string]string{"PYTHONDONTWRITEBYTECODE": "1"}
+	stdout, stderr, runErr := spawnPythonProcessWithEnvLimited(runCtx, pairPolicyScript, nil, stdin, timeout, env, pythonOutputLimits{Stdout: pairPolicyMaxStdoutBytes, Stderr: pairPolicyMaxStderrBytes})
+	if runErr == nil && runCtx.Err() != nil {
+		runErr = runCtx.Err()
+	}
+	return stdout, stderr, runErr
+}
+
+var pairPolicyResultFields = map[string]bool{"v": true, "pair_id": true, "slot_ms": true, "contract_fingerprint": true, "input_fingerprint": true,
+	"status": true, "orientation": true, "targets": true, "hold_reason": true, "error": true, "decision": true}
+
+func pairResultInteger(v interface{}) bool {
+	n, ok := v.(pairJSONNumber)
+	if !ok || !pairIntegerPattern.MatchString(string(n)) {
+		return false
+	}
+	_, err := strconv.ParseInt(string(n), 10, 64)
+	return err == nil
+}
+
+func pairResultFinite(v interface{}) bool {
+	n, ok := v.(pairJSONNumber)
+	if !ok {
+		return false
+	}
+	f, err := strconv.ParseFloat(string(n), 64)
+	return err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
+}
+
+func pairResultEmptyString(obj map[string]interface{}, key string) bool {
+	v, ok := obj[key]
+	if !ok {
+		return true
+	}
+	s, isStr := v.(string)
+	return isStr && s == ""
+}
+
+func pairResultSchemaError(obj map[string]interface{}) error {
+	var unknown []string
+	for k := range obj {
+		if !pairPolicyResultFields[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return fmt.Errorf("unknown result fields %s", strings.Join(unknown, ", "))
+	}
+	for _, k := range []string{"v", "slot_ms"} {
+		if !pairResultInteger(obj[k]) {
+			return fmt.Errorf("result field %s must be a JSON integer", k)
+		}
+	}
+	for _, k := range []string{"pair_id", "contract_fingerprint", "input_fingerprint", "status"} {
+		if _, ok := obj[k].(string); !ok {
+			return fmt.Errorf("result field %s must be a JSON string", k)
+		}
+	}
+	for _, k := range []string{"orientation", "hold_reason", "error"} {
+		if v, ok := obj[k]; ok {
+			s, isStr := v.(string)
+			if !isStr {
+				return fmt.Errorf("result field %s must be a JSON string", k)
+			}
+			if len(s) > pairPolicyMaxReasonBytes {
+				return fmt.Errorf("result field %s is %d bytes, above the %d-byte limit", k, len(s), pairPolicyMaxReasonBytes)
+			}
+		}
+	}
+	if _, ok := obj["decision"].(map[string]interface{}); !ok {
+		return fmt.Errorf("result field decision must be a JSON object")
+	}
+	status := obj["status"].(string)
+	targets, hasTargets := obj["targets"]
+	switch status {
+	case pairPolicyStatusEnter, pairPolicyStatusExit:
+		if status == pairPolicyStatusEnter {
+			if s, _ := obj["orientation"].(string); s == "" {
+				return fmt.Errorf("an enter result needs an orientation")
+			}
+		} else if !pairResultEmptyString(obj, "orientation") {
+			return fmt.Errorf("an exit result carries no orientation")
+		}
+		if !pairResultEmptyString(obj, "hold_reason") || !pairResultEmptyString(obj, "error") {
+			return fmt.Errorf("a %s result carries no hold_reason or error", status)
+		}
+		m, ok := targets.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("a %s result needs a targets object", status)
+		}
+		ids := make([]string, 0, len(m))
+		for id := range m {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			t, ok := m[id].(map[string]interface{})
+			if !ok || len(t) != 2 || !pairResultFinite(t["target_base_qty"]) || !pairResultFinite(t["price_bound"]) {
+				return fmt.Errorf("target %s must be exactly {target_base_qty, price_bound} with finite numbers", id)
+			}
+		}
+	case pairPolicyStatusHold, pairPolicyStatusInvalid:
+		if hasTargets && targets != nil {
+			return fmt.Errorf("a %s result carries no targets", status)
+		}
+		if !pairResultEmptyString(obj, "orientation") {
+			return fmt.Errorf("a %s result carries no orientation", status)
+		}
+		if status == pairPolicyStatusHold && !pairResultEmptyString(obj, "error") {
+			return fmt.Errorf("a hold result carries no error")
+		}
+		if status == pairPolicyStatusInvalid && !pairResultEmptyString(obj, "hold_reason") {
+			return fmt.Errorf("an invalid result carries no hold_reason")
+		}
+	default:
+		return fmt.Errorf("unknown status %q", status)
+	}
+	return nil
+}
+
+func pairDecodePolicyResult(stdout []byte) (*pairPolicyResult, error) {
+	tree, err := pairStrictParse(stdout)
+	if err != nil {
+		return nil, err
+	}
+	obj, ok := tree.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("the result is not a JSON object")
+	}
+	if err := pairResultSchemaError(obj); err != nil {
+		return nil, err
+	}
+	var res pairPolicyResult
+	dec := json.NewDecoder(bytes.NewReader(stdout))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&res); err != nil {
+		return nil, err
+	}
+	if len(res.Decision) > pairPolicyMaxDecisionBytes {
+		return nil, fmt.Errorf("the decision is %d bytes, above the %d-byte limit", len(res.Decision), pairPolicyMaxDecisionBytes)
+	}
+	return &res, nil
+}
+
+func pairConversionRates(env pairQuoteEnvelope, memberID string) (map[string]float64, error) {
+	em, ok := env.member(memberID)
+	if !ok {
+		return nil, fmt.Errorf("the verified envelope has no record for member %s", memberID)
+	}
+	out := map[string]float64{pairUSD: 1}
+	for _, c := range em.Conversions {
+		r, err := c.RateUSD.rat()
+		if err != nil {
+			return nil, fmt.Errorf("member %s %s conversion: %w", memberID, c.Currency, err)
+		}
+		f, _ := r.Float64()
+		if !basketFinitePositive(f) {
+			return nil, fmt.Errorf("member %s %s conversion %s is not a finite positive rate", memberID, c.Currency, c.RateUSD)
+		}
+		out[c.Currency] = f
+	}
+	return out, nil
+}
 
 type pairMemberRequest struct {
 	PairID     string `json:"pair_id"`
