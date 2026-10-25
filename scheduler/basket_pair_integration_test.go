@@ -673,9 +673,19 @@ func TestBasketPairProtectiveExceptionRecoversThroughFaults(t *testing.T) {
 	if p.Lifecycle != pairLifecycleRecovery || !p.IncreasesFrozen || len(p.Exceptions) == 0 {
 		t.Fatalf("a unilateral close must record a durable exception and freeze increases: %+v", p)
 	}
+	if prot := e.actionsByPurpose(pairPurposeProtective); len(prot) != 0 {
+		t.Fatalf("a quote outage leaves no fresh reference, so the survivor reduction must hold: %+v", prot)
+	}
+	if o := p.obligation(pairObligationReductionReference, pairTestOKX, ""); o == nil {
+		t.Fatal("the held survivor reduction needs a durable reference obligation")
+	}
+	e.quotes.mu.Lock()
+	e.quotes.refErr = nil
+	e.quotes.mu.Unlock()
+	e.step(pairSlotAt(pairTestStart(), 2).Add(6 * time.Second))
 	prot := e.actionsByPurpose(pairPurposeProtective)
 	if len(prot) != 1 || prot[0].StrategyID != pairTestOKX || prot[0].Direction != basketDirectionReduce {
-		t.Fatalf("the survivor must reduce toward zero under pause and a quote outage: %+v", prot)
+		t.Fatalf("the survivor must reduce toward zero under pause once a fresh reference is published: %+v", prot)
 	}
 	e.restart()
 	if e.rt().Pair.Progress.Lifecycle != pairLifecycleRecovery {
@@ -683,9 +693,6 @@ func TestBasketPairProtectiveExceptionRecoversThroughFaults(t *testing.T) {
 	}
 	survivor := e.actionsByPurpose(pairPurposeProtective)[0]
 	pairQueryVenue(e, survivor, basketVenueOutcome{Outcome: basketVenueFilled, CumQty: survivor.RequestedQty, CumNotional: survivor.RequestedQty * 60100, Terminal: true})
-	e.quotes.mu.Lock()
-	e.quotes.refErr = nil
-	e.quotes.mu.Unlock()
 	e.step(pairSlotAt(pairTestStart(), 3))
 	e.assertBooks("survivor flat", 0, 0)
 	e.step(pairSlotAt(pairTestStart(), 4))

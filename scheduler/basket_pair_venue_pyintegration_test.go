@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -148,6 +150,8 @@ else:
                 return state["price_text"]
             return text(Decimal(repr(price)).quantize(Decimal("0.1"), rounding=ROUND_HALF_EVEN))
         def publicGetPublicInstruments(self, params):
+            if "after_instruments_ms" in state:
+                clock["ms"] = int(state["after_instruments_ms"])
             return {"code": "0", "data": [{"instId": params["instId"], "ctVal": state.get("ct_val", "0.01"), "tickSz": "0.1", "lotSz": "1", "minSz": "1", "state": "live", "settleCcy": "USDT"}]}
         def create_order(self, symbol, type, side, amount, price, params=None):
             params = dict(params or {})
@@ -332,6 +336,12 @@ func (r *pairVenueRig) action(m pairContractMember, purpose, side, posSide strin
 		ContractFingerprint: strings.Repeat("ab", 32)}
 	if dir == basketDirectionIncrease {
 		req.QuoteEventID, req.CapabilityHash, req.EvidenceHash = "pq-fixture", strings.Repeat("cd", 32), strings.Repeat("ef", 32)
+	} else {
+		px := bound + 500
+		if side == "buy" {
+			px = bound - 500
+		}
+		req.ReferenceReceiptMs, req.ReferenceMaxAgeMs, req.ReferencePx = r.now-100, 20000, strconv.FormatFloat(math.Round(px*10)/10, 'f', -1, 64)
 	}
 	a.RequestJSON = marshalEntryJSON(req)
 	return a
@@ -945,4 +955,104 @@ func TestBasketPairVenueRealCoordinatorRunsBothVenuesAndRecoversBySavedIdentity(
 	if pm := e.savedPositionMatch(); pm == nil || pm.Status != pairPositionMatched {
 		t.Fatalf("the barrier must end matched through the real position scripts, got %+v", pm)
 	}
+}
+
+func TestBasketPairVenueRealReferenceAgeChecksInTheChild(t *testing.T) {
+	type tc struct {
+		provider string
+		mutate   func(r *pairVenueRig, a *basketAction)
+	}
+	cases := map[string]tc{
+		"hyperliquid reference expired when the child starts": {provider: "hyperliquid", mutate: func(r *pairVenueRig, a *basketAction) {
+			r.f.write("hyperliquid", map[string]any{"now_ms": r.now - 100 + 20001})
+		}},
+		"hyperliquid reference expires during the adapter setup": {provider: "hyperliquid", mutate: func(r *pairVenueRig, a *basketAction) {
+			r.f.write("hyperliquid", map[string]any{"now_ms": r.now, "after_expiry_ms": r.now - 100 + 20001})
+		}},
+		"hyperliquid request without reference authority": {provider: "hyperliquid", mutate: func(r *pairVenueRig, a *basketAction) {
+			r.f.write("hyperliquid", map[string]any{"now_ms": r.now})
+			a.RequestJSON = pairVenueStripAuthority(t, a.RequestJSON)
+		}},
+		"okx reference expired when the child starts": {provider: "okx", mutate: func(r *pairVenueRig, a *basketAction) {
+			r.f.write("okx", map[string]any{"now_ms": r.now - 100 + 20001})
+		}},
+		"okx reference expires during the precision check": {provider: "okx", mutate: func(r *pairVenueRig, a *basketAction) {
+			r.f.write("okx", map[string]any{"now_ms": r.now, "after_instruments_ms": r.now - 100 + 20001})
+		}},
+		"okx saved bound does not cross the saved reference": {provider: "okx", mutate: func(r *pairVenueRig, a *basketAction) {
+			r.f.write("okx", map[string]any{"now_ms": r.now})
+			a.RequestJSON = strings.Replace(a.RequestJSON, `"reference_px":"60100.3"`, `"reference_px":"60700"`, 1)
+		}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := newPairVenueRig(t)
+			var a *basketAction
+			var v pairVenue
+			if c.provider == "hyperliquid" {
+				a, v = r.action(r.hlM, pairPurposeProtective, "sell", entrySideLong, 0.06, 59500, "0x000000000000000000000000000000d1"), r.hl
+			} else {
+				a, v = r.action(r.okxM, pairPurposeProtective, "buy", entrySideShort, 0.57, 60600.3, "fxage"), r.okx
+			}
+			before := a.RequestJSON
+			c.mutate(r, a)
+			if name == "okx saved bound does not cross the saved reference" && a.RequestJSON == before {
+				t.Fatalf("the fixture request has no reference level to replace: %s", before)
+			}
+			out, err := v.Submit(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := r.f.read(c.provider)
+			pairVenueNoGuard(t, got)
+			if len(pairVenueWire(t, got)) != 0 || out.Outcome != pairVenueNeverSent {
+				t.Fatalf("the child must end never sent with no order call while the acceptance deadline is still open, got %+v and wire %v", out, got["wire"])
+			}
+		})
+	}
+	t.Run("the go clock refuses an expired reference before launching the child", func(t *testing.T) {
+		r := newPairVenueRig(t)
+		a := r.action(r.hlM, pairPurposeExit, "sell", entrySideLong, 0.06, 59500, "0x000000000000000000000000000000d2")
+		r.f.write("hyperliquid", map[string]any{"now_ms": r.now})
+		r.now += 20000
+		out, err := r.hl.Submit(a)
+		if err != nil || out.Outcome != pairVenueNeverSent || len(pairVenueWire(t, r.f.read("hyperliquid"))) != 0 {
+			t.Fatalf("an expired reference on the Go clock must send nothing, got %+v (%v)", out, err)
+		}
+	})
+	t.Run("an older request without authority stays queryable and is never resent", func(t *testing.T) {
+		r := newPairVenueRig(t)
+		r.f.write("hyperliquid", map[string]any{"now_ms": r.now, "behavior": "accept_then_crash"})
+		a := r.action(r.hlM, pairPurposeExit, "sell", entrySideLong, 0.06, 59500, "0x000000000000000000000000000000d3")
+		if out, err := r.hl.Submit(a); err != nil || out.Outcome != basketVenueUnknown {
+			t.Fatalf("a crash after acceptance must leave the outcome unknown, got %+v (%v)", out, err)
+		}
+		a.RequestJSON = pairVenueStripAuthority(t, a.RequestJSON)
+		q, err := r.hl.Query(a)
+		if err != nil || q.Outcome != basketVenueFilled || !basketQtyEqual(q.CumQty, 0.06) {
+			t.Fatalf("the saved identity query must still settle a request without the new authority, got %+v (%v)", q, err)
+		}
+		if out, err := r.hl.Submit(a); err != nil || out.Outcome != pairVenueNeverSent {
+			t.Fatalf("a request without the new authority must never send again, got %+v (%v)", out, err)
+		}
+		if n := pairVenueWireCount(t, r.f.read("hyperliquid"), "hyperliquid", a.ClientOrderID); n != 1 {
+			t.Fatalf("the identity reached the venue %d times, want once", n)
+		}
+	})
+}
+
+func pairVenueStripAuthority(t *testing.T, raw string) string {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"reference_receipt_ms", "reference_max_age_ms", "reference_px"} {
+		delete(m, k)
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

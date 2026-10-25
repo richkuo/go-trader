@@ -2592,7 +2592,7 @@ Boundaries: native kill-switch and circuit-breaker close booking prices and requ
 
 Issue #1877 freezes the rounded policy bounds, enforces crossing and full depth at dispatch, adds the strict pair order, query and position routes on both venues, the fixture-only live-shaped venues and the generation-checked venue position barrier.
 Production pair activation stays refused, research admission stays synthetic and virtual, and no deployed configuration, default, credential or promotion changes.
-Reduction reference bounds and the reduction policy stay with #1879.
+Reduction reference bounds and the reduction policy are #1879 (Coordinator reduction references below).
 
 **Saved bounds.** `decidePairSlot` validates a policy result in three stages: identity, schema, finite values and lifecycle (`validatePairPolicyResult`, which checks lots without minimum notional); rounding (`pairRoundTargets`); and economics (`pairRoundedEconomics`).
 Each side comes from the target change against the member exposure; a zero-target exit closes the nonzero exposure.
@@ -2611,7 +2611,7 @@ A version-2 actionable record must pass `pairCheckSavedTargets` (every member, s
 A failing first leg ends its slot held with no reservation; a failing hedge after a first-leg fill opens recovery at once; a failing later first-leg tranche only holds.
 Order quantities are exact: `pairExactOrderQty` computes native = lots × lot step and base = native × contract size as rationals and refuses unless each float's shortest decimal is exactly the grid value; the action's requested quantity and both request quantities use these values.
 A live-shaped venue needs a finite positive bound on the venue grid before reservation (`pairBoundOnGrid`); a hold-age exit rounds its fallback bound safe-side or holds.
-Live-shaped protective reductions hold with a visible `protective_bound_unavailable` obligation, one CRITICAL alert per recovery episode and retry backoff until #1879 supplies a reference bound; no market or uncapped route exists.
+Protective and hold-age reductions take the #1879 reference width bound; a reduction without a fresh saved reference holds (Coordinator reduction references below), and no market or uncapped route exists.
 A nonzero exit remainder below the venue minimum after rounding keeps a visible `reduction_below_minimum` obligation and one CRITICAL alert; the flat check clears both obligations.
 For a live-shaped admission the reservation transaction (`pairCheckLiveRequest` in `pairValidateActionRequest`) also requires the bound on the grid and equal to the action's, exact quantities, and, for increases and decision exits, the bound and side of the saved bound evidence.
 The transport proof keeps the deadline, the selected receipt within `quote_age_ms` and the per-member view evidence limit (`evidenceLimitMs`, #1876) and adds the saved request deadline the child checks, the crossing and depth result and the barrier freshness limit.
@@ -2667,6 +2667,58 @@ Queries, settlement, closes and protection run before and regardless of the barr
 
 **Tests.** `TestBasketPairBound*` and `TestBasketPairPosition*` run in the go-race-basket job (the default Go job skips `^TestBasket`) and in a local `go -C scheduler test ./...`; `TestBasketPairVenueReal*` (`pyintegration`, go-python-integration job) runs the real scripts and adapters with substituted SDK clients, a driver clock and network and signing guards.
 `TestBasketPairVenueRealCoordinatorRunsBothVenuesAndRecoversBySavedIdentity` drives the coordinator through both real scripts: the first leg commits from its submit answer, the hedge follows at the next slot, an exit crashes after venue acceptance, and after a restart the saved client id query settles it with no second order.
+
+### Coordinator reduction references (#1879)
+
+Issue #1879 gives every coordinator reduction (`pair_exit`, `pair_protective`) a saved fresh reference and a bounded reduce-only IOC order, and sizes live-shaped Hyperliquid reductions through the existing close size owner.
+Native emergency closes (`pair_kill_switch`, `pair_operator`) keep their separate route: no missing reference, bound, accounting record or pair reservation blocks them, and native evidence, units, fee settlement and paper emergency prices stay with #1914.
+No deployed configuration, default, credential, promotion or live activation changes.
+
+**Reference source.** A reduction consumes the reference that `preparePairRisk` published for the member (side `sell` for a long exposure, else `buy`); no consumer reads its own quote.
+`pairMemberValuation.ReferenceValid` is true only for a reference read that succeeded with an ordered best bid and ask in a preparation that did not change, cancel or time out; conversion, capability, account and position-barrier evidence are not reduction gates.
+`pairReductionReference` binds a detached copy with the view `Generation`, `EvidenceHash`, side and exposure (`pairReductionRef`); `pairReductionStillValid` rechecks the publication, side, exposure, `pairCheckReference` (identity, source, payload, native levels, `quote_age_ms` at fresh coordinator time) and crossing.
+The view is process memory, so a restart needs a new publication before any reduction.
+Exit valuation and tranche proofs keep the step-start time (#1876); reference age and crossing use fresh coordinator time.
+
+**Bounds.** `pairReductionBound(m, side, ref, nowMs, lim)` refuses an invalid width or a stale reference, takes best bid × (1 − `protective_width_bps`/10000) for a sell floor or best ask × (1 + `protective_width_bps`/10000) for a buy cap, rounds safe-side with `pairRoundBoundRule` (sell up, buy down) and requires the rounded bound to cross the reference level (equality crosses).
+Protective and hold-age reductions use it; a policy exit keeps its saved rounded bound evidence (`pairPolicyExitEvidence`) and holds while that bound does not cross the current reference.
+The virtual residual rounding exception and exact live-shaped quantities are unchanged.
+
+**Saved request.** A new reduction request saves `Reference` (the detached observation), `ReferenceMaxAgeMs` (`reference_max_age_ms`, the contract `quote_age_ms`), `ReferenceReceiptMs` (`reference_receipt_ms`) and `ReferencePx` (`reference_px`, the native best bid for a sell or best ask for a buy).
+`pairCheckReductionAuthority` (inside `pairValidateActionRequest`, at the reservation transaction with the refreshed coordinator time) requires all of them, the committed published reference of that member, the legal bound (saved policy evidence or the recomputed width bound, equal to the action) and crossing; increases and native requests refuse every reference field.
+The coordinator rechecks the reference before reservation and after the submitting mark (a failure ends the action never sent), and the transport proof and `pairLiveBase.submit` check `pairReductionAgeRefusal` with fresh time; an expired reference sends nothing even before the acceptance deadline.
+Older saved requests stay readable for queries and settlement; missing authority never permits a send.
+
+**Transport projection.** `pairTransportRequestJSON` removes `reference` from the order and query argument, so the argument stays small for any admitted window (Linux refuses one argument above 131072 bytes); the full request stays in the state file.
+`shared_tools/pair_orders.py` accepts `reference_receipt_ms`, `reference_max_age_ms` and `reference_px` only on reductions, all together, with a canonical positive level that the bound crosses; the order route (`parse_request(raw, provider, route="order")`) refuses a reduction without them, and the query route accepts it.
+`reference_refusal(req, now)` runs after `--probe-only` returns: both check scripts call it before the adapter is built and again immediately before the venue order call, so time spent waiting for a process slot or in adapter setup counts.
+The Hyperliquid probe vector (shared by the order and query argvs) carries the three fields.
+
+**Hyperliquid sizing.** A live-shaped Hyperliquid reduction calls `pairSizeHLReduction`: it releases `mu`, takes `lockHyperliquidProtectionSync(symbol)`, captures the exposure (`pairExposure`), peers (`pairHLPeerBooks`: books on the same account and coin, member excluded) and records, refetches through `pairVenue.Position` outside `mu`, rechecks the records, contract and publication, and calls `resolveHLCloseOrder` (`planHLCloseOrder` stays the sole size and mode owner).
+Skip, Defer, a netted Cross and a changed record send nothing and cancel nothing; a capped size floors to lots, repeats the exit tranche proof and the venue minimum; the uncapped reduce-only fallback after a failed refetch keeps the saved price bound.
+The symbol lock is released after reservation and before transport, so native closes and protection never wait for the order script.
+The pair IOC route never cancels protection, so `rearmAfterSizedClose` is not used; paper and virtual reductions call no planner and read no private position.
+
+**Holds.** `holdPairReduction` saves one `reduction_reference_unavailable` member obligation (detail updated, episode kept), sends one CRITICAL alert per episode (`reduction_reference|<member>|<episode>`, the recovery start for protective reductions) and, for protective reductions, the retry backoff; exits retry at the next step.
+A reservation clears it and the legacy `protective_bound_unavailable`, and so does a flat member; recovery-age escalation, `reduction_below_minimum`, queries, settlement and native protection continue.
+
+**Contracts for later children (#1914, #1880, #1881, #1882, #1863).**
+
+| Name | Go signature or type | Rule |
+|---|---|---|
+| `pairReductionBound` | `func pairReductionBound(m pairContractMember, side string, ref pairObservation, nowMs int64, lim pairOperationalLimits) (float64, string)` | the only width bound for protective and hold-age reductions |
+| `pairReductionRef` | `Ref pairObservation`, `Side`, `Px string`, `Generation uint64`, `EvidenceHash string`, `Exposure float64` | `pairCandidate.Ref`; built by `pairReductionReference`, rechecked by `pairReductionStillValid` |
+| `pairMemberValuation.ReferenceValid` | `bool` | the only reduction authority flag of a published view |
+| Request fields | `reference`, `reference_max_age_ms`, `reference_receipt_ms`, `reference_px` | required on new coordinator reductions; refused on increases and native requests |
+| `pairCheckReductionAuthority` | `func pairCheckReductionAuthority(rt *basketRuntime, m pairContractMember, a *basketAction, req pairActionRequest, nowMs int64) error` | reservation rule |
+| `pairTransportRequestJSON`, `pairReductionAgeRefusal` | `func pairTransportRequestJSON(raw string) (string, error)`; `func pairReductionAgeRefusal(raw string, nowMs int64) string` | every order and query argument; the Go transport age check |
+| `pair_orders.reference_refusal` | `reference_refusal(req, now) -> str` | child age check before the adapter and before the order call |
+| `pairSizeHLReduction` | `func (bc *basketCoordinator) pairSizeHLReduction(rt *basketRuntime, c pairCandidate, qty float64, v pairVenue, in *basketCycleInputs) (float64, func(), string)` | live-shaped Hyperliquid only; returns the symbol unlock for the caller to release before transport |
+| Obligation | `reduction_reference_unavailable` (member) | recovery evidence; cleared by a reservation or a flat member |
+
+Rules: #1880's virtual venue keeps the reference and width bound and never calls `pairSizeHLReduction` or `Position`; #1881 and #1882 publish the view at host step 3 before any reduction; #1914 keeps native requests free of reference fields.
+
+**Tests.** `TestBasketPairReduction*` (untagged, go-race-basket job) covers fresh and missing references, backoff and alerts, hold-age width bounds, policy-bound crossing holds, the transport-boundary expiry, Hyperliquid capped, uncapped, fallback, skip and changed-record sizing with lock release and no protection call, native closes without a reference, virtual routes, restart and the sealed-window argument size; `TestBasketPairVenueRealReferenceAgeChecksInTheChild` (`pyintegration`) runs both real scripts.
 
 ### Offline basket replay (#1791)
 

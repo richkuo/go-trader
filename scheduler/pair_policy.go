@@ -811,6 +811,9 @@ type pairCandidate struct {
 	Target       float64
 
 	ProposedBound float64
+
+	Ref  *pairReductionRef
+	Plan *pairPlan
 }
 
 func (c pairCandidate) riskBound() float64 {

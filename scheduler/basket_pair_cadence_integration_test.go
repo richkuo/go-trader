@@ -933,7 +933,7 @@ func TestBasketPairClockAdvanceCannotAuthorizeStaleActions(t *testing.T) {
 }
 
 func TestBasketPairExitLegsKeepTheStepStartValuationClock(t *testing.T) {
-	t.Run("a slow first exit leg still sends the second leg", func(t *testing.T) {
+	t.Run("a slow first exit leg holds the second leg until a fresh reference", func(t *testing.T) {
 		e := newPairTestEnv(t, nil)
 		pairEnterExitRunner(e, 0.06)
 		e.slotStep(0)
@@ -958,11 +958,31 @@ func TestBasketPairExitLegsKeepTheStepStartValuationClock(t *testing.T) {
 		if !advanced {
 			t.Fatal("the first exit leg must reach the venue")
 		}
-		if exits := e.actionsByPurpose(pairPurposeExit); len(exits) != 2 {
-			t.Fatalf("both exit legs must be sent in the same step after the clock passed the valuation age, got %d", len(exits))
+		exits := e.actionsByPurpose(pairPurposeExit)
+		if len(exits) != 1 {
+			t.Fatalf("the second exit leg must hold once its saved reference is older than quote_age_ms at fresh time, got %d exit actions", len(exits))
 		}
 		if e.rt().Pair.Progress.obligation("bounds_unavailable", "", "") != nil {
 			t.Fatal("a reduction must not save a bounds_unavailable obligation from a clock refresh inside its step")
+		}
+		held := pairTestOKX
+		if exits[0].StrategyID == pairTestOKX {
+			held = pairTestHL
+		}
+		if o := e.rt().Pair.Progress.obligation(pairObligationReductionReference, held, ""); o == nil || !strings.Contains(o.Detail, "quote_age_ms") {
+			t.Fatalf("the held leg needs a durable reference obligation, got %+v", o)
+		}
+		for _, v := range []*pairScriptedVenue{e.venues.hl, e.venues.okx} {
+			v.mu.Lock()
+			v.onSubmit = nil
+			v.mu.Unlock()
+		}
+		e.step(stepAt.Add(10 * time.Second))
+		if exits := e.actionsByPurpose(pairPurposeExit); len(exits) != 2 {
+			t.Fatalf("a fresh publication must release the held exit leg, got %d exit actions", len(exits))
+		}
+		if o := e.rt().Pair.Progress.obligation(pairObligationReductionReference, held, ""); o != nil {
+			t.Fatalf("the reference obligation must clear once the reduction reserves, got %+v", o)
 		}
 		e.assertBooks("exited", 0, 0)
 	})

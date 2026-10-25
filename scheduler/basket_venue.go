@@ -74,6 +74,7 @@ type pairMemberValuation struct {
 	ConversionEvidence  []pairConversionEvidence
 	Account             pairAccountEvidence
 	MarkValid           bool
+	ReferenceValid      bool
 	ConversionValid     bool
 	CapabilityValid     bool
 	CollateralValid     bool
