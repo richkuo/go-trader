@@ -538,17 +538,29 @@ func TestBasketPairVirtualVenueSpentIdentifierIsNeverReused(t *testing.T) {
 	}
 }
 
-func (e *pairTestEnv) reserveVirtual(id, purpose, orderSide, positionSide string, base, native, bound float64, deadlineMs int64) *basketAction {
+func (e *pairTestEnv) reserveVirtual(id, purpose, orderSide, positionSide string, base, native float64, deadlineMs int64) *basketAction {
 	e.t.Helper()
+	e.bc.beginCycle()
+	e.observe("")
+	e.prepare(e.now)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	rt := e.rt()
+	rt.clock = e.now
 	m := e.member(id)
+	now := e.now.UnixMilli()
+	ref, why := e.bc.pairReductionReference(rt, m, orderSide, now)
+	if why != "" {
+		e.t.Fatalf("reduction reference: %s", why)
+	}
+	bound, why := pairReductionBound(m, orderSide, ref.Ref, now, rt.Pair.Limits)
+	if why != "" {
+		e.t.Fatalf("reduction bound: %s", why)
+	}
 	cloid, err := e.vvenue(id).NewClientOrderID()
 	if err != nil {
 		e.t.Fatalf("allocate: %v", err)
 	}
-	now := e.now.UnixMilli()
 	slot := now
 	if rb := rt.latest(); rb != nil {
 		slot = rb.DeadlineMs
@@ -559,7 +571,8 @@ func (e *pairTestEnv) reserveVirtual(id, purpose, orderSide, positionSide string
 		PriceBound: bound, AcceptDeadlineMs: deadlineMs, CreatedAtMs: now, UpdatedAtMs: now}
 	a.RequestJSON = marshalEntryJSON(pairActionRequest{V: pairActionRequestVersion, PairID: a.BasketID, Partition: rt.Partition.String(), MemberID: id, Provider: m.Provider,
 		AccountKey: m.AccountKey, Instrument: m.Instrument, ClientOrderID: cloid, Purpose: purpose, OrderSide: orderSide, PositionSide: positionSide, BaseQty: base,
-		NativeQty: native, ContractSize: m.Meta.ContractSize, PriceBound: bound, AcceptDeadlineMs: deadlineMs, OriginSlotMs: slot, ReduceOnly: true, ContractFingerprint: rt.Contract.Fingerprint()})
+		NativeQty: native, ContractSize: m.Meta.ContractSize, PriceBound: bound, AcceptDeadlineMs: deadlineMs, OriginSlotMs: slot, ReduceOnly: true, ContractFingerprint: rt.Contract.Fingerprint(),
+		Reference: &ref.Ref, ReferenceMaxAgeMs: rt.Pair.Limits.QuoteAgeMs, ReferenceReceiptMs: ref.Ref.FirstReceiptMs, ReferencePx: ref.Px})
 	if err := e.store.ReservePairAction(rt, a, nil, nil); err != nil {
 		e.t.Fatalf("reserve: %v", err)
 	}
@@ -596,14 +609,15 @@ func TestBasketPairVirtualVenueRefusesWithoutConsumingAndHoldsProtection(t *test
 			t.Fatalf("a changed request must answer unknown and write nothing, got %+v %v", out, err)
 		}
 	})
-	t.Run("unbounded protective request", func(t *testing.T) {
+	t.Run("protective request whose saved reference is stale at acceptance", func(t *testing.T) {
 		e.now = e.now.Add(time.Second)
-		a := e.reserveVirtual(pairTestOKX, pairPurposeProtective, "buy", entrySideShort, 0.06, 6, 0, e.now.UnixMilli()+30000)
+		a := e.reserveVirtual(pairTestOKX, pairPurposeProtective, "buy", entrySideShort, 0.06, 6, e.now.UnixMilli()+30000)
+		e.now = e.now.Add(time.Duration(e.rt().Pair.Limits.QuoteAgeMs+1000) * time.Millisecond)
 		market.add(pairTestOKX, e.defaultBook(pairTestOKX, e.now.UnixMilli()+5, e.now.UnixMilli()+5))
 		consumed := e.virtualRows(pairVirtualKindConsume)
 		out, err := okx.Submit(a)
-		if err != nil || out.Outcome != pairVenueNeverSent || e.virtualRows(pairVirtualKindRefusal) != 1 || e.virtualRows(pairVirtualKindSubmit) != 1 {
-			t.Fatalf("a request without its saved bound must be a durable never-sent refusal, got %+v %v", out, err)
+		if err != nil || out.Outcome != pairVenueNeverSent || !strings.Contains(out.Detail, "reference") || e.virtualRows(pairVirtualKindRefusal) != 1 || e.virtualRows(pairVirtualKindSubmit) != 1 {
+			t.Fatalf("a reduction whose saved reference is older than quote_age_ms at acceptance must be a durable never-sent refusal, got %+v %v", out, err)
 		}
 		e.now = e.now.Add(time.Second)
 		again, err := okx.Query(a)
@@ -632,26 +646,58 @@ func TestBasketPairVirtualVenueRefusesWithoutConsumingAndHoldsProtection(t *test
 	})
 	t.Run("off-lot reduction that is not the full exposure", func(t *testing.T) {
 		e.now = e.now.Add(time.Second)
-		a := e.reserveVirtual(pairTestOKX, pairPurposeExit, "buy", entrySideShort, 0.055, 5.5, 60200, e.now.UnixMilli()+30000)
+		a := e.reserveVirtual(pairTestOKX, pairPurposeExit, "buy", entrySideShort, 0.055, 5.5, e.now.UnixMilli()+30000)
 		out, err := okx.Submit(a)
 		if err != nil || out.Outcome != pairVenueNeverSent || e.virtualRows(pairVirtualKindRefusal) != 2 || e.virtualRows(pairVirtualKindSubmit) != 1 {
 			t.Fatalf("an off-lot reduction below the known exposure must refuse durably, got %+v %v", out, err)
 		}
 	})
-	t.Run("virtual protective reduction holds before reservation", func(t *testing.T) {
+	t.Run("virtual protective reductions use the saved reference width bound", func(t *testing.T) {
 		e2, market2 := newPairVirtualEnv(t, nil, 0, 0)
 		e2.virtualFirstLegFilled(market2)
 		e2.externalBookChange(pairTestHL, 0.01)
-		e2.stepAt(e2.now.UnixMilli() + 1000)
-		p := e2.rt().Pair.Progress
-		if p.Lifecycle != pairLifecycleRecovery || p.obligation(pairObligationProtectiveBound, pairTestOKX, "") == nil || p.obligation(pairObligationProtectiveBound, pairTestHL, "") == nil {
-			t.Fatalf("both exposed members must hold with a protective bound obligation, got %+v", p)
-		}
-		if n := e2.count(`SELECT COUNT(*) FROM basket_member_actions WHERE purpose = 'pair_protective'`); n != 0 || p.Retries[pairTestOKX].RetryAtMs == 0 {
-			t.Fatalf("a held virtual protective reduction reserves nothing and schedules a retry, got %d actions and %+v", n, p.Retries)
-		}
+		at := e2.now.UnixMilli() + 1000
+		e2.stepAt(at)
 		if why := e2.bc.pairIncreaseHold(e2.rt(), e2.inputs(e2.now)); why == "" {
 			t.Fatalf("recovery and the unexplained book change must hold increases")
+		}
+		for i := 0; i < 4 && (e2.signed(pairTestHL) != 0 || e2.signed(pairTestOKX) != 0); i++ {
+			for _, x := range e2.actionsByPurpose(pairPurposeProtective) {
+				if basketActionPending(x.Status) {
+					market2.add(x.StrategyID, e2.defaultBook(x.StrategyID, x.SubmittedAtMs+10, x.SubmittedAtMs+10))
+				}
+			}
+			at += 100
+			e2.stepAt(at)
+		}
+		e2.assertBooks("virtual protective", 0, 0)
+		p := e2.rt().Pair.Progress
+		if p.obligation(pairObligationProtectiveBound, pairTestOKX, "") != nil || p.obligation(pairObligationProtectiveBound, pairTestHL, "") != nil ||
+			p.obligation(pairObligationReductionReference, pairTestOKX, "") != nil || p.obligation(pairObligationReductionReference, pairTestHL, "") != nil {
+			t.Fatalf("a virtual protective reduction with a saved reference must not hold, got %+v", p.Obligations)
+		}
+		src := e2.submitBoundSources()
+		prot := e2.actionsByPurpose(pairPurposeProtective)
+		members := map[string]bool{}
+		for _, x := range prot {
+			if x.Status != basketActionCommitted {
+				continue
+			}
+			members[x.StrategyID] = true
+			var req pairActionRequest
+			if err := json.Unmarshal([]byte(x.RequestJSON), &req); err != nil || req.Reference == nil {
+				t.Fatalf("protective %s must save its reduction reference: %v", x.ActionID, err)
+			}
+			want, why := pairReductionBound(e2.member(x.StrategyID), req.OrderSide, *req.Reference, req.ReferenceReceiptMs, e2.rt().Pair.Limits)
+			if why != "" || want != x.PriceBound || req.PriceBound != x.PriceBound {
+				t.Fatalf("protective %s bound %v must be the width bound %v of its saved reference (%s)", x.ActionID, x.PriceBound, want, why)
+			}
+			if src[x.ClientOrderID] != pairVirtualBoundReference {
+				t.Fatalf("protective %s must fill with the saved reference bound, got %q", x.ClientOrderID, src[x.ClientOrderID])
+			}
+		}
+		if !members[pairTestOKX] || !members[pairTestHL] {
+			t.Fatalf("both exposed members must reduce through the virtual venue, got %+v", prot)
 		}
 	})
 }
@@ -678,7 +724,7 @@ func (e *pairTestEnv) submitBoundSources() map[string]string {
 	return out
 }
 
-func TestBasketPairVirtualVenueHoldAgeExitUsesTheGridBound(t *testing.T) {
+func TestBasketPairVirtualVenueHoldAgeExitUsesTheSavedReductionBound(t *testing.T) {
 	e, market := newPairVirtualEnv(t, pairSetLimit("max_hold_age_ms", 150000), 0, 0)
 	e.virtualFirstLegFilled(market)
 	e.slotStep(1)
@@ -709,22 +755,35 @@ func TestBasketPairVirtualVenueHoldAgeExitUsesTheGridBound(t *testing.T) {
 	}
 	e.assertBooks("hold-age exit", 0, 0)
 	src := e.submitBoundSources()
-	rows, err := e.db().db.Query(`SELECT client_order_id, status FROM basket_member_actions WHERE purpose = 'pair_exit' AND status = 'committed' ORDER BY client_order_id`)
+	rows, err := e.db().db.Query(`SELECT client_order_id, strategy_id, request_json, price_bound FROM basket_member_actions WHERE purpose = 'pair_exit' AND status = 'committed' ORDER BY client_order_id`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	committed := 0
+	var exits []basketAction
 	for rows.Next() {
-		var id, status string
-		if err := rows.Scan(&id, &status); err != nil {
+		var x basketAction
+		if err := rows.Scan(&x.ClientOrderID, &x.StrategyID, &x.RequestJSON, &x.PriceBound); err != nil {
 			t.Fatal(err)
 		}
-		committed++
-		if src[id] != pairVirtualBoundGrid {
-			t.Fatalf("a hold-age exit without exit decision evidence must fill with a grid-checked bound, got %q for %s", src[id], id)
-		}
+		x.ActionID = x.ClientOrderID
+		exits = append(exits, x)
 	}
 	rows.Close()
+	committed := 0
+	for _, x := range exits {
+		committed++
+		var req pairActionRequest
+		if err := json.Unmarshal([]byte(x.RequestJSON), &req); err != nil || req.Reference == nil {
+			t.Fatalf("hold-age exit %s must save its reduction reference: %v", x.ActionID, err)
+		}
+		want, why := pairReductionBound(e.member(x.StrategyID), req.OrderSide, *req.Reference, req.ReferenceReceiptMs, e.rt().Pair.Limits)
+		if why != "" || want != x.PriceBound || req.PriceBound != x.PriceBound {
+			t.Fatalf("hold-age exit %s bound %v must be the width bound %v of its saved reference (%s)", x.ActionID, x.PriceBound, want, why)
+		}
+		if src[x.ClientOrderID] != pairVirtualBoundReference {
+			t.Fatalf("a hold-age exit without exit decision evidence must fill with its saved reference bound, got %q for %s", src[x.ClientOrderID], x.ClientOrderID)
+		}
+	}
 	if committed != 2 {
 		t.Fatalf("want two committed exit tranches, got %d", committed)
 	}

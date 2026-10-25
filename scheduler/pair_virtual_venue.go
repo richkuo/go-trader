@@ -18,7 +18,7 @@ const (
 	pairVirtualClientPrefix     = "vp-"
 	pairVirtualMarketTimeout    = 30 * time.Second
 	pairVirtualBoundEvidence    = "decision_evidence"
-	pairVirtualBoundGrid        = "venue_grid"
+	pairVirtualBoundReference   = "reduction_reference"
 	pairVirtualMaxLatencyMs     = int64(24 * 60 * 60 * 1000)
 	pairVirtualAdverseBandLimit = 10000.0
 )
@@ -810,7 +810,15 @@ func (v *pairVirtualVenue) validateLocked(a *basketAction, now int64) (pairVirtu
 	if err := pairBoundOnGrid(m, req.OrderSide, req.PriceBound); err != nil {
 		return body, "the request bound is not a legal venue price: " + err.Error(), ""
 	}
-	source := pairVirtualBoundGrid
+	source := pairVirtualBoundReference
+	var refPx *big.Rat
+	if !increase {
+		px, why := v.reductionAuthorityLocked(req, now)
+		if why != "" {
+			return body, why, ""
+		}
+		refPx = px
+	}
 	raw, found, err := v.st.PairVirtualSlotTargets(rt, req.OriginSlotMs)
 	if err != nil {
 		return body, "", "the origin slot decision is unreadable: " + err.Error()
@@ -834,6 +842,17 @@ func (v *pairVirtualVenue) validateLocked(a *basketAction, now int64) (pairVirtu
 		source = pairVirtualBoundEvidence
 	case a.Purpose == pairPurposeEntry:
 		return body, fmt.Sprintf("the entry names slot %d, which holds no saved entry decision", req.OriginSlotMs), ""
+	default:
+		want, why := pairReductionBound(m, req.OrderSide, *req.Reference, now, rt.Pair.Limits)
+		if why != "" {
+			return body, "the reduction width bound of the saved reference: " + why, ""
+		}
+		if want != req.PriceBound {
+			return body, fmt.Sprintf("the %s bound %v is not the width bound %v of the saved reduction reference", req.OrderSide, req.PriceBound, want), ""
+		}
+	}
+	if refPx != nil && !pairBoundCrossesPx(req.OrderSide, req.PriceBound, refPx) {
+		return body, fmt.Sprintf("the %s bound %v does not cross the saved reference level %s", req.OrderSide, req.PriceBound, req.ReferencePx), ""
 	}
 	row, err := v.st.PairVirtualActionRow(rt, v.id, a.ClientOrderID)
 	if err != nil {
@@ -865,6 +884,28 @@ func (v *pairVirtualVenue) validateLocked(a *basketAction, now int64) (pairVirtu
 		Purpose: a.Purpose, OrderSide: req.OrderSide, ReduceOnly: req.ReduceOnly, NativeQty: pairDecimal(nd), BaseQty: pairDecimal(bd), PriceBound: pb, BoundSource: source,
 		AcceptedAtMs: now, AcceptDeadlineMs: req.AcceptDeadlineMs, InventoryBase: invText}
 	return body, "", ""
+}
+
+func (v *pairVirtualVenue) reductionAuthorityLocked(req pairActionRequest, now int64) (*big.Rat, string) {
+	if req.Reference == nil {
+		return nil, "the reduction carries no saved reduction reference (#1879); the virtual venue never fills a reduction without one"
+	}
+	ref := pairCloneObservation(*req.Reference)
+	if err := pairCheckReference(v.rt, v.member, &ref, req.OrderSide, now); err != nil {
+		return nil, "the saved reduction reference is refused at acceptance: " + err.Error()
+	}
+	if req.ReferenceMaxAgeMs != v.rt.Pair.Limits.QuoteAgeMs || req.ReferenceReceiptMs != ref.FirstReceiptMs {
+		return nil, fmt.Sprintf("the reduction reference age policy (receipt %d, max age %d) is not the saved reference receipt %d and quote_age_ms %d",
+			req.ReferenceReceiptMs, req.ReferenceMaxAgeMs, ref.FirstReceiptMs, v.rt.Pair.Limits.QuoteAgeMs)
+	}
+	text, px, err := pairReferencePx(ref, req.OrderSide)
+	if err != nil {
+		return nil, "the saved reduction reference: " + err.Error()
+	}
+	if req.ReferencePx != text {
+		return nil, fmt.Sprintf("the reduction reference level %q is not the saved reference level %q", req.ReferencePx, text)
+	}
+	return px, ""
 }
 
 func (v *pairVirtualVenue) Query(a *basketAction) (basketVenueOutcome, error) {
