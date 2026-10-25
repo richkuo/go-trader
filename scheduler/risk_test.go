@@ -291,7 +291,10 @@ func TestPortfolioNotional(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			notional := PortfolioNotional(tc.strategies, tc.prices)
+			notional, status := portfolioNotionalMarked(tc.strategies, tc.prices, nil)
+			if !status.complete() {
+				t.Fatalf("ordinary strategies must read complete: %s", status.label())
+			}
 			if math.Abs(notional-tc.want) > 0.01 {
 				t.Errorf("expected notional=%.2f; got %.2f", tc.want, notional)
 			}
@@ -757,7 +760,10 @@ func TestPerpsMarginDrawdownInputs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			loss, margin := perpsMarginDrawdownInputs(&StrategyState{Positions: tc.positions}, tc.leverage, tc.prices)
+			loss, margin, status := perpsMarginDrawdownInputsMarked(&StrategyState{Positions: tc.positions}, tc.leverage, tc.prices, nil)
+			if !status.complete() {
+				t.Fatalf("an ordinary strategy must read complete: %s", status.label())
+			}
 			if math.Abs(margin-tc.wantMargin) > 1e-6 {
 				t.Errorf("margin = %.4f; want %.4f", margin, tc.wantMargin)
 			}
@@ -831,7 +837,10 @@ func TestAggregatePerpsMarginInputs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			loss, margin := AggregatePerpsMarginInputs(tc.strategies, tc.configs, tc.prices)
+			loss, margin, status := aggregatePerpsMarginInputsMarked(tc.strategies, tc.configs, tc.prices, nil)
+			if !status.complete() {
+				t.Fatalf("ordinary strategies must read complete: %s", status.label())
+			}
 			if math.Abs(margin-tc.wantMargin) > 1e-6 {
 				t.Errorf("margin = %.4f; want %.4f", margin, tc.wantMargin)
 			}

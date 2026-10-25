@@ -314,10 +314,15 @@ type basketRuntime struct {
 	Pair *pairRuntimeState
 
 	pairEchoFailures map[string]string
-	pairLastInputs   *pairStepInputs
 	pairQuoteNote    string
 	pairLastStepMs   int64
 	pairPositions    *pairPositionState
+	pairView         pairViewSet
+	pairViewGen      uint64
+	pairPrepSeq      uint64
+	pairLastMark     map[string]pairLastMark
+	pairViewNote     string
+	pairPrepHostNote string
 
 	expectedDurable map[string]float64
 	needsDurable    bool

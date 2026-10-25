@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
@@ -64,6 +63,26 @@ func qpEnv(t *testing.T, root string, vars map[string]string) {
 	for _, k := range keys {
 		t.Setenv(k, vars[k])
 	}
+}
+
+func qpChildEnv(t *testing.T, root string, vars map[string]string) []string {
+	t.Helper()
+	env := append(os.Environ(),
+		"QP_STUB=1",
+		"PYTHONPATH="+filepath.Join(root, "shared_scripts", "testdata", "quote_precision"),
+		"HOME="+t.TempDir())
+	for _, k := range qpEnvKeys {
+		env = append(env, k+"=")
+	}
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		env = append(env, k+"="+vars[k])
+	}
+	return env
 }
 
 func qpNum(v float64) string { return strconv.FormatFloat(v, 'g', -1, 64) }
@@ -289,19 +308,13 @@ type qpScheduler struct {
 	root  string
 	bin   string
 	dir   string
+	env   []string
 	lines []string
 }
 
 func qpBuildScheduler(t *testing.T, root string) *qpScheduler {
 	t.Helper()
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "go-trader")
-	build := exec.Command("go", "build", "-o", bin, ".")
-	build.Dir = filepath.Join(root, "scheduler")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build scheduler: %v\n%s", err, out)
-	}
-	return &qpScheduler{t: t, root: root, bin: bin}
+	return &qpScheduler{t: t, root: root, bin: pyintegrationBinary(t)}
 }
 
 func (s *qpScheduler) config(strategies []StrategyConfig) string {
@@ -310,7 +323,8 @@ func (s *qpScheduler) config(strategies []StrategyConfig) string {
 	cfg := map[string]interface{}{
 		"interval_seconds": 3600,
 		"db_file":          filepath.Join(s.dir, "state.db"),
-		"status_port":      20000 + rand.Intn(20000),
+		"status_port":      htfITFreePort(s.t),
+		"log_dir":          filepath.Join(s.dir, "logs"),
 		"log_level":        "debug",
 		"strategies":       strategies,
 	}
@@ -332,7 +346,7 @@ func (s *qpScheduler) run(cfgPath, until string, whileRunning func(statusURL str
 	s.lines = nil
 	cmd := exec.Command(s.bin, "--config", cfgPath)
 	cmd.Dir = s.root
-	cmd.Env = os.Environ()
+	cmd.Env = s.env
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
@@ -462,13 +476,14 @@ func qpStatusPrices(t *testing.T, statusURL string) map[string]float64 {
 }
 
 func TestCheckQuotePrecisionSchedulerCycleKeepsTinySpotQuotes(t *testing.T) {
-	root := qpRoot(t)
+	t.Parallel()
+	root := robinhoodStdoutPyRoot(t)
 	sched := qpBuildScheduler(t, root)
 	q := 0.00001234
 	tinyBuy := ApplyAdverseSlippage(q, true)
 
 	t.Run("only_tiny_quotes", func(t *testing.T) {
-		qpEnv(t, root, map[string]string{"QP_TICKERS": `{"DOGE/USDT": 1.234e-05}`, "QP_CLOSES": `{"DOGE/USDT": 1.234e-05}`, "QP_SHAPE": "cross_up"})
+		sched.env = qpChildEnv(t, root, map[string]string{"QP_TICKERS": `{"DOGE/USDT": 1.234e-05}`, "QP_CLOSES": `{"DOGE/USDT": 1.234e-05}`, "QP_SHAPE": "cross_up"})
 		cfg := sched.config([]StrategyConfig{qpSpotSC("qp-doge", "DOGE/USDT")})
 		var status map[string]float64
 		out := sched.run(cfg, "Cycle 1 complete", func(u string) { status = qpStatusPrices(t, u) })
@@ -490,7 +505,7 @@ func TestCheckQuotePrecisionSchedulerCycleKeepsTinySpotQuotes(t *testing.T) {
 	})
 
 	t.Run("tiny_quote_with_a_positive_peer", func(t *testing.T) {
-		qpEnv(t, root, map[string]string{
+		sched.env = qpChildEnv(t, root, map[string]string{
 			"QP_TICKERS": `{"DOGE/USDT": 1.234e-05, "BTC/USDT": 65000.5}`,
 			"QP_CLOSES":  `{"DOGE/USDT": 1.234e-05, "BTC/USDT": 65000.5}`,
 			"QP_SHAPE":   "cross_up",
@@ -516,7 +531,7 @@ func TestCheckQuotePrecisionSchedulerCycleKeepsTinySpotQuotes(t *testing.T) {
 	})
 
 	t.Run("unavailable_quote_skips_the_cycle", func(t *testing.T) {
-		qpEnv(t, root, map[string]string{"QP_TICKERS": `{"DOGE/USDT": null}`, "QP_CLOSES": `{"DOGE/USDT": 1.234e-05}`, "QP_SHAPE": "cross_up"})
+		sched.env = qpChildEnv(t, root, map[string]string{"QP_TICKERS": `{"DOGE/USDT": null}`, "QP_CLOSES": `{"DOGE/USDT": 1.234e-05}`, "QP_SHAPE": "cross_up"})
 		cfg := sched.config([]StrategyConfig{qpSpotSC("qp-doge", "DOGE/USDT")})
 		out := sched.run(cfg, "All prices are zero/missing", nil)
 		if strings.Contains(out, "Cycle 1 complete") || strings.Contains(out, "Signal: BUY") {
@@ -1150,12 +1165,13 @@ func qpExec(t *testing.T, db *sql.DB, query string, args ...interface{}) {
 }
 
 func TestCheckQuotePrecisionUpgradeRebaselinesRoundedPeaksOnce(t *testing.T) {
-	root := qpRoot(t)
+	t.Parallel()
+	root := robinhoodStdoutPyRoot(t)
 	sched := qpBuildScheduler(t, root)
 	const q = 0.0055
 	const legacyMark = 0.01
 	tickers := `{"DOGE/USDT": 0.0055, "SHIB/USDT": 0.0055, "XRP/USDT": 0.0055}`
-	qpEnv(t, root, map[string]string{"QP_TICKERS": tickers, "QP_CLOSES": tickers, "QP_SHAPE": "cross_up"})
+	sched.env = qpChildEnv(t, root, map[string]string{"QP_TICKERS": tickers, "QP_CLOSES": tickers, "QP_SHAPE": "cross_up"})
 	tight := func(sc StrategyConfig) StrategyConfig {
 		sc.MaxDrawdownPct = 20
 		return sc

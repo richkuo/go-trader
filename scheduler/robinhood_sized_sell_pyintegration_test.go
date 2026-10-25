@@ -383,7 +383,7 @@ func TestRobinhoodLiveOrderSizedSellRecoversAcrossRestartWithTheSentQuantity(t *
 		if trades, _ := e.signal("rh-btc", -1, 0, 99); trades != 0 {
 			t.Fatalf("trades = %d, want 0", trades)
 		}
-		robinhoodOrderScriptTimeout = 16 * time.Second
+		robinhoodOrderScriptTimeout = 14 * time.Second
 		row := e.onlyAttempt()
 		if row.Status != robinhoodAttemptUnknown {
 			t.Fatalf("a killed order script must leave the attempt unknown, got %+v", row)

@@ -322,7 +322,7 @@ func TestBasketPairSubsetSavesAdvanceOnlyTheirMembers(t *testing.T) {
 	f2.install(t)
 	e.mu.Lock()
 	e.rt().needsDurable = false
-	e.bc.executePair(e.rt(), basketCycleInputs{Now: at.Add(2 * time.Second)}, *e.rt().pairLastInputs)
+	e.bc.executePair(e.rt(), basketCycleInputs{Now: at.Add(2 * time.Second)}, e.bc.pairValuationsLocked(e.rt()))
 	completed := e.rt().Rebalances[pairTestStart().UnixMilli()].Status == basketRebalanceCompleted
 	e.mu.Unlock()
 	storeCommitHook = nil

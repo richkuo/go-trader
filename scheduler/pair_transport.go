@@ -129,10 +129,6 @@ func (v *pairLiveBase) ExecutionModel() string          { return pairExecutionVe
 func (v *pairLiveBase) Provider() string                { return v.provider }
 func (v *pairLiveBase) AccountKey(RiskPartition) string { return v.account }
 
-func (v *pairLiveBase) Valuation(pairContractMember, int64) (pairMemberValuation, error) {
-	return pairMemberValuation{}, fmt.Errorf("a live-shaped pair venue reads no private valuation; valuations come from the coordinator's admitted quote evidence")
-}
-
 func (v *hyperliquidPairVenue) NewClientOrderID() (string, error) { return newQuoteClientOrderID() }
 
 func (v *okxPairVenue) NewClientOrderID() (string, error) {

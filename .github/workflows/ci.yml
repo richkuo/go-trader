@@ -101,7 +101,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
+          cache-dependency-path: |
+            scheduler/go.sum
+            scheduler/go.mod
 
       - name: Basket coordinator race check
         run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestBasket' .
@@ -114,7 +116,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
+          cache-dependency-path: |
+            scheduler/go.sum
+            scheduler/go.mod
 
       - name: Quote coordinator race check
         run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestQuote' -skip '^(TestQuoteReplayRunsThePolicyThroughTheRealCoordinator|TestQuoteReplayResumeMatchesAnUninterruptedRun|TestQuoteReplayFaultsRecoverWithTheirStatedClass|TestQuoteReplayRefusesUnsafeStateAndInputs|TestQuoteReplayLaterReceiptsLeaveEarlierDecisionsUnchanged|TestQuoteReplayCoverageAndTimingRefusals|TestQuotePolicyBoundaryCasesThroughTheRealCoordinator)$' .
@@ -132,12 +136,12 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --compile-bytecode
 
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBasketRealRanker[A-Za-z]*|TestBasketMemberRealCheckIsManagementOnly|TestBasketMemberBatched[A-Za-z]*|TestBasketPairMemberReal[A-Za-z]*|TestBasketPairProbeArgvs[A-Za-z]*|TestBasketPairEvidence[A-Za-z]*|TestBasketPairQuote[A-Za-z]*|TestBasketPairCadence[A-Za-z]*|TestBasketPairPolicyReal[A-Za-z]*|TestBasketReplay[A-Za-z]*|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestOKXSharedStep[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestBasketPairFundingPython[A-Za-z]*|TestBasketPairVenueReal[A-Za-z]*)$' -skip '^(TestBasketReplay[A-Za-z]*|TestMergePaperInstance)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBasketRealRanker[A-Za-z]*|TestBasketMemberRealCheckIsManagementOnly|TestBasketMemberBatched[A-Za-z]*|TestBasketPairMemberReal[A-Za-z]*|TestBasketPairProbeArgvs[A-Za-z]*|TestBasketPairEvidence[A-Za-z]*|TestBasketPairQuote[A-Za-z]*|TestBasketPairCadence[A-Za-z]*|TestBasketPairValuation[A-Za-z]*|TestBasketPairPolicyReal[A-Za-z]*|TestBasketReplay[A-Za-z]*|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestOKXSharedStep[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestBasketPairFundingPython[A-Za-z]*|TestBasketPairVenueReal[A-Za-z]*)$' -skip '^(TestBasketReplay[A-Za-z]*|TestMergePaperInstance)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1

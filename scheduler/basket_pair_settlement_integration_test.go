@@ -311,15 +311,36 @@ func TestBasketPairSettlementHistoricalConversionsUseFillTime(t *testing.T) {
 		t.Fatalf("the booked price must sum separately converted notionals, got %v fee %v", px, fee)
 	}
 	fillsBefore := exit.SettlementJSON[:strings.Index(exit.SettlementJSON, `"fees"`)]
-	e.mu.Lock()
-	e.venues.okx.val.Conversions = map[string]float64{"USD": 1, "USDC": 1, "USDT": 2}
-	e.mu.Unlock()
+	changedValuationStep := func(at time.Time) {
+		e.now = at
+		e.bc.beginCycle()
+		e.observe("")
+		e.prepare(at)
+		e.bc.mu.Lock()
+		v, ok := e.rt().pairView[pairTestOKX]
+		if ok {
+			v.Conversions = map[string]float64{"USD": 1, "USDC": 1, "USDT": 2}
+			evs := append([]pairConversionEvidence(nil), v.ConversionEvidence...)
+			for i := range evs {
+				if evs[i].Currency == "USDT" {
+					evs[i].RateUSD = "2"
+				}
+			}
+			v.ConversionEvidence = evs
+			e.rt().pairView[pairTestOKX] = v
+		}
+		e.bc.mu.Unlock()
+		if !ok {
+			t.Fatal("setup: the coordinator published no okx valuation view to change")
+		}
+		e.bc.step(e.inputs(at))
+	}
 	okx := e.state.Strategies[pairTestOKX]
 	cash := okx.Cash
 	full := pairWithFees(exitFills, true, pairTestFeeRec{"x", "0.9", "USDT"}, pairTestFeeRec{"y", "0.9", "USDT"})
 	pairAnswerVenue(e, exit, full)
-	e.step(e.now.Add(time.Second))
-	e.step(e.now.Add(time.Second))
+	changedValuationStep(e.now.Add(time.Second))
+	changedValuationStep(e.now.Add(time.Second))
 	if got := cash - okx.Cash; math.Abs(got-0.81) > 1e-9 || exit.Status != basketActionCommitted {
 		t.Fatalf("the late fee must charge only its own USD value at its fill's saved rate once, moved cash by %v: %+v", got, exit)
 	}

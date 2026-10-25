@@ -129,7 +129,7 @@ func newPairPolicyEnv(t *testing.T, f pairPolicyFixture) (*pairTestEnv, *pairPol
 		t.Fatalf("newPairResearchAdmission: %v", err)
 	}
 	t.Cleanup(adm.release)
-	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart(), quotes: q}
+	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart(), quotes: q, generation: 1}
 	e.runner = &pairTestRunner{respond: func(req pairPolicyRequest) (pairPolicyResult, error) { return pairHoldResult(req, "scripted"), nil }}
 	e.store = openSourceStore(t, cfg)
 	e.state = NewAppState()
@@ -539,6 +539,8 @@ func TestBasketPairPolicyRealConvertedCapCheck(t *testing.T) {
 	}{{"converted cap equality passes", 3750, pairPolicyStatusEnter}, {"converted excess holds", 3700, pairPolicyStatusHold}} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := pairPolicyGoodBooks()
+			f.hlBids, f.hlAsks = [][2]string{{"4999", "1"}, {"4998", "1"}, {"4997", "1"}}, [][2]string{{"5000", "1"}, {"5001", "1"}, {"5002", "1"}}
+			f.okxBids, f.okxAsks = [][2]string{{"6000", "100"}, {"5999.9", "100"}, {"5999.8", "100"}}, [][2]string{{"6000.1", "100"}, {"6000.2", "100"}, {"6000.3", "100"}}
 			f.limits = map[string]interface{}{"gross_budget_usd": 7300, "hyperliquid_notional_cap_usd": 7000, "okx_notional_cap_usd": tc.okxCap}
 			f.evidence = pairPolicyEvidence(map[string]string{"USDT": "1.25"}, nil, nil)
 			e, _, _ := newPairPolicyEnv(t, f)

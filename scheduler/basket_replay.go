@@ -660,12 +660,12 @@ func (r *basketReplayRuntime) manageMember(sc StrategyConfig, scopeRisk map[Risk
 	logger := &StrategyLogger{stratID: sc.ID, writer: os.Stdout}
 	sym := hyperliquidSymbol(sc.Args)
 	mu.RLock()
-	pv := PortfolioValue(s, prices)
+	pv, _ := portfolioValueMarked(s, prices, state.pairMarksLocked())
 	pos, hasPos := readHLPerpsPosition(sc, s, sym, cfg.Regime)
 	scaleInCash := s.Cash
 	mu.RUnlock()
 	mu.Lock()
-	allowed, reason := CheckRisk(&sc, s, pv, prices, logger, nil)
+	allowed, reason := checkStrategyRiskWithView(&sc, s, pv, prices, state.pairMarksLocked(), logger, nil)
 	mu.Unlock()
 	cbManageOnly := false
 	if !allowed {

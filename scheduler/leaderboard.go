@@ -26,6 +26,7 @@ type LeaderboardEntry struct {
 	PositionsOpened int     `json:"positions_opened"`
 	Wins            int     `json:"wins"`
 	Losses          int     `json:"losses"`
+	Incomplete      string  `json:"incomplete,omitempty"`
 }
 
 func leaderboardTopN(cfg *Config) int {
@@ -55,19 +56,22 @@ func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]fl
 
 func buildLeaderboardEntries(strategies []StrategyConfig, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, globalIntervalSeconds int) []LeaderboardEntry {
 	var entries []LeaderboardEntry
+	pm := state.pairMarksLocked()
 	for _, sc := range strategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
 			continue
 		}
-		pv := displayStrategyValue(ss, prices)
+		pv, status := displayStrategyValueMarked(ss, prices, pm)
 		initCap := EffectiveInitialCapital(sc, ss)
 		pnl := pv - initCap
 		pnlPct := 0.0
 		if initCap > 0 {
 			pnlPct = (pnl / initCap) * 100
 		}
-		entries = append(entries, newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, globalIntervalSeconds))
+		e := newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, globalIntervalSeconds)
+		e.Incomplete = status.label()
+		entries = append(entries, e)
 	}
 	return entries
 }
@@ -79,6 +83,12 @@ func sortLeaderboardEntriesByPnLPct(entries []LeaderboardEntry) {
 }
 
 func leaderboardEntryBefore(a, b LeaderboardEntry, descending bool) bool {
+	if (a.Incomplete != "") != (b.Incomplete != "") {
+		return a.Incomplete == ""
+	}
+	if a.Incomplete != "" {
+		return a.ID < b.ID
+	}
 	if a.PoolBudget != b.PoolBudget {
 		return !a.PoolBudget
 	}
@@ -202,6 +212,9 @@ func leaderboardAdjustedTotal(
 	}
 	var subset []StrategyConfig
 	for _, e := range entries {
+		if e.Incomplete != "" {
+			continue
+		}
 		if sc, ok := configByID[e.ID]; ok {
 			subset = append(subset, sc)
 		}
@@ -209,7 +222,10 @@ func leaderboardAdjustedTotal(
 	if len(subset) == 0 {
 		return -1
 	}
-	adj, _ := computeSubsetDisplayValue(subset, state, prices, walletBalances, accountShared)
+	adj, _, status := computeSubsetDisplayValueMarked(subset, state, prices, walletBalances, accountShared, state.pairMarksLocked())
+	if !status.complete() {
+		return -1
+	}
 	return adj
 }
 
@@ -229,7 +245,14 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 	totalPositionsOpened, totalWins, totalLosses := 0, 0, 0
 	winning, losing, flat := 0, 0, 0
 	hasPoolBudget := false
+	scored := 0
+	var incomplete []string
 	for _, e := range entries {
+		if e.Incomplete != "" {
+			incomplete = append(incomplete, e.ID+": "+e.Incomplete)
+			continue
+		}
+		scored++
 		totalValue += e.Value
 		totalCapital += e.Capital
 		totalPositionsOpened += e.PositionsOpened
@@ -303,6 +326,10 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 			label += "*"
 			pctStr = "—"
 		}
+		if e.Incomplete != "" {
+			label += "?"
+			pctStr = "—"
+		}
 		tfStr := truncateRunes(e.Timeframe, 4)
 		intStr := truncateRunes(e.Interval, 4)
 		wlStr := fmtWinLossRatio(e.Wins, e.Losses)
@@ -315,7 +342,7 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 	}
 	sb.WriteString(sep + "\n")
 
-	totalLabel := fmt.Sprintf("TOTAL (%d strategies)", len(entries))
+	totalLabel := fmt.Sprintf("TOTAL (%d strategies)", scored)
 	if len(totalLabel) > labelMax {
 		totalLabel = totalLabel[:labelMax]
 	}
@@ -331,6 +358,10 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 	sb.WriteString("```\n")
 	if hasPoolBudget {
 		sb.WriteString("* POOL row: Value/PnL is attributed net performance; PnL% and TOTAL return are unavailable because wallet deposits are not strategy capital.\n")
+	}
+	if len(incomplete) > 0 {
+		sort.Strings(incomplete)
+		sb.WriteString("? row is unranked and outside TOTAL: " + strings.Join(incomplete, "; ") + "\n")
 	}
 	sb.WriteString(fmt.Sprintf("🟢 %d winning · 🔴 %d losing · ⚪ %d flat\n", winning, losing, flat))
 
@@ -424,6 +455,7 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 
 	var entries []LeaderboardEntry
 	configByID := make(map[string]StrategyConfig)
+	pm := state.pairMarksLocked()
 	for _, sc := range cfg.Strategies {
 		if !strings.EqualFold(sc.Platform, lc.Platform) {
 			continue
@@ -435,14 +467,16 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 		if ss == nil {
 			continue
 		}
-		pv := displayStrategyValue(ss, prices)
+		pv, status := displayStrategyValueMarked(ss, prices, pm)
 		initCap := EffectiveInitialCapital(sc, ss)
 		pnl := pv - initCap
 		pnlPct := 0.0
 		if initCap > 0 {
 			pnlPct = (pnl / initCap) * 100
 		}
-		entries = append(entries, newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, cfg.IntervalSeconds))
+		e := newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, cfg.IntervalSeconds)
+		e.Incomplete = status.label()
+		entries = append(entries, e)
 		configByID[sc.ID] = sc
 	}
 

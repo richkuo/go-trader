@@ -538,18 +538,47 @@ type pairPendingFill struct {
 }
 
 type pairLeg struct {
-	Member    pairContractMember
-	Booked    float64
-	Unapplied float64
-	Val       pairMemberValuation
-	ValOK     bool
-	Cash      float64
-	Posted    float64
-	Leverage  float64
+	Member         pairContractMember
+	Booked         float64
+	Unapplied      float64
+	Val            pairMemberValuation
+	ValOK          bool
+	ValWhy         string
+	MarkUSD        float64
+	LowerUSD       float64
+	UpperUSD       float64
+	PriceRate      float64
+	Cash           float64
+	AvgCostUSD     float64
+	Posted         float64
+	BookedCosts    float64
+	UnappliedFills []pairPendingFill
+	Leverage       float64
+	Account        pairAccountUSD
+	AccountWhy     string
 }
 
 func (l pairLeg) exposure() float64 {
 	return l.Booked + l.Unapplied
+}
+
+func (l pairLeg) imr() float64 {
+	lev := l.Leverage
+	if !(lev > 0) {
+		lev = 1
+	}
+	return math.Max(l.Member.Meta.InitialMarginRate, 1/lev)
+}
+
+func (l pairLeg) feeRate() float64 {
+	return math.Max(math.Max(l.Val.FeeRate, 0), l.Member.CostPolicy.TakerFeePct)
+}
+
+func (l pairLeg) adverseUSD(signed float64) float64 {
+	if signed > 0 {
+		return l.LowerUSD
+	}
+	return l.UpperUSD
 }
 
 type pairPlan struct {
@@ -557,6 +586,8 @@ type pairPlan struct {
 	Legs    map[string]*pairLeg
 	Order   []string
 	Pending []pairPendingFill
+	NowMs   int64
+	Views   pairViewSet
 }
 
 type pairEndpointReading struct {
@@ -567,31 +598,43 @@ type pairEndpointReading struct {
 	Available map[string]float64
 	Liquidity map[string]float64
 	Equity    map[string]float64
+	Missing   map[string]string
 }
 
 func (p *pairPlan) upper(id string, fills []pairPendingFill) (float64, bool) {
 	l := p.Legs[id]
-	if l == nil || !l.ValOK || !basketFinitePositive(l.Val.UpperPx) {
+	if l == nil || !l.ValOK || !basketFinitePositive(l.UpperUSD) || !basketFinitePositive(l.PriceRate) {
 		return 0, false
 	}
-	conv, ok := l.Val.conversion(l.Member.Meta.SettlementCurrency)
-	if !ok {
-		return 0, false
-	}
-	u := l.Val.UpperPx
+	u := l.UpperUSD
 	for _, f := range fills {
-		if f.MemberID == id && f.Signed > 0 && f.PriceBound > u {
-			u = f.PriceBound
+		if f.MemberID == id && f.Signed > 0 && f.PriceBound*l.PriceRate > u {
+			u = f.PriceBound * l.PriceRate
 		}
 	}
-	return u * conv, true
+	return u, true
+}
+
+type pairResourceTotals struct {
+	members     []string
+	bookFree    float64
+	bookEquity  float64
+	venueDeduct float64
+	bookedCosts float64
+	upnl        float64
+	required    float64
+	maintenance float64
+	feeReserve  float64
+	account     pairAccountUSD
+	missing     string
 }
 
 func (p *pairPlan) reading(fills []pairPendingFill, include []bool) (pairEndpointReading, error) {
-	r := pairEndpointReading{Venue: map[string]float64{}, Required: map[string]float64{}, Available: map[string]float64{}, Liquidity: map[string]float64{}, Equity: map[string]float64{}}
+	r := pairEndpointReading{Venue: map[string]float64{}, Required: map[string]float64{}, Available: map[string]float64{}, Liquidity: map[string]float64{}, Equity: map[string]float64{}, Missing: map[string]string{}}
 	qty := map[string]float64{}
 	added := map[string]float64{}
 	feeNotional := map[string]float64{}
+	chosenByMember := map[string][]pairPendingFill{}
 	for _, id := range p.Order {
 		qty[id] = p.Legs[id].exposure()
 	}
@@ -601,20 +644,31 @@ func (p *pairPlan) reading(fills []pairPendingFill, include []bool) (pairEndpoin
 			continue
 		}
 		chosen = append(chosen, f)
+		chosenByMember[f.MemberID] = append(chosenByMember[f.MemberID], f)
 		qty[f.MemberID] += f.Signed
-		px := f.PriceBound
-		if l := p.Legs[f.MemberID]; l != nil && l.ValOK && l.Val.UpperPx > px {
-			px = l.Val.UpperPx
+		l := p.Legs[f.MemberID]
+		px := 0.0
+		if l != nil {
+			px = f.PriceBound * l.PriceRate
+			if l.ValOK && l.UpperUSD > px {
+				px = l.UpperUSD
+			}
 		}
 		feeNotional[f.MemberID] += math.Abs(f.Signed) * px
 	}
 	maxU := 0.0
 	var net float64
+	resources := map[string]*pairResourceTotals{}
+	var resourceOrder []string
 	for _, id := range p.Order {
 		l := p.Legs[id]
 		u, ok := p.upper(id, chosen)
 		if !ok {
-			return r, fmt.Errorf("member %s has no conservative upper valuation with a settlement conversion", id)
+			why := l.ValWhy
+			if why == "" {
+				why = "no checked mark with a price conversion"
+			}
+			return r, fmt.Errorf("member %s has no own upper valuation at the reader time (%s)", id, why)
 		}
 		if u > maxU {
 			maxU = u
@@ -627,17 +681,64 @@ func (p *pairPlan) reading(fills []pairPendingFill, include []bool) (pairEndpoin
 		if math.Abs(qty[id]) > start {
 			added[id] = math.Abs(qty[id]) - start
 		}
-		lev := l.Leverage
-		if !(lev > 0) {
-			lev = 1
+		feeReserve := feeNotional[id] * l.feeRate()
+		upnl := l.Booked * (l.adverseUSD(l.Booked) - l.AvgCostUSD)
+		unappliedFee := 0.0
+		unappliedIM := 0.0
+		for _, f := range l.UnappliedFills {
+			pxUSD := f.PriceBound * l.PriceRate
+			upnl += f.Signed * (l.adverseUSD(f.Signed) - pxUSD)
+			unappliedFee += math.Abs(f.Signed) * pxUSD * l.feeRate()
+			if f.Elective {
+				unappliedIM += math.Abs(f.Signed) * pxUSD * l.imr()
+			}
 		}
-		imr := math.Max(l.Member.Meta.InitialMarginRate, 1/lev)
-		conv, _ := l.Val.conversion(l.Member.Meta.SettlementCurrency)
-		feeReserve := feeNotional[id] * conv * math.Max(math.Max(l.Val.FeeRate, 0), l.Member.CostPolicy.TakerFeePct)
-		r.Required[id] = added[id]*u*imr + feeReserve
-		r.Available[id] = l.Cash
-		r.Liquidity[id] = n * l.Member.Meta.MaintenanceMarginRate
-		r.Equity[id] = l.Cash + l.Posted - feeReserve
+		for _, f := range chosenByMember[id] {
+			pxUSD := f.PriceBound * l.PriceRate
+			upnl += f.Signed * (l.adverseUSD(f.Signed) - pxUSD)
+		}
+		key := pairAccountResource(l.Val.Key)
+		if l.Val.Key.MemberID == "" {
+			key = id
+		}
+		res := resources[key]
+		if res == nil {
+			res = &pairResourceTotals{account: l.Account}
+			resources[key] = res
+			resourceOrder = append(resourceOrder, key)
+		}
+		res.members = append(res.members, id)
+		res.required += added[id]*u*l.imr() + feeReserve
+		res.maintenance += n * l.Member.Meta.MaintenanceMarginRate
+		res.bookFree += l.Cash - l.Posted - unappliedIM - unappliedFee
+		res.bookEquity += l.Cash + upnl - feeReserve - unappliedFee
+		res.venueDeduct += l.Posted + unappliedIM + unappliedFee + l.BookedCosts
+		res.bookedCosts += l.BookedCosts
+		res.upnl += upnl
+		res.feeReserve += feeReserve + unappliedFee
+		switch {
+		case l.AccountWhy != "":
+			res.missing = pairJoinReasons(res.missing, l.AccountWhy)
+		case res.account.EvidenceHash != l.Account.EvidenceHash:
+			res.missing = pairJoinReasons(res.missing, fmt.Sprintf("conflicting account records %s and %s for one account resource", shortFingerprint(res.account.EvidenceHash), shortFingerprint(l.Account.EvidenceHash)))
+		}
+	}
+	for _, key := range resourceOrder {
+		res := resources[key]
+		sort.Strings(res.members)
+		label := strings.Join(res.members, "+")
+		r.Required[label] = res.required
+		r.Liquidity[label] = res.maintenance
+		if res.missing != "" {
+			r.Missing[label] = res.missing
+			r.Available[label] = res.bookFree
+			r.Equity[label] = res.bookEquity
+			continue
+		}
+		venueFree := res.account.Free - res.venueDeduct
+		venueEquity := res.account.Equity - res.bookedCosts + res.upnl - res.feeReserve
+		r.Available[label] = math.Min(res.bookFree, venueFree)
+		r.Equity[label] = math.Min(res.bookEquity, venueEquity)
 	}
 	r.Unmatched = math.Abs(net) * maxU
 	return r, nil
@@ -667,6 +768,9 @@ func (r pairEndpointReading) violations(l pairOperationalLimits) []string {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
+		if why := r.Missing[id]; why != "" {
+			out = append(out, fmt.Sprintf("%s free collateral evidence is unavailable: %s", id, why))
+		}
 		if r.Available[id] < r.Required[id] {
 			out = append(out, fmt.Sprintf("%s free collateral $%.2f is below the $%.2f margin and fee reserve", id, r.Available[id], r.Required[id]))
 		}

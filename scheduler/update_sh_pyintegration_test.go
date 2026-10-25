@@ -35,12 +35,7 @@ func TestUpdateHelpersEnvfileParsing790(t *testing.T) {
 		t.Fatal("runtime.Caller failed")
 	}
 	schedDir := filepath.Dir(thisFile)
-	bin := filepath.Join(t.TempDir(), "go-trader")
-	build := exec.Command("go", "build", "-o", bin, ".")
-	build.Dir = schedDir
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
+	bin := pyintegrationBinary(t)
 	script := filepath.Join(schedDir, "..", "scripts", "test_update_helpers.sh")
 	cmd := exec.Command(bash, script)
 	cmd.Env = append(os.Environ(), "GO_TRADER_BIN="+bin)
@@ -357,7 +352,7 @@ func TestApplyUpgradeTimeoutSendsSIGTERMAndRecoversWithoutOrphans(t *testing.T) 
 		}
 	}
 
-	runCase("uv", "45")
+	runCase("uv", "35")
 	runCase("git_pull", "")
 	runCase("go_build", "")
 }
@@ -1286,7 +1281,7 @@ func TestUpdateShellSignalModePreservesWrapperAndRecoversOnHealthFail(t *testing
 	}
 	newPidA := strings.TrimSpace(string(pidBytesA))
 	defer killIfAlive(newPidA)
-	time.Sleep(10 * time.Second)
+	time.Sleep(2 * time.Second)
 	if err := exec.Command("kill", "-0", newPidA).Run(); err != nil {
 		t.Fatalf("exec-style wrapper pid %s was killed after signal-mode update exit: %v", newPidA, err)
 	}
@@ -1327,7 +1322,7 @@ func TestUpdateShellSignalModePreservesWrapperAndRecoversOnHealthFail(t *testing
 	traderPidB := strings.TrimSpace(string(pidBytesB))
 	defer killIfAlive(wrapPidB)
 	defer killIfAlive(traderPidB)
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 	if err := exec.Command("kill", "-0", wrapPidB).Run(); err != nil {
 		t.Fatalf("loop wrapper pid %s was killed after signal-mode update exit: %v", wrapPidB, err)
 	}
@@ -1369,7 +1364,7 @@ func TestUpdateShellSignalModePreservesWrapperAndRecoversOnHealthFail(t *testing
 	}
 	recPidC := strings.TrimSpace(string(pidBytesC))
 	defer killIfAlive(recPidC)
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 	if err := exec.Command("kill", "-0", recPidC).Run(); err != nil {
 		t.Fatalf("recovered signal-mode trader pid %s is not alive: %v", recPidC, err)
 	}

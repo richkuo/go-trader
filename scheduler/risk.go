@@ -446,20 +446,21 @@ type KillSwitchEvent struct {
 }
 
 type PortfolioRiskState struct {
-	PeakValue                  float64           `json:"peak_value"`
-	CurrentDrawdownPct         float64           `json:"current_drawdown_pct"`
-	CurrentMarginDrawdownPct   float64           `json:"current_margin_drawdown_pct,omitempty"`
-	DrawdownReadingSubstituted bool              `json:"drawdown_reading_substituted,omitempty"`
-	UntrustedOverLimitSince    time.Time         `json:"untrusted_over_limit_since,omitempty"`
-	KillSwitchActive           bool              `json:"kill_switch_active"`
-	KillSwitchAt               time.Time         `json:"kill_switch_at,omitempty"`
-	WarningSent                bool              `json:"warning_sent,omitempty"`
-	WarnBandEnteredAt          time.Time         `json:"warn_band_entered_at,omitempty"`
-	LastWarningEquityDDPct     float64           `json:"last_warning_equity_dd_pct,omitempty"`
-	LastWarningMarginDDPct     float64           `json:"last_warning_margin_dd_pct,omitempty"`
-	WarningEquityDeltaPct      float64           `json:"warning_equity_delta_pct,omitempty"`
-	WarningMarginDeltaPct      float64           `json:"warning_margin_delta_pct,omitempty"`
-	Events                     []KillSwitchEvent `json:"events,omitempty"`
+	PeakValue                    float64           `json:"peak_value"`
+	CurrentDrawdownPct           float64           `json:"current_drawdown_pct"`
+	CurrentMarginDrawdownPct     float64           `json:"current_margin_drawdown_pct,omitempty"`
+	DrawdownReadingSubstituted   bool              `json:"drawdown_reading_substituted,omitempty"`
+	UntrustedOverLimitSince      time.Time         `json:"untrusted_over_limit_since,omitempty"`
+	PairValuationIncompleteSince time.Time         `json:"pair_valuation_incomplete_since,omitempty"`
+	KillSwitchActive             bool              `json:"kill_switch_active"`
+	KillSwitchAt                 time.Time         `json:"kill_switch_at,omitempty"`
+	WarningSent                  bool              `json:"warning_sent,omitempty"`
+	WarnBandEnteredAt            time.Time         `json:"warn_band_entered_at,omitempty"`
+	LastWarningEquityDDPct       float64           `json:"last_warning_equity_dd_pct,omitempty"`
+	LastWarningMarginDDPct       float64           `json:"last_warning_margin_dd_pct,omitempty"`
+	WarningEquityDeltaPct        float64           `json:"warning_equity_delta_pct,omitempty"`
+	WarningMarginDeltaPct        float64           `json:"warning_margin_delta_pct,omitempty"`
+	Events                       []KillSwitchEvent `json:"events,omitempty"`
 
 	ManualMarkBasisRebaselined bool `json:"manual_mark_basis_rebaselined,omitempty"`
 	QuotePrecisionRebaselined  bool `json:"quote_precision_rebaselined,omitempty"`
@@ -629,7 +630,7 @@ func addKillSwitchEvent(prs *PortfolioRiskState, eventType, source string, drawd
 	}
 }
 
-func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, configs []StrategyConfig, prices map[string]float64) (unrealizedLoss, margin float64) {
+func aggregatePerpsMarginInputsMarked(strategies map[string]*StrategyState, configs []StrategyConfig, prices map[string]float64, pm *pairMarks) (unrealizedLoss, margin float64, st pairValueStatus) {
 	leverageByID := make(map[string]float64, len(configs))
 	for _, sc := range configs {
 		leverageByID[sc.ID] = sc.Leverage
@@ -642,11 +643,28 @@ func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, configs []
 		if lev <= 0 {
 			continue
 		}
-		loss, m := perpsMarginDrawdownInputs(s, lev, prices)
+		loss, m, ms := perpsMarginDrawdownInputsMarked(s, lev, prices, pm)
 		unrealizedLoss += loss
 		margin += m
+		st.merge(ms)
 	}
-	return unrealizedLoss, margin
+	return unrealizedLoss, margin, st
+}
+
+func latchPortfolioKillSwitchForPairValuation(prs *PortfolioRiskState, totalValue float64, detail string) string {
+	prs.KillSwitchActive = true
+	prs.KillSwitchAt = tradingNow().UTC()
+	prs.WarningSent = false
+	prs.WarnBandEnteredAt = time.Time{}
+	prs.LastWarningEquityDDPct = 0
+	prs.LastWarningMarginDDPct = 0
+	prs.WarningEquityDeltaPct = 0
+	prs.WarningMarginDeltaPct = 0
+	prs.UntrustedOverLimitSince = time.Time{}
+	r := fmt.Sprintf("pair valuation incomplete longer than %s: %s; the reading counts as over the limit and the portfolio kill switch latches (fail closed)",
+		formatWarningDuration(untrustedEquityLatchDeferral), detail)
+	addKillSwitchEvent(prs, "triggered", "pair_valuation", prs.CurrentDrawdownPct, totalValue, prs.PeakValue, r)
+	return r
 }
 
 func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64) (allowed, notionalBlocked, warning bool, reason string) {
@@ -819,11 +837,19 @@ func portfolioWarnBandSignals(cfg *PortfolioRiskConfig, prs *PortfolioRiskState,
 	return equityInBand, marginInBand
 }
 
-func PortfolioNotional(strategies map[string]*StrategyState, prices map[string]float64) float64 {
+func portfolioNotionalMarked(strategies map[string]*StrategyState, prices map[string]float64, pm *pairMarks) (float64, pairValueStatus) {
+	var st pairValueStatus
 	total := 0.0
 	for _, s := range strategies {
 		for sym, pos := range s.Positions {
 			price, ok := prices[sym]
+			if mark, state, why, pair := pm.markFor(s, sym); pair {
+				st.note(s.ID, state, why)
+				if state == pairMarkUnavailable {
+					continue
+				}
+				price, ok = mark, true
+			}
 			if !ok {
 				price = pos.AvgCost
 			}
@@ -841,7 +867,7 @@ func PortfolioNotional(strategies map[string]*StrategyState, prices map[string]f
 			}
 		}
 	}
-	return total
+	return total, st
 }
 
 type RiskState struct {
@@ -1491,15 +1517,19 @@ func forceCloseSettledPositions(s *StrategyState, sc StrategyConfig, prices map[
 	}
 }
 
-func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices map[string]float64) (unrealizedLoss, margin float64) {
+func perpsMarginDrawdownInputsMarked(s *StrategyState, configLeverage float64, prices map[string]float64, pm *pairMarks) (unrealizedLoss, margin float64, st pairValueStatus) {
 	if configLeverage <= 0 {
-		return 0, 0
+		return 0, 0, st
 	}
 	for sym, pos := range s.Positions {
 		if pos.Multiplier <= 0 {
 			continue
 		}
 		price, ok := prices[sym]
+		if mark, state, why, pair := pm.markFor(s, sym); pair {
+			st.note(s.ID, state, why)
+			price, ok = pairConservativePx(pos, state, mark), true
+		}
 		if !ok || price <= 0 {
 			price = pos.AvgCost
 		}
@@ -1522,13 +1552,14 @@ func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices 
 			unrealizedLoss += -pnl
 		}
 	}
-	return unrealizedLoss, margin
+	return unrealizedLoss, margin, st
 }
 
 const (
 	RiskReasonCircuitBreakerActive = "circuit breaker active"
 	RiskReasonMaxDrawdownExceeded  = "max drawdown exceeded"
 	RiskReasonConsecutiveLosses    = "consecutive losses"
+	RiskReasonPairValuationStale   = "pair valuation incomplete too long"
 )
 
 func circuitBreakerPermitsManagement(reason, platform, stratType string, posQty float64) bool {
@@ -1537,6 +1568,65 @@ func circuitBreakerPermitsManagement(reason, platform, stratType string, posQty 
 }
 
 func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
+	if strategyPairCostRequired(s) && (sc == nil || sc.Type != "manual") {
+		return checkPairMemberRiskWithoutView(sc, s, logger, assist)
+	}
+	return checkRiskValued(sc, s, portfolioValue, prices, true, nil, logger, assist)
+}
+
+func checkStrategyRiskWithView(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, pm *pairMarks, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
+	if pm != nil && strategyPairCostRequired(s) && (sc == nil || sc.Type != "manual") {
+		ok, reason, _ := checkPairMemberRisk(sc, s, pm, logger, assist)
+		return ok, reason
+	}
+	return CheckRisk(sc, s, portfolioValue, prices, logger, assist)
+}
+
+func checkPairMemberRiskWithoutView(sc *StrategyConfig, s *StrategyState, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
+	pv, prices, status := pairMemberRiskInputs(s, nil)
+	if status.complete() {
+		return checkRiskValued(sc, s, pv, prices, true, nil, logger, assist)
+	}
+	if r := &s.RiskState; r.CircuitBreaker && tradingNow().UTC().Before(r.CircuitBreakerUntil) {
+		return false, RiskReasonCircuitBreakerActive
+	}
+	return false, status.label() + "; this risk reader has no coordinator valuation view, so the strategy holds, the circuit breaker reads nothing and the peak is not updated this cycle"
+}
+
+func pairMemberRiskInputs(s *StrategyState, pm *pairMarks) (float64, map[string]float64, pairValueStatus) {
+	pv, status := portfolioValueMarked(s, nil, pm)
+	prices := map[string]float64{}
+	for sym, pos := range s.Positions {
+		if px, state, _, pair := pm.markFor(s, sym); pair {
+			if c := pairConservativePx(pos, state, px); basketFinitePositive(c) {
+				prices[sym] = c
+			}
+		}
+	}
+	return pv, prices, status
+}
+
+func checkPairMemberRisk(sc *StrategyConfig, s *StrategyState, pm *pairMarks, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string, pairValueStatus) {
+	pv, prices, status := pairMemberRiskInputs(s, pm)
+	ok, reason := checkRiskValued(sc, s, pv, prices, status.complete(), pm, logger, assist)
+	if since, overdue := pm.overdue(status)[s.ID]; ok && overdue && sc != nil && sc.CircuitBreakerEnabled() {
+		r := &s.RiskState
+		r.CircuitBreaker = true
+		r.CircuitBreakerUntil = tradingNow().UTC().Add(sc.CircuitBreakerDrawdownCooldown())
+		why := fmt.Sprintf("%s: %s, longer than %s; the circuit breaker trips (fail closed) and books no close without a checked price",
+			RiskReasonPairValuationStale, pairOverdueDetail(map[string]int64{s.ID: since}, status), formatWarningDuration(untrustedEquityLatchDeferral))
+		if logger != nil {
+			logger.Warn("Circuit breaker: %s", why)
+		}
+		return false, why, status
+	}
+	if !status.complete() && reason == "" {
+		reason = status.label() + "; the circuit-breaker drawdown uses the conservative member value and the peak is not updated this cycle"
+	}
+	return ok, reason, status
+}
+
+func checkRiskValued(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, valued bool, pm *pairMarks, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
 	if sc != nil && sc.Type == "manual" {
 		return true, ""
 	}
@@ -1561,7 +1651,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 
 	poolBudget := sc != nil && usesSharedWalletPoolBudget(*sc)
 
-	if !poolBudget && portfolioValue > r.PeakValue {
+	if valued && !poolBudget && portfolioValue > r.PeakValue {
 		r.PeakValue = portfolioValue
 	}
 
@@ -1573,7 +1663,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		if sc != nil {
 			configLev = sc.Leverage
 		}
-		if pnlLoss, margin := perpsMarginDrawdownInputs(s, configLev, prices); margin > 0 {
+		if pnlLoss, margin, _ := perpsMarginDrawdownInputsMarked(s, configLev, prices, pm); margin > 0 {
 			loss = pnlLoss
 			denom = margin
 			denomLabel = "margin"

@@ -201,14 +201,10 @@ func htfITHeld(log, id string) bool {
 }
 
 func TestHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *testing.T) {
+	t.Parallel()
 	root := htfITRoot(t)
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "go-trader")
-	build := exec.Command("go", "build", "-o", bin, ".")
-	build.Dir = filepath.Join(root, "scheduler")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := pyintegrationBinary(t)
 	type strat struct {
 		id, symbol string
 		spot       bool
@@ -232,7 +228,7 @@ func TestHTFFilterIntegrationSchedulerOnceHoldsEntriesAndKeepsCloses(t *testing.
 	cfgPath := filepath.Join(dir, "config.json")
 	blob, err := json.MarshalIndent(map[string]any{
 		"config_version": CurrentConfigVersion, "interval_seconds": 60,
-		"db_file": filepath.Join(dir, "state.db"), "strategies": entries,
+		"db_file": filepath.Join(dir, "state.db"), "log_dir": filepath.Join(dir, "logs"), "strategies": entries,
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)

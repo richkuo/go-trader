@@ -13,10 +13,17 @@ func notionalCapHoldDetail(totalNotional, capUSD float64) string {
 }
 
 func evaluateNotionalCapHold(pr *PortfolioRiskConfig, strategies map[string]*StrategyState, prices map[string]float64) (held bool, detail string) {
+	return evaluateNotionalCapHoldMarked(pr, strategies, prices, nil)
+}
+
+func evaluateNotionalCapHoldMarked(pr *PortfolioRiskConfig, strategies map[string]*StrategyState, prices map[string]float64, pm *pairMarks) (held bool, detail string) {
 	if pr == nil || pr.MaxNotionalUSD <= 0 {
 		return false, ""
 	}
-	total := PortfolioNotional(strategies, prices)
+	total, status := portfolioNotionalMarked(strategies, prices, pm)
+	if !status.complete() {
+		return true, fmt.Sprintf("portfolio notional is incomplete (%s) — new opens held against cap $%.2f, exits continue", status.label(), pr.MaxNotionalUSD)
+	}
 	if total > pr.MaxNotionalUSD {
 		return true, notionalCapHoldDetail(total, pr.MaxNotionalUSD)
 	}
