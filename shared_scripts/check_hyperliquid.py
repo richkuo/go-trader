@@ -3698,6 +3698,295 @@ def run_quote_position(symbol, mode):
     _quote_print(out)
 
 
+PAIR_FILL_MARGIN_MS = 60000
+PAIR_CONFIRM_ATTEMPTS = 3
+PAIR_CONFIRM_DELAY_S = 0.25
+PAIR_HL_LIVE_STATUSES = ("open", "triggered", "resting")
+PAIR_HL_FILLED_STATUSES = ("filled",)
+
+
+def _pair_orders():
+    import importlib.util
+    name = "go_trader_pair_orders"
+    mod = sys.modules.get(name)
+    if mod is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared_tools", "pair_orders.py")
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
+def pair_hl_place_refusal(resp):
+    if not isinstance(resp, dict):
+        return ""
+    if resp.get("status") == "err":
+        return f"the venue refused the action: {resp.get('response')!r}"
+    if resp.get("status") != "ok":
+        return ""
+    response = resp.get("response")
+    data = response.get("data") if isinstance(response, dict) else None
+    statuses = data.get("statuses") if isinstance(data, dict) else None
+    if not isinstance(statuses, list) or len(statuses) != 1 or not isinstance(statuses[0], dict):
+        return ""
+    err = statuses[0].get("error")
+    if isinstance(err, str) and err and len(statuses[0]) == 1:
+        return err
+    return ""
+
+
+def _pair_hl_order(resp):
+    if not isinstance(resp, dict):
+        raise ValueError(f"orderStatus returned no object: {resp!r}")
+    top = resp.get("status")
+    if top == "unknownOid":
+        return None
+    if top != "order":
+        raise ValueError(f"orderStatus returned status {top!r}")
+    wrapper = resp.get("order")
+    if not isinstance(wrapper, dict) or not isinstance(wrapper.get("order"), dict):
+        raise ValueError("orderStatus returned no order body")
+    status = wrapper.get("status")
+    if not isinstance(status, str) or not status:
+        raise ValueError("orderStatus returned no order state")
+    return wrapper["order"], status
+
+
+def _pair_hl_side(raw):
+    return {"B": "buy", "A": "sell"}.get(raw, "")
+
+
+def _pair_hl_fills(po, raw_fills, keep):
+    by_tid = {}
+    order = []
+    for f in raw_fills:
+        if not keep(f):
+            continue
+        tid = f.get("tid")
+        if tid is None:
+            raise ValueError("a matching fill carries no trade id")
+        key = str(tid)
+        body = json.dumps(f, sort_keys=True, separators=(",", ":"), default=str)
+        if key in by_tid:
+            if by_tid[key][1] != body:
+                raise ValueError(f"fill {key} was returned twice with different bodies")
+            continue
+        by_tid[key] = (f, body)
+        order.append(key)
+    out = []
+    for key in order:
+        f = by_tid[key][0]
+        fee_known = f.get("fee") not in (None, "") and bool(str(f.get("feeToken") or "").strip())
+        out.append(po.fill_record(key, f.get("time"), f.get("sz"), f.get("px"), f.get("fee"), f.get("feeToken"), fee_known,
+                                  order_id=f.get("oid"), side=_pair_hl_side(f.get("side"))))
+    out.sort(key=lambda r: (r["venue_time_ms"], r["fill_id"]))
+    return out
+
+
+def pair_hl_outcome(adapter, po, req, mode, account, since_ms, place_resp=None, place_error=""):
+    cloid = req["client_order_id"]
+    venue = {"account_key": account, "contract_size": "1", "price_currency": "USDC", "native_unit": "base"}
+    try:
+        found = _pair_hl_order(adapter.query_order_by_cloid(cloid))
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        return po.outcome(mode, "unknown", f"the order status read failed: {e}", req, venue=venue)
+    try:
+        scan = _RecoveryFillScan(adapter, since_ms)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        return po.outcome(mode, "unknown", f"the fill history read failed: {e}", req, venue=venue)
+    s = scan.scan
+    coverage = {"complete": bool(s["complete"]), "reason": s["reason"], "from_ms": int(s["from_ms"]), "through_ms": int(s["through_ms"] if s["complete"] else 0), "pages": int(s["pages"])}
+    try:
+        if found is None:
+            labels, attributed, why = scan.attribution()
+            coverage["complete"] = coverage["complete"] and attributed
+            if not coverage["complete"]:
+                coverage["through_ms"] = 0
+                coverage["reason"] = coverage["reason"] or why or "the fill history is incomplete"
+            window = s["window"] if s["complete"] else s["fills"]
+            mine = [f for f, label in zip(window, labels) if label == cloid]
+            mine += [f for f in list(window[len(labels):]) + list(s["later"]) if str(f.get("cloid") or "").lower() == cloid]
+            if mine:
+                return po.outcome(mode, "unknown", "fills name this client order id, but the venue holds no order record for it", req,
+                                  venue=venue, fill_coverage=coverage, contrary_evidence=True)
+            if mode == "order":
+                if place_error:
+                    return po.outcome(mode, "unknown", f"the placement outcome is unknown: {place_error}", req, venue=venue, fill_coverage=coverage)
+                refusal = pair_hl_place_refusal(place_resp)
+                if refusal:
+                    return po.outcome(mode, "rejected", f"the venue refused the order with no fill: {refusal}", req, venue=venue, fill_coverage=coverage, terminal=True)
+                return po.outcome(mode, "unknown", f"the venue returned no order record after the placement: {place_resp!r}", req, venue=venue, fill_coverage=coverage)
+            return po.outcome(mode, "absent", "the venue holds no order record for this client order id", req, venue=venue, fill_coverage=coverage)
+        body, status = found
+        oid = int(body.get("oid"))
+        orig = po.exact_decimal(body.get("origSz"), "origSz", positive=True)
+        remaining = po.exact_decimal(body.get("sz"), "sz")
+        venue.update({
+            "instrument": str(body.get("coin") or ""),
+            "client_order_id": str(body.get("cloid") or "").lower(),
+            "venue_order_id": str(oid),
+            "side": _pair_hl_side(body.get("side")),
+            "native_qty": po.decimal_text(orig),
+            "price": po.decimal_text(po.exact_decimal(body.get("limitPx"), "limitPx", positive=True)),
+            "tif": str(body.get("tif") or ""),
+            "status": status,
+        })
+        if isinstance(body.get("reduceOnly"), bool):
+            venue["reduce_only"] = body["reduceOnly"]
+        accepted = int(body.get("timestamp") or 0)
+        fills = _pair_hl_fills(po, s["fills"], lambda f: str(f.get("oid")) == str(oid))
+    except (ValueError, TypeError, po.PairOrderError) as e:
+        traceback.print_exc(file=sys.stderr)
+        return po.outcome(mode, "unknown", f"the venue evidence is malformed: {e}", req, venue=venue, fill_coverage=coverage)
+    executed = orig if status in PAIR_HL_FILLED_STATUSES else orig - remaining
+    if executed < 0:
+        executed = Decimal(0)
+    qty, notional = po.sum_fills(fills)
+    base = {"venue": venue, "fill_coverage": coverage, "accepted_at_ms": accepted, "fills": fills}
+    if qty > executed:
+        return po.outcome(mode, "unknown", f"the fills sum to {qty}, above the executed size {executed}", req, **base)
+    complete = coverage["complete"] and qty == executed
+    cum = {"cum_native_qty": po.decimal_text(qty), "cum_native_notional": po.decimal_text(notional)}
+    known = status in PAIR_HL_FILLED_STATUSES or status in QUOTE_CANCELLED_STATUSES or status in QUOTE_REJECTED_STATUSES
+    if status in PAIR_HL_LIVE_STATUSES:
+        return po.outcome(mode, "open", f"the order is {status}", req, **base, **cum)
+    if not known:
+        return po.outcome(mode, "unknown", f"unfamiliar order state {status!r}", req, **base)
+    if executed == 0:
+        if qty > 0:
+            return po.outcome(mode, "unknown", "fills exist for an order the venue reports unfilled", req, **base)
+        return po.outcome(mode, "rejected", f"the order ended {status} with no fill", req, terminal=True, **base)
+    if not complete:
+        status_out = "partial" if qty > 0 else "unknown"
+        return po.outcome(mode, status_out, f"the order ended {status}; {qty} of {executed} executed are visible in a {'complete' if coverage['complete'] else 'incomplete'} fill history", req, **base, **cum)
+    status_out = "filled" if executed == orig else "partial"
+    return po.outcome(mode, status_out, f"the order ended {status} with {executed} of {orig} executed", req, terminal=True, **base, **cum)
+
+
+def _pair_hl_adapter(po, req, mode):
+    from adapter import HyperliquidExchangeAdapter
+    adapter = HyperliquidExchangeAdapter()
+    account = hyperliquid_account_key(adapter.account_address)
+    return adapter, account
+
+
+def run_pair_order(raw, mode, probe_only=False):
+    po = _pair_orders()
+    try:
+        req = po.parse_request(raw, "hyperliquid")
+    except po.PairOrderError as e:
+        po.finish({"platform": "hyperliquid", "error": str(e), "pair_outcome": po.never_sent("order", f"the request was refused before any adapter or venue call: {e}")}, 1)
+        return
+    if probe_only:
+        sys.exit(0)
+    if mode != "live":
+        po.finish({"platform": "hyperliquid", "error": "--pair-order-json requires --mode=live", "pair_outcome": po.never_sent("order", "--pair-order-json requires --mode=live", req)}, 1)
+        return
+    deadline = req["accept_deadline_ms"]
+    if po.now_ms() >= deadline:
+        po.finish({"platform": "hyperliquid", "pair_outcome": po.never_sent("order", "the acceptance deadline passed before the adapter was built; nothing was sent", req)})
+        return
+    try:
+        adapter, account = _pair_hl_adapter(po, req, mode)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        po.finish({"platform": "hyperliquid", "error": str(e), "pair_outcome": po.never_sent("order", f"the adapter could not be built, so nothing was sent: {e}", req)}, 1)
+        return
+    if account != req["account_key"]:
+        po.finish({"platform": "hyperliquid", "account": account, "pair_outcome": po.never_sent("order", f"the credentials answer for account {account!r}, the request is bound to {req['account_key']!r}; nothing was sent", req)})
+        return
+    native_text, bound_text = po.decimal_text(req["native_qty"]), po.decimal_text(req["price_bound"])
+    try:
+        adapter.check_quote_request(req["instrument"], native_text, bound_text)
+    except Exception as e:
+        po.finish({"platform": "hyperliquid", "account": account, "pair_outcome": po.never_sent("order", f"the saved size or bound is not on the venue grid, so nothing was sent: {e}", req)})
+        return
+    try:
+        if po.now_ms() >= deadline:
+            raise TimeoutError("the acceptance deadline passed before the order expiry was set")
+        adapter.set_order_expiry(int(deadline))
+    except Exception as e:
+        po.finish({"platform": "hyperliquid", "account": account, "pair_outcome": po.never_sent("order", f"nothing was sent: {e}", req)})
+        return
+    if po.now_ms() >= deadline:
+        po.finish({"platform": "hyperliquid", "account": account, "pair_outcome": po.never_sent("order", "the acceptance deadline passed immediately before the order call; nothing was sent", req)})
+        return
+    since = po.now_ms() - PAIR_FILL_MARGIN_MS
+    resp, place_error = None, ""
+    try:
+        resp = adapter.limit_open(req["instrument"], req["order_side"] == "buy", float(native_text), float(bound_text), tif="Ioc",
+                                  cloid=req["client_order_id"], reduce_only=bool(req["reduce_only"]), require_exact=True)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        place_error = str(e)
+    out = None
+    for attempt in range(PAIR_CONFIRM_ATTEMPTS):
+        out = pair_hl_outcome(adapter, po, req, "order", account, since, place_resp=resp, place_error=place_error)
+        if out["terminal"] and out["status"] != "unknown":
+            break
+        if attempt + 1 < PAIR_CONFIRM_ATTEMPTS:
+            time.sleep(PAIR_CONFIRM_DELAY_S)
+    po.finish({"platform": "hyperliquid", "account": account, "pair_outcome": out})
+
+
+def run_pair_query(raw, since_ms, mode, probe_only=False):
+    po = _pair_orders()
+    try:
+        req = po.parse_request(raw, "hyperliquid")
+    except po.PairOrderError as e:
+        po.finish({"platform": "hyperliquid", "error": str(e)}, 1)
+        return
+    if probe_only:
+        sys.exit(0)
+    if mode != "live":
+        po.finish({"platform": "hyperliquid", "error": "--pair-query-json requires --mode=live"}, 1)
+        return
+    try:
+        adapter, account = _pair_hl_adapter(po, req, mode)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        po.finish({"platform": "hyperliquid", "error": f"the adapter could not be built: {e}"}, 1)
+        return
+    if account != req["account_key"]:
+        po.finish({"platform": "hyperliquid", "account": account, "error": f"the credentials answer for account {account!r}, the request is bound to {req['account_key']!r}"}, 1)
+        return
+    po.finish({"platform": "hyperliquid", "account": account, "pair_outcome": pair_hl_outcome(adapter, po, req, "query", account, int(since_ms))})
+
+
+def run_pair_position(raw, mode, probe_only=False):
+    po = _pair_orders()
+    try:
+        req = po.parse_position_request(raw, "hyperliquid")
+    except po.PairOrderError as e:
+        po.finish({"platform": "hyperliquid", "error": str(e)}, 1)
+        return
+    if probe_only:
+        sys.exit(0)
+    if mode != "live":
+        po.finish({"platform": "hyperliquid", "error": "--pair-position-json requires --mode=live"}, 1)
+        return
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+        account = hyperliquid_account_key(adapter.account_address)
+        if account != req["account_key"]:
+            raise ValueError(f"the credentials answer for account {account!r}, the request is bound to {req['account_key']!r}")
+        pos = adapter.strict_pair_position(req["instrument"])
+        observed = po.now_ms()
+        qty = po.decimal_text(po.exact_decimal(pos["szi"], "szi", allow_negative=True))
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        po.finish({"platform": "hyperliquid", "error": f"strict pair position read failed: {e}"}, 1)
+        return
+    po.finish({"platform": "hyperliquid", "account": account, "pair_position": {
+        "v": po.POSITION_OUTPUT_VERSION, "account_key": account, "instrument": req["instrument"], "native_unit": "base",
+        "contract_size": "1", "signed_native_qty": qty, "position_mode": pos["position_mode"], "margin_mode": pos["margin_mode"],
+        "found": bool(pos["found"]), "observed_ms": observed}})
+
+
 def main():
     if "--batch-check" in sys.argv:
         import argparse
@@ -3946,6 +4235,28 @@ def main():
                     stop_cloid=args.stop_cloid,
                     expires_after_ms=args.expires_after_ms,
                     stop_expires_after_ms=args.stop_expires_after_ms)
+    elif any(a.startswith("--pair-order-json") or a.startswith("--pair-query-json") or a.startswith("--pair-position-json") for a in sys.argv[1:]):
+        import argparse
+        parser = argparse.ArgumentParser()
+        group = parser.add_mutually_exclusive_group(required=True)
+        group.add_argument("--pair-order-json", default=None)
+        group.add_argument("--pair-query-json", default=None)
+        group.add_argument("--pair-position-json", default=None)
+        parser.add_argument("--since-ms", type=int, default=None)
+        parser.add_argument("--mode", default="live")
+        parser.add_argument("--probe-only", action="store_true",
+                            help="Startup compatibility probe (#1877): parse the strict request and exit 0 before any adapter, clock or venue call.")
+        args = parser.parse_args()
+        if args.pair_query_json is not None:
+            if args.since_ms is None or args.since_ms <= 0:
+                parser.error("--pair-query-json needs --since-ms above zero")
+            run_pair_query(args.pair_query_json, args.since_ms, args.mode, probe_only=args.probe_only)
+        elif args.since_ms is not None:
+            parser.error("--since-ms applies to --pair-query-json only")
+        elif args.pair_order_json is not None:
+            run_pair_order(args.pair_order_json, args.mode, probe_only=args.probe_only)
+        else:
+            run_pair_position(args.pair_position_json, args.mode, probe_only=args.probe_only)
     elif "--quote-place" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()

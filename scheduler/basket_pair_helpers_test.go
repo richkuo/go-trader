@@ -634,6 +634,10 @@ type pairScriptedVenue struct {
 	queryCnt  map[string]int
 	now       func() int64
 	model     string
+	ledger    map[string]float64
+	adjust    float64
+	position  func(m pairContractMember, nowMs int64) (pairVenuePosition, error)
+	posReads  int
 }
 
 func (v *pairScriptedVenue) Name() string     { return "pair-scripted-" + v.provider }
@@ -658,6 +662,59 @@ func (v *pairScriptedVenue) NewClientOrderID() (string, error) {
 	*v.seq++
 	return fmt.Sprintf("%s-%06d", v.provider, *v.seq), nil
 }
+func (v *pairScriptedVenue) venueBase() float64 {
+	total := v.adjust
+	for _, q := range v.ledger {
+		total += q
+	}
+	return total
+}
+
+func (v *pairScriptedVenue) setVenueBase(qty float64) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	sum := 0.0
+	for _, q := range v.ledger {
+		sum += q
+	}
+	v.adjust = qty - sum
+}
+
+func (v *pairScriptedVenue) Position(ctx context.Context, m pairContractMember, nowMs int64) (pairVenuePosition, error) {
+	v.mu.Lock()
+	v.posReads++
+	hook := v.position
+	base := v.venueBase()
+	v.mu.Unlock()
+	if hook != nil {
+		return hook(m, nowMs)
+	}
+	if v.virtual || !v.live {
+		return pairVenuePosition{}, fmt.Errorf("a virtual research venue makes no private position read")
+	}
+	return pairTestVenuePosition(m, base, nowMs, nowMs)
+}
+
+func pairTestVenuePosition(m pairContractMember, base float64, observedMs, receiptMs int64) (pairVenuePosition, error) {
+	native := math.Round(base/m.Meta.ContractSize*1e9) / 1e9
+	q, err := pairDecimalFromFloat(native)
+	if err != nil {
+		return pairVenuePosition{}, err
+	}
+	cs, err := pairDecimalFromFloat(m.Meta.ContractSize)
+	if err != nil {
+		return pairVenuePosition{}, err
+	}
+	margin := m.Meta.MarginMode
+	if q == "0" {
+		margin = ""
+	}
+	p := pairVenuePosition{V: pairVenuePositionVersion, Key: pairEvidenceKey{Partition: "live", Provider: m.Provider, AccountKey: m.AccountKey, Instrument: m.Instrument, MemberID: m.MemberID},
+		SignedNativeQty: string(q), ContractSize: string(cs), PositionMode: m.Meta.PositionMode, MarginMode: margin,
+		ObservedMs: observedMs, FirstReceiptMs: receiptMs, EvidenceID: fmt.Sprintf("fixture-position:%s:%d", m.MemberID, receiptMs)}
+	return p.sealed()
+}
+
 func (v *pairScriptedVenue) fill(a *basketAction, out basketVenueOutcome) basketVenueOutcome {
 	if out.ClientOrderID == "" {
 		out.ClientOrderID = a.ClientOrderID
@@ -679,6 +736,12 @@ func (v *pairScriptedVenue) fill(a *basketAction, out basketVenueOutcome) basket
 		if out.AcceptedAtMs == 0 {
 			out.AcceptedAtMs = a.CreatedAtMs
 		}
+	}
+	if out.CumQty > 0 && !a.recoveryNote().NativeBooked {
+		if v.ledger == nil {
+			v.ledger = map[string]float64{}
+		}
+		v.ledger[a.ClientOrderID] = a.signedDelta() * out.CumQty
 	}
 	return out
 }
@@ -1055,6 +1118,7 @@ func (e *pairTestEnv) externalBookChange(id string, qty float64) {
 	if err := e.store.SavePartition(e.state, e.rt().Partition); err != nil {
 		e.t.Fatalf("save the external book change: %v", err)
 	}
+	e.venues.of(id).setVenueBase(qty)
 }
 
 func (e *pairTestEnv) signed(id string) float64 {

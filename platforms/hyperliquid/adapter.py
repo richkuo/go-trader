@@ -843,6 +843,42 @@ class HyperliquidExchangeAdapter:
         free = user_state.get("withdrawable")
         return {"size": size, "liquidation_px": liq, "free_margin": "" if free in (None, "") else str(free)}
 
+    def strict_pair_position(self, symbol: str) -> dict:
+        if not self._account_address:
+            raise RuntimeError("strict_pair_position requires HYPERLIQUID_ACCOUNT_ADDRESS")
+        user_state = self._info.user_state(self._account_address)
+        if not isinstance(user_state, dict) or not isinstance(user_state.get("assetPositions"), list):
+            raise ValueError(f"user_state returned no position list: {user_state!r}")
+        found = None
+        for i, asset_pos in enumerate(user_state["assetPositions"]):
+            if not isinstance(asset_pos, dict) or not isinstance(asset_pos.get("position"), dict):
+                raise ValueError(f"position row {i} is malformed, so no coin can be proven flat: {asset_pos!r}")
+            pos = asset_pos["position"]
+            coin = pos.get("coin")
+            if not isinstance(coin, str) or not coin:
+                raise ValueError(f"position row {i} names no coin, so no coin can be proven flat")
+            if coin != symbol:
+                continue
+            if found is not None:
+                raise ValueError(f"the position list holds {symbol} twice")
+            raw = pos.get("szi")
+            if not isinstance(raw, str) or not raw.strip():
+                raise ValueError(f"position for {symbol} carries no size text: {raw!r}")
+            size = Decimal(raw.strip())
+            if not size.is_finite():
+                raise ValueError(f"position for {symbol} carries size {raw!r}")
+            row_type = asset_pos.get("type")
+            if row_type != "oneWay":
+                raise ValueError(f"position for {symbol} has position mode {row_type!r}, not oneWay")
+            lev = pos.get("leverage")
+            margin = lev.get("type") if isinstance(lev, dict) else None
+            if size != 0 and margin not in ("cross", "isolated"):
+                raise ValueError(f"position for {symbol} carries margin mode {margin!r}")
+            found = {"szi": raw.strip(), "margin_mode": margin or "", "position_mode": "one_way", "found": True}
+        if found is None:
+            return {"szi": "0", "margin_mode": "", "position_mode": "one_way", "found": False}
+        return found
+
     def market_close(self, symbol: str, sz: float | None = None) -> dict:
         exchange = self._require_exchange("market_close")
         if sz is not None:

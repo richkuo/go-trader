@@ -316,6 +316,7 @@ type basketRuntime struct {
 	pairEchoFailures map[string]string
 	pairQuoteNote    string
 	pairLastStepMs   int64
+	pairPositions    *pairPositionState
 	pairView         pairViewSet
 	pairViewGen      uint64
 	pairPrepSeq      uint64

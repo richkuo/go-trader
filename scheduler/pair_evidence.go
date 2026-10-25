@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
 	"math/big"
 	"reflect"
 	"regexp"
@@ -1664,58 +1663,7 @@ func pairRoundBound(m pairContractMember, capEv pairCapabilityEvidence, side str
 	if err := pairCapabilityMatches(m, capEv); err != nil {
 		return 0, err
 	}
-	if side != "buy" && side != "sell" {
-		return 0, fmt.Errorf("bound side %q is neither buy nor sell", side)
-	}
-	if math.IsNaN(bound) || math.IsInf(bound, 0) || bound <= 0 {
-		return 0, fmt.Errorf("bound %v must be finite and above zero", bound)
-	}
-	x, err := quoteRatFromFloatDecimal(bound)
-	if err != nil {
-		return 0, err
-	}
-	round := func(px *big.Rat) (*big.Rat, error) {
-		switch capEv.Meta.PriceRule {
-		case pairPriceRuleHyperliquid:
-			rule := newQuotePriceRule(hlLotLookup{Known: true, SzDecimals: capEv.Meta.SzDecimals, Coin: m.Instrument})
-			return rule.roundQuotePx(side, px)
-		case pairPriceRuleFixedTick:
-			tick, err := pairParseDecimalInput(capEv.Meta.TickStepText)
-			if err != nil || tick.Sign() <= 0 {
-				return nil, fmt.Errorf("tick_step_text %q is not a positive decimal", capEv.Meta.TickStepText)
-			}
-			q := new(big.Rat).Quo(px, tick)
-			n := new(big.Int).Quo(q.Num(), q.Denom())
-			if side == "sell" && new(big.Rat).SetInt(n).Cmp(q) != 0 {
-				n.Add(n, big.NewInt(1))
-			}
-			return new(big.Rat).Mul(new(big.Rat).SetInt(n), tick), nil
-		}
-		return nil, fmt.Errorf("price rule %q is not supported", capEv.Meta.PriceRule)
-	}
-	r, err := round(x)
-	if err != nil {
-		return 0, err
-	}
-	if r.Sign() <= 0 {
-		return 0, fmt.Errorf("bound %v rounds to zero", bound)
-	}
-	f := quoteRatFloat(r)
-	if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
-		return 0, fmt.Errorf("rounded bound %s has no finite positive float", r.RatString())
-	}
-	back, err := quoteRatFromFloatDecimal(f)
-	if err != nil || back.Cmp(r) != 0 {
-		return 0, fmt.Errorf("rounded bound %s does not survive float projection exactly", r.RatString())
-	}
-	again, err := round(back)
-	if err != nil || again.Cmp(back) != 0 {
-		return 0, fmt.Errorf("projected bound %v is not a legal venue price", f)
-	}
-	if (side == "buy" && back.Cmp(x) > 0) || (side == "sell" && back.Cmp(x) < 0) {
-		return 0, fmt.Errorf("projected bound %v would widen the %s bound %v", f, side, bound)
-	}
-	return f, nil
+	return pairRoundBoundRule(m.Instrument, capEv.Meta, side, bound)
 }
 
 var pairEvidenceReaderScript = "shared_scripts/fetch_pair_evidence.py"

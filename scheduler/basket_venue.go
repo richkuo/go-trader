@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -86,6 +87,7 @@ type pairVenue interface {
 	basketVenue
 	Virtual() bool
 	ExecutionModel() string
+	Position(ctx context.Context, m pairContractMember, nowMs int64) (pairVenuePosition, error)
 }
 
 type basketVenue interface {

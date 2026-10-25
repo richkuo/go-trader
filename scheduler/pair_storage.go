@@ -669,6 +669,7 @@ type pairProgress struct {
 	LastBound          *pairBoundRecord     `json:"last_bound,omitempty"`
 	CostEvidence       json.RawMessage      `json:"cost_evidence,omitempty"`
 	FundingBinding     json.RawMessage      `json:"funding_binding,omitempty"`
+	PositionMatch      *pairPositionMatch   `json:"position_match,omitempty"`
 }
 
 func (p *pairProgress) alerted(key string) bool {
@@ -1524,6 +1525,9 @@ func (r *basketFileRecords) pairPendingFor(k basketKey) []string {
 				if pairRecoveryObligation(o) {
 					out = append(out, fmt.Sprintf("open %s obligation: %s", o.Kind, o.Detail))
 				}
+			}
+			if pm := p.PositionMatch; pm != nil && (pm.Status == pairPositionMismatch || pm.Status == pairPositionFailed) {
+				out = append(out, fmt.Sprintf("venue position match is %s: %s", pm.Status, pm.Reason))
 			}
 		}
 	}

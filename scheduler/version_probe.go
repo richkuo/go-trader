@@ -258,6 +258,26 @@ var robinhoodCloseProbeArgv = []string{
 	"--ref-id=00000000-0000-4000-8000-000000000000", "--probe-only",
 }
 
+const (
+	pairOrderHLProbeRequestJSON     = `{"v":2,"pair_id":"probe","partition":"live","member_id":"probe","provider":"hyperliquid","account_key":"hyperliquid:mainnet:0x0000000000000000000000000000000000000001","instrument":"BTC","client_order_id":"0x00000000000000000000000000000005","purpose":"pair_exit","order_side":"sell","position_side":"long","base_qty":0.001,"native_qty":0.001,"contract_size":1,"price_bound":1,"accept_deadline_ms":1,"origin_slot_ms":1,"reduce_only":true,"contract_fingerprint":"0000000000000000000000000000000000000000000000000000000000000000"}`
+	pairOrderOKXProbeRequestJSON    = `{"v":2,"pair_id":"probe","partition":"live","member_id":"probe","provider":"okx","account_key":"okx:swap:live:key-0000000000000000","instrument":"BTC-USDT-SWAP","client_order_id":"gtprobe","purpose":"pair_entry","order_side":"buy","position_side":"long","base_qty":0.01,"native_qty":1,"contract_size":0.01,"price_bound":1,"accept_deadline_ms":1,"quote_event_id":"pq-probe","origin_slot_ms":1,"reduce_only":false,"contract_fingerprint":"0000000000000000000000000000000000000000000000000000000000000000","capability_hash":"0000000000000000000000000000000000000000000000000000000000000000","evidence_hash":"0000000000000000000000000000000000000000000000000000000000000000"}`
+	pairPositionHLProbeRequestJSON  = `{"v":1,"provider":"hyperliquid","account_key":"hyperliquid:mainnet:0x0000000000000000000000000000000000000001","instrument":"BTC","member_id":"probe","partition":"live"}`
+	pairPositionOKXProbeRequestJSON = `{"v":1,"provider":"okx","account_key":"okx:swap:live:key-0000000000000000","instrument":"BTC-USDT-SWAP","member_id":"probe","partition":"live"}`
+)
+
+var pairOrderHLProbeArgvs = [][]string{
+	{pairOrderFlag + "=" + pairOrderHLProbeRequestJSON, "--mode=live", "--probe-only"},
+	{pairQueryFlag + "=" + pairOrderHLProbeRequestJSON, "--since-ms=1", "--mode=live", "--probe-only"},
+	{pairPositionFlag + "=" + pairPositionHLProbeRequestJSON, "--mode=live", "--probe-only"},
+}
+
+var pairOrderOKXProbeArgvs = [][]string{
+	{pairOrderFlag + "=" + pairOrderOKXProbeRequestJSON, "--mode=live", "--probe-only"},
+	{pairQueryFlag + "=" + pairOrderOKXProbeRequestJSON, "--since-ms=1", "--mode=live", "--probe-only"},
+}
+
+var pairPositionOKXProbeArgv = []string{pairPositionFlag + "=" + pairPositionOKXProbeRequestJSON, "--mode=live", "--probe-only"}
+
 var pairEvidenceHyperliquidProbeArgv = []string{"--provider=hyperliquid", "--instrument=BTC", "--probe-only"}
 
 var pairEvidenceOKXProbeArgv = []string{"--provider=okx", "--instrument=BTC-USDT-SWAP", "--probe-only"}
@@ -314,6 +334,11 @@ func probeCheckScripts(cfg *Config) error {
 					return err
 				}
 			}
+			for _, argv := range pairOrderHLProbeArgvs {
+				if err := probeOneCheckScriptFn(script, argv); err != nil {
+					return err
+				}
+			}
 		}
 		if filepath.Base(script) == "check_robinhood.py" {
 			if err := probeOneCheckScriptFn(script, robinhoodExecuteProbeArgv); err != nil {
@@ -332,6 +357,11 @@ func probeCheckScripts(cfg *Config) error {
 			}
 			if err := probeOneCheckScriptFn(script, okxRecoverEntryProbeArgv); err != nil {
 				return err
+			}
+			for _, argv := range pairOrderOKXProbeArgvs {
+				if err := probeOneCheckScriptFn(script, argv); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -368,6 +398,9 @@ func probeCheckScripts(cfg *Config) error {
 			return err
 		}
 		if err := probeOneCheckScriptFn(pairQuoteReaderScript, pairQuoteOKXPublicProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn(okxFetchPositionsScript, pairPositionOKXProbeArgv); err != nil {
 			return err
 		}
 	}
