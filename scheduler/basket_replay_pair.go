@@ -16,13 +16,14 @@ import (
 )
 
 const (
-	pairReplayStageScenario   = "scenario"
-	pairReplayStagePolicy     = "policy"
-	pairReplayStageManagement = "management"
-	pairReplayKindProcess     = "process_failure"
-	pairReplayKindNativeCheck = "native_check_failure"
-	pairReplayMaxSameTime     = 3
-	pairReplayManagementBars  = 500
+	pairReplayStageScenario           = "scenario"
+	pairReplayStagePolicy             = "policy"
+	pairReplayStageManagement         = "management"
+	pairReplayKindProcess             = "process_failure"
+	pairReplayKindNativeCheck         = "native_check_failure"
+	pairReplayScenarioManagementCause = "scenario management_check_failure: "
+	pairReplayMaxSameTime             = 3
+	pairReplayManagementBars          = 500
 )
 
 type pairReplayManifest struct {
@@ -1149,6 +1150,7 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 					r.nextManageMs += r.interval
 				}
 				trace = append(trace, "manage")
+				r.fault("exit-after-management")
 			}
 		}
 		riskRecs = pairReplayRiskRecords(risk)
@@ -1334,7 +1336,10 @@ func (r *pairReplayRuntime) manageMember(sc StrategyConfig, risk map[RiskPartiti
 		r.recordFailure(pairReplayFailure{Stage: pairReplayStageManagement, Kind: pairReplayKindNativeCheck, MemberID: sc.ID, Cause: why})
 		return
 	}
-	inject := r.scenario(pairReplayFailManagement, func(f pairReplayFailureScript) bool { return f.MemberID == sc.ID && f.atMs == atMs })
+	inject := r.scenario(pairReplayFailManagement, func(f pairReplayFailureScript) bool { return f.MemberID == sc.ID && f.atMs == atMs }) &&
+		!r.hasFailure(pairReplayStageManagement, pairReplayKindNativeCheck, func(f pairReplayFailure) bool {
+			return f.MemberID == sc.ID && f.AtMs == atMs && strings.HasPrefix(f.Cause, pairReplayScenarioManagementCause)
+		})
 	if sc.Platform == "okx" {
 		r.manageOKX(sc, risk, at, mark, inject)
 	} else {
@@ -1348,9 +1353,9 @@ func (r *pairReplayRuntime) manageMember(sc StrategyConfig, risk map[RiskPartiti
 	}
 	cause := echo
 	if inject {
-		cause = "scenario management_check_failure: " + echo
+		cause = pairReplayScenarioManagementCause + echo
 	}
-	r.recordFailure(pairReplayFailure{Stage: pairReplayStageManagement, Kind: pairReplayKindNativeCheck, MemberID: sc.ID, Cause: cause})
+	r.recordFailure(pairReplayFailure{Stage: pairReplayStageManagement, Kind: pairReplayKindNativeCheck, MemberID: sc.ID, AtMs: atMs, Cause: cause})
 }
 
 func (r *pairReplayRuntime) memberRisk(sc StrategyConfig, s *StrategyState, prices map[string]float64, logger *StrategyLogger) (bool, string, float64) {

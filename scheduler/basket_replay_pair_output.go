@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -104,7 +103,7 @@ func pairReplayRiskRecords(risk map[RiskPartition]*scopeCycleRisk) []pairReplayR
 	out := []pairReplayRiskRecord{}
 	for _, p := range pairReplayRiskPartitions(risk) {
 		sr := risk[p]
-		out = append(out, pairReplayRiskRecord{Partition: p.String(), TotalPV: pairReplayReading(sr.TotalPV), TotalNotional: pairReplayReading(sr.TotalNotional), PairValuation: sr.PairValuation.label(),
+		out = append(out, pairReplayRiskRecord{Partition: p.String(), TotalPV: sr.TotalPV, TotalNotional: sr.TotalNotional, PairValuation: sr.PairValuation.label(),
 			EquityTrusted: sr.EquityTrusted, KillSwitchFired: sr.KillSwitchFired, DailyLossEntriesHeld: sr.DailyLossEntriesHeld, NotionalBlocked: sr.NotionalBlocked,
 			ExposureValuation: sr.ExposureCapStatus.ValuationIncomplete, Reason: sr.Reason})
 	}
@@ -176,13 +175,12 @@ func (r *pairReplayRuntime) stateReadingsLocked(at time.Time) ([]pairReplayMembe
 		nst.merge(st)
 		mst.merge(ms)
 	}
-	proof.PortfolioNotional, proof.PerpsUnrealizedLoss, proof.PerpsMargin = pairReplayReading(proof.PortfolioNotional), pairReplayReading(proof.PerpsUnrealizedLoss), pairReplayReading(proof.PerpsMargin)
 	proof.NotionalStatus, proof.MarginStatus = nst.label(), mst.label()
 	deltas, _, dst := computeAssetDeltasMarked(states, cfg.Strategies, prices, pm)
 	for asset, e := range deltas {
 		if e != nil {
-			proof.AssetDeltas[asset] = pairReplayReading(e.NetDeltaUSD)
-			proof.AssetGross[asset] = pairReplayReading(e.GrossDeltaUSD)
+			proof.AssetDeltas[asset] = e.NetDeltaUSD
+			proof.AssetGross[asset] = e.GrossDeltaUSD
 		}
 	}
 	proof.AssetDeltaStatus = dst.label()
@@ -248,12 +246,4 @@ type pairReplayOutput struct {
 	ServerStatus         map[string]json.RawMessage `json:"server_status,omitempty"`
 	Export               map[string]interface{}     `json:"export,omitempty"`
 	Comparison           *pairReplayComparison      `json:"comparison,omitempty"`
-}
-
-func pairReplayReading(v float64) float64 {
-	out, err := strconv.ParseFloat(strconv.FormatFloat(v, 'g', 12, 64), 64)
-	if err != nil {
-		return v
-	}
-	return out
 }

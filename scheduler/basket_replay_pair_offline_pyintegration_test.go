@@ -407,7 +407,7 @@ func TestBasketReplayPairOfflineFaultsResumeToEqualResults(t *testing.T) {
 	f := newPairOfflineFixture(t, pairOfflineOptions{})
 	base := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("base")), nil)
 	pairOfflineRequireComplete(t, "uninterrupted run", base)
-	for i, fault := range []string{"exit-after-collection:1", "exit-after-envelope-freeze:2", "exit-after-acceptance:1", "exit-after-acceptance:2", "exit-after-book-write:40", "exit-after-book-commit:3"} {
+	for i, fault := range []string{"exit-after-collection:1", "exit-after-envelope-freeze:2", "exit-after-acceptance:1", "exit-after-acceptance:2", "exit-after-book-write:40", "exit-after-book-commit:3", "exit-after-management:2"} {
 		t.Run(fault, func(t *testing.T) {
 			dir := f.stateDir(fmt.Sprintf("fault-%d", i))
 			crash := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, dir), nil, "--fault", fault)
@@ -514,6 +514,53 @@ func TestBasketReplayPairOfflineProcessFailuresStayIncompleteAfterResume(t *test
 	}
 }
 
+func TestBasketReplayPairOfflineScriptedManagementFailureFiresOnceAcrossARestart(t *testing.T) {
+	at := pairTestStart().Add(-time.Minute)
+	f := newPairOfflineFixture(t, pairOfflineOptions{failures: []pairReplayFailureScript{{Kind: pairReplayFailManagement, MemberID: pairTestOKX, At: at.UTC().Format(time.RFC3339Nano)}}})
+	scripted := func(p pairReplayProc) int {
+		n := 0
+		for _, fl := range p.Out.Failures {
+			if fl.Stage == pairReplayStageManagement && fl.MemberID == pairTestOKX && fl.AtMs == at.UnixMilli() && strings.HasPrefix(fl.Cause, pairReplayScenarioManagementCause) {
+				n++
+			}
+		}
+		return n
+	}
+	base := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("base")), nil)
+	if base.Out.MechanicallyComplete || scripted(base) != 1 {
+		t.Fatalf("an uninterrupted run must record the scripted management failure once and stay incomplete, got complete=%v failures=%+v", base.Out.MechanicallyComplete, base.Out.Failures)
+	}
+	pass, injectedPass := 0, 0
+	for _, raw := range base.Out.Steps {
+		var st struct {
+			AtMs    int64 `json:"at_ms"`
+			Managed bool  `json:"managed"`
+		}
+		if err := json.Unmarshal(raw, &st); err != nil {
+			t.Fatal(err)
+		}
+		if st.Managed {
+			pass++
+			if st.AtMs == at.UnixMilli() {
+				injectedPass = pass
+			}
+		}
+	}
+	if injectedPass == 0 {
+		t.Fatalf("the fixture must manage the members at the scripted time %d", at.UnixMilli())
+	}
+	dir := f.stateDir("crash")
+	fault := fmt.Sprintf("exit-after-management:%d", injectedPass)
+	crash := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, dir), nil, "--fault", fault)
+	if crash.Code != basketReplayExitFault || !strings.Contains(crash.Stderr, "fault "+fault+"\n") {
+		t.Fatalf("the fault must stop the process after the scripted management pass, got exit %d, stderr tail %s", crash.Code, tail(crash.Stderr, 3000))
+	}
+	resumed := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeResume, dir), nil)
+	if !resumed.Out.Run.Resumed || resumed.Out.MechanicallyComplete || scripted(resumed) != 1 {
+		t.Fatalf("the resume reruns the management pass, so the scripted failure must not fire again: resumed=%v complete=%v failures=%+v", resumed.Out.Run.Resumed, resumed.Out.MechanicallyComplete, resumed.Out.Failures)
+	}
+}
+
 func TestBasketReplayPairOfflineMissingEvidenceIsNeverMechanicalSuccess(t *testing.T) {
 	t.Run("quotes end while the spread is matched", func(t *testing.T) {
 		t0 := pairTestStart().Add(-2 * time.Minute).UnixMilli()
@@ -598,6 +645,9 @@ func TestBasketReplayPairOfflineFutureInputsCannotChangeEarlierDecisions(t *test
 			_ = json.Unmarshal(raw, &rec)
 			if rec.AtMs <= cut {
 				rec.Trace = nil
+				for i := range rec.Risk {
+					rec.Risk[i].TotalPV, rec.Risk[i].TotalNotional = 0, 0
+				}
 				blob, _ := json.Marshal(rec)
 				parts = append(parts, string(blob))
 			}
@@ -694,6 +744,56 @@ func TestBasketReplayPairOfflineDriverReportsAMechanicalResult(t *testing.T) {
 	}
 	if rec["mechanically_complete"] != true || rec["scored"] != false || rec["promotion_eligible"] != false || rec["adapter_exit_code"] != float64(0) {
 		t.Fatalf("the pair result record must be mechanically complete with scored and promotion_eligible false: %v", rec)
+	}
+}
+
+func TestBasketReplayPairOfflineDriverRefusalKeepsThePlanVersion(t *testing.T) {
+	repo := basketPyRoot(t)
+	pairPlan := func(path string) map[string]interface{} {
+		return map[string]interface{}{"plan": "go-trader.basket-replay-plan", "version": 2, "run_id": "pair-refused", "state_dir": filepath.Join(t.TempDir(), "state"),
+			"source": map[string]string{"quotes": "fixture"}, "research_config": map[string]string{"path": "research-config.json", "sha256": sha256Hex([]byte("{}"))},
+			"objects": []map[string]string{{"kind": "quotes", "member_id": pairTestHL, "path": path, "sha256": sha256Hex([]byte("x"))}}, "scenario": map[string]interface{}{}, "bounds": map[string]interface{}{}}
+	}
+	noBounds := pairPlan("quotes.jsonl")
+	delete(noBounds, "bounds")
+	for _, tc := range []struct {
+		name    string
+		plan    map[string]interface{}
+		version float64
+		pair    bool
+	}{
+		{"version 2 without bounds", noBounds, 2, true},
+		{"version 2 with an escaping object path", pairPlan("../x"), 2, true},
+		{"version 1 with an unknown key", map[string]interface{}{"plan": "go-trader.basket-replay-plan", "version": 1, "unknown_key": true}, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			blob, _ := json.Marshal(tc.plan)
+			planPath := filepath.Join(dir, "plan.json")
+			if err := os.WriteFile(planPath, blob, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			outPath := filepath.Join(dir, "result.json")
+			cmd := exec.Command(filepath.Join(repo, ".venv", "bin", "python3"), filepath.Join(repo, "backtest", "basket_replay.py"), "--plan", planPath, "--binary", filepath.Join(dir, "unused"), "--out", outPath)
+			cmd.Dir = repo
+			out, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 3 {
+				t.Fatalf("a refused plan must exit 3, got %v\n%s", err, tail(string(out), 4000))
+			}
+			resBlob, err := os.ReadFile(outPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rec map[string]interface{}
+			if err := json.Unmarshal(resBlob, &rec); err != nil {
+				t.Fatal(err)
+			}
+			complete, has := rec["mechanically_complete"]
+			if rec["version"] != tc.version || rec["status"] != "refused" || rec["scored"] != false || rec["promotion_eligible"] != false || has != tc.pair || (tc.pair && complete != false) {
+				t.Fatalf("the refused record must keep the plan version %v (mechanically_complete false only for version 2), got %v", tc.version, rec)
+			}
+		})
 	}
 }
 

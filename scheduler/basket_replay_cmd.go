@@ -57,6 +57,7 @@ var basketReplayFaultKinds = map[string]int{
 	"exit-after-acceptance":      pairReplayProtocolVersion,
 	"exit-after-book-write":      pairReplayProtocolVersion,
 	"exit-after-book-commit":     pairReplayProtocolVersion,
+	"exit-after-management":      pairReplayProtocolVersion,
 }
 
 func parseBasketReplayFault(raw string) (basketReplayFault, error) {
@@ -66,7 +67,7 @@ func parseBasketReplayFault(raw string) (basketReplayFault, error) {
 	}
 	name, val, ok := strings.Cut(raw, ":")
 	if _, known := basketReplayFaultKinds[name]; !ok || !known {
-		return f, fmt.Errorf("--fault %q must be <kind>:<n> with kind exit-after-submit (version 1) or exit-after-collection, exit-after-envelope-freeze, exit-after-acceptance, exit-after-book-write or exit-after-book-commit (version 2)", raw)
+		return f, fmt.Errorf("--fault %q must be <kind>:<n> with kind exit-after-submit (version 1) or exit-after-collection, exit-after-management, exit-after-envelope-freeze, exit-after-acceptance, exit-after-book-write or exit-after-book-commit (version 2)", raw)
 	}
 	n, err := strconv.Atoi(val)
 	if err != nil || n <= 0 {
@@ -98,7 +99,7 @@ func runBasketReplayWith(args []string, stdin io.Reader, out io.Writer) int {
 	fs.SetOutput(os.Stderr)
 	specPath := fs.String("spec", "", "path to the versioned step script (JSON), or - for standard input")
 	maxSteps := fs.Int("max-steps", 0, "apply at most this many further steps, then stop with the run resumable (0 = all)")
-	faultRaw := fs.String("fault", "", "controlled fault for restart tests: exit-after-submit:<n> (version 1) or exit-after-collection|exit-after-envelope-freeze|exit-after-acceptance|exit-after-book-write|exit-after-book-commit:<n> (version 2)")
+	faultRaw := fs.String("fault", "", "controlled fault for restart tests: exit-after-submit:<n> (version 1) or exit-after-collection|exit-after-management|exit-after-envelope-freeze|exit-after-acceptance|exit-after-book-write|exit-after-book-commit:<n> (version 2)")
 	if err := fs.Parse(args); err != nil {
 		return basketReplayExitUsage
 	}

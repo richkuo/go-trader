@@ -404,6 +404,14 @@ func (r *pairReplayRuntime) projection(steps []pairReplayStoredStep) (map[string
 			return nil, err
 		}
 		delete(m, "trace")
+		if risk, ok := m["risk"].([]interface{}); ok {
+			for _, e := range risk {
+				if row, ok := e.(map[string]interface{}); ok {
+					delete(row, "total_pv")
+					delete(row, "total_notional")
+				}
+			}
+		}
 		b, _ := json.Marshal(m)
 		admin.assign(string(b))
 		projected = append(projected, b)

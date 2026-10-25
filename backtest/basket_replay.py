@@ -114,10 +114,17 @@ def _unique_pairs(pairs):
     return out
 
 
-def load_plan(path):
+def read_plan(path):
     with open(path) as fh:
-        plan = json.load(fh, object_pairs_hook=_unique_pairs)
-    if isinstance(plan, dict) and plan.get("plan") == PLAN_SCHEMA and plan.get("version") == PAIR_PLAN_VERSION:
+        return json.load(fh, object_pairs_hook=_unique_pairs)
+
+
+def is_pair_plan(plan):
+    return isinstance(plan, dict) and plan.get("plan") == PLAN_SCHEMA and plan.get("version") == PAIR_PLAN_VERSION
+
+
+def check_plan(plan):
+    if is_pair_plan(plan):
         return load_pair_plan(plan)
     _strict_keys(plan, PLAN_KEYS, "plan")
     if plan.get("plan") != PLAN_SCHEMA or plan.get("version") != PLAN_VERSION:
@@ -371,8 +378,9 @@ def main(argv=None):
     mode = "resume" if args.resume else "new"
     pair = False
     try:
-        plan = load_plan(plan_path)
-        pair = plan.get("version") == PAIR_PLAN_VERSION
+        plan = read_plan(plan_path)
+        pair = is_pair_plan(plan)
+        plan = check_plan(plan)
         if pair:
             hashes, research, objects = verify_pair_inputs(plan, base)
             spec = build_pair_spec(plan, base, mode, research, objects)
