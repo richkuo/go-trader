@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS pair_virtual_allocations (
     created_at_ms INTEGER NOT NULL,
     PRIMARY KEY (run_tag, member_key_json, seq)
 );
+CREATE INDEX IF NOT EXISTS idx_basket_member_actions_client
+    ON basket_member_actions(client_order_id);
 CREATE TRIGGER IF NOT EXISTS trg_pair_virtual_allocations_immutable
     BEFORE UPDATE ON pair_virtual_allocations
     BEGIN SELECT RAISE(ABORT, 'pair virtual client identifier allocations are append-only'); END;
@@ -408,18 +410,49 @@ func pairVirtualReadAllocations(q pairVirtualQueryer, id pairVirtualIdentity, si
 		if err := rows.Scan(&a.Seq, &a.ClientOrderID, &a.CreatedAtMs, &bsid, &bscope, &bsource, &bpair, &a.Recorded); err != nil {
 			return nil, err
 		}
-		if bsid.Valid {
-			if bsid.String != sid || bscope.String != string(id.Partition.Scope) || bsource.String != id.Partition.Source || bpair.String != id.PairID {
-				return nil, fmt.Errorf("pair virtual client identifier %s is bound to an action of %s in %s/%s pair %s, not member %s in %s pair %s", a.ClientOrderID, bsid.String, bscope.String, bsource.String, bpair.String, id.MemberID, partitionLabel(id.Partition), id.PairID)
-			}
-			a.Bound = true
+		bound, err := pairVirtualAllocationBound(id, sid, a.ClientOrderID, bsid, bscope, bsource, bpair)
+		if err != nil {
+			return nil, err
 		}
+		a.Bound = bound
 		if len(out) > 0 && a.Seq != out[len(out)-1].Seq+1 || len(out) == 0 && a.Seq != 1 {
 			return nil, fmt.Errorf("pair virtual allocation history has seq %d after %d; the append-only history has a hole", a.Seq, len(out))
 		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+func pairVirtualAllocationBound(id pairVirtualIdentity, sid, cloid string, bsid, bscope, bsource, bpair sql.NullString) (bool, error) {
+	if !bsid.Valid {
+		return false, nil
+	}
+	if bsid.String != sid || bscope.String != string(id.Partition.Scope) || bsource.String != id.Partition.Source || bpair.String != id.PairID {
+		return false, fmt.Errorf("pair virtual client identifier %s is bound to an action of %s in %s/%s pair %s, not member %s in %s pair %s", cloid, bsid.String, bscope.String, bsource.String, bpair.String, id.MemberID, partitionLabel(id.Partition), id.PairID)
+	}
+	return true, nil
+}
+
+func pairVirtualNewestAllocation(q *sql.Tx, id pairVirtualIdentity, sid, keyJSON string) (pairVirtualAllocation, bool, error) {
+	var a pairVirtualAllocation
+	var bsid, bscope, bsource, bpair sql.NullString
+	err := q.QueryRow(`SELECT a.seq, a.client_order_id, a.created_at_ms, b.strategy_id, b.scope, b.source, b.basket_id,
+		    EXISTS (SELECT 1 FROM pair_virtual_events e WHERE e.run_tag = a.run_tag AND e.member_key_json = a.member_key_json AND e.client_order_id = a.client_order_id)
+		FROM pair_virtual_allocations a
+		LEFT JOIN basket_member_actions b ON b.provider = a.provider AND b.account_key = a.account_key AND b.client_order_id = a.client_order_id
+		WHERE a.run_tag = ? AND a.member_key_json = ? ORDER BY a.seq DESC LIMIT 1`, id.RunTag, keyJSON).Scan(&a.Seq, &a.ClientOrderID, &a.CreatedAtMs, &bsid, &bscope, &bsource, &bpair, &a.Recorded)
+	if err == sql.ErrNoRows {
+		return a, false, nil
+	}
+	if err != nil {
+		return a, false, fmt.Errorf("read the newest pair virtual allocation: %w", err)
+	}
+	bound, err := pairVirtualAllocationBound(id, sid, a.ClientOrderID, bsid, bscope, bsource, bpair)
+	if err != nil {
+		return a, false, err
+	}
+	a.Bound = bound
+	return a, true, nil
 }
 
 func (sdb *StateDB) pairVirtualEnsureBinding(tx *sql.Tx, id pairVirtualIdentity, sid, keyJSON string, binding string, nowMs int64) (int64, string, error) {
@@ -493,20 +526,18 @@ func (sdb *StateDB) allocatePairVirtualTx(id pairVirtualIdentity, binding string
 	if err != nil {
 		return "", err
 	}
-	allocs, err := pairVirtualReadAllocations(tx, id, sid, keyJSON)
+	newest, found, err := pairVirtualNewestAllocation(tx, id, sid, keyJSON)
 	if err != nil {
 		return "", err
 	}
-	for _, a := range allocs {
-		if !a.Bound && !a.Recorded {
-			if err := tx.Commit(); err != nil {
-				return "", err
-			}
-			sdb.notePairVirtualTip(id.RunTag, keyJSON, pairVirtualTip{Seq: tipSeq, Hash: tipHash})
-			return a.ClientOrderID, nil
+	if found && !newest.Bound && !newest.Recorded {
+		if err := tx.Commit(); err != nil {
+			return "", err
 		}
+		sdb.notePairVirtualTip(id.RunTag, keyJSON, pairVirtualTip{Seq: tipSeq, Hash: tipHash})
+		return newest.ClientOrderID, nil
 	}
-	seq := int64(len(allocs)) + 1
+	seq := newest.Seq + 1
 	cloid := mkID(seq)
 	var clash int
 	if err := tx.QueryRow(`SELECT (SELECT COUNT(*) FROM pair_virtual_allocations WHERE client_order_id = ?) + (SELECT COUNT(*) FROM basket_member_actions WHERE client_order_id = ?)`, cloid, cloid).Scan(&clash); err != nil {

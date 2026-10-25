@@ -1117,6 +1117,50 @@ func TestBasketPairVirtualVenueStorageOwnershipAndInspection(t *testing.T) {
 			t.Fatalf("inspection must report a tampered middle row as corrupt: %v %v", rej, err)
 		}
 	})
+	t.Run("allocation reads only the newest allocation", func(t *testing.T) {
+		e, _ := newPairVirtualEnv(t, nil, 0, 0)
+		e.step(pairTestStart().Add(-30 * time.Second))
+		okx := e.vvenue(pairTestOKX)
+		sid, key, err := e.db().pairVirtualKey(okx.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix := "vp-run-1-" + okx.memberHash() + "-"
+		tx, err := e.db().db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for seq := 1; seq <= 10000; seq++ {
+			if seq == 5000 {
+				continue
+			}
+			if _, err := tx.Exec(`INSERT INTO pair_virtual_allocations (run_tag, member_key_json, seq, scope, source, pair_id, strategy_id, provider, account_key, instrument, client_order_id, created_at_ms)
+				VALUES ('run-1', ?, ?, 'paper', '', ?, ?, 'okx', 'synthetic:okx-research', 'BTC-USDT-SWAP', ?, 1)`, key, seq, pairTestID, sid, fmt.Sprintf("%s%d", prefix, seq)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		newest := prefix + "10000"
+		if _, err := e.store.AppendPairVirtualEvents(e.rt(), okx.id, okx.binding, []pairVirtualEvent{{Kind: pairVirtualKindRefusal, SemanticKey: "refusal|" + newest, ClientOrderID: newest, Body: `{}`}}, nil, e.now.UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+		got, err := okx.NewClientOrderID()
+		if err != nil || got != prefix+"10001" {
+			t.Fatalf("with 9,999 saved allocations, a hole at seq 5000 and a refused newest identifier with no action, allocation must read only the newest row and commit seq 10001: %q %v", got, err)
+		}
+		again, err := okx.NewClientOrderID()
+		if err != nil || again != got {
+			t.Fatalf("an allocation with no action and no venue record must be returned again after a crash: %q then %q %v", got, again, err)
+		}
+		if n := e.count(`SELECT COUNT(*) FROM pair_virtual_allocations WHERE client_order_id = ?`, newest); n != 1 {
+			t.Fatalf("the refused identifier must stay one spent allocation, got %d", n)
+		}
+		if _, err := e.store.LoadPairVirtualLedger(e.rt(), okx.id); err == nil || !strings.Contains(err.Error(), "has a hole") {
+			t.Fatalf("a full load must refuse the allocation hole: %v", err)
+		}
+	})
 	t.Run("ordinary load refuses allocation-only state", func(t *testing.T) {
 		e, _ := newPairVirtualEnv(t, nil, 0, 0)
 		e.step(pairTestStart().Add(-30 * time.Second))
