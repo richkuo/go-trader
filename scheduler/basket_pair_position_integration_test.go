@@ -212,7 +212,7 @@ func TestBasketPairPositionGenerationChangeDiscardsTheRead(t *testing.T) {
 		calls++
 		if calls == 1 {
 			e.mu.Lock()
-			e.rt().Pair.Progress.Lifecycle = pairLifecycleOpening
+			e.state.Strategies[pairTestHL].Positions["BTC"] = &Position{Symbol: "BTC", Side: entrySideLong, Quantity: 0.01, AvgCost: 60000, Multiplier: 1}
 			e.mu.Unlock()
 		}
 		return pairTestVenuePosition(m, 0, nowMs, nowMs)
@@ -231,6 +231,69 @@ func TestBasketPairPositionGenerationChangeDiscardsTheRead(t *testing.T) {
 	}
 	if pm := e.rt().Pair.Progress.PositionMatch; pm != nil && pm.Status == pairPositionMatched {
 		t.Fatalf("a discarded read must not record a match: %+v", pm)
+	}
+	if hold := e.bc.pairPositionAuthorized(e.rt(), "", e.now.UnixMilli()); hold == "" {
+		t.Fatal("a discarded read must leave increases held")
+	}
+}
+
+func TestBasketPairPositionFirstLegKeepsTheStepReadAcrossTheOpeningFlip(t *testing.T) {
+	e := newPairLiveShapedEnv(t, &pairNativeClosers{})
+	hl, okx := e.venues.hl.posReads, e.venues.okx.posReads
+	pairLiveFirstLeg(t, e)
+	if got := e.venues.hl.posReads - hl; got != 1 {
+		t.Fatalf("the first-leg step read the hyperliquid position %d times, want only the step read", got)
+	}
+	if got := e.venues.okx.posReads - okx; got != 1 {
+		t.Fatalf("the first-leg step read the okx position %d times, want only the step read", got)
+	}
+	if e.lifecycle() != pairLifecycleOpening {
+		t.Fatalf("lifecycle %s, want opening after the first leg", e.lifecycle())
+	}
+}
+
+func TestBasketPairPositionBookOrActionChangeAfterAMatchForcesANewRead(t *testing.T) {
+	e := newPairLiveShapedEnv(t, &pairNativeClosers{})
+	at := pairSlotAt(pairTestStart(), 0)
+	e.slot(at, "in-0")
+	e.now = at.Add(time.Second)
+	e.bc.beginCycle()
+	e.observe("")
+	e.mu.Lock()
+	_, why := e.bc.pairReadPositions(e.rt(), e.inputs(e.now), "")
+	nowMs := e.now.UnixMilli()
+	if why != "" || e.bc.pairPositionAuthorized(e.rt(), "", nowMs) != "" {
+		e.mu.Unlock()
+		t.Fatalf("a flat pair with flat venues must match, got %q", why)
+	}
+	e.rt().Pair.Progress.Lifecycle = pairLifecycleOpening
+	if hold := e.bc.pairPositionAuthorized(e.rt(), "", nowMs); hold != "" {
+		e.mu.Unlock()
+		t.Fatalf("a lifecycle change alone must keep the matching read, got %q", hold)
+	}
+	e.rt().Pair.Progress.Lifecycle = pairLifecycleFlat
+	e.mu.Unlock()
+	e.externalBookChange(pairTestHL, 0.01)
+	e.mu.Lock()
+	hold := e.bc.pairPositionAuthorized(e.rt(), "", nowMs)
+	e.mu.Unlock()
+	if hold == "" {
+		t.Fatal("a book change after the matching read must force a new read")
+	}
+	e.externalBookChange(pairTestHL, 0)
+
+	e2 := newPairLiveShapedEnv(t, &pairNativeClosers{})
+	first := pairLiveFirstLeg(t, e2)
+	e2.mu.Lock()
+	authorized := e2.bc.pairPositionAuthorized(e2.rt(), "", e2.now.UnixMilli())
+	e2.mu.Unlock()
+	if authorized == "" {
+		t.Fatal("the committed first leg changed the book and action records, so the step read must no longer authorize the hedge")
+	}
+	before := e2.venues.hl.posReads
+	e2.step(first.Add(2 * time.Minute))
+	if e2.venues.hl.posReads == before {
+		t.Fatal("the step after a committed first leg must read the venue positions again before the hedge")
 	}
 }
 

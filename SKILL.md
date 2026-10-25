@@ -2635,7 +2635,7 @@ Hyperliquid `strict_pair_position` and OKX `fetch_pair_position` refuse a malfor
 Virtual venues make no private read and are never asked.
 
 **Barrier** (`scheduler/pair_position.go`). `pairProgress.PositionMatch` (`position_match`: `generation`, `status` unchecked, matched, mismatch or failed, `reason`, `checked_at_ms`, `episode_ms`, `held_since_ms`) is saved through the progress writer; missing loads as unchecked and the flat reset keeps it.
-The generation hashes the partition, contract, lifecycle, member identities and books and every action's status, quantities, terminal flag and native ownership; barrier fields are not part of it.
+The generation hashes the partition, contract, member identities and books and every action's status, quantities, terminal flag and native ownership; the lifecycle and barrier fields are not part of it, because neither moves a venue position or the reachable range, so the flat-to-opening flip of a first leg keeps the step's matching read.
 `stepPairPositions` runs for live-shaped members after the lifecycle checks unless the partition is latched or the step is save-blocked: at startup, when the generation changed and at each decision cadence, never in a busy loop.
 It runs inside the pair step, so its reads always follow `preparePairRisk` (host step 3); live-shaped venues take every mark and exit depth bound from that view.
 `pairReadPositions` captures the generation, reads both venues outside `mu` under one `collection_timeout_ms` context, rereads time, discards a changed generation, and requires `observed_ms <= first_receipt_ms <= now` with both within `quote_age_ms`.

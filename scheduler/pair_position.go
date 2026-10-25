@@ -147,7 +147,7 @@ func (bc *basketCoordinator) pairLiveMembers(rt *basketRuntime) ([]pairContractM
 
 func (bc *basketCoordinator) pairPositionGeneration(rt *basketRuntime, exclude string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "p|%s|%s|%s|%s\n", rt.Partition.String(), rt.Contract.BasketID, rt.Contract.Fingerprint(), rt.Pair.Progress.Lifecycle)
+	fmt.Fprintf(&b, "p|%s|%s|%s\n", rt.Partition.String(), rt.Contract.BasketID, rt.Contract.Fingerprint())
 	for _, m := range rt.Contract.pairMembersSorted() {
 		fmt.Fprintf(&b, "m|%s|%s|%s|%s|%s|%.17g\n", m.MemberID, m.Provider, m.AccountKey, m.Instrument, m.Symbol, basketPositionSigned(bc.state.Strategies[m.MemberID], m.Symbol))
 	}
