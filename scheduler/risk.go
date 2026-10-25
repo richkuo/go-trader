@@ -1296,7 +1296,7 @@ func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices m
 	}
 	applyHyperliquidKillSwitchCloseFill(s, sc, hlFills, hlLiveAll, hlVirtualQty)
 	applyHyperliquidKillSwitchHedgeFill(s, sc, hlFills)
-	forceCloseAllPositions(s, &sc, prices, logger)
+	forceCloseAllPositionsFor(s, &sc, prices, pairNativeTriggerKillSwitch, logger)
 }
 
 const (
@@ -1359,8 +1359,12 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 }
 
 func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[string]float64, logger *StrategyLogger) {
+	forceCloseAllPositionsFor(s, sc, prices, pairNativeTriggerCircuit, logger)
+}
+
+func forceCloseAllPositionsFor(s *StrategyState, sc *StrategyConfig, prices map[string]float64, pairTrigger string, logger *StrategyLogger) {
 	for symbol, pos := range s.Positions {
-		closeVirtualPositionAtMark(s, sc, symbol, pos, prices, logger)
+		closeVirtualPositionAtMarkFor(s, sc, symbol, pos, prices, pairTrigger, logger)
 	}
 	now := tradingNow().UTC()
 
@@ -1405,24 +1409,28 @@ func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[str
 }
 
 func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {
+	closeVirtualPositionAtMarkFor(s, sc, symbol, pos, prices, pairNativeTriggerCircuit, logger)
+}
+
+func closeVirtualPositionAtMarkFor(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, pairTrigger string, logger *StrategyLogger) {
 	if err := withVirtualCloseCostScope(s, sc, func() {
 		mutatePaperPerpsBook(s, symbol, func() {
-			closeVirtualPositionAtMarkInner(s, sc, symbol, pos, prices, logger)
+			closeVirtualPositionPairAware(s, sc, symbol, pos, prices, "circuit_breaker", pairTrigger, false, logger)
 		})
 	}); err != nil {
 		logStrategyCostRefusal(logger, "circuit-breaker close", symbol, err)
 	}
 }
 
-func closeVirtualPositionAtMarkInner(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {
-	closeVirtualPositionInner(s, sc, symbol, pos, prices, "circuit_breaker", false, logger)
+func closeVirtualPositionInner(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, reason string, verifiedFlat bool, logger *StrategyLogger) {
+	closeVirtualPositionPairAware(s, sc, symbol, pos, prices, reason, reason, verifiedFlat, logger)
 }
 
-func closeVirtualPositionInner(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, reason string, verifiedFlat bool, logger *StrategyLogger) {
+func closeVirtualPositionPairAware(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, reason, pairTrigger string, verifiedFlat bool, logger *StrategyLogger) {
 	if pairStrategyMember(s, sc) {
-		requestPairEmergencyClose(s, symbol, pos.Quantity, reason)
+		requestPairEmergencyClose(s, symbol, pos.Quantity, pairTrigger)
 		if logger != nil {
-			logger.Warn("Pair emergency close requested for %s %s (%s): a pair member books only at its own checked mark or confirmed native fill, never at a shared or average-cost price", pos.Side, symbol, reason)
+			logger.Warn("Pair emergency close requested for %s %s (%s): a pair member books only at its own checked mark or confirmed native fill, never at a shared or average-cost price", pos.Side, symbol, pairTrigger)
 		}
 		return
 	}
@@ -1526,7 +1534,7 @@ func forceCloseSettledPositions(s *StrategyState, sc StrategyConfig, prices map[
 	}
 	sort.Strings(syms)
 	for _, sym := range syms {
-		closeVirtualPositionAtMark(s, &sc, sym, s.Positions[sym], prices, logger)
+		closeVirtualPositionAtMarkFor(s, &sc, sym, s.Positions[sym], prices, pairNativeTriggerKillSwitch, logger)
 	}
 }
 
@@ -1809,7 +1817,7 @@ func forceClosePaperScopePositions(state *AppState, cfg *Config, part RiskPartit
 			continue
 		}
 		scCopy := sc
-		forceCloseAllPositions(s, &scCopy, prices, nil)
+		forceCloseAllPositionsFor(s, &scCopy, prices, pairNativeTriggerKillSwitch, nil)
 		if !pairStrategyMember(s, &scCopy) {
 			closed = append(closed, sc.ID)
 		}

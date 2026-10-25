@@ -182,7 +182,7 @@ func pairNativeEvidenceResult(m pairContractMember, ev *nativeCloseEvidence, rep
 		out.FeeCoverage = append(out.FeeCoverage, fee)
 	}
 	if len(out.FillCoverage) == 0 {
-		if executed == 0 && errText == "" {
+		if executed == 0 && errText == "" && ev.Complete {
 			return pairNativeResult{Out: basketVenueOutcome{Outcome: basketVenueRejected, Terminal: true, Detail: "the native close order executed nothing", ObservedAtMs: nowMs}, ExecutedQty: 0}
 		}
 		why := strings.TrimSpace(ev.Detail)
@@ -959,6 +959,7 @@ func (bc *basketCoordinator) stepPairEmergency(rt *basketRuntime, in basketCycle
 	nowMs := now.UnixMilli()
 	p := &rt.Pair.Progress
 	save := false
+	var undo []pairPaperCommitUndo
 	for _, m := range rt.Contract.pairMembersSorted() {
 		s := bc.state.Strategies[m.MemberID]
 		if s == nil {
@@ -971,6 +972,10 @@ func (bc *basketCoordinator) stepPairEmergency(rt *basketRuntime, in basketCycle
 		}
 		book := basketPositionSigned(s, m.Symbol)
 		if book == 0 {
+			if rt.needsDurable {
+				continue
+			}
+			undo = append(undo, newPairPaperCommitUndo(p, s, m.MemberID, staged))
 			if staged != nil {
 				staged.Status, staged.CommittedAtMs = pairPaperCloseCommitted, nowMs
 				save = true
@@ -978,7 +983,9 @@ func (bc *basketCoordinator) stepPairEmergency(rt *basketRuntime, in basketCycle
 			if why := pairNativeAccountingPendingFor(rt, m.MemberID); why != "" {
 				if p.addObligation(pairObligation{Kind: pairObligationEmergencyClose, MemberID: m.MemberID, Detail: "the member book is flat, but its emergency close accounting is not committed: " + why, AtMs: nowMs}) {
 					rt.touchPairProgress()
-					bc.persistPair(rt)
+					if !save {
+						bc.persistPair(rt)
+					}
 				}
 				continue
 			}
@@ -1027,6 +1034,7 @@ func (bc *basketCoordinator) stepPairEmergency(rt *basketRuntime, in basketCycle
 			}
 			continue
 		}
+		undo = append(undo, newPairPaperCommitUndo(p, s, m.MemberID, rec))
 		rec.Status, rec.CommittedAtMs = pairPaperCloseCommitted, nowMs
 		s.RiskState.clearPendingCircuitClose(PlatformPendingClosePair)
 		p.clearObligation(pairObligationEmergencyClose, m.MemberID, "")
@@ -1036,12 +1044,55 @@ func (bc *basketCoordinator) stepPairEmergency(rt *basketRuntime, in basketCycle
 	if !save {
 		return
 	}
-	p.trimPaperCloses()
 	rt.touchPairProgress()
 	bc.clearPairEndedObligations(rt)
 	if err := bc.store.SavePartition(bc.state, rt.Partition); err != nil {
+		for i := len(undo) - 1; i >= 0; i-- {
+			undo[i].restore(p)
+		}
+		rt.touchPairProgress()
 		rt.needsDurable = true
-		bc.pairLogf(rt, "the emergency close accounting is staged in memory, but the %s state file did not save: %v; the same staged outcome saves on a later step and nothing is repriced", partitionLabel(rt.Partition), err)
+		bc.pairLogf(rt, "the emergency close book change is in memory, but the %s state file did not save: %v; the close stays staged at its saved price and time, commits only after the book saves, and nothing is repriced", partitionLabel(rt.Partition), err)
+		return
+	}
+	p.trimPaperCloses()
+}
+
+type pairPaperCommitUndo struct {
+	state      *StrategyState
+	memberID   string
+	staged     bool
+	closeAtMs  int64
+	pending    *PendingCircuitClose
+	obligation *pairObligation
+}
+
+func newPairPaperCommitUndo(p *pairProgress, s *StrategyState, memberID string, staged *pairPaperClose) pairPaperCommitUndo {
+	u := pairPaperCommitUndo{state: s, memberID: memberID, pending: s.RiskState.getPendingCircuitClose(PlatformPendingClosePair)}
+	if staged != nil {
+		u.staged, u.closeAtMs = true, staged.CloseAtMs
+	}
+	if o := p.obligation(pairObligationEmergencyClose, memberID, ""); o != nil {
+		cp := *o
+		u.obligation = &cp
+	}
+	return u
+}
+
+func (u pairPaperCommitUndo) restore(p *pairProgress) {
+	if u.staged {
+		for i := range p.PaperCloses {
+			c := &p.PaperCloses[i]
+			if c.MemberID == u.memberID && c.CloseAtMs == u.closeAtMs {
+				c.Status, c.CommittedAtMs = pairPaperCloseStaged, 0
+			}
+		}
+	}
+	if u.pending != nil {
+		u.state.RiskState.setPendingCircuitClose(PlatformPendingClosePair, u.pending)
+	}
+	if u.obligation != nil {
+		p.addObligation(*u.obligation)
 	}
 }
 

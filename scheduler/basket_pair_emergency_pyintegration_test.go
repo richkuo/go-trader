@@ -97,3 +97,91 @@ func TestBasketPairEmergencyRealCloseScriptsBookFillEvidenceOnce(t *testing.T) {
 		})
 	}
 }
+
+func TestBasketPairEmergencyRealOKXCloseWithoutTerminalEvidenceStaysUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		orderState  string
+		reserve     bool
+		wantUnknown bool
+	}{
+		{name: "open order with no fills", orderState: "live", reserve: true, wantUnknown: true},
+		{name: "cancelled order with no fills", orderState: "", reserve: true, wantUnknown: false},
+		{name: "open order with no fills and no saved action", orderState: "live", reserve: false, wantUnknown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPairVenuePy(t)
+			closers := &pairNativeClosers{
+				hl: func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
+					t.Fatal("the hyperliquid closer must not run")
+					return nil, nil
+				},
+				okx: func(sym string, p *float64) (*OKXCloseResult, error) {
+					res, _, err := RunOKXClose(f.drivers["okx_close"], sym, p)
+					return res, err
+				},
+			}
+			e := newPairLiveShapedEnv(t, closers)
+			pairLiveMatched(t, e)
+			f.write("okx", map[string]any{"now_ms": e.now.UnixMilli(), "close_positions": []map[string]any{{"contracts": 6, "side": "short"}}, "fill_px": "60050",
+				"close_parts": []string{"0"}, "drop_fills": true, "order_state": tc.orderState})
+			var release func()
+			if !tc.reserve {
+				r, ok := tryLockEntryAttempt(pairTestOKX)
+				if !ok {
+					t.Fatal("setup: the entry lock is busy")
+				}
+				release = r
+			}
+			_, err := e.bc.pairKillSwitchOKXCloser(closers.okx)("BTC", nil)
+			if release != nil {
+				release()
+			}
+			if err != nil {
+				t.Fatalf("the real okx close script must answer: %v", err)
+			}
+			e.step(e.now.Add(time.Second))
+			e.step(e.now.Add(time.Second))
+			if w := f.read("okx")["wire"].([]any); len(w) != 1 {
+				t.Fatalf("the native close must send once and accounting must send nothing, got %d sends", len(w))
+			}
+			e.assertBooks("a close without fills books nothing", 0.06, -0.06)
+			var acts []*basketAction
+			for _, a := range e.actionsByPurpose(pairPurposeKillSwitch) {
+				if a.StrategyID == pairTestOKX {
+					acts = append(acts, a)
+				}
+			}
+			var unknown *pairObligation
+			var native []string
+			for i, o := range e.rt().Pair.Progress.Obligations {
+				if o.MemberID != pairTestOKX || !pairNativeObligationKind(o.Kind) {
+					continue
+				}
+				native = append(native, o.Kind)
+				if o.Kind == pairObligationNativeUnknown {
+					unknown = &e.rt().Pair.Progress.Obligations[i]
+				}
+			}
+			if !tc.wantUnknown {
+				if len(acts) != 1 || acts[0].Status != basketActionNoFill || len(native) != 0 {
+					t.Fatalf("a terminal order with no fills must end no_fill with no obligation: %+v %v", acts, native)
+				}
+				return
+			}
+			if unknown == nil || unknown.FromMs <= 0 {
+				t.Fatalf("an order that is not terminal must keep an unknown-fill obligation with a start time: %+v %v", unknown, native)
+			}
+			if tc.reserve {
+				if len(acts) != 1 || acts[0].Status == basketActionNoFill || (acts[0].Status != basketActionUnresolved && acts[0].Status != basketActionHeld) {
+					t.Fatalf("the native action must stay unresolved or held, never no_fill: %+v", acts)
+				}
+			} else if len(acts) != 0 {
+				t.Fatalf("no native action may exist when the reservation failed: %+v", acts)
+			}
+			if got, ok := pairIncompleteEvidence(e.rt()); !ok || got.MemberID != pairTestOKX {
+				t.Fatalf("the incomplete-result reader must report the okx member, got %+v %v", got, ok)
+			}
+		})
+	}
+}

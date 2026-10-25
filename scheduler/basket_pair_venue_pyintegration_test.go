@@ -208,7 +208,7 @@ else:
             filled = sum(parts, Decimal(0))
             fill_px = state.get("fill_px", "60000")
             info = {"instId": "BTC-USDT-SWAP", "ordId": oid, "side": side, "sz": text(size), "ordType": "market", "reduceOnly": "true",
-                    "state": "filled" if filled == size else "canceled", "accFillSz": text(filled), "cTime": str(now)}
+                    "state": state.get("order_state") or ("filled" if filled == size else "canceled"), "accFillSz": text(filled), "cTime": str(now)}
             state.setdefault("orders_by_id", {})[oid] = info
             if not state.get("drop_fills"):
                 for p in parts:

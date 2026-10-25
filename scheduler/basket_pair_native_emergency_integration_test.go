@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -244,6 +246,162 @@ func TestBasketPairPaperEmergencyFailedSaveKeepsTheStagedPrice(t *testing.T) {
 			}
 			if c := e.rt().Pair.Progress.PaperCloses; len(c) != 1 || c[0].Status != pairPaperCloseCommitted {
 				t.Fatalf("the staged close must commit once: %+v", c)
+			}
+		})
+	}
+}
+
+func pairFailBookSavesOnly() func() {
+	prev := storeCommitHook
+	storeCommitHook = func(storageRole) error {
+		pc := make([]uintptr, 64)
+		frames := runtime.CallersFrames(pc[:runtime.Callers(2, pc)])
+		for {
+			fr, more := frames.Next()
+			if strings.HasSuffix(fr.Function, ".saveStateSubset") {
+				return fmt.Errorf("disk full")
+			}
+			if !more {
+				return nil
+			}
+		}
+	}
+	return func() { storeCommitHook = prev }
+}
+
+func (e *pairTestEnv) savedPaperCloses(id string) []pairPaperClose {
+	e.t.Helper()
+	var p pairProgress
+	if err := json.Unmarshal([]byte(e.savedProgress()), &p); err != nil {
+		e.t.Fatalf("saved pair progress is unreadable: %v", err)
+	}
+	var out []pairPaperClose
+	for _, c := range p.PaperCloses {
+		if c.MemberID == id {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func TestBasketPairPaperEmergencyBookSaveFailureKeepsTheCloseStaged(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		failSteps int
+		restart   bool
+	}{
+		{name: "a progress save after the failed book save, then a restart", failSteps: 1, restart: true},
+		{name: "the next step saves the book with no restart", failSteps: 1, restart: false},
+		{name: "three failed book saves, then a restart at another mark", failSteps: 3, restart: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newPairPaperEmergencyEnv(t)
+			e.tripLossStreak(pairTestHL)
+			e.now = e.now.Add(time.Second)
+			own, valid, why := e.ownMark(pairTestHL)
+			if !valid {
+				t.Fatalf("setup: the member needs an own mark: %s", why)
+			}
+			restore := pairFailBookSavesOnly()
+			for i := 0; i < tc.failSteps; i++ {
+				at := e.now
+				if i > 0 {
+					pairViewSetHL(e, 52000+float64(i)*100)
+					at = e.now.Add(time.Second)
+				}
+				e.step(at)
+				e.mu.Lock()
+				ok := e.bc.persistPair(e.rt())
+				e.mu.Unlock()
+				if !ok {
+					restore()
+					t.Fatalf("step %d: a progress save must succeed while book saves fail", i)
+				}
+				saved := e.savedPaperCloses(pairTestHL)
+				if len(saved) != 1 || saved[0].Status != pairPaperCloseStaged || e.savedCloseRows(pairTestHL) != 0 {
+					restore()
+					t.Fatalf("step %d: a progress save after a failed book save must keep the close staged with no saved close row: %+v rows %d", i, saved, e.savedCloseRows(pairTestHL))
+				}
+			}
+			restore()
+			staged := e.savedPaperCloses(pairTestHL)[0]
+			if !pairCostNear(staged.PriceUSD, own) {
+				t.Fatalf("the close must stage at the own mark %v, got %+v", own, staged)
+			}
+			if tc.restart {
+				e.restart()
+				if p := e.rt().Pair.Progress.stagedPaperClose(pairTestHL); p == nil || p.CloseAtMs != staged.CloseAtMs || e.signed(pairTestHL) != 0.06 {
+					t.Fatalf("a restart must reload the staged close and the open book: %+v %v", p, e.signed(pairTestHL))
+				}
+				pairViewSetHL(e, 53000)
+			}
+			e.step(e.now.Add(time.Second))
+			tr, ok := e.closeTrade(pairTestHL)
+			if !ok || !pairCostNear(tr.Price, staged.PriceUSD) || tr.Timestamp.UnixMilli() != staged.CloseAtMs || e.signed(pairTestHL) != 0 || e.savedCloseRows(pairTestHL) != 1 {
+				t.Fatalf("the close must book once at the staged price %v and time %d, got %+v rows %d", staged.PriceUSD, staged.CloseAtMs, tr, e.savedCloseRows(pairTestHL))
+			}
+			saved := e.savedPaperCloses(pairTestHL)
+			if len(saved) != 1 || saved[0].Status != pairPaperCloseCommitted || e.pairPending(pairTestHL) != nil || e.hasObligation(pairObligationEmergencyClose, pairTestHL) {
+				t.Fatalf("the close must commit once after the book saves and clear the pending close: %+v pending %+v", saved, e.pairPending(pairTestHL))
+			}
+			e.restart()
+			if e.signed(pairTestHL) != 0 || e.pairPending(pairTestHL) != nil || e.savedCloseRows(pairTestHL) != 1 || e.rt().Pair.Progress.stagedPaperClose(pairTestHL) != nil {
+				t.Fatalf("the committed close must reload flat with no pending close: book %v pending %+v", e.signed(pairTestHL), e.pairPending(pairTestHL))
+			}
+		})
+	}
+}
+
+func TestBasketPairPaperEmergencyTriggerNamesTheRequestingMechanism(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want string
+		fire func(e *pairTestEnv)
+	}{
+		{name: "paper portfolio kill switch", want: pairNativeTriggerKillSwitch, fire: func(e *pairTestEnv) {
+			e.prepare(e.now)
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			applyPaperKillSwitchCycle(e.state, e.cfg, map[string]float64{"BTC": 50000}, &scopeCycleRisk{Partition: e.rt().Partition, KillSwitchFired: true, Reason: "test drawdown"}, true)
+		}},
+		{name: "per-strategy loss streak", want: pairNativeTriggerCircuit, fire: func(e *pairTestEnv) {
+			e.tripLossStreak(pairTestHL)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newPairPaperEmergencyEnv(t)
+			tc.fire(e)
+			if p := e.pairPending(pairTestHL); p == nil || p.Episode != tc.want {
+				t.Fatalf("the pending pair close must name %s: %+v", tc.want, p)
+			}
+			e.step(e.now.Add(time.Second))
+			var rec *pairPaperClose
+			for i, c := range e.rt().Pair.Progress.PaperCloses {
+				if c.MemberID == pairTestHL {
+					rec = &e.rt().Pair.Progress.PaperCloses[i]
+				}
+			}
+			tr, ok := e.closeTrade(pairTestHL)
+			var reasons []string
+			rows, err := e.db().db.Query(`SELECT close_reason FROM closed_positions WHERE close_reason LIKE 'pair_emergency_%' ORDER BY id`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+				var r string
+				if err := rows.Scan(&r); err != nil {
+					t.Fatal(err)
+				}
+				reasons = append(reasons, r)
+			}
+			rows.Close()
+			if rec == nil || rec.Trigger != tc.want || !ok || !strings.Contains(tr.Details, "("+tc.want+")") || len(reasons) == 0 {
+				t.Fatalf("the staged close and the trade must name %s: %+v %+v %v", tc.want, rec, tr, reasons)
+			}
+			for _, r := range reasons {
+				if r != "pair_emergency_"+tc.want {
+					t.Fatalf("every saved pair emergency close reason must be pair_emergency_%s, got %v", tc.want, reasons)
+				}
 			}
 		})
 	}
