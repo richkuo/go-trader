@@ -2439,7 +2439,15 @@ func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketReba
 		if skipped = proof.refusal(t.UnixMilli()); skipped != "" {
 			return
 		}
+		if h := bc.pairReplay; h != nil && h.beforeSubmit != nil {
+			if serr = h.beforeSubmit(submitted); serr != nil {
+				return
+			}
+		}
 		out, serr = v.Submit(&submitted)
+		if h := bc.pairReplay; h != nil && h.submitted != nil {
+			h.submitted(submitted, out, serr)
+		}
 	})
 	if rt.Actions[a.ActionID] != ptr || ptr.Status != basketActionSubmitting {
 		bc.pairLogf(rt, "action %s changed while it was submitted; the submit answer is discarded and the next cycle queries it by its saved identity", a.ActionID)

@@ -1467,21 +1467,44 @@ func (a *pairResearchAdmission) checkStateDir(cfg *Config) error {
 		}
 		return nil
 	}
-	entries, err := os.ReadDir(a.stateDir)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read pair research state directory: %w", err)
-	}
-	if len(entries) > 0 {
-		return fmt.Errorf("pair research state directory %s is not fresh: a new run needs an empty, freshly owned directory", a.stateDir)
-	}
-	if err := os.MkdirAll(a.stateDir, 0o700); err != nil {
-		return fmt.Errorf("create pair research state directory: %w", err)
+	if err := basketReplayPathAllowed(a.stateDir); err != nil {
+		return fmt.Errorf("pair research state directory refused: %w", err)
 	}
 	blob, err := json.Marshal(pairResearchManifest{Owner: pairResearchManifestOwner, RunID: a.runID, PairID: a.pair.ID, ContractFP: a.contract, PairVersion: pairContractVersion, EvidenceDigest: a.evidence.Digest(), UID: os.Getuid(), FundingBinding: json.RawMessage(a.fundingBinding)})
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(manifestPath, blob, 0o600)
+	if err := os.Mkdir(a.stateDir, 0o700); err != nil {
+		return fmt.Errorf("pair research state directory %s could not be claimed: a new run creates its own directory, so an existing path (an empty directory, a file or a symbolic link included) or a missing parent is refused: %w", a.stateDir, err)
+	}
+	return pairWriteClaimFile(a.stateDir, manifestPath, blob)
+}
+
+func pairWriteClaimFile(dir, path string, blob []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create %s exclusively in the claimed directory: %w", filepath.Base(path), err)
+	}
+	if _, err := f.Write(blob); err != nil {
+		f.Close()
+		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("sync %s: %w", filepath.Base(path), err)
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open the claimed directory to sync it: %w", err)
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("sync the claimed directory: %w", err)
+	}
+	return nil
 }
 
 func (a *pairResearchAdmission) bindFunding(c basketContract, src pairFundingSource) error {

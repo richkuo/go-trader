@@ -18,6 +18,13 @@ A result is scored only when the adapter reports status "complete". Any process
 error, adapter timeout, refusal, short frame, missing mark, unresolved funding or
 unresolved order produces a diagnostic record with scored=false and
 promotion_eligible=false; it is never a valid economic result.
+
+Plan version 2 (issue 1881) runs one research pair through the version-2 offline
+pair replay: it hashes the research configuration and every frozen input object
+(evidence, funding, recorded quotes or books, management candles), passes them
+by reference with their sizes, and records the adapter's mechanical result. A
+pair result is never scored or promotion-eligible; the driver succeeds only when
+the adapter exits 0 and reports mechanically_complete.
 """
 
 import argparse
@@ -33,10 +40,13 @@ import sys
 
 PLAN_SCHEMA = "go-trader.basket-replay-plan"
 PLAN_VERSION = 1
+PAIR_PLAN_VERSION = 2
 RESULT_SCHEMA = "go-trader.basket-replay-result"
 RESULT_VERSION = 1
+PAIR_RESULT_VERSION = 2
 ADAPTER_PROTOCOL = "go-trader.basket-replay"
 ADAPTER_VERSION = 1
+PAIR_ADAPTER_VERSION = 2
 INTERVAL_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
                "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000, "8h": 28_800_000,
                "12h": 43_200_000, "1d": 86_400_000}
@@ -48,6 +58,9 @@ WINDOW_KEYS = {"start", "end", "step_seconds"}
 FILE_KEYS = {"path", "sha256"}
 FUNDING_KEYS = {"path", "sha256", "from"}
 SCRIPT_KEYS = {"venue", "queries", "save_failure"}
+PAIR_PLAN_KEYS = {"plan", "version", "run_id", "state_dir", "source", "research_config", "objects", "scenario", "bounds"}
+PAIR_OBJECT_KEYS = {"kind", "member_id", "path", "sha256"}
+PAIR_OBJECT_KINDS = {"evidence", "funding", "quotes", "books", "candles"}
 
 
 class ReplayPlanError(Exception):
@@ -104,6 +117,8 @@ def _unique_pairs(pairs):
 def load_plan(path):
     with open(path) as fh:
         plan = json.load(fh, object_pairs_hook=_unique_pairs)
+    if isinstance(plan, dict) and plan.get("plan") == PLAN_SCHEMA and plan.get("version") == PAIR_PLAN_VERSION:
+        return load_pair_plan(plan)
     _strict_keys(plan, PLAN_KEYS, "plan")
     if plan.get("plan") != PLAN_SCHEMA or plan.get("version") != PLAN_VERSION:
         raise ReplayPlanError(f"plan is {plan.get('plan')!r} version {plan.get('version')!r}; this driver reads "
@@ -120,6 +135,79 @@ def load_plan(path):
         _utc_ms(at)
         _strict_keys(spec, SCRIPT_KEYS, f"venue_script[{at}]")
     return plan
+
+
+def load_pair_plan(plan):
+    _strict_keys(plan, PAIR_PLAN_KEYS, "plan")
+    for key in sorted(PAIR_PLAN_KEYS):
+        if key not in plan:
+            raise ReplayPlanError(f"plan is missing {key!r}")
+    _strict_keys(plan["research_config"], FILE_KEYS, "research_config")
+    if not isinstance(plan["objects"], list) or not plan["objects"]:
+        raise ReplayPlanError("objects must be a nonempty list")
+    for i, obj in enumerate(plan["objects"]):
+        _strict_keys(obj, PAIR_OBJECT_KEYS, f"objects[{i}]")
+        if obj.get("kind") not in PAIR_OBJECT_KINDS:
+            raise ReplayPlanError(f"objects[{i}] kind {obj.get('kind')!r} is not one of {sorted(PAIR_OBJECT_KINDS)}")
+        path = obj.get("path")
+        if not isinstance(path, str) or os.path.isabs(path) or os.path.normpath(path) != path or path.startswith(".."):
+            raise ReplayPlanError(f"objects[{i}] path {path!r} must be a clean relative path under the plan directory")
+    return plan
+
+
+def verify_pair_inputs(plan, base):
+    hashes, objects = {}, []
+    path = _resolve(base, plan["research_config"]["path"])
+    got = _sha256_file(path)
+    if got != plan["research_config"]["sha256"]:
+        raise ReplayPlanError(f"research_config file {path!r} has sha256 {got}, the plan freezes {plan['research_config']['sha256']}")
+    hashes["research_config"] = got
+    with open(path) as fh:
+        research = json.load(fh, object_pairs_hook=_unique_pairs)
+    for obj in plan["objects"]:
+        full = _resolve(base, obj["path"])
+        if not os.path.isfile(full):
+            raise ReplayPlanError(f"object {obj['path']!r} is missing")
+        got = _sha256_file(full)
+        if got != obj["sha256"]:
+            raise ReplayPlanError(f"object {obj['path']!r} has sha256 {got}, the plan freezes {obj['sha256']}")
+        hashes[f"{obj['kind']}[{obj.get('member_id', '')}]"] = got
+        ref = {"kind": obj["kind"], "path": obj["path"], "sha256": got, "size_bytes": os.path.getsize(full)}
+        if obj.get("member_id"):
+            ref["member_id"] = obj["member_id"]
+        objects.append(ref)
+    return hashes, research, objects
+
+
+def build_pair_spec(plan, base, mode, research, objects):
+    """Pass the frozen pair inputs by reference; every decision stays in the Go adapter."""
+    return {
+        "protocol": ADAPTER_PROTOCOL, "version": PAIR_ADAPTER_VERSION, "mode": mode,
+        "run": {"run_id": plan["run_id"], "state_dir": plan["state_dir"], "source": plan["source"]},
+        "research_config": research,
+        "input_manifest": {"root": os.path.abspath(base), "objects": objects},
+        "scenario": plan["scenario"], "bounds": plan["bounds"],
+    }
+
+
+def pair_result_record(plan_sha, input_hashes, code, out, process_error):
+    rec = {"schema": RESULT_SCHEMA, "version": PAIR_RESULT_VERSION, "plan_sha256": plan_sha, "inputs": input_hashes,
+           "adapter_exit_code": code, "scored": False, "promotion_eligible": False, "mechanically_complete": False}
+    if process_error:
+        rec.update(status="process_error", refusal={"reason": "process_error", "detail": [process_error]})
+        return rec
+    rec["status"] = out.get("status")
+    rec["adapter_output"] = out
+    rec["mechanically_complete"] = out.get("mechanically_complete") is True and code == 0
+    rec["incomplete_reasons"] = list(out.get("incomplete_reasons") or [])
+    rec["comparison"] = out.get("comparison")
+    if out.get("refusal") or out.get("error"):
+        refusal = out.get("refusal") or {}
+        detail = list(refusal.get("detail") or [])
+        if out.get("error"):
+            detail.append(out["error"])
+        rec["refusal"] = {"reason": refusal.get("reason") or f"status_{out.get('status')}", "detail": detail}
+    return rec
 
 
 def verify_inputs(plan, base):
@@ -207,7 +295,7 @@ def build_spec(plan, base, mode):
     return spec
 
 
-def run_adapter(binary, spec, timeout, stderr_path=None):
+def run_adapter(binary, spec, timeout, stderr_path=None, version=ADAPTER_VERSION):
     blob = json.dumps(spec).encode()
     err = open(stderr_path, "wb") if stderr_path else subprocess.DEVNULL
     try:
@@ -222,7 +310,7 @@ def run_adapter(binary, spec, timeout, stderr_path=None):
         out = json.loads(proc.stdout.decode() or "null")
     except ValueError as exc:
         return proc.returncode, None, f"the adapter output is not JSON: {exc}"
-    if not isinstance(out, dict) or out.get("protocol") != ADAPTER_PROTOCOL or out.get("version") != ADAPTER_VERSION:
+    if not isinstance(out, dict) or out.get("protocol") != ADAPTER_PROTOCOL or out.get("version") != version:
         return proc.returncode, None, "the adapter output does not carry the replay protocol"
     return proc.returncode, out, None
 
@@ -280,16 +368,31 @@ def main(argv=None):
         return 2
     plan_path = os.path.abspath(args.plan)
     base = os.path.dirname(plan_path)
+    mode = "resume" if args.resume else "new"
+    pair = False
     try:
         plan = load_plan(plan_path)
-        hashes = verify_inputs(plan, base)
-        spec = build_spec(plan, base, "resume" if args.resume else "new")
+        pair = plan.get("version") == PAIR_PLAN_VERSION
+        if pair:
+            hashes, research, objects = verify_pair_inputs(plan, base)
+            spec = build_pair_spec(plan, base, mode, research, objects)
+        else:
+            hashes = verify_inputs(plan, base)
+            spec = build_spec(plan, base, mode)
     except (ReplayPlanError, OSError, ValueError, KeyError) as exc:
-        rec = {"schema": RESULT_SCHEMA, "version": RESULT_VERSION, "status": "refused", "scored": False,
+        rec = {"schema": RESULT_SCHEMA, "version": PAIR_RESULT_VERSION if pair else RESULT_VERSION, "status": "refused", "scored": False,
                "promotion_eligible": False, "refusal": {"reason": "plan_refused", "detail": [str(exc)]}}
+        if pair:
+            rec["mechanically_complete"] = False
         write_new(args.out, rec)
         print(f"basket_replay: refused: {exc}", file=sys.stderr)
         return 3
+    if pair:
+        code, out, err = run_adapter(os.path.abspath(args.binary), spec, args.timeout, args.stderr, PAIR_ADAPTER_VERSION)
+        rec = pair_result_record(_sha256_file(plan_path), hashes, code, out, err)
+        write_new(args.out, rec)
+        print(f"basket_replay: status={rec['status']} mechanically_complete={rec['mechanically_complete']} scored=False out={args.out}")
+        return 0 if rec["mechanically_complete"] else 1
     code, out, err = run_adapter(os.path.abspath(args.binary), spec, args.timeout, args.stderr)
     rec = result_record(_sha256_file(plan_path), hashes, code, out, err)
     write_new(args.out, rec)

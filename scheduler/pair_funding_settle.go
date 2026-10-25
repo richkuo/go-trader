@@ -223,6 +223,22 @@ func (bc *basketCoordinator) drainPairFundingIntegrity(rt *basketRuntime, now ti
 	return changed
 }
 
+func (bc *basketCoordinator) stepPairFundingDue(in basketCycleInputs) {
+	if !bc.active() {
+		return
+	}
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	for _, id := range bc.sortedPairIDs() {
+		rt := bc.runtimes[id]
+		if bc.pairLiveRefusal(rt) != "" || !rt.Pair.admission.costDurable() {
+			continue
+		}
+		step := bc.refreshPairInputs(rt, in)
+		bc.stepPairFunding(rt, step)
+	}
+}
+
 func (bc *basketCoordinator) stepPairFunding(rt *basketRuntime, in basketCycleInputs) {
 	f := rt.Pair.funding
 	if f == nil {

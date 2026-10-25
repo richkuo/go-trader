@@ -62,6 +62,22 @@ var probeCompositeArgv = []string{
 	"--probe-only",
 }
 
+const okxPairMemberProbeRequestJSON = `{"pair_id":"probe","member_id":"probe","provider":"okx","instrument":"BTC-USDT-SWAP","mode":"management_only"}`
+
+var okxPairManagementProbeArgv = []string{
+	"pair_member", "BTC", "1h", "--mode=paper", "--inst-type=swap",
+	"--position-side", "long",
+	"--position-avg-cost=1",
+	"--position-qty=1",
+	"--position-initial-qty=1",
+	"--position-entry-atr=1",
+	"--position-risk-anchor-price=1",
+	"--strategy-refs", `{"open":{"name":"pair_member","params":{}},"closes":[{"name":"atr_stop","params":{"atr_mult":3}}]}`,
+	pairMemberFlag + "=" + okxPairMemberProbeRequestJSON,
+	pairManagementStdinFlag,
+	"--probe-only",
+}
+
 var hyperliquidMarketCheckProbeArgv = append(append([]string{}, probeArgv[:len(probeArgv)-1]...),
 	"--market-stdin", restingTPRuleFlag+"="+restingTPProbeRuleJSONSample, "--probe-only")
 
@@ -362,6 +378,9 @@ func probeCheckScripts(cfg *Config) error {
 				if err := probeOneCheckScriptFn(script, argv); err != nil {
 					return err
 				}
+			}
+			if err := probeOneCheckScriptFn(script, okxPairManagementProbeArgv); err != nil {
+				return err
 			}
 		}
 	}

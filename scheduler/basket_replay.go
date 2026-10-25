@@ -28,6 +28,8 @@ type basketReplayOptions struct {
 
 type basketReplayFault struct {
 	ExitAfterSubmit int
+	Kind            string
+	N               int
 }
 
 type basketReplayRuntime struct {

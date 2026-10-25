@@ -63,6 +63,21 @@ type basketCoordinator struct {
 	pairPolicyRun        pairPolicyRunner
 	pairClock            func() time.Time
 	pairConversionLookup func(ctx context.Context, m pairContractMember, currency string, fillAtMs, settlementAtMs int64) (pairConversionEvidence, error)
+	pairReplay           *pairReplayHooks
+}
+
+type pairCollectedSlot struct {
+	SlotMs     int64
+	StartMs    int64
+	DeadlineMs int64
+	Envelope   pairEnvelope
+}
+
+type pairReplayHooks struct {
+	collected    func(rt *basketRuntime, c pairCollectedSlot) error
+	frozen       func(rt *basketRuntime, slotMs int64)
+	beforeSubmit func(a basketAction) error
+	submitted    func(a basketAction, out basketVenueOutcome, err error)
 }
 
 func newBasketCoordinator(cfg *Config, state *AppState, store *StateStore, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager, runtimes map[string]*basketRuntime) *basketCoordinator {

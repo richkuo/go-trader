@@ -263,9 +263,18 @@ func (bc *basketCoordinator) collectPairSlot(rt *basketRuntime, in basketCycleIn
 		bc.holdPairSlot(rt, rb, "the collected quotes do not form a valid envelope: "+why, now)
 		return bc.refreshPairInputs(rt, in)
 	}
+	if h := bc.pairReplay; h != nil && h.collected != nil {
+		if err := h.collected(rt, pairCollectedSlot{SlotMs: slotMs, StartMs: startMs, DeadlineMs: deadlineMs, Envelope: env}); err != nil {
+			bc.holdPairSlot(rt, rb, "the replay host could not record the checked collection before the freeze: "+err.Error(), now)
+			return bc.refreshPairInputs(rt, in)
+		}
+	}
 	if err := bc.freezePairEnvelope(rt, slotMs, env, now); err != nil {
 		bc.holdPairSlot(rt, rb, "the envelope could not be frozen in the pair partition file: "+err.Error(), now)
 		return bc.refreshPairInputs(rt, in)
+	}
+	if h := bc.pairReplay; h != nil && h.frozen != nil {
+		h.frozen(rt, slotMs)
 	}
 	bc.pairLogf(rt, "slot %s: quote envelope frozen (cutoff %d, input %s)", formatClosedBarMs(slotMs), cutoffMs, shortFingerprint(env.InputFP))
 	return bc.refreshPairInputs(rt, in)

@@ -306,7 +306,7 @@ func (sdb *StateDB) ensureBasketReplaySchema() error {
 	if _, err := sdb.db.Exec(basketReplaySchemaDDL); err != nil {
 		return fmt.Errorf("create basket replay tables: %w", err)
 	}
-	return nil
+	return sdb.migrateBasketReplayColumns()
 }
 
 func (sdb *StateDB) insertBasketReplayRun(m basketReplayManifest, policy fillCostPolicy) error {

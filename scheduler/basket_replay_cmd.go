@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -49,21 +50,40 @@ func scrubBasketReplayEnvironment() []string {
 	return removed
 }
 
+var basketReplayFaultKinds = map[string]int{
+	"exit-after-submit":          1,
+	"exit-after-collection":      pairReplayProtocolVersion,
+	"exit-after-envelope-freeze": pairReplayProtocolVersion,
+	"exit-after-acceptance":      pairReplayProtocolVersion,
+	"exit-after-book-write":      pairReplayProtocolVersion,
+	"exit-after-book-commit":     pairReplayProtocolVersion,
+}
+
 func parseBasketReplayFault(raw string) (basketReplayFault, error) {
 	var f basketReplayFault
 	if raw == "" {
 		return f, nil
 	}
 	name, val, ok := strings.Cut(raw, ":")
-	if !ok || name != "exit-after-submit" {
-		return f, fmt.Errorf("--fault %q must be exit-after-submit:<n>", raw)
+	if _, known := basketReplayFaultKinds[name]; !ok || !known {
+		return f, fmt.Errorf("--fault %q must be <kind>:<n> with kind exit-after-submit (version 1) or exit-after-collection, exit-after-envelope-freeze, exit-after-acceptance, exit-after-book-write or exit-after-book-commit (version 2)", raw)
 	}
 	n, err := strconv.Atoi(val)
 	if err != nil || n <= 0 {
-		return f, fmt.Errorf("--fault %q needs a positive submit count", raw)
+		return f, fmt.Errorf("--fault %q needs a positive occurrence count", raw)
 	}
-	f.ExitAfterSubmit = n
+	f.Kind, f.N = name, n
+	if name == "exit-after-submit" {
+		f.ExitAfterSubmit = n
+	}
 	return f, nil
+}
+
+func basketReplayFaultVersionError(f basketReplayFault, version int) error {
+	if f.Kind == "" || basketReplayFaultKinds[f.Kind] == version {
+		return nil
+	}
+	return fmt.Errorf("--fault %s is a version-%d fault; the specification is version %d", f.Kind, basketReplayFaultKinds[f.Kind], version)
 }
 
 func runBasketReplay(args []string) int {
@@ -78,12 +98,12 @@ func runBasketReplayWith(args []string, stdin io.Reader, out io.Writer) int {
 	fs.SetOutput(os.Stderr)
 	specPath := fs.String("spec", "", "path to the versioned step script (JSON), or - for standard input")
 	maxSteps := fs.Int("max-steps", 0, "apply at most this many further steps, then stop with the run resumable (0 = all)")
-	faultRaw := fs.String("fault", "", "controlled fault for restart tests: exit-after-submit:<n>")
+	faultRaw := fs.String("fault", "", "controlled fault for restart tests: exit-after-submit:<n> (version 1) or exit-after-collection|exit-after-envelope-freeze|exit-after-acceptance|exit-after-book-write|exit-after-book-commit:<n> (version 2)")
 	if err := fs.Parse(args); err != nil {
 		return basketReplayExitUsage
 	}
 	if fs.NArg() > 0 || *specPath == "" || *maxSteps < 0 {
-		fmt.Fprintln(os.Stderr, "usage: go-trader basket-replay --spec <step-script.json|-> [--max-steps N] [--fault exit-after-submit:N]")
+		fmt.Fprintln(os.Stderr, "usage: go-trader basket-replay --spec <step-script.json|-> [--max-steps N] [--fault <kind>:N]")
 		return basketReplayExitUsage
 	}
 	fault, err := parseBasketReplayFault(*faultRaw)
@@ -109,7 +129,23 @@ func runBasketReplayWith(args []string, stdin io.Reader, out io.Writer) int {
 		defer f.Close()
 		src = f
 	}
-	spec, raw, err := decodeBasketReplaySpec(src)
+	raw, err := io.ReadAll(io.LimitReader(src, basketReplayMaxSpecBytes+1))
+	if err != nil {
+		o, code := basketReplayErrorOutput(refuseReplay("spec_unreadable", err.Error()))
+		return emit(o, code)
+	}
+	if _, version, err := pairReplayPeekVersion(raw); err == nil && version == pairReplayProtocolVersion {
+		if err := basketReplayFaultVersionError(fault, version); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return basketReplayExitUsage
+		}
+		return runPairReplayWith(raw, basketReplayOptions{MaxSteps: *maxSteps, Fault: fault}, out)
+	}
+	if err := basketReplayFaultVersionError(fault, basketReplayProtocolVersion); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return basketReplayExitUsage
+	}
+	spec, raw, err := decodeBasketReplaySpec(bytes.NewReader(raw))
 	if err != nil {
 		o, code := basketReplayErrorOutput(err)
 		return emit(o, code)

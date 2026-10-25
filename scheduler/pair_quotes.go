@@ -280,6 +280,9 @@ func pairQuoteSourceErrors(c basketContract, src pairQuoteSource) error {
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
+	if b, ok := src.(pairContractBinder); ok {
+		return b.bindContract(c)
+	}
 	return nil
 }
 

@@ -27,6 +27,10 @@ var egressOfflineSubcommands = map[string]bool{
 	"quote-replay": true,
 }
 
+var egressConfiglessSubcommands = map[string]bool{
+	"basket-replay": true,
+}
+
 var egressLocalSubcommands = map[string]bool{
 	"init": true, "export": true, "inspect": true, "storage-inspect": true, "agent-info": true,
 	"diagnostics": true, "feed-fetch": true, "basket-replay": true,
@@ -55,7 +59,7 @@ func subcommandConfigPath(args []string) string {
 }
 
 func gateSubcommandEgress(sub string, args []string) (int, bool) {
-	if egressOfflineSubcommands[sub] {
+	if egressOfflineSubcommands[sub] || egressConfiglessSubcommands[sub] {
 		if os.Getenv(egresspolicy.EnvProxy) == "" {
 			return 0, false
 		}
