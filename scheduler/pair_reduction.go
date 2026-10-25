@@ -255,7 +255,10 @@ func pairReductionAgeRefusal(raw string, nowMs int64) string {
 func (bc *basketCoordinator) holdPairReduction(rt *basketRuntime, c pairCandidate, reason string, now time.Time) {
 	p := &rt.Pair.Progress
 	nowMs := now.UnixMilli()
-	retry := ""
+	retryAt, ok := pairAddMs(nowMs, rt.Pair.Limits.RetryInitialMs)
+	if !ok {
+		retryAt = math.MaxInt64
+	}
 	if c.Purpose == pairPurposeProtective {
 		r := p.Retries[c.MemberID]
 		backoff := rt.Pair.Limits.RetryInitialMs
@@ -273,15 +276,16 @@ func (bc *basketCoordinator) holdPairReduction(rt *basketRuntime, c pairCandidat
 			p.Retries = map[string]pairRetry{}
 		}
 		p.Retries[c.MemberID] = pairRetry{Count: r.Count + 1, RetryAtMs: at}
-		retry = "; the check repeats at " + formatClosedBarMs(at)
+		retryAt = at
 	}
+	retry := "; the check repeats at " + formatClosedBarMs(retryAt)
 	detail := fmt.Sprintf("the %s reduction of %.10g base holds: %s; the pair never sends an unbounded or market reduction, native protection stays active and nothing is cancelled%s", c.Purpose, c.FullQty, reason, retry)
 	episode := nowMs
 	if o := p.obligation(pairObligationReductionReference, c.MemberID, ""); o != nil {
 		episode = o.AtMs
-		o.Detail = detail
+		o.Detail, o.RetryAtMs = detail, retryAt
 	} else {
-		p.Obligations = append(p.Obligations, pairObligation{Kind: pairObligationReductionReference, MemberID: c.MemberID, Detail: detail, AtMs: nowMs})
+		p.Obligations = append(p.Obligations, pairObligation{Kind: pairObligationReductionReference, MemberID: c.MemberID, Detail: detail, AtMs: nowMs, RetryAtMs: retryAt})
 	}
 	if c.Purpose == pairPurposeProtective && p.RecoveryStartMs > 0 {
 		episode = p.RecoveryStartMs

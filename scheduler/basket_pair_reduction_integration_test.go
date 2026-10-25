@@ -432,3 +432,106 @@ func TestBasketPairReductionSealedReferenceStaysOutOfTheOrderArgument(t *testing
 		t.Fatal("the transport projection must keep the saved bound")
 	}
 }
+
+func pairHeldExitLeg(t *testing.T) (*pairTestEnv, string) {
+	t.Helper()
+	e := newPairTestEnv(t, nil)
+	pairEnterExitRunner(e, 0.06)
+	e.slotStep(0)
+	e.slotStep(1)
+	e.assertBooks("matched", 0.06, -0.06)
+	slot2 := pairSlotAt(pairTestStart(), 2)
+	stepAt := slot2.Add(time.Second)
+	advanced := false
+	slow := func(a *basketAction) {
+		if a.Purpose == pairPurposeExit && !advanced {
+			advanced = true
+			e.now = stepAt.Add(5001 * time.Millisecond)
+		}
+	}
+	for _, v := range []*pairScriptedVenue{e.venues.hl, e.venues.okx} {
+		v.mu.Lock()
+		v.onSubmit = slow
+		v.mu.Unlock()
+	}
+	e.slot(slot2, "in-2")
+	e.step(stepAt)
+	for _, v := range []*pairScriptedVenue{e.venues.hl, e.venues.okx} {
+		v.mu.Lock()
+		v.onSubmit = nil
+		v.mu.Unlock()
+	}
+	exits := e.actionsByPurpose(pairPurposeExit)
+	if !advanced || len(exits) != 1 || exits[0].Status != basketActionCommitted {
+		t.Fatalf("want one settled exit leg and one held leg, got %+v", exits)
+	}
+	held := pairTestOKX
+	if exits[0].StrategyID == pairTestOKX {
+		held = pairTestHL
+	}
+	if o := e.rt().Pair.Progress.obligation(pairObligationReductionReference, held, ""); o == nil || o.RetryAtMs != e.now.UnixMilli()+5000 {
+		t.Fatalf("the held exit leg must save its obligation with a retry at the hold time plus retry_initial_ms, got %+v", o)
+	}
+	return e, held
+}
+
+func TestBasketPairReductionHeldExitWakesForRetry(t *testing.T) {
+	t.Run("the coordinator wakes after retry_initial_ms and sends the held leg", func(t *testing.T) {
+		e, held := pairHeldExitLeg(t)
+		holdAt := e.now
+		d := pairWakeAt(t, e, holdAt)
+		if d != 5*time.Second {
+			t.Fatalf("a held exit leg must wake the coordinator after retry_initial_ms, got %s", d)
+		}
+		e.step(holdAt.Add(d))
+		if exits := e.actionsByPurpose(pairPurposeExit); len(exits) != 2 {
+			t.Fatalf("the wake step must publish a fresh reference and send the held leg, got %d exit actions", len(exits))
+		}
+		if o := e.rt().Pair.Progress.obligation(pairObligationReductionReference, held, ""); o != nil {
+			t.Fatalf("the reservation must clear the hold, got %+v", o)
+		}
+		e.assertBooks("exited", 0, 0)
+	})
+	t.Run("a member flat by another route drops the wake and sends nothing", func(t *testing.T) {
+		e, held := pairHeldExitLeg(t)
+		holdAt := e.now
+		e.externalBookChange(held, 0)
+		if d := pairWakeAt(t, e, holdAt); d <= 5*time.Second {
+			t.Fatalf("a flat member needs no retry wake, got %s", d)
+		}
+		e.step(holdAt.Add(5 * time.Second))
+		if exits := e.actionsByPurpose(pairPurposeExit); len(exits) != 1 {
+			t.Fatalf("a flat member must not be reduced, got %d exit actions", len(exits))
+		}
+		if o := e.rt().Pair.Progress.obligation(pairObligationReductionReference, held, ""); o != nil {
+			t.Fatalf("a flat member must clear the hold, got %+v", o)
+		}
+		e.assertBooks("flat", 0, 0)
+	})
+	t.Run("a reference that keeps failing wakes no more often than retry_initial_ms", func(t *testing.T) {
+		e, held := pairHeldExitLeg(t)
+		e.quotes.mu.Lock()
+		e.quotes.refErr = errors.New("quote outage")
+		e.quotes.mu.Unlock()
+		at := e.now
+		for i := 0; i < 3; i++ {
+			at = at.Add(5 * time.Second)
+			e.step(at)
+			if exits := e.actionsByPurpose(pairPurposeExit); len(exits) != 1 {
+				t.Fatalf("retry %d: a failed reference read must not send the held leg, got %d exit actions", i, len(exits))
+			}
+			if o := e.rt().Pair.Progress.obligation(pairObligationReductionReference, held, ""); o == nil {
+				t.Fatalf("retry %d: the hold must stay open while the reference read fails", i)
+			}
+			if d := pairWakeAt(t, e, at); d != 5*time.Second {
+				t.Fatalf("retry %d: the next wake must be retry_initial_ms after the hold, got %s", i, d)
+			}
+			if d := pairWakeAt(t, e, at.Add(time.Second)); d != 4*time.Second {
+				t.Fatalf("retry %d: no earlier wake may fire inside retry_initial_ms, got %s", i, d)
+			}
+		}
+		if n := e.alertsWithPrefix("reduction_reference|"); n != 1 {
+			t.Fatalf("one hold episode must send one alert, got %d", n)
+		}
+	})
+}

@@ -2699,7 +2699,7 @@ Skip, Defer, a netted Cross and a changed record send nothing and cancel nothing
 The symbol lock is released after reservation and before transport, so native closes and protection never wait for the order script.
 The pair IOC route never cancels protection, so `rearmAfterSizedClose` is not used; paper and virtual reductions call no planner and read no private position.
 
-**Holds.** `holdPairReduction` saves one `reduction_reference_unavailable` member obligation (detail updated, episode kept), sends one CRITICAL alert per episode (`reduction_reference|<member>|<episode>`, the recovery start for protective reductions) and, for protective reductions, the retry backoff; exits retry at the next step.
+**Holds.** `holdPairReduction` saves one `reduction_reference_unavailable` member obligation (detail updated, episode kept), sends one CRITICAL alert per episode (`reduction_reference|<member>|<episode>`, the recovery start for protective reductions) and, for protective reductions, the retry backoff. Each hold saves the obligation `retry_at_ms` (the backoff time for a protective reduction, the hold time plus `retry_initial_ms` for an exit). While the member has exposure, `pairWakeBoundaries` wakes the coordinator at the later of that time and the last step plus `retry_initial_ms`, so a held exit retries soon and never more often than `retry_initial_ms`.
 A reservation clears it and the legacy `protective_bound_unavailable`, and so does a flat member; recovery-age escalation, `reduction_below_minimum`, queries, settlement and native protection continue.
 
 **Contracts for later children (#1914, #1880, #1881, #1882, #1863).**

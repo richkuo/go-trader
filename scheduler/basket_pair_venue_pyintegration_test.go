@@ -957,29 +957,49 @@ func TestBasketPairVenueRealCoordinatorRunsBothVenuesAndRecoversBySavedIdentity(
 	}
 }
 
+func pairVenueChildDirect(t *testing.T, v *pairLiveBase, a *basketAction) basketVenueOutcome {
+	t.Helper()
+	wire, err := pairTransportRequestJSON(a.RequestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, runErr := runPythonSideEffectWithTimeout(v.t.Script, []string{pairOrderFlag + "=" + wire, "--mode=live"}, pairOrderScriptTimout)
+	out, perr := pairParseScriptOutput(stdout, stderr, runErr)
+	if perr != nil || out.Outcome == nil || out.Outcome.Mode != "order" {
+		t.Fatalf("the child must answer with an order outcome, got %+v (%v; stderr %s)", out, perr, stderr)
+	}
+	return pairMapScriptOutcome(v.provider, a, v.m, *out.Outcome)
+}
+
 func TestBasketPairVenueRealReferenceAgeChecksInTheChild(t *testing.T) {
 	type tc struct {
 		provider string
+		direct   bool
+		want     string
 		mutate   func(r *pairVenueRig, a *basketAction)
 	}
 	cases := map[string]tc{
-		"hyperliquid reference expired when the child starts": {provider: "hyperliquid", mutate: func(r *pairVenueRig, a *basketAction) {
+		"hyperliquid reference expired when the child starts": {provider: "hyperliquid", want: "(checked before the adapter was built)", mutate: func(r *pairVenueRig, a *basketAction) {
 			r.f.write("hyperliquid", map[string]any{"now_ms": r.now - 100 + 20001})
 		}},
-		"hyperliquid reference expires during the adapter setup": {provider: "hyperliquid", mutate: func(r *pairVenueRig, a *basketAction) {
+		"hyperliquid reference expires during the adapter setup": {provider: "hyperliquid", want: "(checked immediately before the order call)", mutate: func(r *pairVenueRig, a *basketAction) {
 			r.f.write("hyperliquid", map[string]any{"now_ms": r.now, "after_expiry_ms": r.now - 100 + 20001})
 		}},
-		"hyperliquid request without reference authority": {provider: "hyperliquid", mutate: func(r *pairVenueRig, a *basketAction) {
+		"hyperliquid request without reference authority": {provider: "hyperliquid", direct: true, want: "needs its saved reference authority", mutate: func(r *pairVenueRig, a *basketAction) {
 			r.f.write("hyperliquid", map[string]any{"now_ms": r.now})
-			a.RequestJSON = pairVenueStripAuthority(t, a.RequestJSON)
+			a.RequestJSON = pairVenueStripAuthority(t, a.RequestJSON, "reference_receipt_ms", "reference_max_age_ms", "reference_px")
 		}},
-		"okx reference expired when the child starts": {provider: "okx", mutate: func(r *pairVenueRig, a *basketAction) {
+		"hyperliquid request with only the reference level": {provider: "hyperliquid", direct: true, want: "reference authority is incomplete", mutate: func(r *pairVenueRig, a *basketAction) {
+			r.f.write("hyperliquid", map[string]any{"now_ms": r.now})
+			a.RequestJSON = pairVenueStripAuthority(t, a.RequestJSON, "reference_receipt_ms", "reference_max_age_ms")
+		}},
+		"okx reference expired when the child starts": {provider: "okx", want: "(checked before the adapter was built)", mutate: func(r *pairVenueRig, a *basketAction) {
 			r.f.write("okx", map[string]any{"now_ms": r.now - 100 + 20001})
 		}},
-		"okx reference expires during the precision check": {provider: "okx", mutate: func(r *pairVenueRig, a *basketAction) {
+		"okx reference expires during the precision check": {provider: "okx", want: "(checked immediately before the order call)", mutate: func(r *pairVenueRig, a *basketAction) {
 			r.f.write("okx", map[string]any{"now_ms": r.now, "after_instruments_ms": r.now - 100 + 20001})
 		}},
-		"okx saved bound does not cross the saved reference": {provider: "okx", mutate: func(r *pairVenueRig, a *basketAction) {
+		"okx saved bound does not cross the saved reference": {provider: "okx", direct: true, want: "so it does not cross", mutate: func(r *pairVenueRig, a *basketAction) {
 			r.f.write("okx", map[string]any{"now_ms": r.now})
 			a.RequestJSON = strings.Replace(a.RequestJSON, `"reference_px":"60100.3"`, `"reference_px":"60700"`, 1)
 		}},
@@ -989,24 +1009,36 @@ func TestBasketPairVenueRealReferenceAgeChecksInTheChild(t *testing.T) {
 			r := newPairVenueRig(t)
 			var a *basketAction
 			var v pairVenue
+			var base *pairLiveBase
 			if c.provider == "hyperliquid" {
-				a, v = r.action(r.hlM, pairPurposeProtective, "sell", entrySideLong, 0.06, 59500, "0x000000000000000000000000000000d1"), r.hl
+				a, v, base = r.action(r.hlM, pairPurposeProtective, "sell", entrySideLong, 0.06, 59500, "0x000000000000000000000000000000d1"), r.hl, &r.hl.pairLiveBase
 			} else {
-				a, v = r.action(r.okxM, pairPurposeProtective, "buy", entrySideShort, 0.57, 60600.3, "fxage"), r.okx
+				a, v, base = r.action(r.okxM, pairPurposeProtective, "buy", entrySideShort, 0.57, 60600.3, "fxage"), r.okx, &r.okx.pairLiveBase
 			}
 			before := a.RequestJSON
 			c.mutate(r, a)
-			if name == "okx saved bound does not cross the saved reference" && a.RequestJSON == before {
-				t.Fatalf("the fixture request has no reference level to replace: %s", before)
+			if c.direct && a.RequestJSON == before {
+				t.Fatalf("the fixture request was not changed: %s", before)
 			}
-			out, err := v.Submit(a)
-			if err != nil {
-				t.Fatal(err)
+			var out basketVenueOutcome
+			if c.direct {
+				if why := pairReductionAgeRefusal(a.RequestJSON, r.now); why == "" {
+					t.Fatal("the direct case must hold a request that the Go transport check would also refuse")
+				}
+				out = pairVenueChildDirect(t, base, a)
+			} else {
+				var err error
+				if out, err = v.Submit(a); err != nil {
+					t.Fatal(err)
+				}
 			}
 			got := r.f.read(c.provider)
 			pairVenueNoGuard(t, got)
 			if len(pairVenueWire(t, got)) != 0 || out.Outcome != pairVenueNeverSent {
 				t.Fatalf("the child must end never sent with no order call while the acceptance deadline is still open, got %+v and wire %v", out, got["wire"])
+			}
+			if strings.Contains(out.Detail, "the order script was not launched") || !strings.Contains(out.Detail, c.want) {
+				t.Fatalf("the refusal must come from the child itself with %q, got %q", c.want, out.Detail)
 			}
 		})
 	}
@@ -1027,7 +1059,7 @@ func TestBasketPairVenueRealReferenceAgeChecksInTheChild(t *testing.T) {
 		if out, err := r.hl.Submit(a); err != nil || out.Outcome != basketVenueUnknown {
 			t.Fatalf("a crash after acceptance must leave the outcome unknown, got %+v (%v)", out, err)
 		}
-		a.RequestJSON = pairVenueStripAuthority(t, a.RequestJSON)
+		a.RequestJSON = pairVenueStripAuthority(t, a.RequestJSON, "reference_receipt_ms", "reference_max_age_ms", "reference_px")
 		q, err := r.hl.Query(a)
 		if err != nil || q.Outcome != basketVenueFilled || !basketQtyEqual(q.CumQty, 0.06) {
 			t.Fatalf("the saved identity query must still settle a request without the new authority, got %+v (%v)", q, err)
@@ -1041,13 +1073,13 @@ func TestBasketPairVenueRealReferenceAgeChecksInTheChild(t *testing.T) {
 	})
 }
 
-func pairVenueStripAuthority(t *testing.T, raw string) string {
+func pairVenueStripAuthority(t *testing.T, raw string, fields ...string) string {
 	t.Helper()
 	var m map[string]any
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"reference_receipt_ms", "reference_max_age_ms", "reference_px"} {
+	for _, k := range fields {
 		delete(m, k)
 	}
 	b, err := json.Marshal(m)
