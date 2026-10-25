@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -692,5 +694,255 @@ func TestBasketPairVenueRealProbeVectorsParseWithoutAdapters(t *testing.T) {
 	bad := []string{pairOrderFlag + "=" + strings.Replace(pairOrderHLProbeRequestJSON, `"v":2`, `"v":1`, 1), "--mode=live", "--probe-only"}
 	if err := probeOneCheckScript(hyperliquidCheckScript, bad); err == nil {
 		t.Fatal("a probe request with the wrong version must fail the probe")
+	}
+}
+
+func newPairVenueRealEnv(t *testing.T) (*pairTestEnv, *pairVenuePy, func(StrategyConfig) (basketVenue, error)) {
+	t.Helper()
+	f := newPairVenuePy(t)
+	hlKey, okxKey := pairVenueTestAccounts(t)
+	registerPairTestPolicy(t)
+	dir := filepath.Join(t.TempDir(), "fixture")
+	doc := pairTestDoc(t, dir, func(root map[string]interface{}) {
+		pairLiveShapedMutate(root)
+		pairTestMemberEntry(root, 0)["account_key"] = hlKey
+		pairTestMemberEntry(root, 1)["account_key"] = okxKey
+		limits := pairTestPair(root)["limits"].(map[string]interface{})
+		limits["quote_age_ms"] = 20000
+		limits["collection_timeout_ms"] = 20000
+	})
+	venues := newPairTestVenues(true)
+	venues.hl.account, venues.okx.account = hlKey, okxKey
+	quotes := newPairFixtureQuotes(t, doc)
+	deps := pairLiveShapedDeps{
+		VenueFor: venues.factory(),
+		HLCloser: func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
+			return nil, fmt.Errorf("the controlled fixture sends no hyperliquid close")
+		},
+		OKXCloser: func(string, *float64) (*OKXCloseResult, error) {
+			return nil, fmt.Errorf("the controlled fixture sends no okx close")
+		},
+		HLFetcher:    func(string) ([]HLPosition, error) { return nil, nil },
+		OKXFetcher:   func() ([]OKXPosition, error) { return nil, nil },
+		EntryQueries: func(*entryIntent) error { return fmt.Errorf("no live entry query is permitted") },
+		Quotes:       quotes.collector,
+	}
+	adm, cfg, err := newPairLiveShapedAdmission(t, doc, dir, deps)
+	if err != nil {
+		t.Fatalf("live-shaped admission with venue account formats: %v", err)
+	}
+	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart(), quotes: quotes, generation: 1}
+	e.runner = &pairTestRunner{respond: func(req pairPolicyRequest) (pairPolicyResult, error) { return pairHoldResult(req, "no edge"), nil }}
+	e.store = openSourceStore(t, cfg)
+	e.state = NewAppState()
+	for _, sc := range cfg.Strategies {
+		e.state.Strategies[sc.ID] = NewStrategyState(sc)
+	}
+	e.reopen(false)
+	hlM, _ := e.rt().Contract.pairMember(pairTestHL)
+	okxM, _ := e.rt().Contract.pairMember(pairTestOKX)
+	if hlM.AccountKey != hlKey || okxM.AccountKey != okxKey {
+		t.Fatalf("the contract binds %q and %q, want the venue account formats", hlM.AccountKey, okxM.AccountKey)
+	}
+	clock := func() time.Time { return e.now }
+	hl, err := newHyperliquidPairVenue(adm, hlM, pairLiveTransport{Script: f.drivers["hl_check"], PositionScript: f.drivers["hl_check"], Partition: RiskPartition{Scope: ScopeLive}, Clock: clock, Substituted: true})
+	if err != nil {
+		t.Fatalf("hyperliquid pair venue: %v", err)
+	}
+	okx, err := newOKXPairVenue(adm, okxM, pairLiveTransport{Script: f.drivers["okx_check"], PositionScript: f.drivers["okx_positions"], Partition: RiskPartition{Scope: ScopeLive}, Clock: clock, Substituted: true})
+	if err != nil {
+		t.Fatalf("okx pair venue: %v", err)
+	}
+	real := func(sc StrategyConfig) (basketVenue, error) {
+		switch sc.ID {
+		case pairTestHL:
+			return hl, nil
+		case pairTestOKX:
+			return okx, nil
+		}
+		return nil, fmt.Errorf("no live-shaped pair venue for %s", sc.ID)
+	}
+	e.bc.venueFor = real
+	return e, f, real
+}
+
+func pairVenueFilledNative(t *testing.T, provider string, state map[string]any) *big.Rat {
+	t.Helper()
+	total := new(big.Rat)
+	raw, _ := state["fills"].([]any)
+	for _, x := range raw {
+		fill := x.(map[string]any)
+		qty, side, buy := fill["sz"], fill["side"], "B"
+		if provider == "okx" {
+			qty, buy = fill["fillSz"], "buy"
+		}
+		q, ok := new(big.Rat).SetString(qty.(string))
+		if !ok {
+			t.Fatalf("fixture fill %v has no readable size", fill)
+		}
+		if side != buy {
+			q.Neg(q)
+		}
+		total.Add(total, q)
+	}
+	return total
+}
+
+func (f *pairVenuePy) venueTruth(nowMs int64, behavior string) {
+	f.t.Helper()
+	for _, p := range []string{"hyperliquid", "okx"} {
+		st := map[string]any{}
+		if b, err := os.ReadFile(f.states[p]); err == nil {
+			if err := json.Unmarshal(b, &st); err != nil {
+				f.t.Fatal(err)
+			}
+		}
+		st["now_ms"] = nowMs
+		delete(st, "behavior")
+		if behavior != "" {
+			st["behavior"] = behavior
+		}
+		pos, err := pairRatDecimal(pairVenueFilledNative(f.t, p, st))
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		if p == "hyperliquid" {
+			rows := []any{}
+			if pos != "0" {
+				rows = append(rows, map[string]any{"type": "oneWay", "position": map[string]any{"coin": "BTC", "szi": pos, "leverage": map[string]any{"type": "cross", "value": 2}}})
+			}
+			st["user_state"] = map[string]any{"withdrawable": "100", "assetPositions": rows}
+		} else {
+			rows := []any{}
+			if pos != "0" {
+				rows = append(rows, map[string]any{"instId": "BTC-USDT-SWAP", "pos": pos, "posSide": "net", "mgnMode": "cross"})
+			}
+			st["positions"] = map[string]any{"code": "0", "data": rows}
+		}
+		f.write(p, st)
+	}
+}
+
+func pairVenueWireCount(t *testing.T, state map[string]any, provider, cloid string) int {
+	t.Helper()
+	n := 0
+	for _, w := range pairVenueWire(t, state) {
+		id := w["cloid"]
+		if provider == "okx" {
+			params, _ := w["params"].(map[string]any)
+			id = params["clOrdId"]
+		}
+		if id == cloid {
+			n++
+		}
+	}
+	return n
+}
+
+func TestBasketPairVenueRealCoordinatorRunsBothVenuesAndRecoversBySavedIdentity(t *testing.T) {
+	e, f, real := newPairVenueRealEnv(t)
+	pairEnterExitRunner(e, 0.06)
+	run := func(i int, behavior string) time.Time {
+		at := pairSlotAt(pairTestStart(), i)
+		e.slot(at, fmt.Sprintf("in-%d", i))
+		f.venueTruth(at.Add(time.Second).UnixMilli(), behavior)
+		e.step(at.Add(time.Second))
+		return at
+	}
+	run(0, "")
+	e.assertBooks("first leg", 0, -0.06)
+	entries := e.actionsByPurpose(pairPurposeEntry)
+	if len(entries) != 1 || entries[0].StrategyID != pairTestOKX || entries[0].Status != basketActionCommitted || !entries[0].FeeFinal {
+		t.Fatalf("the OKX first leg must commit from its own submit answer in the submit step, got %+v", entries)
+	}
+	first := entries[0]
+	if n := pairVenueWireCount(t, f.read("okx"), "okx", first.ClientOrderID); n != 1 || len(pairVenueWire(t, f.read("hyperliquid"))) != 0 {
+		t.Fatalf("the first leg must send one OKX order (%d) and no hedge yet", n)
+	}
+	if pm := e.savedPositionMatch(); pm == nil || pm.Status != pairPositionMatched {
+		t.Fatalf("the barrier must match through the real position scripts before the first leg, got %+v", pm)
+	}
+	run(1, "")
+	e.assertBooks("hedged", 0.06, -0.06)
+	entries = e.actionsByPurpose(pairPurposeEntry)
+	if len(entries) != 2 || e.lifecycle() != pairLifecycleMatched {
+		t.Fatalf("the hedge must follow at the next slot and match the pair, got lifecycle %s and %+v", e.lifecycle(), entries)
+	}
+	for _, a := range entries {
+		if a.Status != basketActionCommitted || !a.FeeFinal {
+			t.Fatalf("entry %s must commit with fee finality, got %s", a.ActionID, a.Status)
+		}
+	}
+	at := run(2, "accept_then_crash")
+	var crashed []*basketAction
+	for _, a := range e.actionsByPurpose(pairPurposeExit) {
+		if basketActionPending(a.Status) {
+			crashed = append(crashed, a)
+		}
+	}
+	if len(crashed) == 0 || e.lifecycle() != pairLifecycleExiting {
+		t.Fatalf("a crash after venue acceptance must leave the exit reduction unresolved in the exiting lifecycle, got %s and %+v", e.lifecycle(), e.actionsByPurpose(pairPurposeExit))
+	}
+	ids := map[string]string{}
+	for _, a := range crashed {
+		provider := "hyperliquid"
+		if a.StrategyID == pairTestOKX {
+			provider = "okx"
+		}
+		if n := pairVenueWireCount(t, f.read(provider), provider, a.ClientOrderID); n != 1 {
+			t.Fatalf("the crashed reduction %s reached the venue %d times, want once", a.ActionID, n)
+		}
+		ids[a.ActionID] = provider
+	}
+	e.restart()
+	e.bc.venueFor = real
+	for id := range ids {
+		if a := e.rt().Actions[id]; a == nil || !basketActionPending(a.Status) {
+			t.Fatalf("the restart must keep the crashed reduction %s unresolved for its saved-identity query", id)
+		}
+	}
+	for i := 1; i <= 10 && !(e.lifecycle() == pairLifecycleFlat && basketQtyEqual(e.signed(pairTestHL), 0) && basketQtyEqual(e.signed(pairTestOKX), 0)); i++ {
+		now := at.Add(time.Second + time.Duration(i)*20*time.Second)
+		f.venueTruth(now.UnixMilli(), "")
+		e.step(now)
+	}
+	e.assertBooks("exited", 0, 0)
+	if e.lifecycle() != pairLifecycleFlat {
+		t.Fatalf("the exited pair must reset to flat, got %s", e.lifecycle())
+	}
+	for id, provider := range ids {
+		a := e.rt().Actions[id]
+		if a.Status != basketActionCommitted || !a.FeeFinal || !basketQtyEqual(a.ConfirmedQty, 0.06) {
+			t.Fatalf("the query by the saved client id must settle %s, got %s fee final %v confirmed %v", id, a.Status, a.FeeFinal, a.ConfirmedQty)
+		}
+		if n := pairVenueWireCount(t, f.read(provider), provider, a.ClientOrderID); n != 1 {
+			t.Fatalf("the recovered reduction %s was sent %d times, want once", id, n)
+		}
+	}
+	for _, p := range []string{"hyperliquid", "okx"} {
+		st := f.read(p)
+		pairVenueNoGuard(t, st)
+		member := pairTestHL
+		if p == "okx" {
+			member = pairTestOKX
+		}
+		n := 0
+		for _, a := range e.rt().Actions {
+			if a.StrategyID == member {
+				n++
+				if a.Status != basketActionCommitted {
+					t.Fatalf("action %s ended %s, want committed", a.ActionID, a.Status)
+				}
+			}
+		}
+		if w := len(pairVenueWire(t, st)); w != n || n != 2 {
+			t.Fatalf("%s saw %d order calls for %d saved actions, want one entry and one reduction each", p, w, n)
+		}
+		if pos := pairVenueFilledNative(t, p, st); pos.Sign() != 0 {
+			t.Fatalf("%s venue position is %s after the exit, want flat", p, pos.FloatString(6))
+		}
+	}
+	if pm := e.savedPositionMatch(); pm == nil || pm.Status != pairPositionMatched {
+		t.Fatalf("the barrier must end matched through the real position scripts, got %+v", pm)
 	}
 }

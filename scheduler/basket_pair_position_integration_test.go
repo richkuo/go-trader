@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -320,4 +321,80 @@ func TestBasketPairPositionBarrierOpensRecoveryForAHeldOneSidedOpening(t *testin
 		t.Fatalf("a one-sided opening held past the acceptance deadline plus the grace must open recovery, got %s", e.lifecycle())
 	}
 	_ = at
+}
+
+type pairTestAccountReader struct {
+	mu    sync.Mutex
+	src   *pairFrozenEvidenceSource
+	calls int
+	edit  func(a pairAccountEvidence) (pairAccountEvidence, error)
+}
+
+func (r *pairTestAccountReader) Account(ctx context.Context, m pairContractMember, refMs int64) (pairAccountEvidence, error) {
+	r.mu.Lock()
+	r.calls++
+	edit := r.edit
+	r.mu.Unlock()
+	a, err := r.src.Account(ctx, m, refMs)
+	if err != nil || edit == nil {
+		return a, err
+	}
+	return edit(a)
+}
+
+func (r *pairTestAccountReader) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+func TestBasketPairPositionAccountReaderFeedsTheLiveShapedView(t *testing.T) {
+	t.Run("a checked account record authorizes the first leg", func(t *testing.T) {
+		e := newPairLiveShapedEnv(t, &pairNativeClosers{})
+		reader := &pairTestAccountReader{src: e.adm.evidence}
+		e.adm.deps.Account = reader
+		if _, ok := e.adm.evidenceSource().(*pairLiveShapedEvidenceSource); !ok {
+			t.Fatal("an injected account reader must route account evidence through the live-shaped source")
+		}
+		pairLiveFirstLeg(t, e)
+		if reader.count() == 0 {
+			t.Fatal("the view never read the injected account reader")
+		}
+	})
+	refusals := map[string]func(a pairAccountEvidence) (pairAccountEvidence, error){
+		"a reader error": func(pairAccountEvidence) (pairAccountEvidence, error) {
+			return pairAccountEvidence{}, fmt.Errorf("venue unreachable")
+		},
+		"a record for another member": func(a pairAccountEvidence) (pairAccountEvidence, error) {
+			a.Key.MemberID = "pair-other"
+			return a, nil
+		},
+		"a record whose hash does not match": func(a pairAccountEvidence) (pairAccountEvidence, error) {
+			a.EvidenceHash = strings.Repeat("0", len(a.EvidenceHash))
+			return a, nil
+		},
+	}
+	for name, edit := range refusals {
+		t.Run(name+" holds increases", func(t *testing.T) {
+			e := newPairLiveShapedEnv(t, &pairNativeClosers{})
+			reader := &pairTestAccountReader{src: e.adm.evidence}
+			e.adm.deps.Account = reader
+			pairEnterExitRunner(e, 0.06)
+			pairOpenVenue(e, pairTestOKX, pairFee(basketVenueOutcome{Outcome: basketVenueFilled, CumQty: 0.06, CumNotional: 0.06 * 59700, Terminal: true}, 1.5, "USDT", true))
+			at := pairSlotAt(pairTestStart(), 0)
+			e.slot(at, "in-0")
+			reader.mu.Lock()
+			reader.edit = edit
+			before := reader.calls
+			reader.mu.Unlock()
+			e.step(at.Add(time.Second))
+			if reader.count() == before {
+				t.Fatal("the view never read the injected account reader")
+			}
+			if n := e.entryActions(); n != 0 {
+				t.Fatalf("a refused account record authorized %d increases", n)
+			}
+			e.assertBooks("held", 0, 0)
+		})
+	}
 }

@@ -2661,7 +2661,8 @@ Queries, settlement, closes and protection run before and regardless of the barr
 | Script flags | `--pair-order-json`, `--pair-query-json` with `--since-ms`, `--pair-position-json` | each probed in both probe paths (`pairOrderHLProbeArgvs`, `pairOrderOKXProbeArgvs`, `pairPositionOKXProbeArgv`) |
 | Obligations | `protective_bound_unavailable` (member), `reduction_below_minimum` | recovery evidence; cleared when the exposure is flat |
 
-**Tests.** `TestBasketPairBound*` and `TestBasketPairPosition*` run in the default and race suites; `TestBasketPairVenueReal*` (`pyintegration`, go-python-integration job) runs the real scripts and adapters with substituted SDK clients, a driver clock and network and signing guards.
+**Tests.** `TestBasketPairBound*` and `TestBasketPairPosition*` run in the go-race-basket job (the default Go job skips `^TestBasket`) and in a local `go -C scheduler test ./...`; `TestBasketPairVenueReal*` (`pyintegration`, go-python-integration job) runs the real scripts and adapters with substituted SDK clients, a driver clock and network and signing guards.
+`TestBasketPairVenueRealCoordinatorRunsBothVenuesAndRecoversBySavedIdentity` drives the coordinator through both real scripts: the first leg commits from its submit answer, the hedge follows at the next slot, an exit crashes after venue acceptance, and after a restart the saved client id query settles it with no second order.
 
 ### Offline basket replay (#1791)
 
