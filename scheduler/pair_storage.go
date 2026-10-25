@@ -339,7 +339,10 @@ func (sdb *StateDB) migratePairSchema() error {
 	if _, err := sdb.db.Exec(pairQuoteUseDDL); err != nil {
 		return fmt.Errorf("create pair quote event uses: %w", err)
 	}
-	return sdb.migratePairFundingSchema()
+	if err := sdb.migratePairFundingSchema(); err != nil {
+		return err
+	}
+	return sdb.migratePairVirtualSchema()
 }
 
 func checkPendingGroupActionTx(tx *sql.Tx, rt *basketRuntime, a *basketAction) error {
@@ -1492,7 +1495,10 @@ func (sdb *StateDB) loadPairRecordsInto(out *basketFileRecords) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	return sdb.loadPairFundingRecordsInto(out)
+	if err := sdb.loadPairFundingRecordsInto(out); err != nil {
+		return err
+	}
+	return sdb.loadPairVirtualRecordsInto(out)
 }
 
 func (r *basketFileRecords) pairContract(k basketKey) bool {
@@ -1663,6 +1669,31 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 		if r.Funding[k].any() {
 			return fmt.Errorf("pair %s funding records sit in the %s state file, but its members are owned by the %s file; funding evidence is never adopted from another file", p.ID, otherRole, role)
 		}
+		for vk, v := range r.Virtual {
+			if v.any() {
+				return fmt.Errorf("pair %s virtual venue records sit in the %s state file for %s (%s), but the pair members are owned by the %s file; execution evidence is never adopted from another file", vk.BasketID, otherRole, vk.BasketID, partitionLabel(vk.Partition), role)
+			}
+		}
+	}
+	var virtualRows *pairVirtualFileRows
+	if r := records[role]; r != nil {
+		for vk, v := range r.Virtual {
+			if !v.any() {
+				continue
+			}
+			if vk != k {
+				return fmt.Errorf("the %s state file holds virtual venue records for pair %s (%s), which this research run does not admit; they are never adopted", role, vk.BasketID, partitionLabel(vk.Partition))
+			}
+			if adm.kind != pairAdmissionResearch {
+				return fmt.Errorf("pair %s holds virtual venue records, but the %s admission has no virtual venue", p.ID, adm.kind)
+			}
+			for _, tag := range v.RunTags {
+				if tag != adm.runID {
+					return fmt.Errorf("pair %s holds virtual venue records for run %s, but this research run is %s; another run's execution history is never adopted", p.ID, tag, adm.runID)
+				}
+			}
+			virtualRows = v
+		}
 	}
 	if r := records[role]; r != nil {
 		if raw, ok := r.Contracts[k]; ok {
@@ -1709,7 +1740,7 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 	if r := records[role]; r != nil {
 		fundingRows = r.Funding[k]
 	}
-	saved := progressSaved || fundingRows.any() || pairRunHasSavedState(state, rt, p.ID)
+	saved := progressSaved || fundingRows.any() || virtualRows.any() || pairRunHasSavedState(state, rt, p.ID)
 	if err := bindPairCostEvidence(rt, adm, saved); err != nil {
 		return err
 	}

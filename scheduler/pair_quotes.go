@@ -286,6 +286,7 @@ func pairQuoteSourceErrors(c basketContract, src pairQuoteSource) error {
 type pairLevelRat struct {
 	px, qty *big.Rat
 	level   pairNativeLevel
+	orders  uint64
 }
 
 type pairDerived struct {
@@ -296,6 +297,18 @@ type pairDerived struct {
 	SnapshotID     string
 	Coverage       pairCoverage
 	Bids, Asks     []pairNativeLevel
+	Records        []pairWindowRecord
+}
+
+type pairWindowRecord struct {
+	Seq       int64
+	EventMs   int64
+	ReceiptMs int64
+	Identity  string
+	BidDepth  int
+	AskDepth  int
+	Bids      []pairLevelRat
+	Asks      []pairLevelRat
 }
 
 func pairTreeObject(node interface{}, path string, required, optional []string) (map[string]interface{}, error) {
@@ -755,6 +768,8 @@ func pairDeriveWindow(spec pairSourceSpec, m pairContractMember, need pairBookNe
 	type winObs struct {
 		seq, event, recv int64
 		bids, asks       []pairLevelRat
+		identity         string
+		depths           [2]int64
 	}
 	var obs []winObs
 	ids := map[string]bool{}
@@ -785,12 +800,14 @@ func pairDeriveWindow(spec pairSourceSpec, m pairContractMember, need pairBookNe
 			return pairDerived{}, fmt.Errorf("%s.identity is not a unique 64-character lowercase hex digest", p)
 		}
 		ids[identity] = true
+		w.identity = identity
 		var depths [2]int64
 		for s, name := range []string{"bid_depth", "ask_depth"} {
 			if depths[s], err = pairTreeInt(o[name], p+"."+name, 1, feedBookMaxLevels); err != nil {
 				return pairDerived{}, err
 			}
 		}
+		w.depths = depths
 		for s, name := range []string{"bids", "asks"} {
 			levels, err := pairTreeArray(o[name], p+"."+name, need.Depth)
 			if err != nil {
@@ -816,7 +833,8 @@ func pairDeriveWindow(spec pairSourceSpec, m pairContractMember, need pairBookNe
 				if err != nil {
 					return pairDerived{}, err
 				}
-				if _, err := pairTreeInt(parts[2], lp+" n", 1, int64(feedBookMaxOrders)); err != nil {
+				orders, err := pairTreeInt(parts[2], lp+" n", 1, int64(feedBookMaxOrders))
+				if err != nil {
 					return pairDerived{}, err
 				}
 				px, pxR, err := pairCanonicalBookDecimal(pxRaw, lp+" px")
@@ -827,7 +845,7 @@ func pairDeriveWindow(spec pairSourceSpec, m pairContractMember, need pairBookNe
 				if err != nil {
 					return pairDerived{}, err
 				}
-				lr := pairLevelRat{px: pxR, qty: szR, level: pairNativeLevel{Px: px, Qty: sz}}
+				lr := pairLevelRat{px: pxR, qty: szR, level: pairNativeLevel{Px: px, Qty: sz}, orders: uint64(orders)}
 				if s == 0 {
 					w.bids = append(w.bids, lr)
 				} else {
@@ -950,11 +968,19 @@ func pairDeriveWindow(spec pairSourceSpec, m pairContractMember, need pairBookNe
 	if !prefix || len(out) > 0 {
 		status = pairCoverageIncomplete
 	}
+	records := make([]pairWindowRecord, 0, len(obs))
+	for _, o := range obs {
+		r, err := pairShift(o.recv, delay, "record receipt")
+		if err != nil {
+			return pairDerived{}, err
+		}
+		records = append(records, pairWindowRecord{Seq: o.seq, EventMs: o.event, ReceiptMs: r, Identity: o.identity, BidDepth: int(o.depths[0]), AskDepth: int(o.depths[1]), Bids: o.bids, Asks: o.asks})
+	}
 	cov := pairCoverage{SourceContract: spec.Contract, TimeSemantics: spec.TimeSemantics, IdentitySemantics: spec.IdentitySemantics,
 		FromMs: from, ThroughMs: through, RequiredDepth: need.Depth, RequiredWindowMs: need.WindowMs, RequiredCapacity: need.Capacity,
 		PrefixComplete: prefix, Status: status, Gaps: out}
 	return pairDerived{Provenance: spec.Contract + "@" + owner, VenueTimeMs: last.event, FirstReceiptMs: receipt, SourceCutoffMs: cutoff,
-		SnapshotID: snapshotID, Coverage: cov, Bids: bids, Asks: asks}, nil
+		SnapshotID: snapshotID, Coverage: cov, Bids: bids, Asks: asks, Records: records}, nil
 }
 
 func pairObservationFromPayload(m pairContractMember, partition string, need pairBookNeed, payload []byte, readerReceiptMs int64, generation uint64) (pairObservation, error) {
@@ -1126,55 +1152,63 @@ func pairCheckObservationSource(o pairObservation, m pairContractMember, key pai
 }
 
 func pairCheckObservationSourceSide(o pairObservation, m pairContractMember, key pairEvidenceKey, need pairBookNeed, side string) (pairSourceSpec, error) {
-	spec, ok := pairSourceSpecFor(m.Provider, m.Source)
-	if !ok {
-		return spec, fmt.Errorf("member %s source %q has no source contract", m.MemberID, m.Source)
-	}
-	if o.V != pairObservationVersion {
-		return spec, fmt.Errorf("observation version %d is not supported (want %d)", o.V, pairObservationVersion)
-	}
-	if o.Key != key {
-		return spec, fmt.Errorf("observation key %s is not the member key %s", o.Key, key)
-	}
-	if o.Source != m.Source {
-		return spec, fmt.Errorf("observation source %q is not the frozen source %q", o.Source, m.Source)
-	}
-	if o.ModeledDeliveryMs != m.ModeledDeliveryMs {
-		return spec, fmt.Errorf("observation modeled delivery %dms is not the frozen %dms", o.ModeledDeliveryMs, m.ModeledDeliveryMs)
-	}
-	if o.VenueTimeMs == nil {
-		return spec, fmt.Errorf("source contract %s supplies a venue time, but the observation venue time is null", spec.Contract)
-	}
-	if max := pairPayloadMaxBytes(spec, m, need); len(o.Payload) == 0 || len(o.Payload) > max {
-		return spec, fmt.Errorf("observation payload is %d bytes, outside [1, %d]", len(o.Payload), max)
-	}
-	if o.PayloadHash != pairSHA256(o.Payload) {
-		return spec, fmt.Errorf("observation payload_hash does not match its payload bytes")
-	}
-	d, err := pairDeriveSide(spec, m, need, o.Payload, o.FirstReceiptMs, side)
+	spec, _, err := pairCheckObservationEvent(o, m, key, need, side)
 	if err != nil {
-		return spec, fmt.Errorf("%s payload: %w", spec.Contract, err)
-	}
-	if d.Provenance != o.Provenance {
-		return spec, fmt.Errorf("observation provenance %q is not the payload provenance %q", o.Provenance, d.Provenance)
-	}
-	if *o.VenueTimeMs != d.VenueTimeMs || o.FirstReceiptMs != d.FirstReceiptMs || o.SourceCutoffMs != d.SourceCutoffMs || o.SnapshotID != d.SnapshotID {
-		return spec, fmt.Errorf("observation times or snapshot (venue %d, receipt %d, source cutoff %d, snapshot %q) disagree with the payload (%d, %d, %d, %q)",
-			*o.VenueTimeMs, o.FirstReceiptMs, o.SourceCutoffMs, o.SnapshotID, d.VenueTimeMs, d.FirstReceiptMs, d.SourceCutoffMs, d.SnapshotID)
-	}
-	if !reflect.DeepEqual(o.Coverage, d.Coverage) {
-		return spec, fmt.Errorf("observation coverage %+v disagrees with the payload coverage %+v", o.Coverage, d.Coverage)
-	}
-	if !reflect.DeepEqual(o.NativeBids, d.Bids) || !reflect.DeepEqual(o.NativeAsks, d.Asks) {
-		return spec, fmt.Errorf("observation native levels disagree with the payload levels")
+		return spec, err
 	}
 	if o.Coverage.Status != pairCoverageComplete {
 		return spec, fmt.Errorf("%s coverage is %s (prefix complete %v, %d gaps); a failed or partial book is never repaired", spec.Contract, o.Coverage.Status, o.Coverage.PrefixComplete, len(o.Coverage.Gaps))
 	}
-	if spec.Source != pairSourceSealedFeed && o.Generation != 0 {
-		return spec, fmt.Errorf("a %s observation carries snapshot generation %d", spec.Source, o.Generation)
-	}
 	return spec, nil
+}
+
+func pairCheckObservationEvent(o pairObservation, m pairContractMember, key pairEvidenceKey, need pairBookNeed, side string) (pairSourceSpec, pairDerived, error) {
+	spec, ok := pairSourceSpecFor(m.Provider, m.Source)
+	if !ok {
+		return spec, pairDerived{}, fmt.Errorf("member %s source %q has no source contract", m.MemberID, m.Source)
+	}
+	if o.V != pairObservationVersion {
+		return spec, pairDerived{}, fmt.Errorf("observation version %d is not supported (want %d)", o.V, pairObservationVersion)
+	}
+	if o.Key != key {
+		return spec, pairDerived{}, fmt.Errorf("observation key %s is not the member key %s", o.Key, key)
+	}
+	if o.Source != m.Source {
+		return spec, pairDerived{}, fmt.Errorf("observation source %q is not the frozen source %q", o.Source, m.Source)
+	}
+	if o.ModeledDeliveryMs != m.ModeledDeliveryMs {
+		return spec, pairDerived{}, fmt.Errorf("observation modeled delivery %dms is not the frozen %dms", o.ModeledDeliveryMs, m.ModeledDeliveryMs)
+	}
+	if o.VenueTimeMs == nil {
+		return spec, pairDerived{}, fmt.Errorf("source contract %s supplies a venue time, but the observation venue time is null", spec.Contract)
+	}
+	if max := pairPayloadMaxBytes(spec, m, need); len(o.Payload) == 0 || len(o.Payload) > max {
+		return spec, pairDerived{}, fmt.Errorf("observation payload is %d bytes, outside [1, %d]", len(o.Payload), max)
+	}
+	if o.PayloadHash != pairSHA256(o.Payload) {
+		return spec, pairDerived{}, fmt.Errorf("observation payload_hash does not match its payload bytes")
+	}
+	d, err := pairDeriveSide(spec, m, need, o.Payload, o.FirstReceiptMs, side)
+	if err != nil {
+		return spec, pairDerived{}, fmt.Errorf("%s payload: %w", spec.Contract, err)
+	}
+	if d.Provenance != o.Provenance {
+		return spec, pairDerived{}, fmt.Errorf("observation provenance %q is not the payload provenance %q", o.Provenance, d.Provenance)
+	}
+	if *o.VenueTimeMs != d.VenueTimeMs || o.FirstReceiptMs != d.FirstReceiptMs || o.SourceCutoffMs != d.SourceCutoffMs || o.SnapshotID != d.SnapshotID {
+		return spec, pairDerived{}, fmt.Errorf("observation times or snapshot (venue %d, receipt %d, source cutoff %d, snapshot %q) disagree with the payload (%d, %d, %d, %q)",
+			*o.VenueTimeMs, o.FirstReceiptMs, o.SourceCutoffMs, o.SnapshotID, d.VenueTimeMs, d.FirstReceiptMs, d.SourceCutoffMs, d.SnapshotID)
+	}
+	if !reflect.DeepEqual(o.Coverage, d.Coverage) {
+		return spec, pairDerived{}, fmt.Errorf("observation coverage %+v disagrees with the payload coverage %+v", o.Coverage, d.Coverage)
+	}
+	if !reflect.DeepEqual(o.NativeBids, d.Bids) || !reflect.DeepEqual(o.NativeAsks, d.Asks) {
+		return spec, pairDerived{}, fmt.Errorf("observation native levels disagree with the payload levels")
+	}
+	if spec.Source != pairSourceSealedFeed && o.Generation != 0 {
+		return spec, pairDerived{}, fmt.Errorf("a %s observation carries snapshot generation %d", spec.Source, o.Generation)
+	}
+	return spec, d, nil
 }
 
 func pairDecodeQuoteEnvelope(raw []byte, limit int) (pairQuoteEnvelope, error) {

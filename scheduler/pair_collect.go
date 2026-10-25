@@ -632,6 +632,11 @@ func (bc *basketCoordinator) pairWakeBoundaries(rt *basketRuntime, nowMs int64) 
 	if (p.Lifecycle == pairLifecycleOpening || p.Lifecycle == pairLifecycleMatched) && p.FirstFillMs > 0 {
 		add(pairAddMs(p.FirstFillMs, l.MaxHoldAgeMs))
 	}
+	for _, id := range rt.memberIDs() {
+		if vv := bc.pairVirtualVenueFor(id); vv != nil {
+			add(vv.NextVisibleMs())
+		}
+	}
 	if p.Lifecycle == pairLifecycleRecovery && p.RecoveryStartMs > 0 {
 		add(pairAddMs(p.RecoveryStartMs, l.RecoveryAgeMs))
 	}

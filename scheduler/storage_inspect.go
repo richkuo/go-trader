@@ -52,6 +52,9 @@ type storageFileInspection struct {
 	PairFundingInventory    int                  `json:"pair_funding_inventory_rows"`
 	PairFundingPending      []string             `json:"pending_pair_funding"`
 	PairFundingUnresolvable []string             `json:"unresolvable_pair_funding,omitempty"`
+	PairVirtualEvents       int                  `json:"pair_virtual_event_rows"`
+	PairVirtualAllocations  int                  `json:"pair_virtual_allocation_rows"`
+	PairVirtualPending      []string             `json:"unresolved_pair_virtual_orders,omitempty"`
 	ReplayRuns              []string             `json:"basket_replay_runs,omitempty"`
 	QuoteReplayRuns         []string             `json:"quote_replay_runs,omitempty"`
 	QuoteOwners             int                  `json:"quote_owner_contracts"`
@@ -439,6 +442,12 @@ func formatStorageInspection(si storageInspection) string {
 		}
 		for _, line := range fi.PairFundingUnresolvable {
 			fmt.Fprintf(&b, "    UNRESOLVABLE PAIR FUNDING %s\n", line)
+		}
+		if fi.PairVirtualEvents > 0 || fi.PairVirtualAllocations > 0 {
+			fmt.Fprintf(&b, "  pair virtual venue records: %d, client identifier allocations: %d\n", fi.PairVirtualEvents, fi.PairVirtualAllocations)
+		}
+		for _, line := range fi.PairVirtualPending {
+			fmt.Fprintf(&b, "    UNRESOLVED PAIR VIRTUAL ORDER %s\n", line)
 		}
 		fmt.Fprintf(&b, "  quote owner contracts: %d\n", fi.QuoteOwners)
 		for _, line := range fi.QuotePending {

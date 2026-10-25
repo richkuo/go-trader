@@ -999,6 +999,7 @@ type basketFileRecords struct {
 	Uses       map[basketKey][]*pairQuoteEventUse
 	Progress   map[basketKey]string
 	Funding    map[basketKey]*pairFundingFileRows
+	Virtual    map[basketKey]*pairVirtualFileRows
 	Unmapped   []string
 }
 
@@ -1285,6 +1286,18 @@ func (st *StateStore) LoadBaskets(state *AppState, cfg *Config) (map[string]*bas
 		for _, k := range keys {
 			return nil, fmt.Errorf("the %s state file holds research pair records for %s (%s); an ordinary load never activates or adopts a pair: %s", role, k.BasketID, partitionLabel(k.Partition), strings.Join(append([]string{"contract saved"}, r.pairPendingFor(k)...), "; "))
 		}
+		vkeys := make([]basketKey, 0, len(r.Virtual))
+		for k, v := range r.Virtual {
+			if v.any() {
+				vkeys = append(vkeys, k)
+			}
+		}
+		sort.Slice(vkeys, func(i, j int) bool {
+			return vkeys[i].Partition.String()+"|"+vkeys[i].BasketID < vkeys[j].Partition.String()+"|"+vkeys[j].BasketID
+		})
+		for _, k := range vkeys {
+			return nil, fmt.Errorf("the %s state file holds research pair virtual venue records for %s (%s); an ordinary load never activates or adopts a pair: %s", role, k.BasketID, partitionLabel(k.Partition), r.Virtual[k].describe())
+		}
 	}
 	configured := make(map[basketKey]storageRole)
 	if pairAdmitted {
@@ -1504,6 +1517,11 @@ func inspectBasketRows(db *StateDB, fi *storageFileInspection, ident storageIden
 	if err != nil {
 		return nil, err
 	}
+	virtualRejections, err := inspectPairVirtualRows(db, fi, ident, ownedScopes, ownedParts)
+	if err != nil {
+		return nil, err
+	}
 	rejections = append(rejections, lifecycleRejections...)
-	return append(rejections, fundingRejections...), nil
+	rejections = append(rejections, fundingRejections...)
+	return append(rejections, virtualRejections...), nil
 }

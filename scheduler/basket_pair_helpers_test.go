@@ -916,6 +916,23 @@ type pairTestEnv struct {
 	sealMu     sync.Mutex
 	sealCalls  []pairSealCall
 	generation uint64
+
+	virtual *pairVirtualTestSet
+}
+
+type pairVirtualTestSet struct {
+	build func() map[string]*pairVirtualVenue
+	cur   map[string]*pairVirtualVenue
+}
+
+func (s *pairVirtualTestSet) factory() func(StrategyConfig) (basketVenue, error) {
+	cur := s.cur
+	return func(sc StrategyConfig) (basketVenue, error) {
+		if v := cur[sc.ID]; v != nil {
+			return v, nil
+		}
+		return nil, fmt.Errorf("no virtual pair venue for %s", sc.ID)
+	}
 }
 
 type pairSealCall struct {
@@ -946,6 +963,11 @@ func newPairTestEnvEvidence(t *testing.T, mutate func(root map[string]interface{
 
 func newPairTestEnvDeps(t *testing.T, mutate func(root map[string]interface{}), depsFor func(doc []byte, venues *pairTestVenues) pairResearchDeps) *pairTestEnv {
 	t.Helper()
+	return newPairTestEnvWith(t, mutate, depsFor, nil)
+}
+
+func newPairTestEnvWith(t *testing.T, mutate func(root map[string]interface{}), depsFor func(doc []byte, venues *pairTestVenues) pairResearchDeps, virtual *pairVirtualTestSet) *pairTestEnv {
+	t.Helper()
 	registerPairTestPolicy(t)
 	dir := filepath.Join(t.TempDir(), "run")
 	doc := pairTestDoc(t, dir, mutate)
@@ -954,12 +976,16 @@ func newPairTestEnvDeps(t *testing.T, mutate func(root map[string]interface{}), 
 	if depsFor != nil {
 		deps = depsFor(doc, venues)
 	}
+	if virtual != nil {
+		virtual.cur = virtual.build()
+		deps.VenueFor = virtual.factory()
+	}
 	adm, cfg, err := newPairResearchAdmission(doc, "run-1", dir, false, deps)
 	if err != nil {
 		t.Fatalf("newPairResearchAdmission: %v", err)
 	}
 	t.Cleanup(adm.release)
-	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart(), generation: 1}
+	e := &pairTestEnv{t: t, dir: dir, doc: doc, adm: adm, cfg: cfg, venues: venues, mu: &sync.RWMutex{}, now: pairTestStart(), generation: 1, virtual: virtual}
 	e.quotes = pairFixtureQuotesOf(deps.Quotes)
 	e.runner = &pairTestRunner{respond: func(req pairPolicyRequest) (pairPolicyResult, error) { return pairHoldResult(req, "no edge"), nil }}
 	e.store = openSourceStore(t, cfg)
@@ -991,6 +1017,15 @@ func (e *pairTestEnv) reopen(persisted bool) {
 	e.bc.venueFor = e.venues.factory()
 	e.bc.pairPolicyRun = e.runner.run
 	e.bc.pairClock = func() time.Time { return e.now }
+	if e.virtual != nil {
+		if persisted {
+			e.virtual.cur = e.virtual.build()
+		}
+		e.bc.venueFor = e.virtual.factory()
+		if err := e.bc.attachPairVirtualVenues(); err != nil {
+			e.t.Fatalf("attachPairVirtualVenues: %v", err)
+		}
+	}
 	if err := e.bc.startupCheck(); err != nil {
 		e.t.Fatalf("startupCheck: %v", err)
 	}
