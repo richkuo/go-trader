@@ -438,7 +438,14 @@ func (v *pairLiveBase) submit(a *basketAction, m pairContractMember) (basketVenu
 	if !pairBeforeDeadline(v.nowMs(), a.AcceptDeadlineMs) {
 		return basketVenueOutcome{Outcome: pairVenueNeverSent, Detail: "the acceptance deadline passed before the order script launched; nothing was sent", ObservedAtMs: v.nowMs()}, nil
 	}
-	args := []string{pairOrderFlag + "=" + a.RequestJSON, "--mode=live"}
+	if why := pairReductionAgeRefusal(a.RequestJSON, v.nowMs()); why != "" {
+		return basketVenueOutcome{Outcome: pairVenueNeverSent, Detail: why + "; the order script was not launched and nothing was sent", ObservedAtMs: v.nowMs()}, nil
+	}
+	wire, err := pairTransportRequestJSON(a.RequestJSON)
+	if err != nil {
+		return basketVenueOutcome{Outcome: pairVenueNeverSent, Detail: err.Error() + "; nothing was sent", ObservedAtMs: v.nowMs()}, nil
+	}
+	args := []string{pairOrderFlag + "=" + wire, "--mode=live"}
 	stdout, stderr, runErr := runPythonSideEffectWithTimeout(v.t.Script, args, pairOrderScriptTimout)
 	out, perr := pairParseScriptOutput(stdout, stderr, runErr)
 	if perr != nil || out.Outcome == nil {
@@ -465,7 +472,11 @@ func (v *pairLiveBase) query(ctx context.Context, a *basketAction, m pairContrac
 	if since <= 0 {
 		since = 1
 	}
-	args := []string{pairQueryFlag + "=" + a.RequestJSON, fmt.Sprintf("--since-ms=%d", since), "--mode=live"}
+	wire, err := pairTransportRequestJSON(a.RequestJSON)
+	if err != nil {
+		return basketVenueOutcome{}, err
+	}
+	args := []string{pairQueryFlag + "=" + wire, fmt.Sprintf("--since-ms=%d", since), "--mode=live"}
 	out, err := v.read(ctx, v.t.Script, args)
 	if err != nil {
 		return basketVenueOutcome{}, err

@@ -629,6 +629,16 @@ func (bc *basketCoordinator) pairWakeBoundaries(rt *basketRuntime, nowMs int64) 
 			add(r.RetryAtMs, true)
 		}
 	}
+	for _, o := range p.Obligations {
+		if o.Kind != pairObligationReductionReference || o.MemberID == "" || o.RetryAtMs <= 0 || bc.pairExposure(rt, o.MemberID) == 0 {
+			continue
+		}
+		at := o.RetryAtMs
+		if next, ok := pairAddMs(rt.pairLastStepMs, l.RetryInitialMs); ok && next > at {
+			at = next
+		}
+		add(at, true)
+	}
 	if (p.Lifecycle == pairLifecycleOpening || p.Lifecycle == pairLifecycleMatched) && p.FirstFillMs > 0 {
 		add(pairAddMs(p.FirstFillMs, l.MaxHoldAgeMs))
 	}

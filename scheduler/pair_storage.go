@@ -623,11 +623,12 @@ func updatePairQuoteUseTx(tx *sql.Tx, sid string, u *pairQuoteEventUse) error {
 }
 
 type pairObligation struct {
-	Kind     string `json:"kind"`
-	MemberID string `json:"member_id,omitempty"`
-	ActionID string `json:"action_id,omitempty"`
-	Detail   string `json:"detail"`
-	AtMs     int64  `json:"at_ms"`
+	Kind      string `json:"kind"`
+	MemberID  string `json:"member_id,omitempty"`
+	ActionID  string `json:"action_id,omitempty"`
+	Detail    string `json:"detail"`
+	AtMs      int64  `json:"at_ms"`
+	RetryAtMs int64  `json:"retry_at_ms,omitempty"`
 }
 
 type pairRetry struct {

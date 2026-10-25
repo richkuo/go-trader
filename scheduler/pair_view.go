@@ -402,7 +402,7 @@ func (bc *basketCoordinator) preparePairRiskFor(rt *basketRuntime, in basketCycl
 	}
 	for id, v := range out {
 		if changed != "" {
-			v.MarkValid, v.ConversionValid, v.CapabilityValid, v.CollateralValid = false, false, false, false
+			v.MarkValid, v.ReferenceValid, v.ConversionValid, v.CapabilityValid, v.CollateralValid = false, false, false, false, false
 			v.MissingReason = pairJoinReasons(changed, v.MissingReason)
 		} else {
 			v = pairRecheckView(v, nowMs)
@@ -477,7 +477,7 @@ func pairFillView(v pairMemberValuation, m pairContractMember, partition string,
 			v.Observation = pairCloneObservation(r.obs)
 			v.Mark, v.LowerPx, v.UpperPx = (bid+ask)/2, bid, ask
 			v.EvidenceMs = r.obs.FirstReceiptMs
-			v.MarkValid = true
+			v.MarkValid, v.ReferenceValid = true, true
 		}
 	}
 	if v.MarkValid {

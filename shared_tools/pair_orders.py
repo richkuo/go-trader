@@ -40,9 +40,12 @@ _OPTIONAL = {
     "conversions": "list",
     "capability_hash": "str",
     "evidence_hash": "str",
-    "reference": "obj",
+    "reference_max_age_ms": "int",
+    "reference_receipt_ms": "int",
+    "reference_px": "str",
     "native_booked": "bool",
 }
+REFERENCE_FIELDS = ("reference_receipt_ms", "reference_max_age_ms", "reference_px")
 _POSITION_FIELDS = {"v": "int", "provider": "str", "account_key": "str", "instrument": "str", "member_id": "str", "partition": "str"}
 
 HL_ACCOUNT = re.compile(r"^hyperliquid:(mainnet|testnet):0x[0-9a-f]{40}$")
@@ -165,7 +168,7 @@ def _strict_object(raw, required, optional, what):
     return out
 
 
-def parse_request(raw, provider):
+def parse_request(raw, provider, route="query"):
     req = _strict_object(raw, _REQUIRED, _OPTIONAL, "pair action request")
     if req["v"] != ACTION_REQUEST_VERSION:
         raise PairOrderError(f"request version {req['v']} is not {ACTION_REQUEST_VERSION}")
@@ -199,6 +202,7 @@ def parse_request(raw, provider):
         raise PairOrderError("an increase request needs its quote event, capability hash and evidence hash")
     if kind == "reduction" and evidence:
         raise PairOrderError(f"a reduction request carries increase evidence {evidence}")
+    _check_reference_authority(req, kind, route)
     if provider == "hyperliquid":
         if req["contract_size"] != 1 or req["native_qty"] != req["base_qty"]:
             raise PairOrderError("a hyperliquid request has contract size 1 and native quantity equal to base quantity")
@@ -218,6 +222,44 @@ def parse_request(raw, provider):
     else:
         raise PairOrderError(f"provider {provider!r} has no pair order route")
     return req
+
+
+def _check_reference_authority(req, kind, route):
+    present = [k for k in REFERENCE_FIELDS if k in req]
+    if kind == "increase":
+        if present:
+            raise PairOrderError(f"an increase binds its quote event and carries no reduction reference {present}")
+        return
+    if not present:
+        if route == "order":
+            raise PairOrderError("a reduction order needs its saved reference authority (reference_receipt_ms, reference_max_age_ms, reference_px); an older request stays queryable but never authorizes a send")
+        return
+    if len(present) != len(REFERENCE_FIELDS):
+        raise PairOrderError(f"the reduction reference authority is incomplete: {sorted(present)}")
+    if req["reference_receipt_ms"] <= 0 or req["reference_max_age_ms"] <= 0:
+        raise PairOrderError("reference_receipt_ms and reference_max_age_ms must be above zero")
+    text = req["reference_px"]
+    px = exact_decimal(text, "reference_px", positive=True)
+    if decimal_text(px) != text:
+        raise PairOrderError(f"reference_px {text!r} is not a canonical decimal")
+    req["reference_px"] = px
+    if req["order_side"] == "sell" and req["price_bound"] > px:
+        raise PairOrderError(f"the sell bound {req['price_bound']} is above the saved reference best bid {text}, so it does not cross")
+    if req["order_side"] == "buy" and req["price_bound"] < px:
+        raise PairOrderError(f"the buy bound {req['price_bound']} is below the saved reference best ask {text}, so it does not cross")
+
+
+def reference_refusal(req, now):
+    if PURPOSE_KIND.get(req["purpose"]) != "reduction":
+        return ""
+    if "reference_receipt_ms" not in req:
+        return "the reduction request has no saved reference authority; nothing is sent"
+    receipt, limit = req["reference_receipt_ms"], req["reference_max_age_ms"]
+    if receipt > now:
+        return f"the saved reference receipt {receipt} is after the child time {now}; nothing is sent"
+    if now - receipt > limit:
+        return f"the saved reference received at {receipt} is older than reference_max_age_ms {limit} at the child time {now}; nothing is sent"
+    return ""
 
 
 def parse_position_request(raw, provider):

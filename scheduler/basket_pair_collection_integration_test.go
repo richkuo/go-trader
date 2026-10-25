@@ -674,25 +674,81 @@ func TestBasketPairCollectionRequestRulesAtReservation(t *testing.T) {
 	use := func() *pairQuoteEventUse {
 		return &pairQuoteEventUse{Partition: rt.Partition, PairID: rt.Contract.BasketID, StrategyID: pairTestHL, Event: ev, EventID: ev.ID(), Status: pairUseReserved}
 	}
-	refused := map[string]struct {
-		a   *basketAction
-		use *pairQuoteEventUse
-	}{
-		"increase without evidence": {mk(pairPurposeEntry, basketDirectionIncrease, nil, false), use()},
-		"increase with another envelope": {mk(pairPurposeEntry, basketDirectionIncrease, func(r *pairActionRequest) {
-			r.Conversions, r.CapabilityHash, r.EvidenceHash = convs, firstReq["capability_hash"].(string), strings.Repeat("a", 64)
-		}, false), use()},
-		"increase with the other member's capability": {mk(pairPurposeEntry, basketDirectionIncrease, func(r *pairActionRequest) {
-			r.Conversions, r.CapabilityHash, r.EvidenceHash = convs, firstReq["capability_hash"].(string), ev.InputFingerprint
-		}, false), use()},
-		"reduction with evidence":    {mk(pairPurposeProtective, basketDirectionReduce, func(r *pairActionRequest) { r.EvidenceHash = ev.InputFingerprint }, false), nil},
-		"reduction without contract": {mk(pairPurposeProtective, basketDirectionReduce, func(r *pairActionRequest) { r.ContractFingerprint = "" }, false), nil},
-		"native without marker":      {mk(pairPurposeKillSwitch, basketDirectionReduce, nil, true), nil},
-		"native marker without note": {mk(pairPurposeOperator, basketDirectionReduce, func(r *pairActionRequest) { r.NativeBooked = true }, false), nil},
-		"version one":                {mk(pairPurposeProtective, basketDirectionReduce, func(r *pairActionRequest) { r.V = 1 }, false), nil},
+	hlM, _ := rt.Contract.pairMember(pairTestHL)
+	view := rt.pairView[pairTestHL]
+	refBound, why := pairReductionBound(hlM, "buy", view.Observation, rt.auditNowMs(), rt.Pair.Limits)
+	if why != "" {
+		t.Fatalf("the published reference gives no buy width bound: %s", why)
 	}
+	reduction := func(edit func(r *pairActionRequest, a *basketAction)) *basketAction {
+		a := mk(pairPurposeProtective, basketDirectionReduce, nil, false)
+		a.PositionSide, a.PriceBound = entrySideShort, refBound
+		var r pairActionRequest
+		_ = json.Unmarshal([]byte(a.RequestJSON), &r)
+		ref := pairCloneObservation(view.Observation)
+		r.PositionSide, r.PriceBound, r.BaseQty, r.NativeQty, r.ContractSize = entrySideShort, refBound, a.RequestedQty, a.NativeQty, a.ContractSize
+		r.Reference, r.ReferenceMaxAgeMs, r.ReferenceReceiptMs, r.ReferencePx = &ref, rt.Pair.Limits.QuoteAgeMs, ref.FirstReceiptMs, ref.NativeAsks[0].Px
+		if edit != nil {
+			edit(&r, a)
+		}
+		a.RequestJSON = marshalEntryJSON(r)
+		return a
+	}
+	okxRef := pairCloneObservation(rt.pairView[pairTestOKX].Observation)
+	if _, err := pairValidateActionRequest(rt, reduction(nil), nil, rt.auditNowMs()); err != nil {
+		t.Fatalf("the unedited reduction with its committed reference must pass the request rules, so each refusal below proves its own rule: %v", err)
+	}
+	refused := map[string]struct {
+		a     *basketAction
+		use   *pairQuoteEventUse
+		prep  func()
+		after func()
+	}{
+		"reduction without a reference": {a: reduction(func(r *pairActionRequest, a *basketAction) {
+			r.Reference, r.ReferenceMaxAgeMs, r.ReferenceReceiptMs, r.ReferencePx = nil, 0, 0, ""
+		})},
+		"reduction with a stale reference": {a: reduction(nil), prep: func() {
+			rt.clock = time.UnixMilli(view.Observation.FirstReceiptMs + rt.Pair.Limits.QuoteAgeMs + 1).UTC()
+		}},
+		"reduction with another member's reference": {a: reduction(func(r *pairActionRequest, a *basketAction) { r.Reference = &okxRef })},
+		"reduction with an altered bound":           {a: reduction(func(r *pairActionRequest, a *basketAction) { r.PriceBound, a.PriceBound = refBound-1, refBound-1 })},
+		"reduction with a forged reference level":   {a: reduction(func(r *pairActionRequest, a *basketAction) { r.ReferencePx = "59000" })},
+		"reduction with another age policy":         {a: reduction(func(r *pairActionRequest, a *basketAction) { r.ReferenceMaxAgeMs++ })},
+		"reduction with an uncommitted reference": {a: reduction(nil), prep: func() {
+			v := rt.pairView[pairTestHL]
+			v.ReferenceValid = false
+			rt.pairView[pairTestHL] = v
+		}, after: func() { rt.pairView[pairTestHL] = view }},
+		"increase with a reference": {a: mk(pairPurposeEntry, basketDirectionIncrease, func(r *pairActionRequest) {
+			r.Conversions, r.CapabilityHash, r.EvidenceHash, r.ReferencePx = convs, firstReq["capability_hash"].(string), ev.InputFingerprint, "60001"
+		}, false), use: use()},
+		"native with a reference":   {a: mk(pairPurposeKillSwitch, basketDirectionReduce, func(r *pairActionRequest) { r.NativeBooked, r.ReferenceMaxAgeMs = true, 5000 }, true)},
+		"increase without evidence": {a: mk(pairPurposeEntry, basketDirectionIncrease, nil, false), use: use()},
+		"increase with another envelope": {a: mk(pairPurposeEntry, basketDirectionIncrease, func(r *pairActionRequest) {
+			r.Conversions, r.CapabilityHash, r.EvidenceHash = convs, firstReq["capability_hash"].(string), strings.Repeat("a", 64)
+		}, false), use: use()},
+		"increase with the other member's capability": {a: mk(pairPurposeEntry, basketDirectionIncrease, func(r *pairActionRequest) {
+			r.Conversions, r.CapabilityHash, r.EvidenceHash = convs, firstReq["capability_hash"].(string), ev.InputFingerprint
+		}, false), use: use()},
+		"reduction with evidence":    {a: reduction(func(r *pairActionRequest, a *basketAction) { r.EvidenceHash = ev.InputFingerprint })},
+		"reduction without contract": {a: reduction(func(r *pairActionRequest, a *basketAction) { r.ContractFingerprint = "" })},
+		"native without marker":      {a: mk(pairPurposeKillSwitch, basketDirectionReduce, nil, true)},
+		"native marker without note": {a: mk(pairPurposeOperator, basketDirectionReduce, func(r *pairActionRequest) { r.NativeBooked = true }, false)},
+		"version one":                {a: reduction(func(r *pairActionRequest, a *basketAction) { r.V = 1 })},
+	}
+	clock := rt.clock
 	for name, tc := range refused {
 		t.Run(name, func(t *testing.T) {
+			rt.clock = clock
+			if tc.prep != nil {
+				tc.prep()
+			}
+			defer func() {
+				rt.clock = clock
+				if tc.after != nil {
+					tc.after()
+				}
+			}()
 			var intent *entryIntent
 			if tc.a.Direction == basketDirectionIncrease {
 				intent = &entryIntent{IntentID: "probe-" + name, Partition: rt.Partition, StrategyID: pairTestHL, Status: entryIntentReserved, OwnerMode: pairGroupMode, DecisionKind: entryDecisionKindQuote, QuoteEventID: ev.ID()}

@@ -1082,7 +1082,7 @@ def pair_okx_outcome(adapter, po, req, mode, account, since_ms, inst=None, refus
 def run_pair_order(raw, mode, probe_only=False):
     po = _pair_orders()
     try:
-        req = po.parse_request(raw, "okx")
+        req = po.parse_request(raw, "okx", route="order")
     except po.PairOrderError as e:
         po.finish({"platform": "okx", "error": str(e), "pair_outcome": po.never_sent("order", f"the request was refused before any adapter or venue call: {e}")}, 1)
         return
@@ -1094,6 +1094,10 @@ def run_pair_order(raw, mode, probe_only=False):
     deadline = req["accept_deadline_ms"]
     if po.now_ms() >= deadline:
         po.finish({"platform": "okx", "pair_outcome": po.never_sent("order", "the acceptance deadline passed before the adapter was built; nothing was sent", req)})
+        return
+    refusal = po.reference_refusal(req, po.now_ms())
+    if refusal:
+        po.finish({"platform": "okx", "pair_outcome": po.never_sent("order", refusal + " (checked before the adapter was built)", req)})
         return
     try:
         from adapter import OKXExchangeAdapter
@@ -1129,6 +1133,10 @@ def run_pair_order(raw, mode, probe_only=False):
         return
     if po.now_ms() >= deadline:
         po.finish({"platform": "okx", "account": account, "pair_outcome": po.never_sent("order", "the acceptance deadline passed immediately before the order call; nothing was sent", req)})
+        return
+    refusal = po.reference_refusal(req, po.now_ms())
+    if refusal:
+        po.finish({"platform": "okx", "account": account, "pair_outcome": po.never_sent("order", refusal + " (checked immediately before the order call)", req)})
         return
     since = po.now_ms() - PAIR_FILL_MARGIN_MS
     refusal = ""

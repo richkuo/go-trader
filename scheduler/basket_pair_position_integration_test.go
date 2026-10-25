@@ -334,36 +334,6 @@ func pairLiveFirstLeg(t *testing.T, e *pairTestEnv) time.Time {
 	return at
 }
 
-func TestBasketPairPositionLiveProtectiveReductionHoldsWithoutAReferenceBound(t *testing.T) {
-	e := newPairLiveShapedEnv(t, &pairNativeClosers{})
-	at := pairLiveFirstLeg(t, e)
-	e.externalBookChange(pairTestOKX, -0.03)
-	e.step(at.Add(2 * time.Minute))
-	if e.lifecycle() != pairLifecycleRecovery {
-		t.Fatalf("lifecycle %s, want recovery after the outside reduction", e.lifecycle())
-	}
-	if n := len(e.actionsByPurpose(pairPurposeProtective)); n != 0 {
-		t.Fatalf("a live-shaped protective reduction without a reference bound reserved %d actions", n)
-	}
-	p := e.rt().Pair.Progress
-	o := p.obligation(pairObligationProtectiveBound, pairTestOKX, "")
-	r, ok := p.Retries[pairTestOKX]
-	if o == nil || !ok || r.Count != 1 || r.RetryAtMs != at.Add(2*time.Minute).UnixMilli()+5000 {
-		t.Fatalf("the hold needs a visible obligation and the first backoff, got %+v %+v", o, r)
-	}
-	e.step(at.Add(2*time.Minute + 2*time.Second))
-	if r := e.rt().Pair.Progress.Retries[pairTestOKX]; r.Count != 1 {
-		t.Fatalf("the hold must wait for its backoff, got %+v", r)
-	}
-	e.step(at.Add(2*time.Minute + 6*time.Second))
-	if r := e.rt().Pair.Progress.Retries[pairTestOKX]; r.Count != 2 || r.RetryAtMs != at.Add(2*time.Minute+6*time.Second).UnixMilli()+10000 {
-		t.Fatalf("the retry backoff must double, got %+v", r)
-	}
-	if n := e.alertsWithPrefix("protective_bound|"); n != 1 {
-		t.Fatalf("one recovery episode must send one protective-bound alert, got %d", n)
-	}
-}
-
 func TestBasketPairPositionBarrierOpensRecoveryForAHeldOneSidedOpening(t *testing.T) {
 	e := newPairLiveShapedEnv(t, &pairNativeClosers{})
 	at := pairLiveFirstLeg(t, e)

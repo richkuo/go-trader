@@ -1547,6 +1547,7 @@ func pairValidateActionRequest(rt *basketRuntime, a *basketAction, use *pairQuot
 		return req, fmt.Errorf("pair action %s request names contract %s, the running contract is %s", a.ActionID, shortFingerprint(req.ContractFingerprint), shortFingerprint(rt.Contract.Fingerprint()))
 	}
 	evidence := len(req.Conversions) > 0 || req.CapabilityHash != "" || req.EvidenceHash != ""
+	authority := req.Reference != nil || req.ReferenceMaxAgeMs != 0 || req.ReferenceReceiptMs != 0 || req.ReferencePx != ""
 	switch pairRequestKind(a.Purpose) {
 	case "increase":
 		if a.Direction != basketDirectionIncrease || req.ReduceOnly || req.NativeBooked || a.recoveryNote().NativeBooked {
@@ -1558,7 +1559,7 @@ func pairValidateActionRequest(rt *basketRuntime, a *basketAction, use *pairQuot
 		if len(req.Conversions) == 0 || !pairHexDigestPattern.MatchString(req.CapabilityHash) || req.EvidenceHash != use.Event.InputFingerprint || !pairHexDigestPattern.MatchString(req.EvidenceHash) {
 			return req, fmt.Errorf("pair increase %s request needs conversions, a capability hash and the selected envelope's evidence hash", a.ActionID)
 		}
-		if req.Reference != nil {
+		if authority {
 			return req, fmt.Errorf("pair increase %s binds its quote event, not a reference", a.ActionID)
 		}
 		if err := pairCheckLiveRequest(rt, m, a, req); err != nil {
@@ -1571,10 +1572,8 @@ func pairValidateActionRequest(rt *basketRuntime, a *basketAction, use *pairQuot
 		if evidence {
 			return req, fmt.Errorf("pair reduction %s carries quote-event evidence fields, which only an increase binds", a.ActionID)
 		}
-		if req.Reference != nil {
-			if err := pairCheckReference(rt, m, req.Reference, req.OrderSide, nowMs); err != nil {
-				return req, fmt.Errorf("pair reduction %s reference: %w", a.ActionID, err)
-			}
+		if err := pairCheckReductionAuthority(rt, m, a, req, nowMs); err != nil {
+			return req, err
 		}
 		if err := pairCheckLiveRequest(rt, m, a, req); err != nil {
 			return req, err
@@ -1583,7 +1582,7 @@ func pairValidateActionRequest(rt *basketRuntime, a *basketAction, use *pairQuot
 		if a.Direction != basketDirectionReduce || !req.ReduceOnly || !req.NativeBooked || !a.recoveryNote().NativeBooked {
 			return req, fmt.Errorf("pair native reduction %s needs native_booked with a matching recovery note and reduce_only", a.ActionID)
 		}
-		if evidence || req.QuoteEventID != "" || req.Reference != nil || req.PriceBound != 0 {
+		if evidence || authority || req.QuoteEventID != "" || req.PriceBound != 0 {
 			return req, fmt.Errorf("pair native reduction %s carries quote evidence or a price bound; the native owner keeps booking authority", a.ActionID)
 		}
 	default:
