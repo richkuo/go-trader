@@ -22,6 +22,7 @@ const (
 	pairReplayKindProcess             = "process_failure"
 	pairReplayKindNativeCheck         = "native_check_failure"
 	pairReplayScenarioManagementCause = "scenario management_check_failure: "
+	pairReplayScenarioPolicyCause     = "scenario policy_process_failure: "
 	pairReplayMaxSameTime             = 3
 	pairReplayManagementBars          = 500
 )
@@ -891,6 +892,29 @@ func (r *pairReplayRuntime) scenario(kind string, match func(f pairReplayFailure
 	return false
 }
 
+func pairReplayScenarioSubmitCause(purpose string, nth int) string {
+	return fmt.Sprintf("scenario transport failure of %s #%d before the venue received action ", purpose, nth)
+}
+
+func (r *pairReplayRuntime) scenarioApplied(s pairReplayFailureScript) bool {
+	switch s.Kind {
+	case pairReplayFailSubmit:
+		prefix := pairReplayScenarioSubmitCause(s.Purpose, s.Nth)
+		return r.hasFailure(pairReplayStageScenario, pairReplayFailSubmit, func(f pairReplayFailure) bool { return strings.HasPrefix(f.Cause, prefix) })
+	case pairReplayFailPolicy:
+		return r.hasFailure(pairReplayStagePolicy, pairReplayKindProcess, func(f pairReplayFailure) bool {
+			return f.AtMs == s.atMs && strings.HasPrefix(f.Cause, pairReplayScenarioPolicyCause)
+		})
+	case pairReplayFailManagement:
+		return r.hasFailure(pairReplayStageManagement, pairReplayKindNativeCheck, func(f pairReplayFailure) bool {
+			return f.MemberID == s.MemberID && f.AtMs == s.atMs && strings.HasPrefix(f.Cause, pairReplayScenarioManagementCause)
+		})
+	case pairReplayFailSave:
+		return r.hasFailure(pairReplayStageScenario, pairReplayFailSave, func(f pairReplayFailure) bool { return f.AtMs == s.atMs })
+	}
+	return false
+}
+
 func (r *pairReplayRuntime) policyRunner(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
 	var head struct {
 		SlotMs int64 `json:"slot_ms"`
@@ -899,8 +923,8 @@ func (r *pairReplayRuntime) policyRunner(ctx context.Context, stdin []byte, time
 	nowMs := r.clock.Now().UnixMilli()
 	if r.scenario(pairReplayFailPolicy, func(f pairReplayFailureScript) bool { return f.atMs == nowMs }) &&
 		!r.hasFailure(pairReplayStagePolicy, pairReplayKindProcess, func(f pairReplayFailure) bool { return f.SlotMs == head.SlotMs }) {
-		err := fmt.Errorf("scenario policy_process_failure: the policy process was not launched")
-		r.recordFailure(pairReplayFailure{Stage: pairReplayStagePolicy, Kind: pairReplayKindProcess, SlotMs: head.SlotMs, Cause: err.Error()})
+		err := fmt.Errorf("%sthe policy process was not launched", pairReplayScenarioPolicyCause)
+		r.recordFailure(pairReplayFailure{Stage: pairReplayStagePolicy, Kind: pairReplayKindProcess, SlotMs: head.SlotMs, AtMs: nowMs, Cause: err.Error()})
 		return nil, nil, err
 	}
 	out, errb, err := runPairPolicyProcess(ctx, stdin, timeout)
@@ -952,7 +976,7 @@ func (r *pairReplayRuntime) beforeSubmit(a basketAction) error {
 	if r.hasFailure(pairReplayStageScenario, pairReplayFailSubmit, func(f pairReplayFailure) bool { return strings.HasSuffix(f.Cause, " "+a.ActionID) }) {
 		return nil
 	}
-	r.recordFailure(pairReplayFailure{Stage: pairReplayStageScenario, Kind: pairReplayFailSubmit, MemberID: a.StrategyID, Cause: "scenario transport failure before the venue received action " + a.ActionID})
+	r.recordFailure(pairReplayFailure{Stage: pairReplayStageScenario, Kind: pairReplayFailSubmit, MemberID: a.StrategyID, Cause: pairReplayScenarioSubmitCause(a.Purpose, nth) + a.ActionID})
 	return fmt.Errorf("scenario submit_transport_error: the request never reached the virtual venue")
 }
 

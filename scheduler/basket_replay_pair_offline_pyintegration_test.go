@@ -510,6 +510,9 @@ func TestBasketReplayPairOfflineProcessFailuresStayIncompleteAfterResume(t *test
 			if !found || resumed.Out.Scored || resumed.Out.PromotionEligible {
 				t.Fatalf("the persisted %s failure must survive the resume and both flags stay false: %+v", tc.stage, resumed.Out.Failures)
 			}
+			if unapplied := pairOfflineUnapplied(resumed.Out); !resumed.Out.Run.Finished || unapplied != nil {
+				t.Fatalf("the scripted %s failure fired, so the finished run must not report it unapplied: finished=%v unapplied=%v", tc.name, resumed.Out.Run.Finished, unapplied)
+			}
 		})
 	}
 }
@@ -558,6 +561,68 @@ func TestBasketReplayPairOfflineScriptedManagementFailureFiresOnceAcrossARestart
 	resumed := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeResume, dir), nil)
 	if !resumed.Out.Run.Resumed || resumed.Out.MechanicallyComplete || scripted(resumed) != 1 {
 		t.Fatalf("the resume reruns the management pass, so the scripted failure must not fire again: resumed=%v complete=%v failures=%+v", resumed.Out.Run.Resumed, resumed.Out.MechanicallyComplete, resumed.Out.Failures)
+	}
+	if !resumed.Out.Run.Finished || pairOfflineUnapplied(resumed.Out) != nil {
+		t.Fatalf("a scripted failure that fired before the crash is applied after the resume: finished=%v unapplied=%v", resumed.Out.Run.Finished, pairOfflineUnapplied(resumed.Out))
+	}
+}
+
+func pairOfflineUnapplied(out pairReplayOutput) []string {
+	var got []string
+	for _, r := range out.IncompleteReasons {
+		if strings.Contains(r, "was declared but never applied") {
+			got = append(got, r)
+		}
+	}
+	return got
+}
+
+func TestBasketReplayPairOfflineUnappliedScriptedFailuresAreReported(t *testing.T) {
+	offStep := pairTestStart().Add(-time.Minute + time.Second)
+	for _, tc := range []struct {
+		name    string
+		failure pairReplayFailureScript
+		applied bool
+	}{
+		{"management one second off the management steps", pairReplayFailureScript{Kind: pairReplayFailManagement, MemberID: pairTestOKX, At: offStep.UTC().Format(time.RFC3339Nano)}, false},
+		{"submit nth past the entry submits", pairReplayFailureScript{Kind: pairReplayFailSubmit, Purpose: pairPurposeEntry, Nth: 99}, false},
+		{"submit of the first entry", pairReplayFailureScript{Kind: pairReplayFailSubmit, Purpose: pairPurposeEntry, Nth: 1}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPairOfflineFixture(t, pairOfflineOptions{failures: []pairReplayFailureScript{tc.failure}})
+			p := runPairReplayAdapter(t, f.repo, f.spec(basketReplayModeNew, f.stateDir("run")), nil)
+			if !p.Out.Run.Finished {
+				t.Fatalf("the run must finish so the scripted failure is judged, got stop reason %q", p.Out.Run.StopReason)
+			}
+			if tc.failure.Kind == pairReplayFailManagement {
+				for _, raw := range p.Out.Steps {
+					var st struct {
+						AtMs    int64 `json:"at_ms"`
+						Managed bool  `json:"managed"`
+					}
+					if err := json.Unmarshal(raw, &st); err != nil {
+						t.Fatal(err)
+					}
+					if st.Managed && st.AtMs == offStep.UnixMilli() {
+						t.Fatalf("the fixture manages the members at %d, so the script is not off the management steps", st.AtMs)
+					}
+				}
+			}
+			unapplied := pairOfflineUnapplied(p.Out)
+			if tc.applied {
+				fired := false
+				for _, fl := range p.Out.Failures {
+					fired = fired || (fl.Stage == pairReplayStageScenario && fl.Kind == pairReplayFailSubmit && strings.HasPrefix(fl.Cause, pairReplayScenarioSubmitCause(tc.failure.Purpose, tc.failure.Nth)))
+				}
+				if !fired || unapplied != nil {
+					t.Fatalf("a scripted submit failure that fired must leave its row and no unapplied reason: fired=%v unapplied=%v failures=%+v", fired, unapplied, p.Out.Failures)
+				}
+				return
+			}
+			if p.Out.MechanicallyComplete || p.Code != basketReplayExitError || len(unapplied) != 1 || !strings.Contains(unapplied[0], "scenario.venue_failures[0] "+tc.failure.Kind) {
+				t.Fatalf("a scripted failure that never fired must keep the finished run incomplete with one unapplied reason, got exit %d complete=%v reasons=%v", p.Code, p.Out.MechanicallyComplete, p.Out.IncompleteReasons)
+			}
+		})
 	}
 }
 

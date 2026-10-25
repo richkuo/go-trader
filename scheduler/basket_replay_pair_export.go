@@ -540,6 +540,13 @@ func (r *pairReplayRuntime) incompleteReasons(steps []pairReplayStoredStep, rawB
 			add("%s %s at step %d: %s", f.Stage, f.Kind, f.Ordinal, f.Cause)
 		}
 	}
+	if r.finished {
+		for i, s := range r.spec.Scenario.VenueFailures {
+			if !r.scenarioApplied(s) {
+				add("scenario.venue_failures[%d] %s was declared but never applied in the finished run", i, s.Kind)
+			}
+		}
+	}
 	out = append(out, rawBad...)
 	r.mu.RLock()
 	rt := r.rt
