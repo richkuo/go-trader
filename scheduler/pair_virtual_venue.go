@@ -842,15 +842,9 @@ func (v *pairVirtualVenue) validateLocked(a *basketAction, now int64) (pairVirtu
 	if !row.Found || row.RequestJSON != a.RequestJSON || !basketActionPending(row.Status) || row.Status == basketActionReserved {
 		return body, fmt.Sprintf("client %s has no durable submitting action with this request (found %v, status %q)", a.ClientOrderID, row.Found, row.Status), ""
 	}
-	ledger, err := v.st.LoadPairVirtualLedger(rt, v.id)
+	allocated, err := v.st.PairVirtualAllocated(rt, v.id, a.ClientOrderID)
 	if err != nil {
 		return body, "", "the allocation history is unreadable: " + err.Error()
-	}
-	allocated := false
-	for _, al := range ledger.Allocations {
-		if al.ClientOrderID == a.ClientOrderID {
-			allocated = true
-		}
 	}
 	if !allocated {
 		return body, fmt.Sprintf("client %s was not allocated by this venue for run %s", a.ClientOrderID, v.cfg.RunTag), ""

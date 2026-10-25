@@ -885,6 +885,25 @@ func TestBasketPairVirtualVenueAttachmentRefusesChangedBindings(t *testing.T) {
 	if err := attach(e.vvenue(pairTestOKX), okxCfg); err == nil {
 		t.Fatalf("a second attachment must refuse")
 	}
+	unclocked := e.virtual.build()
+	savedClock, savedVenues := e.bc.pairClock, e.bc.venueFor
+	e.bc.venueFor = func(sc StrategyConfig) (basketVenue, error) { return unclocked[sc.ID], nil }
+	e.bc.pairClock = nil
+	err := e.bc.attachPairVirtualVenues()
+	e.bc.pairClock, e.bc.venueFor = savedClock, savedVenues
+	if err == nil || !strings.Contains(err.Error(), "no pair clock") || unclocked[pairTestOKX].isAttached() || unclocked[pairTestHL].isAttached() {
+		t.Fatalf("attachment with no coordinator clock must refuse and attach nothing: %v", err)
+	}
+	if after := e.virtualFootprint(); after != before {
+		t.Fatalf("a refused clockless attachment changed the saved records: %s -> %s", before, after)
+	}
+	replaced := time.UnixMilli(e.now.UnixMilli() + 1234).UTC()
+	e.bc.pairClock = func() time.Time { return replaced }
+	got := e.vvenue(pairTestOKX).clock()
+	e.bc.pairClock = savedClock
+	if !got.Equal(replaced) {
+		t.Fatalf("the attached venue must read the current coordinator clock, got %v want %v", got, replaced)
+	}
 	cases := map[string]func(c *pairVirtualVenueConfig) StrategyConfig{
 		"resumed latency": func(c *pairVirtualVenueConfig) StrategyConfig { c.ResponseLatencyMs = 500; return okxCfg },
 		"resumed band":    func(c *pairVirtualVenueConfig) StrategyConfig { c.AdverseBandBps = 7; return okxCfg },
@@ -995,6 +1014,107 @@ func TestBasketPairVirtualVenueStorageOwnershipAndInspection(t *testing.T) {
 		}
 		if _, err := e.store.LoadPairVirtualLedger(e.rt(), e.vvenue(pairTestOKX).id); err == nil {
 			t.Fatalf("a broken hash chain must refuse to load")
+		}
+	})
+	t.Run("long history appends from the verified tip", func(t *testing.T) {
+		e, market := newPairVirtualEnv(t, nil, 0, 0)
+		okx := e.vvenue(pairTestOKX)
+		id, binding := okx.id, okx.binding
+		_, key, err := e.db().pairVirtualKey(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		appendQueries := func(from, n int) ([]pairVirtualEvent, error) {
+			evs := make([]pairVirtualEvent, 0, n)
+			for i := from; i < from+n; i++ {
+				evs = append(evs, pairVirtualEvent{Kind: pairVirtualKindQuery, SemanticKey: fmt.Sprintf("query|long|%d", i), Body: `{}`})
+			}
+			return e.store.AppendPairVirtualEvents(e.rt(), id, binding, evs, nil, e.now.UnixMilli())
+		}
+		for b := 0; b < 10; b++ {
+			if _, err := appendQueries(b*1000, 1000); err != nil {
+				t.Fatal(err)
+			}
+		}
+		chainHash := func(seq int) string {
+			var h string
+			if err := e.db().db.QueryRow(`SELECT event_hash FROM pair_virtual_events WHERE run_tag = 'run-1' AND member_key_json = ? AND seq = ?`, key, seq).Scan(&h); err != nil {
+				t.Fatal(err)
+			}
+			return h
+		}
+		if tip := e.db().pairVirtualVerifiedTip("run-1", key); tip.Seq != 10001 || tip.Hash != chainHash(10001) {
+			t.Fatalf("10,000 saved events must leave the verified tip at seq 10001, got %+v", tip)
+		}
+		e.db().notePairVirtualTip("run-1", key, pairVirtualTip{Seq: 5000, Hash: chainHash(5000)})
+		saved, err := appendQueries(20000, 1)
+		if err != nil || len(saved) != 1 || saved[0].Seq != 10002 || saved[0].PrevHash != chainHash(10001) {
+			t.Fatalf("an append after rows saved beyond the verified tip must chain onto the newest row with no fork: %+v %v", saved, err)
+		}
+		if _, err := e.store.LoadPairVirtualLedger(e.rt(), id); err != nil {
+			t.Fatalf("the chain extended past a lagging tip must stay whole: %v", err)
+		}
+		e.db().notePairVirtualTip("run-1", key, pairVirtualTip{Seq: 9000, Hash: chainHash(9000)})
+		if _, err := e.db().db.Exec(`INSERT INTO pair_virtual_events (run_tag, member_key_json, seq, scope, source, pair_id, strategy_id, provider, account_key, instrument, kind, semantic_key, body_json, previous_event_hash, event_hash, created_at_ms)
+			VALUES ('run-1', ?, 10003, 'paper', '', ?, ?, 'okx', 'synthetic:okx-research', 'BTC-USDT-SWAP', 'query', 'forged-tail', '{}', ?, 'bad', 1)`, key, pairTestID, pairTestOKX, chainHash(10002)); err != nil {
+			t.Fatal(err)
+		}
+		before := e.virtualFootprint()
+		if _, err := appendQueries(20001, 1); err == nil || !strings.Contains(err.Error(), "does not match its content") {
+			t.Fatalf("a forged row after the verified tip must refuse the append: %v", err)
+		}
+		if after := e.virtualFootprint(); after != before {
+			t.Fatalf("a refused append changed the saved records")
+		}
+		if _, err := e.db().db.Exec(`DROP TRIGGER trg_pair_virtual_events_kept`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.db().db.Exec(`DELETE FROM pair_virtual_events WHERE run_tag = 'run-1' AND member_key_json = ? AND seq = 10003`, key); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.db().db.Exec(`DROP TRIGGER trg_pair_virtual_events_immutable`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.db().db.Exec(`UPDATE pair_virtual_events SET body_json = '{"forged":true}' WHERE run_tag = 'run-1' AND member_key_json = ? AND seq = 5000`, key); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.db().db.Exec(pairVirtualDDL); err != nil {
+			t.Fatal(err)
+		}
+		e.db().notePairVirtualTip("run-1", key, pairVirtualTip{Seq: 10002, Hash: chainHash(10002)})
+		first := e.virtualFirstLegFilled(market)
+		if n := e.count(`SELECT COUNT(*) FROM pair_virtual_events WHERE run_tag = 'run-1' AND member_key_json = ? AND client_order_id = ? AND seq > 10002`, key, first.ClientOrderID); n < 2 {
+			t.Fatalf("allocation, submit, query and match over 10,002 saved events must append from the verified tip and never re-read the older history, got %d records", n)
+		}
+		if _, err := e.store.LoadPairVirtualLedger(e.rt(), id); err == nil || !strings.Contains(err.Error(), "event 5000 hash") {
+			t.Fatalf("a full load must refuse a tampered middle row: %v", err)
+		}
+		c := pairVirtualVenueConfig{Partition: defaultPaperPartition, RunTag: "run-1", MemberID: pairTestOKX, Provider: entryProviderOKX, AccountKey: "synthetic:okx-research",
+			Instrument: "BTC-USDT-SWAP", Market: newPairTestMarket(), AdverseBandBps: 4}
+		v, err := newPairVirtualVenue(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.mu.Lock()
+		err = v.attach(pairVirtualAttachment{Store: e.store, Runtime: e.rt(), Config: e.bc.members[pairTestOKX], Clock: func() time.Time { return e.now }})
+		e.mu.Unlock()
+		if err == nil || !strings.Contains(err.Error(), "event 5000 hash") || v.isAttached() {
+			t.Fatalf("attachment must refuse a tampered middle row: %v", err)
+		}
+		ident, layout := pairTestIdentity(t, e.cfg)
+		ro, err := openStateDBReadOnly(filepath.Join(e.dir, "state.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ro.Close()
+		fi := &storageFileInspection{Role: storageRolePrimary, ScopesOwned: layout.scopesForRole(storageRolePrimary), PartitionsOwned: partitionTextList(layout.partitionsForRole(storageRolePrimary))}
+		owned := map[PortfolioScope]bool{}
+		for _, sc := range fi.ScopesOwned {
+			owned[sc] = true
+		}
+		rej, err := inspectPairVirtualRows(ro, fi, ident, owned, nil)
+		if err != nil || len(rej) != 1 || !strings.Contains(rej[0], "is corrupt") {
+			t.Fatalf("inspection must report a tampered middle row as corrupt: %v %v", rej, err)
 		}
 	})
 	t.Run("ordinary load refuses allocation-only state", func(t *testing.T) {

@@ -491,6 +491,9 @@ type StateDB struct {
 	role     storageRole
 	ident    *fileIdentity
 	readOnly bool
+
+	pairVirtualTipMu sync.Mutex
+	pairVirtualTips  map[string]pairVirtualTip
 }
 
 func OpenStateDB(path string) (*StateDB, error) {

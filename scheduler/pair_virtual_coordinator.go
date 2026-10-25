@@ -14,10 +14,13 @@ func (bc *basketCoordinator) attachPairVirtualVenues() error {
 	}
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
+	if bc.pairClock == nil {
+		return fmt.Errorf("pair virtual venue attachment refused: the coordinator has no pair clock, and the venue reads only the coordinator clock; no venue is attached")
+	}
 	clock := func() time.Time {
 		c := bc.pairClock
 		if c == nil {
-			c = tradingNow
+			return time.Time{}
 		}
 		return c()
 	}

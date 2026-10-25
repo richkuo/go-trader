@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS pair_virtual_events (
 );
 CREATE INDEX IF NOT EXISTS idx_pair_virtual_events_capacity
     ON pair_virtual_events(run_tag, member_key_json, source_contract, observation_id, book_side, level_index) WHERE kind = 'consume';
+CREATE INDEX IF NOT EXISTS idx_pair_virtual_events_client
+    ON pair_virtual_events(run_tag, member_key_json, client_order_id);
 CREATE TRIGGER IF NOT EXISTS trg_pair_virtual_events_immutable
     BEFORE UPDATE ON pair_virtual_events
     BEGIN SELECT RAISE(ABORT, 'pair virtual execution history is append-only'); END;
@@ -238,7 +240,15 @@ type pairVirtualQueryer interface {
 }
 
 func pairVirtualReadEvents(q pairVirtualQueryer, runTag, keyJSON string) ([]pairVirtualEvent, error) {
-	rows, err := q.Query(`SELECT `+pairVirtualEventColumns+` FROM pair_virtual_events WHERE run_tag = ? AND member_key_json = ? ORDER BY seq`, runTag, keyJSON)
+	return pairVirtualScanEvents(q, `SELECT `+pairVirtualEventColumns+` FROM pair_virtual_events WHERE run_tag = ? AND member_key_json = ? ORDER BY seq`, runTag, keyJSON)
+}
+
+func pairVirtualReadEventsFrom(q pairVirtualQueryer, runTag, keyJSON string, fromSeq int64) ([]pairVirtualEvent, error) {
+	return pairVirtualScanEvents(q, `SELECT `+pairVirtualEventColumns+` FROM pair_virtual_events WHERE run_tag = ? AND member_key_json = ? AND (seq = 1 OR seq >= ?) ORDER BY seq`, runTag, keyJSON, fromSeq)
+}
+
+func pairVirtualScanEvents(q pairVirtualQueryer, query string, args ...interface{}) ([]pairVirtualEvent, error) {
+	rows, err := q.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read pair virtual events: %w", err)
 	}
@@ -257,38 +267,99 @@ func pairVirtualReadEvents(q pairVirtualQueryer, runTag, keyJSON string) ([]pair
 	return out, rows.Err()
 }
 
+func pairVirtualCheckLink(runTag, keyJSON string, e pairVirtualEvent, wantSeq int64, prev string) error {
+	if e.Seq != wantSeq {
+		return fmt.Errorf("pair virtual history has seq %d at position %d; the append-only history has a hole", e.Seq, wantSeq)
+	}
+	if e.PrevHash != prev {
+		return fmt.Errorf("pair virtual event %d names previous hash %s, the chain holds %s", e.Seq, shortFingerprint(e.PrevHash), shortFingerprint(prev))
+	}
+	h, err := pairVirtualEventHash(runTag, keyJSON, e)
+	if err != nil {
+		return err
+	}
+	if h != e.Hash {
+		return fmt.Errorf("pair virtual event %d hash %s does not match its content %s", e.Seq, shortFingerprint(e.Hash), shortFingerprint(h))
+	}
+	if (wantSeq == 1) != (e.Kind == pairVirtualKindBinding) {
+		return fmt.Errorf("pair virtual event %d is %s; the binding is exactly the first record", e.Seq, e.Kind)
+	}
+	for _, d := range []pairDecimal{e.ConsumedNative, e.ConsumedBase, e.NativeDelta} {
+		if _, err := d.rat(); err != nil {
+			return fmt.Errorf("pair virtual event %d: %v", e.Seq, err)
+		}
+	}
+	return nil
+}
+
 func pairVirtualCheckChain(runTag, keyJSON string, events []pairVirtualEvent) error {
 	prev := pairVirtualGenesisHash
 	seen := map[string]bool{}
 	for i, e := range events {
-		if e.Seq != int64(i)+1 {
-			return fmt.Errorf("pair virtual history has seq %d at position %d; the append-only history has a hole", e.Seq, i+1)
-		}
-		if e.PrevHash != prev {
-			return fmt.Errorf("pair virtual event %d names previous hash %s, the chain holds %s", e.Seq, shortFingerprint(e.PrevHash), shortFingerprint(prev))
-		}
-		h, err := pairVirtualEventHash(runTag, keyJSON, e)
-		if err != nil {
+		if err := pairVirtualCheckLink(runTag, keyJSON, e, int64(i)+1, prev); err != nil {
 			return err
-		}
-		if h != e.Hash {
-			return fmt.Errorf("pair virtual event %d hash %s does not match its content %s", e.Seq, shortFingerprint(e.Hash), shortFingerprint(h))
 		}
 		if seen[e.SemanticKey] {
 			return fmt.Errorf("pair virtual event %d repeats the semantic identity %s", e.Seq, e.SemanticKey)
 		}
 		seen[e.SemanticKey] = true
-		if (i == 0) != (e.Kind == pairVirtualKindBinding) {
-			return fmt.Errorf("pair virtual event %d is %s; the binding is exactly the first record", e.Seq, e.Kind)
-		}
-		for _, d := range []pairDecimal{e.ConsumedNative, e.ConsumedBase, e.NativeDelta} {
-			if _, err := d.rat(); err != nil {
-				return fmt.Errorf("pair virtual event %d: %v", e.Seq, err)
-			}
-		}
 		prev = e.Hash
 	}
 	return nil
+}
+
+type pairVirtualTip struct {
+	Seq  int64
+	Hash string
+}
+
+func pairVirtualTipKey(runTag, keyJSON string) string {
+	return runTag + "\x00" + keyJSON
+}
+
+func (sdb *StateDB) pairVirtualVerifiedTip(runTag, keyJSON string) pairVirtualTip {
+	sdb.pairVirtualTipMu.Lock()
+	defer sdb.pairVirtualTipMu.Unlock()
+	return sdb.pairVirtualTips[pairVirtualTipKey(runTag, keyJSON)]
+}
+
+func (sdb *StateDB) notePairVirtualTip(runTag, keyJSON string, tip pairVirtualTip) {
+	if tip.Seq < 1 {
+		return
+	}
+	sdb.pairVirtualTipMu.Lock()
+	defer sdb.pairVirtualTipMu.Unlock()
+	if sdb.pairVirtualTips == nil {
+		sdb.pairVirtualTips = map[string]pairVirtualTip{}
+	}
+	sdb.pairVirtualTips[pairVirtualTipKey(runTag, keyJSON)] = tip
+}
+
+func pairVirtualExtendTip(q pairVirtualQueryer, runTag, keyJSON, binding string, tip pairVirtualTip) (pairVirtualTip, bool, error) {
+	events, err := pairVirtualReadEventsFrom(q, runTag, keyJSON, tip.Seq)
+	if err != nil {
+		return pairVirtualTip{}, false, err
+	}
+	if len(events) == 0 || pairVirtualCheckLink(runTag, keyJSON, events[0], 1, pairVirtualGenesisHash) != nil || events[0].Body != binding {
+		return pairVirtualTip{}, false, nil
+	}
+	i := 0
+	if tip.Seq > 1 {
+		i = 1
+		if len(events) < 2 || events[1].Seq != tip.Seq || events[1].Hash != tip.Hash || pairVirtualCheckLink(runTag, keyJSON, events[1], tip.Seq, events[1].PrevHash) != nil {
+			return pairVirtualTip{}, false, nil
+		}
+	} else if events[0].Hash != tip.Hash {
+		return pairVirtualTip{}, false, nil
+	}
+	last := events[i]
+	for _, e := range events[i+1:] {
+		if pairVirtualCheckLink(runTag, keyJSON, e, last.Seq+1, last.Hash) != nil {
+			return pairVirtualTip{}, false, nil
+		}
+		last = e
+	}
+	return pairVirtualTip{Seq: last.Seq, Hash: last.Hash}, true, nil
 }
 
 func (sdb *StateDB) loadPairVirtualLedger(id pairVirtualIdentity) (pairVirtualLedger, error) {
@@ -307,6 +378,9 @@ func (sdb *StateDB) loadPairVirtualLedger(id pairVirtualIdentity) (pairVirtualLe
 	}
 	if err := pairVirtualCheckChain(id.RunTag, keyJSON, events); err != nil {
 		return out, err
+	}
+	if n := len(events); n > 0 {
+		sdb.notePairVirtualTip(id.RunTag, keyJSON, pairVirtualTip{Seq: events[n-1].Seq, Hash: events[n-1].Hash})
 	}
 	out.Events = events
 	allocs, err := pairVirtualReadAllocations(sdb.db, id, sid, keyJSON)
@@ -349,6 +423,15 @@ func pairVirtualReadAllocations(q pairVirtualQueryer, id pairVirtualIdentity, si
 }
 
 func (sdb *StateDB) pairVirtualEnsureBinding(tx *sql.Tx, id pairVirtualIdentity, sid, keyJSON string, binding string, nowMs int64) (int64, string, error) {
+	if tip := sdb.pairVirtualVerifiedTip(id.RunTag, keyJSON); tip.Seq > 0 {
+		cur, ok, err := pairVirtualExtendTip(tx, id.RunTag, keyJSON, binding, tip)
+		if err != nil {
+			return 0, "", err
+		}
+		if ok {
+			return cur.Seq, cur.Hash, nil
+		}
+	}
 	events, err := pairVirtualReadEvents(tx, id.RunTag, keyJSON)
 	if err != nil {
 		return 0, "", err
@@ -406,7 +489,8 @@ func (sdb *StateDB) allocatePairVirtualTx(id pairVirtualIdentity, binding string
 		return "", fmt.Errorf("begin pair virtual allocation: %w", err)
 	}
 	defer tx.Rollback()
-	if _, _, err := sdb.pairVirtualEnsureBinding(tx, id, sid, keyJSON, binding, nowMs); err != nil {
+	tipSeq, tipHash, err := sdb.pairVirtualEnsureBinding(tx, id, sid, keyJSON, binding, nowMs)
+	if err != nil {
 		return "", err
 	}
 	allocs, err := pairVirtualReadAllocations(tx, id, sid, keyJSON)
@@ -418,6 +502,7 @@ func (sdb *StateDB) allocatePairVirtualTx(id pairVirtualIdentity, binding string
 			if err := tx.Commit(); err != nil {
 				return "", err
 			}
+			sdb.notePairVirtualTip(id.RunTag, keyJSON, pairVirtualTip{Seq: tipSeq, Hash: tipHash})
 			return a.ClientOrderID, nil
 		}
 	}
@@ -442,6 +527,7 @@ func (sdb *StateDB) allocatePairVirtualTx(id pairVirtualIdentity, binding string
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
+	sdb.notePairVirtualTip(id.RunTag, keyJSON, pairVirtualTip{Seq: tipSeq, Hash: tipHash})
 	return cloid, nil
 }
 
@@ -527,6 +613,7 @@ func (sdb *StateDB) appendPairVirtualTx(id pairVirtualIdentity, binding string, 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	sdb.notePairVirtualTip(id.RunTag, keyJSON, pairVirtualTip{Seq: seq, Hash: prev})
 	return out, nil
 }
 
@@ -586,6 +673,26 @@ func (st *StateStore) LoadPairVirtualLedger(rt *basketRuntime, id pairVirtualIde
 		return pairVirtualLedger{}, err
 	}
 	return db.loadPairVirtualLedger(id)
+}
+
+func (sdb *StateDB) pairVirtualAllocated(id pairVirtualIdentity, cloid string) (bool, error) {
+	_, keyJSON, err := sdb.pairVirtualKey(id)
+	if err != nil {
+		return false, err
+	}
+	var n int
+	if err := sdb.db.QueryRow(`SELECT COUNT(*) FROM pair_virtual_allocations WHERE run_tag = ? AND member_key_json = ? AND client_order_id = ?`, id.RunTag, keyJSON, cloid).Scan(&n); err != nil {
+		return false, fmt.Errorf("read pair virtual allocation %s: %w", cloid, err)
+	}
+	return n == 1, nil
+}
+
+func (st *StateStore) PairVirtualAllocated(rt *basketRuntime, id pairVirtualIdentity, cloid string) (bool, error) {
+	db, err := st.pairVirtualFile(rt)
+	if err != nil {
+		return false, err
+	}
+	return db.pairVirtualAllocated(id, cloid)
 }
 
 func (st *StateStore) AllocatePairVirtualID(rt *basketRuntime, id pairVirtualIdentity, binding string, nowMs int64, mkID func(seq int64) string) (string, error) {
