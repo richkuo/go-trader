@@ -958,8 +958,7 @@ func (bc *basketCoordinator) stepPairEmergency(rt *basketRuntime, in basketCycle
 	now := in.Now
 	nowMs := now.UnixMilli()
 	p := &rt.Pair.Progress
-	save := false
-	var undo []pairPaperCommitUndo
+	var commits []pairPaperCommit
 	for _, m := range rt.Contract.pairMembersSorted() {
 		s := bc.state.Strategies[m.MemberID]
 		if s == nil {
@@ -975,26 +974,23 @@ func (bc *basketCoordinator) stepPairEmergency(rt *basketRuntime, in basketCycle
 			if rt.needsDurable {
 				continue
 			}
-			undo = append(undo, newPairPaperCommitUndo(p, s, m.MemberID, staged))
+			c := pairPaperCommit{memberID: m.MemberID}
 			if staged != nil {
-				staged.Status, staged.CommittedAtMs = pairPaperCloseCommitted, nowMs
-				save = true
+				c.staged, c.closeAtMs = true, staged.CloseAtMs
 			}
 			if why := pairNativeAccountingPendingFor(rt, m.MemberID); why != "" {
+				if c.staged {
+					commits = append(commits, c)
+				}
 				if p.addObligation(pairObligation{Kind: pairObligationEmergencyClose, MemberID: m.MemberID, Detail: "the member book is flat, but its emergency close accounting is not committed: " + why, AtMs: nowMs}) {
 					rt.touchPairProgress()
-					if !save {
-						bc.persistPair(rt)
-					}
+					bc.persistPair(rt)
 				}
 				continue
 			}
-			if pending != nil {
-				s.RiskState.clearPendingCircuitClose(PlatformPendingClosePair)
-				save = true
-			}
-			if p.clearObligation(pairObligationEmergencyClose, m.MemberID, "") {
-				save = true
+			c.clearPending = pending != nil || p.obligation(pairObligationEmergencyClose, m.MemberID, "") != nil
+			if c.staged || c.clearPending {
+				commits = append(commits, c)
 			}
 			continue
 		}
@@ -1034,15 +1030,17 @@ func (bc *basketCoordinator) stepPairEmergency(rt *basketRuntime, in basketCycle
 			}
 			continue
 		}
-		undo = append(undo, newPairPaperCommitUndo(p, s, m.MemberID, rec))
-		rec.Status, rec.CommittedAtMs = pairPaperCloseCommitted, nowMs
-		s.RiskState.clearPendingCircuitClose(PlatformPendingClosePair)
-		p.clearObligation(pairObligationEmergencyClose, m.MemberID, "")
-		bc.pairLogf(rt, "emergency close (%s) booked %s %.10g %s at its own checked mark $%.6f (view generation %d)", rec.Trigger, m.MemberID, rec.Qty, m.Symbol, rec.PriceUSD, rec.Generation)
-		save = true
+		commits = append(commits, pairPaperCommit{memberID: m.MemberID, staged: true, closeAtMs: rec.CloseAtMs, clearPending: true})
+		bc.pairLogf(rt, "emergency close (%s) booked %s %.10g %s at its own checked mark $%.6f (view generation %d); it commits when the book saves", rec.Trigger, m.MemberID, rec.Qty, m.Symbol, rec.PriceUSD, rec.Generation)
 	}
-	if !save {
+	if len(commits) == 0 {
 		return
+	}
+	undo := make([]pairPaperCommitUndo, 0, len(commits))
+	for _, c := range commits {
+		s := bc.state.Strategies[c.memberID]
+		undo = append(undo, newPairPaperCommitUndo(p, s, c))
+		c.apply(p, s, nowMs)
 	}
 	rt.touchPairProgress()
 	bc.clearPairEndedObligations(rt)
@@ -1058,6 +1056,28 @@ func (bc *basketCoordinator) stepPairEmergency(rt *basketRuntime, in basketCycle
 	p.trimPaperCloses()
 }
 
+type pairPaperCommit struct {
+	memberID     string
+	staged       bool
+	closeAtMs    int64
+	clearPending bool
+}
+
+func (c pairPaperCommit) apply(p *pairProgress, s *StrategyState, nowMs int64) {
+	if c.staged {
+		for i := range p.PaperCloses {
+			r := &p.PaperCloses[i]
+			if r.MemberID == c.memberID && r.CloseAtMs == c.closeAtMs && r.Status == pairPaperCloseStaged {
+				r.Status, r.CommittedAtMs = pairPaperCloseCommitted, nowMs
+			}
+		}
+	}
+	if c.clearPending {
+		s.RiskState.clearPendingCircuitClose(PlatformPendingClosePair)
+		p.clearObligation(pairObligationEmergencyClose, c.memberID, "")
+	}
+}
+
 type pairPaperCommitUndo struct {
 	state      *StrategyState
 	memberID   string
@@ -1067,12 +1087,9 @@ type pairPaperCommitUndo struct {
 	obligation *pairObligation
 }
 
-func newPairPaperCommitUndo(p *pairProgress, s *StrategyState, memberID string, staged *pairPaperClose) pairPaperCommitUndo {
-	u := pairPaperCommitUndo{state: s, memberID: memberID, pending: s.RiskState.getPendingCircuitClose(PlatformPendingClosePair)}
-	if staged != nil {
-		u.staged, u.closeAtMs = true, staged.CloseAtMs
-	}
-	if o := p.obligation(pairObligationEmergencyClose, memberID, ""); o != nil {
+func newPairPaperCommitUndo(p *pairProgress, s *StrategyState, c pairPaperCommit) pairPaperCommitUndo {
+	u := pairPaperCommitUndo{state: s, memberID: c.memberID, staged: c.staged, closeAtMs: c.closeAtMs, pending: s.RiskState.getPendingCircuitClose(PlatformPendingClosePair)}
+	if o := p.obligation(pairObligationEmergencyClose, c.memberID, ""); o != nil {
 		cp := *o
 		u.obligation = &cp
 	}

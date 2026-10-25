@@ -251,14 +251,19 @@ func TestBasketPairPaperEmergencyFailedSaveKeepsTheStagedPrice(t *testing.T) {
 	}
 }
 
-func pairFailBookSavesOnly() func() {
+func pairFailBookSaves(stopAfter bool) func() {
 	prev := storeCommitHook
+	stopped := false
 	storeCommitHook = func(storageRole) error {
+		if stopped {
+			return fmt.Errorf("the process stopped")
+		}
 		pc := make([]uintptr, 64)
 		frames := runtime.CallersFrames(pc[:runtime.Callers(2, pc)])
 		for {
 			fr, more := frames.Next()
 			if strings.HasSuffix(fr.Function, ".saveStateSubset") {
+				stopped = stopAfter
 				return fmt.Errorf("disk full")
 			}
 			if !more {
@@ -267,6 +272,10 @@ func pairFailBookSavesOnly() func() {
 		}
 	}
 	return func() { storeCommitHook = prev }
+}
+
+func pairFailBookSavesOnly() func() {
+	return pairFailBookSaves(false)
 }
 
 func (e *pairTestEnv) savedPaperCloses(id string) []pairPaperClose {
@@ -352,6 +361,78 @@ func TestBasketPairPaperEmergencyBookSaveFailureKeepsTheCloseStaged(t *testing.T
 	}
 }
 
+func (e *pairTestEnv) firePaperKillSwitch() {
+	e.t.Helper()
+	e.prepare(e.now)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	applyPaperKillSwitchCycle(e.state, e.cfg, map[string]float64{"BTC": 50000}, &scopeCycleRisk{Partition: e.rt().Partition, KillSwitchFired: true, Reason: "test drawdown"}, true)
+}
+
+func TestBasketPairPaperEmergencyTwoMemberBookSaveFailureKeepsEveryCloseStaged(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		okxNoMark    bool
+		wantStagedAt []string
+	}{
+		{name: "both members stage and book in one step", okxNoMark: false, wantStagedAt: []string{pairTestHL, pairTestOKX}},
+		{name: "the second member has no own mark", okxNoMark: true, wantStagedAt: []string{pairTestHL}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newPairPaperEmergencyEnv(t)
+			e.now = e.now.Add(time.Second)
+			if tc.okxNoMark {
+				e.quoteOutage(true)
+			}
+			e.firePaperKillSwitch()
+			for _, id := range []string{pairTestHL, pairTestOKX} {
+				if e.pairPending(id) == nil {
+					t.Fatalf("setup: the paper kill switch must request a pair close for %s", id)
+				}
+			}
+			e.now = e.now.Add(time.Second)
+			restore := pairFailBookSaves(true)
+			e.step(e.now)
+			restore()
+			staged := map[string]pairPaperClose{}
+			for _, id := range []string{pairTestHL, pairTestOKX} {
+				saved := e.savedPaperCloses(id)
+				for _, c := range saved {
+					if c.Status != pairPaperCloseStaged {
+						t.Fatalf("%s: when the process stops at the failed book save every saved close must be staged: %+v", id, saved)
+					}
+				}
+				if len(saved) == 1 {
+					staged[id] = saved[0]
+				}
+				if e.savedCloseRows(id) != 0 {
+					t.Fatalf("%s: the failed book save must leave no saved close row", id)
+				}
+			}
+			if len(staged) != len(tc.wantStagedAt) {
+				t.Fatalf("want staged closes for %v, got %+v", tc.wantStagedAt, staged)
+			}
+			if tc.okxNoMark && !e.hasObligation(pairObligationEmergencyClose, pairTestOKX) {
+				t.Fatalf("the member without an own mark must keep its obligation: %v", e.obligationKinds(pairTestOKX))
+			}
+			e.restart()
+			e.quoteOutage(false)
+			pairViewSetHL(e, 53000)
+			e.step(e.now.Add(time.Second))
+			for id, st := range staged {
+				tr, ok := e.closeTrade(id)
+				if !ok || !pairCostNear(tr.Price, st.PriceUSD) || tr.Timestamp.UnixMilli() != st.CloseAtMs || e.signed(id) != 0 || e.savedCloseRows(id) != 1 {
+					t.Fatalf("%s must close once at its first staged price %v and time %d, got %+v rows %d book %v", id, st.PriceUSD, st.CloseAtMs, tr, e.savedCloseRows(id), e.signed(id))
+				}
+				saved := e.savedPaperCloses(id)
+				if len(saved) != 1 || saved[0].Status != pairPaperCloseCommitted || e.pairPending(id) != nil {
+					t.Fatalf("%s: the close must commit once after the book saves: %+v pending %+v", id, saved, e.pairPending(id))
+				}
+			}
+		})
+	}
+}
+
 func TestBasketPairPaperEmergencyTriggerNamesTheRequestingMechanism(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -359,10 +440,7 @@ func TestBasketPairPaperEmergencyTriggerNamesTheRequestingMechanism(t *testing.T
 		fire func(e *pairTestEnv)
 	}{
 		{name: "paper portfolio kill switch", want: pairNativeTriggerKillSwitch, fire: func(e *pairTestEnv) {
-			e.prepare(e.now)
-			e.mu.Lock()
-			defer e.mu.Unlock()
-			applyPaperKillSwitchCycle(e.state, e.cfg, map[string]float64{"BTC": 50000}, &scopeCycleRisk{Partition: e.rt().Partition, KillSwitchFired: true, Reason: "test drawdown"}, true)
+			e.firePaperKillSwitch()
 		}},
 		{name: "per-strategy loss streak", want: pairNativeTriggerCircuit, fire: func(e *pairTestEnv) {
 			e.tripLossStreak(pairTestHL)
