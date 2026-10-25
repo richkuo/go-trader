@@ -236,11 +236,11 @@ func TestOptionsLiveModeMigrationFreshIdentity(t *testing.T) {
 						inspected = fi.Orphans
 					}
 				}
-				if len(inspected) != 1 || inspected[0].StorageID != optionsMigrationOldID || inspected[0].PositionCount != 0 {
-					t.Errorf("storage-inspect primary orphans = %+v, want only %s with a position count of 0", inspected, optionsMigrationOldID)
+				if len(inspected) != 1 || inspected[0].StorageID != optionsMigrationOldID || inspected[0].PositionCount != 2 {
+					t.Errorf("storage-inspect primary orphans = %+v, want only %s with a position count of 2", inspected, optionsMigrationOldID)
 				}
-				if report := formatStorageInspection(si); !strings.Contains(report, "    ORPHAN "+optionsMigrationOldID+" (0 position(s))\n") {
-					t.Errorf("storage-inspect report lacks the orphan line:\n%s", report)
+				if report := formatStorageInspection(si); !strings.Contains(report, "    ORPHAN "+optionsMigrationOldID+" (2 position(s))  ** holds positions **\n") {
+					t.Errorf("storage-inspect report lacks the orphan line and position marker:\n%s", report)
 				}
 				store := openSplitStore(t, after)
 				state, orphans, err := LoadStateWithStore(after, store)
@@ -250,8 +250,8 @@ func TestOptionsLiveModeMigrationFreshIdentity(t *testing.T) {
 				if len(orphans) != 1 {
 					t.Fatalf("orphans = %+v, want exactly one", orphans)
 				}
-				if orphans[0].StorageID != optionsMigrationOldID || orphans[0].Role != storageRolePrimary || orphans[0].PositionCount != 0 {
-					t.Errorf("orphan = %+v, want %s in the primary file with a position count of 0", orphans[0], optionsMigrationOldID)
+				if orphans[0].StorageID != optionsMigrationOldID || orphans[0].Role != storageRolePrimary || orphans[0].PositionCount != 2 {
+					t.Errorf("orphan = %+v, want %s in the primary file with a position count of 2", orphans[0], optionsMigrationOldID)
 				}
 				if _, adopted := state.Strategies[optionsMigrationOldID]; adopted {
 					t.Fatal("the old options book was keyed into the roster")

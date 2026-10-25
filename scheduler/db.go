@@ -2610,6 +2610,9 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		}
 		procID, mapped := loaded[storedID]
 		if !mapped {
+			if _, isOrphan := orphanPositions[storedID]; isOrphan {
+				orphanPositions[storedID]++
+			}
 			continue
 		}
 		opt.OpenedAt = parseTime(openedAtStr)

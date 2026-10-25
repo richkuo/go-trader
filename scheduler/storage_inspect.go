@@ -157,6 +157,27 @@ func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storag
 			return nil, fmt.Errorf("iterate position counts in the %s state file: %w", fi.Role, err)
 		}
 	}
+	if ok, err := tableExists(db, "option_positions"); err != nil {
+		return nil, err
+	} else if ok {
+		rows, err := db.db.Query("SELECT strategy_id, COUNT(*) FROM option_positions GROUP BY strategy_id")
+		if err != nil {
+			return nil, fmt.Errorf("count option positions in the %s state file: %w", fi.Role, err)
+		}
+		for rows.Next() {
+			var id string
+			var n int
+			if err := rows.Scan(&id, &n); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan option position count in the %s state file: %w", fi.Role, err)
+			}
+			positionCounts[id] += n
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate option position counts in the %s state file: %w", fi.Role, err)
+		}
+	}
 
 	if ok, err := tableExists(db, "strategies"); err != nil {
 		return nil, err

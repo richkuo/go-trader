@@ -67,14 +67,14 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
   Step (c): back up every state file (`db_file`, `paper_db_file`, each `paper_sources[].db_file`) before anything prunes, for example `sqlite3 <db> ".backup '<db>.pre-1823'"`.
   Step (d): edit the config and remove the strategy, or keep it as paper under a fresh identity: set `--mode=paper` (or remove the mode tokens) and give it a new `id` that keeps its platform prefix (such as `rh-`) or sets `platform`, with no `storage_strategy_id` that names the old id.
   For a clean simulated book that never shares files with the live scope, prefer a separate paper instance with its own state files and a fresh id.
-  Step (e): run `./go-trader storage-inspect --config <config>`; it must exit 0 and list `ORPHAN <old id> (0 position(s))` under the primary state file.
-  The orphan count reads only spot and perps positions, so an options book shows 0 positions and startup prints no stale-position WARN line for it, even while it holds option positions.
+  Step (e): run `./go-trader storage-inspect --config <config>`; it must exit 0 and list `ORPHAN <old id> (N position(s))  ** holds positions **` under the primary state file when N is nonzero, where N counts all rows in `positions` and `option_positions` for that stored id.
+  Thus an options-only book with two option rows shows 2 positions, and startup prints its stale-position WARN with the same total before a save can delete the book.
   Step (f): run `bash scripts/update.sh --restart`.
   Do not keep the old `id` with a paper mode.
   Split storage (`paper_db_file` set) with the old id: `storage-inspect` exits 1 with `primary state file: stored strategy "<id>" is mapped to the paper state file; move or re-map it by hand`, and startup exits 80, so the service does not start until the config changes.
   Single-file storage with the old id: the strategy resumes its old simulated cash, option positions and pending closes in the paper scope, and a saved Robinhood options operator-required close keeps its CRITICAL warning.
   In that case nothing is pruned, so the live portfolio peak keeps the moved book's value while the live portfolio value falls by it; the live drawdown reading rises by that share and can latch the live kill switch, which closes real live positions.
-  Effects of a removal or a fresh id, in both layouts: startup prints `Pruned stale strategy: <old id> [primary state file, 0 position(s)]`, and when a scope peak changes it prints `Portfolio peak rebaselined after prune [<scope>]`; the new live peak is the sum of the remaining live strategies' peaks, at least their capital.
+  Effects of a removal or a fresh id, in both layouts: startup prints `Pruned stale strategy: <old id> [primary state file, N position(s)]` with the same combined total, and when a scope peak changes it prints `Portfolio peak rebaselined after prune [<scope>]`; the new live peak is the sum of the remaining live strategies' peaks, at least their capital.
   The first save deletes the old strategy row and its option positions from the primary file; its trade rows stay there under the old id.
   A fresh id starts at its configured capital (`Initialized strategy: <id> (type=options, capital=$<capital>)`).
   To undo, stop the service and restore the backup.

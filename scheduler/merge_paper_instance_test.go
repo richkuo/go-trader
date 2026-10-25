@@ -26,7 +26,10 @@ func writeMergeFixtureDB(t *testing.T, path string, scope PortfolioScope, latche
 		Positions: map[string]*Position{
 			"ETH": {Symbol: "ETH", Quantity: 0.4, AvgCost: 2500, Side: "long", OwnerStrategyID: "hl-x", OpenedAt: now.Add(-6 * time.Hour)},
 		},
-		OptionPositions: map[string]*OptionPosition{},
+		OptionPositions: map[string]*OptionPosition{
+			"ETH-call-3000-20261218": {ID: "ETH-call-3000-20261218", Underlying: "ETH", OptionType: "call", Strike: 3000, Expiry: "2026-12-18", Action: "buy", Quantity: 1, EntryPremium: 10, EntryPremiumUSD: 10, CurrentValueUSD: 12, OpenedAt: now.Add(-5 * time.Hour)},
+			"ETH-put-2000-20261218":  {ID: "ETH-put-2000-20261218", Underlying: "ETH", OptionType: "put", Strike: 2000, Expiry: "2026-12-18", Action: "buy", Quantity: 1, EntryPremium: 8, EntryPremiumUSD: 8, CurrentValueUSD: 9, OpenedAt: now.Add(-4 * time.Hour)},
+		},
 		TradeHistory: []Trade{
 			{Timestamp: now.Add(-6 * time.Hour), StrategyID: "hl-x", Symbol: "ETH", Side: "buy", Quantity: 0.4, Price: 2500, Value: 1000, TradeType: "perps"},
 		},
