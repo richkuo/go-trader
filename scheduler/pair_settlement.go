@@ -144,6 +144,9 @@ type pairLedger struct {
 }
 
 func pairOrderScope(a *basketAction) string {
+	if a.pairNative() {
+		return strings.Join([]string{a.Partition.String(), a.StrategyID, a.Provider, a.AccountKey, a.Instrument, "native"}, "|")
+	}
 	return strings.Join([]string{a.Partition.String(), a.StrategyID, a.Provider, a.AccountKey, a.Instrument, a.ClientOrderID}, "|")
 }
 
@@ -923,7 +926,7 @@ func (bc *basketCoordinator) refreshPairFeeIncomplete(rt *basketRuntime, a *bask
 	p := &rt.Pair.Progress
 	exec, err1 := pairParseFills(a.FillCoverageJSON)
 	fees, err2 := pairParseFees(a.FeeCoverageJSON)
-	if err1 != nil || err2 != nil || a.AppliedQty <= 1e-12 || a.recoveryNote().NativeBooked {
+	if err1 != nil || err2 != nil || a.AppliedQty <= 1e-12 {
 		return false
 	}
 	if pairExecutionComplete(exec, a.ConfirmedQty, a.ConfirmedNotional) && pairFeeCoversAll(fees, exec) {
@@ -1129,9 +1132,12 @@ func (bc *basketCoordinator) settlePairActionLive(rt *basketRuntime, a *basketAc
 	if !pl.qtyDue && len(pl.fixFees) == 0 {
 		bc.clearPairQuantityHolds(rt, a)
 		bc.refreshPairFeeIncomplete(rt, a, now)
-		if bc.pairActionComplete(a) {
+		switch {
+		case bc.pairActionComplete(a):
 			a.Status = basketActionCommitted
-		} else {
+		case a.pairNative():
+			a.Status = basketActionHeld
+		default:
 			a.Status = basketActionUnresolved
 		}
 		a.UpdatedAtMs = now.UnixMilli()
@@ -1466,6 +1472,11 @@ func (bc *basketCoordinator) savePairLiveSettlement(rt *basketRuntime, a *basket
 		a.Status = basketActionSettling
 	case bc.pairActionComplete(a):
 		a.Status = basketActionCommitted
+	case a.pairNative():
+		a.Status = basketActionHeld
+		if a.HoldReason == "" {
+			a.HoldReason = "the native close is booked from its confirmed fills, but its fee evidence is incomplete and no later venue answer can complete it"
+		}
 	default:
 		a.Status = basketActionUnresolved
 	}

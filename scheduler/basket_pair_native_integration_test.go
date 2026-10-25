@@ -367,7 +367,7 @@ func TestBasketPairKillSwitchRostersResolveBothLegs(t *testing.T) {
 			if hlFail {
 				return nil, fmt.Errorf("transport crash")
 			}
-			return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{AvgPx: 59900, TotalSz: 0.06}}}, nil
+			return pairHLNativeResult(pairNativeEvidence("901", "sell", env.nativeAt(), "59900", "1.8", "USDC", "0.06"), 59900), nil
 		},
 		okx: func(symbol string, partialSz *float64) (*OKXCloseResult, error) {
 			var status string
@@ -375,7 +375,7 @@ func TestBasketPairKillSwitchRostersResolveBothLegs(t *testing.T) {
 				return nil, fmt.Errorf("no reserved reduction before the okx callback: %v", err)
 			}
 			seen = append(seen, "okx:"+status)
-			return &OKXCloseResult{Close: &OKXClose{Symbol: symbol, Fill: &OKXCloseFill{AvgPx: 60050, TotalSz: 6}}}, nil
+			return pairOKXNativeResult(pairNativeEvidence("801", "buy", env.nativeAt(), "60050", "1.2", "USDT", "6"), 60050), nil
 		},
 	}
 	env = newPairLiveShapedEnv(t, closers)
@@ -425,31 +425,46 @@ func TestBasketPairKillSwitchRostersResolveBothLegs(t *testing.T) {
 			hlAct = a
 		}
 	}
-	if hlAct == nil || hlAct.Status != basketActionUnresolved {
-		t.Fatalf("a crashed native close must leave its reduction unresolved and queryable: %+v", hlAct)
+	if hlAct == nil || hlAct.Status != basketActionUnresolved || !env.hasObligation(pairObligationNativeUnknown, pairTestHL) {
+		t.Fatalf("a crashed native close must leave its reduction unresolved with a visible unknown-fill obligation: %+v %v", hlAct, env.obligationKinds(pairTestHL))
 	}
-	env.externalBookChange(pairTestOKX, 0)
+	var okxKS *basketAction
+	for _, a := range env.actionsByPurpose(pairPurposeKillSwitch) {
+		if a.StrategyID == pairTestOKX {
+			okxKS = a
+		}
+	}
+	if okxKS == nil || okxKS.Status != basketActionSettling || !basketQtyEqual(okxKS.ConfirmedQty, 0.06) || okxKS.AppliedQty != 0 || env.signed(pairTestOKX) != -0.06 {
+		t.Fatalf("the confirmed okx native fill must wait for accounting with the book unchanged: %+v", okxKS)
+	}
+	env.step(env.now.Add(time.Second))
+	if env.signed(pairTestOKX) != 0 || okxKS.Status != basketActionCommitted || !basketQtyEqual(okxKS.AppliedQty, 0.06) {
+		t.Fatalf("the coordinator must book the okx native fill from its fill records: book %v action %+v", env.signed(pairTestOKX), okxKS)
+	}
 	if pos := env.state.Strategies[pairTestHL].Positions["BTC"]; pos == nil || pos.StopLossOID != 4242 {
 		t.Fatalf("the surviving leg lost its protection: %+v", pos)
 	}
 	env.restart()
 	var restored *basketAction
 	for _, a := range env.rt().pairUnresolvedActions() {
-		if a.Purpose == pairPurposeKillSwitch {
+		if a.Purpose == pairPurposeKillSwitch && a.StrategyID == pairTestHL {
 			restored = a
 		}
 	}
-	if restored == nil || restored.ClientOrderID != hlAct.ClientOrderID {
-		t.Fatalf("the unknown reduction must stay queryable by its saved identity after a crash: %+v", restored)
+	if restored == nil || restored.ClientOrderID != hlAct.ClientOrderID || !env.hasObligation(pairObligationNativeUnknown, pairTestHL) {
+		t.Fatalf("the unknown reduction and its obligation must survive a restart: %+v", restored)
 	}
-	env.externalBookChange(pairTestHL, 0)
 	trades := env.bookedTrades(pairTestHL)
-	env.step(env.now.Add(time.Minute))
-	if restored.Status != basketActionCommitted || env.bookedTrades(pairTestHL) != trades {
-		t.Fatalf("the flat member book must end the unconfirmed native reduction without a client-id query or a second booking: %+v", restored)
+	queries := env.venues.of(pairTestHL).queryCount()
+	env.step(env.now.Add(10 * time.Minute))
+	if restored.Status != basketActionHeld || env.bookedTrades(pairTestHL) != trades || env.venues.of(pairTestHL).queryCount() != queries {
+		t.Fatalf("the deadline must hold the unconfirmed native reduction without a client-id query or a booking: %+v", restored)
 	}
-	if env.lifecycle() != pairLifecycleRecovery && env.lifecycle() != pairLifecycleFlat {
-		t.Fatalf("the native closes must be observed as a pair exception, got %s", env.lifecycle())
+	if !env.hasObligation(pairObligationNativeUnknown, pairTestHL) || env.signed(pairTestHL) != 0.06 {
+		t.Fatalf("an unknown native fill keeps its obligation and the member book: %v %v", env.obligationKinds(pairTestHL), env.signed(pairTestHL))
+	}
+	if env.lifecycle() != pairLifecycleRecovery && env.lifecycle() != pairLifecycleOperatorHeld {
+		t.Fatalf("the native closes must open recovery, got %s", env.lifecycle())
 	}
 }
 
@@ -466,10 +481,10 @@ func newPairKillSwitchFixture(t *testing.T) *pairKillSwitchFixture {
 	t.Helper()
 	f := &pairKillSwitchFixture{}
 	f.hlOut = func() (*HyperliquidCloseResult, error) {
-		return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: "BTC", Fill: &HyperliquidCloseFill{AvgPx: 59900, TotalSz: 0.06}}}, nil
+		return pairHLNativeResult(pairNativeEvidence("901", "sell", f.env.nativeAt(), "59900", "1.8", "USDC", "0.06"), 59900), nil
 	}
 	f.okxOut = func() (*OKXCloseResult, error) {
-		return &OKXCloseResult{Close: &OKXClose{Symbol: "BTC", Fill: &OKXCloseFill{AvgPx: 60050, TotalSz: 6}}}, nil
+		return pairOKXNativeResult(pairNativeEvidence("801", "buy", f.env.nativeAt(), "60050", "1.2", "USDT", "6"), 60050), nil
 	}
 	f.closers = &pairNativeClosers{
 		hl: func(symbol string, partialSz *float64, cancel []int64) (*HyperliquidCloseResult, error) {
@@ -535,6 +550,38 @@ func (f *pairKillSwitchFixture) assertRecoveryRecorded(t *testing.T, label strin
 	}
 }
 
+func (f *pairKillSwitchFixture) assertReceiptBooksOnce(t *testing.T, label string) {
+	t.Helper()
+	e := f.env
+	if len(e.rt().Pair.Progress.NativeReceipts) != 1 || !e.hasObligation(pairObligationNativeReceipt, pairTestHL) || e.signed(pairTestHL) != 0.06 {
+		t.Fatalf("%s: the confirmed fill must be kept as a saved receipt with the book unchanged: %+v %v", label, e.rt().Pair.Progress.NativeReceipts, e.obligationKinds(pairTestHL))
+	}
+	if !e.savedProgressHas(e.rt().Pair.Progress.NativeReceipts[0].ID) {
+		t.Fatalf("%s: the native receipt must be saved in the pair progress", label)
+	}
+	if got, ok := pairIncompleteEvidence(e.rt()); !ok || got.Kind != pairObligationNativeReceipt {
+		t.Fatalf("%s: the incomplete-result reader must report the unattached receipt, got %+v %v", label, got, ok)
+	}
+	calls := f.hlCalls
+	e.step(e.now.Add(time.Second))
+	acts := f.killSwitchActions(pairTestHL)
+	if len(acts) != 1 || acts[0].Status != basketActionCommitted || !basketQtyEqual(acts[0].AppliedQty, 0.06) || e.signed(pairTestHL) != 0 {
+		t.Fatalf("%s: the coordinator must attach the receipt as one accounting action and book it: %+v book %v", label, acts, e.signed(pairTestHL))
+	}
+	if len(e.rt().Pair.Progress.NativeReceipts) != 0 || e.hasObligation(pairObligationNativeReceipt, pairTestHL) || f.hlCalls != calls {
+		t.Fatalf("%s: attaching the receipt must remove it, clear its obligation and send no order (calls %d -> %d)", label, calls, f.hlCalls)
+	}
+	tr, ok := e.closeTrade(pairTestHL)
+	if !ok || tr.ExchangeOrderID != "901" || !pairCostNear(tr.ExchangeFee, 1.8) {
+		t.Fatalf("%s: the booked close must carry the venue order and the confirmed fee: %+v", label, tr)
+	}
+	e.restart()
+	e.step(e.now.Add(time.Second))
+	if e.savedCloseRows(pairTestHL) != 1 || f.hlCalls != calls {
+		t.Fatalf("%s: a restart must not book or send the receipt again: rows %d calls %d", label, e.savedCloseRows(pairTestHL), f.hlCalls)
+	}
+}
+
 func TestBasketPairKillSwitchNeverGatesTheNativeClose(t *testing.T) {
 	t.Run("a failed close does not block the next kill-switch cycle", func(t *testing.T) {
 		f := newPairKillSwitchFixture(t)
@@ -545,7 +592,7 @@ func TestBasketPairKillSwitchNeverGatesTheNativeClose(t *testing.T) {
 			t.Fatalf("cycle 1: the failed close must leave one unresolved native action: calls %d actions %+v", f.hlCalls, first)
 		}
 		f.hlOut = func() (*HyperliquidCloseResult, error) {
-			return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: "BTC", Fill: &HyperliquidCloseFill{AvgPx: 59900, TotalSz: 0.06}}}, nil
+			return pairHLNativeResult(pairNativeEvidence("902", "sell", f.env.nativeAt(), "59900", "1.8", "USDC", "0.06"), 59900), nil
 		}
 		f.fire()
 		if f.hlCalls != 2 {
@@ -563,14 +610,24 @@ func TestBasketPairKillSwitchNeverGatesTheNativeClose(t *testing.T) {
 				next = a
 			}
 		}
-		if old.Status != basketActionCommitted || !strings.Contains(old.HoldReason, "supersedes") {
-			t.Fatalf("the earlier unconfirmed native action must end as superseded: %+v", old)
+		if old.Status != basketActionHeld || !strings.Contains(old.HoldReason, "supersedes") || f.env.rt().Pair.Progress.obligation(pairObligationNativeUnknown, pairTestHL, old.ActionID) == nil {
+			t.Fatalf("the earlier unconfirmed native action must end held with an unknown-fill obligation and never committed: %+v", old)
 		}
-		if next.Status != basketActionCommitted || !basketQtyEqual(next.ConfirmedQty, 0.06) {
-			t.Fatalf("the cycle 2 native fill must commit: %+v", next)
+		if next.Status != basketActionSettling || !basketQtyEqual(next.ConfirmedQty, 0.06) || f.env.signed(pairTestHL) != 0.06 {
+			t.Fatalf("the cycle 2 native fill must wait for its book commit: %+v", next)
 		}
-		if n := f.env.count(`SELECT COUNT(*) FROM basket_member_actions WHERE purpose = 'pair_kill_switch' AND instrument = 'BTC' AND status = 'committed'`); n != 2 {
-			t.Fatalf("both native actions must be saved as committed, got %d", n)
+		f.env.step(f.env.now.Add(time.Second))
+		if next.Status != basketActionCommitted || f.env.signed(pairTestHL) != 0 {
+			t.Fatalf("the cycle 2 native fill must book and commit: %+v book %v", next, f.env.signed(pairTestHL))
+		}
+		if n := f.env.count(`SELECT COUNT(*) FROM basket_member_actions WHERE purpose = 'pair_kill_switch' AND instrument = 'BTC' AND status = 'committed'`); n != 1 {
+			t.Fatalf("only the booked native action may be saved committed, got %d", n)
+		}
+		if n := f.env.count(`SELECT COUNT(*) FROM basket_member_actions WHERE purpose = 'pair_kill_switch' AND instrument = 'BTC' AND status = 'held'`); n != 1 {
+			t.Fatalf("the unconfirmed native action must be saved held, got %d", n)
+		}
+		if got, ok := pairIncompleteEvidence(f.env.rt()); !ok || got.Kind != pairObligationNativeUnknown {
+			t.Fatalf("the unknown first close must keep the result incomplete, got %+v %v", got, ok)
 		}
 	})
 	t.Run("a failed reservation commit still sends the close", func(t *testing.T) {
@@ -593,6 +650,7 @@ func TestBasketPairKillSwitchNeverGatesTheNativeClose(t *testing.T) {
 			t.Fatalf("a failed reservation must not leave an in-memory action: %+v", acts)
 		}
 		f.assertRecoveryRecorded(t, "failed reservation")
+		f.assertReceiptBooksOnce(t, "failed reservation")
 	})
 	t.Run("a held entry lock still sends the close", func(t *testing.T) {
 		f := newPairKillSwitchFixture(t)
@@ -609,42 +667,51 @@ func TestBasketPairKillSwitchNeverGatesTheNativeClose(t *testing.T) {
 			t.Fatalf("no native action can be reserved without the entry lock: %+v", acts)
 		}
 		f.assertRecoveryRecorded(t, "held entry lock")
+		f.assertReceiptBooksOnce(t, "held entry lock")
 	})
 }
 
 func TestBasketPairKillSwitchPartialNativeFillIsConfirmedPartial(t *testing.T) {
 	cases := []struct {
 		name  string
-		hlSz  float64
-		okxSz float64
+		hlSz  string
+		okxSz string
 		want  map[string]float64
 	}{
-		{name: "hyperliquid partial", hlSz: 0.03, okxSz: 6, want: map[string]float64{pairTestHL: 0.03}},
-		{name: "okx partial", hlSz: 0.06, okxSz: 3, want: map[string]float64{pairTestOKX: 0.03}},
-		{name: "both full", hlSz: 0.06, okxSz: 6, want: map[string]float64{pairTestHL: 0.06, pairTestOKX: 0.06}},
+		{name: "hyperliquid partial", hlSz: "0.03", okxSz: "6", want: map[string]float64{pairTestHL: 0.03, pairTestOKX: 0.06}},
+		{name: "okx partial", hlSz: "0.06", okxSz: "3", want: map[string]float64{pairTestHL: 0.06, pairTestOKX: 0.03}},
+		{name: "both full", hlSz: "0.06", okxSz: "6", want: map[string]float64{pairTestHL: 0.06, pairTestOKX: 0.06}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPairKillSwitchFixture(t)
 			f.hlOut = func() (*HyperliquidCloseResult, error) {
-				return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: "BTC", Fill: &HyperliquidCloseFill{AvgPx: 59900, TotalSz: tc.hlSz}}}, nil
+				return pairHLNativeResult(pairNativeEvidence("901", "sell", f.env.nativeAt(), "59900", "0.9", "USDC", tc.hlSz), 59900), nil
 			}
 			f.okxOut = func() (*OKXCloseResult, error) {
-				return &OKXCloseResult{Close: &OKXClose{Symbol: "BTC", Fill: &OKXCloseFill{AvgPx: 60050, TotalSz: tc.okxSz}}}, nil
+				return pairOKXNativeResult(pairNativeEvidence("801", "buy", f.env.nativeAt(), "60050", "0.6", "USDT", tc.okxSz), 60050), nil
 			}
 			f.fire()
+			f.env.step(f.env.now.Add(time.Second))
+			start := map[string]float64{pairTestHL: 0.06, pairTestOKX: -0.06}
 			for _, member := range []string{pairTestHL, pairTestOKX} {
-				want, ok := tc.want[member]
-				if !ok {
-					continue
-				}
+				want := tc.want[member]
 				acts := f.killSwitchActions(member)
 				if len(acts) != 1 {
 					t.Fatalf("one native action expected for %s: %+v", member, acts)
 				}
 				a := acts[0]
-				if a.Status != basketActionCommitted || !basketQtyEqual(a.ConfirmedQty, want) || strings.Contains(a.HoldReason, "inconsistent") {
-					t.Fatalf("the native close must save %v confirmed for %s with no inconsistency hold: %+v", want, member, a)
+				if a.Status != basketActionCommitted || !basketQtyEqual(a.ConfirmedQty, want) || !basketQtyEqual(a.AppliedQty, want) || strings.Contains(a.HoldReason, "inconsistent") {
+					t.Fatalf("the native close must book %v confirmed for %s once with no inconsistency hold: %+v", want, member, a)
+				}
+				left := start[member]
+				if left > 0 {
+					left -= want
+				} else {
+					left += want
+				}
+				if got := f.env.signed(member); !basketQtyEqual(got, left) {
+					t.Fatalf("%s book must keep the unfilled remainder %v, holds %v", member, left, got)
 				}
 			}
 			if p := f.env.rt().Pair.Progress; strings.Contains(p.FreezeReason, "inconsistent") {

@@ -541,7 +541,22 @@ class OKXExchangeAdapter:
             )
         return self._exchange.fetch_order_trades(order_id, self.order_pair(symbol, inst_type))
 
+    def fetch_order_info(self, symbol: str, inst_type: str, order_id: str) -> dict:
+        if not self._is_live:
+            raise RuntimeError(
+                "fetch_order_info requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
+            )
+        order = self._exchange.fetch_order(order_id, self.order_pair(symbol, inst_type))
+        info = order.get("info") if isinstance(order, dict) else None
+        if not isinstance(info, dict):
+            raise RuntimeError(f"the order read for {order_id} returned no venue record: {order!r}")
+        return info
+
     def market_close(self, symbol: str, sz: float | None = None) -> dict:
+        orders = self.market_close_orders(symbol, sz)
+        return orders[0] if orders else {}
+
+    def market_close_orders(self, symbol: str, sz: float | None = None) -> list:
         if not self._is_live:
             raise RuntimeError(
                 "market_close requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
@@ -565,7 +580,7 @@ class OKXExchangeAdapter:
                     pair, close_side, close_sz,
                     params={"tdMode": "cross", "reduceOnly": True}
                 ))
-        return results[0] if results else {}
+        return results
 
     def get_account_balance(self) -> float:
         if not self._is_live:

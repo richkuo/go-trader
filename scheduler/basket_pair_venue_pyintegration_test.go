@@ -123,6 +123,23 @@ if PROVIDER == "hyperliquid":
                 save()
                 os._exit(1)
             return {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"totalSz": text(filled), "avgPx": px, "oid": oid}}]}}}
+        def market_close(self, coin, sz=None, px=None, slippage=0.05, cloid=None, builder=None):
+            pos = Decimal(state.get("close_position", {}).get(coin, "0"))
+            if pos == 0:
+                return {"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}
+            size = Decimal(repr(sz)) if sz is not None else abs(pos)
+            is_buy = pos < 0
+            state.setdefault("wire", []).append({"coin": coin, "is_buy": is_buy, "sz": text(size), "market_close": True})
+            now = clock["ms"]
+            oid = 9500 + len(state["wire"])
+            parts = [Decimal(p) for p in state.get("close_parts", [text(size)])]
+            filled = sum(parts, Decimal(0))
+            fill_px = state.get("fill_px", "60000")
+            if not state.get("drop_fills"):
+                for p in parts:
+                    state.setdefault("fills", []).append({"coin": coin, "px": fill_px, "sz": text(p), "side": "B" if is_buy else "A", "time": now, "oid": oid,
+                                                          "tid": 600000 + len(state.get("fills", [])), "fee": state.get("fee", "0.01"), "feeToken": "USDC", "cloid": None, "hash": "0x00"})
+            return {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"totalSz": text(filled), "avgPx": fill_px, "oid": oid}}]}}}
 
     hyperliquid.api.API = FakeAPI
     hyperliquid.info.Info = FakeInfo
@@ -179,8 +196,35 @@ else:
                 save()
                 os._exit(1)
             return {"id": oid, "info": info}
+        def fetch_positions(self, symbols):
+            return list(state.get("close_positions", []))
+        def create_market_order(self, symbol, side, amount, params=None):
+            params = dict(params or {})
+            state.setdefault("wire", []).append({"symbol": symbol, "side": side, "amount": repr(amount), "params": params, "market_close": True})
+            now = clock["ms"]
+            oid = str(7500 + len(state["wire"]))
+            size = Decimal(repr(amount))
+            parts = [Decimal(p) for p in state.get("close_parts", [text(size)])]
+            filled = sum(parts, Decimal(0))
+            fill_px = state.get("fill_px", "60000")
+            info = {"instId": "BTC-USDT-SWAP", "ordId": oid, "side": side, "sz": text(size), "ordType": "market", "reduceOnly": "true",
+                    "state": "filled" if filled == size else "canceled", "accFillSz": text(filled), "cTime": str(now)}
+            state.setdefault("orders_by_id", {})[oid] = info
+            if not state.get("drop_fills"):
+                for p in parts:
+                    bill = str(900000 + len(state.get("fills", [])))
+                    state.setdefault("fills", []).append({"billId": bill, "tradeId": "t" + bill, "ordId": oid, "instId": "BTC-USDT-SWAP", "side": side, "fillSz": text(p),
+                                                          "fillPx": fill_px, "fee": state.get("fee", "-0.25"), "feeCcy": "USDT", "fillTime": str(now), "ts": str(now)})
+            return {"id": oid, "info": info, "amount": amount, "filled": None, "average": None, "price": None}
+        def fetch_order_trades(self, oid, symbol=None, since=None, limit=None, params=None):
+            return [{"info": f} for f in state.get("fills", []) if f.get("ordId") == oid]
         def fetch_order(self, oid, symbol, params=None):
             state["headers_after"] = dict(self.headers or {})
+            if oid is not None and not (params or {}).get("clOrdId"):
+                o = state.get("orders_by_id", {}).get(oid)
+                if o is None:
+                    raise ccxt.OrderNotFound("okx order not found")
+                return {"id": oid, "info": o}
             o = state.get("orders", {}).get((params or {}).get("clOrdId"))
             if o is None:
                 raise ccxt.OrderNotFound("okx order not found")
@@ -224,7 +268,8 @@ func newPairVenuePy(t *testing.T) *pairVenuePy {
 	t.Helper()
 	root := entryOperatorRepoRoot(t)
 	f := &pairVenuePy{t: t, root: root, dir: t.TempDir(), states: map[string]string{}, drivers: map[string]string{}}
-	for name, spec := range map[string][2]string{"hl_check": {"hyperliquid", "check_hyperliquid.py"}, "okx_check": {"okx", "check_okx.py"}, "okx_positions": {"okx", "fetch_okx_positions.py"}} {
+	for name, spec := range map[string][2]string{"hl_check": {"hyperliquid", "check_hyperliquid.py"}, "okx_check": {"okx", "check_okx.py"}, "okx_positions": {"okx", "fetch_okx_positions.py"},
+		"hl_close": {"hyperliquid", "close_hyperliquid_position.py"}, "okx_close": {"okx", "close_okx_position.py"}} {
 		body := strings.ReplaceAll(strings.ReplaceAll(pairVenueFakeDriver, "@@PROVIDER@@", spec[0]), "@@SCRIPT@@", spec[1])
 		path := filepath.Join(f.dir, name+".py")
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {

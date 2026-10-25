@@ -97,12 +97,27 @@ func TestBasketPairCostNativeOwnersUseTheMemberBinding(t *testing.T) {
 	for _, id := range []string{pairTestHL, pairTestOKX} {
 		sc := k.bc.members[id]
 		s := k.state.Strategies[id]
+		before := k.bookSnapshot(id)
 		k.mu.Lock()
 		closeVirtualPositionAtMark(s, &sc, "BTC", s.Positions["BTC"], map[string]float64{"BTC": 60100}, pairCostLogger(id))
+		pending := s.RiskState.getPendingCircuitClose(PlatformPendingClosePair)
 		k.mu.Unlock()
+		if got := k.bookSnapshot(id); got != before || pending == nil {
+			t.Fatalf("a shared-price circuit-breaker close of %s must book nothing and request the pair close: %+v -> %+v pending %+v", id, before, got, pending)
+		}
+	}
+	k.step(k.now.Add(time.Second))
+	for _, id := range []string{pairTestHL, pairTestOKX} {
+		k.mu.RLock()
+		view := k.rt().pairView[id]
+		k.mu.RUnlock()
+		own, valid, why := view.usdMarkAt(k.now.UnixMilli())
 		tr := k.lastTrade(id)
-		if !tr.IsClose || tr.FeeSource != FeeSourceReconcileAdjustment || tr.ExchangeFee != 0 || tr.CostPolicyID != k.binding(id).PolicyID {
-			t.Fatalf("the circuit-breaker close of %s must keep its model-only classification and carry the member stamp: %+v", id, tr)
+		if !valid || !tr.IsClose || tr.FeeSource != FeeSourceReconcileAdjustment || tr.ExchangeFee != 0 || tr.CostPolicyID != k.binding(id).PolicyID || !pairCostNear(tr.Price, own) || !strings.Contains(tr.Details, "own checked mark") {
+			t.Fatalf("the circuit-breaker close of %s must book at its own checked mark %v (%s), keep its model-only classification and carry the member stamp: %+v", id, own, why, tr)
+		}
+		if k.signed(id) != 0 {
+			t.Fatalf("%s must be flat after the own-mark close", id)
 		}
 	}
 }
@@ -352,11 +367,15 @@ func TestBasketPairCostRefusedNativeCloseOpensRecoveryAndNeverBooksLegacy(t *tes
 	if !critical {
 		t.Fatalf("the refused close must raise a critical cost alert: %v", e.rt().Pair.Progress.Alerts)
 	}
+	booked := e.bookSnapshot(pairTestHL)
+	if booked.qty != 0 || booked.trades != before.trades+1 {
+		t.Fatalf("with ownership restored the coordinator must book the confirmed native fill once from its fill records: %+v -> %+v", before, booked)
+	}
 	e.mu.Lock()
 	applyHyperliquidCircuitCloseFill(hl, "BTC", 0.06, 59900, 1.2, 0.06, 4242, "kill_switch")
 	e.mu.Unlock()
-	if e.signed(pairTestHL) != 0 {
-		t.Fatal("with ownership restored the later sync pass must book the confirmed close")
+	if got := e.bookSnapshot(pairTestHL); got != booked {
+		t.Fatalf("the generic close owner never books a pair member: %+v -> %+v", booked, got)
 	}
 	if err := e.store.SavePartition(e.state, e.rt().Partition); err != nil {
 		t.Fatal(err)

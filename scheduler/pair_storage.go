@@ -94,7 +94,7 @@ const basketActionsV2DDL = `CREATE TABLE basket_member_actions_v2 (
     seq INTEGER NOT NULL CHECK (seq >= 1),
     order_side TEXT NOT NULL CHECK (order_side IN ('buy','sell')),
     position_side TEXT NOT NULL CHECK (position_side IN ('long','short')),
-    status TEXT NOT NULL CHECK (status IN ('reserved','submitting','unresolved','settling','committed','no_fill')),
+    status TEXT NOT NULL CHECK (status IN ('reserved','submitting','unresolved','settling','committed','no_fill','held')),
     requested_qty REAL NOT NULL CHECK (requested_qty > 0),
     pre_qty REAL NOT NULL DEFAULT 0,
     pre_notional_usd REAL NOT NULL DEFAULT 0,
@@ -159,6 +159,60 @@ const basketActionsLegacyCopyColumns = `action_id, scope, source, basket_id, dea
     confirmed_qty, confirmed_avg_px, confirmed_fee, applied_qty, applied_fee, evidence_json, hold_reason,
     created_at_ms, updated_at_ms, purpose, lifecycle_position_id, expiry_ms, lifecycle_attempt`
 
+const pairProtectiveIndexDDL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_pair_actions_one_protective
+    ON basket_member_actions(scope, source, provider, account_key, instrument)
+    WHERE group_mode = 'pair' AND ((purpose = 'pair_protective' AND status IN ('reserved','submitting','unresolved','settling'))
+      OR (purpose IN ('pair_kill_switch','pair_operator') AND status IN ('reserved','submitting','unresolved')))`
+
+const pairProtectivePendingSQL = `((purpose = 'pair_protective' AND status IN ('reserved','submitting','unresolved','settling'))
+      OR (purpose IN ('pair_kill_switch','pair_operator') AND status IN ('reserved','submitting','unresolved')))`
+
+func (sdb *StateDB) migrateBasketActionHeldStatus(after []string) error {
+	var ddl string
+	if err := sdb.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'basket_member_actions'`).Scan(&ddl); err != nil {
+		return fmt.Errorf("read the basket action table definition: %w", err)
+	}
+	if strings.Contains(ddl, "'held'") {
+		return nil
+	}
+	const oldCheck = "status IN ('reserved','submitting','unresolved','settling','committed','no_fill')"
+	if strings.Count(ddl, oldCheck) != 1 {
+		return fmt.Errorf("the basket action table definition has no single known status rule, so the held status cannot be added")
+	}
+	next := strings.Replace(ddl, oldCheck, "status IN ('reserved','submitting','unresolved','settling','committed','no_fill','held')", 1)
+	replaced := false
+	for _, head := range []string{`CREATE TABLE "basket_member_actions"`, "CREATE TABLE basket_member_actions"} {
+		if strings.HasPrefix(next, head) {
+			next = "CREATE TABLE basket_member_actions_v2" + strings.TrimPrefix(next, head)
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		return fmt.Errorf("the basket action table definition has an unknown header")
+	}
+	copySQL := `INSERT INTO basket_member_actions_v2 SELECT * FROM basket_member_actions ORDER BY rowid`
+	return sdb.rebuildTableTx("basket_member_actions", next, copySQL, after)
+}
+
+func (sdb *StateDB) migratePairProtectiveIndex() error {
+	var existing string
+	err := sdb.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_pair_actions_one_protective'`).Scan(&existing)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the pair protective index: %w", err)
+	}
+	if strings.Contains(existing, "purpose = 'pair_protective'") {
+		return nil
+	}
+	if _, err := sdb.db.Exec(`DROP INDEX IF EXISTS idx_pair_actions_one_protective`); err != nil {
+		return fmt.Errorf("drop the pair protective index: %w", err)
+	}
+	return nil
+}
+
 var basketActionIndexDDL = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_basket_actions_one_pending
     ON basket_member_actions(scope, source, basket_id)
@@ -168,9 +222,7 @@ var basketActionIndexDDL = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_pair_actions_one_elective
     ON basket_member_actions(scope, source, basket_id)
     WHERE group_mode = 'pair' AND purpose IN ('pair_entry','pair_exit') AND status IN ('reserved','submitting','unresolved','settling')`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_pair_actions_one_protective
-    ON basket_member_actions(scope, source, provider, account_key, instrument)
-    WHERE group_mode = 'pair' AND purpose IN ('pair_protective','pair_kill_switch','pair_operator') AND status IN ('reserved','submitting','unresolved','settling')`,
+	pairProtectiveIndexDDL,
 	`CREATE TRIGGER IF NOT EXISTS trg_basket_actions_identity_immutable
     BEFORE UPDATE ON basket_member_actions
     WHEN NEW.group_mode != OLD.group_mode OR NEW.purpose != OLD.purpose OR NEW.client_order_id != OLD.client_order_id
@@ -325,6 +377,9 @@ func (sdb *StateDB) migratePairSchema() error {
 			return err
 		}
 	} else {
+		if err := sdb.migratePairProtectiveIndex(); err != nil {
+			return err
+		}
 		for _, ddl := range basketActionIndexDDL {
 			if _, err := sdb.db.Exec(ddl); err != nil {
 				return fmt.Errorf("migrate basket action indexes: %w", err)
@@ -335,6 +390,9 @@ func (sdb *StateDB) migratePairSchema() error {
 		if _, err := sdb.db.Exec(ddl); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate pair settlement columns: %w", err)
 		}
+	}
+	if err := sdb.migrateBasketActionHeldStatus(after); err != nil {
+		return err
 	}
 	if _, err := sdb.db.Exec(pairQuoteUseDDL); err != nil {
 		return fmt.Errorf("create pair quote event uses: %w", err)
@@ -367,7 +425,7 @@ func checkPendingGroupActionTx(tx *sql.Tx, rt *basketRuntime, a *basketAction) e
 		}
 	case pairProtectivePurpose(a.Purpose):
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM basket_member_actions WHERE scope = ? AND source = ? AND provider = ? AND account_key = ? AND instrument = ?
-			AND group_mode = 'pair' AND purpose IN ('pair_protective','pair_kill_switch','pair_operator') AND status IN `+pairPendingStatusSQL,
+			AND group_mode = 'pair' AND `+pairProtectivePendingSQL,
 			string(a.Partition.Scope), a.Partition.Source, a.Provider, a.AccountKey, a.Instrument).Scan(&pending); err != nil {
 			return fmt.Errorf("read pending pair protective reductions: %w", err)
 		}
@@ -419,7 +477,7 @@ func (a *basketAction) bookedTrades() []pairBookedTrade {
 }
 
 func pairActionStatusForWrite(a *basketAction, withBook bool) string {
-	if withBook || a.Status != basketActionCommitted || a.durableStatus == basketActionCommitted || a.recoveryNote().NativeBooked {
+	if withBook || a.Status != basketActionCommitted || a.durableStatus == basketActionCommitted {
 		return a.Status
 	}
 	if a.durableStatus == "" || basketActionRank(a.durableStatus) < basketActionRank(basketActionSettling) {
@@ -430,10 +488,10 @@ func pairActionStatusForWrite(a *basketAction, withBook bool) string {
 
 const pairActionTransitionSQL = `(
     status = excluded.status
-    OR (status = 'reserved' AND excluded.status IN ('submitting','no_fill'))
-    OR (status = 'submitting' AND excluded.status IN ('unresolved','settling','committed','no_fill'))
-    OR (status = 'unresolved' AND excluded.status IN ('settling','committed','no_fill'))
-    OR (status = 'settling' AND excluded.status IN ('unresolved','committed','no_fill'))
+    OR (status = 'reserved' AND excluded.status IN ('submitting','no_fill','held'))
+    OR (status = 'submitting' AND excluded.status IN ('unresolved','settling','committed','no_fill','held'))
+    OR (status = 'unresolved' AND excluded.status IN ('settling','committed','no_fill','held'))
+    OR (status = 'settling' AND excluded.status IN ('unresolved','committed','no_fill','held'))
 )`
 
 func upsertPairActionRow(exec sqlExecer, sid string, a *basketAction, withBook bool) error {
@@ -629,6 +687,7 @@ type pairObligation struct {
 	Detail    string `json:"detail"`
 	AtMs      int64  `json:"at_ms"`
 	RetryAtMs int64  `json:"retry_at_ms,omitempty"`
+	FromMs    int64  `json:"from_ms,omitempty"`
 }
 
 type pairRetry struct {
@@ -652,7 +711,10 @@ const (
 	pairLifecycleOperatorHeld = "operator_held"
 )
 
-const pairProgressVersion = 1
+const (
+	pairProgressVersion       = 2
+	pairProgressVersionLegacy = 1
+)
 
 type pairProgress struct {
 	V                  int                  `json:"v"`
@@ -674,6 +736,8 @@ type pairProgress struct {
 	CostEvidence       json.RawMessage      `json:"cost_evidence,omitempty"`
 	FundingBinding     json.RawMessage      `json:"funding_binding,omitempty"`
 	PositionMatch      *pairPositionMatch   `json:"position_match,omitempty"`
+	NativeReceipts     []pairNativeReceipt  `json:"native_receipts,omitempty"`
+	PaperCloses        []pairPaperClose     `json:"paper_closes,omitempty"`
 }
 
 func (p *pairProgress) alerted(key string) bool {
@@ -743,6 +807,9 @@ func parsePairProgress(raw string) (pairProgress, error) {
 	}
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
 		return p, fmt.Errorf("saved pair progress is unreadable: %w", err)
+	}
+	if p.V == pairProgressVersionLegacy && len(p.NativeReceipts) == 0 && len(p.PaperCloses) == 0 {
+		p.V = pairProgressVersion
 	}
 	if p.V != pairProgressVersion {
 		return p, fmt.Errorf("saved pair progress version %d is not supported", p.V)
@@ -1536,6 +1603,14 @@ func (r *basketFileRecords) pairPendingFor(k basketKey) []string {
 			if pm := p.PositionMatch; pm != nil && (pm.Status == pairPositionMismatch || pm.Status == pairPositionFailed) {
 				out = append(out, fmt.Sprintf("venue position match is %s: %s", pm.Status, pm.Reason))
 			}
+			for _, r := range p.NativeReceipts {
+				out = append(out, fmt.Sprintf("native fill receipt %s for %s is not attached to an accounting action", r.ID, r.MemberID))
+			}
+			for _, c := range p.PaperCloses {
+				if c.Status == pairPaperCloseStaged {
+					out = append(out, fmt.Sprintf("emergency close for %s is staged at $%.6f and not committed", c.MemberID, c.PriceUSD))
+				}
+			}
 		}
 	}
 	out = append(out, r.Funding[k].open()...)
@@ -1865,4 +1940,145 @@ func (st *StateStore) PairTradeStamp(rt *basketRuntime, strategyID, ts, symbol, 
 		return pairTradeStamp{}, fmt.Errorf("%w: the booked trade row %s %s at %s matched %d saved rows, want exactly 1", errPairFeeFixProvenance, symbol, orderID, ts, len(found))
 	}
 	return found[0], nil
+}
+
+func (st *StateStore) AttachPairNativeReceipt(rt *basketRuntime, a *basketAction, receiptID string) error {
+	db, err := st.basketFile(rt)
+	if err != nil {
+		return err
+	}
+	return db.attachPairNativeReceiptTx(rt, a, receiptID)
+}
+
+func (sdb *StateDB) attachPairNativeReceiptTx(rt *basketRuntime, a *basketAction, receiptID string) (retErr error) {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	if sdb.readOnly {
+		return fmt.Errorf("%s state file is open read-only", sdb.storageRoleOf())
+	}
+	if !rt.isPair() || !a.pairNative() || a.Status != basketActionSettling {
+		return fmt.Errorf("a native receipt attaches only as a settling native pair action")
+	}
+	p := &rt.Pair.Progress
+	idx := -1
+	for i, r := range p.NativeReceipts {
+		if r.ID == receiptID {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("native receipt %s is not in the pair record", receiptID)
+	}
+	if _, err := pairValidateActionRequest(rt, a, nil, rt.auditNowMs()); err != nil {
+		return err
+	}
+	sids, err := sdb.checkBasketOwnership(rt)
+	if err != nil {
+		return err
+	}
+	sid, ok := sids[a.StrategyID]
+	if !ok {
+		return fmt.Errorf("native receipt %s names %s, which is not a member of pair %s", receiptID, a.StrategyID, rt.Contract.BasketID)
+	}
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin native receipt attachment: %w", err)
+	}
+	defer tx.Rollback()
+	var savedFP string
+	if err := tx.QueryRow(`SELECT contract_fingerprint FROM basket_contracts WHERE scope = ? AND source = ? AND basket_id = ?`,
+		string(rt.Partition.Scope), rt.Partition.Source, rt.Contract.BasketID).Scan(&savedFP); err != nil {
+		return fmt.Errorf("read pair %s contract before attaching a native receipt: %w", rt.Contract.BasketID, err)
+	}
+	if savedFP != rt.Contract.Fingerprint() {
+		return fmt.Errorf("pair %s saved contract differs from the running contract", rt.Contract.BasketID)
+	}
+	fills, err := pairParseFills(a.FillCoverageJSON)
+	if err != nil {
+		return err
+	}
+	want := map[string]string{}
+	for _, f := range fills {
+		want[f.FillID] = f.EvidenceHash
+	}
+	rows, err := tx.Query(`SELECT action_id, fill_coverage_json FROM basket_member_actions WHERE scope = ? AND source = ? AND basket_id = ? AND strategy_id = ?
+		AND group_mode = 'pair' AND purpose IN ('pair_kill_switch','pair_operator') AND fill_coverage_json != ''`,
+		string(rt.Partition.Scope), rt.Partition.Source, rt.Contract.BasketID, sid)
+	if err != nil {
+		return fmt.Errorf("read saved native fills: %w", err)
+	}
+	dup, conflict := 0, ""
+	for rows.Next() {
+		var id, raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		saved, err := pairParseFills(raw)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("saved native action %s fill records are unreadable: %w", id, err)
+		}
+		for _, f := range saved {
+			if h, ok := want[f.FillID]; ok {
+				if h == f.EvidenceHash {
+					dup++
+				} else {
+					conflict = fmt.Sprintf("native fill %s is saved on action %s with different evidence", f.FillID, id)
+				}
+			}
+		}
+	}
+	rows.Close()
+	if conflict != "" {
+		return errors.New(conflict)
+	}
+	if dup > 0 {
+		if dup == len(want) {
+			return errPairNativeDuplicate
+		}
+		return fmt.Errorf("native receipt %s repeats only part of the saved native fills", receiptID)
+	}
+	seq, err := nextBasketActionSeqTx(tx, a, sid)
+	if err != nil {
+		return err
+	}
+	a.Seq = seq
+	a.ActionID = pairActionID(a.Partition, a.BasketID, a.DeadlineMs, a.StrategyID, a.Purpose, a.Seq)
+	var taken int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM basket_member_actions WHERE action_id = ? OR (provider = ? AND account_key = ? AND client_order_id = ?)`,
+		a.ActionID, a.Provider, a.AccountKey, a.ClientOrderID).Scan(&taken); err != nil {
+		return fmt.Errorf("read pair action identity: %w", err)
+	}
+	if taken > 0 {
+		return fmt.Errorf("pair action %s or client order %s is already saved", a.ActionID, a.ClientOrderID)
+	}
+	receipt := p.NativeReceipts[idx]
+	prevReceipts := append([]pairNativeReceipt(nil), p.NativeReceipts...)
+	prevOblig := append([]pairObligation(nil), p.Obligations...)
+	prevSeq := p.Seq
+	rt.Actions[a.ActionID] = a
+	p.NativeReceipts = append(append([]pairNativeReceipt(nil), p.NativeReceipts[:idx]...), p.NativeReceipts[idx+1:]...)
+	p.clearObligation(pairObligationNativeReceipt, receipt.MemberID, receipt.ID)
+	rt.touchPairProgress()
+	defer func() {
+		if retErr != nil {
+			delete(rt.Actions, a.ActionID)
+			p.NativeReceipts, p.Obligations, p.Seq = prevReceipts, prevOblig, prevSeq
+		}
+	}()
+	if _, err := sdb.writePairTx(tx, rt, nil, rt.auditNowMs()); err != nil {
+		return err
+	}
+	if storeCommitHook != nil {
+		if err := storeCommitHook(sdb.storageRoleOf()); err != nil {
+			return fmt.Errorf("commit hook (%s): %w", sdb.storageRoleOf(), err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	markBasketDurable(rt, nil, nil)
+	return nil
 }

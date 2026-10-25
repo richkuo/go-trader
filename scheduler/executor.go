@@ -831,6 +831,7 @@ type HyperliquidClose struct {
 	Fill        *HyperliquidCloseFill `json:"fill,omitempty"`
 	AlreadyFlat bool                  `json:"already_flat,omitempty"`
 	SubmittedSz float64               `json:"submitted_sz,omitempty"`
+	Evidence    *nativeCloseEvidence  `json:"evidence,omitempty"`
 }
 
 type HyperliquidCloseResult struct {
@@ -1624,12 +1625,14 @@ type OKXCloseFill struct {
 	TotalSz float64 `json:"total_sz,omitempty"`
 	OID     string  `json:"oid,omitempty"`
 	Fee     float64 `json:"fee,omitempty"`
+	BaseSz  float64 `json:"base_sz,omitempty"`
 }
 
 type OKXClose struct {
-	Symbol      string        `json:"symbol"`
-	Fill        *OKXCloseFill `json:"fill,omitempty"`
-	AlreadyFlat bool          `json:"already_flat,omitempty"`
+	Symbol      string               `json:"symbol"`
+	Fill        *OKXCloseFill        `json:"fill,omitempty"`
+	AlreadyFlat bool                 `json:"already_flat,omitempty"`
+	Evidence    *nativeCloseEvidence `json:"evidence,omitempty"`
 }
 
 type OKXCloseResult struct {
@@ -1654,6 +1657,9 @@ func RunOKXClose(script, symbol string, partialSz *float64) (*OKXCloseResult, st
 func parseOKXCloseOutput(stdout []byte, stderrStr string, runErr error) (*OKXCloseResult, string, error) {
 	var result OKXCloseResult
 	parseErr := json.Unmarshal(stdout, &result)
+	if result.Close != nil && result.Close.Fill != nil {
+		result.Close.Fill.BaseSz = 0
+	}
 
 	switch {
 	case runErr == nil && parseErr == nil && result.Error == "":

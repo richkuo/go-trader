@@ -27,6 +27,7 @@ type pairLastMark struct {
 
 type pairViewSource interface {
 	pairMarksLocked() *pairMarks
+	pairEmergencyPendingLocked(part RiskPartition) []string
 }
 
 type pairMarks struct {

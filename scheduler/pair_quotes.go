@@ -1579,7 +1579,7 @@ func pairValidateActionRequest(rt *basketRuntime, a *basketAction, use *pairQuot
 			return req, err
 		}
 	case "native_booked":
-		if a.Direction != basketDirectionReduce || !req.ReduceOnly || !req.NativeBooked || !a.recoveryNote().NativeBooked {
+		if a.Direction != basketDirectionReduce || !req.ReduceOnly || !req.NativeBooked || !a.recoveryNote().NativeBooked || !a.savedNoteNative() {
 			return req, fmt.Errorf("pair native reduction %s needs native_booked with a matching recovery note and reduce_only", a.ActionID)
 		}
 		if evidence || authority || req.QuoteEventID != "" || req.PriceBound != 0 {

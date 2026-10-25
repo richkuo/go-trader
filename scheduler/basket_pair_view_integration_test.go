@@ -742,6 +742,95 @@ func TestBasketMemberViewIncompleteValuationEscalatesAfterTheDeferral(t *testing
 			t.Fatalf("the latch must name the member with no checked mark: %+v", last)
 		}
 	})
+	t.Run("the latch closes each member only at its own checked mark", func(t *testing.T) {
+		x := newPairEscalationEnv(t, 50)
+		tPre := pairSlotAt(pairTestStart(), 2)
+		x.h.run(tPre)
+		t0 := tPre.Add(time.Minute)
+		x.outage()
+		pairViewSetHL(x.e, 50000)
+		x.h.marks = map[string]float64{"BTC": 50000}
+		x.runEvery(t0, t0.Add(limit-2*time.Minute))
+		tl := t0.Add(limit + time.Second)
+		x.h.run(tl)
+		latched, _ := x.read()
+		if !latched.KillSwitchActive || latched.KillSwitchCloseApplied {
+			t.Fatalf("the latch must hold its close as not applied while a pair member has no checked mark: %+v", latched)
+		}
+		x.e.mu.RLock()
+		okxView := x.e.rt().pairView[pairTestOKX]
+		x.e.mu.RUnlock()
+		own, valid, why := okxView.usdMarkAt(tl.UnixMilli())
+		tr, ok := x.e.closeTrade(pairTestOKX)
+		if x.e.signed(pairTestOKX) != 0 || !valid || !ok || !pairCostNear(tr.Price, own) || pairCostNear(tr.Price, 50000) {
+			t.Fatalf("the healthy okx member must close at its own checked mark %v (%s), never the shared 50000: book %v trade %+v", own, why, x.e.signed(pairTestOKX), tr)
+		}
+		if x.e.signed(pairTestHL) != 0.06 || !x.e.hasObligation(pairObligationEmergencyClose, pairTestHL) {
+			t.Fatalf("the hyperliquid member without a mark must keep its book and an emergency obligation: %v %v", x.e.signed(pairTestHL), x.e.obligationKinds(pairTestHL))
+		}
+		if got, ok := x.h.incomplete(); !ok || got.Kind != pairObligationEmergencyClose || got.MemberID != pairTestHL {
+			t.Fatalf("the incomplete-result reader must name the held member, got %+v %v", got, ok)
+		}
+		x.runEvery(tl.Add(time.Minute), tl.Add(3*time.Minute))
+		x.restartAt(tl.Add(4 * time.Minute))
+		x.h.run(tl.Add(4 * time.Minute))
+		if prs, _ := x.read(); prs.KillSwitchCloseApplied || x.e.signed(pairTestHL) != 0.06 || !x.e.hasObligation(pairObligationEmergencyClose, pairTestHL) {
+			t.Fatalf("the held member must stay held with its latch across latched cycles and a restart: %+v %v", prs, x.e.signed(pairTestHL))
+		}
+		x.hlSeal = ""
+		pairViewSetHL(x.e, 49000)
+		tb := tl.Add(5 * time.Minute)
+		x.h.run(tb)
+		x.e.mu.RLock()
+		hlView := x.e.rt().pairView[pairTestHL]
+		x.e.mu.RUnlock()
+		hlOwn, hlValid, hlWhy := hlView.usdMarkAt(tb.UnixMilli())
+		hlTr, ok := x.e.closeTrade(pairTestHL)
+		if x.e.signed(pairTestHL) != 0 || !hlValid || !ok || !pairCostNear(hlTr.Price, hlOwn) || x.e.hasObligation(pairObligationEmergencyClose, pairTestHL) {
+			t.Fatalf("a later checked mark must close the held member at that own mark %v (%s): book %v trade %+v", hlOwn, hlWhy, x.e.signed(pairTestHL), hlTr)
+		}
+		x.h.run(tb.Add(time.Minute))
+		if prs, _ := x.read(); !prs.KillSwitchCloseApplied {
+			t.Fatalf("the latch close applies only after every pair close is committed: %+v", prs)
+		}
+	})
+	t.Run("both members without marks stay held", func(t *testing.T) {
+		x := newPairEscalationEnv(t, 50)
+		tPre := pairSlotAt(pairTestStart(), 2)
+		x.h.run(tPre)
+		t0 := tPre.Add(time.Minute)
+		x.outage()
+		x.h.marks = map[string]float64{"BTC": 50000}
+		x.runEvery(t0, t0.Add(limit-2*time.Minute))
+		x.e.quotes.mu.Lock()
+		x.e.quotes.refErr = errors.New("quote outage")
+		x.e.quotes.mu.Unlock()
+		tl := t0.Add(limit + time.Second)
+		x.h.run(tl)
+		x.h.run(tl.Add(time.Minute))
+		prs, _ := x.read()
+		if !prs.KillSwitchActive || prs.KillSwitchCloseApplied {
+			t.Fatalf("the latch must stay with no close applied: %+v", prs)
+		}
+		x.e.assertBooks("both members held", 0.06, -0.06)
+		for _, id := range []string{pairTestHL, pairTestOKX} {
+			if !x.e.hasObligation(pairObligationEmergencyClose, id) {
+				t.Fatalf("%s without a checked mark must keep its own emergency obligation: %v", id, x.e.obligationKinds(id))
+			}
+		}
+		if !x.h.savedIncomplete() && !x.e.savedProgressHas(pairObligationEmergencyClose) {
+			t.Fatal("the emergency obligations must be saved")
+		}
+		x.e.mu.Lock()
+		ResetPortfolioKillSwitchManual(x.e.state.partitionRisk(x.e.rt().Partition))
+		x.e.mu.Unlock()
+		if prs, _ := x.read(); prs.KillSwitchActive {
+			t.Fatalf("the operator reset must clear the latch even while pair accounting is held: %+v", prs)
+		}
+		if got, ok := x.h.incomplete(); !ok || got.Kind != pairObligationEmergencyClose {
+			t.Fatalf("an operator reset must keep the research result incomplete, got %+v %v", got, ok)
+		}
+	})
 	t.Run("the member circuit breaker trips after an unbroken outage", func(t *testing.T) {
 		x := newPairEscalationEnv(t, 50)
 		tPre := pairSlotAt(pairTestStart(), 2)

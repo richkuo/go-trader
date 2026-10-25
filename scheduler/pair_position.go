@@ -169,7 +169,7 @@ func (bc *basketCoordinator) pairReachable(rt *basketRuntime, m pairContractMemb
 		if a.StrategyID != m.MemberID || id == exclude {
 			continue
 		}
-		if d := a.ConfirmedQty - a.AppliedQty; d > 1e-12 && !a.recoveryNote().NativeBooked {
+		if d := a.ConfirmedQty - a.AppliedQty; d > 1e-12 {
 			lo += a.signedDelta() * d
 			hi += a.signedDelta() * d
 		}

@@ -857,10 +857,18 @@ func TestBasketPairVirtualVenueNativeBookChangesCountOnce(t *testing.T) {
 	e.mu.Lock()
 	closed := forceClosePaperScopePositions(e.state, e.cfg, e.rt().Partition, map[string]float64{"BTC": 60000})
 	e.mu.Unlock()
-	if len(closed) == 0 || e.signed(pairTestOKX) != 0 {
-		t.Fatalf("the emergency paper close must flatten the short member, got %v", closed)
+	if len(closed) != 0 || e.signed(pairTestOKX) != -0.06 {
+		t.Fatalf("a shared-price emergency close must leave the short member book for its own checked mark, got %v %v", closed, e.signed(pairTestOKX))
 	}
 	e.stepAt(e.now.UnixMilli() + 1000)
+	e.mu.RLock()
+	view := e.rt().pairView[pairTestOKX]
+	e.mu.RUnlock()
+	own, valid, why := view.usdMarkAt(e.now.UnixMilli())
+	tr, ok := e.closeTrade(pairTestOKX)
+	if e.signed(pairTestOKX) != 0 || !valid || !ok || !pairCostNear(tr.Price, own) || !strings.Contains(tr.Details, "own checked mark") {
+		t.Fatalf("the emergency paper close must flatten the short member at its own checked mark %v (%s), got book %v trade %+v", own, why, e.signed(pairTestOKX), tr)
+	}
 	if got := e.inventoryOrigins(pairTestOKX); got[pairInventoryOriginNative] != 1 {
 		t.Fatalf("the emergency close must enter the journal once as a native change, got %v", got)
 	}

@@ -30,6 +30,7 @@ const (
 	basketActionSettling   = "settling"
 	basketActionCommitted  = "committed"
 	basketActionNoFill     = "no_fill"
+	basketActionHeld       = "held"
 )
 
 const (
@@ -71,7 +72,7 @@ func basketActionRank(status string) int {
 		return 2
 	case basketActionSettling:
 		return 3
-	case basketActionCommitted, basketActionNoFill:
+	case basketActionCommitted, basketActionNoFill, basketActionHeld:
 		return 4
 	}
 	return -1
@@ -513,7 +514,7 @@ CREATE TABLE IF NOT EXISTS basket_member_actions (
     seq INTEGER NOT NULL CHECK (seq >= 1),
     order_side TEXT NOT NULL CHECK (order_side IN ('buy','sell')),
     position_side TEXT NOT NULL CHECK (position_side IN ('long','short')),
-    status TEXT NOT NULL CHECK (status IN ('reserved','submitting','unresolved','settling','committed','no_fill')),
+    status TEXT NOT NULL CHECK (status IN ('reserved','submitting','unresolved','settling','committed','no_fill','held')),
     requested_qty REAL NOT NULL CHECK (requested_qty > 0),
     pre_qty REAL NOT NULL DEFAULT 0,
     pre_notional_usd REAL NOT NULL DEFAULT 0,

@@ -1689,8 +1689,14 @@ func main() {
 						forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, rhFlatCoins, nil)
 					}
 				}
+				livePairPending := pairEmergencyPendingFor(state, livePartition)
+				if len(livePairPending) > 0 {
+					plan.DiscordMessage = pairKillSwitchAccountingNote(plan.DiscordMessage, livePairPending)
+				}
 				if !notifier.HasOwner() {
-					if plan.CanAutoResetWithoutOwner() {
+					if len(livePairPending) > 0 {
+						fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset suppressed: pair member accounting is not committed (%s)\n", strings.Join(livePairPending, "; "))
+					} else if plan.CanAutoResetWithoutOwner() {
 						peakRebaselineAvailable := liveSR.PeakRebaselineAvailable
 						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(state.partitionRisk(livePartition), liveSR.TotalPV,
 							peakRebaselineAvailable,

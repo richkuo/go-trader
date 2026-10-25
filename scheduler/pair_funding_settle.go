@@ -152,7 +152,7 @@ func (f *pairFundingRuntime) recordedChainPending() []pairFundingChainRow {
 func (bc *basketCoordinator) pairInventoryThrough(rt *basketRuntime, m *pairFundingMember) int64 {
 	h := m.observedMs
 	for _, a := range rt.Actions {
-		if a.StrategyID != m.memberID || !basketActionPending(a.Status) || a.recoveryNote().NativeBooked || a.Status == basketActionReserved {
+		if a.StrategyID != m.memberID || !pairActionFillPossible(rt, a) {
 			continue
 		}
 		start := a.SubmittedAtMs
@@ -167,12 +167,15 @@ func (bc *basketCoordinator) pairInventoryThrough(rt *basketRuntime, m *pairFund
 			h = bound
 		}
 	}
+	if from := pairNativeUnknownFromMs(rt, m.memberID); from > 0 && from-1 < h {
+		h = from - 1
+	}
 	return h
 }
 
 func (bc *basketCoordinator) pairFillPossibleBefore(rt *basketRuntime, memberID string, t int64) bool {
 	for _, a := range rt.Actions {
-		if a.StrategyID != memberID || !basketActionPending(a.Status) || a.recoveryNote().NativeBooked || a.Status == basketActionReserved {
+		if a.StrategyID != memberID || !pairActionFillPossible(rt, a) {
 			continue
 		}
 		start := a.SubmittedAtMs
@@ -182,6 +185,9 @@ func (bc *basketCoordinator) pairFillPossibleBefore(rt *basketRuntime, memberID 
 		if start < t {
 			return true
 		}
+	}
+	if from := pairNativeUnknownFromMs(rt, memberID); from > 0 && from < t {
+		return true
 	}
 	return false
 }

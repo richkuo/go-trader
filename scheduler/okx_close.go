@@ -381,7 +381,7 @@ func runPendingOKXCircuitCloses(
 				continue
 			}
 			partial := sz
-			_, err := closer(c.Symbol, &partial)
+			_, err := pairCircuitOKXCloserFor(state, j.stratID, closer)(c.Symbol, &partial)
 			if err != nil {
 				fmt.Printf("[CRITICAL] okx-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Symbol, sz, err)
 				allOK = false

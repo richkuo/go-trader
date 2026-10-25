@@ -945,6 +945,7 @@ class HyperliquidExchangeAdapter:
                         "fee": fee_total,
                         "closed_pnl": pnl_total,
                         "count": len(matched),
+                        "fills": matched,
                     }
             attempt += 1
             if attempt < max_retries:

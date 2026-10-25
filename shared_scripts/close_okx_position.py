@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "platforms", "okx"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
 
 def main():
@@ -38,19 +39,21 @@ def main():
         if not adapter.is_live:
             _emit_error(args.symbol, "OKX adapter not live — set OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE")
             return
-        result = adapter.market_close(args.symbol, args.sz)
+        orders = adapter.market_close_orders(args.symbol, args.sz)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         _emit_error(args.symbol, str(e))
         return
 
-    if not isinstance(result, dict):
-        _emit_error(args.symbol, f"unexpected adapter response type {type(result).__name__}: {result!r}")
+    if not isinstance(orders, list) or not all(isinstance(o, dict) for o in orders):
+        _emit_error(args.symbol, f"unexpected adapter response type {type(orders).__name__}: {orders!r}")
         return
 
-    if not result:
+    if not orders:
         _emit_success(args.symbol, fill={}, already_flat=True)
         return
+
+    result = orders[0]
 
     fill = {}
     avg = result.get("average") or result.get("price")
@@ -72,13 +75,16 @@ def main():
         except (TypeError, ValueError):
             pass
 
-    _emit_success(args.symbol, fill)
+    from native_close_evidence import okx_close_evidence
+    _emit_success(args.symbol, fill, evidence=okx_close_evidence(adapter, args.symbol, orders))
 
 
-def _emit_success(symbol, fill, already_flat=False):
+def _emit_success(symbol, fill, already_flat=False, evidence=None):
     close = {"symbol": symbol, "fill": fill}
     if already_flat:
         close["already_flat"] = True
+    if evidence is not None:
+        close["evidence"] = evidence
     print(json.dumps({
         "close": close,
         "platform": "okx",

@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "platforms", "h
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
 from hl_user_fills import apply_user_fills_lookup
+from native_close_evidence import hyperliquid_close_evidence
 
 
 def main():
@@ -163,17 +164,26 @@ def main():
     if fee is not None:
         fill["fee"] = float(fee)
 
-    if fill.get("oid"):
-        try:
-            lookup = adapter.lookup_fill_fee_by_oid(fill["oid"], fills_since_ms)
-            if not lookup:
-                print(f"[WARN] userFills lookup returned no fills for oid={fill['oid']}", file=sys.stderr)
-            elif not apply_user_fills_lookup(fill, lookup):
-                print(f"[WARN] userFills lookup returned malformed fill data for oid={fill['oid']}", file=sys.stderr)
-        except Exception as fe:
-            print(f"[WARN] userFills lookup failed for oid={fill['oid']}: {fe}", file=sys.stderr)
+    evidence = _lookup_fill(adapter, fill, filled.get("totalSz"), fills_since_ms)
     _emit_success(args.symbol, fill, cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
-                  cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
+                  cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids, evidence=evidence)
+
+
+def _lookup_fill(adapter, fill, raw_total_sz, fills_since_ms):
+    if not fill.get("oid"):
+        return hyperliquid_close_evidence(None, raw_total_sz, [])
+    raw_fills = []
+    try:
+        lookup = adapter.lookup_fill_fee_by_oid(fill["oid"], fills_since_ms)
+        if not lookup:
+            print(f"[WARN] userFills lookup returned no fills for oid={fill['oid']}", file=sys.stderr)
+        elif not apply_user_fills_lookup(fill, lookup):
+            print(f"[WARN] userFills lookup returned malformed fill data for oid={fill['oid']}", file=sys.stderr)
+        if isinstance(lookup, dict) and isinstance(lookup.get("fills"), list):
+            raw_fills = lookup["fills"]
+    except Exception as fe:
+        print(f"[WARN] userFills lookup failed for oid={fill['oid']}: {fe}", file=sys.stderr)
+    return hyperliquid_close_evidence(fill["oid"], raw_total_sz, raw_fills)
 
 
 def _cancel_trigger_orders(adapter, symbol, cancel_oids):
@@ -351,25 +361,26 @@ def run_sized_close(args):
             adapter, symbol, args.cancel_stop_loss_oid
         )
 
-    if fill.get("oid"):
-        try:
-            lookup = adapter.lookup_fill_fee_by_oid(fill["oid"], fills_since_ms)
-            if not lookup:
-                print(f"[WARN] userFills lookup returned no fills for oid={fill['oid']}", file=sys.stderr)
-            elif not apply_user_fills_lookup(fill, lookup):
-                print(f"[WARN] userFills lookup returned malformed fill data for oid={fill['oid']}", file=sys.stderr)
-        except Exception as fe:
-            print(f"[WARN] userFills lookup failed for oid={fill['oid']}: {fe}", file=sys.stderr)
+    evidence = _lookup_fill(adapter, fill, _raw_total_sz(result), fills_since_ms)
     _emit_success(symbol, fill, cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
                   cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids,
-                  order_outcome="filled", submitted_sz=submitted_sz)
+                  order_outcome="filled", submitted_sz=submitted_sz, evidence=evidence)
+
+
+def _raw_total_sz(result):
+    try:
+        return result["response"]["data"]["statuses"][0]["filled"]["totalSz"]
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 def _emit_success(symbol, fill, already_flat=False, cancel_err="", cancel_succeeded=False,
-                  cancel_succeeded_oids=None, cancel_failed_oids=None, order_outcome="", submitted_sz=None):
+                  cancel_succeeded_oids=None, cancel_failed_oids=None, order_outcome="", submitted_sz=None, evidence=None):
     close = {"symbol": symbol, "fill": fill}
     if already_flat:
         close["already_flat"] = True
+    if evidence is not None:
+        close["evidence"] = evidence
     if submitted_sz is not None:
         close["submitted_sz"] = submitted_sz
     out = {

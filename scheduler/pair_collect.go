@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 )
 
@@ -492,10 +493,41 @@ func pairIncompleteEvidence(rt *basketRuntime) (pairObligation, bool) {
 	if !rt.isPair() {
 		return pairObligation{}, false
 	}
-	if o := rt.Pair.Progress.obligation(pairObligationPolicyTimeout, "", ""); o != nil {
+	p := &rt.Pair.Progress
+	if o := p.obligation(pairObligationPolicyTimeout, "", ""); o != nil {
 		return *o, true
 	}
-	return pairObligation{}, false
+	var found []pairObligation
+	for _, o := range p.Obligations {
+		if pairNativeObligationKind(o.Kind) {
+			found = append(found, o)
+			continue
+		}
+		if a := rt.Actions[o.ActionID]; a != nil && a.pairNative() && (pairSettlementObligationKind(o.Kind) || o.Kind == pairObligationFeeIncomplete) {
+			found = append(found, o)
+		}
+	}
+	for _, r := range p.NativeReceipts {
+		found = append(found, pairObligation{Kind: pairObligationNativeReceipt, MemberID: r.MemberID, ActionID: r.ID, Detail: "a confirmed native fill receipt is not attached to an accounting action", AtMs: r.CreatedAtMs})
+	}
+	for _, c := range p.PaperCloses {
+		if c.Status == pairPaperCloseStaged {
+			found = append(found, pairObligation{Kind: pairObligationEmergencyClose, MemberID: c.MemberID, Detail: "a staged emergency close is not committed", AtMs: c.CloseAtMs})
+		}
+	}
+	if len(found) == 0 {
+		return pairObligation{}, false
+	}
+	sort.SliceStable(found, func(i, j int) bool {
+		if found[i].Kind != found[j].Kind {
+			return found[i].Kind < found[j].Kind
+		}
+		if found[i].MemberID != found[j].MemberID {
+			return found[i].MemberID < found[j].MemberID
+		}
+		return found[i].ActionID < found[j].ActionID
+	})
+	return found[0], true
 }
 
 func (bc *basketCoordinator) notePairPolicyTimeout(rt *basketRuntime, rb *basketRebalance, ctxErr error, budget time.Duration, now time.Time) {

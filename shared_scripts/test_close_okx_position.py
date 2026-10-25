@@ -22,9 +22,9 @@ def _run_script(adapter_response_or_exc, argv, is_live=True):
     mock_adapter.is_live = is_live
     mock_adapter_cls.return_value = mock_adapter
     if isinstance(adapter_response_or_exc, Exception):
-        mock_adapter.market_close.side_effect = adapter_response_or_exc
+        mock_adapter.market_close_orders.side_effect = adapter_response_or_exc
     else:
-        mock_adapter.market_close.return_value = adapter_response_or_exc
+        mock_adapter.market_close_orders.return_value = [adapter_response_or_exc] if adapter_response_or_exc else []
 
     captured = StringIO()
     exit_code = {"value": 0}
