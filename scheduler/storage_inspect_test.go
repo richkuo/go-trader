@@ -164,13 +164,31 @@ func TestInspectStorageOwnership(t *testing.T) {
 		if !strings.Contains(string(blob), `"position_count":2`) || !strings.Contains(string(blob), `"position_count":3`) {
 			t.Errorf("inspection JSON lacks the mapped totals: %s", blob)
 		}
+	})
+
+	t.Run("an orphan holding regular and option positions is reported not rejected", func(t *testing.T) {
+		cfg := splitTestConfig(t)
+		store := openSplitStore(t, cfg)
+		state := splitTestState(t)
+		state.Strategies["hl-paper"].Positions["BTC"] = &Position{Symbol: "BTC", Side: "long", Quantity: 1, AvgCost: 60000}
+		state.Strategies["hl-paper"].OptionPositions = map[string]*OptionPosition{
+			"BTC-call": {ID: "BTC-call", Underlying: "BTC", OptionType: "call", Strike: 70000, Expiry: "2026-12-18", Action: "buy", Quantity: 1},
+			"BTC-put":  {ID: "BTC-put", Underlying: "BTC", OptionType: "put", Strike: 50000, Expiry: "2026-12-18", Action: "buy", Quantity: 1},
+		}
+		if err := SaveStateWithStore(state, store); err != nil {
+			t.Fatalf("SaveStateWithStore: %v", err)
+		}
+		store.Close()
 
 		trimmed := &Config{DBFile: cfg.DBFile, PaperDBFile: cfg.PaperDBFile, Strategies: cfg.Strategies[:1]}
-		si = inspectionFor(t, trimmed, false)
+		si := inspectionFor(t, trimmed, false)
+		if !si.OK() {
+			t.Fatalf("rejections = %v, want none (an orphan is reported, not rejected)", si.Rejections)
+		}
 		var found bool
 		for _, fi := range si.Files {
 			for _, orphan := range fi.Orphans {
-				if fi.Role == storageRolePaper && orphan.StorageID == "shared-book" {
+				if fi.Role == storageRolePaper && orphan.StorageID == "hl-paper" {
 					found = true
 					if orphan.PositionCount != 3 {
 						t.Errorf("orphan position count = %d, want 3", orphan.PositionCount)
@@ -179,7 +197,7 @@ func TestInspectStorageOwnership(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatalf("paper orphan shared-book not reported; files = %+v", si.Files)
+			t.Fatalf("paper orphan hl-paper not reported; files = %+v", si.Files)
 		}
 		store2 := openSplitStore(t, trimmed)
 		reloaded, orphans, err := LoadStateWithStore(trimmed, store2)
@@ -189,8 +207,8 @@ func TestInspectStorageOwnership(t *testing.T) {
 		if _, adopted := reloaded.Strategies["hl-paper"]; adopted {
 			t.Fatal("an orphan book was keyed into the roster")
 		}
-		if len(orphans) != 1 || orphans[0].Role != storageRolePaper || orphans[0].StorageID != "shared-book" || orphans[0].PositionCount != 3 {
-			t.Errorf("orphans = %+v, want only the paper shared-book with 3 positions", orphans)
+		if len(orphans) != 1 || orphans[0].Role != storageRolePaper || orphans[0].StorageID != "hl-paper" || orphans[0].PositionCount != 3 {
+			t.Errorf("orphans = %+v, want only the paper hl-paper book with 3 positions", orphans)
 		}
 	})
 
