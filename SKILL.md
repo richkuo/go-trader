@@ -3012,7 +3012,7 @@ A native-check result hash covers its stdout without the top-level `timestamp` f
 The second preparation keeps the valuation input of `bc.step` equal across a coordinator-phase restart, because the recorded delivery moves the logical clock inside the cycle.
 
 **Recording barrier.** A failed append sets `pairProgress.RecordingBlocked {reason, failed_seq, at_ms}` (progress version 4, written only when the field is present; the flat reset carries it).
-While it is set the coordinator holds collection (`collectHold`), new decisions (`decideHold`), position increases (`pairIncreaseHold`) and an increase at the submit skip lane (finished as no fill, never as an unknown outcome); reductions, protection, recovery and emergency closes continue.
+While it is set the coordinator holds collection (`collectHold`), new decisions (`decideHold`), position increases (`pairIncreaseHold`) and an increase at the submit skip lane (it finishes as no fill through `finishPairNoFill`); reductions, protection, recovery and emergency closes continue.
 Each refused call commits a `record_failure` event when the log accepts it again, so playback reproduces the refusal; the barrier clears only after `verifyRecordingForClear` reads the full committed chain and it equals the recorder head (a `barrier_clear` event), or at restart after the full chain verifies, which also removes the equality claim.
 
 **Resume.** Resume checks the directory (`pairPaperResumeEntries` adds `export` and `seal.json`), the paper manifest and, before admission, a read-only snapshot of the run file: it verifies the chain, appends the committed funding batches in order and restores the committed evidence records, then admits and rechecks the same frontier after the store opens.
@@ -3020,7 +3020,7 @@ It commits an `epoch` event, a `call_recovery` event for every call without a te
 
 | Kind | Committed terminal at restart | Start without terminal |
 |---|---|---|
-| `collect`, `member_read` | saved result consumed; a reserved slot whose collection committed is collected again from the record, never held by `recoverInterrupted`; before a slot frozen ahead of the restart is decided, its recorded collect is consumed (`catchUpCollect`), so the decision runs at the recorded logical time | unknown; the slot holds |
+| `collect`, `member_read` | saved result consumed; a reserved slot whose collection committed is collected again from the record, and `recoverInterrupted` skips it; before a slot frozen ahead of the restart is decided, its recorded collect is consumed (`catchUpCollect`), so the decision runs at the recorded logical time | unknown; the slot holds |
 | `reference`, `marks`, `match_poll`, `management_candles`, `capability` | saved result consumed in order | unknown; the owner treats it as a failed read |
 | `funding` | the batch is already appended before admission | unknown; the next poll reads again from the last committed batch |
 | `policy`, `native_check` | saved result consumed, no process launch | unknown; recorded as a process failure, never launched again |
