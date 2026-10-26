@@ -11,6 +11,9 @@ ACTION_REQUEST_VERSION = 2
 OUTCOME_VERSION = 1
 POSITION_REQUEST_VERSION = 1
 POSITION_OUTPUT_VERSION = 1
+NATIVE_HISTORY_REQUEST_VERSION = 1
+NATIVE_HISTORY_OUTPUT_VERSION = 1
+NATIVE_HISTORY_MAX_ORDERS = 8
 
 PURPOSE_KIND = {"pair_entry": "increase", "pair_exit": "reduction", "pair_protective": "reduction"}
 
@@ -47,6 +50,8 @@ _OPTIONAL = {
 }
 REFERENCE_FIELDS = ("reference_receipt_ms", "reference_max_age_ms", "reference_px")
 _POSITION_FIELDS = {"v": "int", "provider": "str", "account_key": "str", "instrument": "str", "member_id": "str", "partition": "str"}
+_NATIVE_HISTORY_FIELDS = {"v": "int", "pair_id": "str", "partition": "str", "member_id": "str", "provider": "str", "account_key": "str", "instrument": "str",
+                          "attempt_id": "str", "order_side": "str", "venue_order_ids": "list", "from_ms": "int", "through_ms": "int", "revision": "str"}
 
 HL_ACCOUNT = re.compile(r"^hyperliquid:(mainnet|testnet):0x[0-9a-f]{40}$")
 OKX_ACCOUNT = re.compile(r"^okx:swap:(live|sandbox):key-[0-9a-f]{16}$")
@@ -55,6 +60,10 @@ OKX_CLOID = re.compile(r"^[a-z0-9]{1,32}$")
 HL_COIN = re.compile(r"^[A-Za-z0-9]{1,20}$")
 OKX_INST = re.compile(r"^([A-Z0-9]{1,16})-USDT-SWAP$")
 _FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+NATIVE_ATTEMPT = re.compile(r"^pn[ao]-[0-9a-f]{32}$")
+NATIVE_REVISION = re.compile(r"^[0-9a-f]{16}$")
+HL_OID = re.compile(r"^[1-9][0-9]{0,19}$")
+OKX_ORDID = re.compile(r"^[0-9]{1,32}$")
 _INTEGER = re.compile(r"^-?(0|[1-9][0-9]*)$")
 
 
@@ -277,6 +286,69 @@ def parse_position_request(raw, provider):
     else:
         raise PairOrderError(f"provider {provider!r} has no pair position route")
     return req
+
+
+def parse_native_history_request(raw, provider):
+    req = _strict_object(raw, _NATIVE_HISTORY_FIELDS, {}, "native history request")
+    if req["v"] != NATIVE_HISTORY_REQUEST_VERSION:
+        raise PairOrderError(f"native history request version {req['v']} is not {NATIVE_HISTORY_REQUEST_VERSION}")
+    if req["provider"] != provider:
+        raise PairOrderError(f"the native history request names provider {req['provider']!r}, this route serves {provider!r}")
+    if provider == "hyperliquid":
+        if not HL_COIN.match(req["instrument"]) or not HL_ACCOUNT.match(req["account_key"]):
+            raise PairOrderError("the hyperliquid native history request needs a coin and a hyperliquid:<network>:<address> account")
+        order_rule = HL_OID
+    elif provider == "okx":
+        if not OKX_INST.match(req["instrument"]) or not OKX_ACCOUNT.match(req["account_key"]):
+            raise PairOrderError("the okx native history request needs <UNDERLYING>-USDT-SWAP and an okx:swap:<network>:key-<16 hex> account")
+        order_rule = OKX_ORDID
+    else:
+        raise PairOrderError(f"provider {provider!r} has no native history route")
+    if not NATIVE_ATTEMPT.match(req["attempt_id"]):
+        raise PairOrderError(f"attempt id {req['attempt_id']!r} is not a native attempt id")
+    if not NATIVE_REVISION.match(req["revision"]):
+        raise PairOrderError(f"revision {req['revision']!r} is not 16 lowercase hex characters")
+    if req["order_side"] not in ("buy", "sell"):
+        raise PairOrderError(f"order side {req['order_side']!r} is not buy or sell")
+    ids = req["venue_order_ids"]
+    if not ids or len(ids) > NATIVE_HISTORY_MAX_ORDERS:
+        raise PairOrderError(f"venue_order_ids must name 1..{NATIVE_HISTORY_MAX_ORDERS} orders")
+    seen = set()
+    for oid in ids:
+        if not isinstance(oid, str) or not order_rule.match(oid):
+            raise PairOrderError(f"venue order id {oid!r} is not a {provider} order id")
+        if oid in seen:
+            raise PairOrderError(f"venue order id {oid} appears twice")
+        seen.add(oid)
+    if req["from_ms"] <= 0 or req["through_ms"] < req["from_ms"]:
+        raise PairOrderError(f"the attempt window {req['from_ms']}..{req['through_ms']} is not positive and ordered")
+    return req
+
+
+def native_history_output(req):
+    return {
+        "v": NATIVE_HISTORY_OUTPUT_VERSION,
+        "mode": "native_history",
+        "status": "incomplete",
+        "detail": "",
+        "observed_at_ms": now_ms(),
+        "attempt_id": req["attempt_id"],
+        "account_key": req["account_key"],
+        "instrument": req["instrument"],
+        "order_side": req["order_side"],
+        "venue_order_ids": list(req["venue_order_ids"]),
+        "orders": [],
+        "coverage": {"complete": False, "reason": "", "from_ms": int(req["from_ms"]), "through_ms": 0, "pages": 0},
+        "evidence": None,
+    }
+
+
+def native_history_incomplete(out, detail):
+    out["status"] = "incomplete"
+    out["detail"] = detail
+    out["evidence"] = None
+    out["observed_at_ms"] = now_ms()
+    return out
 
 
 def request_echo(req):

@@ -44,6 +44,7 @@ var opsCommandNames = map[string]bool{
 	"clear-operator-close":    true,
 	"resolve-entry":           true,
 	"resolve-robinhood-order": true,
+	pairNativeCommandName:     true,
 }
 
 func authorizeCommand(name, invokerID, guildID, ownerID string) (bool, string) {
@@ -516,6 +517,7 @@ func slashCommands() []*discordgo.ApplicationCommand {
 				{Name: robinhoodAttestReleaseChoice, Value: robinhoodAttestReleaseChoice},
 			}},
 		}},
+		pairNativeSlashCommand(),
 	}
 }
 
@@ -651,6 +653,8 @@ func (d *DiscordNotifier) interactionCreate(s discordTransport, i *discordgo.Int
 		d.handleResolveEntry(s, i, data.Options)
 	case "resolve-robinhood-order":
 		d.handleResolveRobinhoodOrder(s, i, data.Options)
+	case pairNativeCommandName:
+		d.handleResolvePairNative(s, i, data.Options)
 	default:
 		respondEphemeral(s, i, "unknown command")
 	}

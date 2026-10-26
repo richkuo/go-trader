@@ -298,7 +298,7 @@ func (bc *basketCoordinator) pairStartupErrors(rt *basketRuntime) []string {
 			pending = true
 		}
 	}
-	if len(rt.Pair.Progress.NativeReceipts) > 0 || rt.Pair.Progress.hasStagedPaperClose() {
+	if len(rt.Pair.Progress.NativeReceipts) > 0 || rt.Pair.Progress.hasStagedPaperClose() || len(rt.Pair.Progress.nativeRecoveryStaged()) > 0 {
 		pending = true
 	}
 	if rt.Pair.Progress.Lifecycle != "" && rt.Pair.Progress.Lifecycle != pairLifecycleFlat {
@@ -403,6 +403,7 @@ func (bc *basketCoordinator) freezePairEnvelope(rt *basketRuntime, slotMs int64,
 func (bc *basketCoordinator) stepPair(rt *basketRuntime, in basketCycleInputs) {
 	rt.clock = in.Now
 	bc.notePairStep(rt, in)
+	rt.Pair.noteNativeRequestsSeen()
 	if msg := bc.pairLiveRefusal(rt); msg != "" {
 		bc.pairAlert(rt, "refused|"+msg, msg+"; no pair action is dispatched", true)
 		return
@@ -422,6 +423,9 @@ func (bc *basketCoordinator) stepPair(rt *basketRuntime, in basketCycleInputs) {
 			rt.needsDurable = false
 		}
 	}
+	in = bc.refreshPairInputs(rt, in)
+	defer bc.flushPairNativeAlerts(rt)
+	bc.stepPairNativeRecovery(rt, in)
 	in = bc.refreshPairInputs(rt, in)
 	inputs := bc.pairValuationsLocked(rt)
 	bc.attachPairNativeReceipts(rt, in)
@@ -1057,7 +1061,7 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 			accounted = false
 		}
 	}
-	if len(p.NativeReceipts) > 0 || p.hasStagedPaperClose() {
+	if len(p.NativeReceipts) > 0 || p.hasStagedPaperClose() || !pairNativeRecoveryAccounted(p) {
 		accounted = false
 	}
 	if rt.Pair.funding.hasPending() {
@@ -1097,7 +1101,8 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 				rb.UpdatedAtMs = nowMs
 			}
 			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound, CostEvidence: p.CostEvidence, FundingBinding: p.FundingBinding, PositionMatch: p.PositionMatch,
-				NativeReceipts: p.NativeReceipts, PaperCloses: p.PaperCloses}
+				NativeReceipts: p.NativeReceipts, PaperCloses: p.PaperCloses, NativeAttempts: p.NativeAttempts, NativeAttemptSeq: p.NativeAttemptSeq,
+				NativeFundingHolds: p.NativeFundingHolds, NativeRequests: p.NativeRequests}
 			changed = true
 		}
 	case pairLifecycleOpening:
@@ -1482,6 +1487,11 @@ func (bc *basketCoordinator) pairIncreaseHold(rt *basketRuntime, in basketCycleI
 		}
 		if sr.NotionalBlocked {
 			return "the partition notional cap holds new opens"
+		}
+	}
+	for _, id := range rt.memberIDs() {
+		if from := pairNativeFundingHoldFromMs(rt, id); from > 0 {
+			return fmt.Sprintf("%s has a native funding hold from %d after an operator native decision, so its later funding can never be booked; increases hold while the hold exists and exits, queries and protection continue", id, from)
 		}
 	}
 	for _, id := range rt.memberIDs() {

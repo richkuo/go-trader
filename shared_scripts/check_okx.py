@@ -1188,13 +1188,114 @@ def run_pair_query(raw, since_ms, mode, probe_only=False):
     po.finish({"platform": "okx", "account": account, "pair_outcome": pair_okx_outcome(adapter, po, req, "query", account, int(since_ms))})
 
 
+PAIR_OKX_TRADE_PAGE = 100
+
+
+def pair_okx_native_history(adapter, po, req):
+    from decimal import Decimal
+    from native_close_evidence import native_history_evidence
+    out = po.native_history_output(req)
+    match = po.OKX_INST.match(req["instrument"])
+    symbol = match.group(1)
+    orders = []
+    fills = []
+    executed = Decimal(0)
+    accepted = 0
+    for oid in req["venue_order_ids"]:
+        try:
+            info = adapter.fetch_order_info(symbol, "swap", oid)
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            return po.native_history_incomplete(out, f"the order read for {oid} failed: {e}")
+        try:
+            if str(info.get("ordId") or "") != oid:
+                raise ValueError(f"the order read for {oid} returned order {info.get('ordId')!r}")
+            state = str(info.get("state") or "")
+            ex = po.exact_decimal(info.get("accFillSz") or "0", "accFillSz")
+            created = int(info.get("cTime") or 0)
+        except (ValueError, TypeError, po.PairOrderError) as e:
+            return po.native_history_incomplete(out, f"the order record for {oid} is malformed: {e}")
+        orders.append({"order_id": oid, "state": state, "terminal": state in PAIR_OKX_TERMINAL_STATES, "side": str(info.get("side") or ""),
+                       "instrument": str(info.get("instId") or ""), "executed_native_qty": po.decimal_text(ex), "accepted_at_ms": created})
+        executed += ex
+        if created > 0 and (accepted == 0 or created < accepted):
+            accepted = created
+        try:
+            trades = adapter.fetch_order_trades(symbol, "swap", oid)
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            out["orders"] = orders
+            return po.native_history_incomplete(out, f"the order trade read for {oid} failed: {e}")
+        if not isinstance(trades, list):
+            out["orders"] = orders
+            return po.native_history_incomplete(out, f"the order trade read for {oid} returned no list")
+        if len(trades) >= PAIR_OKX_TRADE_PAGE:
+            out["orders"] = orders
+            return po.native_history_incomplete(out, f"the order trade read for {oid} returned a full page of {len(trades)} rows, so it may be clipped")
+        rows = []
+        for t in trades:
+            row = t.get("info") if isinstance(t, dict) and isinstance(t.get("info"), dict) else t
+            if isinstance(row, dict):
+                rows.append(row)
+        try:
+            fills.extend(_pair_okx_fills(po, rows, oid))
+        except (ValueError, TypeError, po.PairOrderError) as e:
+            out["orders"] = orders
+            return po.native_history_incomplete(out, f"the fill records for {oid} are malformed: {e}")
+    out["orders"] = orders
+    out["coverage"] = {"complete": True, "reason": "", "from_ms": int(req["from_ms"]), "through_ms": po.now_ms(), "pages": len(orders)}
+    for o in orders:
+        if not o["terminal"]:
+            out["coverage"] = {"complete": False, "reason": f"order {o['order_id']} is {o['state']}", "from_ms": int(req["from_ms"]), "through_ms": 0, "pages": len(orders)}
+            return po.native_history_incomplete(out, f"order {o['order_id']} is {o['state']!r}, not terminal")
+    fills.sort(key=lambda r: (r["venue_time_ms"], r["fill_id"]))
+    qty, _ = po.sum_fills(fills)
+    if qty != executed:
+        out["coverage"]["complete"] = False
+        out["coverage"]["through_ms"] = 0
+        out["coverage"]["reason"] = f"the fill records cover {qty} of {executed}"
+        return po.native_history_incomplete(out, f"the fill records cover {qty} of the {executed} the orders executed")
+    out["evidence"] = native_history_evidence(req["venue_order_ids"], accepted, executed, fills)
+    out["status"] = "complete"
+    out["detail"] = f"{len(orders)} terminal orders executed {executed} with {len(fills)} fill records"
+    out["observed_at_ms"] = po.now_ms()
+    return out
+
+
+def run_pair_native_history(raw, mode, probe_only=False):
+    po = _pair_orders()
+    try:
+        req = po.parse_native_history_request(raw, "okx")
+    except po.PairOrderError as e:
+        po.finish({"platform": "okx", "error": str(e)}, 1)
+        return
+    if probe_only:
+        sys.exit(0)
+    if mode != "live":
+        po.finish({"platform": "okx", "error": "--pair-native-history-json requires --mode=live"}, 1)
+        return
+    try:
+        from adapter import OKXExchangeAdapter
+        adapter = OKXExchangeAdapter()
+        account = okx_account_key("swap")
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        po.finish({"platform": "okx", "error": f"the adapter could not be built: {e}"}, 1)
+        return
+    if account != req["account_key"]:
+        po.finish({"platform": "okx", "account": account, "error": f"the credentials answer for account {account!r}, the request is bound to {req['account_key']!r}"}, 1)
+        return
+    po.finish({"platform": "okx", "account": account, "native_history": pair_okx_native_history(adapter, po, req)})
+
+
 def main():
-    if any(a.startswith("--pair-order-json") or a.startswith("--pair-query-json") for a in sys.argv[1:]):
+    if any(a.startswith("--pair-order-json") or a.startswith("--pair-query-json") or a.startswith("--pair-native-history-json") for a in sys.argv[1:]):
         import argparse
         parser = argparse.ArgumentParser()
         group = parser.add_mutually_exclusive_group(required=True)
         group.add_argument("--pair-order-json", default=None)
         group.add_argument("--pair-query-json", default=None)
+        group.add_argument("--pair-native-history-json", default=None)
         parser.add_argument("--since-ms", type=int, default=None)
         parser.add_argument("--mode", default="live")
         parser.add_argument("--inst-type", default="swap", choices=["swap"])
@@ -1205,6 +1306,10 @@ def main():
             if args.since_ms is None or args.since_ms <= 0:
                 parser.error("--pair-query-json needs --since-ms above zero")
             run_pair_query(args.pair_query_json, args.since_ms, args.mode, probe_only=args.probe_only)
+        elif args.pair_native_history_json is not None:
+            if args.since_ms is not None:
+                parser.error("--since-ms applies to --pair-query-json only")
+            run_pair_native_history(args.pair_native_history_json, args.mode, probe_only=args.probe_only)
         else:
             if args.since_ms is not None:
                 parser.error("--since-ms applies to --pair-query-json only")

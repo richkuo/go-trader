@@ -23,7 +23,7 @@ def _pair_orders():
     return mod
 
 
-def _evidence(order_ids, accepted_at_ms, executed, fills, complete, detail):
+def _evidence(order_ids, accepted_at_ms, executed, fills, complete, detail, orders_complete=True):
     po = _pair_orders()
     return {
         "v": EVIDENCE_VERSION,
@@ -33,19 +33,35 @@ def _evidence(order_ids, accepted_at_ms, executed, fills, complete, detail):
         "fills": fills,
         "complete": bool(complete),
         "detail": "" if complete else (detail or "the venue fill history is incomplete"),
+        "orders_complete": bool(orders_complete),
     }
 
 
-def _failed(order_ids, detail):
+def _failed(order_ids, detail, orders_complete=False):
+    ids = [str(o) for o in order_ids if o not in (None, "")]
     return {
         "v": EVIDENCE_VERSION,
-        "venue_order_ids": [str(o) for o in order_ids if o not in (None, "")],
+        "venue_order_ids": ids,
         "accepted_at_ms": 0,
         "executed_native_qty": "",
         "fills": [],
         "complete": False,
         "detail": detail,
+        "orders_complete": bool(orders_complete and ids),
     }
+
+
+def native_history_evidence(order_ids, accepted_at_ms, executed, fills):
+    return _evidence(order_ids, accepted_at_ms, executed, fills, True, "")
+
+
+def okx_partial_close_evidence(orders, detail):
+    ids = []
+    for o in orders or []:
+        oid = o.get("id") if isinstance(o, dict) else None
+        if oid not in (None, ""):
+            ids.append(str(oid))
+    return _failed(ids, detail, orders_complete=False)
 
 
 def _dedupe(rows, key_field, what):
@@ -89,7 +105,7 @@ def hyperliquid_close_evidence(oid, total_sz, raw_fills):
             detail = f"the fill records sum to {qty}, the venue reports {executed} executed"
         return _evidence([oid], 0, executed, fills, complete, detail)
     except Exception as e:
-        return _failed([oid], f"the close fill evidence is unreadable: {e}")
+        return _failed([oid], f"the close fill evidence is unreadable: {e}", orders_complete=True)
 
 
 def _okx_order_fills(po, adapter, symbol, oid):
@@ -151,4 +167,4 @@ def okx_close_evidence(adapter, symbol, orders, attempts=OKX_READ_ATTEMPTS, dela
                 time.sleep(delay_s)
         return _evidence(ids, accepted, executed, fills, False, last)
     except Exception as e:
-        return _failed(ids, f"the close fill evidence is unreadable: {e}")
+        return _failed(ids, f"the close fill evidence is unreadable: {e}", orders_complete=True)

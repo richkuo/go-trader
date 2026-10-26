@@ -205,6 +205,8 @@ type pairScriptOutput struct {
 	Error    string             `json:"error"`
 	Outcome  *pairScriptOutcome `json:"pair_outcome"`
 	Position *pairScriptPos     `json:"pair_position"`
+
+	NativeHistory *pairNativeHistoryOutput `json:"native_history"`
 }
 
 type pairScriptPos struct {

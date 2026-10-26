@@ -3964,6 +3964,92 @@ def run_pair_query(raw, since_ms, mode, probe_only=False):
     po.finish({"platform": "hyperliquid", "account": account, "pair_outcome": pair_hl_outcome(adapter, po, req, "query", account, int(since_ms))})
 
 
+def pair_hl_native_history(adapter, po, req):
+    from native_close_evidence import native_history_evidence
+    out = po.native_history_output(req)
+    terminal_states = PAIR_HL_FILLED_STATUSES + QUOTE_CANCELLED_STATUSES + QUOTE_REJECTED_STATUSES
+    orders = []
+    executed = Decimal(0)
+    accepted = 0
+    for oid in req["venue_order_ids"]:
+        try:
+            found = _pair_hl_order(adapter.query_order_by_oid(int(oid)))
+        except (ValueError, TypeError) as e:
+            return po.native_history_incomplete(out, f"the order record for {oid} is malformed: {e}")
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            return po.native_history_incomplete(out, f"the order status read for {oid} failed: {e}")
+        if found is None:
+            return po.native_history_incomplete(out, f"the venue holds no order record for order {oid}")
+        body, status = found
+        try:
+            if str(body.get("oid")) != oid:
+                raise ValueError(f"the read for {oid} returned order {body.get('oid')!r}")
+            orig = po.exact_decimal(body.get("origSz"), "origSz", positive=True)
+            remaining = po.exact_decimal(body.get("sz"), "sz")
+        except (ValueError, TypeError, po.PairOrderError) as e:
+            return po.native_history_incomplete(out, f"the order record for {oid} is malformed: {e}")
+        ex = orig if status in PAIR_HL_FILLED_STATUSES else orig - remaining
+        if ex < 0:
+            ex = Decimal(0)
+        ts = int(body.get("timestamp") or 0)
+        orders.append({"order_id": oid, "state": status, "terminal": status in terminal_states, "side": _pair_hl_side(body.get("side")),
+                       "instrument": str(body.get("coin") or ""), "executed_native_qty": po.decimal_text(ex), "accepted_at_ms": ts})
+        executed += ex
+        if ts > 0 and (accepted == 0 or ts < accepted):
+            accepted = ts
+    out["orders"] = orders
+    try:
+        scan = scan_recovery_fills(adapter, int(req["from_ms"]))
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        return po.native_history_incomplete(out, f"the fill history read failed: {e}")
+    out["coverage"] = {"complete": bool(scan["complete"]), "reason": scan["reason"], "from_ms": int(scan["from_ms"]),
+                       "through_ms": int(scan["through_ms"] if scan["complete"] else 0), "pages": int(scan["pages"])}
+    if not scan["complete"]:
+        return po.native_history_incomplete(out, f"the fill history is not complete: {scan['reason']}")
+    for o in orders:
+        if not o["terminal"]:
+            return po.native_history_incomplete(out, f"order {o['order_id']} is {o['state']}, not terminal")
+    wanted = set(req["venue_order_ids"])
+    try:
+        fills = _pair_hl_fills(po, scan["fills"], lambda f: str(f.get("oid")) in wanted)
+    except (ValueError, TypeError, po.PairOrderError) as e:
+        return po.native_history_incomplete(out, f"the fill records are malformed: {e}")
+    qty, _ = po.sum_fills(fills)
+    if qty != executed:
+        return po.native_history_incomplete(out, f"the fill records cover {qty} of the {executed} the orders executed")
+    out["evidence"] = native_history_evidence(req["venue_order_ids"], accepted, executed, fills)
+    out["status"] = "complete"
+    out["detail"] = f"{len(orders)} terminal orders executed {executed} with {len(fills)} fill records in a complete fill history"
+    out["observed_at_ms"] = po.now_ms()
+    return out
+
+
+def run_pair_native_history(raw, mode, probe_only=False):
+    po = _pair_orders()
+    try:
+        req = po.parse_native_history_request(raw, "hyperliquid")
+    except po.PairOrderError as e:
+        po.finish({"platform": "hyperliquid", "error": str(e)}, 1)
+        return
+    if probe_only:
+        sys.exit(0)
+    if mode != "live":
+        po.finish({"platform": "hyperliquid", "error": "--pair-native-history-json requires --mode=live"}, 1)
+        return
+    try:
+        adapter, account = _pair_hl_adapter(po, req, mode)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        po.finish({"platform": "hyperliquid", "error": f"the adapter could not be built: {e}"}, 1)
+        return
+    if account != req["account_key"]:
+        po.finish({"platform": "hyperliquid", "account": account, "error": f"the credentials answer for account {account!r}, the request is bound to {req['account_key']!r}"}, 1)
+        return
+    po.finish({"platform": "hyperliquid", "account": account, "native_history": pair_hl_native_history(adapter, po, req)})
+
+
 def run_pair_position(raw, mode, probe_only=False):
     po = _pair_orders()
     try:
@@ -4243,13 +4329,14 @@ def main():
                     stop_cloid=args.stop_cloid,
                     expires_after_ms=args.expires_after_ms,
                     stop_expires_after_ms=args.stop_expires_after_ms)
-    elif any(a.startswith("--pair-order-json") or a.startswith("--pair-query-json") or a.startswith("--pair-position-json") for a in sys.argv[1:]):
+    elif any(a.startswith("--pair-order-json") or a.startswith("--pair-query-json") or a.startswith("--pair-position-json") or a.startswith("--pair-native-history-json") for a in sys.argv[1:]):
         import argparse
         parser = argparse.ArgumentParser()
         group = parser.add_mutually_exclusive_group(required=True)
         group.add_argument("--pair-order-json", default=None)
         group.add_argument("--pair-query-json", default=None)
         group.add_argument("--pair-position-json", default=None)
+        group.add_argument("--pair-native-history-json", default=None)
         parser.add_argument("--since-ms", type=int, default=None)
         parser.add_argument("--mode", default="live")
         parser.add_argument("--probe-only", action="store_true",
@@ -4263,6 +4350,8 @@ def main():
             parser.error("--since-ms applies to --pair-query-json only")
         elif args.pair_order_json is not None:
             run_pair_order(args.pair_order_json, args.mode, probe_only=args.probe_only)
+        elif args.pair_native_history_json is not None:
+            run_pair_native_history(args.pair_native_history_json, args.mode, probe_only=args.probe_only)
         else:
             run_pair_position(args.pair_position_json, args.mode, probe_only=args.probe_only)
     elif "--quote-place" in sys.argv:

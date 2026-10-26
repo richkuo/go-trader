@@ -64,6 +64,11 @@ type basketCoordinator struct {
 	pairClock            func() time.Time
 	pairConversionLookup func(ctx context.Context, m pairContractMember, currency string, fillAtMs, settlementAtMs int64) (pairConversionEvidence, error)
 	pairReplay           *pairReplayHooks
+
+	pairNativeHistory pairNativeHistoryReader
+	pairNativeGen     map[string]uint64
+	pairNativeSending map[string]int
+	pairNativeReqGen  map[string]uint64
 }
 
 type pairCollectedSlot struct {
