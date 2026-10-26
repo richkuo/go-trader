@@ -80,8 +80,12 @@ func okxOrdinaryCheck(prices map[string]float64, cfg *Config, notifier *MultiNot
 }
 
 func okxPairManagementCheck(input pairManagementInput, notifier *MultiNotifier) okxCheckFunc {
+	return okxPairManagementCheckWith(input, notifier, runPythonReadOnlyWithStdin)
+}
+
+func okxPairManagementCheckWith(input pairManagementInput, notifier *MultiNotifier, run func(script string, args []string, stdin []byte) ([]byte, []byte, error)) okxCheckFunc {
 	return func(sc StrategyConfig, posCtx PositionCtx, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
-		args, result, stderr, err := runOKXPairManagementCheckRaw(sc, posCtx, input, logger)
+		args, result, stderr, err := runOKXPairManagementCheckRawWith(sc, posCtx, input, logger, run)
 		frozen := map[string]float64{}
 		if sym := okxSymbol(sc.Args); sym != "" && okxUsablePrice(input.MarkPrice) {
 			frozen[sym] = input.MarkPrice

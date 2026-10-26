@@ -83,6 +83,73 @@ type pairReplayHooks struct {
 	frozen       func(rt *basketRuntime, slotMs int64)
 	beforeSubmit func(a basketAction) error
 	submitted    func(a basketAction, out basketVenueOutcome, err error)
+	collectHold  func(rt *basketRuntime, startMs int64) string
+	decideHold   func(rt *basketRuntime, nowMs int64) (string, bool)
+	increaseHold func(rt *basketRuntime) string
+	budget       func(site string, ctx context.Context, wallStart time.Time) (time.Duration, error)
+	wallNow      func() time.Time
+}
+
+func (bc *basketCoordinator) pairBudgetStart() time.Time {
+	if h := bc.pairReplay; h != nil && h.wallNow != nil {
+		return h.wallNow()
+	}
+	return time.Now()
+}
+
+func (bc *basketCoordinator) pairWallBudget(site string, ctx context.Context, wallStart time.Time) (time.Duration, error) {
+	if h := bc.pairReplay; h != nil && h.budget != nil {
+		return h.budget(site, ctx, wallStart)
+	}
+	return time.Since(wallStart), ctx.Err()
+}
+
+func pairRecordingBarrierReason(rt *basketRuntime) string {
+	if b := rt.Pair.Progress.RecordingBlocked; b != nil {
+		return fmt.Sprintf("the recording barrier holds new decisions and increases since input %d failed to commit (%s); it clears only after an explicit verification of the committed record", b.FailedSeq, b.Reason)
+	}
+	return ""
+}
+
+func (bc *basketCoordinator) pairCollectHold(rt *basketRuntime, startMs int64) string {
+	if why := pairRecordingBarrierReason(rt); why != "" {
+		return why
+	}
+	if h := bc.pairReplay; h != nil && h.collectHold != nil {
+		return h.collectHold(rt, startMs)
+	}
+	return ""
+}
+
+func (bc *basketCoordinator) pairDecideHold(rt *basketRuntime, nowMs int64) (string, bool) {
+	if h := bc.pairReplay; h != nil && h.decideHold != nil {
+		why, final := h.decideHold(rt, nowMs)
+		if final {
+			return why, true
+		}
+		if bw := pairRecordingBarrierReason(rt); bw != "" {
+			return bw, false
+		}
+		return why, false
+	}
+	return pairRecordingBarrierReason(rt), false
+}
+
+func (bc *basketCoordinator) pairHostIncreaseHoldUnlocked(rt *basketRuntime) string {
+	if h := bc.pairReplay; h != nil && h.increaseHold != nil {
+		return h.increaseHold(rt)
+	}
+	return ""
+}
+
+func (bc *basketCoordinator) pairHostIncreaseHold(rt *basketRuntime) string {
+	if why := pairRecordingBarrierReason(rt); why != "" {
+		return why
+	}
+	if h := bc.pairReplay; h != nil && h.increaseHold != nil {
+		return h.increaseHold(rt)
+	}
+	return ""
 }
 
 func newBasketCoordinator(cfg *Config, state *AppState, store *StateStore, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager, runtimes map[string]*basketRuntime) *basketCoordinator {

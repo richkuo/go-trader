@@ -103,6 +103,14 @@ type pairReplayRuntime struct {
 	equality   []string
 	wakeTimes  []int64
 	cleanups   []func()
+
+	paper            *pairPaperRun
+	rec              *pairRecorder
+	lastNativeCall   string
+	paperFrame0      pairPaperHistoryCandles
+	pollNextMs       int64
+	fundingNextMs    int64
+	capabilityNextMs int64
 }
 
 func (r *pairReplayRuntime) Close() {
@@ -165,6 +173,9 @@ func (r *pairReplayRuntime) fault(kind string) {
 }
 
 func openPairReplay(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, opts basketReplayOptions) (*pairReplayRuntime, error) {
+	if spec.Recording != nil {
+		return openPairPlayback(spec, raw, lt, opts)
+	}
 	r := &pairReplayRuntime{spec: spec, lt: lt, opts: opts, mu: &sync.RWMutex{}, notifier: NewMultiNotifier(), clock: &simulatedClock{}, faultCount: map[string]int{}}
 	ok := false
 	defer func() {
@@ -550,6 +561,10 @@ func (r *pairReplayRuntime) loadState() error {
 	bc.pairPolicyRun = r.policyRunner
 	bc.pairClock = r.clock.Now
 	bc.pairReplay = &pairReplayHooks{collected: r.onCollected, frozen: r.onFrozen, beforeSubmit: r.beforeSubmit, submitted: r.onSubmitted}
+	if r.paper != nil {
+		bc.pairPolicyRun = recordingPolicyRunner{r: r}.run
+		bc.pairReplay = r.paperHooks()
+	}
 	ids := bc.sortedPairIDs()
 	if len(ids) != 1 {
 		return refuseReplay("state_refused", fmt.Sprintf("the replay needs exactly one pair runtime, got %d", len(ids)))
@@ -695,7 +710,11 @@ func (r *pairReplayRuntime) resumeState() error {
 		if err := pairReplayStrictDecode(pending.Record, &rec); err != nil {
 			return refuseReplay("state_foreign", fmt.Sprintf("the pending record of step %d is unreadable: %v", pending.Ordinal, err))
 		}
-		if rec.PrefixHash != r.prefixHash(rec.AtMs) || rec.PrefixHash != r.cursor.PendingHash || rec.AtMs != r.cursor.PendingMs {
+		want := r.prefixHash(rec.AtMs)
+		if r.paper != nil {
+			want = r.paperPrefix(rec.AtMs, rec.RecSeq)
+		}
+		if rec.PrefixHash != want || rec.PrefixHash != r.cursor.PendingHash || rec.AtMs != r.cursor.PendingMs {
 			return refuseReplay("resume_refused", fmt.Sprintf("the pending step %d visible-prefix binding does not match the frozen inputs", pending.Ordinal))
 		}
 		r.pending, r.resumeStep, r.resumePhase = rec, true, pending.Phase
@@ -712,6 +731,25 @@ func (r *pairReplayRuntime) resumeState() error {
 		if err := r.clock.Set(time.UnixMilli(r.cursor.CursorMs).UTC()); err != nil {
 			return err
 		}
+	}
+	if r.rec != nil && pending == nil {
+		rc, rl, err := r.file.readPairRecCursor(r.spec.Run.RunID)
+		if err != nil {
+			return err
+		}
+		r.rec.restorePosition(rc, 0, rl, "")
+	}
+	if r.paper != nil && pending != nil {
+		r.mu.Lock()
+		for d, rb := range r.rt.Rebalances {
+			if rb.Status == basketRebalanceReserved && rb.CreatedAtMs >= r.pending.AtMs {
+				if r.rt.pairResumeSlots == nil {
+					r.rt.pairResumeSlots = map[int64]bool{}
+				}
+				r.rt.pairResumeSlots[d] = true
+			}
+		}
+		r.mu.Unlock()
 	}
 	r.bc.recoverInterrupted(time.UnixMilli(nowMs).UTC())
 	return nil
@@ -804,12 +842,30 @@ func (r *pairReplayRuntime) prefixHash(atMs int64) string {
 func (r *pairReplayRuntime) hostStateLocked() pairReplayHostState {
 	rt := r.rt
 	h := pairReplayHostState{Cycle: r.bc.cycle, NextManageMs: r.nextManageMs, LastStepMs: rt.pairLastStepMs, ViewGen: rt.pairViewGen, PrepSeq: rt.pairPrepSeq,
-		Observations: map[string]pairReplayObservation{}, EchoFailures: map[string]string{}}
+		Observations: map[string]pairReplayObservation{}, EchoFailures: map[string]string{}, PollNextMs: r.pollNextMs, FundingNextMs: r.fundingNextMs, CapabilityNextMs: r.capabilityNextMs}
 	for id, o := range rt.observations {
 		h.Observations[id] = pairReplayObservation{Cycle: o.Cycle, AtMs: o.AtMs, Fields: o.Fields, Indicators: o.Indicators, Price: o.Price}
 	}
 	for id, why := range rt.pairEchoFailures {
 		h.EchoFailures[id] = why
+	}
+	if r.paper != nil {
+		if len(rt.pairView) > 0 {
+			h.PairView = map[string]pairMemberValuation{}
+			for id, v := range rt.pairView {
+				if _, err := json.Marshal(v); err == nil {
+					h.PairView[id] = v
+				}
+			}
+		}
+		if len(rt.pairLastMark) > 0 {
+			h.PairLastMarks = map[string]pairLastMark{}
+			for id, m := range rt.pairLastMark {
+				if _, err := json.Marshal(m); err == nil {
+					h.PairLastMarks[id] = m
+				}
+			}
+		}
 	}
 	return h
 }
@@ -830,6 +886,7 @@ func (r *pairReplayRuntime) restoreHost(h pairReplayHostState) {
 	rt := r.rt
 	r.bc.cycle = h.Cycle
 	r.nextManageMs = h.NextManageMs
+	r.pollNextMs, r.fundingNextMs, r.capabilityNextMs = h.PollNextMs, h.FundingNextMs, h.CapabilityNextMs
 	rt.pairLastStepMs = h.LastStepMs
 	rt.pairViewGen, rt.pairPrepSeq = h.ViewGen, h.PrepSeq
 	rt.observations = map[string]basketMemberObservation{}
@@ -839,6 +896,21 @@ func (r *pairReplayRuntime) restoreHost(h pairReplayHostState) {
 	rt.pairEchoFailures = map[string]string{}
 	for id, why := range h.EchoFailures {
 		rt.pairEchoFailures[id] = why
+	}
+	if r.paper != nil {
+		rt.pairView, rt.pairLastMark = nil, nil
+		if len(h.PairView) > 0 {
+			rt.pairView = pairViewSet{}
+			for id, v := range h.PairView {
+				rt.pairView[id] = v
+			}
+		}
+		if len(h.PairLastMarks) > 0 {
+			rt.pairLastMark = map[string]pairLastMark{}
+			for id, m := range h.PairLastMarks {
+				rt.pairLastMark[id] = m
+			}
+		}
 	}
 }
 
@@ -942,6 +1014,9 @@ func (r *pairReplayRuntime) policyRunner(ctx context.Context, stdin []byte, time
 }
 
 func (r *pairReplayRuntime) onCollected(rt *basketRuntime, c pairCollectedSlot) error {
+	if r.paper != nil {
+		return r.onCollectedPaper(rt, c)
+	}
 	rec := r.pending
 	rec.Collection = &pairReplayCollection{RunID: r.spec.Run.RunID, PairID: rt.Contract.BasketID, ContractFP: rt.Contract.Fingerprint(), SlotMs: c.SlotMs, StartMs: c.StartMs,
 		DeadlineMs: c.DeadlineMs, CutoffMs: c.Envelope.CutoffMs, InputFP: c.Envelope.InputFP, EvidenceJSON: c.Envelope.EvidenceJSON, SnapshotID: c.Envelope.SnapshotID,
@@ -1043,6 +1118,9 @@ func (r *pairReplayRuntime) memberTrades(id string) ([]Trade, error) {
 }
 
 func (r *pairReplayRuntime) Run() error {
+	if r.paper != nil {
+		return r.runPaper()
+	}
 	for {
 		if r.stopReason != "" {
 			return nil
@@ -1067,6 +1145,9 @@ func (r *pairReplayRuntime) Run() error {
 }
 
 func (r *pairReplayRuntime) cycleInputs(at time.Time) basketCycleInputs {
+	if r.quotes == nil {
+		return basketCycleInputs{Now: at, Once: true}
+	}
 	return basketCycleInputs{Now: at, Once: true, PairSnapshotFor: r.quotes.seal, PairGeneration: r.quotes.generation}
 }
 
@@ -1102,8 +1183,21 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 		resumePhase = r.resumePhase
 		r.restoreHost(r.pending.HostBefore)
 		r.resumeStep = false
+		if r.rec != nil {
+			r.rec.beginStep(stepID, 0)
+			if cp := r.pending.Coordinator; resumePhase == pairReplayPhaseCoordinator && cp != nil {
+				r.rec.restorePosition(cp.RecCursor, cp.RecOrdinal, cp.RecLogicalMs, stepID)
+			} else {
+				r.rec.restorePosition(r.pending.RecCursor, 0, r.pending.RecLogicalMs, stepID)
+			}
+		}
 	} else {
 		rec := pairReplayPendingRecord{V: 1, StepID: stepID, AtMs: atMs, Ordinal: ordinal, PrefixHash: r.prefixHash(atMs), HostBefore: r.hostState()}
+		if r.rec != nil {
+			r.rec.beginStep(stepID, 0)
+			rec.RecSeq, rec.RecCursor, rec.RecLogicalMs = r.rec.wakeSeq(), r.rec.cursorNow(), r.rec.logicalNow()
+			rec.PrefixHash = r.paperPrefix(atMs, rec.RecSeq)
+		}
 		saved, err := r.file.beginPairReplayStep(r.spec.Run.RunID, rec)
 		if err != nil {
 			return err
@@ -1118,8 +1212,10 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 	managed, saveBlocked := false, false
 	var riskRecs []pairReplayRiskRecord
 	if resumePhase == pairReplayPhaseCoordinator && r.pending.Coordinator != nil {
-		r.bc.preparePairRisk(in)
-		r.checkResumedView(at)
+		if r.paper == nil {
+			r.bc.preparePairRisk(in)
+			r.checkResumedView(at)
+		}
 		cp := r.pending.Coordinator
 		r.restoreHost(cp.HostAfter)
 		managed, riskRecs = cp.Managed, cp.Risk
@@ -1133,10 +1229,18 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 		}
 		trace = append(trace, "prepare_risk", "risk_restored")
 	} else {
+		if r.paper != nil {
+			trace = append(trace, r.deliver(at)...)
+			at = r.clock.Now()
+			atMs = at.UnixMilli()
+			in = r.cycleInputs(at)
+		}
 		r.bc.stepPairFundingDue(in)
 		trace = append(trace, "funding")
 		r.bc.preparePairRisk(in)
-		r.checkResumedView(at)
+		if r.paper == nil {
+			r.checkResumedView(at)
+		}
 		trace = append(trace, "prepare_risk")
 		if allPartitionsSaveBlocked(store, cfg) {
 			saveBlocked = true
@@ -1178,8 +1282,14 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 			}
 		}
 		riskRecs = pairReplayRiskRecords(risk)
+		if r.rec != nil {
+			r.syncBarrier()
+		}
 		cp := r.pending
 		cp.Coordinator = &pairReplayCoordinatorCheckpoint{HostAfter: r.hostState(), Managed: managed, Risk: riskRecs}
+		if r.rec != nil {
+			cp.Coordinator.RecCursor, cp.Coordinator.RecOrdinal, cp.Coordinator.RecLogicalMs = r.rec.cursorNow(), r.rec.stepOrdinal(), r.rec.logicalNow()
+		}
 		r.commitMu.Lock()
 		r.coordCommit = &cp
 		r.commitMu.Unlock()
@@ -1196,19 +1306,42 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 		}
 	}
 	in.ScopeRisk, in.SaveBlocked = risk, saveBlocked
+	if r.paper != nil {
+		in.Now = r.clock.Now()
+		r.bc.preparePairRisk(in)
+		trace = append(trace, "prepare_risk")
+	}
 	trace = append(trace, "step")
 	r.bc.step(in)
+	if r.rec != nil {
+		r.rec.endStep()
+		r.mu.Lock()
+		if len(r.rt.pairResumeSlots) > 0 {
+			r.rt.pairResumeSlots = nil
+			r.bc.recoverInterruptedPair(r.rt, at)
+		}
+		r.mu.Unlock()
+		r.syncBarrier()
+	}
 	fresh := r.bc.pairNow(basketCycleInputs{Now: at})
 	next := r.nextWake(fresh.UnixMilli())
 	sameTime := 0
 	if next == atMs {
 		sameTime = r.sameTime + 1
 		if sameTime >= pairReplayMaxSameTime {
-			next = r.nextWakeAfter(atMs)
+			if r.paper != nil {
+				next = r.paperNextWakeAfter(atMs)
+			} else {
+				next = r.nextWakeAfter(atMs)
+			}
 			sameTime = 0
 		}
 	}
-	rec := r.stepRecord(ordinal, stepID, at, managed, saveBlocked, trace, next, sameTime, riskRecs)
+	recAt := at
+	if r.paper != nil {
+		recAt = fresh
+	}
+	rec := r.stepRecord(ordinal, stepID, recAt, managed, saveBlocked, trace, next, sameTime, riskRecs)
 	recBlob, err := json.Marshal(rec)
 	if err != nil {
 		return err
@@ -1217,7 +1350,10 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 	if err != nil {
 		return err
 	}
-	commit := pairReplayFinalCommit{Ordinal: ordinal, StepID: stepID, AtMs: atMs, Record: recBlob, ResultHash: sha256Hex(recBlob), BindingSeq: binding}
+	commit := pairReplayFinalCommit{Ordinal: ordinal, StepID: stepID, AtMs: r.pending.AtMs, Record: recBlob, ResultHash: sha256Hex(recBlob), BindingSeq: binding}
+	if r.rec != nil {
+		commit.Recorded, commit.RecCursor, commit.RecLogicalMs = true, r.rec.cursorNow(), r.rec.logicalNow()
+	}
 	r.commitMu.Lock()
 	r.finalCommit = &commit
 	r.commitMu.Unlock()
@@ -1256,7 +1392,7 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 		return nil
 	}
 	r.fault("exit-after-book-commit")
-	r.cursor.Applied, r.cursor.CursorMs, r.cursor.CursorStepID, r.cursor.CursorPhase, r.cursor.BindingSeq = ordinal+1, atMs, stepID, pairReplayPhaseComplete, binding
+	r.cursor.Applied, r.cursor.CursorMs, r.cursor.CursorStepID, r.cursor.CursorPhase, r.cursor.BindingSeq = ordinal+1, r.pending.AtMs, stepID, pairReplayPhaseComplete, binding
 	r.cursor.PendingID, r.cursor.PendingMs, r.cursor.PendingHash = "", 0, ""
 	r.nextAt, r.sameTime = next, sameTime
 	return nil
@@ -1272,7 +1408,12 @@ func pairReplayRiskPartitions(m map[RiskPartition]*scopeCycleRisk) []RiskPartiti
 }
 
 func (r *pairReplayRuntime) nextWake(nowMs int64) int64 {
-	best := r.nextWakeAfter(nowMs)
+	best := int64(0)
+	if r.paper != nil {
+		best = r.paperNextWakeAfter(nowMs)
+	} else {
+		best = r.nextWakeAfter(nowMs)
+	}
 	if d := r.bc.wakeDelay(time.UnixMilli(nowMs).UTC()); d >= 0 {
 		if t := nowMs + d.Milliseconds(); t < best {
 			best = t
@@ -1354,6 +1495,10 @@ func pairDecodeEvidenceDocumentBytes(blob []byte) ([]pairEvidenceStamp, error) {
 
 func (r *pairReplayRuntime) manageMember(sc StrategyConfig, risk map[RiskPartition]*scopeCycleRisk, at time.Time) {
 	atMs := at.UnixMilli()
+	if r.paper != nil {
+		r.managePaperMember(sc, risk, at)
+		return
+	}
 	mark, ok := r.quotes.nativeMid(sc.ID, atMs)
 	if !ok {
 		why := fmt.Sprintf("no recorded quote of %s is visible at %d for its management mark", sc.ID, atMs)
@@ -1423,8 +1568,14 @@ func (r *pairReplayRuntime) manageHL(sc StrategyConfig, risk map[RiskPartition]*
 	if notionalCapSkipsStrategyCycle(sr.NotionalBlocked) {
 		return
 	}
-	snap := r.hlSnapshot(sc, at, prices)
-	feedCtx := &marketFeedContext{Enabled: true, Requirements: r.feedReq, Snapshot: snap, Interval: cfg.IntervalSeconds}
+	var snap *marketSnapshot
+	var stdinRun func(string, []string, []byte) ([]byte, []byte, error)
+	if r.paper != nil {
+		snap, stdinRun = r.paperSnapshot(sc, at, prices, r.paperFrame0), recordingManagementCheck{r: r, memberID: sc.ID}.run
+	} else {
+		snap = r.hlSnapshot(sc, at, prices)
+	}
+	feedCtx := &marketFeedContext{Enabled: true, Requirements: r.feedReq, Snapshot: snap, Interval: cfg.IntervalSeconds, StdinRun: stdinRun}
 	x := &hlPerpsStep{
 		sc: sc, mu: mu, logger: logger, stratState: s, notifier: r.notifier, cfg: cfg, stratDB: stratDB, store: store, state: state,
 		sr: sr, prices: prices, feedCtx: feedCtx, basketCoord: r.bc, intervals: r.intervals, stratScope: part.Scope,
@@ -1510,13 +1661,19 @@ func (r *pairReplayRuntime) manageOKX(sc StrategyConfig, risk map[RiskPartition]
 		c.Pos = okxStepPosition{Ctx: ctx, Qty: ctx.Quantity, Side: ctx.Side, AvgCost: ctx.AvgCost, Leverage: pos.Leverage}
 	}
 	mu.RUnlock()
-	tf := r.inputs.timeframes[sc.ID]
-	ivl, _ := hlCandleIntervalMs(tf)
 	input := pairManagementInput{MarkPrice: mark}
-	for _, b := range pairReplayFrame(r.inputs.candles[sc.ID], ivl, at.UnixMilli(), pairReplayManagementBars, false) {
-		input.Candles = append(input.Candles, [6]float64{float64(b.OpenMs), b.Open, b.High, b.Low, b.Close, b.Volume})
+	var check okxCheckFunc
+	if r.paper != nil {
+		input.Candles = append(input.Candles, r.paperFrame0.Bars...)
+		check = okxPairManagementCheckWith(input, r.notifier, recordingManagementCheck{r: r, memberID: sc.ID}.run)
+	} else {
+		tf := r.inputs.timeframes[sc.ID]
+		ivl, _ := hlCandleIntervalMs(tf)
+		for _, b := range pairReplayFrame(r.inputs.candles[sc.ID], ivl, at.UnixMilli(), pairReplayManagementBars, false) {
+			input.Candles = append(input.Candles, [6]float64{float64(b.OpenMs), b.Open, b.High, b.Low, b.Close, b.Volume})
+		}
+		check = okxPairManagementCheck(input, r.notifier)
 	}
-	check := okxPairManagementCheck(input, r.notifier)
 	if inject {
 		check = func(StrategyConfig, PositionCtx, *StrategyLogger) (*OKXResult, string, float64, bool) {
 			logger.Error("the scenario stopped the management check process")

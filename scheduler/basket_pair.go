@@ -226,6 +226,9 @@ func (bc *basketCoordinator) recoverInterruptedPair(rt *basketRuntime, now time.
 	changed := false
 	for _, d := range rt.sortedDeadlines() {
 		rb := rt.Rebalances[d]
+		if rb.Status == basketRebalanceReserved && rt.pairResumeSlots[d] {
+			continue
+		}
 		if rb.Status == basketRebalanceReserved || rb.Status == basketRebalanceRanking {
 			rb.Status = basketRebalanceHeld
 			rb.HoldReason = "the scheduler restarted before the quote envelope froze; a cadence slot is never collected twice"
@@ -1102,7 +1105,7 @@ func (bc *basketCoordinator) pairLifecycleChecks(rt *basketRuntime, in basketCyc
 			}
 			*p = pairProgress{V: pairProgressVersion, Seq: p.Seq, Lifecycle: pairLifecycleFlat, Alerts: p.Alerts, Exceptions: p.Exceptions, Retries: nil, Obligations: p.Obligations, LastBound: p.LastBound, CostEvidence: p.CostEvidence, FundingBinding: p.FundingBinding, PositionMatch: p.PositionMatch,
 				NativeReceipts: p.NativeReceipts, PaperCloses: p.PaperCloses, NativeAttempts: p.NativeAttempts, NativeAttemptSeq: p.NativeAttemptSeq,
-				NativeFundingHolds: p.NativeFundingHolds, NativeRequests: p.NativeRequests}
+				NativeFundingHolds: p.NativeFundingHolds, NativeRequests: p.NativeRequests, RecordingBlocked: p.RecordingBlocked}
 			changed = true
 		}
 	case pairLifecycleOpening:
@@ -1167,6 +1170,28 @@ func (bc *basketCoordinator) decidePendingPairSlots(rt *basketRuntime, in basket
 		return
 	}
 	newest := undecided[len(undecided)-1]
+	why, final := bc.pairDecideHold(rt, bc.pairNow(in).UnixMilli())
+	if final {
+		now := bc.pairNow(in)
+		for _, rb := range undecided {
+			t := &pairTargets{Kind: pairPolicyStatusHold, CoordinatorReason: why}
+			_, saved, err := bc.freezePairTargets(rt, rb, t, why, now)
+			if err != nil {
+				bc.pairLogf(rt, "slot %s end hold could not be saved: %v; a later step holds it again", formatClosedBarMs(rb.DeadlineMs), err)
+				continue
+			}
+			bc.pairLogf(rt, "slot %s held: %s", formatClosedBarMs(rb.DeadlineMs), saved)
+		}
+		return
+	}
+	if why != "" {
+		if rt.pairDecideNote != why {
+			rt.pairDecideNote = why
+			bc.pairLogf(rt, "slot decisions hold: %s; frozen slots stay undecided, and queries, settlement and protection continue", why)
+		}
+		return
+	}
+	rt.pairDecideNote = ""
 	changed := false
 	for _, rb := range undecided[:len(undecided)-1] {
 		rb.Status = basketRebalanceSuperseded
@@ -1262,8 +1287,9 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 	bc.unlocked(func() {
 		ctx, cancel := context.WithTimeout(parent, timeout)
 		defer cancel()
+		wallStart := bc.pairBudgetStart()
 		stdout, stderr, runErr = runner(ctx, stdin, timeout)
-		ctxErr = ctx.Err()
+		_, ctxErr = bc.pairWallBudget("policy", ctx, wallStart)
 	})
 	now = bc.pairNow(in)
 	rt.clock = now
@@ -1465,6 +1491,9 @@ func (bc *basketCoordinator) freezePairTargets(rt *basketRuntime, rb *basketReba
 }
 
 func (bc *basketCoordinator) pairIncreaseHold(rt *basketRuntime, in basketCycleInputs) string {
+	if why := bc.pairHostIncreaseHold(rt); why != "" {
+		return why
+	}
 	p := rt.Pair.Progress
 	if p.IncreasesFrozen {
 		if p.FreezeReason != "" {
@@ -2448,6 +2477,11 @@ func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketReba
 		}
 		if skipped = proof.refusal(t.UnixMilli()); skipped != "" {
 			return
+		}
+		if c.Direction == basketDirectionIncrease {
+			if skipped = bc.pairHostIncreaseHoldUnlocked(rt); skipped != "" {
+				return
+			}
 		}
 		if h := bc.pairReplay; h != nil && h.beforeSubmit != nil {
 			if serr = h.beforeSubmit(submitted); serr != nil {

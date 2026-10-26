@@ -390,8 +390,48 @@ def okx_range_records(key, result, visible_ms, provenance, evidence_id):
     return rates, seal(cov, "coverage")
 
 
+def hyperliquid_window_records(key, records, from_ms, through_ms, visible_ms, provenance, evidence_id):
+    if key["provider"] != "hyperliquid":
+        raise PairEvidenceError("a Hyperliquid funding window needs a Hyperliquid member key")
+    if isinstance(from_ms, bool) or isinstance(through_ms, bool) or not isinstance(from_ms, int) or not isinstance(through_ms, int) or from_ms < 0 or through_ms <= from_ms:
+        raise PairEvidenceError(f"the Hyperliquid funding window ({from_ms}, {through_ms}] is empty or negative")
+    rates = []
+    prev = None
+    for r in records:
+        t = r["time"]
+        if isinstance(t, bool) or not isinstance(t, int) or t <= from_ms or t > through_ms:
+            raise PairEvidenceError(f"Hyperliquid funding record {t!r} is outside ({from_ms}, {through_ms}]")
+        if prev is not None and t <= prev:
+            raise PairEvidenceError("Hyperliquid funding records are not strictly ascending")
+        if t > visible_ms:
+            raise PairEvidenceError(f"funding event {t} is after its visibility {visible_ms}")
+        prev = t
+        rec = {"v": RECORD_VERSION, "key": dict(key), "event_id": event_id("hyperliquid", key["instrument"], t), "rule_version": RULE_HYPERLIQUID,
+               "event_ms": t, "visible_ms": visible_ms, "rate": r["rate"], "provenance": provenance, "record_hash": ""}
+        rates.append(seal(rec, "rate"))
+    proven, gaps = [], []
+    through = from_ms
+    if rates:
+        through = min(prev, through_ms)
+        proven.append({"from_ms": from_ms, "through_ms": through})
+    if through < through_ms:
+        gaps.append({"from_ms": through, "through_ms": through_ms, "reason": "after_last_record"})
+    cov = {"v": RECORD_VERSION, "key": dict(key), "evidence_id": evidence_id, "requested_from_ms": from_ms, "requested_through_ms": through_ms,
+           "proven": proven, "gaps": gaps, "visible_ms": visible_ms, "provenance": provenance, "record_hash": ""}
+    return rates, seal(cov, "coverage")
+
+
+def mark_price_record(key, at_ms, price, visible_ms, provenance, evidence_id):
+    if at_ms > visible_ms:
+        raise PairEvidenceError(f"mark price at {at_ms} is after its visibility {visible_ms}")
+    rec = {"v": RECORD_VERSION, "key": dict(key), "evidence_id": evidence_id, "price_kind": "mark", "at_ms": at_ms, "visible_ms": visible_ms,
+           "price": price, "provenance": provenance, "record_hash": ""}
+    return seal(rec, "price")
+
+
 __all__ = [
     "BATCH_VERSION", "COVERAGE_VERSION", "DOCUMENT_VERSION", "EVENT_VERSION", "RECORD_VERSION", "RULES", "RULE_HYPERLIQUID", "RULE_OKX",
     "JSONNumber", "batch_bytes", "batch_hash", "check_records", "decode_document", "decode_event", "document_bytes", "event_hash",
-    "event_id", "funding_amounts", "okx_range_records", "record_hash", "seal", "seal_batch", "source_hash",
+    "event_id", "funding_amounts", "hyperliquid_window_records", "mark_price_record", "okx_range_records", "record_hash", "seal", "seal_batch",
+    "source_hash",
 ]

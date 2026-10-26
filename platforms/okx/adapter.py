@@ -219,6 +219,56 @@ class OKXExchangeAdapter:
         except Exception:
             return 0.0
 
+    PUBLIC_BARS = {"1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H", "1d": "1D"}
+    PUBLIC_BAR_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "2h": 7_200_000,
+                     "4h": 14_400_000, "6h": 21_600_000, "12h": 43_200_000, "1d": 86_400_000}
+
+    def public_candles(self, inst_id: str, interval: str, limit: int) -> dict:
+        if not self._public_only:
+            raise RuntimeError("public candle reads need the public-only reader")
+        bar = self.PUBLIC_BARS.get(interval)
+        if bar is None:
+            raise RuntimeError(f"OKX candle interval {interval!r} is not supported")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 300:
+            raise RuntimeError(f"OKX candle limit {limit!r} is outside [1, 300]")
+        ivl = self.PUBLIC_BAR_MS[interval]
+        resp = self._exchange.publicGetMarketCandles({"instId": inst_id, "bar": bar, "limit": str(limit)})
+        if not isinstance(resp, dict) or resp.get("code") != "0" or not isinstance(resp.get("data"), list):
+            msg = resp.get("msg") if isinstance(resp, dict) else resp
+            raise RuntimeError(f"OKX public candles refused {inst_id}: {msg!r}")
+        closed, forming = [], []
+        for row in resp["data"]:
+            if not isinstance(row, list) or len(row) < 9 or not all(isinstance(v, str) for v in row[:9]):
+                raise RuntimeError(f"OKX candle row {row!r} is not a list of text fields")
+            if not row[0].isdigit() or int(row[0]) % ivl != 0 or row[8] not in ("0", "1"):
+                raise RuntimeError(f"OKX candle row {row!r} has no aligned open time or confirm flag")
+            vals = [float(v) for v in row[1:6]]
+            if row[8] == "1":
+                closed.append([int(row[0])] + vals)
+            else:
+                forming = [int(row[0]), vals[0]]
+        closed.sort(key=lambda r: r[0])
+        for a, b in zip(closed, closed[1:]):
+            if b[0] <= a[0]:
+                raise RuntimeError("OKX closed candles repeat an open time")
+        return {"bars": closed, "forming": forming}
+
+    def public_mark_price_at(self, inst_id: str, at_ms: int):
+        if not self._public_only:
+            raise RuntimeError("public mark reads need the public-only reader")
+        if isinstance(at_ms, bool) or not isinstance(at_ms, int) or at_ms < 1:
+            raise RuntimeError(f"OKX mark time {at_ms!r} must be a positive integer")
+        resp = self._exchange.publicGetMarketHistoryMarkPriceCandles({"instId": inst_id, "bar": "1m", "after": str(at_ms + 1), "limit": "1"})
+        if not isinstance(resp, dict) or resp.get("code") != "0" or not isinstance(resp.get("data"), list):
+            msg = resp.get("msg") if isinstance(resp, dict) else resp
+            raise RuntimeError(f"OKX mark price candles refused {inst_id}: {msg!r}")
+        for row in resp["data"]:
+            if isinstance(row, list) and len(row) >= 2 and isinstance(row[0], str) and row[0].isdigit() and int(row[0]) == at_ms and isinstance(row[1], str):
+                if not self.FUNDING_DECIMAL.match(row[1]) or float(row[1]) <= 0:
+                    raise RuntimeError(f"OKX mark price {row[1]!r} at {at_ms} is not a positive decimal")
+                return row[1]
+        return None
+
     def get_funding_history(self, symbol: str, days: int = 7) -> list:
         try:
             pair = f"{symbol}/USDT:USDT"

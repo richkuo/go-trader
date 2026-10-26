@@ -364,6 +364,7 @@ func (bc *basketCoordinator) preparePairRiskFor(rt *basketRuntime, in basketCycl
 	if refusal == "" && evidence == nil {
 		refusal = "the pair has no admitted evidence source"
 	}
+	wallStart := bc.pairBudgetStart()
 	ctx, cancel := context.WithTimeout(bc.parent, budget)
 	defer cancel()
 	for _, m := range members {
@@ -392,14 +393,18 @@ func (bc *basketCoordinator) preparePairRiskFor(rt *basketRuntime, in basketCycl
 		bc.pairLogf(rt, "a newer valuation preparation replaced this one; its results are discarded")
 		return
 	}
+	var prepErr error
+	if refusal == "" {
+		_, prepErr = bc.pairWallBudget("valuation", ctx, wallStart)
+	}
 	changed := ""
 	switch {
 	case !before.same(bc.pairSnapshot(rt)):
 		changed = "the pair records changed while the valuation view was prepared"
 	case rt.Contract.Fingerprint() != fp:
 		changed = "the pair contract changed while the valuation view was prepared"
-	case ctx.Err() != nil:
-		changed = fmt.Sprintf("the valuation preparation budget ended (%v)", ctx.Err())
+	case prepErr != nil:
+		changed = fmt.Sprintf("the valuation preparation budget ended (%v)", prepErr)
 	}
 	for id, v := range out {
 		if changed != "" {

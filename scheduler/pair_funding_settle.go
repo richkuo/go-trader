@@ -640,7 +640,7 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 			changed = bc.noteFundingIncomplete(rt, f, m, r, sh, pairFundingReasonPriceMissing, fmt.Sprintf("no %s price at %d was visible by %d", rule.PriceKind, t, nowMs), now) || changed
 			continue
 		}
-		conv, reason, cerr := rt.Pair.admission.evidence.FundingConversion(m.member, rule.Currency, t, nowMs)
+		conv, reason, cerr := rt.Pair.admission.admittedEvidence().FundingConversion(m.member, rule.Currency, t, nowMs)
 		if cerr != nil {
 			changed = bc.noteFundingIncomplete(rt, f, m, r, sh, reason, cerr.Error(), now) || changed
 			continue

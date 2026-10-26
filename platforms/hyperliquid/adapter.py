@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -539,6 +540,89 @@ class HyperliquidExchangeAdapter:
                 out.append({"n": n, "px": px, "sz": sz})
             sides.append(out)
         return {"request": {"coin": symbol, "type": "l2Book"}, "response": {"coin": symbol, "levels": sides, "time": ts}}
+
+    PUBLIC_CANDLE_INTERVALS = ("1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d")
+    PUBLIC_DECIMAL = re.compile(r"^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]{1,4})?$")
+
+    def public_candles(self, symbol: str, interval: str, limit: int, now_ms: int) -> dict:
+        if not self._public_only:
+            raise RuntimeError("public candle reads need the public-only reader")
+        if interval not in self.PUBLIC_CANDLE_INTERVALS:
+            raise RuntimeError(f"Hyperliquid candle interval {interval!r} is not supported")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 5000:
+            raise RuntimeError(f"Hyperliquid candle limit {limit!r} is outside [1, 5000]")
+        rules = self.public_instrument_rules(symbol)
+        if rules["is_delisted"]:
+            raise RuntimeError(f"{symbol} is delisted")
+        ivl = self._OHLCV_INTERVAL_MS[interval]
+        start = now_ms - ivl * (limit + 2)
+        rows = self._info.candles_snapshot(symbol, interval, start, now_ms)
+        if not isinstance(rows, list):
+            raise RuntimeError(f"Hyperliquid candleSnapshot for {symbol} is not a list")
+        closed, forming = [], []
+        prev = None
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError("Hyperliquid candle row is not an object")
+            t, close_t = row.get("t"), row.get("T")
+            if isinstance(t, bool) or not isinstance(t, int) or isinstance(close_t, bool) or not isinstance(close_t, int) or t % ivl != 0:
+                raise RuntimeError(f"Hyperliquid candle row {row!r} has no aligned integer open and close time")
+            if row.get("s") not in (None, symbol) or row.get("i") not in (None, interval):
+                raise RuntimeError(f"Hyperliquid candle row is for {row.get('s')!r} {row.get('i')!r}")
+            if prev is not None and t <= prev:
+                raise RuntimeError("Hyperliquid candle rows are not strictly ascending")
+            prev = t
+            vals = []
+            for name in ("o", "h", "l", "c", "v"):
+                raw = row.get(name)
+                if not isinstance(raw, str) or not self.PUBLIC_DECIMAL.match(raw):
+                    raise RuntimeError(f"Hyperliquid candle {name} {raw!r} is not decimal text")
+                vals.append(float(raw))
+            if t + ivl <= now_ms:
+                closed.append([t] + vals)
+            elif t <= now_ms:
+                forming = [t, vals[0]]
+        return {"bars": closed[-limit:], "forming": forming}
+
+    def public_funding_window(self, symbol: str, start_ms: int, end_ms: int, max_pages: int = 64) -> dict:
+        if not self._public_only:
+            raise RuntimeError("public funding reads need the public-only reader")
+        for name, value in (("start_ms", start_ms), ("end_ms", end_ms), ("max_pages", max_pages)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise RuntimeError(f"Hyperliquid funding window {name} must be an integer, got {value!r}")
+        if start_ms < 1 or end_ms < start_ms:
+            raise RuntimeError(f"Hyperliquid funding window [{start_ms}, {end_ms}] is empty or negative")
+        self.public_instrument_rules(symbol)
+        out = []
+        cursor = start_ms
+        pages = 0
+        while cursor <= end_ms:
+            if pages >= max_pages:
+                raise RuntimeError(f"Hyperliquid funding window needed more than {max_pages} pages")
+            pages += 1
+            page = self._info.funding_history(symbol, cursor, end_ms)
+            if not isinstance(page, list):
+                raise RuntimeError(f"Hyperliquid fundingHistory for {symbol} at {cursor} is not a list")
+            if not page:
+                break
+            prev = None
+            for r in page:
+                if not isinstance(r, dict):
+                    raise RuntimeError("Hyperliquid funding record is not an object")
+                t, rate = r.get("time"), r.get("fundingRate")
+                if isinstance(t, bool) or not isinstance(t, int) or not isinstance(rate, str) or not self.PUBLIC_DECIMAL.match(rate):
+                    raise RuntimeError(f"Hyperliquid funding record {r!r} has no integer time and decimal rate text")
+                if r.get("coin") not in (None, symbol):
+                    raise RuntimeError(f"Hyperliquid funding record is for {r.get('coin')!r}, not {symbol}")
+                if t < cursor or (prev is not None and t <= prev):
+                    raise RuntimeError(f"Hyperliquid funding history for {symbol} is not strictly ascending from {cursor}")
+                prev = t
+                if t <= end_ms:
+                    out.append({"time": t, "rate": rate})
+            if prev > end_ms:
+                break
+            cursor = prev + 1
+        return {"records": out, "pages": pages}
 
     @property
     def is_live(self) -> bool:

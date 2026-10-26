@@ -83,6 +83,7 @@ type pairReplayPairRecord struct {
 	NativeDecisions    []string `json:"native_decisions,omitempty"`
 	Slots              int      `json:"slots"`
 	Actions            int      `json:"actions"`
+	RecordingBlocked   string   `json:"recording_blocked,omitempty"`
 }
 
 type pairReplayStepRecord struct {
@@ -191,6 +192,9 @@ func (r *pairReplayRuntime) stateReadingsLocked(at time.Time) ([]pairReplayMembe
 	proof.ExposureCapValuation, proof.ExposureCapLongBlock, proof.ExposureCapShortBlock = ec.ValuationIncomplete, ec.LongBlocked, ec.ShortBlocked
 	proof.NotionalCapHeld, proof.NotionalCapDetail = evaluateNotionalCapHoldMarked(prc, states, prices, pm)
 	pr := pairReplayPairRecord{Lifecycle: rt.Pair.Progress.Lifecycle, NeedsDurable: rt.needsDurable, Conservation: r.bc.pairVirtualConservation(rt), Slots: len(rt.Rebalances), Actions: len(rt.Actions)}
+	if r.paper != nil {
+		pr.Slots, pr.Actions = r.durablePairCounts()
+	}
 	for _, o := range rt.Pair.Progress.Obligations {
 		pr.Obligations = append(pr.Obligations, strings.TrimRight(o.Kind+"|"+o.MemberID+"|"+o.ActionID, "|"))
 	}
@@ -202,6 +206,9 @@ func (r *pairReplayRuntime) stateReadingsLocked(at time.Time) ([]pairReplayMembe
 		pr.IncompleteEvidence = o.Kind + ": " + o.Detail
 	}
 	pr.EmergencyPending = pairEmergencyPendingFor(state, r.partition)
+	if b := rt.Pair.Progress.RecordingBlocked; b != nil {
+		pr.RecordingBlocked = fmt.Sprintf("input %d: %s", b.FailedSeq, b.Reason)
+	}
 	for _, d := range rt.Pair.resolutions {
 		pr.NativeDecisions = append(pr.NativeDecisions, fmt.Sprintf("%s|%s|%s %s by %s %s", d.Kind, d.MemberID, d.ObligationID, d.Mode, d.DecidedBy, d.ID))
 	}
@@ -252,4 +259,5 @@ type pairReplayOutput struct {
 	ServerStatus         map[string]json.RawMessage `json:"server_status,omitempty"`
 	Export               map[string]interface{}     `json:"export,omitempty"`
 	Comparison           *pairReplayComparison      `json:"comparison,omitempty"`
+	Recording            *pairPaperOutputInfo       `json:"recording,omitempty"`
 }

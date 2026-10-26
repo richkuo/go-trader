@@ -685,9 +685,9 @@ func (bc *basketCoordinator) pairResolveConversions(rt *basketRuntime, a *basket
 	if len(pending) == 0 {
 		return resolved, missing, settleAt, true
 	}
-	var src *pairFrozenEvidenceSource
+	var src pairAdmittedEvidence
 	if rt.Pair != nil && rt.Pair.admission != nil {
-		src = rt.Pair.admission.evidence
+		src = rt.Pair.admission.admittedEvidence()
 	}
 	lookup := bc.pairConversionLookup
 	if lookup == nil && src == nil {

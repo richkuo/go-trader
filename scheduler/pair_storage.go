@@ -720,6 +720,14 @@ const (
 	pairProgressVersionNative = 3
 )
 
+const pairProgressVersionRecording = 4
+
+type pairRecBarrier struct {
+	Reason    string `json:"reason"`
+	FailedSeq int64  `json:"failed_seq"`
+	AtMs      int64  `json:"at_ms"`
+}
+
 type pairProgress struct {
 	V                  int                         `json:"v"`
 	Seq                int64                       `json:"seq"`
@@ -746,6 +754,7 @@ type pairProgress struct {
 	NativeAttemptSeq   int64                       `json:"native_attempt_seq,omitempty"`
 	NativeFundingHolds []pairNativeFundingHold     `json:"native_funding_holds,omitempty"`
 	NativeRequests     []pairNativeOperatorRequest `json:"native_requests,omitempty"`
+	RecordingBlocked   *pairRecBarrier             `json:"recording_blocked,omitempty"`
 }
 
 func (p *pairProgress) alerted(key string) bool {
@@ -805,6 +814,9 @@ func (p pairProgress) JSON() string {
 	if p.hasNativeRecovery() {
 		p.V = pairProgressVersionNative
 	}
+	if p.RecordingBlocked != nil {
+		p.V = pairProgressVersionRecording
+	}
 	b, err := json.Marshal(p)
 	if err != nil {
 		return ""
@@ -823,7 +835,7 @@ func parsePairProgress(raw string) (pairProgress, error) {
 	if p.V == pairProgressVersionLegacy && len(p.NativeReceipts) == 0 && len(p.PaperCloses) == 0 {
 		p.V = pairProgressVersion
 	}
-	if p.V == pairProgressVersionNative {
+	if p.V == pairProgressVersionNative || (p.V == pairProgressVersionRecording && p.RecordingBlocked != nil) {
 		p.V = pairProgressVersion
 	}
 	if p.V != pairProgressVersion {

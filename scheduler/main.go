@@ -38,6 +38,7 @@ var knownSubcommands = []string{
 	"supervise",
 	"healthcheck",
 	"basket-replay",
+	"basket-replay-paper",
 	"quote-replay",
 	"robinhood-login",
 	"notify-broker",
@@ -119,6 +120,8 @@ func main() {
 			os.Exit(runHealthcheck(os.Args[2:]))
 		case "basket-replay":
 			os.Exit(runBasketReplay(os.Args[2:]))
+		case "basket-replay-paper":
+			os.Exit(runBasketReplayPaper(os.Args[2:]))
 		case "quote-replay":
 			os.Exit(runQuoteReplay(os.Args[2:]))
 		case "robinhood-login":
@@ -3626,7 +3629,9 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	var result *HyperliquidResult
 	var stderr string
 	var err error
-	if marketStdin != nil {
+	if marketStdin != nil && feed != nil && feed.StdinRun != nil {
+		result, stderr, err = runHyperliquidCheckStdout(feed.StdinRun(sc.Script, args, marketStdin))
+	} else if marketStdin != nil {
 		result, stderr, err = runHyperliquidCheckWithStdinFn(sc.Script, args, marketStdin)
 	} else {
 		result, stderr, err = runHyperliquidCheckFn(sc.Script, args)

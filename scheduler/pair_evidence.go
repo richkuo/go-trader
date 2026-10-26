@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -1683,6 +1682,17 @@ type pairPublicReadResult struct {
 }
 
 func pairReadPublicCapability(ctx context.Context, key pairEvidenceKey, prev *pairCapabilityEvidence, validForMs int64) (pairCapabilityEvidence, error) {
+	c, _, _, err := pairReadPublicCapabilityRaw(ctx, key, prev, validForMs)
+	return c, err
+}
+
+func pairReadPublicCapabilityRaw(ctx context.Context, key pairEvidenceKey, prev *pairCapabilityEvidence, validForMs int64) (pairCapabilityEvidence, []byte, []byte, error) {
+	var stdout, stderr []byte
+	c, err := pairReadPublicCapabilityInto(ctx, key, prev, validForMs, &stdout, &stderr)
+	return c, stdout, stderr, err
+}
+
+func pairReadPublicCapabilityInto(ctx context.Context, key pairEvidenceKey, prev *pairCapabilityEvidence, validForMs int64, rawOut, rawErr *[]byte) (pairCapabilityEvidence, error) {
 	if _, err := key.memberKey(); err != nil {
 		return pairCapabilityEvidence{}, err
 	}
@@ -1701,7 +1711,8 @@ func pairReadPublicCapability(ctx context.Context, key pairEvidenceKey, prev *pa
 	}
 	args := []string{"--provider=" + key.Provider, "--instrument=" + key.Instrument}
 	stdout, stderr, runErr := spawnPythonProcessWithEnv(ctx, pairEvidenceReaderScript, args, nil, 0, env)
-	receivedMs := time.Now().UnixMilli()
+	receivedMs := pairPaperWall.Now().UnixMilli()
+	*rawOut, *rawErr = stdout, stderr
 	tree, perr := pairStrictParse(bytes.TrimSpace(stdout))
 	if perr != nil {
 		if runErr != nil {

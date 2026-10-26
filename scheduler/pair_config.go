@@ -1234,6 +1234,7 @@ type pairResearchAdmission struct {
 	raw      json.RawMessage
 	contract string
 	evidence *pairFrozenEvidenceSource
+	recorded *pairRecordedEvidenceSource
 	costMu   sync.RWMutex
 	costs    *pairAdmissionCosts
 
@@ -1243,13 +1244,49 @@ type pairResearchAdmission struct {
 }
 
 func (a *pairResearchAdmission) evidenceSource() pairEvidenceSource {
-	if a == nil || a.evidence == nil {
+	if a == nil {
+		return nil
+	}
+	if a.recorded != nil {
+		return a.recorded
+	}
+	if a.evidence == nil {
 		return nil
 	}
 	if a.kind == pairAdmissionLiveShapedFixture && a.deps.Account != nil {
 		return &pairLiveShapedEvidenceSource{frozen: a.evidence, accounts: a.deps.Account}
 	}
 	return a.evidence
+}
+
+func (a *pairResearchAdmission) admittedEvidence() pairAdmittedEvidence {
+	switch {
+	case a == nil:
+		return nil
+	case a.recorded != nil:
+		return a.recorded
+	case a.evidence != nil:
+		return a.evidence
+	}
+	return nil
+}
+
+func pairAdmittedEvidenceFor(src pairEvidenceSource, kind string) (pairAdmittedEvidence, error) {
+	switch s := src.(type) {
+	case *pairFrozenEvidenceSource:
+		if s != nil {
+			return s, nil
+		}
+	case *pairRecordedEvidenceSource:
+		if s == nil {
+			break
+		}
+		if kind != pairAdmissionResearch {
+			return nil, fmt.Errorf("the append-only recorded evidence source is admitted only for isolated paper research, never for the live-shaped fixture")
+		}
+		return s, nil
+	}
+	return nil, fmt.Errorf("pair research needs the immutable frozen evidence source (newPairFrozenEvidenceSource) or the append-only recorded evidence source (newPairRecordedEvidenceSource)")
 }
 
 func (a *pairResearchAdmission) quoteSource() pairQuoteSource {
@@ -1331,8 +1368,8 @@ func newPairResearchAdmission(doc []byte, runID, stateDir string, resume bool, d
 	if deps.Account != nil {
 		return nil, nil, fmt.Errorf("pair research has no private account reader; only the controlled live-shaped fixture substitutes account evidence")
 	}
-	if _, ok := deps.Evidence.(*pairFrozenEvidenceSource); !ok || deps.Evidence.(*pairFrozenEvidenceSource) == nil {
-		return nil, nil, fmt.Errorf("pair research needs the immutable frozen evidence source (newPairFrozenEvidenceSource)")
+	if _, err := pairAdmittedEvidenceFor(deps.Evidence, pairAdmissionResearch); err != nil {
+		return nil, nil, err
 	}
 	if !filepath.IsAbs(stateDir) {
 		return nil, nil, fmt.Errorf("pair research state directory %q must be absolute", stateDir)
@@ -1402,9 +1439,9 @@ func loadPairResearchConfig(adm *pairResearchAdmission, doc []byte) (*Config, er
 	if err != nil {
 		return nil, err
 	}
-	src, isFrozen := adm.deps.Evidence.(*pairFrozenEvidenceSource)
-	if !isFrozen || src == nil {
-		return nil, fmt.Errorf("pair activation needs the immutable frozen evidence source")
+	src, err := pairAdmittedEvidenceFor(adm.deps.Evidence, adm.kind)
+	if err != nil {
+		return nil, fmt.Errorf("pair activation: %w", err)
 	}
 	if adm.kind == pairAdmissionLiveShapedFixture && adm.deps.Funding != nil {
 		return nil, fmt.Errorf("pair live-shaped funding evidence has no owner in this build: a confirmed venue funding charge never receives an additional modeled paper charge, and attributed live funding ingestion is refused")
@@ -1413,7 +1450,12 @@ func loadPairResearchConfig(adm *pairResearchAdmission, doc []byte) (*Config, er
 		return nil, fmt.Errorf("pair research evidence is refused: %w", err)
 	}
 	adm.contract = contract.Fingerprint()
-	adm.evidence = src
+	switch s := src.(type) {
+	case *pairFrozenEvidenceSource:
+		adm.evidence, adm.recorded = s, nil
+	case *pairRecordedEvidenceSource:
+		adm.evidence, adm.recorded = nil, s
+	}
 	if err := adm.bindCosts(cfg, contract); err != nil {
 		return nil, fmt.Errorf("pair research member cost binding is refused: %w", err)
 	}
@@ -1450,8 +1492,8 @@ func (a *pairResearchAdmission) checkStateDir(cfg *Config) error {
 		if saved.Owner != pairResearchManifestOwner || saved.RunID != a.runID || saved.PairID != a.pair.ID || saved.ContractFP != a.contract {
 			return fmt.Errorf("pair research resume refused: the saved run %q (pair %s, contract %s) is not this run %q (pair %s, contract %s)", saved.RunID, saved.PairID, shortFingerprint(saved.ContractFP), a.runID, a.pair.ID, shortFingerprint(a.contract))
 		}
-		if saved.EvidenceDigest != a.evidence.Digest() {
-			return fmt.Errorf("pair research resume refused: the evidence document digest %s is not the saved run's %s", shortFingerprint(a.evidence.Digest()), shortFingerprint(saved.EvidenceDigest))
+		if saved.EvidenceDigest != a.admittedEvidence().Digest() {
+			return fmt.Errorf("pair research resume refused: the evidence document digest %s is not the saved run's %s", shortFingerprint(a.admittedEvidence().Digest()), shortFingerprint(saved.EvidenceDigest))
 		}
 		if len(saved.FundingBinding) == 0 {
 			return fmt.Errorf("pair research resume refused: the saved run %q has no funding binding; a pre-funding run needs a new research run, and its history is never charged retroactively", saved.RunID)
@@ -1470,7 +1512,7 @@ func (a *pairResearchAdmission) checkStateDir(cfg *Config) error {
 	if err := basketReplayPathAllowed(a.stateDir); err != nil {
 		return fmt.Errorf("pair research state directory refused: %w", err)
 	}
-	blob, err := json.Marshal(pairResearchManifest{Owner: pairResearchManifestOwner, RunID: a.runID, PairID: a.pair.ID, ContractFP: a.contract, PairVersion: pairContractVersion, EvidenceDigest: a.evidence.Digest(), UID: os.Getuid(), FundingBinding: json.RawMessage(a.fundingBinding)})
+	blob, err := json.Marshal(pairResearchManifest{Owner: pairResearchManifestOwner, RunID: a.runID, PairID: a.pair.ID, ContractFP: a.contract, PairVersion: pairContractVersion, EvidenceDigest: a.admittedEvidence().Digest(), UID: os.Getuid(), FundingBinding: json.RawMessage(a.fundingBinding)})
 	if err != nil {
 		return err
 	}

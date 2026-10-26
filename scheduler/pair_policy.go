@@ -1023,6 +1023,10 @@ func runOKXPairManagementCheck(sc StrategyConfig, posCtx PositionCtx, input pair
 }
 
 func runOKXPairManagementCheckRaw(sc StrategyConfig, posCtx PositionCtx, input pairManagementInput, logger *StrategyLogger) ([]string, *OKXResult, string, error) {
+	return runOKXPairManagementCheckRawWith(sc, posCtx, input, logger, runPythonReadOnlyWithStdin)
+}
+
+func runOKXPairManagementCheckRawWith(sc StrategyConfig, posCtx PositionCtx, input pairManagementInput, logger *StrategyLogger, run func(script string, args []string, stdin []byte) ([]byte, []byte, error)) ([]string, *OKXResult, string, error) {
 	if !isPairMember(sc) || sc.Platform != "okx" {
 		return nil, nil, "", fmt.Errorf("strategy %s is not an OKX pair member", sc.ID)
 	}
@@ -1043,7 +1047,7 @@ func runOKXPairManagementCheckRaw(sc StrategyConfig, posCtx PositionCtx, input p
 	if logger != nil {
 		logger.Running(sc.Script, args)
 	}
-	stdout, stderr, runErr := runPythonReadOnlyWithStdin(sc.Script, args, stdin)
+	stdout, stderr, runErr := run(sc.Script, args, stdin)
 	var result OKXResult
 	if jsonErr := json.Unmarshal(stdout, &result); jsonErr != nil {
 		if runErr != nil {

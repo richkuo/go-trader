@@ -323,7 +323,7 @@ func (st *StateStore) loadPairFunding(state *AppState, rt *basketRuntime, adm *p
 			if ev.Key != m.key || ev.EventID != e.EventID || ev.RuleVersion != e.RuleVersion || ev.EvidenceHash != e.EvidenceHash || ev.SourceHash != e.SourceHash || string(ev.USDAmount) != e.USDAmount {
 				return fmt.Errorf("pair %s applied funding event %s columns disagree with its saved event bytes", id, e.EventID)
 			}
-			if e.ContractFP == rt.Contract.Fingerprint() && !adm.evidence.hasConversion(ev.Conversion) {
+			if e.ContractFP == rt.Contract.Fingerprint() && !adm.admittedEvidence().hasConversion(ev.Conversion) {
 				return fmt.Errorf("pair %s applied funding event %s uses conversion %s, which is not a record of the bound evidence document", id, e.EventID, ev.Conversion.EvidenceID)
 			}
 			rate := pairFundingRate{Key: ev.Key, EventID: ev.EventID, RuleVersion: ev.RuleVersion, EventMs: ev.EventMs, Rate: ev.Rate}
