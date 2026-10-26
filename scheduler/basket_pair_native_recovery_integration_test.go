@@ -1053,8 +1053,8 @@ func TestBasketPairNativeOperatorWriteOffOfAFlatMemberEndsTheLifecycle(t *testin
 		t.Fatalf("setup: both books are flat and the open unknown obligation holds the lifecycle: %v %v %s", e.signed(pairTestHL), e.signed(pairTestOKX), e.lifecycle())
 	}
 	d, _ := r.discord()
-	if msg := r.decide(d, pairTestHL, pairObligationNativeUnknown, id, pairNativeDecisionWriteOff, "venue history purged; the owner accepts the gap"); !strings.Contains(msg, "Staged") {
-		t.Fatalf("the write-off must stage: %q", msg)
+	if msg := r.decide(d, pairTestHL, pairObligationNativeUnknown, id, pairNativeDecisionWriteOff, "venue history purged; the owner accepts the gap"); !strings.Contains(msg, "Staged") || !strings.Contains(msg, "pair increases hold while the hold exists") {
+		t.Fatalf("the write-off must stage and its confirmation must state the increase hold: %q", msg)
 	}
 	for i := 0; i < 3; i++ {
 		r.step(time.Minute)
@@ -1075,6 +1075,77 @@ func TestBasketPairNativeOperatorWriteOffOfAFlatMemberEndsTheLifecycle(t *testin
 	r.step(time.Minute)
 	if e.lifecycle() != pairLifecycleFlat || pairNativeUnknownFromMs(e.rt(), pairTestHL) != from || len(r.savedResolutions(pairTestHL)) != 1 {
 		t.Fatalf("a restart keeps the flat lifecycle, the hold and the one decision: %s", e.lifecycle())
+	}
+	e.mu.Lock()
+	hold := e.bc.pairIncreaseHold(e.rt(), e.inputs(e.now))
+	e.mu.Unlock()
+	if !strings.Contains(hold, "native funding hold") {
+		t.Fatalf("a member with a funding hold must hold pair increases: %q", hold)
+	}
+	entries := len(e.actionsByPurpose(pairPurposeEntry))
+	calls := r.f.hlCalls + r.f.okxCalls
+	at := e.now.Truncate(time.Minute).Add(time.Minute)
+	e.slot(at, "after-write-off")
+	e.step(at.Add(time.Second))
+	e.step(at.Add(30 * time.Second))
+	if got := len(e.actionsByPurpose(pairPurposeEntry)); got != entries || r.f.hlCalls+r.f.okxCalls != calls || e.signed(pairTestHL) != 0 || e.signed(pairTestOKX) != 0 {
+		t.Fatalf("an entry signal after the write-off must send no order: entries %d -> %d, books %v %v", entries, got, e.signed(pairTestHL), e.signed(pairTestOKX))
+	}
+}
+
+func TestBasketPairNativeOperatorVenueReadRefusesAnOrderOrFillOfAnotherPairAction(t *testing.T) {
+	entry := func(r *pairNativeRig) (*basketAction, pairConfirmedFill) {
+		a := r.e.memberAction(pairTestHL, pairPurposeEntry)
+		fills, err := pairParseFills(a.FillCoverageJSON)
+		r.e.mu.Lock()
+		if a.VenueOrderID == "" {
+			a.VenueOrderID = "2001"
+		}
+		r.e.mu.Unlock()
+		if err != nil || len(fills) != 1 {
+			r.t.Fatalf("setup: the booked entry needs its order id and one fill record: %+v %v", a, err)
+		}
+		return a, fills[0]
+	}
+	for _, actionless := range []bool{false, true} {
+		t.Run(fmt.Sprintf("actionless_%v", actionless), func(t *testing.T) {
+			r := newPairNativeRig(t)
+			e := r.e
+			sentAt := e.nativeAt()
+			a, fill := entry(r)
+			if actionless {
+				release, ok := tryLockEntryAttempt(pairTestHL)
+				if !ok {
+					t.Fatal("setup: the entry lock is busy")
+				}
+				r.fireHL(&nativeCloseEvidence{V: nativeCloseEvidenceVersion, Detail: "no order id"}, errors.New("close failed"))
+				release()
+			} else {
+				r.fireHL(&nativeCloseEvidence{V: nativeCloseEvidenceVersion, Detail: "no order id"}, errors.New("close failed"))
+			}
+			ob := r.obligation(pairObligationNativeUnknown, pairTestHL)
+			if ob == nil {
+				t.Fatal("setup: the unknown close needs its obligation")
+			}
+			book, rows := e.signed(pairTestHL), e.savedCloseRows(pairTestHL)
+			if msg := r.stageRead(pairTestHL, ob, a.VenueOrderID); !strings.Contains(msg, "belongs to pair action "+a.ActionID) || len(e.rt().Pair.Progress.NativeRequests) != 0 {
+				t.Fatalf("an operator order id of another pair action must be refused at staging: %q", msg)
+			}
+			if msg := r.stageRead(pairTestHL, ob, "1702"); !strings.Contains(msg, "Staged") {
+				t.Fatalf("setup: a fresh order id must stage: %q", msg)
+			}
+			ev := pairNativeEvidence("1702", "sell", sentAt, "59900", "0.9", "USDC", "0.06")
+			ev.Fills[0].FillID = fill.FillID
+			r.answer(pairTestHL, pairNativeAnswer{res: pairNativeHistoryOf(ev, "sell", "BTC")})
+			r.step(time.Second)
+			r.step(time.Second)
+			if r.readCount() != 1 || len(r.savedResolutions(pairTestHL)) != 0 || e.signed(pairTestHL) != book || e.savedCloseRows(pairTestHL) != rows || r.obligation(pairObligationNativeUnknown, pairTestHL) == nil {
+				t.Fatalf("a read that returns a fill another pair action already accounts must book nothing and clear nothing: reads %d book %v rows %d %v", r.readCount(), e.signed(pairTestHL), e.savedCloseRows(pairTestHL), e.obligationKinds(pairTestHL))
+			}
+			if len(e.rt().Pair.Progress.NativeReceipts) != 0 {
+				t.Fatalf("no receipt may carry the other action's fill: %+v", e.rt().Pair.Progress.NativeReceipts)
+			}
+		})
 	}
 }
 

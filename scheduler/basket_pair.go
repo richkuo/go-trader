@@ -1490,6 +1490,11 @@ func (bc *basketCoordinator) pairIncreaseHold(rt *basketRuntime, in basketCycleI
 		}
 	}
 	for _, id := range rt.memberIDs() {
+		if from := pairNativeFundingHoldFromMs(rt, id); from > 0 {
+			return fmt.Sprintf("%s has a native funding hold from %d after an operator native decision, so its later funding can never be booked; increases hold while the hold exists and exits, queries and protection continue", id, from)
+		}
+	}
+	for _, id := range rt.memberIDs() {
 		sc := bc.members[id]
 		if sc.Paused {
 			return id + " is paused; increases hold and exits, queries and protection continue"

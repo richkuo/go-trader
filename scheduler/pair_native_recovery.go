@@ -592,6 +592,15 @@ func (bc *basketCoordinator) pairNativeTargetFor(rt *basketRuntime, ob pairOblig
 				}
 			}
 		}
+		for _, aid := range rt.sortedActionIDs() {
+			o := rt.Actions[aid]
+			if o == t.action || o.StrategyID != ob.MemberID || !o.pair() || o.VenueOrderID == "" {
+				continue
+			}
+			if seen[o.VenueOrderID] {
+				return t, fmt.Sprintf("venue order %s belongs to pair action %s (%s); one order is attributed to one action", o.VenueOrderID, o.ActionID, o.Purpose)
+			}
+		}
 		sort.Strings(merged)
 		t.orders, complete = merged, true
 	}
@@ -608,6 +617,32 @@ func (bc *basketCoordinator) pairNativeTargetFor(rt *basketRuntime, ob pairOblig
 		return t, "the attempt has no acceptance window"
 	}
 	return t, ""
+}
+
+func pairNativeFillOwnedElsewhere(rt *basketRuntime, a *basketAction, fills []pairConfirmedFill) string {
+	if len(fills) == 0 {
+		return ""
+	}
+	want := map[string]bool{}
+	for _, f := range fills {
+		want[f.FillID] = true
+	}
+	for _, id := range rt.sortedActionIDs() {
+		o := rt.Actions[id]
+		if o == a || o.StrategyID != a.StrategyID || !o.pair() || o.pairNative() || strings.TrimSpace(o.FillCoverageJSON) == "" {
+			continue
+		}
+		prev, err := pairParseFills(o.FillCoverageJSON)
+		if err != nil {
+			return fmt.Sprintf("pair action %s holds unreadable fill records: %v", o.ActionID, err)
+		}
+		for _, f := range prev {
+			if want[f.FillID] {
+				return fmt.Sprintf("fill %s is already accounted on pair action %s (%s); a venue read never books it again as a native close fill", f.FillID, o.ActionID, o.Purpose)
+			}
+		}
+	}
+	return ""
 }
 
 func pairNativeSavedOrderIDs(att *pairNativeAttempt, a *basketAction) ([]string, string) {
@@ -902,6 +937,9 @@ func (bc *basketCoordinator) convertPairNativeReceipt(rt *basketRuntime, m pairC
 	if why := bc.pairNativeFillConflict(rt, &basketAction{StrategyID: m.MemberID}, out.FillCoverage); why != "" {
 		return why
 	}
+	if why := pairNativeFillOwnedElsewhere(rt, &basketAction{StrategyID: m.MemberID}, out.FillCoverage); why != "" {
+		return why
+	}
 	if why := rt.pairNativeResolvedFillOverlap(m.MemberID, out.FillCoverage); why != "" {
 		return why
 	}
@@ -1025,6 +1063,9 @@ func (bc *basketCoordinator) recoverPairNativeAction(rt *basketRuntime, m pairCo
 		return "the venue answer is inconsistent with the saved native action: " + why
 	}
 	if why := bc.pairNativeFillConflict(rt, a, out.FillCoverage); why != "" {
+		return why
+	}
+	if why := pairNativeFillOwnedElsewhere(rt, a, out.FillCoverage); why != "" {
 		return why
 	}
 	if why := rt.pairNativeResolvedFillOverlap(a.StrategyID, out.FillCoverage); why != "" {
@@ -1462,6 +1503,9 @@ func (bc *basketCoordinator) pairNativeOperator(cmd pairNativeOperatorCommand, s
 		summary += " An acknowledgment books nothing and never books a historical quantity again."
 	case pairNativeDecisionRead:
 		summary += " The coordinator reads the venue history once and books only proven fills through the settlement ledger."
+	}
+	if cmd.Decision != pairNativeDecisionRead && pairNativeHorizonKind(ob.Kind) && ob.FromMs > 0 {
+		summary += fmt.Sprintf(" It adds a funding hold for %s from %d: later funding of that member is never booked, so pair increases hold while the hold exists (the pair can still finish its flat reset, exit and protect).", cmd.MemberID, ob.FromMs)
 	}
 	if !stage {
 		return summary, true
