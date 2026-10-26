@@ -298,7 +298,7 @@ func (bc *basketCoordinator) pairStartupErrors(rt *basketRuntime) []string {
 			pending = true
 		}
 	}
-	if len(rt.Pair.Progress.NativeReceipts) > 0 || rt.Pair.Progress.hasStagedPaperClose() || len(rt.Pair.Progress.nativeRecoveryPending()) > 0 {
+	if len(rt.Pair.Progress.NativeReceipts) > 0 || rt.Pair.Progress.hasStagedPaperClose() || len(rt.Pair.Progress.nativeRecoveryStaged()) > 0 {
 		pending = true
 	}
 	if rt.Pair.Progress.Lifecycle != "" && rt.Pair.Progress.Lifecycle != pairLifecycleFlat {
@@ -403,6 +403,7 @@ func (bc *basketCoordinator) freezePairEnvelope(rt *basketRuntime, slotMs int64,
 func (bc *basketCoordinator) stepPair(rt *basketRuntime, in basketCycleInputs) {
 	rt.clock = in.Now
 	bc.notePairStep(rt, in)
+	rt.Pair.noteNativeRequestsSeen()
 	if msg := bc.pairLiveRefusal(rt); msg != "" {
 		bc.pairAlert(rt, "refused|"+msg, msg+"; no pair action is dispatched", true)
 		return

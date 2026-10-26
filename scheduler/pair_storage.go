@@ -846,6 +846,7 @@ type pairRuntimeState struct {
 	finalizing   []pairNativeResolution
 	nativeAlerts []pairNativeResolution
 	nativeReads  map[string]*pairNativeReadToken
+	nativeSeen   map[string]bool
 }
 
 func newPairRuntimeState(p PairConfig, limits pairOperationalLimits, adm *pairResearchAdmission) *pairRuntimeState {

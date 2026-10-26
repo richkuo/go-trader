@@ -194,6 +194,16 @@ func (p *pairProgress) nativePendingFor(actionID string) bool {
 	return false
 }
 
+func (p *pairProgress) nativePendingResolution(kind, memberID, obligationID string) *pairNativeAttempt {
+	for i := range p.NativeAttempts {
+		a := &p.NativeAttempts[i]
+		if a.Pending != nil && a.Pending.Kind == kind && a.Pending.MemberID == memberID && a.Pending.ObligationID == obligationID {
+			return a
+		}
+	}
+	return nil
+}
+
 func (p *pairProgress) nativeRequestFor(kind, memberID, obligationID string) *pairNativeOperatorRequest {
 	for i := range p.NativeRequests {
 		r := &p.NativeRequests[i]
@@ -202,6 +212,14 @@ func (p *pairProgress) nativeRequestFor(kind, memberID, obligationID string) *pa
 		}
 	}
 	return nil
+}
+
+func (s *pairRuntimeState) noteNativeRequestsSeen() {
+	seen := map[string]bool{}
+	for _, r := range s.Progress.NativeRequests {
+		seen[r.ID] = true
+	}
+	s.nativeSeen = seen
 }
 
 func (p *pairProgress) removeNativeRequest(id string) bool {
@@ -245,6 +263,11 @@ func (p pairProgress) nativeRecoveryPending() []string {
 	for _, h := range p.NativeFundingHolds {
 		out = append(out, fmt.Sprintf("native funding hold for %s from %d after resolution %s", h.MemberID, h.FromMs, h.ResolutionID))
 	}
+	return append(out, p.nativeRecoveryStaged()...)
+}
+
+func (p pairProgress) nativeRecoveryStaged() []string {
+	var out []string
 	for _, r := range p.NativeRequests {
 		out = append(out, fmt.Sprintf("operator native decision %s for %s %s is staged", r.ID, r.Kind, r.MemberID))
 	}
@@ -534,8 +557,8 @@ func (bc *basketCoordinator) pairNativeTargetFor(rt *basketRuntime, ob pairOblig
 		t.fromMs, t.throughMs = att.SentAtMs-pairNativeAcceptSkewMs, att.DeadlineMs+pairNativeAcceptSkewMs
 	}
 	if a := t.action; a != nil {
-		if a.Status != basketActionHeld && a.Status != basketActionUnresolved {
-			return t, fmt.Sprintf("native action %s is %s; a venue read resolves only a held or unresolved native action", a.ActionID, a.Status)
+		if !pairNativeRereadable(rt, a) {
+			return t, fmt.Sprintf("native action %s is %s; a venue read resolves only a held or unresolved native action, or a recovered one whose booking still waits for evidence", a.ActionID, a.Status)
 		}
 		if t.side == "" {
 			t.side = a.OrderSide
@@ -545,20 +568,32 @@ func (bc *basketCoordinator) pairNativeTargetFor(rt *basketRuntime, ob pairOblig
 		}
 	}
 	if len(orders) > 0 {
+		saved, why := pairNativeSavedOrderIDs(att, t.action)
+		if why != "" {
+			return t, why
+		}
+		seen := map[string]bool{}
+		var merged []string
+		for _, list := range [][]string{orders, saved} {
+			for _, o := range list {
+				if !seen[o] {
+					seen[o] = true
+					merged = append(merged, o)
+				}
+			}
+		}
 		for _, other := range p.NativeAttempts {
 			if other.ID == t.attID || other.MemberID != ob.MemberID {
 				continue
 			}
 			for _, id := range other.VenueOrderIDs {
-				for _, o := range orders {
-					if o == id {
-						return t, fmt.Sprintf("venue order %s belongs to native attempt %s; one order is attributed to one attempt", o, other.ID)
-					}
+				if seen[id] {
+					return t, fmt.Sprintf("venue order %s belongs to native attempt %s; one order is attributed to one attempt", id, other.ID)
 				}
 			}
 		}
-		t.orders, complete = append([]string(nil), orders...), true
-		sort.Strings(t.orders)
+		sort.Strings(merged)
+		t.orders, complete = merged, true
 	}
 	switch {
 	case len(t.orders) == 0:
@@ -573,6 +608,29 @@ func (bc *basketCoordinator) pairNativeTargetFor(rt *basketRuntime, ob pairOblig
 		return t, "the attempt has no acceptance window"
 	}
 	return t, ""
+}
+
+func pairNativeSavedOrderIDs(att *pairNativeAttempt, a *basketAction) ([]string, string) {
+	var out []string
+	if att != nil {
+		out = append(out, att.VenueOrderIDs...)
+		if len(att.Evidence) > 0 {
+			var ev nativeCloseEvidence
+			if err := json.Unmarshal(att.Evidence, &ev); err != nil {
+				return nil, "the saved close evidence of the attempt is unreadable, so its order ids are unknown; only a write-off can end it"
+			}
+			out = append(out, ev.VenueOrderIDs...)
+		}
+	}
+	if a != nil && a.VenueOrderID != "" {
+		out = append(out, a.VenueOrderID)
+	}
+	for _, id := range out {
+		if !pairPrintableASCII(id, pairEvidenceMaxIDLen) {
+			return nil, fmt.Sprintf("a saved venue order id %q of this close is not a readable order id, so a venue read cannot cover every order the close sent", id)
+		}
+	}
+	return out, ""
 }
 
 func (bc *basketCoordinator) stepPairNativeRecovery(rt *basketRuntime, in basketCycleInputs) {
@@ -614,7 +672,7 @@ func (bc *basketCoordinator) stepPairNativeRecovery(rt *basketRuntime, in basket
 		if ob == nil || bc.pairNativeBusy(rt, att.MemberID) != "" || rt.pairNativeResolution(ob.Kind, ob.MemberID, ob.ActionID) != nil {
 			continue
 		}
-		if a := rt.Actions[att.ActionID]; att.ActionID != "" && a != nil && a.Status != basketActionHeld && a.Status != basketActionUnresolved {
+		if a := rt.Actions[att.ActionID]; att.ActionID != "" && a != nil && !pairNativeRereadable(rt, a) {
 			continue
 		}
 		t, why := bc.pairNativeTargetFor(rt, *ob, nil)
@@ -950,9 +1008,10 @@ func pairNativeRecoveredAction(m pairContractMember, a *basketAction, out basket
 
 func (bc *basketCoordinator) recoverPairNativeAction(rt *basketRuntime, m pairContractMember, t pairNativeTarget, req pairNativeHistoryRequest, pres pairNativeResult, ev nativeCloseEvidence, op *pairNativeOperatorRequest, now time.Time) string {
 	a := t.action
-	if a.Status != basketActionHeld && a.Status != basketActionUnresolved {
-		return fmt.Sprintf("native action %s is %s; recovery settles only a held or unresolved native action", a.ActionID, a.Status)
+	if !pairNativeRereadable(rt, a) {
+		return fmt.Sprintf("native action %s is %s; recovery settles only a held or unresolved native action, or a recovered one whose booking still waits for evidence", a.ActionID, a.Status)
 	}
+	prior := a.Status
 	out := pres.Out
 	pairNativeKeepVisible(a.EvidenceJSON, &out)
 	if basketQtyEqual(out.CumQty, a.RequestedQty) {
@@ -992,7 +1051,7 @@ func (bc *basketCoordinator) recoverPairNativeAction(rt *basketRuntime, m pairCo
 	}
 	r.AttemptID = attID
 	savedFills := a.durableFills
-	err := bc.commitPairNativeMutation(rt, nil, []pairNativeRowUpdate{{action: a, from: []string{basketActionHeld, basketActionUnresolved}, to: basketActionSettling, fills: fills, savedRaw: savedFills}},
+	err := bc.commitPairNativeMutation(rt, nil, []pairNativeRowUpdate{{action: a, from: []string{prior}, to: basketActionSettling, fills: fills, savedRaw: savedFills}},
 		[]*basketAction{a}, func() {
 			p := &rt.Pair.Progress
 			*a = next
@@ -1023,6 +1082,16 @@ func (bc *basketCoordinator) recoverPairNativeAction(rt *basketRuntime, m pairCo
 	bc.pairLogf(rt, "native action %s for %s: a complete venue read confirmed %.10g (%d fill records); it settles once through the settlement ledger and the %s obligation ends when the book commits",
 		a.ActionID, a.StrategyID, a.ConfirmedQty, len(fills), t.ob.Kind)
 	return ""
+}
+
+func pairNativeRereadable(rt *basketRuntime, a *basketAction) bool {
+	switch a.Status {
+	case basketActionHeld, basketActionUnresolved:
+		return true
+	case basketActionSettling:
+		return rt.Pair.Progress.nativePendingFor(a.ActionID) && !pairLiveCompleteFor(rt, a)
+	}
+	return false
 }
 
 func pairLiveCompleteFor(rt *basketRuntime, a *basketAction) bool {
@@ -1149,6 +1218,8 @@ func (bc *basketCoordinator) pairNativeRequestStale(rt *basketRuntime, req pairN
 		return "the obligation is no longer open"
 	case pairNativeObligationRevision(rt, *ob) != req.Revision:
 		return "the obligation evidence changed after the decision was staged (stale revision)"
+	case req.Decision != pairNativeDecisionRead && p.nativePendingResolution(req.Kind, req.MemberID, req.ObligationID) != nil:
+		return "a recovered booking for the obligation waits for its book to commit; it ends the obligation itself"
 	}
 	if bc.pairNativeReqGen == nil {
 		bc.pairNativeReqGen = map[string]uint64{}
@@ -1364,6 +1435,9 @@ func (bc *basketCoordinator) pairNativeOperator(cmd pairNativeOperatorCommand, s
 	if why := bc.pairNativeBusy(rt, cmd.MemberID); why != "" {
 		return "refused: " + why + "; retry after it ends", false
 	}
+	if att := p.nativePendingResolution(cmd.Kind, cmd.MemberID, cmd.ObligationID); att != nil && cmd.Decision != pairNativeDecisionRead {
+		return fmt.Sprintf("refused: native attempt %s already holds a recovered booking for this obligation that waits for its book to commit; it ends the obligation through the settlement ledger, so no write-off or acknowledgment is applied (a venue-read can add the missing fee evidence)", att.ID), false
+	}
 	id := pairNativeOperatorRequestID(rt, cmd)
 	if staged := p.nativeRequestFor(cmd.Kind, cmd.MemberID, cmd.ObligationID); staged != nil {
 		if staged.ID == id {
@@ -1435,6 +1509,9 @@ func (bc *basketCoordinator) describePairNative(rt *basketRuntime, cmd pairNativ
 		if att := p.nativeAttemptFor(o); att != nil {
 			line += fmt.Sprintf("; attempt %s orders %v complete=%v side %s, %d reads, last: %s", att.ID, att.VenueOrderIDs, att.OrdersComplete, att.OrderSide, att.RetryCount, att.LastError)
 		}
+		if a := p.nativePendingResolution(o.Kind, o.MemberID, o.ActionID); a != nil {
+			line += fmt.Sprintf("; recovered booking %s for action %s waits for its book to commit", a.Pending.ID, a.Pending.ActionID)
+		}
 		if r := p.nativeRequestFor(o.Kind, o.MemberID, o.ActionID); r != nil {
 			line += fmt.Sprintf("; staged decision %s (%s)", r.ID, r.Decision)
 		}
@@ -1463,7 +1540,7 @@ func pairNativeFundingHoldFromMs(rt *basketRuntime, memberID string) int64 {
 }
 
 func pairNativeRecoveryAccounted(p *pairProgress) bool {
-	if len(p.NativeFundingHolds) > 0 || len(p.NativeRequests) > 0 {
+	if len(p.NativeRequests) > 0 {
 		return false
 	}
 	for _, a := range p.NativeAttempts {

@@ -654,8 +654,10 @@ func (bc *basketCoordinator) pairWakeBoundaries(rt *basketRuntime, nowMs int64) 
 			add(at.RetryAtMs, true)
 		}
 	}
-	if len(p.NativeRequests) > 0 {
-		add(nowMs, true)
+	for _, r := range p.NativeRequests {
+		if !rt.Pair.nativeSeen[r.ID] {
+			add(nowMs, true)
+		}
 	}
 	grace := entryRecoveryGrace.Milliseconds()
 	for _, a := range rt.pairUnresolvedActions() {

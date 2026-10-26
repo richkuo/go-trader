@@ -48,6 +48,7 @@ const (
 	pairFundingReasonArithmetic        = "amount_not_finite_decimal"
 	pairFundingReasonCurrency          = "currency_mismatch"
 	pairFundingReasonPositionUnknown   = "position_identity_unknown"
+	pairFundingReasonNativeDecision    = "native_decision_unproven"
 )
 
 type pairFundingRule struct {
