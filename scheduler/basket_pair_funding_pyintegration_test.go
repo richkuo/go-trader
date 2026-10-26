@@ -218,6 +218,80 @@ func TestBasketPairFundingPythonCodecMatchesGo(t *testing.T) {
 	}
 }
 
+func TestBasketPairFundingPythonLegacyCanonicalGoldens(t *testing.T) {
+	blob, d := pairFundingPyDocument(t)
+	batch, err := (pairFundingBatch{V: pairFundingBatchVersion, SourceID: d.SourceID, Seq: 1, Rates: d.Rates, Prices: d.Prices, Coverage: d.Coverage}).sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchJSON, err := pairFundingBatchBytes(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rulesDigest, _, err := pairFundingRulesDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := pairTestStart()
+	tOKX := t0.Add(4 * time.Hour).UnixMilli()
+	e := newPairFundingEnv(t, func(d *pairFundingDocument, k map[string]pairEvidenceKey) {
+		d.Rates = []pairFundingRate{pfRate(k[pairTestOKX], pairFundingRuleOKX, tOKX, "-0.0002")}
+		d.Prices = []pairFundingPrice{pfPrice(k[pairTestOKX], pairFundingPriceMark, tOKX, "60100")}
+		pairFundingAutoCoverage(d, k)
+	}, pairFundingConversions("1.0002", "0.9995"))
+	e.openMatched(0.05)
+	e.step(t0.Add(4*time.Hour + 61*time.Second))
+	eventID := pairFundingEventID("okx", "BTC-USDT-SWAP", tOKX)
+	_, _, eventJSON := e.fundingRow(pairTestOKX, eventID)
+	e.restart()
+	_, _, reloaded := e.fundingRow(pairTestOKX, eventID)
+	if reloaded != eventJSON {
+		t.Fatal("legacy event bytes changed across the real coordinator save and reload")
+	}
+	files := map[string][]byte{
+		"rules-digest.txt": []byte(rulesDigest + "\n"),
+		"binding-v1.json":  append([]byte(nil), e.adm.fundingBinding...),
+		"document-v1.json": blob,
+		"batch-v1.json":    batchJSON,
+		"event-v2.json":    []byte(eventJSON),
+	}
+	capture := os.Getenv("GO_TRADER_CAPTURE_PAIR_FUNDING_GOLDENS")
+	if capture != "" {
+		if err := os.MkdirAll(capture, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		base, err := exec.Command("git", "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		hashes := map[string]string{"base_sha256": strings.TrimSpace(string(base)), "rules_digest": rulesDigest}
+		for name, raw := range files {
+			hashes[name] = sha256Hex(raw)
+		}
+		metadata, err := pairCanonicalJSON(hashes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files["hashes.json"] = metadata
+		for name, raw := range files {
+			if err := os.WriteFile(filepath.Join(capture, name), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+	dir := filepath.Join(basketPyRoot(t), "scheduler", "testdata", "pair_funding_legacy")
+	for _, name := range []string{"rules-digest.txt", "binding-v1.json", "document-v1.json", "batch-v1.json", "event-v2.json", "hashes.json"} {
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read immutable legacy golden %s: %v", name, err)
+		}
+		if name != "hashes.json" && !bytes.Equal(raw, files[name]) {
+			t.Fatalf("legacy golden %s differs from current canonical bytes", name)
+		}
+	}
+}
+
 type pairOKXFundingFixture struct {
 	mu     sync.Mutex
 	afters map[string][]string
