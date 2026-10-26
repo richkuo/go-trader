@@ -400,6 +400,9 @@ func (sdb *StateDB) migratePairSchema() error {
 	if err := sdb.migratePairFundingSchema(); err != nil {
 		return err
 	}
+	if err := sdb.migratePairNativeSchema(); err != nil {
+		return err
+	}
 	return sdb.migratePairVirtualSchema()
 }
 
@@ -714,30 +717,35 @@ const (
 const (
 	pairProgressVersion       = 2
 	pairProgressVersionLegacy = 1
+	pairProgressVersionNative = 3
 )
 
 type pairProgress struct {
-	V                  int                  `json:"v"`
-	Seq                int64                `json:"seq"`
-	Lifecycle          string               `json:"lifecycle"`
-	OriginSlotMs       int64                `json:"origin_slot_ms,omitempty"`
-	ExitReason         string               `json:"exit_reason,omitempty"`
-	FirstFillMs        int64                `json:"first_fill_ms,omitempty"`
-	RecoveryStartMs    int64                `json:"recovery_start_ms,omitempty"`
-	RecoveryReason     string               `json:"recovery_reason,omitempty"`
-	IncreasesFrozen    bool                 `json:"increases_frozen,omitempty"`
-	FreezeReason       string               `json:"freeze_reason,omitempty"`
-	OperatorHeldReason string               `json:"operator_held_reason,omitempty"`
-	Exceptions         []basketException    `json:"exceptions,omitempty"`
-	Alerts             []string             `json:"alerts,omitempty"`
-	Obligations        []pairObligation     `json:"obligations,omitempty"`
-	Retries            map[string]pairRetry `json:"retries,omitempty"`
-	LastBound          *pairBoundRecord     `json:"last_bound,omitempty"`
-	CostEvidence       json.RawMessage      `json:"cost_evidence,omitempty"`
-	FundingBinding     json.RawMessage      `json:"funding_binding,omitempty"`
-	PositionMatch      *pairPositionMatch   `json:"position_match,omitempty"`
-	NativeReceipts     []pairNativeReceipt  `json:"native_receipts,omitempty"`
-	PaperCloses        []pairPaperClose     `json:"paper_closes,omitempty"`
+	V                  int                         `json:"v"`
+	Seq                int64                       `json:"seq"`
+	Lifecycle          string                      `json:"lifecycle"`
+	OriginSlotMs       int64                       `json:"origin_slot_ms,omitempty"`
+	ExitReason         string                      `json:"exit_reason,omitempty"`
+	FirstFillMs        int64                       `json:"first_fill_ms,omitempty"`
+	RecoveryStartMs    int64                       `json:"recovery_start_ms,omitempty"`
+	RecoveryReason     string                      `json:"recovery_reason,omitempty"`
+	IncreasesFrozen    bool                        `json:"increases_frozen,omitempty"`
+	FreezeReason       string                      `json:"freeze_reason,omitempty"`
+	OperatorHeldReason string                      `json:"operator_held_reason,omitempty"`
+	Exceptions         []basketException           `json:"exceptions,omitempty"`
+	Alerts             []string                    `json:"alerts,omitempty"`
+	Obligations        []pairObligation            `json:"obligations,omitempty"`
+	Retries            map[string]pairRetry        `json:"retries,omitempty"`
+	LastBound          *pairBoundRecord            `json:"last_bound,omitempty"`
+	CostEvidence       json.RawMessage             `json:"cost_evidence,omitempty"`
+	FundingBinding     json.RawMessage             `json:"funding_binding,omitempty"`
+	PositionMatch      *pairPositionMatch          `json:"position_match,omitempty"`
+	NativeReceipts     []pairNativeReceipt         `json:"native_receipts,omitempty"`
+	PaperCloses        []pairPaperClose            `json:"paper_closes,omitempty"`
+	NativeAttempts     []pairNativeAttempt         `json:"native_attempts,omitempty"`
+	NativeAttemptSeq   int64                       `json:"native_attempt_seq,omitempty"`
+	NativeFundingHolds []pairNativeFundingHold     `json:"native_funding_holds,omitempty"`
+	NativeRequests     []pairNativeOperatorRequest `json:"native_requests,omitempty"`
 }
 
 func (p *pairProgress) alerted(key string) bool {
@@ -793,6 +801,10 @@ func (p *pairProgress) clearObligation(kind, memberID, actionID string) bool {
 }
 
 func (p pairProgress) JSON() string {
+	p.V = pairProgressVersion
+	if p.hasNativeRecovery() {
+		p.V = pairProgressVersionNative
+	}
 	b, err := json.Marshal(p)
 	if err != nil {
 		return ""
@@ -811,6 +823,9 @@ func parsePairProgress(raw string) (pairProgress, error) {
 	if p.V == pairProgressVersionLegacy && len(p.NativeReceipts) == 0 && len(p.PaperCloses) == 0 {
 		p.V = pairProgressVersion
 	}
+	if p.V == pairProgressVersionNative {
+		p.V = pairProgressVersion
+	}
 	if p.V != pairProgressVersion {
 		return p, fmt.Errorf("saved pair progress version %d is not supported", p.V)
 	}
@@ -826,7 +841,11 @@ type pairRuntimeState struct {
 	admission *pairResearchAdmission
 	funding   *pairFundingRuntime
 
-	durableSeq int64
+	durableSeq   int64
+	resolutions  []pairNativeResolution
+	finalizing   []pairNativeResolution
+	nativeAlerts []pairNativeResolution
+	nativeReads  map[string]*pairNativeReadToken
 }
 
 func newPairRuntimeState(p PairConfig, limits pairOperationalLimits, adm *pairResearchAdmission) *pairRuntimeState {
@@ -1029,7 +1048,7 @@ func (sdb *StateDB) writePairTx(tx *sql.Tx, rt *basketRuntime, books map[string]
 	if err := sdb.writePairFundingTx(tx, rt, sids, books, nowMs); err != nil {
 		return nil, err
 	}
-	if err := writePairProgressTx(tx, rt); err != nil {
+	if err := writePairProgressFinalizingTx(tx, rt, sids, books); err != nil {
 		return nil, err
 	}
 	k := basketKey{Partition: rt.Partition, BasketID: rt.Contract.BasketID}
@@ -1145,6 +1164,7 @@ func markPairDurable(rt *basketRuntime, books map[string]*StrategyState) {
 			delete(rt.Pair.Intents, id)
 		}
 	}
+	applyPairNativeFinalized(rt)
 	rt.Pair.durableSeq = rt.Pair.Progress.Seq
 	rt.Pair.admission.markCostDurable(rt.Pair.Progress.CostEvidence)
 	markPairFundingDurable(rt, books)
@@ -1566,6 +1586,9 @@ func (sdb *StateDB) loadPairRecordsInto(out *basketFileRecords) error {
 	if err := sdb.loadPairFundingRecordsInto(out); err != nil {
 		return err
 	}
+	if err := sdb.loadPairNativeRecordsInto(out); err != nil {
+		return err
+	}
 	return sdb.loadPairVirtualRecordsInto(out)
 }
 
@@ -1611,6 +1634,7 @@ func (r *basketFileRecords) pairPendingFor(k basketKey) []string {
 					out = append(out, fmt.Sprintf("emergency close for %s is staged at $%.6f and not committed", c.MemberID, c.PriceUSD))
 				}
 			}
+			out = append(out, p.nativeRecoveryPending()...)
 		}
 	}
 	out = append(out, r.Funding[k].open()...)
@@ -1745,6 +1769,9 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 		if r.Funding[k].any() {
 			return fmt.Errorf("pair %s funding records sit in the %s state file, but its members are owned by the %s file; funding evidence is never adopted from another file", p.ID, otherRole, role)
 		}
+		if len(r.NativeResolutions[k]) > 0 {
+			return fmt.Errorf("pair %s native fill resolutions sit in the %s state file, but its members are owned by the %s file; a resolution is never adopted from another file", p.ID, otherRole, role)
+		}
 		for vk, v := range r.Virtual {
 			if v.any() {
 				return fmt.Errorf("pair %s virtual venue records sit in the %s state file for %s (%s), but the pair members are owned by the %s file; execution evidence is never adopted from another file", vk.BasketID, otherRole, vk.BasketID, partitionLabel(vk.Partition), role)
@@ -1799,6 +1826,7 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 		for _, u := range r.Uses[k] {
 			rt.Pair.Uses[u.key()] = u
 		}
+		rt.Pair.resolutions = append([]pairNativeResolution(nil), r.NativeResolutions[k]...)
 		if raw, ok := r.Progress[k]; ok {
 			prog, perr := parsePairProgress(raw)
 			if perr != nil {

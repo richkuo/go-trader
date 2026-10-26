@@ -1001,7 +1001,9 @@ type basketFileRecords struct {
 	Progress   map[basketKey]string
 	Funding    map[basketKey]*pairFundingFileRows
 	Virtual    map[basketKey]*pairVirtualFileRows
-	Unmapped   []string
+
+	NativeResolutions map[basketKey][]pairNativeResolution
+	Unmapped          []string
 }
 
 func scanBasketRebalance(scan func(dest ...interface{}) error) (*basketRebalance, error) {

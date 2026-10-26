@@ -1142,6 +1142,9 @@ func (bc *basketCoordinator) settlePairActionLive(rt *basketRuntime, a *basketAc
 		}
 		a.UpdatedAtMs = now.UnixMilli()
 		rt.touchPairProgress()
+		if a.Status == basketActionCommitted && rt.Pair.Progress.nativePendingFor(a.ActionID) {
+			return bc.savePairLiveSettlement(rt, a, now)
+		}
 		return bc.persistPair(rt)
 	}
 	qNeeds := pl.quantityNeeds(m)

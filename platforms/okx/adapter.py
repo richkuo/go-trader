@@ -52,6 +52,12 @@ def _normalize_okx_bill(entry: dict) -> dict:
     }
 
 
+class OKXCloseOrdersError(RuntimeError):
+    def __init__(self, message, orders):
+        super().__init__(message)
+        self.orders = list(orders)
+
+
 class OKXExchangeAdapter:
 
     def __init__(self, public_only: bool = False):
@@ -576,10 +582,15 @@ class OKXExchangeAdapter:
                     close_sz = min(float(sz), contracts)
                     if close_sz <= 0:
                         continue
-                results.append(self._exchange.create_market_order(
-                    pair, close_side, close_sz,
-                    params={"tdMode": "cross", "reduceOnly": True}
-                ))
+                try:
+                    results.append(self._exchange.create_market_order(
+                        pair, close_side, close_sz,
+                        params={"tdMode": "cross", "reduceOnly": True}
+                    ))
+                except Exception as e:
+                    if not results:
+                        raise
+                    raise OKXCloseOrdersError(f"close order {len(results) + 1} failed after {len(results)} close orders were sent: {e}", results) from e
         return results
 
     def get_account_balance(self) -> float:

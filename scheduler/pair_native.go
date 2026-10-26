@@ -60,6 +60,7 @@ type nativeCloseEvidence struct {
 	Fills             []pairScriptFill `json:"fills"`
 	Complete          bool             `json:"complete"`
 	Detail            string           `json:"detail"`
+	OrdersComplete    *bool            `json:"orders_complete,omitempty"`
 }
 
 type pairNativeResult struct {
@@ -355,6 +356,7 @@ type pairNativeSend struct {
 	positionSide string
 	ambiguous    string
 	sentMs       int64
+	counted      bool
 }
 
 func pairNativeStartMs(a *basketAction) int64 {
@@ -421,6 +423,8 @@ func (bc *basketCoordinator) beginPairNative(provider, coin, stratID, purpose, t
 	}
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
+	bc.pairNativeSendBegan(m.MemberID)
+	send.counted = true
 	rt.clock = now
 	if peers := bc.pairNativePeerHolders(rt, m); len(peers) > 0 {
 		send.ambiguous = fmt.Sprintf("strategies %s also hold %s in the %s partition, so a whole-coin native fill cannot be attributed to pair member %s", strings.Join(peers, ", "), m.Symbol, partitionLabel(rt.Partition), m.MemberID)
@@ -515,6 +519,9 @@ func (bc *basketCoordinator) endPairNativeAction(rt *basketRuntime, a *basketAct
 	a.Terminal = true
 	a.HoldReason = reason + "; its fill is unknown, so the member accounting stays open and nothing is booked from it"
 	a.UpdatedAtMs = now.UnixMilli()
+	if rt.pairNativeResolution(pairObligationNativeUnknown, a.StrategyID, a.ActionID) != nil {
+		return
+	}
 	if rt.Pair.Progress.addObligation(pairObligation{Kind: pairObligationNativeUnknown, MemberID: a.StrategyID, ActionID: a.ActionID, Detail: a.HoldReason, AtMs: now.UnixMilli(), FromMs: pairNativeStartMs(a)}) {
 		bc.pairAlert(rt, "native-unknown|"+a.ActionID, fmt.Sprintf("%s native close %s ended without a confirmed outcome (%s); the result stays incomplete until an operator reconciles the venue account", a.StrategyID, a.ActionID, reason), true)
 	}
@@ -544,6 +551,9 @@ func (bc *basketCoordinator) finishPairNative(send *pairNativeSend, ev *nativeCl
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	rt, m := send.rt, send.m
+	if send.counted {
+		bc.pairNativeSendEnded(m.MemberID)
+	}
 	rt.clock = now
 	if send.recordErr != nil {
 		msg := fmt.Sprintf("a native close for a pair member ran without a complete pair record: %v", send.recordErr)
@@ -558,9 +568,18 @@ func (bc *basketCoordinator) finishPairNative(send *pairNativeSend, ev *nativeCl
 			send.orderSide, send.positionSide = pairNativeSideFromFills(ev)
 		}
 	}
-	key := rt.Contract.pairMemberKey(m).String()
+	att := bc.pairNativeAttemptFor(rt, send, ev, closeErr, res, now)
+	rt.Pair.Progress.NativeAttempts = append(rt.Pair.Progress.NativeAttempts, att)
+	rt.touchPairProgress()
+	defer func() {
+		n := len(rt.Pair.Progress.NativeAttempts)
+		rt.Pair.Progress.pruneNativeAttempts()
+		if len(rt.Pair.Progress.NativeAttempts) != n {
+			rt.touchPairProgress()
+		}
+	}()
 	if send.ambiguous != "" {
-		id := pairNativeReceiptID(key, send.purpose, send.trigger, res.Out)
+		id := att.ID
 		if res.confirmed() || res.Out.Outcome == basketVenueUnknown {
 			rt.Pair.Progress.addObligation(pairObligation{Kind: pairObligationNativeAmbiguous, MemberID: m.MemberID, ActionID: id, Detail: send.ambiguous, AtMs: now.UnixMilli(), FromMs: send.sentMs})
 			rt.touchPairProgress()
@@ -571,9 +590,12 @@ func (bc *basketCoordinator) finishPairNative(send *pairNativeSend, ev *nativeCl
 	}
 	a := send.a
 	if a != nil && rt.Actions[a.ActionID] == a && basketActionPending(a.Status) {
+		if cur := rt.Pair.Progress.nativeAttempt(att.ID); cur != nil {
+			cur.ActionID = a.ActionID
+		}
 		bc.applyPairNativeResult(rt, a, res, now)
 	} else {
-		bc.retainPairNativeReceipt(rt, send, res, now)
+		bc.retainPairNativeReceipt(rt, send, att.ID, res, now)
 	}
 	return res.Out.CumQty
 }
@@ -685,7 +707,7 @@ func (bc *basketCoordinator) pairNativeFillConflict(rt *basketRuntime, a *basket
 	return ""
 }
 
-func (bc *basketCoordinator) retainPairNativeReceipt(rt *basketRuntime, send *pairNativeSend, res pairNativeResult, now time.Time) {
+func (bc *basketCoordinator) retainPairNativeReceipt(rt *basketRuntime, send *pairNativeSend, attemptID string, res pairNativeResult, now time.Time) {
 	nowMs := now.UnixMilli()
 	p := &rt.Pair.Progress
 	m := send.m
@@ -693,9 +715,9 @@ func (bc *basketCoordinator) retainPairNativeReceipt(rt *basketRuntime, send *pa
 	id := pairNativeReceiptID(key, send.purpose, send.trigger, res.Out)
 	switch {
 	case res.Out.Outcome == basketVenueUnknown:
-		if p.addObligation(pairObligation{Kind: pairObligationNativeUnknown, MemberID: m.MemberID, ActionID: id, Detail: "a native close ran without a saved action and returned no confirmed fill: " + res.Out.Detail, AtMs: nowMs, FromMs: send.sentMs}) {
+		if p.addObligation(pairObligation{Kind: pairObligationNativeUnknown, MemberID: m.MemberID, ActionID: attemptID, Detail: "a native close ran without a saved action and returned no confirmed fill: " + res.Out.Detail, AtMs: nowMs, FromMs: send.sentMs}) {
 			rt.touchPairProgress()
-			bc.pairAlert(rt, "native-unknown|"+id, fmt.Sprintf("%s native %s close ran without a saved action and its fill is unknown (%s); the result stays incomplete", m.MemberID, send.trigger, res.Out.Detail), true)
+			bc.pairAlert(rt, "native-unknown|"+attemptID, fmt.Sprintf("%s native %s close attempt %s ran without a saved action and its fill is unknown (%s); the result stays incomplete", m.MemberID, send.trigger, attemptID, res.Out.Detail), true)
 		}
 		bc.persistPair(rt)
 		return
@@ -707,6 +729,9 @@ func (bc *basketCoordinator) retainPairNativeReceipt(rt *basketRuntime, send *pa
 		if r.ID == id {
 			return
 		}
+	}
+	if cur := p.nativeAttempt(attemptID); cur != nil {
+		cur.ReceiptID = id
 	}
 	r := pairNativeReceipt{ID: id, Key: key, MemberID: m.MemberID, Purpose: send.purpose, Trigger: send.trigger, OrderSide: send.orderSide, PositionSide: send.positionSide,
 		ExecutedQty: res.ExecutedQty, Unconfirmed: res.Unconfirmed, Outcome: res.Out, CreatedAtMs: nowMs}
@@ -738,6 +763,14 @@ func (bc *basketCoordinator) attachPairNativeReceipts(rt *basketRuntime, in bask
 			continue
 		}
 		if p.obligation(pairObligationNativeConflict, r.MemberID, r.ID) != nil {
+			continue
+		}
+		if why := rt.pairNativeResolvedFillOverlap(r.MemberID, r.Outcome.FillCoverage); why != "" {
+			if p.addObligation(pairObligation{Kind: pairObligationNativeConflict, MemberID: r.MemberID, ActionID: r.ID, Detail: "the saved native receipt needs review: " + why, AtMs: nowMs}) {
+				rt.touchPairProgress()
+				bc.persistPair(rt)
+				bc.pairAlert(rt, "native-decided-fill|"+r.ID, fmt.Sprintf("%s: native receipt %s for %s carries a fill an operator already decided (%s); it is never attached or booked and needs review", rt.Contract.BasketID, r.ID, r.MemberID, why), true)
+			}
 			continue
 		}
 		sc, ok := bc.members[r.MemberID]
@@ -814,11 +847,17 @@ func (bc *basketCoordinator) attachPairNativeReceipts(rt *basketRuntime, in bask
 			bc.pairLogf(rt, "native receipt %s for %s is not attached yet: %v; it stays in the pair record and no order is sent", r.ID, r.MemberID, err)
 			continue
 		}
+		for i := range rt.Pair.Progress.NativeAttempts {
+			if att := &rt.Pair.Progress.NativeAttempts[i]; att.MemberID == r.MemberID && att.ReceiptID == r.ID {
+				att.ActionID = a.ActionID
+			}
+		}
 		if r.Unconfirmed != "" {
 			rt.Pair.Progress.addObligation(pairObligation{Kind: pairObligationNativeUnconfirmed, MemberID: a.StrategyID, ActionID: a.ActionID, Detail: r.Unconfirmed, AtMs: nowMs, FromMs: a.SubmittedAtMs})
-			rt.touchPairProgress()
-			bc.persistPair(rt)
 		}
+		rt.Pair.Progress.pruneNativeAttempts()
+		rt.touchPairProgress()
+		bc.persistPair(rt)
 		bc.pairLogf(rt, "native receipt %s for %s attached as accounting action %s (%.10g confirmed); no order was sent", r.ID, r.MemberID, a.ActionID, a.ConfirmedQty)
 	}
 }
@@ -914,6 +953,9 @@ func (bc *basketCoordinator) recoverPairNativeLegacy(rt *basketRuntime, now time
 	for _, id := range rt.sortedActionIDs() {
 		a := rt.Actions[id]
 		if !a.pairNative() || a.Status != basketActionCommitted || a.ConfirmedQty <= 1e-12 || strings.TrimSpace(a.SettlementJSON) != "" {
+			continue
+		}
+		if rt.pairNativeResolution(pairObligationNativeLegacy, a.StrategyID, a.ActionID) != nil {
 			continue
 		}
 		if rt.Pair.Progress.addObligation(pairObligation{Kind: pairObligationNativeLegacy, MemberID: a.StrategyID, ActionID: a.ActionID,
@@ -1294,6 +1336,9 @@ func pairNativeUnknownFromMs(rt *basketRuntime, memberID string) int64 {
 		if r.MemberID == memberID && r.Outcome.AcceptedAtMs > 0 && (from == 0 || r.Outcome.AcceptedAtMs < from) {
 			from = r.Outcome.AcceptedAtMs
 		}
+	}
+	if h := pairNativeFundingHoldFromMs(rt, memberID); h > 0 && (from == 0 || h < from) {
+		from = h
 	}
 	return from
 }
