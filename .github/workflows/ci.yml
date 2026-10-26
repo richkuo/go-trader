@@ -236,7 +236,31 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestBasketReplay[A-Za-z]*$' -skip '^TestBasketReplay(MomentumStudy|ReversalStudy)[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestBasketReplay[A-Za-z]*$' -skip '^TestBasketReplay(MomentumStudy|ReversalStudy|PairPaper)[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
+            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
+            exit 1
+          fi
+
+  go-python-integration-basket-replay-paper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Python-backed Go integration tests
+        run: |
+          set -o pipefail
+          go -C scheduler test -v -timeout 40m -tags pyintegration -run '^TestBasketReplayPairPaper[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1

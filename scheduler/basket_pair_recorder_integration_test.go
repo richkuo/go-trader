@@ -234,6 +234,59 @@ func TestBasketPairRecorderAppendFailureRefusesReadsUntilAnExplicitVerification(
 	}
 }
 
+func pairRecCommittedStream(l *pairRecLog) int {
+	n := 0
+	for _, r := range l.rows {
+		if pairRecConsumable(r) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestBasketPairRecorderBarrierCursorCountsOnlyCommittedRows(t *testing.T) {
+	e := newPairRecTestEnv(t, pairRecFaults{kind: "fail-record-append", n: 4})
+	e.rec.beginStep("s0@1", 0)
+	if _, err := e.rec.wake("", 0); err != nil {
+		t.Fatal(err)
+	}
+	launch := pairRecResultOf("r")
+	if _, _, err := e.rec.call(context.Background(), pairRecCall{Kind: pairRecKindReference, MemberID: "a", Request: []byte("q1")}, launch); err == nil {
+		t.Fatal("a call whose start cannot commit must fail")
+	}
+	if _, err := e.rec.budget("collect", context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	e.rec.beginStep("s1@2", 0)
+	if _, err := e.rec.wake("", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.rec.call(context.Background(), pairRecCall{Kind: pairRecKindPolicy, Request: []byte("q2")}, launch); err == nil {
+		t.Fatal("every read is refused while blocked")
+	}
+	if got, want := e.rec.cursorNow(), pairRecCommittedStream(e.log()); got != want {
+		t.Fatalf("while the barrier holds the cursor counts committed stream rows only: cursor %d, committed %d", got, want)
+	}
+	e.rec.faults = pairRecFaults{}
+	if cleared, err := e.rec.clearAtBoundary(func() (int64, error) { return e.log().head().Seq, nil }); !cleared || err != nil {
+		t.Fatalf("the verified release commits the queue, got %v %v", cleared, err)
+	}
+	l := e.log()
+	if got, want := e.rec.cursorNow(), pairRecCommittedStream(l); got != want || want != len(l.stream) {
+		t.Fatalf("after the release the cursor equals the committed stream: cursor %d, committed %d, stream %d", got, want, len(l.stream))
+	}
+	e.rec.beginStep("s2@3", 0)
+	if _, err := e.rec.wake("", 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.rec.call(context.Background(), pairRecCall{Kind: pairRecKindReference, MemberID: "a", Request: []byte("q3")}, launch); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := e.rec.cursorNow(), len(e.log().stream); got != want {
+		t.Fatalf("later live rows keep the cursor on the committed stream: cursor %d, stream %d", got, want)
+	}
+}
+
 func TestBasketPairRecorderPlaybackKeepsFailuresWithoutLaunchAndChecksProcessResults(t *testing.T) {
 	e := newPairRecTestEnv(t, pairRecFaults{})
 	e.rec.beginStep("s0@1", 0)

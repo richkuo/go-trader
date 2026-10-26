@@ -195,7 +195,7 @@ func (bc *basketCoordinator) collectPairSlot(rt *basketRuntime, in basketCycleIn
 		generation uint64
 	)
 	bc.unlocked(func() {
-		wallStart := time.Now()
+		wallStart := bc.pairBudgetStart()
 		ctx, cancel := context.WithTimeout(parent, budget)
 		defer cancel()
 		if needSeal {
@@ -355,7 +355,7 @@ func (bc *basketCoordinator) readPairReferenceLocked(ctx context.Context, rt *ba
 		generation uint64
 	)
 	bc.unlocked(func() {
-		wallStart := time.Now()
+		wallStart := bc.pairBudgetStart()
 		rctx, cancel := context.WithTimeout(ctx, budget)
 		defer cancel()
 		if needSeal {

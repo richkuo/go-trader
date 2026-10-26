@@ -100,9 +100,9 @@ func pairPaperPublicRead(ctx context.Context, egress *EgressConfig, m pairContra
 		env[k] = ""
 	}
 	args := []string{"--provider=" + m.Provider, "--source=" + pairSourcePublicSnapshot, "--instrument=" + m.Instrument, "--depth=" + strconv.Itoa(depth)}
-	start := time.Now()
+	start := pairPaperWall.Now()
 	stdout, stderr, runErr := spawnPythonProcessWithEnvLimited(ctx, pairQuoteReaderScript, args, nil, 0, env, pythonOutputLimits{Stdout: limit, Stderr: limit})
-	recv := time.Now()
+	recv := pairPaperWall.Now()
 	res := pairRecResult{Stdout: stdout, Stderr: processEgress.redact(string(stderr)), ExitStatus: pairExitStatus(runErr)}
 	setFail := func(class, format string, a ...interface{}) pairRecResult {
 		res.Class, res.Cause = class, processEgress.redact(fmt.Sprintf(format, a...))
@@ -635,9 +635,9 @@ func pairRunHistoryReader(ctx context.Context, egress *EgressConfig, args []stri
 	for _, k := range pairQuoteReaderClearedEnv {
 		env[k] = ""
 	}
-	start := time.Now()
+	start := pairPaperWall.Now()
 	stdout, stderr, runErr := spawnPythonProcessWithEnvLimited(ctx, pairHistoryReaderScript, args, nil, 0, env, pythonOutputLimits{Stdout: pairPaperHistoryMaxOut, Stderr: pairRecMaxStderrBytes})
-	recv := time.Now()
+	recv := pairPaperWall.Now()
 	res := pairRecResult{Stdout: stdout, Stderr: processEgress.redact(string(stderr)), ExitStatus: pairExitStatus(runErr)}
 	fail := func(class, format string, a ...interface{}) pairRecResult {
 		res.Class, res.Cause = class, processEgress.redact(fmt.Sprintf(format, a...))

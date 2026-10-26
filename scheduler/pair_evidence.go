@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -1712,7 +1711,7 @@ func pairReadPublicCapabilityInto(ctx context.Context, key pairEvidenceKey, prev
 	}
 	args := []string{"--provider=" + key.Provider, "--instrument=" + key.Instrument}
 	stdout, stderr, runErr := spawnPythonProcessWithEnv(ctx, pairEvidenceReaderScript, args, nil, 0, env)
-	receivedMs := time.Now().UnixMilli()
+	receivedMs := pairPaperWall.Now().UnixMilli()
 	*rawOut, *rawErr = stdout, stderr
 	tree, perr := pairStrictParse(bytes.TrimSpace(stdout))
 	if perr != nil {

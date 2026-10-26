@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -104,6 +105,39 @@ func parsePairPaperFault(raw string) (basketReplayFault, pairRecFaults, error) {
 	return f, pairRecFaults{}, fmt.Errorf("--fault %q must be <kind>:<n> with a version-2 replay kind or exit-after-call-start, exit-after-input-commit or fail-record-append", raw)
 }
 
+type pairPaperFaultFlags []string
+
+func (f *pairPaperFaultFlags) String() string { return strings.Join(*f, ",") }
+
+func (f *pairPaperFaultFlags) Set(v string) error {
+	*f = append(*f, v)
+	return nil
+}
+
+func parsePairPaperFaults(raws []string) (basketReplayFault, pairRecFaults, error) {
+	var f basketReplayFault
+	var rf pairRecFaults
+	if len(raws) > 2 {
+		return f, rf, fmt.Errorf("--fault is given at most twice: one version-2 replay kind and one recorder kind")
+	}
+	for _, raw := range raws {
+		vf, vrf, err := parsePairPaperFault(raw)
+		if err != nil {
+			return f, rf, err
+		}
+		if (vf.Kind != "" && f.Kind != "") || (vrf.kind != "" && rf.kind != "") {
+			return f, rf, fmt.Errorf("--fault given twice needs one version-2 replay kind and one recorder kind, got %s", strings.Join(raws, " and "))
+		}
+		if vf.Kind != "" {
+			f = vf
+		}
+		if vrf.kind != "" {
+			rf = vrf
+		}
+	}
+	return f, rf, nil
+}
+
 func runBasketReplayPaper(args []string) int {
 	protocolOut := os.Stdout
 	os.Stdout = os.Stderr
@@ -117,7 +151,8 @@ func runBasketReplayPaperWith(args []string, stdin io.Reader, out io.Writer, egr
 	specPath := fs.String("spec", "", "path to the version-2 paper specification (JSON), or - for standard input")
 	configPath := fs.String("config", "", "absolute path of the research egress file (checked before the egress gate)")
 	maxSteps := fs.Int("max-steps", 0, "apply at most this many further host cycles, then stop with the run resumable (0 = all)")
-	faultRaw := fs.String("fault", "", "controlled fault for restart tests: a version-2 replay kind or exit-after-call-start|exit-after-input-commit|fail-record-append:<n>")
+	var faultRaws pairPaperFaultFlags
+	fs.Var(&faultRaws, "fault", "controlled fault for restart tests: a version-2 replay kind or exit-after-call-start|exit-after-input-commit|fail-record-append:<n>; given twice, one of each")
 	seal := fs.Bool("seal", false, "seal the finished run and export it for offline version-2 reproduction")
 	if err := fs.Parse(args); err != nil {
 		return basketReplayExitUsage
@@ -126,7 +161,7 @@ func runBasketReplayPaperWith(args []string, stdin io.Reader, out io.Writer, egr
 		fmt.Fprintln(os.Stderr, "usage: go-trader basket-replay-paper --spec <v2.json|-> --config <absolute research egress file> [--max-steps N] [--fault kind:N] [--seal]")
 		return basketReplayExitUsage
 	}
-	f, rf, err := parsePairPaperFault(*faultRaw)
+	f, rf, err := parsePairPaperFaults(faultRaws)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return basketReplayExitUsage
@@ -615,6 +650,10 @@ func openPairPaper(spec *pairPaperSpec, raw []byte, lt pairReplayLifetime, opts 
 		if err := r.recheckRecordingFrontier(); err != nil {
 			return nil, err
 		}
+		if err := r.restoreSourcesFrom(r.paper.preLog, -1); err != nil {
+			return nil, err
+		}
+		r.paper.evidence.activate()
 	}
 	if err := r.loadState(); err != nil {
 		return nil, err
@@ -969,10 +1008,6 @@ func (r *pairReplayRuntime) initPaperGrids() {
 
 func (r *pairReplayRuntime) paperResumeState() error {
 	l := r.paper.preLog
-	if err := r.restoreSourcesFrom(l, -1); err != nil {
-		return err
-	}
-	r.paper.evidence.activate()
 	r.rec.log = l
 	r.rec.head = l.head()
 	r.rec.epoch = l.epochs + 1
@@ -1014,9 +1049,19 @@ func (r *pairReplayRuntime) paperResumeState() error {
 		if r.rec.mode != pairRecLive {
 			r.rec.refuse("the recording barrier from input %d was set before a restart; the refused calls of that process were not recorded, so this run makes no equality claim", blocked.FailedSeq)
 		}
+		prevCursor := r.rec.cursorNow()
 		if err := r.rec.appendDirect(ev); err != nil {
 			return fmt.Errorf("the barrier release after the restart verification could not be recorded: %w", err)
 		}
+		full, rerr := readVerifiedPairRecLog(r.file, r.spec.Run.RunID, r.partition.String(), r.adm.contract)
+		if rerr != nil {
+			return rerr
+		}
+		if full.head() != r.rec.headNow() {
+			return refuseReplay("resume_refused", "the committed recording head after the restart release is not the recorder head")
+		}
+		r.rec.adoptLog(full, prevCursor)
+		r.paper.preLog = full
 		r.mu.Lock()
 		r.rt.Pair.Progress.RecordingBlocked = nil
 		r.rt.touchPairProgress()
@@ -1041,17 +1086,18 @@ func (r *pairReplayRuntime) paperHooks() *pairReplayHooks {
 			}
 			return r.rec.increaseHold()
 		},
-		decideHold: func(rt *basketRuntime, nowMs int64) string {
+		decideHold: func(rt *basketRuntime, nowMs int64) (string, bool) {
 			if slot := pairNewestUndecidedSlot(rt); slot > 0 && r.rec.catchUpCollect(slot) {
 				nowMs = r.clock.Now().UnixMilli()
 			}
 			if nowMs >= c.ThroughMs {
-				return fmt.Sprintf("no new decision is made after the collection end %d", c.ThroughMs)
+				return fmt.Sprintf("the slot was frozen before the collection end %d and is decided after it, so it holds without a policy run: no new decision is made after the collection end", c.ThroughMs), true
 			}
-			return r.rec.increaseHold()
+			return r.rec.increaseHold(), false
 		},
 		increaseHold: func(rt *basketRuntime) string { return r.rec.increaseHold() },
 		budget:       r.rec.budget,
+		wallNow:      func() time.Time { return r.rec.now() },
 	}
 }
 
@@ -1132,7 +1178,7 @@ func (r *pairReplayRuntime) deliver(at time.Time) []string {
 	if r.fundingNextMs > 0 && atMs >= r.fundingNextMs && r.fundingNextMs <= c.DrainThroughMs {
 		for _, m := range r.rt.Contract.pairMembersSorted() {
 			key := r.rt.Contract.pairMemberKey(m).evidenceKey()
-			chain := r.paper.funding.chain()
+			chain := r.rec.fundingConsumed(r.paper.funding.chain())
 			seq, prev := int64(len(chain)+1), ""
 			if len(chain) > 0 {
 				prev = chain[len(chain)-1].BatchHash
@@ -1145,6 +1191,9 @@ func (r *pairReplayRuntime) deliver(at time.Time) []string {
 			batch, err := recordingFundingSource{rec: r.rec, src: r.paper.funding, egress: r.paperEgress()}.read(ctx, key, seq, prev, from, through)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[paper] funding read of %s: %v\n", m.MemberID, err)
+				continue
+			}
+			if held := r.paper.funding.chainRaw(seq); held != nil && bytes.Equal(held, batch) {
 				continue
 			}
 			if err := r.paper.funding.Append(batch); err != nil {
@@ -1246,14 +1295,14 @@ func (r *pairReplayRuntime) runPaper() error {
 			}
 		} else if !r.rec.consuming() {
 			for {
-				wait := time.Until(time.UnixMilli(r.nextAt))
+				wait := time.UnixMilli(r.nextAt).Sub(pairPaperWall.Now())
 				if wait <= 0 {
 					break
 				}
 				if wait > pairPaperWaitSlice {
 					wait = pairPaperWaitSlice
 				}
-				time.Sleep(wait)
+				pairPaperWall.Sleep(wait)
 			}
 		}
 		if _, err := r.rec.clearAtBoundary(r.verifyRecordingForClear); err != nil {

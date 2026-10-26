@@ -1165,7 +1165,21 @@ func (bc *basketCoordinator) decidePendingPairSlots(rt *basketRuntime, in basket
 		return
 	}
 	newest := undecided[len(undecided)-1]
-	if why := bc.pairDecideHold(rt, bc.pairNow(in).UnixMilli()); why != "" {
+	why, final := bc.pairDecideHold(rt, bc.pairNow(in).UnixMilli())
+	if final {
+		now := bc.pairNow(in)
+		for _, rb := range undecided {
+			t := &pairTargets{Kind: pairPolicyStatusHold, CoordinatorReason: why}
+			_, saved, err := bc.freezePairTargets(rt, rb, t, why, now)
+			if err != nil {
+				bc.pairLogf(rt, "slot %s end hold could not be saved: %v; a later step holds it again", formatClosedBarMs(rb.DeadlineMs), err)
+				continue
+			}
+			bc.pairLogf(rt, "slot %s held: %s", formatClosedBarMs(rb.DeadlineMs), saved)
+		}
+		return
+	}
+	if why != "" {
 		if rt.pairDecideNote != why {
 			rt.pairDecideNote = why
 			bc.pairLogf(rt, "slot decisions hold: %s; frozen slots stay undecided, and queries, settlement and protection continue", why)
@@ -1268,7 +1282,7 @@ func (bc *basketCoordinator) decidePairSlot(rt *basketRuntime, rb *basketRebalan
 	bc.unlocked(func() {
 		ctx, cancel := context.WithTimeout(parent, timeout)
 		defer cancel()
-		wallStart := time.Now()
+		wallStart := bc.pairBudgetStart()
 		stdout, stderr, runErr = runner(ctx, stdin, timeout)
 		_, ctxErr = bc.pairWallBudget("policy", ctx, wallStart)
 	})

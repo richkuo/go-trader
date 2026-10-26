@@ -119,6 +119,8 @@ type pairReplayHostState struct {
 	PollNextMs       int64                            `json:"poll_next_ms,omitempty"`
 	FundingNextMs    int64                            `json:"funding_next_ms,omitempty"`
 	CapabilityNextMs int64                            `json:"capability_next_ms,omitempty"`
+	PairView         map[string]pairMemberValuation   `json:"pair_view,omitempty"`
+	PairLastMarks    map[string]pairLastMark          `json:"pair_last_marks,omitempty"`
 }
 
 type pairReplayCollection struct {

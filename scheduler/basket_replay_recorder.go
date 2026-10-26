@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+type pairPaperWallSource interface {
+	Now() time.Time
+	Sleep(d time.Duration)
+	Tick()
+}
+
+type pairPaperRealWall struct{}
+
+func (pairPaperRealWall) Now() time.Time        { return time.Now() }
+func (pairPaperRealWall) Sleep(d time.Duration) { time.Sleep(d) }
+func (pairPaperRealWall) Tick()                 {}
+
+var pairPaperWall pairPaperWallSource = pairPaperRealWall{}
+
 type pairRecMode int
 
 const (
@@ -84,19 +98,24 @@ type pairRecorder struct {
 	failedSeq   int64
 	queue       []pairRecEvent
 
+	fundingLog *pairRecLog
+	fundingPos map[string]int
+
 	backward  atomic.Bool
 	refusals  []string
 	diverged  string
 	faults    pairRecFaults
 	counts    map[string]int
 	now       func() time.Time
+	tick      func()
 	lastWake  int64
 	skipped   int
 	faultSaid bool
 }
 
 func newPairRecorder(mode pairRecMode, runID, partition, contractFP string, file *StateDB, clock *simulatedClock, faults pairRecFaults) *pairRecorder {
-	return &pairRecorder{mode: mode, runID: runID, partition: partition, contractFP: contractFP, file: file, clock: clock, faults: faults, counts: map[string]int{}, now: time.Now}
+	return &pairRecorder{mode: mode, runID: runID, partition: partition, contractFP: contractFP, file: file, clock: clock, faults: faults, counts: map[string]int{},
+		now: func() time.Time { return pairPaperWall.Now() }, tick: func() { pairPaperWall.Tick() }}
 }
 
 func (rec *pairRecorder) fault(kind string) {
@@ -203,9 +222,6 @@ func pairRecConsumableEvent(ev pairRecEvent) bool {
 
 func (rec *pairRecorder) enqueueLocked(ev pairRecEvent) {
 	rec.queue = append(rec.queue, ev)
-	if pairRecConsumableEvent(ev) {
-		rec.cursor++
-	}
 }
 
 func (rec *pairRecorder) block(reason string) {
@@ -215,7 +231,7 @@ func (rec *pairRecorder) block(reason string) {
 	rec.blockReason = reason
 	rec.failedSeq = rec.head.Seq + 1
 	rec.blocked.Store(true)
-	fmt.Fprintf(os.Stderr, "[paper] CRITICAL: the recording append failed at input %d (%s); new decisions and increases hold until an explicit verification of the committed record clears the barrier, while queries, settlement, protection and emergency closes continue\n", rec.failedSeq, reason)
+	fmt.Fprintf(os.Stderr, "[paper] CRITICAL: the recording append failed at input %d (%s); new decisions and increases hold until an explicit verification of the committed record clears the barrier; settlement, protection and emergency closes run only on inputs committed before the failure, because no new poll, mark, candle or member check is read\n", rec.failedSeq, reason)
 }
 
 func (rec *pairRecorder) barrier() (bool, string, int64) {
@@ -278,6 +294,7 @@ func (rec *pairRecorder) call(ctx context.Context, c pairRecCall, live func(ctx 
 	}
 	reqHash := sha256Hex(c.Request)
 	if c.Phase == pairRecPhaseStep && rec.consuming() {
+		rec.skipClearsLocked()
 		if rec.mode == pairRecResume && !rec.seekLocked(func(row *pairRecRow) bool { return pairRecMatchesCall(row, c, reqHash) }) {
 			if rec.consuming() {
 				if item, _ := rec.streamItem(); item != nil && item.Kind == pairRecEventWake {
@@ -316,6 +333,9 @@ func (rec *pairRecorder) call(ctx context.Context, c pairRecCall, live func(ctx 
 	rec.mu.Unlock()
 	res := live(ctx, h)
 	rec.mu.Lock()
+	if rec.tick != nil {
+		rec.tick()
+	}
 	return rec.finishLocked(callID, start, res)
 }
 
@@ -457,20 +477,23 @@ func (rec *pairRecorder) budget(site string, ctx context.Context, wallStart time
 		rec.seekLocked(func(row *pairRecRow) bool { return row.Kind == pairRecEventBudget && row.Event.Budget.Site == site })
 	}
 	if rec.consuming() {
+		rec.skipClearsLocked()
+	}
+	if rec.consuming() {
 		item, ok := rec.streamItem()
 		if !ok || item.Kind != pairRecEventBudget || item.Event.Budget.Site != site {
 			if !ok {
 				_ = rec.diverge("the %s budget disposition of step %s has no recorded event: the recording ends before it", site, rec.stepID)
-				return time.Since(wallStart), ctx.Err()
+				return rec.now().Sub(wallStart), ctx.Err()
 			}
 			_ = rec.diverge("the %s budget disposition of step %s meets the recorded %s event at input %d", site, rec.stepID, item.Kind, item.Seq)
-			return time.Since(wallStart), ctx.Err()
+			return rec.now().Sub(wallStart), ctx.Err()
 		}
 		rec.cursor++
 		b := item.Event.Budget
 		return time.Duration(b.ElapsedNs), pairRecCauseError(b.Cause)
 	}
-	elapsed, err := time.Since(wallStart), ctx.Err()
+	elapsed, err := rec.now().Sub(wallStart), ctx.Err()
 	cause := ""
 	if err != nil {
 		cause = err.Error()
@@ -562,21 +585,28 @@ func (rec *pairRecorder) clearAtBoundary(verify func() (int64, error)) (bool, er
 	}
 	events := append([]pairRecEvent(nil), rec.queue...)
 	events = append(events, pairRecEvent{Kind: pairRecEventClear, Clear: &pairRecClear{VerifiedThroughSeq: through, FailedSeq: rec.failedSeq, Reason: rec.blockReason, Epoch: rec.epoch}})
-	queued := 0
-	for _, ev := range rec.queue {
-		if pairRecConsumableEvent(ev) {
-			queued++
-		}
-	}
-	rec.cursor -= queued
 	if err := rec.appendLocked(events...); err != nil {
-		rec.cursor += queued
 		return false, fmt.Errorf("the barrier release could not be recorded, so the barrier stays: %w", err)
 	}
 	rec.queue = nil
 	rec.blocked.Store(false)
 	rec.blockReason, rec.failedSeq = "", 0
 	return true, nil
+}
+
+func (rec *pairRecorder) skipClearsLocked() {
+	if rec.mode != pairRecPlayback {
+		return
+	}
+	for {
+		item, ok := rec.streamItem()
+		if !ok || item.Kind != pairRecEventClear {
+			return
+		}
+		rec.cursor++
+		rec.blocked.Store(false)
+		rec.blockReason, rec.failedSeq = "", 0
+	}
 }
 
 func (rec *pairRecorder) increaseHold() string {
@@ -635,6 +665,15 @@ func (rec *pairRecorder) restorePosition(cursor, ordinal int, logical int64, ste
 	}
 	if rec.mode == pairRecResume && (rec.log == nil || rec.cursor >= len(rec.log.stream)) {
 		rec.mode = pairRecLive
+	}
+}
+
+func (rec *pairRecorder) adoptLog(l *pairRecLog, prevCursor int) {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	rec.log = l
+	if rec.mode != pairRecLive {
+		rec.cursor = prevCursor
 	}
 }
 
@@ -779,6 +818,41 @@ func (rec *pairRecorder) catchUpCollect(slotMs int64) bool {
 		}
 	}
 	return false
+}
+
+func (rec *pairRecorder) fundingConsumed(chain []pairFundingBatch) []pairFundingBatch {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	l := rec.log
+	if l == nil {
+		return chain
+	}
+	if rec.fundingLog != l {
+		pos := map[string]int{}
+		for i, ri := range l.stream {
+			row := l.rows[ri]
+			st := row.Event.Start
+			if row.Kind != pairRecEventStart || st == nil || st.Kind != pairRecKindFunding || st.ParentID != "" {
+				continue
+			}
+			ei, ok := l.ends[row.CallID]
+			if !ok || ei < 0 || l.rows[ei].Kind != pairRecEventEnd || l.rows[ei].Event.End.Class != pairRecClassResult {
+				continue
+			}
+			b, err := pairDecodeFundingBatch(l.rows[ei].Event.End.Result)
+			if err != nil {
+				continue
+			}
+			pos[b.BatchHash] = i
+		}
+		rec.fundingLog, rec.fundingPos = l, pos
+	}
+	for i, b := range chain {
+		if p, ok := rec.fundingPos[b.BatchHash]; ok && p >= rec.cursor {
+			return chain[:i]
+		}
+	}
+	return chain
 }
 
 func (rec *pairRecorder) endStep() {

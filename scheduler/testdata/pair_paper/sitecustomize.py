@@ -9,7 +9,18 @@ import time
 
 _FIXTURE = os.environ.get("PAIR_PAPER_FIXTURE", "")
 _BLOCK_ALL = os.environ.get("PAIR_PAPER_BLOCK_NETWORK", "") == "1"
+_CLOCK = os.environ.get("GO_TRADER_PAPER_TEST_CLOCK", "")
 _HOUR = 3_600_000
+
+
+def _clock_ms():
+    with open(_CLOCK) as fh:
+        return int(fh.read().strip())
+
+
+if _CLOCK and not _BLOCK_ALL:
+    time.time = lambda: _clock_ms() / 1000.0
+    time.time_ns = lambda: _clock_ms() * 1_000_000
 
 
 def _load():
@@ -110,7 +121,7 @@ def _hl_post(self, path, payload=None):
         start = int(payload["startTime"])
         end = int(payload.get("endTime") or now)
         rows = [[int(r[0]), r[1]] for r in fx.get("hl_funding", [])]
-        if fx.get("follow_funding"):
+        if fx.get("follow_funding_hl", False):
             rows.append([end, "0.0000125"])
         out = []
         for tm, rate in sorted(rows):

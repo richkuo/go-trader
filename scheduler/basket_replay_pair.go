@@ -849,6 +849,24 @@ func (r *pairReplayRuntime) hostStateLocked() pairReplayHostState {
 	for id, why := range rt.pairEchoFailures {
 		h.EchoFailures[id] = why
 	}
+	if r.paper != nil {
+		if len(rt.pairView) > 0 {
+			h.PairView = map[string]pairMemberValuation{}
+			for id, v := range rt.pairView {
+				if _, err := json.Marshal(v); err == nil {
+					h.PairView[id] = v
+				}
+			}
+		}
+		if len(rt.pairLastMark) > 0 {
+			h.PairLastMarks = map[string]pairLastMark{}
+			for id, m := range rt.pairLastMark {
+				if _, err := json.Marshal(m); err == nil {
+					h.PairLastMarks[id] = m
+				}
+			}
+		}
+	}
 	return h
 }
 
@@ -878,6 +896,21 @@ func (r *pairReplayRuntime) restoreHost(h pairReplayHostState) {
 	rt.pairEchoFailures = map[string]string{}
 	for id, why := range h.EchoFailures {
 		rt.pairEchoFailures[id] = why
+	}
+	if r.paper != nil {
+		rt.pairView, rt.pairLastMark = nil, nil
+		if len(h.PairView) > 0 {
+			rt.pairView = pairViewSet{}
+			for id, v := range h.PairView {
+				rt.pairView[id] = v
+			}
+		}
+		if len(h.PairLastMarks) > 0 {
+			rt.pairLastMark = map[string]pairLastMark{}
+			for id, m := range h.PairLastMarks {
+				rt.pairLastMark[id] = m
+			}
+		}
 	}
 }
 

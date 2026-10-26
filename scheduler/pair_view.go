@@ -364,7 +364,7 @@ func (bc *basketCoordinator) preparePairRiskFor(rt *basketRuntime, in basketCycl
 	if refusal == "" && evidence == nil {
 		refusal = "the pair has no admitted evidence source"
 	}
-	wallStart := time.Now()
+	wallStart := bc.pairBudgetStart()
 	ctx, cancel := context.WithTimeout(bc.parent, budget)
 	defer cancel()
 	for _, m := range members {

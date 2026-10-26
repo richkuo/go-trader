@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ type pairPaperFixture struct {
 	config   string
 	fixture  string
 	callLog  string
+	clock    string
 	fromMs   int64
 	through  int64
 	drain    int64
@@ -36,14 +38,15 @@ type pairPaperFixture struct {
 }
 
 type pairPaperOptions2 struct {
-	runID       string
-	collectS    int64
-	drainS      int64
-	convergeS   int64
-	interval    int
-	capRefresh  int64
-	mutate      func(root map[string]interface{})
-	fixtureMore map[string]interface{}
+	runID        string
+	collectS     int64
+	drainS       int64
+	convergeS    int64
+	interval     int
+	capRefresh   int64
+	minuteAfterS int64
+	mutate       func(root map[string]interface{})
+	fixtureMore  map[string]interface{}
 }
 
 func pairPaperLimits() map[string]interface{} {
@@ -80,7 +83,18 @@ func newPairPaperFixture(t *testing.T, o pairPaperOptions2) *pairPaperFixture {
 	if interval == 0 {
 		interval = 10
 	}
+	f.clock = filepath.Join(pairOfflineRealPath(t, t.TempDir()), "clock")
+	if err := os.WriteFile(f.clock, []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	start := time.Now().Add(2 * time.Second).UnixMilli()
+	if o.minuteAfterS > 0 {
+		m := (start/60000 + 1) * 60000
+		for m-o.minuteAfterS*1000 < start {
+			m += 60000
+		}
+		start = m - o.minuteAfterS*1000
+	}
 	f.fromMs, f.through, f.drain = start, start+collect*1000, start+(collect+drain)*1000
 	doc := pairTestDoc(t, f.parent, func(root map[string]interface{}) {
 		delete(root, "db_file")
@@ -104,7 +118,7 @@ func newPairPaperFixture(t *testing.T, o pairPaperOptions2) *pairPaperFixture {
 		t.Fatal(err)
 	}
 	fx := map[string]interface{}{"start_ms": start, "converge_ms": start + converge*1000, "follow_funding": true,
-		"okx_funding": [][]interface{}{{start - 1000, "0.0001"}}, "hl_funding": [][]interface{}{}}
+		"okx_funding": [][]interface{}{{start - 1000, "0.0001"}}, "hl_funding": [][]interface{}{{start + (collect+drain-10)*1000, "0.0000125"}}}
 	for k, v := range o.fixtureMore {
 		fx[k] = v
 	}
@@ -115,7 +129,7 @@ func newPairPaperFixture(t *testing.T, o pairPaperOptions2) *pairPaperFixture {
 	}
 	f.callLog = filepath.Join(filepath.Dir(f.fixture), "calls.jsonl")
 	f.scenario = pairPaperScenario{SubmitLatencyMs: 0, ResponseLatencyMs: 200, ReceiptModel: pairReplayReceiptModel, VenueFailures: []pairReplayFailureScript{},
-		PaperPollIntervalMs: 500, PaperFundingPollMs: (collect + drain - 5) * 1000, PaperCapabilityRefreshMs: o.capRefresh}
+		PaperPollIntervalMs: 4000, PaperFundingPollMs: (collect + drain - 5) * 1000, PaperCapabilityRefreshMs: o.capRefresh}
 	f.maxSteps = 2000
 	return f
 }
@@ -132,6 +146,8 @@ func (f *pairPaperFixture) env(blocked bool) []string {
 	env := []string{"PYTHONPATH=" + filepath.Join(f.repo, "scheduler", "testdata", "pair_paper"), "PAIR_PAPER_FIXTURE=" + f.fixture, "PAIR_PAPER_CALL_LOG=" + f.callLog}
 	if blocked {
 		env = append(env, "PAIR_PAPER_BLOCK_NETWORK=1")
+	} else {
+		env = append(env, pairPaperTestClockEnv+"="+f.clock)
 	}
 	return env
 }

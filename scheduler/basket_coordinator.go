@@ -79,9 +79,17 @@ type pairReplayHooks struct {
 	beforeSubmit func(a basketAction) error
 	submitted    func(a basketAction, out basketVenueOutcome, err error)
 	collectHold  func(rt *basketRuntime, startMs int64) string
-	decideHold   func(rt *basketRuntime, nowMs int64) string
+	decideHold   func(rt *basketRuntime, nowMs int64) (string, bool)
 	increaseHold func(rt *basketRuntime) string
 	budget       func(site string, ctx context.Context, wallStart time.Time) (time.Duration, error)
+	wallNow      func() time.Time
+}
+
+func (bc *basketCoordinator) pairBudgetStart() time.Time {
+	if h := bc.pairReplay; h != nil && h.wallNow != nil {
+		return h.wallNow()
+	}
+	return time.Now()
 }
 
 func (bc *basketCoordinator) pairWallBudget(site string, ctx context.Context, wallStart time.Time) (time.Duration, error) {
@@ -108,14 +116,18 @@ func (bc *basketCoordinator) pairCollectHold(rt *basketRuntime, startMs int64) s
 	return ""
 }
 
-func (bc *basketCoordinator) pairDecideHold(rt *basketRuntime, nowMs int64) string {
-	if why := pairRecordingBarrierReason(rt); why != "" {
-		return why
-	}
+func (bc *basketCoordinator) pairDecideHold(rt *basketRuntime, nowMs int64) (string, bool) {
 	if h := bc.pairReplay; h != nil && h.decideHold != nil {
-		return h.decideHold(rt, nowMs)
+		why, final := h.decideHold(rt, nowMs)
+		if final {
+			return why, true
+		}
+		if bw := pairRecordingBarrierReason(rt); bw != "" {
+			return bw, false
+		}
+		return why, false
 	}
-	return ""
+	return pairRecordingBarrierReason(rt), false
 }
 
 func (bc *basketCoordinator) pairHostIncreaseHoldUnlocked(rt *basketRuntime) string {
