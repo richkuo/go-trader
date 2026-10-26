@@ -363,7 +363,7 @@ func pairPaperNoRepeatedCall(t *testing.T, rows []pairRecRow) int {
 }
 
 func TestBasketReplayPairPaperCrashesResumeWithoutRepeatingCommittedCalls(t *testing.T) {
-	slots := make(chan struct{}, 2)
+	slots := make(chan struct{}, 4)
 	for _, fault := range []string{"exit-after-call-start:45", "exit-after-input-commit:160", "exit-after-management:2", "exit-after-collection:2", "exit-after-envelope-freeze:1", "exit-after-acceptance:1", "exit-after-book-write:6", "exit-after-book-commit:2"} {
 		fault := fault
 		t.Run(fault, func(t *testing.T) {
