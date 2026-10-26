@@ -109,7 +109,7 @@ func pairPaperNoRecommittedCall(t *testing.T, rows []pairRecRow) {
 }
 
 func TestBasketReplayPairPaperResumesAnAppliedOKXFundingEventFromItsRecordedEvidence(t *testing.T) {
-	f := newPairPaperFixture(t, pairPaperOptions2{runID: "paper-okx-funding", collectS: 110, drainS: 15, convergeS: 100, minuteAfterS: 30,
+	f := newPairPaperFixture(t, pairPaperOptions2{runID: "paper-okx-funding", collectS: 110, drainS: 15, convergeS: 100, minuteAfterS: 30, capRefresh: 20000,
 		fixtureMore: map[string]interface{}{"follow_funding": false}})
 	eventMs := f.fromMs + 30000
 	fx := map[string]interface{}{}
