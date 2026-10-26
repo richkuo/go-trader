@@ -18,6 +18,7 @@ type marketFeedContext struct {
 	Interval     int
 	SharedKey    int64
 	SharedPrices map[string]float64
+	StdinRun     func(script string, args []string, stdin []byte) ([]byte, []byte, error)
 }
 
 func (c *marketFeedContext) logSharedPayload(kind, owner string, specs []marketPayloadFrameSpec, coins []string, payload *marketPayload) {

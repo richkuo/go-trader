@@ -58,6 +58,7 @@ type pairReplaySpec struct {
 	InputManifest  pairReplayInputManifest `json:"input_manifest"`
 	Scenario       pairReplayScenario      `json:"scenario"`
 	Bounds         pairReplayBounds        `json:"bounds"`
+	Recording      *pairReplayRecordingRef `json:"recording,omitempty"`
 }
 
 type pairReplayInputManifest struct {
@@ -312,6 +313,12 @@ func validatePairReplaySpec(spec *pairReplaySpec) (pairReplayLifetime, error) {
 	}
 	if spec.Bounds.MaxSteps <= 0 || spec.Bounds.MaxSteps > pairReplayMaxSteps {
 		add("bounds.max_steps %d must be in [1, %d]", spec.Bounds.MaxSteps, pairReplayMaxSteps)
+	}
+	if spec.Recording != nil {
+		errs = append(errs, pairValidateRecordingRef(spec.Recording)...)
+		if len(sc.VenueFailures) != 0 {
+			add("scenario.venue_failures must be empty with a recording: the recorded outcomes are the only failures a playback reproduces")
+		}
 	}
 	if len(errs) > 0 {
 		sort.Strings(errs)

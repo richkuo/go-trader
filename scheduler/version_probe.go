@@ -411,6 +411,11 @@ func probeCheckScripts(cfg *Config) error {
 		if err := probeOneCheckScriptFn(pairQuoteReaderScript, pairQuoteHLArchiveProbeArgv); err != nil {
 			return err
 		}
+		for _, argv := range [][]string{pairHistoryHLCandlesProbeArgv, pairHistoryHLFundingProbeArgv} {
+			if err := probeOneCheckScriptFn(pairHistoryReaderScript, argv); err != nil {
+				return err
+			}
+		}
 	}
 	if okxSwap {
 		if err := probeOneCheckScriptFn(pairEvidenceReaderScript, pairEvidenceOKXProbeArgv); err != nil {
@@ -421,6 +426,11 @@ func probeCheckScripts(cfg *Config) error {
 		}
 		if err := probeOneCheckScriptFn(okxFetchPositionsScript, pairPositionOKXProbeArgv); err != nil {
 			return err
+		}
+		for _, argv := range [][]string{pairHistoryOKXCandlesProbeArgv, pairHistoryOKXFundingProbeArgv} {
+			if err := probeOneCheckScriptFn(pairHistoryReaderScript, argv); err != nil {
+				return err
+			}
 		}
 	}
 	if len(cfg.Baskets) > 0 {

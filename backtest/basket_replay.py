@@ -25,6 +25,15 @@ pair replay: it hashes the research configuration and every frozen input object
 by reference with their sizes, and records the adapter's mechanical result. A
 pair result is never scored or promotion-eligible; the driver succeeds only when
 the adapter exits 0 and reports mechanically_complete.
+
+Isolated paper (issue 1882): --paper runs the same version-2 pair plan through
+`go-trader basket-replay-paper`, which records every live public input and
+process outcome before use; the plan adds a `collection` block and the paper
+scenario fields, --config names the checked research egress file, --seal seals
+a finished run, and --max-steps stops a resumable chunk. A paper run has no
+wall timeout unless --timeout is given (offline keeps 3600 seconds). A plan with
+a `recording` reference replays a sealed recording offline. Every invocation
+writes a new --out file, so each chunk names its own result path.
 """
 
 import argparse
@@ -59,6 +68,9 @@ FILE_KEYS = {"path", "sha256"}
 FUNDING_KEYS = {"path", "sha256", "from"}
 SCRIPT_KEYS = {"venue", "queries", "save_failure"}
 PAIR_PLAN_KEYS = {"plan", "version", "run_id", "state_dir", "source", "research_config", "objects", "scenario", "bounds"}
+PAIR_PLAN_OPTIONAL = {"collection", "recording"}
+COLLECTION_KEYS = {"from_ms", "through_ms", "drain_through_ms"}
+OFFLINE_TIMEOUT_S = 3600
 PAIR_OBJECT_KEYS = {"kind", "member_id", "path", "sha256"}
 PAIR_OBJECT_KINDS = {"evidence", "funding", "quotes", "books", "candles"}
 
@@ -145,10 +157,20 @@ def check_plan(plan):
 
 
 def load_pair_plan(plan):
-    _strict_keys(plan, PAIR_PLAN_KEYS, "plan")
+    _strict_keys(plan, PAIR_PLAN_KEYS | PAIR_PLAN_OPTIONAL, "plan")
     for key in sorted(PAIR_PLAN_KEYS):
         if key not in plan:
             raise ReplayPlanError(f"plan is missing {key!r}")
+    if "collection" in plan:
+        _strict_keys(plan["collection"], COLLECTION_KEYS, "collection")
+        for key in sorted(COLLECTION_KEYS):
+            value = plan["collection"].get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ReplayPlanError(f"collection.{key} must be an integer millisecond time")
+        if "recording" in plan:
+            raise ReplayPlanError("a paper plan records live and takes no recording reference")
+    if "recording" in plan:
+        _strict_keys(plan["recording"], FILE_KEYS, "recording")
     _strict_keys(plan["research_config"], FILE_KEYS, "research_config")
     if not isinstance(plan["objects"], list) or not plan["objects"]:
         raise ReplayPlanError("objects must be a nonempty list")
@@ -188,13 +210,22 @@ def verify_pair_inputs(plan, base):
 
 def build_pair_spec(plan, base, mode, research, objects):
     """Pass the frozen pair inputs by reference; every decision stays in the Go adapter."""
-    return {
+    spec = {
         "protocol": ADAPTER_PROTOCOL, "version": PAIR_ADAPTER_VERSION, "mode": mode,
         "run": {"run_id": plan["run_id"], "state_dir": plan["state_dir"], "source": plan["source"]},
         "research_config": research,
         "input_manifest": {"root": os.path.abspath(base), "objects": objects},
         "scenario": plan["scenario"], "bounds": plan["bounds"],
     }
+    if "collection" in plan:
+        spec["collection"] = plan["collection"]
+    if "recording" in plan:
+        path = _resolve(base, plan["recording"]["path"])
+        got = _sha256_file(path)
+        if got != plan["recording"]["sha256"]:
+            raise ReplayPlanError(f"recording {path!r} has sha256 {got}, the plan freezes {plan['recording']['sha256']}")
+        spec["recording"] = {"version": 1, "path": plan["recording"]["path"], "sha256": got, "size_bytes": os.path.getsize(path)}
+    return spec
 
 
 def pair_result_record(plan_sha, input_hashes, code, out, process_error):
@@ -302,11 +333,11 @@ def build_spec(plan, base, mode):
     return spec
 
 
-def run_adapter(binary, spec, timeout, stderr_path=None, version=ADAPTER_VERSION):
+def run_adapter(binary, spec, timeout, stderr_path=None, version=ADAPTER_VERSION, extra=None, command="basket-replay"):
     blob = json.dumps(spec).encode()
     err = open(stderr_path, "wb") if stderr_path else subprocess.DEVNULL
     try:
-        proc = subprocess.run([binary, "basket-replay", "--spec", "-"], input=blob, stdout=subprocess.PIPE,
+        proc = subprocess.run([binary, command, "--spec", "-"] + list(extra or []), input=blob, stdout=subprocess.PIPE,
                               stderr=err, cwd=REPO_ROOT, timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
         return None, None, f"the adapter did not finish within {timeout}s"
@@ -367,12 +398,20 @@ def main(argv=None):
     ap.add_argument("--binary", required=True, help="go-trader binary built from this checkout")
     ap.add_argument("--out", required=True, help="new result JSON path (never replaced)")
     ap.add_argument("--resume", action="store_true", help="resume the run from its saved adapter state")
-    ap.add_argument("--timeout", type=int, default=3600, help="adapter timeout in seconds")
+    ap.add_argument("--timeout", type=int, default=None, help="adapter timeout in seconds (offline default 3600; a paper run has none unless given)")
     ap.add_argument("--stderr", help="optional path for the adapter log")
+    ap.add_argument("--paper", action="store_true", help="record a live isolated paper run (basket-replay-paper) from a version-2 plan with a collection block")
+    ap.add_argument("--config", help="absolute research egress file for --paper")
+    ap.add_argument("--seal", action="store_true", help="seal a finished --paper run and export it")
+    ap.add_argument("--max-steps", dest="max_steps", type=int, default=0, help="stop after this many further cycles; the run stays resumable")
     args = ap.parse_args(argv)
     if os.path.exists(args.out):
         print(f"basket_replay: {args.out} exists; a result record is never replaced", file=sys.stderr)
         return 2
+    if args.paper != bool(args.config) or (args.seal and not args.paper) or args.max_steps < 0 or (args.timeout is not None and args.timeout <= 0):
+        print("basket_replay: --paper needs --config, --config and --seal need --paper, and --max-steps and --timeout must be positive", file=sys.stderr)
+        return 2
+    timeout = args.timeout if args.timeout is not None else (None if args.paper else OFFLINE_TIMEOUT_S)
     plan_path = os.path.abspath(args.plan)
     base = os.path.dirname(plan_path)
     mode = "resume" if args.resume else "new"
@@ -382,8 +421,12 @@ def main(argv=None):
         pair = is_pair_plan(plan)
         plan = check_plan(plan)
         if pair:
+            if args.paper != ("collection" in plan):
+                raise ReplayPlanError("--paper needs a plan with a collection block, and a collection block needs --paper")
             hashes, research, objects = verify_pair_inputs(plan, base)
             spec = build_pair_spec(plan, base, mode, research, objects)
+        elif args.paper:
+            raise ReplayPlanError("--paper needs a version-2 pair plan")
         else:
             hashes = verify_inputs(plan, base)
             spec = build_spec(plan, base, mode)
@@ -396,12 +439,20 @@ def main(argv=None):
         print(f"basket_replay: refused: {exc}", file=sys.stderr)
         return 3
     if pair:
-        code, out, err = run_adapter(os.path.abspath(args.binary), spec, args.timeout, args.stderr, PAIR_ADAPTER_VERSION)
+        extra = ["--max-steps", str(args.max_steps)] if args.max_steps else []
+        command = "basket-replay"
+        if args.paper:
+            command = "basket-replay-paper"
+            extra = ["--config", os.path.abspath(args.config)] + (["--seal"] if args.seal else []) + extra
+        code, out, err = run_adapter(os.path.abspath(args.binary), spec, timeout, args.stderr, PAIR_ADAPTER_VERSION, extra, command)
         rec = pair_result_record(_sha256_file(plan_path), hashes, code, out, err)
+        if args.paper:
+            rec["paper"] = True
+            rec["recording"] = (out or {}).get("recording")
         write_new(args.out, rec)
         print(f"basket_replay: status={rec['status']} mechanically_complete={rec['mechanically_complete']} scored=False out={args.out}")
         return 0 if rec["mechanically_complete"] else 1
-    code, out, err = run_adapter(os.path.abspath(args.binary), spec, args.timeout, args.stderr)
+    code, out, err = run_adapter(os.path.abspath(args.binary), spec, timeout, args.stderr, extra=["--max-steps", str(args.max_steps)] if args.max_steps else None)
     rec = result_record(_sha256_file(plan_path), hashes, code, out, err)
     write_new(args.out, rec)
     print(f"basket_replay: status={rec['status']} scored={rec['scored']} out={args.out}")

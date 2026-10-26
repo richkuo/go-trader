@@ -632,7 +632,19 @@ func (r *pairReplayRuntime) output() (pairReplayOutput, error) {
 	}
 	out.ServerStatus = status
 	okChecks, bad := r.rawChecks(steps)
+	var recIncomplete []string
+	if r.paper != nil {
+		info, rok, rbad, rinc := r.recordingChecks()
+		out.Recording = info
+		okChecks = append(okChecks, rok...)
+		bad = append(bad, rbad...)
+		recIncomplete = rinc
+	}
 	out.IncompleteReasons = r.incompleteReasons(steps, bad)
+	if len(recIncomplete) > 0 {
+		out.IncompleteReasons = append(out.IncompleteReasons, recIncomplete...)
+		sort.Strings(out.IncompleteReasons)
+	}
 	out.MechanicallyComplete = len(out.IncompleteReasons) == 0
 	proj, err := r.projection(steps)
 	if err != nil {
@@ -644,6 +656,14 @@ func (r *pairReplayRuntime) output() (pairReplayOutput, error) {
 		return out, err
 	}
 	cmp := &pairReplayComparison{Hash: sha256Hex(canon), RawCheck: okChecks, Reasons: append([]string(nil), r.equality...)}
+	if r.rec != nil {
+		cmp.Reasons = append(cmp.Reasons, r.rec.equalityReasons()...)
+		if r.paper != nil && r.paper.playback && r.finished {
+			if left := r.rec.unconsumed(); len(left) > 0 {
+				cmp.Reasons = append(cmp.Reasons, "the playback finished with recorded events it never consumed: "+strings.Join(left, ", "))
+			}
+		}
+	}
 	if !out.MechanicallyComplete {
 		cmp.Reasons = append(cmp.Reasons, "the run is not mechanically complete, so it makes no equality claim")
 	}

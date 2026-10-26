@@ -47,6 +47,8 @@ var pairReplayRunColumns = []struct{ name, ddl string }{
 	{"pending_step_id", "TEXT NOT NULL DEFAULT ''"},
 	{"pending_step_ms", "INTEGER NOT NULL DEFAULT 0"},
 	{"pending_prefix_hash", "TEXT NOT NULL DEFAULT ''"},
+	{"recording_cursor", "INTEGER NOT NULL DEFAULT 0"},
+	{"recording_logical_ms", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 var pairReplayStepColumns = []struct{ name, ddl string }{
@@ -86,6 +88,15 @@ func (sdb *StateDB) migrateBasketReplayColumns() error {
 	if _, err := sdb.db.Exec(pairReplaySchemaDDL); err != nil {
 		return fmt.Errorf("create pair replay tables: %w", err)
 	}
+	ok, err := sdb.tableHasColumn("basket_replay_failures", "call_id")
+	if err != nil {
+		return fmt.Errorf("introspect basket_replay_failures: %w", err)
+	}
+	if !ok {
+		if _, err := sdb.db.Exec("ALTER TABLE basket_replay_failures ADD COLUMN call_id TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("add basket_replay_failures.call_id: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -98,13 +109,16 @@ type pairReplayObservation struct {
 }
 
 type pairReplayHostState struct {
-	Cycle        int                              `json:"cycle"`
-	NextManageMs int64                            `json:"next_manage_ms"`
-	LastStepMs   int64                            `json:"last_step_ms"`
-	ViewGen      uint64                           `json:"view_generation"`
-	PrepSeq      uint64                           `json:"preparation_seq"`
-	Observations map[string]pairReplayObservation `json:"observations"`
-	EchoFailures map[string]string                `json:"echo_failures"`
+	Cycle            int                              `json:"cycle"`
+	NextManageMs     int64                            `json:"next_manage_ms"`
+	LastStepMs       int64                            `json:"last_step_ms"`
+	ViewGen          uint64                           `json:"view_generation"`
+	PrepSeq          uint64                           `json:"preparation_seq"`
+	Observations     map[string]pairReplayObservation `json:"observations"`
+	EchoFailures     map[string]string                `json:"echo_failures"`
+	PollNextMs       int64                            `json:"poll_next_ms,omitempty"`
+	FundingNextMs    int64                            `json:"funding_next_ms,omitempty"`
+	CapabilityNextMs int64                            `json:"capability_next_ms,omitempty"`
 }
 
 type pairReplayCollection struct {
@@ -123,20 +137,26 @@ type pairReplayCollection struct {
 }
 
 type pairReplayCoordinatorCheckpoint struct {
-	HostAfter pairReplayHostState    `json:"host_after"`
-	Managed   bool                   `json:"managed"`
-	Risk      []pairReplayRiskRecord `json:"risk"`
+	HostAfter    pairReplayHostState    `json:"host_after"`
+	Managed      bool                   `json:"managed"`
+	Risk         []pairReplayRiskRecord `json:"risk"`
+	RecCursor    int                    `json:"recording_cursor,omitempty"`
+	RecOrdinal   int                    `json:"recording_ordinal,omitempty"`
+	RecLogicalMs int64                  `json:"recording_logical_ms,omitempty"`
 }
 
 type pairReplayPendingRecord struct {
-	V           int                              `json:"v"`
-	StepID      string                           `json:"step_id"`
-	AtMs        int64                            `json:"at_ms"`
-	Ordinal     int                              `json:"ordinal"`
-	PrefixHash  string                           `json:"prefix_hash"`
-	HostBefore  pairReplayHostState              `json:"host_before"`
-	Collection  *pairReplayCollection            `json:"collection,omitempty"`
-	Coordinator *pairReplayCoordinatorCheckpoint `json:"coordinator,omitempty"`
+	V            int                              `json:"v"`
+	StepID       string                           `json:"step_id"`
+	AtMs         int64                            `json:"at_ms"`
+	Ordinal      int                              `json:"ordinal"`
+	PrefixHash   string                           `json:"prefix_hash"`
+	HostBefore   pairReplayHostState              `json:"host_before"`
+	Collection   *pairReplayCollection            `json:"collection,omitempty"`
+	Coordinator  *pairReplayCoordinatorCheckpoint `json:"coordinator,omitempty"`
+	RecSeq       int64                            `json:"recording_seq,omitempty"`
+	RecCursor    int                              `json:"recording_cursor,omitempty"`
+	RecLogicalMs int64                            `json:"recording_logical_ms,omitempty"`
 }
 
 type pairReplayCursor struct {
@@ -173,6 +193,7 @@ type pairReplayFailure struct {
 	MemberID string `json:"member_id,omitempty"`
 	Cause    string `json:"cause"`
 	AtMs     int64  `json:"at_ms"`
+	CallID   string `json:"call_id,omitempty"`
 }
 
 func (sdb *StateDB) insertPairReplayRun(m pairReplayManifest, objects []pairReplayObjectRef, totals map[string]int) error {
@@ -304,12 +325,15 @@ func writePairReplayCoordinatorTx(tx *sql.Tx, runID string, rec pairReplayPendin
 }
 
 type pairReplayFinalCommit struct {
-	Ordinal    int
-	StepID     string
-	AtMs       int64
-	Record     []byte
-	ResultHash string
-	BindingSeq int64
+	Ordinal      int
+	StepID       string
+	AtMs         int64
+	Record       []byte
+	ResultHash   string
+	BindingSeq   int64
+	Recorded     bool
+	RecCursor    int
+	RecLogicalMs int64
 }
 
 func writePairReplayFinalTx(tx *sql.Tx, runID string, c pairReplayFinalCommit) error {
@@ -329,7 +353,19 @@ func writePairReplayFinalTx(tx *sql.Tx, runID string, c pairReplayFinalCommit) e
 	if n, _ := res.RowsAffected(); n != 1 {
 		return fmt.Errorf("the replay cursor of %s is not at pending step %d", runID, c.Ordinal)
 	}
+	if c.Recorded {
+		if _, err := tx.Exec(`UPDATE basket_replay_runs SET recording_cursor = ?, recording_logical_ms = ? WHERE run_id = ?`, c.RecCursor, c.RecLogicalMs, runID); err != nil {
+			return fmt.Errorf("advance the recording cursor: %w", err)
+		}
+	}
 	return nil
+}
+
+func (sdb *StateDB) readPairRecCursor(runID string) (int, int64, error) {
+	var c int
+	var l int64
+	err := sdb.db.QueryRow(`SELECT recording_cursor, recording_logical_ms FROM basket_replay_runs WHERE run_id = ?`, runID).Scan(&c, &l)
+	return c, l, err
 }
 
 func (sdb *StateDB) readPairReplaySteps(runID string) ([]pairReplayStoredStep, error) {
@@ -352,13 +388,13 @@ func (sdb *StateDB) readPairReplaySteps(runID string) ([]pairReplayStoredStep, e
 }
 
 func (sdb *StateDB) insertPairReplayFailure(runID string, f pairReplayFailure) error {
-	_, err := sdb.db.Exec(`INSERT INTO basket_replay_failures (run_id, step_index, step_id, stage, kind, slot_ms, member_id, cause, at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		runID, f.Ordinal, f.StepID, f.Stage, f.Kind, f.SlotMs, f.MemberID, f.Cause, f.AtMs)
+	_, err := sdb.db.Exec(`INSERT INTO basket_replay_failures (run_id, step_index, step_id, stage, kind, slot_ms, member_id, cause, at_ms, call_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, f.Ordinal, f.StepID, f.Stage, f.Kind, f.SlotMs, f.MemberID, f.Cause, f.AtMs, f.CallID)
 	return err
 }
 
 func (sdb *StateDB) readPairReplayFailures(runID string) ([]pairReplayFailure, error) {
-	rows, err := sdb.db.Query(`SELECT seq, step_index, step_id, stage, kind, slot_ms, member_id, cause, at_ms FROM basket_replay_failures WHERE run_id = ? ORDER BY seq`, runID)
+	rows, err := sdb.db.Query(`SELECT seq, step_index, step_id, stage, kind, slot_ms, member_id, cause, at_ms, call_id FROM basket_replay_failures WHERE run_id = ? ORDER BY seq`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +402,7 @@ func (sdb *StateDB) readPairReplayFailures(runID string) ([]pairReplayFailure, e
 	var out []pairReplayFailure
 	for rows.Next() {
 		var f pairReplayFailure
-		if err := rows.Scan(&f.Seq, &f.Ordinal, &f.StepID, &f.Stage, &f.Kind, &f.SlotMs, &f.MemberID, &f.Cause, &f.AtMs); err != nil {
+		if err := rows.Scan(&f.Seq, &f.Ordinal, &f.StepID, &f.Stage, &f.Kind, &f.SlotMs, &f.MemberID, &f.Cause, &f.AtMs, &f.CallID); err != nil {
 			return nil, err
 		}
 		out = append(out, f)

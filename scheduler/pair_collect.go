@@ -124,7 +124,15 @@ func (bc *basketCoordinator) collectPairSlot(rt *basketRuntime, in basketCycleIn
 	if slotMs <= 0 {
 		return in
 	}
-	if _, taken := rt.Rebalances[slotMs]; taken {
+	resumed := false
+	if old, taken := rt.Rebalances[slotMs]; taken {
+		if !rt.pairResumeSlots[slotMs] || old.Status != basketRebalanceReserved {
+			return in
+		}
+		resumed = true
+	}
+	if why := bc.pairCollectHold(rt, startMs); why != "" {
+		bc.notePairQuoteHold(rt, why)
 		return in
 	}
 	adm := rt.Pair.admission
@@ -144,7 +152,15 @@ func (bc *basketCoordinator) collectPairSlot(rt *basketRuntime, in basketCycleIn
 		return in
 	}
 	rt.pairQuoteNote = ""
-	rb, err := bc.reservePairSlot(rt, slotMs, start)
+	var rb *basketRebalance
+	var err error
+	if resumed {
+		rb = rt.Rebalances[slotMs]
+		delete(rt.pairResumeSlots, slotMs)
+		bc.pairLogf(rt, "slot %s: the recorded collection resumes the slot reserved before the restart", formatClosedBarMs(slotMs))
+	} else {
+		rb, err = bc.reservePairSlot(rt, slotMs, start)
+	}
 	if errors.Is(err, errBasketDeadlineTaken) {
 		return in
 	}
@@ -226,8 +242,7 @@ func (bc *basketCoordinator) collectPairSlot(rt *basketRuntime, in basketCycleIn
 				collectErr = fmt.Errorf("the host feed generation moved from %d to %d during the read; the captured seal no longer belongs to the current feed configuration", generation, cur)
 			}
 		}
-		ctxErr = ctx.Err()
-		elapsed = time.Since(wallStart)
+		elapsed, ctxErr = bc.pairWallBudget("collect", ctx, wallStart)
 	})
 	now := bc.pairNow(in)
 	if !before.same(bc.pairSnapshot(rt)) || rt.Rebalances[slotMs] != rb || rb.Status != basketRebalanceReserved {
@@ -360,8 +375,7 @@ func (bc *basketCoordinator) readPairReferenceLocked(ctx context.Context, rt *ba
 				readErr = fmt.Errorf("the host feed generation moved from %d to %d during the reference read", generation, cur)
 			}
 		}
-		ctxErr = rctx.Err()
-		elapsed = time.Since(wallStart)
+		elapsed, ctxErr = bc.pairWallBudget("reference", rctx, wallStart)
 	})
 	now := bc.pairNow(in)
 	nowMs := now.UnixMilli()
