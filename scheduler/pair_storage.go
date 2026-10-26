@@ -2031,16 +2031,16 @@ func (sdb *StateDB) attachPairNativeReceiptTx(rt *basketRuntime, a *basketAction
 	for _, f := range fills {
 		want[f.FillID] = f.EvidenceHash
 	}
-	rows, err := tx.Query(`SELECT action_id, fill_coverage_json FROM basket_member_actions WHERE scope = ? AND source = ? AND basket_id = ? AND strategy_id = ?
-		AND group_mode = 'pair' AND purpose IN ('pair_kill_switch','pair_operator') AND fill_coverage_json != ''`,
+	rows, err := tx.Query(`SELECT action_id, purpose, fill_coverage_json FROM basket_member_actions WHERE scope = ? AND source = ? AND basket_id = ? AND strategy_id = ?
+		AND group_mode = 'pair' AND fill_coverage_json != ''`,
 		string(rt.Partition.Scope), rt.Partition.Source, rt.Contract.BasketID, sid)
 	if err != nil {
 		return fmt.Errorf("read saved native fills: %w", err)
 	}
 	dup, conflict := 0, ""
 	for rows.Next() {
-		var id, raw string
-		if err := rows.Scan(&id, &raw); err != nil {
+		var id, purpose, raw string
+		if err := rows.Scan(&id, &purpose, &raw); err != nil {
 			rows.Close()
 			return err
 		}
@@ -2051,7 +2051,9 @@ func (sdb *StateDB) attachPairNativeReceiptTx(rt *basketRuntime, a *basketAction
 		}
 		for _, f := range saved {
 			if h, ok := want[f.FillID]; ok {
-				if h == f.EvidenceHash {
+				if !pairNativePurpose(purpose) {
+					conflict = fmt.Sprintf("native fill %s is already accounted on pair action %s (%s); a native receipt never books it again", f.FillID, id, purpose)
+				} else if h == f.EvidenceHash {
 					dup++
 				} else {
 					conflict = fmt.Sprintf("native fill %s is saved on action %s with different evidence", f.FillID, id)

@@ -1314,3 +1314,60 @@ func TestBasketPairNativeOperatorStagedDecisionThatCannotApplyKeepsTheCadence(t 
 		})
 	}
 }
+
+func TestBasketPairNativeOperatorVenueReadRefusesAFillOfAPrunedPairAction(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart_%v", restart), func(t *testing.T) {
+			r := newPairNativeRig(t)
+			e := r.e
+			sentAt := e.nativeAt()
+			entry := e.memberAction(pairTestHL, pairPurposeEntry)
+			fills, err := pairParseFills(entry.FillCoverageJSON)
+			if err != nil || len(fills) != 1 {
+				t.Fatalf("setup: the booked entry needs one fill record: %v %v", fills, err)
+			}
+			release, ok := tryLockEntryAttempt(pairTestHL)
+			if !ok {
+				t.Fatal("setup: the entry lock is busy")
+			}
+			r.fireHL(&nativeCloseEvidence{V: nativeCloseEvidenceVersion, Detail: "no order id"}, errors.New("close failed"))
+			release()
+			if restart {
+				r.restart()
+			}
+			prune := func() {
+				e.mu.Lock()
+				for id, a := range e.rt().Actions {
+					if a.StrategyID == pairTestHL && a.Purpose == pairPurposeEntry {
+						delete(e.rt().Actions, id)
+					}
+				}
+				e.mu.Unlock()
+			}
+			prune()
+			if len(e.actionsByPurpose(pairPurposeEntry)) != 1 {
+				t.Fatal("setup: only the okx entry stays in memory; the settled hyperliquid entry is out of memory, as prunePair leaves it")
+			}
+			ob := r.obligation(pairObligationNativeUnknown, pairTestHL)
+			if ob == nil {
+				t.Fatal("setup: the action-less unknown close needs its obligation")
+			}
+			book, rows := e.signed(pairTestHL), e.savedCloseRows(pairTestHL)
+			if msg := r.stageRead(pairTestHL, ob, "1702"); !strings.Contains(msg, "Staged") {
+				t.Fatalf("setup: a fresh order id must stage: %q", msg)
+			}
+			ev := pairNativeEvidence("1702", "sell", sentAt, "59900", "0.9", "USDC", "0.06")
+			ev.Fills[0].FillID = fills[0].FillID
+			r.answer(pairTestHL, pairNativeAnswer{res: pairNativeHistoryOf(ev, "sell", "BTC")})
+			r.step(time.Second)
+			prune()
+			r.step(time.Second)
+			if r.readCount() != 1 || len(r.savedResolutions(pairTestHL)) != 0 || len(e.rt().Pair.Progress.NativeReceipts) != 0 || r.obligation(pairObligationNativeUnknown, pairTestHL) == nil {
+				t.Fatalf("a fill a saved pair action holds must never become a receipt: reads %d receipts %+v %v", r.readCount(), e.rt().Pair.Progress.NativeReceipts, e.obligationKinds(pairTestHL))
+			}
+			if e.signed(pairTestHL) != book || e.savedCloseRows(pairTestHL) != rows || len(e.rt().Pair.Progress.NativeRequests) != 0 {
+				t.Fatalf("the refused read must book nothing and end the request: book %v rows %d", e.signed(pairTestHL), e.savedCloseRows(pairTestHL))
+			}
+		})
+	}
+}

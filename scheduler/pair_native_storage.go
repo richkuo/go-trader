@@ -154,15 +154,20 @@ type pairNativeRowUpdate struct {
 	savedRaw string
 }
 
-func (st *StateStore) CommitPairNative(rt *basketRuntime, rows []pairNativeResolution, updates []pairNativeRowUpdate) error {
+type pairNativeFillGuard struct {
+	memberID string
+	fills    []pairConfirmedFill
+}
+
+func (st *StateStore) CommitPairNative(rt *basketRuntime, rows []pairNativeResolution, updates []pairNativeRowUpdate, guards []pairNativeFillGuard) error {
 	db, err := st.basketFile(rt)
 	if err != nil {
 		return err
 	}
-	return db.commitPairNativeTx(rt, rows, updates)
+	return db.commitPairNativeTx(rt, rows, updates, guards)
 }
 
-func (sdb *StateDB) commitPairNativeTx(rt *basketRuntime, rows []pairNativeResolution, updates []pairNativeRowUpdate) error {
+func (sdb *StateDB) commitPairNativeTx(rt *basketRuntime, rows []pairNativeResolution, updates []pairNativeRowUpdate, guards []pairNativeFillGuard) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
@@ -189,6 +194,15 @@ func (sdb *StateDB) commitPairNativeTx(rt *basketRuntime, rows []pairNativeResol
 	if savedFP != rt.Contract.Fingerprint() {
 		return fmt.Errorf("pair %s saved contract differs from the running contract", rt.Contract.BasketID)
 	}
+	for _, g := range guards {
+		sid, ok := sids[g.memberID]
+		if !ok {
+			return fmt.Errorf("native fill guard names %s, which is not a member of pair %s", g.memberID, rt.Contract.BasketID)
+		}
+		if err := pairFillsUnownedTx(tx, rt, sid, "", g.fills); err != nil {
+			return err
+		}
+	}
 	for _, u := range updates {
 		if err := applyPairNativeRowUpdateTx(tx, rt, sids, u); err != nil {
 			return err
@@ -214,6 +228,46 @@ func (sdb *StateDB) commitPairNativeTx(rt *basketRuntime, rows []pairNativeResol
 	return nil
 }
 
+func pairFillsUnownedTx(tx *sql.Tx, rt *basketRuntime, sid, excludeActionID string, fills []pairConfirmedFill) error {
+	if len(fills) == 0 {
+		return nil
+	}
+	want := map[string]bool{}
+	for _, f := range fills {
+		want[f.FillID] = true
+	}
+	rows, err := tx.Query(`SELECT action_id, purpose, fill_coverage_json FROM basket_member_actions WHERE scope = ? AND source = ? AND basket_id = ? AND strategy_id = ?
+		AND group_mode = 'pair' AND fill_coverage_json != '' AND action_id != ?`,
+		string(rt.Partition.Scope), rt.Partition.Source, rt.Contract.BasketID, sid, excludeActionID)
+	if err != nil {
+		return fmt.Errorf("read saved pair fills: %w", err)
+	}
+	defer rows.Close()
+	conflict := ""
+	for rows.Next() {
+		var id, purpose, raw string
+		if err := rows.Scan(&id, &purpose, &raw); err != nil {
+			return err
+		}
+		saved, err := pairParseFills(raw)
+		if err != nil {
+			return fmt.Errorf("saved pair action %s fill records are unreadable: %w", id, err)
+		}
+		for _, f := range saved {
+			if want[f.FillID] && conflict == "" {
+				conflict = fmt.Sprintf("native fill %s is already saved on pair action %s (%s); a fill is accounted once", f.FillID, id, purpose)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if conflict != "" {
+		return errors.New(conflict)
+	}
+	return nil
+}
+
 func applyPairNativeRowUpdateTx(tx *sql.Tx, rt *basketRuntime, sids map[string]string, u pairNativeRowUpdate) error {
 	a := u.action
 	if a == nil || !a.pairNative() || len(u.from) == 0 {
@@ -223,42 +277,8 @@ func applyPairNativeRowUpdateTx(tx *sql.Tx, rt *basketRuntime, sids map[string]s
 	if !ok {
 		return fmt.Errorf("native action %s names %s, which is not a member of pair %s", a.ActionID, a.StrategyID, rt.Contract.BasketID)
 	}
-	if len(u.fills) > 0 {
-		want := map[string]string{}
-		for _, f := range u.fills {
-			want[f.FillID] = f.EvidenceHash
-		}
-		rows, err := tx.Query(`SELECT action_id, fill_coverage_json FROM basket_member_actions WHERE scope = ? AND source = ? AND basket_id = ? AND strategy_id = ?
-			AND group_mode = 'pair' AND fill_coverage_json != '' AND action_id != ?`,
-			string(rt.Partition.Scope), rt.Partition.Source, rt.Contract.BasketID, sid, a.ActionID)
-		if err != nil {
-			return fmt.Errorf("read saved native fills: %w", err)
-		}
-		conflict := ""
-		for rows.Next() {
-			var id, raw string
-			if err := rows.Scan(&id, &raw); err != nil {
-				rows.Close()
-				return err
-			}
-			saved, err := pairParseFills(raw)
-			if err != nil {
-				rows.Close()
-				return fmt.Errorf("saved native action %s fill records are unreadable: %w", id, err)
-			}
-			for _, f := range saved {
-				if _, ok := want[f.FillID]; ok {
-					conflict = fmt.Sprintf("native fill %s is already saved on pair action %s; a fill is accounted once", f.FillID, id)
-				}
-			}
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		if conflict != "" {
-			return errors.New(conflict)
-		}
+	if err := pairFillsUnownedTx(tx, rt, sid, a.ActionID, u.fills); err != nil {
+		return err
 	}
 	marks := make([]string, len(u.from))
 	args := []interface{}{u.to, a.UpdatedAtMs, a.ActionID, sid, a.RequestJSON, a.ClientOrderID, u.savedRaw}

@@ -838,7 +838,7 @@ func (bc *basketCoordinator) newPairNativeResolution(rt *basketRuntime, ob pairO
 	return r
 }
 
-func (bc *basketCoordinator) commitPairNativeMutation(rt *basketRuntime, rows []pairNativeResolution, updates []pairNativeRowUpdate, actions []*basketAction, mutate func()) error {
+func (bc *basketCoordinator) commitPairNativeMutation(rt *basketRuntime, rows []pairNativeResolution, updates []pairNativeRowUpdate, guards []pairNativeFillGuard, actions []*basketAction, mutate func()) error {
 	snap := pairCloneProgress(rt.Pair.Progress)
 	saved := make([]basketAction, len(actions))
 	for i, a := range actions {
@@ -847,7 +847,7 @@ func (bc *basketCoordinator) commitPairNativeMutation(rt *basketRuntime, rows []
 	mutate()
 	rt.Pair.Progress.pruneNativeAttempts()
 	rt.touchPairProgress()
-	if err := bc.store.CommitPairNative(rt, rows, updates); err != nil {
+	if err := bc.store.CommitPairNative(rt, rows, updates, guards); err != nil {
 		rt.Pair.Progress = snap
 		for i, a := range actions {
 			*a = saved[i]
@@ -904,7 +904,7 @@ func (bc *basketCoordinator) commitPairNativeZero(rt *basketRuntime, t pairNativ
 		r.Evidence = b
 	}
 	nowMs := now.UnixMilli()
-	err := bc.commitPairNativeMutation(rt, []pairNativeResolution{r}, updates, actions, func() {
+	err := bc.commitPairNativeMutation(rt, []pairNativeResolution{r}, updates, nil, actions, func() {
 		p := &rt.Pair.Progress
 		p.clearObligation(t.ob.Kind, t.ob.MemberID, t.ob.ActionID)
 		if op != nil {
@@ -975,7 +975,7 @@ func (bc *basketCoordinator) convertPairNativeReceipt(rt *basketRuntime, m pairC
 	for _, f := range out.FillCoverage {
 		r.FillIDs = append(r.FillIDs, f.FillID)
 	}
-	err := bc.commitPairNativeMutation(rt, []pairNativeResolution{r}, nil, nil, func() {
+	err := bc.commitPairNativeMutation(rt, []pairNativeResolution{r}, nil, []pairNativeFillGuard{{memberID: m.MemberID, fills: out.FillCoverage}}, nil, func() {
 		p := &rt.Pair.Progress
 		p.NativeReceipts = append(p.NativeReceipts, rec)
 		p.addObligation(pairObligation{Kind: pairObligationNativeReceipt, MemberID: m.MemberID, ActionID: id,
@@ -1092,7 +1092,7 @@ func (bc *basketCoordinator) recoverPairNativeAction(rt *basketRuntime, m pairCo
 	}
 	r.AttemptID = attID
 	savedFills := a.durableFills
-	err := bc.commitPairNativeMutation(rt, nil, []pairNativeRowUpdate{{action: a, from: []string{prior}, to: basketActionSettling, fills: fills, savedRaw: savedFills}},
+	err := bc.commitPairNativeMutation(rt, nil, []pairNativeRowUpdate{{action: a, from: []string{prior}, to: basketActionSettling, fills: fills, savedRaw: savedFills}}, nil,
 		[]*basketAction{a}, func() {
 			p := &rt.Pair.Progress
 			*a = next
@@ -1377,7 +1377,7 @@ func (bc *basketCoordinator) commitPairNativeDecision(rt *basketRuntime, req pai
 	if a != nil {
 		actions = append(actions, a)
 	}
-	err := bc.commitPairNativeMutation(rt, []pairNativeResolution{r}, nil, actions, func() {
+	err := bc.commitPairNativeMutation(rt, []pairNativeResolution{r}, nil, nil, actions, func() {
 		p := &rt.Pair.Progress
 		p.clearObligation(ob.Kind, ob.MemberID, ob.ActionID)
 		p.removeNativeRequest(req.ID)
