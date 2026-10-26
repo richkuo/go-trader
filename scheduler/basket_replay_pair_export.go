@@ -180,6 +180,7 @@ var pairReplayExportTables = []struct {
 	{"pair_funding_inventory", "", []string{"id", "seq"}},
 	{"pair_virtual_allocations", "", nil},
 	{"pair_virtual_events", "kind != 'query'", []string{"seq", "previous_event_hash", "event_hash"}},
+	{"pair_native_resolutions", "", nil},
 }
 
 var pairReplayTradeRowRef = regexp.MustCompile(`"trade_row_id":\s*([0-9]+)`)
@@ -555,6 +556,11 @@ func (r *pairReplayRuntime) incompleteReasons(steps []pairReplayStoredStep, rawB
 	}
 	for _, o := range rt.Pair.Progress.Obligations {
 		add("open pair obligation %s (member %q, action %q): %s", o.Kind, o.MemberID, o.ActionID, o.Detail)
+	}
+	for _, d := range rt.Pair.resolutions {
+		if d.Mode == pairNativeModeWriteOff {
+			add("native %s for %s (%s) was written off by operator %s (resolution %s); a write-off keeps the result incomplete", d.Kind, d.MemberID, d.ObligationID, d.Operator, d.ID)
+		}
 	}
 	for _, a := range rt.pairUnresolvedActions() {
 		add("action %s is %s at the end of the run", a.ActionID, a.Status)

@@ -279,17 +279,21 @@ const (
 	pairOrderOKXProbeRequestJSON    = `{"v":2,"pair_id":"probe","partition":"live","member_id":"probe","provider":"okx","account_key":"okx:swap:live:key-0000000000000000","instrument":"BTC-USDT-SWAP","client_order_id":"gtprobe","purpose":"pair_entry","order_side":"buy","position_side":"long","base_qty":0.01,"native_qty":1,"contract_size":0.01,"price_bound":1,"accept_deadline_ms":1,"quote_event_id":"pq-probe","origin_slot_ms":1,"reduce_only":false,"contract_fingerprint":"0000000000000000000000000000000000000000000000000000000000000000","capability_hash":"0000000000000000000000000000000000000000000000000000000000000000","evidence_hash":"0000000000000000000000000000000000000000000000000000000000000000"}`
 	pairPositionHLProbeRequestJSON  = `{"v":1,"provider":"hyperliquid","account_key":"hyperliquid:mainnet:0x0000000000000000000000000000000000000001","instrument":"BTC","member_id":"probe","partition":"live"}`
 	pairPositionOKXProbeRequestJSON = `{"v":1,"provider":"okx","account_key":"okx:swap:live:key-0000000000000000","instrument":"BTC-USDT-SWAP","member_id":"probe","partition":"live"}`
+	pairNativeHistoryHLProbeJSON    = `{"v":1,"pair_id":"probe","partition":"live","member_id":"probe","provider":"hyperliquid","account_key":"hyperliquid:mainnet:0x0000000000000000000000000000000000000001","instrument":"BTC","attempt_id":"pna-00000000000000000000000000000000","order_side":"sell","venue_order_ids":["1"],"from_ms":1,"through_ms":2,"revision":"0000000000000000"}`
+	pairNativeHistoryOKXProbeJSON   = `{"v":1,"pair_id":"probe","partition":"live","member_id":"probe","provider":"okx","account_key":"okx:swap:live:key-0000000000000000","instrument":"BTC-USDT-SWAP","attempt_id":"pna-00000000000000000000000000000000","order_side":"buy","venue_order_ids":["1"],"from_ms":1,"through_ms":2,"revision":"0000000000000000"}`
 )
 
 var pairOrderHLProbeArgvs = [][]string{
 	{pairOrderFlag + "=" + pairOrderHLProbeRequestJSON, "--mode=live", "--probe-only"},
 	{pairQueryFlag + "=" + pairOrderHLProbeRequestJSON, "--since-ms=1", "--mode=live", "--probe-only"},
 	{pairPositionFlag + "=" + pairPositionHLProbeRequestJSON, "--mode=live", "--probe-only"},
+	{pairNativeHistoryFlag + "=" + pairNativeHistoryHLProbeJSON, "--mode=live", "--probe-only"},
 }
 
 var pairOrderOKXProbeArgvs = [][]string{
 	{pairOrderFlag + "=" + pairOrderOKXProbeRequestJSON, "--mode=live", "--probe-only"},
 	{pairQueryFlag + "=" + pairOrderOKXProbeRequestJSON, "--since-ms=1", "--mode=live", "--probe-only"},
+	{pairNativeHistoryFlag + "=" + pairNativeHistoryOKXProbeJSON, "--mode=live", "--probe-only"},
 }
 
 var pairPositionOKXProbeArgv = []string{pairPositionFlag + "=" + pairPositionOKXProbeRequestJSON, "--mode=live", "--probe-only"}

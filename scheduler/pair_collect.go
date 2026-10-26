@@ -538,6 +538,9 @@ func pairIncompleteEvidence(rt *basketRuntime) (pairObligation, bool) {
 			found = append(found, pairObligation{Kind: pairObligationEmergencyClose, MemberID: c.MemberID, Detail: "a staged emergency close is not committed", AtMs: c.CloseAtMs})
 		}
 	}
+	for _, h := range p.NativeFundingHolds {
+		found = append(found, pairObligation{Kind: pairObligationNativeFundingUncertain, MemberID: h.MemberID, ActionID: h.ResolutionID, Detail: h.Detail, AtMs: h.AtMs, FromMs: h.FromMs})
+	}
 	if len(found) == 0 {
 		return pairObligation{}, false
 	}
@@ -658,6 +661,16 @@ func (bc *basketCoordinator) pairWakeBoundaries(rt *basketRuntime, nowMs int64) 
 		}
 		if w, why := pairPolicyWindowFor(rt, rb, env); why == "" {
 			add(w.endMs(), true)
+		}
+	}
+	for _, at := range p.NativeAttempts {
+		if at.RetryAtMs > 0 && at.OrdersComplete && at.Ambiguous == "" {
+			add(at.RetryAtMs, true)
+		}
+	}
+	for _, r := range p.NativeRequests {
+		if !rt.Pair.nativeSeen[r.ID] {
+			add(nowMs, true)
 		}
 	}
 	grace := entryRecoveryGrace.Milliseconds()

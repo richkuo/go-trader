@@ -42,6 +42,11 @@ def main():
         orders = adapter.market_close_orders(args.symbol, args.sz)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
+        sent = getattr(e, "orders", None)
+        if isinstance(sent, list) and sent:
+            from native_close_evidence import okx_partial_close_evidence
+            _emit_error(args.symbol, str(e), evidence=okx_partial_close_evidence(sent, f"a later close order failed, so another order may have an unknown result: {e}"))
+            return
         _emit_error(args.symbol, str(e))
         return
 
@@ -92,9 +97,12 @@ def _emit_success(symbol, fill, already_flat=False, evidence=None):
     }))
 
 
-def _emit_error(symbol, message):
+def _emit_error(symbol, message, evidence=None):
+    close = {"symbol": symbol, "fill": {}}
+    if evidence is not None:
+        close["evidence"] = evidence
     print(json.dumps({
-        "close": {"symbol": symbol, "fill": {}},
+        "close": close,
         "platform": "okx",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "error": message,

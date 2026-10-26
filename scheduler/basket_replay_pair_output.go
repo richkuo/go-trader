@@ -80,6 +80,7 @@ type pairReplayPairRecord struct {
 	NeedsDurable       bool     `json:"settlement_not_durable,omitempty"`
 	Conservation       string   `json:"conservation,omitempty"`
 	EmergencyPending   []string `json:"emergency_pending,omitempty"`
+	NativeDecisions    []string `json:"native_decisions,omitempty"`
 	Slots              int      `json:"slots"`
 	Actions            int      `json:"actions"`
 	RecordingBlocked   string   `json:"recording_blocked,omitempty"`
@@ -208,6 +209,10 @@ func (r *pairReplayRuntime) stateReadingsLocked(at time.Time) ([]pairReplayMembe
 	if b := rt.Pair.Progress.RecordingBlocked; b != nil {
 		pr.RecordingBlocked = fmt.Sprintf("input %d: %s", b.FailedSeq, b.Reason)
 	}
+	for _, d := range rt.Pair.resolutions {
+		pr.NativeDecisions = append(pr.NativeDecisions, fmt.Sprintf("%s|%s|%s %s by %s %s", d.Kind, d.MemberID, d.ObligationID, d.Mode, d.DecidedBy, d.ID))
+	}
+	sort.Strings(pr.NativeDecisions)
 	return members, proof, pr
 }
 

@@ -439,7 +439,7 @@ func loadPairPlaybackInput(spec *pairReplaySpec, lt pairReplayLifetime) (*pairPl
 	if got := sha256Hex([]byte(pairReplayCompactJSON(spec.ResearchConfig))); got != man.ResearchConfigSHA256 {
 		add("research_config differs from the recorded research configuration")
 	}
-	if a, b := mustJSON(spec.Scenario), mustJSON(man.Scenario.replay()); !bytes.Equal(a, b) {
+	if a, b := pairPaperJSON(spec.Scenario), pairPaperJSON(man.Scenario.replay()); !bytes.Equal(a, b) {
 		add("scenario %s differs from the recorded scenario %s", a, b)
 	}
 	if lt.String() != man.Lifetime.String() {

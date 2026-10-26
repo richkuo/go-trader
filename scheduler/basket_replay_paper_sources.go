@@ -408,7 +408,7 @@ func (s *recordingQuoteSource) Collect(ctx context.Context, req pairCollectReque
 		if mr.MemberID != m.MemberID {
 			return nil, fmt.Errorf("the recorded collection read %d names %s, not %s", i, mr.MemberID, m.MemberID)
 		}
-		if _, err := pairPaperDecodeRead(mustJSON(mr.Read)); err != nil {
+		if _, err := pairPaperDecodeRead(pairPaperJSON(mr.Read)); err != nil {
 			return nil, err
 		}
 		o, err := s.derive(m, mr.Read, "")
@@ -420,7 +420,7 @@ func (s *recordingQuoteSource) Collect(ctx context.Context, req pairCollectReque
 	return out, nil
 }
 
-func mustJSON(v interface{}) []byte {
+func pairPaperJSON(v interface{}) []byte {
 	b, _ := json.Marshal(v)
 	return b
 }

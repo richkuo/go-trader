@@ -383,6 +383,15 @@ func (bc *basketCoordinator) voidFundingIncomplete(rt *basketRuntime, f *pairFun
 }
 
 func (bc *basketCoordinator) noteFundingUnresolvable(rt *basketRuntime, f *pairFundingRuntime, m *pairFundingMember, r pairFundingRate, sourceHash, reason, detail string, now time.Time) bool {
+	if !bc.markFundingUnresolvable(rt, f, m, r, sourceHash, reason, detail, now) {
+		return false
+	}
+	key := pairFundingKeyOf(m.memberID, r.EventID, r.RuleVersion)
+	bc.pairAlert(rt, "funding-unresolvable|"+key, fmt.Sprintf("CRITICAL pair %s member %s funding event %s (%s) can never settle from the saved inventory history: %s: %s; no charge is booked, the event is saved as unresolvable with this detail, and it does not hold pair completion", rt.Contract.BasketID, m.memberID, r.EventID, r.RuleVersion, reason, detail), true)
+	return true
+}
+
+func (bc *basketCoordinator) markFundingUnresolvable(rt *basketRuntime, f *pairFundingRuntime, m *pairFundingMember, r pairFundingRate, sourceHash, reason, detail string, now time.Time) bool {
 	key := pairFundingKeyOf(m.memberID, r.EventID, r.RuleVersion)
 	nowMs := now.UnixMilli()
 	cur := f.incomplete[key]
@@ -398,7 +407,6 @@ func (bc *basketCoordinator) noteFundingUnresolvable(rt *basketRuntime, f *pairF
 	}
 	cur.Status, cur.Reason, cur.Detail, cur.UpdatedMs, cur.dirty = pairFundingStatusUnresolvable, reason, detail, nowMs, true
 	rt.Pair.Progress.clearObligation(pairObligationFundingIncomplete, m.memberID, r.EventID+"|"+r.RuleVersion)
-	bc.pairAlert(rt, "funding-unresolvable|"+key, fmt.Sprintf("CRITICAL pair %s member %s funding event %s (%s) can never settle from the saved inventory history: %s: %s; no charge is booked, the event is saved as unresolvable with this detail, and it does not hold pair completion", rt.Contract.BasketID, m.memberID, r.EventID, r.RuleVersion, reason, detail), true)
 	return true
 }
 
@@ -558,6 +566,14 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 			need = t + window - 1
 		}
 		if nowMs < need {
+			continue
+		}
+		if hold := pairNativeFundingHoldFromMs(rt, m.memberID); hold > 0 && hold <= need {
+			detail := fmt.Sprintf("an operator native decision left the %s inventory unproven from %d and nothing releases that hold, so the inventory the event needs through %d can never be proven", m.memberID, hold, need)
+			if bc.markFundingUnresolvable(rt, f, m, r, sh, pairFundingReasonNativeDecision, detail, now) {
+				changed = true
+				bc.pairAlert(rt, fmt.Sprintf("funding-native-hold|%s|%d", m.memberID, hold), fmt.Sprintf("pair %s member %s: each funding event that needs inventory from %d onward is saved unresolvable (%s) with no charge and no funding obligation, because an operator native decision left that inventory unproven; the result stays incomplete", rt.Contract.BasketID, m.memberID, hold, pairFundingReasonNativeDecision), false)
+			}
 			continue
 		}
 		if hInv < need {
