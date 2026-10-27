@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -383,4 +385,189 @@ func pairPaperWriteJSON(t *testing.T, path string, v interface{}) {
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type pairPaperOracleFaults struct {
+	callStart int
+	inputEnd  int
+}
+
+func pairPaperResearchOracleFaultCounts(t *testing.T, opts pairPaperResearchOptions) pairPaperOracleFaults {
+	t.Helper()
+	opts.runID = "paper-research-dry"
+	f, _ := newPairPaperResearchFixture(t, opts)
+	dir := filepath.Join(f.parent, "dry")
+	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false))
+	if p.Out.Run == nil || !p.Out.Run.Finished {
+		t.Fatalf("the dry research run finishes, got exit %d %+v\nstderr tail=%s", p.Code, p.Out.Refusal, tail(p.Stderr, 4000))
+	}
+	rows := pairPaperLogRows(t, dir, f.runID)
+	out := pairPaperOracleFaults{}
+	starts := 0
+	oracleCall := ""
+	for _, r := range rows {
+		if r.Kind == pairRecEventStart {
+			starts++
+			if r.Event.Start.Kind == pairRecKindFundingOracle {
+				if oracleCall != "" {
+					t.Fatal("the dry run holds one oracle attempt")
+				}
+				oracleCall, out.callStart = r.CallID, starts
+			}
+		}
+		if r.Kind == pairRecEventEnd && r.CallID == oracleCall {
+			out.inputEnd = int(r.Seq)
+		}
+	}
+	if out.callStart == 0 || out.inputEnd == 0 {
+		t.Fatalf("the dry run commits an oracle start and terminal, got %+v", out)
+	}
+	return out
+}
+
+func pairPaperOracleRows(rows []pairRecRow) (starts, ends, recoveries int) {
+	calls := map[string]bool{}
+	for _, r := range rows {
+		switch {
+		case r.Kind == pairRecEventStart && r.Event.Start.Kind == pairRecKindFundingOracle:
+			starts++
+			calls[r.CallID] = true
+		case r.Kind == pairRecEventEnd && calls[r.CallID]:
+			ends++
+		case r.Kind == pairRecEventRecovery && calls[r.CallID]:
+			recoveries++
+		}
+	}
+	return
+}
+
+func TestBasketReplayPairPaperResearchOracleResume(t *testing.T) {
+	counts := pairPaperResearchOracleFaultCounts(t, pairPaperResearchOptions{})
+	late := pairPaperResearchOptions{fixtureMore: map[string]interface{}{"oracle_response_delay_ms": 5000}}
+	lateCounts := pairPaperResearchOracleFaultCounts(t, late)
+	slots := make(chan struct{}, 3)
+	crash := func(t *testing.T, f *pairPaperFixture, dir, fault string) []pairRecRow {
+		t.Helper()
+		p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false), "--fault", fault)
+		if p.Code != basketReplayExitFault || !strings.Contains(p.Stderr, "fault "+fault+"\n") {
+			t.Fatalf("the fault %s exits 75 at its boundary, got exit %d\nstderr tail=%s", fault, p.Code, tail(p.Stderr, 4000))
+		}
+		return pairPaperLogRows(t, dir, f.runID)
+	}
+	t.Run("start-only recovery never repeats the hour", func(t *testing.T) {
+		t.Parallel()
+		slots <- struct{}{}
+		defer func() { <-slots }()
+		f, target := newPairPaperResearchFixture(t, pairPaperResearchOptions{runID: "paper-oracle-start-only"})
+		dir := filepath.Join(f.parent, "paper")
+		before := crash(t, f, dir, fmt.Sprintf("exit-after-call-start:%d", counts.callStart))
+		if last := before[len(before)-1]; last.Kind != pairRecEventStart || last.Event.Start.Kind != pairRecKindFundingOracle {
+			t.Fatalf("the crash leaves the oracle start as the last committed row, got %s", last.Kind)
+		}
+		resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
+		pairPaperRequireResumed(t, "start-only resume", resumed)
+		after := pairPaperLogRows(t, dir, f.runID)
+		if s, e, rcv := pairPaperOracleRows(after); s != 1 || e != 0 || rcv != 1 {
+			t.Fatalf("the interrupted oracle start is marked unknown once and never repeated, got %d starts %d ends %d recoveries", s, e, rcv)
+		}
+		pairPaperNoRepeatedCall(t, after)
+		if n := pairPaperMetaReads(f); n != 0 {
+			t.Fatalf("the interrupted attempt read nothing and no later read repairs the hour, got %d reads", n)
+		}
+		event := pairFundingEventID(entryProviderHyperliquid, "BTC", target+3)
+		for _, row := range pairPaperFundingRows(t, dir) {
+			if row.StrategyID == pairTestHL && row.EventMs == target+3 && row.Status == pairFundingStatusApplied {
+				t.Fatalf("the held hour with no sample is never charged: %s", event)
+			}
+		}
+		if resumed.Out.MechanicallyComplete {
+			t.Fatal("a held hour whose sample was interrupted keeps the run incomplete")
+		}
+	})
+	t.Run("terminal before publication resumes past the deadline", func(t *testing.T) {
+		t.Parallel()
+		slots <- struct{}{}
+		defer func() { <-slots }()
+		f, target := newPairPaperResearchFixture(t, pairPaperResearchOptions{runID: "paper-oracle-terminal"})
+		dir := filepath.Join(f.parent, "paper")
+		before := crash(t, f, dir, fmt.Sprintf("exit-after-input-commit:%d", counts.inputEnd))
+		last := before[len(before)-1]
+		if last.Kind != pairRecEventEnd || last.Event.End.Class != pairRecClassResult {
+			t.Fatalf("the crash leaves the committed oracle terminal as the last row, got %s", last.Kind)
+		}
+		clock, _ := strconv.ParseInt(strings.TrimSpace(string(pairPaperReadFile(t, f.clock))), 10, 64)
+		if err := os.WriteFile(f.clock, []byte(strconv.FormatInt(clock+15000, 10)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		deadline, _ := pairFundingOracleDeadline(*f.scenario.FundingPolicy, target)
+		if clock+15000 <= deadline {
+			t.Fatalf("the restart happens after the sampling deadline %d, clock %d", deadline, clock+15000)
+		}
+		reads := pairPaperMetaReads(f)
+		chunk := filepath.Join(f.parent, "chunk")
+		_ = exec.Command("cp", "-R", dir, chunk).Run()
+		resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
+		pairPaperRequireResumed(t, "terminal resume", resumed)
+		pairPaperRequireComplete(t, "terminal resume", resumed)
+		after := pairPaperLogRows(t, dir, f.runID)
+		if s, e, rcv := pairPaperOracleRows(after); s != 1 || e != 1 || rcv != 0 {
+			t.Fatalf("the committed terminal is consumed from the recording, got %d starts %d ends %d recoveries", s, e, rcv)
+		}
+		if n := pairPaperMetaReads(f); n != reads {
+			t.Fatalf("the resume makes no new outside oracle read, got %d new reads", n-reads)
+		}
+		applied := pairPaperApplied(pairPaperFundingRows(t, dir), pairTestHL, target+3)
+		if applied == nil {
+			t.Fatal("the restored sample settles the held hour after a restart past the deadline")
+		}
+		ev, err := pairDecodeFundingEvent([]byte(applied.EventJSON))
+		if err != nil || ev.Research == nil || ev.Research.ObservationTargetEventMs != target {
+			t.Fatalf("the restored version 3 event uses the recorded sample: %+v %v", ev, err)
+		}
+		playback := pairPaperReproduce(t, f, dir, "reproduction")
+		if playback.Out.Comparison == nil || playback.Out.Comparison.Hash != resumed.Out.Comparison.Hash || !playback.Out.Comparison.Eligible {
+			t.Fatalf("the offline reproduction of the resumed research recording equals it, got paper %+v playback %+v\n%s", resumed.Out.Comparison, playback.Out.Comparison, pairOfflineDiff(t, resumed.Out, playback.Out))
+		}
+		mid := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, chunk), f.env(false), "--max-steps", "4")
+		pairPaperRequireResumed(t, "chunked terminal resume", mid)
+		db, err := OpenStateDB(filepath.Join(chunk, basketReplayDBName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var seq int64
+		var raw string
+		if err := db.db.QueryRow(`SELECT seq, batch_json FROM pair_funding_chain WHERE batch_json LIKE '%"observations":[{%' ORDER BY seq LIMIT 1`).Scan(&seq, &raw); err != nil {
+			t.Fatalf("the admitted oracle batch is saved in the funding chain: %v", err)
+		}
+		if _, err := db.db.Exec(`DROP TRIGGER trg_pair_funding_chain_immutable`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.db.Exec(`UPDATE pair_funding_chain SET batch_json = ? WHERE seq = ?`, strings.Replace(raw, `"60010.5"`, `"60011.5"`, 1), seq); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+		refused := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, chunk), f.env(false), "--max-steps", "4")
+		if refused.Code != basketReplayExitRefused {
+			t.Fatalf("a saved chain row the recording no longer proves refuses the resume, got exit %d %+v", refused.Code, refused.Out.Refusal)
+		}
+	})
+	t.Run("refused terminal batch keeps its sequence for the next read", func(t *testing.T) {
+		t.Parallel()
+		slots <- struct{}{}
+		defer func() { <-slots }()
+		late.runID = "paper-oracle-refused"
+		f, _ := newPairPaperResearchFixture(t, late)
+		dir := filepath.Join(f.parent, "paper")
+		crash(t, f, dir, fmt.Sprintf("exit-after-input-commit:%d", lateCounts.inputEnd))
+		resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
+		pairPaperRequireResumed(t, "refused terminal resume", resumed)
+		o := pairPaperOracleOutcomeOf(t, dir, f.runID)
+		if len(o.starts) != 1 || len(o.refusedSeq) != 1 || len(o.admitted) != 0 {
+			t.Fatalf("the late terminal stays only in the recording after the restart: starts %d refused %v admitted %d", len(o.starts), o.refusedSeq, len(o.admitted))
+		}
+		if _, ok := o.chainSeqs[o.refusedSeq[0]]; !ok {
+			t.Fatalf("a later accepted batch reuses the refused sequence %d: %v", o.refusedSeq[0], o.chainSeqs)
+		}
+		pairPaperNoRepeatedCall(t, pairPaperLogRows(t, dir, f.runID))
+	})
 }

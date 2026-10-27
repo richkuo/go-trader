@@ -40,15 +40,31 @@ func init() {
 	pairPaperWall = &pairPaperTestWall{path: path, ms: ms}
 }
 
+func (w *pairPaperTestWall) reloadLocked() {
+	blob, err := os.ReadFile(w.path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "the paper test clock could not reload: %v\n", err)
+		os.Exit(basketReplayExitError)
+	}
+	ms, err := strconv.ParseInt(strings.TrimSpace(string(blob)), 10, 64)
+	if err != nil || ms <= 0 {
+		fmt.Fprintf(os.Stderr, "the paper test clock holds no positive millisecond time: %q\n", blob)
+		os.Exit(basketReplayExitError)
+	}
+	w.ms = ms
+}
+
 func (w *pairPaperTestWall) Now() time.Time {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.reloadLocked()
 	return time.UnixMilli(w.ms)
 }
 
 func (w *pairPaperTestWall) advance(d time.Duration) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.reloadLocked()
 	step := int64((d + time.Millisecond - 1) / time.Millisecond)
 	if step < 1 {
 		step = 1

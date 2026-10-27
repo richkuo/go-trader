@@ -1525,3 +1525,454 @@ func TestPairFundingExposureCacheMatchesAFullRebuild(t *testing.T) {
 	}
 	same("after a late earlier row", now.Add(2*time.Minute).UnixMilli())
 }
+
+func pairResearchTestPolicy() pairFundingPolicyV1 {
+	return pairFundingPolicyV1{Version: pairFundingPolicyVersion, MemberRules: map[string]string{pairTestHL: pairFundingRuleHLReceiptResearch, pairTestOKX: pairFundingRuleOKX},
+		WindowMs: 5000, MaxPrintOffsetMs: 60000, PrepareLeadMs: 30000, FromMs: pairTestFundingFromMs, DrainThroughMs: pairFundingFarMs}
+}
+
+func pfObservation(t *testing.T, k pairEvidenceKey, policy pairFundingPolicyV1, targetMs, requestMs, receiptMs int64, px string) pairFundingOracleObservation {
+	t.Helper()
+	digest, err := pairFundingPolicyDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := pairFundingOracleAttemptID(k, targetMs, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := pairFundingOracleObservation{V: pairFundingObservationVersion, Key: k, EvidenceID: pairFundingOracleEvidenceID(k, targetMs, receiptMs), AttemptID: attempt,
+		PolicyDigest: digest, PriceKind: pairFundingPriceOracleReceipt, TargetEventMs: targetMs, RequestMs: requestMs, ReceiptMs: receiptMs, AtMs: receiptMs, VisibleMs: receiptMs,
+		TimeBasis: pairFundingObservationTimeBasis, Price: pairDecimal(px), Provenance: pairFundingOracleProvenance}.sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+func pairResearchFundingBytes(t *testing.T, doc []byte, policy pairFundingPolicyV1, fund func(d *pairFundingDocumentV2, k map[string]pairEvidenceKey)) []byte {
+	t.Helper()
+	keys := pairFundingTestKeys(doc)
+	legacy := pairTestFundingDocument(doc)
+	digest, err := pairFundingPolicyDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := pairFundingDocumentV2{V: pairFundingResearchDocumentVersion, SourceID: "fixture-research-funding", Policy: policy, PolicyDigest: digest,
+		Rates: []pairFundingRate{}, Prices: []pairFundingPrice{}, Observations: []pairFundingOracleObservation{}, Coverage: legacy.Coverage}
+	if fund != nil {
+		fund(&d, keys)
+	}
+	legacy.Rates, legacy.Prices, legacy.Coverage = d.Rates, d.Prices, d.Coverage
+	for i := range legacy.Rates {
+		legacy.Rates[i], _ = legacy.Rates[i].sealed()
+	}
+	for i := range legacy.Prices {
+		legacy.Prices[i], _ = legacy.Prices[i].sealed()
+	}
+	for i := range legacy.Coverage {
+		legacy.Coverage[i], _ = legacy.Coverage[i].sealed()
+	}
+	d.Rates, d.Prices, d.Coverage = legacy.Rates, legacy.Prices, legacy.Coverage
+	blob, err := pairFundingDocumentV2Bytes(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return blob
+}
+
+func pairResearchAutoCoverage(d *pairFundingDocumentV2, k map[string]pairEvidenceKey) {
+	legacy := pairFundingDocument{Rates: d.Rates}
+	pairFundingAutoCoverage(&legacy, k)
+	d.Coverage = legacy.Coverage
+}
+
+func newPairResearchFundingEnv(t *testing.T, fund func(d *pairFundingDocumentV2, k map[string]pairEvidenceKey)) *pairTestEnv {
+	t.Helper()
+	return newPairTestEnvDeps(t, pairSetLimit("max_hold_age_ms", 86400000), func(doc []byte, venues *pairTestVenues) pairResearchDeps {
+		blob := pairResearchFundingBytes(t, doc, pairResearchTestPolicy(), fund)
+		src, err := newPairFrozenFundingSource(blob, sha256Hex(blob))
+		if err != nil {
+			t.Fatalf("research funding fixture: %v", err)
+		}
+		return pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc, pairFundingConversions("1.0002", "0.9995")), Quotes: newPairFixtureQuotes(t, doc).collector, Funding: src}
+	})
+}
+
+func TestBasketPairFundingPolicyBindsBeforeAnyWrite(t *testing.T) {
+	registerPairTestPolicy(t)
+	doc := pairTestDoc(t, filepath.Join(t.TempDir(), "run"), nil)
+	keys := pairFundingTestKeys(doc)
+	venues := newPairTestVenues(false)
+	base := pairResearchTestPolicy()
+	admit := func(policy pairFundingPolicyV1, fund func(d *pairFundingDocumentV2, k map[string]pairEvidenceKey), want string) {
+		t.Helper()
+		blob := pairResearchFundingBytes(t, doc, policy, fund)
+		src, err := newPairFrozenFundingSource(blob, sha256Hex(blob))
+		if err != nil {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("the frozen research document must be refused for %q, got %v", want, err)
+			}
+			return
+		}
+		deps := pairTestDeps(t, doc, venues)
+		deps.Funding = src
+		pairAdmitBytesRefused(t, doc, deps, want)
+	}
+	clone := func(edit func(p *pairFundingPolicyV1)) pairFundingPolicyV1 {
+		p := pairFundingPolicyClone(base)
+		edit(&p)
+		return p
+	}
+	admit(clone(func(p *pairFundingPolicyV1) { p.WindowMs = 5001 }), nil, "window_ms 5000")
+	admit(clone(func(p *pairFundingPolicyV1) { p.MaxPrintOffsetMs = 60001 }), nil, "max_print_offset_ms 60000")
+	admit(clone(func(p *pairFundingPolicyV1) { p.PrepareLeadMs = 0 }), nil, "prepare_lead_ms 30000")
+	admit(clone(func(p *pairFundingPolicyV1) { p.Version = 2 }), nil, "version 1")
+	admit(clone(func(p *pairFundingPolicyV1) { p.DrainThroughMs = p.FromMs - 1 }), nil, "bounds")
+	admit(clone(func(p *pairFundingPolicyV1) { p.MemberRules[pairTestHL] = pairFundingRuleHyperliquid }), nil, "must select "+pairFundingRuleHLReceiptResearch)
+	admit(clone(func(p *pairFundingPolicyV1) { p.MemberRules[pairTestOKX] = pairFundingRuleHLReceiptResearch }), nil, "must select "+pairFundingRuleOKX)
+	admit(clone(func(p *pairFundingPolicyV1) { delete(p.MemberRules, pairTestOKX) }), nil, "every pair member")
+	admit(clone(func(p *pairFundingPolicyV1) { p.MemberRules["stranger"] = pairFundingRuleOKX }), nil, "every pair member")
+	admit(clone(func(p *pairFundingPolicyV1) { p.MemberRules[pairTestOKX] = "okx_unknown_v9" }), nil, "unsupported rule")
+	target := pairTestStart().Add(time.Hour).UnixMilli()
+	for name, mutate := range map[string]func(k *pairEvidenceKey){
+		"account":    func(k *pairEvidenceKey) { k.AccountKey = "other-account" },
+		"partition":  func(k *pairEvidenceKey) { k.Partition = "paper:elsewhere" },
+		"instrument": func(k *pairEvidenceKey) { k.Instrument = "ETH" },
+		"member":     func(k *pairEvidenceKey) { k.MemberID = pairTestOKX },
+	} {
+		mutate := mutate
+		t.Run("observation "+name, func(t *testing.T) {
+			admit(base, func(d *pairFundingDocumentV2, k map[string]pairEvidenceKey) {
+				key := k[pairTestHL]
+				mutate(&key)
+				d.Observations = []pairFundingOracleObservation{pfObservation(t, key, base, target, target, target+400, "60000")}
+			}, "")
+		})
+	}
+	admit(base, func(d *pairFundingDocumentV2, k map[string]pairEvidenceKey) {
+		d.Prices = []pairFundingPrice{pfPrice(k[pairTestHL], pairFundingPriceOracle, target, "60000")}
+	}, "selected price evidence")
+	okObs := pfObservation(t, keys[pairTestHL], base, target, target, target+400, "60000")
+	blob := pairResearchFundingBytes(t, doc, base, func(d *pairFundingDocumentV2, k map[string]pairEvidenceKey) {
+		d.Observations = []pairFundingOracleObservation{okObs}
+	})
+	src, err := newPairFrozenFundingSource(blob, sha256Hex(blob))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newPairTestEnvDeps(t, nil, func(doc []byte, venues *pairTestVenues) pairResearchDeps {
+		d := pairTestDeps(t, doc, venues)
+		d.Funding = src
+		return d
+	})
+	_, binding, err := pairFundingBindingCanonical(e.adm.fundingBinding)
+	if err != nil || binding.Research == nil || binding.V != pairFundingResearchBindingVersion || binding.Research.PolicyDigest != okObs.PolicyDigest ||
+		strings.Join(binding.Rules, ",") != pairFundingRuleHLReceiptResearch+","+pairFundingRuleOKX {
+		t.Fatalf("a policy source binds a version 2 binding with the selected rules: %+v %v", binding, err)
+	}
+	pairEnterHoldRunner(e, 0.05)
+	e.slotStep(0)
+	e.store.Close()
+	resume := func(funding pairFundingSource) error {
+		d := pairTestDeps(t, e.doc, e.venues)
+		d.Funding = funding
+		adm, _, err := newPairResearchAdmission(e.doc, "run-1", e.dir, true, d)
+		if err == nil {
+			adm.release()
+		}
+		return err
+	}
+	digest := dirDigest(t, e.dir)
+	for name, funding := range map[string]func() pairFundingSource{
+		"legacy source": func() pairFundingSource { return pairTestFunding(t, e.doc, nil) },
+		"changed drain": func() pairFundingSource {
+			p := clone(func(p *pairFundingPolicyV1) { p.DrainThroughMs-- })
+			b := pairResearchFundingBytes(t, e.doc, p, nil)
+			s, err := newPairFrozenFundingSource(b, sha256Hex(b))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return s
+		},
+		"changed observations": func() pairFundingSource {
+			b := pairResearchFundingBytes(t, e.doc, base, nil)
+			s, err := newPairFrozenFundingSource(b, sha256Hex(b))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return s
+		},
+	} {
+		if err := resume(funding()); err == nil || !strings.Contains(err.Error(), "funding binding does not match") {
+			t.Fatalf("%s: an edited funding policy or document must refuse resume before any write, got %v", name, err)
+		}
+		if dirDigest(t, e.dir) != digest {
+			t.Fatalf("%s: the refused resume changed the saved state", name)
+		}
+	}
+	if err := resume(src); err != nil {
+		t.Fatalf("the unchanged policy source resumes: %v", err)
+	}
+}
+
+func TestBasketPairFundingResearchObservationSettlesOnce(t *testing.T) {
+	t0 := pairTestStart()
+	policy := pairResearchTestPolicy()
+	h := func(n int) int64 { return t0.Add(time.Duration(n) * time.Hour).UnixMilli() }
+	e1, e2, e3, e5, e6 := h(1)+3, h(2)+60001, h(3)+60000, h(5)+5, h(6)+5
+	tOKX := h(4)
+	e := newPairResearchFundingEnv(t, func(d *pairFundingDocumentV2, k map[string]pairEvidenceKey) {
+		hl, okx := k[pairTestHL], k[pairTestOKX]
+		d.Rates = []pairFundingRate{
+			pfRate(hl, pairFundingRuleHLReceiptResearch, e1, "0.0001"),
+			pfRate(hl, pairFundingRuleHLReceiptResearch, e2, "0.0001"),
+			pfRate(hl, pairFundingRuleHLReceiptResearch, e3, "-0.0002"),
+			pfRate(okx, pairFundingRuleOKX, tOKX, "-0.0002"),
+			pfRate(hl, pairFundingRuleHLReceiptResearch, e5, "0.0001"),
+			pfRate(hl, pairFundingRuleHLReceiptResearch, e6, "0.0001"),
+			pfRate(hl, pairFundingRuleHLReceiptResearch, h(7), "0.0001"),
+		}
+		d.Prices = []pairFundingPrice{pfPrice(okx, pairFundingPriceMark, tOKX, "60100")}
+		d.Observations = []pairFundingOracleObservation{
+			pfObservation(t, hl, policy, h(1), h(1), h(1)+800, "60010"),
+			pfObservation(t, hl, policy, h(2), h(2)+1, h(2)+900, "60020"),
+			pfObservation(t, hl, policy, h(3), h(3)+2, h(3)+4999, "60030"),
+			pfObservation(t, hl, policy, h(6), h(6), h(6)+700, "60060"),
+			pfObservation(t, hl, policy, h(6), h(6), h(6)+701, "60060"),
+			pfObservation(t, hl, policy, h(7), h(7), h(7)+600, "60070"),
+		}
+		pairResearchAutoCoverage(d, k)
+	})
+	e.openMatched(0.05)
+	ev1 := pairFundingEventID("hyperliquid", "BTC", e1)
+	e.step(time.UnixMilli(e1).Add(30 * time.Second))
+	status, _, raw := e.fundingRow(pairTestHL, ev1)
+	if status != pairFundingStatusApplied {
+		t.Fatalf("the held hourly event settles from its research observation, got %q", status)
+	}
+	got, err := pairDecodeFundingEvent([]byte(raw))
+	if err != nil || got.Research == nil || got.V != pairFundingResearchEventVersion {
+		t.Fatalf("the research event is a strict version 3 event: %+v %v", got, err)
+	}
+	obs1 := pfObservation(t, pairFundingTestKeys(e.doc)[pairTestHL], policy, h(1), h(1), h(1)+800, "60010")
+	if got.RuleVersion != pairFundingRuleHLReceiptResearch || got.NativeMark != "60010" || got.PriceHash != obs1.RecordHash || got.Research.ObservationRecordHash != obs1.RecordHash ||
+		got.Research.ObservationTargetEventMs != h(1) || got.Research.ObservationReceiptMs != h(1)+800 || got.EventMs != e1 ||
+		string(got.NativeAmount) != "-0.30005" || string(got.USDAmount) != "-0.30011001" || got.Research.PolicyDigest != obs1.PolicyDigest {
+		t.Fatalf("the research event keeps the print time and copies the selected observation: %+v", got)
+	}
+	if n := len(e.fundingTrades(pairTestHL)); n != 1 || e.fundingTrades(pairTestHL)[0].RealizedPnL != pairDecimalFloat(t, "-0.30011001") ||
+		!strings.Contains(e.fundingTrades(pairTestHL)[0].Details, pairFundingPriceOracleReceipt) {
+		t.Fatalf("one research funding row is booked at the exact product: %+v", e.fundingTrades(pairTestHL))
+	}
+	e.step(t0.Add(4*time.Hour + 61*time.Second))
+	e.step(t0.Add(7*time.Hour + 30*time.Second))
+	ev2, ev3, ev5, ev6 := pairFundingEventID("hyperliquid", "BTC", e2), pairFundingEventID("hyperliquid", "BTC", e3), pairFundingEventID("hyperliquid", "BTC", e5), pairFundingEventID("hyperliquid", "BTC", e6)
+	if s, reason, _ := e.fundingRow(pairTestHL, ev2); s == pairFundingStatusApplied || reason != pairFundingReasonPriceMissing {
+		t.Fatalf("a print 60001 ms after the hour has no research target and stays price_missing, got %q %q", s, reason)
+	}
+	if s, _, raw3 := e.fundingRow(pairTestHL, ev3); s != pairFundingStatusApplied {
+		t.Fatalf("a print exactly 60000 ms after the hour maps to that hour, got %q", s)
+	} else if v, err := pairDecodeFundingEvent([]byte(raw3)); err != nil || v.EventMs != e3 || v.NativeMark != "60030" {
+		t.Fatalf("the offset print keeps its own event time: %+v %v", v, err)
+	}
+	if s, reason, _ := e.fundingRow(pairTestHL, ev5); s == pairFundingStatusApplied || reason != pairFundingReasonPriceMissing {
+		t.Fatalf("a held event with no sample stays price_missing, got %q %q", s, reason)
+	}
+	if s, reason, _ := e.fundingRow(pairTestHL, ev6); s == pairFundingStatusApplied || reason != pairFundingReasonConflict {
+		t.Fatalf("two distinct observation hashes for one hour conflict even at equal prices, got %q %q", s, reason)
+	}
+	okxStatus, _, okxRaw := e.fundingRow(pairTestOKX, pairFundingEventID("okx", "BTC-USDT-SWAP", tOKX))
+	okxEvent, err := pairDecodeFundingEvent([]byte(okxRaw))
+	if okxStatus != pairFundingStatusApplied || err != nil || okxEvent.Research != nil || okxEvent.V != pairFundingEventVersion || string(okxEvent.USDAmount) != "-0.6006995" {
+		t.Fatalf("the okx member settles a version 2 event in a policy run: %q %+v %v", okxStatus, okxEvent, err)
+	}
+	hlCash, okxCash := e.cash(pairTestHL), e.cash(pairTestOKX)
+	e.restart()
+	e.step(t0.Add(8 * time.Hour))
+	if s, _, raw7 := e.fundingRow(pairTestHL, pairFundingEventID("hyperliquid", "BTC", h(7))); s != pairFundingStatusApplied || !strings.Contains(raw7, `"native_mark":"60070"`) {
+		t.Fatalf("a print exactly at the hour maps to that hour, got %q", s)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM pair_funding_events WHERE status = 'applied'`); n != 4 {
+		t.Fatalf("three research events and one okx event settle once across a restart, got %d", n)
+	}
+	if e.cash(pairTestHL) != hlCash || e.cash(pairTestOKX) != okxCash || len(e.fundingTrades(pairTestHL)) != 3 {
+		t.Fatal("a restart charged a research event again")
+	}
+	if e.savedCash(pairTestHL) != e.cash(pairTestHL) {
+		t.Fatal("the saved cash differs from the booked research charges")
+	}
+	t.Run("failed save", func(t *testing.T) {
+		e := newPairResearchFundingEnv(t, func(d *pairFundingDocumentV2, k map[string]pairEvidenceKey) {
+			d.Rates = []pairFundingRate{pfRate(k[pairTestHL], pairFundingRuleHLReceiptResearch, e1, "0.0001")}
+			d.Observations = []pairFundingOracleObservation{pfObservation(t, k[pairTestHL], policy, h(1), h(1), h(1)+800, "60010")}
+			pairResearchAutoCoverage(d, k)
+		})
+		e.openMatched(0.05)
+		savedBefore := e.savedCash(pairTestHL)
+		prev := storeCommitHook
+		failing := true
+		storeCommitHook = func(role storageRole) error {
+			if failing {
+				return os.ErrDeadlineExceeded
+			}
+			return nil
+		}
+		t.Cleanup(func() { storeCommitHook = prev })
+		e.step(time.UnixMilli(e1).Add(30 * time.Second))
+		if len(e.fundingTrades(pairTestHL)) != 1 || !e.rt().needsDurable || e.count(`SELECT COUNT(*) FROM pair_funding_events WHERE status = 'applied'`) != 0 {
+			t.Fatal("a failed save keeps the research charge in memory only and holds for the retry")
+		}
+		failing = false
+		e.restart()
+		e.step(time.UnixMilli(e1).Add(60 * time.Second))
+		e.step(time.UnixMilli(e1).Add(90 * time.Second))
+		if n := e.count(`SELECT COUNT(*) FROM pair_funding_events WHERE status = 'applied'`); n != 1 || len(e.fundingTrades(pairTestHL)) != 1 {
+			t.Fatalf("the research event commits once after the failed save, got %d rows and %d trades", n, len(e.fundingTrades(pairTestHL)))
+		}
+		if math.Abs(e.savedCash(pairTestHL)-(savedBefore+pairDecimalFloat(t, "-0.30011001"))) > 1e-9 {
+			t.Fatalf("the saved cash changed once: %v", e.savedCash(pairTestHL))
+		}
+	})
+}
+
+func TestBasketPairFundingResearchIntegrityBeforeCash(t *testing.T) {
+	t0 := pairTestStart()
+	policy := pairResearchTestPolicy()
+	anchor := t0.UnixMilli()
+	h1 := t0.Add(time.Hour).UnixMilli()
+	end := t0.Add(90 * time.Minute).UnixMilli()
+	var keys map[string]pairEvidenceKey
+	var src *pairRecordedFundingSource
+	digest, _ := pairFundingPolicyDigest(policy)
+	appendBatch := func(rates []pairFundingRate, obs []pairFundingOracleObservation, cov []pairFundingCoverageRecord) error {
+		t.Helper()
+		for i := range rates {
+			rates[i], _ = rates[i].sealed()
+		}
+		for i := range cov {
+			cov[i], _ = cov[i].sealed()
+		}
+		if rates == nil {
+			rates = []pairFundingRate{}
+		}
+		if obs == nil {
+			obs = []pairFundingOracleObservation{}
+		}
+		if cov == nil {
+			cov = []pairFundingCoverageRecord{}
+		}
+		chain := src.chain()
+		prev := ""
+		if len(chain) > 0 {
+			prev = chain[len(chain)-1].BatchHash
+		}
+		b, err := pairFundingBatchV2{V: pairFundingResearchBatchVersion, SourceID: src.SourceID(), Seq: int64(len(chain) + 1), PrevHash: prev, PolicyDigest: digest,
+			Rates: rates, Prices: []pairFundingPrice{}, Observations: obs, Coverage: cov}.sealed()
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := pairFundingBatchValueBytes(pairFundingBatchV2Value(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return src.Append(raw)
+	}
+	covFor := func(k pairEvidenceKey, id string, from, through, visible int64) pairFundingCoverageRecord {
+		return pairFundingCoverageRecord{V: pairFundingRecordVersion, Key: k, EvidenceID: id, RequestedFromMs: from, RequestedThroughMs: through,
+			Proven: []pairFundingInterval{{FromMs: from, ThroughMs: through}}, Gaps: []pairCoverageGap{}, VisibleMs: visible, Provenance: "research-funding:recorded"}
+	}
+	e := newPairTestEnvDeps(t, pairSetLimit("max_hold_age_ms", 86400000), func(doc []byte, venues *pairTestVenues) pairResearchDeps {
+		keys = pairFundingTestKeys(doc)
+		var err error
+		src, err = newPairRecordedFundingSourceWithPolicy("paper-research-1", anchor, policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pairResearchDeps{VenueFor: venues.factory(), Evidence: pairTestEvidence(t, doc, pairFundingConversions("1.0002", "0.9995")), Quotes: newPairFixtureQuotes(t, doc).collector, Funding: src}
+	})
+	hl, okx := keys[pairTestHL], keys[pairTestOKX]
+	obsA := pfObservation(t, hl, policy, h1, h1, h1+300, "60010")
+	if err := appendBatch(nil, []pairFundingOracleObservation{obsA}, nil); err != nil {
+		t.Fatalf("a price may arrive before its rate: %v", err)
+	}
+	if err := appendBatch(nil, []pairFundingOracleObservation{obsA}, nil); err == nil || !strings.Contains(err.Error(), "repeats an earlier evidence id") {
+		t.Fatalf("a repeated observation evidence id is refused, got %v", err)
+	}
+	mixed := pfObservation(t, hl, policy, h1, h1, h1+301, "60010")
+	if err := appendBatch(nil, []pairFundingOracleObservation{mixed}, []pairFundingCoverageRecord{covFor(okx, "okx-mixed", anchor-1, end, h1+400)}); err == nil || !strings.Contains(err.Error(), "exactly one observation") {
+		t.Fatalf("an oracle batch with other records is refused, got %v", err)
+	}
+	if err := appendBatch([]pairFundingRate{pfRate(hl, pairFundingRuleHLReceiptResearch, h1+3, "0.0001")}, nil,
+		[]pairFundingCoverageRecord{covFor(hl, "hl-1", anchor-1, end, h1+1003), covFor(okx, "okx-1", anchor-1, end, h1+1003)}); err != nil {
+		t.Fatalf("the rate batch appends after its price: %v", err)
+	}
+	e.openMatched(0.05)
+	event := pairFundingEventID("hyperliquid", "BTC", h1+3)
+	e.step(time.UnixMilli(h1).Add(20 * time.Second))
+	if status, _, _ := e.fundingRow(pairTestHL, event); status != pairFundingStatusApplied {
+		t.Fatalf("the price-before-rate event settles, got %q", status)
+	}
+	funding := func() (int, float64, string) {
+		sum := 0.0
+		for _, tr := range e.fundingTrades(pairTestHL) {
+			sum += tr.RealizedPnL
+		}
+		_, _, raw := e.fundingRow(pairTestHL, event)
+		return len(e.fundingTrades(pairTestHL)), sum, raw
+	}
+	trades, sum, row := funding()
+	obsB := pfObservation(t, hl, policy, h1, h1+1, h1+299, "60010")
+	if err := appendBatch(nil, []pairFundingOracleObservation{obsB}, nil); err != nil {
+		t.Fatalf("a second distinct observation is admitted as evidence: %v", err)
+	}
+	e.step(time.UnixMilli(h1).Add(40 * time.Second))
+	if !e.hasObligation(pairObligationFundingIntegrity, pairTestHL) || !e.rt().Pair.Progress.IncreasesFrozen {
+		t.Fatal("a conflicting observation after application opens the funding integrity hold without a new rate")
+	}
+	if n, got, raw := funding(); n != trades || got != sum || raw != row || e.count(`SELECT COUNT(*) FROM trades WHERE exchange_order_id LIKE 'pair_funding:%'`) != 1 {
+		t.Fatal("the integrity hold changes no prior funding charge, trade or event")
+	}
+	e.restart()
+	e.step(time.UnixMilli(h1).Add(60 * time.Second))
+	if n, got, raw := funding(); !e.hasObligation(pairObligationFundingIntegrity, pairTestHL) || n != trades || got != sum || raw != row {
+		t.Fatal("the reloaded version 3 event keeps its observation and the integrity hold after a restart")
+	}
+	if n := e.count(`SELECT COUNT(*) FROM pair_funding_events WHERE status = 'applied'`); n != 1 {
+		t.Fatalf("the event stays applied once, got %d", n)
+	}
+}
+
+func TestBasketPairFundingResearchCrossRuleGuardPrecedesCash(t *testing.T) {
+	t0 := pairTestStart()
+	policy := pairResearchTestPolicy()
+	h1 := t0.Add(time.Hour).UnixMilli()
+	fund := func(d *pairFundingDocumentV2, k map[string]pairEvidenceKey) {
+		d.Rates = []pairFundingRate{pfRate(k[pairTestHL], pairFundingRuleHLReceiptResearch, h1+3, "0.0001")}
+		d.Observations = []pairFundingOracleObservation{pfObservation(t, k[pairTestHL], policy, h1, h1, h1+500, "60010")}
+		pairResearchAutoCoverage(d, k)
+	}
+	for _, mode := range []string{"applied", "pending"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newPairResearchFundingEnv(t, fund)
+			e.openMatched(0.05)
+			f := e.rt().Pair.funding
+			key := pairFundingVenueEventKey{Key: f.members[pairTestHL].key, EventID: pairFundingEventID("hyperliquid", "BTC", h1+3)}
+			if mode == "applied" {
+				f.appliedVenueRules[key] = pairFundingRuleHyperliquid
+			} else {
+				f.pendingVenueRules[key] = pairFundingRuleHyperliquid
+			}
+			e.step(time.UnixMilli(h1).Add(30 * time.Second))
+			if len(e.fundingTrades(pairTestHL)) != 0 || len(f.pending) != 0 || e.count(`SELECT COUNT(*) FROM trades WHERE exchange_order_id LIKE 'pair_funding:%'`) != 0 {
+				t.Fatal("a venue event owned by another rule is never charged a second time")
+			}
+			if !e.hasObligation(pairObligationFundingIntegrity, pairTestHL) {
+				t.Fatal("the cross-rule collision opens the funding integrity hold")
+			}
+			if n := e.count(`SELECT COUNT(*) FROM pair_funding_events WHERE status = 'applied'`); n != 0 {
+				t.Fatalf("no applied row is written for the collision, got %d", n)
+			}
+		})
+	}
+}
