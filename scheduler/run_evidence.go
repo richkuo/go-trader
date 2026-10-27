@@ -67,8 +67,10 @@ func (r *runEvidence) clearHeld(id string) {
 	}
 }
 
-func recordHeldStrategies(due []StrategyConfig, scopeRisk map[RiskPartition]*scopeCycleRisk, store *StateStore, now time.Time) {
+func recordHeldStrategies(due, all []StrategyConfig, scopeRisk map[RiskPartition]*scopeCycleRisk, store *StateStore, now time.Time) {
+	seen := make(map[string]bool, len(due))
 	for _, sc := range due {
+		seen[sc.ID] = true
 		part := partitionFor(sc)
 		switch {
 		case scopeCycleRiskFired(scopeRisk, part):
@@ -78,6 +80,19 @@ func recordHeldStrategies(due []StrategyConfig, scopeRisk map[RiskPartition]*sco
 		default:
 			globalRunEvidence.clearHeld(sc.ID)
 		}
+	}
+	if scopeRisk == nil {
+		return
+	}
+	for _, sc := range all {
+		if seen[sc.ID] {
+			continue
+		}
+		part := partitionFor(sc)
+		if scopeCycleRiskFired(scopeRisk, part) || partitionSaveBlocked(store, part) {
+			continue
+		}
+		globalRunEvidence.clearHeld(sc.ID)
 	}
 }
 

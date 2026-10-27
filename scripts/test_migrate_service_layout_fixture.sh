@@ -787,16 +787,8 @@ scenario_latch() {
     done
     [[ "$(health_field "$port" run_evidence.held.hl-latch-src.reason "$token")" == "portfolio_kill_switch" ]] || fail "$unit does not report hl-latch-src as held"
     [[ -z "$(health_field "$port" run_evidence)" && -n "$(health_field "$port" pid)" ]] || fail "/health shows run_evidence without the status token"
-    local plan_ok=0
-    for i in $(seq 1 60); do
-        tool plan --unit "$unit" --instance "$inst" >"$WORK/plan.out" 2>&1 || { cat "$WORK/plan.out"; fail "plan refused"; }
-        if grep -q "note: the portfolio kill switch of the running daemon held hl-latch-src" "$WORK/plan.out"; then
-            plan_ok=1
-            break
-        fi
-        sleep 0.25
-    done
-    [[ "$plan_ok" == "1" ]] || { cat "$WORK/plan.out"; fail "plan did not report the kill switch hold"; }
+    tool plan --unit "$unit" --instance "$inst" >"$WORK/plan.out" 2>&1 || { cat "$WORK/plan.out"; fail "plan refused"; }
+    grep -q "note: the portfolio kill switch of the running daemon held hl-latch-src" "$WORK/plan.out" || { cat "$WORK/plan.out"; fail "plan did not report the kill switch hold"; }
     local plan_id sentinel="$WORK/release-latch"
     plan_id=$(sed -n 's/.*plan id: \([0-9a-f]*\).*/\1/p' "$WORK/plan.out" | tail -n 1)
     MIGRATE_SERVICE_LAYOUT_PAUSE_AT="validated:$sentinel" "$PY3" "$TOOL" apply --unit "$unit" --instance "$inst" --plan-id "$plan_id" >"$WORK/apply.out" 2>&1 &
