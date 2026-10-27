@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +38,12 @@ for case in req["cases"]:
             data = base64.b64decode(case["input"])
             doc = pf.decode_document(data, case.get("digest"))
             out.append({"ok": True, "hex": pf.document_bytes(doc).hex(), "hashes": [pf.source_hash(r) for r in doc["rates"]]})
+        elif kind == "decode_batch":
+            batch = pf.decode_batch(base64.b64decode(case["input"]))
+            out.append({"ok": True, "hex": pf.batch_bytes(batch).hex(), "hash": pf.batch_hash(batch)})
+        elif kind == "decode_binding":
+            binding = pf.decode_binding(base64.b64decode(case["input"]))
+            out.append({"ok": True, "hex": pf.canonical_bytes(binding).hex()})
         elif kind == "seal":
             sealed = pf.seal(case["record"], case["record_kind"])
             out.append({"ok": True, "hash": sealed["record_hash"]})
@@ -215,6 +223,251 @@ func TestBasketPairFundingPythonCodecMatchesGo(t *testing.T) {
 	}
 	if res[1].OK || tampered == eventJSON {
 		t.Fatalf("Python must refuse a tampered amount: %+v", res[1])
+	}
+}
+
+func TestBasketPairFundingPythonLegacyCanonicalGoldens(t *testing.T) {
+	blob, d := pairFundingPyDocument(t)
+	batch, err := (pairFundingBatch{V: pairFundingBatchVersion, SourceID: d.SourceID, Seq: 1, Rates: d.Rates, Prices: d.Prices, Coverage: d.Coverage}).sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchJSON, err := pairFundingBatchBytes(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rulesDigest, _, err := pairFundingRulesDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := pairTestStart()
+	tOKX := t0.Add(4 * time.Hour).UnixMilli()
+	e := newPairFundingEnv(t, func(d *pairFundingDocument, k map[string]pairEvidenceKey) {
+		d.Rates = []pairFundingRate{pfRate(k[pairTestOKX], pairFundingRuleOKX, tOKX, "-0.0002")}
+		d.Prices = []pairFundingPrice{pfPrice(k[pairTestOKX], pairFundingPriceMark, tOKX, "60100")}
+		pairFundingAutoCoverage(d, k)
+	}, pairFundingConversions("1.0002", "0.9995"))
+	e.openMatched(0.05)
+	e.step(t0.Add(4*time.Hour + 61*time.Second))
+	eventID := pairFundingEventID("okx", "BTC-USDT-SWAP", tOKX)
+	_, _, eventJSON := e.fundingRow(pairTestOKX, eventID)
+	e.restart()
+	_, _, reloaded := e.fundingRow(pairTestOKX, eventID)
+	if reloaded != eventJSON {
+		t.Fatal("legacy event bytes changed across the real coordinator save and reload")
+	}
+	files := map[string][]byte{
+		"rules-digest.txt": []byte(rulesDigest + "\n"),
+		"binding-v1.json":  append([]byte(nil), e.adm.fundingBinding...),
+		"document-v1.json": blob,
+		"batch-v1.json":    batchJSON,
+		"event-v2.json":    []byte(eventJSON),
+	}
+	capture := os.Getenv("GO_TRADER_CAPTURE_PAIR_FUNDING_GOLDENS")
+	if capture != "" {
+		if err := os.MkdirAll(capture, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		base, err := exec.Command("git", "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		hashes := map[string]string{"base_sha256": strings.TrimSpace(string(base)), "rules_digest": rulesDigest}
+		for name, raw := range files {
+			hashes[name] = sha256Hex(raw)
+		}
+		metadata, err := pairCanonicalJSON(hashes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files["hashes.json"] = metadata
+		for name, raw := range files {
+			if err := os.WriteFile(filepath.Join(capture, name), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+	dir := filepath.Join(basketPyRoot(t), "scheduler", "testdata", "pair_funding_legacy")
+	for _, name := range []string{"rules-digest.txt", "binding-v1.json", "document-v1.json", "batch-v1.json", "event-v2.json", "hashes.json"} {
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read immutable legacy golden %s: %v", name, err)
+		}
+		if name != "hashes.json" && !bytes.Equal(raw, files[name]) {
+			t.Fatalf("legacy golden %s differs from current canonical bytes", name)
+		}
+	}
+}
+
+func TestBasketPairFundingPythonResearchCodecMatchesGo(t *testing.T) {
+	_, legacy := pairFundingPyDocument(t)
+	t0 := pairTestStart().UnixMilli()
+	target := t0 + 3600000
+	policy := pairFundingPolicyV1{Version: 1, MemberRules: map[string]string{pairTestHL: pairFundingRuleHLReceiptResearch, pairTestOKX: pairFundingRuleOKX}, WindowMs: 5000, MaxPrintOffsetMs: 60000, PrepareLeadMs: 30000, FromMs: t0, DrainThroughMs: t0 + 7200000}
+	digest, err := pairFundingPolicyDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hlKey pairEvidenceKey
+	var hlRate pairFundingRate
+	rates := append([]pairFundingRate(nil), legacy.Rates...)
+	for i, r := range rates {
+		if r.Key.Provider == entryProviderHyperliquid {
+			hlKey = r.Key
+			hlRate = r
+			rates[i].RuleVersion = pairFundingRuleHLReceiptResearch
+			rates[i], err = rates[i].sealed()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	attempt, err := pairFundingOracleAttemptID(hlKey, target, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs, err := (pairFundingOracleObservation{V: 2, Key: hlKey, EvidenceID: pairFundingOracleEvidenceID(hlKey, target, target+1), AttemptID: attempt, PolicyDigest: digest, PriceKind: pairFundingPriceOracleReceipt, TargetEventMs: target, RequestMs: target, ReceiptMs: target + 1, AtMs: target + 1, VisibleMs: target + 1, TimeBasis: pairFundingObservationTimeBasis, Price: "59999.25", Provenance: pairFundingOracleProvenance}).sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prices := []pairFundingPrice{}
+	for _, p := range legacy.Prices {
+		if p.Key.Provider == entryProviderOKX {
+			prices = append(prices, p)
+		}
+	}
+	doc := pairFundingDocumentV2{V: 2, SourceID: "research-codec", Policy: policy, PolicyDigest: digest, Rates: rates, Prices: prices, Observations: []pairFundingOracleObservation{obs}, Coverage: legacy.Coverage}
+	docJSON, err := pairFundingDocumentV2Bytes(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newPairFrozenFundingSource(docJSON, sha256Hex(docJSON)); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := (pairFundingBatchV2{V: 2, SourceID: doc.SourceID, Seq: 1, PolicyDigest: digest, Rates: []pairFundingRate{}, Prices: []pairFundingPrice{}, Observations: []pairFundingOracleObservation{obs}, Coverage: []pairFundingCoverageRecord{}}).sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchJSON, err := pairFundingBatchValueBytes(pairFundingBatchV2Value(batch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newPairFundingEnv(t, func(d *pairFundingDocument, k map[string]pairEvidenceKey) {
+		d.Rates = []pairFundingRate{hlRate}
+		d.Prices = []pairFundingPrice{pfPrice(hlKey, pairFundingPriceOracle, hlRate.EventMs, "59999.25")}
+		pairFundingAutoCoverage(d, k)
+	}, pairFundingConversions("1.0002", "0.9995"))
+	e.openMatched(0.05)
+	e.step(time.UnixMilli(hlRate.EventMs + 1000))
+	eventID := pairFundingEventID(entryProviderHyperliquid, hlKey.Instrument, hlRate.EventMs)
+	_, _, eventJSON := e.fundingRow(pairTestHL, eventID)
+	legacyEvent, err := pairDecodeFundingEvent([]byte(eventJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	researchEvent := pairFundingEventV3{pairFundingEvent: legacyEvent.pairFundingEvent, PolicyDigest: digest, ObservationEvidenceID: obs.EvidenceID, ObservationRecordHash: obs.RecordHash, ObservationTargetEventMs: obs.TargetEventMs, ObservationRequestMs: obs.RequestMs, ObservationReceiptMs: obs.ReceiptMs, ObservationTimeBasis: obs.TimeBasis}
+	researchEvent.V = 3
+	researchEvent.RuleVersion = pairFundingRuleHLReceiptResearch
+	researchEvent.PriceHash = obs.RecordHash
+	researchEvent, err = researchEvent.sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	researchEventJSON, err := pairFundingEventValueBytes(pairFundingEventV3Value(researchEvent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded, err := pairDecodeFundingEvent(researchEventJSON); err != nil || decoded.Research == nil || decoded.EvidenceHash != researchEvent.EvidenceHash {
+		t.Fatalf("Go decodes its own sealed version 3 event strictly: %v", err)
+	}
+	_, legacyBinding, err := pairFundingBindingCanonical(e.adm.fundingBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rulesDigest, rules, err := pairFundingRulesDigestSelected(policy.MemberRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingWire := pairFundingBindingV2{pairFundingBinding: legacyBinding.pairFundingBinding, Policy: policy, PolicyDigest: digest}
+	bindingWire.V = 2
+	bindingWire.RulesDigest = rulesDigest
+	bindingWire.Rules = rules
+	bindingJSON, err := pairCanonicalJSON(bindingWire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obsMap map[string]interface{}
+	obsRaw, _ := json.Marshal(obs)
+	if err := json.Unmarshal(obsRaw, &obsMap); err != nil {
+		t.Fatal(err)
+	}
+	cases := []map[string]interface{}{
+		{"kind": "decode_document", "input": base64.StdEncoding.EncodeToString(docJSON)},
+		{"kind": "decode_batch", "input": base64.StdEncoding.EncodeToString(batchJSON)},
+		{"kind": "decode_binding", "input": base64.StdEncoding.EncodeToString(bindingJSON)},
+		{"kind": "decode_event", "input": base64.StdEncoding.EncodeToString(researchEventJSON)},
+		{"kind": "seal", "record": obsMap, "record_kind": "observation"},
+	}
+	res := pairFundingRunPy(t, cases)
+	for i, want := range [][]byte{docJSON, batchJSON, bindingJSON} {
+		if !res[i].OK || res[i].Hex != fmt.Sprintf("%x", want) {
+			t.Fatalf("research codec case %d differs: %+v", i, res[i])
+		}
+	}
+	if !res[3].OK || res[3].Hash != researchEvent.EvidenceHash || !res[4].OK || res[4].Hash != obs.RecordHash || batch.BatchHash != res[1].Hash {
+		t.Fatalf("research hashes differ: %+v", res)
+	}
+	badVersion := pairFundingDocumentV2Value(doc)
+	badVersion.Research.V = 99
+	badVersionJSON, _ := pairCanonicalJSON(*badVersion.Research)
+	var misplaced map[string]interface{}
+	if err := json.Unmarshal(docJSON, &misplaced); err != nil {
+		t.Fatal(err)
+	}
+	misplaced["prices"] = []interface{}{misplaced["observations"].([]interface{})[0]}
+	misplacedJSON, _ := pairCanonicalJSON(misplaced)
+	refusals := []struct {
+		name string
+		kind string
+		raw  []byte
+	}{
+		{"unknown field", "document", bytes.Replace(docJSON, []byte(`"source_id"`), []byte(`"extra":1,"source_id"`), 1)},
+		{"missing field", "document", bytes.Replace(docJSON, []byte(`"policy_digest":`+strconv.Quote(digest)+`,`), nil, 1)},
+		{"duplicate field", "document", bytes.Replace(docJSON, []byte(`{"coverage"`), []byte(`{"v":2,"coverage"`), 1)},
+		{"noncanonical decimal", "document", bytes.Replace(docJSON, []byte(`"59999.25"`), []byte(`"59999.250"`), 1)},
+		{"unsupported version", "document", badVersionJSON},
+		{"observation in prices", "document", misplacedJSON},
+		{"unknown batch field", "batch", bytes.Replace(batchJSON, []byte(`"source_id"`), []byte(`"extra":1,"source_id"`), 1)},
+		{"unknown binding field", "binding", bytes.Replace(bindingJSON, []byte(`"source_id"`), []byte(`"extra":1,"source_id"`), 1)},
+		{"tampered event", "event", bytes.Replace(researchEventJSON, []byte(`"observation_request_ms":`+strconv.FormatInt(target, 10)), []byte(`"observation_request_ms":`+strconv.FormatInt(target-1, 10)), 1)},
+	}
+	for _, refusal := range refusals {
+		t.Run(refusal.name, func(t *testing.T) {
+			got := pairFundingRunPy(t, []map[string]interface{}{{"kind": "decode_" + refusal.kind, "input": base64.StdEncoding.EncodeToString(refusal.raw)}})
+			if len(got) != 1 || got[0].OK {
+				t.Fatalf("Python accepted %s: %+v", refusal.name, got)
+			}
+			var err error
+			switch refusal.kind {
+			case "document":
+				_, err = pairDecodeFundingDocument(refusal.raw)
+			case "batch":
+				_, err = pairDecodeFundingBatch(refusal.raw)
+			case "binding":
+				_, _, err = pairFundingBindingCanonical(refusal.raw)
+			case "event":
+				_, err = pairDecodeFundingEvent(refusal.raw)
+			}
+			if err == nil {
+				t.Fatalf("Go accepted %s", refusal.name)
+			}
+		})
+	}
+	for _, value := range []interface{}{pairFundingDocumentValue{}, pairFundingBatchValue{}, pairFundingEventValue{}, pairFundingBindingValue{}} {
+		if _, err := json.Marshal(value); err == nil {
+			t.Fatalf("envelope %T marshaled directly", value)
+		}
 	}
 }
 
@@ -422,4 +675,186 @@ func TestBasketPairFundingPythonOKXRangeReader(t *testing.T) {
 	if len(d.Rates) != 7 || len(d.Coverage) != 1 || d.Coverage[0].Proven[0] != (pairFundingInterval{FromMs: 3 * p, ThroughMs: 10 * p}) || d.Rates[0].Rate != "0.0001" || d.Rates[0].RuleVersion != pairFundingRuleOKX {
 		t.Fatalf("the produced document is wrong: %+v (reader %v)", d, res[0].Result)
 	}
+}
+
+type pairOracleReaderRun struct {
+	res      pairRecResult
+	clock    string
+	callLog  string
+	target   int64
+	deadline int64
+	key      pairEvidenceKey
+	policy   pairFundingPolicyV1
+}
+
+func pairOracleReaderRunWith(t *testing.T, fx map[string]interface{}, startMs int64, ctxTimeout time.Duration) pairOracleReaderRun {
+	t.Helper()
+	root := basketPyRoot(t)
+	t.Chdir(root)
+	dir := t.TempDir()
+	target := (startMs/3600000 + 1) * 3600000
+	policy := pairFundingPolicyV1{Version: pairFundingPolicyVersion, MemberRules: map[string]string{pairTestHL: pairFundingRuleHLReceiptResearch, pairTestOKX: pairFundingRuleOKX},
+		WindowMs: 5000, MaxPrintOffsetMs: 60000, PrepareLeadMs: 30000, FromMs: target - 120000, DrainThroughMs: target + 180000}
+	digest, err := pairFundingPolicyDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline, err := pairFundingOracleDeadline(policy, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := pairEvidenceKey{Partition: "paper", Provider: entryProviderHyperliquid, AccountKey: "synthetic:hl-research", Instrument: "BTC", MemberID: pairTestHL}
+	args, err := pairPaperOracleArgs(key, policy, target, deadline, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := pairOracleReaderRun{target: target, deadline: deadline, key: key, policy: policy, callLog: filepath.Join(dir, "calls.jsonl")}
+	fixture := filepath.Join(dir, "fixture.json")
+	blob, _ := json.Marshal(fx)
+	if err := os.WriteFile(fixture, blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PYTHONPATH", filepath.Join(root, "scheduler", "testdata", "pair_paper"))
+	t.Setenv("PAIR_PAPER_FIXTURE", fixture)
+	t.Setenv("PAIR_PAPER_CALL_LOG", run.callLog)
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "0x"+strings.Repeat("1", 64))
+	t.Setenv("OKX_API_KEY", "fixture-key")
+	prev := pairPaperWall
+	t.Cleanup(func() { pairPaperWall = prev })
+	if ctxTimeout == 0 {
+		run.clock = filepath.Join(dir, "clock")
+		if err := os.WriteFile(run.clock, []byte(strconv.FormatInt(startMs, 10)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(pairPaperTestClockEnv, run.clock)
+		pairPaperWall = &pairPaperTestWall{path: run.clock, ms: startMs}
+		ctxTimeout = time.Minute
+	} else {
+		t.Setenv(pairPaperTestClockEnv, "")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
+	defer cancel()
+	run.res = pairRunHistoryReader(ctx, nil, args)
+	return run
+}
+
+func (r pairOracleReaderRun) metaCalls(t *testing.T) (int, []string) {
+	t.Helper()
+	b, _ := os.ReadFile(r.callLog)
+	n := 0
+	var other []string
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if line == "" {
+			continue
+		}
+		var row []interface{}
+		if err := json.Unmarshal([]byte(line), &row); err != nil || len(row) < 2 {
+			t.Fatalf("bad call log line %q", line)
+		}
+		switch {
+		case row[0] == "hl" && row[1] == "metaAndAssetCtxs":
+			n++
+		case row[0] == "hl" && (row[1] == "meta" || row[1] == "spotMeta"):
+		default:
+			other = append(other, line)
+		}
+	}
+	sort.Strings(other)
+	return n, other
+}
+
+func TestBasketPairFundingPythonPublicOracleReader(t *testing.T) {
+	start := pairTestStart().Add(time.Hour - 30*time.Second).UnixMilli()
+	t.Run("valid sample at the hour", func(t *testing.T) {
+		r := pairOracleReaderRunWith(t, map[string]interface{}{"oracle_px": "60123.50", "oracle_response_delay_ms": 250}, start, 0)
+		if r.res.Class != pairRecClassResult {
+			t.Fatalf("the public reader returns its sample: %+v", r.res)
+		}
+		o, err := pairPaperCheckOracle(r.res.Stdout, r.key, r.policy, r.target, r.deadline, r.res.ReceiptMs)
+		if err != nil {
+			t.Fatalf("the sample passes every echo, identity and time check: %v", err)
+		}
+		if o.RequestMs != r.target || o.ReceiptMs != r.target+250 || o.Price != "60123.5" || o.AtMs != o.ReceiptMs || o.VisibleMs != o.ReceiptMs {
+			t.Fatalf("the reader waits for the hour, then takes request and receipt around the one read: %+v", o)
+		}
+		if n, other := r.metaCalls(t); n != 1 || len(other) != 0 {
+			t.Fatalf("one public metaAndAssetCtxs read and no other venue call, got %d and %v", n, other)
+		}
+	})
+	t.Run("receipt exactly at the deadline", func(t *testing.T) {
+		r := pairOracleReaderRunWith(t, map[string]interface{}{"oracle_response_delay_ms": 5000}, start, 0)
+		o, err := pairPaperCheckOracle(r.res.Stdout, r.key, r.policy, r.target, r.deadline, r.res.ReceiptMs)
+		if r.res.Class != pairRecClassResult || err != nil || o.ReceiptMs != r.deadline {
+			t.Fatalf("a receipt at the closed window end is in the window: %+v %v", r.res, err)
+		}
+	})
+	refused := map[string]map[string]interface{}{
+		"receipt after the deadline": {"oracle_response_delay_ms": 5001},
+		"missing symbol":             {"oracle_context_mode": "missing_symbol"},
+		"duplicate symbol":           {"oracle_context_mode": "duplicate_symbol"},
+		"short context":              {"oracle_context_mode": "short_context"},
+		"missing oracle":             {"oracle_context_mode": "missing_oracle"},
+		"zero oracle":                {"oracle_context_mode": "nonpositive_oracle"},
+		"negative oracle":            {"oracle_context_mode": "negative_oracle"},
+		"malformed oracle":           {"oracle_context_mode": "malformed_oracle"},
+		"float oracle":               {"oracle_context_mode": "float_oracle"},
+		"bool oracle":                {"oracle_context_mode": "bool_oracle"},
+		"nan oracle":                 {"oracle_context_mode": "nan_oracle"},
+		"infinite oracle":            {"oracle_context_mode": "infinite_oracle"},
+		"padded oracle":              {"oracle_context_mode": "padded_oracle"},
+		"testnet host":               {"oracle_context_mode": "wrong_host"},
+		"rewritten window":           {"oracle_context_mode": "oracle_envelope_override"},
+		"oversize output":            {"oracle_context_mode": "oversize_output"},
+	}
+	names := make([]string, 0, len(refused))
+	for name := range refused {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fx := refused[name]
+		t.Run(name, func(t *testing.T) {
+			r := pairOracleReaderRunWith(t, fx, start, 0)
+			if r.res.Class == pairRecClassResult {
+				if _, err := pairPaperCheckOracle(r.res.Stdout, r.key, r.policy, r.target, r.deadline, r.res.ReceiptMs); err == nil {
+					t.Fatalf("%s must be refused by the reader or by the Go checks", name)
+				}
+			}
+			if name == "rewritten window" {
+				var env pairPaperOracleResponse
+				if err := pairReplayStrictDecode(bytes.TrimSpace(r.res.Stdout), &env); err != nil {
+					t.Fatalf("the rewritten envelope still decodes: %v", err)
+				}
+				if _, err := pairPaperCheckOracle(r.res.Stdout, r.key, r.policy, r.target, r.deadline, env.ReceiptMs); err == nil || !strings.Contains(err.Error(), "outside") {
+					t.Fatalf("Go refuses request and receipt times outside the sample window on its own checks, got %v", err)
+				}
+			}
+			if name == "oversize output" && !r.res.Overflow {
+				t.Fatalf("an output over the reader limit is bounded and refused: %+v", r.res.Class)
+			}
+		})
+	}
+	t.Run("credentials and testnet are refused when set", func(t *testing.T) {
+		root := basketPyRoot(t)
+		args := append([]string{}, pairHistoryHLOracleProbeArgv[:len(pairHistoryHLOracleProbeArgv)-1]...)
+		for _, env := range []string{"HYPERLIQUID_SECRET_KEY=0xabc", "HYPERLIQUID_TESTNET=1", "OKX_API_KEY=k"} {
+			cmd := exec.Command(filepath.Join(root, ".venv", "bin", "python3"), append([]string{filepath.Join(root, pairHistoryReaderScript)}, args...)...)
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "PYTHONPATH="+filepath.Join(root, "scheduler", "testdata", "pair_paper"), "PAIR_PAPER_BLOCK_NETWORK=1", env)
+			out, err := cmd.Output()
+			if err == nil || !strings.Contains(string(out), "requires these variables to be empty") {
+				t.Fatalf("%s must refuse the public reader before any read, got %v %s", env, err, out)
+			}
+		}
+	})
+	t.Run("cancellation stops the wait", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		r := pairOracleReaderRunWith(t, map[string]interface{}{}, now, 1500*time.Millisecond)
+		if r.res.Class != pairRecClassCancelled {
+			t.Fatalf("a cancelled oracle wait is recorded as cancelled, got %+v", r.res)
+		}
+		if n, _ := r.metaCalls(t); n != 0 {
+			t.Fatalf("the cancelled reader never read the venue, got %d reads", n)
+		}
+	})
 }

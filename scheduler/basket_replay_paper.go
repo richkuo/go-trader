@@ -59,6 +59,15 @@ type pairPaperManifest struct {
 
 const pairPaperEventOrder = "one host cycle per recorded wake; a wake's logical time is the larger of the previous logical time plus 1 ms and the wall clock; the cycle first commits its due match polls (member id order), capability refreshes and funding reads at its anchored grids, then runs coordinator funding, preparePairRisk, partition risk with the paper kill switch, native member management on a management cycle (Hyperliquid then OKX by member id, each with a recorded candle read, a recorded own mark and a recorded member check), the coordinator step, one full save that commits the step record and the cursor, then the next wake from fresh time; every outside read and process outcome commits before use and advances logical time to the larger of the previous logical time plus 1 ms and its raw completion"
 
+const pairPaperEventOrderResearch = "one host cycle per recorded wake; a wake's logical time is the larger of the previous logical time plus 1 ms and the wall clock; for the frozen research policy the cycle first prepares and commits due oracle observations, then commits its due match polls (member id order), capability refreshes and funding reads at their anchored grids, then runs coordinator funding, preparePairRisk, partition risk with the paper kill switch, native member management on a management cycle (Hyperliquid then OKX by member id, each with a recorded candle read, a recorded own mark and a recorded member check), the coordinator step, one full save that commits the step record and the cursor, then the next wake from fresh time; every outside read and process outcome commits before use and advances logical time to the larger of the previous logical time plus 1 ms and its raw completion"
+
+func pairPaperManifestFamily(policy *pairFundingPolicyV1) (int, string) {
+	if policy != nil {
+		return pairPaperManifestResearchVer, pairPaperEventOrderResearch
+	}
+	return pairPaperManifestVer, pairPaperEventOrder
+}
+
 type pairPaperRun struct {
 	playback   bool
 	spec       *pairPaperSpec
@@ -259,13 +268,16 @@ func (r *pairReplayRuntime) paperProbes() [][]string {
 				append([]string{pairQuoteReaderScript}, pairQuoteHLPublicProbeArgv...),
 				append([]string{pairEvidenceReaderScript}, pairEvidenceHyperliquidProbeArgv...),
 				append([]string{pairHistoryReaderScript}, pairHistoryHLCandlesProbeArgv...),
-				append([]string{pairHistoryReaderScript}, pairHistoryHLFundingProbeArgv...))
+				append([]string{pairHistoryReaderScript}, pairHistoryHLFundingProbeArgv...),
+				append([]string{pairHistoryReaderScript}, pairHistoryHLOracleProbeArgv...),
+				append([]string{pairHistoryReaderScript}, pairHistoryHLResearchFundingProbeArgv...))
 		case "okx":
 			probes = append(probes, append([]string{sc.Script}, okxPairManagementProbeArgv...),
 				append([]string{pairQuoteReaderScript}, pairQuoteOKXPublicProbeArgv...),
 				append([]string{pairEvidenceReaderScript}, pairEvidenceOKXProbeArgv...),
 				append([]string{pairHistoryReaderScript}, pairHistoryOKXCandlesProbeArgv...),
-				append([]string{pairHistoryReaderScript}, pairHistoryOKXFundingProbeArgv...))
+				append([]string{pairHistoryReaderScript}, pairHistoryOKXFundingProbeArgv...),
+				append([]string{pairHistoryReaderScript}, pairHistoryOKXResearchFundingProbeArgv...))
 		}
 	}
 	return append(probes, append([]string{pairPolicyScript}, pairPolicyProbeArgv...))
@@ -352,8 +364,9 @@ func readPairPaperManifest(dir string) (pairPaperManifest, error) {
 	if err := pairReplayStrictDecode(blob, &m); err != nil {
 		return m, refuseReplay("state_foreign", fmt.Sprintf("the manifest is not a paper recording manifest: %v", err))
 	}
-	if m.Owner != pairPaperManifestOwner || m.Version != pairPaperManifestVer {
-		return m, refuseReplay("state_foreign", fmt.Sprintf("the manifest owner %q version %d is not this recorder's", m.Owner, m.Version))
+	version, eventOrder := pairPaperManifestFamily(m.Scenario.FundingPolicy)
+	if m.Owner != pairPaperManifestOwner || m.Version != version || m.EventOrder != eventOrder {
+		return m, refuseReplay("state_foreign", fmt.Sprintf("the manifest owner %q version %d and event order do not match its funding policy", m.Owner, m.Version))
 	}
 	return m, nil
 }
@@ -366,6 +379,7 @@ func comparePairPaperManifest(saved, want pairPaperManifest, withContract bool) 
 		}
 	}
 	check("run id", saved.RunID, want.RunID)
+	check("version", strconv.Itoa(saved.Version), strconv.Itoa(want.Version))
 	check("protocol", saved.Fingerprints.Protocol, want.Fingerprints.Protocol)
 	check("source (adapter version, source commit and provenance)", saved.Fingerprints.Source, want.Fingerprints.Source)
 	check("paper identity", saved.PaperIdentity, want.PaperIdentity)
@@ -449,7 +463,12 @@ func (r *pairReplayRuntime) buildRecordedSources(o pairRecordedSetup) (map[strin
 	if err != nil {
 		return nil, refuseReplay("input_refused", err.Error())
 	}
-	funding, err := newPairRecordedFundingSource(pairPaperSourcePrefix+o.runID, o.collection.FromMs)
+	var funding *pairRecordedFundingSource
+	if o.scenario.FundingPolicy != nil {
+		funding, err = newPairRecordedFundingSourceWithPolicy(pairPaperSourcePrefix+o.runID, o.collection.FromMs, *o.scenario.FundingPolicy)
+	} else {
+		funding, err = newPairRecordedFundingSource(pairPaperSourcePrefix+o.runID, o.collection.FromMs)
+	}
 	if err != nil {
 		return nil, refuseReplay("input_refused", "funding: "+err.Error())
 	}
@@ -578,11 +597,12 @@ func openPairPaper(spec *pairPaperSpec, raw []byte, lt pairReplayLifetime, opts 
 	}
 	r.venues = venues
 	part0, _ := pairPaperMemberPartition(shape, shape.Pairs[0].Members[0].StrategyID)
-	r.paper.manifest = pairPaperManifest{Owner: pairPaperManifestOwner, Version: pairPaperManifestVer, RunID: spec.Run.RunID, Fingerprints: r.fp, PaperIdentity: identity,
+	manifestVersion, eventOrder := pairPaperManifestFamily(spec.Scenario.FundingPolicy)
+	r.paper.manifest = pairPaperManifest{Owner: pairPaperManifestOwner, Version: manifestVersion, RunID: spec.Run.RunID, Fingerprints: r.fp, PaperIdentity: identity,
 		Partition: part0.String(), EvidenceIdentity: r.paper.evidence.Identity(), EvidenceDigest: r.paper.evidence.Digest(), Objects: []pairReplayObjectRef{seedRef}, Lifetime: lt,
-		Collection: spec.Collection, Scenario: spec.Scenario, EventOrder: pairPaperEventOrder, AdministrativeFields: pairReplayAdministrativeFields, UID: os.Getuid()}
+		Collection: spec.Collection, Scenario: spec.Scenario, EventOrder: eventOrder, AdministrativeFields: pairReplayAdministrativeFields, UID: os.Getuid()}
 	r.manifest = pairReplayManifest{Owner: basketReplayOwnerMarker, Version: pairReplayManifestVersion, RunID: spec.Run.RunID, Fingerprints: r.fp, EvidenceDigest: r.paper.evidence.Digest(),
-		Objects: []pairReplayObjectRef{seedRef}, Lifetime: lt, Scenario: spec.Scenario.replay(), EventOrder: pairPaperEventOrder, AdministrativeFields: pairReplayAdministrativeFields, UID: os.Getuid()}
+		Objects: []pairReplayObjectRef{seedRef}, Lifetime: lt, Scenario: spec.Scenario.replay(), EventOrder: eventOrder, AdministrativeFields: pairReplayAdministrativeFields, UID: os.Getuid()}
 	var saved pairPaperManifest
 	if resume {
 		saved, err = readPairPaperManifest(stateDir)
@@ -748,6 +768,9 @@ func (r *pairReplayRuntime) preAdmissionRestore(stateDir string, saved pairPaper
 		pairPaperSealedFromLog(stateDir, l)
 		return refuseReplay("resume_refused", fmt.Sprintf("the run is sealed at input %d; a sealed recording is immutable and is reproduced with basket-replay --spec version 2", l.sealed.FinalSeq))
 	}
+	if _, err := pairPaperOracleAttemptIndex(l); err != nil {
+		return refuseReplay("resume_refused", "the committed oracle attempts are refused: "+err.Error())
+	}
 	return r.restoreFundingFrom(l)
 }
 
@@ -796,17 +819,14 @@ func (r *pairReplayRuntime) restoreFundingFrom(l *pairRecLog) error {
 			continue
 		}
 		si := l.starts[row.CallID]
-		if l.rows[si].Event.Start.Kind != pairRecKindFunding {
+		start := l.rows[si].Event.Start
+		if start.Kind != pairRecKindFunding && start.Kind != pairRecKindFundingOracle {
 			continue
 		}
-		b, err := pairDecodeFundingBatch(row.Event.End.Result)
-		if err != nil {
+		if _, err := pairDecodeFundingBatch(row.Event.End.Result); err != nil {
 			return refuseReplay("resume_refused", fmt.Sprintf("the recorded funding batch of call %s is unreadable: %v", row.CallID, err))
 		}
-		if b.Seq <= int64(len(src.chain())) {
-			continue
-		}
-		_ = src.Append(row.Event.End.Result)
+		_ = pairPaperAdmitFundingResult(src, row.Event.End.Result, *start, row.Event.End)
 	}
 	return nil
 }
@@ -852,14 +872,11 @@ func (r *pairReplayRuntime) deliverRecorded(s *pairRecStart, callID string, end 
 			return err
 		}
 		r.paper.quotes.addPoll(s.MemberID, o, end.LogicalMs, callID)
-	case pairRecKindFunding:
-		b, err := pairDecodeFundingBatch(end.Result)
-		if err != nil {
+	case pairRecKindFunding, pairRecKindFundingOracle:
+		if _, err := pairDecodeFundingBatch(end.Result); err != nil {
 			return err
 		}
-		if b.Seq > int64(len(r.paper.funding.chain())) {
-			_ = r.paper.funding.Append(end.Result)
-		}
+		_ = pairPaperAdmitFundingResult(r.paper.funding, end.Result, *s, end)
 	}
 	return nil
 }
@@ -996,13 +1013,50 @@ func (r *pairReplayRuntime) bootstrapSeed() error {
 	return nil
 }
 
+func pairPaperOraclePrepareAt(targetMs int64, policy pairFundingPolicyV1) (int64, error) {
+	prepare, ok := pairAddMs(targetMs, -policy.PrepareLeadMs)
+	if !ok {
+		return 0, fmt.Errorf("the oracle preparation time overflows")
+	}
+	if prepare < policy.FromMs {
+		prepare = policy.FromMs
+	}
+	return prepare, nil
+}
+
+func (r *pairReplayRuntime) advanceOracleGrid() {
+	if r.paper.scenario.FundingPolicy == nil || r.oracleNextMs <= 0 {
+		return
+	}
+	next, ok := pairAddMs(r.oracleNextMs, 3600000)
+	if !ok || next > r.paper.scenario.FundingPolicy.DrainThroughMs {
+		r.oracleNextMs = 0
+		return
+	}
+	r.oracleNextMs = next
+}
+
 func (r *pairReplayRuntime) initPaperGrids() {
 	c, sc := r.paper.collection, r.paper.scenario
 	r.pollNextMs = c.FromMs
 	r.fundingNextMs = c.FromMs + sc.PaperFundingPollMs
 	r.capabilityNextMs = 0
+	r.oracleNextMs = 0
 	if sc.PaperCapabilityRefreshMs > 0 {
 		r.capabilityNextMs = c.FromMs + sc.PaperCapabilityRefreshMs
+	}
+	if sc.FundingPolicy != nil {
+		target := c.FromMs
+		if rem := target % 3600000; rem != 0 {
+			var ok bool
+			target, ok = pairAddMs(target, 3600000-rem)
+			if !ok {
+				target = 0
+			}
+		}
+		if target >= c.FromMs && target <= c.DrainThroughMs {
+			r.oracleNextMs = target
+		}
 	}
 }
 
@@ -1137,11 +1191,86 @@ func (r *pairReplayRuntime) verifyRecordingForClear() (int64, error) {
 	return l.head().Seq, nil
 }
 
-func (r *pairReplayRuntime) deliver(at time.Time) []string {
+func (r *pairReplayRuntime) deliverOracle(wake pairRecWake) []string {
+	policy := r.paper.scenario.FundingPolicy
+	if policy == nil {
+		return nil
+	}
+	var key pairEvidenceKey
+	found := false
+	for _, m := range r.rt.Contract.pairMembersSorted() {
+		if m.Provider == entryProviderHyperliquid {
+			key = r.rt.Contract.pairMemberKey(m).evidenceKey()
+			found = true
+		}
+	}
+	if !found {
+		return []string{"oracle_missing_member"}
+	}
+	digest, err := pairFundingPolicyDigest(*policy)
+	if err != nil {
+		return []string{"oracle_policy_error"}
+	}
+	var trace []string
+	for r.oracleNextMs > 0 {
+		target := r.oracleNextMs
+		prepare, err := pairPaperOraclePrepareAt(target, *policy)
+		if err != nil {
+			return trace
+		}
+		if wake.WallMs < prepare {
+			break
+		}
+		deadline, err := pairFundingOracleDeadline(*policy, target)
+		if err != nil {
+			return trace
+		}
+		attemptID, err := pairFundingOracleAttemptID(key, target, digest)
+		if err != nil {
+			return trace
+		}
+		if wake.ClockBackward || wake.WallMs > deadline {
+			r.advanceOracleGrid()
+			trace = append(trace, "oracle_missed")
+			continue
+		}
+		if r.rec.oracleAttemptConsumed(attemptID) || r.rec.oracleAttemptRecorded(attemptID) && !r.rec.consumingNow() {
+			r.advanceOracleGrid()
+			trace = append(trace, "oracle_consumed")
+			continue
+		}
+		chain := r.rec.fundingConsumed(r.paper.funding.chain())
+		seq, prev := int64(len(chain)+1), ""
+		if len(chain) > 0 {
+			prev = chain[len(chain)-1].BatchHash
+		}
+		raw, saved, err := recordingFundingSource{rec: r.rec, src: r.paper.funding, egress: r.paperEgress()}.readOracle(context.Background(), key, seq, prev, target)
+		if pairRecCallNotMade(err) {
+			fmt.Fprintf(os.Stderr, "[paper] funding oracle read for hour %d was not made, so the hour stays for the next wake: %v\n", target, err)
+			trace = append(trace, "oracle_not_made")
+			break
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[paper] funding oracle read for hour %d: %v\n", target, err)
+		} else if saved == nil || saved.End == nil {
+			fmt.Fprintf(os.Stderr, "[paper] funding oracle read for hour %d has no committed terminal\n", target)
+		} else if err := pairPaperAdmitFundingResult(r.paper.funding, raw, saved.Start, saved.End); err != nil {
+			fmt.Fprintf(os.Stderr, "[paper] the recorded funding oracle batch for hour %d is refused and stays only in the recording: %v\n", target, err)
+		}
+		r.advanceOracleGrid()
+		trace = append(trace, "funding_oracle")
+	}
+	return trace
+}
+
+func (r *pairReplayRuntime) deliver(at time.Time, wake *pairRecWake) []string {
 	atMs := at.UnixMilli()
 	var trace []string
 	c, sc := r.paper.collection, r.paper.scenario
 	ctx := context.Background()
+	if wake != nil {
+		trace = append(trace, r.deliverOracle(*wake)...)
+	}
 	if r.pollNextMs > 0 && atMs >= r.pollNextMs && r.pollNextMs <= c.DrainThroughMs {
 		for _, m := range r.members {
 			if err := r.paper.quotes.poll(ctx, m.ID); err != nil {
@@ -1208,7 +1337,7 @@ func (r *pairReplayRuntime) deliver(at time.Time) []string {
 	return trace
 }
 
-func pairPaperFundingFrom(chain []pairFundingBatch, key pairEvidenceKey, anchorMs int64) int64 {
+func pairPaperFundingFrom(chain []pairFundingBatchValue, key pairEvidenceKey, anchorMs int64) int64 {
 	from := anchorMs - 1
 	for _, b := range chain {
 		for _, c := range b.Coverage {
@@ -1244,6 +1373,16 @@ func (r *pairReplayRuntime) paperNextWakeAfter(nowMs int64) int64 {
 	for _, t := range []int64{r.pollNextMs, r.fundingNextMs, r.capabilityNextMs} {
 		if t > 0 && t <= c.DrainThroughMs {
 			consider(t)
+		}
+	}
+	if r.oracleNextMs > 0 && r.paper.scenario.FundingPolicy != nil {
+		policy := *r.paper.scenario.FundingPolicy
+		if prepare, err := pairPaperOraclePrepareAt(r.oracleNextMs, policy); err == nil {
+			consider(prepare)
+		}
+		consider(r.oracleNextMs)
+		if deadline, err := pairFundingOracleDeadline(policy, r.oracleNextMs); err == nil {
+			consider(deadline)
 		}
 	}
 	consider(c.DrainThroughMs + 1)

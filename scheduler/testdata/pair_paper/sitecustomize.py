@@ -21,6 +21,14 @@ def _clock_ms():
 if _CLOCK and not _BLOCK_ALL:
     time.time = lambda: _clock_ms() / 1000.0
     time.time_ns = lambda: _clock_ms() * 1_000_000
+    if os.path.basename(sys.argv[0]) == "fetch_pair_history.py" and "--kind=funding_oracle" in sys.argv:
+        def _advance_clock(seconds):
+            current = _clock_ms()
+            path = _CLOCK + ".next"
+            with open(path, "w") as fh:
+                fh.write(str(current + int(seconds * 1000)))
+            os.replace(path, _CLOCK)
+        time.sleep = _advance_clock
 
 
 def _load():
@@ -98,7 +106,45 @@ def _hl_post(self, path, payload=None):
         raise RuntimeError("fixture failure of hyperliquid " + t)
     if path != "/info":
         raise RuntimeError("the pair paper fixture serves only /info, not " + str(path))
+    if t == "metaAndAssetCtxs":
+        if fx.get("oracle_request_delay_ms"):
+            time.sleep(fx["oracle_request_delay_ms"] / 1000)
+        mode = fx.get("oracle_context_mode", "valid")
+        universe = list(_META["universe"])
+        if mode == "missing_symbol":
+            universe = []
+        elif mode == "duplicate_symbol":
+            universe = universe + universe
+        contexts = [{"oraclePx": fx.get("oracle_px", "60000")}]
+        if mode == "short_context":
+            contexts = []
+        elif mode == "missing_oracle":
+            contexts = [{}]
+        elif mode == "nonpositive_oracle":
+            contexts = [{"oraclePx": "0"}]
+        elif mode == "malformed_oracle":
+            contexts = [{"oraclePx": "not-a-number"}]
+        elif mode == "float_oracle":
+            contexts = [{"oraclePx": 60000.5}]
+        elif mode == "bool_oracle":
+            contexts = [{"oraclePx": True}]
+        elif mode == "nan_oracle":
+            contexts = [{"oraclePx": "NaN"}]
+        elif mode == "infinite_oracle":
+            contexts = [{"oraclePx": "Infinity"}]
+        elif mode == "negative_oracle":
+            contexts = [{"oraclePx": "-1"}]
+        elif mode == "padded_oracle":
+            contexts = [{"oraclePx": " 60000"}]
+        result = [{"universe": universe}, contexts]
+        if fx.get("oracle_clock_jump_ms"):
+            time.sleep(fx["oracle_clock_jump_ms"] / 1000)
+        if fx.get("oracle_response_delay_ms"):
+            time.sleep(fx["oracle_response_delay_ms"] / 1000)
+        return result
     if t == "meta":
+        if fx.get("oracle_setup_delay_ms") and "--kind=funding_oracle" in sys.argv:
+            time.sleep(fx["oracle_setup_delay_ms"] / 1000)
         return _META
     if t == "spotMeta":
         return _SPOT
@@ -217,3 +263,26 @@ class _FixtureFinder(importlib.abc.MetaPathFinder):
 
 if _FIXTURE and not _BLOCK_ALL:
     sys.meta_path.insert(0, _FixtureFinder())
+    if os.path.basename(sys.argv[0]) == "fetch_pair_history.py" and "--kind=funding_oracle" in sys.argv:
+        _real_json_dumps = json.dumps
+
+        def _oracle_json_dumps(value, *args, **kwargs):
+            if isinstance(value, dict) and value.get("ok") is True and value.get("kind") == "funding_oracle":
+                fx = _load()
+                mode = fx.get("oracle_context_mode", "valid")
+                if mode == "wrong_host":
+                    value["host"] = "https://api.hyperliquid-testnet.xyz"
+                elif mode == "oversize_output":
+                    value["padding"] = "x" * (9 << 20)
+                elif mode == "oracle_envelope_override":
+                    observation = value["observation"]
+                    target = observation["target_event_ms"]
+                    value["request_ms"] = target - 1
+                    value["receipt_ms"] = target + 60000
+                    observation["request_ms"] = value["request_ms"]
+                    observation["receipt_ms"] = value["receipt_ms"]
+                    observation["at_ms"] = value["receipt_ms"]
+                    observation["visible_ms"] = value["receipt_ms"]
+            return _real_json_dumps(value, *args, **kwargs)
+
+        json.dumps = _oracle_json_dumps

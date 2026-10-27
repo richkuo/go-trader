@@ -283,6 +283,10 @@ def _shape(node, schema, path, normalize):
         if not isinstance(node, list):
             raise PairEvidenceError(f"{path} must be a JSON array")
         return [_shape(item, schema[1], f"{path}[{i}]", normalize) for i, item in enumerate(node)]
+    if isinstance(schema, tuple) and schema and schema[0] == "map":
+        if not isinstance(node, dict):
+            raise PairEvidenceError(f"{path} must be a JSON object")
+        return {name: _shape(value, schema[1], f"{path}.{name}", normalize) for name, value in node.items()}
     if isinstance(schema, tuple):
         if not isinstance(node, dict):
             raise PairEvidenceError(f"{path} must be a JSON object")

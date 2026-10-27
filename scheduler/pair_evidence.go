@@ -690,6 +690,21 @@ func pairCheckShape(node interface{}, t reflect.Type, path string) error {
 			return pairCheckShape(node, t.Elem(), path)
 		}
 		return fmt.Errorf("%s has unsupported nullable schema kind %s", path, t.Elem().Kind())
+	case reflect.Map:
+		obj, ok := node.(map[string]interface{})
+		if !ok || t.Key().Kind() != reflect.String {
+			return fmt.Errorf("%s must be a JSON object with string keys", path)
+		}
+		keys := make([]string, 0, len(obj))
+		for key := range obj {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if err := pairCheckShape(obj[key], t.Elem(), path+"."+key); err != nil {
+				return err
+			}
+		}
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
 			return pairCheckBytesNode(node, path)

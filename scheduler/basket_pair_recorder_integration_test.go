@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -470,4 +472,218 @@ func TestBasketPairRecordingBarrierHoldsIncreasesWhileEmergencyClosesContinue(t 
 	if !strings.Contains(saved, `"recording_blocked"`) || !strings.Contains(saved, `"v":4`) {
 		t.Fatalf("the saved progress carries the barrier as version 4, got %s", saved)
 	}
+}
+
+type pairRecOracleFixture struct {
+	policy   pairFundingPolicyV1
+	digest   string
+	key      pairEvidenceKey
+	target   int64
+	deadline int64
+	src      *pairRecordedFundingSource
+}
+
+func newPairRecOracleFixture(t *testing.T, target int64) *pairRecOracleFixture {
+	t.Helper()
+	policy := pairFundingPolicyV1{Version: pairFundingPolicyVersion, MemberRules: map[string]string{"hl": pairFundingRuleHLReceiptResearch, "okx": pairFundingRuleOKX},
+		WindowMs: 5000, MaxPrintOffsetMs: 60000, PrepareLeadMs: 30000, FromMs: target - 120000, DrainThroughMs: target + 180000}
+	digest, err := pairFundingPolicyDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := newPairRecordedFundingSourceWithPolicy("paper:rec-run-1", policy.FromMs, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline, err := pairFundingOracleDeadline(policy, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &pairRecOracleFixture{policy: policy, digest: digest, key: pairEvidenceKey{Partition: "paper", Provider: entryProviderHyperliquid, AccountKey: "synthetic:rec", Instrument: "BTC", MemberID: "hl"},
+		target: target, deadline: deadline, src: src}
+}
+
+func (f *pairRecOracleFixture) request(t *testing.T) []byte {
+	t.Helper()
+	args, err := pairPaperOracleArgs(f.key, f.policy, f.target, f.deadline, f.digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := pairFundingOracleAttemptID(f.key, f.target, f.digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := f.src.chain()
+	prev := ""
+	if len(chain) > 0 {
+		prev = chain[len(chain)-1].BatchHash
+	}
+	raw, err := pairCanonicalJSON(pairPaperOracleRequest{Args: args, Key: f.key, SourceID: f.src.SourceID(), Seq: int64(len(chain) + 1), PrevHash: prev, TargetEventMs: f.target, PolicyDigest: f.digest, AttemptID: attempt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func (f *pairRecOracleFixture) batch(t *testing.T, requestMs, receiptMs int64) []byte {
+	t.Helper()
+	attempt, _ := pairFundingOracleAttemptID(f.key, f.target, f.digest)
+	o, err := pairFundingOracleObservation{V: pairFundingObservationVersion, Key: f.key, EvidenceID: pairFundingOracleEvidenceID(f.key, f.target, receiptMs), AttemptID: attempt,
+		PolicyDigest: f.digest, PriceKind: pairFundingPriceOracleReceipt, TargetEventMs: f.target, RequestMs: requestMs, ReceiptMs: receiptMs, AtMs: receiptMs, VisibleMs: receiptMs,
+		TimeBasis: pairFundingObservationTimeBasis, Price: "60000.5", Provenance: pairFundingOracleProvenance}.sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := f.src.chain()
+	prev := ""
+	if len(chain) > 0 {
+		prev = chain[len(chain)-1].BatchHash
+	}
+	b, err := pairFundingBatchV2{V: pairFundingResearchBatchVersion, SourceID: f.src.SourceID(), Seq: int64(len(chain) + 1), PrevHash: prev, PolicyDigest: f.digest,
+		Rates: []pairFundingRate{}, Prices: []pairFundingPrice{}, Observations: []pairFundingOracleObservation{o}, Coverage: []pairFundingCoverageRecord{}}.sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pairFundingBatchValueBytes(pairFundingBatchV2Value(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestBasketPairRecorderOracleCommitsBeforePublication(t *testing.T) {
+	if pairRecProcessKinds[pairRecKindFundingOracle] || !pairRecCallKinds[pairRecKindFundingOracle] {
+		t.Fatal("funding_oracle is a recorded call kind that playback never reruns as a process")
+	}
+	target := int64(1_800_003_600_000)
+	type outcome struct {
+		requestMs, receiptMs, completionMs int64
+		backward                           bool
+		admitted                           bool
+	}
+	cases := map[string]outcome{
+		"receipt and completion inside the window": {requestMs: target, receiptMs: target + 4960, completionMs: target + 4980, admitted: true},
+		"completion exactly at the deadline":       {requestMs: target, receiptMs: target + 4980, completionMs: target + 5000, admitted: true},
+		"receipt at the deadline, completion late": {requestMs: target, receiptMs: target + 5000, completionMs: target + 5020},
+		"receipt after the deadline":               {requestMs: target, receiptMs: target + 5001, completionMs: target + 5001},
+		"request before the hour":                  {requestMs: target - 1, receiptMs: target + 100, completionMs: target + 120},
+		"backward terminal":                        {requestMs: target, receiptMs: target + 100, completionMs: target - 40000, backward: true},
+	}
+	names := make([]string, 0, len(cases))
+	for name := range cases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		c := cases[name]
+		t.Run(name, func(t *testing.T) {
+			e := newPairRecTestEnv(t, pairRecFaults{})
+			atomic.StoreInt64(&e.wall, target-30000)
+			f := newPairRecOracleFixture(t, target)
+			e.rec.beginStep("s0@1", 0)
+			if _, err := e.rec.wake("", 0); err != nil {
+				t.Fatal(err)
+			}
+			req := f.request(t)
+			batch := f.batch(t, c.requestMs, c.receiptMs)
+			var sawStart bool
+			res, saved, err := e.rec.call(context.Background(), pairRecCall{Kind: pairRecKindFundingOracle, MemberID: f.key.MemberID, SlotMs: target, Request: req}, func(ctx context.Context, h *pairRecHandle) pairRecResult {
+				l := e.log()
+				for _, r := range l.rows {
+					if r.Kind == pairRecEventStart && r.Event.Start.Kind == pairRecKindFundingOracle {
+						_, ended := l.ends[r.CallID]
+						sawStart = !ended
+					}
+				}
+				if len(f.src.chain()) != 0 {
+					t.Error("nothing is published while the reader runs")
+				}
+				atomic.StoreInt64(&e.wall, c.completionMs)
+				return pairRecResult{Class: pairRecClassResult, Result: batch, ReceiptMs: c.receiptMs}
+			})
+			if err != nil || res.Class != pairRecClassResult || saved == nil || saved.End == nil {
+				t.Fatalf("the oracle call commits its terminal: %+v %v", res, err)
+			}
+			if !sawStart {
+				t.Fatal("the oracle start commits before the reader runs")
+			}
+			if len(f.src.chain()) != 0 {
+				t.Fatal("rec.call publishes nothing; the source changes only through admission")
+			}
+			l := e.log()
+			end := l.rows[l.ends[saved.CallID]].Event.End
+			if !bytes.Equal(end.Result, batch) || end.RawReceiptMs != c.receiptMs || end.RawCompletionMs != c.completionMs || end.ClockBackward != c.backward {
+				t.Fatalf("the committed terminal holds the exact batch bytes and raw times: %+v", end)
+			}
+			fromBefore := pairPaperFundingFrom(f.src.chain(), f.key, f.policy.FromMs)
+			err = pairPaperAdmitFundingResult(f.src, res.Result, saved.Start, saved.End)
+			if c.admitted != (err == nil) {
+				t.Fatalf("admission of %s: want admitted=%v, got %v", name, c.admitted, err)
+			}
+			if !c.admitted {
+				if len(f.src.chain()) != 0 {
+					t.Fatal("an ineligible terminal stays only in the recording")
+				}
+				return
+			}
+			if len(f.src.chain()) != 1 || !bytes.Equal(f.src.chainRaw(1), end.Result) {
+				t.Fatal("the admitted batch equals the committed terminal bytes")
+			}
+			if pairPaperFundingFrom(f.src.chain(), f.key, f.policy.FromMs) != fromBefore {
+				t.Fatal("an oracle batch never proves or extends rate coverage")
+			}
+			if err := pairPaperAdmitFundingResult(f.src, res.Result, saved.Start, saved.End); err != nil || len(f.src.chain()) != 1 {
+				t.Fatalf("re-delivery of the accepted bytes is skipped: %v", err)
+			}
+			attempts, err := pairPaperOracleAttemptIndex(l)
+			if err != nil || len(attempts) != 1 {
+				t.Fatalf("the committed start is the hour's one attempt: %v %v", attempts, err)
+			}
+		})
+	}
+	t.Run("terminal append failure publishes nothing", func(t *testing.T) {
+		e := newPairRecTestEnv(t, pairRecFaults{})
+		atomic.StoreInt64(&e.wall, target-30000)
+		f := newPairRecOracleFixture(t, target)
+		e.rec.beginStep("s0@1", 0)
+		if _, err := e.rec.wake("", 0); err != nil {
+			t.Fatal(err)
+		}
+		e.rec.faults = pairRecFaults{kind: "fail-record-append", n: 2}
+		var ran bool
+		_, saved, err := e.rec.call(context.Background(), pairRecCall{Kind: pairRecKindFundingOracle, MemberID: f.key.MemberID, SlotMs: target, Request: f.request(t)}, func(ctx context.Context, h *pairRecHandle) pairRecResult {
+			ran = true
+			atomic.StoreInt64(&e.wall, target+200)
+			return pairRecResult{Class: pairRecClassResult, Result: f.batch(t, target, target+100), ReceiptMs: target + 100}
+		})
+		if !ran || err == nil || saved != nil {
+			t.Fatalf("a terminal that does not commit is never returned for use: ran=%v saved=%+v err=%v", ran, saved, err)
+		}
+		if len(f.src.chain()) != 0 {
+			t.Fatal("no batch is published after a terminal append failure")
+		}
+		if blocked, _, _ := e.rec.barrier(); !blocked {
+			t.Fatal("the failed terminal append sets the recording barrier")
+		}
+	})
+	t.Run("two starts for one hour refuse the log", func(t *testing.T) {
+		e := newPairRecTestEnv(t, pairRecFaults{})
+		atomic.StoreInt64(&e.wall, target-30000)
+		f := newPairRecOracleFixture(t, target)
+		e.rec.beginStep("s0@1", 0)
+		if _, err := e.rec.wake("", 0); err != nil {
+			t.Fatal(err)
+		}
+		req := f.request(t)
+		for i := 0; i < 2; i++ {
+			if _, _, err := e.rec.call(context.Background(), pairRecCall{Kind: pairRecKindFundingOracle, MemberID: f.key.MemberID, SlotMs: target, Request: req}, func(ctx context.Context, h *pairRecHandle) pairRecResult {
+				return pairRecResult{Class: pairRecClassInfra, Cause: "fixture failure"}
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := pairPaperOracleAttemptIndex(e.log()); err == nil || !strings.Contains(err.Error(), "one outside attempt") {
+			t.Fatalf("a repeated outside attempt for one hour refuses the recording, got %v", err)
+		}
+	})
 }

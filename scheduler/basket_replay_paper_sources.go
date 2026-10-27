@@ -28,6 +28,34 @@ var pairHistoryOKXFundingProbeArgv = []string{"--kind=funding", "--provider=okx"
 	`--member-key-json={"partition":"paper","provider":"okx","account_key":"synthetic:probe","instrument":"BTC-USDT-SWAP","member_id":"probe"}`,
 	"--source-id=probe", "--seq=1", "--prev-hash=", "--probe-only"}
 
+var pairHistoryHLOracleProbeArgv, pairHistoryHLResearchFundingProbeArgv, pairHistoryOKXResearchFundingProbeArgv = func() ([]string, []string, []string) {
+	policy := pairFundingPolicyV1{Version: 1, MemberRules: map[string]string{"hl_probe": pairFundingRuleHLReceiptResearch, "okx_probe": pairFundingRuleOKX},
+		WindowMs: 5000, MaxPrintOffsetMs: 60000, PrepareLeadMs: 30000, FromMs: 1, DrainThroughMs: 7200000}
+	digest, err := pairFundingPolicyDigest(policy)
+	if err != nil {
+		panic(err)
+	}
+	policyJSON, err := pairCanonicalJSON(policy)
+	if err != nil {
+		panic(err)
+	}
+	hlKey, err := pairCanonicalJSON(pairEvidenceKey{Partition: "paper", Provider: entryProviderHyperliquid, AccountKey: "synthetic:probe", Instrument: "BTC", MemberID: "hl_probe"})
+	if err != nil {
+		panic(err)
+	}
+	okxKey, err := pairCanonicalJSON(pairEvidenceKey{Partition: "paper", Provider: entryProviderOKX, AccountKey: "synthetic:probe", Instrument: "BTC-USDT-SWAP", MemberID: "okx_probe"})
+	if err != nil {
+		panic(err)
+	}
+	oracle := []string{"--kind=funding_oracle", "--provider=hyperliquid", "--instrument=BTC", "--member-key-json=" + string(hlKey),
+		"--target-event-ms=3600000", "--not-before-ms=3600000", "--deadline-ms=3605000", "--funding-policy-json=" + string(policyJSON), "--policy-digest=" + digest, "--probe-only"}
+	hl := []string{"--kind=funding", "--provider=hyperliquid", "--instrument=BTC", "--from-ms=1", "--through-ms=2", "--member-key-json=" + string(hlKey),
+		"--source-id=probe", "--seq=1", "--prev-hash=", "--funding-policy-json=" + string(policyJSON), "--policy-digest=" + digest, "--rule-version=" + pairFundingRuleHLReceiptResearch, "--probe-only"}
+	okx := []string{"--kind=funding", "--provider=okx", "--instrument=BTC-USDT-SWAP", "--from-ms=1", "--through-ms=2", "--member-key-json=" + string(okxKey),
+		"--source-id=probe", "--seq=1", "--prev-hash=", "--funding-policy-json=" + string(policyJSON), "--policy-digest=" + digest, "--rule-version=" + pairFundingRuleOKX, "--probe-only"}
+	return oracle, hl, okx
+}()
+
 const (
 	pairPaperCandleLimitHL  = 500
 	pairPaperCandleLimitOKX = 300
@@ -766,10 +794,209 @@ func pairPaperCheckCandles(stdout []byte, m pairContractMember, timeframe string
 	return nil
 }
 
+type pairPaperOracleResponse struct {
+	OK          bool                         `json:"ok"`
+	Kind        string                       `json:"kind"`
+	Provider    string                       `json:"provider"`
+	Instrument  string                       `json:"instrument"`
+	Host        string                       `json:"host"`
+	Observation pairFundingOracleObservation `json:"observation"`
+	RequestMs   int64                        `json:"request_ms"`
+	ReceiptMs   int64                        `json:"receipt_ms"`
+}
+
+func pairFundingOracleDeadline(policy pairFundingPolicyV1, targetMs int64) (int64, error) {
+	end, ok := pairAddMs(targetMs, policy.WindowMs)
+	if !ok {
+		return 0, fmt.Errorf("the oracle deadline overflows")
+	}
+	if end > policy.DrainThroughMs {
+		end = policy.DrainThroughMs
+	}
+	return end, nil
+}
+
+func pairPaperCheckOracle(stdout []byte, key pairEvidenceKey, policy pairFundingPolicyV1, targetMs, deadlineMs, receiptMs int64) (pairFundingOracleObservation, error) {
+	var raw pairPaperOracleResponse
+	if err := pairReplayStrictDecode(bytes.TrimSpace(stdout), &raw); err != nil {
+		return raw.Observation, fmt.Errorf("the oracle reader output is unreadable: %w", err)
+	}
+	deadline, err := pairFundingOracleDeadline(policy, targetMs)
+	if err != nil {
+		return raw.Observation, err
+	}
+	if !raw.OK || raw.Kind != "funding_oracle" || raw.Provider != entryProviderHyperliquid || raw.Instrument != key.Instrument || raw.Host != pairHLPublicHost {
+		return raw.Observation, fmt.Errorf("the oracle reader response does not match the requested public Hyperliquid instrument")
+	}
+	if deadlineMs != deadline || raw.RequestMs != raw.Observation.RequestMs || raw.ReceiptMs != raw.Observation.ReceiptMs || receiptMs != raw.ReceiptMs {
+		return raw.Observation, fmt.Errorf("the oracle reader response times do not match its observation and parent receipt")
+	}
+	o := raw.Observation
+	if o.Key != key || o.TargetEventMs != targetMs {
+		return o, fmt.Errorf("the oracle observation names another member or target")
+	}
+	if err := pairFundingValidateObservation(o, policy); err != nil {
+		return o, err
+	}
+	if o.RequestMs < targetMs || o.ReceiptMs < o.RequestMs || o.ReceiptMs > deadlineMs {
+		return o, fmt.Errorf("the oracle observation is outside [%d, %d]", targetMs, deadlineMs)
+	}
+	return o, nil
+}
+
 type recordingFundingSource struct {
 	rec    *pairRecorder
 	src    *pairRecordedFundingSource
 	egress *EgressConfig
+}
+
+type pairPaperOracleRequest struct {
+	Args          []string        `json:"args"`
+	Key           pairEvidenceKey `json:"key"`
+	SourceID      string          `json:"source_id"`
+	Seq           int64           `json:"seq"`
+	PrevHash      string          `json:"prev_hash"`
+	TargetEventMs int64           `json:"target_event_ms"`
+	PolicyDigest  string          `json:"policy_digest"`
+	AttemptID     string          `json:"attempt_id"`
+}
+
+func pairPaperOracleArgs(key pairEvidenceKey, policy pairFundingPolicyV1, targetMs, deadlineMs int64, digest string) ([]string, error) {
+	keyJSON, err := pairCanonicalJSON(key)
+	if err != nil {
+		return nil, err
+	}
+	policyJSON, err := pairCanonicalJSON(policy)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"--kind=funding_oracle", "--provider=" + key.Provider, "--instrument=" + key.Instrument, "--member-key-json=" + string(keyJSON),
+		"--target-event-ms=" + strconv.FormatInt(targetMs, 10), "--not-before-ms=" + strconv.FormatInt(targetMs, 10), "--deadline-ms=" + strconv.FormatInt(deadlineMs, 10),
+		"--funding-policy-json=" + string(policyJSON), "--policy-digest=" + digest}, nil
+}
+
+func (f recordingFundingSource) readOracle(ctx context.Context, key pairEvidenceKey, seq int64, prev string, targetMs int64) ([]byte, *pairRecSaved, error) {
+	if f.src.policy == nil {
+		return nil, nil, fmt.Errorf("an oracle read requires a recorded research policy")
+	}
+	policy := *f.src.policy
+	digest, err := pairFundingPolicyDigest(policy)
+	if err != nil {
+		return nil, nil, err
+	}
+	deadline, err := pairFundingOracleDeadline(policy, targetMs)
+	if err != nil {
+		return nil, nil, err
+	}
+	args, err := pairPaperOracleArgs(key, policy, targetMs, deadline, digest)
+	if err != nil {
+		return nil, nil, err
+	}
+	attemptID, err := pairFundingOracleAttemptID(key, targetMs, digest)
+	if err != nil {
+		return nil, nil, err
+	}
+	request := pairPaperOracleRequest{Args: args, Key: key, SourceID: f.src.SourceID(), Seq: seq, PrevHash: prev, TargetEventMs: targetMs, PolicyDigest: digest, AttemptID: attemptID}
+	req, err := pairCanonicalJSON(request)
+	if err != nil {
+		return nil, nil, err
+	}
+	res, saved, err := f.rec.call(ctx, pairRecCall{Kind: pairRecKindFundingOracle, MemberID: key.MemberID, SlotMs: targetMs, Request: req}, func(ctx context.Context, h *pairRecHandle) pairRecResult {
+		remaining := time.UnixMilli(deadline).Sub(pairPaperWall.Now())
+		if remaining <= 0 {
+			return pairRecResult{Class: pairRecClassCancelled, Cause: "the oracle sampling deadline elapsed before the reader launch"}
+		}
+		callCtx, cancel := context.WithDeadline(ctx, time.UnixMilli(deadline))
+		defer cancel()
+		r := pairRunHistoryReader(callCtx, f.egress, args)
+		if r.Class != pairRecClassResult {
+			return r
+		}
+		observation, checkErr := pairPaperCheckOracle(r.Stdout, key, policy, targetMs, deadline, r.ReceiptMs)
+		if checkErr != nil {
+			r.Class, r.Cause = pairRecClassInfra, checkErr.Error()
+			return r
+		}
+		batch, sealErr := (pairFundingBatchV2{V: pairFundingResearchBatchVersion, SourceID: f.src.SourceID(), Seq: seq, PrevHash: prev, PolicyDigest: digest,
+			Rates: []pairFundingRate{}, Prices: []pairFundingPrice{}, Observations: []pairFundingOracleObservation{observation}, Coverage: []pairFundingCoverageRecord{}}).sealed()
+		if sealErr != nil {
+			r.Class, r.Cause = pairRecClassInfra, sealErr.Error()
+			return r
+		}
+		r.Result, sealErr = pairFundingBatchValueBytes(pairFundingBatchV2Value(batch))
+		if sealErr != nil {
+			r.Class, r.Cause = pairRecClassInfra, sealErr.Error()
+			return r
+		}
+		r.Stdout = nil
+		return r
+	})
+	if err != nil {
+		return nil, saved, err
+	}
+	if res.Class != pairRecClassResult {
+		return nil, saved, fmt.Errorf("the %s oracle read ended %s: %s", key.MemberID, res.Class, res.Cause)
+	}
+	if saved == nil || saved.End == nil {
+		return nil, saved, fmt.Errorf("the oracle result has no committed terminal")
+	}
+	if err := pairPaperCheckFundingTerminal(f.src, res.Result, saved.Start, saved.End); err != nil {
+		return nil, saved, err
+	}
+	return res.Result, saved, nil
+}
+
+func pairPaperCheckFundingTerminal(src *pairRecordedFundingSource, raw []byte, start pairRecStart, end *pairRecEnd) error {
+	if end == nil || end.Class != pairRecClassResult || !bytes.Equal(end.Result, raw) {
+		return fmt.Errorf("the recorded funding result has no matching committed terminal")
+	}
+	b, err := pairDecodeFundingBatch(raw)
+	if err != nil {
+		return err
+	}
+	if b.SourceID != src.SourceID() {
+		return fmt.Errorf("the recorded funding batch belongs to another source")
+	}
+	if start.Kind == pairRecKindFundingOracle {
+		if src.policy == nil || b.Research == nil || len(b.Research.Observations) != 1 || len(b.Rates) != 0 || len(b.Prices) != 0 || len(b.Coverage) != 0 {
+			return fmt.Errorf("the oracle terminal is outside the research batch contract")
+		}
+		var req pairPaperOracleRequest
+		if err := pairReplayStrictDecode(start.Request, &req); err != nil {
+			return fmt.Errorf("the oracle request is unreadable: %w", err)
+		}
+		digest, _ := pairFundingPolicyDigest(*src.policy)
+		attemptID, _ := pairFundingOracleAttemptID(req.Key, req.TargetEventMs, digest)
+		deadline, err := pairFundingOracleDeadline(*src.policy, req.TargetEventMs)
+		if err != nil {
+			return err
+		}
+		args, _ := pairPaperOracleArgs(req.Key, *src.policy, req.TargetEventMs, deadline, digest)
+		want, _ := pairCanonicalJSON(pairPaperOracleRequest{Args: args, Key: req.Key, SourceID: src.SourceID(), Seq: b.Seq, PrevHash: b.PrevHash, TargetEventMs: req.TargetEventMs, PolicyDigest: digest, AttemptID: attemptID})
+		if !bytes.Equal(want, start.Request) || b.Research.PolicyDigest != digest || b.Seq != req.Seq || b.PrevHash != req.PrevHash {
+			return fmt.Errorf("the oracle terminal does not match its committed request and policy")
+		}
+		o := b.Research.Observations[0]
+		if o.Key != req.Key || o.TargetEventMs != req.TargetEventMs || o.AttemptID != req.AttemptID || end.ClockBackward || end.RawCompletionMs < o.ReceiptMs || end.RawCompletionMs > deadline || end.RawReceiptMs != o.ReceiptMs {
+			return fmt.Errorf("the oracle terminal times or identity are ineligible")
+		}
+		return pairFundingValidateObservation(o, *src.policy)
+	}
+	return nil
+}
+
+func pairPaperAdmitFundingResult(src *pairRecordedFundingSource, raw []byte, start pairRecStart, end *pairRecEnd) error {
+	if err := pairPaperCheckFundingTerminal(src, raw, start, end); err != nil {
+		return err
+	}
+	b, err := pairDecodeFundingBatch(raw)
+	if err != nil {
+		return err
+	}
+	if held := src.chainRaw(b.Seq); held != nil && bytes.Equal(held, raw) {
+		return nil
+	}
+	return src.Append(raw)
 }
 
 func (f recordingFundingSource) read(ctx context.Context, key pairEvidenceKey, seq int64, prev string, fromMs, throughMs int64) ([]byte, error) {
@@ -780,6 +1007,22 @@ func (f recordingFundingSource) read(ctx context.Context, key pairEvidenceKey, s
 	}
 	args := []string{"--kind=funding", "--provider=" + key.Provider, "--instrument=" + key.Instrument, "--from-ms=" + strconv.FormatInt(fromMs, 10), "--through-ms=" + strconv.FormatInt(throughMs, 10),
 		"--member-key-json=" + string(keyJSON), "--source-id=" + sourceID, "--seq=" + strconv.FormatInt(seq, 10), "--prev-hash=" + prev}
+	policyDigest := ""
+	if f.src.policy != nil {
+		rule, ok := pairFundingSelectedRule(f.src.policy, key)
+		if !ok {
+			return nil, fmt.Errorf("member %s has no selected funding rule", key.MemberID)
+		}
+		policyJSON, err := pairCanonicalJSON(*f.src.policy)
+		if err != nil {
+			return nil, err
+		}
+		policyDigest, err = pairFundingPolicyDigest(*f.src.policy)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "--funding-policy-json="+string(policyJSON), "--policy-digest="+policyDigest, "--rule-version="+rule.RuleVersion)
+	}
 	req, _ := json.Marshal(struct {
 		Args []string `json:"args"`
 	}{args})
@@ -806,6 +1049,10 @@ func (f recordingFundingSource) read(ctx context.Context, key pairEvidenceKey, s
 			r.Class, r.Cause = pairRecClassInfra, fmt.Sprintf("the funding reader sealed batch %s/%d after %s, Go asked for %s/%d after %s", b.SourceID, b.Seq, shortFingerprint(b.PrevHash), sourceID, seq, shortFingerprint(prev))
 			return r
 		}
+		if (f.src.policy == nil) != (b.Research == nil) || b.Research != nil && (b.Research.PolicyDigest != policyDigest || len(b.Research.Observations) != 0) {
+			r.Class, r.Cause = pairRecClassInfra, "the funding reader batch version, policy or observations do not match the source"
+			return r
+		}
 		for _, x := range b.Rates {
 			if x.Key != key || x.VisibleMs > r.ReceiptMs {
 				r.Class, r.Cause = pairRecClassInfra, fmt.Sprintf("funding rate %s names %s or is visible after the read receipt %d", x.EventID, x.Key, r.ReceiptMs)
@@ -816,6 +1063,12 @@ func (f recordingFundingSource) read(ctx context.Context, key pairEvidenceKey, s
 			if x.Key != key || x.VisibleMs > r.ReceiptMs {
 				r.Class, r.Cause = pairRecClassInfra, fmt.Sprintf("funding price %s names %s or is visible after the read receipt %d", x.EvidenceID, x.Key, r.ReceiptMs)
 				return r
+			}
+			if f.src.policy != nil {
+				if selected, ok := pairFundingSelectedRule(f.src.policy, key); !ok || x.PriceKind != selected.PriceKind {
+					r.Class, r.Cause = pairRecClassInfra, fmt.Sprintf("funding price %s is not the %s member's selected price evidence", x.EvidenceID, key.MemberID)
+					return r
+				}
 			}
 		}
 		for _, x := range b.Coverage {

@@ -315,6 +315,11 @@ func TestBasketPairMemberRealBatchedSlotStaysManagementOnly(t *testing.T) {
 func TestBasketPairProbeArgvsParseInEveryStrictCheck(t *testing.T) {
 	root := basketPyRoot(t)
 	t.Chdir(root)
+	for name, argv := range map[string][]string{"oracle": pairHistoryHLOracleProbeArgv, "research Hyperliquid funding": pairHistoryHLResearchFundingProbeArgv, "research OKX funding": pairHistoryOKXResearchFundingProbeArgv} {
+		if err := probeOneCheckScript(pairHistoryReaderScript, argv); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 	for _, script := range []string{"shared_scripts/check_hyperliquid.py", "shared_scripts/check_okx.py", "shared_scripts/check_robinhood.py", "shared_scripts/check_topstep.py"} {
 		for name, argv := range map[string][]string{"probeArgv": probeArgv, "probeCompositeArgv": probeCompositeArgv} {
 			if err := probeOneCheckScript(script, argv); err != nil {

@@ -5,12 +5,14 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -134,6 +136,55 @@ func newPairPaperFixture(t *testing.T, o pairPaperOptions2) *pairPaperFixture {
 	return f
 }
 
+type pairPaperResearchOptions struct {
+	runID       string
+	fromBefore  int64
+	throughAt   int64
+	drainAt     int64
+	clockAt     int64
+	convergeAt  int64
+	fixtureMore map[string]interface{}
+}
+
+func newPairPaperResearchFixture(t *testing.T, o pairPaperResearchOptions) (*pairPaperFixture, int64) {
+	t.Helper()
+	f := newPairPaperFixture(t, pairPaperOptions2{runID: o.runID})
+	target := (time.Now().Add(120*time.Second).UnixMilli()/3600000 + 1) * 3600000
+	if o.fromBefore == 0 {
+		o.fromBefore = 60000
+	}
+	if o.throughAt == 0 {
+		o.throughAt = 30000
+	}
+	if o.drainAt == 0 {
+		o.drainAt = 70000
+	}
+	if o.convergeAt == 0 {
+		o.convergeAt = 20000
+	}
+	f.fromMs, f.through, f.drain = target-o.fromBefore, target+o.throughAt, target+o.drainAt
+	policy := pairFundingPolicyV1{Version: pairFundingPolicyVersion, MemberRules: map[string]string{pairTestHL: pairFundingRuleHLReceiptResearch, pairTestOKX: pairFundingRuleOKX},
+		WindowMs: 5000, MaxPrintOffsetMs: 60000, PrepareLeadMs: 30000, FromMs: f.fromMs, DrainThroughMs: f.drain}
+	f.scenario.FundingPolicy = &policy
+	f.scenario.PaperFundingPollMs = 10000
+	f.scenario.PaperPollIntervalMs = 4000
+	fx := map[string]interface{}{"start_ms": f.fromMs, "converge_ms": target + o.convergeAt, "follow_funding": false, "oracle_target_ms": target, "oracle_px": "60010.5",
+		"okx_funding": [][]interface{}{{f.fromMs - 1000, "0.0001"}, {target + 40000, "0.0001"}},
+		"hl_funding":  [][]interface{}{{target + 3, "0.0000125"}, {target + 65000, "0.0000125"}}}
+	for k, v := range o.fixtureMore {
+		fx[k] = v
+	}
+	pairPaperWriteJSON(t, f.fixture, fx)
+	clock := f.fromMs - 2000
+	if o.clockAt != 0 {
+		clock = target + o.clockAt
+	}
+	if err := os.WriteFile(f.clock, []byte(strconv.FormatInt(clock, 10)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return f, target
+}
+
 func (f *pairPaperFixture) spec(mode, stateDir string) *pairPaperSpec {
 	return &pairPaperSpec{Protocol: basketReplayProtocolName, Version: pairReplayProtocolVersion, Mode: mode,
 		Run:            basketReplayRunSpec{RunID: f.runID, StateDir: stateDir, Source: map[string]string{"venues": "pair paper fixture", "seed": "fixture schedule"}},
@@ -248,6 +299,118 @@ func pairPaperPurposes(t *testing.T, out pairReplayOutput) map[string]int {
 		purposes[fmt.Sprint(a["purpose"])]++
 	}
 	return purposes
+}
+
+func TestBasketReplayPairPaperResearchPolicyAdmission(t *testing.T) {
+	f, _ := newPairPaperResearchFixture(t, pairPaperResearchOptions{runID: "paper-research-admission"})
+	cases := map[string]func(*pairFundingPolicyV1){
+		"version":       func(p *pairFundingPolicyV1) { p.Version = 2 },
+		"window":        func(p *pairFundingPolicyV1) { p.WindowMs = 5001 },
+		"print offset":  func(p *pairFundingPolicyV1) { p.MaxPrintOffsetMs = 59999 },
+		"prepare lead":  func(p *pairFundingPolicyV1) { p.PrepareLeadMs = 29999 },
+		"legacy oracle": func(p *pairFundingPolicyV1) { p.MemberRules[pairTestHL] = pairFundingRuleHyperliquid },
+		"swapped rules": func(p *pairFundingPolicyV1) {
+			p.MemberRules[pairTestHL], p.MemberRules[pairTestOKX] = pairFundingRuleOKX, pairFundingRuleHLReceiptResearch
+		},
+		"unknown rule":      func(p *pairFundingPolicyV1) { p.MemberRules[pairTestOKX] = "okx_unknown_v9" },
+		"missing member":    func(p *pairFundingPolicyV1) { delete(p.MemberRules, pairTestOKX) },
+		"unknown member":    func(p *pairFundingPolicyV1) { p.MemberRules["stranger"] = pairFundingRuleOKX },
+		"from bound":        func(p *pairFundingPolicyV1) { p.FromMs++ },
+		"drain bound":       func(p *pairFundingPolicyV1) { p.DrainThroughMs-- },
+		"nonpositive bound": func(p *pairFundingPolicyV1) { p.FromMs = 0 },
+	}
+	names := make([]string, 0, len(cases))
+	for name := range cases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		badDir := filepath.Join(f.parent, "bad-"+strings.ReplaceAll(name, " ", "-"))
+		spec := f.spec(basketReplayModeNew, badDir)
+		policy := pairFundingPolicyClone(*spec.Scenario.FundingPolicy)
+		cases[name](&policy)
+		spec.Scenario.FundingPolicy = &policy
+		got := runPairPaperAdapter(t, f, spec, f.env(false))
+		if got.Code != basketReplayExitRefused || got.Out.Refusal == nil {
+			t.Fatalf("%s: an invalid policy was admitted: exit %d %+v", name, got.Code, got.Out.Refusal)
+		}
+		if _, err := os.Lstat(badDir); !os.IsNotExist(err) {
+			t.Fatalf("%s: a refused policy claimed a run directory", name)
+		}
+	}
+	rawSpec, err := json.Marshal(f.spec(basketReplayModeNew, filepath.Join(f.parent, "raw-policy")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]interface{}{
+		"null policy":         nil,
+		"float window":        "5000.0",
+		"null window":         "null",
+		"string window":       `"5000"`,
+		"extra policy field":  "extra",
+		"missing drain field": "missing",
+	} {
+		var spec map[string]interface{}
+		dec := json.NewDecoder(bytes.NewReader(rawSpec))
+		dec.UseNumber()
+		if err := dec.Decode(&spec); err != nil {
+			t.Fatal(err)
+		}
+		sc := spec["scenario"].(map[string]interface{})
+		switch v := value.(type) {
+		case nil:
+			sc["funding_policy"] = nil
+		case string:
+			p := sc["funding_policy"].(map[string]interface{})
+			switch v {
+			case "extra":
+				p["sample_ms"] = json.Number("1")
+			case "missing":
+				delete(p, "drain_through_ms")
+			default:
+				p["window_ms"] = json.RawMessage(v)
+			}
+		}
+		dir := filepath.Join(f.parent, "raw-"+strings.ReplaceAll(name, " ", "-"))
+		spec["run"].(map[string]interface{})["state_dir"] = dir
+		got := runPairPaperAdapter(t, f, spec, f.env(false))
+		if got.Code != basketReplayExitRefused {
+			t.Fatalf("%s: the malformed policy was admitted: exit %d %+v", name, got.Code, got.Out.Refusal)
+		}
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			t.Fatalf("%s: a refused policy claimed a run directory", name)
+		}
+	}
+	dir := filepath.Join(f.parent, "paper")
+	first := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false), "--max-steps", "3")
+	if first.Code == basketReplayExitRefused || first.Out.Run == nil || first.Out.Run.Finished {
+		t.Fatalf("the complete policy starts a resumable chunk after both startup probe routes pass, got exit %d %+v %+v\nstderr tail=%s", first.Code, first.Out.Refusal, first.Out.Run, tail(first.Stderr, 4000))
+	}
+	manifest, err := readPairPaperManifest(dir)
+	if err != nil || manifest.Version != pairPaperManifestResearchVer || manifest.EventOrder != pairPaperEventOrderResearch || manifest.Scenario.FundingPolicy == nil {
+		t.Fatalf("a policy run writes the version 2 paper manifest with the research event order: %+v %v", manifest, err)
+	}
+	digest := dirDigest(t, dir)
+	legacy := f.spec(basketReplayModeResume, dir)
+	legacy.Scenario.FundingPolicy = nil
+	edited := f.spec(basketReplayModeResume, dir)
+	edited.Collection.DrainThroughMs++
+	ep := pairFundingPolicyClone(*edited.Scenario.FundingPolicy)
+	ep.DrainThroughMs++
+	edited.Scenario.FundingPolicy = &ep
+	for name, spec := range map[string]*pairPaperSpec{"policy removed": legacy, "policy bounds changed": edited} {
+		got := runPairPaperAdapter(t, f, spec, f.env(false), "--max-steps", "3")
+		if got.Code != basketReplayExitRefused {
+			t.Fatalf("%s: a resume that changes the frozen policy is refused, got exit %d %+v", name, got.Code, got.Out.Refusal)
+		}
+		if dirDigest(t, dir) != digest {
+			t.Fatalf("%s: the refused resume changed the run files", name)
+		}
+	}
+	again := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--max-steps", "3")
+	if again.Code == basketReplayExitRefused || again.Out.Run == nil || !again.Out.Run.Resumed {
+		t.Fatalf("the unchanged policy resumes, got exit %d %+v", again.Code, again.Out.Refusal)
+	}
 }
 
 func TestBasketReplayPairPaperRecordsBeforeUseAndReproducesOffline(t *testing.T) {
@@ -407,6 +570,56 @@ func TestBasketReplayPairPaperCrashesResumeWithoutRepeatingCommittedCalls(t *tes
 			}
 		})
 	}
+	t.Run("research oracle", func(t *testing.T) {
+		counts := pairPaperResearchOracleFaultCounts(t, pairPaperResearchOptions{})
+		for _, fault := range []string{fmt.Sprintf("exit-after-call-start:%d", counts.callStart), fmt.Sprintf("exit-after-input-commit:%d", counts.inputEnd), "exit-after-book-write:5", "exit-after-book-commit:5"} {
+			fault := fault
+			t.Run(fault, func(t *testing.T) {
+				t.Parallel()
+				slots <- struct{}{}
+				defer func() { <-slots }()
+				f, target := newPairPaperResearchFixture(t, pairPaperResearchOptions{runID: "paper-oracle-fault-" + strings.SplitN(fault, ":", 2)[0][11:]})
+				dir := filepath.Join(f.parent, "paper")
+				crash := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false), "--fault", fault)
+				if crash.Code != basketReplayExitFault || !strings.Contains(crash.Stderr, "fault "+fault+"\n") {
+					t.Fatalf("the fault must exit 75 at its boundary, got exit %d\nstderr tail=%s", crash.Code, tail(crash.Stderr, 4000))
+				}
+				before := pairPaperLogRows(t, dir, f.runID)
+				resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
+				if resumed.Code == basketReplayExitRefused || resumed.Out.Run == nil || !resumed.Out.Run.Resumed || !resumed.Out.Run.Finished {
+					t.Fatalf("the resumed research run must finish, got exit %d refusal %+v run %+v\nstderr tail=%s", resumed.Code, resumed.Out.Refusal, resumed.Out.Run, tail(resumed.Stderr, 6000))
+				}
+				after := pairPaperLogRows(t, dir, f.runID)
+				for i := range before {
+					if after[i].Prefix != before[i].Prefix {
+						t.Fatalf("the committed prefix changed at input %d across the restart", before[i].Seq)
+					}
+				}
+				recovered := pairPaperNoRepeatedCall(t, after)
+				starts, _, _ := pairPaperOracleRows(after)
+				if starts != 1 {
+					t.Fatalf("the hour keeps exactly one outside oracle attempt across the restart, got %d", starts)
+				}
+				interrupting := recovered > 0
+				if interrupting == resumed.Out.MechanicallyComplete {
+					t.Fatalf("an interrupted call keeps the run incomplete and any other boundary resumes complete: complete=%v reasons=%v", resumed.Out.MechanicallyComplete, resumed.Out.IncompleteReasons)
+				}
+				applied := 0
+				for _, row := range pairPaperFundingRows(t, dir) {
+					if row.StrategyID == pairTestHL && row.EventMs == target+3 && row.Status == pairFundingStatusApplied {
+						applied++
+					}
+				}
+				if applied != map[bool]int{true: 0, false: 1}[interrupting] {
+					t.Fatalf("the held hour is charged once from its one sample, or never when the sample was interrupted, got %d", applied)
+				}
+				playback := pairPaperReproduce(t, f, dir, "reproduction")
+				if playback.Out.Comparison == nil || playback.Out.Comparison.Hash != resumed.Out.Comparison.Hash || playback.Out.MechanicallyComplete != resumed.Out.MechanicallyComplete {
+					t.Fatalf("the offline reproduction of the resumed research recording must equal it: paper %+v, playback %+v\n%s", resumed.Out.Comparison, playback.Out.Comparison, pairOfflineDiff(t, resumed.Out, playback.Out))
+				}
+			})
+		}
+	})
 }
 
 func pairPaperCallLogLines(f *pairPaperFixture) []string {
@@ -934,5 +1147,537 @@ func TestBasketReplayPairPaperDriverRunsChunksWithoutADefaultTimeout(t *testing.
 	code, res, _ = drive(replayPath)
 	if code != 0 || !res.MechanicallyComplete || res.Comparison == nil || !res.Comparison.Eligible {
 		t.Fatalf("the driver replays the sealed recording offline to a mechanical result, got exit %d %+v", code, res)
+	}
+}
+
+func pairPaperResearchSealedRun(t *testing.T, runID string) (*pairPaperFixture, int64, string, pairPaperProc) {
+	t.Helper()
+	f, target := newPairPaperResearchFixture(t, pairPaperResearchOptions{runID: runID})
+	dir := filepath.Join(f.parent, "paper")
+	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false), "--seal")
+	pairPaperRequireComplete(t, "research oracle run", p)
+	if p.Out.Recording == nil || p.Out.Recording.Seal == nil || !p.Out.Recording.Seal.Sealed {
+		t.Fatalf("the research run seals: %+v", p.Out.Recording)
+	}
+	return f, target, dir, p
+}
+
+func pairPaperResearchEvent(t *testing.T, out pairReplayOutput, eventMs int64) (map[string]interface{}, pairFundingEventValue) {
+	t.Helper()
+	want := pairFundingEventID(entryProviderHyperliquid, "BTC", eventMs)
+	for _, row := range pairOfflineSection(t, out, "pair_funding_events") {
+		if row["event_id"] != want {
+			continue
+		}
+		raw, _ := row["event_json"].(string)
+		ev, err := pairDecodeFundingEvent([]byte(raw))
+		if err != nil {
+			t.Fatalf("the exported research event decodes strictly: %v", err)
+		}
+		return row, ev
+	}
+	t.Fatalf("the export holds no funding event %s", want)
+	return nil, pairFundingEventValue{}
+}
+
+func pairPaperMetaReads(f *pairPaperFixture) int {
+	n := 0
+	for _, line := range pairPaperCallLogLines(f) {
+		if strings.Contains(line, `"metaAndAssetCtxs"`) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestBasketReplayPairPaperResearchOracleReproducesOffline(t *testing.T) {
+	t.Parallel()
+	f, target, dir, p := pairPaperResearchSealedRun(t, "paper-research-oracle")
+	policy := *f.scenario.FundingPolicy
+	prepare, _ := pairPaperOraclePrepareAt(target, policy)
+	deadline, _ := pairFundingOracleDeadline(policy, target)
+	rows := pairPaperLogRows(t, dir, f.runID)
+	ends := map[string]pairRecRow{}
+	for _, r := range rows {
+		if r.Kind == pairRecEventEnd {
+			ends[r.CallID] = r
+		}
+	}
+	var oracleStarts []pairRecRow
+	for _, r := range rows {
+		if r.Kind == pairRecEventStart && r.Event.Start.Kind == pairRecKindFundingOracle {
+			oracleStarts = append(oracleStarts, r)
+		}
+	}
+	if len(oracleStarts) != 1 {
+		t.Fatalf("one held hour makes exactly one recorded oracle attempt, got %d", len(oracleStarts))
+	}
+	st := oracleStarts[0]
+	end, ok := ends[st.CallID]
+	if !ok || end.Seq <= st.Seq || end.Event.End.Class != pairRecClassResult || st.Event.Start.RawStartMs < prepare || st.Event.Start.SlotMs != target {
+		t.Fatalf("the oracle start commits at or after preparation and before its terminal result: start %+v end %+v", st.Event.Start, end.Event)
+	}
+	batch, err := pairDecodeFundingBatch(end.Event.End.Result)
+	if err != nil || batch.Research == nil || len(batch.Research.Observations) != 1 {
+		t.Fatalf("the oracle terminal holds one version 2 observation batch: %v", err)
+	}
+	obs := batch.Research.Observations[0]
+	if obs.TargetEventMs != target || obs.RequestMs < target || obs.ReceiptMs > deadline || obs.Price != "60010.5" || end.Event.End.RawCompletionMs > deadline {
+		t.Fatalf("the committed observation lies inside [%d, %d]: %+v", target, deadline, obs)
+	}
+	if n := pairPaperMetaReads(f); n != 1 {
+		t.Fatalf("the paper run reads metaAndAssetCtxs once for its one hour, got %d", n)
+	}
+	row, ev := pairPaperResearchEvent(t, p.Out, target+3)
+	if ev.Research == nil || ev.RuleVersion != pairFundingRuleHLReceiptResearch || ev.PriceHash != obs.RecordHash || ev.NativeMark != obs.Price ||
+		string(ev.SignedBaseQty) != "0.09" || string(ev.NativeAmount) != "-0.0675118125" || row["status"] != pairFundingStatusApplied {
+		t.Fatalf("the held hour settles once from the committed observation: %+v %+v", row, ev)
+	}
+	slotLine := regexp.MustCompile(`\] slot (\d{4}-\d\d-\d\dT[0-9:.]+Z): (.*)$`)
+	for _, line := range strings.Split(p.Stderr, "\n") {
+		m := slotLine.FindStringSubmatch(line)
+		if m == nil || !strings.Contains(m[2], "decision frozen") {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, m[1])
+		if err != nil {
+			t.Fatalf("slot time %q: %v", m[1], err)
+		}
+		if ms := at.UnixMilli(); ms > prepare && ms <= target {
+			t.Fatalf("a slot inside the preparation stall must hold, never decide on stale quotes: %s", line)
+		}
+	}
+	reads := pairPaperMetaReads(f)
+	playback := pairPaperReproduce(t, f, dir, "reproduction")
+	pairOfflineRequireComplete(t, "sealed research playback with every network route blocked", playback)
+	if playback.Out.Comparison.Hash != p.Out.Comparison.Hash {
+		t.Fatalf("the offline reproduction equals the research run: paper %s, playback %s\n%s", p.Out.Comparison.Hash, playback.Out.Comparison.Hash, pairOfflineDiff(t, p.Out, playback.Out))
+	}
+	if _, pev := pairPaperResearchEvent(t, playback.Out, target+3); pev.EvidenceHash != ev.EvidenceHash || pev.USDAmount != ev.USDAmount {
+		t.Fatalf("the playback rebuilds the same version 3 event: %+v", pev)
+	}
+	if n := pairPaperMetaReads(f); n != reads {
+		t.Fatalf("playback never runs the public oracle reader, saw %d new reads", n-reads)
+	}
+	for _, line := range pairPaperCallLogLines(f) {
+		if strings.Contains(line, `"connect"`) {
+			t.Fatalf("no child opens a socket: %s", line)
+		}
+	}
+	exportDir := filepath.Join(dir, pairPaperExportDirName)
+	manBlob, err := os.ReadFile(filepath.Join(exportDir, pairRecordingManifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man map[string]interface{}
+	if err := json.Unmarshal(manBlob, &man); err != nil {
+		t.Fatal(err)
+	}
+	if man["v"] != float64(pairRecordingManifestResearchVer) {
+		t.Fatalf("a research recording manifest is version 2, got %v", man["v"])
+	}
+	tampered := map[string]func(m map[string]interface{}){
+		"policy window": func(m map[string]interface{}) {
+			m["scenario"].(map[string]interface{})["funding_policy"].(map[string]interface{})["window_ms"] = 6000
+		},
+		"policy removed": func(m map[string]interface{}) { delete(m["scenario"].(map[string]interface{}), "funding_policy") },
+		"binding policy digest": func(m map[string]interface{}) {
+			m["funding_binding"].(map[string]interface{})["policy_digest"] = strings.Repeat("0", 64)
+		},
+	}
+	names := make([]string, 0, len(tampered))
+	for name := range tampered {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		var m map[string]interface{}
+		_ = json.Unmarshal(manBlob, &m)
+		tampered[name](m)
+		mb, _ := json.Marshal(m)
+		root := filepath.Join(f.parent, "tamper-"+strings.ReplaceAll(name, " ", "-"))
+		if err := exec.Command("cp", "-R", exportDir, root).Run(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, pairRecordingManifestName), mb, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		blob, _ := os.ReadFile(filepath.Join(exportDir, pairRecordingSpecName))
+		var repro map[string]interface{}
+		_ = json.Unmarshal(blob, &repro)
+		repro["input_manifest"].(map[string]interface{})["root"] = root
+		repro["recording"] = map[string]interface{}{"version": 2, "path": pairRecordingManifestName, "sha256": sha256Hex(mb), "size_bytes": len(mb)}
+		repro["run"].(map[string]interface{})["state_dir"] = filepath.Join(f.parent, "tamper-state-"+strings.ReplaceAll(name, " ", "-"))
+		got := runPairReplayAdapter(t, f.repo, repro, f.env(true))
+		if got.Code == 0 && got.Out.Comparison != nil && got.Out.Comparison.Eligible && got.Out.Comparison.Hash == p.Out.Comparison.Hash {
+			t.Fatalf("%s: a changed policy or binding must be refused or fail the equality check", name)
+		}
+	}
+	logBlob, err := os.ReadFile(filepath.Join(exportDir, pairRecordingLogName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logBlob)), "\n")
+	edited := false
+	for i, line := range lines {
+		var row map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		if row["call_id"] != st.CallID || row["event_kind"] != pairRecEventEnd {
+			continue
+		}
+		payload, err := base64.StdEncoding.DecodeString(row["payload"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ev map[string]interface{}
+		if err := json.Unmarshal(payload, &ev); err != nil {
+			t.Fatal(err)
+		}
+		endObj := ev["end"].(map[string]interface{})
+		result, err := base64.StdEncoding.DecodeString(endObj["result"].(string))
+		if err != nil || !bytes.Contains(result, []byte(`"60010.5"`)) {
+			t.Fatalf("the oracle terminal result holds the observation price: %v", err)
+		}
+		endObj["result"] = base64.StdEncoding.EncodeToString(bytes.Replace(result, []byte(`"60010.5"`), []byte(`"60011.5"`), 1))
+		pb, _ := json.Marshal(ev)
+		row["payload"] = base64.StdEncoding.EncodeToString(pb)
+		rb, _ := json.Marshal(row)
+		lines[i] = string(rb)
+		edited = true
+	}
+	if !edited {
+		t.Fatal("the sealed recording log holds the oracle terminal")
+	}
+	tamperRoot := filepath.Join(f.parent, "tamper-observation")
+	if err := exec.Command("cp", "-R", exportDir, tamperRoot).Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tamperRoot, pairRecordingLogName), []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	specBlob, _ := os.ReadFile(filepath.Join(exportDir, pairRecordingSpecName))
+	var tamperSpec map[string]interface{}
+	_ = json.Unmarshal(specBlob, &tamperSpec)
+	tamperSpec["input_manifest"].(map[string]interface{})["root"] = tamperRoot
+	tamperSpec["run"].(map[string]interface{})["state_dir"] = filepath.Join(f.parent, "tamper-observation-state")
+	if got := runPairReplayAdapter(t, f.repo, tamperSpec, f.env(true)); got.Code == 0 && got.Out.Comparison != nil && got.Out.Comparison.Eligible {
+		t.Fatal("an edited observation in the sealed log must be refused")
+	}
+}
+
+func TestBasketReplayPairPaperResearchOracleStandaloneFunding(t *testing.T) {
+	t.Parallel()
+	f, target, dir, p := pairPaperResearchSealedRun(t, "paper-research-standalone")
+	exportDir := filepath.Join(dir, pairPaperExportDirName)
+	blob, err := os.ReadFile(filepath.Join(exportDir, pairRecordingSpecName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repro map[string]interface{}
+	if err := json.Unmarshal(blob, &repro); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(f.parent, "standalone-inputs")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	objects := repro["input_manifest"].(map[string]interface{})["objects"].([]interface{})
+	for _, o := range objects {
+		path := o.(map[string]interface{})["path"].(string)
+		raw, err := os.ReadFile(filepath.Join(exportDir, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, path), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fundingRaw, err := os.ReadFile(filepath.Join(root, "funding.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := pairDecodeFundingDocument(fundingRaw)
+	if err != nil || doc.Research == nil || len(doc.Research.Observations) != 1 || doc.Research.Policy.FromMs != f.fromMs || doc.Research.Policy.DrainThroughMs != f.drain {
+		t.Fatalf("the exported funding object is a strict version 2 document with the policy and its observation: %v", err)
+	}
+	delete(repro, "recording")
+	repro["input_manifest"].(map[string]interface{})["root"] = root
+	repro["run"].(map[string]interface{})["state_dir"] = filepath.Join(f.parent, "standalone-state")
+	repro["run"].(map[string]interface{})["source"] = map[string]string{"funding": "exported research funding document"}
+	got := runPairReplayAdapter(t, f.repo, repro, f.env(true))
+	if (got.Code != 0 && got.Code != 1) || got.Out.Refusal != nil {
+		t.Fatalf("the standalone frozen research replay runs without a refusal, got exit %d refusal %+v error %q\nstderr tail=%s", got.Code, got.Out.Refusal, got.Out.Error, tail(got.Stderr, 4000))
+	}
+	for _, reason := range got.Out.IncompleteReasons {
+		if strings.Contains(reason, "funding") {
+			t.Fatalf("the standalone frozen research replay has no funding gap: %v", got.Out.IncompleteReasons)
+		}
+	}
+	paperRow, paperEvent := pairPaperResearchEvent(t, p.Out, target+3)
+	row, ev := pairPaperResearchEvent(t, got.Out, target+3)
+	if row["status"] != pairFundingStatusApplied || ev.USDAmount != paperEvent.USDAmount || ev.NativeAmount != paperEvent.NativeAmount || ev.PriceHash != paperEvent.PriceHash ||
+		ev.Research == nil || ev.Research.ObservationRecordHash != paperEvent.Research.ObservationRecordHash || row["usd_amount"] != paperRow["usd_amount"] {
+		t.Fatalf("the frozen version 2 document settles the selected-rule amount the recorded run settled: %+v vs %+v", ev, paperEvent)
+	}
+	refusals := map[string]func(m map[string]interface{}){
+		"policy digest": func(m map[string]interface{}) { m["policy_digest"] = strings.Repeat("1", 64) },
+		"policy bounds": func(m map[string]interface{}) {
+			m["policy"].(map[string]interface{})["drain_through_ms"] = json.Number(strconv.FormatInt(f.drain+1, 10))
+		},
+		"observation price": func(m map[string]interface{}) {
+			m["observations"].([]interface{})[0].(map[string]interface{})["price"] = "60011.5"
+		},
+		"observation target": func(m map[string]interface{}) {
+			m["observations"].([]interface{})[0].(map[string]interface{})["target_event_ms"] = json.Number(strconv.FormatInt(target+3600000, 10))
+		},
+	}
+	names := make([]string, 0, len(refusals))
+	for name := range refusals {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		dec := json.NewDecoder(bytes.NewReader(fundingRaw))
+		dec.UseNumber()
+		var m map[string]interface{}
+		if err := dec.Decode(&m); err != nil {
+			t.Fatal(err)
+		}
+		refusals[name](m)
+		edited, err := pairCanonicalJSON(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bad := filepath.Join(f.parent, "standalone-"+strings.ReplaceAll(name, " ", "-"))
+		if err := exec.Command("cp", "-R", root, bad).Run(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bad, "funding.json"), edited, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		spec := map[string]interface{}{}
+		_ = json.Unmarshal(blob, &spec)
+		delete(spec, "recording")
+		im := spec["input_manifest"].(map[string]interface{})
+		im["root"] = bad
+		for _, o := range im["objects"].([]interface{}) {
+			if obj := o.(map[string]interface{}); obj["path"] == "funding.json" {
+				obj["sha256"], obj["size_bytes"] = sha256Hex(edited), len(edited)
+			}
+		}
+		spec["run"].(map[string]interface{})["state_dir"] = filepath.Join(f.parent, "standalone-state-"+strings.ReplaceAll(name, " ", "-"))
+		got := runPairReplayAdapter(t, f.repo, spec, f.env(true))
+		if got.Code != basketReplayExitRefused {
+			t.Fatalf("%s: an edited frozen research document is refused before trading, got exit %d %+v", name, got.Code, got.Out.Refusal)
+		}
+	}
+}
+
+type pairPaperOracleOutcome struct {
+	starts     []pairRecRow
+	ends       []pairRecRow
+	admitted   []pairFundingOracleObservation
+	refusedSeq []int64
+	chainSeqs  map[int64]string
+}
+
+func pairPaperOracleOutcomeOf(t *testing.T, dir, runID string) pairPaperOracleOutcome {
+	t.Helper()
+	rows := pairPaperLogRows(t, dir, runID)
+	out := pairPaperOracleOutcome{chainSeqs: map[int64]string{}}
+	byCall := map[string]pairRecRow{}
+	for _, r := range rows {
+		switch {
+		case r.Kind == pairRecEventStart && r.Event.Start.Kind == pairRecKindFundingOracle:
+			out.starts = append(out.starts, r)
+			byCall[r.CallID] = r
+		case r.Kind == pairRecEventEnd:
+			if _, ok := byCall[r.CallID]; ok {
+				out.ends = append(out.ends, r)
+			}
+		}
+	}
+	db, err := openStateDBReadOnly(filepath.Join(dir, basketReplayDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	q, err := db.db.Query(`SELECT seq, batch_json FROM pair_funding_chain ORDER BY seq`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	for q.Next() {
+		var seq int64
+		var raw string
+		if err := q.Scan(&seq, &raw); err != nil {
+			t.Fatal(err)
+		}
+		b, err := pairDecodeFundingBatch([]byte(raw))
+		if err != nil {
+			t.Fatalf("saved chain batch %d: %v", seq, err)
+		}
+		out.chainSeqs[seq] = b.BatchHash
+		if b.Research != nil {
+			out.admitted = append(out.admitted, b.Research.Observations...)
+		}
+	}
+	for _, e := range out.ends {
+		if e.Event.End.Class != pairRecClassResult {
+			continue
+		}
+		b, err := pairDecodeFundingBatch(e.Event.End.Result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.chainSeqs[b.Seq] != b.BatchHash {
+			out.refusedSeq = append(out.refusedSeq, b.Seq)
+		}
+	}
+	return out
+}
+
+func TestBasketReplayPairPaperResearchOracleTiming(t *testing.T) {
+	t.Run("decisions use only the saved wake", func(t *testing.T) {
+		e := newPairTestEnv(t, nil)
+		target := int64(1_800_003_600_000)
+		policy := pairFundingPolicyV1{Version: pairFundingPolicyVersion, MemberRules: map[string]string{pairTestHL: pairFundingRuleHLReceiptResearch, pairTestOKX: pairFundingRuleOKX},
+			WindowMs: 5000, MaxPrintOffsetMs: 60000, PrepareLeadMs: 30000, FromMs: target - 120000, DrainThroughMs: target + 7200000}
+		prepare, _ := pairPaperOraclePrepareAt(target, policy)
+		deadline, _ := pairFundingOracleDeadline(policy, target)
+		clock := filepath.Join(t.TempDir(), "clock")
+		prevWall := pairPaperWall
+		t.Cleanup(func() { pairPaperWall = prevWall })
+		decide := func(wake pairRecWake, wallMs int64) ([]string, int64) {
+			if err := os.WriteFile(clock, []byte(strconv.FormatInt(wallMs, 10)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			pairPaperWall = &pairPaperTestWall{path: clock, ms: wallMs}
+			rec := newPairRecorder(pairRecLive, "timing-run", "paper", "contract", nil, &simulatedClock{}, pairRecFaults{})
+			r := &pairReplayRuntime{rt: e.rt(), rec: rec, oracleNextMs: target, paper: &pairPaperRun{scenario: pairPaperScenario{FundingPolicy: &policy}}}
+			trace := r.deliverOracle(wake)
+			return trace, r.oracleNextMs
+		}
+		cases := []struct {
+			name string
+			wake pairRecWake
+			want string
+			next int64
+		}{
+			{"before preparation", pairRecWake{WallMs: prepare - 1}, "", target},
+			{"past the deadline", pairRecWake{WallMs: deadline + 1}, "oracle_missed", target + 3600000},
+			{"raw backward wake", pairRecWake{WallMs: prepare + 1000, ClockBackward: true}, "oracle_missed", target + 3600000},
+		}
+		for _, c := range cases {
+			for _, wall := range []int64{c.wake.WallMs - 600000, c.wake.WallMs + 600000} {
+				trace, next := decide(c.wake, wall)
+				if strings.Join(trace, ",") != c.want || next != c.next {
+					t.Fatalf("%s at wall %d: want trace %q next %d, got %v next %d", c.name, wall, c.want, c.next, trace, next)
+				}
+			}
+		}
+		late := policy
+		late.DrainThroughMs = target + 3000
+		rec := newPairRecorder(pairRecLive, "timing-run", "paper", "contract", nil, &simulatedClock{}, pairRecFaults{})
+		r := &pairReplayRuntime{rt: e.rt(), rec: rec, oracleNextMs: target, paper: &pairPaperRun{scenario: pairPaperScenario{FundingPolicy: &late}}}
+		if trace := r.deliverOracle(pairRecWake{WallMs: target + 3001}); strings.Join(trace, ",") != "oracle_missed" || r.oracleNextMs != 0 {
+			t.Fatalf("drain clips the deadline to drain_through_ms and no later hour exists, got %v next %d", trace, r.oracleNextMs)
+		}
+	})
+	type paperCase struct {
+		opts      pairPaperResearchOptions
+		admitted  bool
+		noStart   bool
+		resultEnd bool
+		check     func(t *testing.T, target int64, o pairPaperOracleOutcome)
+	}
+	short := func(more map[string]interface{}) pairPaperResearchOptions {
+		return pairPaperResearchOptions{fromBefore: 32000, throughAt: 10000, drainAt: 20000, convergeAt: 1, fixtureMore: more}
+	}
+	cases := map[string]paperCase{
+		"sample at the hour": {opts: short(nil), admitted: true, resultEnd: true, check: func(t *testing.T, target int64, o pairPaperOracleOutcome) {
+			if o.admitted[0].RequestMs != target || o.starts[0].Event.Start.RawStartMs < target-30000 {
+				t.Fatalf("the reader starts at preparation and requests at the hour: start %d request %d", o.starts[0].Event.Start.RawStartMs, o.admitted[0].RequestMs)
+			}
+		}},
+		"receipt with completion inside the deadline": {opts: short(map[string]interface{}{"oracle_response_delay_ms": 4960}), admitted: true, resultEnd: true, check: func(t *testing.T, target int64, o pairPaperOracleOutcome) {
+			if c := o.ends[0].Event.End.RawCompletionMs; o.admitted[0].ReceiptMs != target+4960 || c > target+5000 {
+				t.Fatalf("receipt %d and completion %d stay inside the deadline", o.admitted[0].ReceiptMs, c)
+			}
+		}},
+		"receipt at the deadline with late completion": {opts: short(map[string]interface{}{"oracle_response_delay_ms": 5000}), resultEnd: true, check: func(t *testing.T, target int64, o pairPaperOracleOutcome) {
+			if c := o.ends[0].Event.End.RawCompletionMs; c <= target+5000 {
+				t.Fatalf("the parent completion %d lies after the deadline in this case", c)
+			}
+			if len(o.refusedSeq) != 1 {
+				t.Fatalf("the late terminal batch stays only in the recording, got refused %v", o.refusedSeq)
+			}
+			if _, reused := o.chainSeqs[o.refusedSeq[0]]; !reused {
+				t.Fatalf("the next accepted batch reuses the refused sequence %d: %v", o.refusedSeq[0], o.chainSeqs)
+			}
+		}},
+		"receipt after the deadline": {opts: short(map[string]interface{}{"oracle_response_delay_ms": 5001})},
+		"request before the hour":    {opts: short(map[string]interface{}{"oracle_context_mode": "oracle_envelope_override"})},
+		"backward terminal":          {opts: short(map[string]interface{}{"oracle_clock_jump_ms": -10000})},
+		"testnet host":               {opts: short(map[string]interface{}{"oracle_context_mode": "wrong_host"})},
+		"missing context":            {opts: short(map[string]interface{}{"oracle_context_mode": "missing_oracle"})},
+		"setup consumes the lead": {opts: short(map[string]interface{}{"oracle_setup_delay_ms": 31000}), admitted: true, resultEnd: true, check: func(t *testing.T, target int64, o pairPaperOracleOutcome) {
+			if o.admitted[0].RequestMs <= target {
+				t.Fatalf("late setup moves the request after the hour, got %d", o.admitted[0].RequestMs)
+			}
+		}},
+		"first wake after the hour":  {opts: pairPaperResearchOptions{fromBefore: 32000, throughAt: 10000, drainAt: 20000, convergeAt: 1, clockAt: 2000}, admitted: true, resultEnd: true},
+		"startup after the deadline": {opts: pairPaperResearchOptions{fromBefore: 32000, throughAt: 10000, drainAt: 20000, convergeAt: 1, clockAt: 6000}, noStart: true},
+		"drain clips the deadline":   {opts: pairPaperResearchOptions{fromBefore: 32000, throughAt: -10000, drainAt: 3000, convergeAt: 1, fixtureMore: map[string]interface{}{"oracle_response_delay_ms": 2900}}, admitted: true, resultEnd: true},
+		"receipt after the drain":    {opts: pairPaperResearchOptions{fromBefore: 32000, throughAt: -10000, drainAt: 3000, convergeAt: 1, fixtureMore: map[string]interface{}{"oracle_response_delay_ms": 3100}}},
+	}
+	names := make([]string, 0, len(cases))
+	for name := range cases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	slots := make(chan struct{}, 4)
+	for _, name := range names {
+		c := cases[name]
+		name := name
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			c.opts.runID = "paper-timing-" + strings.ReplaceAll(name, " ", "-")
+			f, target := newPairPaperResearchFixture(t, c.opts)
+			dir := filepath.Join(f.parent, "paper")
+			p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false))
+			if p.Code == basketReplayExitRefused || p.Out.Run == nil || !p.Out.Run.Finished {
+				t.Fatalf("the timing run finishes, got exit %d %+v %+v\nstderr tail=%s", p.Code, p.Out.Refusal, p.Out.Run, tail(p.Stderr, 4000))
+			}
+			o := pairPaperOracleOutcomeOf(t, dir, f.runID)
+			if c.noStart {
+				if len(o.starts) != 0 || len(o.admitted) != 0 {
+					t.Fatalf("a first wake after the deadline makes no outside call, got %d starts", len(o.starts))
+				}
+				return
+			}
+			if len(o.starts) != 1 || len(o.ends) != 1 {
+				t.Fatalf("the hour has exactly one committed attempt with one terminal, got %d starts and %d ends", len(o.starts), len(o.ends))
+			}
+			if got := o.ends[0].Event.End.Class == pairRecClassResult; got != c.resultEnd {
+				t.Fatalf("terminal class %s (cause %q), want result=%v", o.ends[0].Event.End.Class, o.ends[0].Event.End.Cause, c.resultEnd)
+			}
+			if (len(o.admitted) == 1) != c.admitted || len(o.admitted) > 1 {
+				t.Fatalf("admitted observations %+v, want admitted=%v", o.admitted, c.admitted)
+			}
+			if c.admitted {
+				deadline, _ := pairFundingOracleDeadline(*f.scenario.FundingPolicy, target)
+				if obs := o.admitted[0]; obs.TargetEventMs != target || obs.RequestMs < target || obs.ReceiptMs > deadline || o.ends[0].Event.End.RawCompletionMs > deadline {
+					t.Fatalf("an admitted sample lies inside [%d, %d]: %+v", target, deadline, obs)
+				}
+			}
+			if c.check != nil {
+				c.check(t, target, o)
+			}
+		})
 	}
 }

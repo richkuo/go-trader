@@ -37,9 +37,12 @@ type pairFundingHashMemo struct {
 }
 
 type pairFundingAppliedRef struct {
-	EventMs      int64
-	SourceHash   string
-	EvidenceHash string
+	EventMs                  int64
+	SourceHash               string
+	EvidenceHash             string
+	PolicyDigest             string
+	ObservationRecordHash    string
+	ObservationTargetEventMs int64
 }
 
 type pairFundingIncomplete struct {
@@ -58,7 +61,7 @@ type pairFundingIncomplete struct {
 
 type pairFundingApplication struct {
 	MemberID string
-	Event    pairFundingEvent
+	Event    pairFundingEventValue
 	JSON     []byte
 	AtMs     int64
 }
@@ -71,18 +74,25 @@ type pairFundingChainRow struct {
 	JSON      []byte
 }
 
+type pairFundingVenueEventKey struct {
+	Key     pairEvidenceKey
+	EventID string
+}
+
 type pairFundingRuntime struct {
-	source     pairFundingSource
-	binding    []byte
-	contract   string
-	members    map[string]*pairFundingMember
-	applied    map[string]pairFundingAppliedRef
-	pending    map[string]*pairFundingApplication
-	incomplete map[string]*pairFundingIncomplete
-	chainHead  int64
-	chainSaved []pairFundingChainRow
-	hashes     map[string]pairFundingHashMemo
-	hashMisses int64
+	source            pairFundingSource
+	binding           []byte
+	contract          string
+	members           map[string]*pairFundingMember
+	applied           map[string]pairFundingAppliedRef
+	pending           map[string]*pairFundingApplication
+	incomplete        map[string]*pairFundingIncomplete
+	appliedVenueRules map[pairFundingVenueEventKey]string
+	pendingVenueRules map[pairFundingVenueEventKey]string
+	chainHead         int64
+	chainSaved        []pairFundingChainRow
+	hashes            map[string]pairFundingHashMemo
+	hashMisses        int64
 }
 
 func (f *pairFundingRuntime) sourceHash(r pairFundingRate) (string, error) {
@@ -106,7 +116,7 @@ func pairFundingKeyOf(memberID, eventID, rule string) string {
 func newPairFundingRuntime(adm *pairResearchAdmission, c basketContract) *pairFundingRuntime {
 	f := &pairFundingRuntime{source: adm.funding, binding: append([]byte(nil), adm.fundingBinding...), contract: c.Fingerprint(),
 		members: map[string]*pairFundingMember{}, applied: map[string]pairFundingAppliedRef{}, pending: map[string]*pairFundingApplication{}, incomplete: map[string]*pairFundingIncomplete{},
-		hashes: map[string]pairFundingHashMemo{}}
+		appliedVenueRules: map[pairFundingVenueEventKey]string{}, pendingVenueRules: map[pairFundingVenueEventKey]string{}, hashes: map[string]pairFundingHashMemo{}}
 	coins := map[string]string{}
 	for _, m := range c.Members {
 		coins[m.StrategyID] = m.Coin
@@ -297,6 +307,9 @@ func (bc *basketCoordinator) stepPairFunding(rt *basketRuntime, in basketCycleIn
 		applied += n
 		changed = changed || c
 	}
+	if pairFundingSourcePolicy(f.source) != nil {
+		changed = bc.drainPairFundingIntegrity(rt, now) || changed
+	}
 	if applied > 0 {
 		rt.touchPairProgress()
 		if err := bc.store.SavePartition(bc.state, rt.Partition); err != nil {
@@ -450,24 +463,68 @@ func (m *pairFundingMember) positionBefore(t int64) string {
 	return best.PositionID
 }
 
-func pairFundingUnknownAmount(lo, hi *big.Rat, rule pairFundingRule, ruleOK bool, rate pairDecimal, prices []pairFundingPrice, t int64) string {
+func pairFundingObservationFor(observations []pairFundingOracleObservation, key pairEvidenceKey, eventMs, cutoffMs int64, policy pairFundingPolicyV1) (pairFundingOracleObservation, string) {
+	target, ok := pairFundingResearchTarget(eventMs, policy)
+	if !ok {
+		return pairFundingOracleObservation{}, ""
+	}
+	digest, err := pairFundingPolicyDigest(policy)
+	if err != nil {
+		return pairFundingOracleObservation{}, err.Error()
+	}
+	byHash := map[string]pairFundingOracleObservation{}
+	for _, o := range observations {
+		if o.Key != key || o.TargetEventMs != target || o.VisibleMs > cutoffMs || o.PolicyDigest != digest {
+			continue
+		}
+		if err := pairFundingValidateObservation(o, policy); err != nil {
+			return pairFundingOracleObservation{}, err.Error()
+		}
+		byHash[o.RecordHash] = o
+	}
+	if len(byHash) == 0 {
+		return pairFundingOracleObservation{}, ""
+	}
+	if len(byHash) > 1 {
+		hashes := make([]string, 0, len(byHash))
+		for hash := range byHash {
+			hashes = append(hashes, hash)
+		}
+		sort.Strings(hashes)
+		return pairFundingOracleObservation{}, fmt.Sprintf("conflicting oracle observations for %s at target %d: %s and %s", key, target, shortFingerprint(hashes[0]), shortFingerprint(hashes[1]))
+	}
+	for _, o := range byHash {
+		return o, ""
+	}
+	return pairFundingOracleObservation{}, ""
+}
+
+func pairFundingUnknownAmount(lo, hi *big.Rat, rule pairFundingRule, ruleOK bool, rate pairDecimal, prices []pairFundingPrice, observations []pairFundingOracleObservation, t, cutoffMs int64, policy *pairFundingPolicyV1, key pairEvidenceKey) string {
 	out := fmt.Sprintf("the signed base position before %d lies between %s and %s", t, pairDecimalOfRat(lo), pairDecimalOfRat(hi))
 	if !ruleOK {
 		return out + "; the charge is unknown"
 	}
-	price, why := pairFundingPriceFor(prices, rule.PriceKind, t)
+	px := pairDecimal("")
+	why := ""
+	if rule.RuleVersion == pairFundingRuleHLReceiptResearch && policy != nil {
+		observation, conflict := pairFundingObservationFor(observations, key, t, cutoffMs, *policy)
+		px, why = observation.Price, conflict
+	} else {
+		price, conflict := pairFundingPriceFor(prices, rule.PriceKind, t)
+		px, why = price.Price, conflict
+	}
 	rateRat, rerr := rate.rat()
-	if why != "" || price.EvidenceID == "" || rerr != nil {
+	pxRat, perr := px.rat()
+	if why != "" || rerr != nil || perr != nil || pxRat.Sign() <= 0 {
 		return out + "; the charge is unknown"
 	}
-	pxRat, _ := price.Price.rat()
 	one := big.NewRat(1, 1)
 	a, _, err1 := pairFundingAmounts(lo, pxRat, rateRat, one)
 	b, _, err2 := pairFundingAmounts(hi, pxRat, rateRat, one)
 	if err1 != nil || err2 != nil {
 		return out + "; the charge is unknown"
 	}
-	return fmt.Sprintf("%s; the unknown native charge lies between %s and %s %s (rate %s, %s price %s)", out, a, b, rule.Currency, rate, rule.PriceKind, price.Price)
+	return fmt.Sprintf("%s; the unknown native charge lies between %s and %s %s (rate %s, %s price %s)", out, a, b, rule.Currency, rate, rule.PriceKind, px)
 }
 
 func pairFundingPriceFor(prices []pairFundingPrice, kind string, atMs int64) (pairFundingPrice, string) {
@@ -513,6 +570,34 @@ func pairFundingCoverageGaps(cov []pairFundingCoverageRecord, requested []pairFu
 	return pairFundingIntersect(proven, requested), gaps
 }
 
+func pairFundingObservationIntegrity(policy *pairFundingPolicyV1, rate pairFundingRate, observations []pairFundingOracleObservation, cutoffMs int64, expectedHash string) string {
+	if expectedHash == "" || policy == nil {
+		return ""
+	}
+	if rule, ok := pairFundingSelectedRateRule(policy, rate); !ok || rule.RuleVersion != pairFundingRuleHLReceiptResearch {
+		return ""
+	}
+	observation, conflict := pairFundingObservationFor(observations, rate.Key, rate.EventMs, cutoffMs, *policy)
+	if conflict != "" {
+		return fmt.Sprintf("funding event %s has %s", rate.EventID, conflict)
+	}
+	if observation.RecordHash != "" && observation.RecordHash != expectedHash {
+		return fmt.Sprintf("funding event %s used observation %s, but admitted evidence now selects %s", rate.EventID, shortFingerprint(expectedHash), shortFingerprint(observation.RecordHash))
+	}
+	return ""
+}
+
+func pairFundingVenueRuleCollision(f *pairFundingRuntime, key pairEvidenceKey, eventID, rule string) (string, bool) {
+	venueKey := pairFundingVenueEventKey{Key: key, EventID: eventID}
+	if owner, ok := f.appliedVenueRules[venueKey]; ok && owner != rule {
+		return owner, true
+	}
+	if owner, ok := f.pendingVenueRules[venueKey]; ok && owner != rule {
+		return owner, true
+	}
+	return "", false
+}
+
 func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairFundingRuntime, m *pairFundingMember, got pairFundingCollected, now time.Time) (int, bool) {
 	nowMs := now.UnixMilli()
 	changed := false
@@ -521,6 +606,8 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 	if s == nil {
 		return 0, false
 	}
+	policy := pairFundingSourcePolicy(f.source)
+	records := pairFundingSourceRecordSet(f.source)
 	hInv := bc.pairInventoryThrough(rt, m)
 	rates, conflicts := pairFundingDedupeRates(got.Rates, f.sourceHash)
 	for _, r := range got.Rates {
@@ -537,11 +624,21 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 			if ref.SourceHash != sh {
 				m.integrity = append(m.integrity, fmt.Sprintf("funding event %s was applied from source %s, but the input now carries source %s for the same identity", r.EventID, shortFingerprint(ref.SourceHash), shortFingerprint(sh)))
 			}
+			if msg := pairFundingObservationIntegrity(policy, r, got.Observations, nowMs, ref.ObservationRecordHash); msg != "" {
+				m.integrity = append(m.integrity, msg)
+			}
 			continue
 		}
 		if app, ok := f.pending[key]; ok {
 			if app.Event.SourceHash != sh {
 				m.integrity = append(m.integrity, fmt.Sprintf("funding event %s is staged from source %s, but the input now carries source %s", r.EventID, shortFingerprint(app.Event.SourceHash), shortFingerprint(sh)))
+			}
+			expectedHash := ""
+			if app.Event.Research != nil {
+				expectedHash = app.Event.Research.ObservationRecordHash
+			}
+			if msg := pairFundingObservationIntegrity(policy, r, got.Observations, nowMs, expectedHash); msg != "" {
+				m.integrity = append(m.integrity, msg)
 			}
 			continue
 		}
@@ -557,6 +654,9 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 		}
 		t := r.EventMs
 		rule, ruleOK := pairFundingRuleFor(r.RuleVersion)
+		if policy != nil {
+			rule, ruleOK = pairFundingSelectedRateRule(policy, r)
+		}
 		window := int64(0)
 		if ruleOK {
 			window = rule.AssessmentWindowMs
@@ -587,12 +687,12 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 		q, amb := m.qtyBefore(t)
 		if amb {
 			lo, hi := m.qtyRangeAt(t, 0)
-			changed = bc.noteFundingUnresolvable(rt, f, m, r, sh, pairFundingReasonFillTime, fmt.Sprintf("a saved inventory change has an unknown time around %d; %s", t, pairFundingUnknownAmount(lo, hi, rule, ruleOK, r.Rate, got.Prices, t)), now) || changed
+			changed = bc.noteFundingUnresolvable(rt, f, m, r, sh, pairFundingReasonFillTime, fmt.Sprintf("a saved inventory change has an unknown time around %d; %s", t, pairFundingUnknownAmount(lo, hi, rule, ruleOK, r.Rate, got.Prices, got.Observations, t, nowMs, policy, m.key)), now) || changed
 			continue
 		}
 		if window > 0 && m.windowTouched(t, window) {
 			lo, hi := m.qtyRangeAt(t, window)
-			changed = bc.noteFundingUnresolvable(rt, f, m, r, sh, pairFundingReasonAssessment, fmt.Sprintf("an inventory change may lie inside the venue assessment window [%d, %d); %s", t, t+window, pairFundingUnknownAmount(lo, hi, rule, ruleOK, r.Rate, got.Prices, t)), now) || changed
+			changed = bc.noteFundingUnresolvable(rt, f, m, r, sh, pairFundingReasonAssessment, fmt.Sprintf("an inventory change may lie inside the venue assessment window [%d, %d); %s", t, t+window, pairFundingUnknownAmount(lo, hi, rule, ruleOK, r.Rate, got.Prices, got.Observations, t, nowMs, policy, m.key)), now) || changed
 			continue
 		}
 		if q.Sign() == 0 {
@@ -601,7 +701,7 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 		}
 		positionID := m.positionBefore(t)
 		if positionID == "" {
-			changed = bc.noteFundingUnresolvable(rt, f, m, r, sh, pairFundingReasonPositionUnknown, fmt.Sprintf("the saved inventory history holds %s base before %d but names no position identity; %s", pairDecimalOfRat(q), t, pairFundingUnknownAmount(q, q, rule, ruleOK, r.Rate, got.Prices, t)), now) || changed
+			changed = bc.noteFundingUnresolvable(rt, f, m, r, sh, pairFundingReasonPositionUnknown, fmt.Sprintf("the saved inventory history holds %s base before %d but names no position identity; %s", pairDecimalOfRat(q), t, pairFundingUnknownAmount(q, q, rule, ruleOK, r.Rate, got.Prices, got.Observations, t, nowMs, policy, m.key)), now) || changed
 			continue
 		}
 		if !ruleOK {
@@ -631,12 +731,20 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 			changed = bc.noteFundingIncomplete(rt, f, m, r, sh, pairFundingReasonCoverageGap, fmt.Sprintf("funding coverage does not prove (%d, %d] complete: gap (%d, %d] %s", prev, t, gaps[0].FromMs, gaps[0].ThroughMs, gaps[0].Reason), now) || changed
 			continue
 		}
-		price, why := pairFundingPriceFor(got.Prices, rule.PriceKind, t)
+		nativeMark, priceHash, priceVisible, why := pairDecimal(""), "", int64(0), ""
+		var observation pairFundingOracleObservation
+		if rule.RuleVersion == pairFundingRuleHLReceiptResearch {
+			observation, why = pairFundingObservationFor(got.Observations, m.key, t, nowMs, *policy)
+			nativeMark, priceHash, priceVisible = observation.Price, observation.RecordHash, observation.VisibleMs
+		} else {
+			price, conflict := pairFundingPriceFor(got.Prices, rule.PriceKind, t)
+			nativeMark, priceHash, priceVisible, why = price.Price, price.RecordHash, price.VisibleMs, conflict
+		}
 		if why != "" {
 			changed = bc.noteFundingIncomplete(rt, f, m, r, sh, pairFundingReasonConflict, why, now) || changed
 			continue
 		}
-		if price.EvidenceID == "" {
+		if priceHash == "" {
 			changed = bc.noteFundingIncomplete(rt, f, m, r, sh, pairFundingReasonPriceMissing, fmt.Sprintf("no %s price at %d was visible by %d", rule.PriceKind, t, nowMs), now) || changed
 			continue
 		}
@@ -646,7 +754,7 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 			continue
 		}
 		rateRat, _ := r.Rate.rat()
-		pxRat, _ := price.Price.rat()
+		pxRat, _ := nativeMark.rat()
 		convRat, _ := conv.RateUSD.rat()
 		native, usd, aerr := pairFundingAmounts(q, pxRat, rateRat, convRat)
 		if aerr != nil {
@@ -654,7 +762,7 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 			continue
 		}
 		visible := r.VisibleMs
-		for _, v := range []int64{price.VisibleMs, conv.FirstReceiptMs, conv.ObservedMs} {
+		for _, v := range []int64{priceVisible, conv.FirstReceiptMs, conv.ObservedMs} {
 			if v > visible {
 				visible = v
 			}
@@ -665,16 +773,26 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 			}
 		}
 		ev := pairFundingEvent{V: pairFundingEventVersion, Key: m.key, EventID: r.EventID, RuleVersion: r.RuleVersion, EventMs: t, VisibleMs: visible,
-			SignedBaseQty: pairDecimalOfRat(q), NativeMark: price.Price, Rate: r.Rate, Currency: rule.Currency, NativeAmount: pairDecimal(native), USDAmount: pairDecimal(usd),
-			Conversion: conv, SourceHash: sh, PriceHash: price.RecordHash,
+			SignedBaseQty: pairDecimalOfRat(q), NativeMark: nativeMark, Rate: r.Rate, Currency: rule.Currency, NativeAmount: pairDecimal(native), USDAmount: pairDecimal(usd),
+			Conversion: conv, SourceHash: sh, PriceHash: priceHash,
 			Coverage: pairFundingCoverage{V: pairFundingCoverageVersion, Key: m.key, RequestedFromMs: prev, RequestedThroughMs: t, Proven: proven, Gaps: []pairCoverageGap{}, InventoryThroughMs: hInv, SourceKind: got.SourceKind, SourceID: got.SourceID, CutoffMs: nowMs}}
-		sealed, err := ev.sealed()
+		value := pairFundingEventValue{pairFundingEvent: ev}
+		if rule.RuleVersion == pairFundingRuleHLReceiptResearch {
+			digest, err := pairFundingPolicyDigest(*policy)
+			if err != nil {
+				changed = bc.noteFundingIncomplete(rt, f, m, r, sh, pairFundingReasonArithmetic, err.Error(), now) || changed
+				continue
+			}
+			ev.V = pairFundingResearchEventVersion
+			value = pairFundingEventV3Value(pairFundingEventV3{pairFundingEvent: ev, PolicyDigest: digest, ObservationEvidenceID: observation.EvidenceID, ObservationRecordHash: observation.RecordHash, ObservationTargetEventMs: observation.TargetEventMs, ObservationRequestMs: observation.RequestMs, ObservationReceiptMs: observation.ReceiptMs, ObservationTimeBasis: observation.TimeBasis})
+		}
+		sealed, err := value.sealed()
 		if err == nil {
-			err = pairFundingValidateEvent(sealed)
+			err = pairFundingValidateSelectedEvent(sealed, policy, records)
 		}
 		var raw []byte
 		if err == nil {
-			raw, err = pairCanonicalJSON(sealed)
+			raw, err = pairFundingEventValueBytes(sealed)
 		}
 		if err != nil {
 			changed = bc.noteFundingIncomplete(rt, f, m, r, sh, pairFundingReasonArithmetic, "the funding event failed its own checks: "+err.Error(), now) || changed
@@ -686,16 +804,34 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 			changed = bc.noteFundingIncomplete(rt, f, m, r, sh, pairFundingReasonArithmetic, "the USD amount has no finite float projection", now) || changed
 			continue
 		}
-		bc.stagePairFunding(rt, f, m, s, sealed, raw, amount, positionID, now)
-		applied++
-		changed = true
+		if owner, collision := pairFundingVenueRuleCollision(f, m.key, r.EventID, r.RuleVersion); collision {
+			m.integrity = append(m.integrity, fmt.Sprintf("funding event %s for %s is already owned by rule %s; rule %s cannot apply a second charge", r.EventID, m.key, owner, r.RuleVersion))
+			continue
+		}
+		if bc.stagePairFunding(rt, f, m, s, sealed, raw, amount, positionID, now) {
+			applied++
+			changed = true
+		}
 	}
 	changed = bc.notePairFundingGaps(rt, m, got, hInv, nowMs) || changed
 	return applied, changed
 }
 
-func (bc *basketCoordinator) stagePairFunding(rt *basketRuntime, f *pairFundingRuntime, m *pairFundingMember, s *StrategyState, ev pairFundingEvent, raw []byte, amount float64, positionID string, now time.Time) {
+func (bc *basketCoordinator) stagePairFunding(rt *basketRuntime, f *pairFundingRuntime, m *pairFundingMember, s *StrategyState, ev pairFundingEventValue, raw []byte, amount float64, positionID string, now time.Time) bool {
 	key := pairFundingKeyOf(m.memberID, ev.EventID, ev.RuleVersion)
+	venueKey := pairFundingVenueEventKey{Key: ev.Key, EventID: ev.EventID}
+	if owner, ok := f.appliedVenueRules[venueKey]; ok {
+		if owner != ev.RuleVersion {
+			m.integrity = append(m.integrity, fmt.Sprintf("funding event %s for %s is already owned by rule %s; rule %s cannot apply a second charge", ev.EventID, ev.Key, owner, ev.RuleVersion))
+		}
+		return false
+	}
+	if owner, ok := f.pendingVenueRules[venueKey]; ok {
+		if owner != ev.RuleVersion {
+			m.integrity = append(m.integrity, fmt.Sprintf("funding event %s for %s is already staged by rule %s; rule %s cannot apply a second charge", ev.EventID, ev.Key, owner, ev.RuleVersion))
+		}
+		return false
+	}
 	delete(f.incomplete, key)
 	rt.Pair.Progress.clearObligation(pairObligationFundingIncomplete, m.memberID, ev.EventID+"|"+ev.RuleVersion)
 	prevDefer := s.deferTradePersist
@@ -709,7 +845,7 @@ func (bc *basketCoordinator) stagePairFunding(rt *basketRuntime, f *pairFundingR
 			PositionID:      positionID,
 			Side:            "funding",
 			TradeType:       TradeTypeFunding,
-			Details:         fmt.Sprintf("Pair funding %s on %s %s: -(qty %s x %s price %s x rate %s) = %s %s x %s USD/%s = $%s (rule %s)", ev.EventID, m.key.Provider, m.key.Instrument, ev.SignedBaseQty, pairFundingPriceKindOf(ev.RuleVersion), ev.NativeMark, ev.Rate, ev.NativeAmount, ev.Currency, ev.Conversion.RateUSD, ev.Currency, ev.USDAmount, ev.RuleVersion),
+			Details:         fmt.Sprintf("Pair funding %s on %s %s: -(qty %s x %s price %s x rate %s) = %s %s x %s USD/%s = $%s (rule %s)", ev.EventID, m.key.Provider, m.key.Instrument, ev.SignedBaseQty, pairFundingPriceKindOf(pairFundingSourcePolicy(f.source), ev.Key, ev.RuleVersion), ev.NativeMark, ev.Rate, ev.NativeAmount, ev.Currency, ev.Conversion.RateUSD, ev.Currency, ev.USDAmount, ev.RuleVersion),
 			ExchangeOrderID: pairFundingOrderIDPrefix + ev.RuleVersion + ":" + ev.EventID,
 			RealizedPnL:     amount,
 			PnLGross:        true,
@@ -717,10 +853,12 @@ func (bc *basketCoordinator) stagePairFunding(rt *basketRuntime, f *pairFundingR
 	})
 	s.deferTradePersist = prevDefer
 	f.pending[key] = &pairFundingApplication{MemberID: m.memberID, Event: ev, JSON: raw, AtMs: now.UnixMilli()}
+	f.pendingVenueRules[venueKey] = ev.RuleVersion
 	if ev.EventMs > m.maxAppliedMs {
 		m.maxAppliedMs = ev.EventMs
 	}
 	bc.pairLogf(rt, "member %s funding %s (%s) applied once: $%s", m.memberID, ev.EventID, ev.RuleVersion, ev.USDAmount)
+	return true
 }
 
 func (bc *basketCoordinator) notePairFundingGaps(rt *basketRuntime, m *pairFundingMember, got pairFundingCollected, hInv, nowMs int64) bool {
@@ -761,9 +899,9 @@ func (bc *basketCoordinator) notePairFundingGaps(rt *basketRuntime, m *pairFundi
 	return changed
 }
 
-func pairFundingPriceKindOf(rule string) string {
-	if r, ok := pairFundingRuleFor(rule); ok {
-		return r.PriceKind
+func pairFundingPriceKindOf(policy *pairFundingPolicyV1, key pairEvidenceKey, ruleVersion string) string {
+	if rule, ok := pairFundingSelectedRule(policy, key); ok && rule.RuleVersion == ruleVersion {
+		return rule.PriceKind
 	}
 	return "unknown"
 }

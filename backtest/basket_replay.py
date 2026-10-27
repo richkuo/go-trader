@@ -32,8 +32,10 @@ process outcome before use; the plan adds a `collection` block and the paper
 scenario fields, --config names the checked research egress file, --seal seals
 a finished run, and --max-steps stops a resumable chunk. A paper run has no
 wall timeout unless --timeout is given (offline keeps 3600 seconds). A plan with
-a `recording` reference replays a sealed recording offline. Every invocation
-writes a new --out file, so each chunk names its own result path.
+a `recording` reference replays a sealed recording offline and reads its
+manifest version. Funding policy belongs to paper plans, recording manifests
+and frozen funding documents. Every invocation writes a new --out file, so each
+chunk names its own result path.
 """
 
 import argparse
@@ -219,12 +221,18 @@ def build_pair_spec(plan, base, mode, research, objects):
     }
     if "collection" in plan:
         spec["collection"] = plan["collection"]
+    elif isinstance(plan["scenario"], dict) and "funding_policy" in plan["scenario"]:
+        raise ReplayPlanError("scenario.funding_policy belongs to a paper plan with a collection block; an offline replay reads the policy from its recording manifest or frozen funding document")
     if "recording" in plan:
         path = _resolve(base, plan["recording"]["path"])
         got = _sha256_file(path)
         if got != plan["recording"]["sha256"]:
             raise ReplayPlanError(f"recording {path!r} has sha256 {got}, the plan freezes {plan['recording']['sha256']}")
-        spec["recording"] = {"version": 1, "path": plan["recording"]["path"], "sha256": got, "size_bytes": os.path.getsize(path)}
+        with open(path) as fh:
+            manifest = json.load(fh, object_pairs_hook=_unique_pairs)
+        if not isinstance(manifest, dict) or manifest.get("kind") != "go-trader.paper-recording" or isinstance(manifest.get("v"), bool) or manifest.get("v") not in (1, 2):
+            raise ReplayPlanError("recording manifest must be a go-trader.paper-recording object of version 1 or 2")
+        spec["recording"] = {"version": manifest["v"], "path": plan["recording"]["path"], "sha256": got, "size_bytes": os.path.getsize(path)}
     return spec
 
 

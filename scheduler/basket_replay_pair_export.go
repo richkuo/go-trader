@@ -493,6 +493,9 @@ func (r *pairReplayRuntime) rawChecks(steps []pairReplayStoredStep) ([]string, [
 		if h, _ := row["evidence_hash"].(string); h != ev.EvidenceHash {
 			bad = append(bad, fmt.Sprintf("funding event %v row hash differs from its evidence", row["event_id"]))
 		}
+		if err := pairFundingValidateSelectedEvent(ev, pairFundingSourcePolicy(r.adm.funding), pairFundingSourceRecordSet(r.adm.funding)); err != nil {
+			bad = append(bad, fmt.Sprintf("funding event %v selected evidence: %v", row["event_id"], err))
+		}
 	}
 	ok = append(ok, fmt.Sprintf("%d applied funding events", len(frows)))
 	r.mu.RLock()

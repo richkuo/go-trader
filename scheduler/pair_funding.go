@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"sort"
@@ -12,18 +13,28 @@ import (
 )
 
 const (
-	pairFundingDocumentVersion = 1
-	pairFundingRecordVersion   = 1
-	pairFundingBatchVersion    = 1
-	pairFundingEventVersion    = 2
-	pairFundingCoverageVersion = 1
-	pairFundingBindingVersion  = 1
+	pairFundingDocumentVersion         = 1
+	pairFundingRecordVersion           = 1
+	pairFundingBatchVersion            = 1
+	pairFundingEventVersion            = 2
+	pairFundingCoverageVersion         = 1
+	pairFundingBindingVersion          = 1
+	pairFundingResearchDocumentVersion = 2
+	pairFundingResearchBatchVersion    = 2
+	pairFundingResearchEventVersion    = 3
+	pairFundingResearchBindingVersion  = 2
+	pairFundingObservationVersion      = 2
+	pairFundingPolicyVersion           = 1
 
-	pairFundingRuleHyperliquid = "hyperliquid_hourly_oracle_v1"
-	pairFundingRuleOKX         = "okx_swap_realized_mark_v1"
+	pairFundingRuleHyperliquid       = "hyperliquid_hourly_oracle_v1"
+	pairFundingRuleOKX               = "okx_swap_realized_mark_v1"
+	pairFundingRuleHLReceiptResearch = "hyperliquid_hourly_oracle_receipt_research_v1"
 
-	pairFundingPriceOracle = "oracle"
-	pairFundingPriceMark   = "mark"
+	pairFundingPriceOracle          = "oracle"
+	pairFundingPriceMark            = "mark"
+	pairFundingPriceOracleReceipt   = "oracle_receipt_research"
+	pairFundingObservationTimeBasis = "local_request_receipt"
+	pairFundingOracleProvenance     = "hyperliquid_info_metaAndAssetCtxs_oraclePx_receipt_research_v1@https://api.hyperliquid.xyz"
 
 	pairFundingSourceFrozen   = "frozen"
 	pairFundingSourceRecorded = "recorded"
@@ -272,6 +283,270 @@ type pairFundingBinding struct {
 	AnchorMs            int64             `json:"anchor_ms"`
 	RulesDigest         string            `json:"rules_digest"`
 	Rules               []string          `json:"rules"`
+}
+
+type pairFundingPolicyV1 struct {
+	Version          int               `json:"version"`
+	MemberRules      map[string]string `json:"member_rules"`
+	WindowMs         int64             `json:"window_ms"`
+	MaxPrintOffsetMs int64             `json:"max_print_offset_ms"`
+	PrepareLeadMs    int64             `json:"prepare_lead_ms"`
+	FromMs           int64             `json:"from_ms"`
+	DrainThroughMs   int64             `json:"drain_through_ms"`
+}
+
+type pairFundingOracleObservation struct {
+	V             int             `json:"v"`
+	Key           pairEvidenceKey `json:"key"`
+	EvidenceID    string          `json:"evidence_id"`
+	AttemptID     string          `json:"attempt_id"`
+	PolicyDigest  string          `json:"policy_digest"`
+	PriceKind     string          `json:"price_kind"`
+	TargetEventMs int64           `json:"target_event_ms"`
+	RequestMs     int64           `json:"request_ms"`
+	ReceiptMs     int64           `json:"receipt_ms"`
+	AtMs          int64           `json:"at_ms"`
+	VisibleMs     int64           `json:"visible_ms"`
+	TimeBasis     string          `json:"time_basis"`
+	Price         pairDecimal     `json:"price"`
+	Provenance    string          `json:"provenance"`
+	RecordHash    string          `json:"record_hash"`
+}
+
+type pairFundingDocumentV2 struct {
+	V            int                            `json:"v"`
+	SourceID     string                         `json:"source_id"`
+	Policy       pairFundingPolicyV1            `json:"policy"`
+	PolicyDigest string                         `json:"policy_digest"`
+	Rates        []pairFundingRate              `json:"rates"`
+	Prices       []pairFundingPrice             `json:"prices"`
+	Observations []pairFundingOracleObservation `json:"observations"`
+	Coverage     []pairFundingCoverageRecord    `json:"coverage"`
+}
+
+type pairFundingBatchV2 struct {
+	V            int                            `json:"v"`
+	SourceID     string                         `json:"source_id"`
+	Seq          int64                          `json:"seq"`
+	PrevHash     string                         `json:"prev_hash"`
+	PolicyDigest string                         `json:"policy_digest"`
+	Rates        []pairFundingRate              `json:"rates"`
+	Prices       []pairFundingPrice             `json:"prices"`
+	Observations []pairFundingOracleObservation `json:"observations"`
+	Coverage     []pairFundingCoverageRecord    `json:"coverage"`
+	BatchHash    string                         `json:"batch_hash"`
+}
+
+type pairFundingEventV3 struct {
+	pairFundingEvent
+	PolicyDigest             string `json:"policy_digest"`
+	ObservationEvidenceID    string `json:"observation_evidence_id"`
+	ObservationRecordHash    string `json:"observation_record_hash"`
+	ObservationTargetEventMs int64  `json:"observation_target_event_ms"`
+	ObservationRequestMs     int64  `json:"observation_request_ms"`
+	ObservationReceiptMs     int64  `json:"observation_receipt_ms"`
+	ObservationTimeBasis     string `json:"observation_time_basis"`
+}
+
+type pairFundingBindingV2 struct {
+	pairFundingBinding
+	Policy       pairFundingPolicyV1 `json:"policy"`
+	PolicyDigest string              `json:"policy_digest"`
+}
+
+type pairFundingDocumentValue struct {
+	pairFundingDocument
+	Research *pairFundingDocumentV2
+}
+
+type pairFundingBatchValue struct {
+	pairFundingBatch
+	Research *pairFundingBatchV2
+}
+
+type pairFundingEventValue struct {
+	pairFundingEvent
+	Research *pairFundingEventV3
+}
+
+type pairFundingBindingValue struct {
+	pairFundingBinding
+	Research *pairFundingBindingV2
+}
+
+func (pairFundingDocumentValue) MarshalJSON() ([]byte, error) {
+	return nil, fmt.Errorf("pairFundingDocumentValue cannot be marshaled; use pairFundingDocumentValueBytes")
+}
+
+func (pairFundingBatchValue) MarshalJSON() ([]byte, error) {
+	return nil, fmt.Errorf("pairFundingBatchValue cannot be marshaled; use pairFundingBatchValueBytes")
+}
+
+func (pairFundingEventValue) MarshalJSON() ([]byte, error) {
+	return nil, fmt.Errorf("pairFundingEventValue cannot be marshaled; use pairFundingEventValueBytes")
+}
+
+func (pairFundingBindingValue) MarshalJSON() ([]byte, error) {
+	return nil, fmt.Errorf("pairFundingBindingValue cannot be marshaled; use pairFundingBindingCanonical or its authoritative wire value")
+}
+
+var _ json.Marshaler = pairFundingDocumentValue{}
+var _ json.Marshaler = pairFundingBatchValue{}
+var _ json.Marshaler = pairFundingEventValue{}
+var _ json.Marshaler = pairFundingBindingValue{}
+
+var pairFundingResearchRules = map[string]pairFundingRule{
+	pairFundingRuleHLReceiptResearch: {
+		RuleVersion: pairFundingRuleHLReceiptResearch, Provider: entryProviderHyperliquid, Currency: pairHyperliquidCurrency,
+		RateField: "fundingHistory.fundingRate", PriceKind: pairFundingPriceOracleReceipt,
+		Formula: "native_amount = -(signed_base_qty * native_mark * rate)", AssessmentWindowMs: 0,
+		SameTime: "inventory strictly before event_ms; a fill at event_ms is excluded",
+		Schedule: "each venue settlement record is one event; research oracle selection floors event_ms to the UTC hour within the frozen maximum print offset",
+		Rounding: "none: the exact decimal product is kept",
+		Evidence: []string{"research receipt-time observation; timing bounds do not establish venue settlement equality or oracle-update age"},
+	},
+}
+
+func pairFundingPolicyDigest(p pairFundingPolicyV1) (string, error) {
+	raw, err := pairCanonicalJSON(p)
+	if err != nil {
+		return "", err
+	}
+	return pairSHA256(raw), nil
+}
+
+func pairFundingPolicyClone(p pairFundingPolicyV1) pairFundingPolicyV1 {
+	out := p
+	out.MemberRules = map[string]string{}
+	for k, v := range p.MemberRules {
+		out.MemberRules[k] = v
+	}
+	return out
+}
+
+func pairFundingValidatePolicy(p pairFundingPolicyV1) error {
+	if p.Version != pairFundingPolicyVersion || p.WindowMs != 5000 || p.MaxPrintOffsetMs != 60000 || p.PrepareLeadMs != 30000 {
+		return fmt.Errorf("funding policy must be version 1 with window_ms 5000, max_print_offset_ms 60000 and prepare_lead_ms 30000")
+	}
+	if p.FromMs <= 0 || p.DrainThroughMs < p.FromMs {
+		return fmt.Errorf("funding policy bounds (%d, %d] are invalid", p.FromMs, p.DrainThroughMs)
+	}
+	if len(p.MemberRules) == 0 {
+		return fmt.Errorf("funding policy member_rules is empty")
+	}
+	for id, rule := range p.MemberRules {
+		if !pairPrintableASCII(id, pairEvidenceMaxIDLen) {
+			return fmt.Errorf("funding policy member id %q is invalid", id)
+		}
+		r, ok := pairFundingRules[rule]
+		if !ok {
+			r, ok = pairFundingResearchRules[rule]
+		}
+		if !ok || (rule == pairFundingRuleHLReceiptResearch && r.Provider != entryProviderHyperliquid) {
+			return fmt.Errorf("funding policy member %s selects unsupported rule %q", id, rule)
+		}
+	}
+	return nil
+}
+
+func pairFundingResearchTarget(eventMs int64, p pairFundingPolicyV1) (int64, bool) {
+	if eventMs <= 0 {
+		return 0, false
+	}
+	target := eventMs - eventMs%3600000
+	return target, target > 0 && eventMs-target >= 0 && eventMs-target <= p.MaxPrintOffsetMs && target >= p.FromMs && target <= p.DrainThroughMs
+}
+
+func pairFundingOracleAttemptID(key pairEvidenceKey, targetMs int64, digest string) (string, error) {
+	body := struct {
+		Key           pairEvidenceKey `json:"key"`
+		TargetEventMs int64           `json:"target_event_ms"`
+		PolicyDigest  string          `json:"policy_digest"`
+	}{key, targetMs, digest}
+	raw, err := pairCanonicalJSON(body)
+	if err != nil {
+		return "", err
+	}
+	return "hyperliquid-oracle-attempt:" + pairSHA256(raw), nil
+}
+
+func pairFundingOracleEvidenceID(key pairEvidenceKey, targetMs, receiptMs int64) string {
+	return "hyperliquid-oracle:" + key.Instrument + ":" + strconv.FormatInt(targetMs, 10) + ":" + strconv.FormatInt(receiptMs, 10)
+}
+
+func (o pairFundingOracleObservation) computeHash() (string, error) {
+	o.RecordHash = ""
+	return pairRecordHashOf(o)
+}
+
+func (o pairFundingOracleObservation) sealed() (pairFundingOracleObservation, error) {
+	h, err := o.computeHash()
+	o.RecordHash = h
+	return o, err
+}
+
+func pairFundingValidateObservation(o pairFundingOracleObservation, p pairFundingPolicyV1) error {
+	what := "funding oracle observation " + o.EvidenceID
+	if o.V != pairFundingObservationVersion || o.PriceKind != pairFundingPriceOracleReceipt || o.TimeBasis != pairFundingObservationTimeBasis || o.Provenance != pairFundingOracleProvenance {
+		return fmt.Errorf("%s has an unsupported version, price kind, time basis or provenance", what)
+	}
+	if err := pairFundingCheckKey(o.Key, what); err != nil {
+		return err
+	}
+	digest, err := pairFundingPolicyDigest(p)
+	if err != nil || o.PolicyDigest != digest {
+		return fmt.Errorf("%s policy digest does not match the admitted policy", what)
+	}
+	attempt, err := pairFundingOracleAttemptID(o.Key, o.TargetEventMs, digest)
+	if err != nil || o.AttemptID != attempt {
+		return fmt.Errorf("%s attempt identity is invalid", what)
+	}
+	if o.TargetEventMs <= 0 || o.TargetEventMs%3600000 != 0 || o.TargetEventMs < p.FromMs || o.TargetEventMs > p.DrainThroughMs {
+		return fmt.Errorf("%s target is outside the policy hour grid", what)
+	}
+	deadline, ok := pairAddMs(o.TargetEventMs, p.WindowMs)
+	if !ok || deadline > p.DrainThroughMs {
+		deadline = p.DrainThroughMs
+	}
+	if o.RequestMs < o.TargetEventMs || o.ReceiptMs < o.RequestMs || o.ReceiptMs > deadline || o.AtMs != o.ReceiptMs || o.VisibleMs != o.ReceiptMs {
+		return fmt.Errorf("%s local request/receipt times are outside [%d, %d]", what, o.TargetEventMs, deadline)
+	}
+	if o.EvidenceID != pairFundingOracleEvidenceID(o.Key, o.TargetEventMs, o.ReceiptMs) || !pairPrintableASCII(o.EvidenceID, pairEvidenceMaxIDLen) {
+		return fmt.Errorf("%s evidence identity is invalid", what)
+	}
+	if _, err := pairDecimalPositive("price", o.Price); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	h, err := o.computeHash()
+	if err != nil || !pairHexDigestPattern.MatchString(o.RecordHash) || o.RecordHash != h {
+		return fmt.Errorf("%s record_hash does not match its canonical bytes", what)
+	}
+	return nil
+}
+
+func pairFundingSortObservations(obs []pairFundingOracleObservation) {
+	sort.SliceStable(obs, func(i, j int) bool {
+		a, b := obs[i], obs[j]
+		if c := a.Key.less(b.Key); c != 0 {
+			return c < 0
+		}
+		if a.TargetEventMs != b.TargetEventMs {
+			return a.TargetEventMs < b.TargetEventMs
+		}
+		if a.ReceiptMs != b.ReceiptMs {
+			return a.ReceiptMs < b.ReceiptMs
+		}
+		if a.EvidenceID != b.EvidenceID {
+			return a.EvidenceID < b.EvidenceID
+		}
+		return a.RecordHash < b.RecordHash
+	})
+}
+
+func pairFundingNormalizeObservations(obs []pairFundingOracleObservation) []pairFundingOracleObservation {
+	out := append([]pairFundingOracleObservation{}, obs...)
+	pairFundingSortObservations(out)
+	return out
 }
 
 func (r pairFundingRate) computeHash() (string, error) {
@@ -555,6 +830,24 @@ func pairFundingDocumentBytes(d pairFundingDocument) ([]byte, error) {
 	return pairCanonicalJSON(out)
 }
 
+func pairFundingDocumentV2Value(d pairFundingDocumentV2) pairFundingDocumentValue {
+	d.Rates, d.Prices, d.Coverage = pairFundingNormalizeLists(d.Rates, d.Prices, d.Coverage)
+	d.Observations = pairFundingNormalizeObservations(d.Observations)
+	return pairFundingDocumentValue{pairFundingDocument: pairFundingDocument{V: d.V, SourceID: d.SourceID, Rates: d.Rates, Prices: d.Prices, Coverage: d.Coverage}, Research: &d}
+}
+
+func pairFundingDocumentV2Bytes(d pairFundingDocumentV2) ([]byte, error) {
+	v := pairFundingDocumentV2Value(d)
+	return pairCanonicalJSON(*v.Research)
+}
+
+func pairFundingDocumentValueBytes(d pairFundingDocumentValue) ([]byte, error) {
+	if d.Research != nil {
+		return pairFundingDocumentV2Bytes(*d.Research)
+	}
+	return pairFundingDocumentBytes(d.pairFundingDocument)
+}
+
 func (b pairFundingBatch) computeHash() (string, error) {
 	b.BatchHash = ""
 	b.Rates, b.Prices, b.Coverage = pairFundingNormalizeLists(b.Rates, b.Prices, b.Coverage)
@@ -573,10 +866,53 @@ func pairFundingBatchBytes(b pairFundingBatch) ([]byte, error) {
 	return pairCanonicalJSON(b)
 }
 
+func pairFundingBatchV2Value(b pairFundingBatchV2) pairFundingBatchValue {
+	b.Rates, b.Prices, b.Coverage = pairFundingNormalizeLists(b.Rates, b.Prices, b.Coverage)
+	b.Observations = pairFundingNormalizeObservations(b.Observations)
+	return pairFundingBatchValue{pairFundingBatch: pairFundingBatch{V: b.V, SourceID: b.SourceID, Seq: b.Seq, PrevHash: b.PrevHash, Rates: b.Rates, Prices: b.Prices, Coverage: b.Coverage, BatchHash: b.BatchHash}, Research: &b}
+}
+
+func (b pairFundingBatchV2) computeHash() (string, error) {
+	b.BatchHash = ""
+	v := pairFundingBatchV2Value(b)
+	return pairRecordHashOf(*v.Research)
+}
+
+func (b pairFundingBatchV2) sealed() (pairFundingBatchV2, error) {
+	h, err := b.computeHash()
+	b.BatchHash = h
+	return b, err
+}
+
+func pairFundingBatchValueBytes(b pairFundingBatchValue) ([]byte, error) {
+	if b.Research != nil {
+		v := pairFundingBatchV2Value(*b.Research)
+		return pairCanonicalJSON(*v.Research)
+	}
+	return pairFundingBatchBytes(b.pairFundingBatch)
+}
+
+func (b pairFundingBatchValue) computeHash() (string, error) {
+	if b.Research != nil {
+		return b.Research.computeHash()
+	}
+	return b.pairFundingBatch.computeHash()
+}
+
+func (b pairFundingBatchValue) sealed() (pairFundingBatchValue, error) {
+	if b.Research != nil {
+		sealed, err := b.Research.sealed()
+		return pairFundingBatchV2Value(sealed), err
+	}
+	sealed, err := b.pairFundingBatch.sealed()
+	return pairFundingBatchValue{pairFundingBatch: sealed}, err
+}
+
 type pairFundingRecordSet struct {
-	Rates    []pairFundingRate
-	Prices   []pairFundingPrice
-	Coverage []pairFundingCoverageRecord
+	Rates        []pairFundingRate
+	Prices       []pairFundingPrice
+	Observations []pairFundingOracleObservation
+	Coverage     []pairFundingCoverageRecord
 }
 
 func pairFundingIdentity(k pairEvidenceKey, eventID, rule string) string {
@@ -656,80 +992,236 @@ func pairFundingStrictDecode(b []byte, out interface{}, what string, maxBytes in
 	return pairStrictDecodeTree(tree, b, out, what)
 }
 
-func pairDecodeFundingDocument(b []byte) (pairFundingDocument, error) {
-	var d pairFundingDocument
-	if err := pairFundingStrictDecode(b, &d, "funding document", pairEvidenceMaxDocumentBytes); err != nil {
-		return d, err
+func pairFundingWireVersion(raw []byte, what string) (int, interface{}, error) {
+	tree, err := pairStrictParse(raw)
+	if err != nil {
+		return 0, nil, fmt.Errorf("%s: %w", what, err)
 	}
-	if d.V != pairFundingDocumentVersion {
-		return d, fmt.Errorf("funding document version %d is not supported (want %d)", d.V, pairFundingDocumentVersion)
+	obj, ok := tree.(map[string]interface{})
+	if !ok {
+		return 0, nil, fmt.Errorf("%s must be an object", what)
+	}
+	n, ok := obj["v"].(pairJSONNumber)
+	if !ok {
+		return 0, nil, fmt.Errorf("%s v must be an integer", what)
+	}
+	v, err := strconv.Atoi(string(n))
+	if err != nil {
+		return 0, nil, fmt.Errorf("%s v must be an integer", what)
+	}
+	return v, tree, nil
+}
+
+func pairFundingCheckObservations(obs []pairFundingOracleObservation, p pairFundingPolicyV1) error {
+	if len(obs) > pairFundingMaxRecords {
+		return fmt.Errorf("funding input holds more than %d observations", pairFundingMaxRecords)
+	}
+	seen := map[string]bool{}
+	for _, o := range obs {
+		if err := pairFundingValidateObservation(o, p); err != nil {
+			return err
+		}
+		id := o.Key.String() + "|" + o.EvidenceID
+		if seen[id] {
+			return fmt.Errorf("funding observation %s for %s appears twice", o.EvidenceID, o.Key)
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
+func pairDecodeFundingDocument(raw []byte) (pairFundingDocumentValue, error) {
+	version, _, err := pairFundingWireVersion(raw, "funding document")
+	if err != nil {
+		return pairFundingDocumentValue{}, err
+	}
+	if version == pairFundingResearchDocumentVersion {
+		var d pairFundingDocumentV2
+		if err := pairFundingStrictDecode(raw, &d, "funding document", pairEvidenceMaxDocumentBytes); err != nil {
+			return pairFundingDocumentValue{}, err
+		}
+		v := pairFundingDocumentV2Value(d)
+		canon, err := pairFundingDocumentValueBytes(v)
+		if err != nil || !bytes.Equal(canon, raw) {
+			return v, fmt.Errorf("funding document version 2 bytes are not canonical")
+		}
+		if err := pairFundingValidatePolicy(d.Policy); err != nil {
+			return v, err
+		}
+		digest, _ := pairFundingPolicyDigest(d.Policy)
+		if d.PolicyDigest != digest || !pairPrintableASCII(d.SourceID, pairEvidenceMaxIDLen) {
+			return v, fmt.Errorf("funding document version 2 source or policy digest is invalid")
+		}
+		set := pairFundingRecordSet{Rates: d.Rates, Prices: d.Prices, Observations: d.Observations, Coverage: d.Coverage}
+		if err := pairFundingCheckRecords(set, nil); err != nil {
+			return v, err
+		}
+		if err := pairFundingCheckObservations(d.Observations, d.Policy); err != nil {
+			return v, err
+		}
+		return v, nil
+	}
+	if version != pairFundingDocumentVersion {
+		return pairFundingDocumentValue{}, fmt.Errorf("funding document version %d is not supported", version)
+	}
+	var d pairFundingDocument
+	if err := pairFundingStrictDecode(raw, &d, "funding document", pairEvidenceMaxDocumentBytes); err != nil {
+		return pairFundingDocumentValue{}, err
+	}
+	v := pairFundingDocumentValue{pairFundingDocument: d}
+	canon, err := pairFundingDocumentBytes(d)
+	if err != nil || !bytes.Equal(canon, raw) {
+		return v, fmt.Errorf("funding document bytes are not canonical (compact sorted keys, canonical decimals, records sorted by key and time)")
 	}
 	if !pairPrintableASCII(d.SourceID, pairEvidenceMaxIDLen) {
-		return d, fmt.Errorf("funding document source_id must be 1..%d printable ASCII characters", pairEvidenceMaxIDLen)
-	}
-	canon, err := pairFundingDocumentBytes(d)
-	if err != nil {
-		return d, err
-	}
-	if !bytes.Equal(canon, b) {
-		return d, fmt.Errorf("funding document bytes are not canonical (compact sorted keys, canonical decimals, records sorted by key and time)")
+		return v, fmt.Errorf("funding document source_id must be 1..%d printable ASCII characters", pairEvidenceMaxIDLen)
 	}
 	if err := pairFundingCheckRecords(pairFundingRecordSet{Rates: d.Rates, Prices: d.Prices, Coverage: d.Coverage}, nil); err != nil {
-		return d, err
+		return v, err
 	}
-	return d, nil
+	return v, nil
 }
 
-func pairDecodeFundingBatch(b []byte) (pairFundingBatch, error) {
-	var x pairFundingBatch
-	if err := pairFundingStrictDecode(b, &x, "funding batch", pairEvidenceMaxDocumentBytes); err != nil {
-		return x, err
-	}
-	if x.V != pairFundingBatchVersion {
-		return x, fmt.Errorf("funding batch version %d is not supported (want %d)", x.V, pairFundingBatchVersion)
-	}
-	if !pairPrintableASCII(x.SourceID, pairEvidenceMaxIDLen) {
-		return x, fmt.Errorf("funding batch source_id must be 1..%d printable ASCII characters", pairEvidenceMaxIDLen)
-	}
-	if x.Seq < 1 {
-		return x, fmt.Errorf("funding batch seq %d must be at least 1", x.Seq)
-	}
-	if (x.Seq == 1) != (x.PrevHash == "") || (x.PrevHash != "" && !pairHexDigestPattern.MatchString(x.PrevHash)) {
-		return x, fmt.Errorf("funding batch %d prev_hash must be empty for the first batch and a lowercase SHA-256 otherwise", x.Seq)
-	}
-	canon, err := pairFundingBatchBytes(x)
+func pairDecodeFundingBatch(raw []byte) (pairFundingBatchValue, error) {
+	version, _, err := pairFundingWireVersion(raw, "funding batch")
 	if err != nil {
-		return x, err
+		return pairFundingBatchValue{}, err
 	}
-	if !bytes.Equal(canon, b) {
-		return x, fmt.Errorf("funding batch %d bytes are not canonical", x.Seq)
+	var v pairFundingBatchValue
+	if version == pairFundingResearchBatchVersion {
+		var b pairFundingBatchV2
+		if err := pairFundingStrictDecode(raw, &b, "funding batch", pairEvidenceMaxDocumentBytes); err != nil {
+			return pairFundingBatchValue{}, err
+		}
+		v = pairFundingBatchV2Value(b)
+	} else if version == pairFundingBatchVersion {
+		var b pairFundingBatch
+		if err := pairFundingStrictDecode(raw, &b, "funding batch", pairEvidenceMaxDocumentBytes); err != nil {
+			return pairFundingBatchValue{}, err
+		}
+		v = pairFundingBatchValue{pairFundingBatch: b}
+	} else {
+		return pairFundingBatchValue{}, fmt.Errorf("funding batch version %d is not supported", version)
 	}
-	h, err := x.computeHash()
-	if err != nil {
-		return x, err
+	canon, err := pairFundingBatchValueBytes(v)
+	if err != nil || !bytes.Equal(canon, raw) {
+		return v, fmt.Errorf("funding batch %d bytes are not canonical", v.Seq)
 	}
-	if !pairHexDigestPattern.MatchString(x.BatchHash) || x.BatchHash != h {
-		return x, fmt.Errorf("funding batch %d batch_hash does not match its canonical bytes", x.Seq)
+	if !pairPrintableASCII(v.SourceID, pairEvidenceMaxIDLen) || v.Seq < 1 || (v.Seq == 1) != (v.PrevHash == "") || (v.PrevHash != "" && !pairHexDigestPattern.MatchString(v.PrevHash)) {
+		return v, fmt.Errorf("funding batch %d source, sequence or previous hash is invalid", v.Seq)
 	}
-	return x, nil
+	h, err := v.computeHash()
+	if err != nil || !pairHexDigestPattern.MatchString(v.BatchHash) || v.BatchHash != h {
+		return v, fmt.Errorf("funding batch %d batch_hash does not match its canonical bytes", v.Seq)
+	}
+	if v.Research != nil {
+		digest := v.Research.PolicyDigest
+		if !pairHexDigestPattern.MatchString(digest) {
+			return v, fmt.Errorf("funding batch %d policy digest is invalid", v.Seq)
+		}
+	}
+	return v, nil
 }
 
-func pairDecodeFundingEvent(b []byte) (pairFundingEvent, error) {
+func (e pairFundingEventV3) computeHash() (string, error) {
+	e.EvidenceHash = ""
+	e.Coverage.Proven = pairFundingIntervalsOrEmpty(e.Coverage.Proven)
+	e.Coverage.Gaps = pairFundingGapsOrEmpty(e.Coverage.Gaps)
+	return pairRecordHashOf(e)
+}
+
+func (e pairFundingEventV3) sealed() (pairFundingEventV3, error) {
+	h, err := e.computeHash()
+	e.EvidenceHash = h
+	return e, err
+}
+
+func pairFundingEventV3Value(e pairFundingEventV3) pairFundingEventValue {
+	projection := e.pairFundingEvent
+	projection.V = pairFundingResearchEventVersion
+	projection.Coverage.Proven = pairFundingIntervalsOrEmpty(projection.Coverage.Proven)
+	projection.Coverage.Gaps = pairFundingGapsOrEmpty(projection.Coverage.Gaps)
+	return pairFundingEventValue{pairFundingEvent: projection, Research: &e}
+}
+
+func pairFundingEventValueBytes(e pairFundingEventValue) ([]byte, error) {
+	if e.Research != nil {
+		return pairCanonicalJSON(*e.Research)
+	}
+	return pairCanonicalJSON(e.pairFundingEvent)
+}
+
+func (e pairFundingEventValue) computeHash() (string, error) {
+	if e.Research != nil {
+		return e.Research.computeHash()
+	}
+	return e.pairFundingEvent.computeHash()
+}
+
+func (e pairFundingEventValue) sealed() (pairFundingEventValue, error) {
+	if e.Research != nil {
+		sealed, err := e.Research.sealed()
+		return pairFundingEventV3Value(sealed), err
+	}
+	sealed, err := e.pairFundingEvent.sealed()
+	return pairFundingEventValue{pairFundingEvent: sealed}, err
+}
+
+func pairFundingResearchRuleFor(version string) (pairFundingRule, bool) {
+	r, ok := pairFundingResearchRules[version]
+	if ok {
+		r.Evidence = append([]string{}, r.Evidence...)
+	}
+	return r, ok
+}
+
+func pairFundingValidateEventV3Shape(e pairFundingEventV3) error {
+	if e.V != pairFundingResearchEventVersion || e.RuleVersion != pairFundingRuleHLReceiptResearch || !pairHexDigestPattern.MatchString(e.PolicyDigest) || !pairPrintableASCII(e.ObservationEvidenceID, pairEvidenceMaxIDLen) || !pairHexDigestPattern.MatchString(e.ObservationRecordHash) || e.ObservationTimeBasis != pairFundingObservationTimeBasis {
+		return fmt.Errorf("funding event %s has an invalid research identity", e.EventID)
+	}
+	if e.PriceHash != e.ObservationRecordHash || e.ObservationTargetEventMs <= 0 || e.ObservationTargetEventMs%3600000 != 0 || e.ObservationReceiptMs < e.ObservationRequestMs || e.ObservationRequestMs < e.ObservationTargetEventMs || e.ObservationReceiptMs > e.VisibleMs {
+		return fmt.Errorf("funding event %s has invalid observation evidence", e.EventID)
+	}
+	if err := pairFundingValidateEventBody(e.pairFundingEvent, pairFundingResearchRuleFor); err != nil {
+		return err
+	}
+	h, err := e.computeHash()
+	if err != nil || !pairHexDigestPattern.MatchString(e.EvidenceHash) || e.EvidenceHash != h {
+		return fmt.Errorf("funding event %s evidence_hash does not match its canonical bytes", e.EventID)
+	}
+	return nil
+}
+
+func pairDecodeFundingEvent(raw []byte) (pairFundingEventValue, error) {
+	version, _, err := pairFundingWireVersion(raw, "funding event")
+	if err != nil {
+		return pairFundingEventValue{}, err
+	}
+	if version == pairFundingResearchEventVersion {
+		var e pairFundingEventV3
+		if err := pairFundingStrictDecode(raw, &e, "funding event", pairEvidenceMaxDocumentBytes); err != nil {
+			return pairFundingEventValue{}, err
+		}
+		v := pairFundingEventV3Value(e)
+		canon, err := pairFundingEventValueBytes(v)
+		if err != nil || !bytes.Equal(canon, raw) {
+			return v, fmt.Errorf("funding event bytes are not canonical")
+		}
+		return v, pairFundingValidateEventV3Shape(e)
+	}
+	if version != pairFundingEventVersion {
+		return pairFundingEventValue{}, fmt.Errorf("funding event version %d is not supported", version)
+	}
 	var e pairFundingEvent
-	if err := pairFundingStrictDecode(b, &e, "funding event", pairEvidenceMaxDocumentBytes); err != nil {
-		return e, err
+	if err := pairFundingStrictDecode(raw, &e, "funding event", pairEvidenceMaxDocumentBytes); err != nil {
+		return pairFundingEventValue{}, err
 	}
+	v := pairFundingEventValue{pairFundingEvent: e}
 	canon, err := pairCanonicalJSON(e)
-	if err != nil {
-		return e, err
+	if err != nil || !bytes.Equal(canon, raw) {
+		return v, fmt.Errorf("funding event bytes are not canonical")
 	}
-	if !bytes.Equal(canon, b) {
-		return e, fmt.Errorf("funding event bytes are not canonical")
-	}
-	if err := pairFundingValidateEvent(e); err != nil {
-		return e, err
-	}
-	return e, nil
+	return v, pairFundingValidateEvent(e)
 }
 
 func pairFundingValidateEvent(e pairFundingEvent) error {
@@ -737,6 +1229,21 @@ func pairFundingValidateEvent(e pairFundingEvent) error {
 	if e.V != pairFundingEventVersion {
 		return fmt.Errorf("%s version %d is not supported (want %d)", what, e.V, pairFundingEventVersion)
 	}
+	if err := pairFundingValidateEventBody(e, pairFundingRuleFor); err != nil {
+		return err
+	}
+	h, err := e.computeHash()
+	if err != nil {
+		return err
+	}
+	if !pairHexDigestPattern.MatchString(e.EvidenceHash) || e.EvidenceHash != h {
+		return fmt.Errorf("%s evidence_hash does not match its canonical bytes", what)
+	}
+	return nil
+}
+
+func pairFundingValidateEventBody(e pairFundingEvent, ruleFor func(string) (pairFundingRule, bool)) error {
+	what := "funding event " + e.EventID
 	if err := pairFundingCheckKey(e.Key, what); err != nil {
 		return err
 	}
@@ -746,7 +1253,7 @@ func pairFundingValidateEvent(e pairFundingEvent) error {
 	if e.VisibleMs < e.EventMs {
 		return fmt.Errorf("%s visible_ms %d is before event_ms %d", what, e.VisibleMs, e.EventMs)
 	}
-	rule, ok := pairFundingRuleFor(e.RuleVersion)
+	rule, ok := ruleFor(e.RuleVersion)
 	if !ok || rule.Provider != e.Key.Provider {
 		return fmt.Errorf("%s rule %q is not the supported rule for %s", what, e.RuleVersion, e.Key.Provider)
 	}
@@ -811,13 +1318,6 @@ func pairFundingValidateEvent(e pairFundingEvent) error {
 	}
 	if !pairHexDigestPattern.MatchString(e.SourceHash) || !pairHexDigestPattern.MatchString(e.PriceHash) {
 		return fmt.Errorf("%s needs its source and price record hashes", what)
-	}
-	h, err := e.computeHash()
-	if err != nil {
-		return err
-	}
-	if !pairHexDigestPattern.MatchString(e.EvidenceHash) || e.EvidenceHash != h {
-		return fmt.Errorf("%s evidence_hash does not match its canonical bytes", what)
 	}
 	return nil
 }
@@ -907,12 +1407,13 @@ type pairFundingRequest struct {
 }
 
 type pairFundingCollected struct {
-	Request    pairFundingRequest
-	SourceKind string
-	SourceID   string
-	Rates      []pairFundingRate
-	Prices     []pairFundingPrice
-	Coverage   []pairFundingCoverageRecord
+	Request      pairFundingRequest
+	SourceKind   string
+	SourceID     string
+	Rates        []pairFundingRate
+	Prices       []pairFundingPrice
+	Observations []pairFundingOracleObservation
+	Coverage     []pairFundingCoverageRecord
 }
 
 type pairFundingSource interface {
@@ -922,8 +1423,18 @@ type pairFundingSource interface {
 	NextVisibleMs(key pairEvidenceKey, afterMs int64) (int64, bool)
 }
 
-func pairFundingFilter(set pairFundingRecordSet, req pairFundingRequest) pairFundingCollected {
-	out := pairFundingCollected{Request: req, Rates: []pairFundingRate{}, Prices: []pairFundingPrice{}, Coverage: []pairFundingCoverageRecord{}}
+func pairFundingSourcePolicy(src pairFundingSource) *pairFundingPolicyV1 {
+	switch s := src.(type) {
+	case *pairFrozenFundingSource:
+		return s.policy
+	case *pairRecordedFundingSource:
+		return s.policy
+	}
+	return nil
+}
+
+func pairFundingFilter(set pairFundingRecordSet, req pairFundingRequest, policy *pairFundingPolicyV1) pairFundingCollected {
+	out := pairFundingCollected{Request: req, Rates: []pairFundingRate{}, Prices: []pairFundingPrice{}, Observations: []pairFundingOracleObservation{}, Coverage: []pairFundingCoverageRecord{}}
 	for _, r := range set.Rates {
 		if r.Key == req.Key && r.VisibleMs <= req.CutoffMs && r.EventMs > req.FromMs && r.EventMs <= req.ThroughMs {
 			out.Rates = append(out.Rates, r)
@@ -932,6 +1443,14 @@ func pairFundingFilter(set pairFundingRecordSet, req pairFundingRequest) pairFun
 	for _, p := range set.Prices {
 		if p.Key == req.Key && p.VisibleMs <= req.CutoffMs && p.AtMs > req.FromMs && p.AtMs <= req.ThroughMs {
 			out.Prices = append(out.Prices, p)
+		}
+	}
+	if policy != nil {
+		for _, o := range set.Observations {
+			end, ok := pairAddMs(o.TargetEventMs, policy.MaxPrintOffsetMs)
+			if o.Key == req.Key && o.VisibleMs <= req.CutoffMs && o.TargetEventMs <= req.ThroughMs && ok && end > req.FromMs && o.TargetEventMs >= policy.FromMs && o.TargetEventMs <= policy.DrainThroughMs {
+				out.Observations = append(out.Observations, o)
+			}
 		}
 	}
 	for _, c := range set.Coverage {
@@ -945,6 +1464,7 @@ func pairFundingFilter(set pairFundingRecordSet, req pairFundingRequest) pairFun
 	}
 	pairFundingSortRates(out.Rates)
 	pairFundingSortPrices(out.Prices)
+	pairFundingSortObservations(out.Observations)
 	pairFundingSortCoverage(out.Coverage)
 	return out
 }
@@ -961,6 +1481,9 @@ func pairFundingNextVisible(set pairFundingRecordSet, key pairEvidenceKey, after
 	}
 	for _, p := range set.Prices {
 		consider(p.Key, p.VisibleMs)
+	}
+	for _, o := range set.Observations {
+		consider(o.Key, o.VisibleMs)
 	}
 	for _, c := range set.Coverage {
 		consider(c.Key, c.VisibleMs)
@@ -983,7 +1506,8 @@ func pairFundingRequestCheck(ctx context.Context, req pairFundingRequest) error 
 
 type pairFrozenFundingSource struct {
 	digest  string
-	doc     pairFundingDocument
+	doc     pairFundingDocumentValue
+	policy  *pairFundingPolicyV1
 	set     pairFundingRecordSet
 	bound   bool
 	boundFP string
@@ -1000,7 +1524,13 @@ func newPairFrozenFundingSource(doc []byte, wantDigest string) (*pairFrozenFundi
 	if err != nil {
 		return nil, err
 	}
-	return &pairFrozenFundingSource{digest: wantDigest, doc: d, set: pairFundingRecordSet{Rates: d.Rates, Prices: d.Prices, Coverage: d.Coverage}}, nil
+	s := &pairFrozenFundingSource{digest: wantDigest, doc: d, set: pairFundingRecordSet{Rates: d.Rates, Prices: d.Prices, Coverage: d.Coverage}}
+	if d.Research != nil {
+		p := pairFundingPolicyClone(d.Research.Policy)
+		s.policy = &p
+		s.set.Observations = d.Research.Observations
+	}
+	return s, nil
 }
 
 func (s *pairFrozenFundingSource) Kind() string     { return pairFundingSourceFrozen }
@@ -1011,7 +1541,7 @@ func (s *pairFrozenFundingSource) Collect(ctx context.Context, req pairFundingRe
 	if err := pairFundingRequestCheck(ctx, req); err != nil {
 		return pairFundingCollected{}, err
 	}
-	out := pairFundingFilter(s.set, req)
+	out := pairFundingFilter(s.set, req, s.policy)
 	out.SourceKind, out.SourceID = pairFundingSourceFrozen, s.doc.SourceID
 	return out, nil
 }
@@ -1024,20 +1554,37 @@ type pairRecordedFundingSource struct {
 	mu       sync.RWMutex
 	sourceID string
 	anchorMs int64
-	batches  []pairFundingBatch
+	policy   *pairFundingPolicyV1
+	batches  []pairFundingBatchValue
 	raw      [][]byte
 	set      pairFundingRecordSet
 	ids      map[string]string
 }
 
 func newPairRecordedFundingSource(sourceID string, anchorMs int64) (*pairRecordedFundingSource, error) {
+	return newPairRecordedFundingSourceWithPolicyValue(sourceID, anchorMs, nil)
+}
+
+func newPairRecordedFundingSourceWithPolicy(sourceID string, anchorMs int64, policy pairFundingPolicyV1) (*pairRecordedFundingSource, error) {
+	p := pairFundingPolicyClone(policy)
+	return newPairRecordedFundingSourceWithPolicyValue(sourceID, anchorMs, &p)
+}
+
+func newPairRecordedFundingSourceWithPolicyValue(sourceID string, anchorMs int64, policy *pairFundingPolicyV1) (*pairRecordedFundingSource, error) {
 	if !pairPrintableASCII(sourceID, pairEvidenceMaxIDLen) {
 		return nil, fmt.Errorf("recorded funding source id must be 1..%d printable ASCII characters", pairEvidenceMaxIDLen)
 	}
 	if anchorMs <= 0 {
 		return nil, fmt.Errorf("recorded funding source needs a positive anchor time, got %d", anchorMs)
 	}
-	return &pairRecordedFundingSource{sourceID: sourceID, anchorMs: anchorMs, ids: map[string]string{}}, nil
+	if policy != nil {
+		if err := pairFundingValidatePolicy(*policy); err != nil {
+			return nil, err
+		}
+		p := pairFundingPolicyClone(*policy)
+		policy = &p
+	}
+	return &pairRecordedFundingSource{sourceID: sourceID, anchorMs: anchorMs, policy: policy, ids: map[string]string{}}, nil
 }
 
 func (s *pairRecordedFundingSource) Kind() string     { return pairFundingSourceRecorded }
@@ -1051,6 +1598,25 @@ func (s *pairRecordedFundingSource) Append(raw []byte) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var observations []pairFundingOracleObservation
+	if b.Research != nil {
+		observations = b.Research.Observations
+	}
+	if (s.policy == nil) != (b.Research == nil) {
+		return fmt.Errorf("funding batch %d version family does not match the source policy", b.Seq)
+	}
+	if s.policy != nil {
+		digest, _ := pairFundingPolicyDigest(*s.policy)
+		if b.Research.PolicyDigest != digest {
+			return fmt.Errorf("funding batch %d policy digest does not match the source", b.Seq)
+		}
+		if len(observations) > 0 && (len(observations) != 1 || len(b.Rates) != 0 || len(b.Prices) != 0 || len(b.Coverage) != 0) {
+			return fmt.Errorf("funding batch %d mixes an oracle observation with other records; an oracle batch holds exactly one observation", b.Seq)
+		}
+		if err := pairFundingCheckObservations(observations, *s.policy); err != nil {
+			return fmt.Errorf("funding batch %d is refused: %w", b.Seq, err)
+		}
+	}
 	if b.SourceID != s.sourceID {
 		return fmt.Errorf("funding batch %d belongs to source %s, not %s", b.Seq, b.SourceID, s.sourceID)
 	}
@@ -1075,9 +1641,17 @@ func (s *pairRecordedFundingSource) Append(raw []byte) error {
 		return fmt.Errorf("funding batch %d is refused: %w", b.Seq, err)
 	}
 	all := pairFundingRecordSet{
-		Rates:    append(append([]pairFundingRate{}, s.set.Rates...), b.Rates...),
-		Prices:   append(append([]pairFundingPrice{}, s.set.Prices...), b.Prices...),
-		Coverage: append(append([]pairFundingCoverageRecord{}, s.set.Coverage...), b.Coverage...),
+		Rates:        append(append([]pairFundingRate{}, s.set.Rates...), b.Rates...),
+		Prices:       append(append([]pairFundingPrice{}, s.set.Prices...), b.Prices...),
+		Observations: append(append([]pairFundingOracleObservation{}, s.set.Observations...), observations...),
+		Coverage:     append(append([]pairFundingCoverageRecord{}, s.set.Coverage...), b.Coverage...),
+	}
+	for _, o := range observations {
+		for _, q := range s.set.Observations {
+			if o.Key == q.Key && o.EvidenceID == q.EvidenceID {
+				return fmt.Errorf("funding batch %d observation %s repeats an earlier evidence id", b.Seq, o.EvidenceID)
+			}
+		}
 	}
 	for _, p := range b.Prices {
 		for _, q := range s.set.Prices {
@@ -1127,10 +1701,10 @@ func (s *pairRecordedFundingSource) Append(raw []byte) error {
 	return nil
 }
 
-func (s *pairRecordedFundingSource) chain() []pairFundingBatch {
+func (s *pairRecordedFundingSource) chain() []pairFundingBatchValue {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return append([]pairFundingBatch(nil), s.batches...)
+	return append([]pairFundingBatchValue(nil), s.batches...)
 }
 
 func (s *pairRecordedFundingSource) chainRaw(seq int64) []byte {
@@ -1148,7 +1722,7 @@ func (s *pairRecordedFundingSource) Collect(ctx context.Context, req pairFunding
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := pairFundingFilter(s.set, req)
+	out := pairFundingFilter(s.set, req, s.policy)
 	out.SourceKind, out.SourceID = pairFundingSourceRecorded, s.sourceID
 	return out, nil
 }
@@ -1159,7 +1733,175 @@ func (s *pairRecordedFundingSource) NextVisibleMs(key pairEvidenceKey, afterMs i
 	return pairFundingNextVisible(s.set, key, afterMs)
 }
 
-func pairFundingCheckAgainstContract(set pairFundingRecordSet, c basketContract) error {
+func pairFundingSelectedRule(policy *pairFundingPolicyV1, key pairEvidenceKey) (pairFundingRule, bool) {
+	if policy == nil {
+		version, ok := pairFundingRuleVersionFor(key.Provider)
+		if !ok {
+			return pairFundingRule{}, false
+		}
+		return pairFundingRuleFor(version)
+	}
+	version, ok := policy.MemberRules[key.MemberID]
+	if !ok {
+		return pairFundingRule{}, false
+	}
+	if r, ok := pairFundingResearchRules[version]; ok {
+		return r, r.Provider == key.Provider
+	}
+	r, ok := pairFundingRuleFor(version)
+	return r, ok && r.Provider == key.Provider
+}
+
+func pairFundingSelectedRateRule(policy *pairFundingPolicyV1, rate pairFundingRate) (pairFundingRule, bool) {
+	r, ok := pairFundingSelectedRule(policy, rate.Key)
+	return r, ok && r.RuleVersion == rate.RuleVersion
+}
+
+func pairFundingSourceRecordSet(src pairFundingSource) pairFundingRecordSet {
+	switch s := src.(type) {
+	case *pairFrozenFundingSource:
+		return pairFundingRecordSet{Rates: append([]pairFundingRate{}, s.set.Rates...), Prices: append([]pairFundingPrice{}, s.set.Prices...), Observations: append([]pairFundingOracleObservation{}, s.set.Observations...), Coverage: append([]pairFundingCoverageRecord{}, s.set.Coverage...)}
+	case *pairRecordedFundingSource:
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		return pairFundingRecordSet{Rates: append([]pairFundingRate{}, s.set.Rates...), Prices: append([]pairFundingPrice{}, s.set.Prices...), Observations: append([]pairFundingOracleObservation{}, s.set.Observations...), Coverage: append([]pairFundingCoverageRecord{}, s.set.Coverage...)}
+	}
+	return pairFundingRecordSet{}
+}
+
+func pairFundingValidateSelectedEvent(value pairFundingEventValue, policy *pairFundingPolicyV1, records pairFundingRecordSet) error {
+	e := value.pairFundingEvent
+	if policy == nil {
+		if value.Research != nil {
+			return fmt.Errorf("funding event %s is a research event without a funding policy", e.EventID)
+		}
+		return pairFundingValidateEvent(e)
+	}
+	rule, selected := pairFundingSelectedRateRule(policy, pairFundingRate{Key: e.Key, RuleVersion: e.RuleVersion})
+	if !selected {
+		return fmt.Errorf("funding event %s rule %q is not selected for member %s", e.EventID, e.RuleVersion, e.Key.MemberID)
+	}
+	cutoff := e.Coverage.CutoffMs
+	if rule.RuleVersion == pairFundingRuleHLReceiptResearch {
+		if value.Research == nil {
+			return fmt.Errorf("funding event %s uses the research rule without its version 3 observation fields", e.EventID)
+		}
+		if err := pairFundingValidateEventV3Shape(*value.Research); err != nil {
+			return err
+		}
+		digest, err := pairFundingPolicyDigest(*policy)
+		if err != nil || value.Research.PolicyDigest != digest {
+			return fmt.Errorf("funding event %s policy digest does not match the admitted policy", e.EventID)
+		}
+		var observation *pairFundingOracleObservation
+		for i := range records.Observations {
+			o := &records.Observations[i]
+			if o.RecordHash == value.Research.ObservationRecordHash && o.Key == e.Key {
+				observation = o
+				break
+			}
+		}
+		if observation == nil {
+			return fmt.Errorf("funding event %s observation %s is absent from admitted evidence", e.EventID, shortFingerprint(value.Research.ObservationRecordHash))
+		}
+		o := *observation
+		target, ok := pairFundingResearchTarget(e.EventMs, *policy)
+		if err := pairFundingValidateObservation(o, *policy); err != nil || !ok || o.TargetEventMs != target || o.EvidenceID != value.Research.ObservationEvidenceID ||
+			o.TargetEventMs != value.Research.ObservationTargetEventMs || o.RequestMs != value.Research.ObservationRequestMs || o.ReceiptMs != value.Research.ObservationReceiptMs ||
+			o.TimeBasis != value.Research.ObservationTimeBasis || o.Price != e.NativeMark || o.RecordHash != e.PriceHash || o.VisibleMs > e.VisibleMs || o.VisibleMs > cutoff {
+			return fmt.Errorf("funding event %s copied observation fields disagree with admitted evidence", e.EventID)
+		}
+	} else {
+		if value.Research != nil {
+			return fmt.Errorf("funding event %s carries research observation fields for rule %s", e.EventID, e.RuleVersion)
+		}
+		if err := pairFundingValidateEvent(e); err != nil {
+			return err
+		}
+		prices := []pairFundingPrice{}
+		for _, p := range records.Prices {
+			if p.Key == e.Key && p.VisibleMs <= cutoff {
+				prices = append(prices, p)
+			}
+		}
+		price, why := pairFundingPriceFor(prices, rule.PriceKind, e.EventMs)
+		if why != "" || price.RecordHash != e.PriceHash || price.Price != e.NativeMark || price.VisibleMs > e.VisibleMs {
+			return fmt.Errorf("funding event %s price evidence is absent from or disagrees with admitted evidence", e.EventID)
+		}
+	}
+	foundRate := false
+	for _, r := range records.Rates {
+		if r.Key != e.Key || r.EventID != e.EventID || r.RuleVersion != e.RuleVersion || r.VisibleMs > cutoff {
+			continue
+		}
+		hash, err := pairFundingSourceHash(r)
+		if err != nil || hash != e.SourceHash || r.EventMs != e.EventMs || r.Rate != e.Rate {
+			return fmt.Errorf("funding event %s rate evidence disagrees with admitted evidence", e.EventID)
+		}
+		if r.VisibleMs <= e.VisibleMs {
+			foundRate = true
+		}
+	}
+	if !foundRate {
+		return fmt.Errorf("funding event %s rate is absent from admitted evidence", e.EventID)
+	}
+	return nil
+}
+
+func pairFundingRulesDigestSelected(memberRules map[string]string) (string, []string, error) {
+	seen := map[string]bool{}
+	table := []pairFundingRule{}
+	for _, version := range memberRules {
+		if seen[version] {
+			continue
+		}
+		seen[version] = true
+		r, ok := pairFundingResearchRules[version]
+		if !ok {
+			r, ok = pairFundingRuleFor(version)
+		}
+		if !ok {
+			return "", nil, fmt.Errorf("unknown selected funding rule %q", version)
+		}
+		r.Evidence = append([]string{}, r.Evidence...)
+		table = append(table, r)
+	}
+	sort.Slice(table, func(i, j int) bool { return table[i].RuleVersion < table[j].RuleVersion })
+	raw, err := pairCanonicalJSON(table)
+	if err != nil {
+		return "", nil, err
+	}
+	rules := make([]string, 0, len(table))
+	for _, r := range table {
+		rules = append(rules, r.RuleVersion)
+	}
+	return pairSHA256(raw), rules, nil
+}
+
+func pairFundingValidatePolicyForContract(p pairFundingPolicyV1, c basketContract) error {
+	if err := pairFundingValidatePolicy(p); err != nil {
+		return err
+	}
+	if len(p.MemberRules) != len(c.Pair.Members) {
+		return fmt.Errorf("funding policy must name every pair member exactly once")
+	}
+	for _, m := range c.Pair.Members {
+		version, ok := p.MemberRules[m.MemberID]
+		if !ok {
+			return fmt.Errorf("funding policy does not name member %s", m.MemberID)
+		}
+		want := pairFundingRuleOKX
+		if m.Provider == entryProviderHyperliquid {
+			want = pairFundingRuleHLReceiptResearch
+		}
+		if version != want {
+			return fmt.Errorf("funding policy member %s on %s must select %s, got %s", m.MemberID, m.Provider, want, version)
+		}
+	}
+	return nil
+}
+
+func pairFundingCheckAgainstContract(set pairFundingRecordSet, c basketContract, policy *pairFundingPolicyV1) error {
 	members := map[string]pairContractMember{}
 	for _, m := range c.Pair.Members {
 		members[m.MemberID] = m
@@ -1180,6 +1922,27 @@ func pairFundingCheckAgainstContract(set pairFundingRecordSet, c basketContract)
 		if err := check(p.Key, "price", p.EvidenceID); err != nil {
 			return err
 		}
+		if policy != nil {
+			rule, ok := pairFundingSelectedRule(policy, p.Key)
+			if !ok || rule.PriceKind != p.PriceKind {
+				return fmt.Errorf("funding price %s does not use the member's selected price evidence", p.EvidenceID)
+			}
+		}
+	}
+	for _, o := range set.Observations {
+		if err := check(o.Key, "observation", o.EvidenceID); err != nil {
+			return err
+		}
+		if policy == nil {
+			return fmt.Errorf("funding observation %s requires a research policy", o.EvidenceID)
+		}
+		rule, ok := pairFundingSelectedRule(policy, o.Key)
+		if !ok || rule.RuleVersion != pairFundingRuleHLReceiptResearch {
+			return fmt.Errorf("funding observation %s names a member without the research oracle rule", o.EvidenceID)
+		}
+		if err := pairFundingValidateObservation(o, *policy); err != nil {
+			return err
+		}
 	}
 	for _, cv := range set.Coverage {
 		if err := check(cv.Key, "coverage", cv.EvidenceID); err != nil {
@@ -1189,62 +1952,100 @@ func pairFundingCheckAgainstContract(set pairFundingRecordSet, c basketContract)
 	return nil
 }
 
-func pairFundingBindingFor(c basketContract, src pairFundingSource) (pairFundingBinding, []byte, error) {
-	rulesDigest, rules, err := pairFundingRulesDigest()
-	if err != nil {
-		return pairFundingBinding{}, nil, err
+func pairFundingBindingFor(c basketContract, src pairFundingSource) (pairFundingBindingValue, []byte, error) {
+	policy := pairFundingSourcePolicy(src)
+	var rulesDigest string
+	var rules []string
+	var err error
+	if policy == nil {
+		rulesDigest, rules, err = pairFundingRulesDigest()
+	} else {
+		err = pairFundingValidatePolicyForContract(*policy, c)
+		if err == nil {
+			rulesDigest, rules, err = pairFundingRulesDigestSelected(policy.MemberRules)
+		}
 	}
-	b := pairFundingBinding{V: pairFundingBindingVersion, ContractFingerprint: c.Fingerprint(), SourceKind: src.Kind(), SourceID: src.SourceID(), RulesDigest: rulesDigest, Rules: rules}
+	if err != nil {
+		return pairFundingBindingValue{}, nil, err
+	}
+	version := pairFundingBindingVersion
+	if policy != nil {
+		version = pairFundingResearchBindingVersion
+	}
+	b := pairFundingBinding{V: version, ContractFingerprint: c.Fingerprint(), SourceKind: src.Kind(), SourceID: src.SourceID(), RulesDigest: rulesDigest, Rules: rules}
 	for _, m := range c.pairMembersSorted() {
 		b.Members = append(b.Members, c.pairMemberKey(m).evidenceKey())
 	}
 	switch s := src.(type) {
 	case *pairFrozenFundingSource:
-		if err := pairFundingCheckAgainstContract(s.set, c); err != nil {
-			return pairFundingBinding{}, nil, err
+		if err := pairFundingCheckAgainstContract(s.set, c, policy); err != nil {
+			return pairFundingBindingValue{}, nil, err
 		}
 		b.Digest = s.Digest()
 	case *pairRecordedFundingSource:
 		s.mu.RLock()
-		err := pairFundingCheckAgainstContract(s.set, c)
+		err := pairFundingCheckAgainstContract(s.set, c, policy)
 		s.mu.RUnlock()
 		if err != nil {
-			return pairFundingBinding{}, nil, err
+			return pairFundingBindingValue{}, nil, err
 		}
 		b.AnchorMs = s.AnchorMs()
 	default:
-		return pairFundingBinding{}, nil, fmt.Errorf("pair research needs the immutable frozen funding source or the append-only recorded funding source")
+		return pairFundingBindingValue{}, nil, fmt.Errorf("pair research needs the immutable frozen funding source or the append-only recorded funding source")
 	}
 	for _, m := range c.pairMembersSorted() {
-		rule, ok := pairFundingRuleVersionFor(m.Provider)
+		key := c.pairMemberKey(m).evidenceKey()
+		r, ok := pairFundingSelectedRule(policy, key)
 		if !ok {
-			return pairFundingBinding{}, nil, fmt.Errorf("no single funding rule serves provider %s", m.Provider)
+			return pairFundingBindingValue{}, nil, fmt.Errorf("no selected funding rule serves member %s on %s", m.MemberID, m.Provider)
 		}
-		r, _ := pairFundingRuleFor(rule)
 		if r.Currency != m.Meta.SettlementCurrency {
-			return pairFundingBinding{}, nil, fmt.Errorf("funding rule %s settles in %s, member %s settles in %s", rule, r.Currency, m.MemberID, m.Meta.SettlementCurrency)
+			return pairFundingBindingValue{}, nil, fmt.Errorf("funding rule %s settles in %s, member %s settles in %s", r.RuleVersion, r.Currency, m.MemberID, m.Meta.SettlementCurrency)
 		}
 	}
-	raw, err := pairCanonicalJSON(b)
-	if err != nil {
-		return pairFundingBinding{}, nil, err
+	if policy == nil {
+		raw, err := pairCanonicalJSON(b)
+		return pairFundingBindingValue{pairFundingBinding: b}, raw, err
 	}
-	return b, raw, nil
+	digest, _ := pairFundingPolicyDigest(*policy)
+	research := pairFundingBindingV2{pairFundingBinding: b, Policy: pairFundingPolicyClone(*policy), PolicyDigest: digest}
+	raw, err := pairCanonicalJSON(research)
+	return pairFundingBindingValue{pairFundingBinding: b, Research: &research}, raw, err
 }
 
-func pairFundingBindingCanonical(raw []byte) ([]byte, pairFundingBinding, error) {
+func pairFundingBindingCanonical(raw []byte) ([]byte, pairFundingBindingValue, error) {
+	version, _, err := pairFundingWireVersion(raw, "funding binding")
+	if err != nil {
+		return nil, pairFundingBindingValue{}, err
+	}
+	if version == pairFundingResearchBindingVersion {
+		var b pairFundingBindingV2
+		if err := pairFundingStrictDecode(raw, &b, "funding binding", 1<<20); err != nil {
+			return nil, pairFundingBindingValue{}, err
+		}
+		if err := pairFundingValidatePolicy(b.Policy); err != nil {
+			return nil, pairFundingBindingValue{}, err
+		}
+		digest, _ := pairFundingPolicyDigest(b.Policy)
+		rulesDigest, rules, err := pairFundingRulesDigestSelected(b.Policy.MemberRules)
+		if err != nil || b.PolicyDigest != digest || b.RulesDigest != rulesDigest || strings.Join(b.Rules, ",") != strings.Join(rules, ",") {
+			return nil, pairFundingBindingValue{}, fmt.Errorf("funding binding policy or selected rule digest is invalid")
+		}
+		canon, err := pairCanonicalJSON(b)
+		return canon, pairFundingBindingValue{pairFundingBinding: b.pairFundingBinding, Research: &b}, err
+	}
+	if version != pairFundingBindingVersion {
+		return nil, pairFundingBindingValue{}, fmt.Errorf("funding binding version %d is not supported", version)
+	}
 	var b pairFundingBinding
 	if err := pairFundingStrictDecode(raw, &b, "funding binding", 1<<20); err != nil {
-		return nil, b, err
+		return nil, pairFundingBindingValue{}, err
 	}
 	canon, err := pairCanonicalJSON(b)
-	if err != nil {
-		return nil, b, err
-	}
-	return canon, b, nil
+	return canon, pairFundingBindingValue{pairFundingBinding: b}, err
 }
 
-func pairFundingBindingDiff(want, got pairFundingBinding) string {
+func pairFundingBindingDiff(want, got pairFundingBindingValue) string {
 	switch {
 	case got.V != want.V:
 		return fmt.Sprintf("binding version %d, want %d", got.V, want.V)
@@ -1258,6 +2059,10 @@ func pairFundingBindingDiff(want, got pairFundingBinding) string {
 		return fmt.Sprintf("frozen funding digest %s, the run has %s", shortFingerprint(got.Digest), shortFingerprint(want.Digest))
 	case got.AnchorMs != want.AnchorMs:
 		return fmt.Sprintf("recorded funding anchor %d, the run has %d", got.AnchorMs, want.AnchorMs)
+	case (got.Research == nil) != (want.Research == nil):
+		return "the funding policy family differs from the run"
+	case got.Research != nil && got.Research.PolicyDigest != want.Research.PolicyDigest:
+		return fmt.Sprintf("funding policy %s, the run has %s", shortFingerprint(got.Research.PolicyDigest), shortFingerprint(want.Research.PolicyDigest))
 	case got.RulesDigest != want.RulesDigest:
 		return fmt.Sprintf("venue funding rules %s (%s), the run has %s (%s)", shortFingerprint(got.RulesDigest), strings.Join(got.Rules, ","), shortFingerprint(want.RulesDigest), strings.Join(want.Rules, ","))
 	case len(got.Members) != len(want.Members):
