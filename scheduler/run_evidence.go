@@ -51,6 +51,9 @@ func (r *runEvidence) markHeld(id, reason string, at time.Time) {
 		r.held = make(map[string]runEvidenceHold)
 	}
 	r.held[id] = runEvidenceHold{reason: reason, at: at.UTC()}
+	if reason == runEvidenceHeldKillSwitch && r.evaluated != nil {
+		delete(r.evaluated, id)
+	}
 }
 
 func recordHeldStrategies(due []StrategyConfig, scopeRisk map[RiskPartition]*scopeCycleRisk, store *StateStore, now time.Time) {
