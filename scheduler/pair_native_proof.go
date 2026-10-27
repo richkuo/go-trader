@@ -35,6 +35,7 @@ type pairNativeFundingProof struct {
 	Position       pairVenuePosition `json:"position"`
 	VenueBaseQty   string            `json:"venue_base_qty"`
 	BookBaseQty    string            `json:"book_base_qty"`
+	JournalRows    int64             `json:"journal_rows"`
 	RequestStartMs int64             `json:"request_start_ms"`
 	AcceptedAtMs   int64             `json:"accepted_at_ms"`
 	TimeSource     string            `json:"time_source"`
@@ -178,6 +179,9 @@ func pairCheckNativeFundingProof(hold pairNativeFundingHold, proof pairNativeFun
 	}
 	if proof.VenueBaseQty != venueQty || proof.BookBaseQty != venueQty {
 		return fmt.Errorf("native funding proof quantities venue %s book %s, want %s", proof.VenueBaseQty, proof.BookBaseQty, venueQty)
+	}
+	if proof.JournalRows < 0 {
+		return fmt.Errorf("native funding proof journal row count %d is negative", proof.JournalRows)
 	}
 	if hold.MemberID != proof.MemberID || hold.Kind != proof.Kind || hold.ObligationID != proof.ObligationID || hold.ResolutionID != proof.ResolutionID || hold.FromMs != proof.HoldFromMs || hold.AtMs != proof.HoldAtMs {
 		return fmt.Errorf("native funding proof does not name hold %s", hold.identity())
@@ -426,7 +430,10 @@ func validatePairNativeFundingHolds(rt *basketRuntime) error {
 			if !ok {
 				return fmt.Errorf("pair %s native funding hold %s bound overflows", rt.Contract.BasketID, h.identity())
 			}
-			q, amb := m.qtyBefore(end)
+			q, amb, err := m.qtyBeforeThroughSeq(end, proof.JournalRows)
+			if err != nil {
+				return fmt.Errorf("pair %s native funding hold %s: %w", rt.Contract.BasketID, h.identity(), err)
+			}
 			if amb {
 				return fmt.Errorf("pair %s native funding hold %s journal is ambiguous at its bound", rt.Contract.BasketID, h.identity())
 			}
@@ -434,6 +441,8 @@ func validatePairNativeFundingHolds(rt *basketRuntime) error {
 			if err != nil || q.Cmp(want) != 0 {
 				return fmt.Errorf("pair %s native funding hold %s journal holds %s at its bound, proof holds %s", rt.Contract.BasketID, h.identity(), pairDecimalOfRat(q), proof.BookBaseQty)
 			}
+		} else if proof.JournalRows != 0 {
+			return fmt.Errorf("pair %s native funding hold %s records %d journal rows and this runtime has no funding journal", rt.Contract.BasketID, h.identity(), proof.JournalRows)
 		}
 	}
 	return nil
@@ -740,6 +749,7 @@ func (bc *basketCoordinator) pairEvaluateNativeProofs(rt *basketRuntime, ms []pa
 		if err != nil {
 			continue
 		}
+		var journalRows int64
 		if f := rt.Pair.funding; f != nil {
 			fm := f.members[m.MemberID]
 			if fm == nil {
@@ -753,12 +763,13 @@ func (bc *basketCoordinator) pairEvaluateNativeProofs(rt *basketRuntime, ms []pa
 			if amb || q.Cmp(bookRat) != 0 {
 				continue
 			}
+			journalRows = int64(len(fm.rows))
 		}
 		for _, th := range tok.holds {
 			cand := th
 			cand.ThroughMs = got[i].FirstReceiptMs
 			proof := pairNativeFundingProof{Partition: rt.Partition.String(), PairID: rt.Contract.BasketID, MemberID: m.MemberID, Kind: th.Kind, ObligationID: th.ObligationID, ResolutionID: th.ResolutionID,
-				HoldFromMs: th.FromMs, HoldAtMs: th.AtMs, ContractFP: rt.Contract.Fingerprint(), ContractJSON: rt.Contract.JSON(), Position: got[i], VenueBaseQty: venueQty, BookBaseQty: venueQty,
+				HoldFromMs: th.FromMs, HoldAtMs: th.AtMs, ContractFP: rt.Contract.Fingerprint(), ContractJSON: rt.Contract.JSON(), Position: got[i], VenueBaseQty: venueQty, BookBaseQty: venueQty, JournalRows: journalRows,
 				RequestStartMs: startMs, AcceptedAtMs: nowMs}
 			built, raw, err := pairBuildNativeFundingProof(proof)
 			if err != nil {

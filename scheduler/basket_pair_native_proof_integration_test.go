@@ -432,7 +432,67 @@ func TestBasketPairNativeFundingProofLoadRefusesACorruptOrUnlinkedProof(t *testi
 	}
 }
 
-func pairProofBoundedResearchHold(t *testing.T, e *pairTestEnv, member string, fromMs, throughMs int64, baseQty string) pairNativeResolution {
+func TestBasketPairNativeFundingProofLoadUsesTheProofJournalPrefix(t *testing.T) {
+	t0 := pairTestStart()
+	from := pairSlotAt(t0, 2).UnixMilli()
+	through := pairSlotAt(t0, 3).UnixMilli()
+	appendLate := func(t *testing.T, e *pairTestEnv, origin string, eventMs, eventLatestMs int64) {
+		t.Helper()
+		fm := e.rt().Pair.funding.members[pairTestHL]
+		before := e.count(`SELECT COUNT(*) FROM pair_funding_inventory WHERE pair_id = ?`, pairTestID)
+		want, err := quoteRatFromFloatDecimal(0.0625)
+		if err != nil {
+			t.Fatal(err)
+		}
+		delta := new(big.Rat).Sub(want, fm.total())
+		d, err := pairRatDecimal(delta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fm.appendRow(pairInventoryRow{Origin: origin, Delta: pairDecimal(d), EventMs: eventMs, EventLatestMs: eventLatestMs, VisibleMs: eventLatestMs, RecordedAtMs: eventLatestMs}, fm.total(), "", "")
+		pos := e.state.Strategies[pairTestHL].Positions[fm.coin]
+		if pos == nil {
+			t.Fatalf("member %s has no %s position to move with the late row", pairTestHL, fm.coin)
+		}
+		pos.Quantity = 0.0625
+		for part, err := range e.store.SaveAll(e.state) {
+			if err != nil {
+				t.Fatalf("save the late inventory row for %s: %v", part, err)
+			}
+		}
+		if got := e.count(`SELECT COUNT(*) FROM pair_funding_inventory WHERE pair_id = ?`, pairTestID); got != before+1 {
+			t.Fatalf("the late inventory row was not saved, count %d want %d", got, before+1)
+		}
+		e.restart()
+		rt := e.rt()
+		if rt == nil || len(rt.Pair.Progress.NativeFundingHolds) != 1 || rt.Pair.Progress.NativeFundingHolds[0].ThroughMs != through || len(rt.Pair.Progress.NativeFundingHolds[0].Proof) == 0 {
+			t.Fatalf("the bound must survive the late journal row: %+v", rt)
+		}
+	}
+	t.Run("coordinator fill at or before the bound", func(t *testing.T) {
+		e := newPairFundingEnv(t, func(d *pairFundingDocument, k map[string]pairEvidenceKey) { pairFundingAutoCoverage(d, k) }, nil)
+		e.openMatched(0.05)
+		pairProofBoundedResearchHold(t, e, pairTestHL, from, through, "0.05", -1)
+		appendLate(t, e, pairInventoryOriginCoordinator, through, through)
+	})
+	t.Run("reconcile span across the bound", func(t *testing.T) {
+		e := newPairFundingEnv(t, func(d *pairFundingDocument, k map[string]pairEvidenceKey) { pairFundingAutoCoverage(d, k) }, nil)
+		e.openMatched(0.05)
+		pairProofBoundedResearchHold(t, e, pairTestHL, from, through, "0.05", -1)
+		appendLate(t, e, pairInventoryOriginUnexplained, through, through+5000)
+	})
+	t.Run("prefix quantity differs from the proof", func(t *testing.T) {
+		e := newPairFundingEnv(t, func(d *pairFundingDocument, k map[string]pairEvidenceKey) { pairFundingAutoCoverage(d, k) }, nil)
+		e.openMatched(0.05)
+		n := int64(len(e.rt().Pair.funding.members[pairTestHL].rows))
+		pairProofBoundedResearchHold(t, e, pairTestHL, from, through, "0", n)
+		if _, err := e.store.LoadBaskets(e.state, e.cfg); err == nil || !strings.Contains(err.Error(), "journal holds") {
+			t.Fatalf("a proof whose book quantity differs from the journal prefix must refuse the load: %v", err)
+		}
+	})
+}
+
+func pairProofBoundedResearchHold(t *testing.T, e *pairTestEnv, member string, fromMs, throughMs int64, baseQty string, journalRows int64) pairNativeResolution {
 	t.Helper()
 	rt := e.rt()
 	m, ok := rt.Contract.pairMember(member)
@@ -452,6 +512,16 @@ func pairProofBoundedResearchHold(t *testing.T, e *pairTestEnv, member string, f
 	if err != nil {
 		t.Fatal(err)
 	}
+	if journalRows < 0 && rt.Pair.funding != nil {
+		if fm := rt.Pair.funding.members[member]; fm != nil {
+			journalRows = int64(len(fm.rows))
+		} else {
+			journalRows = 0
+		}
+	}
+	if journalRows < 0 {
+		journalRows = 0
+	}
 	margin := m.Meta.MarginMode
 	if baseQty == "0" {
 		margin = ""
@@ -466,7 +536,7 @@ func pairProofBoundedResearchHold(t *testing.T, e *pairTestEnv, member string, f
 	hold := pairNativeFundingHold{MemberID: member, Kind: pairObligationNativeUnknown, ObligationID: "pna-proof-" + member, ResolutionID: resID,
 		FromMs: fromMs, AtMs: fromMs, Detail: "the operator write_off left the inventory unproven", ThroughMs: throughMs}
 	proof := pairNativeFundingProof{Partition: rt.Partition.String(), PairID: rt.Contract.BasketID, MemberID: member, Kind: hold.Kind, ObligationID: hold.ObligationID, ResolutionID: resID,
-		HoldFromMs: fromMs, HoldAtMs: fromMs, ContractFP: rt.Contract.Fingerprint(), ContractJSON: rt.Contract.JSON(), Position: pos, VenueBaseQty: baseQty, BookBaseQty: baseQty,
+		HoldFromMs: fromMs, HoldAtMs: fromMs, ContractFP: rt.Contract.Fingerprint(), ContractJSON: rt.Contract.JSON(), Position: pos, VenueBaseQty: baseQty, BookBaseQty: baseQty, JournalRows: journalRows,
 		RequestStartMs: throughMs - 100, AcceptedAtMs: throughMs + 100}
 	_, raw, err := pairBuildNativeFundingProof(proof)
 	if err != nil {
@@ -500,7 +570,7 @@ func TestBasketPairFundingBoundedNativeHoldSettlesOnlyAfterTheBound(t *testing.T
 		pairFundingAutoCoverage(d, k)
 	}, nil)
 	e.openMatched(0.05)
-	pairProofBoundedResearchHold(t, e, pairTestHL, from, through, "0.05")
+	pairProofBoundedResearchHold(t, e, pairTestHL, from, through, "0.05", -1)
 	e.restart()
 	e.step(pairSlotAt(t0, 6))
 	if status, reason, _ := e.fundingRow(pairTestHL, insideID); status != pairFundingStatusUnresolvable || reason != pairFundingReasonNativeDecision {
@@ -538,7 +608,7 @@ func TestBasketPairFundingMultipleNativeHoldsEachKeepTheirInterval(t *testing.T)
 		pairFundingAutoCoverage(d, k)
 	}, nil)
 	e.openMatched(0.05)
-	pairProofBoundedResearchHold(t, e, pairTestHL, from, through, "0.05")
+	pairProofBoundedResearchHold(t, e, pairTestHL, from, through, "0.05", -1)
 	e.mu.Lock()
 	e.rt().Pair.Progress.NativeFundingHolds = append(e.rt().Pair.Progress.NativeFundingHolds, pairNativeFundingHold{MemberID: pairTestHL, Kind: pairObligationNativeUnknown,
 		ObligationID: "pna-proof-later", ResolutionID: "pnz-proof-later", FromMs: through + 30000, AtMs: through + 30000, Detail: "a later operator decision left the inventory unproven"})
