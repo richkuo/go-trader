@@ -1166,9 +1166,10 @@ def inspect(unit, instance, exec_timeout=None):
             for sid, hold in sorted(rev["held"].items()):
                 if not isinstance(hold, dict):
                     continue
-                if (parse_iso(evaluated_at.get(sid)) or 0) > (parse_iso(hold.get("at")) or 0):
+                reason = hold.get("reason") or "unknown"
+                if reason != HELD_KILL_SWITCH and (parse_iso(evaluated_at.get(sid)) or 0) > (parse_iso(hold.get("at")) or 0):
                     continue
-                by_reason.setdefault(hold.get("reason") or "unknown", []).append(sid)
+                by_reason.setdefault(reason, []).append(sid)
             if by_reason.get(HELD_KILL_SWITCH):
                 plan.note("the portfolio kill switch of the running daemon held %s in its latest cycle; the execution proof accepts a strategy the target holds the same way" % ", ".join(by_reason[HELD_KILL_SWITCH]))
             for reason in sorted(r for r in by_reason if r != HELD_KILL_SWITCH):
