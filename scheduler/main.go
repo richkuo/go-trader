@@ -2065,7 +2065,6 @@ func main() {
 				}
 				return lg
 			})
-			recordHeldStrategies(dueStrategies, scopeRisk, store, time.Now())
 			dueUnlatched := dueStrategiesPersistable(store, dueStrategiesNotLatched(dueStrategies, scopeRisk))
 			ensureRestingTPLotMetadata(dueUnlatched)
 			hlBatchResults := runHyperliquidBatchPrePass(dueUnlatched, state, &mu, cfg, prices, notifier, func(format string, a ...any) {
@@ -2842,6 +2841,7 @@ func main() {
 				logger.Close()
 				markStrategyEvaluated(sc, deadlineFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
 			}
+			recordHeldStrategies(dueStrategies, scopeRisk, store, time.Now())
 			if hlCycle != nil {
 				mu.RLock()
 				hlCycle.SweepClosed(state.Strategies)
