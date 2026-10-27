@@ -33,6 +33,9 @@ func (r *runEvidence) markEvaluated(id string, at time.Time) {
 		r.evaluated = make(map[string]time.Time)
 	}
 	r.evaluated[id] = at.UTC()
+	if r.held != nil {
+		delete(r.held, id)
+	}
 }
 
 func (r *runEvidence) markZeroCapitalSkipped(id string, at time.Time) {
@@ -51,8 +54,16 @@ func (r *runEvidence) markHeld(id, reason string, at time.Time) {
 		r.held = make(map[string]runEvidenceHold)
 	}
 	r.held[id] = runEvidenceHold{reason: reason, at: at.UTC()}
-	if reason == runEvidenceHeldKillSwitch && r.evaluated != nil {
+	if r.evaluated != nil {
 		delete(r.evaluated, id)
+	}
+}
+
+func (r *runEvidence) clearHeld(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.held != nil {
+		delete(r.held, id)
 	}
 }
 
@@ -64,6 +75,8 @@ func recordHeldStrategies(due []StrategyConfig, scopeRisk map[RiskPartition]*sco
 			globalRunEvidence.markHeld(sc.ID, runEvidenceHeldKillSwitch, now)
 		case partitionSaveBlocked(store, part):
 			globalRunEvidence.markHeld(sc.ID, runEvidenceHeldSaveBlocked, now)
+		default:
+			globalRunEvidence.clearHeld(sc.ID)
 		}
 	}
 }
