@@ -82,6 +82,19 @@ type pairRecHandle struct {
 
 var errPairRecDiverged = errors.New("the recorded call sequence diverged")
 
+var pairRecTestAppendFault func() error
+
+type pairRecNotMadeError struct{ err error }
+
+func (e pairRecNotMadeError) Error() string { return e.err.Error() }
+
+func (e pairRecNotMadeError) Unwrap() error { return e.err }
+
+func pairRecCallNotMade(err error) bool {
+	var nm pairRecNotMadeError
+	return errors.As(err, &nm)
+}
+
 type pairRecFaults struct {
 	kind string
 	n    int
@@ -203,6 +216,9 @@ func (rec *pairRecorder) appendLocked(events ...pairRecEvent) error {
 		if rec.failNextAppend() {
 			fail = true
 			return fmt.Errorf("injected fault fail-record-append:%d", rec.faults.n)
+		}
+		if pairRecTestAppendFault != nil {
+			return pairRecTestAppendFault()
 		}
 		return nil
 	})
@@ -338,7 +354,7 @@ func (rec *pairRecorder) call(ctx context.Context, c pairRecCall, live func(ctx 
 	if rec.blocked.Load() {
 		rec.enqueueLocked(pairRecEvent{Kind: pairRecEventFailure, CallID: callID, Failure: &pairRecFailure{CallKind: c.Kind, MemberID: c.MemberID, RequestHash: reqHash,
 			StepID: rec.stepID, Ordinal: ordinal, Reason: "the recorder was blocked, so the call was refused before any read: " + rec.blockReason, FailedSeq: rec.failedSeq}})
-		return pairRecResult{}, nil, fmt.Errorf("the %s call was not made: the recording barrier refuses every new outside read until the committed record is verified (%s)", c.Kind, rec.blockReason)
+		return pairRecResult{}, nil, pairRecNotMadeError{fmt.Errorf("the %s call was not made: the recording barrier refuses every new outside read until the committed record is verified (%s)", c.Kind, rec.blockReason)}
 	}
 	rawStart := rec.now().UnixMilli()
 	start := pairRecStart{Kind: c.Kind, Phase: c.Phase, MemberID: c.MemberID, SlotMs: c.SlotMs, ActionID: c.ActionID, StepID: rec.stepID, Ordinal: ordinal,
@@ -347,7 +363,7 @@ func (rec *pairRecorder) call(ctx context.Context, c pairRecCall, live func(ctx 
 		rec.block(err.Error())
 		rec.enqueueLocked(pairRecEvent{Kind: pairRecEventFailure, CallID: callID, Failure: &pairRecFailure{CallKind: c.Kind, MemberID: c.MemberID, RequestHash: reqHash,
 			StepID: rec.stepID, Ordinal: ordinal, Reason: "the call start did not commit, so the call was never made: " + err.Error(), FailedSeq: rec.failedSeq}})
-		return pairRecResult{}, nil, fmt.Errorf("the %s call start could not be recorded, so no outside read was made: %w", c.Kind, err)
+		return pairRecResult{}, nil, pairRecNotMadeError{fmt.Errorf("the %s call start could not be recorded, so no outside read was made: %w", c.Kind, err)}
 	}
 	rec.fault("exit-after-call-start")
 	h := &pairRecHandle{rec: rec, parentID: callID}
@@ -437,7 +453,7 @@ func (rec *pairRecorder) consumeCallLocked(ctx context.Context, c pairRecCall, r
 			rec.blockReason, rec.failedSeq = f.Reason, f.FailedSeq
 			rec.blocked.Store(true)
 		}
-		return pairRecResult{}, &pairRecSaved{CallID: item.CallID, Failure: f}, fmt.Errorf("the %s call was not made in the recorded run: %s", c.Kind, f.Reason)
+		return pairRecResult{}, &pairRecSaved{CallID: item.CallID, Failure: f}, pairRecNotMadeError{fmt.Errorf("the %s call was not made in the recorded run: %s", c.Kind, f.Reason)}
 	case item.Kind != pairRecEventStart:
 		return pairRecResult{}, nil, rec.diverge("call %d of step %s (%s for %q) meets the recorded %s event at input %d", ordinal, rec.stepID, c.Kind, c.MemberID, item.Kind, item.Seq)
 	}
@@ -569,7 +585,7 @@ func (rec *pairRecorder) wake(stepID string, ordinal int) (int64, error) {
 	logical := rec.nextLogical(wall)
 	ev := pairRecEvent{Kind: pairRecEventWake, Wake: &pairRecWake{StepID: stepID, Ordinal: ordinal, WallMs: wall, LogicalMs: logical, ClockBackward: back, Epoch: rec.epoch}}
 	rec.lastWake = 0
-	rec.lastWakeRecord = nil
+	rec.lastWakeRecord = ev.Wake
 	if rec.blocked.Load() {
 		rec.enqueueLocked(ev)
 	} else if err := rec.appendLocked(ev); err != nil {
@@ -577,7 +593,6 @@ func (rec *pairRecorder) wake(stepID string, ordinal int) (int64, error) {
 		rec.enqueueLocked(ev)
 	} else {
 		rec.lastWake = rec.head.Seq
-		rec.lastWakeRecord = ev.Wake
 	}
 	if back {
 		rec.backward.Store(true)
@@ -601,6 +616,15 @@ func (rec *pairRecorder) wakeAt(seq int64) (pairRecWake, error) {
 		}
 	}
 	return pairRecWake{}, fmt.Errorf("host wake at recording sequence %d is not committed", seq)
+}
+
+func (rec *pairRecorder) queuedWake() (pairRecWake, bool) {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.mode != pairRecLive || rec.lastWake != 0 || rec.lastWakeRecord == nil || !rec.blocked.Load() {
+		return pairRecWake{}, false
+	}
+	return *rec.lastWakeRecord, true
 }
 
 func (rec *pairRecorder) clearAtBoundary(verify func() (int64, error)) (bool, error) {
@@ -698,7 +722,7 @@ func (rec *pairRecorder) restorePosition(cursor, ordinal int, logical int64, ste
 		for i := cursor - 1; i >= 0; i-- {
 			row := rec.log.rows[rec.log.stream[i]]
 			if row.Kind == pairRecEventWake {
-				rec.lastWake = row.Seq
+				rec.lastWake, rec.lastWakeRecord = row.Seq, row.Event.Wake
 				break
 			}
 		}

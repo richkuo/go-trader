@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	pairPaperTestClockEnv  = "GO_TRADER_PAPER_TEST_CLOCK"
-	pairPaperTestClockTick = 20 * time.Millisecond
+	pairPaperTestClockEnv       = "GO_TRADER_PAPER_TEST_CLOCK"
+	pairPaperTestAppendFaultEnv = "GO_TRADER_PAPER_TEST_APPEND_FAULT"
+	pairPaperTestClockTick      = 20 * time.Millisecond
 )
 
 type pairPaperTestWall struct {
@@ -37,7 +38,25 @@ func init() {
 		fmt.Fprintf(os.Stderr, "the paper test clock %s holds no positive millisecond time: %q\n", path, blob)
 		os.Exit(basketReplayExitError)
 	}
-	pairPaperWall = &pairPaperTestWall{path: path, ms: ms}
+	wall := &pairPaperTestWall{path: path, ms: ms}
+	pairPaperWall = wall
+	window := os.Getenv(pairPaperTestAppendFaultEnv)
+	if window == "" {
+		return
+	}
+	from, to, ok := strings.Cut(window, ":")
+	fromMs, ferr := strconv.ParseInt(from, 10, 64)
+	toMs, terr := strconv.ParseInt(to, 10, 64)
+	if !ok || ferr != nil || terr != nil || toMs <= fromMs {
+		fmt.Fprintf(os.Stderr, "the paper test append fault %q is not <from_ms>:<to_ms>\n", window)
+		os.Exit(basketReplayExitError)
+	}
+	pairRecTestAppendFault = func() error {
+		if now := wall.Now().UnixMilli(); now >= fromMs && now < toMs {
+			return fmt.Errorf("test append fault at wall %d inside [%d, %d)", now, fromMs, toMs)
+		}
+		return nil
+	}
 }
 
 func (w *pairPaperTestWall) reloadLocked() {

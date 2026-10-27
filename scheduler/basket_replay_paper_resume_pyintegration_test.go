@@ -571,3 +571,155 @@ func TestBasketReplayPairPaperResearchOracleResume(t *testing.T) {
 		pairPaperNoRepeatedCall(t, pairPaperLogRows(t, dir, f.runID))
 	})
 }
+
+func pairPaperOracleFailureRows(rows []pairRecRow) int {
+	n := 0
+	for _, r := range rows {
+		if r.Kind == pairRecEventFailure && r.Event.Failure.CallKind == pairRecKindFundingOracle {
+			n++
+		}
+	}
+	return n
+}
+
+func pairPaperAppendFaultEnv(f *pairPaperFixture, fromMs, toMs int64) []string {
+	return append(f.env(false), fmt.Sprintf("%s=%d:%d", pairPaperTestAppendFaultEnv, fromMs, toMs))
+}
+
+func TestBasketReplayPairPaperResearchOracleBarrierDecidesFromTheSameWake(t *testing.T) {
+	t.Parallel()
+	f, target := newPairPaperResearchFixture(t, pairPaperResearchOptions{runID: "paper-oracle-barrier-clear"})
+	policy := *f.scenario.FundingPolicy
+	prepare, _ := pairPaperOraclePrepareAt(target, policy)
+	deadline, _ := pairFundingOracleDeadline(policy, target)
+	clearFrom := prepare + 10000
+	dir := filepath.Join(f.parent, "paper")
+	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), pairPaperAppendFaultEnv(f, prepare, clearFrom), "--seal")
+	if p.Code == basketReplayExitRefused || p.Out.Run == nil || !p.Out.Run.Finished || p.Out.Comparison == nil || p.Out.Recording == nil || p.Out.Recording.BarrierSet || p.Out.Recording.Seal == nil || !p.Out.Recording.Seal.Sealed {
+		t.Fatalf("a barrier that clears in the same process lets the run finish and seal, got exit %d recording %+v reasons %v refusal %+v\nstderr tail=%s", p.Code, p.Out.Recording, p.Out.IncompleteReasons, p.Out.Refusal, tail(p.Stderr, 6000))
+	}
+	rows := pairPaperLogRows(t, dir, f.runID)
+	clears := 0
+	for _, r := range rows {
+		if r.Kind == pairRecEventClear {
+			clears++
+		}
+	}
+	notMade, missed := 0, 0
+	for _, s := range pairOfflineSteps(t, p.Out) {
+		for _, tr := range s.Trace {
+			switch tr {
+			case "oracle_not_made":
+				notMade++
+				if s.AtMs < prepare || s.AtMs >= clearFrom {
+					t.Fatalf("only a step whose wake the barrier held refuses the oracle call, got step at %d outside [%d, %d)", s.AtMs, prepare, clearFrom)
+				}
+			case "oracle_missed":
+				missed++
+			}
+		}
+	}
+	failures := pairPaperOracleFailureRows(rows)
+	if clears != 1 || notMade == 0 || failures != notMade || missed != 0 {
+		t.Fatalf("each held step queues one refused oracle row that the in-process release commits, got %d clears, %d not-made steps, %d failure rows, %d missed", clears, notMade, failures, missed)
+	}
+	var start, end pairRecRow
+	for _, r := range rows {
+		if r.Kind == pairRecEventStart && r.Event.Start.Kind == pairRecKindFundingOracle {
+			start = r
+		}
+	}
+	for _, r := range rows {
+		if r.Kind == pairRecEventEnd && r.CallID == start.CallID {
+			end = r
+		}
+	}
+	if s, e, rcv := pairPaperOracleRows(rows); s != 1 || e != 1 || rcv != 0 || start.Event.Start.RawStartMs < clearFrom || end.Event.End.Class != pairRecClassResult {
+		t.Fatalf("the hour stays for the first committed wake after the release and reads once, got %d starts %d ends %d recoveries, start %+v", s, e, rcv, start.Event.Start)
+	}
+	batch, err := pairDecodeFundingBatch(end.Event.End.Result)
+	if err != nil || batch.Research == nil || len(batch.Research.Observations) != 1 {
+		t.Fatalf("the oracle terminal holds one observation batch: %v", err)
+	}
+	obs := batch.Research.Observations[0]
+	if obs.TargetEventMs != target || obs.RequestMs < target || obs.ReceiptMs > deadline {
+		t.Fatalf("the observation lies inside [%d, %d]: %+v", target, deadline, obs)
+	}
+	row, ev := pairPaperResearchEvent(t, p.Out, target+3)
+	if ev.Research == nil || ev.PriceHash != obs.RecordHash || row["status"] != pairFundingStatusApplied {
+		t.Fatalf("the held hour settles once from the observation read after the release: %+v %+v", row, ev)
+	}
+	reads := pairPaperMetaReads(f)
+	if reads != 1 {
+		t.Fatalf("the paper run reads metaAndAssetCtxs once, got %d", reads)
+	}
+	playback := pairPaperReproduce(t, f, dir, "reproduction")
+	if playback.Code == basketReplayExitRefused || playback.Out.Refusal != nil || playback.Out.Comparison == nil || playback.Code != p.Code || playback.Out.MechanicallyComplete != p.Out.MechanicallyComplete {
+		t.Fatalf("the sealed playback with every network route blocked ends like the live run, got exit %d (live %d) refusal %+v reasons %v\nstderr tail=%s", playback.Code, p.Code, playback.Out.Refusal, playback.Out.IncompleteReasons, tail(playback.Stderr, 6000))
+	}
+	for _, r := range append(append([]string{}, playback.Out.IncompleteReasons...), playback.Out.Comparison.Reasons...) {
+		if strings.Contains(r, "diverged") {
+			t.Fatalf("the playback consumes the refused oracle rows at the same steps without a divergence, got %s", r)
+		}
+	}
+	if p.Out.Comparison.Eligible || playback.Out.Comparison.Eligible {
+		t.Fatalf("a run with refused calls makes no equality claim, got live %+v playback %+v", p.Out.Comparison, playback.Out.Comparison)
+	}
+	if _, pev := pairPaperResearchEvent(t, playback.Out, target+3); pev.PriceHash != obs.RecordHash || pev.EvidenceHash != ev.EvidenceHash || pev.USDAmount != ev.USDAmount {
+		t.Fatalf("the playback settles the same amount from the same observation: live %+v playback %+v", ev, pev)
+	}
+	if n := pairPaperMetaReads(f); n != reads {
+		t.Fatalf("playback never runs the public oracle reader, saw %d new reads", n-reads)
+	}
+}
+
+func TestBasketReplayPairPaperResearchOracleBarrierRestartReadsTheHeldHourOnce(t *testing.T) {
+	t.Parallel()
+	f, target := newPairPaperResearchFixture(t, pairPaperResearchOptions{runID: "paper-oracle-barrier-restart"})
+	policy := *f.scenario.FundingPolicy
+	prepare, _ := pairPaperOraclePrepareAt(target, policy)
+	dir := filepath.Join(f.parent, "paper")
+	first := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), pairPaperAppendFaultEnv(f, prepare, f.drain+3600000), "--max-steps", "21")
+	if first.Code == basketReplayExitRefused || first.Out.Recording == nil || !first.Out.Recording.BarrierSet {
+		t.Fatalf("the first process stops while the barrier holds, got exit %d recording %+v refusal %+v\nstderr tail=%s", first.Code, first.Out.Recording, first.Out.Refusal, tail(first.Stderr, 6000))
+	}
+	held := false
+	for _, s := range pairOfflineSteps(t, first.Out) {
+		for _, tr := range s.Trace {
+			if tr == "oracle_not_made" {
+				held = true
+			}
+		}
+	}
+	if !held || pairPaperMetaReads(f) != 0 {
+		t.Fatalf("the held process refuses the oracle call before any read, got held=%v reads=%d", held, pairPaperMetaReads(f))
+	}
+	resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false))
+	pairPaperRequireResumed(t, "restart after a held oracle hour", resumed)
+	rows := pairPaperLogRows(t, dir, f.runID)
+	if s, _, _ := pairPaperOracleRows(rows); s != 1 || pairPaperMetaReads(f) != 1 || pairPaperOracleFailureRows(rows) != 0 {
+		t.Fatalf("the restart reads the held hour once and keeps no row of the stopped process, got %d starts, %d reads, %d failure rows", s, pairPaperMetaReads(f), pairPaperOracleFailureRows(rows))
+	}
+}
+
+func TestBasketReplayPairPaperResearchOracleBarrierOutsidePreparationAddsNoOracleRow(t *testing.T) {
+	t.Parallel()
+	f, target := newPairPaperResearchFixture(t, pairPaperResearchOptions{runID: "paper-oracle-barrier-early"})
+	policy := *f.scenario.FundingPolicy
+	prepare, _ := pairPaperOraclePrepareAt(target, policy)
+	dir := filepath.Join(f.parent, "paper")
+	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), pairPaperAppendFaultEnv(f, prepare-16000, prepare-6000), "--seal")
+	if p.Code == basketReplayExitRefused || p.Out.Run == nil || !p.Out.Run.Finished || p.Out.Recording == nil || p.Out.Recording.BarrierSet {
+		t.Fatalf("a barrier before preparation clears in process and the run finishes, got exit %d recording %+v refusal %+v\nstderr tail=%s", p.Code, p.Out.Recording, p.Out.Refusal, tail(p.Stderr, 6000))
+	}
+	rows := pairPaperLogRows(t, dir, f.runID)
+	clears := 0
+	for _, r := range rows {
+		if r.Kind == pairRecEventClear {
+			clears++
+		}
+	}
+	if s, e, _ := pairPaperOracleRows(rows); clears != 1 || s != 1 || e != 1 || pairPaperOracleFailureRows(rows) != 0 {
+		t.Fatalf("a barrier window with no preparation window adds no oracle row, got %d clears, %d starts, %d ends, %d failure rows", clears, s, e, pairPaperOracleFailureRows(rows))
+	}
+}

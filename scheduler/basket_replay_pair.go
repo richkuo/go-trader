@@ -1181,6 +1181,7 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 	ordinal := r.cursor.Applied
 	stepID := fmt.Sprintf("s%d@%d", ordinal, atMs)
 	resumePhase := ""
+	resumed := r.resumeStep
 	if r.resumeStep {
 		if r.pending.StepID != stepID {
 			return refuseReplay("resume_refused", fmt.Sprintf("the pending step %s is not the next step %s", r.pending.StepID, stepID))
@@ -1212,12 +1213,18 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 	}
 	cfg, state, store, mu := r.cfg, r.state, r.store, r.mu
 	var recordedWake *pairRecWake
-	if r.paper != nil && r.paper.scenario.FundingPolicy != nil && r.pending.RecSeq > 0 {
+	switch {
+	case r.paper == nil || r.paper.scenario.FundingPolicy == nil:
+	case r.pending.RecSeq > 0:
 		wake, err := r.rec.wakeAt(r.pending.RecSeq)
 		if err != nil {
 			return refuseReplay("resume_refused", err.Error())
 		}
 		recordedWake = &wake
+	case !resumed:
+		if wake, ok := r.rec.queuedWake(); ok {
+			recordedWake = &wake
+		}
 	}
 	in := r.cycleInputs(at)
 	trace := []string{"evidence"}

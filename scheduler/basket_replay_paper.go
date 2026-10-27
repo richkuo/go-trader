@@ -1245,6 +1245,11 @@ func (r *pairReplayRuntime) deliverOracle(wake pairRecWake) []string {
 			prev = chain[len(chain)-1].BatchHash
 		}
 		raw, saved, err := recordingFundingSource{rec: r.rec, src: r.paper.funding, egress: r.paperEgress()}.readOracle(context.Background(), key, seq, prev, target)
+		if pairRecCallNotMade(err) {
+			fmt.Fprintf(os.Stderr, "[paper] funding oracle read for hour %d was not made, so the hour stays for the next wake: %v\n", target, err)
+			trace = append(trace, "oracle_not_made")
+			break
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[paper] funding oracle read for hour %d: %v\n", target, err)
 		} else if saved == nil || saved.End == nil {
