@@ -278,6 +278,8 @@ func pairFundingCheckJournal(memberID string, rows []pairInventoryRow) error {
 func (st *StateStore) loadPairFunding(state *AppState, rt *basketRuntime, adm *pairResearchAdmission, rows *pairFundingFileRows) error {
 	id := rt.Contract.BasketID
 	f := newPairFundingRuntime(adm, rt.Contract)
+	policy := pairFundingSourcePolicy(adm.funding)
+	records := pairFundingSourceRecordSet(adm.funding)
 	if rows == nil {
 		rows = &pairFundingFileRows{Inventory: map[string][]pairInventoryRow{}}
 	}
@@ -323,6 +325,14 @@ func (st *StateStore) loadPairFunding(state *AppState, rt *basketRuntime, adm *p
 			if ev.Key != m.key || ev.EventID != e.EventID || ev.RuleVersion != e.RuleVersion || ev.EvidenceHash != e.EvidenceHash || ev.SourceHash != e.SourceHash || string(ev.USDAmount) != e.USDAmount {
 				return fmt.Errorf("pair %s applied funding event %s columns disagree with its saved event bytes", id, e.EventID)
 			}
+			if err := pairFundingValidateSelectedEvent(ev, policy, records); err != nil {
+				return fmt.Errorf("pair %s applied funding event %s is not valid against admitted evidence: %w", id, e.EventID, err)
+			}
+			venueKey := pairFundingVenueEventKey{Key: ev.Key, EventID: ev.EventID}
+			if owner, exists := f.appliedVenueRules[venueKey]; exists && owner != ev.RuleVersion {
+				return fmt.Errorf("pair %s applied funding event %s is owned by both %s and %s", id, e.EventID, owner, ev.RuleVersion)
+			}
+			f.appliedVenueRules[venueKey] = ev.RuleVersion
 			if e.ContractFP == rt.Contract.Fingerprint() && !adm.admittedEvidence().hasConversion(ev.Conversion) {
 				return fmt.Errorf("pair %s applied funding event %s uses conversion %s, which is not a record of the bound evidence document", id, e.EventID, ev.Conversion.EvidenceID)
 			}
@@ -332,7 +342,13 @@ func (st *StateStore) loadPairFunding(state *AppState, rt *basketRuntime, adm *p
 				return fmt.Errorf("pair %s applied funding event %s source hash %s is not the hash of its saved rate record; the saved state is kept unchanged", id, e.EventID, shortFingerprint(e.SourceHash))
 			}
 			f.hashes[pairFundingIdentity(ev.Key, ev.EventID, ev.RuleVersion)] = pairFundingHashMemo{eventMs: ev.EventMs, rate: ev.Rate, hash: sh}
-			f.applied[key] = pairFundingAppliedRef{EventMs: e.EventMs, SourceHash: e.SourceHash, EvidenceHash: e.EvidenceHash}
+			ref := pairFundingAppliedRef{EventMs: e.EventMs, SourceHash: e.SourceHash, EvidenceHash: e.EvidenceHash}
+			if ev.Research != nil {
+				ref.PolicyDigest = ev.Research.PolicyDigest
+				ref.ObservationRecordHash = ev.Research.ObservationRecordHash
+				ref.ObservationTargetEventMs = ev.Research.ObservationTargetEventMs
+			}
+			f.applied[key] = ref
 			if e.EventMs > m.maxAppliedMs {
 				m.maxAppliedMs = e.EventMs
 			}
@@ -545,6 +561,13 @@ func (sdb *StateDB) writePairFundingTx(tx *sql.Tx, rt *basketRuntime, sids map[s
 		}
 		m := f.members[app.MemberID]
 		ev := app.Event
+		if err := pairFundingValidateSelectedEvent(ev, pairFundingSourcePolicy(f.source), pairFundingSourceRecordSet(f.source)); err != nil {
+			return fmt.Errorf("apply pair %s funding event %s for %s: %w", pairID, ev.EventID, app.MemberID, err)
+		}
+		raw, err := pairFundingEventValueBytes(ev)
+		if err != nil || !bytes.Equal(raw, app.JSON) {
+			return fmt.Errorf("apply pair %s funding event %s for %s: staged bytes differ from its canonical event", pairID, ev.EventID, app.MemberID)
+		}
 		res, err := tx.Exec(`INSERT INTO pair_funding_events (scope, source, pair_id, contract_fingerprint, strategy_id, provider, account_key, instrument, event_id,
 			    rule_version, event_ms, status, reason, detail, source_hash, evidence_hash, usd_amount, event_json, created_at_ms, updated_at_ms)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', '', '', ?, ?, ?, ?, ?, ?)
@@ -587,7 +610,16 @@ func markPairFundingDurable(rt *basketRuntime, books map[string]*StrategyState) 
 		if books[app.MemberID] == nil {
 			continue
 		}
-		f.applied[k] = pairFundingAppliedRef{EventMs: app.Event.EventMs, SourceHash: app.Event.SourceHash, EvidenceHash: app.Event.EvidenceHash}
+		ref := pairFundingAppliedRef{EventMs: app.Event.EventMs, SourceHash: app.Event.SourceHash, EvidenceHash: app.Event.EvidenceHash}
+		if app.Event.Research != nil {
+			ref.PolicyDigest = app.Event.Research.PolicyDigest
+			ref.ObservationRecordHash = app.Event.Research.ObservationRecordHash
+			ref.ObservationTargetEventMs = app.Event.Research.ObservationTargetEventMs
+		}
+		f.applied[k] = ref
+		venueKey := pairFundingVenueEventKey{Key: app.Event.Key, EventID: app.Event.EventID}
+		f.appliedVenueRules[venueKey] = app.Event.RuleVersion
+		delete(f.pendingVenueRules, venueKey)
 		delete(f.pending, k)
 	}
 	if pending := f.recordedChainPending(); len(pending) > 0 {

@@ -111,6 +111,7 @@ type pairReplayRuntime struct {
 	pollNextMs       int64
 	fundingNextMs    int64
 	capabilityNextMs int64
+	oracleNextMs     int64
 }
 
 func (r *pairReplayRuntime) Close() {
@@ -234,6 +235,9 @@ func openPairReplay(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, opt
 	funding, err := newPairFrozenFundingSource(in.funding, sha256Hex(in.funding))
 	if err != nil {
 		return nil, refuseReplay("input_refused", "funding: "+err.Error())
+	}
+	if funding.policy != nil && (funding.policy.FromMs != lt.StartMs || funding.policy.DrainThroughMs != lt.EndMs) {
+		return nil, refuseReplay("input_refused", "funding policy bounds must equal the replay lifetime")
 	}
 	r.evidence, r.funding = evidence, funding
 	sources := map[string]string{}
@@ -842,7 +846,7 @@ func (r *pairReplayRuntime) prefixHash(atMs int64) string {
 func (r *pairReplayRuntime) hostStateLocked() pairReplayHostState {
 	rt := r.rt
 	h := pairReplayHostState{Cycle: r.bc.cycle, NextManageMs: r.nextManageMs, LastStepMs: rt.pairLastStepMs, ViewGen: rt.pairViewGen, PrepSeq: rt.pairPrepSeq,
-		Observations: map[string]pairReplayObservation{}, EchoFailures: map[string]string{}, PollNextMs: r.pollNextMs, FundingNextMs: r.fundingNextMs, CapabilityNextMs: r.capabilityNextMs}
+		Observations: map[string]pairReplayObservation{}, EchoFailures: map[string]string{}, PollNextMs: r.pollNextMs, FundingNextMs: r.fundingNextMs, CapabilityNextMs: r.capabilityNextMs, OracleNextMs: r.oracleNextMs}
 	for id, o := range rt.observations {
 		h.Observations[id] = pairReplayObservation{Cycle: o.Cycle, AtMs: o.AtMs, Fields: o.Fields, Indicators: o.Indicators, Price: o.Price}
 	}
@@ -887,6 +891,7 @@ func (r *pairReplayRuntime) restoreHost(h pairReplayHostState) {
 	r.bc.cycle = h.Cycle
 	r.nextManageMs = h.NextManageMs
 	r.pollNextMs, r.fundingNextMs, r.capabilityNextMs = h.PollNextMs, h.FundingNextMs, h.CapabilityNextMs
+	r.oracleNextMs = h.OracleNextMs
 	rt.pairLastStepMs = h.LastStepMs
 	rt.pairViewGen, rt.pairPrepSeq = h.ViewGen, h.PrepSeq
 	rt.observations = map[string]basketMemberObservation{}
@@ -1206,6 +1211,14 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 		r.cursor.PendingID, r.cursor.PendingMs, r.cursor.PendingHash = stepID, atMs, rec.PrefixHash
 	}
 	cfg, state, store, mu := r.cfg, r.state, r.store, r.mu
+	var recordedWake *pairRecWake
+	if r.paper != nil && r.paper.scenario.FundingPolicy != nil && r.pending.RecSeq > 0 {
+		wake, err := r.rec.wakeAt(r.pending.RecSeq)
+		if err != nil {
+			return refuseReplay("resume_refused", err.Error())
+		}
+		recordedWake = &wake
+	}
 	in := r.cycleInputs(at)
 	trace := []string{"evidence"}
 	var risk map[RiskPartition]*scopeCycleRisk
@@ -1230,7 +1243,7 @@ func (r *pairReplayRuntime) runStep(atMs int64) error {
 		trace = append(trace, "prepare_risk", "risk_restored")
 	} else {
 		if r.paper != nil {
-			trace = append(trace, r.deliver(at)...)
+			trace = append(trace, r.deliver(at, recordedWake)...)
 			at = r.clock.Now()
 			atMs = at.UnixMilli()
 			in = r.cycleInputs(at)

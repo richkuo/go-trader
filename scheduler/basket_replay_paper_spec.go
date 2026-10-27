@@ -10,12 +10,13 @@ import (
 )
 
 const (
-	pairPaperProtocolLabel  = "go-trader.basket-replay-paper"
-	pairPaperManifestOwner  = "go-trader basket-replay-paper recorder"
-	pairPaperManifestVer    = 1
-	pairPaperRecordsPerStep = 3
-	pairPaperRecordOverhead = 96
-	pairPaperMinFundingMs   = 1000
+	pairPaperProtocolLabel       = "go-trader.basket-replay-paper"
+	pairPaperManifestOwner       = "go-trader basket-replay-paper recorder"
+	pairPaperManifestVer         = 1
+	pairPaperManifestResearchVer = 2
+	pairPaperRecordsPerStep      = 3
+	pairPaperRecordOverhead      = 96
+	pairPaperMinFundingMs        = 1000
 )
 
 type pairPaperCollection struct {
@@ -32,6 +33,7 @@ type pairPaperScenario struct {
 	PaperPollIntervalMs      int64                     `json:"paper_poll_interval_ms"`
 	PaperFundingPollMs       int64                     `json:"paper_funding_poll_ms"`
 	PaperCapabilityRefreshMs int64                     `json:"paper_capability_refresh_ms"`
+	FundingPolicy            *pairFundingPolicyV1      `json:"funding_policy,omitempty"`
 }
 
 type pairPaperSpec struct {
@@ -71,6 +73,15 @@ func decodePairPaperSpec(raw []byte) (*pairPaperSpec, error) {
 	}
 	if dec.More() {
 		return nil, refuseReplay("spec_malformed", "trailing data after the paper specification")
+	}
+	var rawShape struct {
+		Scenario map[string]json.RawMessage `json:"scenario"`
+	}
+	if err := json.Unmarshal(raw, &rawShape); err != nil {
+		return nil, refuseReplay("spec_malformed", err.Error())
+	}
+	if policy, ok := rawShape.Scenario["funding_policy"]; ok && bytes.Equal(bytes.TrimSpace(policy), []byte("null")) {
+		return nil, refuseReplay("spec_invalid", "scenario.funding_policy must be an object when present; null is refused")
 	}
 	return &spec, nil
 }
@@ -180,6 +191,39 @@ func validatePairPaperSpec(spec *pairPaperSpec) (pairReplayLifetime, error) {
 	}
 	if _, ok := pairAddMs(c.DrainThroughMs, pairMaxIntervalMs); !ok {
 		add("collection.drain_through_ms %d leaves no room for checked time arithmetic", c.DrainThroughMs)
+	}
+	if p := sc.FundingPolicy; p != nil {
+		if err := pairFundingValidatePolicy(*p); err != nil {
+			add("scenario.funding_policy: %v", err)
+		}
+		if p.FromMs != c.FromMs || p.DrainThroughMs != c.DrainThroughMs {
+			add("scenario.funding_policy bounds (%d, %d] must equal collection bounds (%d, %d]", p.FromMs, p.DrainThroughMs, c.FromMs, c.DrainThroughMs)
+		}
+		shape, serr := pairPaperShape(spec.ResearchConfig)
+		if serr != nil || len(shape.Pairs[0].Members) != 2 {
+			add("scenario.funding_policy needs the checked two-member research pair")
+		} else {
+			if len(p.MemberRules) != len(shape.Pairs[0].Members) {
+				add("scenario.funding_policy must name every pair member exactly once")
+			}
+			for _, m := range shape.Pairs[0].Members {
+				_, provider := pairPaperMemberPartition(shape, m.StrategyID)
+				want := ""
+				switch provider {
+				case entryProviderHyperliquid:
+					want = pairFundingRuleHLReceiptResearch
+				case entryProviderOKX:
+					want = pairFundingRuleOKX
+				}
+				version, ok := p.MemberRules[m.StrategyID]
+				switch {
+				case !ok:
+					add("scenario.funding_policy does not name member %s", m.StrategyID)
+				case want == "" || version != want:
+					add("scenario.funding_policy member %s on %q must select %q, got %q", m.StrategyID, provider, want, version)
+				}
+			}
+		}
 	}
 	start, err := pairReplayParseTime("bounds.start", spec.Bounds.Start)
 	if err != nil {

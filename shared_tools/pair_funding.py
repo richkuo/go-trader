@@ -24,15 +24,40 @@ RECORD_VERSION = 1
 BATCH_VERSION = 1
 EVENT_VERSION = 2
 COVERAGE_VERSION = 1
+RESEARCH_DOCUMENT_VERSION = 2
+RESEARCH_BATCH_VERSION = 2
+RESEARCH_EVENT_VERSION = 3
+RESEARCH_BINDING_VERSION = 2
+OBSERVATION_VERSION = 2
+POLICY_VERSION = 1
 MAX_RECORDS = 1 << 16
 MAX_INTERVALS = 1 << 12
 
 RULE_HYPERLIQUID = "hyperliquid_hourly_oracle_v1"
 RULE_OKX = "okx_swap_realized_mark_v1"
+RULE_HL_RECEIPT_RESEARCH = "hyperliquid_hourly_oracle_receipt_research_v1"
+PRICE_ORACLE_RECEIPT = "oracle_receipt_research"
+OBSERVATION_TIME_BASIS = "local_request_receipt"
+ORACLE_PROVENANCE = "hyperliquid_info_metaAndAssetCtxs_oraclePx_receipt_research_v1@https://api.hyperliquid.xyz"
 
 RULES = {
     RULE_HYPERLIQUID: {"provider": "hyperliquid", "currency": "USDC", "price_kind": "oracle", "assessment_window_ms": 0},
     RULE_OKX: {"provider": "okx", "currency": "USDT", "price_kind": "mark", "assessment_window_ms": 60000},
+}
+RESEARCH_RULES = {
+    RULE_HL_RECEIPT_RESEARCH: {
+        "rule_version": RULE_HL_RECEIPT_RESEARCH,
+        "provider": "hyperliquid",
+        "currency": "USDC",
+        "rate_field": "fundingHistory.fundingRate",
+        "price_kind": PRICE_ORACLE_RECEIPT,
+        "formula": "native_amount = -(signed_base_qty * native_mark * rate)",
+        "same_time": "inventory strictly before event_ms; a fill at event_ms is excluded",
+        "assessment_window_ms": 0,
+        "schedule": "each venue settlement record is one event; research oracle selection floors event_ms to the UTC hour within the frozen maximum print offset",
+        "rounding": "none: the exact decimal product is kept",
+        "evidence": ["research receipt-time observation; timing bounds do not establish venue settlement equality or oracle-update age"],
+    },
 }
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -73,7 +98,41 @@ EVENT_FIELDS = (
     ("coverage", EVENT_COVERAGE_FIELDS), ("source_hash", "str"), ("price_hash", "str"), ("evidence_hash", "str"),
 )
 
-SCHEMAS = {"rate": RATE_FIELDS, "price": PRICE_FIELDS, "coverage": COVERAGE_RECORD_FIELDS}
+POLICY_FIELDS = (
+    ("version", "int"), ("member_rules", ("map", "str")), ("window_ms", "int"),
+    ("max_print_offset_ms", "int"), ("prepare_lead_ms", "int"), ("from_ms", "int"), ("drain_through_ms", "int"),
+)
+OBSERVATION_FIELDS = (
+    ("v", "int"), ("key", KEY_FIELDS), ("evidence_id", "str"), ("attempt_id", "str"),
+    ("policy_digest", "str"), ("price_kind", "str"), ("target_event_ms", "int"),
+    ("request_ms", "int"), ("receipt_ms", "int"), ("at_ms", "int"), ("visible_ms", "int"),
+    ("time_basis", "str"), ("price", "decimal"), ("provenance", "str"), ("record_hash", "str"),
+)
+DOCUMENT_V2_FIELDS = (
+    ("v", "int"), ("source_id", "str"), ("policy", POLICY_FIELDS), ("policy_digest", "str"),
+    ("rates", ("list", RATE_FIELDS)), ("prices", ("list", PRICE_FIELDS)),
+    ("observations", ("list", OBSERVATION_FIELDS)), ("coverage", ("list", COVERAGE_RECORD_FIELDS)),
+)
+BATCH_V2_FIELDS = (
+    ("v", "int"), ("source_id", "str"), ("seq", "int"), ("prev_hash", "str"),
+    ("policy_digest", "str"), ("rates", ("list", RATE_FIELDS)), ("prices", ("list", PRICE_FIELDS)),
+    ("observations", ("list", OBSERVATION_FIELDS)), ("coverage", ("list", COVERAGE_RECORD_FIELDS)),
+    ("batch_hash", "str"),
+)
+EVENT_V3_FIELDS = EVENT_FIELDS[:-1] + (
+    ("policy_digest", "str"), ("observation_evidence_id", "str"),
+    ("observation_record_hash", "str"), ("observation_target_event_ms", "int"),
+    ("observation_request_ms", "int"), ("observation_receipt_ms", "int"),
+    ("observation_time_basis", "str"), ("evidence_hash", "str"),
+)
+BINDING_FIELDS = (
+    ("v", "int"), ("contract_fingerprint", "str"), ("members", ("list", KEY_FIELDS)),
+    ("source_kind", "str"), ("source_id", "str"), ("digest", "str"), ("anchor_ms", "int"),
+    ("rules_digest", "str"), ("rules", ("list", "str")),
+)
+BINDING_V2_FIELDS = BINDING_FIELDS + (("policy", POLICY_FIELDS), ("policy_digest", "str"))
+
+SCHEMAS = {"rate": RATE_FIELDS, "price": PRICE_FIELDS, "coverage": COVERAGE_RECORD_FIELDS, "observation": OBSERVATION_FIELDS}
 
 
 def _printable(text, limit):
@@ -86,6 +145,78 @@ def _key_tuple(key):
 
 def event_id(provider, instrument, event_ms):
     return f"{provider}:{instrument}:{int(event_ms)}"
+
+
+def policy_digest(policy):
+    norm = _shape(policy, POLICY_FIELDS, "funding policy", True)
+    return sha256_hex(canonical_bytes(norm))
+
+
+def validate_policy(policy):
+    p = _shape(policy, POLICY_FIELDS, "funding policy", False)
+    if p["version"] != POLICY_VERSION or p["window_ms"] != 5000 or p["max_print_offset_ms"] != 60000 or p["prepare_lead_ms"] != 30000:
+        raise PairEvidenceError("funding policy must be version 1 with window_ms 5000, max_print_offset_ms 60000 and prepare_lead_ms 30000")
+    if p["from_ms"] <= 0 or p["drain_through_ms"] < p["from_ms"]:
+        raise PairEvidenceError("funding policy bounds are invalid")
+    if not p["member_rules"]:
+        raise PairEvidenceError("funding policy member_rules is empty")
+    for member_id, version in p["member_rules"].items():
+        if not _printable(member_id, MAX_ID_LEN):
+            raise PairEvidenceError(f"funding policy member id {member_id!r} is invalid")
+        rule = RESEARCH_RULES.get(version)
+        if rule is None:
+            rule = RULES.get(version)
+        if rule is None:
+            raise PairEvidenceError(f"funding policy member {member_id} selects unsupported rule {version!r}")
+    return p
+
+
+def research_target(event_ms, policy):
+    p = validate_policy(policy)
+    if isinstance(event_ms, bool) or not isinstance(event_ms, int) or event_ms <= 0:
+        return None
+    target = event_ms - event_ms % 3600000
+    if target <= 0 or not 0 <= event_ms - target <= p["max_print_offset_ms"]:
+        return None
+    if target < p["from_ms"] or target > p["drain_through_ms"]:
+        return None
+    return target
+
+
+def oracle_attempt_id(key, target_event_ms, digest):
+    body = {"key": key, "target_event_ms": target_event_ms, "policy_digest": digest}
+    return "hyperliquid-oracle-attempt:" + sha256_hex(canonical_bytes(body))
+
+
+def oracle_evidence_id(key, target_event_ms, receipt_ms):
+    return f"hyperliquid-oracle:{key['instrument']}:{target_event_ms}:{receipt_ms}"
+
+
+def validate_observation(observation, policy):
+    o = _shape(observation, OBSERVATION_FIELDS, "funding oracle observation", False)
+    p = validate_policy(policy)
+    what = f"funding oracle observation {o['evidence_id']}"
+    if o["v"] != OBSERVATION_VERSION or o["price_kind"] != PRICE_ORACLE_RECEIPT or o["time_basis"] != OBSERVATION_TIME_BASIS or o["provenance"] != ORACLE_PROVENANCE:
+        raise PairEvidenceError(f"{what} has an unsupported version, price kind, time basis or provenance")
+    validate_key(o["key"])
+    digest = policy_digest(p)
+    if o["policy_digest"] != digest:
+        raise PairEvidenceError(f"{what} policy digest does not match the admitted policy")
+    if o["attempt_id"] != oracle_attempt_id(o["key"], o["target_event_ms"], digest):
+        raise PairEvidenceError(f"{what} attempt identity is invalid")
+    target = o["target_event_ms"]
+    if target <= 0 or target % 3600000 or target < p["from_ms"] or target > p["drain_through_ms"]:
+        raise PairEvidenceError(f"{what} target is outside the policy hour grid")
+    deadline = min(target + p["window_ms"], p["drain_through_ms"])
+    if o["request_ms"] < target or o["receipt_ms"] < o["request_ms"] or o["receipt_ms"] > deadline or o["at_ms"] != o["receipt_ms"] or o["visible_ms"] != o["receipt_ms"]:
+        raise PairEvidenceError(f"{what} local request/receipt times are outside [{target}, {deadline}]")
+    if o["evidence_id"] != oracle_evidence_id(o["key"], target, o["receipt_ms"]) or not _printable(o["evidence_id"], MAX_ID_LEN):
+        raise PairEvidenceError(f"{what} evidence identity is invalid")
+    if decimal_fraction(o["price"], "price") <= 0:
+        raise PairEvidenceError(f"{what} price must be above zero")
+    if not _HEX64.match(o["record_hash"]) or o["record_hash"] != record_hash(o, "observation"):
+        raise PairEvidenceError(f"{what} record_hash does not match its canonical bytes")
+    return o
 
 
 def record_hash(record, kind):
@@ -219,8 +350,9 @@ def validate_coverage(c):
         raise PairEvidenceError(f"{what} record_hash does not match its canonical bytes")
 
 
-def check_records(rates, prices, coverage, prior=None):
-    if len(rates) > MAX_RECORDS or len(prices) > MAX_RECORDS or len(coverage) > MAX_RECORDS:
+def check_records(rates, prices, coverage, prior=None, observations=None, policy=None):
+    observations = observations or []
+    if len(rates) > MAX_RECORDS or len(prices) > MAX_RECORDS or len(coverage) > MAX_RECORDS or len(observations) > MAX_RECORDS:
         raise PairEvidenceError(f"funding input holds more than {MAX_RECORDS} records of one kind")
     seen = dict(prior or {})
     fresh = set()
@@ -241,6 +373,15 @@ def check_records(rates, prices, coverage, prior=None):
         if ident in pseen:
             raise PairEvidenceError(f"funding price {p['evidence_id']} appears twice")
         pseen.add(ident)
+    oseen = set()
+    for o in observations:
+        if policy is None:
+            raise PairEvidenceError("funding observations require an admitted policy")
+        validate_observation(o, policy)
+        ident = (_key_tuple(o["key"]), o["evidence_id"])
+        if ident in oseen:
+            raise PairEvidenceError(f"funding observation {o['evidence_id']} appears twice")
+        oseen.add(ident)
     cseen = set()
     for c in coverage:
         validate_coverage(c)
@@ -261,10 +402,29 @@ def _sort_lists(doc):
     doc["rates"].sort(key=lambda r: (_key_tuple(r["key"]), r["event_ms"], r["rule_version"].encode("utf-8"), r["visible_ms"]))
     doc["prices"].sort(key=lambda p: (_key_tuple(p["key"]), p["at_ms"], p["price_kind"].encode("utf-8"), p["visible_ms"], p["evidence_id"].encode("utf-8")))
     doc["coverage"].sort(key=lambda c: (_key_tuple(c["key"]), c["visible_ms"], c["evidence_id"].encode("utf-8")))
+    if "observations" in doc:
+        doc["observations"].sort(key=lambda o: (_key_tuple(o["key"]), o["target_event_ms"], o["receipt_ms"], o["evidence_id"].encode("utf-8"), o["record_hash"].encode("utf-8")))
+
+
+def _version(tree, what):
+    if not isinstance(tree, dict):
+        raise PairEvidenceError(f"{what} must be an object")
+    value = tree.get("v")
+    if isinstance(value, JSONNumber):
+        if not re.fullmatch(r"-?(0|[1-9][0-9]*)", value.text):
+            raise PairEvidenceError(f"{what} v must be an integer")
+        return int(value.text)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PairEvidenceError(f"{what} v must be an integer")
+    return value
 
 
 def document_bytes(doc):
-    norm = _shape(doc, DOCUMENT_FIELDS, "funding document", True)
+    version = _version(doc, "funding document")
+    schema = DOCUMENT_FIELDS if version == DOCUMENT_VERSION else DOCUMENT_V2_FIELDS if version == RESEARCH_DOCUMENT_VERSION else None
+    if schema is None:
+        raise PairEvidenceError(f"funding document version {version} is not supported")
+    norm = _shape(doc, schema, "funding document", True)
     _sort_lists(norm)
     return canonical_bytes(norm)
 
@@ -278,35 +438,82 @@ def decode_document(data, expected_digest=None):
         if sha256_hex(bytes(data)) != expected_digest:
             raise PairEvidenceError("funding document digest is not the expected digest")
     tree = loads_strict(data)
-    doc = _shape(tree, DOCUMENT_FIELDS, "funding document", False)
-    if doc["v"] != DOCUMENT_VERSION:
-        raise PairEvidenceError(f"funding document version {doc['v']} is not supported (want {DOCUMENT_VERSION})")
+    version = _version(tree, "funding document")
+    schema = DOCUMENT_FIELDS if version == DOCUMENT_VERSION else DOCUMENT_V2_FIELDS if version == RESEARCH_DOCUMENT_VERSION else None
+    if schema is None:
+        raise PairEvidenceError(f"funding document version {version} is not supported")
+    doc = _shape(tree, schema, "funding document", False)
     if not _printable(doc["source_id"], MAX_ID_LEN):
         raise PairEvidenceError(f"funding document source_id must be 1..{MAX_ID_LEN} printable ASCII characters")
     if document_bytes(doc) != bytes(data):
         raise PairEvidenceError("funding document bytes are not canonical (compact sorted keys, canonical decimals, records sorted by key and time)")
-    check_records(doc["rates"], doc["prices"], doc["coverage"])
+    policy = None
+    observations = None
+    if version == RESEARCH_DOCUMENT_VERSION:
+        policy = validate_policy(doc["policy"])
+        if doc["policy_digest"] != policy_digest(policy):
+            raise PairEvidenceError("funding document policy digest is invalid")
+        observations = doc["observations"]
+    check_records(doc["rates"], doc["prices"], doc["coverage"], observations=observations, policy=policy)
     return doc
 
 
+def _batch_schema(version):
+    if version == BATCH_VERSION:
+        return BATCH_FIELDS
+    if version == RESEARCH_BATCH_VERSION:
+        return BATCH_V2_FIELDS
+    raise PairEvidenceError(f"funding batch version {version} is not supported")
+
+
 def batch_hash(batch):
-    norm = _shape(batch, BATCH_FIELDS, "funding batch", True)
+    norm = _shape(batch, _batch_schema(_version(batch, "funding batch")), "funding batch", True)
     _sort_lists(norm)
     norm["batch_hash"] = ""
     return sha256_hex(canonical_bytes(norm))
 
 
 def seal_batch(batch):
-    norm = _shape(batch, BATCH_FIELDS, "funding batch", True)
+    norm = _shape(batch, _batch_schema(_version(batch, "funding batch")), "funding batch", True)
     _sort_lists(norm)
     norm["batch_hash"] = batch_hash(norm)
     return norm
 
 
 def batch_bytes(batch):
-    norm = _shape(batch, BATCH_FIELDS, "funding batch", True)
+    norm = _shape(batch, _batch_schema(_version(batch, "funding batch")), "funding batch", True)
     _sort_lists(norm)
     return canonical_bytes(norm)
+
+
+def decode_batch(data):
+    tree = loads_strict(data)
+    batch = _shape(tree, _batch_schema(_version(tree, "funding batch")), "funding batch", False)
+    if batch_bytes(batch) != bytes(data):
+        raise PairEvidenceError("funding batch bytes are not canonical")
+    if not _printable(batch["source_id"], MAX_ID_LEN) or batch["seq"] < 1 or (batch["seq"] == 1) != (batch["prev_hash"] == "") or (batch["prev_hash"] and not _HEX64.match(batch["prev_hash"])):
+        raise PairEvidenceError("funding batch source, sequence or previous hash is invalid")
+    if not _HEX64.match(batch["batch_hash"]) or batch["batch_hash"] != batch_hash(batch):
+        raise PairEvidenceError("funding batch hash does not match its canonical bytes")
+    if batch["v"] == RESEARCH_BATCH_VERSION and not _HEX64.match(batch["policy_digest"]):
+        raise PairEvidenceError("funding batch policy digest is invalid")
+    return batch
+
+
+def decode_binding(data):
+    tree = loads_strict(data)
+    version = _version(tree, "funding binding")
+    schema = BINDING_FIELDS if version == 1 else BINDING_V2_FIELDS if version == RESEARCH_BINDING_VERSION else None
+    if schema is None:
+        raise PairEvidenceError(f"funding binding version {version} is not supported")
+    binding = _shape(tree, schema, "funding binding", False)
+    if canonical_bytes(binding) != bytes(data):
+        raise PairEvidenceError("funding binding bytes are not canonical")
+    if version == RESEARCH_BINDING_VERSION:
+        policy = validate_policy(binding["policy"])
+        if binding["policy_digest"] != policy_digest(policy):
+            raise PairEvidenceError("funding binding policy digest is invalid")
+    return binding
 
 
 def funding_amounts(qty, price, rate, rate_usd):
@@ -316,25 +523,38 @@ def funding_amounts(qty, price, rate, rate_usd):
 
 
 def event_hash(event):
-    norm = _shape(event, EVENT_FIELDS, "funding event", True)
+    version = _version(event, "funding event")
+    schema = EVENT_FIELDS if version == EVENT_VERSION else EVENT_V3_FIELDS if version == RESEARCH_EVENT_VERSION else None
+    if schema is None:
+        raise PairEvidenceError(f"funding event version {version} is not supported")
+    norm = _shape(event, schema, "funding event", True)
     norm["evidence_hash"] = ""
     return sha256_hex(canonical_bytes(norm))
 
 
 def decode_event(data):
     tree = loads_strict(data)
-    ev = _shape(tree, EVENT_FIELDS, "funding event", False)
+    version = _version(tree, "funding event")
+    schema = EVENT_FIELDS if version == EVENT_VERSION else EVENT_V3_FIELDS if version == RESEARCH_EVENT_VERSION else None
+    if schema is None:
+        raise PairEvidenceError(f"funding event version {version} is not supported")
+    ev = _shape(tree, schema, "funding event", False)
     if canonical_bytes(ev) != bytes(data):
         raise PairEvidenceError("funding event bytes are not canonical")
     what = f"funding event {ev['event_id']}"
-    if ev["v"] != EVENT_VERSION:
-        raise PairEvidenceError(f"{what} version {ev['v']} is not supported (want {EVENT_VERSION})")
     validate_key(ev["key"])
+    if version == RESEARCH_EVENT_VERSION:
+        if ev["rule_version"] != RULE_HL_RECEIPT_RESEARCH or not _HEX64.match(ev["policy_digest"]) or not _printable(ev["observation_evidence_id"], MAX_ID_LEN) or not _HEX64.match(ev["observation_record_hash"]) or ev["observation_time_basis"] != OBSERVATION_TIME_BASIS:
+            raise PairEvidenceError(f"{what} has an invalid research identity")
+        if (ev["price_hash"] != ev["observation_record_hash"] or ev["observation_target_event_ms"] <= 0 or ev["observation_target_event_ms"] % 3600000
+                or ev["observation_receipt_ms"] < ev["observation_request_ms"] or ev["observation_request_ms"] < ev["observation_target_event_ms"]
+                or ev["observation_receipt_ms"] > ev["visible_ms"]):
+            raise PairEvidenceError(f"{what} has invalid observation evidence")
     if ev["event_id"] != event_id(ev["key"]["provider"], ev["key"]["instrument"], ev["event_ms"]) or ev["event_ms"] <= 0:
         raise PairEvidenceError(f"{what} event_id is not the venue identity")
     if ev["visible_ms"] < ev["event_ms"]:
         raise PairEvidenceError(f"{what} visible_ms is before event_ms")
-    rule = RULES.get(ev["rule_version"])
+    rule = RESEARCH_RULES.get(ev["rule_version"]) if version == RESEARCH_EVENT_VERSION else RULES.get(ev["rule_version"])
     if rule is None or rule["provider"] != ev["key"]["provider"]:
         raise PairEvidenceError(f"{what} rule {ev['rule_version']!r} is not the supported rule for {ev['key']['provider']}")
     if ev["currency"] != rule["currency"] or ev["conversion"]["currency"] != ev["currency"]:
@@ -390,7 +610,7 @@ def okx_range_records(key, result, visible_ms, provenance, evidence_id):
     return rates, seal(cov, "coverage")
 
 
-def hyperliquid_window_records(key, records, from_ms, through_ms, visible_ms, provenance, evidence_id):
+def hyperliquid_window_records(key, records, from_ms, through_ms, visible_ms, provenance, evidence_id, rule_version=RULE_HYPERLIQUID):
     if key["provider"] != "hyperliquid":
         raise PairEvidenceError("a Hyperliquid funding window needs a Hyperliquid member key")
     if isinstance(from_ms, bool) or isinstance(through_ms, bool) or not isinstance(from_ms, int) or not isinstance(through_ms, int) or from_ms < 0 or through_ms <= from_ms:
@@ -406,7 +626,7 @@ def hyperliquid_window_records(key, records, from_ms, through_ms, visible_ms, pr
         if t > visible_ms:
             raise PairEvidenceError(f"funding event {t} is after its visibility {visible_ms}")
         prev = t
-        rec = {"v": RECORD_VERSION, "key": dict(key), "event_id": event_id("hyperliquid", key["instrument"], t), "rule_version": RULE_HYPERLIQUID,
+        rec = {"v": RECORD_VERSION, "key": dict(key), "event_id": event_id("hyperliquid", key["instrument"], t), "rule_version": rule_version,
                "event_ms": t, "visible_ms": visible_ms, "rate": r["rate"], "provenance": provenance, "record_hash": ""}
         rates.append(seal(rec, "rate"))
     proven, gaps = [], []
@@ -430,8 +650,11 @@ def mark_price_record(key, at_ms, price, visible_ms, provenance, evidence_id):
 
 
 __all__ = [
-    "BATCH_VERSION", "COVERAGE_VERSION", "DOCUMENT_VERSION", "EVENT_VERSION", "RECORD_VERSION", "RULES", "RULE_HYPERLIQUID", "RULE_OKX",
-    "JSONNumber", "batch_bytes", "batch_hash", "check_records", "decode_document", "decode_event", "document_bytes", "event_hash",
-    "event_id", "funding_amounts", "hyperliquid_window_records", "mark_price_record", "okx_range_records", "record_hash", "seal", "seal_batch",
-    "source_hash",
+    "BATCH_VERSION", "COVERAGE_VERSION", "DOCUMENT_VERSION", "EVENT_VERSION", "RECORD_VERSION", "RULES", "RESEARCH_RULES",
+    "RULE_HYPERLIQUID", "RULE_OKX", "RULE_HL_RECEIPT_RESEARCH", "OBSERVATION_VERSION", "POLICY_VERSION", "PRICE_ORACLE_RECEIPT",
+    "OBSERVATION_TIME_BASIS", "ORACLE_PROVENANCE", "POLICY_FIELDS", "OBSERVATION_FIELDS", "DOCUMENT_V2_FIELDS", "BATCH_V2_FIELDS",
+    "EVENT_V3_FIELDS", "BINDING_V2_FIELDS", "JSONNumber", "batch_bytes", "batch_hash", "check_records", "decode_batch", "decode_binding",
+    "decode_document", "decode_event", "document_bytes", "event_hash", "event_id", "funding_amounts", "hyperliquid_window_records",
+    "mark_price_record", "okx_range_records", "oracle_attempt_id", "oracle_evidence_id", "policy_digest", "record_hash", "research_target",
+    "seal", "seal_batch", "source_hash", "validate_observation", "validate_policy",
 ]

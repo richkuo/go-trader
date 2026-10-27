@@ -62,6 +62,18 @@ type pairRecSaved struct {
 	Replayed  bool
 }
 
+type pairPaperOracleAttempt struct {
+	Key           pairEvidenceKey
+	TargetEventMs int64
+	PolicyDigest  string
+	AttemptID     string
+	CallID        string
+	StartSeq      int64
+	EndSeq        int64
+	StreamPos     int
+	Disposition   string
+}
+
 type pairRecHandle struct {
 	rec      *pairRecorder
 	parentID string
@@ -98,8 +110,11 @@ type pairRecorder struct {
 	failedSeq   int64
 	queue       []pairRecEvent
 
-	fundingLog *pairRecLog
-	fundingPos map[string]int
+	fundingLog     *pairRecLog
+	fundingPos     map[string]int
+	oracleLog      *pairRecLog
+	attempts       map[string]pairPaperOracleAttempt
+	lastWakeRecord *pairRecWake
 
 	backward  atomic.Bool
 	refusals  []string
@@ -276,6 +291,12 @@ func (rec *pairRecorder) consuming() bool {
 		rec.mode = pairRecLive
 	}
 	return false
+}
+
+func (rec *pairRecorder) consumingNow() bool {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	return rec.consuming()
 }
 
 func (rec *pairRecorder) diverge(format string, a ...interface{}) error {
@@ -539,6 +560,7 @@ func (rec *pairRecorder) wake(stepID string, ordinal int) (int64, error) {
 			rec.backward.Store(true)
 		}
 		rec.lastWake = item.Seq
+		rec.lastWakeRecord = w
 		rec.setLogical(w.LogicalMs)
 		return w.LogicalMs, nil
 	}
@@ -547,6 +569,7 @@ func (rec *pairRecorder) wake(stepID string, ordinal int) (int64, error) {
 	logical := rec.nextLogical(wall)
 	ev := pairRecEvent{Kind: pairRecEventWake, Wake: &pairRecWake{StepID: stepID, Ordinal: ordinal, WallMs: wall, LogicalMs: logical, ClockBackward: back, Epoch: rec.epoch}}
 	rec.lastWake = 0
+	rec.lastWakeRecord = nil
 	if rec.blocked.Load() {
 		rec.enqueueLocked(ev)
 	} else if err := rec.appendLocked(ev); err != nil {
@@ -554,6 +577,7 @@ func (rec *pairRecorder) wake(stepID string, ordinal int) (int64, error) {
 		rec.enqueueLocked(ev)
 	} else {
 		rec.lastWake = rec.head.Seq
+		rec.lastWakeRecord = ev.Wake
 	}
 	if back {
 		rec.backward.Store(true)
@@ -561,6 +585,22 @@ func (rec *pairRecorder) wake(stepID string, ordinal int) (int64, error) {
 	}
 	rec.setLogical(logical)
 	return logical, nil
+}
+
+func (rec *pairRecorder) wakeAt(seq int64) (pairRecWake, error) {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if seq > 0 && seq == rec.lastWake && rec.lastWakeRecord != nil {
+		return *rec.lastWakeRecord, nil
+	}
+	if rec.log != nil {
+		for _, row := range rec.log.rows {
+			if row.Seq == seq && row.Kind == pairRecEventWake && row.Event.Wake != nil {
+				return *row.Event.Wake, nil
+			}
+		}
+	}
+	return pairRecWake{}, fmt.Errorf("host wake at recording sequence %d is not committed", seq)
 }
 
 func (rec *pairRecorder) clearAtBoundary(verify func() (int64, error)) (bool, error) {
@@ -820,7 +860,73 @@ func (rec *pairRecorder) catchUpCollect(slotMs int64) bool {
 	return false
 }
 
-func (rec *pairRecorder) fundingConsumed(chain []pairFundingBatch) []pairFundingBatch {
+func pairPaperOracleAttemptIndex(l *pairRecLog) (map[string]pairPaperOracleAttempt, error) {
+	attempts := map[string]pairPaperOracleAttempt{}
+	if l == nil {
+		return attempts, nil
+	}
+	for i, ri := range l.stream {
+		row := l.rows[ri]
+		st := row.Event.Start
+		if row.Kind != pairRecEventStart || st == nil || st.Kind != pairRecKindFundingOracle || st.ParentID != "" {
+			continue
+		}
+		var req pairPaperOracleRequest
+		if err := pairReplayStrictDecode(st.Request, &req); err != nil {
+			return nil, fmt.Errorf("oracle call %s has an invalid request: %v", row.CallID, err)
+		}
+		attemptID, err := pairFundingOracleAttemptID(req.Key, req.TargetEventMs, req.PolicyDigest)
+		if err != nil || attemptID != req.AttemptID {
+			return nil, fmt.Errorf("oracle call %s has an invalid deterministic attempt identity", row.CallID)
+		}
+		attempt := pairPaperOracleAttempt{Key: req.Key, TargetEventMs: req.TargetEventMs, PolicyDigest: req.PolicyDigest, AttemptID: req.AttemptID,
+			CallID: row.CallID, StartSeq: row.Seq, EndSeq: -1, StreamPos: i, Disposition: "started"}
+		if ei, ok := l.ends[row.CallID]; ok {
+			if ei < 0 || l.rows[ei].Kind == pairRecEventRecovery {
+				attempt.Disposition = "interrupted"
+			} else {
+				end := l.rows[ei]
+				attempt.EndSeq = end.Seq
+				attempt.Disposition = end.Event.End.Class
+			}
+		}
+		if prior, exists := attempts[req.AttemptID]; exists {
+			return nil, fmt.Errorf("oracle attempt %s has distinct committed starts %s and %s; one hour has one outside attempt", req.AttemptID, prior.CallID, row.CallID)
+		}
+		attempts[req.AttemptID] = attempt
+	}
+	return attempts, nil
+}
+
+func (rec *pairRecorder) rebuildOracleAttemptsLocked() {
+	if rec.oracleLog == rec.log && rec.attempts != nil {
+		return
+	}
+	attempts, err := pairPaperOracleAttemptIndex(rec.log)
+	if err != nil {
+		rec.refuse("%v", err)
+		attempts = map[string]pairPaperOracleAttempt{}
+	}
+	rec.oracleLog, rec.attempts = rec.log, attempts
+}
+
+func (rec *pairRecorder) oracleAttemptConsumed(attemptID string) bool {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	rec.rebuildOracleAttemptsLocked()
+	attempt, ok := rec.attempts[attemptID]
+	return ok && attempt.StreamPos < rec.cursor
+}
+
+func (rec *pairRecorder) oracleAttemptRecorded(attemptID string) bool {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	rec.rebuildOracleAttemptsLocked()
+	_, ok := rec.attempts[attemptID]
+	return ok
+}
+
+func (rec *pairRecorder) fundingConsumed(chain []pairFundingBatchValue) []pairFundingBatchValue {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	l := rec.log
@@ -832,7 +938,7 @@ func (rec *pairRecorder) fundingConsumed(chain []pairFundingBatch) []pairFunding
 		for i, ri := range l.stream {
 			row := l.rows[ri]
 			st := row.Event.Start
-			if row.Kind != pairRecEventStart || st == nil || st.Kind != pairRecKindFunding || st.ParentID != "" {
+			if row.Kind != pairRecEventStart || st == nil || (st.Kind != pairRecKindFunding && st.Kind != pairRecKindFundingOracle) || st.ParentID != "" {
 				continue
 			}
 			ei, ok := l.ends[row.CallID]

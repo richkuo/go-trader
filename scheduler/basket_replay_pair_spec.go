@@ -419,9 +419,14 @@ func loadPairReplayInputs(spec *pairReplaySpec) (*pairReplayInputs, error) {
 			}
 		case pairReplayKindFunding:
 			in.funding = blob
-			var d pairFundingDocument
-			if json.Unmarshal(blob, &d) == nil {
-				in.recordTotal[key] = len(d.Rates) + len(d.Prices) + len(d.Coverage)
+			d, err := pairDecodeFundingDocument(blob)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", label, err))
+				continue
+			}
+			in.recordTotal[key] = len(d.Rates) + len(d.Prices) + len(d.Coverage)
+			if d.Research != nil {
+				in.recordTotal[key] += len(d.Research.Observations)
 			}
 		case pairReplayKindQuotes:
 			var d pairReplayQuoteDoc

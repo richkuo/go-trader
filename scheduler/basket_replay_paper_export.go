@@ -14,13 +14,15 @@ import (
 )
 
 const (
-	pairRecordingManifestKind    = "go-trader.paper-recording"
-	pairRecordingManifestVersion = 1
-	pairRecordingRefVersion      = 1
-	pairRecordingManifestName    = "recording-manifest.json"
-	pairRecordingLogName         = "recording-log.jsonl"
-	pairRecordingSeedName        = "seed-evidence.json"
-	pairRecordingSpecName        = "reproduce-spec.json"
+	pairRecordingManifestKind        = "go-trader.paper-recording"
+	pairRecordingManifestVersion     = 1
+	pairRecordingManifestResearchVer = 2
+	pairRecordingRefVersion          = 1
+	pairRecordingRefResearchVersion  = 2
+	pairRecordingManifestName        = "recording-manifest.json"
+	pairRecordingLogName             = "recording-log.jsonl"
+	pairRecordingSeedName            = "seed-evidence.json"
+	pairRecordingSpecName            = "reproduce-spec.json"
 )
 
 type pairReplayRecordingRef struct {
@@ -250,15 +252,37 @@ func (r *pairReplayRuntime) buildExport(l *pairRecLog) (map[string][]byte, pairR
 	}
 	files["evidence.json"] = evBlob
 	objects = append(objects, pairExportRef(pairReplayKindEvidence, "", "evidence.json", evBlob))
-	fd := pairFundingDocument{V: pairFundingDocumentVersion, SourceID: r.paper.funding.SourceID(), Rates: []pairFundingRate{}, Prices: []pairFundingPrice{}, Coverage: []pairFundingCoverageRecord{}}
-	for _, b := range r.paper.funding.chain() {
-		fd.Rates = append(fd.Rates, b.Rates...)
-		fd.Prices = append(fd.Prices, b.Prices...)
-		fd.Coverage = append(fd.Coverage, b.Coverage...)
-	}
-	fBlob, err := pairFundingDocumentBytes(fd)
-	if err != nil {
-		return nil, pairRecordingManifest{}, fmt.Errorf("funding document: %w", err)
+	var fBlob []byte
+	if r.paper.scenario.FundingPolicy != nil {
+		policy := pairFundingPolicyClone(*r.paper.scenario.FundingPolicy)
+		digest, err := pairFundingPolicyDigest(policy)
+		if err != nil {
+			return nil, pairRecordingManifest{}, fmt.Errorf("funding policy: %w", err)
+		}
+		fd := pairFundingDocumentV2{V: pairFundingResearchDocumentVersion, SourceID: r.paper.funding.SourceID(), Policy: policy, PolicyDigest: digest, Rates: []pairFundingRate{}, Prices: []pairFundingPrice{}, Observations: []pairFundingOracleObservation{}, Coverage: []pairFundingCoverageRecord{}}
+		for _, b := range r.paper.funding.chain() {
+			fd.Rates = append(fd.Rates, b.Rates...)
+			fd.Prices = append(fd.Prices, b.Prices...)
+			fd.Coverage = append(fd.Coverage, b.Coverage...)
+			if b.Research != nil {
+				fd.Observations = append(fd.Observations, b.Research.Observations...)
+			}
+		}
+		fBlob, err = pairFundingDocumentValueBytes(pairFundingDocumentV2Value(fd))
+		if err != nil {
+			return nil, pairRecordingManifest{}, fmt.Errorf("funding document: %w", err)
+		}
+	} else {
+		fd := pairFundingDocument{V: pairFundingDocumentVersion, SourceID: r.paper.funding.SourceID(), Rates: []pairFundingRate{}, Prices: []pairFundingPrice{}, Coverage: []pairFundingCoverageRecord{}}
+		for _, b := range r.paper.funding.chain() {
+			fd.Rates = append(fd.Rates, b.Rates...)
+			fd.Prices = append(fd.Prices, b.Prices...)
+			fd.Coverage = append(fd.Coverage, b.Coverage...)
+		}
+		fBlob, err = pairFundingDocumentBytes(fd)
+		if err != nil {
+			return nil, pairRecordingManifest{}, fmt.Errorf("funding document: %w", err)
+		}
 	}
 	if _, ferr := newPairFrozenFundingSource(fBlob, sha256Hex(fBlob)); ferr != nil {
 		notes = append(notes, "the merged funding document does not decode as a frozen document: "+ferr.Error())
@@ -366,7 +390,11 @@ func (r *pairReplayRuntime) buildExport(l *pairRecLog) (map[string][]byte, pairR
 		notes = []string{}
 	}
 	sort.Slice(objects, func(i, j int) bool { return objects[i].Path < objects[j].Path })
-	man := pairRecordingManifest{V: pairRecordingManifestVersion, Kind: pairRecordingManifestKind, RunID: r.spec.Run.RunID, PaperIdentity: r.paper.identity,
+	manifestVersion, refVersion := pairRecordingManifestVersion, pairRecordingRefVersion
+	if r.paper.scenario.FundingPolicy != nil {
+		manifestVersion, refVersion = pairRecordingManifestResearchVer, pairRecordingRefResearchVersion
+	}
+	man := pairRecordingManifest{V: manifestVersion, Kind: pairRecordingManifestKind, RunID: r.spec.Run.RunID, PaperIdentity: r.paper.identity,
 		ContractFP: r.adm.contract, Partition: r.partition.String(), ResearchConfigSHA256: sha256Hex([]byte(pairReplayCompactJSON(r.spec.ResearchConfig))),
 		Collection: r.paper.collection, Scenario: r.paper.scenario, Lifetime: r.lt, EvidenceIdentity: r.paper.evidence.Identity(), FundingBinding: json.RawMessage(r.adm.fundingBinding),
 		MemberCosts: r.paper.manifest.MemberCosts, Seed: pairExportRef(pairReplayKindEvidence, "", pairRecordingSeedName, r.paper.seedBlob),
@@ -384,7 +412,7 @@ func (r *pairReplayRuntime) buildExport(l *pairRecLog) (map[string][]byte, pairR
 		"input_manifest":  map[string]interface{}{"root": filepath.Join(r.spec.Run.StateDir, pairPaperExportDirName), "objects": objects},
 		"scenario":        r.paper.scenario.replay(),
 		"bounds":          r.spec.Bounds,
-		"recording":       pairReplayRecordingRef{Version: pairRecordingRefVersion, Path: pairRecordingManifestName, SHA256: sha256Hex(files[pairRecordingManifestName]), SizeBytes: int64(len(files[pairRecordingManifestName]))},
+		"recording":       pairReplayRecordingRef{Version: refVersion, Path: pairRecordingManifestName, SHA256: sha256Hex(files[pairRecordingManifestName]), SizeBytes: int64(len(files[pairRecordingManifestName]))},
 	}
 	rb, err := json.MarshalIndent(repro, "", "  ")
 	if err != nil {
@@ -402,8 +430,8 @@ type pairPlaybackInput struct {
 
 func pairValidateRecordingRef(ref *pairReplayRecordingRef) []string {
 	var errs []string
-	if ref.Version != pairRecordingRefVersion {
-		errs = append(errs, fmt.Sprintf("recording.version %d must be %d", ref.Version, pairRecordingRefVersion))
+	if ref.Version != pairRecordingRefVersion && ref.Version != pairRecordingRefResearchVersion {
+		errs = append(errs, fmt.Sprintf("recording.version %d must be %d or %d", ref.Version, pairRecordingRefVersion, pairRecordingRefResearchVersion))
 	}
 	if !pairReplayObjectPathPattern.MatchString(ref.Path) || strings.Contains(ref.Path, "..") {
 		errs = append(errs, fmt.Sprintf("recording.path %q must be a clean relative path inside the input root", ref.Path))
@@ -430,8 +458,19 @@ func loadPairPlaybackInput(spec *pairReplaySpec, lt pairReplayLifetime) (*pairPl
 	}
 	var errs []string
 	add := func(format string, a ...interface{}) { errs = append(errs, fmt.Sprintf(format, a...)) }
-	if man.V != pairRecordingManifestVersion || man.Kind != pairRecordingManifestKind {
-		add("the recording manifest is %q version %d, not %q version %d", man.Kind, man.V, pairRecordingManifestKind, pairRecordingManifestVersion)
+	if man.Kind != pairRecordingManifestKind || (man.V != pairRecordingManifestVersion && man.V != pairRecordingManifestResearchVer) {
+		add("the recording manifest is %q version %d; supported versions are %d and %d", man.Kind, man.V, pairRecordingManifestVersion, pairRecordingManifestResearchVer)
+	}
+	if ref.Version != man.V || (man.V == pairRecordingManifestResearchVer) != (man.Scenario.FundingPolicy != nil) {
+		add("recording reference, manifest version and funding policy families do not match")
+	}
+	if man.Scenario.FundingPolicy != nil {
+		if err := pairFundingValidatePolicy(*man.Scenario.FundingPolicy); err != nil {
+			add("recorded funding policy: %v", err)
+		}
+		if man.Scenario.FundingPolicy.FromMs != man.Lifetime.StartMs || man.Scenario.FundingPolicy.DrainThroughMs != man.Lifetime.EndMs {
+			add("recorded funding policy bounds must equal the recorded lifetime")
+		}
 	}
 	if man.RunID != spec.Run.RunID {
 		add("run.run_id %q must be the recorded run id %q: client ids and the virtual ledger carry the run id, so a reproduction keeps it", spec.Run.RunID, man.RunID)
@@ -556,8 +595,9 @@ func openPairPlayback(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, o
 	if r.paper.evidence.Identity() != man.EvidenceIdentity {
 		return nil, refuseReplay("input_refused", "the recorded evidence identity differs from the seed the recording names")
 	}
+	_, eventOrder := pairPaperManifestFamily(man.Scenario.FundingPolicy)
 	r.manifest = pairReplayManifest{Owner: basketReplayOwnerMarker, Version: pairReplayManifestVersion, RunID: spec.Run.RunID, Fingerprints: r.fp, EvidenceDigest: r.paper.evidence.Digest(),
-		FundingDigest: sha256Hex(in.funding), Objects: pairReplayObjectsWithTotals(in), Lifetime: lt, Scenario: spec.Scenario, EventOrder: pairPaperEventOrder, AdministrativeFields: pairReplayAdministrativeFields, UID: os.Getuid()}
+		FundingDigest: sha256Hex(in.funding), Objects: pairReplayObjectsWithTotals(in), Lifetime: lt, Scenario: spec.Scenario, EventOrder: eventOrder, AdministrativeFields: pairReplayAdministrativeFields, UID: os.Getuid()}
 	var saved pairReplayManifest
 	if resume {
 		saved, err = readPairReplayManifest(stateDir)
@@ -702,10 +742,11 @@ func (r *pairReplayRuntime) playbackFundingBeforeAdmission(stateDir string, man 
 		if row.Kind != pairRecEventEnd || row.Event.End.Class != pairRecClassResult {
 			continue
 		}
-		if l.rows[l.starts[row.CallID]].Event.Start.Kind != pairRecKindFunding {
+		start := l.rows[l.starts[row.CallID]].Event.Start
+		if start.Kind != pairRecKindFunding && start.Kind != pairRecKindFundingOracle {
 			continue
 		}
-		_ = r.paper.funding.Append(row.Event.End.Result)
+		_ = pairPaperAdmitFundingResult(r.paper.funding, row.Event.End.Result, *start, row.Event.End)
 	}
 	return nil
 }

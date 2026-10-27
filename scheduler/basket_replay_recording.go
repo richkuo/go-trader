@@ -35,24 +35,25 @@ const (
 	pairRecClassInfra     = "infrastructure_failure"
 	pairRecClassCancelled = "cancelled"
 
-	pairRecKindCollect     = "collect"
-	pairRecKindReference   = "reference"
-	pairRecKindCapability  = "capability"
-	pairRecKindAccount     = "account"
-	pairRecKindConversions = "conversions"
-	pairRecKindPosition    = "position"
-	pairRecKindCandles     = "management_candles"
-	pairRecKindMarks       = "marks"
-	pairRecKindFunding     = "funding"
-	pairRecKindMatchPoll   = "match_poll"
-	pairRecKindPolicy      = "policy"
-	pairRecKindNativeCheck = "native_check"
-	pairRecKindMemberRead  = "member_read"
+	pairRecKindCollect       = "collect"
+	pairRecKindReference     = "reference"
+	pairRecKindCapability    = "capability"
+	pairRecKindAccount       = "account"
+	pairRecKindConversions   = "conversions"
+	pairRecKindPosition      = "position"
+	pairRecKindCandles       = "management_candles"
+	pairRecKindMarks         = "marks"
+	pairRecKindFunding       = "funding"
+	pairRecKindFundingOracle = "funding_oracle"
+	pairRecKindMatchPoll     = "match_poll"
+	pairRecKindPolicy        = "policy"
+	pairRecKindNativeCheck   = "native_check"
+	pairRecKindMemberRead    = "member_read"
 )
 
 var pairRecCallKinds = map[string]bool{
 	pairRecKindCollect: true, pairRecKindReference: true, pairRecKindCapability: true, pairRecKindAccount: true, pairRecKindConversions: true,
-	pairRecKindPosition: true, pairRecKindCandles: true, pairRecKindMarks: true, pairRecKindFunding: true, pairRecKindMatchPoll: true,
+	pairRecKindPosition: true, pairRecKindCandles: true, pairRecKindMarks: true, pairRecKindFunding: true, pairRecKindFundingOracle: true, pairRecKindMatchPoll: true,
 	pairRecKindPolicy: true, pairRecKindNativeCheck: true, pairRecKindMemberRead: true,
 }
 

@@ -507,6 +507,40 @@ class HyperliquidExchangeAdapter:
     def public_host(self) -> str:
         return self._base_url
 
+    def public_oracle_observation(self, symbol: str) -> str:
+        if not self._public_only:
+            raise RuntimeError("public oracle reads need the public-only reader")
+        if self.public_host() != MAINNET_URL:
+            raise RuntimeError("public oracle reads require the Hyperliquid mainnet host")
+        response = self._info.meta_and_asset_ctxs()
+        if not isinstance(response, (list, tuple)) or len(response) != 2:
+            raise RuntimeError("Hyperliquid metaAndAssetCtxs must return metadata and contexts")
+        meta, contexts = response
+        if not isinstance(meta, dict) or not isinstance(meta.get("universe"), list) or not isinstance(contexts, list):
+            raise RuntimeError("Hyperliquid metaAndAssetCtxs metadata or contexts are malformed")
+        universe = meta["universe"]
+        if len(contexts) != len(universe):
+            raise RuntimeError("Hyperliquid metaAndAssetCtxs universe and context lengths differ")
+        indexes = [i for i, entry in enumerate(universe) if isinstance(entry, dict) and entry.get("name") == symbol]
+        if len(indexes) != 1:
+            raise RuntimeError(f"Hyperliquid metaAndAssetCtxs names {symbol!r} {len(indexes)} times")
+        context = contexts[indexes[0]]
+        if not isinstance(context, dict):
+            raise RuntimeError("Hyperliquid oracle context is not an object")
+        raw = context.get("oraclePx")
+        if not isinstance(raw, str) or not raw or raw.strip() != raw:
+            raise RuntimeError("Hyperliquid oraclePx must be a decimal string")
+        try:
+            price = Decimal(raw)
+        except Exception as exc:
+            raise RuntimeError("Hyperliquid oraclePx is not decimal") from exc
+        if not price.is_finite() or price <= 0:
+            raise RuntimeError("Hyperliquid oraclePx must be finite and above zero")
+        text = format(price, "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return text
+
     def public_l2_snapshot(self, symbol: str, depth: int) -> dict:
         if not self._public_only:
             raise RuntimeError("public depth reads need the public-only reader")
