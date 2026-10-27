@@ -191,6 +191,8 @@ func clonePaperFundingState(st *paperFundingState) *paperFundingState {
 }
 
 func mutatePaperPerpsBookAt(s *StrategyState, symbol string, atMs int64, mutate func()) error {
+	bumpPairCoinEpoch(symbol)
+	defer bumpPairCoinEpoch(symbol)
 	if s == nil || s.PaperFunding == nil {
 		mutate()
 		return nil

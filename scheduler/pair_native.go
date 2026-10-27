@@ -481,6 +481,7 @@ func (bc *basketCoordinator) beginPairNative(provider, coin, stratID, purpose, t
 		return send
 	}
 	rt.Actions[a.ActionID] = a
+	rt.bumpPairMutationEpoch()
 	if err := bc.store.MarkPairActionSubmitting(rt, a, nil); err != nil {
 		a.Status, a.Terminal = basketActionHeld, true
 		a.HoldReason = "the submission could not be recorded before the native close; the close still runs and its fill receipt is accounted separately"

@@ -111,6 +111,9 @@ func insertPairNativeResolutionTx(tx *sql.Tx, rt *basketRuntime, sids map[string
 }
 
 func writePairProgressValueTx(tx *sql.Tx, rt *basketRuntime, p pairProgress) error {
+	if err := checkSavedPairNativeBoundsTx(tx, rt, p); err != nil {
+		return err
+	}
 	res, err := tx.Exec(`UPDATE basket_contracts SET progress_json = ?, progress_seq = ?
 		WHERE scope = ? AND source = ? AND basket_id = ? AND contract_fingerprint = ? AND progress_seq <= ?`,
 		p.JSON(), p.Seq, string(rt.Partition.Scope), rt.Partition.Source, rt.Contract.BasketID, rt.Contract.Fingerprint(), p.Seq)

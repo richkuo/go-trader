@@ -96,13 +96,15 @@ type pairNativeResolution struct {
 }
 
 type pairNativeFundingHold struct {
-	MemberID     string `json:"member_id"`
-	Kind         string `json:"kind"`
-	ObligationID string `json:"obligation_id"`
-	ResolutionID string `json:"resolution_id"`
-	FromMs       int64  `json:"from_ms"`
-	AtMs         int64  `json:"at_ms"`
-	Detail       string `json:"detail"`
+	MemberID     string          `json:"member_id"`
+	Kind         string          `json:"kind"`
+	ObligationID string          `json:"obligation_id"`
+	ResolutionID string          `json:"resolution_id"`
+	FromMs       int64           `json:"from_ms"`
+	AtMs         int64           `json:"at_ms"`
+	Detail       string          `json:"detail"`
+	ThroughMs    int64           `json:"through_ms,omitempty"`
+	Proof        json.RawMessage `json:"proof,omitempty"`
 }
 
 type pairNativeOperatorRequest struct {
@@ -261,7 +263,11 @@ func (p *pairProgress) pruneNativeAttempts() {
 func (p pairProgress) nativeRecoveryPending() []string {
 	var out []string
 	for _, h := range p.NativeFundingHolds {
-		out = append(out, fmt.Sprintf("native funding hold for %s from %d after resolution %s", h.MemberID, h.FromMs, h.ResolutionID))
+		if h.bounded() {
+			out = append(out, fmt.Sprintf("native funding hold for %s from %d bounded through %d after resolution %s", h.MemberID, h.FromMs, h.ThroughMs, h.ResolutionID))
+		} else {
+			out = append(out, fmt.Sprintf("native funding hold for %s from %d after resolution %s", h.MemberID, h.FromMs, h.ResolutionID))
+		}
 	}
 	return append(out, p.nativeRecoveryStaged()...)
 }
@@ -1505,7 +1511,7 @@ func (bc *basketCoordinator) pairNativeOperator(cmd pairNativeOperatorCommand, s
 		summary += " The coordinator reads the venue history once and books only proven fills through the settlement ledger."
 	}
 	if cmd.Decision != pairNativeDecisionRead && pairNativeHorizonKind(ob.Kind) && ob.FromMs > 0 {
-		summary += fmt.Sprintf(" It adds a funding hold for %s from %d: later funding of that member is never booked, so pair increases hold while the hold exists (the pair can still finish its flat reset, exit and protect).", cmd.MemberID, ob.FromMs)
+		summary += fmt.Sprintf(" It adds a funding hold for %s from %d: funding inside the unknown interval is never booked, and pair increases hold until a later exact venue position read with no pending work for the member proves the inventory and bounds the hold (the pair can still finish its flat reset, exit and protect).", cmd.MemberID, ob.FromMs)
 	}
 	if !stage {
 		return summary, true
@@ -1574,13 +1580,7 @@ func (bc *basketCoordinator) describePairNative(rt *basketRuntime, cmd pairNativ
 }
 
 func pairNativeFundingHoldFromMs(rt *basketRuntime, memberID string) int64 {
-	var from int64
-	for _, h := range rt.Pair.Progress.NativeFundingHolds {
-		if h.MemberID == memberID && h.FromMs > 0 && (from == 0 || h.FromMs < from) {
-			from = h.FromMs
-		}
-	}
-	return from
+	return pairNativeOpenHoldFromMs(rt, memberID)
 }
 
 func pairNativeRecoveryAccounted(p *pairProgress) bool {

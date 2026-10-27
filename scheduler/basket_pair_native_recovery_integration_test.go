@@ -1052,8 +1052,9 @@ func TestBasketPairNativeOperatorWriteOffOfAFlatMemberEndsTheLifecycle(t *testin
 	if e.signed(pairTestHL) != 0 || e.signed(pairTestOKX) != 0 || e.lifecycle() == pairLifecycleFlat {
 		t.Fatalf("setup: both books are flat and the open unknown obligation holds the lifecycle: %v %v %s", e.signed(pairTestHL), e.signed(pairTestOKX), e.lifecycle())
 	}
+	e.venues.of(pairTestHL).position = pairProofInexactPosition
 	d, _ := r.discord()
-	if msg := r.decide(d, pairTestHL, pairObligationNativeUnknown, id, pairNativeDecisionWriteOff, "venue history purged; the owner accepts the gap"); !strings.Contains(msg, "Staged") || !strings.Contains(msg, "pair increases hold while the hold exists") {
+	if msg := r.decide(d, pairTestHL, pairObligationNativeUnknown, id, pairNativeDecisionWriteOff, "venue history purged; the owner accepts the gap"); !strings.Contains(msg, "Staged") || !strings.Contains(msg, "pair increases hold until a later exact venue position read") {
 		t.Fatalf("the write-off must stage and its confirmation must state the increase hold: %q", msg)
 	}
 	for i := 0; i < 3; i++ {

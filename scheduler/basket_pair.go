@@ -1520,7 +1520,7 @@ func (bc *basketCoordinator) pairIncreaseHold(rt *basketRuntime, in basketCycleI
 	}
 	for _, id := range rt.memberIDs() {
 		if from := pairNativeFundingHoldFromMs(rt, id); from > 0 {
-			return fmt.Sprintf("%s has a native funding hold from %d after an operator native decision, so its later funding can never be booked; increases hold while the hold exists and exits, queries and protection continue", id, from)
+			return fmt.Sprintf("%s has an open native funding hold from %d after an operator native decision; increases hold until an exact venue position read bounds the hold, and exits, queries and protection continue", id, from)
 		}
 	}
 	for _, id := range rt.memberIDs() {
@@ -2385,7 +2385,7 @@ func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketReba
 	if live && c.Direction == basketDirectionIncrease {
 		if why := bc.pairPositionAuthorized(rt, "", in.Now.UnixMilli()); why != "" {
 			var rwhy string
-			in, rwhy = bc.pairReadPositions(rt, in, "")
+			in, rwhy = bc.pairReadPositions(rt, in, "", false)
 			if rwhy == "" {
 				why = bc.pairPositionAuthorized(rt, "", in.Now.UnixMilli())
 			} else {
@@ -2412,6 +2412,7 @@ func (bc *basketCoordinator) runPairAction(rt *basketRuntime, origin *basketReba
 		return false
 	}
 	rt.Actions[a.ActionID] = a
+	rt.bumpPairMutationEpoch()
 	if reduction {
 		bc.clearPairReductionHold(rt, c.MemberID)
 	}

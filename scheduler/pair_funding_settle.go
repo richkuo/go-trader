@@ -662,17 +662,32 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 			window = rule.AssessmentWindowMs
 		}
 		need := t
-		if t+window-1 > need {
-			need = t + window - 1
+		overflow := false
+		if window > 0 {
+			if n, ok := pairAddMs(t, window-1); ok {
+				need = n
+			} else {
+				need, overflow = math.MaxInt64, true
+			}
 		}
 		if nowMs < need {
 			continue
 		}
-		if hold := pairNativeFundingHoldFromMs(rt, m.memberID); hold > 0 && hold <= need {
-			detail := fmt.Sprintf("an operator native decision left the %s inventory unproven from %d and nothing releases that hold, so the inventory the event needs through %d can never be proven", m.memberID, hold, need)
+		hold, hit := pairNativeFundingHoldsHit(rt, m.memberID, t, need)
+		if overflow && !hit {
+			if holds := pairNativeSortedHolds(rt, m.memberID); len(holds) > 0 {
+				hold, hit = holds[0], true
+			}
+		}
+		if hit {
+			interval := fmt.Sprintf("[%d, open)", hold.FromMs)
+			if hold.bounded() {
+				interval = fmt.Sprintf("[%d, %d]", hold.FromMs, hold.ThroughMs)
+			}
+			detail := fmt.Sprintf("an operator native decision left the %s inventory unproven in %s, so the inventory the event needs through %d can never be proven", m.memberID, interval, need)
 			if bc.markFundingUnresolvable(rt, f, m, r, sh, pairFundingReasonNativeDecision, detail, now) {
 				changed = true
-				bc.pairAlert(rt, fmt.Sprintf("funding-native-hold|%s|%d", m.memberID, hold), fmt.Sprintf("pair %s member %s: each funding event that needs inventory from %d onward is saved unresolvable (%s) with no charge and no funding obligation, because an operator native decision left that inventory unproven; the result stays incomplete", rt.Contract.BasketID, m.memberID, hold, pairFundingReasonNativeDecision), false)
+				bc.pairAlert(rt, fmt.Sprintf("funding-native-hold|%s|%d|%s", m.memberID, hold.FromMs, hold.ResolutionID), fmt.Sprintf("pair %s member %s: each funding event that needs inventory in %s is saved unresolvable (%s) with no charge and no funding obligation, because an operator native decision left that inventory unproven; the result stays incomplete", rt.Contract.BasketID, m.memberID, interval, pairFundingReasonNativeDecision), false)
 			}
 			continue
 		}
@@ -723,6 +738,11 @@ func (bc *basketCoordinator) settlePairMemberFunding(rt *basketRuntime, f *pairF
 					prev = rates[j].EventMs
 				}
 				break
+			}
+		}
+		for _, h := range pairNativeSortedHolds(rt, m.memberID) {
+			if h.bounded() && h.ThroughMs < t && h.ThroughMs > prev {
+				prev = h.ThroughMs
 			}
 		}
 		requested := []pairFundingInterval{{FromMs: prev, ThroughMs: t}}
@@ -867,6 +887,7 @@ func (bc *basketCoordinator) notePairFundingGaps(rt *basketRuntime, m *pairFundi
 		h = hInv
 	}
 	exposure := m.exposure(h)
+	exposure = pairFundingSubtract(exposure, pairNativeHoldGapIntervals(rt, m.memberID))
 	_, gaps := pairFundingCoverageGaps(got.Coverage, exposure)
 	p := &rt.Pair.Progress
 	want := map[string]string{}
