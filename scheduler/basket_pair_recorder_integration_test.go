@@ -687,3 +687,90 @@ func TestBasketPairRecorderOracleCommitsBeforePublication(t *testing.T) {
 		}
 	})
 }
+
+func TestBasketReplayPairPaperFamily2RefusedSequenceStaysReusable(t *testing.T) {
+	target := int64(1_800_003_600_000)
+	f := newPairRecOracleFixture(t, target)
+	req := f.request(t)
+	raw := f.batch(t, target, target+5000)
+	start := pairRecStart{Kind: pairRecKindFundingOracle, Request: req}
+	end := &pairRecEnd{Class: pairRecClassResult, Result: raw, RawReceiptMs: target + 5000, RawCompletionMs: target + 5020}
+	if err := pairPaperAdmitFundingResult(f.src, raw, start, end); err == nil {
+		t.Fatal("a family-2 terminal completed after the deadline is refused")
+	}
+	if len(f.src.chain()) != 0 {
+		t.Fatal("the refused terminal allocates no funding sequence")
+	}
+	next := f.batch(t, target, target+1000)
+	if err := f.src.Append(next); err != nil {
+		t.Fatalf("the next batch reuses sequence 1: %v", err)
+	}
+	if got := f.src.chain(); len(got) != 1 || got[0].Seq != 1 {
+		t.Fatalf("the accepted batch is sequence 1, got %+v", got)
+	}
+}
+
+func TestBasketReplayPairPaperAsyncConsumptionIsTheOnlyPublication(t *testing.T) {
+	db, err := OpenStateDB(filepath.Join(t.TempDir(), basketReplayDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.ensurePairRecordingSchema(); err != nil {
+		t.Fatal(err)
+	}
+	rec := newPairRecorder(pairRecLive, pairRecTestRun, pairRecTestPartition, pairRecTestContract, db, &simulatedClock{}, pairRecFaults{})
+	rec.schema = pairRecSchemaAsync
+	rec.now = func() time.Time { return time.UnixMilli(1_800_000_000_000) }
+	rec.epoch = 1
+	bind := pairRecBind{RunID: pairRecTestRun, PaperIdentity: "id", ContractFP: pairRecTestContract, Partition: pairRecTestPartition, SeedSHA256: "seed", EvidenceIdentity: "ev", AnchorMs: 1, Family: pairPaperManifestAsyncVer}
+	if err := rec.appendDirect(pairRecEvent{Kind: pairRecEventBind, Bind: &bind}, pairRecEvent{Kind: pairRecEventEpoch, Epoch: &pairRecEpoch{Epoch: 1, WallMs: 1, Mode: "new"}}); err != nil {
+		t.Fatal(err)
+	}
+	rec.beginStep("s0@1", 0)
+	if _, err := rec.wake("", 0); err != nil {
+		t.Fatal(err)
+	}
+	req := []byte(`{"attempt_id":"a","key":{"account_key":"synthetic:rec","instrument":"BTC","member_id":"hl","partition":"paper","provider":"hyperliquid"},"policy_digest":"d","source_id":"s","target_event_ms":1}`)
+	callID, start, err := rec.beginAsyncCall(pairRecCall{Kind: pairRecKindFundingOracle, MemberID: "hl", SlotMs: 1, Request: req})
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterStart := rec.cursorNow()
+	end, err := rec.appendAsyncTerminal(callID, start, pairAsyncOracleResult{res: pairRecResult{Class: pairRecClassResult, Result: []byte(`{"obs":1}`), ReceiptMs: 2}, completion: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.cursorNow() != afterStart {
+		t.Fatal("an asynchronous terminal is not a consumable stream item")
+	}
+	l := mustPairRecLog(t, db)
+	if _, ok := l.consumes[callID]; ok {
+		t.Fatal("the observation is not published at the terminal")
+	}
+	if err := rec.appendConsume(callID, pairRecConsume{RequestHash: start.RequestHash, TerminalHash: end.ResultHash, TerminalKind: pairRecEventEnd, WakeSeq: 1, StepID: "s0@1", LogicalMs: 4, Disposition: "refused"}); err != nil {
+		t.Fatal(err)
+	}
+	if rec.cursorNow() != afterStart+1 {
+		t.Fatalf("call_consume advances the stream cursor once, got %d after %d", rec.cursorNow(), afterStart)
+	}
+	l = mustPairRecLog(t, db)
+	if l.consumes[callID] == 0 && len(l.consumes) != 1 {
+		t.Fatal("the consumption event is the publication")
+	}
+	if err := rec.appendConsume(callID, pairRecConsume{RequestHash: start.RequestHash, TerminalHash: end.ResultHash, TerminalKind: pairRecEventEnd, WakeSeq: 1, StepID: "s0@1", LogicalMs: 5, Disposition: "refused"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readVerifiedPairRecLog(db, pairRecTestRun, pairRecTestPartition, pairRecTestContract); err == nil {
+		t.Fatal("a second consumption of the same call is refused")
+	}
+}
+
+func mustPairRecLog(t *testing.T, db *StateDB) *pairRecLog {
+	t.Helper()
+	l, err := readVerifiedPairRecLog(db, pairRecTestRun, pairRecTestPartition, pairRecTestContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}

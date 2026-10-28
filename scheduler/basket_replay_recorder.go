@@ -58,6 +58,7 @@ type pairRecSaved struct {
 	Start     pairRecStart
 	End       *pairRecEnd
 	Recovered bool
+	Pending   bool
 	Failure   *pairRecFailure
 	Replayed  bool
 }
@@ -71,6 +72,8 @@ type pairPaperOracleAttempt struct {
 	StartSeq      int64
 	EndSeq        int64
 	StreamPos     int
+	ConsumeStream int
+	Async         bool
 	Disposition   string
 }
 
@@ -129,16 +132,18 @@ type pairRecorder struct {
 	attempts       map[string]pairPaperOracleAttempt
 	lastWakeRecord *pairRecWake
 
-	backward  atomic.Bool
-	refusals  []string
-	diverged  string
-	faults    pairRecFaults
-	counts    map[string]int
-	now       func() time.Time
-	tick      func()
-	lastWake  int64
-	skipped   int
-	faultSaid bool
+	backward   atomic.Bool
+	refusals   []string
+	diverged   string
+	faults     pairRecFaults
+	counts     map[string]int
+	now        func() time.Time
+	tick       func()
+	lastWake   int64
+	skipped    int
+	faultSaid  bool
+	schema     int
+	beforeExit func()
 }
 
 func newPairRecorder(mode pairRecMode, runID, partition, contractFP string, file *StateDB, clock *simulatedClock, faults pairRecFaults) *pairRecorder {
@@ -153,6 +158,9 @@ func (rec *pairRecorder) fault(kind string) {
 	rec.counts[kind]++
 	if rec.counts[kind] == rec.faults.n {
 		pairReplayFaultMessage(kind, rec.faults.n)
+		if rec.beforeExit != nil {
+			rec.beforeExit()
+		}
 		os.Exit(basketReplayExitFault)
 	}
 }
@@ -212,7 +220,7 @@ func (rec *pairRecorder) appendLocked(events ...pairRecEvent) error {
 		return fmt.Errorf("the recorder has no partition file")
 	}
 	fail := false
-	next, err := rec.file.appendPairRecEvents(rec.runID, rec.partition, rec.contractFP, rec.head, events, func(int) error {
+	next, err := rec.file.appendPairRecEvents(rec.runID, rec.partition, rec.contractFP, rec.head, rec.schemaVersion(), events, func(int) error {
 		if rec.failNextAppend() {
 			fail = true
 			return fmt.Errorf("injected fault fail-record-append:%d", rec.faults.n)
@@ -243,12 +251,19 @@ func (rec *pairRecorder) appendLocked(events ...pairRecEvent) error {
 
 func pairRecConsumableEvent(ev pairRecEvent) bool {
 	switch ev.Kind {
-	case pairRecEventWake, pairRecEventBudget, pairRecEventFailure, pairRecEventClear:
+	case pairRecEventWake, pairRecEventBudget, pairRecEventFailure, pairRecEventClear, pairRecEventConsume:
 		return true
 	case pairRecEventStart:
 		return ev.Start != nil && ev.Start.ParentID == "" && ev.Start.Phase == pairRecPhaseStep
 	}
 	return false
+}
+
+func (rec *pairRecorder) schemaVersion() int {
+	if rec != nil && rec.schema == pairRecSchemaAsync {
+		return pairRecSchemaAsync
+	}
+	return pairRecSchemaVersion
 }
 
 func (rec *pairRecorder) enqueueLocked(ev pairRecEvent) {
@@ -468,6 +483,10 @@ func (rec *pairRecorder) consumeCallLocked(ctx context.Context, c pairRecCall, r
 	rec.cursor++
 	rec.ordinal = s.Ordinal
 	saved := &pairRecSaved{CallID: item.CallID, Start: *s}
+	if s.Async {
+		saved.Pending = true
+		return pairRecResult{}, saved, nil
+	}
 	ei, ok := rec.log.ends[item.CallID]
 	if !ok {
 		if rec.mode == pairRecPlayback {
@@ -846,11 +865,18 @@ func (rec *pairRecorder) seekLocked(match func(row *pairRecRow) bool) bool {
 func (rec *pairRecorder) skipTo(i int) {
 	for j := rec.cursor; j < i; j++ {
 		row := &rec.log.rows[rec.log.stream[j]]
+		if row.Kind == pairRecEventConsume && row.Event.Consume != nil {
+			rec.setLogical(row.Event.Consume.LogicalMs)
+			continue
+		}
 		if row.Kind != pairRecEventStart {
 			continue
 		}
 		if st := row.Event.Start; st != nil && st.Phase == pairRecPhaseStep && st.StepID == rec.stepID && st.Ordinal > rec.ordinal {
 			rec.ordinal = st.Ordinal
+		}
+		if row.Event.Start != nil && row.Event.Start.Async {
+			continue
 		}
 		if ei, ok := rec.log.ends[row.CallID]; ok && ei >= 0 {
 			if end := rec.log.rows[ei].Event.End; end != nil {
@@ -904,7 +930,15 @@ func pairPaperOracleAttemptIndex(l *pairRecLog) (map[string]pairPaperOracleAttem
 			return nil, fmt.Errorf("oracle call %s has an invalid deterministic attempt identity", row.CallID)
 		}
 		attempt := pairPaperOracleAttempt{Key: req.Key, TargetEventMs: req.TargetEventMs, PolicyDigest: req.PolicyDigest, AttemptID: req.AttemptID,
-			CallID: row.CallID, StartSeq: row.Seq, EndSeq: -1, StreamPos: i, Disposition: "started"}
+			CallID: row.CallID, StartSeq: row.Seq, EndSeq: -1, StreamPos: i, ConsumeStream: -1, Async: st.Async, Disposition: "started"}
+		if ci, ok := l.consumes[row.CallID]; ok {
+			for si, ri := range l.stream {
+				if ri == ci {
+					attempt.ConsumeStream = si
+					break
+				}
+			}
+		}
 		if ei, ok := l.ends[row.CallID]; ok {
 			if ei < 0 || l.rows[ei].Kind == pairRecEventRecovery {
 				attempt.Disposition = "interrupted"
@@ -939,7 +973,13 @@ func (rec *pairRecorder) oracleAttemptConsumed(attemptID string) bool {
 	defer rec.mu.Unlock()
 	rec.rebuildOracleAttemptsLocked()
 	attempt, ok := rec.attempts[attemptID]
-	return ok && attempt.StreamPos < rec.cursor
+	if !ok {
+		return false
+	}
+	if attempt.Async {
+		return attempt.ConsumeStream >= 0 && attempt.ConsumeStream < rec.cursor
+	}
+	return attempt.StreamPos < rec.cursor
 }
 
 func (rec *pairRecorder) oracleAttemptRecorded(attemptID string) bool {
@@ -961,8 +1001,12 @@ func (rec *pairRecorder) fundingConsumed(chain []pairFundingBatchValue) []pairFu
 		pos := map[string]int{}
 		for i, ri := range l.stream {
 			row := l.rows[ri]
+			if row.Kind == pairRecEventConsume && row.Event.Consume != nil && row.Event.Consume.Disposition == "accepted" && row.Event.Consume.BatchHash != "" {
+				pos[row.Event.Consume.BatchHash] = i
+				continue
+			}
 			st := row.Event.Start
-			if row.Kind != pairRecEventStart || st == nil || (st.Kind != pairRecKindFunding && st.Kind != pairRecKindFundingOracle) || st.ParentID != "" {
+			if row.Kind != pairRecEventStart || st == nil || st.Async || (st.Kind != pairRecKindFunding && st.Kind != pairRecKindFundingOracle) || st.ParentID != "" {
 				continue
 			}
 			ei, ok := l.ends[row.CallID]

@@ -950,6 +950,9 @@ func pairPaperCheckFundingTerminal(src *pairRecordedFundingSource, raw []byte, s
 	if end == nil || end.Class != pairRecClassResult || !bytes.Equal(end.Result, raw) {
 		return fmt.Errorf("the recorded funding result has no matching committed terminal")
 	}
+	if start.Async {
+		return fmt.Errorf("an asynchronous oracle observation is published only by its consumption event")
+	}
 	b, err := pairDecodeFundingBatch(raw)
 	if err != nil {
 		return err

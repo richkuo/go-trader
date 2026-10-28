@@ -1591,13 +1591,26 @@ func (s *pairRecordedFundingSource) Kind() string     { return pairFundingSource
 func (s *pairRecordedFundingSource) SourceID() string { return s.sourceID }
 func (s *pairRecordedFundingSource) AnchorMs() int64  { return s.anchorMs }
 
+func (s *pairRecordedFundingSource) Check(raw []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.admitLocked(raw, false)
+}
+
 func (s *pairRecordedFundingSource) Append(raw []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.admitLocked(raw, true)
+}
+
+func (s *pairRecordedFundingSource) admitLocked(raw []byte, commit bool) error {
 	b, err := pairDecodeFundingBatch(raw)
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if b.Seq >= 1 && int(b.Seq) <= len(s.raw) && bytes.Equal(s.raw[b.Seq-1], raw) {
+		return nil
+	}
 	var observations []pairFundingOracleObservation
 	if b.Research != nil {
 		observations = b.Research.Observations
@@ -1690,6 +1703,9 @@ func (s *pairRecordedFundingSource) Append(raw []byte) error {
 				}
 			}
 		}
+	}
+	if !commit {
+		return nil
 	}
 	for _, r := range b.Rates {
 		sh, _ := pairFundingSourceHash(r)

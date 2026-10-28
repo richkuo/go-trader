@@ -13,6 +13,7 @@ import (
 
 const (
 	pairRecSchemaVersion   = 1
+	pairRecSchemaAsync     = 2
 	pairRecMaxPayloadBytes = 16 << 20
 	pairRecMaxStdoutBytes  = 4 << 20
 	pairRecMaxStderrBytes  = 64 << 10
@@ -27,6 +28,7 @@ const (
 	pairRecEventFailure  = "record_failure"
 	pairRecEventClear    = "barrier_clear"
 	pairRecEventSeal     = "seal"
+	pairRecEventConsume  = "call_consume"
 
 	pairRecPhaseStep      = "step"
 	pairRecPhaseBootstrap = "bootstrap"
@@ -62,6 +64,7 @@ var pairRecProcessKinds = map[string]bool{pairRecKindPolicy: true, pairRecKindNa
 var pairRecEventKinds = map[string]bool{
 	pairRecEventBind: true, pairRecEventEpoch: true, pairRecEventStart: true, pairRecEventEnd: true, pairRecEventRecovery: true,
 	pairRecEventWake: true, pairRecEventBudget: true, pairRecEventFailure: true, pairRecEventClear: true, pairRecEventSeal: true,
+	pairRecEventConsume: true,
 }
 
 var pairRecClasses = map[string]bool{pairRecClassResult: true, pairRecClassInfra: true, pairRecClassCancelled: true}
@@ -159,6 +162,7 @@ type pairRecEvent struct {
 	Failure  *pairRecFailure  `json:"failure,omitempty"`
 	Clear    *pairRecClear    `json:"clear,omitempty"`
 	Seal     *pairRecSeal     `json:"seal,omitempty"`
+	Consume  *pairRecConsume  `json:"consume,omitempty"`
 }
 
 type pairRecBind struct {
@@ -170,6 +174,7 @@ type pairRecBind struct {
 	EvidenceIdentity string `json:"evidence_identity"`
 	FundingBinding   string `json:"funding_binding"`
 	AnchorMs         int64  `json:"anchor_ms"`
+	Family           int    `json:"family,omitempty"`
 }
 
 type pairRecEpoch struct {
@@ -191,6 +196,19 @@ type pairRecStart struct {
 	RequestHash     string `json:"request_hash"`
 	RawStartMs      int64  `json:"raw_start_ms"`
 	LogicalBeforeMs int64  `json:"logical_before_ms"`
+	Async           bool   `json:"async,omitempty"`
+}
+
+type pairRecConsume struct {
+	RequestHash  string `json:"request_hash"`
+	TerminalHash string `json:"terminal_hash"`
+	TerminalKind string `json:"terminal_kind"`
+	WakeSeq      int64  `json:"wake_seq"`
+	StepID       string `json:"step_id"`
+	LogicalMs    int64  `json:"logical_ms"`
+	Disposition  string `json:"disposition"`
+	Batch        []byte `json:"batch,omitempty"`
+	BatchHash    string `json:"batch_hash,omitempty"`
 }
 
 type pairRecEnd struct {
@@ -269,13 +287,27 @@ type pairRecRow struct {
 	Event       pairRecEvent
 }
 
-func pairRecPrefixHash(runID string, seq int64, partition, contractFP, kind, callID, prev, payloadHash string) string {
-	header := strings.Join([]string{"go-trader.paper-recording/1", runID, strconv.FormatInt(seq, 10), strconv.Itoa(pairRecSchemaVersion), partition, contractFP, kind, callID, prev, payloadHash}, "\x1f")
+func pairRecPrefixHash(schema int, runID string, seq int64, partition, contractFP, kind, callID, prev, payloadHash string) string {
+	if schema == 0 {
+		schema = pairRecSchemaVersion
+	}
+	header := strings.Join([]string{"go-trader.paper-recording/1", runID, strconv.FormatInt(seq, 10), strconv.Itoa(schema), partition, contractFP, kind, callID, prev, payloadHash}, "\x1f")
 	return sha256Hex([]byte(header))
 }
 
 func pairRecEncode(ev pairRecEvent) ([]byte, error) {
-	ev.V = pairRecSchemaVersion
+	schema := ev.V
+	if schema == 0 {
+		schema = pairRecSchemaVersion
+	}
+	return pairRecEncodeSchema(schema, ev)
+}
+
+func pairRecEncodeSchema(schema int, ev pairRecEvent) ([]byte, error) {
+	if schema != pairRecSchemaVersion && schema != pairRecSchemaAsync {
+		return nil, fmt.Errorf("recording schema %d is not 1 or 2", schema)
+	}
+	ev.V = schema
 	b, err := json.Marshal(ev)
 	if err != nil {
 		return nil, err
@@ -298,7 +330,7 @@ func pairRecDecode(b []byte) (pairRecEvent, error) {
 	if !bytes.Equal(again, b) {
 		return ev, fmt.Errorf("the recording event bytes are not their canonical encoding")
 	}
-	if ev.V != pairRecSchemaVersion || !pairRecEventKinds[ev.Kind] {
+	if (ev.V != pairRecSchemaVersion && ev.V != pairRecSchemaAsync) || !pairRecEventKinds[ev.Kind] {
 		return ev, fmt.Errorf("the recording event is version %d kind %q", ev.V, ev.Kind)
 	}
 	return ev, nil
@@ -309,16 +341,19 @@ type pairRecHead struct {
 	Prefix string
 }
 
-func pairRecInsertTx(tx *sql.Tx, runID, partition, contractFP string, head pairRecHead, ev pairRecEvent) (pairRecHead, error) {
-	payload, err := pairRecEncode(ev)
+func pairRecInsertTx(tx *sql.Tx, runID, partition, contractFP string, head pairRecHead, schema int, ev pairRecEvent) (pairRecHead, error) {
+	if schema == 0 {
+		schema = pairRecSchemaVersion
+	}
+	payload, err := pairRecEncodeSchema(schema, ev)
 	if err != nil {
 		return head, err
 	}
 	seq := head.Seq + 1
 	ph := sha256Hex(payload)
-	prefix := pairRecPrefixHash(runID, seq, partition, contractFP, ev.Kind, ev.CallID, head.Prefix, ph)
+	prefix := pairRecPrefixHash(schema, runID, seq, partition, contractFP, ev.Kind, ev.CallID, head.Prefix, ph)
 	if _, err := tx.Exec(`INSERT INTO basket_replay_inputs (run_id, seq, schema_version, partition, contract_fingerprint, event_kind, call_id, prev_prefix_hash, prefix_hash, payload_hash, payload)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, runID, seq, pairRecSchemaVersion, partition, contractFP, ev.Kind, ev.CallID, head.Prefix, prefix, ph, payload); err != nil {
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, runID, seq, schema, partition, contractFP, ev.Kind, ev.CallID, head.Prefix, prefix, ph, payload); err != nil {
 		return head, fmt.Errorf("append recording input %d: %w", seq, err)
 	}
 	if err := pairRecProjectTx(tx, runID, seq, ev); err != nil {
@@ -351,7 +386,7 @@ func pairRecProjectTx(tx *sql.Tx, runID string, seq int64, ev pairRecEvent) erro
 	return nil
 }
 
-func (sdb *StateDB) appendPairRecEvents(runID, partition, contractFP string, head pairRecHead, events []pairRecEvent, before func(n int) error) (pairRecHead, error) {
+func (sdb *StateDB) appendPairRecEvents(runID, partition, contractFP string, head pairRecHead, schema int, events []pairRecEvent, before func(n int) error) (pairRecHead, error) {
 	tx, err := sdb.db.Begin()
 	if err != nil {
 		return head, err
@@ -376,7 +411,7 @@ func (sdb *StateDB) appendPairRecEvents(runID, partition, contractFP string, hea
 				return head, err
 			}
 		}
-		if next, err = pairRecInsertTx(tx, runID, partition, contractFP, next, ev); err != nil {
+		if next, err = pairRecInsertTx(tx, runID, partition, contractFP, next, schema, ev); err != nil {
 			return head, err
 		}
 	}
@@ -477,9 +512,11 @@ type pairRecLog struct {
 	runID      string
 	partition  string
 	contractFP string
+	schema     int
 	rows       []pairRecRow
 	starts     map[string]int
 	ends       map[string]int
+	consumes   map[string]int
 	children   map[string][]string
 	stream     []int
 	bind       *pairRecBind
@@ -497,16 +534,16 @@ func (l *pairRecLog) head() pairRecHead {
 
 func pairRecConsumable(r pairRecRow) bool {
 	switch r.Kind {
-	case pairRecEventWake, pairRecEventBudget, pairRecEventFailure, pairRecEventClear:
+	case pairRecEventWake, pairRecEventBudget, pairRecEventFailure, pairRecEventClear, pairRecEventConsume:
 		return true
 	case pairRecEventStart:
-		return r.Event.Start.ParentID == "" && r.Event.Start.Phase == pairRecPhaseStep
+		return r.Event.Start != nil && r.Event.Start.ParentID == "" && r.Event.Start.Phase == pairRecPhaseStep
 	}
 	return false
 }
 
 func verifyPairRecLog(rows []pairRecRow, runID, partition, contractFP string) (*pairRecLog, error) {
-	l := &pairRecLog{runID: runID, partition: partition, contractFP: contractFP, starts: map[string]int{}, ends: map[string]int{}, children: map[string][]string{}}
+	l := &pairRecLog{runID: runID, partition: partition, contractFP: contractFP, starts: map[string]int{}, ends: map[string]int{}, consumes: map[string]int{}, children: map[string][]string{}}
 	prev := ""
 	for i := range rows {
 		r := rows[i]
@@ -514,8 +551,14 @@ func verifyPairRecLog(rows []pairRecRow, runID, partition, contractFP string) (*
 		if r.Seq != int64(i+1) {
 			return nil, fmt.Errorf("%s is at position %d; the append-only log has a gap or a reordered row", where, i+1)
 		}
-		if r.Schema != pairRecSchemaVersion || r.Partition != partition || r.ContractFP != contractFP {
-			return nil, fmt.Errorf("%s binds schema %d, partition %s and contract %s, not this run's", where, r.Schema, r.Partition, shortFingerprint(r.ContractFP))
+		if r.Schema != pairRecSchemaVersion && r.Schema != pairRecSchemaAsync {
+			return nil, fmt.Errorf("%s schema %d is not 1 or 2", where, r.Schema)
+		}
+		if l.schema == 0 {
+			l.schema = r.Schema
+		}
+		if r.Schema != l.schema || r.Partition != partition || r.ContractFP != contractFP {
+			return nil, fmt.Errorf("%s binds schema %d, partition %s and contract %s, not this run's schema %d", where, r.Schema, r.Partition, shortFingerprint(r.ContractFP), l.schema)
 		}
 		if r.PrevPrefix != prev {
 			return nil, fmt.Errorf("%s does not extend the previous prefix", where)
@@ -523,21 +566,22 @@ func verifyPairRecLog(rows []pairRecRow, runID, partition, contractFP string) (*
 		if sha256Hex(r.Payload) != r.PayloadHash {
 			return nil, fmt.Errorf("%s payload does not match its payload hash", where)
 		}
-		if want := pairRecPrefixHash(runID, r.Seq, partition, contractFP, r.Kind, r.CallID, r.PrevPrefix, r.PayloadHash); want != r.Prefix {
+		if want := pairRecPrefixHash(r.Schema, runID, r.Seq, partition, contractFP, r.Kind, r.CallID, r.PrevPrefix, r.PayloadHash); want != r.Prefix {
 			return nil, fmt.Errorf("%s prefix hash does not match its row", where)
 		}
 		ev, err := pairRecDecode(r.Payload)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", where, err)
 		}
-		if ev.Kind != r.Kind || ev.CallID != r.CallID {
-			return nil, fmt.Errorf("%s row kind %s/%s differs from its payload %s/%s", where, r.Kind, r.CallID, ev.Kind, ev.CallID)
+		if ev.Kind != r.Kind || ev.CallID != r.CallID || ev.V != r.Schema {
+			return nil, fmt.Errorf("%s row kind %s/%s schema %d differs from its payload %s/%s version %d", where, r.Kind, r.CallID, r.Schema, ev.Kind, ev.CallID, ev.V)
 		}
 		r.Event = ev
+		rows[i] = r
+		l.rows = rows
 		if err := l.admit(i, r); err != nil {
 			return nil, fmt.Errorf("%s: %w", where, err)
 		}
-		rows[i] = r
 		prev = r.Prefix
 	}
 	l.rows = rows
@@ -559,7 +603,7 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 	}
 	one := func(set bool) error {
 		count := 0
-		for _, p := range []bool{ev.Bind != nil, ev.Epoch != nil, ev.Start != nil, ev.End != nil, ev.Recovery != nil, ev.Wake != nil, ev.Budget != nil, ev.Failure != nil, ev.Clear != nil, ev.Seal != nil} {
+		for _, p := range []bool{ev.Bind != nil, ev.Epoch != nil, ev.Start != nil, ev.End != nil, ev.Recovery != nil, ev.Wake != nil, ev.Budget != nil, ev.Failure != nil, ev.Clear != nil, ev.Seal != nil, ev.Consume != nil} {
 			if p {
 				count++
 			}
@@ -579,6 +623,9 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 		}
 		if ev.Bind.RunID != l.runID || ev.Bind.ContractFP != l.contractFP || ev.Bind.Partition != l.partition {
 			return fmt.Errorf("the binding names run %s, contract %s and partition %s", ev.Bind.RunID, shortFingerprint(ev.Bind.ContractFP), ev.Bind.Partition)
+		}
+		if (l.schema == pairRecSchemaAsync) != (ev.Bind.Family == pairPaperManifestAsyncVer) {
+			return fmt.Errorf("schema %d binding names family %d", l.schema, ev.Bind.Family)
 		}
 		b := *ev.Bind
 		l.bind = &b
@@ -603,6 +650,10 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 		}
 		if sha256Hex(s.Request) != s.RequestHash {
 			return fmt.Errorf("call %s request does not match its request hash", ev.CallID)
+		}
+		oracle := s.Kind == "funding_oracle" && s.ParentID == ""
+		if s.Async != (l.schema == pairRecSchemaAsync && oracle) {
+			return fmt.Errorf("call %s async flag does not match schema %d", ev.CallID, l.schema)
 		}
 		if s.ParentID != "" {
 			pi, ok := l.starts[s.ParentID]
@@ -637,6 +688,57 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 			return fmt.Errorf("call %s has a second terminal event", ev.CallID)
 		}
 		l.ends[ev.CallID] = i
+	case pairRecEventConsume:
+		if err := one(ev.Consume != nil); err != nil {
+			return err
+		}
+		if l.schema != pairRecSchemaAsync {
+			return fmt.Errorf("call consumption belongs to schema 2")
+		}
+		c := ev.Consume
+		si, ok := l.starts[ev.CallID]
+		if !ok {
+			return fmt.Errorf("call %s is consumed without a start", ev.CallID)
+		}
+		ei, ended := l.ends[ev.CallID]
+		if !ended {
+			return fmt.Errorf("call %s is consumed without a terminal", ev.CallID)
+		}
+		if _, dup := l.consumes[ev.CallID]; dup {
+			return fmt.Errorf("call %s is consumed twice", ev.CallID)
+		}
+		start, term := l.rows[si], l.rows[ei]
+		if start.Seq >= term.Seq || term.Seq >= r.Seq {
+			return fmt.Errorf("call %s consumption is not after its start and terminal", ev.CallID)
+		}
+		if c.RequestHash != start.Event.Start.RequestHash || c.WakeSeq <= 0 || c.StepID == "" || c.LogicalMs <= 0 {
+			return fmt.Errorf("call %s consumption does not bind its request, wake, step and logical time", ev.CallID)
+		}
+		switch c.TerminalKind {
+		case pairRecEventEnd:
+			if term.Kind != pairRecEventEnd || c.TerminalHash != term.Event.End.ResultHash {
+				return fmt.Errorf("call %s consumption does not bind its terminal hash", ev.CallID)
+			}
+		case pairRecEventRecovery:
+			if term.Kind != pairRecEventRecovery || c.TerminalHash != sha256Hex([]byte(term.Event.Recovery.Reason)) {
+				return fmt.Errorf("call %s consumption does not bind its recovery", ev.CallID)
+			}
+		default:
+			return fmt.Errorf("call %s consumption names terminal kind %q", ev.CallID, c.TerminalKind)
+		}
+		switch c.Disposition {
+		case "accepted":
+			if len(c.Batch) == 0 || c.BatchHash != sha256Hex(c.Batch) {
+				return fmt.Errorf("call %s accepted consumption has no sealed batch", ev.CallID)
+			}
+		case "refused", "interrupted", "cancelled", "infrastructure_failure":
+			if len(c.Batch) != 0 || c.BatchHash != "" {
+				return fmt.Errorf("call %s %s consumption carries a batch", ev.CallID, c.Disposition)
+			}
+		default:
+			return fmt.Errorf("call %s consumption disposition %q is unknown", ev.CallID, c.Disposition)
+		}
+		l.consumes[ev.CallID] = i
 	case pairRecEventWake:
 		if err := one(ev.Wake != nil); err != nil {
 			return err
@@ -660,9 +762,14 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 		if ev.Seal.FinalSeq != r.Seq-1 || ev.Seal.FinalPrefixHash != r.PrevPrefix {
 			return fmt.Errorf("the seal binds seq %d, not the prefix it follows", ev.Seal.FinalSeq)
 		}
-		for id := range l.starts {
+		for id, si := range l.starts {
 			if _, ok := l.ends[id]; !ok {
 				return fmt.Errorf("the seal follows call %s, which has no terminal or recovery event", id)
+			}
+			if l.rows[si].Event.Start != nil && l.rows[si].Event.Start.Async {
+				if _, ok := l.consumes[id]; !ok {
+					return fmt.Errorf("the seal follows asynchronous call %s, which has no consumption", id)
+				}
 			}
 		}
 		s := *ev.Seal
