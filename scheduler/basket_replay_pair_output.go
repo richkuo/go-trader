@@ -81,6 +81,7 @@ type pairReplayPairRecord struct {
 	Conservation       string   `json:"conservation,omitempty"`
 	EmergencyPending   []string `json:"emergency_pending,omitempty"`
 	NativeDecisions    []string `json:"native_decisions,omitempty"`
+	NativeFundingHolds []string `json:"native_funding_holds,omitempty"`
 	Slots              int      `json:"slots"`
 	Actions            int      `json:"actions"`
 	RecordingBlocked   string   `json:"recording_blocked,omitempty"`
@@ -213,6 +214,23 @@ func (r *pairReplayRuntime) stateReadingsLocked(at time.Time) ([]pairReplayMembe
 		pr.NativeDecisions = append(pr.NativeDecisions, fmt.Sprintf("%s|%s|%s %s by %s %s", d.Kind, d.MemberID, d.ObligationID, d.Mode, d.DecidedBy, d.ID))
 	}
 	sort.Strings(pr.NativeDecisions)
+	holds := append([]pairNativeFundingHold(nil), rt.Pair.Progress.NativeFundingHolds...)
+	sort.Slice(holds, func(i, j int) bool {
+		if holds[i].MemberID != holds[j].MemberID {
+			return holds[i].MemberID < holds[j].MemberID
+		}
+		if holds[i].FromMs != holds[j].FromMs {
+			return holds[i].FromMs < holds[j].FromMs
+		}
+		return holds[i].ResolutionID < holds[j].ResolutionID
+	})
+	for _, h := range holds {
+		through := "open"
+		if h.bounded() {
+			through = fmt.Sprintf("%d", h.ThroughMs)
+		}
+		pr.NativeFundingHolds = append(pr.NativeFundingHolds, fmt.Sprintf("%s|%d|%s|%s|%s", h.MemberID, h.FromMs, through, h.ResolutionID, pairNativeProofHashPrefix(h.Proof)))
+	}
 	return members, proof, pr
 }
 

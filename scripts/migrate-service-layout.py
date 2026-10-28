@@ -163,6 +163,27 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def held_by_latest_cycle(rev):
+    """Holds that are still the latest evidence for that strategy.
+
+    A current daemon clears a hold when that strategy is evaluated, and it
+    replaces or clears holds at the end of the cycle. It does not leave a hold
+    next to a newer evaluated time. An older daemon can. A later evaluated
+    time still drops the hold, for every reason including the portfolio kill switch.
+    """
+    by_reason = {}
+    if not isinstance(rev, dict) or not isinstance(rev.get("held"), dict):
+        return by_reason
+    evaluated_at = rev.get("evaluated") if isinstance(rev.get("evaluated"), dict) else {}
+    for sid, hold in sorted(rev["held"].items()):
+        if not isinstance(hold, dict):
+            continue
+        if (parse_iso(evaluated_at.get(sid)) or 0) > (parse_iso(hold.get("at")) or 0):
+            continue
+        by_reason.setdefault(hold.get("reason") or "unknown", []).append(sid)
+    return by_reason
+
+
 def parse_iso(text):
     if not text:
         return None
@@ -1161,14 +1182,7 @@ def inspect(unit, instance, exec_timeout=None):
             plan.refuse(EXIT_BINARY, "the running daemon's /health has no run_evidence with held strategies%s; run scripts/update.sh --restart first" % (
                 " (sent with the unit's STATUS_AUTH_TOKEN)" if status_token else ""))
         else:
-            by_reason = {}
-            evaluated_at = rev.get("evaluated") if isinstance(rev.get("evaluated"), dict) else {}
-            for sid, hold in sorted(rev["held"].items()):
-                if not isinstance(hold, dict):
-                    continue
-                if (parse_iso(evaluated_at.get(sid)) or 0) > (parse_iso(hold.get("at")) or 0):
-                    continue
-                by_reason.setdefault(hold.get("reason") or "unknown", []).append(sid)
+            by_reason = held_by_latest_cycle(rev)
             if by_reason.get(HELD_KILL_SWITCH):
                 plan.note("the portfolio kill switch of the running daemon held %s in its latest cycle; the execution proof accepts a strategy the target holds the same way" % ", ".join(by_reason[HELD_KILL_SWITCH]))
             for reason in sorted(r for r in by_reason if r != HELD_KILL_SWITCH):

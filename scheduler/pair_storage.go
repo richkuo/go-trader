@@ -859,6 +859,9 @@ type pairRuntimeState struct {
 	nativeAlerts []pairNativeResolution
 	nativeReads  map[string]*pairNativeReadToken
 	nativeSeen   map[string]bool
+
+	mutationEpoch uint64
+	proofUnknown  map[string]json.RawMessage
 }
 
 func newPairRuntimeState(p PairConfig, limits pairOperationalLimits, adm *pairResearchAdmission) *pairRuntimeState {
@@ -879,6 +882,7 @@ func (rt *basketRuntime) isPair() bool {
 func (rt *basketRuntime) touchPairProgress() {
 	if rt.Pair != nil {
 		rt.Pair.Progress.Seq++
+		rt.Pair.mutationEpoch++
 	}
 }
 
@@ -920,6 +924,9 @@ func (rt *basketRuntime) pairPendingProtective(memberID string) *basketAction {
 }
 
 func writePairProgressTx(tx *sql.Tx, rt *basketRuntime) error {
+	if err := checkSavedPairNativeBoundsTx(tx, rt, rt.Pair.Progress); err != nil {
+		return err
+	}
 	p := rt.Pair.Progress
 	res, err := tx.Exec(`UPDATE basket_contracts SET progress_json = ?, progress_seq = ?
 		WHERE scope = ? AND source = ? AND basket_id = ? AND contract_fingerprint = ? AND progress_seq <= ?`,
@@ -1721,6 +1728,7 @@ func (rt *basketRuntime) prunePair() {
 		for id, a := range rt.Actions {
 			if a.DeadlineMs == d {
 				delete(rt.Actions, id)
+				rt.bumpPairMutationEpoch()
 			}
 		}
 	}
@@ -1730,6 +1738,7 @@ func (rt *basketRuntime) prunePair() {
 		}
 		if _, ok := rt.Rebalances[a.DeadlineMs]; !ok {
 			delete(rt.Actions, id)
+			rt.bumpPairMutationEpoch()
 		}
 	}
 	if rt.Pair == nil {
@@ -1870,6 +1879,9 @@ func (st *StateStore) loadPairRuntimes(state *AppState, cfg *Config, records map
 		}
 	} else if fundingRows.any() || len(rt.Pair.Progress.FundingBinding) > 0 {
 		return fmt.Errorf("pair %s holds research funding records, but the %s admission has no funding owner", p.ID, adm.kind)
+	}
+	if err := validatePairNativeFundingHolds(rt); err != nil {
+		return err
 	}
 	for _, m := range contract.Members {
 		if s := state.Strategies[m.StrategyID]; s != nil {
@@ -2102,12 +2114,14 @@ func (sdb *StateDB) attachPairNativeReceiptTx(rt *basketRuntime, a *basketAction
 	prevOblig := append([]pairObligation(nil), p.Obligations...)
 	prevSeq := p.Seq
 	rt.Actions[a.ActionID] = a
+	rt.bumpPairMutationEpoch()
 	p.NativeReceipts = append(append([]pairNativeReceipt(nil), p.NativeReceipts[:idx]...), p.NativeReceipts[idx+1:]...)
 	p.clearObligation(pairObligationNativeReceipt, receipt.MemberID, receipt.ID)
 	rt.touchPairProgress()
 	defer func() {
 		if retErr != nil {
 			delete(rt.Actions, a.ActionID)
+			rt.bumpPairMutationEpoch()
 			p.NativeReceipts, p.Obligations, p.Seq = prevReceipts, prevOblig, prevSeq
 		}
 	}()

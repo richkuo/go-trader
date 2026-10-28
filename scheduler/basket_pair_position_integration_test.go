@@ -223,7 +223,7 @@ func TestBasketPairPositionGenerationChangeDiscardsTheRead(t *testing.T) {
 	e.bc.beginCycle()
 	e.observe("")
 	e.mu.Lock()
-	in, why := e.bc.pairReadPositions(e.rt(), e.inputs(e.now), "")
+	in, why := e.bc.pairReadPositions(e.rt(), e.inputs(e.now), "", false)
 	e.mu.Unlock()
 	_ = in
 	if why == "" || e.rt().pairPositions.auth != nil {
@@ -260,7 +260,7 @@ func TestBasketPairPositionBookOrActionChangeAfterAMatchForcesANewRead(t *testin
 	e.bc.beginCycle()
 	e.observe("")
 	e.mu.Lock()
-	_, why := e.bc.pairReadPositions(e.rt(), e.inputs(e.now), "")
+	_, why := e.bc.pairReadPositions(e.rt(), e.inputs(e.now), "", false)
 	nowMs := e.now.UnixMilli()
 	if why != "" || e.bc.pairPositionAuthorized(e.rt(), "", nowMs) != "" {
 		e.mu.Unlock()

@@ -82,9 +82,6 @@ func pairPositionBase(p pairVenuePosition) (*big.Rat, error) {
 }
 
 func pairCheckVenuePosition(rt *basketRuntime, m pairContractMember, p pairVenuePosition, nowMs int64) error {
-	if p.V != pairVenuePositionVersion {
-		return fmt.Errorf("position record version %d, want %d", p.V, pairVenuePositionVersion)
-	}
 	want := pairEvidenceKey{Partition: rt.Partition.String(), Provider: m.Provider, AccountKey: m.AccountKey, Instrument: m.Instrument, MemberID: m.MemberID}
 	if p.Key != want {
 		return fmt.Errorf("position record key %s does not name member %s", p.Key, want)
@@ -102,27 +99,7 @@ func pairCheckVenuePosition(rt *basketRuntime, m pairContractMember, p pairVenue
 	if !pairDecimalCanonical(p.SignedNativeQty) {
 		return fmt.Errorf("position quantity %q is not a canonical decimal", p.SignedNativeQty)
 	}
-	wantCS, err := pairDecimalFromFloat(m.Meta.ContractSize)
-	if err != nil {
-		return err
-	}
-	if p.ContractSize != string(wantCS) {
-		return fmt.Errorf("position contract size %s differs from the contract size %s", p.ContractSize, wantCS)
-	}
-	if p.PositionMode != m.Meta.PositionMode {
-		return fmt.Errorf("position mode %q differs from the contract position mode %q", p.PositionMode, m.Meta.PositionMode)
-	}
-	zero := p.SignedNativeQty == "0"
-	if !(zero && p.MarginMode == "") && p.MarginMode != m.Meta.MarginMode {
-		return fmt.Errorf("position margin mode %q differs from the contract margin mode %q", p.MarginMode, m.Meta.MarginMode)
-	}
-	if p.ObservedMs <= 0 || p.ObservedMs > p.FirstReceiptMs || p.FirstReceiptMs > nowMs {
-		return fmt.Errorf("position times observed %d, received %d and coordinator %d are not ordered", p.ObservedMs, p.FirstReceiptMs, nowMs)
-	}
-	if !pairAgeWithin(nowMs, p.ObservedMs, rt.Pair.Limits.QuoteAgeMs) || !pairAgeWithin(nowMs, p.FirstReceiptMs, rt.Pair.Limits.QuoteAgeMs) {
-		return fmt.Errorf("position observed %d and received %d are not within quote_age_ms %d of %d", p.ObservedMs, p.FirstReceiptMs, rt.Pair.Limits.QuoteAgeMs, nowMs)
-	}
-	return nil
+	return pairCheckVenuePositionFor(m, p, nowMs, rt.Pair.Limits.QuoteAgeMs)
 }
 
 func (bc *basketCoordinator) pairLiveMembers(rt *basketRuntime) ([]pairContractMember, []pairVenue, error) {
@@ -241,7 +218,7 @@ func (bc *basketCoordinator) savePairPositionMatch(rt *basketRuntime) {
 	}
 }
 
-func (bc *basketCoordinator) pairReadPositions(rt *basketRuntime, in basketCycleInputs, exclude string) (basketCycleInputs, string) {
+func (bc *basketCoordinator) pairReadPositions(rt *basketRuntime, in basketCycleInputs, exclude string, proofs bool) (basketCycleInputs, string) {
 	ms, vs, err := bc.pairLiveMembers(rt)
 	if err != nil {
 		return in, err.Error()
@@ -259,6 +236,11 @@ func (bc *basketCoordinator) pairReadPositions(rt *basketRuntime, in basketCycle
 	gen := bc.pairPositionGeneration(rt, exclude)
 	fp := rt.Contract.Fingerprint()
 	startMs := bc.pairNow(in).UnixMilli()
+	var proofTokens map[string]*pairNativeProofToken
+	if proofs {
+		bc.recoverPairNativeProofUnknown(rt)
+		proofTokens = bc.pairNativeProofTokens(rt, ms, startMs, in.SaveBlocked)
+	}
 	st.attemptMs, st.attemptGen = startMs, gen
 	limit := time.Duration(rt.Pair.Limits.CollectionTimeoutMs) * time.Millisecond
 	parent := bc.parent
@@ -267,6 +249,7 @@ func (bc *basketCoordinator) pairReadPositions(rt *basketRuntime, in basketCycle
 	}
 	got := make([]pairVenuePosition, len(ms))
 	errs := make([]error, len(ms))
+	answered := make([]bool, len(ms))
 	st.readsInFlight = true
 	var ctxErr error
 	bc.unlocked(func() {
@@ -287,7 +270,7 @@ func (bc *basketCoordinator) pairReadPositions(rt *basketRuntime, in basketCycle
 		for n := 0; n < len(ms); n++ {
 			select {
 			case a := <-answers:
-				got[a.i], errs[a.i] = a.p, a.err
+				got[a.i], errs[a.i], answered[a.i] = a.p, a.err, true
 			case <-ctx.Done():
 				ctxErr = ctx.Err()
 				return
@@ -301,6 +284,9 @@ func (bc *basketCoordinator) pairReadPositions(rt *basketRuntime, in basketCycle
 	if rt.Contract.Fingerprint() != fp || bc.pairPositionGeneration(rt, exclude) != gen {
 		st.auth = nil
 		return in, "the pair records changed while the venue positions were read; the answer is discarded"
+	}
+	if proofs {
+		bc.pairEvaluateNativeProofs(rt, ms, got, errs, answered, proofTokens, startMs, nowMs)
 	}
 	fail := func(reason string) (basketCycleInputs, string) {
 		st.auth = nil
@@ -372,7 +358,7 @@ func (bc *basketCoordinator) stepPairPositions(rt *basketRuntime, in basketCycle
 	if !due {
 		return in
 	}
-	in, why := bc.pairReadPositions(rt, in, "")
+	in, why := bc.pairReadPositions(rt, in, "", true)
 	if why != "" {
 		bc.pairPositionOpeningDeadline(rt, in.Now)
 	}

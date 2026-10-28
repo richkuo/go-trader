@@ -316,6 +316,34 @@ func (m *pairFundingMember) qtyBefore(t int64) (*big.Rat, bool) {
 	return q, amb
 }
 
+// qtyBeforeThroughSeq sums only the prefix of maxSeq rows, the rows present
+// when a native funding proof was accepted. A later append keeps its own seq
+// and cannot change that prefix, even when its event time is at or before t.
+func (m *pairFundingMember) qtyBeforeThroughSeq(t, maxSeq int64) (*big.Rat, bool, error) {
+	if maxSeq < 0 {
+		return nil, false, fmt.Errorf("journal row count %d is negative", maxSeq)
+	}
+	q := new(big.Rat)
+	amb := false
+	var seen int64
+	for i, r := range m.rows {
+		if r.Seq <= 0 || r.Seq > maxSeq {
+			continue
+		}
+		seen++
+		switch pairRowStateAt(r, t) {
+		case pairInventoryIncluded:
+			q.Add(q, m.rowQty(i))
+		case pairInventoryAmbiguous:
+			amb = true
+		}
+	}
+	if seen != maxSeq {
+		return q, amb, fmt.Errorf("journal has %d rows at or before seq %d, the proof records %d", seen, maxSeq, maxSeq)
+	}
+	return q, amb, nil
+}
+
 func (m *pairFundingMember) windowTouched(t, windowMs int64) bool {
 	if windowMs <= 0 {
 		return false

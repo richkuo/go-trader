@@ -236,6 +236,8 @@ func mutatePaperPerpsBook(s *StrategyState, symbol string, mutate func()) {
 }
 
 func mutatePaperPerpsBookCoins(s *StrategyState, symbols []string, mutate func()) {
+	bumpPairCoinEpoch(symbols...)
+	defer bumpPairCoinEpoch(symbols...)
 	if pairInventoryTrack(s, symbols, func() { mutatePaperPerpsBookCoinsLegacy(s, symbols, mutate) }) {
 		return
 	}

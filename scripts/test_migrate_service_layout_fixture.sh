@@ -779,6 +779,7 @@ scenario_latch() {
     systemctl stop "$unit"
     latch_kill_switch "$src/scheduler/source-btc.db"
     echo "STATUS_AUTH_TOKEN=$token" >>"$src/.env"
+    echo "GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH=1" >>"$src/.env"
     systemctl start "$unit"
     wait_health "$unit" "$port"
     for i in $(seq 1 90); do

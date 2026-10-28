@@ -539,7 +539,11 @@ func pairIncompleteEvidence(rt *basketRuntime) (pairObligation, bool) {
 		}
 	}
 	for _, h := range p.NativeFundingHolds {
-		found = append(found, pairObligation{Kind: pairObligationNativeFundingUncertain, MemberID: h.MemberID, ActionID: h.ResolutionID, Detail: h.Detail, AtMs: h.AtMs, FromMs: h.FromMs})
+		detail := h.Detail
+		if h.bounded() {
+			detail += fmt.Sprintf("; bounded through %d by proof %s", h.ThroughMs, pairNativeProofHashPrefix(h.Proof))
+		}
+		found = append(found, pairObligation{Kind: pairObligationNativeFundingUncertain, MemberID: h.MemberID, ActionID: h.ResolutionID, Detail: detail, AtMs: h.AtMs, FromMs: h.FromMs})
 	}
 	if len(found) == 0 {
 		return pairObligation{}, false
