@@ -29,7 +29,7 @@ func TestRunEvidenceHoldReplacesEvaluatedAndClearsAfterLatchReset(t *testing.T) 
 
 	recordHeldStrategies(nil, []StrategyConfig{sc}, map[RiskPartition]*scopeCycleRisk{
 		part: {Partition: part},
-	}, nil, nil, t2.Add(time.Second))
+	}, nil, t2.Add(time.Second))
 	view = globalRunEvidence.healthView()
 	held, _ = view["held"].(map[string]map[string]string)
 	if _, ok := held[sc.ID]; ok {
@@ -37,19 +37,18 @@ func TestRunEvidenceHoldReplacesEvaluatedAndClearsAfterLatchReset(t *testing.T) 
 	}
 }
 
-func TestKillSwitchHoldStaysLatestUntilTheInterval(t *testing.T) {
+func TestKillSwitchHoldDoesNotDelayTheNextCycle(t *testing.T) {
 	prev := globalRunEvidence
 	globalRunEvidence = &runEvidence{startedAt: time.Now().UTC()}
 	t.Cleanup(func() { globalRunEvidence = prev })
 
-	sc := StrategyConfig{ID: "hl-latch-src", Type: "perps", Platform: "hyperliquid", Args: []string{"vwap", "ETH", "1h", "--mode=paper"}, PaperSource: "btc", IntervalSeconds: 3600}
+	sc := StrategyConfig{ID: "hl-live", Type: "perps", Platform: "hyperliquid", Args: []string{"vwap", "ETH", "1h", "--mode=live"}, IntervalSeconds: 3600}
 	part := partitionFor(sc)
 	now := time.Date(2026, 10, 27, 2, 0, 0, 0, time.UTC)
 	globalRunEvidence.markEvaluated(sc.ID, now.Add(-time.Second))
-	lastRun := map[string]time.Time{}
 	recordHeldStrategies([]StrategyConfig{sc}, nil, map[RiskPartition]*scopeCycleRisk{
 		part: {Partition: part, KillSwitchFired: true},
-	}, nil, lastRun, now)
+	}, nil, now)
 
 	view := globalRunEvidence.healthView()
 	held, _ := view["held"].(map[string]map[string]string)
@@ -61,8 +60,21 @@ func TestKillSwitchHoldStaysLatestUntilTheInterval(t *testing.T) {
 	}
 	cfg := &Config{Strategies: []StrategyConfig{sc}, IntervalSeconds: 3600}
 	intervals := map[string]int{sc.ID: 3600}
-	due, _, _ := computeDueSet(now.Add(time.Second), cfg, intervals, lastRun, nil, false, nil)
-	if len(due) != 0 {
-		t.Fatalf("strategy was due again one second after the hold: %+v", due)
+	due, _, _ := computeDueSet(now.Add(time.Second), cfg, intervals, map[string]time.Time{}, nil, false, nil)
+	if len(due) != 1 || due[0].ID != sc.ID {
+		t.Fatalf("latched strategy was not due on the next tick: %+v", due)
+	}
+}
+
+func TestMigrateFixtureEnvKeepsPaperKillSwitchLatched(t *testing.T) {
+	t.Setenv("GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH", "1")
+	part := paperSourcePartition("btc")
+	prs := &PortfolioRiskState{KillSwitchActive: true, KillSwitchCloseApplied: true}
+	st := &AppState{PortfolioRisk: map[RiskPartition]*PortfolioRiskState{part: prs}}
+	applyPaperKillSwitchCycle(st, &Config{}, nil, &scopeCycleRisk{
+		Partition: part, KillSwitchFired: true, TotalPV: 100, PeakRebaselineAvailable: true,
+	}, false)
+	if !prs.KillSwitchActive {
+		t.Fatal("fixture env cleared the paper kill switch")
 	}
 }

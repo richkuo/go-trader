@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -1906,7 +1907,7 @@ func applyPaperKillSwitchCycle(state *AppState, cfg *Config, prices map[string]f
 			out.Message += " " + paperKillSwitchPairCommittedLine
 		}
 	}
-	if hasOwner || !prs.KillSwitchActive {
+	if hasOwner || os.Getenv("GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH") == "1" || !prs.KillSwitchActive {
 		return out
 	}
 	if hasPair {
