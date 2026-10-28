@@ -562,11 +562,18 @@ func TestBasketReplayPairPaperResearchOracleResume(t *testing.T) {
 		resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
 		pairPaperRequireResumed(t, "refused terminal resume", resumed)
 		o := pairPaperOracleOutcomeOf(t, dir, f.runID)
-		if len(o.starts) != 1 || len(o.refusedSeq) != 1 || len(o.admitted) != 0 {
+		if len(o.starts) != 1 || len(o.refusedSeq) != 1 || o.refusedSeq[0] != 0 || len(o.admitted) != 0 {
 			t.Fatalf("the late terminal stays only in the recording after the restart: starts %d refused %v admitted %d", len(o.starts), o.refusedSeq, len(o.admitted))
 		}
-		if _, ok := o.chainSeqs[o.refusedSeq[0]]; !ok {
-			t.Fatalf("a later accepted batch reuses the refused sequence %d: %v", o.refusedSeq[0], o.chainSeqs)
+		var seqs []int
+		for seq := range o.chainSeqs {
+			seqs = append(seqs, int(seq))
+		}
+		sort.Ints(seqs)
+		for i, seq := range seqs {
+			if seq != i+1 {
+				t.Fatalf("a refused family-3 sample allocates no sequence, chain sequences are %v", seqs)
+			}
 		}
 		pairPaperNoRepeatedCall(t, pairPaperLogRows(t, dir, f.runID))
 	})
