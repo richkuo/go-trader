@@ -396,6 +396,10 @@ type pyIntegrationCIExemption struct {
 
 var pyIntegrationCIExemptions = map[string]pyIntegrationCIExemption{}
 
+func localOnlyBasketTest(test string) bool {
+	return strings.HasPrefix(test, "TestBasket")
+}
+
 func (s ciPyIntegrationShard) selects(test string) bool {
 	return s.run.MatchString(test) && (s.skip == nil || !s.skip.MatchString(test))
 }
@@ -634,7 +638,9 @@ func checkPyIntegrationPartition(t *testing.T, shards []ciPyIntegrationShard, te
 			t.Errorf("no %s shard job runs the allowlisted %s", ciPyIntegrationJob, test)
 		case len(owners) > 1:
 			t.Errorf("%s runs in more than one shard job: %s", test, strings.Join(owners, ", "))
-		case tagged[test] && !allowed && !exempt:
+		case localOnlyBasketTest(test) && (allowed || len(owners) > 0):
+			t.Errorf("basket test %s is selected by CI (%s); basket tests run locally, not in CI", test, strings.Join(append(owners, map[bool]string{true: ciPyIntegrationJob}[allowed]), ", "))
+		case tagged[test] && !allowed && !exempt && !localOnlyBasketTest(test):
 			t.Errorf("the pyintegration test %s runs in no CI job: add it to the %s allowlist, or to pyIntegrationCIExemptions with a written reason and an issue number", test, ciPyIntegrationJob)
 		}
 	}
