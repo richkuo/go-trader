@@ -737,11 +737,25 @@ func TestBasketReplayPairPaperAsyncConsumptionIsTheOnlyPublication(t *testing.T)
 		t.Fatal(err)
 	}
 	afterStart := rec.cursorNow()
+	_, saved, err := rec.call(context.Background(), pairRecCall{Kind: pairRecKindMatchPoll, MemberID: "hl", Request: []byte("book")}, pairRecResultOf("book"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil || saved.End == nil || bytes.Contains(saved.End.Result, []byte("obs")) {
+		t.Fatal("a later call during the pending oracle does not receive the observation")
+	}
+	if _, ok := mustPairRecLog(t, db).consumes[callID]; ok {
+		t.Fatal("the observation is not published at the start or at a later call")
+	}
+	afterCall := rec.cursorNow()
+	if afterCall <= afterStart {
+		t.Fatal("the later call is its own consumable stream item")
+	}
 	end, err := rec.appendAsyncTerminal(callID, start, pairAsyncOracleResult{res: pairRecResult{Class: pairRecClassResult, Result: []byte(`{"obs":1}`), ReceiptMs: 2}, completion: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.cursorNow() != afterStart {
+	if rec.cursorNow() != afterCall {
 		t.Fatal("an asynchronous terminal is not a consumable stream item")
 	}
 	l := mustPairRecLog(t, db)
@@ -751,8 +765,8 @@ func TestBasketReplayPairPaperAsyncConsumptionIsTheOnlyPublication(t *testing.T)
 	if err := rec.appendConsume(callID, pairRecConsume{RequestHash: start.RequestHash, TerminalHash: end.ResultHash, TerminalKind: pairRecEventEnd, WakeSeq: 1, StepID: "s0@1", LogicalMs: 4, Disposition: "refused"}); err != nil {
 		t.Fatal(err)
 	}
-	if rec.cursorNow() != afterStart+1 {
-		t.Fatalf("call_consume advances the stream cursor once, got %d after %d", rec.cursorNow(), afterStart)
+	if rec.cursorNow() != afterCall+1 {
+		t.Fatalf("call_consume advances the stream cursor once, got %d after %d", rec.cursorNow(), afterCall)
 	}
 	l = mustPairRecLog(t, db)
 	if l.consumes[callID] == 0 && len(l.consumes) != 1 {
@@ -763,6 +777,40 @@ func TestBasketReplayPairPaperAsyncConsumptionIsTheOnlyPublication(t *testing.T)
 	}
 	if _, err := readVerifiedPairRecLog(db, pairRecTestRun, pairRecTestPartition, pairRecTestContract); err == nil {
 		t.Fatal("a second consumption of the same call is refused")
+	}
+}
+
+func TestBasketReplayPairPaperAsyncConsumptionRefusesAMismatchedTerminal(t *testing.T) {
+	db, err := OpenStateDB(filepath.Join(t.TempDir(), basketReplayDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.ensurePairRecordingSchema(); err != nil {
+		t.Fatal(err)
+	}
+	rec := newPairRecorder(pairRecLive, pairRecTestRun, pairRecTestPartition, pairRecTestContract, db, &simulatedClock{}, pairRecFaults{})
+	rec.schema = pairRecSchemaAsync
+	rec.now = func() time.Time { return time.UnixMilli(1_800_000_000_000) }
+	rec.epoch = 1
+	bind := pairRecBind{RunID: pairRecTestRun, PaperIdentity: "id", ContractFP: pairRecTestContract, Partition: pairRecTestPartition, SeedSHA256: "seed", EvidenceIdentity: "ev", AnchorMs: 1, Family: pairPaperManifestAsyncVer}
+	if err := rec.appendDirect(pairRecEvent{Kind: pairRecEventBind, Bind: &bind}, pairRecEvent{Kind: pairRecEventEpoch, Epoch: &pairRecEpoch{Epoch: 1, WallMs: 1, Mode: "new"}}); err != nil {
+		t.Fatal(err)
+	}
+	rec.beginStep("s0@1", 0)
+	if _, err := rec.wake("", 0); err != nil {
+		t.Fatal(err)
+	}
+	req := []byte(`{"attempt_id":"a","target_event_ms":1}`)
+	callID, start, err := rec.beginAsyncCall(pairRecCall{Kind: pairRecKindFundingOracle, MemberID: "hl", SlotMs: 1, Request: req})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.appendConsume(callID, pairRecConsume{RequestHash: start.RequestHash, TerminalHash: start.RequestHash, TerminalKind: pairRecEventEnd, WakeSeq: 1, StepID: "s0@1", LogicalMs: 2, Disposition: "refused"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readVerifiedPairRecLog(db, pairRecTestRun, pairRecTestPartition, pairRecTestContract); err == nil || !strings.Contains(err.Error(), "without a terminal") {
+		t.Fatalf("consumption before the terminal is refused, got %v", err)
 	}
 }
 

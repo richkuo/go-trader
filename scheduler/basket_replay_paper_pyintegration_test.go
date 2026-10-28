@@ -149,11 +149,12 @@ type pairPaperResearchOptions struct {
 	clockAt     int64
 	convergeAt  int64
 	fixtureMore map[string]interface{}
+	mutate      func(root map[string]interface{})
 }
 
 func newPairPaperResearchFixture(t *testing.T, o pairPaperResearchOptions) (*pairPaperFixture, int64) {
 	t.Helper()
-	f := newPairPaperFixture(t, pairPaperOptions2{runID: o.runID})
+	f := newPairPaperFixture(t, pairPaperOptions2{runID: o.runID, mutate: o.mutate})
 	target := (time.Now().Add(120*time.Second).UnixMilli()/3600000 + 1) * 3600000
 	if o.fromBefore == 0 {
 		o.fromBefore = 60000
@@ -1743,5 +1744,284 @@ func TestBasketReplayPairPaperResearchOracleTiming(t *testing.T) {
 				c.check(t, target, o)
 			}
 		})
+	}
+}
+
+func pairPaperPatchFixture(t *testing.T, f *pairPaperFixture, extra map[string]interface{}) {
+	t.Helper()
+	blob, err := os.ReadFile(f.fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(blob, &m); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.fixture, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type pairPaperFill struct {
+	id                 string
+	side, status       string
+	accepted, deadline int64
+	event              int64
+	bid, ask           string
+}
+
+func pairPaperJoinedFills(t *testing.T, dir string) []pairPaperFill {
+	t.Helper()
+	db, err := openStateDBReadOnly(filepath.Join(dir, basketReplayDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.db.Query(`SELECT kind, client_order_id, body_json FROM pair_virtual_events WHERE kind IN ('submit','match') ORDER BY seq`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	submits := map[string]pairVirtualSubmitBody{}
+	var matches []pairVirtualMatchBody
+	for rows.Next() {
+		var kind, id, body string
+		if err := rows.Scan(&kind, &id, &body); err != nil {
+			t.Fatal(err)
+		}
+		switch kind {
+		case "submit":
+			var b pairVirtualSubmitBody
+			if err := json.Unmarshal([]byte(body), &b); err != nil {
+				t.Fatal(err)
+			}
+			submits[id] = b
+		case "match":
+			var b pairVirtualMatchBody
+			if err := json.Unmarshal([]byte(body), &b); err != nil {
+				t.Fatal(err)
+			}
+			matches = append(matches, b)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	var out []pairPaperFill
+	for _, m := range matches {
+		s, ok := submits[m.ClientOrderID]
+		if !ok {
+			continue
+		}
+		fill := pairPaperFill{id: m.ClientOrderID, side: m.Side, status: m.Status, accepted: s.AcceptedAtMs, deadline: s.AcceptDeadlineMs, event: m.Book.EventMs}
+		if len(m.Book.Bids) > 0 {
+			fill.bid = m.Book.Bids[0].Px
+		}
+		if len(m.Book.Asks) > 0 {
+			fill.ask = m.Book.Asks[0].Px
+		}
+		out = append(out, fill)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].accepted != out[j].accepted {
+			return out[i].accepted < out[j].accepted
+		}
+		return out[i].side < out[j].side
+	})
+	return out
+}
+
+func pairPaperOpenOrderRun(t *testing.T, runID string, delay int, gapUntil, throughAt, drainAt int64) (*pairPaperFixture, int64, string, pairPaperProc) {
+	t.Helper()
+	f, target := newPairPaperResearchFixture(t, pairPaperResearchOptions{
+		runID: runID, fromBefore: 40000, throughAt: throughAt, drainAt: drainAt, convergeAt: 12000,
+		mutate: func(root map[string]interface{}) {
+			limits := pairTestPair(root)["limits"].(map[string]interface{})
+			limits["acceptance_deadline_ms"] = 120000
+			limits["quote_age_ms"] = 20000
+		},
+	})
+	f.scenario.PaperPollIntervalMs = 2000
+	extra := map[string]interface{}{"books_gap_from_ms": target - 38000, "books_gap_until_ms": target + gapUntil}
+	if delay > 0 {
+		extra["oracle_response_delay_ms"] = delay
+	}
+	pairPaperPatchFixture(t, f, extra)
+	dir := filepath.Join(f.parent, "paper")
+	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false), "--seal")
+	return f, target, dir, p
+}
+
+func TestBasketReplayPairPaperResearchOracleOpenOrder(t *testing.T) {
+	held, target, heldDir, heldRun := pairPaperOpenOrderRun(t, "paper-open-order-held", 3500, 2000, 25000, 50000)
+	prepare, _ := pairPaperOraclePrepareAt(target, *held.scenario.FundingPolicy)
+	pairPaperRequireComplete(t, "an order accepted before preparation fills after the hour while the oracle waits", heldRun)
+	if heldRun.Out.Recording == nil || heldRun.Out.Recording.Seal == nil || !heldRun.Out.Recording.Seal.Sealed {
+		t.Fatalf("the open-order run seals: %+v", heldRun.Out.Recording)
+	}
+	heldFills := pairPaperEntryFills(t, heldDir, prepare, target)
+	fast, fastTarget, fastDir, fastRun := pairPaperOpenOrderRun(t, "paper-open-order-fast", 0, 2000, 25000, 50000)
+	pairPaperRequireComplete(t, "the same books fill when the oracle does not wait", fastRun)
+	fastPrepare, _ := pairPaperOraclePrepareAt(fastTarget, *fast.scenario.FundingPolicy)
+	fastFills := pairPaperEntryFills(t, fastDir, fastPrepare, fastTarget)
+	if got, want := pairPaperFillKey(heldFills), pairPaperFillKey(fastFills); got != want {
+		t.Fatalf("the waiting oracle and the immediate oracle fill the same eligible books:\nheld %s\nfast %s", got, want)
+	}
+	_ = fast
+	missing, _, _, missingRun := pairPaperOpenOrderRun(t, "paper-open-order-missing", 1000, 500000, 8000, 20000)
+	if missingRun.Out.Run == nil || !missingRun.Out.Run.Finished || missingRun.Out.MechanicallyComplete || missingRun.Out.Status != basketReplayStatusIncomplete {
+		t.Fatalf("a missing book keeps the finished run incomplete, got exit %d status %s complete=%v reasons=%v\nstderr tail=%s", missingRun.Code, missingRun.Out.Status, missingRun.Out.MechanicallyComplete, missingRun.Out.IncompleteReasons, tail(missingRun.Stderr, 4000))
+	}
+	var named bool
+	for _, reason := range missingRun.Out.IncompleteReasons {
+		if strings.Contains(reason, "no saved match or absence proof") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("the missing book is the incomplete reason, got %v", missingRun.Out.IncompleteReasons)
+	}
+	if submits := pairPaperSubmitCount(t, filepath.Join(missing.parent, "paper")); submits == 0 {
+		t.Fatal("the missing-book run still accepted an entry")
+	}
+}
+
+func pairPaperEntryFills(t *testing.T, dir string, prepare, hour int64) []pairPaperFill {
+	t.Helper()
+	var out []pairPaperFill
+	for _, f := range pairPaperJoinedFills(t, dir) {
+		if f.accepted >= prepare {
+			continue
+		}
+		if f.event <= hour || f.event >= f.deadline || f.status != basketVenueFilled {
+			t.Fatalf("an entry accepted at %d before preparation %d fills from a book after the hour %d and before its deadline %d, got %+v", f.accepted, prepare, hour, f.deadline, f)
+		}
+		out = append(out, f)
+	}
+	if len(out) == 0 {
+		t.Fatal("the run accepted no entry before preparation")
+	}
+	return out
+}
+
+func pairPaperFillKey(fills []pairPaperFill) string {
+	parts := make([]string, 0, len(fills))
+	for _, f := range fills {
+		parts = append(parts, fmt.Sprintf("%s %s %d %s %s", f.side, f.status, f.event, f.bid, f.ask))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\n")
+}
+
+func pairPaperSubmitCount(t *testing.T, dir string) int {
+	t.Helper()
+	db, err := openStateDBReadOnly(filepath.Join(dir, basketReplayDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM pair_virtual_events WHERE kind = 'submit'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestBasketReplayPairPaperResearchOracleHostContinues(t *testing.T) {
+	f, target := newPairPaperResearchFixture(t, pairPaperResearchOptions{
+		runID: "paper-oracle-progress", fromBefore: 32000, throughAt: 10000, drainAt: 20000, convergeAt: 1,
+		fixtureMore: map[string]interface{}{"oracle_response_delay_ms": 2000},
+	})
+	dir := filepath.Join(f.parent, "paper")
+	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false))
+	if p.Code == basketReplayExitRefused || p.Out.Run == nil || !p.Out.Run.Finished {
+		t.Fatalf("the progress run finishes, got exit %d %+v\nstderr tail=%s", p.Code, p.Out.Refusal, tail(p.Stderr, 4000))
+	}
+	policy := *f.scenario.FundingPolicy
+	prepare, _ := pairPaperOraclePrepareAt(target, policy)
+	deadline, _ := pairFundingOracleDeadline(policy, target)
+	rows := pairPaperLogRows(t, dir, f.runID)
+	var oracleStart, oracleEnd int64
+	var pollTimes []int64
+	seenPoll := map[int64]bool{}
+	var managed, funded bool
+	for _, r := range rows {
+		if r.Kind == pairRecEventStart && r.Event.Start != nil && r.Event.Start.Kind == pairRecKindMatchPoll {
+			ms := r.Event.Start.RawStartMs
+			if !seenPoll[ms] {
+				seenPoll[ms] = true
+				pollTimes = append(pollTimes, ms)
+			}
+		}
+		if r.Kind == pairRecEventStart && r.Event.Start != nil && r.Event.Start.Kind == pairRecKindFundingOracle {
+			oracleStart = r.Seq
+		}
+		if r.Kind == pairRecEventEnd && oracleStart > 0 && r.Seq > oracleStart && oracleEnd == 0 {
+			if st := r.Event.End; st != nil {
+				for _, s := range rows {
+					if s.CallID == r.CallID && s.Kind == pairRecEventStart && s.Event.Start != nil && s.Event.Start.Kind == pairRecKindFundingOracle {
+						oracleEnd = r.Seq
+					}
+				}
+			}
+		}
+	}
+	if oracleStart == 0 || oracleEnd <= oracleStart {
+		t.Fatalf("the hour records an oracle start before its terminal, start %d end %d", oracleStart, oracleEnd)
+	}
+	sort.Slice(pollTimes, func(i, j int) bool { return pollTimes[i] < pollTimes[j] })
+	var during int
+	var brackets bool
+	for i, ms := range pollTimes {
+		if i > 0 && pollTimes[i]-pollTimes[i-1] > int64(f.scenario.PaperPollIntervalMs) {
+			t.Fatalf("match polls gap %d ms, above one interval %d: %v", pollTimes[i]-pollTimes[i-1], f.scenario.PaperPollIntervalMs, pollTimes)
+		}
+		if i > 0 && pollTimes[i-1] <= deadline && ms >= deadline && ms-pollTimes[i-1] <= int64(f.scenario.PaperPollIntervalMs) {
+			brackets = true
+		}
+	}
+	for _, r := range rows {
+		if r.Seq <= oracleStart || r.Seq >= oracleEnd || r.Kind != pairRecEventStart || r.Event.Start == nil {
+			continue
+		}
+		switch r.Event.Start.Kind {
+		case pairRecKindMatchPoll:
+			if r.Event.Start.RawStartMs > prepare && r.Event.Start.RawStartMs <= deadline {
+				during++
+			}
+		case pairRecKindCandles, pairRecKindMarks, pairRecKindNativeCheck:
+			managed = true
+		case pairRecKindFunding:
+			funded = true
+		}
+	}
+	if during < 2 || !brackets || !managed || !funded {
+		t.Fatalf("while the oracle is pending the host records polls (%d), a deadline bracket (%v), management (%v) and a funding read (%v)", during, brackets, managed, funded)
+	}
+	var decided bool
+	slotLine := regexp.MustCompile(`\] slot (\d{4}-\d\d-\d\dT[0-9:.]+Z): (.*)$`)
+	for _, line := range strings.Split(p.Stderr, "\n") {
+		m := slotLine.FindStringSubmatch(line)
+		if m == nil || !strings.Contains(m[2], "decision frozen") {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, m[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		ms := at.UnixMilli()
+		if ms > prepare && ms <= deadline {
+			decided = true
+		}
+	}
+	if !decided {
+		t.Fatal("an eligible decision is recorded from a fresh quote while the oracle read is pending")
 	}
 }
