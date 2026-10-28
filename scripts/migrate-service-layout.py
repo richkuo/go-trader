@@ -166,10 +166,10 @@ def now_iso():
 def held_by_latest_cycle(rev):
     """Holds that are still the latest evidence for that strategy.
 
-    A later evaluated time means the strategy ran again after the hold was
-    recorded, so the hold is not what the latest cycle did. Every reason,
-    including the portfolio kill switch, uses that test: a kill-switch hold
-    is never cleared, and a newer evaluation is the sign it no longer applies.
+    A current daemon clears a hold when that strategy is evaluated, and it
+    replaces or clears holds at the end of the cycle. It does not leave a hold
+    next to a newer evaluated time. An older daemon can. A later evaluated
+    time still drops the hold, for every reason including the portfolio kill switch.
     """
     by_reason = {}
     if not isinstance(rev, dict) or not isinstance(rev.get("held"), dict):
