@@ -1,6 +1,9 @@
 package main
 
 import (
+	"io"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -71,10 +74,37 @@ func TestMigrateFixtureEnvKeepsPaperKillSwitchLatched(t *testing.T) {
 	part := paperSourcePartition("btc")
 	prs := &PortfolioRiskState{KillSwitchActive: true, KillSwitchCloseApplied: true}
 	st := &AppState{PortfolioRisk: map[RiskPartition]*PortfolioRiskState{part: prs}}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
 	applyPaperKillSwitchCycle(st, &Config{}, nil, &scopeCycleRisk{
 		Partition: part, KillSwitchFired: true, TotalPV: 100, PeakRebaselineAvailable: true,
 	}, false)
+	w.Close()
+	os.Stdout = old
+	logged, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !prs.KillSwitchActive {
 		t.Fatal("fixture env cleared the paper kill switch")
+	}
+	if !strings.Contains(string(logged), "GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH=1") {
+		t.Fatalf("log = %q", logged)
+	}
+}
+
+func TestPaperKillSwitchAutoResetsWithoutFixtureEnv(t *testing.T) {
+	part := paperSourcePartition("btc")
+	prs := &PortfolioRiskState{KillSwitchActive: true, KillSwitchCloseApplied: true}
+	st := &AppState{PortfolioRisk: map[RiskPartition]*PortfolioRiskState{part: prs}}
+	applyPaperKillSwitchCycle(st, &Config{}, nil, &scopeCycleRisk{
+		Partition: part, KillSwitchFired: true, TotalPV: 100, PeakRebaselineAvailable: true,
+	}, false)
+	if prs.KillSwitchActive {
+		t.Fatal("paper kill switch stayed latched without the fixture env")
 	}
 }

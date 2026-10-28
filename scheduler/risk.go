@@ -1907,7 +1907,11 @@ func applyPaperKillSwitchCycle(state *AppState, cfg *Config, prices map[string]f
 			out.Message += " " + paperKillSwitchPairCommittedLine
 		}
 	}
-	if hasOwner || os.Getenv("GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH") == "1" || !prs.KillSwitchActive {
+	if hasOwner || !prs.KillSwitchActive {
+		return out
+	}
+	if os.Getenv("GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH") == "1" {
+		fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset suppressed: GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH=1 is set; this is for the migrate fixture only\n", partitionLabel(paperSR.Partition))
 		return out
 	}
 	if hasPair {

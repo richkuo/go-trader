@@ -231,6 +231,7 @@ Set in systemd overrides or exported environment variables before installation:
 | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE`, `OKX_SANDBOX` | OKX live/demo |
 | `LUNO_API_KEY_ID`, `LUNO_API_KEY_SECRET` | Luno live |
 | `GO_TRADER_ALLOW_MISSING_STATE` | `1` only for a genuine first-run live deployment |
+| `GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH` | `1` only in the migrate layout fixture's latch scenario. A paper kill switch with no DM owner stays latched, and the daemon logs that this variable suppressed the auto-reset. Do not set it on a running service |
 | `GO_TRADER_CASHFLOW_JOURNAL_ALARM` | `0`/`off`/`false`/`no` forces the legacy trade-ledger drift basis for HL shared wallets (default on) |
 | `GO_TRADER_HL_BATCH` | `0`/`off`/`false`/`no` disables batched Hyperliquid signal checks |
 | `GO_TRADER_EGRESS_PROXY` | Egress proxy URL (`http`, `https`, `socks5`, `socks5h`; explicit port; optional credentials); a non-empty value turns on egress proxy mode (§ Egress Proxy Mode) |
