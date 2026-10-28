@@ -100,6 +100,10 @@ func (w *pairAsyncOracle) snapshot() pairAsyncOracleResult {
 }
 
 func (w *pairAsyncOracle) take(wait bool) (pairAsyncOracleResult, bool) {
+	return w.join(wait, false)
+}
+
+func (w *pairAsyncOracle) join(wait, cancelFirst bool) (pairAsyncOracleResult, bool) {
 	if w == nil {
 		return pairAsyncOracleResult{}, false
 	}
@@ -109,18 +113,24 @@ func (w *pairAsyncOracle) take(wait bool) (pairAsyncOracleResult, bool) {
 	if !wait {
 		return pairAsyncOracleResult{}, false
 	}
-	if w.cancel != nil {
+	if cancelFirst && w.cancel != nil {
 		w.cancel()
 	}
 	timer := time.NewTimer(pairOracleCleanupBound)
+	defer timer.Stop()
 	select {
 	case <-w.done:
-		timer.Stop()
 	case <-timer.C:
-		timer.Stop()
+		if cancelFirst {
+			return pairAsyncOracleResult{}, false
+		}
+		if w.cancel != nil {
+			w.cancel()
+		}
+		timer.Reset(pairOracleCleanupBound)
 		select {
 		case <-w.done:
-		case <-time.After(pairOracleCleanupBound):
+		case <-timer.C:
 			return pairAsyncOracleResult{}, false
 		}
 	}
@@ -511,6 +521,10 @@ func (r *pairReplayRuntime) consumeLoggedAttempt(wake pairRecWake, attempt pairP
 func (r *pairReplayRuntime) playAsyncOracle(wake pairRecWake) []string {
 	var trace []string
 	for {
+		if r.rec.consumeOracleFailure() {
+			trace = append(trace, "oracle_not_made")
+			continue
+		}
 		kind, row, ok := r.rec.takeAsyncBoundary()
 		if !ok {
 			break
@@ -601,7 +615,7 @@ func (r *pairReplayRuntime) finalizeOracle() {
 		r.killOracleChild()
 		return
 	}
-	res, ok := w.take(true)
+	res, ok := w.join(true, true)
 	if !ok {
 		if w.terminal == nil {
 			_, _ = r.rec.appendAsyncTerminal(w.callID, w.start, pairAsyncOracleResult{res: pairRecResult{Class: pairRecClassCancelled, Cause: "the oracle worker did not finish before the run closed"}, completion: w.deadline})
@@ -639,12 +653,16 @@ func (rec *pairRecorder) beginAsyncCall(c pairRecCall) (string, pairRecStart, er
 	reqHash := sha256Hex(c.Request)
 	ordinal, callID := rec.callOrdinal()
 	if rec.blocked.Load() {
+		rec.enqueueLocked(pairRecEvent{Kind: pairRecEventFailure, CallID: callID, Failure: &pairRecFailure{CallKind: c.Kind, MemberID: c.MemberID, RequestHash: reqHash,
+			StepID: rec.stepID, Ordinal: ordinal, Reason: "the recorder was blocked, so the call was refused before any read: " + rec.blockReason, FailedSeq: rec.failedSeq}})
 		return "", pairRecStart{}, pairRecNotMadeError{fmt.Errorf("the %s call was not made: the recording barrier refuses every new outside read until the committed record is verified (%s)", c.Kind, rec.blockReason)}
 	}
 	start := pairRecStart{Kind: c.Kind, Phase: c.Phase, MemberID: c.MemberID, SlotMs: c.SlotMs, ActionID: c.ActionID, StepID: rec.stepID, Ordinal: ordinal,
 		Request: c.Request, RequestHash: reqHash, RawStartMs: rec.now().UnixMilli(), LogicalBeforeMs: rec.logical, Async: true}
 	if err := rec.appendLocked(pairRecEvent{Kind: pairRecEventStart, CallID: callID, Start: &start}); err != nil {
 		rec.block(err.Error())
+		rec.enqueueLocked(pairRecEvent{Kind: pairRecEventFailure, CallID: callID, Failure: &pairRecFailure{CallKind: c.Kind, MemberID: c.MemberID, RequestHash: reqHash,
+			StepID: rec.stepID, Ordinal: ordinal, Reason: "the call start did not commit, so the call was never made: " + err.Error(), FailedSeq: rec.failedSeq}})
 		return "", pairRecStart{}, pairRecNotMadeError{fmt.Errorf("the %s call start could not be recorded, so no outside read was made: %w", c.Kind, err)}
 	}
 	rec.fault("exit-after-call-start")
@@ -729,6 +747,25 @@ func (rec *pairRecorder) oracleAttempt(attemptID string) pairPaperOracleAttempt 
 		return pairPaperOracleAttempt{}
 	}
 	return rec.attempts[attemptID]
+}
+
+func (rec *pairRecorder) consumeOracleFailure() bool {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if !rec.consuming() {
+		return false
+	}
+	item, ok := rec.streamItem()
+	if !ok || item.Kind != pairRecEventFailure || item.Event.Failure == nil || item.Event.Failure.CallKind != pairRecKindFundingOracle {
+		return false
+	}
+	rec.callOrdinal()
+	rec.cursor++
+	if !rec.blocked.Load() {
+		rec.blockReason, rec.failedSeq = item.Event.Failure.Reason, item.Event.Failure.FailedSeq
+		rec.blocked.Store(true)
+	}
+	return true
 }
 
 func (rec *pairRecorder) takeAsyncBoundary() (string, pairRecRow, bool) {

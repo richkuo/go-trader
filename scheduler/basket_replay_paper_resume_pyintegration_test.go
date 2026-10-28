@@ -644,11 +644,10 @@ func TestBasketReplayPairPaperResearchOracleBarrierDecidesFromTheSameWake(t *tes
 	if s, e, rcv := pairPaperOracleRows(rows); s != 1 || e != 1 || rcv != 0 || start.Event.Start.RawStartMs < clearFrom || end.Event.End.Class != pairRecClassResult {
 		t.Fatalf("the hour stays for the first committed wake after the release and reads once, got %d starts %d ends %d recoveries, start %+v", s, e, rcv, start.Event.Start)
 	}
-	batch, err := pairDecodeFundingBatch(end.Event.End.Result)
-	if err != nil || batch.Research == nil || len(batch.Research.Observations) != 1 {
-		t.Fatalf("the oracle terminal holds one observation batch: %v", err)
+	var obs pairFundingOracleObservation
+	if err := pairReplayStrictDecode(end.Event.End.Result, &obs); err != nil || obs.RecordHash == "" {
+		t.Fatalf("the oracle terminal holds one observation: %v", err)
 	}
-	obs := batch.Research.Observations[0]
 	if obs.TargetEventMs != target || obs.RequestMs < target || obs.ReceiptMs > deadline {
 		t.Fatalf("the observation lies inside [%d, %d]: %+v", target, deadline, obs)
 	}
