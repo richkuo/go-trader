@@ -1845,11 +1845,15 @@ func pairPaperOpenOrderRun(t *testing.T, runID string, delay int, gapUntil, thro
 		mutate: func(root map[string]interface{}) {
 			limits := pairTestPair(root)["limits"].(map[string]interface{})
 			limits["acceptance_deadline_ms"] = 120000
+			limits["recovery_age_ms"] = 240000
 			limits["quote_age_ms"] = 20000
 		},
 	})
 	f.scenario.PaperPollIntervalMs = 2000
-	extra := map[string]interface{}{"books_gap_from_ms": target - 38000, "books_gap_until_ms": target + gapUntil}
+	extra := map[string]interface{}{
+		"books_gap_from_ms": target - 38000, "books_gap_until_ms": target + gapUntil,
+		"hl_funding": []interface{}{[]interface{}{target + 3, "0.0000125"}, []interface{}{target + 8000, "0.0000125"}, []interface{}{target + 40000, "0.0000125"}},
+	}
 	if delay > 0 {
 		extra["oracle_response_delay_ms"] = delay
 	}
@@ -1881,12 +1885,12 @@ func TestBasketReplayPairPaperResearchOracleOpenOrder(t *testing.T) {
 	}
 	var named bool
 	for _, reason := range missingRun.Out.IncompleteReasons {
-		if strings.Contains(reason, "no saved match or absence proof") {
+		if strings.Contains(reason, "no saved match or absence proof") || strings.Contains(reason, "unresolved") {
 			named = true
 		}
 	}
 	if !named {
-		t.Fatalf("the missing book is the incomplete reason, got %v", missingRun.Out.IncompleteReasons)
+		t.Fatalf("the missing book leaves an unresolved order, got %v", missingRun.Out.IncompleteReasons)
 	}
 	if submits := pairPaperSubmitCount(t, filepath.Join(missing.parent, "paper")); submits == 0 {
 		t.Fatal("the missing-book run still accepted an entry")

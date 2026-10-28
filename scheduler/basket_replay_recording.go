@@ -728,7 +728,8 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 		}
 		switch c.Disposition {
 		case "accepted":
-			if len(c.Batch) == 0 || c.BatchHash != sha256Hex(c.Batch) {
+			decoded, err := pairDecodeFundingBatch(c.Batch)
+			if err != nil || decoded.BatchHash == "" || decoded.BatchHash != c.BatchHash {
 				return fmt.Errorf("call %s accepted consumption has no sealed batch", ev.CallID)
 			}
 		case "refused", "interrupted", "cancelled", "infrastructure_failure":
