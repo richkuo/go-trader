@@ -93,6 +93,19 @@ jobs:
             exit 1
           fi
 
+  go-basket-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - name: Basket safety checks
+        run: go -C scheduler test -v -count=1 -timeout 10m -run '^TestBasketPair(KillSwitch|NativeEmergency|PaperEmergency|NativeRecovery|NativeOperator|Reduction)' .
+
   go-race-quote:
     runs-on: ubuntu-latest
     steps:
