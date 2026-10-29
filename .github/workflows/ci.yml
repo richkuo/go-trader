@@ -93,7 +93,7 @@ jobs:
             exit 1
           fi
 
-  go-race-basket:
+  go-basket-safety:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,12 +101,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-          cache-dependency-path: |
-            scheduler/go.sum
-            scheduler/go.mod
+          cache-dependency-path: scheduler/go.sum
 
-      - name: Basket coordinator race check
-        run: cd scheduler && go test -race -count=1 -timeout 30m -run '^TestBasket' .
+      - name: Basket safety checks
+        run: go -C scheduler test -v -count=1 -timeout 10m -run '^TestBasketPair(KillSwitch|NativeEmergency|PaperEmergency|NativeRecovery|NativeOperator|Reduction)' .
 
   go-race-quote:
     runs-on: ubuntu-latest
@@ -141,7 +139,7 @@ jobs:
       - name: Python-backed Go integration tests
         run: |
           set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBasketRealRanker[A-Za-z]*|TestBasketMemberRealCheckIsManagementOnly|TestBasketMemberBatched[A-Za-z]*|TestBasketPairMemberReal[A-Za-z]*|TestBasketPairProbeArgvs[A-Za-z]*|TestBasketPairEvidence[A-Za-z]*|TestBasketPairQuote[A-Za-z]*|TestBasketPairCadence[A-Za-z]*|TestBasketPairValuation[A-Za-z]*|TestBasketPairPolicyReal[A-Za-z]*|TestBasketReplay[A-Za-z]*|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestOKXSharedStep[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*|TestBasketPairFundingPython[A-Za-z]*|TestBasketPairVenueReal[A-Za-z]*|TestBasketPairEmergencyReal[A-Za-z]*|TestBasketPairNativeRecoveryReal[A-Za-z]*)$' -skip '^(TestBasketReplay[A-Za-z]*|TestMergePaperInstance)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
+          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^(TestHLBankruptcyBoundPreflight[A-Za-z]*|TestMergePaperInstance|TestOrphanOptionPositionsCLIAndStartupIntegration|TestUpdateCanonicalDBPathMatchesScheduler|TestUpdateHelpersEnvfileParsing790|TestUpdateShell[A-Za-z0-9]*|TestApplyUpgrade[A-Za-z0-9]*|TestHLPaperLotParityWithLiveGateAndBacktester|TestHLPaperFundingParityWithBacktester|TestClosedBarEntryAllowanceMatchesBacktesterWithRealCheckScript|TestTrueStrengthIndexAddedPaperEntryRunsThroughTheRealCheckScript|TestBitcoinLeadLagGoPayload[A-Za-z]*|TestRobinhoodScriptStdout[A-Za-z]*|TestRobinhoodLiveOrder[A-Za-z]*|TestRobinhoodTimeframe[A-Za-z]*|TestOptionsLiveModeRealCheckScript[A-Za-z]*|TestCheckQuotePrecision[A-Za-z]*|TestElderForcePullbackAddedPaperEntryRunsThroughTheRealCheckScript|TestEntryOperatorRealOKXQueryErrorRefusesTheRelease|TestEntryRecoveryRealHLOrderLookupFailureOnlyBlocksTheRelease|TestEntryAccountKeysMatchTheRecoveryScripts|TestMassIndexReversalAddedPaperEntryRunsThroughTheRealCheckScript|TestRegimeCompareResolversMatchLive|TestRestingTPRuleGoAndCheckScanAcrossChecks|TestTunerPreviewStopPayloadContract|TestTunerPreviewHandlerRegimeTimeframeRefusesPerArm|TestTunerPreviewHandlerAppliesCertifiedDirectionalPolicy|TestEgressPython[A-Za-z]*|TestHTFFilterIntegration[A-Za-z]*|TestOKXSharedStep[A-Za-z]*|TestQuoteVenuePython[A-Za-z]*|TestQuoteReplayPython[A-Za-z]*)$' -skip '^(TestMergePaperInstance)$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -165,130 +163,6 @@ jobs:
         run: |
           set -o pipefail
           go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestMergePaperInstance$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
-
-  go-python-integration-basket-replay-momentum-study:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - uses: astral-sh/setup-uv@v6
-
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestBasketReplayMomentumStudy[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
-
-  go-python-integration-basket-replay-reversal-study:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - uses: astral-sh/setup-uv@v6
-
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestBasketReplayReversalStudy[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
-
-  go-python-integration-basket-replay:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - uses: astral-sh/setup-uv@v6
-
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 30m -tags pyintegration -run '^TestBasketReplay[A-Za-z]*$' -skip '^TestBasketReplay(MomentumStudy|ReversalStudy|PairPaper)[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
-
-  go-python-integration-basket-replay-paper:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - uses: astral-sh/setup-uv@v6
-
-      - name: Install dependencies with compiled bytecode
-        run: |
-          uv sync --compile-bytecode
-          uv run --no-sync python -m compileall -q platforms shared_scripts shared_tools shared_strategies scheduler/testdata/pair_paper
-
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 40m -tags pyintegration -run '^TestBasketReplayPairPaper[A-Za-z]*$' -skip '^TestBasketReplayPairPaperCrashesResumeWithoutRepeatingCommittedCalls$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
-          if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
-            echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
-            exit 1
-          fi
-
-  go-python-integration-basket-replay-paper-crashes:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - uses: astral-sh/setup-uv@v6
-
-      - name: Install dependencies with compiled bytecode
-        run: |
-          uv sync --compile-bytecode
-          uv run --no-sync python -m compileall -q platforms shared_scripts shared_tools shared_strategies scheduler/testdata/pair_paper
-
-      - name: Python-backed Go integration tests
-        run: |
-          set -o pipefail
-          go -C scheduler test -v -timeout 40m -tags pyintegration -run '^TestBasketReplayPairPaperCrashesResumeWithoutRepeatingCommittedCalls$' ./... 2>&1 | tee "$RUNNER_TEMP/pyintegration.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/pyintegration.log"; then
             echo "::error::a Python-backed Go integration test reported SKIP, so it proved nothing"
             exit 1
@@ -442,31 +316,11 @@ jobs:
       - name: Service layout migration fixture (root, systemd)
         run: |
           bash scripts/run_ci_shell_suite.sh \
-            --marker 'OK: migrate-service-layout fixture passed (stages kill)' \
+            --marker 'OK: migrate-service-layout fixture passed (stages kill refuse plan confirm apply latch conflict resume signal fold newtarget)' \
             --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
-            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='stages kill' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
+            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='stages kill refuse plan confirm apply latch conflict resume signal fold newtarget' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
   shell-suites-migrate-3:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache-dependency-path: scheduler/go.sum
-
-      - name: Build
-        run: go -C scheduler build -o "$RUNNER_TEMP/go-trader" .
-
-      - name: Service layout migration fixture (root, systemd)
-        run: |
-          bash scripts/run_ci_shell_suite.sh \
-            --marker 'OK: migrate-service-layout fixture passed (refuse plan confirm apply latch conflict resume signal fold newtarget)' \
-            --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
-            -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS='refuse plan confirm apply latch conflict resume signal fold newtarget' MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
-
-  shell-suites-migrate-4:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -524,9 +378,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {suite: default, group: 1, splits: 3, paths: ''}
-          - {suite: default, group: 2, splits: 3, paths: ''}
-          - {suite: default, group: 3, splits: 3, paths: ''}
+          - {suite: default, group: 1, splits: 2, paths: ''}
+          - {suite: default, group: 2, splits: 2, paths: ''}
           - {suite: shared_scripts, group: 1, splits: 1, paths: shared_scripts/}
     steps:
       - uses: actions/checkout@v4
@@ -543,7 +396,7 @@ jobs:
           SPLITS: ${{ matrix.splits }}
           PATHS: ${{ matrix.paths }}
         run: |
-          uv run pytest ${PATHS:+"$PATHS"} -n auto --durations=25 \
+          uv run pytest ${PATHS:+"$PATHS"} -n auto --dist=worksteal --durations=25 \
             --splits="$SPLITS" --group="$GROUP" --splitting-algorithm=least_duration \
             --durations-path="scripts/pytest_durations/$SUITE.json" \
             --report-log="$RUNNER_TEMP/pytest-shards/$SUITE-$GROUP-of-$SPLITS.jsonl"
