@@ -1,6 +1,6 @@
 {
-  "binary_sha256": "91feea68337510ad51b9e67c2275b804dc10de32918ef236ba2e030e45c0e77e",
-  "commit": "0e3966625b657754f089391ae42ccb4a09b2b326",
+  "binary_sha256": "3eb141edeb351440de3c04bf177a19880cc9acf5f1219cdb5d97bfd20d37bc8d",
+  "commit": "d6e686b571d3f1644cf67f4f0d50924592ec1af9",
   "data_manifest_sha256": "caeaffbb4c33789966bef383d77181a61ecda086e041e9a48c51d20c859a9d64",
   "excluded": [
     "REPORT.md",
@@ -11,7 +11,7 @@
     "results.json",
     "state"
   ],
-  "locked_at_utc": "2026-10-29T11:45:38Z",
+  "locked_at_utc": "2026-10-29T15:19:58Z",
   "plans": {
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/plans/experiments.json": "c4016aaeb506d214ef18536c4503b75883832779bc9c2955c9c2fcdce8af6e47"
   },
@@ -30,7 +30,7 @@
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/discovery_spot_before.json": "0daef2134feeb421a974f75b5e374e5004fd284a0cba716d19ff7a93474f3928",
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/plans/experiments.json": "c4016aaeb506d214ef18536c4503b75883832779bc9c2955c9c2fcdce8af6e47",
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/protocol.json": "58e553386fa68e4f195b6a0dd61cb3f90df386c036f5ef56b04b06186667736e",
-    "backtest/candidates/cross_exchange_perp_arbitrage_1655/run_study.py": "0d52b9c8cc658f8eaf739c6fab31c8aafd9e801d7c91b3be4f4b6d20889d1aba",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/run_study.py": "f6c1fd5f1a21b242a7d66709506acb1e32ccd0dd8676f3152a692b03d8cfe67c",
     "scheduler/basket_pair.go": "f06682a9225149c8d9008f1456d66ec6830139054bc2924ddc97dc3b27447653",
     "scheduler/basket_replay_pair.go": "4bcc64732737474a4d5458912e21ec41b75b9419e6ef80a83ce536a5940ff711",
     "scheduler/basket_replay_pair_spec.go": "bfa2617b43f410c03d2b4e6cd174e4b56ac3c75ed3d4f60b1c296e7d30508986",
@@ -45,7 +45,7 @@
   "tools": {
     "go": "go version go1.27.3 darwin/arm64",
     "go_trader": "dev",
-    "python": "3.12.9",
+    "python": "3.15.2",
     "uv": "uv 0.9.5 (d5f39331a 2025-10-21)"
   },
   "version": 1
