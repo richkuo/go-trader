@@ -1,0 +1,82 @@
+{
+  "schema": "go-trader.pair-spread-study-protocol",
+  "version": 1,
+  "candidate": "cross_exchange_perp_arbitrage",
+  "edge_source": "unvalidated",
+  "signal_spec": {
+    "path": "backtest/candidates/cross_exchange_perp_arbitrage_1655/SIGNAL_SPEC.md",
+    "sha256": "8c61cee1f5d94cc200c19f2a9fffd313909caa838f790665431f78210660c571"
+  },
+  "windows": {
+    "train": {"start": null, "end": null, "reason": "no verified cross-venue history is frozen, so no train window is opened"},
+    "held_out": {"start": null, "end": null, "reason": "no verified cross-venue history is frozen, so no held-out window is opened"}
+  },
+  "parameters": {
+    "required": ["adverse_band_bps", "entry_threshold_bps", "exit_threshold_bps", "funding_allowance_bps"],
+    "grid": [],
+    "selection": "training-only; the grid is empty until a train window and its booked results exist"
+  },
+  "baselines": ["no_trade", "frozen_schedule"],
+  "orientations": ["long_hyperliquid_short_okx", "long_okx_short_hyperliquid"],
+  "latency_cases_ms": [0, 200, 1000],
+  "sample_rules": {
+    "min_independent_pairs": 30,
+    "min_coverage_ratio": 0.95,
+    "independent_pair": "one completed round trip whose entry slot is not inside another open pair"
+  },
+  "verdict_rules": {
+    "pass": "held-out booked net after fees and funding is positive, drawdown is within the frozen bound, both baselines are beaten, sample and coverage floors pass, and every economic comparison is eligible",
+    "fail": "the evidence floors pass and the pass rule is false",
+    "inconclusive": "any required evidence, sample floor, coverage floor, or unresolved obligation is missing"
+  },
+  "evidence_requirements": [
+    "real venue capability and account evidence",
+    "historical cross-venue depth, not a snapshot",
+    "conversions, member fees, and funding",
+    "at least 30 independent completed pairs on the held-out window",
+    "held-out coverage at least 0.95"
+  ],
+  "mechanical_classification": "a synthetic fixture run is a mechanical diagnostic: study scored is false, promotion_eligible is false, and the verdict is inconclusive",
+  "costs": {
+    "source": "member cost_policy on the admitted pair contract",
+    "missing": "no frozen real fee schedule is attached to this study"
+  },
+  "funding": {
+    "source": "recording manifest or frozen funding document",
+    "scenario_funding_policy": "paper collection plans only",
+    "missing_or_refused": "the affected event stays incomplete",
+    "oracle": "a research receipt price is not a historical venue oracle price"
+  },
+  "recording_families": [1, 2, 3],
+  "report_fields": {
+    "source_hashes": {"source": "protocol.lock.json sources"},
+    "binary_hash": {"source": "protocol.lock.json binary_sha256"},
+    "data_coverage": {"missing": "no OKX sealed recording and no continuous cross-venue depth are frozen"},
+    "windows": {"source": "protocol.json windows"},
+    "parameters": {"source": "protocol.json parameters"},
+    "costs": {"missing": "no frozen real fee schedule is attached to this study"},
+    "baselines": {"source": "protocol.json baselines"},
+    "orientations": {"source": "protocol.json orientations"},
+    "latency": {"missing": "latency cases are declared and not run; no depth history is frozen"},
+    "failure_cases": {"missing": "venue failure cases are declared and not run; no depth history is frozen"},
+    "booked_net": {"missing": "no booked trades exist for the committed study"},
+    "funding_policy": {"missing": "no recording manifest or frozen funding document is attached"},
+    "recording_family": {"missing": "no sealed recording is attached"},
+    "oracle_visibility": {"source": "a standalone research oracle price is visible at receipt; sealed playback publishes it at the recorded consumption step; neither is a historical venue oracle price"},
+    "verdict": {"source": "results.json verdict"}
+  },
+  "execution_sources": [
+    "backtest/basket_replay.py",
+    "backtest/archive_cache.py",
+    "scheduler/basket_replay_pair.go",
+    "scheduler/basket_replay_pair_spec.go",
+    "scheduler/basket_replay_targets.go",
+    "scheduler/basket_pair.go",
+    "scheduler/pair_policy.go",
+    "scheduler/pair_bounds.go",
+    "shared_strategies/open/cross_exchange_perp_arbitrage.py",
+    "shared_scripts/run_pair_policy.py",
+    "shared_scripts/check_hyperliquid.py",
+    "shared_scripts/check_okx.py"
+  ]
+}

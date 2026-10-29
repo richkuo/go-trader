@@ -42,6 +42,7 @@ type pairReplayManifest struct {
 	Scenario             pairReplayScenario       `json:"scenario"`
 	EventOrder           string                   `json:"event_order"`
 	AdministrativeFields []string                 `json:"administrative_fields"`
+	TargetInputSHA       string                   `json:"target_input_sha256,omitempty"`
 	UID                  int                      `json:"uid"`
 	CreatedAt            string                   `json:"created_at"`
 }
@@ -296,7 +297,7 @@ func openPairReplay(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, opt
 	}
 	r.manifest = pairReplayManifest{Owner: basketReplayOwnerMarker, Version: pairReplayManifestVersion, RunID: spec.Run.RunID, Fingerprints: r.fp,
 		EvidenceDigest: evidence.Digest(), FundingDigest: sha256Hex(in.funding), Objects: pairReplayObjectsWithTotals(in), Lifetime: lt, Scenario: spec.Scenario,
-		EventOrder: pairReplayEventOrder, AdministrativeFields: pairReplayAdministrativeFields, UID: os.Getuid()}
+		EventOrder: pairReplayEventOrder, AdministrativeFields: pairReplayAdministrativeFields, TargetInputSHA: pairTargetInputSHA(spec.TargetInput), UID: os.Getuid()}
 	var saved pairReplayManifest
 	if spec.Mode == basketReplayModeResume {
 		saved, err = readPairReplayManifest(stateDir)
@@ -506,6 +507,7 @@ func comparePairReplayManifest(saved, want pairReplayManifest, withContract bool
 	check("scenario", string(sa), string(wa))
 	check("event order", saved.EventOrder, want.EventOrder)
 	check("administrative field list", strings.Join(saved.AdministrativeFields, "\n"), strings.Join(want.AdministrativeFields, "\n"))
+	check("target input", saved.TargetInputSHA, want.TargetInputSHA)
 	if saved.UID != want.UID {
 		diffs = append(diffs, "the run was created by another user")
 	}
@@ -1010,10 +1012,18 @@ func (r *pairReplayRuntime) policyRunner(ctx context.Context, stdin []byte, time
 		r.recordFailure(pairReplayFailure{Stage: pairReplayStagePolicy, Kind: pairReplayKindProcess, SlotMs: head.SlotMs, AtMs: nowMs, Cause: err.Error()})
 		return nil, nil, err
 	}
-	out, errb, err := runPairPolicyProcess(ctx, stdin, timeout)
+	run := runPairPolicyProcess
+	failLabel := "the canonical policy runner failed: "
+	if r.pairBaselineSelected() {
+		run = func(ctx context.Context, stdin []byte, timeout time.Duration) ([]byte, []byte, error) {
+			return pairBaselinePolicyRun(r, ctx, stdin, timeout)
+		}
+		failLabel = "the pair baseline target-input runner failed: "
+	}
+	out, errb, err := run(ctx, stdin, timeout)
 	switch {
 	case err != nil:
-		r.recordFailure(pairReplayFailure{Stage: pairReplayStagePolicy, Kind: pairReplayKindProcess, SlotMs: head.SlotMs, Cause: "the canonical policy runner failed: " + err.Error()})
+		r.recordFailure(pairReplayFailure{Stage: pairReplayStagePolicy, Kind: pairReplayKindProcess, SlotMs: head.SlotMs, Cause: failLabel + err.Error()})
 	case ctx.Err() != nil:
 		r.recordFailure(pairReplayFailure{Stage: pairReplayStagePolicy, Kind: pairReplayKindProcess, SlotMs: head.SlotMs, Cause: "the policy context ended: " + ctx.Err().Error()})
 	default:

@@ -397,6 +397,10 @@ type pyIntegrationCIExemption struct {
 var pyIntegrationCIExemptions = map[string]pyIntegrationCIExemption{}
 
 func localOnlyBasketTest(test string) bool {
+	// #1883 selects TestBasketReplayPairStudy in its own shard. Other TestBasket names stay local.
+	if strings.HasPrefix(test, "TestBasketReplayPairStudy") {
+		return false
+	}
 	return strings.HasPrefix(test, "TestBasket")
 }
 

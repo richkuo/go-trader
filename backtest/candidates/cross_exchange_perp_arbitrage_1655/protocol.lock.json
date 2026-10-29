@@ -1,0 +1,52 @@
+{
+  "binary_sha256": "2c751129fea6a5a12c2ee0caa022971c813cd528fea2e33a11886fccd9889e48",
+  "commit": "ef9ae66a19ddb61c2d86be4fd190a69a530ae23f",
+  "data_manifest_sha256": "caeaffbb4c33789966bef383d77181a61ecda086e041e9a48c51d20c859a9d64",
+  "excluded": [
+    "REPORT.md",
+    "logs",
+    "protocol.lock.json",
+    "raw",
+    "results.json",
+    "state"
+  ],
+  "locked_at_utc": "2026-10-29T11:10:12Z",
+  "plans": {
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/plans/experiments.json": "c4016aaeb506d214ef18536c4503b75883832779bc9c2955c9c2fcdce8af6e47"
+  },
+  "protocol_sha256": "58e553386fa68e4f195b6a0dd61cb3f90df386c036f5ef56b04b06186667736e",
+  "schema": "go-trader.pair-spread-study-lock",
+  "signal_spec_sha256": "8c61cee1f5d94cc200c19f2a9fffd313909caa838f790665431f78210660c571",
+  "sources": {
+    "backtest/archive_cache.py": "50ccf9ab8b5eb213821907e5ae2f1600f1701d0b02e2883caf1c4181de7a7f79",
+    "backtest/basket_replay.py": "fb00a1845d933d35465a4aad75c2d7be06b7b90d4f7bee51ff5e4bf85133d59f",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/README.md": "d4c107bfe5edd303878c8da59e3dd71d5bdbab7af9203068380cb12b02b2755f",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/SIGNAL_SPEC.md": "8c61cee1f5d94cc200c19f2a9fffd313909caa838f790665431f78210660c571",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/__pycache__/run_study.cpython-315.pyc": "059d547b692fb85e091422bc14446eb019aa27d9b98afc367395bf2c060af776",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/data_manifest.json": "caeaffbb4c33789966bef383d77181a61ecda086e041e9a48c51d20c859a9d64",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/discovery_futures_after.json": "4013a8cd1de6221e0a74f3436fed0d4d28cfdbe2ab172db2a11ec8a3ebaaa62e",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/discovery_futures_before.json": "4013a8cd1de6221e0a74f3436fed0d4d28cfdbe2ab172db2a11ec8a3ebaaa62e",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/discovery_spot_after.json": "0daef2134feeb421a974f75b5e374e5004fd284a0cba716d19ff7a93474f3928",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/discovery_spot_before.json": "0daef2134feeb421a974f75b5e374e5004fd284a0cba716d19ff7a93474f3928",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/plans/experiments.json": "c4016aaeb506d214ef18536c4503b75883832779bc9c2955c9c2fcdce8af6e47",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/protocol.json": "58e553386fa68e4f195b6a0dd61cb3f90df386c036f5ef56b04b06186667736e",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/run_study.py": "b7895c0aacabd346d231e7bd105b433031b8e5963a9bebc310f976bd919c1609",
+    "scheduler/basket_pair.go": "f06682a9225149c8d9008f1456d66ec6830139054bc2924ddc97dc3b27447653",
+    "scheduler/basket_replay_pair.go": "4bcc64732737474a4d5458912e21ec41b75b9419e6ef80a83ce536a5940ff711",
+    "scheduler/basket_replay_pair_spec.go": "bfa2617b43f410c03d2b4e6cd174e4b56ac3c75ed3d4f60b1c296e7d30508986",
+    "scheduler/basket_replay_targets.go": "c533e47b1d218fa2ad61538ad6cf2ac8f823113f6e1a0943d934b69c4c7096e1",
+    "scheduler/pair_bounds.go": "950871779272ad6b5d8cb43e0e7b40a7ad2c24213aa1a0fae4b72951a0798590",
+    "scheduler/pair_policy.go": "e93bde50b2038afe4561fe672f59d9544fd45571701c9250ddaae6aec687bc0e",
+    "shared_scripts/check_hyperliquid.py": "2760b1bc9283122cdbf6ad35634e2f14ab6254fdadb7f8d368b8481eae4a31c0",
+    "shared_scripts/check_okx.py": "655dd99864aa37418ef94791e10af4e1206fadd0bce3eec92f2a198ebc0a1458",
+    "shared_scripts/run_pair_policy.py": "1ea3a9798e4513122b661e5c008342da4557fc5f4f18c7756d5e35e06070c9c0",
+    "shared_strategies/open/cross_exchange_perp_arbitrage.py": "a692d997c07196a3ab0369b9695ba8d8f27e77bfa895b2140d65a3f3014c1dc5"
+  },
+  "tools": {
+    "go": "go version go1.27.3 darwin/arm64",
+    "go_trader": "dev",
+    "python": "3.12.9",
+    "uv": "uv 0.9.5 (d5f39331a 2025-10-21)"
+  },
+  "version": 1
+}

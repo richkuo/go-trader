@@ -1,0 +1,29 @@
+{
+  "booked_net": null,
+  "comparisons": [],
+  "edge_source": "unvalidated",
+  "experiments": [],
+  "funding_policy": null,
+  "lock_sha256": "fa782ee9675d80dbf45b1fe086b55404c9c5ba077a72c755e04a7447848f310e",
+  "oracle_note": "a research receipt price is not a historical venue oracle price",
+  "promotion_eligible": false,
+  "reasons": [
+    "no frozen real fee schedule is attached",
+    "no recording manifest or frozen funding document is attached",
+    "no sealed OKX paper recording is frozen",
+    "real OKX history, cross-venue depth, capability, fees or funding evidence is not frozen",
+    "research admission uses synthetic accounts and refuses a private account reader",
+    "snapshot history does not establish continuous cross-venue depth"
+  ],
+  "recording_family": null,
+  "schema": "go-trader.pair-spread-study-result",
+  "scored": false,
+  "standalone_notes": [
+    "a research oracle observation is visible at receipt in a standalone replay",
+    "sealed playback publishes that observation at its recorded consumption step",
+    "a research receipt price is not a historical venue oracle price",
+    "scenario.funding_policy belongs only on a paper collection plan"
+  ],
+  "verdict": "inconclusive",
+  "version": 1
+}
