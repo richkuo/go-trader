@@ -369,6 +369,21 @@ func TestBasketReplayPairStudyFrozenScheduleKeepsTheGates(t *testing.T) {
 	})
 }
 
+func pairStudyCopy(t *testing.T, repo string) string {
+	t.Helper()
+	dst := filepath.Join(t.TempDir(), "study")
+	cmd := exec.Command("cp", "-R", filepath.Join(repo, "backtest", "candidates", "cross_exchange_perp_arbitrage_1655"), dst)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("copy study: %v\n%s", err, out)
+	}
+	for _, name := range []string{"protocol.lock.json", "results.json"} {
+		if err := os.Remove(filepath.Join(dst, name)); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	return dst
+}
+
 func pairStudyRun(t *testing.T, repo, study string, args ...string) (int, string) {
 	t.Helper()
 	cmd := exec.Command(pairStudyPython(t, repo), append([]string{filepath.Join(repo, "backtest", "candidates", "cross_exchange_perp_arbitrage_1655", "run_study.py"), "--study", study}, args...)...)
@@ -387,17 +402,8 @@ func pairStudyRun(t *testing.T, repo, study string, args ...string) (int, string
 func TestBasketReplayPairStudyRunnerLocksAnInconclusiveReport(t *testing.T) {
 	repo := basketPyRoot(t)
 	src := filepath.Join(repo, "backtest", "candidates", "cross_exchange_perp_arbitrage_1655")
-	copyDir := func(t *testing.T) string {
-		t.Helper()
-		dst := filepath.Join(t.TempDir(), "study")
-		cmd := exec.Command("cp", "-R", src, dst)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("copy study: %v\n%s", err, out)
-		}
-		return dst
-	}
 	bin := pyintegrationBinary(t)
-	study := copyDir(t)
+	study := pairStudyCopy(t, repo)
 	if code, out := pairStudyRun(t, repo, study, "validate"); code != 0 {
 		t.Fatalf("validate: %s", out)
 	}
@@ -425,7 +431,7 @@ func TestBasketReplayPairStudyRunnerLocksAnInconclusiveReport(t *testing.T) {
 	if code, out := pairStudyRun(t, repo, study, "check"); code != 0 {
 		t.Fatalf("render must leave the lock valid: %s", out)
 	}
-	tampered := copyDir(t)
+	tampered := pairStudyCopy(t, repo)
 	if code, out := pairStudyRun(t, repo, tampered, "lock", "--binary", bin); code != 0 {
 		t.Fatalf("tamper lock: %s", out)
 	}
@@ -573,10 +579,7 @@ func TestBasketReplayPairStudyRunnerReplaysAFixture(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bundle, "bundle.json"), blob, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	study := filepath.Join(t.TempDir(), "study")
-	if out, err := exec.Command("cp", "-R", filepath.Join(repo, "backtest", "candidates", "cross_exchange_perp_arbitrage_1655"), study).CombinedOutput(); err != nil {
-		t.Fatalf("copy: %v\n%s", err, out)
-	}
+	study := pairStudyCopy(t, repo)
 	bin := pyintegrationBinary(t)
 	if code, out := pairStudyRun(t, repo, study, "prepare", "--bundle", bundle); code != 0 {
 		t.Fatalf("prepare: %s", out)
