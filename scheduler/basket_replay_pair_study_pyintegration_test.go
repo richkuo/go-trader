@@ -422,6 +422,21 @@ func TestBasketReplayPairStudyRunnerLocksAnInconclusiveReport(t *testing.T) {
 	if json.Unmarshal(blob, &result) != nil || result["verdict"] != "inconclusive" || result["scored"] != false || result["promotion_eligible"] != false {
 		t.Fatalf("the missing-evidence study must stay unscored and inconclusive: %s", blob)
 	}
+	var gotReasons []string
+	for _, item := range result["reasons"].([]interface{}) {
+		gotReasons = append(gotReasons, fmt.Sprint(item))
+	}
+	wantReasons := []string{
+		"no frozen real fee schedule is attached",
+		"no recording manifest or frozen funding document is attached",
+		"no sealed OKX paper recording is frozen",
+		"real OKX history, cross-venue depth, capability, fees or funding evidence is not frozen",
+		"research admission uses synthetic accounts and refuses a private account reader",
+		"snapshot history does not establish continuous cross-venue depth",
+	}
+	if strings.Join(gotReasons, "\n") != strings.Join(wantReasons, "\n") {
+		t.Fatalf("evidence_missing reasons changed: %v", gotReasons)
+	}
 	if _, err := os.Lstat(filepath.Join(work, "state")); !os.IsNotExist(err) {
 		t.Fatal("an inconclusive study must not claim a replay state directory")
 	}
@@ -635,5 +650,159 @@ func TestBasketReplayPairStudyProtocolRejectsAMissingRule(t *testing.T) {
 	code, out := pairStudyRun(t, repo, study, "validate")
 	if code != 3 || !strings.Contains(out, "min_independent_pairs") {
 		t.Fatalf("protocol validation must reject a missing sample rule, got %d\n%s", code, out)
+	}
+}
+
+func TestBasketReplayPairStudyCommittedLockIgnoresBytecode(t *testing.T) {
+	repo := basketPyRoot(t)
+	study := filepath.Join(repo, "backtest", "candidates", "cross_exchange_perp_arbitrage_1655")
+	if code, out := pairStudyRun(t, repo, study, "check"); code != 0 {
+		t.Fatalf("the committed study must check clean: %s", out)
+	}
+	copy := filepath.Join(t.TempDir(), "study")
+	if out, err := exec.Command("cp", "-R", study, copy).CombinedOutput(); err != nil {
+		t.Fatalf("copy: %v\n%s", err, out)
+	}
+	cache := filepath.Join(copy, "__pycache__")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "run_study.cpython-312.pyc"), []byte("bytecode"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := pairStudyRun(t, repo, copy, "check"); code != 0 {
+		t.Fatalf("bytecode in the study directory must not change the lock: %s", out)
+	}
+}
+
+func TestBasketReplayPairStudyRunnerRefusesAnUnscoredClassification(t *testing.T) {
+	repo := basketPyRoot(t)
+	study := pairStudyCopy(t, repo)
+	path := filepath.Join(study, "data_manifest.json")
+	manifest := map[string]interface{}{}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if json.Unmarshal(blob, &manifest) != nil {
+		t.Fatal("manifest")
+	}
+	manifest["classification"] = "sealed_recording"
+	delete(manifest, "missing")
+	blob, _ = json.MarshalIndent(manifest, "", "  ")
+	if err := os.WriteFile(path, append(blob, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := pyintegrationBinary(t)
+	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin); code != 0 {
+		t.Fatalf("lock: %s", out)
+	}
+	work := filepath.Join(t.TempDir(), "work")
+	code, out := pairStudyRun(t, repo, study, "run", "--binary", bin, "--work", work)
+	if code != 3 || !strings.Contains(out, "unscored_classification") {
+		t.Fatalf("an unscored classification must refuse, got %d\n%s", code, out)
+	}
+	if _, err := os.Lstat(filepath.Join(study, "results.json")); !os.IsNotExist(err) {
+		t.Fatal("a refused classification must not write a result")
+	}
+}
+
+func TestBasketReplayPairStudyRunnerReconcilesBookedTrades(t *testing.T) {
+	f := newPairOfflineFixture(t, pairOfflineOptions{runID: "pair-study-booked", durationS: 240})
+	repo := f.repo
+	bundle := t.TempDir()
+	for _, obj := range f.objects {
+		blob, err := os.ReadFile(filepath.Join(f.inputs, obj.Path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bundle, obj.Path), blob, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(bundle, "research-config.json"), f.doc, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	slot := f.t0
+	schedule := pairStudySchedule(map[int64]map[string]pairPolicyMemberTarget{
+		slot:          pairStudyLegs(0.06, -0.06, 60400, 59700),
+		slot + 120000: pairStudyLegs(0.12, -0.12, 60400, 59700),
+		slot + 180000: pairStudyLegs(0, 0, 59500, 60600),
+	})
+	var sched map[string]interface{}
+	if json.Unmarshal(schedule, &sched) != nil {
+		t.Fatal("schedule")
+	}
+	var objs []map[string]interface{}
+	for _, obj := range f.objects {
+		item := map[string]interface{}{"kind": obj.Kind, "path": obj.Path, "sha256": obj.SHA256}
+		if obj.MemberID != "" {
+			item["member_id"] = obj.MemberID
+		}
+		objs = append(objs, item)
+	}
+	plan := map[string]interface{}{
+		"plan": "go-trader.basket-replay-plan", "version": 2, "run_id": f.runID, "state_dir": "RUNTIME",
+		"source":          map[string]string{"quotes": "mechanical fixture"},
+		"research_config": map[string]string{"path": "research-config.json", "sha256": sha256Hex(f.doc)},
+		"objects":         objs, "scenario": f.scenario, "bounds": f.spec(basketReplayModeNew, "/x").Bounds,
+		"target_input": map[string]interface{}{"mode": "frozen_schedule", "schedule": sched},
+	}
+	blob, _ := json.Marshal(plan)
+	if err := os.WriteFile(filepath.Join(bundle, "plan.json"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	meta := map[string]interface{}{"classification": "mechanical_fixture", "source_identity": "integration fixture",
+		"standalone_notes": []string{"synthetic accounts and conversions are mechanical diagnostics"}}
+	blob, _ = json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(bundle, "bundle.json"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	study := pairStudyCopy(t, repo)
+	bin := pyintegrationBinary(t)
+	if code, out := pairStudyRun(t, repo, study, "prepare", "--bundle", bundle); code != 0 {
+		t.Fatalf("prepare: %s", out)
+	}
+	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin); code != 0 {
+		t.Fatalf("lock: %s", out)
+	}
+	work := filepath.Join(t.TempDir(), "work")
+	if code, out := pairStudyRun(t, repo, study, "run", "--binary", bin, "--work", work); code != 0 {
+		t.Fatalf("run: %s", out)
+	}
+	var result struct {
+		Experiments []struct {
+			Reconciled           bool `json:"reconciled"`
+			MechanicallyComplete bool `json:"mechanically_complete"`
+		} `json:"experiments"`
+	}
+	raw, err := os.ReadFile(filepath.Join(study, "results.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if json.Unmarshal(raw, &result) != nil || len(result.Experiments) != 1 || !result.Experiments[0].Reconciled || !result.Experiments[0].MechanicallyComplete {
+		t.Fatalf("booked trades must reconcile: %s", raw)
+	}
+	driver, err := os.ReadFile(filepath.Join(work, "result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec struct {
+		AdapterOutput struct {
+			Export map[string][]map[string]interface{} `json:"export"`
+		} `json:"adapter_output"`
+	}
+	if json.Unmarshal(driver, &rec) != nil {
+		t.Fatalf("driver result: %s", driver)
+	}
+	trades := rec.AdapterOutput.Export["trades"]
+	funding := 0
+	for _, row := range trades {
+		if row["trade_type"] == "funding" {
+			funding++
+		}
+	}
+	if len(trades) == 0 || funding == 0 {
+		t.Fatalf("the entered pair must book trades and a funding row, got %d trades and %d funding", len(trades), funding)
 	}
 }

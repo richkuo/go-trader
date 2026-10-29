@@ -23,7 +23,8 @@ REPLAY = os.path.join(BACKTEST, "basket_replay.py")
 LOCK_SCHEMA = "go-trader.pair-spread-study-lock"
 RESULT_SCHEMA = "go-trader.pair-spread-study-result"
 EXCLUDED_NAMES = {"protocol.lock.json", "results.json", "REPORT.md"}
-EXCLUDED_DIRS = {"raw", "logs", "state"}
+EXCLUDED_DIRS = {"raw", "logs", "state", "__pycache__"}
+SCOREABLE = {"evidence_missing", "mechanical_fixture"}
 REPORT_FIELDS = (
     "source_hashes", "binary_hash", "data_coverage", "windows", "parameters", "costs",
     "baselines", "orientations", "latency", "failure_cases", "booked_net", "funding_policy",
@@ -126,7 +127,7 @@ def source_map(study, proto):
     for dirpath, dirnames, filenames in os.walk(study.dir):
         dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_DIRS and not d.startswith("."))
         for name in sorted(filenames):
-            if name in EXCLUDED_NAMES or name.startswith("."):
+            if name in EXCLUDED_NAMES or name.startswith(".") or name.endswith((".pyc", ".pyo")):
                 continue
             full = os.path.join(dirpath, name)
             if not os.path.isfile(full):
@@ -143,6 +144,23 @@ def source_map(study, proto):
     if missing:
         raise StudyRefusal("sources", "source_missing", [f"execution source {rel} is missing" for rel in missing])
     return found
+
+
+def repo_dirty(rels):
+    inside = []
+    for rel in rels:
+        path = os.path.realpath(os.path.join(REPO, rel))
+        try:
+            if os.path.commonpath([path, REPO]) != REPO:
+                continue
+        except ValueError:
+            continue
+        if os.path.isfile(path):
+            inside.append(os.path.relpath(path, REPO))
+    if not inside:
+        return []
+    out = subprocess.check_output(["git", "-C", REPO, "status", "--porcelain", "--", *inside], text=True)
+    return [line for line in out.splitlines() if line.strip()]
 
 
 def git_commit():
@@ -239,6 +257,9 @@ def cmd_lock(study, binary):
         "plans": plans, "sources": source_map(study, proto), "binary_sha256": sha256_file(binary),
         "tools": tool_versions(binary), "excluded": sorted(EXCLUDED_NAMES | EXCLUDED_DIRS),
     }
+    dirty = repo_dirty(list(lock["sources"]) + list(plans))
+    if dirty:
+        raise StudyRefusal("lock", "lock_dirty", dirty)
     for rel in plans:
         text = open(os.path.join(REPO, rel)).read()
         if "protocol.lock.json" in text:
@@ -353,6 +374,10 @@ def cmd_run(study, binary, work):
     if os.path.commonpath([work, study.dir]) == study.dir:
         raise StudyRefusal("run", "work_inside_study", "the work directory must sit outside the locked study directory")
     manifest = load_json(study.manifest_path)
+    classification = manifest.get("classification")
+    if classification not in SCOREABLE:
+        raise StudyRefusal("run", "unscored_classification",
+                           f"classification {classification!r} has no scoring path; this runner writes inconclusive only for evidence_missing and mechanical_fixture")
     gaps = evidence_gaps(manifest)
     experiments = []
     comparisons = []

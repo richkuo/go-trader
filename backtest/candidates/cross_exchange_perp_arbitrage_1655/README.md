@@ -1,6 +1,6 @@
 # cross_exchange_perp_arbitrage study
 
-The spread policy is compared with no trade and a frozen two-leg schedule. The verdict is pass, fail, or inconclusive from booked records. Missing real evidence stays inconclusive.
+The spread policy is compared with no trade and a frozen two-leg schedule. This runner writes only an inconclusive verdict. `protocol.json` freezes the pass and fail rules for a later scored evaluation. This command does not apply them, and it does not replay `plans/experiments.json`. Missing real evidence stays inconclusive. A manifest whose classification is neither `evidence_missing` nor `mechanical_fixture` is refused.
 
 `SIGNAL_SPEC.md` freezes the policy formulas. `protocol.json` freezes windows, the parameter grid, sample and coverage floors, and the verdict rules before any held-out read. `plans/experiments.json` names the candidate, both baselines, both orientations, the latency cases, and the venue failure cases. `data_manifest.json` records object hashes or the missing evidence. `protocol.lock.json` is written by `lock` and is not an input of itself.
 
