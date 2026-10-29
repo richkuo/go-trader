@@ -814,6 +814,161 @@ func TestBasketReplayPairPaperAsyncConsumptionRefusesAMismatchedTerminal(t *test
 	}
 }
 
+func TestBasketReplayPairPaperSchema1FamilyLogsStayByteForByte(t *testing.T) {
+	e := newPairRecTestEnv(t, pairRecFaults{})
+	if _, err := readVerifiedPairRecLog(e.db, pairRecTestRun, pairRecTestPartition, pairRecTestContract); err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		seq    int64
+		kind   string
+		prefix string
+		raw    string
+	}{
+		{1, pairRecEventBind, "10752d7e82be9c320fd9b9696777ac5567800e3bc32c0f890a9f62e38486debb", `{"v":1,"kind":"bind","bind":{"run_id":"rec-run-1","paper_identity":"id","contract_fingerprint":"0000000000000000000000000000000000000000000000000000000000000abc","partition":"paper","seed_sha256":"seed","evidence_identity":"ev","funding_binding":"","anchor_ms":1}}`},
+		{2, pairRecEventEpoch, "b905dc7e4ab2aea5f563271bc65a42b5609920f892c31db650b067dc1b1aaef9", `{"v":1,"kind":"epoch","epoch":{"epoch":1,"wall_ms":1,"mode":"new"}}`},
+	}
+	q, err := e.db.db.Query(`SELECT seq, schema_version, event_kind, prefix_hash, payload FROM basket_replay_inputs WHERE run_id = ? ORDER BY seq`, pairRecTestRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	for _, w := range want {
+		if !q.Next() {
+			t.Fatalf("schema 1 log is missing row %d", w.seq)
+		}
+		var seq int64
+		var schema int
+		var kind, prefix string
+		var payload []byte
+		if err := q.Scan(&seq, &schema, &kind, &prefix, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if seq != w.seq || schema != pairRecSchemaVersion || kind != w.kind || prefix != w.prefix || string(payload) != w.raw {
+			t.Fatalf("family 1 and family 2 logs are schema 1 and must stay these bytes: seq %d schema %d kind %s prefix %s payload %s", seq, schema, kind, prefix, payload)
+		}
+		if bytes.Contains(payload, []byte(`"family"`)) || bytes.Contains(payload, []byte(`"async"`)) || bytes.Contains(payload, []byte(`"consume"`)) {
+			t.Fatalf("schema 1 payload gained a family-3 field: %s", payload)
+		}
+	}
+	if q.Next() {
+		t.Fatal("the schema 1 fixture log has more than the bind and epoch rows")
+	}
+}
+
+func TestBasketReplayPairPaperRateBatchBetweenOracleStartAndConsumptionKeepsItsRequest(t *testing.T) {
+	db, err := OpenStateDB(filepath.Join(t.TempDir(), basketReplayDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.ensurePairRecordingSchema(); err != nil {
+		t.Fatal(err)
+	}
+	rec := newPairRecorder(pairRecLive, pairRecTestRun, pairRecTestPartition, pairRecTestContract, db, &simulatedClock{}, pairRecFaults{})
+	rec.schema = pairRecSchemaAsync
+	rec.now = func() time.Time { return time.UnixMilli(1_800_000_000_000) }
+	rec.epoch = 1
+	bind := pairRecBind{RunID: pairRecTestRun, PaperIdentity: "id", ContractFP: pairRecTestContract, Partition: pairRecTestPartition, SeedSHA256: "seed", EvidenceIdentity: "ev", AnchorMs: 1, Family: pairPaperManifestAsyncVer}
+	if err := rec.appendDirect(pairRecEvent{Kind: pairRecEventBind, Bind: &bind}, pairRecEvent{Kind: pairRecEventEpoch, Epoch: &pairRecEpoch{Epoch: 1, WallMs: 1, Mode: "new"}}); err != nil {
+		t.Fatal(err)
+	}
+	rec.beginStep("s0@1", 0)
+	if _, err := rec.wake("", 0); err != nil {
+		t.Fatal(err)
+	}
+	f := newPairRecOracleFixture(t, 1_800_003_600_000)
+	oracleReq := []byte(`{"attempt_id":"a","target_event_ms":1}`)
+	callID, start, err := rec.beginAsyncCall(pairRecCall{Kind: pairRecKindFundingOracle, MemberID: "hl", SlotMs: 1, Request: oracleReq})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rateVal, rateRaw := pairRecTestBatch(t, f, 1, "", nil)
+	recorded := []byte(`{"prev_hash":"","seq":1}`)
+	if _, _, err := rec.call(context.Background(), pairRecCall{Kind: pairRecKindFunding, MemberID: "hl", Request: recorded}, func(ctx context.Context, h *pairRecHandle) pairRecResult {
+		return pairRecResult{Class: pairRecClassResult, Result: rateRaw}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	afterRate := rec.cursorNow()
+	end, err := rec.appendAsyncTerminal(callID, start, pairAsyncOracleResult{res: pairRecResult{Class: pairRecClassResult, Result: []byte(`{"obs":1}`), ReceiptMs: 2}, completion: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := pairFundingOracleAttemptID(f.key, f.target, f.digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := f.target + 1000
+	obs, err := (pairFundingOracleObservation{V: pairFundingObservationVersion, Key: f.key, EvidenceID: pairFundingOracleEvidenceID(f.key, f.target, receipt), AttemptID: attempt,
+		PolicyDigest: f.digest, PriceKind: pairFundingPriceOracleReceipt, TargetEventMs: f.target, RequestMs: f.target, ReceiptMs: receipt, AtMs: receipt, VisibleMs: receipt,
+		TimeBasis: pairFundingObservationTimeBasis, Price: "60000.5", Provenance: pairFundingOracleProvenance}).sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oracleVal, oracleRaw := pairRecTestBatch(t, f, 2, rateVal.BatchHash, []pairFundingOracleObservation{obs})
+	if err := rec.appendConsume(callID, pairRecConsume{RequestHash: start.RequestHash, TerminalHash: end.ResultHash, TerminalKind: pairRecEventEnd, WakeSeq: 1, StepID: "s0@1", LogicalMs: 4, Disposition: "accepted", Batch: oracleRaw, BatchHash: oracleVal.BatchHash}); err != nil {
+		t.Fatal(err)
+	}
+	l := mustPairRecLog(t, db)
+	ratePos := -1
+	for i, ri := range l.stream {
+		row := l.rows[ri]
+		if row.Kind == pairRecEventStart && row.Event.Start != nil && row.Event.Start.Kind == pairRecKindFunding && string(row.Event.Start.Request) == string(recorded) {
+			ratePos = i
+		}
+	}
+	if ratePos < 0 || afterRate != ratePos+1 {
+		t.Fatalf("the rate call is the consumable item before its consumption, pos %d cursor %d", ratePos, afterRate)
+	}
+	rec.adoptLog(l, afterRate)
+	chain := []pairFundingBatchValue{rateVal, oracleVal}
+	rec.restorePosition(afterRate, 0, 1, "s0@1")
+	visible := rec.fundingConsumed(chain)
+	if len(visible) != 1 || visible[0].Seq != 1 || visible[0].PrevHash != "" || visible[0].BatchHash != rateVal.BatchHash {
+		t.Fatalf("between the rate commit and the oracle consumption the visible chain is the rate batch alone, got %+v", visible)
+	}
+	if seq, prev := int64(len(visible)+1), visible[len(visible)-1].BatchHash; seq != 2 || prev != rateVal.BatchHash {
+		t.Fatalf("the next rate request is seq 2 after %s, got seq %d prev %s", rateVal.BatchHash, seq, prev)
+	}
+	rec.restorePosition(ratePos, 0, 1, "s0@1")
+	replay := rec.fundingConsumed(chain)
+	if len(replay) != 0 {
+		t.Fatalf("replaying the recorded rate request sees an empty chain, got %+v", replay)
+	}
+	if seq, prev := int64(len(replay)+1), ""; seq != 1 || prev != "" {
+		t.Fatalf("the resumed rate request is seq 1 with an empty previous hash")
+	}
+}
+
+func pairRecTestBatch(t *testing.T, f *pairRecOracleFixture, seq int64, prev string, obs []pairFundingOracleObservation) (pairFundingBatchValue, []byte) {
+	t.Helper()
+	if obs == nil {
+		obs = []pairFundingOracleObservation{}
+	}
+	for i := range obs {
+		sealed, err := obs[i].sealed()
+		if err != nil {
+			t.Fatal(err)
+		}
+		obs[i] = sealed
+	}
+	b, err := (pairFundingBatchV2{V: pairFundingResearchBatchVersion, SourceID: f.src.SourceID(), Seq: seq, PrevHash: prev, PolicyDigest: f.digest,
+		Rates: []pairFundingRate{}, Prices: []pairFundingPrice{}, Observations: obs, Coverage: []pairFundingCoverageRecord{}}).sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pairFundingBatchValueBytes(pairFundingBatchV2Value(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := pairDecodeFundingBatch(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got, raw
+}
+
 func mustPairRecLog(t *testing.T, db *StateDB) *pairRecLog {
 	t.Helper()
 	l, err := readVerifiedPairRecLog(db, pairRecTestRun, pairRecTestPartition, pairRecTestContract)
