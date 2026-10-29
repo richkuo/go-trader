@@ -1,16 +1,17 @@
 {
-  "binary_sha256": "2c751129fea6a5a12c2ee0caa022971c813cd528fea2e33a11886fccd9889e48",
-  "commit": "ef9ae66a19ddb61c2d86be4fd190a69a530ae23f",
+  "binary_sha256": "91feea68337510ad51b9e67c2275b804dc10de32918ef236ba2e030e45c0e77e",
+  "commit": "0e3966625b657754f089391ae42ccb4a09b2b326",
   "data_manifest_sha256": "caeaffbb4c33789966bef383d77181a61ecda086e041e9a48c51d20c859a9d64",
   "excluded": [
     "REPORT.md",
+    "__pycache__",
     "logs",
     "protocol.lock.json",
     "raw",
     "results.json",
     "state"
   ],
-  "locked_at_utc": "2026-10-29T11:10:12Z",
+  "locked_at_utc": "2026-10-29T11:45:38Z",
   "plans": {
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/plans/experiments.json": "c4016aaeb506d214ef18536c4503b75883832779bc9c2955c9c2fcdce8af6e47"
   },
@@ -20,9 +21,8 @@
   "sources": {
     "backtest/archive_cache.py": "50ccf9ab8b5eb213821907e5ae2f1600f1701d0b02e2883caf1c4181de7a7f79",
     "backtest/basket_replay.py": "fb00a1845d933d35465a4aad75c2d7be06b7b90d4f7bee51ff5e4bf85133d59f",
-    "backtest/candidates/cross_exchange_perp_arbitrage_1655/README.md": "d4c107bfe5edd303878c8da59e3dd71d5bdbab7af9203068380cb12b02b2755f",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/README.md": "eaa2b8b2d3098e5f9b20d66c923f9d7c87a0628b950645a1ba952567a5cd4b75",
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/SIGNAL_SPEC.md": "8c61cee1f5d94cc200c19f2a9fffd313909caa838f790665431f78210660c571",
-    "backtest/candidates/cross_exchange_perp_arbitrage_1655/__pycache__/run_study.cpython-315.pyc": "059d547b692fb85e091422bc14446eb019aa27d9b98afc367395bf2c060af776",
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/data_manifest.json": "caeaffbb4c33789966bef383d77181a61ecda086e041e9a48c51d20c859a9d64",
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/discovery_futures_after.json": "4013a8cd1de6221e0a74f3436fed0d4d28cfdbe2ab172db2a11ec8a3ebaaa62e",
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/discovery_futures_before.json": "4013a8cd1de6221e0a74f3436fed0d4d28cfdbe2ab172db2a11ec8a3ebaaa62e",
@@ -30,7 +30,7 @@
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/discovery_spot_before.json": "0daef2134feeb421a974f75b5e374e5004fd284a0cba716d19ff7a93474f3928",
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/plans/experiments.json": "c4016aaeb506d214ef18536c4503b75883832779bc9c2955c9c2fcdce8af6e47",
     "backtest/candidates/cross_exchange_perp_arbitrage_1655/protocol.json": "58e553386fa68e4f195b6a0dd61cb3f90df386c036f5ef56b04b06186667736e",
-    "backtest/candidates/cross_exchange_perp_arbitrage_1655/run_study.py": "b7895c0aacabd346d231e7bd105b433031b8e5963a9bebc310f976bd919c1609",
+    "backtest/candidates/cross_exchange_perp_arbitrage_1655/run_study.py": "0d52b9c8cc658f8eaf739c6fab31c8aafd9e801d7c91b3be4f4b6d20889d1aba",
     "scheduler/basket_pair.go": "f06682a9225149c8d9008f1456d66ec6830139054bc2924ddc97dc3b27447653",
     "scheduler/basket_replay_pair.go": "4bcc64732737474a4d5458912e21ec41b75b9419e6ef80a83ce536a5940ff711",
     "scheduler/basket_replay_pair_spec.go": "bfa2617b43f410c03d2b4e6cd174e4b56ac3c75ed3d4f60b1c296e7d30508986",

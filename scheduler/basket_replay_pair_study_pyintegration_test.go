@@ -659,18 +659,19 @@ func TestBasketReplayPairStudyCommittedLockIgnoresBytecode(t *testing.T) {
 	if code, out := pairStudyRun(t, repo, study, "check"); code != 0 {
 		t.Fatalf("the committed study must check clean: %s", out)
 	}
-	copy := filepath.Join(t.TempDir(), "study")
-	if out, err := exec.Command("cp", "-R", study, copy).CombinedOutput(); err != nil {
-		t.Fatalf("copy: %v\n%s", err, out)
-	}
-	cache := filepath.Join(copy, "__pycache__")
+	cache := filepath.Join(study, "__pycache__")
+	pyc := filepath.Join(cache, "run_study.cpython-312.pyc")
 	if err := os.MkdirAll(cache, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cache, "run_study.cpython-312.pyc"), []byte("bytecode"), 0o644); err != nil {
+	t.Cleanup(func() {
+		os.Remove(pyc)
+		os.Remove(cache)
+	})
+	if err := os.WriteFile(pyc, []byte("bytecode"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := pairStudyRun(t, repo, copy, "check"); code != 0 {
+	if code, out := pairStudyRun(t, repo, study, "check"); code != 0 {
 		t.Fatalf("bytecode in the study directory must not change the lock: %s", out)
 	}
 }
