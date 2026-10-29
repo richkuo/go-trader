@@ -57,7 +57,11 @@ func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *str
 		return false
 	}
 
+	if exec.Command("git", "merge-base", "--is-ancestor", remoteHash, "HEAD").Run() == nil {
+		return false
+	}
 	if lastNotifiedHash != nil && *lastNotifiedHash == remoteHash {
+
 		logOnChangef("update-check", "notified:"+remoteHash, "[update] Update available (%s), already notified\n", remoteHash[:8])
 		return true
 	}
