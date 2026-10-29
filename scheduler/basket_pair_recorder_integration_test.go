@@ -977,3 +977,256 @@ func mustPairRecLog(t *testing.T, db *StateDB) *pairRecLog {
 	}
 	return l
 }
+
+func newPairAsyncRecordingEnv(t *testing.T) *pairRecTestEnv {
+	t.Helper()
+	db, err := OpenStateDB(filepath.Join(t.TempDir(), basketReplayDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.ensurePairRecordingSchema(); err != nil {
+		t.Fatal(err)
+	}
+	e := &pairRecTestEnv{t: t, db: db, clock: &simulatedClock{}, wall: 1_800_003_570_000}
+	e.rec = newPairRecorder(pairRecLive, pairRecTestRun, pairRecTestPartition, pairRecTestContract, db, e.clock, pairRecFaults{})
+	e.rec.schema = pairRecSchemaAsync
+	e.rec.now = func() time.Time { return time.UnixMilli(atomic.LoadInt64(&e.wall)) }
+	e.rec.epoch = 1
+	bind := pairRecBind{RunID: pairRecTestRun, PaperIdentity: "id", ContractFP: pairRecTestContract, Partition: pairRecTestPartition, SeedSHA256: "seed", EvidenceIdentity: "ev", AnchorMs: 1, Family: pairPaperManifestAsyncVer}
+	if err := e.rec.appendDirect(pairRecEvent{Kind: pairRecEventBind, Bind: &bind}, pairRecEvent{Kind: pairRecEventEpoch, Epoch: &pairRecEpoch{Epoch: 1, WallMs: 1, Mode: "new"}}); err != nil {
+		t.Fatal(err)
+	}
+	e.rec.beginStep("s0@1", 0)
+	if _, err := e.rec.wake("", 0); err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+func TestBasketReplayPairPaperAsyncTerminalFailureRecoversOnce(t *testing.T) {
+	for _, mode := range []string{"next wake", "failed clear", "restart"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newPairAsyncRecordingEnv(t)
+			f := newPairRecOracleFixture(t, 1_800_003_600_000)
+			callID, start, err := e.rec.beginAsyncCall(pairRecCall{Kind: pairRecKindFundingOracle, MemberID: f.key.MemberID, SlotMs: f.target, Request: f.request(t)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := &pairAsyncOracle{target: f.target, deadline: f.deadline, callID: callID, start: start, key: f.key, res: pairRecResult{Class: pairRecClassInfra, Cause: "fixture outcome"}, completion: f.target + 400}
+			w.ready.Store(true)
+			r := &pairReplayRuntime{rec: e.rec, oracle: w, oracleNextMs: f.target, paper: &pairPaperRun{manifest: pairPaperManifest{Version: pairPaperManifestAsyncVer}, funding: f.src, scenario: pairPaperScenario{FundingPolicy: &f.policy}}}
+			e.rec.faults = pairRecFaults{kind: "fail-record-append", n: 1}
+			var trace []string
+			r.finishReadyOracle(pairRecWake{WallMs: f.target + 500}, &trace)
+			if !w.recovered || w.terminal != nil || len(e.log().ends) != 0 {
+				t.Fatal("a failed terminal keeps only the queued recovery")
+			}
+			if mode == "failed clear" {
+				if _, err := e.rec.clearAtBoundary(func() (int64, error) { return 0, errors.New("verification unavailable") }); err == nil {
+					t.Fatal("the first clear must fail")
+				}
+				r.finishReadyOracle(pairRecWake{WallMs: f.target + 600}, &trace)
+				r.finalizeOracle()
+				if len(e.log().ends) != 0 {
+					t.Fatal("a blocked wake and shutdown never retry the terminal")
+				}
+				r.oracle = w
+			}
+			e.rec.faults = pairRecFaults{}
+			if mode == "restart" {
+				path := e.db.path
+				if err := e.db.Close(); err != nil {
+					t.Fatal(err)
+				}
+				e.db, err = OpenStateDB(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { e.db.Close() })
+				l := e.log()
+				rec := newPairRecorder(pairRecResume, pairRecTestRun, pairRecTestPartition, pairRecTestContract, e.db, e.clock, pairRecFaults{})
+				rec.schema = pairRecSchemaAsync
+				rec.head = l.head()
+				rec.epoch = 2
+				rec.now = e.rec.now
+				if err := rec.appendDirect(pairRecEvent{Kind: pairRecEventRecovery, CallID: callID, Recovery: &pairRecRecovery{Reason: "interrupted by restart", Epoch: 2}}); err != nil {
+					t.Fatal(err)
+				}
+				rec.adoptLog(e.log(), len(l.stream))
+				rec.lastWake = e.rec.lastWake
+				rec.stepID = e.rec.stepID
+				r.rec, r.oracle = rec, nil
+				var req pairPaperOracleRequest
+				if err := pairReplayStrictDecode(start.Request, &req); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.consumeLoggedAttempt(pairRecWake{WallMs: f.target + 700}, pairPaperOracleAttempt{CallID: callID, TargetEventMs: f.target, AttemptID: req.AttemptID, Key: f.key}); err != nil {
+					t.Fatal(err)
+				}
+				r.advanceOracleGrid()
+			} else {
+				if cleared, err := e.rec.clearAtBoundary(func() (int64, error) { return e.log().head().Seq, nil }); err != nil || !cleared {
+					t.Fatalf("the next valid clear commits the recovery: %v", err)
+				}
+				r.finishReadyOracle(pairRecWake{WallMs: f.target + 700}, &trace)
+			}
+			l := e.log()
+			if len(l.starts) != 1 || len(l.ends) != 1 || len(l.consumes) != 1 || l.rows[l.ends[callID]].Kind != pairRecEventRecovery || l.rows[l.consumes[callID]].Event.Consume.Disposition != "interrupted" || r.oracleNextMs != 0 {
+				t.Fatalf("one start, recovery and interrupted consumption must advance the hour: starts %d ends %d consumes %d next %d", len(l.starts), len(l.ends), len(l.consumes), r.oracleNextMs)
+			}
+		})
+	}
+}
+
+func TestBasketReplayPairPaperAsyncTimingUsesProductionDelivery(t *testing.T) {
+	for _, mode := range []string{"live", "playback"} {
+		for _, backward := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s backward=%v", mode, backward), func(t *testing.T) {
+				e := newPairAsyncRecordingEnv(t)
+				book := newPairTestEnv(t, nil)
+				target := int64(1_800_003_600_000)
+				policy := pairFundingPolicyV1{Version: pairFundingPolicyVersion, MemberRules: map[string]string{pairTestHL: pairFundingRuleHLReceiptResearch, pairTestOKX: pairFundingRuleOKX}, WindowMs: 5000, MaxPrintOffsetMs: 60000, PrepareLeadMs: 30000, FromMs: target - 120000, DrainThroughMs: target + 7200000}
+				r := &pairReplayRuntime{rt: book.rt(), rec: e.rec, oracleNextMs: target, paper: &pairPaperRun{scenario: pairPaperScenario{FundingPolicy: &policy}}}
+				wake := pairRecWake{WallMs: target + 5001}
+				if backward {
+					wake = pairRecWake{WallMs: target - 29000, ClockBackward: true}
+				}
+				var trace []string
+				if mode == "live" {
+					trace = r.deliverAsyncOracle(wake)
+				} else {
+					trace = r.playbackOracleMiss(wake)
+				}
+				if strings.Join(trace, ",") != "oracle_missed" || r.oracleNextMs != target+3600000 || len(e.log().starts) != 0 {
+					t.Fatalf("a missed wake advances without a call start: trace %v next %d", trace, r.oracleNextMs)
+				}
+			})
+		}
+	}
+}
+
+func TestBasketReplayPairPaperPlaybackRestoresOnlyDurableFunding(t *testing.T) {
+	e := newPairAsyncRecordingEnv(t)
+	f := newPairRecOracleFixture(t, 1_800_003_600_000)
+	if err := e.db.ensureBasketReplaySchema(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.insertPairReplayRun(pairReplayManifest{RunID: pairRecTestRun}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	callID, start, err := e.rec.beginAsyncCall(pairRecCall{Kind: pairRecKindFundingOracle, MemberID: f.key.MemberID, SlotMs: f.target, Request: f.request(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := f.batch(t, f.target, f.target+100)
+	decoded, err := pairDecodeFundingBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs, err := pairCanonicalJSON(decoded.Research.Observations[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	atomic.StoreInt64(&e.wall, f.target+200)
+	if _, err := e.rec.wake("", 0); err != nil {
+		t.Fatal(err)
+	}
+	beforeConsume := e.rec.cursorNow()
+	end, err := e.rec.appendAsyncTerminal(callID, start, pairAsyncOracleResult{res: pairRecResult{Class: pairRecClassResult, Result: obs, ReceiptMs: f.target + 100}, completion: f.target + 400})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.rec.appendConsume(callID, pairRecConsume{RequestHash: start.RequestHash, TerminalHash: end.ResultHash, TerminalKind: pairRecEventEnd, WakeSeq: e.rec.lastWakeSeq(), StepID: "s0@1", LogicalMs: f.target + 500, Disposition: "accepted", Batch: batch, BatchHash: decoded.BatchHash}); err != nil {
+		t.Fatal(err)
+	}
+	afterConsume := e.rec.cursorNow()
+	rate := pfRate(f.key, pairFundingRuleHLReceiptResearch, f.target-60000, "0.0001")
+	rate.VisibleMs = f.target - 59000
+	rate, err = rate.sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rateBatch, err := (pairFundingBatchV2{V: pairFundingResearchBatchVersion, SourceID: f.src.SourceID(), Seq: 2, PrevHash: decoded.BatchHash, PolicyDigest: f.digest, Rates: []pairFundingRate{rate}, Prices: []pairFundingPrice{}, Observations: []pairFundingOracleObservation{}, Coverage: []pairFundingCoverageRecord{}}).sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rateRaw, err := pairFundingBatchValueBytes(pairFundingBatchV2Value(rateBatch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	atomic.StoreInt64(&e.wall, f.target+1000)
+	if _, _, err := e.rec.call(context.Background(), pairRecCall{Kind: pairRecKindFunding, MemberID: f.key.MemberID, Request: []byte(`{"rate":2}`)}, func(context.Context, *pairRecHandle) pairRecResult {
+		return pairRecResult{Class: pairRecClassResult, Result: rateRaw}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	l := e.log()
+	t.Run("last stream item is a consumption", func(t *testing.T) {
+		ci := l.consumes[callID]
+		tail, err := verifyPairRecLog(append([]pairRecRow(nil), l.rows[:ci+1]...), pairRecTestRun, pairRecTestPartition, pairRecTestContract)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attempts, err := pairPaperOracleAttemptIndex(tail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, attempt := range attempts {
+			if attempt.ConsumeStream != len(tail.stream)-1 {
+				t.Fatalf("the final consumption has stream position %d, got %d", len(tail.stream)-1, attempt.ConsumeStream)
+			}
+		}
+		for _, frontier := range []int{len(tail.stream) - 1, len(tail.stream)} {
+			src, err := newPairRecordedFundingSourceWithPolicy(f.src.SourceID(), f.policy.FromMs, f.policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := &pairReplayRuntime{paper: &pairPaperRun{funding: src}}
+			if err := r.restoreAsyncFunding(tail, frontier); err != nil {
+				t.Fatal(err)
+			}
+			if want := frontier - len(tail.stream) + 1; len(src.chain()) != want {
+				t.Fatalf("frontier %d restores %d batches, got %d", frontier, want, len(src.chain()))
+			}
+		}
+	})
+	for _, c := range []struct {
+		name                                   string
+		frontier, batches, observations, rates int
+	}{
+		{"new state", 0, 0, 0, 0},
+		{"receipt before exit", beforeConsume, 0, 0, 0},
+		{"one consumed sample before rate read", afterConsume, 1, 1, 0},
+		{"all consumed", len(l.stream), 2, 1, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := e.db.db.Exec(`UPDATE basket_replay_runs SET recording_cursor = ? WHERE run_id = ?`, c.frontier, pairRecTestRun); err != nil {
+				t.Fatal(err)
+			}
+			src, err := newPairRecordedFundingSourceWithPolicy(f.src.SourceID(), f.policy.FromMs, f.policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := newPairRecorder(pairRecPlayback, pairRecTestRun, pairRecTestPartition, pairRecTestContract, e.db, &simulatedClock{}, pairRecFaults{})
+			rec.adoptLog(l, c.frontier)
+			r := &pairReplayRuntime{spec: &pairReplaySpec{}, rec: rec, paper: &pairPaperRun{manifest: pairPaperManifest{Version: pairPaperManifestAsyncVer}, funding: src}}
+			r.spec.Run.RunID = pairRecTestRun
+			if err := r.playbackFundingBeforeAdmission(filepath.Dir(e.db.path), pairRecordingManifest{Partition: pairRecTestPartition}); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.restoreSourcesFrom(l, -1); err != nil {
+				t.Fatal(err)
+			}
+			got, err := src.Collect(context.Background(), pairFundingRequest{Key: f.key, FromMs: f.policy.FromMs, ThroughMs: f.target + 200, CutoffMs: f.target + 200})
+			if err != nil || len(src.chain()) != c.batches || len(got.Observations) != c.observations || len(got.Rates) != c.rates {
+				t.Fatalf("frontier %d: batches %d observations %d rates %d: %v", c.frontier, len(src.chain()), len(got.Observations), len(got.Rates), err)
+			}
+			if c.frontier == beforeConsume {
+				if trace := r.playAsyncOracle(pairRecWake{WallMs: f.target + 500}); strings.Join(trace, ",") != "funding_oracle" || len(src.chain()) != 1 {
+					t.Fatalf("the remaining sample appears at its consumption: trace %v batches %d", trace, len(src.chain()))
+				}
+			}
+		})
+	}
+}

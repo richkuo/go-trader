@@ -403,7 +403,7 @@ func TestBasketReplayPairPaperResearchPolicyAdmission(t *testing.T) {
 	}
 	manifest, err := readPairPaperManifest(dir)
 	if err != nil || manifest.Version != pairPaperManifestAsyncVer || manifest.EventOrder != pairPaperEventOrderAsync || manifest.Scenario.FundingPolicy == nil {
-		t.Fatalf("a policy run writes the version 2 paper manifest with the research event order: %+v %v", manifest, err)
+		t.Fatalf("a policy run writes the version 3 paper manifest with the research event order: %+v %v", manifest, err)
 	}
 	digest := dirDigest(t, dir)
 	legacy := f.spec(basketReplayModeResume, dir)
@@ -1615,7 +1615,7 @@ func TestBasketReplayPairPaperResearchOracleTiming(t *testing.T) {
 			pairPaperWall = &pairPaperTestWall{path: clock, ms: wallMs}
 			rec := newPairRecorder(pairRecLive, "timing-run", "paper", "contract", nil, &simulatedClock{}, pairRecFaults{})
 			r := &pairReplayRuntime{rt: e.rt(), rec: rec, oracleNextMs: target, paper: &pairPaperRun{scenario: pairPaperScenario{FundingPolicy: &policy}}}
-			trace := r.oracleHourAction(wake)
+			trace := r.deliverOracle(wake)
 			return trace, r.oracleNextMs
 		}
 		cases := []struct {
@@ -1640,7 +1640,7 @@ func TestBasketReplayPairPaperResearchOracleTiming(t *testing.T) {
 		late.DrainThroughMs = target + 3000
 		rec := newPairRecorder(pairRecLive, "timing-run", "paper", "contract", nil, &simulatedClock{}, pairRecFaults{})
 		r := &pairReplayRuntime{rt: e.rt(), rec: rec, oracleNextMs: target, paper: &pairPaperRun{scenario: pairPaperScenario{FundingPolicy: &late}}}
-		if trace := r.oracleHourAction(pairRecWake{WallMs: target + 3001}); strings.Join(trace, ",") != "oracle_missed" || r.oracleNextMs != 0 {
+		if trace := r.deliverOracle(pairRecWake{WallMs: target + 3001}); strings.Join(trace, ",") != "oracle_missed" || r.oracleNextMs != 0 {
 			t.Fatalf("drain clips the deadline to drain_through_ms and no later hour exists, got %v next %d", trace, r.oracleNextMs)
 		}
 	})
@@ -2027,5 +2027,84 @@ func TestBasketReplayPairPaperResearchOracleHostContinues(t *testing.T) {
 	}
 	if !decided {
 		t.Fatal("an eligible decision is recorded from a fresh quote while the oracle read is pending")
+	}
+}
+
+func TestBasketReplayPairPaperResearchPlaybackResumesAfterConsumption(t *testing.T) {
+	f, target := newPairPaperResearchFixture(t, pairPaperResearchOptions{runID: "paper-playback-frontier", fromBefore: 32000, throughAt: 10000, drainAt: 20000, convergeAt: 1})
+	pairPaperPatchFixture(t, f, map[string]interface{}{
+		"hl_funding":  [][]interface{}{{target + 3, "0.0000125"}, {target + 18000, "0.0000125"}},
+		"okx_funding": [][]interface{}{{f.fromMs - 1000, "0.0001"}, {target + 18000, "0.0001"}},
+	})
+	dir := filepath.Join(f.parent, "paper")
+	live := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false), "--seal")
+	pairPaperRequireComplete(t, "the source recording seals", live)
+	rows := pairPaperLogRows(t, dir, f.runID)
+	var stepID string
+	for _, row := range rows {
+		if row.Kind == pairRecEventConsume && row.Event.Consume.Disposition == "accepted" {
+			stepID = row.Event.Consume.StepID
+			break
+		}
+	}
+	if stepID == "" {
+		t.Fatal("the fixture must accept an oracle consumption")
+	}
+	db, err := openStateDBReadOnly(filepath.Join(dir, basketReplayDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ordinal int
+	err = db.db.QueryRow(`SELECT step_index FROM basket_replay_steps WHERE run_id = ? AND step_id = ?`, f.runID, stepID).Scan(&ordinal)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := os.ReadFile(filepath.Join(dir, pairPaperExportDirName, pairRecordingSpecName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repro map[string]interface{}
+	if err := json.Unmarshal(blob, &repro); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(f.parent, "chunk-playback")
+	repro["run"].(map[string]interface{})["state_dir"] = stateDir
+	first := runPairReplayAdapter(t, f.repo, repro, f.env(true), "--max-steps", strconv.Itoa(ordinal+1))
+	if first.Out.Run == nil || first.Out.Run.Finished || first.Out.Status != basketReplayStatusStopped {
+		t.Fatalf("the playback must stop after the first accepted consumption: exit %d status %s refusal %+v", first.Code, first.Out.Status, first.Out.Refusal)
+	}
+	db, err = openStateDBReadOnly(filepath.Join(stateDir, basketReplayDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frontier, err := pairPaperConsumptionFrontier(db, f.runID)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := verifyPairRecLog(rows, f.runID, "paper", live.Out.Run.Fingerprints.Contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := 0
+	remaining := false
+	for i, ri := range l.stream {
+		row := l.rows[ri]
+		if i < frontier && row.Kind == pairRecEventConsume && row.Event.Consume.Disposition == "accepted" {
+			accepted++
+		}
+		if i >= frontier && row.Kind == pairRecEventStart && row.Event.Start.Kind == pairRecKindFunding {
+			remaining = true
+		}
+	}
+	if accepted != 1 || !remaining {
+		t.Fatalf("the chunk saves one consumption and leaves later rate reads: accepted %d remaining %v", accepted, remaining)
+	}
+	repro["mode"] = basketReplayModeResume
+	resumed := runPairReplayAdapter(t, f.repo, repro, f.env(true))
+	pairOfflineRequireComplete(t, "resumed playback", resumed)
+	if resumed.Out.Comparison.Hash != live.Out.Comparison.Hash {
+		t.Fatalf("resumed playback equals the live comparison hash: live %s resumed %s", live.Out.Comparison.Hash, resumed.Out.Comparison.Hash)
 	}
 }

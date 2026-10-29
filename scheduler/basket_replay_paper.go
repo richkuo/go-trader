@@ -911,7 +911,7 @@ func (r *pairReplayRuntime) deliverRecorded(s *pairRecStart, callID string, end 
 		}
 		r.paper.quotes.addPoll(s.MemberID, o, end.LogicalMs, callID)
 	case pairRecKindFunding, pairRecKindFundingOracle:
-		if s.Async {
+		if r.paperAsync() || s.Async {
 			return nil
 		}
 		if _, err := pairDecodeFundingBatch(end.Result); err != nil {

@@ -509,19 +509,20 @@ func readPairRecSlotRows(q interface {
 }
 
 type pairRecLog struct {
-	runID      string
-	partition  string
-	contractFP string
-	schema     int
-	rows       []pairRecRow
-	starts     map[string]int
-	ends       map[string]int
-	consumes   map[string]int
-	children   map[string][]string
-	stream     []int
-	bind       *pairRecBind
-	epochs     int
-	sealed     *pairRecSeal
+	runID           string
+	partition       string
+	contractFP      string
+	schema          int
+	rows            []pairRecRow
+	starts          map[string]int
+	ends            map[string]int
+	consumes        map[string]int
+	children        map[string][]string
+	stream          []int
+	streamPositions []int
+	bind            *pairRecBind
+	epochs          int
+	sealed          *pairRecSeal
 }
 
 func (l *pairRecLog) head() pairRecHead {
@@ -588,8 +589,10 @@ func verifyPairRecLog(rows []pairRecRow, runID, partition, contractFP string) (*
 	if len(rows) > 0 && l.bind == nil {
 		return nil, fmt.Errorf("the recording has no binding event")
 	}
+	l.streamPositions = make([]int, len(l.rows))
 	for i := range l.rows {
 		if pairRecConsumable(l.rows[i]) {
+			l.streamPositions[i] = len(l.stream) + 1
 			l.stream = append(l.stream, i)
 		}
 	}

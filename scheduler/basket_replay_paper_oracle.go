@@ -58,6 +58,7 @@ type pairAsyncOracle struct {
 	backward   bool
 	terminal   *pairRecEnd
 	consumed   bool
+	recovered  bool
 }
 
 func (r *pairReplayRuntime) paperAsync() bool {
@@ -138,31 +139,6 @@ func (w *pairAsyncOracle) join(wait, cancelFirst bool) (pairAsyncOracleResult, b
 		return pairAsyncOracleResult{}, false
 	}
 	return w.snapshot(), true
-}
-
-func (r *pairReplayRuntime) oracleHourAction(wake pairRecWake) []string {
-	policy := r.paper.scenario.FundingPolicy
-	if policy == nil {
-		return nil
-	}
-	var trace []string
-	for r.oracleNextMs > 0 {
-		prepare, err := pairPaperOraclePrepareAt(r.oracleNextMs, *policy)
-		if err != nil || wake.WallMs < prepare {
-			break
-		}
-		deadline, err := pairFundingOracleDeadline(*policy, r.oracleNextMs)
-		if err != nil {
-			break
-		}
-		if wake.ClockBackward || wake.WallMs > deadline {
-			r.advanceOracleGrid()
-			trace = append(trace, "oracle_missed")
-			continue
-		}
-		break
-	}
-	return trace
 }
 
 func (r *pairReplayRuntime) deliverAsyncOracle(wake pairRecWake) []string {
@@ -317,6 +293,28 @@ func (r *pairReplayRuntime) finishReadyOracle(wake pairRecWake, trace *[]string)
 		r.settleOracleFromLog(wake, trace)
 		return
 	}
+	if w.recovered {
+		if r.rec.blocked.Load() {
+			return
+		}
+		l, err := readVerifiedPairRecLog(r.rec.file, r.rec.runID, r.rec.partition, r.rec.contractFP)
+		if err == nil {
+			attempt := pairPaperOracleAttempt{CallID: w.callID, TargetEventMs: w.target, AttemptID: w.attemptID, Key: w.key}
+			err = r.consumeLoggedAttemptFrom(l, wake, attempt)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[paper] funding oracle recovery for hour %d could not be consumed: %v\n", w.target, err)
+			*trace = append(*trace, "oracle_consume_unrecorded")
+			return
+		}
+		w.consumed = true
+		r.clearOracle()
+		if w.target == r.oracleNextMs {
+			r.advanceOracleGrid()
+		}
+		*trace = append(*trace, "funding_oracle")
+		return
+	}
 	wait := wake.WallMs >= w.deadline
 	res, ok := w.take(wait || w.ready.Load())
 	if !ok {
@@ -327,6 +325,7 @@ func (r *pairReplayRuntime) finishReadyOracle(wake pairRecWake, trace *[]string)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[paper] funding oracle terminal for hour %d could not be recorded: %v\n", w.target, err)
 			*trace = append(*trace, "oracle_terminal_unrecorded")
+			w.recovered = true
 			return
 		}
 		w.terminal = end
@@ -465,7 +464,10 @@ func (r *pairReplayRuntime) settleOracleFromLog(wake pairRecWake, trace *[]strin
 }
 
 func (r *pairReplayRuntime) consumeLoggedAttempt(wake pairRecWake, attempt pairPaperOracleAttempt) error {
-	l := r.rec.log
+	return r.consumeLoggedAttemptFrom(r.rec.log, wake, attempt)
+}
+
+func (r *pairReplayRuntime) consumeLoggedAttemptFrom(l *pairRecLog, wake pairRecWake, attempt pairPaperOracleAttempt) error {
 	si, ok := l.starts[attempt.CallID]
 	if !ok {
 		return fmt.Errorf("oracle call %s is not in the log", attempt.CallID)
@@ -612,6 +614,11 @@ func (r *pairReplayRuntime) playbackOracleMiss(wake pairRecWake) []string {
 func (r *pairReplayRuntime) finalizeOracle() {
 	w := r.currentOracle()
 	if w == nil || w.consumed {
+		r.killOracleChild()
+		return
+	}
+	if w.recovered {
+		r.clearOracle()
 		r.killOracleChild()
 		return
 	}
@@ -793,15 +800,10 @@ func (rec *pairRecorder) takeAsyncBoundary() (string, pairRecRow, bool) {
 }
 
 func (l *pairRecLog) streamIndex(row int) int {
-	if l == nil {
+	if l == nil || row < 0 || row >= len(l.streamPositions) {
 		return -1
 	}
-	for i, ri := range l.stream {
-		if ri == row {
-			return i
-		}
-	}
-	return -1
+	return l.streamPositions[row] - 1
 }
 
 func pairPaperConsumptionFrontier(db *StateDB, runID string) (int, error) {

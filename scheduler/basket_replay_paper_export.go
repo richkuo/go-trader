@@ -776,7 +776,16 @@ func (r *pairReplayRuntime) playbackFundingBeforeAdmission(stateDir string, man 
 	}
 	l := r.rec.log
 	if l.schema == pairRecSchemaAsync {
-		return r.restoreAsyncFunding(l, len(l.stream))
+		db, err := openPairFundingSnapshot(filepath.Join(stateDir, basketReplayDBName))
+		if err != nil {
+			return refuseReplay("state_foreign", err.Error())
+		}
+		defer db.Close()
+		frontier, err := pairPaperConsumptionFrontier(db, r.spec.Run.RunID)
+		if err != nil {
+			return refuseReplay("resume_refused", "the consumption frontier is unreadable: "+err.Error())
+		}
+		return r.restoreAsyncFunding(l, frontier)
 	}
 	for _, row := range l.rows {
 		if len(r.paper.funding.chain()) >= len(saved) {

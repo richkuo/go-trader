@@ -932,12 +932,7 @@ func pairPaperOracleAttemptIndex(l *pairRecLog) (map[string]pairPaperOracleAttem
 		attempt := pairPaperOracleAttempt{Key: req.Key, TargetEventMs: req.TargetEventMs, PolicyDigest: req.PolicyDigest, AttemptID: req.AttemptID,
 			CallID: row.CallID, StartSeq: row.Seq, EndSeq: -1, StreamPos: i, ConsumeStream: -1, Async: st.Async, Disposition: "started"}
 		if ci, ok := l.consumes[row.CallID]; ok {
-			for si, ri := range l.stream {
-				if ri == ci {
-					attempt.ConsumeStream = si
-					break
-				}
-			}
+			attempt.ConsumeStream = l.streamIndex(ci)
 		}
 		if ei, ok := l.ends[row.CallID]; ok {
 			if ei < 0 || l.rows[ei].Kind == pairRecEventRecovery {
