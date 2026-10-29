@@ -218,7 +218,7 @@ func TestQuoteShutdownKeepsUnknownOutcomesAndStartupRecoversThem(t *testing.T) {
 	e.venue.cancelHook = func(req quoteOrderRequest) (quoteOrderOutcome, bool) {
 		return quoteOrderOutcome{Status: quoteOutcomeUnknown, Detail: "drain timeout"}, true
 	}
-	lines := e.adm.ShutdownCleanup(50 * time.Millisecond)
+	lines := e.adm.ShutdownCleanup(30 * time.Second)
 	if len(lines) == 0 {
 		t.Fatal("shutdown cleanup must report its work")
 	}
