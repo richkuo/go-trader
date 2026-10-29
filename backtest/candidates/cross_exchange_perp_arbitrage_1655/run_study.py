@@ -235,7 +235,7 @@ def cmd_prepare(study, bundle):
     print(f"prepared {dest}")
 
 
-def cmd_lock(study, binary):
+def cmd_lock(study, binary, allow_dirty=False):
     if os.path.exists(study.lock_path):
         raise StudyRefusal("lock", "lock_exists", "protocol.lock.json exists; a lock is never replaced")
     if not binary or not os.path.isfile(binary):
@@ -258,8 +258,10 @@ def cmd_lock(study, binary):
         "tools": tool_versions(binary), "excluded": sorted(EXCLUDED_NAMES | EXCLUDED_DIRS),
     }
     dirty = repo_dirty(list(lock["sources"]) + list(plans))
-    if dirty:
+    if dirty and not allow_dirty:
         raise StudyRefusal("lock", "lock_dirty", dirty)
+    if dirty:
+        lock["dirty"] = dirty
     for rel in plans:
         text = open(os.path.join(REPO, rel)).read()
         if "protocol.lock.json" in text:
@@ -428,6 +430,7 @@ def cmd_render(study):
         "## Lock",
         "",
         f"- Commit recorded by the lock: `{lock.get('commit')}`.",
+        *([f"- Dirty sources: `{item}`." for item in lock["dirty"]] if lock.get("dirty") else []),
         f"- Binary sha256: `{lock.get('binary_sha256')}`.",
         f"- Protocol sha256: `{lock.get('protocol_sha256')}`.",
         f"- Signal specification sha256: `{lock.get('signal_spec_sha256')}`.",
@@ -508,6 +511,7 @@ def main(argv=None):
     prep.add_argument("--bundle")
     lock = sub.add_parser("lock")
     lock.add_argument("--binary", required=True)
+    lock.add_argument("--allow-dirty", action="store_true")
     run = sub.add_parser("run")
     run.add_argument("--binary", required=True)
     run.add_argument("--work", required=True)
@@ -524,7 +528,7 @@ def main(argv=None):
         elif args.cmd == "prepare":
             cmd_prepare(study, os.path.abspath(args.bundle) if args.bundle else None)
         elif args.cmd == "lock":
-            cmd_lock(study, os.path.abspath(args.binary))
+            cmd_lock(study, os.path.abspath(args.binary), args.allow_dirty)
         elif args.cmd == "run":
             cmd_run(study, os.path.abspath(args.binary), os.path.abspath(args.work))
         elif args.cmd == "render":

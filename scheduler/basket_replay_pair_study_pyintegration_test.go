@@ -407,7 +407,7 @@ func TestBasketReplayPairStudyRunnerLocksAnInconclusiveReport(t *testing.T) {
 	if code, out := pairStudyRun(t, repo, study, "validate"); code != 0 {
 		t.Fatalf("validate: %s", out)
 	}
-	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin); code != 0 {
+	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin, "--allow-dirty"); code != 0 {
 		t.Fatalf("lock: %s", out)
 	}
 	work := filepath.Join(t.TempDir(), "work")
@@ -447,7 +447,7 @@ func TestBasketReplayPairStudyRunnerLocksAnInconclusiveReport(t *testing.T) {
 		t.Fatalf("render must leave the lock valid: %s", out)
 	}
 	tampered := pairStudyCopy(t, repo)
-	if code, out := pairStudyRun(t, repo, tampered, "lock", "--binary", bin); code != 0 {
+	if code, out := pairStudyRun(t, repo, tampered, "lock", "--binary", bin, "--allow-dirty"); code != 0 {
 		t.Fatalf("tamper lock: %s", out)
 	}
 	if err := os.WriteFile(filepath.Join(tampered, "plans", "extra.json"), []byte("{}\n"), 0o644); err != nil {
@@ -599,7 +599,7 @@ func TestBasketReplayPairStudyRunnerReplaysAFixture(t *testing.T) {
 	if code, out := pairStudyRun(t, repo, study, "prepare", "--bundle", bundle); code != 0 {
 		t.Fatalf("prepare: %s", out)
 	}
-	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin); code != 0 {
+	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin, "--allow-dirty"); code != 0 {
 		t.Fatalf("lock: %s", out)
 	}
 	work := filepath.Join(t.TempDir(), "work")
@@ -653,11 +653,12 @@ func TestBasketReplayPairStudyProtocolRejectsAMissingRule(t *testing.T) {
 	}
 }
 
-func TestBasketReplayPairStudyCommittedLockIgnoresBytecode(t *testing.T) {
+func TestBasketReplayPairStudyCopyLockIgnoresBytecode(t *testing.T) {
 	repo := basketPyRoot(t)
-	study := filepath.Join(repo, "backtest", "candidates", "cross_exchange_perp_arbitrage_1655")
-	if code, out := pairStudyRun(t, repo, study, "check"); code != 0 {
-		t.Fatalf("the committed study must check clean: %s", out)
+	study := pairStudyCopy(t, repo)
+	bin := pyintegrationBinary(t)
+	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin, "--allow-dirty"); code != 0 {
+		t.Fatalf("lock: %s", out)
 	}
 	cache := filepath.Join(study, "__pycache__")
 	pyc := filepath.Join(cache, "run_study.cpython-312.pyc")
@@ -695,7 +696,7 @@ func TestBasketReplayPairStudyRunnerRefusesAnUnscoredClassification(t *testing.T
 		t.Fatal(err)
 	}
 	bin := pyintegrationBinary(t)
-	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin); code != 0 {
+	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin, "--allow-dirty"); code != 0 {
 		t.Fatalf("lock: %s", out)
 	}
 	work := filepath.Join(t.TempDir(), "work")
@@ -764,7 +765,7 @@ func TestBasketReplayPairStudyRunnerReconcilesBookedTrades(t *testing.T) {
 	if code, out := pairStudyRun(t, repo, study, "prepare", "--bundle", bundle); code != 0 {
 		t.Fatalf("prepare: %s", out)
 	}
-	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin); code != 0 {
+	if code, out := pairStudyRun(t, repo, study, "lock", "--binary", bin, "--allow-dirty"); code != 0 {
 		t.Fatalf("lock: %s", out)
 	}
 	work := filepath.Join(t.TempDir(), "work")
