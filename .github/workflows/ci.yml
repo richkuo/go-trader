@@ -396,7 +396,7 @@ jobs:
           SPLITS: ${{ matrix.splits }}
           PATHS: ${{ matrix.paths }}
         run: |
-          uv run pytest ${PATHS:+"$PATHS"} -n auto --durations=25 \
+          uv run pytest ${PATHS:+"$PATHS"} -n auto --dist=worksteal --durations=25 \
             --splits="$SPLITS" --group="$GROUP" --splitting-algorithm=least_duration \
             --durations-path="scripts/pytest_durations/$SUITE.json" \
             --report-log="$RUNNER_TEMP/pytest-shards/$SUITE-$GROUP-of-$SPLITS.jsonl"
