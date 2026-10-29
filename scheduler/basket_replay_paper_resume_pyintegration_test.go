@@ -562,11 +562,18 @@ func TestBasketReplayPairPaperResearchOracleResume(t *testing.T) {
 		resumed := runPairPaperAdapter(t, f, f.spec(basketReplayModeResume, dir), f.env(false), "--seal")
 		pairPaperRequireResumed(t, "refused terminal resume", resumed)
 		o := pairPaperOracleOutcomeOf(t, dir, f.runID)
-		if len(o.starts) != 1 || len(o.refusedSeq) != 1 || len(o.admitted) != 0 {
+		if len(o.starts) != 1 || len(o.refusedSeq) != 1 || o.refusedSeq[0] != 0 || len(o.admitted) != 0 {
 			t.Fatalf("the late terminal stays only in the recording after the restart: starts %d refused %v admitted %d", len(o.starts), o.refusedSeq, len(o.admitted))
 		}
-		if _, ok := o.chainSeqs[o.refusedSeq[0]]; !ok {
-			t.Fatalf("a later accepted batch reuses the refused sequence %d: %v", o.refusedSeq[0], o.chainSeqs)
+		var seqs []int
+		for seq := range o.chainSeqs {
+			seqs = append(seqs, int(seq))
+		}
+		sort.Ints(seqs)
+		for i, seq := range seqs {
+			if seq != i+1 {
+				t.Fatalf("a refused family-3 sample allocates no sequence, chain sequences are %v", seqs)
+			}
 		}
 		pairPaperNoRepeatedCall(t, pairPaperLogRows(t, dir, f.runID))
 	})
@@ -637,11 +644,10 @@ func TestBasketReplayPairPaperResearchOracleBarrierDecidesFromTheSameWake(t *tes
 	if s, e, rcv := pairPaperOracleRows(rows); s != 1 || e != 1 || rcv != 0 || start.Event.Start.RawStartMs < clearFrom || end.Event.End.Class != pairRecClassResult {
 		t.Fatalf("the hour stays for the first committed wake after the release and reads once, got %d starts %d ends %d recoveries, start %+v", s, e, rcv, start.Event.Start)
 	}
-	batch, err := pairDecodeFundingBatch(end.Event.End.Result)
-	if err != nil || batch.Research == nil || len(batch.Research.Observations) != 1 {
-		t.Fatalf("the oracle terminal holds one observation batch: %v", err)
+	var obs pairFundingOracleObservation
+	if err := pairReplayStrictDecode(end.Event.End.Result, &obs); err != nil || obs.RecordHash == "" {
+		t.Fatalf("the oracle terminal holds one observation: %v", err)
 	}
-	obs := batch.Research.Observations[0]
 	if obs.TargetEventMs != target || obs.RequestMs < target || obs.ReceiptMs > deadline {
 		t.Fatalf("the observation lies inside [%d, %d]: %+v", target, deadline, obs)
 	}

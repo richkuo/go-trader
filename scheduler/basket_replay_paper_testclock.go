@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,9 +19,11 @@ const (
 )
 
 type pairPaperTestWall struct {
-	mu   sync.Mutex
-	path string
-	ms   int64
+	mu                 sync.Mutex
+	path               string
+	ms                 int64
+	oracleCompletionMs int64
+	oracleCompleted    atomic.Bool
 }
 
 func init() {
@@ -39,6 +42,14 @@ func init() {
 		os.Exit(basketReplayExitError)
 	}
 	wall := &pairPaperTestWall{path: path, ms: ms}
+	if raw := os.Getenv("GO_TRADER_PAPER_TEST_ORACLE_COMPLETION_MS"); raw != "" {
+		completion, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || completion <= ms {
+			fmt.Fprintf(os.Stderr, "the paper test oracle completion %q must be after the initial clock\n", raw)
+			os.Exit(basketReplayExitError)
+		}
+		wall.oracleCompletionMs = completion
+	}
 	pairPaperWall = wall
 	window := os.Getenv(pairPaperTestAppendFaultEnv)
 	if window == "" {
@@ -80,15 +91,17 @@ func (w *pairPaperTestWall) Now() time.Time {
 	return time.UnixMilli(w.ms)
 }
 
-func (w *pairPaperTestWall) advance(d time.Duration) {
+func (w *pairPaperTestWall) current() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.reloadLocked()
-	step := int64((d + time.Millisecond - 1) / time.Millisecond)
-	if step < 1 {
-		step = 1
-	}
-	w.ms += step
+	return w.ms
+}
+
+func (w *pairPaperTestWall) writeMs(ms int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.ms = ms
 	tmp := w.path + ".next"
 	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(w.ms, 10)), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "the paper test clock could not advance: %v\n", err)
@@ -100,6 +113,70 @@ func (w *pairPaperTestWall) advance(d time.Duration) {
 	}
 }
 
+func (w *pairPaperTestWall) advance(d time.Duration) {
+	step := int64((d + time.Millisecond - 1) / time.Millisecond)
+	if step < 1 {
+		step = 1
+	}
+	end := w.current() + step
+	tick := d <= pairPaperTestClockTick
+	deadline := time.Now().Add(pairPaperGateWatchdog)
+	for {
+		if time.Now().After(deadline) {
+			fmt.Fprintf(os.Stderr, "paper clock gate watchdog expired\n")
+			os.Exit(basketReplayExitError)
+		}
+		now := w.current()
+		if w.oracleCompletionMs > 0 && now >= w.oracleCompletionMs && !w.oracleCompleted.Load() {
+			time.Sleep(2 * time.Millisecond)
+			continue
+		}
+		if req, ok := pairPaperGateReadRequest(); ok {
+			if req.Kind == "backward" {
+				w.writeMs(req.TargetMs)
+				pairPaperGateWaitAck(deadline, req)
+				deadline = time.Now().Add(pairPaperGateWatchdog)
+				continue
+			}
+			if req.TargetMs <= end {
+				if req.TargetMs > now {
+					w.writeMs(req.TargetMs)
+				}
+				pairPaperGateWaitAck(deadline, req)
+				deadline = time.Now().Add(pairPaperGateWatchdog)
+				continue
+			}
+			if now < end {
+				w.writeMs(end)
+			}
+			return
+		}
+		if now >= end || !pairPaperGateChildActive() || tick {
+			if now < end {
+				w.writeMs(end)
+			}
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 func (w *pairPaperTestWall) Sleep(d time.Duration) { w.advance(d) }
 
-func (w *pairPaperTestWall) Tick() { w.advance(pairPaperTestClockTick) }
+func (w *pairPaperTestWall) Tick() {
+	if w.oracleCompletionMs > 0 {
+		w.advance(time.Millisecond)
+		return
+	}
+	w.advance(pairPaperTestClockTick)
+}
+
+func (w *pairPaperTestWall) CompletionTick() time.Time {
+	if w.oracleCompletionMs > 0 {
+		at := w.Now()
+		w.oracleCompleted.Store(true)
+		return at
+	}
+	w.advance(pairPaperTestClockTick)
+	return w.Now()
+}

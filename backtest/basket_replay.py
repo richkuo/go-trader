@@ -230,8 +230,8 @@ def build_pair_spec(plan, base, mode, research, objects):
             raise ReplayPlanError(f"recording {path!r} has sha256 {got}, the plan freezes {plan['recording']['sha256']}")
         with open(path) as fh:
             manifest = json.load(fh, object_pairs_hook=_unique_pairs)
-        if not isinstance(manifest, dict) or manifest.get("kind") != "go-trader.paper-recording" or isinstance(manifest.get("v"), bool) or manifest.get("v") not in (1, 2):
-            raise ReplayPlanError("recording manifest must be a go-trader.paper-recording object of version 1 or 2")
+        if not isinstance(manifest, dict) or manifest.get("kind") != "go-trader.paper-recording" or isinstance(manifest.get("v"), bool) or manifest.get("v") not in (1, 2, 3):
+            raise ReplayPlanError("recording manifest must be a go-trader.paper-recording object of version 1, 2 or 3")
         spec["recording"] = {"version": manifest["v"], "path": plan["recording"]["path"], "sha256": got, "size_bytes": os.path.getsize(path)}
     return spec
 

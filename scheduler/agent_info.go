@@ -71,6 +71,7 @@ var agentInfoEnvVars = []agentEnvVar{
 	{Name: "GO_TRADER_DIRECTIONAL_CERT_PATH", Purpose: "Override path to the regime directional-certification artifact (#1085); default backtest/research/regime_directional_certifications.json.", Secret: false},
 	{Name: "GO_TRADER_GITHUB_TOKEN", Purpose: "GitHub token for the self-updater (preferred over GITHUB_TOKEN).", Secret: true},
 	{Name: "GO_TRADER_MIGRATE_FIXTURE_HOLD_LATCH", Purpose: "Set to 1 only by scripts/test_migrate_service_layout_fixture.sh scenario_latch. A paper kill switch with no DM owner stays latched, and the daemon logs that this variable suppressed the auto-reset.", Secret: false},
+	{Name: "GO_TRADER_PAPER_TEST_ORACLE_COMPLETION_MS", Purpose: "Integration tests only (pyintegration build): hold the paper test clock at the specified oracle completion time until the worker captures it. Production builds ignore it.", Secret: false},
 	{Name: "GO_TRADER_ROBINHOOD_SESSION_DIR", Purpose: "Set by go-trader at startup, directly after the config loads, to <folder of the resolved --config>/robinhood-session; an inherited value is replaced. Robinhood scripts refuse to log in without it and never use the home folder.", Secret: false},
 	{Name: "GO_TRADER_RUNTIME", Purpose: "Process runtime policy: unset on a host, \"container\" in the Docker image (image-only updates, restart by exit, wildcard status bind with a token, databases under /data).", Secret: false},
 	{Name: "GO_TRADER_SERVICE", Purpose: "systemd unit name used by the updater's restart path.", Secret: false},

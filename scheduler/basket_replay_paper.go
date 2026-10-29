@@ -61,11 +61,30 @@ const pairPaperEventOrder = "one host cycle per recorded wake; a wake's logical 
 
 const pairPaperEventOrderResearch = "one host cycle per recorded wake; a wake's logical time is the larger of the previous logical time plus 1 ms and the wall clock; for the frozen research policy the cycle first prepares and commits due oracle observations, then commits its due match polls (member id order), capability refreshes and funding reads at their anchored grids, then runs coordinator funding, preparePairRisk, partition risk with the paper kill switch, native member management on a management cycle (Hyperliquid then OKX by member id, each with a recorded candle read, a recorded own mark and a recorded member check), the coordinator step, one full save that commits the step record and the cursor, then the next wake from fresh time; every outside read and process outcome commits before use and advances logical time to the larger of the previous logical time plus 1 ms and its raw completion"
 
-func pairPaperManifestFamily(policy *pairFundingPolicyV1) (int, string) {
+const pairPaperEventOrderAsync = "one host cycle per recorded wake; a wake's logical time is the larger of the previous logical time plus 1 ms and the wall clock; each wake first commits an already-ready oracle result, or at the deadline wake joins the worker and commits that terminal and its consumption in the same delivery, then starts a due oracle attempt without waiting for it, then commits due match polls (member id order), capability refreshes and funding reads at their anchored grids, then runs coordinator funding, preparePairRisk, partition risk with the paper kill switch, native member management on a management cycle (Hyperliquid then OKX by member id, each with a recorded candle read, a recorded own mark and a recorded member check), the coordinator step, one full save that commits the step record and the cursor, then the next wake from fresh time; an asynchronous oracle start commits before its outside read and stays pending; its terminal does not enter the consumable stream; only call_consume inside a host step publishes accepted funding and advances logical time to the larger of the previous logical time plus 1 ms and the consumption boundary"
+
+func pairPaperWriteFamily(policy *pairFundingPolicyV1) (int, string) {
 	if policy != nil {
-		return pairPaperManifestResearchVer, pairPaperEventOrderResearch
+		return pairPaperManifestAsyncVer, pairPaperEventOrderAsync
 	}
 	return pairPaperManifestVer, pairPaperEventOrder
+}
+
+func pairPaperOrderForManifest(version int) (string, bool) {
+	switch version {
+	case pairPaperManifestVer:
+		return pairPaperEventOrder, true
+	case pairPaperManifestResearchVer:
+		return pairPaperEventOrderResearch, true
+	case pairPaperManifestAsyncVer:
+		return pairPaperEventOrderAsync, true
+	default:
+		return "", false
+	}
+}
+
+func pairPaperManifestFamily(policy *pairFundingPolicyV1) (int, string) {
+	return pairPaperWriteFamily(policy)
 }
 
 type pairPaperRun struct {
@@ -364,8 +383,10 @@ func readPairPaperManifest(dir string) (pairPaperManifest, error) {
 	if err := pairReplayStrictDecode(blob, &m); err != nil {
 		return m, refuseReplay("state_foreign", fmt.Sprintf("the manifest is not a paper recording manifest: %v", err))
 	}
-	version, eventOrder := pairPaperManifestFamily(m.Scenario.FundingPolicy)
-	if m.Owner != pairPaperManifestOwner || m.Version != version || m.EventOrder != eventOrder {
+	eventOrder, ok := pairPaperOrderForManifest(m.Version)
+	policy := m.Scenario.FundingPolicy != nil
+	familyOK := m.Version == pairPaperManifestVer && !policy || (m.Version == pairPaperManifestResearchVer || m.Version == pairPaperManifestAsyncVer) && policy
+	if m.Owner != pairPaperManifestOwner || !ok || !familyOK || m.EventOrder != eventOrder {
 		return m, refuseReplay("state_foreign", fmt.Sprintf("the manifest owner %q version %d and event order do not match its funding policy", m.Owner, m.Version))
 	}
 	return m, nil
@@ -597,7 +618,7 @@ func openPairPaper(spec *pairPaperSpec, raw []byte, lt pairReplayLifetime, opts 
 	}
 	r.venues = venues
 	part0, _ := pairPaperMemberPartition(shape, shape.Pairs[0].Members[0].StrategyID)
-	manifestVersion, eventOrder := pairPaperManifestFamily(spec.Scenario.FundingPolicy)
+	manifestVersion, eventOrder := pairPaperWriteFamily(spec.Scenario.FundingPolicy)
 	r.paper.manifest = pairPaperManifest{Owner: pairPaperManifestOwner, Version: manifestVersion, RunID: spec.Run.RunID, Fingerprints: r.fp, PaperIdentity: identity,
 		Partition: part0.String(), EvidenceIdentity: r.paper.evidence.Identity(), EvidenceDigest: r.paper.evidence.Digest(), Objects: []pairReplayObjectRef{seedRef}, Lifetime: lt,
 		Collection: spec.Collection, Scenario: spec.Scenario, EventOrder: eventOrder, AdministrativeFields: pairReplayAdministrativeFields, UID: os.Getuid()}
@@ -608,6 +629,9 @@ func openPairPaper(spec *pairPaperSpec, raw []byte, lt pairReplayLifetime, opts 
 		saved, err = readPairPaperManifest(stateDir)
 		if err != nil {
 			return nil, err
+		}
+		if saved.Version == pairPaperManifestResearchVer {
+			return nil, refuseReplay("resume_refused", "paper manifest family 2 cannot resume into a live run; play back a sealed family-2 export")
 		}
 		if err := comparePairPaperManifest(saved, r.paper.manifest, false); err != nil {
 			return nil, err
@@ -652,6 +676,10 @@ func openPairPaper(spec *pairPaperSpec, raw []byte, lt pairReplayLifetime, opts 
 		return nil, err
 	}
 	r.rec.partition, r.rec.contractFP, r.rec.file = r.partition.String(), adm.contract, r.file
+	if spec.Scenario.FundingPolicy != nil {
+		r.rec.schema = pairRecSchemaAsync
+	}
+	r.rec.beforeExit = func() { r.killOracleChild() }
 	if err := r.file.ensurePairRecordingSchema(); err != nil {
 		return nil, err
 	}
@@ -771,7 +799,14 @@ func (r *pairReplayRuntime) preAdmissionRestore(stateDir string, saved pairPaper
 	if _, err := pairPaperOracleAttemptIndex(l); err != nil {
 		return refuseReplay("resume_refused", "the committed oracle attempts are refused: "+err.Error())
 	}
-	return r.restoreFundingFrom(l)
+	frontier := -1
+	if l.schema == pairRecSchemaAsync {
+		frontier, err = pairPaperConsumptionFrontier(db, saved.RunID)
+		if err != nil {
+			return refuseReplay("resume_refused", "the consumption frontier is unreadable: "+err.Error())
+		}
+	}
+	return r.restoreFundingFrom(l, frontier)
 }
 
 func readVerifiedPairRecLog(db *StateDB, runID, partition, contractFP string) (*pairRecLog, error) {
@@ -812,7 +847,10 @@ func readVerifiedPairRecLog(db *StateDB, runID, partition, contractFP string) (*
 	return l, nil
 }
 
-func (r *pairReplayRuntime) restoreFundingFrom(l *pairRecLog) error {
+func (r *pairReplayRuntime) restoreFundingFrom(l *pairRecLog, frontier int) error {
+	if l.schema == pairRecSchemaAsync {
+		return r.restoreAsyncFunding(l, frontier)
+	}
 	src := r.paper.funding
 	for _, row := range l.rows {
 		if row.Kind != pairRecEventEnd || row.Event.End.Class != pairRecClassResult {
@@ -873,6 +911,9 @@ func (r *pairReplayRuntime) deliverRecorded(s *pairRecStart, callID string, end 
 		}
 		r.paper.quotes.addPoll(s.MemberID, o, end.LogicalMs, callID)
 	case pairRecKindFunding, pairRecKindFundingOracle:
+		if r.paperAsync() || s.Async {
+			return nil
+		}
 		if _, err := pairDecodeFundingBatch(end.Result); err != nil {
 			return err
 		}
@@ -942,6 +983,9 @@ func (r *pairReplayRuntime) paperStartupCommit() error {
 	r.rec.epoch = 1
 	bind := pairRecBind{RunID: r.spec.Run.RunID, PaperIdentity: r.paper.identity, ContractFP: r.adm.contract, Partition: r.partition.String(), SeedSHA256: r.paper.seedRef.SHA256,
 		EvidenceIdentity: r.paper.evidence.Digest(), FundingBinding: string(r.adm.fundingBinding), AnchorMs: r.paper.collection.FromMs}
+	if r.rec.schemaVersion() == pairRecSchemaAsync {
+		bind.Family = pairPaperManifestAsyncVer
+	}
 	if err := r.rec.appendDirect(pairRecEvent{Kind: pairRecEventBind, Bind: &bind}, pairRecEvent{Kind: pairRecEventEpoch, Epoch: &pairRecEpoch{Epoch: 1, WallMs: time.Now().UnixMilli(), Mode: "new"}}); err != nil {
 		return fmt.Errorf("the recording bootstrap could not commit: %w", err)
 	}
@@ -1269,7 +1313,11 @@ func (r *pairReplayRuntime) deliver(at time.Time, wake *pairRecWake) []string {
 	c, sc := r.paper.collection, r.paper.scenario
 	ctx := context.Background()
 	if wake != nil {
-		trace = append(trace, r.deliverOracle(*wake)...)
+		if r.paperAsync() {
+			trace = append(trace, r.deliverAsyncOracle(*wake)...)
+		} else {
+			trace = append(trace, r.deliverOracle(*wake)...)
+		}
 	}
 	if r.pollNextMs > 0 && atMs >= r.pollNextMs && r.pollNextMs <= c.DrainThroughMs {
 		for _, m := range r.members {
@@ -1385,6 +1433,11 @@ func (r *pairReplayRuntime) paperNextWakeAfter(nowMs int64) int64 {
 			consider(deadline)
 		}
 	}
+	r.oracleMu.Lock()
+	if r.oracle != nil && r.oracle.deadline > nowMs {
+		consider(r.oracle.deadline)
+	}
+	r.oracleMu.Unlock()
 	consider(c.DrainThroughMs + 1)
 	for _, m := range r.rt.Contract.pairMembersSorted() {
 		if t, ok := r.paper.funding.NextVisibleMs(r.rt.Contract.pairMemberKey(m).evidenceKey(), nowMs); ok {

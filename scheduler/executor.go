@@ -296,7 +296,13 @@ func spawnPythonProcessRawLimited(parentCtx context.Context, python string, cmdA
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	if box, ok := parentCtx.Value(pairOraclePidKey{}).(*pairOraclePidBox); ok && cmd.Process != nil {
+		box.pid.Store(int64(cmd.Process.Pid))
+	}
+	err := cmd.Wait()
 	if ctx.Err() != nil {
 		if cmd.Process != nil {
 			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)

@@ -17,8 +17,10 @@ const (
 	pairRecordingManifestKind        = "go-trader.paper-recording"
 	pairRecordingManifestVersion     = 1
 	pairRecordingManifestResearchVer = 2
+	pairRecordingManifestAsyncVer    = 3
 	pairRecordingRefVersion          = 1
 	pairRecordingRefResearchVersion  = 2
+	pairRecordingRefAsyncVersion     = 3
 	pairRecordingManifestName        = "recording-manifest.json"
 	pairRecordingLogName             = "recording-log.jsonl"
 	pairRecordingSeedName            = "seed-evidence.json"
@@ -120,6 +122,18 @@ func (r *pairReplayRuntime) sealRefusals(l *pairRecLog) []string {
 	r.mu.RUnlock()
 	if ids := l.unterminated(); len(ids) > 0 {
 		out = append(out, "calls without a terminal or recovery event: "+strings.Join(ids, ", "))
+	}
+	var unconsumed []string
+	for id, si := range l.starts {
+		if l.rows[si].Event.Start != nil && l.rows[si].Event.Start.Async {
+			if _, ok := l.consumes[id]; !ok {
+				unconsumed = append(unconsumed, id)
+			}
+		}
+	}
+	if len(unconsumed) > 0 {
+		sort.Strings(unconsumed)
+		out = append(out, "asynchronous calls without a consumption event: "+strings.Join(unconsumed, ", "))
 	}
 	if why := r.rec.equalityReasons(); len(why) > 0 {
 		for _, w := range why {
@@ -385,14 +399,24 @@ func (r *pairReplayRuntime) buildExport(l *pairRecLog) (map[string][]byte, pairR
 	files[pairRecordingLogName] = logBuf.Bytes()
 	files[pairRecordingSeedName] = r.paper.seedBlob
 	head := l.head()
+	if r.paper.scenario.FundingPolicy != nil {
+		notes = append(notes, "an oracle observation keeps at_ms = visible_ms = receipt_ms, so a standalone replay without the recording sees the sample at receipt; the live run publishes it only at the later consumption step")
+	}
 	sort.Strings(notes)
 	if notes == nil {
 		notes = []string{}
 	}
 	sort.Slice(objects, func(i, j int) bool { return objects[i].Path < objects[j].Path })
 	manifestVersion, refVersion := pairRecordingManifestVersion, pairRecordingRefVersion
-	if r.paper.scenario.FundingPolicy != nil {
+	switch r.paper.manifest.Version {
+	case pairPaperManifestAsyncVer:
+		manifestVersion, refVersion = pairRecordingManifestAsyncVer, pairRecordingRefAsyncVersion
+	case pairPaperManifestResearchVer:
 		manifestVersion, refVersion = pairRecordingManifestResearchVer, pairRecordingRefResearchVersion
+	default:
+		if r.paper.scenario.FundingPolicy != nil {
+			manifestVersion, refVersion = pairRecordingManifestAsyncVer, pairRecordingRefAsyncVersion
+		}
 	}
 	man := pairRecordingManifest{V: manifestVersion, Kind: pairRecordingManifestKind, RunID: r.spec.Run.RunID, PaperIdentity: r.paper.identity,
 		ContractFP: r.adm.contract, Partition: r.partition.String(), ResearchConfigSHA256: sha256Hex([]byte(pairReplayCompactJSON(r.spec.ResearchConfig))),
@@ -430,8 +454,8 @@ type pairPlaybackInput struct {
 
 func pairValidateRecordingRef(ref *pairReplayRecordingRef) []string {
 	var errs []string
-	if ref.Version != pairRecordingRefVersion && ref.Version != pairRecordingRefResearchVersion {
-		errs = append(errs, fmt.Sprintf("recording.version %d must be %d or %d", ref.Version, pairRecordingRefVersion, pairRecordingRefResearchVersion))
+	if ref.Version != pairRecordingRefVersion && ref.Version != pairRecordingRefResearchVersion && ref.Version != pairRecordingRefAsyncVersion {
+		errs = append(errs, fmt.Sprintf("recording.version %d must be %d, %d or %d", ref.Version, pairRecordingRefVersion, pairRecordingRefResearchVersion, pairRecordingRefAsyncVersion))
 	}
 	if !pairReplayObjectPathPattern.MatchString(ref.Path) || strings.Contains(ref.Path, "..") {
 		errs = append(errs, fmt.Sprintf("recording.path %q must be a clean relative path inside the input root", ref.Path))
@@ -458,10 +482,12 @@ func loadPairPlaybackInput(spec *pairReplaySpec, lt pairReplayLifetime) (*pairPl
 	}
 	var errs []string
 	add := func(format string, a ...interface{}) { errs = append(errs, fmt.Sprintf(format, a...)) }
-	if man.Kind != pairRecordingManifestKind || (man.V != pairRecordingManifestVersion && man.V != pairRecordingManifestResearchVer) {
-		add("the recording manifest is %q version %d; supported versions are %d and %d", man.Kind, man.V, pairRecordingManifestVersion, pairRecordingManifestResearchVer)
+	if man.Kind != pairRecordingManifestKind || (man.V != pairRecordingManifestVersion && man.V != pairRecordingManifestResearchVer && man.V != pairRecordingManifestAsyncVer) {
+		add("the recording manifest is %q version %d; supported versions are %d, %d and %d", man.Kind, man.V, pairRecordingManifestVersion, pairRecordingManifestResearchVer, pairRecordingManifestAsyncVer)
 	}
-	if ref.Version != man.V || (man.V == pairRecordingManifestResearchVer) != (man.Scenario.FundingPolicy != nil) {
+	policy := man.Scenario.FundingPolicy != nil
+	familyOK := man.V == pairRecordingManifestVersion && !policy || (man.V == pairRecordingManifestResearchVer || man.V == pairRecordingManifestAsyncVer) && policy
+	if ref.Version != man.V || !familyOK {
 		add("recording reference, manifest version and funding policy families do not match")
 	}
 	if man.Scenario.FundingPolicy != nil {
@@ -519,6 +545,13 @@ func loadPairPlaybackInput(spec *pairReplaySpec, lt pairReplayLifetime) (*pairPl
 	}
 	if h := l.head(); h.Seq != man.Log.FinalSeq || h.Prefix != man.Log.FinalPrefixHash || int64(len(rows)) != man.Log.Records {
 		return nil, refuseReplay("input_refused", fmt.Sprintf("the recording log ends at input %d, the manifest seals input %d", h.Seq, man.Log.FinalSeq))
+	}
+	wantSchema := pairRecSchemaVersion
+	if man.V == pairRecordingManifestAsyncVer {
+		wantSchema = pairRecSchemaAsync
+	}
+	if l.schema != wantSchema || (l.bind != nil && (l.bind.Family == pairPaperManifestAsyncVer) != (wantSchema == pairRecSchemaAsync)) {
+		return nil, refuseReplay("input_refused", fmt.Sprintf("recording manifest version %d does not match log schema %d", man.V, l.schema))
 	}
 	if l.bind == nil || l.bind.PaperIdentity != man.PaperIdentity || l.bind.SeedSHA256 != man.Seed.SHA256 {
 		return nil, refuseReplay("input_refused", "the recording log binds another paper identity or seed")
@@ -595,7 +628,14 @@ func openPairPlayback(spec *pairReplaySpec, raw []byte, lt pairReplayLifetime, o
 	if r.paper.evidence.Identity() != man.EvidenceIdentity {
 		return nil, refuseReplay("input_refused", "the recorded evidence identity differs from the seed the recording names")
 	}
-	_, eventOrder := pairPaperManifestFamily(man.Scenario.FundingPolicy)
+	eventOrder, orderOK := pairPaperOrderForManifest(man.V)
+	if !orderOK {
+		return nil, refuseReplay("input_refused", fmt.Sprintf("recording manifest version %d has no paper event order", man.V))
+	}
+	r.paper.manifest.Version = man.V
+	if pb.log != nil {
+		r.rec.schema = pb.log.schema
+	}
 	r.manifest = pairReplayManifest{Owner: basketReplayOwnerMarker, Version: pairReplayManifestVersion, RunID: spec.Run.RunID, Fingerprints: r.fp, EvidenceDigest: r.paper.evidence.Digest(),
 		FundingDigest: sha256Hex(in.funding), Objects: pairReplayObjectsWithTotals(in), Lifetime: lt, Scenario: spec.Scenario, EventOrder: eventOrder, AdministrativeFields: pairReplayAdministrativeFields, UID: os.Getuid()}
 	var saved pairReplayManifest
@@ -735,6 +775,18 @@ func (r *pairReplayRuntime) playbackFundingBeforeAdmission(stateDir string, man 
 		return refuseReplay("state_foreign", err.Error())
 	}
 	l := r.rec.log
+	if l.schema == pairRecSchemaAsync {
+		db, err := openPairFundingSnapshot(filepath.Join(stateDir, basketReplayDBName))
+		if err != nil {
+			return refuseReplay("state_foreign", err.Error())
+		}
+		defer db.Close()
+		frontier, err := pairPaperConsumptionFrontier(db, r.spec.Run.RunID)
+		if err != nil {
+			return refuseReplay("resume_refused", "the consumption frontier is unreadable: "+err.Error())
+		}
+		return r.restoreAsyncFunding(l, frontier)
+	}
 	for _, row := range l.rows {
 		if len(r.paper.funding.chain()) >= len(saved) {
 			break
@@ -743,7 +795,7 @@ func (r *pairReplayRuntime) playbackFundingBeforeAdmission(stateDir string, man 
 			continue
 		}
 		start := l.rows[l.starts[row.CallID]].Event.Start
-		if start.Kind != pairRecKindFunding && start.Kind != pairRecKindFundingOracle {
+		if start.Async || (start.Kind != pairRecKindFunding && start.Kind != pairRecKindFundingOracle) {
 			continue
 		}
 		_ = pairPaperAdmitFundingResult(r.paper.funding, row.Event.End.Result, *start, row.Event.End)

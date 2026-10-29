@@ -230,7 +230,11 @@ func pyintegrationBinary(t *testing.T) string {
 			return
 		}
 		pyintegrationBinPath = filepath.Join(dir, "go-trader")
-		cmd := exec.Command("go", "build", "-tags", "pyintegration", "-o", pyintegrationBinPath, ".")
+		args := []string{"build", "-tags", "pyintegration", "-o", pyintegrationBinPath, "."}
+		if pairPaperRaceEnabled {
+			args = []string{"build", "-race", "-tags", "pyintegration", "-o", pyintegrationBinPath, "."}
+		}
+		cmd := exec.Command("go", args...)
 		cmd.Dir = filepath.Dir(thisFile)
 		out, err := cmd.CombinedOutput()
 		if err != nil {

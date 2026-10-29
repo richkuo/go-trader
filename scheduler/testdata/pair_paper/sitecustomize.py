@@ -10,7 +10,9 @@ import time
 _FIXTURE = os.environ.get("PAIR_PAPER_FIXTURE", "")
 _BLOCK_ALL = os.environ.get("PAIR_PAPER_BLOCK_NETWORK", "") == "1"
 _CLOCK = os.environ.get("GO_TRADER_PAPER_TEST_CLOCK", "")
+_GATE = os.environ.get("GO_TRADER_PAPER_CLOCK_GATE", "")
 _HOUR = 3_600_000
+_REAL_SLEEP = time.sleep
 
 
 def _clock_ms():
@@ -18,17 +20,53 @@ def _clock_ms():
         return int(fh.read().strip())
 
 
+def _gated_sleep(seconds):
+    current = _clock_ms()
+    target = current + int(seconds * 1000)
+    kind = "backward" if seconds < 0 else "until"
+    path = os.path.join(_GATE, "request.json")
+    tmp = path + ".next"
+    with open(tmp, "w") as fh:
+        json.dump({"target_ms": target, "kind": kind}, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    while True:
+        try:
+            now = _clock_ms()
+        except Exception:
+            _REAL_SLEEP(0.002)
+            continue
+        if kind == "until" and now >= target:
+            break
+        if kind == "backward" and now <= target:
+            break
+        _REAL_SLEEP(0.002)
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+def _advance_clock(seconds):
+    current = _clock_ms()
+    path = _CLOCK + ".next"
+    with open(path, "w") as fh:
+        fh.write(str(current + int(seconds * 1000)))
+    os.replace(path, _CLOCK)
+
+
 if _CLOCK and not _BLOCK_ALL:
     time.time = lambda: _clock_ms() / 1000.0
     time.time_ns = lambda: _clock_ms() * 1_000_000
     if os.path.basename(sys.argv[0]) == "fetch_pair_history.py" and "--kind=funding_oracle" in sys.argv:
-        def _advance_clock(seconds):
-            current = _clock_ms()
-            path = _CLOCK + ".next"
-            with open(path, "w") as fh:
-                fh.write(str(current + int(seconds * 1000)))
-            os.replace(path, _CLOCK)
-        time.sleep = _advance_clock
+        if _GATE:
+            os.makedirs(_GATE, exist_ok=True)
+            with open(os.path.join(_GATE, "active"), "w") as fh:
+                fh.write(str(os.getpid()))
+            time.sleep = _gated_sleep
+        else:
+            time.sleep = _advance_clock
 
 
 def _load():
@@ -63,13 +101,22 @@ def _ladder(start, step, sz, depth):
     return [("%.1f" % (start + step * i), sz) for i in range(depth)]
 
 
+def _books_held(fx, now):
+    start, end = fx.get("books_gap_from_ms"), fx.get("books_gap_until_ms")
+    return start is not None and end is not None and start <= now < end
+
+
 def _hl_book(fx, now):
+    if _books_held(fx, now):
+        raise RuntimeError("fixture holds the book until the recorded hour")
     if _converged(fx, now):
         return _ladder(60000, -1, "0.5", 20), _ladder(60002, 1, "0.5", 20)
     return _ladder(59998, -1, "0.5", 20), _ladder(60000, 1, "0.5", 20)
 
 
 def _okx_book(fx, now, depth):
+    if _books_held(fx, now):
+        raise RuntimeError("fixture holds the book until the recorded hour")
     if _converged(fx, now):
         return _ladder(59999.9, -0.1, "30", depth), _ladder(60000, 0.1, "30", depth)
     return _ladder(62000, -0.1, "30", depth), _ladder(62000.1, 0.1, "30", depth)
@@ -270,6 +317,8 @@ if _FIXTURE and not _BLOCK_ALL:
             if isinstance(value, dict) and value.get("ok") is True and value.get("kind") == "funding_oracle":
                 fx = _load()
                 mode = fx.get("oracle_context_mode", "valid")
+                if fx.get("oracle_output_delay_ms"):
+                    time.sleep(fx["oracle_output_delay_ms"] / 1000)
                 if mode == "wrong_host":
                     value["host"] = "https://api.hyperliquid-testnet.xyz"
                 elif mode == "oversize_output":

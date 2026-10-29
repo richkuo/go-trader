@@ -14,6 +14,7 @@ const (
 	pairPaperManifestOwner       = "go-trader basket-replay-paper recorder"
 	pairPaperManifestVer         = 1
 	pairPaperManifestResearchVer = 2
+	pairPaperManifestAsyncVer    = 3
 	pairPaperRecordsPerStep      = 3
 	pairPaperRecordOverhead      = 96
 	pairPaperMinFundingMs        = 1000

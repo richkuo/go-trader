@@ -112,9 +112,15 @@ type pairReplayRuntime struct {
 	fundingNextMs    int64
 	capabilityNextMs int64
 	oracleNextMs     int64
+
+	oracleMu     sync.Mutex
+	oracle       *pairAsyncOracle
+	oracleCancel context.CancelFunc
+	oracleBox    *pairOraclePidBox
 }
 
 func (r *pairReplayRuntime) Close() {
+	r.killOracleChild()
 	for i := len(r.cleanups) - 1; i >= 0; i-- {
 		r.cleanups[i]()
 	}
@@ -1124,7 +1130,9 @@ func (r *pairReplayRuntime) memberTrades(id string) ([]Trade, error) {
 
 func (r *pairReplayRuntime) Run() error {
 	if r.paper != nil {
-		return r.runPaper()
+		err := r.runPaper()
+		r.finalizeOracle()
+		return err
 	}
 	for {
 		if r.stopReason != "" {
