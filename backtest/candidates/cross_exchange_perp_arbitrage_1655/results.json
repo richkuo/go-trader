@@ -4,7 +4,7 @@
   "edge_source": "unvalidated",
   "experiments": [],
   "funding_policy": null,
-  "lock_sha256": "15c286f068a3753302413e7b593541de193bcf42dfd01a9fe2d58125ddb7ebec",
+  "lock_sha256": "6d58fcb23d29be41cdf0113f13231d80e0641be0361c04c69feaf813b234402c",
   "oracle_note": "a research receipt price is not a historical venue oracle price",
   "promotion_eligible": false,
   "reasons": [

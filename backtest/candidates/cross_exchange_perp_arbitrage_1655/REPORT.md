@@ -4,11 +4,11 @@
 
 ## Lock
 
-- Commit recorded by the lock: `d6e686b571d3f1644cf67f4f0d50924592ec1af9`.
-- Binary sha256: `3eb141edeb351440de3c04bf177a19880cc9acf5f1219cdb5d97bfd20d37bc8d`.
+- Commit recorded by the lock: `c7f9572deb9b67d9442519ea65ea9950f109397a`.
+- Binary sha256: `bd1c642c3e491f6fba9a0b0ebee7ba68e904f17f5e3cf9b47426c915baf81649`.
 - Protocol sha256: `58e553386fa68e4f195b6a0dd61cb3f90df386c036f5ef56b04b06186667736e`.
 - Signal specification sha256: `8c61cee1f5d94cc200c19f2a9fffd313909caa838f790665431f78210660c571`.
-- Result lock sha256: `15c286f068a3753302413e7b593541de193bcf42dfd01a9fe2d58125ddb7ebec`.
+- Result lock sha256: `6d58fcb23d29be41cdf0113f13231d80e0641be0361c04c69feaf813b234402c`.
 
 ## Evidence
 
