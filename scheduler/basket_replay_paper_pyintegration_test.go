@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -2107,4 +2108,115 @@ func TestBasketReplayPairPaperResearchPlaybackResumesAfterConsumption(t *testing
 	if resumed.Out.Comparison.Hash != live.Out.Comparison.Hash {
 		t.Fatalf("resumed playback equals the live comparison hash: live %s resumed %s", live.Out.Comparison.Hash, resumed.Out.Comparison.Hash)
 	}
+}
+
+func TestBasketReplayPairPaperResearchReceiptBeforeExitMatchesPlayback(t *testing.T) {
+	f, target := newPairPaperResearchFixture(t, pairPaperResearchOptions{
+		runID: "paper-receipt-before-exit", fromBefore: 31800, throughAt: 10000, drainAt: 20000, convergeAt: 1,
+		fixtureMore: map[string]interface{}{"oracle_response_delay_ms": 100, "oracle_output_delay_ms": 300},
+	})
+	f.scenario.PaperPollIntervalMs = 1000
+	pairPaperPatchFixture(t, f, map[string]interface{}{
+		"hl_funding":  [][]interface{}{{target + 3, "0.0000125"}, {target + 18000, "0.0000125"}},
+		"okx_funding": [][]interface{}{{f.fromMs - 1000, "0.0001"}, {target + 18000, "0.0001"}},
+	})
+	dir := filepath.Join(f.parent, "paper")
+	env := append(f.env(false), "GO_TRADER_PAPER_TEST_ORACLE_COMPLETION_MS="+strconv.FormatInt(target+400, 10))
+	live := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), env, "--seal")
+	pairPaperRequireComplete(t, "the exact-timing source recording seals", live)
+	rows := pairPaperLogRows(t, dir, f.runID)
+	var wake pairRecWake
+	var oracleID string
+	var end *pairRecEnd
+	var consumed *pairRecConsume
+	for _, row := range rows {
+		if row.Kind == pairRecEventStart && row.Event.Start.Kind == pairRecKindFundingOracle {
+			oracleID = row.CallID
+		}
+		if row.CallID == oracleID && row.Kind == pairRecEventEnd {
+			end = row.Event.End
+		}
+		if row.CallID == oracleID && row.Kind == pairRecEventConsume {
+			consumed = row.Event.Consume
+		}
+		if row.Kind == pairRecEventWake && row.Event.Wake.WallMs == target+200 {
+			wake = *row.Event.Wake
+		}
+	}
+	wakeStepID := fmt.Sprintf("s%d@%d", wake.Ordinal, wake.LogicalMs)
+	if end == nil || end.RawReceiptMs != target+100 || end.RawCompletionMs != target+400 || consumed == nil || consumed.Disposition != "accepted" || wake.WallMs != target+200 || consumed.StepID == wakeStepID {
+		t.Fatalf("receipt T+100, completion T+400 and a prior wake T+200 must be recorded: end %+v consumption %+v wake %+v", end, consumed, wake)
+	}
+	var polled bool
+	for _, row := range rows {
+		if row.Kind == pairRecEventStart && row.Event.Start.Kind == pairRecKindMatchPoll && row.Event.Start.StepID == wakeStepID && row.Event.Start.RawStartMs >= target+200 && row.Event.Start.RawStartMs < target+400 {
+			polled = true
+		}
+	}
+	if !polled {
+		t.Fatal("the T+200 wake must poll while the oracle reader has received its sample and has yet to exit")
+	}
+	db, err := openStateDBReadOnly(filepath.Join(dir, basketReplayDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ordinal int
+	var liveStepHash string
+	err = db.db.QueryRow(`SELECT step_index, result_hash FROM basket_replay_steps WHERE run_id = ? AND step_id = ?`, f.runID, wakeStepID).Scan(&ordinal, &liveStepHash)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := os.ReadFile(filepath.Join(dir, pairPaperExportDirName, pairRecordingSpecName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec pairReplaySpec
+	if err := json.Unmarshal(blob, &spec); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(f.parent, "playback")
+	spec.Run.StateDir = stateDir
+	reads := pairPaperMetaReads(f)
+	chunk := runPairReplayAdapter(t, f.repo, &spec, f.env(true), "--max-steps", strconv.Itoa(ordinal+1))
+	if chunk.Out.Status != basketReplayStatusStopped || chunk.Out.Run == nil || chunk.Out.Run.Finished {
+		t.Fatalf("the playback stops after its T+200 step: exit %d status %s refusal %+v", chunk.Code, chunk.Out.Status, chunk.Out.Refusal)
+	}
+	db, err = openStateDBReadOnly(filepath.Join(stateDir, basketReplayDBName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var playbackStepHash string
+	err = db.db.QueryRow(`SELECT result_hash FROM basket_replay_steps WHERE run_id = ? AND step_id = ?`, f.runID, wakeStepID).Scan(&playbackStepHash)
+	db.Close()
+	if err != nil || liveStepHash == "" || liveStepHash != playbackStepHash {
+		t.Fatalf("the live and playback T+200 step hashes must agree: live %s playback %s error %v", liveStepHash, playbackStepHash, err)
+	}
+	l, err := verifyPairRecLog(rows, f.runID, "paper", live.Out.Run.Fingerprints.Contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := newPairRecordedFundingSourceWithPolicy("paper:"+f.runID, f.fromMs, *f.scenario.FundingPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := &pairReplayRuntime{spec: &spec, rec: &pairRecorder{log: l}, paper: &pairPaperRun{funding: src}}
+	if err := check.playbackFundingBeforeAdmission(stateDir, pairRecordingManifest{Partition: "paper"}); err != nil {
+		t.Fatal(err)
+	}
+	var observation pairFundingOracleObservation
+	if err := pairReplayStrictDecode(end.Result, &observation); err != nil {
+		t.Fatal(err)
+	}
+	collected, err := src.Collect(context.Background(), pairFundingRequest{Key: observation.Key, FromMs: f.fromMs, ThroughMs: target + 200, CutoffMs: target + 200})
+	if err != nil || len(collected.Observations) != 0 {
+		t.Fatalf("Collect at T+200 must expose no oracle observation: observations %d error %v", len(collected.Observations), err)
+	}
+	spec.Mode = basketReplayModeResume
+	resumed := runPairReplayAdapter(t, f.repo, &spec, f.env(true))
+	pairOfflineRequireComplete(t, "the exact-timing playback resumes", resumed)
+	if resumed.Out.Comparison.Hash != live.Out.Comparison.Hash || pairPaperMetaReads(f) != reads {
+		t.Fatalf("blocked-network playback must have the live comparison hash and no extra oracle read: live %s playback %s", live.Out.Comparison.Hash, resumed.Out.Comparison.Hash)
+	}
+	t.Logf("ORACLE_TIMING receipt=100 completion=400 poll_wake=200 observations=0 step_hash_equal=true comparison_hash_equal=true hash=%s", resumed.Out.Comparison.Hash)
 }

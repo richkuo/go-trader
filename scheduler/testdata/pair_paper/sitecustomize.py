@@ -317,6 +317,8 @@ if _FIXTURE and not _BLOCK_ALL:
             if isinstance(value, dict) and value.get("ok") is True and value.get("kind") == "funding_oracle":
                 fx = _load()
                 mode = fx.get("oracle_context_mode", "valid")
+                if fx.get("oracle_output_delay_ms"):
+                    time.sleep(fx["oracle_output_delay_ms"] / 1000)
                 if mode == "wrong_host":
                     value["host"] = "https://api.hyperliquid-testnet.xyz"
                 elif mode == "oversize_output":

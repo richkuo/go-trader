@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,9 +19,11 @@ const (
 )
 
 type pairPaperTestWall struct {
-	mu   sync.Mutex
-	path string
-	ms   int64
+	mu                 sync.Mutex
+	path               string
+	ms                 int64
+	oracleCompletionMs int64
+	oracleCompleted    atomic.Bool
 }
 
 func init() {
@@ -39,6 +42,14 @@ func init() {
 		os.Exit(basketReplayExitError)
 	}
 	wall := &pairPaperTestWall{path: path, ms: ms}
+	if raw := os.Getenv("GO_TRADER_PAPER_TEST_ORACLE_COMPLETION_MS"); raw != "" {
+		completion, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || completion <= ms {
+			fmt.Fprintf(os.Stderr, "the paper test oracle completion %q must be after the initial clock\n", raw)
+			os.Exit(basketReplayExitError)
+		}
+		wall.oracleCompletionMs = completion
+	}
 	pairPaperWall = wall
 	window := os.Getenv(pairPaperTestAppendFaultEnv)
 	if window == "" {
@@ -116,6 +127,10 @@ func (w *pairPaperTestWall) advance(d time.Duration) {
 			os.Exit(basketReplayExitError)
 		}
 		now := w.current()
+		if w.oracleCompletionMs > 0 && now >= w.oracleCompletionMs && !w.oracleCompleted.Load() {
+			time.Sleep(2 * time.Millisecond)
+			continue
+		}
 		if req, ok := pairPaperGateReadRequest(); ok {
 			if req.Kind == "backward" {
 				w.writeMs(req.TargetMs)
@@ -148,9 +163,20 @@ func (w *pairPaperTestWall) advance(d time.Duration) {
 
 func (w *pairPaperTestWall) Sleep(d time.Duration) { w.advance(d) }
 
-func (w *pairPaperTestWall) Tick() { w.advance(pairPaperTestClockTick) }
+func (w *pairPaperTestWall) Tick() {
+	if w.oracleCompletionMs > 0 {
+		w.advance(time.Millisecond)
+		return
+	}
+	w.advance(pairPaperTestClockTick)
+}
 
 func (w *pairPaperTestWall) CompletionTick() time.Time {
+	if w.oracleCompletionMs > 0 {
+		at := w.Now()
+		w.oracleCompleted.Store(true)
+		return at
+	}
 	w.advance(pairPaperTestClockTick)
 	return w.Now()
 }
