@@ -677,6 +677,72 @@ func TestBasketReplayPairStudyCopyLockIgnoresBytecode(t *testing.T) {
 	}
 }
 
+func TestBasketReplayPairStudySymlinkedRepository(t *testing.T) {
+	repo := basketPyRoot(t)
+	root := t.TempDir()
+	clone := filepath.Join(root, "checkout")
+	cmd := exec.Command("git", "clone", "--shared", "--quiet", repo, clone)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("clone: %v\n%s", err, out)
+	}
+	script := filepath.Join("backtest", "candidates", "cross_exchange_perp_arbitrage_1655", "run_study.py")
+	data, err := os.ReadFile(filepath.Join(repo, script))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, script), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("git", "-C", clone, "add", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("stage runner: %v\n%s", err, out)
+	}
+	cmd = exec.Command("git", "-C", clone, "-c", "user.name=Study Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "Study fixture")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit runner: %v\n%s", err, out)
+	}
+	if err := os.Symlink(filepath.Join(repo, ".venv"), filepath.Join(clone, ".venv")); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(clone, alias); err != nil {
+		t.Fatal(err)
+	}
+	bin := pyintegrationBinary(t)
+	study := pairStudyCopy(t, alias)
+	if code, out := pairStudyRun(t, alias, study, "lock", "--binary", bin); code != 0 {
+		t.Fatalf("symlinked lock: %s", out)
+	}
+	if code, out := pairStudyRun(t, alias, study, "check"); code != 0 {
+		t.Fatalf("symlinked check: %s", out)
+	}
+	if err := os.WriteFile(filepath.Join(study, "plans", "extra.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(t.TempDir(), "work")
+	if code, out := pairStudyRun(t, alias, study, "run", "--binary", bin, "--work", work); code != 3 || !strings.Contains(out, "lock_mismatch") {
+		t.Fatalf("changed plan must refuse: %d\n%s", code, out)
+	}
+	pairStudyAbsent(t, filepath.Join(work, "state"))
+	path := filepath.Join(clone, "scheduler", "pair_policy.go")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("\n"); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dirtyStudy := pairStudyCopy(t, alias)
+	if code, out := pairStudyRun(t, alias, dirtyStudy, "lock", "--binary", bin); code != 3 || !strings.Contains(out, "lock_dirty") || !strings.Contains(out, "scheduler/pair_policy.go") {
+		t.Fatalf("dirty symlinked source must refuse: %d\n%s", code, out)
+	}
+	pairStudyAbsent(t, filepath.Join(dirtyStudy, "protocol.lock.json"))
+}
+
 func TestBasketReplayPairStudyRunnerRefusesAnUnscoredClassification(t *testing.T) {
 	repo := basketPyRoot(t)
 	study := pairStudyCopy(t, repo)

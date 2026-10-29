@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.realpath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 BACKTEST = os.path.join(REPO, "backtest")
 REPLAY = os.path.join(BACKTEST, "basket_replay.py")
