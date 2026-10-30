@@ -803,9 +803,10 @@ func TestBasketReplayPairPaperRefusesBadSpecificationsAndFaultPairings(t *testin
 		p["policy"] = pairPolicyCrossExchangePerpArbitrage
 		p["params"] = map[string]interface{}{"entry_threshold_bps": 40, "exit_threshold_bps": 30, "adverse_band_bps": 4, "funding_allowance_bps": 0}
 		p["limits"] = pairPaperLimits()
+		pairTestMemberEntry(root, 0)["source"] = pairSourceArchive
 	})
 	bad := map[string]*pairPaperSpec{
-		"sealed member":        mutate(func(s *pairPaperSpec) { s.ResearchConfig = json.RawMessage(sealedDoc) }),
+		"archive member":       mutate(func(s *pairPaperSpec) { s.ResearchConfig = json.RawMessage(sealedDoc) }),
 		"through before from":  mutate(func(s *pairPaperSpec) { s.Collection.ThroughMs = s.Collection.FromMs }),
 		"drain before through": mutate(func(s *pairPaperSpec) { s.Collection.DrainThroughMs = s.Collection.ThroughMs - 1 }),
 		"zero poll interval":   mutate(func(s *pairPaperSpec) { s.Scenario.PaperPollIntervalMs = 0 }),

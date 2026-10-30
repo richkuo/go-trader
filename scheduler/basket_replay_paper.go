@@ -24,9 +24,10 @@ const (
 )
 
 var pairPaperFaultKinds = map[string]bool{
-	"exit-after-call-start":   true,
-	"exit-after-input-commit": true,
-	"fail-record-append":      true,
+	"exit-after-call-start":        true,
+	"exit-after-input-commit":      true,
+	"exit-after-book-input-commit": true,
+	"fail-record-append":           true,
 }
 
 type pairPaperOptions struct {
@@ -61,6 +62,8 @@ const pairPaperEventOrder = "one host cycle per recorded wake; a wake's logical 
 
 const pairPaperEventOrderResearch = "one host cycle per recorded wake; a wake's logical time is the larger of the previous logical time plus 1 ms and the wall clock; for the frozen research policy the cycle first prepares and commits due oracle observations, then commits its due match polls (member id order), capability refreshes and funding reads at their anchored grids, then runs coordinator funding, preparePairRisk, partition risk with the paper kill switch, native member management on a management cycle (Hyperliquid then OKX by member id, each with a recorded candle read, a recorded own mark and a recorded member check), the coordinator step, one full save that commits the step record and the cursor, then the next wake from fresh time; every outside read and process outcome commits before use and advances logical time to the larger of the previous logical time plus 1 ms and its raw completion"
 
+const pairPaperEventOrderBooks = "family 4: committed book inputs never advance host time or cursor; every book read saves its start prefix, intake acknowledgement and terminal before use; immutable source generation 1; optional funding follows family 3; public sources and host cycles retain family 3 ordering"
+
 const pairPaperEventOrderAsync = "one host cycle per recorded wake; a wake's logical time is the larger of the previous logical time plus 1 ms and the wall clock; each wake first commits an already-ready oracle result, or at the deadline wake joins the worker and commits that terminal and its consumption in the same delivery, then starts a due oracle attempt without waiting for it, then commits due match polls (member id order), capability refreshes and funding reads at their anchored grids, then runs coordinator funding, preparePairRisk, partition risk with the paper kill switch, native member management on a management cycle (Hyperliquid then OKX by member id, each with a recorded candle read, a recorded own mark and a recorded member check), the coordinator step, one full save that commits the step record and the cursor, then the next wake from fresh time; an asynchronous oracle start commits before its outside read and stays pending; its terminal does not enter the consumable stream; only call_consume inside a host step publishes accepted funding and advances logical time to the larger of the previous logical time plus 1 ms and the consumption boundary"
 
 func pairPaperWriteFamily(policy *pairFundingPolicyV1) (int, string) {
@@ -78,6 +81,8 @@ func pairPaperOrderForManifest(version int) (string, bool) {
 		return pairPaperEventOrderResearch, true
 	case pairPaperManifestAsyncVer:
 		return pairPaperEventOrderAsync, true
+	case pairPaperManifestBooksVer:
+		return pairPaperEventOrderBooks, true
 	default:
 		return "", false
 	}
@@ -108,6 +113,7 @@ type pairPaperRun struct {
 	barrierLog bool
 	timeframes map[string]string
 	preLog     *pairRecLog
+	books      *pairPaperBooks
 }
 
 func parsePairPaperFault(raw string) (basketReplayFault, pairRecFaults, error) {
@@ -385,7 +391,7 @@ func readPairPaperManifest(dir string) (pairPaperManifest, error) {
 	}
 	eventOrder, ok := pairPaperOrderForManifest(m.Version)
 	policy := m.Scenario.FundingPolicy != nil
-	familyOK := m.Version == pairPaperManifestVer && !policy || (m.Version == pairPaperManifestResearchVer || m.Version == pairPaperManifestAsyncVer) && policy
+	familyOK := m.Version == pairPaperManifestBooksVer || m.Version == pairPaperManifestVer && !policy || (m.Version == pairPaperManifestResearchVer || m.Version == pairPaperManifestAsyncVer) && policy
 	if m.Owner != pairPaperManifestOwner || !ok || !familyOK || m.EventOrder != eventOrder {
 		return m, refuseReplay("state_foreign", fmt.Sprintf("the manifest owner %q version %d and event order do not match its funding policy", m.Owner, m.Version))
 	}
@@ -501,6 +507,10 @@ func (r *pairReplayRuntime) buildRecordedSources(o pairRecordedSetup) (map[strin
 		sources[m.StrategyID] = m.Source
 	}
 	quotes := newRecordingQuoteSource(r.rec, sources, r.lt.MaxSteps, o.egress, r.clock.Now)
+	if pairPaperHasBooks(o.shape) {
+		r.paper.books = newPairPaperBooks(r.rec, quotes)
+		quotes.books = r.paper.books
+	}
 	market := &recordingVirtualMarket{src: quotes}
 	r.paper.evidence, r.paper.funding, r.paper.quotes, r.paper.market = evidence, funding, quotes, market
 	band := 0.0
@@ -619,6 +629,9 @@ func openPairPaper(spec *pairPaperSpec, raw []byte, lt pairReplayLifetime, opts 
 	r.venues = venues
 	part0, _ := pairPaperMemberPartition(shape, shape.Pairs[0].Members[0].StrategyID)
 	manifestVersion, eventOrder := pairPaperWriteFamily(spec.Scenario.FundingPolicy)
+	if pairPaperHasBooks(shape) {
+		manifestVersion, eventOrder = pairPaperManifestBooksVer, pairPaperEventOrderBooks
+	}
 	r.paper.manifest = pairPaperManifest{Owner: pairPaperManifestOwner, Version: manifestVersion, RunID: spec.Run.RunID, Fingerprints: r.fp, PaperIdentity: identity,
 		Partition: part0.String(), EvidenceIdentity: r.paper.evidence.Identity(), EvidenceDigest: r.paper.evidence.Digest(), Objects: []pairReplayObjectRef{seedRef}, Lifetime: lt,
 		Collection: spec.Collection, Scenario: spec.Scenario, EventOrder: eventOrder, AdministrativeFields: pairReplayAdministrativeFields, UID: os.Getuid()}
@@ -679,7 +692,15 @@ func openPairPaper(spec *pairPaperSpec, raw []byte, lt pairReplayLifetime, opts 
 	if spec.Scenario.FundingPolicy != nil {
 		r.rec.schema = pairRecSchemaAsync
 	}
-	r.rec.beforeExit = func() { r.killOracleChild() }
+	if manifestVersion == pairPaperManifestBooksVer {
+		r.rec.schema = pairRecSchemaBooks
+	}
+	r.rec.beforeExit = func() {
+		r.killOracleChild()
+		if r.paper.books != nil {
+			r.paper.books.cancelIntake()
+		}
+	}
 	if err := r.file.ensurePairRecordingSchema(); err != nil {
 		return nil, err
 	}
@@ -786,6 +807,9 @@ func (r *pairReplayRuntime) preAdmissionRestore(stateDir string, saved pairPaper
 		return err
 	}
 	r.paper.preLog = l
+	if r.paper.books != nil {
+		r.paper.books.tail = l
+	}
 	if l.bind == nil {
 		return refuseReplay("resume_refused", "the recording has no binding event; its initialization never finished")
 	}
@@ -800,7 +824,7 @@ func (r *pairReplayRuntime) preAdmissionRestore(stateDir string, saved pairPaper
 		return refuseReplay("resume_refused", "the committed oracle attempts are refused: "+err.Error())
 	}
 	frontier := -1
-	if l.schema == pairRecSchemaAsync {
+	if pairRecAsyncSchema(l.schema) {
 		frontier, err = pairPaperConsumptionFrontier(db, saved.RunID)
 		if err != nil {
 			return refuseReplay("resume_refused", "the consumption frontier is unreadable: "+err.Error())
@@ -810,27 +834,34 @@ func (r *pairReplayRuntime) preAdmissionRestore(stateDir string, saved pairPaper
 }
 
 func readVerifiedPairRecLog(db *StateDB, runID, partition, contractFP string) (*pairRecLog, error) {
-	ok, err := tableExists(db, "basket_replay_inputs")
+	return readVerifiedPairRecLogContext(context.Background(), db, runID, partition, contractFP)
+}
+
+func readVerifiedPairRecLogContext(ctx context.Context, db *StateDB, runID, partition, contractFP string) (*pairRecLog, error) {
+	var present int
+	err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='basket_replay_inputs'`).Scan(&present)
+	ok := present == 1
 	if err != nil {
 		return nil, refuseReplay("state_foreign", err.Error())
 	}
 	if !ok {
 		return nil, refuseReplay("resume_refused", "the state file holds no recording; its initialization never finished")
 	}
-	tx, err := db.db.Begin()
+	tx, err := db.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := readPairRecRows(tx, runID)
+	q := pairRecContextQuery{ctx: ctx, tx: tx}
+	rows, err := readPairRecRows(q, runID)
 	if err != nil {
 		return nil, refuseReplay("state_foreign", err.Error())
 	}
-	calls, err := readPairRecCallRows(tx, runID)
+	calls, err := readPairRecCallRows(q, runID)
 	if err != nil {
 		return nil, refuseReplay("state_foreign", err.Error())
 	}
-	slots, err := readPairRecSlotRows(tx, runID)
+	slots, err := readPairRecSlotRows(q, runID)
 	if err != nil {
 		return nil, refuseReplay("state_foreign", err.Error())
 	}
@@ -848,7 +879,7 @@ func readVerifiedPairRecLog(db *StateDB, runID, partition, contractFP string) (*
 }
 
 func (r *pairReplayRuntime) restoreFundingFrom(l *pairRecLog, frontier int) error {
-	if l.schema == pairRecSchemaAsync {
+	if pairRecAsyncSchema(l.schema) {
 		return r.restoreAsyncFunding(l, frontier)
 	}
 	src := r.paper.funding
@@ -985,6 +1016,8 @@ func (r *pairReplayRuntime) paperStartupCommit() error {
 		EvidenceIdentity: r.paper.evidence.Digest(), FundingBinding: string(r.adm.fundingBinding), AnchorMs: r.paper.collection.FromMs}
 	if r.rec.schemaVersion() == pairRecSchemaAsync {
 		bind.Family = pairPaperManifestAsyncVer
+	} else if r.rec.schemaVersion() == pairRecSchemaBooks {
+		bind.Family = pairPaperManifestBooksVer
 	}
 	if err := r.rec.appendDirect(pairRecEvent{Kind: pairRecEventBind, Bind: &bind}, pairRecEvent{Kind: pairRecEventEpoch, Epoch: &pairRecEpoch{Epoch: 1, WallMs: time.Now().UnixMilli(), Mode: "new"}}); err != nil {
 		return fmt.Errorf("the recording bootstrap could not commit: %w", err)
@@ -1108,6 +1141,9 @@ func (r *pairReplayRuntime) paperResumeState() error {
 	l := r.paper.preLog
 	r.rec.log = l
 	r.rec.head = l.head()
+	if l.schema == pairRecSchemaBooks {
+		r.rec.encodedBytes = pairPaperEncodedLogBytes(l)
+	}
 	r.rec.epoch = l.epochs + 1
 	for _, row := range l.rows {
 		switch {
@@ -1228,6 +1264,11 @@ func (r *pairReplayRuntime) verifyRecordingForClear() (int64, error) {
 	l, err := readVerifiedPairRecLog(r.file, r.spec.Run.RunID, r.partition.String(), r.adm.contract)
 	if err != nil {
 		return 0, err
+	}
+	if r.paper.books != nil {
+		if err := r.paper.books.validateBindings(l); err != nil {
+			return 0, err
+		}
 	}
 	if l.head() != r.rec.head {
 		return 0, fmt.Errorf("the committed recording head (seq %d) is not the recorder head (seq %d)", l.head().Seq, r.rec.head.Seq)
@@ -1453,7 +1494,31 @@ func (r *pairReplayRuntime) paperNextWakeAfter(nowMs int64) int64 {
 }
 
 func (r *pairReplayRuntime) runPaper() error {
+	if r.paper.books != nil && !r.paper.playback {
+		defer func() {
+			reason := "drain_complete"
+			if !r.finished {
+				reason = "chunk_stop"
+			}
+			if r.rec.limitStopped.Load() {
+				reason = "recording_limit"
+			}
+			if err := r.paper.books.stop(reason); err != nil {
+				r.finished = false
+				r.stopReason = "book receiver stop failed: " + err.Error()
+			}
+		}()
+	}
 	for {
+		if r.rec.limitStopped.Load() {
+			r.stopReason = "the recording capacity limit stopped host scheduling"
+			return nil
+		}
+		if r.paper.books != nil && !r.paper.playback && !r.rec.consumingNow() {
+			if err := r.paper.books.start(); err != nil {
+				return err
+			}
+		}
 		if r.stopReason != "" {
 			return nil
 		}
@@ -1638,6 +1703,15 @@ func (r *pairReplayRuntime) managePaperMember(sc StrategyConfig, risk map[RiskPa
 	atMs := at.UnixMilli()
 	mark, err := r.paper.quotes.mark(context.Background(), sc.ID, atMs)
 	if err != nil {
+		if m, ok := r.rt.Contract.pairMember(sc.ID); ok && m.Source == pairSourceSealedFeed {
+			r.mu.Lock()
+			if r.rt.pairEchoFailures == nil {
+				r.rt.pairEchoFailures = map[string]string{}
+			}
+			r.rt.pairEchoFailures[sc.ID] = "sealed management input unavailable: " + err.Error()
+			r.mu.Unlock()
+			return
+		}
 		r.recordFailure(pairReplayFailure{Stage: pairReplayStageManagement, Kind: pairReplayKindNativeCheck, MemberID: sc.ID, AtMs: atMs, Cause: "no recorded own mark for the management check: " + err.Error()})
 		return
 	}
