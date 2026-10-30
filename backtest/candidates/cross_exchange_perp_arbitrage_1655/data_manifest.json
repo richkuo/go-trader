@@ -1,0 +1,23 @@
+{
+  "schema": "go-trader.pair-spread-study-data",
+  "version": 1,
+  "classification": "evidence_missing",
+  "objects": [],
+  "archive": {"bucket": null, "files": []},
+  "missing": [
+    {"id": "okx_history", "reason": "no sealed OKX paper recording is frozen"},
+    {"id": "cross_venue_depth", "reason": "snapshot history does not establish continuous cross-venue depth"},
+    {"id": "real_capability", "reason": "research admission uses synthetic accounts and refuses a private account reader"},
+    {"id": "real_fees", "reason": "no frozen real fee schedule is attached"},
+    {"id": "funding_document", "reason": "no recording manifest or frozen funding document is attached"}
+  ],
+  "coverage": {"train": null, "held_out": null, "ratio": null},
+  "funding_policy": null,
+  "recording_family": null,
+  "standalone_notes": [
+    "a research oracle observation is visible at receipt in a standalone replay",
+    "sealed playback publishes that observation at its recorded consumption step",
+    "a research receipt price is not a historical venue oracle price",
+    "scenario.funding_policy belongs only on a paper collection plan"
+  ]
+}

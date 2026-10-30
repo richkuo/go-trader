@@ -45,6 +45,7 @@ import gzip
 import hashlib
 import io
 import json
+import math
 import os
 import subprocess
 import sys
@@ -70,7 +71,9 @@ FILE_KEYS = {"path", "sha256"}
 FUNDING_KEYS = {"path", "sha256", "from"}
 SCRIPT_KEYS = {"venue", "queries", "save_failure"}
 PAIR_PLAN_KEYS = {"plan", "version", "run_id", "state_dir", "source", "research_config", "objects", "scenario", "bounds"}
-PAIR_PLAN_OPTIONAL = {"collection", "recording"}
+PAIR_PLAN_OPTIONAL = {"collection", "recording", "target_input"}
+TARGET_INPUT_MODES = {"policy", "no_trade", "frozen_schedule"}
+TARGET_LEG_KEYS = {"target_base_qty", "price_bound"}
 COLLECTION_KEYS = {"from_ms", "through_ms", "drain_through_ms"}
 OFFLINE_TIMEOUT_S = 3600
 PAIR_OBJECT_KEYS = {"kind", "member_id", "path", "sha256"}
@@ -173,6 +176,10 @@ def load_pair_plan(plan):
             raise ReplayPlanError("a paper plan records live and takes no recording reference")
     if "recording" in plan:
         _strict_keys(plan["recording"], FILE_KEYS, "recording")
+    if "target_input" in plan and ("collection" in plan or "recording" in plan):
+        raise ReplayPlanError("target_input is refused with a paper collection or a sealed recording")
+    if "target_input" in plan:
+        _check_target_input_shape(plan["target_input"])
     _strict_keys(plan["research_config"], FILE_KEYS, "research_config")
     if not isinstance(plan["objects"], list) or not plan["objects"]:
         raise ReplayPlanError("objects must be a nonempty list")
@@ -210,6 +217,73 @@ def verify_pair_inputs(plan, base):
     return hashes, research, objects
 
 
+def _finite_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _canonical_slot(text):
+    if not isinstance(text, str) or not text.isdigit() or text[0] == "0":
+        return None
+    return int(text)
+
+
+def _check_target_input_shape(ti):
+    if ti is None:
+        raise ReplayPlanError("target_input must be an object when present; null is refused")
+    _strict_keys(ti, {"mode", "schedule"}, "target_input")
+    mode = ti.get("mode")
+    if mode not in TARGET_INPUT_MODES:
+        raise ReplayPlanError(f"target_input.mode {mode!r} must be one of {sorted(TARGET_INPUT_MODES)}")
+    if mode in ("policy", "no_trade"):
+        if "schedule" in ti:
+            raise ReplayPlanError(f"target_input mode {mode} carries no schedule")
+        return
+    schedule = ti.get("schedule")
+    if not isinstance(schedule, dict):
+        raise ReplayPlanError("target_input mode frozen_schedule needs a schedule object; null is refused")
+
+
+def _validate_pair_target_input(plan, research):
+    ti = plan["target_input"]
+    _check_target_input_shape(ti)
+    if ti["mode"] != "frozen_schedule":
+        return
+    pairs = research.get("pairs") if isinstance(research, dict) else None
+    if not isinstance(pairs, list) or len(pairs) != 1 or not isinstance(pairs[0], dict):
+        raise ReplayPlanError("target_input needs research_config to name exactly one pair")
+    members = pairs[0].get("members")
+    if not isinstance(members, list) or len(members) != 2:
+        raise ReplayPlanError("target_input needs exactly the two configured members")
+    ids = []
+    for m in members:
+        if not isinstance(m, dict) or not isinstance(m.get("strategy_id"), str) or m["strategy_id"] in ids:
+            raise ReplayPlanError("target_input needs two distinct configured member ids")
+        ids.append(m["strategy_id"])
+    limits = pairs[0].get("limits") if isinstance(pairs[0].get("limits"), dict) else {}
+    cadence = limits.get("decision_cadence_ms")
+    if isinstance(cadence, bool) or not isinstance(cadence, int) or cadence <= 0:
+        raise ReplayPlanError("target_input needs limits.decision_cadence_ms as a positive integer")
+    start, end = _utc_ms(plan["bounds"]["start"]), _utc_ms(plan["bounds"]["end"])
+    if end < start:
+        raise ReplayPlanError("bounds.end must not be before bounds.start")
+    for key, entry in ti["schedule"].items():
+        slot = _canonical_slot(key)
+        if slot is None:
+            raise ReplayPlanError(f"target_input.schedule key {key!r} is not a canonical positive decimal millisecond time")
+        if slot % cadence or not (slot < end and slot + cadence > start):
+            raise ReplayPlanError(f"target_input.schedule slot {key} is not a {cadence} ms cadence slot inside the replay lifetime")
+        if not isinstance(entry, dict) or set(entry) != set(ids):
+            raise ReplayPlanError(f"target_input.schedule[{key}] must name exactly the configured members {sorted(ids)}")
+        for member_id in sorted(ids):
+            leg = entry[member_id]
+            if not isinstance(leg, dict) or set(leg) != TARGET_LEG_KEYS:
+                raise ReplayPlanError(f"target_input.schedule[{key}].{member_id} must contain exactly target_base_qty and price_bound")
+            if not _finite_number(leg["target_base_qty"]):
+                raise ReplayPlanError(f"target_input.schedule[{key}].{member_id} target_base_qty must be a finite JSON number")
+            if not _finite_number(leg["price_bound"]) or not leg["price_bound"] > 0:
+                raise ReplayPlanError(f"target_input.schedule[{key}].{member_id} price_bound must be a finite JSON number above zero")
+
+
 def build_pair_spec(plan, base, mode, research, objects):
     """Pass the frozen pair inputs by reference; every decision stays in the Go adapter."""
     spec = {
@@ -223,6 +297,9 @@ def build_pair_spec(plan, base, mode, research, objects):
         spec["collection"] = plan["collection"]
     elif isinstance(plan["scenario"], dict) and "funding_policy" in plan["scenario"]:
         raise ReplayPlanError("scenario.funding_policy belongs to a paper plan with a collection block; an offline replay reads the policy from its recording manifest or frozen funding document")
+    if "target_input" in plan:
+        _validate_pair_target_input(plan, research)
+        spec["target_input"] = plan["target_input"]
     if "recording" in plan:
         path = _resolve(base, plan["recording"]["path"])
         got = _sha256_file(path)

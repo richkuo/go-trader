@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -32,6 +33,14 @@ const (
 	pairReplayFailSave        = "save_failure"
 	pairReplayEventOrder      = "one host cycle per wake time; at one time every frozen record with first receipt (quotes), receive time (books), visibility (funding) or eligibility start (evidence) at or before the cycle time is visible together, in recorded order per object; objects are ordered by kind (evidence, funding, books, quotes, candles), then member id; the cycle runs evidence delivery, coordinator funding, preparePairRisk, partition risk with the paper kill switch, native member management on a management cycle (Hyperliquid then OKX by member id), the coordinator step, one full save that commits the step record and the cursor, then the next wake from fresh time"
 	pairReplayClockNote       = "one simulated clock drives every trading, valuation, venue, funding, risk, decision, action and management time; collection, valuation and policy budgets are wall-clock limits that never advance it; the storage audit columns keep the system clock and no decision reads them"
+	pairTargetModePolicy      = "policy"
+	pairTargetModeNoTrade     = "no_trade"
+	pairTargetModeFrozen      = "frozen_schedule"
+	pairTargetHoldNoTrade     = "target_input no_trade: the slot holds and management continues"
+	pairTargetHoldMissing     = "target_input frozen_schedule: the slot has no entry and the candidate policy is not a fallback"
+	pairTargetHoldSatisfied   = "target_input: the scheduled targets are already satisfied"
+	pairTargetHoldConflict    = "target_input: the lifecycle conflicts with the scheduled targets and the schedule does not force a transition"
+	pairTargetHoldGeometry    = "target_input: nonzero targets need opposite signs and equal absolute base quantity"
 )
 
 var pairReplayAdministrativeFields = []string{
@@ -59,6 +68,13 @@ type pairReplaySpec struct {
 	Scenario       pairReplayScenario      `json:"scenario"`
 	Bounds         pairReplayBounds        `json:"bounds"`
 	Recording      *pairReplayRecordingRef `json:"recording,omitempty"`
+	TargetInput    *pairReplayTargetInput  `json:"target_input,omitempty"`
+}
+
+type pairReplayTargetInput struct {
+	Mode     string          `json:"mode"`
+	Schedule json.RawMessage `json:"schedule,omitempty"`
+	slots    map[int64]map[string]pairPolicyMemberTarget
 }
 
 type pairReplayInputManifest struct {
@@ -170,6 +186,20 @@ func pairReplayPeekVersion(raw []byte) (string, int, error) {
 }
 
 func decodePairReplaySpec(raw []byte) (*pairReplaySpec, error) {
+	var probe struct {
+		TargetInput json.RawMessage `json:"target_input"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil, refuseReplay("spec_malformed", err.Error())
+	}
+	if bytes.Equal(bytes.TrimSpace(probe.TargetInput), []byte("null")) {
+		return nil, refuseReplay("spec_invalid", "target_input must be an object when present; null is refused")
+	}
+	if len(bytes.TrimSpace(probe.TargetInput)) > 0 {
+		if _, err := pairStrictParse(raw); err != nil {
+			return nil, refuseReplay("spec_malformed", "a specification with target_input must be one strict JSON object (duplicate keys, invalid text and trailing data are refused): "+err.Error())
+		}
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	var spec pairReplaySpec
@@ -314,11 +344,15 @@ func validatePairReplaySpec(spec *pairReplaySpec) (pairReplayLifetime, error) {
 	if spec.Bounds.MaxSteps <= 0 || spec.Bounds.MaxSteps > pairReplayMaxSteps {
 		add("bounds.max_steps %d must be in [1, %d]", spec.Bounds.MaxSteps, pairReplayMaxSteps)
 	}
+	boundsOK := err == nil && err2 == nil && start > 0 && end >= start
 	if spec.Recording != nil {
 		errs = append(errs, pairValidateRecordingRef(spec.Recording)...)
 		if len(sc.VenueFailures) != 0 {
 			add("scenario.venue_failures must be empty with a recording: the recorded outcomes are the only failures a playback reproduces")
 		}
+	}
+	if spec.TargetInput != nil {
+		errs = append(errs, pairValidateTargetInput(spec, start, end, boundsOK)...)
 	}
 	if len(errs) > 0 {
 		sort.Strings(errs)
@@ -534,4 +568,201 @@ func (d pairReplayBookDoc) structural(member string) string {
 
 func pairReplayFinite(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
+func pairTargetInputSHA(ti *pairReplayTargetInput) string {
+	if ti == nil {
+		return ""
+	}
+	blob, err := json.Marshal(struct {
+		Mode     string          `json:"mode"`
+		Schedule json.RawMessage `json:"schedule,omitempty"`
+	}{Mode: ti.Mode, Schedule: ti.Schedule})
+	if err != nil {
+		return ""
+	}
+	return sha256Hex(blob)
+}
+
+func pairValidateTargetInput(spec *pairReplaySpec, start, end int64, boundsOK bool) []string {
+	ti := spec.TargetInput
+	var errs []string
+	add := func(format string, a ...interface{}) { errs = append(errs, fmt.Sprintf(format, a...)) }
+	if spec.Recording != nil {
+		add("target_input is refused with a recording: sealed playback reproduces the recorded policy and takes no target override")
+	}
+	switch ti.Mode {
+	case pairTargetModePolicy, pairTargetModeNoTrade:
+		if len(bytes.TrimSpace(ti.Schedule)) != 0 {
+			add("target_input mode %s carries no schedule", ti.Mode)
+		}
+	case pairTargetModeFrozen:
+		if len(bytes.TrimSpace(ti.Schedule)) == 0 || bytes.Equal(bytes.TrimSpace(ti.Schedule), []byte("null")) {
+			add("target_input mode frozen_schedule needs a schedule object")
+			break
+		}
+		members, cadence, why := pairTargetConfiguredMembers(spec.ResearchConfig)
+		if why != "" {
+			add("%s", why)
+			break
+		}
+		slots, slotErrs := pairParseTargetSchedule(ti.Schedule, members, cadence, start, end, boundsOK)
+		errs = append(errs, slotErrs...)
+		if len(slotErrs) == 0 {
+			ti.slots = slots
+		}
+	default:
+		add("target_input.mode %q must be policy, no_trade or frozen_schedule", ti.Mode)
+	}
+	return errs
+}
+
+func pairTargetConfiguredMembers(raw json.RawMessage) (ids []string, cadence int64, why string) {
+	var root struct {
+		Pairs []struct {
+			Members []struct {
+				StrategyID string `json:"strategy_id"`
+			} `json:"members"`
+			Limits struct {
+				DecisionCadenceMs json.RawMessage `json:"decision_cadence_ms"`
+			} `json:"limits"`
+		} `json:"pairs"`
+	}
+	if json.Unmarshal(raw, &root) != nil || len(root.Pairs) != 1 {
+		return nil, 0, "target_input needs research_config to name exactly one pair"
+	}
+	seen := map[string]bool{}
+	for _, m := range root.Pairs[0].Members {
+		if m.StrategyID == "" || seen[m.StrategyID] {
+			return nil, 0, "target_input needs two distinct configured member ids"
+		}
+		seen[m.StrategyID] = true
+		ids = append(ids, m.StrategyID)
+	}
+	sort.Strings(ids)
+	if len(ids) != 2 {
+		return nil, 0, "target_input needs exactly the two configured members"
+	}
+	cadence, ok := pairRawInteger(root.Pairs[0].Limits.DecisionCadenceMs)
+	if !ok || cadence <= 0 {
+		return nil, 0, "target_input needs limits.decision_cadence_ms as a positive integer"
+	}
+	return ids, cadence, ""
+}
+
+func pairCanonicalSlotMillis(s string) (int64, bool) {
+	if s == "" || s[0] < '1' || s[0] > '9' {
+		return 0, false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n <= 0 || strconv.FormatInt(n, 10) != s {
+		return 0, false
+	}
+	return n, true
+}
+
+func pairSlotOverlapsLifetime(slot, cadence, start, end int64) bool {
+	if cadence <= 0 || slot <= 0 || slot%cadence != 0 || end < start {
+		return false
+	}
+	next, ok := pairAddMs(slot, cadence)
+	if !ok {
+		return false
+	}
+	return slot < end && next > start
+}
+
+func pairTargetNumber(v interface{}) (float64, bool) {
+	n, ok := v.(pairJSONNumber)
+	if !ok {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(string(n), 64)
+	if err != nil || !pairReplayFinite(f) {
+		return 0, false
+	}
+	return f, true
+}
+
+func pairParseTargetSchedule(raw json.RawMessage, members []string, cadence, start, end int64, boundsOK bool) (map[int64]map[string]pairPolicyMemberTarget, []string) {
+	tree, err := pairStrictParse(raw)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("target_input.schedule is not strict JSON: %v", err)}
+	}
+	obj, ok := tree.(map[string]interface{})
+	if !ok {
+		return nil, []string{"target_input.schedule must be an object"}
+	}
+	want := map[string]bool{}
+	for _, id := range members {
+		want[id] = true
+	}
+	var errs []string
+	slots := map[int64]map[string]pairPolicyMemberTarget{}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	memberList := strings.Join(members, ", ")
+	for _, key := range keys {
+		slot, canon := pairCanonicalSlotMillis(key)
+		if !canon {
+			errs = append(errs, fmt.Sprintf("target_input.schedule key %q is not a canonical positive decimal millisecond time", key))
+			continue
+		}
+		if !boundsOK || !pairSlotOverlapsLifetime(slot, cadence, start, end) {
+			errs = append(errs, fmt.Sprintf("target_input.schedule slot %s is not a %d ms cadence slot inside the replay lifetime", key, cadence))
+		}
+		leg, isObj := obj[key].(map[string]interface{})
+		if !isObj || len(leg) != len(want) {
+			errs = append(errs, fmt.Sprintf("target_input.schedule[%s] must name exactly the configured members %s", key, memberList))
+			continue
+		}
+		targets := map[string]pairPolicyMemberTarget{}
+		ids := make([]string, 0, len(leg))
+		for id := range leg {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			if !want[id] {
+				errs = append(errs, fmt.Sprintf("target_input.schedule[%s] names unknown member %q", key, id))
+				continue
+			}
+			body, bodyOK := leg[id].(map[string]interface{})
+			if !bodyOK || len(body) != 2 {
+				errs = append(errs, fmt.Sprintf("target_input.schedule[%s].%s must contain exactly target_base_qty and price_bound", key, id))
+				continue
+			}
+			qty, qok := pairTargetNumber(body["target_base_qty"])
+			px, pok := pairTargetNumber(body["price_bound"])
+			if _, has := body["target_base_qty"]; !has || !qok {
+				errs = append(errs, fmt.Sprintf("target_input.schedule[%s].%s target_base_qty must be a finite JSON number", key, id))
+			}
+			if _, has := body["price_bound"]; !has || !pok || !(px > 0) {
+				errs = append(errs, fmt.Sprintf("target_input.schedule[%s].%s price_bound must be a finite JSON number above zero", key, id))
+			}
+			for field := range body {
+				if field != "target_base_qty" && field != "price_bound" {
+					errs = append(errs, fmt.Sprintf("target_input.schedule[%s].%s has unknown field %q", key, id, field))
+				}
+			}
+			if qok && pok && px > 0 {
+				targets[id] = pairPolicyMemberTarget{TargetBaseQty: qty, PriceBound: px}
+			}
+		}
+		if len(targets) == len(want) {
+			slots[slot] = targets
+		}
+	}
+	if len(errs) > 0 {
+		return nil, errs
+	}
+	return slots, nil
 }

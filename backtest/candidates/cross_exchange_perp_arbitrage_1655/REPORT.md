@@ -1,28 +1,66 @@
-# cross_exchange_perp_arbitrage: registration record (#1878)
+# cross_exchange_perp_arbitrage study
 
-**Status: UNVALIDATED.** This file is a registration record. It is not a study report.
+**Verdict: inconclusive.** `scored` is false. `promotion_eligible` is false. `edge_source` stays `unvalidated`.
 
-Issue #1878 registers the research pair policy `cross_exchange_perp_arbitrage` (#1875) in the canonical open registry with `edge_status="no_edge"`, `edge_source="unvalidated"` and `production_refused=True`.
-This change supplies no study result, no performance measurement, no baseline comparison, no verdict and no promotion.
-No backtest, replay or paper run of the policy was scored for this record.
+## Lock
 
-## What the registration states
+- Commit recorded by the lock: `c7f9572deb9b67d9442519ea65ea9950f109397a`.
+- Binary sha256: `bd1c642c3e491f6fba9a0b0ebee7ba68e904f17f5e3cf9b47426c915baf81649`.
+- Protocol sha256: `58e553386fa68e4f195b6a0dd61cb3f90df386c036f5ef56b04b06186667736e`.
+- Signal specification sha256: `8c61cee1f5d94cc200c19f2a9fffd313909caa838f790665431f78210660c571`.
+- Result lock sha256: `6d58fcb23d29be41cdf0113f13231d80e0641be0361c04c69feaf813b234402c`.
 
-- Name: `cross_exchange_perp_arbitrage`; contract `{"input": "pair_policy_request_v2", "output": "pair_policy_result_v2"}`; platforms `("futures",)`; `short_entries=False`.
-- Owner: `shared_strategies/open/pair_registry.py` holds the only pair descriptor; `shared_strategies/open/registry.py` projects it into `STRATEGIES` through `register(pair=...)`.
-- Parameters: `adverse_band_bps`, `entry_threshold_bps`, `exit_threshold_bps` and `funding_allowance_bps` are all required and have no defaults; the policy and the Go pair admission validate them.
-- Every production configuration, mode and `allow_no_edge` acknowledgement refuses the name; single-symbol registries, scalar checks, candle backtests, the optimizer and parity runs refuse it.
-  Only the internally admitted research pair coordinator runs it, through `shared_scripts/run_pair_policy.py`.
+## Evidence
 
-## Evidence source
+- no frozen real fee schedule is attached
+- no recording manifest or frozen funding document is attached
+- no sealed OKX paper recording is frozen
+- real OKX history, cross-venue depth, capability, fees or funding evidence is not frozen
+- research admission uses synthetic accounts and refuses a private account reader
+- snapshot history does not establish continuous cross-venue depth
 
-`edge_source="unvalidated"` means that no evidence of edge exists.
-A later change of `edge_source` needs the frozen study lock and the final-tree rerun that #1883 describes; until then this record stays unvalidated.
+## Report fields
 
-## Discovery captures
+- source_hashes: source `protocol.lock.json sources`.
+- binary_hash: source `protocol.lock.json binary_sha256`.
+- data_coverage: missing. no OKX sealed recording and no continuous cross-venue depth are frozen
+- windows: source `protocol.json windows`.
+- parameters: source `protocol.json parameters`.
+- costs: missing. no frozen real fee schedule is attached to this study
+- baselines: source `protocol.json baselines`.
+- orientations: source `protocol.json orientations`.
+- latency: missing. latency cases are declared and not run; no depth history is frozen
+- failure_cases: missing. venue failure cases are declared and not run; no depth history is frozen
+- booked_net: missing. no booked trades exist for the committed study
+- funding_policy: missing. no recording manifest or frozen funding document is attached
+- recording_family: missing. no sealed recording is attached
+- oracle_visibility: source `a standalone research oracle price is visible at receipt; sealed playback publishes it at the recorded consumption step; neither is a historical venue oracle price`.
+- verdict: source `results.json verdict`.
 
-The raw `--list-json` outputs of both single-symbol shims were captured on the build base before the registration (`discovery_spot_before.json`, `discovery_futures_before.json`) and on the final tree after it (`discovery_spot_after.json`, `discovery_futures_after.json`).
+## Baselines and orientations
 
-- Base commit: `f576802c44e298c1c544db7b0dd5831a70672ddc`.
-- Commands: `uv run --no-sync python shared_strategies/open/spot/strategies.py --list-json` and `uv run --no-sync python shared_strategies/open/futures/strategies.py --list-json`.
-- Comparison: `cmp` reports each after capture byte-identical to its before capture (spot 2716 bytes, futures 3227 bytes); the pair adds no discovery entry.
+The declared baselines are no trade and a frozen two-leg schedule. The declared orientations are long Hyperliquid short OKX, and long OKX short Hyperliquid.
+A scheduled slot with no entry holds. The candidate policy is not a fallback. A lifecycle conflict holds and does not force a transition.
+
+## Funding and recordings
+
+Funding policy on this result: `None`. Recording family: `None`.
+a research receipt price is not a historical venue oracle price
+The driver accepts recording manifest versions 1, 2 and 3. A family label changed on a log does not make that log a different family.
+scenario.funding_policy is only for a paper collection plan. An offline experiment reads the policy from the recording manifest or the frozen funding document.
+
+## Booked results
+
+No booked net is claimed. An immediate-or-cancel order can stay unfilled when its rounded policy bound excludes the worst consumed price level.
+Adapter comparison eligibility is not study equality and does not clear an incomplete reason.
+
+## Commands
+
+```
+uv run --no-sync python backtest/candidates/cross_exchange_perp_arbitrage_1655/run_study.py validate
+uv run --no-sync python backtest/candidates/cross_exchange_perp_arbitrage_1655/run_study.py lock --binary <go-trader>
+uv run --no-sync python backtest/candidates/cross_exchange_perp_arbitrage_1655/run_study.py run --binary <go-trader> --work <fresh-dir>
+uv run --no-sync python backtest/candidates/cross_exchange_perp_arbitrage_1655/run_study.py render
+```
+
+Production refusal stays enabled. This report does not change a deployed configuration, credential, default, or live trading path.

@@ -1,0 +1,13 @@
+{
+  "schema": "go-trader.pair-spread-study-experiments",
+  "version": 1,
+  "experiments": [
+    {"id": "candidate", "role": "candidate", "target_input": {"mode": "policy"}},
+    {"id": "no_trade", "role": "baseline", "target_input": {"mode": "no_trade"}},
+    {"id": "frozen_long_hl", "role": "baseline", "target_input": {"mode": "frozen_schedule"}, "orientation": "long_hyperliquid_short_okx"},
+    {"id": "frozen_long_okx", "role": "baseline", "target_input": {"mode": "frozen_schedule"}, "orientation": "long_okx_short_hyperliquid"},
+    {"id": "latency", "role": "sensitivity", "latency_ms": [0, 200, 1000]},
+    {"id": "venue_failure_hyperliquid", "role": "failure", "member": "hyperliquid"},
+    {"id": "venue_failure_okx", "role": "failure", "member": "okx"}
+  ]
+}
