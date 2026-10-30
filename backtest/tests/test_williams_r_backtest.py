@@ -151,12 +151,12 @@ def test_range_gate_blocks_entries_only_and_reads_the_prior_bar_label():
                 regime_label_columns=label_cols, **feature_label_kwargs(plan)).run(
         labeled, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
     labels = labeled["regime"]
-    assert (labels.iloc[:199] == "").all()
-    assert set(labels.iloc[199:]) <= {"ranging", "trending_up", "trending_down"}
+    assert (labels.iloc[:28] == "").all()
+    assert set(labels.iloc[28:]) <= {"ranging", "trending_up", "trending_down"}
     entries = [labeled.index.get_loc(pd.Timestamp(t["entry_date"])) for t in gated["trades"]]
     assert entries
     assert all(labels.iloc[i - 1] == "ranging" for i in entries)
-    assert all(i - 1 >= 199 for i in entries)
+    assert all(i - 1 >= 28 for i in entries)
     decided = [i for i in range(200, len(labeled) - 1) if labeled["signal"].iloc[i] != 0]
     assert any(labels.iloc[i] != "ranging" for i in decided)
     assert len(gated["trades"]) < len(open_ungated["trades"])

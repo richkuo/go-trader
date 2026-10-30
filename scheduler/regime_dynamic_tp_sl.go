@@ -49,7 +49,7 @@ func strategyCurrentATRRegime(stratState *StrategyState, sc StrategyConfig) stri
 	}
 	key := normalizeRegimeWindowKey(sc.RegimeATRWindow)
 	if key != "" && key != regimeWindowDefaultKey && len(stratState.RegimeWindows) > 0 {
-		if label, ok := stratState.RegimeWindows[key]; ok && strings.TrimSpace(label) != "" {
+		if label, ok := stratState.RegimeWindows[key]; ok {
 			return strings.TrimSpace(label)
 		}
 	}
@@ -72,6 +72,8 @@ func advanceDynamicCloseRegime(pos *Position, stratState *StrategyState, sc Stra
 	}
 	current := strategyCurrentATRRegime(stratState, sc)
 	if current == "" {
+		pos.RegimePendingLabel = ""
+		pos.RegimePendingCount = 0
 		return false
 	}
 	confirm := dynamicCloseConfirmCycles(sc)

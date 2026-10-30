@@ -706,7 +706,7 @@ def _shared_decision_regime(shared, selection):
             regime_df = _make_dataframe(selection.rows)
         else:
             regime_sel = _closed_frame_selection(
-                shared, shared["symbol"], tf, shared["ohlcv_limit"], selection.boundary_ms, 30)
+                shared, shared["symbol"], tf, shared["ohlcv_limit"], selection.boundary_ms, 1)
             regime_df = _make_dataframe(regime_sel.rows)
         payload, _live, strategy_payload = prepare_check_regime(
             regime_df,

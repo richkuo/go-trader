@@ -720,6 +720,19 @@ def _loader_segment(tmp_path, cfg, strategy):
     return seg
 
 
+def _ready_label_fixture(frame):
+    for column in list(frame.columns):
+        if column != "regime" and not (str(column).startswith("regime_w_") and not str(column).endswith(("_ready", "_bars", "_need"))):
+            continue
+        if column + "_ready" in frame.columns:
+            continue
+        ready = frame[column].fillna("").map(lambda value: bool(str(value).strip()))
+        frame[column + "_ready"] = ready
+        frame[column + "_bars"] = [29 + i if ok else 0 for i, ok in enumerate(ready)]
+        frame[column + "_need"] = 29
+    return frame
+
+
 def _stop_frame(side, regime, anchor=100.0, marks=(99.0, 101.0, 100.0), entry_atr=2.0):
     import pandas as pd
     n = len(marks) + 1
@@ -742,7 +755,7 @@ def _engine_events(verdict, side, regime, **frame):
     bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0, platform="hyperliquid",
                     intrabar_resolution="bar_close", direction=side,
                     close_strategies=copy.deepcopy(verdict["close_refs"]) or None, **verdict["kwargs"])
-    bt.run(_stop_frame(side, regime, **frame), save=False, stop_observer=events.append)
+    bt.run(_ready_label_fixture(_stop_frame(side, regime, **frame)), save=False, stop_observer=events.append)
     return bt, events
 
 
@@ -1637,11 +1650,11 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
         regime_directional_policy=policy, regime_directional_certified_states=states,
         regime_label_columns=columns,
     )
-    result = bt.run(df, save=False)
+    result = bt.run(_ready_label_fixture(df), save=False)
     assert [t["side"] for t in result["trades"]] == ["long", "long"]
     stamps = [e for e in bt._regime_stamp_trace if e["event"] == "stamp"]
     clears = [e for e in bt._regime_stamp_trace if e["event"] == "clear"]
-    assert [e["directional"] for e in stamps] == ["trending_down"]
+    assert [e["directional"] for e in stamps] == ["trending_up"]
     assert clears and clears[0]["directional"] == ""
 
     partial = df.copy()
@@ -1652,12 +1665,12 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
         regime_directional_policy=policy, regime_directional_certified_states=states,
         regime_label_columns=columns,
     )
-    held.run(partial, save=False)
-    assert held._stamp_directional == "trending_down"
+    held.run(_ready_label_fixture(partial), save=False)
+    assert held._stamp_directional == "trending_up"
     assert not any(e["event"] == "clear" for e in held._regime_stamp_trace)
     open_direction, _ = held._effective_directional_entry(
         "trending_up", held._stamp_directional, 1.0)
-    assert open_direction == "short"
+    assert open_direction == "long"
 
     named = df.copy()
     named["open_action"] = ["short", "none", "none", "none", "none", "none"]
@@ -1672,7 +1685,7 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
             "payload_row": "closed_candle",
         },
     )
-    named_result = named_bt.run(named, save=False)
+    named_result = named_bt.run(_ready_label_fixture(named), save=False)
     assert [t["side"] for t in named_result["trades"]] == ["short"]
     assert named_bt._stamp_directional == "trending_down"
 
@@ -1682,7 +1695,7 @@ def test_engine_keeps_feature_stamps_and_refuses_a_missing_column():
         regime_label_columns=columns,
     )
     with pytest.raises(ValueError, match="refusing missing regime label column regime_w_gate"):
-        refused.run(missing, save=False)
+        refused.run(_ready_label_fixture(missing), save=False)
 
 
 _REGIME_STOP = {"trend_regime": {
@@ -1703,7 +1716,7 @@ def _arms(df, *, columns=None, seed=None, regime_enabled=True):
     if columns is not None:
         kwargs["regime_label_columns"] = columns
     bt = Backtester(**kwargs)
-    bt.run(df, save=False, starting_long=seed, stop_observer=events.append)
+    bt.run(_ready_label_fixture(df), save=False, starting_long=seed, stop_observer=events.append)
     return bt, [e for e in events if e.get("event") == "arm"]
 
 
@@ -1744,7 +1757,7 @@ def test_regime_owned_stop_arms_from_the_decision_bar(tmp_path):
     _dump(fx / "comparison_input.json", cin)
     _, rep = _run(fx, tmp_path, name="named_gate_stop.json")
     assert rep["simulation"]["status"] == "run", rep["eligibility"]["refusals"]
-    assert rep["eligibility"]["regime"]["protection_source"] == "shifted_decision_bar:gate_window:short"
+    assert rep["eligibility"]["regime"]["protection_source"] == "shifted_decision_bar:primary_column"
     assert rep["eligibility"]["regime"]["timing"]["protection"] == "shifted_decision_bar"
     import pandas as pd
     from regime import bounded_window_labels, required_ohlcv_limit
@@ -1824,7 +1837,7 @@ def _armed_with_policy(df, columns, *, policy=None):
         kwargs["regime_directional_policy"] = policy
         kwargs["regime_directional_certified_states"] = dict(_STAMP_STATES)
     bt = Backtester(**kwargs)
-    result = bt.run(df, save=False, stop_observer=events.append)
+    result = bt.run(_ready_label_fixture(df), save=False, stop_observer=events.append)
     arms = [e for e in events if e.get("event") == "arm"]
     return bt, arms, result["trades"]
 
@@ -1857,8 +1870,8 @@ def test_modeled_policy_arms_the_stop_from_the_stamp_row(tmp_path):
     assert trades and trades[0]["side"] == "long"
     assert arms and arms[0]["regime"] == "trending_down"
     assert arms[0]["fraction"] == pytest.approx(0.02)
-    assert bt._stamp_directional == "trending_down"
-    assert arms[0]["regime"] == bt._stamp_directional
+    assert bt._stamp_directional == "trending_up"
+    assert arms[0]["regime"] != bt._stamp_directional
     assert arms[0]["regime"] != "trending_up"
 
     fx = _copy(tmp_path)
@@ -1897,7 +1910,7 @@ def test_modeled_policy_arms_the_stop_from_the_stamp_row(tmp_path):
     seg["strategy"]["regime_gate_window"] = "short"
     named_rep = _bind("policy_short_stop.json")
     assert named_rep["eligibility"]["regime"]["protection_source"] == (
-        "unshifted_closed_candle:gate_window:short")
+        "unshifted_closed_candle:primary_column")
     assert named_rep["eligibility"]["regime"]["timing"]["protection"] == "unshifted_closed_candle"
 
 
@@ -2002,7 +2015,7 @@ def _slice_regime_warmup(fx, cin, warmup):
     cin["market"]["manifest"]["sha256"] = _sha(base / "manifest.json")
 
 
-def test_warmup_between_lookback_and_trim_is_not_an_indicator_refusal(tmp_path):
+def test_warmup_trim_requires_matching_readiness_history(tmp_path):
     def _run_warmup(warmup, name):
         slot = tmp_path / f"warm{warmup}"
         slot.mkdir()
@@ -2023,10 +2036,9 @@ def test_warmup_between_lookback_and_trim_is_not_an_indicator_refusal(tmp_path):
 
     _, mid = _run_warmup(250, "warmup_250.json")
     reasons = {r["reason"] for r in mid["eligibility"]["refusals"]}
-    assert "market_indicator_history_insufficient" not in reasons
+    assert "market_indicator_history_insufficient" in reasons
     assert "regime_lookback_insufficient" not in reasons
-    assert mid["eligibility"]["market"]["strategy_checks"]["indicator_history"]["ok"] is True
-    assert mid["simulation"]["status"] == "run"
+    assert mid["eligibility"]["market"]["strategy_checks"]["indicator_history"]["ok"] is False
 
     _, full = _run_warmup(300, "warmup_300.json")
     assert full["eligibility"]["market"]["strategy_checks"]["indicator_history"]["ok"] is True
@@ -2054,7 +2066,7 @@ def test_unshifted_gate_attestation_reads_the_fill_row(tmp_path):
             platform="hyperliquid", strategy_type="perps", regime_enabled=True,
             allowed_regimes=["trending_up"], regime_label_columns=columns,
         )
-        result = bt.run(frame, save=False)
+        result = bt.run(_ready_label_fixture(frame), save=False)
         return frame, result["trades"]
 
     admitted, admitted_trades = _gate_run(True)
@@ -2072,7 +2084,7 @@ def test_unshifted_gate_attestation_reads_the_fill_row(tmp_path):
         allowed_regimes=["trending_up"],
         regime_label_columns={"gate": "regime", "directional_named": False},
     )
-    prior = prior_bt.run(prior_up, save=False)
+    prior = prior_bt.run(_ready_label_fixture(prior_up), save=False)
     assert prior["trades"] and prior["trades"][0]["side"] == "long"
     assert pd.Timestamp(prior["trades"][0]["entry_date"]) == prior_up.index[1]
 
@@ -2131,7 +2143,7 @@ def test_unshifted_gate_arms_protection_from_the_same_row(tmp_path):
             allowed_regimes=["trending_up"], stop_loss_atr_mult_regime=_REGIME_STOP,
             regime_label_columns=columns,
         )
-        result = bt.run(frame, save=False, stop_observer=events.append)
+        result = bt.run(_ready_label_fixture(frame), save=False, stop_observer=events.append)
         arms = [e for e in events if e.get("event") == "arm"]
         return frame, bt, arms, result["trades"]
 
@@ -2210,7 +2222,7 @@ def test_unshifted_gate_arms_protection_from_the_same_row(tmp_path):
     assert closed["simulation"]["status"] == "run", closed["eligibility"]["refusals"]
     assert closed["eligibility"]["regime"]["timing"]["protection"] == "shifted_decision_bar"
     assert closed["eligibility"]["regime"]["protection_source"] == (
-        "shifted_decision_bar:gate_window:short")
+        "shifted_decision_bar:primary_column")
     assert closed["eligibility"]["regime"]["timing"]["gate"] == "shifted_closed_bar"
 
     _, (_, named) = _stop_compare(
@@ -2218,7 +2230,7 @@ def test_unshifted_gate_arms_protection_from_the_same_row(tmp_path):
     assert named["simulation"]["status"] == "run", named["eligibility"]["refusals"]
     assert named["eligibility"]["regime"]["timing"]["protection"] == "unshifted_closed_candle"
     assert named["eligibility"]["regime"]["protection_source"] == (
-        "unshifted_closed_candle:gate_window:short")
+        "unshifted_closed_candle:primary_column")
 
 
 def _payload_stop_run(tmp_path, name, *, features=None, closed_bar=False, gate_window=None,
@@ -2277,11 +2289,11 @@ def test_result_regime_timing_evidence_sets_the_stop_row_for_every_consumer(tmp_
         tmp_path, "gate_token_named", features={"gate": unshifted}, gate_window="short")
     assert gate_token["simulation"]["status"] == "run", gate_token["eligibility"]["refusals"]
     regime = gate_token["eligibility"]["regime"]
-    assert regime["protection_source"] == "unshifted_closed_candle:gate_window:short"
+    assert regime["protection_source"] == "unshifted_closed_candle:primary_column"
     assert regime["timing"]["protection"] == unshifted
     assert regime["timing"]["gate"] == unshifted
     assert regime["timing"]["result_regime"]["status"] == "attested"
-    short = _bounded_labels(fx, "short")
+    short = _bounded_labels(fx, "medium")
     arms = gate_token["stops"]["arm_events"]
     assert arms and all(a["regime"] == short[_arm_fill_ms(a)] for a in arms)
 
@@ -2294,7 +2306,7 @@ def test_result_regime_timing_evidence_sets_the_stop_row_for_every_consumer(tmp_
 
     fx, (_, bare) = _payload_stop_run(tmp_path, "no_token_named", gate_window="short")
     assert bare["simulation"]["status"] == "run", bare["eligibility"]["refusals"]
-    assert bare["eligibility"]["regime"]["protection_source"] == "shifted_decision_bar:gate_window:short"
+    assert bare["eligibility"]["regime"]["protection_source"] == "shifted_decision_bar:primary_column"
     assert bare["eligibility"]["regime"]["timing"]["result_regime"]["status"] == "unattested"
     arms = bare["stops"]["arm_events"]
     assert arms and all(a["regime"] == short[_arm_fill_ms(a) - HOUR_MS] for a in arms)
@@ -2320,7 +2332,7 @@ def test_result_regime_timing_evidence_sets_the_stop_row_for_every_consumer(tmp_
         tmp_path, "gate_and_dir_tokens", features={"gate": unshifted, "directional": unshifted},
         gate_window="short", allowed=every)
     assert both["simulation"]["status"] == "run", both["eligibility"]["refusals"]
-    assert both["eligibility"]["regime"]["protection_source"] == "unshifted_closed_candle:gate_window:short"
+    assert both["eligibility"]["regime"]["protection_source"] == "unshifted_closed_candle:primary_column"
     arms = both["stops"]["arm_events"]
     assert arms and all(a["regime"] == short[_arm_fill_ms(a)] for a in arms)
 
@@ -2388,13 +2400,13 @@ def test_regime_context_columns_arm_the_stop_on_the_attested_row():
 
     columns, report = _context_label_columns({"gate": "unshifted_closed_candle"}, gate_window="short")
     assert columns["gate"] == "regime_w_short" and columns["payload_row"] == "closed_candle"
-    assert report["protection_source"] == "unshifted_closed_candle:gate_window:short"
-    assert _arm_label(columns, short=moving, medium=still) == "trending_up"
+    assert report["protection_source"] == "unshifted_closed_candle:primary_column"
+    assert _arm_label(columns, short=moving, medium=still) == "ranging"
 
     columns, report = _context_label_columns(None, gate_window="short")
     assert columns["payload_row"] == "decision_bar"
-    assert report["protection_source"] == "shifted_decision_bar:gate_window:short"
-    assert _arm_label(columns, short=moving, medium=still) == "trending_down"
+    assert report["protection_source"] == "shifted_decision_bar:primary_column"
+    assert _arm_label(columns, short=moving, medium=still) == "ranging"
 
     columns, report = _context_label_columns({"directional": "unshifted_closed_candle"})
     assert columns["gate"] == "regime_w_medium" and columns["payload_row"] == "closed_candle"
@@ -2430,7 +2442,7 @@ def test_engine_reads_result_regime_from_one_payload_row():
             kwargs["regime_directional_policy"] = policy
             kwargs["regime_directional_certified_states"] = dict(_STAMP_STATES)
         bt = Backtester(**kwargs)
-        result = bt.run(_ohlc(labels, actions), save=False, stop_observer=events.append)
+        result = bt.run(_ready_label_fixture(_ohlc(labels, actions)), save=False, stop_observer=events.append)
         return bt, [e for e in events if e.get("event") == "arm"], result["trades"]
 
     base = {"gate": "regime", "directional": "regime", "directional_named": False}

@@ -1,3 +1,4 @@
+from shared_tools.conftest import with_regime_readiness
 import contextlib
 import copy
 import importlib.util
@@ -95,7 +96,7 @@ def _frame(case: dict) -> pd.DataFrame:
     }, index=pd.date_range("2026-03-01", periods=n, freq="1h"))
     if pos.get("regime"):
         df["regime"] = pos["regime"]
-    return df
+    return with_regime_readiness(df)
 
 
 def _run(kwargs: dict, case: dict) -> tuple:
@@ -358,7 +359,7 @@ def test_label_owner_without_label_source_refuses_before_the_loop(tmp_path, case
     frame = _frame(case).drop(columns=["regime"])
     events: list = []
     with pytest.raises(CloseCapabilityError) as exc:
-        _bt_for(kwargs).run(frame, save=False, stop_observer=events.append)
+        _bt_for(kwargs).run(with_regime_readiness(frame), save=False, stop_observer=events.append)
     assert exc.value.reason_code == "MISSING_STOP_INPUT"
     assert exc.value.validation.phase == "runtime"
     assert events == []
@@ -397,7 +398,7 @@ def test_m6_label_owner_trades_once_labels_exist(tmp_path, case_id):
     assert kw["regime_enabled"] is True and kw["allowed_regimes"] is None
     frame = _long_labelled_frame([3, 8, 150])
     events: list = []
-    result = Backtester(**kw).run(frame, save=False, stop_observer=events.append)
+    result = Backtester(**kw).run(with_regime_readiness(frame), save=False, stop_observer=events.append)
     assert result["stop_warmup_skipped_entries"] == 2, result.get("stop_warmup_skipped_entries")
     assert len(result["trades"]) >= 1, result["trades"]
     entry = pd.Timestamp(result["trades"][0]["entry_date"])
@@ -425,9 +426,9 @@ def test_m6_arm_stamps_labels_for_a_label_owner(tmp_path):
             _write(tmp_path, _config(GEOMETRY["pct_long"])), STRATEGY_ID)["stops"])
     assert plain["regime_enabled"] is False
     frame = _frame(case).drop(columns=["regime"])
-    Backtester(**kw).run(frame, save=False)
+    Backtester(**kw).run(with_regime_readiness(frame), save=False)
     with pytest.raises(CloseCapabilityError) as exc:
-        Backtester(**dict(kw, regime_enabled=False)).run(frame, save=False)
+        Backtester(**dict(kw, regime_enabled=False)).run(with_regime_readiness(frame), save=False)
     assert exc.value.reason_code == "MISSING_STOP_INPUT"
 
 
@@ -441,7 +442,7 @@ def test_entry_during_atr_warmup_is_skipped_not_left_unprotected(tmp_path):
     kwargs = _load(tmp_path, case)
     frame = _frame(case)
     frame["atr"] = float("nan")
-    result = _bt_for(kwargs).run(frame, save=False)
+    result = _bt_for(kwargs).run(with_regime_readiness(frame), save=False)
     assert result["trades"] == []
     assert result["stop_warmup_skipped_entries"] == 1
 
@@ -452,7 +453,7 @@ def test_implausible_entry_atr_after_warmup_refuses(tmp_path):
     frame = _frame(case)
     frame["atr"] = 60.0
     with pytest.raises(CloseCapabilityError) as exc:
-        _bt_for(kwargs).run(frame, save=False)
+        _bt_for(kwargs).run(with_regime_readiness(frame), save=False)
     assert exc.value.reason_code == "MISSING_STOP_INPUT"
     assert exc.value.validation.phase == "runtime"
 
@@ -462,11 +463,11 @@ def test_regime_label_warmup_skips_and_unresolvable_label_refuses(tmp_path):
     kwargs = _load(tmp_path, case)
     frame = _frame(case)
     frame["regime"] = ""
-    result = _bt_for(kwargs).run(frame, save=False)
+    result = _bt_for(kwargs).run(with_regime_readiness(frame), save=False)
     assert result["trades"] == [] and result["stop_warmup_skipped_entries"] == 1
     frame["regime"] = "not_a_label"
     with pytest.raises(CloseCapabilityError) as exc:
-        _bt_for(kwargs).run(frame, save=False)
+        _bt_for(kwargs).run(with_regime_readiness(frame), save=False)
     assert exc.value.reason_code == "MISSING_STOP_INPUT"
 
 
@@ -476,10 +477,10 @@ def test_seed_without_stop_inputs_starts_flat(tmp_path):
     frame = _frame(case)
     frame["signal"] = 0
     seed = {"entry_price": 100.0, "entry_date": frame.index[0], "high_water": 100.0}
-    result = _bt_for(kwargs).run(frame, save=False, starting_long=seed)
+    result = _bt_for(kwargs).run(with_regime_readiness(frame), save=False, starting_long=seed)
     assert result["trades"] == [] and result["stop_seed_dropped"] is True
     events: list = []
-    seeded = _bt_for(kwargs).run(frame, save=False, stop_observer=events.append,
+    seeded = _bt_for(kwargs).run(with_regime_readiness(frame), save=False, stop_observer=events.append,
                                  starting_long=dict(seed, entry_atr=2.0))
     assert len(seeded["trades"]) == 1 and "stop_seed_dropped" not in seeded
     arm = next(e for e in events if e["event"] == "arm")

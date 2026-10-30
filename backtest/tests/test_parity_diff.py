@@ -172,6 +172,9 @@ def test_regime_directional_policy_decision_layer_parity(monkeypatch):
     def fake_compute_regime(frame, period=14, adx_threshold=20.0):
         out = frame.copy()
         out["regime"] = frame["_test_regime"].values
+        out["regime_ready"] = True
+        out["regime_bars"] = 29
+        out["regime_need"] = 29
         out["regime_score"] = 1.0
         out["adx"] = 50.0
         out["plus_di"] = 10.0
@@ -180,7 +183,7 @@ def test_regime_directional_policy_decision_layer_parity(monkeypatch):
 
     def fake_prepare_check_regime(window, **kwargs):
         label = str(window["_test_regime"].iloc[-1])
-        snap = {"regime": label, "score": 1.0, "metrics": {}}
+        snap = {"regime": label, "score": 1.0, "metrics": {}, "ready": True, "bars": 29, "need": 29}
         return label, label, snap
 
     monkeypatch.setattr(regime_mod, "compute_regime", fake_compute_regime)

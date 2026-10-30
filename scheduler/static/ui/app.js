@@ -2287,6 +2287,11 @@
     }
   }
 
+  function regimeReadinessLabel(snap) {
+    if (!snap || !Number.isInteger(snap.need) || snap.need <= 0) return "unavailable";
+    return snap.ready ? snap.regime : "warming (" + snap.bars + "/" + snap.need + ")";
+  }
+
   async function refreshRegimeStorePanel() {
     if (!els.regimeStoreContent) return;
     try {
@@ -2302,10 +2307,10 @@
         const windows = entry.windows || {};
         const windowRows = Object.keys(windows).sort().map(function (name) {
           const win = windows[name] || {};
-          const label = win.regime || "-";
+          const label = win.status || "unavailable";
           const views = [];
-          if (win.adx3 && win.adx3 !== label) views.push("adx3: " + win.adx3);
-          if (win.composite7 && win.composite7 !== label) views.push("c7: " + win.composite7);
+          if (win.adx3) views.push("adx3: " + regimeReadinessLabel(win.adx3));
+          if (win.composite7) views.push("c7: " + regimeReadinessLabel(win.composite7));
           return '<div class="panel-row panel-indent">' + escapeHTML(name) + ": " +
             '<span class="regime-badge ' + regimeBadgeClass(label) + '">' +
             escapeHTML(humanizeRegimeLabel(label)) + "</span>" +

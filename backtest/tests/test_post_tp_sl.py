@@ -1,4 +1,5 @@
 from __future__ import annotations
+from shared_tools.conftest import with_regime_readiness
 
 import contextlib
 import copy
@@ -470,7 +471,7 @@ def test_backtester_sl_after_scenarios(name):
         kwargs["intrabar_resolution"] = spec["intrabar"]
     if "stop_loss_atr_mult" in spec:
         kwargs["stop_loss_atr_mult"] = spec["stop_loss_atr_mult"]
-    result = Backtester(**kwargs).run(df, save=False)
+    result = Backtester(**kwargs).run(with_regime_readiness(df), save=False)
     sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
     for pair in spec["expect"]:
         assert pair in sides_prices, sides_prices
@@ -509,7 +510,7 @@ def test_unified_backtest_moves_stop_on_the_bar_after_the_tier():
                 "ranging": label(),
             }},
         }],
-    ).run(df, save=False)
+    ).run(with_regime_readiness(df), save=False)
     sl_closes = [t for t in result["trades"] if t["exit_price"] == 99.0]
     assert len(sl_closes) == 1, result["trades"]
     assert sl_closes[0]["exit_date"] == "2024-01-05 00:00:00"
@@ -740,7 +741,7 @@ def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds(platform):
         return
     bt = Backtester(**kwargs)
     assert bt._tp_tier_thresholds_static == []
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
     sl_fires = [t for t in result["trades"] if t.get("exit_price") in (90.0, 89.0, 91.0)]
     assert not sl_fires, f"phantom SL fired at {[t['exit_price'] for t in sl_fires]}"
 

@@ -1,3 +1,4 @@
+from shared_tools.conftest import with_regime_readiness
 import numpy as np
 import pandas as pd
 import pytest
@@ -444,6 +445,7 @@ def test_run_leg_policy_switches_plain_path_side(monkeypatch):
     df = _synthetic_df(n=240)
     df = df.copy()
     df["regime"] = "trending_up"
+    with_regime_readiness(df)
     import data_fetcher
     monkeypatch.setattr(data_fetcher, "load_cached_data",
                         lambda *a, **k: df, raising=True)

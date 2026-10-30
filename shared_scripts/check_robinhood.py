@@ -231,7 +231,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                         else:
                             regime_rows = _select_fresh(
                                 fetch_rows_or_hold(lambda: adapter.get_ohlcv(symbol, interval=regime_tf, limit=ohlcv_limit + 1), symbol, regime_tf),
-                                regime_tf, selection.boundary_ms, cutoff_ms, ohlcv_limit).rows
+                                regime_tf, selection.boundary_ms, cutoff_ms, ohlcv_limit, min_rows=1).rows
                         decision_regime_payload, _decision_live, decision_strategy_regime = prepare_check_regime(
                             _make_dataframe(regime_rows),
                             regime_enabled=True,

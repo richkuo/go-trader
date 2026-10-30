@@ -1,3 +1,4 @@
+from shared_tools.conftest import with_regime_readiness
 import json
 import sys
 import pathlib
@@ -38,19 +39,17 @@ def _bt(policy=None, allowed=("trending_up",)):
     return Backtester(**kwargs)
 
 
-def test_all_empty_regime_bars_admit_entry_under_default_open():
+def test_all_empty_regime_bars_hold_entry_under_default_open():
     df = _df_with_signal()
     df["regime"] = ""
-    result = _bt().run(df, save=False)
-    assert result["total_trades"] >= 1, (
-        "default (fail-open) must admit the entry on empty regime bars"
-    )
+    result = _bt().run(with_regime_readiness(df), save=False)
+    assert result["total_trades"] == 0
 
 
 def test_all_empty_regime_bars_block_entry_under_closed():
     df = _df_with_signal()
     df["regime"] = ""
-    result = _bt("closed").run(df, save=False)
+    result = _bt("closed").run(with_regime_readiness(df), save=False)
     assert result["total_trades"] == 0, (
         "fail-closed must hold entries while the regime label is empty"
     )
@@ -60,18 +59,18 @@ def test_mid_series_gap_at_decision_bar_respects_policy():
     df = _df_with_signal(buy_at=50)
     df["regime"] = "trending_up"
     df.iloc[50, df.columns.get_loc("regime")] = ""
-    assert _bt("open").run(df, save=False)["total_trades"] >= 1
-    assert _bt("closed").run(df, save=False)["total_trades"] == 0
+    assert _bt("open").run(with_regime_readiness(df), save=False)["total_trades"] == 0
+    assert _bt("closed").run(with_regime_readiness(df), save=False)["total_trades"] == 0
 
 
 def test_known_label_decided_by_membership_under_both_policies():
     df = _df_with_signal()
     df["regime"] = "trending_up"
-    assert _bt("closed").run(df, save=False)["total_trades"] >= 1, (
+    assert _bt("closed").run(with_regime_readiness(df), save=False)["total_trades"] >= 1, (
         "a matching label must admit the entry under fail-closed"
     )
     df["regime"] = "ranging"
-    assert _bt("open").run(df, save=False)["total_trades"] == 0, (
+    assert _bt("open").run(with_regime_readiness(df), save=False)["total_trades"] == 0, (
         "a mismatching label must block under fail-open too"
     )
 
@@ -80,8 +79,8 @@ def test_closes_never_gated_under_closed():
     df = _df_with_signal(buy_at=30, sell_at=60)
     df["regime"] = ""
     df.iloc[30, df.columns.get_loc("regime")] = "trending_up"
-    res_open = _bt("open").run(df, save=False)
-    res_closed = _bt("closed").run(df, save=False)
+    res_open = _bt("open").run(with_regime_readiness(df), save=False)
+    res_closed = _bt("closed").run(with_regime_readiness(df), save=False)
     assert res_closed["total_trades"] == res_open["total_trades"] >= 1
     assert [t["exit_date"] for t in res_closed["trades"]] == \
         [t["exit_date"] for t in res_open["trades"]]
@@ -90,8 +89,8 @@ def test_closes_never_gated_under_closed():
 def test_default_open_is_byte_identical_to_omitted():
     df = _df_with_signal()
     df["regime"] = ""
-    res_omitted = _bt().run(df, save=False)
-    res_open = _bt("open").run(df, save=False)
+    res_omitted = _bt().run(with_regime_readiness(df), save=False)
+    res_open = _bt("open").run(with_regime_readiness(df), save=False)
     assert res_omitted["total_trades"] == res_open["total_trades"]
     assert res_omitted["total_return_pct"] == res_open["total_return_pct"]
 

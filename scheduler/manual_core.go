@@ -194,9 +194,10 @@ func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *Stat
 }
 
 type manualCoreDeps struct {
-	cfg      *Config
-	stateDB  *StateStore
-	notifier *MultiNotifier
+	resolveRegime func(StrategyConfig) (RegimePayload, error)
+	cfg           *Config
+	stateDB       *StateStore
+	notifier      *MultiNotifier
 
 	loadState func(strategyID, symbol string) (manualStateView, error)
 
@@ -238,15 +239,16 @@ func newCLIManualCoreDeps(cfg *Config, store *StateStore, notifier *MultiNotifie
 
 func newManualCoreDeps(cfg *Config, stateDB *StateStore, notifier *MultiNotifier) manualCoreDeps {
 	return manualCoreDeps{
-		cfg:         cfg,
-		stateDB:     stateDB,
-		notifier:    notifier,
-		execute:     runHyperliquidExecuteFn,
-		updateSL:    RunHyperliquidUpdateStopLoss,
-		cancelOrder: RunHyperliquidCancelOrder,
-		fetchMids:   fetchHyperliquidMids,
-		closer:      defaultHyperliquidForceCloseCloser,
-		sizedCloser: defaultHyperliquidSizedCloser,
+		cfg:           cfg,
+		resolveRegime: func(sc StrategyConfig) (RegimePayload, error) { return resolveManualRegimePayload(sc, cfg) },
+		stateDB:       stateDB,
+		notifier:      notifier,
+		execute:       runHyperliquidExecuteFn,
+		updateSL:      RunHyperliquidUpdateStopLoss,
+		cancelOrder:   RunHyperliquidCancelOrder,
+		fetchMids:     fetchHyperliquidMids,
+		closer:        defaultHyperliquidForceCloseCloser,
+		sizedCloser:   defaultHyperliquidSizedCloser,
 		fetchPositions: func(accountAddress string) ([]HLPosition, error) {
 			_, positions, err := fetchHyperliquidStateFn(accountAddress)
 			return positions, err
@@ -590,6 +592,15 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		}
 	}
 
+	entryRegime := RegimePayload{Snapshot: &RegimeSnapshot{}}
+	if !in.RecordOnly && strategyRegimeStopDependent(sc) && in.SLPct <= 0 && in.SLATRMult <= 0 {
+		var why string
+		entryRegime, why = manualRegimeAdmission(d, sc, res)
+		if why != "" {
+			return res, manualFailf("manual-open held: %s", why)
+		}
+	}
+
 	entryATR := in.ATR
 	if in.RecordOnly && entryATR > 0 && in.FillPrice > 0 && entryATR > 0.5*in.FillPrice {
 		return res, manualFailf("error: --atr %.4f exceeds 50%% of fill price %.4f (plausibility guard)", entryATR, in.FillPrice)
@@ -681,7 +692,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 	ratchetFallbackNormalizePending := false
 	if effectiveATRMult == 0 && !in.RecordOnly && strategyUsesTrailingTPRatchetClose(sc) &&
 		sc.TrailingStopATRMultRegime != nil && sc.TrailingStopATRMultRegime.IsConfigured() {
-		label := resolveManualRatchetRegimeLabel(sc, cfg, notifier)
+		label := entryRegime.Label(resolveStrategyRegimeWindow(sc, "atr", cfg.Regime), cfg.Regime)
 		mult, fellBack := manualRatchetOpeningTrailOrFallback(sc.TrailingStopATRMultRegime, label, cfg.resolveManualRatchetFallbackATRMult())
 		effectiveATRMult = mult
 		ratchetFallbackNormalizePending = fellBack
@@ -773,6 +784,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		StopLossOID:                     stopLossOID,
 		StopLossTriggerPx:               stopLossTriggerPx,
 		EntryATR:                        entryATR,
+		RegimeSnapshots:                 entryRegimeSnapshots(entryRegime, cfg.Regime),
 		ATRMethod:                       resolveATRMethod(sc, cfg),
 		TPOIDs:                          tpOIDs,
 		RatchetFallbackNormalizePending: ratchetFallbackNormalizePending && stopLossOID > 0 && stopLossTriggerPx > 0,
@@ -879,6 +891,13 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	}
 	if view.ExposureCap.PVBasisMiss {
 		res.errf("%s", exposureCapPVBasisMissWarning)
+	}
+
+	if !in.RecordOnly && strategyRegimeStopDependent(sc) {
+		_, why := manualRegimeAdmission(d, sc, res)
+		if why != "" {
+			return res, manualFailf("manual-add held: %s", why)
+		}
 	}
 
 	if !in.RecordOnly && !in.DryRun {
@@ -1992,4 +2011,22 @@ func configStrategyList(cfg *Config) []StrategyConfig {
 		return nil
 	}
 	return cfg.Strategies
+}
+
+func manualRegimeAdmission(d manualCoreDeps, sc StrategyConfig, res *manualCoreResult) (RegimePayload, string) {
+	resolve := d.resolveRegime
+	if resolve == nil {
+		resolve = func(sc StrategyConfig) (RegimePayload, error) {
+			return RegimePayload{}, fmt.Errorf("manual regime resolver unavailable")
+		}
+	}
+	payload, err := resolve(sc)
+	if err != nil {
+		if !strategyUsesTrailingTPRatchetClose(sc) || !sc.TrailingStopATRMultRegime.IsConfigured() {
+			return payload, fmt.Sprintf("regime stop window unavailable: %v", err)
+		}
+		res.errf("regime stop window unavailable: %v; using the manual fallback protection policy", err)
+		return RegimePayload{Snapshot: &RegimeSnapshot{}}, ""
+	}
+	return payload, regimeDependencyHold(sc, payload, payload, d.cfg.Regime, true)
 }

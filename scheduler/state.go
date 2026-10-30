@@ -84,6 +84,7 @@ type StrategyState struct {
 	RiskState               RiskState                  `json:"risk_state"`
 	Regime                  string                     `json:"regime,omitempty"`
 	RegimeWindows           map[string]string          `json:"regime_windows,omitempty"`
+	RegimeSnapshots         map[string]RegimeSnapshot  `json:"regime_snapshots,omitempty"`
 	RegimeDivergence        *RegimeDivergenceState     `json:"-"`
 	RegimeProfile           *RegimeProfileState        `json:"regime_profile,omitempty"`
 	HurstGate               HurstGateState             `json:"hurst_gate_state,omitempty"`

@@ -17,12 +17,77 @@ const (
 )
 
 type RegimeSnapshot struct {
-	Regime  string             `json:"regime"`
-	Score   float64            `json:"score"`
-	Metrics map[string]float64 `json:"metrics,omitempty"`
+	Ready     bool               `json:"ready"`
+	Bars      int                `json:"bars"`
+	Need      int                `json:"need"`
+	Available bool               `json:"-"`
+	Regime    string             `json:"regime"`
+	Score     float64            `json:"score"`
+	Metrics   map[string]float64 `json:"metrics,omitempty"`
+}
+
+func (s *RegimeSnapshot) UnmarshalJSON(data []byte) error {
+	*s = RegimeSnapshot{}
+	var raw struct {
+		Ready   *bool              `json:"ready"`
+		Bars    *int               `json:"bars"`
+		Need    *int               `json:"need"`
+		Regime  *string            `json:"regime"`
+		Score   float64            `json:"score"`
+		Metrics map[string]float64 `json:"metrics"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil || raw.Ready == nil || raw.Bars == nil || raw.Need == nil || raw.Regime == nil {
+		return nil
+	}
+	if *raw.Bars < 0 || *raw.Need <= 0 || *raw.Ready != (*raw.Bars >= *raw.Need) || *raw.Ready != (strings.TrimSpace(*raw.Regime) != "") {
+		return nil
+	}
+	*s = RegimeSnapshot{Ready: *raw.Ready, Bars: *raw.Bars, Need: *raw.Need, Regime: strings.TrimSpace(*raw.Regime), Score: raw.Score, Metrics: raw.Metrics, Available: true}
+	return nil
+}
+
+func regimeRequiredBars(period int, classifier string) int {
+	if period < 2 {
+		period = 14
+	}
+	if classifier == "composite" || classifier == "composite7" {
+		adxPeriod := min(period, 14)
+		return max(period, 2*adxPeriod+1)
+	}
+	return 2*period + 1
+}
+
+func (s RegimeSnapshot) validated(spec RegimeWindowSpec) RegimeSnapshot {
+	if !s.Available || s.Need != regimeRequiredBars(spec.Period, spec.Classifier) {
+		return RegimeSnapshot{}
+	}
+	if s.Ready {
+		valid := false
+		for _, label := range regimeLabelsForClassifier(spec.Classifier) {
+			if label == s.Regime {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return RegimeSnapshot{}
+		}
+	}
+	return s
+}
+
+func (s RegimeSnapshot) Display() string {
+	if !s.Available {
+		return "unavailable"
+	}
+	if !s.Ready {
+		return fmt.Sprintf("warming (%d/%d)", s.Bars, s.Need)
+	}
+	return s.Regime
 }
 
 type RegimePayload struct {
+	Snapshot  *RegimeSnapshot
 	Legacy    string
 	Windows   map[string]RegimeSnapshot
 	MultiMode bool
@@ -32,11 +97,14 @@ func (p RegimePayload) IsEmpty() bool {
 	if p.MultiMode {
 		return len(p.Windows) == 0
 	}
-	return strings.TrimSpace(p.Legacy) == ""
+	return p.Snapshot == nil && strings.TrimSpace(p.Legacy) == ""
 }
 
 func (p RegimePayload) PrimaryLabel(rc *RegimeConfig) string {
 	if !p.MultiMode {
+		if p.Snapshot != nil {
+			return p.Snapshot.Regime
+		}
 		return strings.TrimSpace(p.Legacy)
 	}
 	key := primaryRegimeWindowKey(rc)
@@ -56,6 +124,9 @@ func (p RegimePayload) PrimaryLabel(rc *RegimeConfig) string {
 func (p RegimePayload) Label(windowKey string, rc *RegimeConfig) string {
 	key := normalizeRegimeWindowKey(windowKey)
 	if !p.MultiMode {
+		if p.Snapshot != nil {
+			return p.Snapshot.Regime
+		}
 		return strings.TrimSpace(p.Legacy)
 	}
 	if key == "" || key == regimeWindowDefaultKey {
@@ -74,96 +145,92 @@ func (p RegimePayload) Label(windowKey string, rc *RegimeConfig) string {
 	return ""
 }
 
-func (p RegimePayload) WindowLabels() map[string]string {
+func (p RegimePayload) Snapshots() map[string]RegimeSnapshot {
 	if !p.MultiMode {
-		label := strings.TrimSpace(p.Legacy)
-		if label == "" {
+		if p.Snapshot == nil {
 			return nil
 		}
-		return map[string]string{regimeWindowDefaultKey: label}
+		return map[string]RegimeSnapshot{regimeWindowDefaultKey: *p.Snapshot}
 	}
-	out := make(map[string]string, len(p.Windows))
-	for name, snap := range p.Windows {
-		if label := strings.TrimSpace(snap.Regime); label != "" {
-			out[name] = label
+	out := make(map[string]RegimeSnapshot, len(p.Windows))
+	for key, snap := range p.Windows {
+		out[key] = snap
+	}
+	return out
+}
+
+func (p RegimePayload) WindowLabels() map[string]string {
+	if !p.MultiMode && p.Snapshot == nil {
+		if p.Legacy == "" {
+			return nil
+		}
+		return map[string]string{regimeWindowDefaultKey: p.Legacy}
+	}
+	out := make(map[string]string)
+	for name, snap := range p.Snapshots() {
+		if name != regimeWindowReservedName {
+			out[name] = snap.Regime
 		}
 	}
 	return out
+}
+
+func (p RegimePayload) WindowSnapshot(key string, rc *RegimeConfig) RegimeSnapshot {
+	if !p.MultiMode {
+		if p.Snapshot != nil {
+			return *p.Snapshot
+		}
+		return RegimeSnapshot{}
+	}
+	if key == "" || key == regimeWindowDefaultKey {
+		if regimeMultiWindowEnabled(rc) {
+			key = primaryRegimeWindowKey(rc)
+		} else {
+			key = regimeWindowDefaultKey
+		}
+	}
+	return p.Windows[key]
 }
 
 func (p RegimePayload) MarshalJSON() ([]byte, error) {
 	if p.MultiMode {
 		return json.Marshal(p.Windows)
 	}
+	if p.Snapshot != nil {
+		return json.Marshal(p.Snapshot)
+	}
 	return json.Marshal(p.Legacy)
 }
 
 func (p *RegimePayload) UnmarshalJSON(data []byte) error {
+	*p = RegimePayload{}
 	if len(data) == 0 || string(data) == "null" {
 		return nil
 	}
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
-		p.Legacy = s
-		p.MultiMode = false
-		p.Windows = nil
+	var legacy string
+	if err := json.Unmarshal(data, &legacy); err == nil {
+		p.Snapshot = &RegimeSnapshot{}
 		return nil
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("regime: expected string or object, got %s", string(data))
-	}
-	if len(raw) == 0 {
+		p.Snapshot = &RegimeSnapshot{}
 		return nil
 	}
 	if _, ok := raw["regime"]; ok {
-		if _, hasScore := raw["score"]; hasScore {
-			var snap RegimeSnapshot
-			if err := json.Unmarshal(data, &snap); err != nil {
-				return err
-			}
-			p.Legacy = snap.Regime
-			p.MultiMode = false
-			p.Windows = nil
-			return nil
-		}
-		if _, hasMetrics := raw["metrics"]; hasMetrics {
-			var snap RegimeSnapshot
-			if err := json.Unmarshal(data, &snap); err != nil {
-				return err
-			}
-			p.Legacy = snap.Regime
-			p.MultiMode = false
-			p.Windows = nil
-			return nil
-		}
-		var label string
-		if err := json.Unmarshal(raw["regime"], &label); err == nil {
-			var snap RegimeSnapshot
-			if err := json.Unmarshal(data, &snap); err != nil {
-				return err
-			}
-			p.Legacy = snap.Regime
-			p.MultiMode = false
-			p.Windows = nil
-			return nil
-		}
-	}
-	windows := make(map[string]RegimeSnapshot, len(raw))
-	for name, blob := range raw {
-		trimmed := strings.TrimSpace(name)
-		if trimmed == "" {
-			return fmt.Errorf("regime: window names must be non-empty")
-		}
 		var snap RegimeSnapshot
-		if err := json.Unmarshal(blob, &snap); err != nil {
-			return fmt.Errorf("regime window %q: %w", trimmed, err)
-		}
-		windows[trimmed] = snap
+		_ = json.Unmarshal(data, &snap)
+		p.Snapshot = &snap
+		p.Legacy = snap.Regime
+		return nil
 	}
-	p.Windows = windows
 	p.MultiMode = true
-	p.Legacy = ""
+	p.Windows = make(map[string]RegimeSnapshot, len(raw))
+	for name, blob := range raw {
+		var snap RegimeSnapshot
+		_ = json.Unmarshal(blob, &snap)
+		p.Windows[strings.TrimSpace(name)] = snap
+	}
 	return nil
 }
 
@@ -274,7 +341,7 @@ func regimeRequiredOhlcvLimit(rc *RegimeConfig) int {
 			}
 		}
 	}
-	warmup := 2*maxPeriod - 1
+	warmup := regimeRequiredBars(maxPeriod, "adx")
 	limit := warmup + regimeOhlcvMargin
 	if limit < regimeOhlcvBaseLimit {
 		limit = regimeOhlcvBaseLimit
@@ -394,9 +461,8 @@ func syncStrategyRegimeState(stratState *StrategyState, payload RegimePayload, r
 		return
 	}
 	stratState.Regime = payload.PrimaryLabel(rc)
-	if labels := payload.WindowLabels(); len(labels) > 0 {
-		stratState.RegimeWindows = cloneStringMap(labels)
-	}
+	stratState.RegimeWindows = cloneStringMap(payload.WindowLabels())
+	stratState.RegimeSnapshots = payload.Snapshots()
 }
 
 func strategyRegimeWindowField(sc StrategyConfig, field string) string {
@@ -417,8 +483,13 @@ func positionFeatureRegimeLabel(pos *Position, sc StrategyConfig, feature string
 		return ""
 	}
 	key := normalizeRegimeWindowKey(strategyRegimeWindowField(sc, feature))
+	if key == "" || key == regimeWindowDefaultKey {
+		if snap, ok := pos.RegimeSnapshots[regimeWindowReservedName]; ok {
+			return snap.Regime
+		}
+	}
 	if key != "" && key != regimeWindowDefaultKey && len(pos.RegimeWindows) > 0 {
-		if label, ok := pos.RegimeWindows[key]; ok && strings.TrimSpace(label) != "" {
+		if label, ok := pos.RegimeWindows[key]; ok {
 			return strings.TrimSpace(label)
 		}
 	}
@@ -439,7 +510,7 @@ func strategyCurrentDirectionalRegime(stratState *StrategyState, sc StrategyConf
 	}
 	key := normalizeRegimeWindowKey(sc.RegimeDirectionalWindow)
 	if key != "" && key != regimeWindowDefaultKey && len(stratState.RegimeWindows) > 0 {
-		if label, ok := stratState.RegimeWindows[key]; ok && strings.TrimSpace(label) != "" {
+		if label, ok := stratState.RegimeWindows[key]; ok {
 			return strings.TrimSpace(label)
 		}
 	}
@@ -450,9 +521,12 @@ func strategyDisplayRegimeLabel(stratState *StrategyState, sc StrategyConfig, rc
 	if stratState == nil {
 		return ""
 	}
+	if len(stratState.RegimeSnapshots) > 0 {
+		return stratState.RegimeSnapshots[resolveStrategyRegimeWindow(sc, "gate", rc)].Display()
+	}
 	key := normalizeRegimeWindowKey(sc.RegimeGateWindow)
 	if key != "" && key != regimeWindowDefaultKey && len(stratState.RegimeWindows) > 0 {
-		if label, ok := stratState.RegimeWindows[key]; ok && strings.TrimSpace(label) != "" {
+		if label, ok := stratState.RegimeWindows[key]; ok {
 			return strings.TrimSpace(label)
 		}
 	}
@@ -464,14 +538,8 @@ func positionCtxForCheck(sc StrategyConfig, pos *Position, regime *RegimeConfig)
 	if pos == nil {
 		return ctx
 	}
-	if label := positionATRRegimeLabel(pos, sc); label != "" {
-		ctx.Regime = label
-	}
-	if label := positionDirectionalRegimeLabel(pos, sc); label != "" {
-		ctx.DirectionalRegime = label
-	} else {
-		ctx.DirectionalRegime = ctx.Regime
-	}
+	ctx.Regime = positionATRRegimeLabel(pos, sc)
+	ctx.DirectionalRegime = positionDirectionalRegimeLabel(pos, sc)
 	if label := protectionATRRegimeLabel(pos, sc); label != "" {
 		ctx.Regime = label
 	}
@@ -503,6 +571,65 @@ func applyRegimeGate(sc StrategyConfig, payload RegimePayload, rc *RegimeConfig,
 	return gateLabel, regimeBlocksOpen(sc.AllowedRegimes, gateLabel, posQty, failClosed)
 }
 
+func strategyRegimeStopDependent(sc StrategyConfig) bool {
+	return sc.StopLossATRMultRegime.IsConfigured() || sc.TrailingStopATRMultRegime.IsConfigured() || strategyUsesUnifiedRegimeClose(sc)
+}
+
+func regimeDependencyHold(sc StrategyConfig, current, decision RegimePayload, rc *RegimeConfig, stopOnly bool) string {
+	type dependency struct {
+		name, key string
+		payload   RegimePayload
+		required  bool
+	}
+	deps := []dependency{}
+	if strategyRegimeStopDependent(sc) {
+		deps = append(deps, dependency{"stop", resolveStrategyRegimeWindow(sc, "atr", rc), current, true})
+	}
+	if !stopOnly && rc != nil && rc.Enabled {
+		if len(sc.AllowedRegimes) > 0 {
+			deps = append(deps, dependency{"gate", resolveStrategyRegimeWindow(sc, "gate", rc), decision, false})
+		}
+		if sc.RegimeProfileAllocation.IsConfigured() {
+			deps = append(deps, dependency{"profile", sc.RegimeProfileAllocation.Window, current, true})
+		}
+		if sc.RegimeDirectionalPolicy.IsConfigured() {
+			deps = append(deps, dependency{"directional", resolveStrategyRegimeWindow(sc, "directional", rc), current, true})
+		}
+	}
+	for _, dep := range deps {
+		key := normalizeRegimeWindowKey(dep.key)
+		if key == "" || key == regimeWindowDefaultKey {
+			key = primaryRegimeWindowKey(rc)
+			if key == "" {
+				key = regimeWindowDefaultKey
+			}
+		}
+		if dep.payload.IsEmpty() && !dep.required {
+			continue
+		}
+		snap := dep.payload.WindowSnapshot(key, rc)
+		if rc != nil && len(rc.Windows) > 1 && !dep.payload.MultiMode {
+			snap = RegimeSnapshot{}
+		}
+		spec, ok := regimeWindowSpec(rc, key)
+		if !ok {
+			period := 14
+			if rc != nil && rc.Period > 0 {
+				period = rc.Period
+			}
+			spec = RegimeWindowSpec{Period: period, Classifier: "adx"}
+		}
+		snap = snap.validated(spec)
+		if !snap.Available {
+			return fmt.Sprintf("regime %s window %s unavailable", dep.name, key)
+		}
+		if !snap.Ready {
+			return fmt.Sprintf("regime %s window %s warming (%d/%d)", dep.name, key, snap.Bars, snap.Need)
+		}
+	}
+	return ""
+}
+
 func regimeGateFailClosedActive(sc StrategyConfig, stratState *StrategyState, rc *RegimeConfig) bool {
 	if len(sc.AllowedRegimes) == 0 || resolveRegimeGateOnFailure(sc, rc) != RegimeGateOnFailureClosed {
 		return false
@@ -522,29 +649,22 @@ func decorateRegimeLabelGateClosed(label string) string {
 }
 
 func stampPositionRegimeFromPayload(s *StrategyState, symbol string, payload RegimePayload, sc StrategyConfig, rc *RegimeConfig) {
-	if s == nil || payload.IsEmpty() {
+	if s == nil {
 		return
 	}
 	pos, exists := s.Positions[symbol]
 	if !exists || pos == nil {
 		return
 	}
-	if len(pos.RegimeWindows) == 0 {
-		if labels := payload.WindowLabels(); len(labels) > 0 {
-			pos.RegimeWindows = cloneStringMap(labels)
-		}
-	}
-	if pos.Regime != "" {
+	if pos.RegimeSnapshots != nil || len(pos.RegimeWindows) > 0 || pos.Regime != "" {
 		return
 	}
-	gateKey := resolveStrategyRegimeWindow(sc, "gate", rc)
-	if label := payload.Label(gateKey, rc); label != "" {
-		pos.Regime = label
-		return
+	pos.RegimeWindows = cloneStringMap(payload.WindowLabels())
+	pos.RegimeSnapshots = entryRegimeSnapshots(payload, rc)
+	if pos.RegimeSnapshots == nil {
+		pos.RegimeSnapshots = map[string]RegimeSnapshot{regimeWindowDefaultKey: {}}
 	}
-	if label := payload.PrimaryLabel(rc); label != "" {
-		pos.Regime = label
-	}
+	pos.Regime = payload.Label(resolveStrategyRegimeWindow(sc, "gate", rc), rc)
 }
 
 func regimeWindowFieldsEqual(a, b StrategyConfig) bool {
@@ -632,4 +752,34 @@ func formatTradeAlertRegimeExtra(sc StrategyConfig, trade Trade, rc *RegimeConfi
 		return fmt.Sprintf("Regime (%s): %s", span, trade.Regime)
 	}
 	return "Regime: " + trade.Regime
+}
+
+func cloneRegimeSnapshots(src map[string]RegimeSnapshot) map[string]RegimeSnapshot {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]RegimeSnapshot, len(src))
+	for key, snap := range src {
+		if snap.Metrics != nil {
+			metrics := make(map[string]float64, len(snap.Metrics))
+			for name, value := range snap.Metrics {
+				metrics[name] = value
+			}
+			snap.Metrics = metrics
+		}
+		out[key] = snap
+	}
+	return out
+}
+
+func entryRegimeSnapshots(payload RegimePayload, rc *RegimeConfig) map[string]RegimeSnapshot {
+	if payload.IsEmpty() {
+		return map[string]RegimeSnapshot{}
+	}
+	snapshots := payload.Snapshots()
+	if snapshots == nil {
+		return map[string]RegimeSnapshot{regimeWindowReservedName: {}}
+	}
+	snapshots[regimeWindowReservedName] = payload.WindowSnapshot(resolveStrategyRegimeWindow(StrategyConfig{}, "atr", rc), rc)
+	return cloneRegimeSnapshots(snapshots)
 }

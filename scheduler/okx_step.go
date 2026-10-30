@@ -113,6 +113,8 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 		basketCoord.observePair(sc, StrategyDecisionFields{}, nil, 0, "the management check has not returned a validated pair echo this cycle")
 	}
 	if result, signalStr, price, ok := check(sc, okxPosCtx, logger); ok {
+		validatedRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
+		result.Regime = &validatedRegime
 		prices[result.Symbol] = price
 		suppressPairMemberIncrease(sc, &result.Signal, result.CloseFraction, okxPosQty, okxPosSide, signalStr, logger)
 		if isPairMember(sc) {
@@ -121,6 +123,11 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 		storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 		result.Regime = &storeRegime
 		decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
+		result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
+		if result.RegimeReadinessHold != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, allowsLong, allowsShort) {
+			logger.Info("%s", result.RegimeReadinessHold)
+			result.Signal = 0
+		}
 		logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
 		if !decisionGate.Held {
 			if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, okxPosQty); regimeBlocked {

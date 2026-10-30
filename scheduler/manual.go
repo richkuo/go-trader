@@ -565,6 +565,12 @@ func applyManualActionWithCriticalsInner(state *AppState, cfg *Config, scByID ma
 			TPOIDs:                          a.TPOIDs,
 			RatchetFallbackNormalizePending: a.RatchetFallbackNormalizePending,
 		}
+		pos.RegimeSnapshots = cloneRegimeSnapshots(a.RegimeSnapshots)
+		if a.RegimeSnapshots != nil {
+			payload := RegimePayload{MultiMode: true, Windows: a.RegimeSnapshots}
+			pos.RegimeWindows = payload.WindowLabels()
+			pos.Regime = payload.Label(resolveStrategyRegimeWindow(sc, "gate", cfg.Regime), cfg.Regime)
+		}
 		pos.ATRMethodAtOpen = normalizeATRMethod(a.ATRMethod)
 		if pos.ATRMethodAtOpen == "" {
 			pos.ATRMethodAtOpen = resolveATRMethod(sc, cfg)
@@ -1028,14 +1034,11 @@ func resolveManualRatchetRegimeLabel(sc StrategyConfig, cfg *Config, notifier *M
 	if !strategyUsesTrailingTPRatchetClose(sc) || sc.TrailingStopATRMultRegime == nil || !sc.TrailingStopATRMultRegime.IsConfigured() {
 		return ""
 	}
-	logger := &StrategyLogger{stratID: sc.ID, writer: os.Stderr}
-	posCtx := positionCtxFromPosition(nil)
-	result, _, _, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, nil, nil)
-	if !ok || result == nil {
+	payload, err := resolveManualRegimePayload(sc, cfg)
+	if err != nil {
 		return ""
 	}
-	payload := regimePayloadValue(result.Regime)
-	return strings.TrimSpace(payload.Label(resolveStrategyRegimeWindow(sc, "atr", cfg.Regime), cfg.Regime))
+	return payload.Label(resolveStrategyRegimeWindow(sc, "atr", cfg.Regime), cfg.Regime)
 }
 
 func manualRatchetOpeningTrailOrFallback(block *RegimeATRBlock, label string, fallbackMult float64) (float64, bool) {
@@ -1062,4 +1065,32 @@ func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notif
 		return 0, 0, false
 	}
 	return result.CloseFraction, price, true
+}
+
+func resolveManualRegimePayload(sc StrategyConfig, cfg *Config) (RegimePayload, error) {
+	if cfg == nil || cfg.Regime == nil || !cfg.Regime.Enabled {
+		return RegimePayload{}, fmt.Errorf("regime processing is disabled")
+	}
+	if len(sc.Args) < 3 {
+		sc.Args = []string{"no_edge", sc.Symbol, resolveManualATRTimeframe(sc)}
+	}
+	req, ok := strategyRegimeBundleRequest(sc, cfg.Regime)
+	if !ok {
+		return RegimePayload{}, fmt.Errorf("no regime bundle request")
+	}
+	if cfg.MarketFeed == "shared" || cfg.MarketFeed == "websocket" {
+		if bundle, found := globalRegimeStore.get(req.Key); found && bundle != nil && bundle.Err == "" {
+			maxAge := time.Duration(max(1, cfg.IntervalSeconds)) * time.Second
+			age := time.Since(bundle.At)
+			if age >= 0 && age <= maxAge {
+				return bundle.Payload, nil
+			}
+		}
+		return RegimePayload{}, fmt.Errorf("sealed market input unavailable for this manual command")
+	}
+	bundle, err := runRegimeBundleCheckFn(shutdownReadOnlyCtx, req, nil)
+	if err != nil {
+		return RegimePayload{}, err
+	}
+	return bundle.Payload, nil
 }

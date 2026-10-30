@@ -2054,6 +2054,11 @@ func main() {
 			}
 
 			regimeStoreReady()
+			mu.Lock()
+			for _, sc := range dueStrategies {
+				syncStrategyRegimeState(state.Strategies[sc.ID], globalRegimeStore.PayloadForStrategy(sc, cfg.Regime), cfg.Regime)
+			}
+			mu.Unlock()
 			processRegimeTransitionAlerts(store.primary(), globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())
 			reportLegacyUnifiedSLAfterGaps(cfg, state, &mu, notifier, func(id string) *StrategyLogger {
 				if logMgr == nil {
@@ -2318,6 +2323,11 @@ func main() {
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
+							result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
+							if result.RegimeReadinessHold != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
+								logger.Info("%s", result.RegimeReadinessHold)
+								result.Signal = 0
+							}
 							logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
 							if !decisionGate.Held {
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, rhPosQty); regimeBlocked {
@@ -2387,6 +2397,11 @@ func main() {
 						storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 						result.Regime = &storeRegime
 						decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
+						result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
+						if result.RegimeReadinessHold != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
+							logger.Info("%s", result.RegimeReadinessHold)
+							result.Signal = 0
+						}
 						logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
 						if !decisionGate.Held {
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
@@ -2572,6 +2587,11 @@ func main() {
 						storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 						result.Regime = &storeRegime
 						decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
+						result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
+						if result.RegimeReadinessHold != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
+							logger.Info("%s", result.RegimeReadinessHold)
+							result.Signal = 0
+						}
 						logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
 						if !decisionGate.Held {
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, tsContracts); regimeBlocked {
@@ -2649,7 +2669,6 @@ func main() {
 					if manualOK {
 						mu.Lock()
 						syncStrategyRegimeState(stratState, manualRegime, cfg.Regime)
-						stampPositionRegimeIfOpened(stratState, sc.Symbol, manualRegime, sc, cfg.Regime)
 						mu.Unlock()
 					}
 					mu.RLock()
@@ -3280,7 +3299,9 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	}
 	trades := exec.TradesExecuted
 	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	if exec.OpenTrade != nil {
+		stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	}
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
@@ -3786,6 +3807,10 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 }
 
 func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash float64, poolBalanceKnown bool, posQty float64, posSide string, avgCost, posLeverage float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, closeCtx hlCloseContext, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+	if result.RegimeReadinessHold != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, posQty, posSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+		logger.Info("%s", result.RegimeReadinessHold)
+		return nil, false
+	}
 	if why := quoteDispatchRefusal(sc); why != "" {
 		logger.Error("%s", why)
 		return nil, false
@@ -4094,7 +4119,9 @@ func executeHyperliquidResultDeferredOpenScoped(sc StrategyConfig, s *StrategySt
 	}
 	openTrade := exec.OpenTrade
 	closedBarStampEntryATR(sc, s, result.Symbol, openTrade != nil, result.StrategyDecisionFields, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	if exec.OpenTrade != nil {
+		stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	}
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, cfg)
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, openTrade != nil, hurst)
@@ -4371,7 +4398,9 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 	}
 	trades := exec.TradesExecuted
 	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	if exec.OpenTrade != nil {
+		stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	}
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
@@ -4723,7 +4752,9 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	}
 	trades := exec.TradesExecuted
 	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	if exec.OpenTrade != nil {
+		stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	}
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
@@ -5021,7 +5052,9 @@ func executeOKXResultScoped(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	}
 	trades := exec.TradesExecuted
 	closedBarStampEntryATR(sc, s, result.Symbol, exec.OpenTrade != nil, result.StrategyDecisionFields, result.Indicators)
-	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	if exec.OpenTrade != nil {
+		stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	}
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)

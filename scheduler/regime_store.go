@@ -14,7 +14,7 @@ import (
 
 const regimeCheckScript = "shared_scripts/check_regime.py"
 
-const regimeBundleMinBars = 30
+const regimeBundleMinBars = 1
 
 const (
 	optionsRegimeTimeframe       = "4h"
@@ -42,8 +42,8 @@ type regimeBundleRequest struct {
 }
 
 type RegimeBundleViews struct {
-	ADX3       string `json:"adx3"`
-	Composite7 string `json:"composite7"`
+	ADX3       RegimeSnapshot `json:"adx3"`
+	Composite7 RegimeSnapshot `json:"composite7"`
 }
 
 type RegimeBundle struct {
@@ -107,7 +107,13 @@ func (s *RegimeStore) seal() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sealed = true
-	return len(s.entries)
+	ready := 0
+	for _, bundle := range s.entries {
+		if bundle != nil && bundle.Err == "" {
+			ready++
+		}
+	}
+	return ready
 }
 
 func (s *RegimeStore) get(key regimeBundleKey) (*RegimeBundle, bool) {
@@ -295,16 +301,41 @@ func parseRegimeBundleOutput(key regimeBundleKey, data []byte, now time.Time) (*
 	}
 	var payload RegimePayload
 	if err := json.Unmarshal(out.Regime, &payload); err != nil {
-		return nil, fmt.Errorf("regime bundle %s: bad regime payload: %w", key, err)
+		payload = RegimePayload{Snapshot: &RegimeSnapshot{}}
 	}
-	if payload.IsEmpty() {
-		return nil, fmt.Errorf("regime bundle %s: empty regime payload", key)
+	var specs RegimeWindowsMap
+	if err := json.Unmarshal([]byte(key.SpecJSON), &specs); err != nil {
+		return nil, fmt.Errorf("regime bundle: invalid configured spec: %w", err)
+	}
+	malformed := false
+	normalized := RegimePayload{MultiMode: true, Windows: make(map[string]RegimeSnapshot, len(specs))}
+	views := make(map[string]RegimeBundleViews, len(specs))
+	for name, spec := range specs {
+		snap := payload.WindowSnapshot(name, &RegimeConfig{Windows: specs, Enabled: true})
+		if !payload.MultiMode && len(specs) > 1 {
+			snap = RegimeSnapshot{}
+		}
+		snap = snap.validated(spec)
+		normalized.Windows[name] = snap
+		malformed = malformed || !snap.Available
+		view := out.Views[name]
+		adxSpec, compositeSpec := spec, spec
+		adxSpec.Classifier, compositeSpec.Classifier = "adx", "composite"
+		views[name] = RegimeBundleViews{ADX3: view.ADX3.validated(adxSpec), Composite7: view.Composite7.validated(compositeSpec)}
+	}
+	if malformed {
+		fmt.Printf("[WARN] regime bundle %s: unavailable readiness metadata\n", key)
+	}
+	payload = normalized
+	normalizedJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
 	}
 	return &RegimeBundle{
 		Key:           key,
 		Payload:       payload,
-		RawRegimeJSON: string(out.Regime),
-		Views:         out.Views,
+		RawRegimeJSON: string(normalizedJSON),
+		Views:         views,
 		BarTime:       out.BarTime,
 		At:            now,
 	}, nil
@@ -387,6 +418,9 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 	if len(reqs) == 0 {
 		return func() {}
 	}
+	for _, req := range reqs {
+		store.set(&RegimeBundle{Key: req.Key, Err: "regime bundle unavailable", At: time.Now().UTC()}, gen)
+	}
 	popCtx, popCancel := context.WithCancel(shutdownReadOnlyCtx)
 	done := make(chan struct{})
 	go func() {
@@ -410,6 +444,7 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 				bundle, err := runRegimeBundleCheckFn(popCtx, req, marketStdin)
 				if err != nil {
 					errs[i] = err
+					store.set(&RegimeBundle{Key: req.Key, Err: err.Error(), At: time.Now().UTC()}, gen)
 					return
 				}
 				store.set(bundle, gen)
@@ -466,9 +501,13 @@ func regimeStoreSummaryParts(store *RegimeStore) ([]string, []string) {
 	all := make([]string, 0, len(bundles))
 	var changed []string
 	for _, b := range bundles {
-		label := b.Payload.PrimaryLabel(nil)
-		if label == "" {
-			label = "-"
+		parts := []string{}
+		for _, key := range sortedRegimeWindowNames(b.Payload.Snapshots()) {
+			parts = append(parts, key+"="+b.Payload.Snapshots()[key].Display())
+		}
+		label := strings.Join(parts, ", ")
+		if b.Err != "" {
+			label = "unavailable"
 		}
 		part := b.Key.String() + "=" + label
 		all = append(all, part)
@@ -485,7 +524,7 @@ func (s *RegimeStore) PayloadForStrategy(sc StrategyConfig, rc *RegimeConfig) Re
 		return RegimePayload{}
 	}
 	b, found := s.get(req.Key)
-	if !found || b == nil {
+	if !found || b == nil || b.Err != "" {
 		return RegimePayload{}
 	}
 	return b.Payload
@@ -509,7 +548,7 @@ func (s *RegimeStore) InjectionJSONForStrategy(sc StrategyConfig, rc *RegimeConf
 		return "", false
 	}
 	b, found := s.get(req.Key)
-	if !found || b == nil {
+	if !found || b == nil || b.Err != "" {
 		return "", true
 	}
 	return b.RawRegimeJSON, true

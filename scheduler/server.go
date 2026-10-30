@@ -338,6 +338,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PoolBudget                     bool                       `json:"pool_budget,omitempty"`
 		RiskState                      RiskState                  `json:"risk_state"`
 		Regime                         string                     `json:"regime,omitempty"`
+		RegimeSnapshots                map[string]RegimeSnapshot  `json:"regime_snapshots,omitempty"`
 		RegimeGateFailClosed           bool                       `json:"regime_gate_fail_closed,omitempty"`
 		BaseDirection                  string                     `json:"base_direction,omitempty"`
 		BaseInvertSignal               bool                       `json:"base_invert_signal,omitempty"`
@@ -520,6 +521,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			PoolBudget:                     usesSharedWalletPoolBudget(sc),
 			RiskState:                      s.RiskState,
 			Regime:                         strategyDisplayRegimeLabel(s, sc, ss.regime),
+			RegimeSnapshots:                cloneRegimeSnapshots(s.RegimeSnapshots),
 			RegimeGateFailClosed:           regimeGateFailClosedActive(sc, s, ss.regime),
 			BaseDirection:                  dirView.BaseDirection,
 			BaseInvertSignal:               dirView.BaseInvertSignal,

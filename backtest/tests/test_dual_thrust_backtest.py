@@ -1,3 +1,4 @@
+from shared_tools.conftest import with_regime_readiness
 import contextlib
 import json
 import math
@@ -519,7 +520,7 @@ def _bt(**kw):
 
 def _run_bt(df, params=None, **kw):
     sig = ensure_atr_indicator(_apply(df, **(params or {})))
-    return sig, _bt(**kw).run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="1h", save=False)
+    return sig, _bt(**kw).run(with_regime_readiness(sig), strategy_name=NAME, symbol="BTC/USDT", timeframe="1h", save=False)
 
 
 def test_long_entry_fills_at_the_next_bar_open_and_the_explicit_close_owns_the_exit():
@@ -572,7 +573,7 @@ def test_an_event_blocked_by_the_regime_gate_never_reappears_later_in_its_sessio
     assert (sig["dt_reason"].iloc[49:72] == "long_consumed").all()
     wide = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.5, "close_fraction": 1.0}]}}]
     gated = _bt(close_strategies=wide, stop_loss_atr_mult=None, stop_loss_pct=60.0, regime_enabled=True,
-                allowed_regimes=["trending"]).run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="1h",
+                allowed_regimes=["trending"]).run(with_regime_readiness(sig), strategy_name=NAME, symbol="BTC/USDT", timeframe="1h",
                                                   save=False)
     assert [t["entry_date"] for t in gated["trades"]] == [str(df.index[73])]
     open_gate = _bt(close_strategies=wide, stop_loss_atr_mult=None, stop_loss_pct=60.0).run(

@@ -36,11 +36,12 @@ def test_switcher_open_freezes_then_commits_on_first_flat():
     assert sw.step("up", flat=True) == "trend"
 
 
-def test_switcher_empty_label_freezes():
+def test_switcher_empty_label_resets_confirmation():
     sw = _ProfileSwitcher(_parse_profile_allocation(_alloc(confirm_bars=2)))
     sw.step("up", flat=True)
     sw.step("", flat=True)
     assert sw.active == "fade"
+    assert sw.step("up", flat=True) == "fade"
     assert sw.step("up", flat=True) == "trend"
 
 
