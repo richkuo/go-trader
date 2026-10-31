@@ -778,19 +778,16 @@ class Kernel:
         ))
 
 
-def compile_kernel() -> Path:
+def compile_kernel(build_dir: Path) -> Path:
     src = _THIS.with_name("regime_1940_block_perm.c")
     digest = hashlib.sha256(src.read_bytes()).hexdigest()[:16]
-    out = Path(tempfile.gettempdir()) / f"regime_1940_block_perm_{digest}.dylib"
-    if out.exists():
-        return out
+    out = build_dir / f"regime_1940_block_perm_{digest}.dylib"
     flag = ["-dynamiclib"] if sys.platform == "darwin" else ["-shared", "-fPIC"]
     subprocess.check_call(["cc", "-O3", *flag, "-o", str(out), str(src)], stdout=subprocess.DEVNULL)
     return out
 
 
-def self_check_kernel(kernel: Kernel | None = None) -> None:
-    kernel = kernel or Kernel(str(compile_kernel()))
+def self_check_kernel(kernel: Kernel) -> None:
     rng = np.random.default_rng(0)
     for n, block, k, ties in ((40, 4, 9, False), (41, 6, 3, True), (80, 5, 9, False)):
         labels = rng.integers(0, k, n).astype(np.int32)
@@ -836,7 +833,12 @@ def _load_checkpoint(args, cell_id: str):
     if not path.exists():
         return None
     doc = json.loads(path.read_text())
-    if doc.get("protocol_sha256") != getattr(args, "protocol_sha", None):
+    expected = {
+        "protocol_sha256": getattr(args, "protocol_sha", None),
+        "snapshot_sha256": getattr(args, "snapshot_sha", None),
+        "kernel_sha256": getattr(args, "kernel_sha", None),
+    }
+    if any(doc.get(key) != value for key, value in expected.items()):
         return None
     return doc
 
@@ -848,6 +850,8 @@ def _save_checkpoint(args, cell_id: str, cell_scores, population) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_plain({
         "protocol_sha256": args.protocol_sha,
+        "snapshot_sha256": args.snapshot_sha,
+        "kernel_sha256": args.kernel_sha,
         "scores": cell_scores,
         "population": population,
     }), separators=(",", ":"), allow_nan=False))
@@ -888,16 +892,16 @@ def _perm_task(task: dict) -> list[dict]:
         if item["degenerate"]:
             out.append({"ge": item["n_perm"], "executed": 0, "h_obs": 0.0, "kind": "degenerate", "p_value": 1.0})
             continue
-        ge_s, ex_s, _ = kernel.count(
-            labels, ranks, run_lo, run_hi, item["k"], item["block_len"], item["h_obs"], inv,
+        ge_s, ex_s, obs_s = kernel.count(
+            labels, ranks, run_lo, run_hi, item["k"], item["block_len"], -1.0, inv,
             item["seed"], task["screen_n"], task["screen_stop"],
         )
         screen_p = (ge_s + 1) / (ex_s + 1)
         if not task.get("allow_full", True) or screen_p > task["screen_max_p"]:
-            out.append({"ge": ge_s, "executed": ex_s, "h_obs": item["h_obs"], "kind": "screen", "p_value": float(screen_p)})
+            out.append({"ge": ge_s, "executed": ex_s, "h_obs": float(obs_s), "kind": "screen", "p_value": float(screen_p)})
             continue
         ge, ex, obs = kernel.count(
-            labels, ranks, run_lo, run_hi, item["k"], item["block_len"], item["h_obs"], inv,
+            labels, ranks, run_lo, run_hi, item["k"], item["block_len"], float(obs_s), inv,
             item["seed"], task["n_perm"], task["full_stop"],
         )
         if ex < task["n_perm"]:
@@ -908,6 +912,11 @@ def _perm_task(task: dict) -> list[dict]:
             kind = "full"
         out.append({"ge": ge, "executed": ex, "h_obs": float(obs), "kind": kind, "p_value": float(p_value)})
     return out
+
+
+def _validate_kernel_h(perm, stats, setting_id: str, cell_id: str) -> None:
+    if abs(float(perm["h_obs"]) - float(stats["kruskal_h"])) > 1e-5 and perm["kind"] != "degenerate":
+        raise RuntimeError(f"kernel H drifted for {setting_id} {cell_id}")
 
 
 def series_seed(master: int, key: str) -> int:
@@ -1192,7 +1201,11 @@ def execute_study(begun: dict, args) -> int:
     if not args.snapshot:
         raise SystemExit("a quiescent snapshot path is required")
     print(f"protocol_sha256={begun['sha256']}", flush=True)
-    kernel_path = compile_kernel()
+    with tempfile.TemporaryDirectory(prefix="regime_1940_") as build_dir:
+        return _execute_compiled_study(begun, args, compile_kernel(Path(build_dir)))
+
+
+def _execute_compiled_study(begun: dict, args, kernel_path: Path) -> int:
     self_check_kernel(Kernel(str(kernel_path)))
     protocol = begun["protocol"]
     expanded = begun["expanded"]
@@ -1204,6 +1217,8 @@ def execute_study(begun: dict, args) -> int:
     finally:
         conn.close()
     args.protocol_sha = begun["sha256"]
+    args.snapshot_sha = snapshot_sha
+    args.kernel_sha = file_sha256(_THIS.with_name("regime_1940_block_perm.c"))
     scores, populations = _score_all(loaded, protocol, expanded, args, kernel_path)
     apply_bh(scores, expanded["family_size"], float(protocol["alpha"]))
     winners = select_winners(scores, expanded["incumbent_ids"], [row["dataset_id"] for row in expanded["datasets"]])
@@ -1244,13 +1259,6 @@ def _score_all(loaded, protocol, expanded, args, kernel_path) -> tuple[list, dic
             for split in protocol["splits"]:
                 pack = loaded[f"{ds['dataset_id']}|{split}"]
                 cell_rows = [cell for cell in expanded["cells"] if cell["dataset_id"] == ds["dataset_id"] and cell["split"] == split]
-                restored = [_load_checkpoint(args, cell["cell_id"]) for cell in cell_rows]
-                if cell_rows and all(item is not None for item in restored):
-                    for cell, saved in zip(cell_rows, restored):
-                        scores.extend(saved["scores"])
-                        populations[cell["cell_id"]] = saved["population"]
-                        print(f"resume {cell['cell_id']}", flush=True)
-                    continue
                 if pack["meta"]["status"] != "available":
                     for cell in cell_rows:
                         populations[cell["cell_id"]] = {**pack["meta"], "cell_id": cell["cell_id"], "usable_rows": 0}
@@ -1276,14 +1284,14 @@ def _score_all(loaded, protocol, expanded, args, kernel_path) -> tuple[list, dic
                     if populations[cell["cell_id"]]["status"] != "available":
                         _save_checkpoint(args, cell["cell_id"], [], populations[cell["cell_id"]])
                         continue
+                    idx = np.flatnonzero(mask)
+                    supports[cell["cell_id"]] = idx
                     saved = _load_checkpoint(args, cell["cell_id"])
                     if saved is not None:
                         scores.extend(saved["scores"])
                         populations[cell["cell_id"]] = saved["population"]
                         print(f"resume {cell['cell_id']}", flush=True)
                         continue
-                    idx = np.flatnonzero(mask)
-                    supports[cell["cell_id"]] = idx
                     runs = support_runs(mask)
                     run_lo = np.array([lo for lo, _hi in runs], dtype=np.int32)
                     run_hi = np.array([hi for _lo, hi in runs], dtype=np.int32)
@@ -1344,8 +1352,7 @@ def _score_all(loaded, protocol, expanded, args, kernel_path) -> tuple[list, dic
                         raise RuntimeError("permutation batch length mismatch")
                     for (setting, stats, _compact), rep in zip(prepared, member_index):
                         perm = perm_rows[rep]
-                        if abs(float(perm["h_obs"]) - float(stats["kruskal_h"])) > 1e-5 and perm["kind"] != "degenerate":
-                            raise RuntimeError(f"kernel H drifted for {setting['setting_id']} {cell['cell_id']}")
+                        _validate_kernel_h(perm, stats, setting["setting_id"], cell["cell_id"])
                         scores.append({
                             "status": "available",
                             "setting_id": setting["setting_id"],

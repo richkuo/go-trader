@@ -248,6 +248,119 @@ def test_explicit_diagnostics_reject_conflicts_and_keep_the_default_payload_shap
     assert _OMITTED is not None
 
 
+def test_kernel_builds_are_private_complete_and_ignore_the_old_shared_path(tmp_path):
+    old = Path(__import__("tempfile").gettempdir()) / "regime_1940_block_perm_attacker.dylib"
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir(mode=0o700)
+    second_dir.mkdir(mode=0o700)
+    first = study.compile_kernel(first_dir)
+    second = study.compile_kernel(second_dir)
+    assert first != second and first.parent == first_dir and second.parent == second_dir
+    assert not first.samefile(old) if old.exists() else True
+    study.self_check_kernel(study.Kernel(str(first)))
+    study.self_check_kernel(study.Kernel(str(second)))
+
+
+def test_checkpoint_requires_matching_snapshot_and_kernel(tmp_path):
+    from types import SimpleNamespace
+    args = SimpleNamespace(checkpoint_dir=tmp_path, protocol_sha="p", snapshot_sha="a", kernel_sha="k")
+    study._save_checkpoint(args, "cell", [], {"status": "available"})
+    assert study._load_checkpoint(args, "cell") is not None
+    args.snapshot_sha = "b"
+    assert study._load_checkpoint(args, "cell") is None
+    args.snapshot_sha = "a"
+    args.kernel_sha = "edited"
+    assert study._load_checkpoint(args, "cell") is None
+
+
+def test_resumed_cells_restore_support_for_confirmation(monkeypatch):
+    import multiprocessing as mp
+    cell = {"cell_id": "ds|oos|4", "dataset_id": "ds", "split": "oos", "horizon": 4}
+    saved = _row("inc", h=2, p=0.01, transition=0.1, support="s", split="oos")
+    monkeypatch.setattr(study, "_load_checkpoint", lambda *_: {"scores": [saved], "population": {"status": "available"}})
+    monkeypatch.setattr(study, "frame_from_rows", lambda _: pd.DataFrame({"close": np.arange(20.0)}))
+    monkeypatch.setattr(study, "build_label_bank", lambda *_: {"base": np.ones(20, dtype=bool), "close": np.arange(20.0)})
+    monkeypatch.setattr(study, "forward_realized_vol", lambda close, h: np.ones(len(close)))
+    monkeypatch.setattr(study, "forward_window_inside", lambda *_: True)
+    captured = {}
+    monkeypatch.setattr(study, "_refine_confirmation", lambda *args: captured.update(args[-1]))
+
+    class Pool:
+        def close(self): pass
+        def join(self): pass
+
+    class Context:
+        def Pool(self, *args, **kwargs): return Pool()
+
+    monkeypatch.setattr(mp, "get_context", lambda _: Context())
+    from types import SimpleNamespace
+    args = SimpleNamespace(workers=1)
+    loaded = {"ds|oos": {"meta": {"status": "available"}, "rows": _hourly(0, 20)}}
+    protocol = {"splits": {"oos": []}, "horizons": [4], "min_usable_bars": 1}
+    expanded = {"datasets": [{"dataset_id": "ds"}], "cells": [cell], "settings": [], "incumbent_ids": {"adx": "inc"}}
+    study._score_all(loaded, protocol, expanded, args, Path("unused"))
+    assert np.array_equal(captured[cell["cell_id"]], np.arange(20))
+
+
+def test_mixed_resumed_and_fresh_cells_both_restore_support(monkeypatch):
+    import multiprocessing as mp
+    from types import SimpleNamespace
+    cells = [{"cell_id": f"ds|oos|{h}", "dataset_id": "ds", "split": "oos", "horizon": h} for h in (4, 12)]
+    saved = _row("inc", h=2, p=0.01, transition=0.1, support="s", split="oos")
+    monkeypatch.setattr(study, "_load_checkpoint", lambda _, cell_id: {"scores": [saved], "population": {"status": "available"}} if cell_id.endswith("|4") else None)
+    monkeypatch.setattr(study, "_save_checkpoint", lambda *_: None)
+    monkeypatch.setattr(study, "frame_from_rows", lambda _: pd.DataFrame({"close": np.arange(20.0)}))
+    bank_entry = {"labels": np.where(np.arange(20) % 2, "high", "low"), "known": ("low", "high")}
+    monkeypatch.setattr(study, "build_label_bank", lambda *_: {"base": np.ones(20, dtype=bool), "close": np.arange(20.0), "bank": {"inc": bank_entry}})
+    monkeypatch.setattr(study, "forward_realized_vol", lambda close, h: np.arange(len(close), dtype=float))
+    monkeypatch.setattr(study, "forward_window_inside", lambda *_: True)
+    monkeypatch.setattr(study, "score_cell_stats", lambda *_: {"block_len": 4, "kruskal_h": 2.0, "k": 2, "degenerate": False,
+        "transition_rate": 0.1, "flips": 1, "mean_dwell": 2.0, "coverage": 1.0, "mean_vol": 1.0,
+        "median_vol": 1.0, "order_by_mean": True, "order_by_median": True})
+    captured = {}
+    monkeypatch.setattr(study, "_refine_confirmation", lambda *args: captured.update(args[-1]))
+
+    class Pool:
+        def map(self, fn, tasks):
+            return [[{"ge": 0, "executed": 2, "h_obs": 2.0, "kind": "screen", "p_value": 0.5} for _ in task["items"]] for task in tasks]
+        def close(self): pass
+        def join(self): pass
+
+    class Context:
+        def Pool(self, *args, **kwargs): return Pool()
+
+    monkeypatch.setattr(mp, "get_context", lambda _: Context())
+    loaded = {"ds|oos": {"meta": {"status": "available"}, "rows": _hourly(0, 20)}}
+    protocol = {"splits": {"oos": []}, "horizons": [4, 12], "min_usable_bars": 1, "block_dwell_multiplier": 1,
+                "seed": 1, "n_perm": 2, "screen_n": 2, "screen_continue_if_p_at_most": 1.0}
+    expanded = {"datasets": [{"dataset_id": "ds"}], "cells": cells, "settings": [{"setting_id": "inc", "classifier": "adx"}], "incumbent_ids": {"adx": "inc"}}
+    study._score_all(loaded, protocol, expanded, SimpleNamespace(workers=1), Path("unused"))
+    assert all(np.array_equal(captured[cell["cell_id"]], np.arange(20)) for cell in cells)
+
+
+def test_kernel_drift_guard_uses_kernel_h_for_single_and_multi_run_support(tmp_path):
+    kernel = study.Kernel(str(study.compile_kernel(tmp_path)))
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(study, "_KERNEL", kernel)
+    try:
+        for lo, hi in ((np.array([0], dtype=np.int32), np.array([30], dtype=np.int32)),
+                       (np.array([0, 15], dtype=np.int32), np.array([15, 30], dtype=np.int32))):
+            labels = np.arange(30, dtype=np.int32) % 3
+            ranks = study.rank_data(np.arange(30.0))
+            stats = {"kruskal_h": kernel.identity_h(labels, ranks, 3, 4, 1.0)}
+            task = {"ranks": ranks + 7.0, "run_lo": lo, "run_hi": hi, "inv_tie": 1.0,
+                    "screen_n": 2, "screen_stop": 0, "screen_max_p": 1.0, "n_perm": 2,
+                    "full_stop": 40, "allow_full": False,
+                    "items": [{"labels": labels, "k": 3, "block_len": 4, "h_obs": stats["kruskal_h"],
+                               "seed": 1, "degenerate": False, "n_perm": 2}]}
+            perm = study._perm_task(task)[0]
+            with pytest.raises(RuntimeError, match="kernel H drifted"):
+                study._validate_kernel_h(perm, stats, "setting", "cell")
+    finally:
+        monkeypatch.undo()
+
+
 def _price_frame(n, seed):
     rng = np.random.default_rng(seed)
     close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
