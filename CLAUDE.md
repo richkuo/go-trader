@@ -6,7 +6,7 @@ Guardrails only; mechanism: SKILL.md, docs/POST_UPDATE_HISTORY.md. CI fails at 1
 - Go 1.26.2. Python: `uv run --no-sync python`; scheduler `.venv/bin/python3`; `uv sync`/worktree. systemd: `ProtectSystem=strict`, no `PATH`/`UV_CACHE_DIR` injected, secrets `/opt/go-trader/.env`, config `/var/lib/go-trader[/<instance>]/config.json`; `scheduler/config.json`=transition symlink.
 
 ## Priorities
-- **Always best solution**: cost/compute/time/effort/code never narrow; branch+PR, issue-claim vs code, destructive-action safety win. **No time/effort estimates**; complexity=scope+risk.
+- **Always best solution**: cost/compute/time/effort/code never narrow; branch+PR, issue-claim vs code, destructive-action safety win. **ETAs: runs only**; complexity=scope+risk.
 
 ## Repo (`scheduler/*.go`=`main`)
 - `executor.go`/`shutdown.go`: side effects via `runPythonSideEffect*`, NEVER `runPython`. Live HL book needs `confirmHyperliquidExecuteFill` (finite `AvgPx>0`+`TotalSz>0`); `check_hyperliquid.py execute` exits 1 on no fill. Live RH book ONLY from settled `robinhood_order_attempts` fill (row pre-send, 1 unresolved/coin, unknown=hold); flat ONLY via fresh strict read; sells≤`quantity_available`, emergency≤book.
