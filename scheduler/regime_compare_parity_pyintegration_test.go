@@ -353,6 +353,8 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 	}
 	regimeReadinessOnceIntegration(t)
 	regimeReadinessAdmissionIntegration(t, bundles, rc)
+	regimeReadinessStopBackfillIntegration(t, bundles, rc)
+	regimeReadinessClassifierCaseIntegration(t, root)
 	state := &StrategyState{Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100}}, Regime: "stale"}
 	syncStrategyRegimeState(state, bundles[3].Payload, rc)
 	syncStrategyRegimeState(state, bundles[0].Payload, rc)
@@ -768,6 +770,182 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 		t.Fatal("cold observation sent a transition alert")
 	}
 	regimeReadinessLimitIntegration(t, bundles, rc)
+}
+
+func regimeReadinessStopBackfillIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
+	t.Helper()
+	stop := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2.5}, "trending_down": {ATR: 9}, "ranging": {ATR: 9}}}
+	base := StrategyConfig{Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=paper"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: stop}
+	ids := []string{"backfill-ready", "backfill-warming", "backfill-limit"}
+	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60}
+	for _, id := range ids {
+		sc := base
+		sc.ID = id
+		cfg.Strategies = append(cfg.Strategies, sc)
+	}
+	db := openTestDB(t)
+	store := openTestStore(t, db)
+	state := NewAppState()
+	for _, sc := range cfg.Strategies {
+		state.Strategies[sc.ID] = NewStrategyState(sc)
+	}
+	previousStore := globalRegimeStore
+	globalRegimeStore = &RegimeStore{}
+	t.Cleanup(func() { globalRegimeStore = previousStore })
+	req, ok := strategyRegimeBundleRequest(cfg.Strategies[0], rc)
+	if !ok {
+		t.Fatal("backfill bundle request missing")
+	}
+	setBundle := func(original *RegimeBundle) RegimePayload {
+		fresh := *original
+		fresh.Key, fresh.At = req.Key, time.Now()
+		gen := globalRegimeStore.resetForCycle(fresh.At)
+		globalRegimeStore.set(&fresh, gen)
+		return globalRegimeStore.PayloadForStrategy(cfg.Strategies[0], rc)
+	}
+	stopMult := func(st *AppState, sc StrategyConfig) float64 {
+		plan, ok := buildHyperliquidProtectionPlan(sc, st.Strategies[sc.ID].Positions["BTC"], 0)
+		if !ok {
+			return 0
+		}
+		return plan.StopLossATRMult
+	}
+	cycle := func(st *AppState, payload RegimePayload, strategies ...StrategyConfig) {
+		for _, sc := range strategies {
+			syncStrategyRegimeState(st.Strategies[sc.ID], payload, rc)
+			backfillPositionStopRegimeEvidence(st.Strategies[sc.ID], sc, payload, rc)
+		}
+	}
+	ready, warming, limit := cfg.Strategies[0], cfg.Strategies[1], cfg.Strategies[2]
+	readyPayload := setBundle(bundles[3])
+	if _, err := manualOpenCore(newCLIManualCoreDeps(cfg, store, nil), ready, manualOpenInputs{StrategyID: ready.ID, Side: "long", Size: 1, FillPrice: 100, ATR: 1, RecordOnly: true}); err != nil {
+		t.Fatalf("ready record-only adoption: %v", err)
+	}
+	coldPayload := setBundle(bundles[2])
+	if _, err := manualOpenCore(newCLIManualCoreDeps(cfg, store, nil), warming, manualOpenInputs{StrategyID: warming.ID, Side: "long", Size: 1, FillPrice: 100, ATR: 1, RecordOnly: true}); err != nil {
+		t.Fatalf("warming record-only adoption: %v", err)
+	}
+	if _, criticals := drainPendingManualActions(state, cfg, store); len(criticals) != 0 {
+		t.Fatalf("record-only adoption criticals: %v", criticals)
+	}
+	if _, err := db.InsertPendingLimitOrder(PendingLimitOrder{StrategyID: limit.ID, Symbol: "BTC", Side: "long", OrderOID: 4242, LimitPrice: 100, OrderSize: 1, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec("UPDATE pending_limit_orders SET regime_snapshots_json = '' WHERE order_oid = 4242"); err != nil {
+		t.Fatal(err)
+	}
+	orders, err := db.LoadPendingLimitOrders()
+	if err != nil || len(orders) != 1 || orders[0].RegimeSnapshots != nil {
+		t.Fatalf("pre-migration limit row: %v %+v", err, orders)
+	}
+	if _, err := applyLimitFillProgress(state, limit, orders[0], 1, 100, 0, 1, ATRMethodSimple, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, sc := range cfg.Strategies {
+		if got := stopMult(state, sc); got != 0 {
+			t.Fatalf("%s armed a stop before backfill: %g", sc.ID, got)
+		}
+	}
+	cycle(state, readyPayload, ready)
+	if got := stopMult(state, ready); got != 2.5 {
+		t.Fatalf("ready record-only adoption: next cycle stop multiplier %g, want 2.5", got)
+	}
+	t.Logf("must survive: record-only adoption while the ATR window is ready arms stop multiplier %g on the next cycle", stopMult(state, ready))
+	cycle(state, coldPayload, warming, limit)
+	if stopMult(state, warming) != 0 || stopMult(state, limit) != 0 {
+		t.Fatal("warming stop window armed a stop")
+	}
+	for _, err := range store.SaveAll(state) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	restarted, err := db.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopMult(restarted, warming) != 0 || stopMult(restarted, limit) != 0 || stopMult(restarted, ready) != 2.5 {
+		t.Fatal("restart changed stop evidence")
+	}
+	readyEvidence := cloneRegimeSnapshots(restarted.Strategies[ready.ID].Positions["BTC"].RegimeSnapshots)
+	cycle(restarted, setBundle(bundles[3]), cfg.Strategies...)
+	if got := stopMult(restarted, warming); got != 2.5 {
+		t.Fatalf("warming record-only adoption after restart: first ready cycle multiplier %g, want 2.5", got)
+	}
+	t.Logf("must survive: warming record-only adoption held no stop while warming and armed multiplier %g on the first ready cycle after a restart", stopMult(restarted, warming))
+	if got := stopMult(restarted, limit); got != 2.5 {
+		t.Fatalf("pre-migration limit fill: first ready cycle multiplier %g, want 2.5", got)
+	}
+	t.Logf("must survive: a pending limit row with empty regime_snapshots_json armed multiplier %g on the first ready cycle", stopMult(restarted, limit))
+	if !reflect.DeepEqual(restarted.Strategies[ready.ID].Positions["BTC"].RegimeSnapshots, readyEvidence) {
+		t.Fatal("backfill replaced captured stop evidence")
+	}
+	other := setBundle(bundles[3])
+	changed := other.Windows["long"]
+	changed.Regime = "trending_down"
+	other.Windows["long"] = changed
+	if backfillPositionStopRegimeEvidence(restarted.Strategies[warming.ID], warming, other, rc) || stopMult(restarted, warming) != 2.5 {
+		t.Fatal("backfill overwrote a captured stop label")
+	}
+}
+
+func regimeReadinessClassifierCaseIntegration(t *testing.T, root string) {
+	t.Helper()
+	cases := []struct {
+		name, classifier string
+		period, bars     int
+		hold             string
+	}{
+		{"capital", "Composite", 20, 200, ""},
+		{"capital-warming", "Composite", 20, 10, "regime stop window w warming (10/29)"},
+		{"spaced", " composite ", 60, 200, ""},
+		{"spaced-warming", " composite ", 60, 59, "regime stop window w warming (59/60)"},
+	}
+	for _, tc := range cases {
+		spec := RegimeWindowsMap{"w": {Classifier: tc.classifier, Period: tc.period}}
+		rc := &RegimeConfig{Enabled: true, Windows: spec}
+		if errs := validateRegimeWindowSpec("w", spec["w"], rc); len(errs) != 0 {
+			t.Fatalf("%s: validator rejected %q: %v", tc.name, tc.classifier, errs)
+		}
+		emitted := regimeWindowsSpecJSON(rc)
+		rows := make([][]float64, tc.bars)
+		for i := range rows {
+			rows[i] = []float64{float64(1700000000000 + i*3600000), float64(i + 1), float64(i + 2), float64(i), float64(i + 1), 1000}
+		}
+		frame := map[string]any{"rows": rows, "required": 251, "bars": tc.bars, "ready": true, "source": "ws", "forming_bar_included": true}
+		input, err := json.Marshal(map[string]any{"v": 2, "market": map[string]any{"version": 4, "snapshot_id": "classifier-case", "frames": map[string]any{"BTC|1h": frame}, "mids": map[string]any{}, "feed_complete": true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(filepath.Join(root, ".venv", "bin", "python3"), filepath.Join(root, "shared_scripts", "check_regime.py"), "--platform=hyperliquid", "--symbol=BTC", "--timeframe=1h", "--market-stdin", "--regime-windows-spec-json", emitted)
+		cmd.Stdin = strings.NewReader(string(input))
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: check_regime: %v", tc.name, err)
+		}
+		bundle, err := parseRegimeBundleOutput(regimeBundleKey{Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", SpecJSON: emitted}, out, time.Now())
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		var raw struct {
+			Regime map[string]struct {
+				Need int `json:"need"`
+			} `json:"regime"`
+		}
+		if err := json.Unmarshal(out, &raw); err != nil {
+			t.Fatal(err)
+		}
+		goNeed := regimeRequiredBars(spec["w"].Period, spec["w"].Classifier)
+		if raw.Regime["w"].Need != goNeed {
+			t.Fatalf("%s: python need %d, go need %d", tc.name, raw.Regime["w"].Need, goNeed)
+		}
+		sc := StrategyConfig{ID: "classifier-case", Platform: "hyperliquid", Type: "perps", Symbol: "BTC", RegimeATRWindow: "w", StopLossATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2}}}}
+		hold := regimeDependencyHold(sc, bundle.Payload, bundle.Payload, rc, false)
+		if hold != tc.hold {
+			t.Fatalf("%s: hold %q, want %q", tc.name, hold, tc.hold)
+		}
+		t.Logf("must survive: classifier %q period %d with %d bars: python need %d, go need %d, hold %q", tc.classifier, tc.period, tc.bars, raw.Regime["w"].Need, goNeed, hold)
+	}
 }
 
 func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {

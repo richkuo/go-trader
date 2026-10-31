@@ -50,6 +50,7 @@ func regimeRequiredBars(period int, classifier string) int {
 	if period < 2 {
 		period = 14
 	}
+	classifier = strings.TrimSpace(strings.ToLower(classifier))
 	if classifier == "composite" || classifier == "composite7" {
 		adxPeriod := min(period, 14)
 		return max(period, 2*adxPeriod+1)
@@ -597,29 +598,10 @@ func regimeDependencyHold(sc StrategyConfig, current, decision RegimePayload, rc
 		}
 	}
 	for _, dep := range deps {
-		key := normalizeRegimeWindowKey(dep.key)
-		if key == "" || key == regimeWindowDefaultKey {
-			key = primaryRegimeWindowKey(rc)
-			if key == "" {
-				key = regimeWindowDefaultKey
-			}
-		}
 		if dep.payload.IsEmpty() && !dep.required {
 			continue
 		}
-		snap := dep.payload.WindowSnapshot(key, rc)
-		if rc != nil && len(rc.Windows) > 1 && !dep.payload.MultiMode {
-			snap = RegimeSnapshot{}
-		}
-		spec, ok := regimeWindowSpec(rc, key)
-		if !ok {
-			period := 14
-			if rc != nil && rc.Period > 0 {
-				period = rc.Period
-			}
-			spec = RegimeWindowSpec{Period: period, Classifier: "adx"}
-		}
-		snap = snap.validated(spec)
+		key, snap := regimeDependencySnapshot(dep.key, dep.payload, rc)
 		if !snap.Available {
 			return fmt.Sprintf("regime %s window %s unavailable", dep.name, key)
 		}
@@ -628,6 +610,63 @@ func regimeDependencyHold(sc StrategyConfig, current, decision RegimePayload, rc
 		}
 	}
 	return ""
+}
+
+func regimeDependencySnapshot(windowKey string, payload RegimePayload, rc *RegimeConfig) (string, RegimeSnapshot) {
+	key := normalizeRegimeWindowKey(windowKey)
+	if key == "" || key == regimeWindowDefaultKey {
+		key = primaryRegimeWindowKey(rc)
+		if key == "" {
+			key = regimeWindowDefaultKey
+		}
+	}
+	snap := payload.WindowSnapshot(key, rc)
+	if rc != nil && len(rc.Windows) > 1 && !payload.MultiMode {
+		snap = RegimeSnapshot{}
+	}
+	spec, ok := regimeWindowSpec(rc, key)
+	if ok {
+		spec = spec.resolvedForEmit(rc)
+	} else {
+		period := 14
+		if rc != nil && rc.Period > 0 {
+			period = rc.Period
+		}
+		spec = RegimeWindowSpec{Period: period, Classifier: "adx"}
+	}
+	return key, snap.validated(spec)
+}
+
+func backfillPositionStopRegimeEvidence(s *StrategyState, sc StrategyConfig, payload RegimePayload, rc *RegimeConfig) bool {
+	if s == nil || !strategyRegimeStopDependent(sc) {
+		return false
+	}
+	pos := s.Positions[sc.Symbol]
+	if pos == nil || pos.Quantity <= 0 || positionATRRegimeLabel(pos, sc) != "" {
+		return false
+	}
+	_, snap := regimeDependencySnapshot(resolveStrategyRegimeWindow(sc, "atr", rc), payload, rc)
+	if !snap.Available || !snap.Ready || snap.Regime == "" {
+		return false
+	}
+	snapshots := cloneRegimeSnapshots(pos.RegimeSnapshots)
+	if snapshots == nil {
+		snapshots = map[string]RegimeSnapshot{}
+	}
+	stopKey := normalizeRegimeWindowKey(sc.RegimeATRWindow)
+	if stopKey == "" || stopKey == regimeWindowDefaultKey {
+		snapshots[regimeWindowReservedName] = snap
+	} else {
+		snapshots[stopKey] = snap
+		windows := cloneStringMap(pos.RegimeWindows)
+		if windows == nil {
+			windows = map[string]string{}
+		}
+		windows[stopKey] = snap.Regime
+		pos.RegimeWindows = windows
+	}
+	pos.RegimeSnapshots = snapshots
+	return positionATRRegimeLabel(pos, sc) != ""
 }
 
 func regimeGateFailClosedActive(sc StrategyConfig, stratState *StrategyState, rc *RegimeConfig) bool {

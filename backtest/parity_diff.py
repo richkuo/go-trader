@@ -811,6 +811,8 @@ def compute_parity_frame(
             match = match and row["bt_regime"] == row["live_regime"]
             for meta in ("ready", "bars", "need"):
                 bt_value = regime_frame["regime_" + meta].iloc[i]
+                if meta == "bars" and window is not None:
+                    bt_value = min(int(bt_value), window)
                 row["bt_" + meta] = bt_value
                 row["live_" + meta] = live.get(meta)
                 match = match and bt_value == live.get(meta)

@@ -2056,7 +2056,11 @@ func main() {
 			regimeStoreReady()
 			mu.Lock()
 			for _, sc := range dueStrategies {
-				syncStrategyRegimeState(state.Strategies[sc.ID], globalRegimeStore.PayloadForStrategy(sc, cfg.Regime), cfg.Regime)
+				payload := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
+				syncStrategyRegimeState(state.Strategies[sc.ID], payload, cfg.Regime)
+				if backfillPositionStopRegimeEvidence(state.Strategies[sc.ID], sc, payload, cfg.Regime) {
+					fmt.Printf("[INFO] %s %s: recorded the ready regime stop window for a position with no usable entry evidence\n", sc.ID, sc.Symbol)
+				}
 			}
 			mu.Unlock()
 			processRegimeTransitionAlerts(store.primary(), globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())

@@ -1086,7 +1086,7 @@ func resolveManualRegimePayload(sc StrategyConfig, cfg *Config) (RegimePayload, 
 				return bundle.Payload, nil
 			}
 		}
-		return RegimePayload{}, fmt.Errorf("sealed market input unavailable for this manual command")
+		return RegimePayload{}, fmt.Errorf("sealed market input unavailable for this manual command: market_feed %q forbids a private fetch, and only the running scheduler holds a fresh sealed regime bundle (status UI open and add use it; a command-line market open needs --stop-loss-pct or --stop-loss-atr-mult)", cfg.MarketFeed)
 	}
 	bundle, err := runRegimeBundleCheckFn(shutdownReadOnlyCtx, req, nil)
 	if err != nil {

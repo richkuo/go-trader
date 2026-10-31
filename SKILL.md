@@ -3913,11 +3913,13 @@ Manual opens and adds check before order execution and remainder cancellation, i
 Manual limit orders also require ready stop inputs before placement or dry-run. Their pending rows retain the snapshot for later fill adoption; reconciliation still books fills during readiness loss.
 The manual market-order ratchet fallback applies only to genuine classification failure; readable invalid readiness holds the order. Limit placement requires usable stop inputs.
 Record-only adoption can still record existing exposure.
+A position on a regime-stop strategy whose entry evidence has no stop label (record-only adoption, the manual fallback, or a row written before the migration) takes the current stop-window snapshot on the first cycle where that window is ready, including after a restart. A captured stop label is never replaced.
 Sealed feed ownership forbids a private candle fetch for a manual command without its sealed frame.
+Under `market_feed` `shared` or `websocket`, only the running scheduler holds a fresh sealed regime bundle. On a regime-stop strategy, a command-line manual add and a market open without `--stop-loss-pct` or `--stop-loss-atr-mult` are refused, except where the manual ratchet fallback applies, and a command-line limit open is always refused. The status UI open and add actions use the scheduler's bundle.
 
 Closes, reductions, stops, trailing stops, ratchets, recovery, and existing protection continue.
 Current state is replaced on each result, including all-warming results.
-Entry snapshots remain fixed through adds and restart; positions, queued manual actions, and pending manual limit orders store optional snapshot JSON through additive migrations.
+Entry snapshots remain fixed through adds and restart, except the stop-label backfill above; positions, queued manual actions, and pending manual limit orders store optional snapshot JSON through additive migrations.
 An explicitly empty named window cannot use the primary label.
 Applied dynamic protection retains its recorded label and clears pending consecutive confirmation when current readiness is lost.
 Only supported labels enter transition history, alerts, and confirmation.

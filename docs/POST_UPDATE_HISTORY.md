@@ -12,6 +12,8 @@ Existing positions keep their captured protection inputs and continue management
 Missing metadata is unavailable, and a genuine store failure keeps its configured gate policy.
 The retained manual market-order ratchet fallback applies only to genuine classification failure.
 Manual limit placement requires ready stop inputs and retains them for later fill adoption.
+A position with no stop label in its entry evidence takes the ready current stop window once, so its regime stop arms.
+Under a shared or websocket feed, command-line regime-stop opens and adds need an explicit stop or the status UI.
 Positions, queued manual actions, and pending manual limit orders gain optional captured snapshot JSON through additive migrations.
 Backtests carry the same typed readiness and report stop warm-up skips; older results can differ.
 Deploy Go and Python together with `bash scripts/update.sh --restart`.
