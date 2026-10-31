@@ -174,7 +174,12 @@ jobs:
           fi
 
   go-python-integration-paper-books:
+    name: go-python-integration-paper-books (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
@@ -191,7 +196,12 @@ jobs:
       - name: Paper book stream and retained recording families
         run: |
           set -o pipefail
-          go -C scheduler test -v -count=1 -timeout 60m -tags pyintegration -run '^TestBasketReplayPairPaper[A-Za-z]*$' ./... 2>&1 | tee "$RUNNER_TEMP/paper-books.log"
+          names=$(go -C scheduler test -count=1 -tags pyintegration -list '^TestBasketReplayPairPaper[A-Za-z]*$' ./... | grep '^Test' | sort | awk -v shard='${{ matrix.shard }}' 'NR % 4 == shard' | paste -sd'|' -)
+          if [ -z "$names" ]; then
+            echo "::error::shard ${{ matrix.shard }} selected no paper tests"
+            exit 1
+          fi
+          go -C scheduler test -v -count=1 -timeout 40m -tags pyintegration -run "^($names)\$" ./... 2>&1 | tee "$RUNNER_TEMP/paper-books.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/paper-books.log"; then
             echo "::error::a paper integration check was skipped"
             exit 1
