@@ -428,6 +428,9 @@ func (h *okxGoldenHarness) dumpTables(names []string) map[string][]map[string]st
 				default:
 					row[c] = fmt.Sprint(v)
 				}
+				if c == "regime_snapshots_json" && (row[c] == "" || row[c] == "{}") {
+					delete(row, c)
+				}
 			}
 			table = append(table, row)
 		}

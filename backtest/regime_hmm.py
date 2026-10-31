@@ -21,7 +21,9 @@ def fit_label_anchored_hmm(features, labels, states, *, filter_window,
                            var_floor=1e-3, laplace=1.0, fitted_on=None) -> dict:
     features = np.asarray(features, dtype=float)
     labels = np.asarray(labels, dtype=object)
-    mask = ~np.isnan(features).any(1)
+    mask = np.isfinite(features).all(1) & np.isin(labels, states)
+    if not mask.any():
+        raise ValueError("no ready regime samples for model fitting")
     x, y = features[mask], labels[mask]
     mean = x.mean(0) if len(x) else np.zeros(features.shape[1])
     std = x.std(0) if len(x) else np.ones(features.shape[1])
@@ -79,9 +81,8 @@ def forward_filter_labels(features: np.ndarray, model: dict):
     min_dwell = int(model.get(DECODE_MIN_DWELL_KEY) or 0)
     if min_dwell < 0:
         raise ValueError(f"{DECODE_MIN_DWELL_KEY} must be >= 0")
-    default_label = states[int(np.argmax(model["init"]))]
 
-    labels = np.array([default_label] * n, dtype=object)
+    labels = np.array([""] * n, dtype=object)
     conf = np.zeros(n, dtype=float)
     held, pending, pending_run = None, None, 0
     for i in range(n):
@@ -91,7 +92,7 @@ def forward_filter_labels(features: np.ndarray, model: dict):
         for t in range(lo, i + 1):
             x = features[t]
             pred = np.array([_logsumexp(alpha + log_A[:, j]) for j in range(k)])
-            if np.isnan(x).any():
+            if not np.isfinite(x).all():
                 alpha = pred
                 continue
             z = (x - mean) / std

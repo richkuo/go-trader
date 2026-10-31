@@ -1695,6 +1695,8 @@ class _ProfileSwitcher:
     def step(self, label: str, flat: bool) -> str:
         desired = self._profiles.get((label or "").strip(), "")
         if desired == "":
+            self._pending = ""
+            self._seen = 0
             return self.active
         if desired == self.active:
             self._pending = ""
@@ -2971,6 +2973,11 @@ class Backtester:
             df["_open_action"] = "none"
             df["_close_fraction"] = _max_close_fraction_series(df).shift(1).fillna(0.0)
         df["_profile_label"] = df["_profile_label"].shift(1).fillna("")
+        for field in ("ready", "bars", "need"):
+            column = "_profile_label_" + field
+            if column in df:
+                dtype, fill = (bool, False) if field == "ready" else (int, 0)
+                df[column] = df[column].shift(1).fillna(fill).astype(dtype)
 
     @staticmethod
     def _join_warmup_prefix(prefix, scored: pd.DataFrame, starting_long,
@@ -3176,13 +3183,20 @@ class Backtester:
                         clean.shift(1).reindex(df.index).fillna(""))
 
             for key in ("gate", "directional", "atr"):
-                if key == "atr" and not label_columns.get("atr_named"):
-                    continue
                 name = str(label_columns.get(key) or "").strip()
                 if name:
                     close_labels, decision_labels = _label_series(name)
                     df[f"_regime_{key}_close"] = close_labels
                     df[f"_regime_{key}_decision"] = decision_labels
+                    for field in ("ready", "bars", "need"):
+                        column = name + "_" + field
+                        source = history[column] if column in history.columns else df.get(column)
+                        if source is None:
+                            source = pd.Series(False if field == "ready" else 0, index=history.index)
+                        fill = False if field == "ready" else 0
+                        dtype = bool if field == "ready" else int
+                        df[f"_regime_{key}_close_{field}"] = source.reindex(df.index).fillna(fill).astype(dtype)
+                        df[f"_regime_{key}_decision_{field}"] = source.shift(1).reindex(df.index).fillna(fill).astype(dtype)
             self._regime_trace = True
             self._regime_stamp_trace = []
         elif self.regime_enabled and "regime" not in df.columns:
@@ -3200,6 +3214,15 @@ class Backtester:
         if self.regime_enabled and "regime" in df.columns:
             regime_source = history["regime"] if "regime" in history.columns else df["regime"]
             df["regime"] = regime_source.shift(1).reindex(df.index).fillna("")
+
+        for field in ("ready", "bars", "need"):
+            column = "regime_" + field
+            source = history[column] if column in history.columns else df.get(column)
+            if source is not None:
+                fill = False if field == "ready" else 0
+                dtype = bool if field == "ready" else int
+                df["_regime_close_" + field] = source.reindex(df.index).fillna(fill).astype(dtype)
+                df[column] = source.shift(1).reindex(df.index).fillna(fill).astype(dtype)
 
         hurst_runner = None
         if self.hurst_gate and self.hurst_gate.get("enabled"):
@@ -3223,8 +3246,8 @@ class Backtester:
         def _payload_stamps(row) -> tuple:
             cols = self._regime_label_columns
             gate = _label_at(row, "gate", payload_row)
-            directional = _label_at(row, "directional", payload_row) if cols.get("directional_named") else gate
-            atr = _label_at(row, "atr", payload_row) if cols.get("atr_named") else gate
+            directional = _label_at(row, "directional", payload_row) if cols.get("directional") else gate
+            atr = _label_at(row, "atr", payload_row) if cols.get("atr") else gate
             return gate, directional, atr
 
         def _entry_stamp(row) -> str:
@@ -3233,6 +3256,22 @@ class Backtester:
             if self.regime_enabled:
                 return str(row.get("regime", "") or "").strip()
             return str(row.get("_regime_bar_close", "") or "").strip()
+
+        def _ready_at(row, key: str, row_kind: str) -> bool:
+            if self._regime_label_columns:
+                if key == "atr" and not label_columns.get("atr"):
+                    key = "gate"
+                suffix = "_close" if row_kind == "closed_candle" else "_decision"
+                prefix = f"_regime_{key}{suffix}"
+            else:
+                prefix = "_regime_close" if row_kind == "closed_candle" else "regime"
+            ready = row.get(prefix + "_ready", False)
+            bars = row.get(prefix + "_bars", 0)
+            need = row.get(prefix + "_need", 0)
+            label = _label_at(row, key, row_kind) if self._regime_label_columns else (
+                str(row.get("_regime_bar_close" if row_kind == "closed_candle" else "regime", "") or "").strip())
+            return isinstance(ready, (bool, np.bool_)) and bool(ready) and need > 0 and bars >= need and bool(label)
+
 
         def _bar_close_regime(row) -> str:
             return str(row.get("_regime_bar_close", "") or "").strip()
@@ -3374,7 +3413,6 @@ class Backtester:
             _atr_vals = pd.to_numeric(atr_series, errors="coerce").to_numpy(dtype=float)
             stop_atr_seen = np.logical_or.accumulate(
                 np.isfinite(_atr_vals) & (_atr_vals > 0)) if len(_atr_vals) else _atr_vals
-        stop_label_seen = False
         stop_warmup_skipped_entries = 0
         stop_seed_dropped = False
         if stop_needs_label and not self.regime_enabled and "regime" not in df.columns:
@@ -3384,7 +3422,7 @@ class Backtester:
                                       "value": None}})
 
         def _stop_inputs_warming(idx) -> bool:
-            if stop_needs_label and not stop_label_seen:
+            if stop_needs_label and (not _entry_stamp(df.loc[idx]) or not _ready_at(df.loc[idx], "atr", payload_row)):
                 return True
             if not stop_needs_atr:
                 return False
@@ -3914,10 +3952,7 @@ class Backtester:
                 float(row["_entry_fraction"]) if has_entry_fraction else 1.0
             )
             risk_entry_blocked = False
-            if stop_needs_label and _entry_stamp(row):
-                stop_label_seen = True
-            if (stop_needs_atr or stop_needs_label) and position == 0 \
-                    and _stop_inputs_warming(idx):
+            if (stop_needs_atr or stop_needs_label) and _stop_inputs_warming(idx):
                 risk_entry_blocked = True
                 entry_wanted = (
                     str(row.get("_open_action", "none")) in ("long", "short")
@@ -3957,6 +3992,8 @@ class Backtester:
                     if self._perps_sizing is None:
                         entry_fraction = risk_fraction
             if profile_switcher is not None:
+                if not str(row.get("_profile_label", "") or "").strip() or ("_profile_label_ready" in row and not bool(row["_profile_label_ready"])):
+                    risk_entry_blocked = True
                 active_profile = profile_switcher.step(
                     str(row.get("_profile_label", "") or ""), position == 0
                 )
@@ -4032,10 +4069,12 @@ class Backtester:
             regime_blocked = (
                 self.regime_enabled
                 and bool(self.allowed_regimes)
-                and not _regime_allows_entry(
-                    self.allowed_regimes, gate_label, self.regime_gate_on_failure
-                )
+                and (not _ready_at(row, "gate", "closed_candle" if gate_row == "payload" and payload_row == "closed_candle" else "decision_bar")
+                     or not _regime_allows_entry(self.allowed_regimes, gate_label, self.regime_gate_on_failure))
             )
+
+            if self.regime_directional_policy is not None and not _ready_at(row, "directional", payload_row):
+                regime_blocked = True
 
             hurst_size_mult = 1.0
             hurst_blocked = False
@@ -4288,12 +4327,14 @@ class Backtester:
                         sl_high_water_px = mark_price
                 elif (
                     self.allow_scale_in
+                    and not regime_blocked and not risk_entry_blocked
                     and open_action == "long"
                     and position > 0
                 ):
                     _try_scale_in_add(i, "long", fill_price)
                 elif (
                     self.allow_scale_in
+                    and not regime_blocked and not risk_entry_blocked
                     and open_action == "short"
                     and position < 0
                 ):
@@ -4853,6 +4894,7 @@ class Backtester:
 
             elif (
                 self.allow_scale_in
+                    and not regime_blocked and not risk_entry_blocked
                 and not plain_short_for_bar
                 and signal == 1
                 and position > 0
@@ -4860,6 +4902,7 @@ class Backtester:
                 _try_scale_in_add(i, "long", fill_price)
             elif (
                 self.allow_scale_in
+                    and not regime_blocked and not risk_entry_blocked
                 and plain_short_for_bar
                 and signal == -1
                 and position < 0

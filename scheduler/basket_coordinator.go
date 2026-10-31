@@ -18,6 +18,7 @@ const basketMaxActionsPerStep = 64
 const basketHeldWakeRetry = time.Minute
 
 type basketMemberObservation struct {
+	Regime     RegimePayload
 	Cycle      int
 	AtMs       int64
 	Fields     StrategyDecisionFields
@@ -397,6 +398,7 @@ func (bc *basketCoordinator) observe(sc StrategyConfig, result *HyperliquidResul
 	}
 	rt.observations[sc.ID] = basketMemberObservation{
 		Cycle:      bc.cycle,
+		Regime:     regimePayloadValue(result.Regime),
 		Fields:     result.StrategyDecisionFields,
 		Indicators: result.Indicators,
 		Price:      price,
@@ -1077,6 +1079,9 @@ func (bc *basketCoordinator) admitIncrease(rt *basketRuntime, sc StrategyConfig,
 	if !ok {
 		return obs, "no management check has produced a closed-bar decision yet"
 	}
+	if why := regimeDependencyHold(sc, obs.Regime, obs.Regime, bc.cfg.Regime, true); why != "" {
+		return obs, why
+	}
 	cb := obs.Fields.ClosedBar
 	if why := closedBarDecisionIdentityError(sc, cb, now); why != "" {
 		return obs, "invalid closed-bar decision identity: " + why
@@ -1459,18 +1464,20 @@ func (bc *basketCoordinator) complete(rt *basketRuntime, rb *basketRebalance, ta
 }
 
 type basketActionProtection struct {
-	StopLossOID        int64   `json:"stop_loss_oid,omitempty"`
-	StopLossTriggerPx  float64 `json:"stop_loss_trigger_px,omitempty"`
-	TPOIDs             []int64 `json:"tp_oids,omitempty"`
-	EntryATR           float64 `json:"entry_atr,omitempty"`
-	DecisionATR        float64 `json:"decision_atr,omitempty"`
-	DecisionIntervalMs int64   `json:"decision_interval_ms,omitempty"`
-	DecisionBoundaryMs int64   `json:"decision_boundary_ms,omitempty"`
-	DecisionCutoffMs   int64   `json:"decision_cutoff_ms,omitempty"`
+	Regime             *RegimePayload `json:"regime,omitempty"`
+	StopLossOID        int64          `json:"stop_loss_oid,omitempty"`
+	StopLossTriggerPx  float64        `json:"stop_loss_trigger_px,omitempty"`
+	TPOIDs             []int64        `json:"tp_oids,omitempty"`
+	EntryATR           float64        `json:"entry_atr,omitempty"`
+	DecisionATR        float64        `json:"decision_atr,omitempty"`
+	DecisionIntervalMs int64          `json:"decision_interval_ms,omitempty"`
+	DecisionBoundaryMs int64          `json:"decision_boundary_ms,omitempty"`
+	DecisionCutoffMs   int64          `json:"decision_cutoff_ms,omitempty"`
 }
 
 func basketProtectionSnapshot(s *StrategyState, coin string, obs basketMemberObservation) string {
 	var p basketActionProtection
+	p.Regime = &obs.Regime
 	if s != nil {
 		if pos := s.Positions[coin]; pos != nil {
 			p.StopLossOID, p.StopLossTriggerPx, p.TPOIDs, p.EntryATR = pos.StopLossOID, pos.StopLossTriggerPx, pos.TPOIDs, pos.EntryATR
@@ -1491,7 +1498,8 @@ func basketActionObservation(a *basketAction) basketMemberObservation {
 	var p basketActionProtection
 	_ = json.Unmarshal([]byte(a.ProtectionJSON), &p)
 	obs := basketMemberObservation{
-		Fields: StrategyDecisionFields{ClosedBar: &ClosedBarDecision{
+		Regime: regimePayloadValue(p.Regime),
+		Fields: StrategyDecisionFields{Regime: p.Regime, ClosedBar: &ClosedBarDecision{
 			Enabled:            true,
 			IntervalMs:         p.DecisionIntervalMs,
 			BarOpenMs:          a.DecisionBarOpenMs,

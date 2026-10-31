@@ -143,7 +143,7 @@ def _load(symbol, timeframe, window, classifier, th, exchange=None):
         return None
     close, labels, valid = _label_stream(df, classifier, th)
     vlabels = labels[valid]
-    st = stability(vlabels)
+    st = stability(np.where(valid, labels, ""))
     mean_dwell = (float(np.mean(list(st["mean_dwell"].values())))
                   if st["mean_dwell"] else 1.0)
     return {"close": close, "valid": valid, "vlabels": vlabels,

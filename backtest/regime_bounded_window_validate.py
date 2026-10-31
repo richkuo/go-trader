@@ -176,8 +176,8 @@ def label_drift_stats(full_labels, bounded_labels, valid_mask) -> dict:
 
 
 def _feature_valid_mask(full_feats: np.ndarray, bounded_feats: np.ndarray) -> np.ndarray:
-    fv = ~np.isnan(np.asarray(full_feats, dtype=float)).any(axis=1)
-    bv = ~np.isnan(np.asarray(bounded_feats, dtype=float)).any(axis=1)
+    fv = np.isfinite(np.asarray(full_feats, dtype=float)).all(axis=1)
+    bv = np.isfinite(np.asarray(bounded_feats, dtype=float)).all(axis=1)
     return fv & bv
 
 

@@ -161,7 +161,7 @@ def test_prepared_atr_window_is_admitted_and_a_missing_column_is_refused(tmp_pat
                timeframe="1h", save=False)
 
 
-def test_default_directional_selector_keeps_the_gate_stamp():
+def test_default_directional_selector_keeps_the_primary_stamp():
     regime = {"enabled": True, "period": 14, "windows": {
         "medium": {"classifier": "adx", "period": 14},
         "fast": {"classifier": "adx", "period": 8},
@@ -191,7 +191,7 @@ def test_default_directional_selector_keeps_the_gate_stamp():
     bt.run(df, strategy_name="hold", symbol="BTC/USDT", timeframe="1h", save=False)
     opens = [row for row in bt._regime_stamp_trace if row["event"] == "stamp"]
     assert opens
-    assert opens[0]["directional"] == opens[0]["gate"]
+    assert opens[0]["directional"] == df[column_name("medium")].iloc[220]
     assert opens[0]["gate"] != ""
 
 
@@ -316,7 +316,7 @@ def _parity_run(selectors, regime=None):
     name = "_parity_label_windows_alternating"
 
     def alternating(frame):
-        hours = frame.index.view("int64") // 3_600_000_000_000
+        hours = frame.index.as_unit("ns").view("int64") // 3_600_000_000_000
         return frame.assign(signal=np.where((hours // 7) % 2 == 0, 1, -1))
 
     reg.STRATEGY_REGISTRY[name] = {"fn": alternating, "description": "test-only",
@@ -348,6 +348,7 @@ def test_parity_named_gate_keeps_the_primary_directional_label():
                & ((medium == "trending_down") | (fast == "trending_down"))).loc[scored]
     assert differs.any()
     assert summary["clean"], frame[~frame["match"]].head()
+    assert list(frame["live_directional_regime"]) == list(medium.shift(1).loc[scored])
     assert (frame["live_open_action"] == "short").any()
 
 
@@ -364,6 +365,7 @@ def test_parity_named_directional_and_atr_windows_against_the_default_run():
     _, primary_slow, _ = _parity_run({}, regime=swapped)
     assert list(named["bt_signal"]) == list(primary_slow["bt_signal"]), case
     assert list(named["live_signal"]) == list(primary_slow["live_signal"]), case
+    assert list(named["live_directional_regime"]) != list(default["live_directional_regime"]), case
     assert list(named["live_signal"]) != list(default["live_signal"]), case
 
     case = "test_parity_named_atr_window_keeps_the_primary_directional_label"

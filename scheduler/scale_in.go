@@ -292,6 +292,10 @@ func scaleInSideLabel(s *StrategyState, symbol string) string {
 }
 
 func runHyperliquidScaleInOrder(sc StrategyConfig, result *HyperliquidResult, addSize float64, walletSnapshot hlExecuteSnapshot, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+	if result.RegimeReadinessHold != "" {
+		logger.Info("%s", result.RegimeReadinessHold)
+		return nil, false
+	}
 	side := "buy"
 	if result.Signal == -1 {
 		side = "sell"

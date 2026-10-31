@@ -264,10 +264,6 @@ func classifyRegimeReversal(snaps map[string]RegimeSnapshot, periods map[string]
 	longest := ""
 	longestPeriod := 0
 	for _, name := range sortedStringKeys(periods) {
-		snap, ok := snaps[name]
-		if !ok || strings.TrimSpace(snap.Regime) == "" {
-			continue
-		}
 		if p := periods[name]; p > longestPeriod {
 			longestPeriod = p
 			longest = name
@@ -277,6 +273,9 @@ func classifyRegimeReversal(snaps map[string]RegimeSnapshot, periods map[string]
 		return regimeReversalResult{}, false
 	}
 	longestSnap := snaps[longest]
+	if longestSnap.Regime == "" {
+		return regimeReversalResult{}, false
+	}
 	longestBias := regimeLabelBias(longestSnap.Regime, snapshotReturnEff(longestSnap))
 	if longestBias == biasNeutral {
 		return regimeReversalResult{}, false
@@ -382,6 +381,9 @@ func processRegimeTransitionAlerts(sdb *StateDB, store *RegimeStore, rc *RegimeC
 	liveKeys := make(map[regimeBundleKey]bool, len(bundles))
 
 	for _, b := range bundles {
+		if b.Err != "" {
+			continue
+		}
 		liveKeys[b.Key] = true
 		labels := b.Payload.WindowLabels()
 		for _, window := range sortedStringKeys(labels) {

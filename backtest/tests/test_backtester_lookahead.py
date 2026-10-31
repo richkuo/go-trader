@@ -1,3 +1,4 @@
+from shared_tools.conftest import with_regime_readiness
 import sys
 import pathlib
 
@@ -43,7 +44,7 @@ def test_signal_at_bar_k_fills_at_bar_k_plus_1_open():
     df.iloc[9, df.columns.get_loc("signal")] = 1
 
     bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
 
     assert result["total_trades"] >= 1
     entry_price = result["trades"][0]["entry_price"]
@@ -63,7 +64,7 @@ def test_intra_bar_jump_captured_at_next_bar_open_documents_limit():
     df.iloc[15, df.columns.get_loc("signal")] = -1
 
     bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
 
     final_pct = (result["final_capital"] - 1000.0) / 1000.0 * 100.0
     assert final_pct > 15.0, (
@@ -82,7 +83,7 @@ def test_regime_gate_uses_prior_bar_regime_not_current():
         initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0,
         regime_enabled=True, allowed_regimes=["trending_up"],
     )
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
 
     assert result["total_trades"] == 1, (
         "Entry should pass: bar 9's regime is 'trending_up' (allowed). "
@@ -102,7 +103,7 @@ def test_regime_gate_blocks_when_prior_bar_regime_disallows():
         initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0,
         regime_enabled=True, allowed_regimes=["trending_up"],
     )
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
 
     assert result["total_trades"] == 0, (
         "Entry should be blocked by bar 9's 'ranging' regime. "
@@ -127,7 +128,7 @@ def test_regime_directional_policy_uses_prior_bar_regime_not_current():
         regime_directional_policy=_REGIME_DIRECTIONAL_POLICY,
         regime_directional_certified=True,
     )
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
 
     assert [t["side"] for t in result["trades"]] == ["short"], (
         "Policy resolver must read bar 9's trending_down label for the bar 10 "
@@ -152,7 +153,7 @@ def test_forward_peek_signal_documents_caller_responsibility():
     df.loc[df.index[-1], "signal"] = 0
 
     bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
 
     buy_and_hold_pct = (close[-1] - close[0]) / close[0] * 100.0
     final_pct = (result["final_capital"] - 1000.0) / 1000.0 * 100.0
@@ -173,7 +174,7 @@ def test_shift_moves_signal_by_exactly_one_row():
     df.iloc[10, df.columns.get_loc("signal")] = -1
 
     bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
 
     assert result["total_trades"] == 1
     entry_date = pd.Timestamp(result["trades"][0]["entry_date"])
@@ -197,7 +198,7 @@ def test_zscore_target_close_uses_closed_bar_z_and_fills_next_open():
                     close_strategies=[{"name": "zscore_target",
                                        "params": {"lookback": 4, "z_target": 1.0}}],
                     direction="long", comparison_mode="approximate")
-    result = bt.run(df, strategy_name="x", save=False)
+    result = bt.run(with_regime_readiness(df), strategy_name="x", save=False)
     assert result["total_trades"] == 1
     exit_date = pd.Timestamp(result["trades"][0]["exit_date"])
     assert exit_date > df.index[spike_bar], (
@@ -372,7 +373,7 @@ def test_entry_atr_stamped_from_bar_before_fill():
             {"atr_multiple": 1.0, "close_fraction": 1.0},
         ]}}],
     )
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
     assert result["total_trades"] == 1
     assert result["trades"][0]["exit_price"] == 110.0
     assert result["trades"][0]["exit_date"] == str(idx[3])
@@ -397,7 +398,7 @@ def test_scale_in_add_fills_at_next_bar_open():
     }, index=idx)
     bt = Backtester(initial_capital=10000, commission_pct=0, slippage_pct=0,
                     allow_scale_in=True)
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
     assert result["scale_in_adds"] == 1
     (trade,) = result["trades"]
     add_qty = 10000.0 / 108.0
@@ -419,7 +420,7 @@ def test_scale_in_decision_ignores_fill_bar_range():
         bt = Backtester(initial_capital=10000, commission_pct=0,
                         slippage_pct=0, allow_scale_in=True,
                         scale_in={"add_spacing_atr": 0.0})
-        return bt.run(df, save=False)
+        return bt.run(with_regime_readiness(df), save=False)
 
     base = _res(108.0, 108.5)
     perturbed = _res(125.0, 126.0)
@@ -440,7 +441,7 @@ def test_scale_in_spacing_gate_reads_signal_bar_close():
     }, index=idx)
     bt = Backtester(initial_capital=10000, commission_pct=0, slippage_pct=0,
                     allow_scale_in=True, scale_in={"add_spacing_atr": 1.0})
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
     assert result["scale_in_adds"] == 0
 
 
@@ -477,7 +478,7 @@ def test_regime_tp_tier_resolution_reads_prior_bar_regime_not_current():
         initial_capital=10_000.0, commission_pct=0.0, slippage_pct=0.0,
         close_strategies=[close_ref], regime_enabled=True,
     )
-    result = bt.run(df, save=False)
+    result = bt.run(with_regime_readiness(df), save=False)
     assert result["trades"][0]["exit_date"] == str(idx[4]), (
         "Bar 4 must resolve its TP tier from bar 3's 'trending_up' label. "
         "An exit at bar 3 means the close side read the unshifted label."

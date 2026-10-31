@@ -133,8 +133,6 @@ def _payload_block(payload: dict, *, needs_attestation: bool, consumer: str):
 def _protection_source(stop_needs_labels, atr_named, protection_reads_gate, row_name, strategy, regime):
     if not stop_needs_labels or atr_named or not row_name:
         return None
-    if protection_reads_gate:
-        return row_name + ":gate_window:" + resolve_strategy_regime_window(strategy, "gate", regime)
     return row_name + ":primary_column"
 
 
@@ -684,6 +682,8 @@ def resolve_regime_context(segment: dict, evidence: dict, binding: dict, market:
         label_columns = {
             "gate": col(gate_key),
             "directional": col(dir_key),
+            "atr": col(primary or "primary"),
+            "atr_named": False,
             "directional_named": _named(strategy.get("regime_directional_window")),
             "payload_row": payload_row,
             "gate_row": "decision_bar" if closed_bar else "payload",

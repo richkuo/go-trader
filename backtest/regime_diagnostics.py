@@ -69,24 +69,22 @@ def separation(labels: np.ndarray, fwd: np.ndarray) -> dict:
 def stability(labels: np.ndarray) -> dict:
     labels = np.asarray(labels, dtype=object)
     n = len(labels)
-    if n < 2:
-        return {"transition_rate": 0.0, "flips": 0, "mean_dwell": {}}
-    changes = labels[1:] != labels[:-1]
-    flips = int(changes.sum())
+    valid = np.array([bool(str(v or "").strip()) for v in labels])
+    adjacent = valid[:-1] & valid[1:]
+    flips = int(((labels[1:] != labels[:-1]) & adjacent).sum())
     runs: dict[str, list[int]] = {}
-    cur, length = labels[0], 1
-    for x in labels[1:]:
-        if x == cur:
+    cur, length = "", 0
+    for x, supported in zip(labels, valid):
+        if supported and x == cur:
             length += 1
         else:
-            runs.setdefault(str(cur), []).append(length)
-            cur, length = x, 1
-    runs.setdefault(str(cur), []).append(length)
-    return {
-        "transition_rate": float(flips / (n - 1)),
-        "flips": flips,
-        "mean_dwell": {s: float(np.mean(v)) for s, v in sorted(runs.items())},
-    }
+            if length:
+                runs.setdefault(str(cur), []).append(length)
+            cur, length = (x, 1) if supported else ("", 0)
+    if length:
+        runs.setdefault(str(cur), []).append(length)
+    return {"transition_rate": float(flips / adjacent.sum()) if adjacent.any() else 0.0,
+            "flips": flips, "mean_dwell": {s: float(np.mean(v)) for s, v in sorted(runs.items())}}
 
 
 def block_shuffle_pvalue(labels, fwd, block_len, n_perm=200, seed=0) -> dict:
@@ -197,11 +195,13 @@ def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, see
         fwd_fn = FORWARD_TARGETS[target]
     except KeyError:
         raise ValueError(f"unknown forward target {target!r}; known: {sorted(FORWARD_TARGETS)}")
-    valid = ~np.isnan(features).any(axis=1)
+    valid = np.isfinite(features).all(axis=1) & np.array([bool(str(v or "").strip()) for v in labels])
     vlabels = labels[valid]
-    st = stability(vlabels)
+    st = stability(np.where(valid, labels, ""))
     mean_dwell = float(np.mean(list(st["mean_dwell"].values()))) if st["mean_dwell"] else 1.0
     out = {"target": target, "coverage": coverage(vlabels), "stability": st, "horizons": {}}
+    if not valid.any():
+        return {**out, "status": "unavailable", "reason": "no ready regime samples"}
     for h in horizons:
         fwd_full = fwd_fn(close, h)
         fwd = fwd_full[valid]

@@ -109,8 +109,8 @@ def _plan_label_series(feature_frame: pd.DataFrame, plan: dict) -> dict:
         "gate": gate,
         "directional": col("directional"),
         "atr": col("atr"),
-        "directional_stamp": col("directional") if named.get("directional") else gate,
-        "atr_stamp": col("atr") if named.get("atr") else gate,
+        "directional_stamp": col("directional"),
+        "atr_stamp": col("atr"),
     }
 
 
@@ -277,19 +277,15 @@ def _feature_labels_from_prepare(window: pd.DataFrame, cfg: ParityConfig) -> dic
     )
     from regime_label_columns import spec_window_key
 
-    def label(key: str) -> str:
-        if isinstance(payload, dict):
-            entry = payload.get(spec_window_key(spec, key)) or {}
-            if isinstance(entry, dict):
-                return str(entry.get("regime") or "")
-            return str(entry or "")
-        return str(payload or "")
-
-    return {
-        "gate": label(windows.get("gate", "")),
-        "directional": label(windows.get("directional", "")),
-        "atr": label(windows.get("atr", "")),
-    }
+    out = {}
+    for field in ("gate", "directional", "atr"):
+        key = windows.get(field, "")
+        entry = payload.get(spec_window_key(spec, key), {}) if spec else payload
+        if not isinstance(entry, dict): entry = {}
+        out[field] = str(entry.get("regime") or "")
+        for meta in ("ready", "bars", "need"):
+            out[field + "_" + meta] = entry.get(meta, False if meta == "ready" else 0)
+    return out
 
 
 def _full_frame_decisions(result_df: pd.DataFrame) -> pd.DataFrame:
@@ -340,7 +336,7 @@ def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
     params["regime"] = strategy_regime
 
     close_names = _close_names(cfg.close_refs)
-    decision = {"regime": str(live_regime or "")}
+    decision = {"regime": str(live_regime or ""), **{k: strategy_regime.get(k) for k in ("ready", "bars", "need")}}
     if close_names or cfg.open_close_config:
         market_ctx = {"mark_price": float(window["close"].iloc[-1])}
         atr_now = latest_atr(window)
@@ -716,10 +712,11 @@ def compute_parity_frame(
         regime_full = label_series["gate"]
     elif cfg.regime_enabled:
         from regime import compute_regime
-        regime_full = compute_regime(
+        regime_frame = compute_regime(
             df, period=cfg.regime_period,
             adx_threshold=cfg.regime_adx_threshold,
-        )["regime"]
+        )
+        regime_full = regime_frame["regime"]
 
     has_close_refs = bool(_close_names(cfg.close_refs))
     needs_decision_walk = (
@@ -802,10 +799,23 @@ def compute_parity_frame(
                 row[f"bt_{field}_regime"] = bt_label
                 row[f"live_{field}_regime"] = live_features[field]
                 match = match and bt_label == live_features[field]
+                for meta in ("ready", "bars", "need"):
+                    bt_value = feature_frame[col + "_" + meta].iloc[i - 1]
+                    live_value = live_features[field + "_" + meta]
+                    row[f"bt_{field}_{meta}"] = bt_value
+                    row[f"live_{field}_{meta}"] = live_value
+                    match = match and bt_value == live_value
         elif cfg.regime_enabled:
             row["bt_regime"] = str(regime_full.iloc[i])
             row["live_regime"] = str(live["regime"])
             match = match and row["bt_regime"] == row["live_regime"]
+            for meta in ("ready", "bars", "need"):
+                bt_value = regime_frame["regime_" + meta].iloc[i]
+                if meta == "bars" and window is not None:
+                    bt_value = min(int(bt_value), window)
+                row["bt_" + meta] = bt_value
+                row["live_" + meta] = live.get(meta)
+                match = match and bt_value == live.get(meta)
         if cfg.batched:
             solo_dec, batch_dec = _batched_bar_decisions(
                 win, cfg, position_side=side, position_ctx=ctx)

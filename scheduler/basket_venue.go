@@ -212,6 +212,7 @@ func bookBasketPaperIncrease(sc StrategyConfig, s *StrategyState, cfg *Config, c
 		Platform:               "hyperliquid",
 		BasketMember:           true,
 	}
+	result.Regime = &obs.Regime
 	var regime *RegimeConfig
 	if cfg != nil {
 		regime = cfg.Regime
@@ -320,6 +321,7 @@ func bookPairFillScoped(sc StrategyConfig, s *StrategyState, cfg *Config, a *bas
 				Platform:               "hyperliquid",
 				PairFill:               &pairBookFill{Qty: qty, Px: px, Fee: fee, OID: oid},
 			}
+			result.Regime = &obs.Regime
 			if pos == nil || pos.Quantity <= 0 {
 				executeHyperliquidResultDeferredOpen(sc, s, result, nil, signalLabel(signal), px, regime, cfg, HurstGateDecision{}, logger)
 			} else {
@@ -332,6 +334,9 @@ func bookPairFillScoped(sc StrategyConfig, s *StrategyState, cfg *Config, a *bas
 					return basketBooking{Hold: err.Error()}
 				}
 				stampEntryATRIfOpened(s, coin, obs.Indicators)
+				if exec.OpenTrade != nil {
+					stampPositionRegimeFromPayload(s, coin, obs.Regime, sc, cfg.Regime)
+				}
 				if p := s.Positions[coin]; p != nil {
 					recordPositionOpen(s, sc, exec.OpenTrade, p)
 				}

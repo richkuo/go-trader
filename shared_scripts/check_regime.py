@@ -122,14 +122,8 @@ def compute_regime_bundle(df, windows_spec: dict) -> dict:
         spec = windows_spec[name]
         period = int(spec["period"])
         snap = snapshots.get(name) or {}
-        if spec.get("classifier") == CLASSIFIER_COMPOSITE:
-            composite7 = str(snap.get("regime") or "")
-            adx3 = str(latest_regime(df, period=period,
-                                     adx_threshold=_window_adx_threshold(spec)).get("regime") or "")
-        else:
-            adx3 = str(snap.get("regime") or "")
-            composite7 = str(latest_regime_composite(
-                df, period, spec.get("thresholds")).get("regime") or "")
+        adx3 = latest_regime(df, period=period, adx_threshold=_window_adx_threshold(spec))
+        composite7 = latest_regime_composite(df, period, spec.get("thresholds"))
         views[name] = {"adx3": adx3, "composite7": composite7}
     return {"regime": snapshots, "views": views}
 
@@ -144,7 +138,7 @@ def main() -> None:
                         help="resolved window specs from Go regimeWindowsSpecJSON")
     parser.add_argument("--ohlcv-limit", type=int, default=200)
     parser.add_argument("--min-bars", type=int, default=30,
-                        help="insufficient-data floor; mirrors the check scripts' candle guard")
+                        help="accepted for compatibility; each classifier reports its own readiness")
     parser.add_argument("--allow-spot-fallback", action="store_true", default=False,
                         help="options platforms: fall back to BinanceUS <symbol>/USDT when the adapter has no OHLCV")
     parser.add_argument("--market-stdin", action="store_true", default=False,
@@ -163,9 +157,9 @@ def main() -> None:
             df = _market_dataframe(args)
         else:
             df = _fetch_dataframe(args)
-        if df is None or len(df) < args.min_bars:
+        if df is None or len(df) == 0:
             got = 0 if df is None else len(df)
-            _emit_error(args, f"Insufficient data: {got} candles (need {args.min_bars})")
+            _emit_error(args, f"Insufficient data: {got} candles (need 1)")
 
         bundle = compute_regime_bundle(df, windows_spec)
 

@@ -49,7 +49,7 @@ def _buy_at(df: pd.DataFrame, bar: int) -> pd.DataFrame:
 
 
 def test_windows_spec_computes_composite_substates_from_ohlcv():
-    labels = set(_ground_truth_labels(_mixed_regime_ohlcv()).unique())
+    labels = set(_ground_truth_labels(_mixed_regime_ohlcv()).unique()) - {""}
     assert labels <= VALID_LABELS_COMPOSITE
     assert labels & VALID_LABELS_ADX == set()
     assert labels, "expected non-empty composite labels"
@@ -308,7 +308,7 @@ def test_profile_label_series_cross_timeframe_aligns_without_lookahead(monkeypat
     monkeypatch.setattr(
         run_backtest, "compute_regime_composite",
         lambda df, period=20, thresholds=None: pd.DataFrame(
-            {"regime": ["macro_row0", "macro_row1", "macro_row2"]}, index=df.index
+            {"regime": ["macro_row0", "macro_row1", "macro_row2"], "regime_ready": [True] * 3, "regime_bars": [29, 30, 31], "regime_need": [29] * 3}, index=df.index
         ),
     )
 

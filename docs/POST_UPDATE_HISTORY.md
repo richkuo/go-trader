@@ -2,6 +2,23 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1939: regime readiness
+
+Runtime behavior changes when a strategy has insufficient regime history.
+The status display shows `warming (bars/need)` for each valid cold window or comparison view.
+Dependent opens, flips, and adds wait under both entry failure policies.
+A flip signal on an open position still closes that position and opens no new side until readiness returns.
+This includes coordinator and manual admission before order or cancellation side effects.
+Existing positions keep their captured protection inputs and continue management.
+Missing metadata is unavailable, and a genuine store failure keeps its configured gate policy.
+The retained manual market-order ratchet fallback applies only to genuine classification failure.
+Manual limit placement requires ready stop inputs and retains them for later fill adoption.
+A position with no stop label in its entry evidence takes the ready current stop window once, so its regime stop arms.
+Under a shared or websocket feed, command-line regime-stop opens and adds need an explicit stop or the status UI.
+Positions, queued manual actions, and pending manual limit orders gain optional captured snapshot JSON through additive migrations.
+Backtests carry the same typed readiness and report stop warm-up skips; older results can differ.
+Deploy Go and Python together with `bash scripts/update.sh --restart`.
+
 ### Reference: known categories
 
 When in doubt, treat as runtime default and prompt. Regenerate from `git log --oneline -50` when stale.
@@ -692,4 +709,5 @@ When in doubt, treat as runtime default and prompt. Regenerate from `git log --o
 - **#1128/#1432/#1433** HL adapter lazy `Exchange` init (fewer `/info` bursts on regime/OHLCV-only subprocesses); transient 429/rate-limit, HTTP 5xx, and `script timed out after` subprocess failures WARN-only until 15 strikes or 75m sustained — then operator DM
 - **#1442** due HL perps strategies sharing market data (same platform/symbol/timeframe/OHLCV limit/ATR method) now run one batched signal check instead of one process per strategy — same decisions, faster cycles. `GO_TRADER_HL_BATCH=0` disables. No config change.
 - **#1408 (display)** Discord category summaries drop the per-strategy Value column when shared-wallet pool budgeting is active (misleading under pool equity). PnL/% columns unchanged.
-
+---
+LLM: GPT-6 (exact variant unavailable) | high | Harness: work-on-issue

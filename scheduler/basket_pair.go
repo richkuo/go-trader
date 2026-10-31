@@ -354,7 +354,7 @@ func (bc *basketCoordinator) observePair(sc StrategyConfig, fields StrategyDecis
 	if clock == nil {
 		clock = tradingNow
 	}
-	rt.observations[sc.ID] = basketMemberObservation{Cycle: bc.cycle, AtMs: clock().UnixMilli(), Fields: fields, Indicators: indicators, Price: price}
+	rt.observations[sc.ID] = basketMemberObservation{Cycle: bc.cycle, Regime: regimePayloadValue(fields.Regime), AtMs: clock().UnixMilli(), Fields: fields, Indicators: indicators, Price: price}
 }
 
 func (bc *basketCoordinator) reservePairSlot(rt *basketRuntime, slotMs int64, now time.Time) (*basketRebalance, error) {
@@ -868,9 +868,6 @@ func (bc *basketCoordinator) pairExposureTotal(rt *basketRuntime) float64 {
 }
 
 func (bc *basketCoordinator) pairObservation(rt *basketRuntime, id string, a *basketAction) basketMemberObservation {
-	if obs, ok := rt.observations[id]; ok {
-		return obs
-	}
 	return basketActionObservation(a)
 }
 
@@ -1544,6 +1541,9 @@ func (bc *basketCoordinator) pairIncreaseHold(rt *basketRuntime, in basketCycleI
 		maxAge := pairManagementMaxAge(bc.cfg)
 		if maxAge <= 0 || obs.AtMs <= 0 || in.Now.UnixMilli()-obs.AtMs > maxAge.Milliseconds() {
 			return fmt.Sprintf("%s management output observed at %d is older than the maximum management age %s at %d", id, obs.AtMs, maxAge, in.Now.UnixMilli())
+		}
+		if why := regimeDependencyHold(sc, obs.Regime, obs.Regime, bc.cfg.Regime, true); why != "" {
+			return id + ": " + why
 		}
 		if indicatorsATRValue(obs.Indicators) <= 0 {
 			return id + " management output carries no ATR for the native stop"

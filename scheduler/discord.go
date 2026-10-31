@@ -308,7 +308,7 @@ func buildRegimeByBaseAsset(strategies []StrategyConfig, state *AppState, regime
 	out := make(map[string]string)
 	for _, sc := range strategies {
 		ss := state.Strategies[sc.ID]
-		if ss == nil || ss.Regime == "" {
+		if ss == nil || (ss.Regime == "" && len(ss.RegimeSnapshots) == 0) {
 			continue
 		}
 		base := extractAsset(sc)

@@ -132,8 +132,15 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 		cash += s.Cash
 		posCount += len(s.Positions) + len(s.OptionPositions)
 		trades += nonFundingTradeCount(s.TradeHistory)
-		if regime == "" && s.Regime != "" {
-			regime = s.Regime
+		if regime == "" {
+			parts := []string{}
+			for _, key := range sortedRegimeWindowNames(s.RegimeSnapshots) {
+				parts = append(parts, key+"="+s.RegimeSnapshots[key].Display())
+			}
+			regime = strings.Join(parts, "; ")
+			if regime == "" {
+				regime = s.Regime
+			}
 		}
 		if s.CashReconcileRequired {
 			reconcileIDs = append(reconcileIDs, id)
