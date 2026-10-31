@@ -389,16 +389,47 @@ def compute_regime(
     return result
 
 
+def _effective_composite_adx_period(period: int, adx_period_cap) -> int:
+    """ADX length used inside the composite. None means the composite period, uncapped."""
+    if adx_period_cap == COMPOSITE_ADX_PERIOD_CAP:
+        return min(period, COMPOSITE_ADX_PERIOD_CAP)
+    if adx_period_cap is None:
+        if period < 2:
+            raise ValueError("regime period must be at least 2")
+        return int(period)
+    if isinstance(adx_period_cap, bool) or not isinstance(adx_period_cap, int) or adx_period_cap < 1:
+        raise ValueError(
+            f"adx_period_cap must be a positive int or None, got {adx_period_cap!r}"
+        )
+    if period < 2:
+        raise ValueError("regime period must be at least 2")
+    return min(int(period), adx_period_cap)
+
+
+def _composite_ready_need(period: int, adx_period_cap) -> int:
+    """Bars required before a composite label is eligible.
+
+    The shipped cap matches ``required_regime_bars``. Any other cap, including
+    uncapped, uses the same formula with that cap's effective ADX period.
+    """
+    if adx_period_cap == COMPOSITE_ADX_PERIOD_CAP:
+        return required_regime_bars(period, CLASSIFIER_COMPOSITE)
+    effective = _effective_composite_adx_period(period, adx_period_cap)
+    return max(int(period), 2 * effective + 1)
+
+
 def compute_regime_composite(
     df: pd.DataFrame,
     period: int,
     thresholds: dict[str, float] | None = None,
+    *,
+    adx_period_cap: int | None = COMPOSITE_ADX_PERIOD_CAP,
 ) -> pd.DataFrame:
     th = normalize_composite_thresholds(thresholds)
     result = df.copy()
     n = len(result)
     result["regime"] = ""
-    need = required_regime_bars(period, CLASSIFIER_COMPOSITE)
+    need = _composite_ready_need(period, adx_period_cap)
     result["regime_bars"] = range(1, n + 1)
     result["regime_need"] = need
     result["regime_ready"] = result["regime_bars"] >= need
@@ -409,7 +440,7 @@ def compute_regime_composite(
     if n == 0:
         return result
 
-    adx_period = min(period, COMPOSITE_ADX_PERIOD_CAP)
+    adx_period = _effective_composite_adx_period(period, adx_period_cap)
     adx_df = compute_regime(result, period=adx_period, adx_threshold=th["adx"])
     result["adx"] = adx_df["adx"].values
     result["plus_di"] = adx_df["plus_di"].values
@@ -434,6 +465,8 @@ def composite_feature_matrix(
     df: pd.DataFrame,
     period: int,
     thresholds: dict[str, float] | None = None,
+    *,
+    adx_period_cap: int | None = COMPOSITE_ADX_PERIOD_CAP,
 ) -> pd.DataFrame:
     th = normalize_composite_thresholds(thresholds)
     cols = ["return_eff", "range_eff", "efficiency", "adx"]
@@ -441,10 +474,10 @@ def composite_feature_matrix(
     n = len(df)
     if n == 0:
         return out
-    adx_period = min(period, COMPOSITE_ADX_PERIOD_CAP)
+    adx_period = _effective_composite_adx_period(period, adx_period_cap)
     adx_df = compute_regime(df, period=adx_period, adx_threshold=th["adx"])
     atr_series = standard_atr(df, period=period, method="simple")
-    for i in range(required_regime_bars(period, CLASSIFIER_COMPOSITE) - 1, n):
+    for i in range(_composite_ready_need(period, adx_period_cap) - 1, n):
         window = df.iloc[i - period + 1 : i + 1]
         atr_val = float(atr_series.iloc[i]) if i < len(atr_series) else 0.0
         if not (atr_val > 0):
