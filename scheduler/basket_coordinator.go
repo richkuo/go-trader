@@ -1079,9 +1079,6 @@ func (bc *basketCoordinator) admitIncrease(rt *basketRuntime, sc StrategyConfig,
 	if !ok {
 		return obs, "no management check has produced a closed-bar decision yet"
 	}
-	if obs.Cycle < bc.cycle-1 {
-		return obs, "management regime observation is stale"
-	}
 	if why := regimeDependencyHold(sc, obs.Regime, obs.Regime, bc.cfg.Regime, true); why != "" {
 		return obs, why
 	}

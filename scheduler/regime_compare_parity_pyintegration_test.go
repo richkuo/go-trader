@@ -536,6 +536,43 @@ func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, 
 	if basketEnv.dbCount("SELECT COUNT(*) FROM basket_member_actions") != 0 {
 		t.Fatal("cold basket reserved an action")
 	}
+	wakeCycle := basketEnv.bc.cycle
+	basketEnv.bc.beginCycle()
+	basketEnv.bc.beginCycle()
+	if basketEnv.bc.cycle != wakeCycle+2 {
+		t.Fatalf("basket cycle %d after two wakes from %d", basketEnv.bc.cycle, wakeCycle)
+	}
+	if _, why := basketEnv.bc.admitIncrease(basketEnv.rt(), member, memberState, basketCandidate{Coin: "BTC", PositionSide: "long"}, now); !strings.Contains(why, "warming") {
+		t.Fatalf("basket cold stop after two wakes: %s", why)
+	} else {
+		t.Logf("basket warming after two wakes: %s", why)
+	}
+	plainCfg := loadBasketTestConfig(t, nil)
+	plainEnv := newBasketTestEnv(t, plainCfg, nil, nil)
+	plainNow := time.Now().UTC().Truncate(time.Hour)
+	plainMember := plainEnv.bc.members["hl-bsk-btc"]
+	if strategyRegimeStopDependent(plainMember) {
+		t.Fatal("plain basket member depends on a regime stop")
+	}
+	plainEnv.bc.observe(plainMember, basketTestObservation(plainNow, 300), 60000)
+	plainObserved := plainEnv.bc.cycle
+	plainEnv.bc.beginCycle()
+	plainEnv.bc.beginCycle()
+	if plainEnv.bc.cycle != plainObserved+2 {
+		t.Fatalf("plain basket cycle %d, observed at %d", plainEnv.bc.cycle, plainObserved)
+	}
+	plainState := plainEnv.state.Strategies[plainMember.ID]
+	plainCandidate := basketCandidate{Coin: "BTC", PositionSide: "long"}
+	if _, why := plainEnv.bc.admitIncrease(plainEnv.rt(), plainMember, plainState, plainCandidate, plainNow); why != "" {
+		t.Fatalf("basket increase after two wakes inside one hour: %s", why)
+	}
+	t.Logf("basket age: member without a regime stop observed at cycle %d with a 1h bar, admitted at cycle %d", plainObserved, plainEnv.bc.cycle)
+	staleNow := plainNow.Add(time.Hour + 30*time.Second)
+	if _, why := plainEnv.bc.admitIncrease(plainEnv.rt(), plainMember, plainState, plainCandidate, staleNow); !strings.Contains(why, "invalid closed-bar decision identity") || !strings.Contains(why, "older than one interval") {
+		t.Fatalf("stale closed-bar cutoff: %s", why)
+	} else {
+		t.Logf("basket age: cutoff one interval before now refused: %s", why)
+	}
 	pairEnv := newPairTestEnv(t, nil)
 	pairEnv.cfg.Regime = rc
 	pairSC := pairEnv.bc.members[pairTestHL]
