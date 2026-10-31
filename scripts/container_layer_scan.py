@@ -6,7 +6,7 @@ import tarfile
 
 FORBIDDEN_NAMES = {".env", "go-trader.env", "config.json", "state.json", "trading_bot.db"}
 FORBIDDEN_GLOBS = [
-    "*.db", "*.db-wal", "*.db-shm", "*.db-journal", "*.db.lock",
+    "*.db", "*.db-wal", "*.db-shm", "*.db-journal", "*.db.lock", "*.manual-regime-owner.json",
     "*.sqlite", "*.sqlite3", "*.sqlite3-wal", "*.sqlite3-shm",
     "*.pid", "*.log", "*.bak", "*.prev",
 ]

@@ -2,6 +2,20 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1945: command-line regime admission under a sealed feed
+
+Runtime behavior changes for `manual-open` and `manual-add` run from the command line when `market_feed` is `shared` or `websocket`.
+They now read the running scheduler's current regime bundle through `GET /api/regime/manual` instead of refusing.
+The command reaches `http://localhost:<status_port or 8099>` by default; set `GO_TRADER_MANUAL_SCHEDULER_URL` (a bare loopback `http` origin with a port) for a `--status-port` override, a fallback listener port or a container port mapping.
+The command authenticates with a secret it reads from the scheduler's owner marker and never sends `STATUS_AUTH_TOKEN`; the scheduler signs each reply, so a different process on that port receives no credential and cannot supply a result.
+An authentication, reply-proof, identity, key, configuration, reply-format, timestamp or draining failure refuses the order with no ratchet fallback; only an absent, unreachable, timed-out or genuinely failed scheduler result keeps the existing market-order ratchet fallback, and limit placement always refuses.
+A new command-line open whose protection needs ATR must pass a finite, positive `--atr`; the command never fetches candles privately, and an adverse fill switches to the arithmetic fallback ATR with a warning.
+Each daemon writes a mode-0600 `<state db>.manual-regime-owner.json` (nonce and route secret) beside every state file while it owns them and removes it on shutdown; stop the daemon before deleting one by hand.
+`update.sh`, the container image build and `migrate-service-layout.py` treat the marker as runtime state and never copy, restore or delete it.
+The bundle age limit is the strategy's own `interval_seconds` (else the global one), and a manual strategy keeps its last bundle between its own cycles, for both the command and the status UI open and add.
+Under `market_feed: rest`, a tracked limit fill whose supplied `--atr` exceeds half the fill price now discards it and fetches a new ATR, as a REST market open already does; the rest of REST mode and record-only adoption are unchanged.
+Deploy Go and Python together with `bash scripts/update.sh --restart`.
+
 ### Issue 1939: regime readiness
 
 Runtime behavior changes when a strategy has insufficient regime history.
@@ -14,7 +28,7 @@ Missing metadata is unavailable, and a genuine store failure keeps its configure
 The retained manual market-order ratchet fallback applies only to genuine classification failure.
 Manual limit placement requires ready stop inputs and retains them for later fill adoption.
 A position with no stop label in its entry evidence takes the ready current stop window once, so its regime stop arms.
-Under a shared or websocket feed, command-line regime-stop opens and adds need an explicit stop or the status UI.
+Under a shared or websocket feed, command-line regime-stop opens and adds needed an explicit stop or the status UI until issue 1945.
 Positions, queued manual actions, and pending manual limit orders gain optional captured snapshot JSON through additive migrations.
 Backtests carry the same typed readiness and report stop warm-up skips; older results can differ.
 Deploy Go and Python together with `bash scripts/update.sh --restart`.

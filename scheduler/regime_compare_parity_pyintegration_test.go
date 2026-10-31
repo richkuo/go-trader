@@ -12,7 +12,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -355,6 +354,7 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 	regimeReadinessAdmissionIntegration(t, bundles, rc)
 	regimeReadinessStopBackfillIntegration(t, bundles, rc)
 	regimeReadinessClassifierCaseIntegration(t, root)
+	regimeReadinessProcessIntegration(t)
 	state := &StrategyState{Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100}}, Regime: "stale"}
 	syncStrategyRegimeState(state, bundles[3].Payload, rc)
 	syncStrategyRegimeState(state, bundles[0].Payload, rc)
@@ -747,9 +747,18 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 	t.Helper()
 	sc := StrategyConfig{ID: "readiness-recovery", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=paper"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2}, "trending_down": {ATR: 2}, "ranging": {ATR: 2}}}}
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60, Strategies: []StrategyConfig{sc}}
-	db := openTestDB(t)
-	store := openTestStore(t, db)
+	adopted := sc
+	adopted.ID += "-adopted"
+	captured := sc
+	captured.ID += "-captured"
+	cfg.Strategies = append(cfg.Strategies, adopted, captured)
+	resetInitialCapitalGuardDedup(t)
 	state := NewAppState()
+	previousStore := globalRegimeStore
+	globalRegimeStore = &RegimeStore{}
+	t.Cleanup(func() { globalRegimeStore = previousStore })
+	route := newMRPLocalRoute(t, cfg, state)
+	db, store := route.db, route.store
 	state.Strategies[sc.ID] = NewStrategyState(sc)
 	state.Strategies[sc.ID].Positions["BTC"] = &Position{Symbol: "BTC", Side: "long", Quantity: 1, AvgCost: 100, StopLossOID: 77, TPOIDs: []int64{88}}
 	for _, err := range store.SaveAll(state) {
@@ -757,21 +766,17 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 			t.Fatal(err)
 		}
 	}
-	previousStore := globalRegimeStore
-	globalRegimeStore = &RegimeStore{}
-	t.Cleanup(func() { globalRegimeStore = previousStore })
 	req, ok := strategyRegimeBundleRequest(sc, rc)
 	if !ok {
 		t.Fatal("manual production bundle request missing")
 	}
 	fresh := *bundles[2]
 	fresh.Key, fresh.At = req.Key, time.Now()
-	gen := globalRegimeStore.resetForCycle(fresh.At)
-	globalRegimeStore.set(&fresh, gen)
-	server := &StatusServer{state: state, stateDB: store, mu: &sync.RWMutex{}}
+	route.publish(&fresh)
+	server := route.server
 	for _, deps := range []manualCoreDeps{newCLIManualCoreDeps(cfg, store, nil), server.daemonManualCoreDeps(cfg)} {
 		for _, dry := range []bool{false, true} {
-			if _, err := manualOpenCore(deps, sc, manualOpenInputs{StrategyID: sc.ID, Side: "long", Size: 1, DryRun: dry}); err == nil || !strings.Contains(err.Error(), "warming") {
+			if _, err := manualOpenCore(deps, sc, manualOpenInputs{StrategyID: sc.ID, Side: "long", Size: 1, ATR: 1, DryRun: dry}); err == nil || !strings.Contains(err.Error(), "warming") {
 				t.Fatalf("production manual open: %v", err)
 			}
 			if _, err := manualAddCore(deps, sc, manualAddInputs{StrategyID: sc.ID, Size: 1, DryRun: dry}); err == nil || !strings.Contains(err.Error(), "warming") {
@@ -793,11 +798,6 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 	if _, why := manualRegimeAdmission(deps, fallback, &manualCoreResult{}); !strings.Contains(why, "unavailable") {
 		t.Fatal("malformed metadata used the failure fallback")
 	}
-	adopted := sc
-	adopted.ID += "-adopted"
-	captured := sc
-	captured.ID += "-captured"
-	cfg.Strategies = append(cfg.Strategies, adopted, captured)
 	state.Strategies[adopted.ID] = NewStrategyState(adopted)
 	state.Strategies[captured.ID] = NewStrategyState(captured)
 	if _, err := manualOpenCore(newCLIManualCoreDeps(cfg, store, nil), adopted, manualOpenInputs{StrategyID: adopted.ID, Side: "long", Size: 1, FillPrice: 100, RecordOnly: true}); err != nil {
@@ -861,13 +861,14 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 	rec := &okxGoldenRecNotifier{}
 	notifier := NewMultiNotifier(notifierBackend{notifier: rec, ownerID: "offline-owner"})
 	coldStore := &RegimeStore{}
-	gen = coldStore.resetForCycle(time.Now())
+	gen := coldStore.resetForCycle(time.Now())
 	coldStore.set(bundles[0], gen)
 	processRegimeTransitionAlerts(db, coldStore, rc, notifier, time.Now())
 	if len(rec.drain()) != 0 {
 		t.Fatal("cold observation sent a transition alert")
 	}
 	regimeReadinessLimitIntegration(t, bundles, rc)
+	regimeReadinessCarryIntegration(t, bundles, rc)
 }
 
 func regimeReadinessStopBackfillIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
@@ -1050,9 +1051,9 @@ func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 	t.Helper()
 	sc := StrategyConfig{ID: "readiness-limit-live", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=live"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2}, "trending_down": {ATR: 2}, "ranging": {ATR: 2}}}}
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60, Strategies: []StrategyConfig{sc}}
-	db := openTestDB(t)
-	store := openTestStore(t, db)
 	state := NewAppState()
+	route := newMRPLocalRoute(t, cfg, state)
+	db, store := route.db, route.store
 	state.Strategies[sc.ID] = NewStrategyState(sc)
 	for _, err := range store.SaveAll(state) {
 		if err != nil {
@@ -1077,8 +1078,7 @@ func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 	setBundle := func(original *RegimeBundle) {
 		fresh := *original
 		fresh.Key, fresh.At = req.Key, time.Now()
-		gen := globalRegimeStore.resetForCycle(fresh.At)
-		globalRegimeStore.set(&fresh, gen)
+		route.publish(&fresh)
 	}
 	calls := 0
 	withStubbedLimitOpen(t, func(string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
@@ -1086,7 +1086,7 @@ func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 		return &HyperliquidLimitOpenResult{Status: "resting", OrderOID: 999}, "", nil
 	})
 	setBundle(bundles[2])
-	input := manualLimitOpenInputs{strategyID: sc.ID, side: "long", openSide: "buy", size: 1, limitPrice: 100, tif: "Alo"}
+	input := manualLimitOpenInputs{strategyID: sc.ID, side: "long", openSide: "buy", size: 1, limitPrice: 100, tif: "Alo", atr: 1}
 	for _, dry := range []bool{false, true} {
 		for _, side := range []string{"long", "short"} {
 			cold := input
@@ -1135,4 +1135,121 @@ func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 	if !reflect.DeepEqual(position.RegimeSnapshots, evidence) || positionATRRegimeLabel(position, sc) != bundles[3].Payload.Label("long", rc) || position.EntryATR != 1 || position.Quantity != 1 {
 		t.Fatal("cold later limit fill lost placement protection or changed entry evidence")
 	}
+}
+
+func regimeReadinessCarryIntegration(t *testing.T, bundles []*RegimeBundle, rc *RegimeConfig) {
+	t.Helper()
+	stop := func(mult float64) *RegimeATRBlock {
+		return &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: mult}, "trending_down": {ATR: mult}, "ranging": {ATR: mult}}}
+	}
+	sc := StrategyConfig{ID: "readiness-carry", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=live"}, IntervalSeconds: 300, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: stop(2)}
+	perps := StrategyConfig{ID: "readiness-carry-perps", Platform: "hyperliquid", Type: "perps", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=paper"}}
+	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60, Strategies: []StrategyConfig{sc}}
+	previousStore := globalRegimeStore
+	globalRegimeStore = &RegimeStore{}
+	t.Cleanup(func() { globalRegimeStore = previousStore })
+	state := NewAppState()
+	route := newMRPLocalRoute(t, cfg, state)
+	store, server := route.store, route.server
+	state.Strategies[sc.ID] = NewStrategyState(sc)
+	state.Strategies[sc.ID].Positions["BTC"] = &Position{Symbol: "BTC", Side: "long", Quantity: 1, AvgCost: 100}
+	for _, err := range store.SaveAll(state) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	req, ok := strategyRegimeBundleRequest(sc, rc)
+	if !ok {
+		t.Fatal("manual bundle request missing")
+	}
+	if peer, ok := strategyRegimeBundleRequest(perps, rc); !ok || peer.Key != req.Key {
+		t.Fatal("the perps peer does not share the manual bundle key")
+	}
+	ready := func(age time.Duration) *RegimeBundle {
+		b := *bundles[3]
+		b.Key, b.At = req.Key, time.Now().Add(-age)
+		return &b
+	}
+	pending := func() *RegimeBundle {
+		return &RegimeBundle{Key: req.Key, Err: regimeBundlePendingErr, At: time.Now().UTC()}
+	}
+	failed := func() *RegimeBundle {
+		return &RegimeBundle{Key: req.Key, Err: "offline classification failure", At: time.Now().UTC()}
+	}
+	cycle := func(c *Config, due []StrategyConfig, bundle *RegimeBundle) {
+		gen := globalRegimeStore.resetForCycleWithExports(time.Now().UTC(), manualRegimeExportsFor(c, store, due))
+		if bundle != nil {
+			globalRegimeStore.set(bundle, gen)
+		}
+	}
+	addAs := func(deps manualCoreDeps, strategy StrategyConfig) error {
+		_, err := manualAddCore(deps, strategy, manualAddInputs{StrategyID: strategy.ID, Size: 1, DryRun: true})
+		return err
+	}
+	add := func(deps manualCoreDeps) error {
+		return addAs(deps, sc)
+	}
+	calls := 0
+	withStubbedLimitOpen(t, func(string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+		calls++
+		return &HyperliquidLimitOpenResult{Status: "resting", OrderOID: 999}, "", nil
+	})
+	limit := manualLimitOpenInputs{strategyID: sc.ID, side: "long", openSide: "buy", size: 1, limitPrice: 100, tif: "Alo", atr: 1, dryRun: true}
+
+	cycle(cfg, []StrategyConfig{sc}, ready(150*time.Second))
+	if code := runManualLimitOpen(cfg, sc, store, limit); code != 0 || calls != 0 {
+		t.Fatalf("limit open 150 s after the 300 s manual cycle: exit %d, venue calls %d", code, calls)
+	}
+	t.Logf("must survive: global 60 s, manual 300 s, limit open 150 s after the manual cycle: exit 0, venue calls %d", calls)
+	cycle(cfg, []StrategyConfig{sc}, ready(301*time.Second))
+	if code := runManualLimitOpen(cfg, sc, store, limit); code != 1 || calls != 0 {
+		t.Fatalf("limit open past the 300 s cadence: exit %d, venue calls %d", code, calls)
+	}
+	t.Logf("cadence bound: limit open 301 s after the 300 s manual cycle: exit 1, venue calls %d", calls)
+
+	cli := newCLIManualCoreDeps(cfg, store, nil)
+	daemon := server.daemonManualCoreDeps(cfg)
+	cycle(cfg, []StrategyConfig{sc, perps}, ready(90*time.Second))
+	cycle(cfg, []StrategyConfig{perps}, pending())
+	if err := add(cli); err != nil {
+		t.Fatalf("command-line add 90 s after the manual cycle, perps cycle pending: %v", err)
+	}
+	t.Logf("must survive: manual 300 s, perps 60 s, command-line manual-add 90 s after the manual cycle with a perps-only cycle between: admitted")
+	if err := add(daemon); err != nil {
+		t.Fatalf("status UI add with the perps cycle pending: %v", err)
+	}
+	t.Logf("must survive: status UI add while the perps-only cycle is pending: admitted with the carried bundle")
+	cycle(cfg, []StrategyConfig{perps}, failed())
+	if err := add(daemon); err != nil {
+		t.Fatalf("status UI add with the perps classification failed: %v", err)
+	}
+	if err := add(cli); err != nil {
+		t.Fatalf("command-line add with the perps classification failed: %v", err)
+	}
+	t.Logf("must survive: status UI add after the perps-only cycle's classification failed: admitted with the carried bundle; command line also admitted")
+	cycle(cfg, []StrategyConfig{sc, perps}, pending())
+	errDaemon, errCLI := add(daemon), add(cli)
+	if errDaemon == nil || !strings.Contains(errDaemon.Error(), "unavailable") || errCLI == nil {
+		t.Fatalf("manual strategy due with a pending bundle: status UI %v, command line %v", errDaemon, errCLI)
+	}
+	t.Logf("must survive: manual strategy due with its bundle pending: status UI refused (%v); command line refused (%v)", errDaemon, errCLI)
+
+	cycle(cfg, []StrategyConfig{sc, perps}, ready(30*time.Second))
+	cycle(cfg, []StrategyConfig{perps}, ready(0))
+	reloaded := *cfg
+	changed := sc
+	changed.StopLossATRMultRegime = stop(3)
+	reloaded.Strategies = []StrategyConfig{changed}
+	server.UpdateStrategies(reloaded.Strategies)
+	server.SetConfigContext("", &reloaded)
+	errCLI = addAs(newCLIManualCoreDeps(&reloaded, store, nil), changed)
+	if errCLI == nil || !strings.Contains(errCLI.Error(), "HTTP 409") {
+		t.Fatalf("reload between manual cycles with a carried bundle: %v", errCLI)
+	}
+	t.Logf("must survive: reload that changes the stop block between manual cycles: %v", errCLI)
+	cycle(&reloaded, []StrategyConfig{changed}, ready(0))
+	if err := addAs(newCLIManualCoreDeps(&reloaded, store, nil), changed); err != nil {
+		t.Fatalf("next manual cycle after the reload: %v", err)
+	}
+	t.Logf("reload: the next manual cycle serves the new contract and the command-line add is admitted")
 }

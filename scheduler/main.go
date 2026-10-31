@@ -324,6 +324,13 @@ func main() {
 	}
 	defer store.Close()
 
+	if ownership != nil {
+		if err := globalManualRegimeOwner.publish(storageLayoutCfg); err != nil {
+			fmt.Fprintf(os.Stderr, "[manual-regime] WARN: owner identity publication failed; command-line regime admission stays disabled for this process: %v\n", err)
+		}
+		defer globalManualRegimeOwner.withdraw()
+	}
+
 	tradeRecorder = store.InsertTrade
 	modelOnlyCloseUpdater = store.ReconcileModelOnlyClose
 	modelOnlyCloseBasisLoader = store.LoadModelOnlyCloseBasis
@@ -1291,7 +1298,7 @@ func main() {
 			mu.RUnlock()
 			basketCoord.step(basketCycleInputs{Now: time.Now(), Snapshot: feedCtx.Snapshot, SnapshotFor: basketSnapshotFor, SaveBlocked: true, Once: *once})
 		} else {
-			regimeStoreReady := startRegimeStorePopulation(globalRegimeStore, dueStrategies, cfg.Regime, notifier, feedCtx)
+			regimeStoreReady := startRegimeStorePopulationWithExports(globalRegimeStore, dueStrategies, cfg.Regime, notifier, feedCtx, manualRegimeExportsFor(cfg, store, dueStrategies))
 			cyclePartitions := activePartitions(cfg.Strategies)
 			scopeRisk := make(map[RiskPartition]*scopeCycleRisk, len(cyclePartitions))
 			for _, part := range cyclePartitions {

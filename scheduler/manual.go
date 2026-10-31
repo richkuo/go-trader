@@ -1079,14 +1079,14 @@ func resolveManualRegimePayload(sc StrategyConfig, cfg *Config) (RegimePayload, 
 		return RegimePayload{}, fmt.Errorf("no regime bundle request")
 	}
 	if cfg.MarketFeed == "shared" || cfg.MarketFeed == "websocket" {
-		if bundle, found := globalRegimeStore.get(req.Key); found && bundle != nil && bundle.Err == "" {
-			maxAge := time.Duration(max(1, cfg.IntervalSeconds)) * time.Second
+		if bundle, found := globalRegimeStore.manualBundle(req.Key, sc.ID); found && bundle != nil && bundle.Err == "" {
+			maxAge := manualRegimeMaxAge(cfg, sc)
 			age := time.Since(bundle.At)
 			if age >= 0 && age <= maxAge {
 				return bundle.Payload, nil
 			}
 		}
-		return RegimePayload{}, fmt.Errorf("sealed market input unavailable for this manual command: market_feed %q forbids a private fetch, and only the running scheduler holds a fresh sealed regime bundle (status UI open and add use it; a command-line market open needs --stop-loss-pct or --stop-loss-atr-mult)", cfg.MarketFeed)
+		return RegimePayload{}, fmt.Errorf("sealed market input unavailable for this manual action: market_feed %q forbids a private fetch, and the current cycle holds no fresh sealed regime bundle for this strategy", cfg.MarketFeed)
 	}
 	bundle, err := runRegimeBundleCheckFn(shutdownReadOnlyCtx, req, nil)
 	if err != nil {

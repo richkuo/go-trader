@@ -23,6 +23,7 @@
 **/*.db
 **/*.db-*
 **/*.db.lock
+**/*.manual-regime-owner.json
 **/*.sqlite
 **/*.sqlite3
 **/*.sqlite3-*
