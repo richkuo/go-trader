@@ -612,6 +612,25 @@ func regimeDependencyHold(sc StrategyConfig, current, decision RegimePayload, rc
 	return ""
 }
 
+func applyRegimeReadinessHold(hold string, signal *int, closeFraction *float64, posQty float64, posSide string, allowsLong, allowsShort bool, logger *StrategyLogger) bool {
+	if hold == "" || !pausedBlocksSignal(*signal, *closeFraction, posQty, posSide, allowsLong, allowsShort) {
+		return false
+	}
+	reverses := posQty > 0 && ((*signal == -1 && posSide != "short") || (*signal == 1 && posSide == "short"))
+	if reverses {
+		*closeFraction = 1.0
+		if logger != nil {
+			logger.Info("%s; the reversal closes the open %s position and opens no new side", hold, posSide)
+		}
+		return false
+	}
+	*signal = 0
+	if logger != nil {
+		logger.Info("%s", hold)
+	}
+	return true
+}
+
 func regimeDependencySnapshot(windowKey string, payload RegimePayload, rc *RegimeConfig) (string, RegimeSnapshot) {
 	key := normalizeRegimeWindowKey(windowKey)
 	if key == "" || key == regimeWindowDefaultKey {

@@ -3906,7 +3906,7 @@ A nonempty short frame is a successful bundle, so normal warm-up does not send a
 Fetch depth covers both comparison views of every window plus the existing margin and base floor.
 
 Admission checks the gate, effective regime stop, profile, and directional dependencies before position increases.
-A known warming dependency holds opens, flips, and same-side adds under both entry failure policies.
+A known warming dependency holds opens, the new side of a flip, and same-side adds under both entry failure policies. A held flip on a position becomes a full close with no opposite open, as the backtester closes on a reversal and holds only the new entry.
 A store outage retains the configured gate failure policy; a regime stop independently requires usable current inputs.
 Basket and pair admission use validated member management observations with their existing cycle and age checks.
 Manual opens and adds check before order execution and remainder cancellation, including dry-run.

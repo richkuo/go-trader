@@ -404,8 +404,14 @@ func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, 
 	sc := StrategyConfig{ID: "readiness-manual", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=paper"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2}, "trending_down": {ATR: 2}, "ranging": {ATR: 2}}}}
 	cfg := &Config{Regime: rc, Strategies: []StrategyConfig{sc}}
 	orders, cancels := 0, 0
+	type sentOrder struct {
+		side        string
+		size, slPct float64
+	}
+	var sentOrders []sentOrder
 	recorder := func(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		orders++
+		sentOrders = append(sentOrders, sentOrder{side: side, size: size, slPct: stopLossPct})
 		if cancelStopLossOID != 0 || len(extraCancelOIDs) > 0 {
 			cancels++
 		}
@@ -439,17 +445,72 @@ func regimeReadinessAdmissionIntegration(t *testing.T, bundles []*RegimeBundle, 
 			if _, sent := runHyperliquidExecuteOrder(sc, result, 100, 1000, true, 0, side, 100, 1, 77, []int64{88}, nil, hlExecuteSnapshot{}, hlCloseContext{}, HurstGateDecision{}, nil, logger); sent {
 				t.Fatal("cold open sent")
 			}
-			if _, sent := runHyperliquidExecuteOrder(sc, result, 100, 1000, true, 1, side, 100, 1, 77, []int64{88}, nil, hlExecuteSnapshot{}, hlCloseContext{}, HurstGateDecision{}, nil, logger); sent {
-				t.Fatal("cold increase sent")
+			if orders != 0 || cancels != 0 {
+				t.Fatalf("cold open from flat sent %d orders and %d cancellations", orders, cancels)
 			}
-			if _, sent := runHyperliquidScaleInOrder(sc, result, 1, hlExecuteSnapshot{}, nil, logger); sent {
+			t.Logf("readiness hold flat: stop window warming, signal %d, sent %d orders", signal, orders)
+			if _, sent := runHyperliquidScaleInOrder(sc, result, 1, hlExecuteSnapshot{}, nil, logger); sent || orders != 0 {
 				t.Fatal("cold add sent")
 			}
+			held := &HyperliquidResult{Symbol: "BTC", Signal: signal, StrategyDecisionFields: StrategyDecisionFields{RegimeReadinessHold: hold}}
+			runHyperliquidExecuteOrder(sc, held, 100, 1000, true, 1, side, 100, 1, 77, []int64{88}, nil, hlExecuteSnapshot{}, hlCloseContext{}, HurstGateDecision{}, nil, logger)
+			reverses := (side == "long") == (signal == -1)
+			if !reverses {
+				if orders != 0 || cancels != 0 || held.Signal != 0 {
+					t.Fatalf("cold same-side increase on %s signal %d sent %d orders and %d cancellations", side, signal, orders, cancels)
+				}
+				t.Logf("readiness hold same side: %s 1 BTC, stop window warming, signal %d, sent %d orders", side, signal, orders)
+				continue
+			}
+			closeSide := map[string]string{"long": "sell", "short": "buy"}[side]
+			if len(sentOrders) != 1 || sentOrders[0].side != closeSide || sentOrders[0].size != 1 || sentOrders[0].slPct != 0 || held.CloseFraction != 1 {
+				t.Fatalf("cold reversal on %s signal %d sent %+v close fraction %v, want one %s close of 1 with no stop", side, signal, sentOrders, held.CloseFraction, closeSide)
+			}
+			t.Logf("readiness hold reversal: %s 1 BTC, stop window warming, signal %d, sent %d order (%s %.0f BTC, close fraction %.0f, new stop pct %.0f), no opposite open", side, signal, len(sentOrders), sentOrders[0].side, sentOrders[0].size, held.CloseFraction, sentOrders[0].slPct)
+			orders, cancels, sentOrders = 0, 0, nil
 		}
 	}
-	if orders != 0 || cancels != 0 {
-		t.Fatalf("cold actions sent %d orders and %d cancellations", orders, cancels)
+	paperBook := func(signal int, open bool) *StrategyState {
+		s := NewStrategyState(StrategyConfig{ID: sc.ID, Type: "perps", Platform: "hyperliquid", Capital: 1000})
+		if open {
+			if _, err := ExecutePerpsSignalWithLeverage(s, 1, "BTC", 100, PerpsSizing{SizingLeverage: 1}, 0, "", 0, DirectionBoth, 0, logger); err != nil || s.Positions["BTC"] == nil {
+				t.Fatalf("paper long open: %v", err)
+			}
+		}
+		var posQty float64
+		posSide := ""
+		if pos := s.Positions["BTC"]; pos != nil {
+			posQty, posSide = pos.Quantity, pos.Side
+		}
+		heldSignal, closeFraction := signal, 0.0
+		applyRegimeReadinessHold(hold, &heldSignal, &closeFraction, posQty, posSide, true, true, logger)
+		if _, err := ExecutePerpsSignalWithLeverage(s, heldSignal, "BTC", 100, PerpsSizing{SizingLeverage: 1}, 0, "", 0, DirectionBoth, closeFraction, logger); err != nil {
+			t.Fatalf("paper execute: %v", err)
+		}
+		return s
 	}
+	if s := paperBook(-1, true); len(s.Positions) != 0 || len(s.TradeHistory) != 2 || !s.TradeHistory[1].IsClose {
+		t.Fatalf("paper cold reversal left positions %+v trades %d", s.Positions, len(s.TradeHistory))
+	} else {
+		t.Logf("readiness hold paper reversal: long closed by %s %.4f BTC, open positions %d, trades %d", s.TradeHistory[1].Side, s.TradeHistory[1].Quantity, len(s.Positions), len(s.TradeHistory))
+	}
+	if s := paperBook(-1, false); len(s.Positions) != 0 || len(s.TradeHistory) != 0 {
+		t.Fatalf("paper cold short from flat opened %+v", s.Positions)
+	}
+	if s := paperBook(1, true); len(s.TradeHistory) != 1 || s.Positions["BTC"] == nil || s.Positions["BTC"].Side != "long" {
+		t.Fatalf("paper cold same-side add changed the book: %+v trades %d", s.Positions, len(s.TradeHistory))
+	}
+	futures := NewStrategyState(StrategyConfig{ID: "readiness-topstep", Type: "futures", Platform: "topstep", Capital: 10000})
+	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 1000}
+	if _, err := ExecuteFuturesSignalWithFillFee(futures, 1, "ES", 5000, spec, 2.5, 1, 0, 0, "", 0, logger); err != nil || futures.Positions["ES"] == nil {
+		t.Fatalf("futures long open: %v", err)
+	}
+	futuresSignal, futuresClose := -1, 0.0
+	applyRegimeReadinessHold(hold, &futuresSignal, &futuresClose, futures.Positions["ES"].Quantity, futures.Positions["ES"].Side, true, true, logger)
+	if _, err := ExecuteFuturesSignalWithFillFee(futures, futuresSignal, "ES", 5000, spec, 2.5, 1, 0, 0, "", futuresClose, logger); err != nil || len(futures.Positions) != 0 {
+		t.Fatalf("futures cold reversal left %+v: %v", futures.Positions, err)
+	}
+	t.Logf("readiness hold futures reversal: long ES closed, open positions %d", len(futures.Positions))
 	basketCfg := loadBasketTestConfig(t, nil)
 	basketCfg.Regime = rc
 	for i := range basketCfg.Strategies {

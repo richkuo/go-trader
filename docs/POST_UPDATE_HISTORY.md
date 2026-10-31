@@ -7,6 +7,7 @@
 Runtime behavior changes when a strategy has insufficient regime history.
 The status display shows `warming (bars/need)` for each valid cold window or comparison view.
 Dependent opens, flips, and adds wait under both entry failure policies.
+A flip signal on an open position still closes that position and opens no new side until readiness returns.
 This includes coordinator and manual admission before order or cancellation side effects.
 Existing positions keep their captured protection inputs and continue management.
 Missing metadata is unavailable, and a genuine store failure keeps its configured gate policy.

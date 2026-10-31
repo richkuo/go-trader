@@ -2328,10 +2328,7 @@ func main() {
 							result.Regime = &storeRegime
 							decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
 							result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
-							if result.RegimeReadinessHold != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
-								logger.Info("%s", result.RegimeReadinessHold)
-								result.Signal = 0
-							}
+							applyRegimeReadinessHold(result.RegimeReadinessHold, &result.Signal, &result.CloseFraction, rhPosQty, rhPosSide, true, false, logger)
 							logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
 							if !decisionGate.Held {
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, rhPosQty); regimeBlocked {
@@ -2402,10 +2399,7 @@ func main() {
 						result.Regime = &storeRegime
 						decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
 						result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
-						if result.RegimeReadinessHold != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
-							logger.Info("%s", result.RegimeReadinessHold)
-							result.Signal = 0
-						}
+						applyRegimeReadinessHold(result.RegimeReadinessHold, &result.Signal, &result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false, logger)
 						logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
 						if !decisionGate.Held {
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
@@ -2592,10 +2586,7 @@ func main() {
 						result.Regime = &storeRegime
 						decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
 						result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
-						if result.RegimeReadinessHold != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
-							logger.Info("%s", result.RegimeReadinessHold)
-							result.Signal = 0
-						}
+						applyRegimeReadinessHold(result.RegimeReadinessHold, &result.Signal, &result.CloseFraction, tsContracts, tsPosSide, true, true, logger)
 						logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
 						if !decisionGate.Held {
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, tsContracts); regimeBlocked {
@@ -3811,8 +3802,7 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 }
 
 func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash float64, poolBalanceKnown bool, posQty float64, posSide string, avgCost, posLeverage float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, closeCtx hlCloseContext, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
-	if result.RegimeReadinessHold != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, posQty, posSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
-		logger.Info("%s", result.RegimeReadinessHold)
+	if applyRegimeReadinessHold(result.RegimeReadinessHold, &result.Signal, &result.CloseFraction, posQty, posSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc), logger) {
 		return nil, false
 	}
 	if why := quoteDispatchRefusal(sc); why != "" {

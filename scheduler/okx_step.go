@@ -124,10 +124,7 @@ func runOKXStep(c okxStepContext, sc StrategyConfig, check okxCheckFunc) (out ok
 		result.Regime = &storeRegime
 		decisionGate := closedBarGateViewFor(sc, result.StrategyDecisionFields, storeRegime, cfg.Regime)
 		result.RegimeReadinessHold = regimeDependencyHold(sc, storeRegime, decisionGate.Regime, cfg.Regime, false)
-		if result.RegimeReadinessHold != "" && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, allowsLong, allowsShort) {
-			logger.Info("%s", result.RegimeReadinessHold)
-			result.Signal = 0
-		}
+		applyRegimeReadinessHold(result.RegimeReadinessHold, &result.Signal, &result.CloseFraction, okxPosQty, okxPosSide, allowsLong, allowsShort, logger)
 		logClosedBarDecision(sc, result.StrategyDecisionFields, logger)
 		if !decisionGate.Held {
 			if gateRegime, regimeBlocked := applyRegimeGate(sc, decisionGate.Regime, cfg.Regime, okxPosQty); regimeBlocked {
