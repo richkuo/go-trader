@@ -112,9 +112,51 @@ _COMPOSITE_THRESHOLD_ALIASES = {
     "range_pct": "range_eff",
 }
 
-_REGIME_COLUMNS = ("regime", "regime_score", "adx", "plus_di", "minus_di")
+_REGIME_COLUMNS = ("regime", "regime_score", "adx", "plus_di", "minus_di", "regime_ready", "regime_bars", "regime_need")
 _DEFAULT_METRICS: dict = {"adx": 0.0, "plus_di": 0.0, "minus_di": 0.0, "atr_pct": 0.0}
 _DEFAULT_RESULT: dict = {"regime": "ranging", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
+
+
+def required_regime_bars(period: int = 14, classifier: str = CLASSIFIER_ADX) -> int:
+    if period < 2:
+        raise ValueError("regime period must be at least 2")
+    if classifier in (CLASSIFIER_COMPOSITE, "composite7"):
+        return max(period, 2 * min(period, COMPOSITE_ADX_PERIOD_CAP) + 1)
+    if classifier not in (CLASSIFIER_ADX, "adx3"):
+        raise ValueError(f"unsupported classifier {classifier!r}")
+    return 2 * period + 1
+
+
+def _readiness(bars: int, period: int, classifier: str) -> dict:
+    need = required_regime_bars(period, classifier)
+    return {"ready": bars >= need, "bars": bars, "need": need}
+
+
+def _cold_snapshot(bars: int, period: int, classifier: str) -> dict:
+    return {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS),
+            "classifier": classifier, **_readiness(bars, period, classifier)}
+
+
+def _usable_snapshot(snap, spec=None) -> dict:
+    if not isinstance(snap, dict):
+        return {"regime": ""}
+    out = dict(snap)
+    ready, bars, need = (out.get(key) for key in ("ready", "bars", "need"))
+    valid = (type(ready) is bool and type(bars) is int and type(need) is int
+             and bars >= 0 and need > 0 and ready == (bars >= need)
+             and isinstance(out.get("regime"), str)
+             and bool(out["regime"]) == ready
+             and (not ready or out["regime"] in VALID_LABELS_ADX | VALID_LABELS_COMPOSITE))
+    if valid and spec is not None:
+        try:
+            norm = _normalize_spec({"period": spec} if type(spec) is int else spec)
+            valid = need == required_regime_bars(norm["period"], norm["classifier"])
+            valid = valid and (not ready or out["regime"] in valid_labels_for_classifier(norm["classifier"]))
+        except (TypeError, ValueError):
+            valid = False
+    if not valid:
+        return {"regime": ""}
+    return out
 
 
 def valid_labels_for_classifier(classifier: str) -> frozenset[str]:
@@ -236,8 +278,8 @@ def latest_regime_composite(
     thresholds: dict[str, float] | None = None,
 ) -> dict:
     th = normalize_composite_thresholds(thresholds)
-    if len(df) == 0:
-        return {**_DEFAULT_RESULT, "metrics": dict(_DEFAULT_METRICS), "classifier": CLASSIFIER_COMPOSITE}
+    if len(df) < required_regime_bars(period, CLASSIFIER_COMPOSITE):
+        return _cold_snapshot(len(df), period, CLASSIFIER_COMPOSITE)
 
     window = _window_slice(df, period)
     atr_val = _atr_at_end(df, period)
@@ -246,6 +288,7 @@ def latest_regime_composite(
             "regime": "ranging_quiet",
             "score": 0.0,
             "classifier": CLASSIFIER_COMPOSITE,
+            **_readiness(len(df), period, CLASSIFIER_COMPOSITE),
             "metrics": dict(_DEFAULT_METRICS),
         }
 
@@ -272,6 +315,7 @@ def latest_regime_composite(
         "regime": label,
         "score": score,
         "classifier": CLASSIFIER_COMPOSITE,
+        **_readiness(len(df), period, CLASSIFIER_COMPOSITE),
         "metrics": metrics,
     }
 
@@ -299,7 +343,11 @@ def compute_regime(
     result = df.copy()
     n = len(result)
 
-    result["regime"] = "ranging"
+    result["regime"] = ""
+    need = required_regime_bars(period, CLASSIFIER_ADX)
+    result["regime_bars"] = range(1, n + 1)
+    result["regime_need"] = need
+    result["regime_ready"] = result["regime_bars"] >= need
     result["regime_score"] = 0.0
     result["adx"] = 0.0
     result["plus_di"] = 0.0
@@ -323,7 +371,7 @@ def compute_regime(
     result["plus_di"] = plus_di
     result["minus_di"] = minus_di
 
-    for i in range(adx_start, n):
+    for i in range(max(adx_start, need - 1), n):
         adx_val = adx_arr[i]
         score = min(adx_val / 100.0, 1.0)
         result.iat[i, result.columns.get_loc("regime_score")] = score
@@ -349,7 +397,11 @@ def compute_regime_composite(
     th = normalize_composite_thresholds(thresholds)
     result = df.copy()
     n = len(result)
-    result["regime"] = "ranging_quiet"
+    result["regime"] = ""
+    need = required_regime_bars(period, CLASSIFIER_COMPOSITE)
+    result["regime_bars"] = range(1, n + 1)
+    result["regime_need"] = need
+    result["regime_ready"] = result["regime_bars"] >= need
     result["regime_score"] = 0.0
     result["adx"] = 0.0
     result["plus_di"] = 0.0
@@ -364,10 +416,11 @@ def compute_regime_composite(
     result["minus_di"] = adx_df["minus_di"].values
 
     atr_series = standard_atr(result, period=period, method="simple")
-    for i in range(period, n):
+    for i in range(need - 1, n):
         window = result.iloc[i - period + 1 : i + 1]
         atr_val = float(atr_series.iloc[i]) if i < len(atr_series) else 0.0
         if not (atr_val > 0):
+            result.iat[i, result.columns.get_loc("regime")] = "ranging_quiet"
             continue
         eff = _composite_efficiency_metrics(window, atr_val, period)
         adx_val = float(result["adx"].iloc[i])
@@ -391,7 +444,7 @@ def composite_feature_matrix(
     adx_period = min(period, COMPOSITE_ADX_PERIOD_CAP)
     adx_df = compute_regime(df, period=adx_period, adx_threshold=th["adx"])
     atr_series = standard_atr(df, period=period, method="simple")
-    for i in range(period, n):
+    for i in range(required_regime_bars(period, CLASSIFIER_COMPOSITE) - 1, n):
         window = df.iloc[i - period + 1 : i + 1]
         atr_val = float(atr_series.iloc[i]) if i < len(atr_series) else 0.0
         if not (atr_val > 0):
@@ -409,8 +462,8 @@ def latest_regime(
     period: int = 14,
     adx_threshold: float = 20.0,
 ) -> dict:
-    if len(df) == 0:
-        return {**_DEFAULT_RESULT, "metrics": dict(_DEFAULT_METRICS)}
+    if len(df) < required_regime_bars(period):
+        return _cold_snapshot(len(df), period, CLASSIFIER_ADX)
 
     reg_df = compute_regime(df, period=period, adx_threshold=adx_threshold)
     last = reg_df.iloc[-1]
@@ -421,6 +474,7 @@ def latest_regime(
 
     return {
         "regime": str(last["regime"]),
+        **_readiness(len(df), period, CLASSIFIER_ADX),
         "score": float(last["regime_score"]),
         "metrics": {
             "adx": float(last["adx"]),
@@ -483,17 +537,17 @@ def regime_payload_for_config(
 
 def regime_label_from_payload(payload: dict | str, window_key: str = "") -> str:
     if isinstance(payload, str):
-        return payload
+        return ""
     if not isinstance(payload, dict):
         return ""
     if "regime" in payload and isinstance(payload.get("regime"), str):
         if "score" in payload or "metrics" in payload:
-            return str(payload["regime"])
+            return str(_usable_snapshot(payload).get("regime") or "")
     key = (window_key or "").strip()
     if key and key in payload:
         entry = payload[key]
         if isinstance(entry, dict):
-            return str(entry.get("regime") or "")
+            return str(_usable_snapshot(entry).get("regime") or "")
     return ""
 
 
@@ -513,7 +567,7 @@ def required_ohlcv_limit(
                 p = int(spec.get("period") or period)
             if p > max_period:
                 max_period = p
-    warmup = 2 * max(max_period, 14) - 1
+    warmup = required_regime_bars(max(max_period, 14))
     return max(base_limit, warmup + margin)
 
 
@@ -521,6 +575,7 @@ def regime_from_injected_payload(
     raw: str | None,
     *,
     atr_window: str = "",
+    windows_spec: dict | None = None,
 ) -> tuple[dict | str, str, dict]:
     disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
     text = str(raw or "").strip()
@@ -530,18 +585,20 @@ def regime_from_injected_payload(
         payload = json.loads(text)
     except (ValueError, TypeError):
         return "", "", disabled
-    if isinstance(payload, str):
-        label = payload.strip()
-        snap = dict(disabled, regime=label) if label else disabled
-        return label, label, snap
     if not isinstance(payload, dict) or not payload:
         return "", "", disabled
+    if "regime" in payload and (not windows_spec or len(windows_spec) == 1):
+        expected = next(iter(windows_spec.values())) if windows_spec else None
+        snap = _usable_snapshot(payload, expected)
+        label = str(snap.get("regime") or "")
+        return snap, label, snap
 
     windows: dict[str, dict] = {}
-    for name, snap in payload.items():
+    for name in sorted(windows_spec if windows_spec else payload):
         key = str(name).strip()
-        if key and isinstance(snap, dict):
-            windows[key] = snap
+        if key:
+            expected = windows_spec.get(name) if windows_spec else None
+            windows[key] = _usable_snapshot(payload.get(name), expected)
     if not windows:
         return "", "", disabled
 
@@ -552,7 +609,7 @@ def regime_from_injected_payload(
     )
     strategy_payload = windows.get(primary_key, disabled)
     atr_key = (atr_window or primary_key).strip() or primary_key
-    atr_entry = windows.get(atr_key, strategy_payload)
+    atr_entry = windows.get(atr_key, disabled)
     live_atr = str(atr_entry.get("regime") or "")
     return windows, live_atr, strategy_payload
 
@@ -571,10 +628,11 @@ def prepare_check_regime(
     disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
     if not regime_enabled:
         return "", "", disabled
-    if injected_payload_json is not None:
-        return regime_from_injected_payload(injected_payload_json, atr_window=atr_window)
-
     spec_map = windows_spec if windows_spec is not None else windows
+    if injected_payload_json is not None:
+        expected = spec_map or {"default": {"classifier": CLASSIFIER_ADX, "period": period}}
+        return regime_from_injected_payload(injected_payload_json, atr_window=atr_window, windows_spec=expected)
+
     if spec_map:
         multi = compute_multi_regime(df, spec_map, default_adx_threshold=adx_threshold)
         primary_key = (
@@ -584,7 +642,7 @@ def prepare_check_regime(
         )
         strategy_payload = multi.get(primary_key, disabled)
         atr_key = (atr_window or primary_key).strip() or primary_key
-        atr_entry = multi.get(atr_key, strategy_payload)
+        atr_entry = multi.get(atr_key, disabled)
         live_atr = str(atr_entry.get("regime") or "")
         return multi, live_atr, strategy_payload
 
@@ -594,7 +652,7 @@ def prepare_check_regime(
         default_adx_threshold=adx_threshold,
     )
     label = str(legacy.get("regime") or "")
-    return label, label, legacy
+    return legacy, label, legacy
 
 
 def parse_regime_windows_spec_json(raw: str | None) -> dict[str, dict[str, Any]] | None:
@@ -644,7 +702,7 @@ def ensure_regime_columns(
     if all(col in df.columns for col in _REGIME_COLUMNS):
         return df
 
-    cls = CLASSIFIER_ADX
+    cls = classifier
     th = thresholds
     p = period
     if windows_spec:
@@ -752,12 +810,12 @@ def bounded_window_labels(
     if limit < 1:
         raise ValueError(f"lookback limit must be positive, got {limit}")
     n = len(df)
-    prepared: dict[str, list[str]] = {col: [""] * n for col in columns}
+    prepared = {col: [""] * n for col in columns}
+    for col in columns:
+        prepared.update({col + "_ready": [False] * n, col + "_bars": [0] * n, col + "_need": [0] * n})
     spec = windows_spec or None
     for i in range(n):
-        start = i - limit + 1
-        if start < 0:
-            continue
+        start = max(0, i - limit + 1)
         payload, _live, _strategy = prepare_check_regime(
             df.iloc[start:i + 1],
             regime_enabled=True,
@@ -766,7 +824,12 @@ def bounded_window_labels(
             windows_spec=spec,
         )
         for col, window_key in columns.items():
-            prepared[col][i] = _payload_window_label(payload, window_key, spec)
+            key = window_key if window_key not in ("", "default") else primary_regime_window_key(spec)
+            snap = payload.get(key, {}) if spec else payload
+            snap = _usable_snapshot(snap)
+            prepared[col][i] = str(snap.get("regime") or "")
+            for field in ("ready", "bars", "need"):
+                prepared[col + "_" + field][i] = snap.get(field, False if field == "ready" else 0)
     for col, values in prepared.items():
         df[col] = values
     return df

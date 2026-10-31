@@ -177,7 +177,7 @@ def load_cell(symbol, timeframe, window, horizon=PRIMARY_HORIZON, period=DEFAULT
         cell.update({"status": "unavailable",
                      "reason": f"too_few_valid_bars: {int(valid.sum())} < {MIN_VALID_BARS}"})
         return cell
-    st = stability(vlabels)
+    st = stability(np.where(valid, labels, ""))
     mean_dwell = float(np.mean(list(st["mean_dwell"].values()))) if st["mean_dwell"] else 1.0
     block_len = max(int(3 * mean_dwell), int(horizon))
     fwd = forward_realized_vol(df["close"].to_numpy(), horizon)[valid]

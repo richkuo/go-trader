@@ -319,7 +319,7 @@ def _validate_allowed_regimes_vocabulary(
         sys.exit(1)
 
 
-def _build_profile_label_series(df: pd.DataFrame, window_spec: dict) -> pd.Series:
+def _build_profile_label_frame(df: pd.DataFrame, window_spec: dict) -> pd.DataFrame:
     classifier = window_spec.get("classifier", "adx")
     period = int(window_spec.get("period") or 14)
     if classifier == "composite":
@@ -328,7 +328,11 @@ def _build_profile_label_series(df: pd.DataFrame, window_spec: dict) -> pd.Serie
     else:
         reg = compute_regime(df, period=period,
                              adx_threshold=float(window_spec.get("adx_threshold") or 20.0))
-    return reg["regime"].astype(str)
+    return reg[["regime", "regime_ready", "regime_bars", "regime_need"]]
+
+
+def _build_profile_label_series(df: pd.DataFrame, window_spec: dict) -> pd.Series:
+    return _build_profile_label_frame(df, window_spec)["regime"].astype(str)
 
 
 def _aligned_regime_columns(
@@ -356,7 +360,11 @@ def _aligned_regime_columns(
     aligned = cols.reindex(trade_index, method="ffill")
     aligned["regime"] = aligned["regime"].fillna("").astype(str)
     for col in _REGIME_COLUMNS:
-        if col != "regime":
+        if col == "regime_ready":
+            aligned[col] = aligned[col].fillna(False).astype(bool)
+        elif col in ("regime_bars", "regime_need"):
+            aligned[col] = aligned[col].fillna(0).astype(int)
+        elif col != "regime":
             aligned[col] = aligned[col].fillna(0.0)
     return aligned
 
@@ -400,17 +408,24 @@ def _profile_label_series(
     regime_timeframe: Optional[str],
     since: str,
     window_spec: dict,
-) -> Optional[pd.Series]:
+    *,
+    metadata: bool = False,
+):
     tf = str(regime_timeframe or "").strip().lower()
     trade_tf = str(trade_timeframe or "").strip().lower()
     if not tf or tf == trade_tf:
-        return _build_profile_label_series(df, window_spec)
-    regime_df = load_cached_data(symbol, tf, start_date=since)
-    if regime_df.empty:
-        print(f"No regime profile data available for {symbol} {tf}")
-        return None
-    labels = _build_profile_label_series(regime_df.copy().sort_index(), window_spec).shift(1)
-    return labels.reindex(df.index, method="ffill").fillna("").astype(str)
+        labeled = _build_profile_label_frame(df, window_spec)
+    else:
+        regime_df = load_cached_data(symbol, tf, start_date=since)
+        if regime_df.empty:
+            print(f"No regime profile data available for {symbol} {tf}")
+            return None
+        labeled = _build_profile_label_frame(regime_df.copy().sort_index(), window_spec).shift(1).reindex(df.index, method="ffill")
+    labeled["regime"] = labeled["regime"].fillna("").astype(str)
+    labeled["regime_ready"] = labeled["regime_ready"].fillna(False).astype(bool)
+    for field in ("regime_bars", "regime_need"):
+        labeled[field] = labeled[field].fillna(0).astype(int)
+    return labeled if metadata else labeled["regime"]
 
 
 class HTFCacheError(ValueError):
@@ -1970,10 +1985,13 @@ def run_single_backtest(
             regime_timeframe,
             since,
             profile_allocation["window_spec"],
+            metadata=True,
         )
         if profile_labels is None:
             return None
-        df_signals["_profile_label"] = profile_labels.values
+        df_signals["_profile_label"] = profile_labels["regime"].values
+        for field in ("ready", "bars", "need"):
+            df_signals["_profile_label_" + field] = profile_labels["regime_" + field].values
         print(f"  Profile allocation: window={profile_allocation['window']} "
               f"profiles={names} confirm_bars={profile_allocation['confirm_bars']}")
     else:

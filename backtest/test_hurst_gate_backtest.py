@@ -184,8 +184,8 @@ def test_decision_series_lags_one_bar():
 def test_live_frame_bars_matches_the_go_fetch_depth():
     assert hg.hurst_live_frame_bars(None, 14) == 200
     assert hg.hurst_live_frame_bars({"medium": {"period": 20}}, 14) == 200
-    assert hg.hurst_live_frame_bars({"long": {"period": 150}}, 14) == 2 * 150 - 1 + 10
-    assert hg.hurst_live_frame_bars({"a": {"period": 30}, "b": {"period": 200}}, 14) == 409
+    assert hg.hurst_live_frame_bars({"long": {"period": 150}}, 14) == 2 * 150 + 1 + 10
+    assert hg.hurst_live_frame_bars({"a": {"period": 30}, "b": {"period": 200}}, 14) == 411
 
 
 def _parity_frame_hurst(windows_spec, *, period: int = 150, n: int = 420):
@@ -205,7 +205,7 @@ def _parity_frame_hurst(windows_spec, *, period: int = 150, n: int = 420):
 def test_parity_diff_reads_hurst_over_the_engines_frame_depth():
     spec = {"long": {"period": 150, "classifier": "composite"}}
     depth = hg.hurst_live_frame_bars(spec, 14)
-    assert depth == 309
+    assert depth == 311
 
     df, frame = _parity_frame_hurst(spec)
     expected = hg.rolling_hurst(df["close"], depth).shift(1)
@@ -248,7 +248,7 @@ def test_parity_config_carries_the_resolved_windows_spec_and_hurst_block():
             "long": {"period": 120, "classifier": "composite"},
         },
     )
-    assert hg.hurst_live_frame_bars(cfg.regime_windows_spec, cfg.regime_period) == 249
+    assert hg.hurst_live_frame_bars(cfg.regime_windows_spec, cfg.regime_period) == 251
     assert pdiff.ParityConfig(strategy_name="momentum").regime_windows_spec is None
 
 

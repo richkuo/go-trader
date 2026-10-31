@@ -14,13 +14,13 @@ sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
 
 import egress_policy
-from regime import latest_regime, regime_from_injected_payload
+from regime import latest_regime, regime_from_injected_payload, required_regime_bars
 
 MAX_POSITIONS_PER_STRATEGY = 4
 MIN_SCORE_THRESHOLD = 0.3
 REGIME_TIMEFRAME = "4h"
 REGIME_LIMIT = 100
-REGIME_MIN_BARS = 30
+REGIME_MIN_BARS = required_regime_bars(14)
 
 
 def _load_adapter(platform: str):
@@ -512,7 +512,7 @@ def main():
         vol_annual, iv_rank = adapter.get_vol_metrics(underlying)
 
         if regime_payload_json is not None:
-            _, _, regime_snap = regime_from_injected_payload(regime_payload_json)
+            _, _, regime_snap = regime_from_injected_payload(regime_payload_json, windows_spec={"default": {"classifier": "adx", "period": 14}})
             regime_label = str(regime_snap.get("regime") or "") or None
         else:
             regime_df = _fetch_ohlcv_df(underlying, REGIME_TIMEFRAME, REGIME_LIMIT,

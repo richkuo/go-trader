@@ -211,6 +211,7 @@ func hyperliquidProtectionPositionSnapshot(pos *Position) *Position {
 		RiskAnchorPrice:                 pos.RiskAnchorPrice,
 		Regime:                          pos.Regime,
 		RegimeWindows:                   cloneStringMap(pos.RegimeWindows),
+		RegimeSnapshots:                 cloneRegimeSnapshots(pos.RegimeSnapshots),
 		RegimeAppliedLabel:              pos.RegimeAppliedLabel,
 		RegimePendingLabel:              pos.RegimePendingLabel,
 		RegimePendingCount:              pos.RegimePendingCount,

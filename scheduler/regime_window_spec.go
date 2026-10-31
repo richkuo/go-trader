@@ -432,14 +432,20 @@ func formatStrategyRegimeDisplay(ss *StrategyState, rc *RegimeConfig) string {
 				continue
 			}
 			label := strings.TrimSpace(ss.RegimeWindows[name])
+			if snap, ok := ss.RegimeSnapshots[name]; ok {
+				label = snap.Display()
+			}
 			if label == "" {
-				continue
+				label = "unavailable"
 			}
 			parts = append(parts, fmt.Sprintf("%s=%s", name, label))
 		}
 		if len(parts) > 0 {
 			return strings.Join(parts, "; ")
 		}
+	}
+	if snap, ok := ss.RegimeSnapshots[regimeWindowDefaultKey]; ok {
+		return snap.Display()
 	}
 	return strings.TrimSpace(ss.Regime)
 }

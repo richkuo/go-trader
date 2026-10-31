@@ -290,7 +290,7 @@ def main():
                     else:
                         regime_rows = select_opening_time(
                             fetch_rows_or_hold(lambda: fetch_ohlcv_rows(symbol, regime_tf, ohlcv_limit + 1), symbol, regime_tf),
-                            timeframe=regime_tf, cutoff_ms=selection.boundary_ms, keep=ohlcv_limit).rows
+                            timeframe=regime_tf, cutoff_ms=selection.boundary_ms, keep=ohlcv_limit, min_rows=1).rows
                     decision_regime_payload, _decision_live, decision_strategy_regime = prepare_check_regime(
                         ohlcv_rows_frame(regime_rows),
                         regime_enabled=True,

@@ -62,8 +62,8 @@ func TestCalendarConditionedEntryRefusesATrainingSpanThatFitsTheCheckFrame(t *te
 		t.Fatalf("a training span above the 200-candle frame must load: %v", err)
 	}
 	regime := map[string]interface{}{"regime": map[string]interface{}{"enabled": true, "period": 2300, "adx_threshold": 25.0}}
-	if _, err := calendarLoadRoot(t, regime, calendarHL("hl-cce-eth", "1h", "--mode=paper")); err == nil || !strings.Contains(err.Error(), "registry default training_bars=4368 fits the regime-enabled check frame of 4609 candles") {
-		t.Fatalf("registry defaults under a 4609-candle regime frame must be refused, got %v", err)
+	if _, err := calendarLoadRoot(t, regime, calendarHL("hl-cce-eth", "1h", "--mode=paper")); err == nil || !strings.Contains(err.Error(), "registry default training_bars=4368 fits the regime-enabled check frame of 4611 candles") {
+		t.Fatalf("registry defaults under a 4611-candle regime frame must be refused, got %v", err)
 	}
 	if cfg, err := calendarLoad(t, calendarHL("hl-cce-eth", "1h", "--mode=paper")); err != nil || cfg.Regime != nil && cfg.Regime.Enabled {
 		t.Fatalf("registry defaults with regime off must load: %v", err)

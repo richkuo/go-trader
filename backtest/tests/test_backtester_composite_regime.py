@@ -26,6 +26,9 @@ def _gated_df(label: str, n: int = 100, buy_at: int = 50) -> pd.DataFrame:
     df["signal"] = 0
     df.iloc[buy_at, df.columns.get_loc("signal")] = 1
     df["regime"] = label
+    df["regime_ready"] = True
+    df["regime_bars"] = np.arange(n) + 29
+    df["regime_need"] = 29
     return df
 
 

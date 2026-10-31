@@ -1,19 +1,25 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 )
 
 type UIRegimeWindow struct {
+	Ready      bool               `json:"ready"`
+	Bars       int                `json:"bars"`
+	Need       int                `json:"need"`
+	Status     string             `json:"status"`
 	Regime     string             `json:"regime"`
 	Score      float64            `json:"score"`
 	Metrics    map[string]float64 `json:"metrics,omitempty"`
-	ADX3       string             `json:"adx3,omitempty"`
-	Composite7 string             `json:"composite7,omitempty"`
+	ADX3       RegimeSnapshot     `json:"adx3,omitempty"`
+	Composite7 RegimeSnapshot     `json:"composite7,omitempty"`
 }
 
 type UIRegimeEntry struct {
+	Error     string                    `json:"error,omitempty"`
 	Platform  string                    `json:"platform"`
 	Symbol    string                    `json:"symbol"`
 	Timeframe string                    `json:"timeframe"`
@@ -27,13 +33,17 @@ func uiRegimeEntries(store *RegimeStore) ([]UIRegimeEntry, time.Time) {
 	out := make([]UIRegimeEntry, 0, len(bundles))
 	for _, b := range bundles {
 		windows := make(map[string]UIRegimeWindow)
-		if b.Payload.MultiMode {
-			for name, snap := range b.Payload.Windows {
-				windows[name] = UIRegimeWindow{Regime: snap.Regime, Score: snap.Score, Metrics: snap.Metrics}
-			}
-		} else if b.Payload.Legacy != "" {
-			windows[regimeWindowDefaultKey] = UIRegimeWindow{Regime: b.Payload.Legacy}
+		for name, snap := range b.Payload.Snapshots() {
+			windows[name] = UIRegimeWindow{Regime: snap.Regime, Score: snap.Score, Metrics: snap.Metrics, Ready: snap.Ready, Bars: snap.Bars, Need: snap.Need, Status: snap.Display()}
 		}
+		if b.Err != "" {
+			var specs RegimeWindowsMap
+			_ = json.Unmarshal([]byte(b.Key.SpecJSON), &specs)
+			for name := range specs {
+				windows[name] = UIRegimeWindow{Status: "unavailable"}
+			}
+		}
+
 		for name, views := range b.Views {
 			w := windows[name]
 			w.ADX3 = views.ADX3
@@ -41,6 +51,7 @@ func uiRegimeEntries(store *RegimeStore) ([]UIRegimeEntry, time.Time) {
 			windows[name] = w
 		}
 		out = append(out, UIRegimeEntry{
+			Error:     b.Err,
 			Platform:  b.Key.Platform,
 			Symbol:    b.Key.Symbol,
 			Timeframe: b.Key.Timeframe,

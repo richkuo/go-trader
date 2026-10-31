@@ -1,3 +1,4 @@
+from shared_tools.conftest import with_regime_readiness
 import pandas as pd
 import pytest
 
@@ -104,7 +105,7 @@ def test_regime_directional_policy_certification(cert_kwargs, expected_sides):
         regime_directional_policy=_REGIME_POLICY,
         **cert_kwargs,
     )
-    res = bt.run(df, save=False)
+    res = bt.run(with_regime_readiness(df), save=False)
     assert [t["side"] for t in res["trades"]] == expected_sides
 
 
@@ -120,7 +121,7 @@ def test_regime_directional_policy_holds_open_position_regime_plain_path():
         regime_directional_policy=_REGIME_POLICY,
         regime_directional_certified=True,
     )
-    res = bt.run(df, save=False)
+    res = bt.run(with_regime_readiness(df), save=False)
     assert [t["side"] for t in res["trades"]] == ["short"]
     assert res["trades"][0]["exit_reason"] == "end_of_data"
 
@@ -149,7 +150,7 @@ def _run_oc_flip(open_action, close_fraction, regime):
         regime_enabled=True, regime_directional_policy=_REGIME_POLICY,
         regime_directional_certified=True,
     )
-    return bt.run(_oc_flip_df(open_action, close_fraction, regime), save=False)
+    return bt.run(with_regime_readiness(_oc_flip_df(open_action, close_fraction, regime)), save=False)
 
 
 @pytest.mark.parametrize(

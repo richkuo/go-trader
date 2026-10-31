@@ -3894,6 +3894,47 @@ Enabled by `replay_log_path` plus per-strategy `replay_sharing="live_mirror"`. P
   The pending-limit-order consumer keeps the tail count (`manualAlert.trades` only).
   The carry-over is in memory, so a restart drops only the pending summary contribution; delivery is not exactly-once across crashes.
 
+### Regime readiness (issue 1939)
+
+A snapshot carries boolean `ready` and integer `bars` and `need` beside `regime`, `score`, and `metrics`.
+Average Directional Index (ADX) needs `2 * period + 1` bars.
+Composite needs `max(period, 2 * min(period, 14) + 1)` bars.
+Each configured window and comparison view has its own need.
+Before that need, its label is empty and its display is `warming (bars/need)`.
+Missing or invalid metadata is unavailable; a readable bundle retains valid siblings.
+A nonempty short frame is a successful bundle, so normal warm-up does not send a script-failure direct message.
+Fetch depth covers both comparison views of every window plus the existing margin and base floor.
+
+Admission checks the gate, effective regime stop, profile, and directional dependencies before position increases.
+A known warming dependency holds opens, the new side of a flip, and same-side adds under both entry failure policies. A held flip on a position becomes a full close with no opposite open, as the backtester closes on a reversal and holds only the new entry.
+A store outage retains the configured gate failure policy; a regime stop independently requires usable current inputs.
+Basket and pair admission use validated member management observations with their existing cycle and age checks.
+Manual opens and adds check before order execution and remainder cancellation, including dry-run.
+Manual limit orders also require ready stop inputs before placement or dry-run. Their pending rows retain the snapshot for later fill adoption; reconciliation still books fills during readiness loss.
+The manual market-order ratchet fallback applies only to genuine classification failure; readable invalid readiness holds the order. Limit placement requires usable stop inputs.
+Record-only adoption can still record existing exposure.
+A position on a regime-stop strategy whose entry evidence has no stop label (record-only adoption, the manual fallback, or a row written before the migration) takes the current stop-window snapshot on the first cycle where that window is ready, including after a restart. A captured stop label is never replaced.
+Sealed feed ownership forbids a private candle fetch for a manual command without its sealed frame.
+Under `market_feed` `shared` or `websocket`, only the running scheduler holds a fresh sealed regime bundle. On a regime-stop strategy, a command-line manual add and a market open without `--stop-loss-pct` or `--stop-loss-atr-mult` are refused, except where the manual ratchet fallback applies, and a command-line limit open is always refused. The status UI open and add actions use the scheduler's bundle.
+
+Closes, reductions, stops, trailing stops, ratchets, recovery, and existing protection continue.
+Current state is replaced on each result, including all-warming results.
+Entry snapshots remain fixed through adds and restart, except the stop-label backfill above; positions, queued manual actions, and pending manual limit orders store optional snapshot JSON through additive migrations.
+An explicitly empty named window cannot use the primary label.
+Applied dynamic protection retains its recorded label and clears pending consecutive confirmation when current readiness is lost.
+Only supported labels enter transition history, alerts, and confirmation.
+The configured longest window remains the reversal reference even while it is unavailable.
+
+Closed-bar gates use the selected decision snapshot; stop admission uses the current protection snapshot.
+Keep primary frame and candle-closure checks.
+Historical preparation carries typed readiness with each label, including the higher-timeframe shift before forward fill.
+A fetch limit caps trailing history; a shorter available prefix can become ready at its classifier need.
+Every simulated increase checks current readiness, including adds and flips after readiness loss.
+Stop warm-up skips remain in the result, and seeded positions retain their safety checks.
+Parity and ledger comparisons include readiness and bars/need; trimming never fills cold evidence with another frame's label.
+Research excludes cold labels and undefined features and retains gaps when it measures transitions.
+Ship Go and Python from one commit with `bash scripts/update.sh --restart`.
+
 ### Pause, regime, ratchet, hedge, Hurst (`pause.go`, `regime*.go`, `post_tp_sl.go`, `trailing_tp_ratchet.go`, `hedge.go`, `hurst_gate.go`)
 
 - `StrategyConfig.Paused` (`"paused"`) runs a full manage-only cycle and hot-reloads at any time, including while open.
@@ -4063,6 +4104,5 @@ Go CI must not depend on a Python runtime, so a test for a subprocess-based live
 **Format and layout checks.** These checks replace CLAUDE.md prose, so keep each one exact:
 - The `go` job format step runs `gofmt -l` over every tracked Go file (`git ls-files '*.go'`, so `scripts/fixtures/ledger_fixture.go` too) and fails on any output or parse error. Run `gofmt -w` after Go edits.
 - The `docs` job fails unless `git ls-files .github/scripts` is exactly `.github/scripts/test_workflow_logic.py`. Put any other script under `scripts/`.
-
 ---
-LLM: GPT-6 | high | Harness: Codex
+LLM: GPT-6 (exact variant unavailable) | high | Harness: work-on-issue

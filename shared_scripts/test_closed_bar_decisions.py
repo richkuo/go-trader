@@ -293,7 +293,7 @@ def test_batch_rejects_a_non_boolean_flag():
 def test_decision_regime_reads_the_closed_frame_and_protection_keeps_the_injected_regime():
     bars = _bars(240, forming_spike=30.0)
     cutoff = bars[-1]["t"] + H // 2
-    injected = '{"default":{"regime":"ranging","score":0.1,"classifier":"adx","metrics":{"adx":5.0}}}'
+    injected = '{"default":{"regime":"ranging","score":0.1,"classifier":"adx","ready":true,"bars":200,"need":29,"metrics":{"adx":5.0}}}'
     extra = ["--regime-enabled", "--regime-windows-spec-json", SPEC, "--ohlcv-limit", "200",
              "--regime-payload-json", injected, "--decision-regime-timeframe=1h"]
     out = _hl_check("breakout", bars, cutoff, closed=True, extra=extra)

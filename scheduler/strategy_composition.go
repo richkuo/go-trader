@@ -11,21 +11,22 @@ import (
 )
 
 type StrategyDecisionFields struct {
-	OpenStrategy       string             `json:"open_strategy,omitempty"`
-	CloseStrategies    []string           `json:"close_strategies,omitempty"`
-	OpenAction         string             `json:"open_action,omitempty"`
-	CloseFraction      float64            `json:"close_fraction"`
-	CloseStrategy      string             `json:"close_strategy,omitempty"`
-	CloseGate          string             `json:"close_gate,omitempty"`
-	CloseOwner         string             `json:"close_owner,omitempty"`
-	CloseTierFillPrice float64            `json:"close_tier_fill_price,omitempty"`
-	OpenSignalInverted bool               `json:"open_signal_inverted,omitempty"`
-	Regime             *RegimePayload     `json:"regime,omitempty"`
-	ClosedBar          *ClosedBarDecision `json:"closed_bar_decision,omitempty"`
-	DecisionRegime     *RegimePayload     `json:"decision_regime,omitempty"`
-	RestingTPRule      *RestingTPRuleEcho `json:"resting_tp_rule,omitempty"`
-	CloseRestingFill   json.RawMessage    `json:"close_resting_fill,omitempty"`
-	HTFFilter          *HTFFilterEcho     `json:"htf_filter,omitempty"`
+	RegimeReadinessHold string             `json:"-"`
+	OpenStrategy        string             `json:"open_strategy,omitempty"`
+	CloseStrategies     []string           `json:"close_strategies,omitempty"`
+	OpenAction          string             `json:"open_action,omitempty"`
+	CloseFraction       float64            `json:"close_fraction"`
+	CloseStrategy       string             `json:"close_strategy,omitempty"`
+	CloseGate           string             `json:"close_gate,omitempty"`
+	CloseOwner          string             `json:"close_owner,omitempty"`
+	CloseTierFillPrice  float64            `json:"close_tier_fill_price,omitempty"`
+	OpenSignalInverted  bool               `json:"open_signal_inverted,omitempty"`
+	Regime              *RegimePayload     `json:"regime,omitempty"`
+	ClosedBar           *ClosedBarDecision `json:"closed_bar_decision,omitempty"`
+	DecisionRegime      *RegimePayload     `json:"decision_regime,omitempty"`
+	RestingTPRule       *RestingTPRuleEcho `json:"resting_tp_rule,omitempty"`
+	CloseRestingFill    json.RawMessage    `json:"close_resting_fill,omitempty"`
+	HTFFilter           *HTFFilterEcho     `json:"htf_filter,omitempty"`
 }
 
 type PositionCtx struct {
@@ -38,6 +39,7 @@ type PositionCtx struct {
 	Regime                          string
 	DirectionalRegime               string
 	RegimeWindows                   map[string]string
+	RegimeSnapshots                 map[string]RegimeSnapshot `json:"regime_snapshots,omitempty"`
 	Profile                         string
 	DirectionCertifiedAtOpen        bool
 	DirectionCertifiedStatesAtOpen  map[string]string
@@ -191,6 +193,7 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		Regime:                          pos.Regime,
 		DirectionalRegime:               pos.Regime,
 		RegimeWindows:                   cloneStringMap(pos.RegimeWindows),
+		RegimeSnapshots:                 cloneRegimeSnapshots(pos.RegimeSnapshots),
 		Profile:                         pos.OpenProfile,
 		DirectionCertifiedAtOpen:        pos.DirectionCertifiedAtOpen,
 		DirectionCertifiedStatesAtOpen:  cloneStringMap(pos.DirectionCertifiedStatesAtOpen),

@@ -225,7 +225,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                     else:
                         regime_rows = select_opening_time(
                             fetch_rows_or_hold(lambda: adapter.fetch_candles(symbol, regime_tf, ohlcv_limit + 1, inst_type=inst_type), symbol, regime_tf),
-                            timeframe=regime_tf, cutoff_ms=selection.boundary_ms, keep=ohlcv_limit).rows
+                            timeframe=regime_tf, cutoff_ms=selection.boundary_ms, keep=ohlcv_limit, min_rows=1).rows
                     decision_regime_payload, _decision_live, decision_strategy_regime = prepare_check_regime(
                         _make_dataframe(regime_rows),
                         regime_enabled=True,
