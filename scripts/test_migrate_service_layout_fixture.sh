@@ -1249,7 +1249,7 @@ for cur, dirs, files in os.walk(root, topdown=True, followlinks=False):
         rel = os.path.join(rel_cur, name) if rel_cur else name
         if rel == "scheduler/config.json" or name in skip_names:
             continue
-        if name.endswith((".db", ".db-wal", ".db-shm", ".db.lock", ".db.manual-action.lock")):
+        if name.endswith((".db", ".db-wal", ".db-shm", ".db.lock", ".db.manual-action.lock", ".manual-regime-owner.json")):
             continue
         if name.startswith("trading_bot.db") or name.startswith("ohlcv_cache.sqlite3"):
             continue

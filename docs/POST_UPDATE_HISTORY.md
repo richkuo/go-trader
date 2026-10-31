@@ -11,6 +11,7 @@ The command authenticates with a secret it reads from the scheduler's owner mark
 An authentication, reply-proof, identity, key, configuration, reply-format, timestamp or draining failure refuses the order with no ratchet fallback; only an absent, unreachable, timed-out or genuinely failed scheduler result keeps the existing market-order ratchet fallback, and limit placement always refuses.
 A new command-line open whose protection needs ATR must pass a finite, positive `--atr`; the command never fetches candles privately, and an adverse fill switches to the arithmetic fallback ATR with a warning.
 Each daemon writes a mode-0600 `<state db>.manual-regime-owner.json` (nonce and route secret) beside every state file while it owns them and removes it on shutdown; stop the daemon before deleting one by hand.
+`update.sh`, the container image build and `migrate-service-layout.py` treat the marker as runtime state and never copy, restore or delete it.
 The status UI open and add, REST mode and record-only adoption are unchanged.
 Deploy Go and Python together with `bash scripts/update.sh --restart`.
 
