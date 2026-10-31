@@ -295,7 +295,7 @@ def run_window(symbol, timeframe, window, *, model=None, horizons=(1, 4, 12), se
                         _DEFAULT_COMPOSITE_THRESHOLDS, COMPOSITE_ADX_PERIOD_CAP,
                         normalize_composite_thresholds)
     from data_fetcher import load_cached_data
-    from eval_windows import WINDOWS
+    from eval_windows import PLATFORM, WINDOWS
     period = _validate_period(period)
     if adx_threshold is not None:
         adx_threshold = _finite_number("adx_threshold", adx_threshold)
@@ -317,9 +317,12 @@ def run_window(symbol, timeframe, window, *, model=None, horizons=(1, 4, 12), se
             and composite_adx_threshold is not None
             and float(adx_threshold) != float(composite_adx_threshold)):
         raise ValueError("conflicting ADX thresholds")
-    exchange_id = _resolve_exchange(exchange)
     start, end = WINDOWS[window]
-    df = load_cached_data(symbol, timeframe, exchange_id=exchange_id, start_date=start, end_date=end)
+    if exchange is None:
+        df = load_cached_data(symbol, timeframe, exchange_id=PLATFORM, start_date=start, end_date=end)
+    else:
+        df = load_cached_data(symbol, timeframe, exchange_id=_resolve_exchange(exchange),
+                              start_date=start, end_date=end)
     if not explicit:
         period_used = int(model["period"]) if model and "period" in model else DEFAULT_PERIOD
         th = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
