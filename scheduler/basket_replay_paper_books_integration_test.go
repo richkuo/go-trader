@@ -605,3 +605,320 @@ func TestBasketReplayPairPaperBooksLivePrefixRejectsCorruptedInput(t *testing.T)
 		t.Fatal("live derivation must verify the full selected hash chain before publication")
 	}
 }
+
+type pairBookTestWall struct{ ms *atomic.Int64 }
+
+func (w pairBookTestWall) Now() time.Time        { return time.UnixMilli(w.ms.Load()) }
+func (w pairBookTestWall) Sleep(d time.Duration) { w.ms.Add(int64(d / time.Millisecond)) }
+func (w pairBookTestWall) Tick()                 {}
+
+func pairBookTestFeed(t *testing.T) chan chan []byte {
+	t.Helper()
+	conns := make(chan chan []byte, 4)
+	up := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var sub map[string]any
+		if conn.ReadJSON(&sub) != nil || conn.WriteJSON(map[string]any{"channel": "subscriptionResponse", "data": sub}) != nil {
+			return
+		}
+		frames := make(chan []byte, 128)
+		conns <- frames
+		for raw := range frames {
+			if conn.WriteMessage(websocket.TextMessage, raw) != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	prev := pairPaperBookEndpoint
+	pairPaperBookEndpoint = func() string { return "ws" + strings.TrimPrefix(server.URL, "http") }
+	t.Cleanup(func() { pairPaperBookEndpoint = prev })
+	return conns
+}
+
+func (e *pairBookTestEnv) bookInputs() []pairPaperBookInput {
+	e.t.Helper()
+	var out []pairPaperBookInput
+	for _, r := range e.log().rows {
+		if r.Event.BookInput != nil {
+			out = append(out, *r.Event.BookInput)
+		}
+	}
+	return out
+}
+
+func (e *pairBookTestEnv) countInputs(match func(pairPaperBookInput) bool) int {
+	e.t.Helper()
+	n := 0
+	for _, in := range e.bookInputs() {
+		if match(in) {
+			n++
+		}
+	}
+	return n
+}
+
+func pairBookTestNextFeed(t *testing.T, conns chan chan []byte) chan []byte {
+	t.Helper()
+	select {
+	case ch := <-conns:
+		return ch
+	case <-time.After(10 * time.Second):
+		t.Fatal("the receiver did not connect")
+		return nil
+	}
+}
+
+func waitLong(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * pairPaperBookJoin)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func TestBasketReplayPairPaperBooksReceiverRestartsAfterLostInput(t *testing.T) {
+	for _, kind := range []string{"lock wait past the join bound", "append deadline error", "host call append failure"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newPairBookTestEnv(t)
+			conns := pairBookTestFeed(t)
+			t.Cleanup(func() { e.b.cancelIntake(); _ = e.b.stop("test") })
+			accepted := func(in pairPaperBookInput) bool { return in.Outcome == feedBookOutcomeAccepted }
+			subscribed := func(in pairPaperBookInput) bool { return in.Kind == "subscribed" }
+			if err := e.b.start(); err != nil {
+				t.Fatal(err)
+			}
+			feed := pairBookTestNextFeed(t, conns)
+			waitFor(t, "committed subscription", func() bool { return e.countInputs(subscribed) == 1 })
+			e.wall.Add(100)
+			feed <- pairBookTestFrame(e.wall.Load(), "60000")
+			waitFor(t, "committed frame", func() bool { return e.countInputs(accepted) == 1 })
+			if _, err := e.b.reduce(context.Background(), pairPaperBookBoundary{Prefix: e.rec.headNow()}, pairTestHL, e.wall.Load(), false); err != nil {
+				t.Fatal(err)
+			}
+			if e.b.cache.seq == 0 {
+				t.Fatal("the read must warm the shared reducer before the fault")
+			}
+			e.wall.Add(100)
+			lost := pairBookTestFrame(e.wall.Load(), "60001")
+			if kind == "lock wait past the join bound" {
+				e.rec.mu.Lock()
+				feed <- lost
+				waitLong(t, "receiver failure after the join bound", func() bool { return e.b.intakeNow().Failed })
+				e.rec.mu.Unlock()
+			} else {
+				var armed atomic.Bool
+				armed.Store(true)
+				pairRecTestAppendFault = func() error {
+					if armed.CompareAndSwap(true, false) {
+						return context.DeadlineExceeded
+					}
+					return nil
+				}
+				t.Cleanup(func() { pairRecTestAppendFault = nil })
+				if kind == "host call append failure" {
+					if _, _, err := e.rec.call(context.Background(), pairRecCall{Kind: pairRecKindReference, MemberID: pairTestHL, Request: []byte("host")}, func(context.Context, *pairRecHandle) pairRecResult {
+						t.Fatal("a call whose start did not commit must not run")
+						return pairRecResult{}
+					}); err == nil || !e.rec.blocked.Load() {
+						t.Fatalf("the failed host call start must set the recording barrier: %v", err)
+					}
+				}
+				feed <- lost
+				waitFor(t, "append barrier", func() bool { return e.rec.blocked.Load() })
+			}
+			waitLong(t, "receiver exit", e.b.joined)
+			inputs := e.bookInputs()
+			var frameTicket int64
+			for _, in := range inputs {
+				if accepted(in) {
+					frameTicket = in.Ticket
+				}
+			}
+			var next *pairPaperBookInput
+			for i := range inputs {
+				if inputs[i].Ticket > frameTicket {
+					next = &inputs[i]
+					break
+				}
+			}
+			if next == nil || next.Kind != "stop" || next.LostTicketFrom != frameTicket+1 || next.Ticket != frameTicket+2 {
+				t.Fatalf("the first input after the lost frame must be a stop naming the lost ticket, got %+v", next)
+			}
+			if err := e.b.validateBindings(e.log()); err != nil {
+				t.Fatal(err)
+			}
+			if kind != "lock wait past the join bound" {
+				if err := e.b.start(); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-conns:
+					t.Fatal("the receiver must not restart while the recording barrier holds")
+				case <-time.After(200 * time.Millisecond):
+				}
+				cleared, err := e.rec.clearAtBoundary(func() (int64, error) {
+					l, err := readVerifiedPairRecLog(e.rec.file, e.rec.runID, e.rec.partition, e.rec.contractFP)
+					if err != nil {
+						return 0, err
+					}
+					return l.head().Seq, nil
+				})
+				if err != nil || !cleared {
+					t.Fatalf("barrier clear: cleared %v error %v", cleared, err)
+				}
+			}
+			if err := e.b.start(); err != nil {
+				t.Fatal(err)
+			}
+			feed = pairBookTestNextFeed(t, conns)
+			waitFor(t, "restarted subscription", func() bool { return e.countInputs(subscribed) == 2 })
+			e.wall.Add(100)
+			feed <- lost
+			waitFor(t, "resent frame", func() bool { return e.countInputs(accepted) == 2 })
+			if err := e.b.validateBindings(e.log()); err != nil {
+				t.Fatalf("the resent frame must keep the outcome that replay of the committed log gives: %v", err)
+			}
+			for i := 1; i <= 65; i++ {
+				e.wall.Add(1000)
+				feed <- pairBookTestFrame(e.wall.Load(), "60000")
+				waitFor(t, "restarted frames", func() bool { return e.countInputs(accepted) == 2+i })
+			}
+			e.wall.Add(2)
+			through := e.wall.Load() - 1
+			if _, err := e.b.read(context.Background(), pairRecKindBookSeal, pairPaperBookRequest{Members: []string{pairTestHL}, ThroughMs: through}); err != nil {
+				t.Fatalf("a book seal after the restart must be available: %v", err)
+			}
+			if _, err := e.b.observation(context.Background(), pairTestHL, through, pairRecKindBookMark); err != nil {
+				t.Fatalf("the management mark after the restart must be available: %v", err)
+			}
+			if err := e.b.stop("test"); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.b.validateBindings(e.log()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestBasketReplayPairPaperBooksLiveReceiptsStayDistinct(t *testing.T) {
+	e := newPairBookTestEnv(t)
+	prev := pairPaperWall
+	pairPaperWall = pairBookTestWall{ms: &e.wall}
+	t.Cleanup(func() { pairPaperWall = prev })
+	conns := pairBookTestFeed(t)
+	t.Cleanup(func() { e.b.cancelIntake(); _ = e.b.stop("test") })
+	if err := e.b.start(); err != nil {
+		t.Fatal(err)
+	}
+	feed := pairBookTestNextFeed(t, conns)
+	waitFor(t, "committed subscription", func() bool {
+		return e.countInputs(func(in pairPaperBookInput) bool { return in.Kind == "subscribed" }) == 1
+	})
+	e.wall.Add(1000)
+	now := e.wall.Load()
+	feed <- pairBookTestFrame(now-2, "60000")
+	feed <- pairBookTestFrame(now-1, "60001")
+	var frames []pairPaperBookInput
+	waitFor(t, "two committed frames", func() bool {
+		frames = nil
+		for _, in := range e.bookInputs() {
+			if in.Kind == "frame" {
+				frames = append(frames, in)
+			}
+		}
+		return len(frames) == 2
+	})
+	if frames[0].Outcome != feedBookOutcomeAccepted || frames[1].Outcome != feedBookOutcomeAccepted || frames[0].ReceiptMs == frames[1].ReceiptMs {
+		t.Fatalf("back-to-back newer frames must both commit with distinct receipts: %+v %+v", frames[0], frames[1])
+	}
+	if err := e.b.stop("test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.b.exportBook(e.log(), pairTestHL); err != nil {
+		t.Fatalf("the seal export must succeed: %v", err)
+	}
+}
+
+func TestBasketReplayPairPaperBooksCachedReadsMatchFullReplay(t *testing.T) {
+	e := newPairBookTestEnv(t)
+	ctx := context.Background()
+	need := contractBookNeed(e.b.need.WindowMs, e.b.need.Capacity, e.b.need.Depth)
+	full := func(head pairRecHead, at int64, all bool) *pairPaperBookReducer {
+		d := newPairPaperBookReducer(e.b.members[pairTestHL], e.b.need, all)
+		if err := e.b.forPrefix(ctx, head, func(in pairPaperBookInput) error {
+			if in.Binding.MemberID == pairTestHL && in.ReceiptMs <= at {
+				d.apply(in)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	encode := func(d *pairPaperBookReducer, at int64) string {
+		st := d.stream(e.rec.runID, at)
+		snap := &marketSnapshot{EvaluationID: "parity", ConfigGeneration: 1, Deadline: time.UnixMilli(at), books: map[feedObservationKey]*marketSnapshotBook{st.key: st.freeze(need, at)}}
+		raw, err := pairCanonicalJSON(snap.l2BookPayload(st.key, need))
+		if err != nil {
+			t.Fatal(err)
+		}
+		extra, err := json.Marshal(map[string]any{"records": d.records, "markers": d.allMarkers, "accepted": d.accepted, "marker_count": d.markers, "incomplete": d.incomplete, "covered": d.state.Covered, "high": d.state.HighRecvMs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw) + string(extra)
+	}
+	checks := 0
+	compare := func(at int64) {
+		t.Helper()
+		head := e.rec.headNow()
+		for _, all := range []bool{false, true} {
+			got, err := e.b.reduce(ctx, pairPaperBookBoundary{Prefix: head}, pairTestHL, at, all)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a, b := encode(got, at), encode(full(head, at, all), at); a != b {
+				t.Fatalf("cached read at %d (all=%v, head %d) differs from full replay:\ncached %s\nfull   %s", at, all, head.Seq, a, b)
+			}
+			checks++
+		}
+	}
+	base := e.wall.Load()
+	e.append("epoch", base, nil)
+	e.append("subscribed", base+1, nil)
+	at := base + 1
+	for i := int64(1); i <= 200; i++ {
+		at = base + i*500
+		e.append("frame", at, pairBookTestFrame(at, fmt.Sprintf("%d", 60000+i%7)))
+		switch i {
+		case 40:
+			e.append("frame", at-3000, pairBookTestFrame(at-3000, "60000"))
+		case 80:
+			e.append("disconnect", at+1, nil)
+			e.append("subscribed", at+2, nil)
+		case 120:
+			e.append("frame", at, pairBookTestFrame(at+1, "60003"))
+		case 160:
+			e.append("silence", at+1, nil)
+		}
+		if i%9 == 0 {
+			compare(at - 1700)
+			compare(at)
+		}
+	}
+	compare(at + 1)
+	compare(base + 30000)
+	compare(at + 1)
+	t.Logf("CACHE_PARITY checks=%d cache_seq=%d head_seq=%d", checks, e.b.cache.seq, e.rec.headNow().Seq)
+}

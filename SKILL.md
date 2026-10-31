@@ -3141,16 +3141,22 @@ The missing management input still blocks new exposure through the existing memb
 
 Exact duplicate frames remain in the raw log and preserve the original canonical receipt.
 Conflicts, malformed or stale input, reconnects, backward receipt clocks and gaps above 10000 ms break the affected coverage window.
-A distinct accepted event at an existing receipt millisecond records evidence loss and makes the run incomplete; timestamps are preserved.
+The live receiver waits for the next wall millisecond before it stamps a frame whose member's last accepted frame holds the current receipt millisecond, so it never writes a receipt tie.
+A distinct accepted event at an existing receipt millisecond in a recorded log records evidence loss, makes the run incomplete and refuses the standalone book export, so the seal is refused; timestamps are preserved.
 A later window becomes ready after a complete required window with valid input and no intervening marker.
 Working state retains at most 4096 observations and 64 markers per book inside the 64 MiB book budget; discarded history advances the known coverage floor.
 Historical virtual windows read the owning recording file only through their saved prefix and a bounded operation.
+Live sealed reads share one verified reducer per member: a read verifies the hash chain only for committed rows after the last verified prefix and applies them while their receipts are at or before its read time, so its cost follows new input instead of the recording length; an older prefix, an earlier read time or a recorded prefix uses the full scan, and the result equals the full replay.
+The shared reducer keeps window records only inside the book budget; past it, every window read returns the memory refusal that a full replay returns.
+Seal, resume and barrier release still verify the whole log.
 A source error returns before the virtual venue can commit a new query digest.
 
 Family-4 append budgets use the exact encoded export-log line size for every event, including host calls and process results.
 The log limit is 256 MiB, with 32 MiB reserved for terminal, recovery, barrier and stop records.
 Exhaustion stops intake and further host scheduling; failed appends set the existing increase barrier before publication.
 A terminal can identify captured tickets whose input could not commit; it cannot claim their coverage.
+Any captured input that does not commit (an append failure, a refusal by the barrier, or a recorder-lock wait past the 5-second join bound) ends the receiver, and its `stop` names the first lost ticket; the receiver never appends another non-stop input after a lost ticket.
+When the receiver ended this way and no stop, memory limit, capacity limit or barrier holds, the next host cycle starts a new receiver: it rebuilds its reducers from the committed prefix only, first writes a `stop` naming any lost ticket that no terminal recorded, then opens a new socket epoch.
 Resume verifies source bindings, epoch and ticket order, canonical dispositions and read prefixes before writable admission.
 It consumes the saved host tail before new socket input is admitted; the resumed socket records a new epoch and coverage break.
 Interrupted reads receive durable recovery and supply no fresh result.

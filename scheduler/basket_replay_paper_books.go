@@ -245,6 +245,18 @@ func (d *pairPaperBookReducer) apply(in pairPaperBookInput) (string, string) {
 	return in.Kind, ""
 }
 
+func (d *pairPaperBookReducer) clone(all bool) *pairPaperBookReducer {
+	c := &pairPaperBookReducer{member: d.member, need: d.need, state: d.state, accepted: d.accepted, markers: d.markers, lastReceipt: d.lastReceipt, epoch: d.epoch, incomplete: d.incomplete, all: all}
+	c.owner.connected, c.owner.obsSession, c.owner.bookSeq = d.owner.connected, d.owner.obsSession, d.owner.bookSeq
+	c.state.Obs = append([]feedBookObservation(nil), d.state.Obs...)
+	c.state.Markers = append([]feedBookMarker(nil), d.state.Markers...)
+	if all {
+		c.records = d.records[:len(d.records):len(d.records)]
+		c.allMarkers = d.allMarkers[:len(d.allMarkers):len(d.allMarkers)]
+	}
+	return c
+}
+
 func (d *pairPaperBookReducer) stream(runID string, through int64) *pairReplaySealedStream {
 	st := &d.state
 	marks := append([]feedBookMarker(nil), st.Markers...)
@@ -279,14 +291,26 @@ type pairPaperBooks struct {
 	ready     chan struct{}
 	startErr  error
 	started   bool
+	terminal  bool
 	stopErr   error
 	stopCause string
 	epoch     int
 	tail      *pairRecLog
+	cacheLock chan struct{}
+	cache     pairPaperBookCache
+}
+
+type pairPaperBookCache struct {
+	seq      int64
+	prefix   string
+	size     int64
+	high     int64
+	overflow bool
+	reducers map[string]*pairPaperBookReducer
 }
 
 func newPairPaperBooks(rec *pairRecorder, src *recordingQuoteSource) *pairPaperBooks {
-	b := &pairPaperBooks{rec: rec, src: src, bindings: map[string]pairPaperBookBinding{}, members: map[string]pairContractMember{}}
+	b := &pairPaperBooks{rec: rec, src: src, bindings: map[string]pairPaperBookBinding{}, members: map[string]pairContractMember{}, cacheLock: make(chan struct{}, 1)}
 	rec.books = b
 	return b
 }
@@ -366,8 +390,30 @@ func (b *pairPaperBooks) intakeNow() pairPaperBookIntake {
 	return v
 }
 
+func (b *pairPaperBooks) restartableLocked() bool {
+	if !b.started || b.startErr != nil || b.terminal || b.stopCause != "" || !b.intake.Failed || b.rec.blocked.Load() || b.rec.limitStopped.Load() {
+		return false
+	}
+	select {
+	case <-b.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func (b *pairPaperBooks) start() (err error) {
 	b.mu.Lock()
+	if b.restartableLocked() {
+		ctx, cancel := context.WithCancel(context.Background())
+		b.cancel = cancel
+		b.done = make(chan struct{})
+		b.stopErr = nil
+		b.intake.Failed, b.intake.Stopped = false, false
+		b.mu.Unlock()
+		go b.receive(ctx)
+		return nil
+	}
 	if b.started {
 		ready := b.ready
 		b.mu.Unlock()
@@ -525,16 +571,8 @@ func (b *pairPaperBooks) receive(ctx context.Context) {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	reducers := map[string]*pairPaperBookReducer{}
-	for _, id := range ids {
-		reducers[id] = newPairPaperBookReducer(b.members[id], b.need, false)
-	}
-	if err := b.forPrefix(ctx, b.rec.headNow(), func(in pairPaperBookInput) error {
-		if d := reducers[in.Binding.MemberID]; d != nil {
-			d.apply(in)
-		}
-		return nil
-	}); err != nil {
+	reducers, err := b.committedReducers(ctx, b.rec.headNow())
+	if err != nil {
 		b.setError(err)
 		return
 	}
@@ -572,6 +610,12 @@ func (b *pairPaperBooks) receive(ctx context.Context) {
 		}
 		b.mu.Unlock()
 	}()
+	if b.uncommitted() {
+		if err := appendAll(ctx, "stop", "captured input did not commit before the receiver restarted"); err != nil {
+			b.setError(err)
+			return
+		}
+	}
 	for ctx.Err() == nil {
 		b.epoch++
 		if err := appendAll(ctx, "epoch", ""); err != nil {
@@ -678,6 +722,9 @@ func (b *pairPaperBooks) receive(ctx context.Context) {
 				for _, id := range ids {
 					if b.members[id].Instrument == coin.Coin {
 						matched = true
+						for ctx.Err() == nil && b.rec.now().UnixMilli() == reducers[id].lastReceipt {
+							pairPaperWall.Sleep(time.Millisecond)
+						}
 						err = b.append(ctx, pairPaperBookInput{Binding: b.bindings[id], Epoch: b.epoch, Kind: "frame", Raw: raw}, reducers[id])
 						if err != nil {
 							break
@@ -698,7 +745,7 @@ func (b *pairPaperBooks) receive(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if b.rec.blocked.Load() {
+		if b.rec.blocked.Load() || b.uncommitted() {
 			b.setError(errors.New("book append failed"))
 			return
 		}
@@ -714,6 +761,12 @@ func (b *pairPaperBooks) setError(err error) {
 	b.stopErr = err
 	b.intake.Failed = true
 	b.mu.Unlock()
+}
+
+func (b *pairPaperBooks) uncommitted() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.intake.Captured > b.intake.Committed
 }
 
 func (b *pairPaperBooks) forPrefix(ctx context.Context, head pairRecHead, visit func(pairPaperBookInput) error) error {
@@ -739,53 +792,206 @@ func (b *pairPaperBooks) forPrefix(ctx context.Context, head pairRecHead, visit 
 		}
 		return nil
 	}
-	rows, err := b.rec.file.db.QueryContext(ctx, `SELECT seq,schema_version,partition,contract_fingerprint,event_kind,call_id,prev_prefix_hash,prefix_hash,payload_hash,payload FROM basket_replay_inputs WHERE run_id=? AND seq<=? ORDER BY seq`, b.rec.runID, head.Seq)
+	end, err := b.scanCommitted(ctx, pairRecHead{}, 0, head, func(_ pairRecRow, in *pairPaperBookInput, _ int64) error {
+		if in == nil {
+			return nil
+		}
+		return visit(*in)
+	})
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	var size, seq int64
-	prefix := ""
-	for rows.Next() {
-		if err = ctx.Err(); err != nil {
-			return err
-		}
-		var row pairRecRow
-		if err = rows.Scan(&row.Seq, &row.Schema, &row.Partition, &row.ContractFP, &row.Kind, &row.CallID, &row.PrevPrefix, &row.Prefix, &row.PayloadHash, &row.Payload); err != nil {
-			return err
-		}
-		size += int64(len(row.Payload))
-		if size > pairPaperBookLogLimit {
-			return errors.New("book prefix exceeds recording bound")
-		}
-		if row.Seq != seq+1 || row.Schema != pairRecSchemaBooks || row.Partition != b.rec.partition || row.ContractFP != b.rec.contractFP || row.PrevPrefix != prefix || sha256Hex(row.Payload) != row.PayloadHash {
-			return errors.New("book read encountered an altered committed prefix")
-		}
-		if pairRecPrefixHash(row.Schema, b.rec.runID, row.Seq, row.Partition, row.ContractFP, row.Kind, row.CallID, row.PrevPrefix, row.PayloadHash) != row.Prefix {
-			return errors.New("book read encountered an invalid prefix hash")
-		}
-		seq, prefix = row.Seq, row.Prefix
-		if row.Kind != pairRecEventBookInput {
-			continue
-		}
-		ev, err := pairRecDecode(row.Payload)
-		if err != nil {
-			return err
-		}
-		if ev.BookInput == nil || ev.Kind != row.Kind || ev.V != row.Schema || ev.CallID != row.CallID {
-			return errors.New("book input body differs from its committed row")
-		}
-		if err = visit(*ev.BookInput); err != nil {
-			return err
-		}
-	}
-	if err = rows.Err(); err != nil {
-		return err
-	}
-	if seq != head.Seq || prefix != head.Prefix {
+	if end != head {
 		return errors.New("book prefix differs from committed storage")
 	}
 	return nil
+}
+
+func (b *pairPaperBooks) scanCommitted(ctx context.Context, after pairRecHead, size int64, head pairRecHead, visit func(pairRecRow, *pairPaperBookInput, int64) error) (pairRecHead, error) {
+	rows, err := b.rec.file.db.QueryContext(ctx, `SELECT seq,schema_version,partition,contract_fingerprint,event_kind,call_id,prev_prefix_hash,prefix_hash,payload_hash,payload FROM basket_replay_inputs WHERE run_id=? AND seq>? AND seq<=? ORDER BY seq`, b.rec.runID, after.Seq, head.Seq)
+	if err != nil {
+		return after, err
+	}
+	defer rows.Close()
+	seq, prefix := after.Seq, after.Prefix
+	for rows.Next() {
+		if err = ctx.Err(); err != nil {
+			return pairRecHead{Seq: seq, Prefix: prefix}, err
+		}
+		var row pairRecRow
+		if err = rows.Scan(&row.Seq, &row.Schema, &row.Partition, &row.ContractFP, &row.Kind, &row.CallID, &row.PrevPrefix, &row.Prefix, &row.PayloadHash, &row.Payload); err != nil {
+			return pairRecHead{Seq: seq, Prefix: prefix}, err
+		}
+		size += int64(len(row.Payload))
+		if size > pairPaperBookLogLimit {
+			return pairRecHead{Seq: seq, Prefix: prefix}, errors.New("book prefix exceeds recording bound")
+		}
+		if row.Seq != seq+1 || row.Schema != pairRecSchemaBooks || row.Partition != b.rec.partition || row.ContractFP != b.rec.contractFP || row.PrevPrefix != prefix || sha256Hex(row.Payload) != row.PayloadHash {
+			return pairRecHead{Seq: seq, Prefix: prefix}, errors.New("book read encountered an altered committed prefix")
+		}
+		if pairRecPrefixHash(row.Schema, b.rec.runID, row.Seq, row.Partition, row.ContractFP, row.Kind, row.CallID, row.PrevPrefix, row.PayloadHash) != row.Prefix {
+			return pairRecHead{Seq: seq, Prefix: prefix}, errors.New("book read encountered an invalid prefix hash")
+		}
+		var in *pairPaperBookInput
+		if row.Kind == pairRecEventBookInput {
+			ev, err := pairRecDecode(row.Payload)
+			if err != nil {
+				return pairRecHead{Seq: seq, Prefix: prefix}, err
+			}
+			if ev.BookInput == nil || ev.Kind != row.Kind || ev.V != row.Schema || ev.CallID != row.CallID {
+				return pairRecHead{Seq: seq, Prefix: prefix}, errors.New("book input body differs from its committed row")
+			}
+			in = ev.BookInput
+		}
+		if err = visit(row, in, size); err != nil {
+			return pairRecHead{Seq: seq, Prefix: prefix}, err
+		}
+		seq, prefix = row.Seq, row.Prefix
+	}
+	if err = rows.Err(); err != nil {
+		return pairRecHead{Seq: seq, Prefix: prefix}, err
+	}
+	return pairRecHead{Seq: seq, Prefix: prefix}, nil
+}
+
+func (b *pairPaperBooks) committedReducers(ctx context.Context, head pairRecHead) (map[string]*pairPaperBookReducer, error) {
+	reducers := map[string]*pairPaperBookReducer{}
+	from := pairRecHead{}
+	var size int64
+	if b.cacheLock != nil && head.Seq > 0 && pairReplaySHAPattern.MatchString(head.Prefix) {
+		b.rec.mu.Lock()
+		recorded := b.rec.log != nil && head.Seq <= int64(len(b.rec.log.rows))
+		b.rec.mu.Unlock()
+		if !recorded {
+			select {
+			case b.cacheLock <- struct{}{}:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			if c := &b.cache; c.reducers != nil && c.seq <= head.Seq {
+				from, size = pairRecHead{Seq: c.seq, Prefix: c.prefix}, c.size
+				for id, d := range c.reducers {
+					reducers[id] = d.clone(false)
+				}
+			}
+			<-b.cacheLock
+		}
+	}
+	for id, m := range b.members {
+		if reducers[id] == nil {
+			reducers[id] = newPairPaperBookReducer(m, b.need, false)
+		}
+	}
+	if from.Seq == 0 {
+		err := b.forPrefix(ctx, head, func(in pairPaperBookInput) error {
+			if d := reducers[in.Binding.MemberID]; d != nil {
+				d.apply(in)
+			}
+			return nil
+		})
+		return reducers, err
+	}
+	end, err := b.scanCommitted(ctx, from, size, head, func(_ pairRecRow, in *pairPaperBookInput, _ int64) error {
+		if in != nil {
+			if d := reducers[in.Binding.MemberID]; d != nil {
+				d.apply(*in)
+			}
+		}
+		return nil
+	})
+	if err == nil && end != head {
+		err = errors.New("book prefix differs from committed storage")
+	}
+	return reducers, err
+}
+
+func (b *pairPaperBooks) recordsOver(d *pairPaperBookReducer) bool {
+	return b.workingReserve()+len(d.records)*(feedBookMemRecordBase+2*feedBookMaxLevels*feedBookMemLevelBytes)+len(d.allMarkers)*feedEstimateBookMarkerBytes > feedBookMemoryBudget
+}
+
+func (b *pairPaperBooks) cachedReduce(ctx context.Context, head pairRecHead, id string, at int64, all bool) (*pairPaperBookReducer, bool, error) {
+	if head.Seq <= 0 || !pairReplaySHAPattern.MatchString(head.Prefix) || b.rec.file == nil || b.cacheLock == nil {
+		return nil, false, nil
+	}
+	b.rec.mu.Lock()
+	recorded := b.rec.log != nil && head.Seq <= int64(len(b.rec.log.rows))
+	b.rec.mu.Unlock()
+	if recorded {
+		return nil, false, nil
+	}
+	select {
+	case b.cacheLock <- struct{}{}:
+	case <-ctx.Done():
+		return nil, true, ctx.Err()
+	}
+	defer func() { <-b.cacheLock }()
+	c := &b.cache
+	if head.Seq < c.seq || at < c.high {
+		return nil, false, nil
+	}
+	if head.Seq == c.seq && head.Prefix != c.prefix {
+		return nil, true, errors.New("book prefix differs from committed storage")
+	}
+	if c.reducers == nil {
+		c.reducers = map[string]*pairPaperBookReducer{}
+		for mid, m := range b.members {
+			c.reducers[mid] = newPairPaperBookReducer(m, b.need, true)
+		}
+	}
+	frontier := true
+	var tail []pairPaperBookInput
+	end, err := b.scanCommitted(ctx, pairRecHead{Seq: c.seq, Prefix: c.prefix}, c.size, head, func(row pairRecRow, in *pairPaperBookInput, size int64) error {
+		if in != nil {
+			if want, ok := b.bindings[in.Binding.MemberID]; ok && in.Binding != want {
+				return errors.New("book input source binding changed")
+			}
+			if d := c.reducers[in.Binding.MemberID]; d != nil {
+				if frontier && in.ReceiptMs <= at {
+					d.apply(*in)
+					if in.ReceiptMs > c.high {
+						c.high = in.ReceiptMs
+					}
+					if d.all && b.recordsOver(d) {
+						c.overflow = true
+						for _, r := range c.reducers {
+							r.all, r.records, r.allMarkers = false, nil, nil
+						}
+					}
+				} else {
+					frontier = false
+					tail = append(tail, *in)
+				}
+			}
+		}
+		if frontier {
+			c.seq, c.prefix, c.size = row.Seq, row.Prefix, size
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, true, err
+	}
+	if end != head {
+		return nil, true, errors.New("book prefix differs from committed storage")
+	}
+	base, ok := c.reducers[id]
+	if !ok {
+		return nil, true, errors.New("unknown sealed book member")
+	}
+	if all && c.overflow {
+		return nil, true, errPairPaperBookMemory
+	}
+	d := base.clone(all)
+	for _, in := range tail {
+		if in.Binding.MemberID != id || in.ReceiptMs > at {
+			continue
+		}
+		d.apply(in)
+	}
+	if all && b.recordsOver(d) {
+		return nil, true, errPairPaperBookMemory
+	}
+	return d, true, nil
 }
 
 func (b *pairPaperBooks) read(ctx context.Context, kind string, req pairPaperBookRequest) (pairPaperBookBoundary, error) {
@@ -821,7 +1027,11 @@ func (b *pairPaperBooks) read(ctx context.Context, kind string, req pairPaperBoo
 		if v.Disposition == "available" {
 			if err := b.checkRead(ctx, v, kind, req); err != nil {
 				if errors.Is(err, errPairPaperBookMemory) {
-					b.setError(err)
+					b.mu.Lock()
+					b.stopErr = err
+					b.intake.Failed = true
+					b.terminal = true
+					b.mu.Unlock()
 					b.cancelIntake()
 				}
 				v.Disposition = "unavailable"
@@ -852,6 +1062,9 @@ func (b *pairPaperBooks) reduce(ctx context.Context, boundary pairPaperBookBound
 	m, ok := b.members[id]
 	if !ok {
 		return nil, errors.New("unknown sealed book member")
+	}
+	if d, ok, err := b.cachedReduce(ctx, boundary.Prefix, id, at, all); ok {
+		return d, err
 	}
 	d := newPairPaperBookReducer(m, b.need, all)
 	err := b.forPrefix(ctx, boundary.Prefix, func(in pairPaperBookInput) error {

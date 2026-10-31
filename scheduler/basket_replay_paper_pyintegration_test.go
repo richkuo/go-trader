@@ -1648,6 +1648,7 @@ func TestBasketReplayPairPaperResearchOracleTiming(t *testing.T) {
 	})
 	type paperCase struct {
 		opts      pairPaperResearchOptions
+		holdAt    int64
 		admitted  bool
 		noStart   bool
 		resultEnd bool
@@ -1662,8 +1663,8 @@ func TestBasketReplayPairPaperResearchOracleTiming(t *testing.T) {
 				t.Fatalf("the reader starts at preparation and requests at the hour: start %d request %d", o.starts[0].Event.Start.RawStartMs, o.admitted[0].RequestMs)
 			}
 		}},
-		"receipt with completion inside the deadline": {opts: short(map[string]interface{}{"oracle_response_delay_ms": 4000}), admitted: true, resultEnd: true, check: func(t *testing.T, target int64, o pairPaperOracleOutcome) {
-			if c := o.ends[0].Event.End.RawCompletionMs; o.admitted[0].ReceiptMs != target+4000 || c > target+5000 {
+		"receipt with completion inside the deadline": {opts: short(map[string]interface{}{"oracle_response_delay_ms": 4960}), holdAt: 4980, admitted: true, resultEnd: true, check: func(t *testing.T, target int64, o pairPaperOracleOutcome) {
+			if c := o.ends[0].Event.End.RawCompletionMs; o.admitted[0].ReceiptMs != target+4960 || c > target+5000 {
 				t.Fatalf("receipt %d and completion %d stay inside the deadline", o.admitted[0].ReceiptMs, c)
 			}
 		}},
@@ -1716,7 +1717,11 @@ func TestBasketReplayPairPaperResearchOracleTiming(t *testing.T) {
 			c.opts.runID = "paper-timing-" + strings.ReplaceAll(name, " ", "-")
 			f, target := newPairPaperResearchFixture(t, c.opts)
 			dir := filepath.Join(f.parent, "paper")
-			p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), f.env(false))
+			env := f.env(false)
+			if c.holdAt > 0 {
+				env = append(env, "GO_TRADER_PAPER_TEST_ORACLE_COMPLETION_MS="+strconv.FormatInt(target+c.holdAt, 10))
+			}
+			p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), env)
 			if p.Code == basketReplayExitRefused || p.Out.Run == nil || !p.Out.Run.Finished {
 				t.Fatalf("the timing run finishes, got exit %d %+v %+v\nstderr tail=%s", p.Code, p.Out.Refusal, p.Out.Run, tail(p.Stderr, 4000))
 			}
