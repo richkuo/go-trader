@@ -201,14 +201,13 @@ func (s *RegimeStore) manualExport(key regimeBundleKey, strategyID string) manua
 func (s *RegimeStore) manualBundle(key regimeBundleKey, strategyID string) (*RegimeBundle, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if _, due := s.exports[strategyID]; !due {
+		if c, ok := s.carried[strategyID]; ok && c.Bundle != nil && c.Bundle.Key == key {
+			return c.Bundle, true
+		}
+	}
 	if b, ok := s.entries[key]; ok && b != nil {
 		return b, true
-	}
-	if _, due := s.exports[strategyID]; due {
-		return nil, false
-	}
-	if c, ok := s.carried[strategyID]; ok && c.Bundle != nil && c.Bundle.Key == key {
-		return c.Bundle, true
 	}
 	return nil, false
 }
