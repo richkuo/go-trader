@@ -7,10 +7,10 @@
 Runtime behavior changes for `manual-open` and `manual-add` run from the command line when `market_feed` is `shared` or `websocket`.
 They now read the running scheduler's current regime bundle through `GET /api/regime/manual` instead of refusing.
 The command reaches `http://localhost:<status_port or 8099>` by default; set `GO_TRADER_MANUAL_SCHEDULER_URL` (a bare loopback `http` origin with a port) for a `--status-port` override, a fallback listener port or a container port mapping.
-Set `STATUS_AUTH_TOKEN` in the command's environment when the scheduler uses one.
-A token, identity, key, configuration, reply-format, timestamp or draining failure refuses the order with no ratchet fallback; only an absent, unreachable, timed-out or genuinely failed scheduler result keeps the existing market-order ratchet fallback, and limit placement always refuses.
+The command authenticates with a secret it reads from the scheduler's owner marker and never sends `STATUS_AUTH_TOKEN`; the scheduler signs each reply, so a different process on that port receives no credential and cannot supply a result.
+An authentication, reply-proof, identity, key, configuration, reply-format, timestamp or draining failure refuses the order with no ratchet fallback; only an absent, unreachable, timed-out or genuinely failed scheduler result keeps the existing market-order ratchet fallback, and limit placement always refuses.
 A new command-line open whose protection needs ATR must pass a finite, positive `--atr`; the command never fetches candles privately, and an adverse fill switches to the arithmetic fallback ATR with a warning.
-Each daemon writes an identity-only `<state db>.manual-regime-owner.json` beside every state file while it owns them and removes it on shutdown; stop the daemon before deleting one by hand.
+Each daemon writes a mode-0600 `<state db>.manual-regime-owner.json` (nonce and route secret) beside every state file while it owns them and removes it on shutdown; stop the daemon before deleting one by hand.
 The status UI open and add, REST mode and record-only adoption are unchanged.
 Deploy Go and Python together with `bash scripts/update.sh --restart`.
 

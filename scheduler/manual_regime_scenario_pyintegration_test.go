@@ -26,21 +26,48 @@ type mrpRoute struct {
 	payload RegimePayload
 }
 
-func (e *mrpEnv) route(port int, strategyID, partition string) mrpRoute {
+func (e *mrpEnv) ownerSecret() string {
+	e.t.Helper()
+	marker, err := readManualRegimeOwnerMarker(mrpMarkerPath(filepath.Join(e.dir, "state.db")))
+	if err != nil {
+		e.t.Fatalf("owner marker: %v", err)
+	}
+	return marker.Secret
+}
+
+func (e *mrpEnv) rawRoute(port int, strategyID, partition, secret string, headers map[string]string) (int, http.Header, []byte, string) {
 	e.t.Helper()
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d%s?strategy=%s&partition=%s", port, manualRegimeRoute, strategyID, partition), nil)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+e.token)
+	challenge, err := newManualRegimeRandomHex()
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	req.Header.Set(manualRegimeChallengeHeader, challenge)
+	req.Header.Set(manualRegimeAuthHeader, manualRegimeRequestMAC(secret, challenge, strategyID, partition))
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, resp.Header, body, challenge
+}
+
+func (e *mrpEnv) route(port int, strategyID, partition string) mrpRoute {
+	e.t.Helper()
+	secret := e.ownerSecret()
+	status, header, body, challenge := e.rawRoute(port, strategyID, partition, secret, nil)
+	if !manualRegimeMACEqual(header.Get(manualRegimeProofHeader), manualRegimeReplyMAC(secret, challenge, status, body)) {
+		e.t.Fatalf("route reply %d carries no valid owner proof: %s", status, body)
+	}
 	var out mrpRoute
-	out.status = resp.StatusCode
+	out.status = status
 	if err := json.Unmarshal(body, &out.env); err != nil {
 		e.t.Fatalf("route body %q: %v", body, err)
 	}
@@ -139,19 +166,27 @@ type mrpProxy struct {
 	port   int
 	mu     sync.Mutex
 	target int
+	secret func() string
 	mutate func(status int, env map[string]any) (int, []byte)
+	proof  func(secret, challenge string, status int, body []byte, upstream string) string
 }
 
-func newMRPProxy(t *testing.T, target int) *mrpProxy {
+func mrpResign(secret, challenge string, status int, body []byte, _ string) string {
+	return manualRegimeReplyMAC(secret, challenge, status, body)
+}
+
+func newMRPProxy(t *testing.T, target int, secret func() string) *mrpProxy {
 	t.Helper()
-	p := &mrpProxy{target: target}
+	p := &mrpProxy{target: target, secret: secret, proof: mrpResign}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		req, _ := http.NewRequest(r.Method, fmt.Sprintf("http://127.0.0.1:%d%s", p.target, r.URL.RequestURI()), nil)
-		req.Header.Set("Authorization", r.Header.Get("Authorization"))
+		challenge := r.Header.Get(manualRegimeChallengeHeader)
+		req.Header.Set(manualRegimeChallengeHeader, challenge)
+		req.Header.Set(manualRegimeAuthHeader, r.Header.Get(manualRegimeAuthHeader))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			w.WriteHeader(http.StatusBadGateway)
@@ -162,7 +197,7 @@ func newMRPProxy(t *testing.T, target int) *mrpProxy {
 		var env map[string]any
 		_ = json.Unmarshal(body, &env)
 		p.mu.Lock()
-		mutate := p.mutate
+		mutate, proof := p.mutate, p.proof
 		p.mu.Unlock()
 		status, out := resp.StatusCode, body
 		if mutate != nil {
@@ -170,6 +205,9 @@ func newMRPProxy(t *testing.T, target int) *mrpProxy {
 		}
 		if status >= 300 && status < 400 {
 			w.Header().Set("Location", "http://127.0.0.1:1/")
+		}
+		if sig := proof(p.secret(), challenge, status, out, resp.Header.Get(manualRegimeProofHeader)); sig != "" {
+			w.Header().Set(manualRegimeProofHeader, sig)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -183,8 +221,48 @@ func newMRPProxy(t *testing.T, target int) *mrpProxy {
 
 func (p *mrpProxy) set(fn func(status int, env map[string]any) (int, []byte)) {
 	p.mu.Lock()
-	p.mutate = fn
+	p.mutate, p.proof = fn, mrpResign
 	p.mu.Unlock()
+}
+
+func (p *mrpProxy) setProof(fn func(secret, challenge string, status int, body []byte, upstream string) string) {
+	p.mu.Lock()
+	p.mutate, p.proof = nil, fn
+	p.mu.Unlock()
+}
+
+type mrpSquatter struct {
+	port    int
+	mu      sync.Mutex
+	headers []http.Header
+	body    []byte
+}
+
+func newMRPSquatter(t *testing.T, body []byte) *mrpSquatter {
+	t.Helper()
+	s := &mrpSquatter{body: body}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.headers = append(s.headers, r.Header.Clone())
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(s.body)
+	})}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	s.port = ln.Addr().(*net.TCPAddr).Port
+	return s
+}
+
+func (s *mrpSquatter) seen() []http.Header {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]http.Header(nil), s.headers...)
 }
 
 func mrpJSON(v any) []byte {
@@ -360,9 +438,9 @@ func regimeReadinessProcessWebsocket(t *testing.T) {
 
 	base := e.venueKinds()
 	r = e.command(cfgA, nil, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5")
-	e.expectRefused(r, "default endpoint reaches the other scheduler", "different scheduler process")
+	e.expectRefused(r, "default endpoint reaches the other scheduler", "HTTP 401")
 	e.expectNoVenue(base, "wrong instance")
-	t.Logf("matrix: configured port held by an identical scheduler with other state -> refused, no fallback, no order")
+	t.Logf("matrix: configured port held by an identical scheduler with other state -> its route rejects the owner authentication, refused, no fallback, no order")
 
 	r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	if r.code != 0 || !strings.Contains(r.stdout, "[dry-run] manual-open mr-ready") {
@@ -389,7 +467,7 @@ func regimeReadinessProcessWebsocket(t *testing.T) {
 		t.Fatalf("equal reported process identifiers changed admission:\n%s", r)
 	}
 	r = e.command(cfgA, nil, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-	e.expectRefused(r, "equal pid wrong instance", "different scheduler process")
+	e.expectRefused(r, "equal pid wrong instance", "HTTP 401")
 	os.WriteFile(lockPath, pidBlob, 0o644)
 	t.Logf("identity: equal reported process identifiers leave admission to the owner nonce")
 
@@ -495,7 +573,7 @@ func regimeReadinessProcessWebsocket(t *testing.T) {
 	}
 	t.Logf("ATR: an adverse confirmed fill queues the arithmetic recovery ATR and no private candle fetch ran")
 
-	proxy := newMRPProxy(t, port+1)
+	proxy := newMRPProxy(t, port+1, e.ownerSecret)
 	via := mrpURL(proxy.port)
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
 	stale := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
@@ -551,9 +629,51 @@ func regimeReadinessProcessWebsocket(t *testing.T) {
 	e.expectNoVenue(base, "transport refusals")
 	t.Logf("matrix: %d malformed, stale, future, foreign or unsupported replies refused open and add with no ratchet fallback and no order", len(refusals))
 
-	r = e.command(cfgA, []string{good, "STATUS_AUTH_TOKEN=wrong"}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
-	e.expectRefused(r, "authentication", "HTTP 401")
+	proxy.setProof(func(_, _ string, _ int, _ []byte, upstream string) string { return upstream })
+	r = e.command(cfgA, []string{via}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
+	if r.code != 0 || strings.Contains(r.stderr, "fallback") {
+		t.Fatalf("an unchanged signed reply through a forwarder must admit:\n%s", r)
+	}
+	foreignSecret, _ := newManualRegimeRandomHex()
+	for name, proof := range map[string]func(string, string, int, []byte, string) string{
+		"unsigned reply": func(string, string, int, []byte, string) string { return "" },
+		"foreign proof": func(_, challenge string, status int, body []byte, _ string) string {
+			return manualRegimeReplyMAC(foreignSecret, challenge, status, body)
+		},
+		"replayed proof": func(secret, _ string, status int, body []byte, _ string) string {
+			return manualRegimeReplyMAC(secret, strings.Repeat("ef", manualRegimeOwnerNonceBytes), status, body)
+		},
+	} {
+		proxy.setProof(proof)
+		r = e.command(cfgA, []string{via}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
+		e.expectRefused(r, name, "no valid owner proof")
+		r = e.command(cfgA, []string{via}, "manual-open", "mr-limit", "--size", "0.01", "--limit-price", strconv.FormatFloat(limitPx, 'f', 2, 64), "--atr", "0.5")
+		e.expectRefused(r, name+" limit", "no valid owner proof")
+	}
+	secretA := e.ownerSecret()
+	_, _, signedBody, _ := e.rawRoute(port+1, "mr-ready", "paper", secretA, nil)
+	squatter := newMRPSquatter(t, signedBody)
+	r = e.command(cfgA, []string{mrpURL(squatter.port)}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
+	e.expectRefused(r, "squatter replaying a real bundle", "no valid owner proof")
+	seen := squatter.seen()
+	if len(seen) != 1 {
+		t.Fatalf("squatter requests: %d", len(seen))
+	}
+	for k, vs := range seen[0] {
+		for _, v := range vs {
+			if strings.EqualFold(k, "Authorization") || strings.Contains(v, e.token) || strings.Contains(v, secretA) {
+				t.Fatalf("the command disclosed a credential to an unverified listener: %s: %s", k, v)
+			}
+		}
+	}
+	if status, header, _, _ := e.rawRoute(port+1, "mr-ready", "paper", foreignSecret, nil); status != http.StatusUnauthorized || header.Get(manualRegimeProofHeader) != "" {
+		t.Fatalf("a request without the owner secret must get an unsigned 401: %d", status)
+	}
+	if status, _, _, _ := e.rawRoute(port+1, "mr-ready", "paper", secretA, map[string]string{"Authorization": "Bearer " + e.token, manualRegimeAuthHeader: ""}); status != http.StatusUnauthorized {
+		t.Fatalf("the status token alone must not authenticate the manual regime route: %d", status)
+	}
 	e.expectNoVenue(base, "authentication")
+	t.Logf("identity: unsigned, foreign-keyed and replayed proofs refused; a squatter replaying a real bundle refused and received no token or secret; the route rejects requests without the owner secret")
 
 	proxy.set(func(_ int, m map[string]any) (int, []byte) {
 		out := map[string]any{"protocol_version": 1, "result": manualRegimeResultClassification}
@@ -604,6 +724,12 @@ func regimeReadinessProcessWebsocket(t *testing.T) {
 	}
 	r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
 	e.expectRefused(r, "replaced marker", "different scheduler process")
+	foreign.Secret, _ = newManualRegimeRandomHex()
+	if err := writeManualRegimeOwnerMarker(markerA, foreign); err != nil {
+		t.Fatal(err)
+	}
+	r = e.command(cfgA, []string{good}, "manual-open", "mr-ready", "--size", "0.01", "--atr", "0.5", "--dry-run")
+	e.expectRefused(r, "replaced marker secret", "HTTP 401")
 	copyPath := markerA + ".copy"
 	os.WriteFile(copyPath, markerBlob, 0o600)
 	os.Remove(markerA)

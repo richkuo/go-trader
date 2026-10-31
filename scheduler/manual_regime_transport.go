@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -32,6 +33,9 @@ const (
 	manualRegimeOwnerMarkerSuffix   = ".manual-regime-owner.json"
 	manualRegimeOwnerMarkerMaxBytes = 4096
 	manualRegimeOwnerNonceBytes     = 32
+	manualRegimeChallengeHeader     = "X-Go-Trader-Manual-Challenge"
+	manualRegimeAuthHeader          = "X-Go-Trader-Manual-Auth"
+	manualRegimeProofHeader         = "X-Go-Trader-Manual-Proof"
 	manualRegimeRoute               = "/api/regime/manual"
 	manualSchedulerURLEnv           = "GO_TRADER_MANUAL_SCHEDULER_URL"
 	manualRegimeConnectTimeout      = time.Second
@@ -79,21 +83,27 @@ func manualRegimeHardRefusal(err error) bool {
 type manualRegimeOwnerMarker struct {
 	Version    int      `json:"version"`
 	OwnerNonce string   `json:"owner_nonce"`
+	Secret     string   `json:"secret"`
 	Role       string   `json:"role"`
 	Partitions []string `json:"partitions"`
+}
+
+type manualRegimeOwnerIdentity struct {
+	Nonce  string
+	Secret string
 }
 
 func manualRegimeOwnerMarkerPath(dbPath string) string {
 	return canonicalDBPath(dbPath) + manualRegimeOwnerMarkerSuffix
 }
 
-func manualRegimeMarkerFor(spec storageFileSpec, nonce string) manualRegimeOwnerMarker {
+func manualRegimeMarkerFor(spec storageFileSpec, id manualRegimeOwnerIdentity) manualRegimeOwnerMarker {
 	parts := make([]string, 0, len(spec.Partitions))
 	for _, p := range spec.Partitions {
 		parts = append(parts, p.String())
 	}
 	sort.Strings(parts)
-	return manualRegimeOwnerMarker{Version: manualRegimeOwnerMarkerVersion, OwnerNonce: nonce, Role: string(spec.Role), Partitions: parts}
+	return manualRegimeOwnerMarker{Version: manualRegimeOwnerMarkerVersion, OwnerNonce: id.Nonce, Secret: id.Secret, Role: string(spec.Role), Partitions: parts}
 }
 
 func validManualRegimeNonce(nonce string) bool {
@@ -102,6 +112,41 @@ func validManualRegimeNonce(nonce string) bool {
 	}
 	_, err := hex.DecodeString(nonce)
 	return err == nil && strings.ToLower(nonce) == nonce
+}
+
+func newManualRegimeRandomHex() (string, error) {
+	raw := make([]byte, manualRegimeOwnerNonceBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+func manualRegimeMAC(secret string, parts ...[]byte) string {
+	key, _ := hex.DecodeString(secret)
+	mac := hmac.New(sha256.New, key)
+	for _, p := range parts {
+		var n [8]byte
+		l := uint64(len(p))
+		for i := range n {
+			n[i] = byte(l >> (56 - 8*i))
+		}
+		mac.Write(n[:])
+		mac.Write(p)
+	}
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func manualRegimeRequestMAC(secret, challenge, strategy, partition string) string {
+	return manualRegimeMAC(secret, []byte("go-trader manual regime request v1"), []byte(challenge), []byte(strategy), []byte(partition))
+}
+
+func manualRegimeReplyMAC(secret, challenge string, status int, body []byte) string {
+	return manualRegimeMAC(secret, []byte("go-trader manual regime reply v1"), []byte(challenge), []byte(strconv.Itoa(status)), body)
+}
+
+func manualRegimeMACEqual(got, want string) bool {
+	return validManualRegimeNonce(got) && hmac.Equal([]byte(got), []byte(want))
 }
 
 var errManualRegimeMarkerAbsent = errors.New("owner marker absent")
@@ -140,7 +185,7 @@ func readManualRegimeOwnerMarker(path string) (manualRegimeOwnerMarker, error) {
 	if err := decodeManualRegimeStrict(blob, &marker); err != nil {
 		return manualRegimeOwnerMarker{}, fmt.Errorf("owner marker %s is malformed: %w", path, err)
 	}
-	if marker.Version != manualRegimeOwnerMarkerVersion || !validManualRegimeNonce(marker.OwnerNonce) || marker.Role == "" {
+	if marker.Version != manualRegimeOwnerMarkerVersion || !validManualRegimeNonce(marker.OwnerNonce) || !validManualRegimeNonce(marker.Secret) || marker.Secret == marker.OwnerNonce || marker.Role == "" {
 		return manualRegimeOwnerMarker{}, fmt.Errorf("owner marker %s is malformed", path)
 	}
 	return marker, nil
@@ -208,25 +253,29 @@ func removeManualRegimeOwnerMarkerIfOwned(path, nonce string) {
 
 type manualRegimeOwner struct {
 	mu        sync.RWMutex
-	nonce     string
+	id        manualRegimeOwnerIdentity
 	active    bool
 	published []string
 }
 
 var globalManualRegimeOwner = &manualRegimeOwner{}
 
-func (o *manualRegimeOwner) identity() (string, bool) {
+func (o *manualRegimeOwner) identity() (manualRegimeOwnerIdentity, bool) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	return o.nonce, o.active
+	return o.id, o.active
 }
 
 func (o *manualRegimeOwner) publish(layout storageLayout) error {
-	raw := make([]byte, manualRegimeOwnerNonceBytes)
-	if _, err := rand.Read(raw); err != nil {
+	nonce, err := newManualRegimeRandomHex()
+	if err != nil {
 		return fmt.Errorf("owner nonce: %w", err)
 	}
-	nonce := hex.EncodeToString(raw)
+	secret, err := newManualRegimeRandomHex()
+	if err != nil {
+		return fmt.Errorf("owner secret: %w", err)
+	}
+	id := manualRegimeOwnerIdentity{Nonce: nonce, Secret: secret}
 	var written []string
 	rollback := func() {
 		for _, path := range written {
@@ -242,7 +291,7 @@ func (o *manualRegimeOwner) publish(layout storageLayout) error {
 			rollback()
 			return err
 		}
-		if err := writeManualRegimeOwnerMarker(path, manualRegimeMarkerFor(spec, nonce)); err != nil {
+		if err := writeManualRegimeOwnerMarker(path, manualRegimeMarkerFor(spec, id)); err != nil {
 			rollback()
 			return fmt.Errorf("owner marker %s: %w", path, err)
 		}
@@ -250,7 +299,7 @@ func (o *manualRegimeOwner) publish(layout storageLayout) error {
 	}
 	for _, path := range written {
 		marker, err := readManualRegimeOwnerMarker(path)
-		if err != nil || marker.OwnerNonce != nonce {
+		if err != nil || marker.OwnerNonce != nonce || marker.Secret != secret {
 			rollback()
 			return fmt.Errorf("owner marker %s did not read back after publication", path)
 		}
@@ -259,14 +308,14 @@ func (o *manualRegimeOwner) publish(layout storageLayout) error {
 		return fmt.Errorf("no on-disk state file to publish an owner marker beside")
 	}
 	o.mu.Lock()
-	o.nonce, o.active, o.published = nonce, true, written
+	o.id, o.active, o.published = id, true, written
 	o.mu.Unlock()
 	return nil
 }
 
 func (o *manualRegimeOwner) withdraw() {
 	o.mu.Lock()
-	nonce, paths := o.nonce, o.published
+	nonce, paths := o.id.Nonce, o.published
 	o.active, o.published = false, nil
 	o.mu.Unlock()
 	for _, path := range paths {
@@ -274,8 +323,8 @@ func (o *manualRegimeOwner) withdraw() {
 	}
 }
 
-func verifyManualRegimeOwner(layout storageLayout) (string, *manualRegimeTransportError) {
-	nonce := ""
+func verifyManualRegimeOwner(layout storageLayout) (manualRegimeOwnerIdentity, *manualRegimeTransportError) {
+	var id manualRegimeOwnerIdentity
 	held, unheld, absent := 0, 0, 0
 	for _, spec := range layout.Files {
 		if spec.InMemory {
@@ -294,30 +343,31 @@ func verifyManualRegimeOwner(layout storageLayout) (string, *manualRegimeTranspo
 			continue
 		}
 		if err != nil {
-			return "", manualRegimeRefused("%v", err)
+			return manualRegimeOwnerIdentity{}, manualRegimeRefused("%v", err)
 		}
-		want := manualRegimeMarkerFor(spec, marker.OwnerNonce)
+		got := manualRegimeOwnerIdentity{Nonce: marker.OwnerNonce, Secret: marker.Secret}
+		want := manualRegimeMarkerFor(spec, got)
 		if marker.Role != want.Role || strings.Join(marker.Partitions, ",") != strings.Join(want.Partitions, ",") {
-			return "", manualRegimeRefused("owner marker %s belongs to a different storage layout", path)
+			return manualRegimeOwnerIdentity{}, manualRegimeRefused("owner marker %s belongs to a different storage layout", path)
 		}
-		if nonce != "" && marker.OwnerNonce != nonce {
-			return "", manualRegimeRefused("owner markers of the configured state files name different scheduler processes")
+		if id.Nonce != "" && got != id {
+			return manualRegimeOwnerIdentity{}, manualRegimeRefused("owner markers of the configured state files name different scheduler processes")
 		}
-		nonce = marker.OwnerNonce
+		id = got
 	}
 	if held == 0 && unheld == 0 {
-		return "", manualRegimeRefused("the configured storage layout has no on-disk state file")
+		return manualRegimeOwnerIdentity{}, manualRegimeRefused("the configured storage layout has no on-disk state file")
 	}
 	if held > 0 && unheld > 0 {
-		return "", manualRegimeRefused("only part of the configured state-file set is owned by a running scheduler")
+		return manualRegimeOwnerIdentity{}, manualRegimeRefused("only part of the configured state-file set is owned by a running scheduler")
 	}
 	if held == 0 {
-		return "", manualRegimeUnavailable("no scheduler owns the configured state files")
+		return manualRegimeOwnerIdentity{}, manualRegimeUnavailable("no scheduler owns the configured state files")
 	}
 	if absent > 0 {
-		return "", manualRegimeUnavailable("the owning scheduler has not published its identity yet")
+		return manualRegimeOwnerIdentity{}, manualRegimeUnavailable("the owning scheduler has not published its identity yet")
 	}
-	return nonce, nil
+	return id, nil
 }
 
 type manualRegimeStrategyProjection struct {
@@ -527,7 +577,9 @@ var manualRegimeMessages = map[string]string{
 	manualRegimeResultInvalid:        "strategy and partition are required",
 }
 
-func writeManualRegimeEnvelope(w http.ResponseWriter, env manualRegimeEnvelope) {
+type manualRegimeReplySigner func(status int, body []byte) string
+
+func writeManualRegimeEnvelope(w http.ResponseWriter, env manualRegimeEnvelope, sign manualRegimeReplySigner) {
 	env.ProtocolVersion = manualRegimeProtocolVersion
 	env.Message = manualRegimeMessages[env.Result]
 	blob, err := json.Marshal(env)
@@ -535,9 +587,13 @@ func writeManualRegimeEnvelope(w http.ResponseWriter, env manualRegimeEnvelope) 
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	status := manualRegimeStatusFor(env.Result)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(manualRegimeStatusFor(env.Result))
+	if sign != nil {
+		w.Header().Set(manualRegimeProofHeader, sign(status, blob))
+	}
+	w.WriteHeader(status)
 	w.Write(blob)
 }
 
@@ -682,9 +738,14 @@ func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
 	if err != nil {
 		return RegimePayload{}, manualRegimeRefused("%v", err)
 	}
-	nonce, terr := verifyManualRegimeOwner(m.store.layout)
+	owner, terr := verifyManualRegimeOwner(m.store.layout)
 	if terr != nil {
 		return RegimePayload{}, terr
+	}
+	nonce := owner.Nonce
+	challenge, err := newManualRegimeRandomHex()
+	if err != nil {
+		return RegimePayload{}, manualRegimeRefused("request challenge: %v", err)
 	}
 	q := url.Values{}
 	q.Set("strategy", sc.ID)
@@ -696,9 +757,8 @@ func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
 		return RegimePayload{}, manualRegimeRefused("build request: %v", err)
 	}
 	req.Host = ep.host
-	if token := m.cfg.StatusToken; token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	req.Header.Set(manualRegimeChallengeHeader, challenge)
+	req.Header.Set(manualRegimeAuthHeader, manualRegimeRequestMAC(owner.Secret, challenge, sc.ID, binding.Contract.Partition))
 	resp, err := ep.client().Do(req)
 	if err != nil {
 		if manualRegimeNetworkUnavailable(err) {
@@ -717,10 +777,14 @@ func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
 	if len(body) > manualRegimeMaxBodyBytes {
 		return RegimePayload{}, manualRegimeRefused("reply exceeds %d bytes", manualRegimeMaxBodyBytes)
 	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return RegimePayload{}, manualRegimeRefused("the listener at %s rejected the owner authentication (HTTP 401)", ep.origin)
+	}
+	if !manualRegimeMACEqual(resp.Header.Get(manualRegimeProofHeader), manualRegimeReplyMAC(owner.Secret, challenge, resp.StatusCode, body)) {
+		return RegimePayload{}, manualRegimeRefused("the reply from %s carries no valid owner proof; the listener is not the scheduler that owns the configured state files", ep.origin)
+	}
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusServiceUnavailable:
-	case http.StatusUnauthorized:
-		return RegimePayload{}, manualRegimeRefused("the scheduler rejected the status token (HTTP 401)")
 	default:
 		return RegimePayload{}, manualRegimeRefused("unexpected HTTP %d from %s", resp.StatusCode, ep.origin)
 	}
@@ -755,7 +819,7 @@ func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
 		}
 		return RegimePayload{}, terr
 	}
-	if again != nonce {
+	if again != owner {
 		return RegimePayload{}, manualRegimeRefused("owner identity changed during the request")
 	}
 	if env.Result == manualRegimeResultUnavailable {
@@ -832,11 +896,11 @@ func (m *manualRegimeRemote) confirm() error {
 	if rec == nil {
 		return nil
 	}
-	nonce, terr := verifyManualRegimeOwner(rec.layout)
+	owner, terr := verifyManualRegimeOwner(rec.layout)
 	if terr != nil {
 		return manualRegimeRefused("owner identity no longer verifies: %s", terr.reason)
 	}
-	if nonce != rec.nonce {
+	if owner.Nonce != rec.nonce {
 		return manualRegimeRefused("the owning scheduler changed after admission")
 	}
 	return checkManualRegimeAge(rec.at, m.now(), rec.interval)

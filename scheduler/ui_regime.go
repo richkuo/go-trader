@@ -87,11 +87,23 @@ func (ss *StatusServer) handleAPIRegime(w http.ResponseWriter, r *http.Request) 
 }
 
 func (ss *StatusServer) handleAPIRegimeManual(w http.ResponseWriter, r *http.Request) {
+	owner, active := globalManualRegimeOwner.identity()
+	q := r.URL.Query()
+	var sign manualRegimeReplySigner
+	challenge := r.Header.Get(manualRegimeChallengeHeader)
+	if active && validManualRegimeNonce(challenge) &&
+		manualRegimeMACEqual(r.Header.Get(manualRegimeAuthHeader), manualRegimeRequestMAC(owner.Secret, challenge, q.Get("strategy"), q.Get(uiPartitionQueryKey))) {
+		secret := owner.Secret
+		sign = func(status int, body []byte) string { return manualRegimeReplyMAC(secret, challenge, status, body) }
+	}
 	if isDraining() {
-		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultDraining})
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultDraining}, sign)
 		return
 	}
-	if !ss.requireAPIAuth(w, r) {
+	if sign == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -102,10 +114,9 @@ func (ss *StatusServer) handleAPIRegimeManual(w http.ResponseWriter, r *http.Req
 		http.NotFound(w, r)
 		return
 	}
-	q := r.URL.Query()
 	id := strings.TrimSpace(q.Get("strategy"))
 	if id == "" || strings.TrimSpace(q.Get(uiPartitionQueryKey)) == "" {
-		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInvalid})
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInvalid}, sign)
 		return
 	}
 	filter, ok := ss.uiPartitionParam(w, r)
@@ -113,12 +124,11 @@ func (ss *StatusServer) handleAPIRegimeManual(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if filter.All {
-		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInvalid})
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInvalid}, sign)
 		return
 	}
-	nonce, active := globalManualRegimeOwner.identity()
-	if !active || ss.stateDB == nil || ss.mu == nil {
-		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInternal})
+	if ss.stateDB == nil || ss.mu == nil {
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInternal}, sign)
 		return
 	}
 
@@ -148,20 +158,20 @@ func (ss *StatusServer) handleAPIRegimeManual(w http.ResponseWriter, r *http.Req
 	ss.mu.RUnlock()
 
 	if cfg == nil {
-		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInternal})
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInternal}, sign)
 		return
 	}
 	if !found || sc.Type != "manual" || partitionFor(sc) != filter.Partition {
-		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultUnknown})
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultUnknown}, sign)
 		return
 	}
 	if bindErr != nil {
-		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInternal})
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInternal}, sign)
 		return
 	}
 	key := manualRegimeKeyFor(binding.Request.Key)
 	env := manualRegimeEnvelope{
-		OwnerNonce:          nonce,
+		OwnerNonce:          owner.Nonce,
 		StrategyID:          binding.Contract.StrategyID,
 		Partition:           binding.Contract.Partition,
 		StorageRole:         binding.Contract.StorageRole,
@@ -189,8 +199,8 @@ func (ss *StatusServer) handleAPIRegimeManual(w http.ResponseWriter, r *http.Req
 		env.BundleAt = &at
 		env.Payload = json.RawMessage(view.PayloadJSON)
 	}
-	if _, stillActive := globalManualRegimeOwner.identity(); !stillActive {
+	if current, stillActive := globalManualRegimeOwner.identity(); !stillActive || current != owner {
 		env = manualRegimeEnvelope{Result: manualRegimeResultInternal}
 	}
-	writeManualRegimeEnvelope(w, env)
+	writeManualRegimeEnvelope(w, env, sign)
 }
