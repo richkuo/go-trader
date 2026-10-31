@@ -1079,8 +1079,8 @@ func resolveManualRegimePayload(sc StrategyConfig, cfg *Config) (RegimePayload, 
 		return RegimePayload{}, fmt.Errorf("no regime bundle request")
 	}
 	if cfg.MarketFeed == "shared" || cfg.MarketFeed == "websocket" {
-		if bundle, found := globalRegimeStore.get(req.Key); found && bundle != nil && bundle.Err == "" {
-			maxAge := time.Duration(max(1, cfg.IntervalSeconds)) * time.Second
+		if bundle, found := globalRegimeStore.manualBundle(req.Key, sc.ID); found && bundle != nil && bundle.Err == "" {
+			maxAge := manualRegimeMaxAge(cfg, sc)
 			age := time.Since(bundle.At)
 			if age >= 0 && age <= maxAge {
 				return bundle.Payload, nil

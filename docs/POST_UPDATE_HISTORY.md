@@ -12,7 +12,8 @@ An authentication, reply-proof, identity, key, configuration, reply-format, time
 A new command-line open whose protection needs ATR must pass a finite, positive `--atr`; the command never fetches candles privately, and an adverse fill switches to the arithmetic fallback ATR with a warning.
 Each daemon writes a mode-0600 `<state db>.manual-regime-owner.json` (nonce and route secret) beside every state file while it owns them and removes it on shutdown; stop the daemon before deleting one by hand.
 `update.sh`, the container image build and `migrate-service-layout.py` treat the marker as runtime state and never copy, restore or delete it.
-The status UI open and add, REST mode and record-only adoption are unchanged.
+The bundle age limit is the strategy's own `interval_seconds` (else the global one), and a manual strategy keeps its last bundle between its own cycles, for both the command and the status UI open and add.
+Under `market_feed: rest`, a tracked limit fill whose supplied `--atr` exceeds half the fill price now discards it and fetches a new ATR, as a REST market open already does; the rest of REST mode and record-only adoption are unchanged.
 Deploy Go and Python together with `bash scripts/update.sh --restart`.
 
 ### Issue 1939: regime readiness

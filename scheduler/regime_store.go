@@ -72,9 +72,16 @@ type RegimeStore struct {
 	mu      sync.RWMutex
 	entries map[regimeBundleKey]*RegimeBundle
 	exports map[string]manualRegimeExport
+	carried map[string]manualRegimeCarry
 	builtAt time.Time
 	sealed  bool
 	gen     uint64
+}
+
+type manualRegimeCarry struct {
+	Export manualRegimeExport
+	Gen    uint64
+	Bundle *RegimeBundle
 }
 
 type manualRegimeExport struct {
@@ -95,12 +102,35 @@ type manualRegimeExportView struct {
 var globalRegimeStore = &RegimeStore{}
 
 func (s *RegimeStore) resetForCycle(now time.Time) uint64 {
-	return s.resetForCycleWithExports(now, nil)
+	return s.reset(now, nil, false)
 }
 
 func (s *RegimeStore) resetForCycleWithExports(now time.Time, exports map[string]manualRegimeExport) uint64 {
+	return s.reset(now, exports, true)
+}
+
+func (s *RegimeStore) reset(now time.Time, exports map[string]manualRegimeExport, carry bool) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	carried := make(map[string]manualRegimeCarry)
+	if carry {
+		for id, export := range s.exports {
+			if _, due := exports[id]; due {
+				continue
+			}
+			carried[id] = manualRegimeCarry{Export: export, Gen: s.gen, Bundle: s.entries[export.Key]}
+		}
+		for id, prev := range s.carried {
+			if _, due := exports[id]; due {
+				continue
+			}
+			if _, newer := carried[id]; newer {
+				continue
+			}
+			carried[id] = prev
+		}
+	}
+	s.carried = carried
 	s.entries = make(map[regimeBundleKey]*RegimeBundle)
 	s.exports = make(map[string]manualRegimeExport, len(exports))
 	for id, export := range exports {
@@ -152,13 +182,35 @@ func (s *RegimeStore) manualExport(key regimeBundleKey, strategyID string) manua
 	defer s.mu.RUnlock()
 	view := manualRegimeExportView{Gen: s.gen}
 	view.Contract, view.ContractFound = s.exports[strategyID]
-	if b, ok := s.entries[key]; ok && b != nil {
+	b, ok := s.entries[key]
+	if !view.ContractFound {
+		if c, carried := s.carried[strategyID]; carried {
+			view.Gen, view.Contract, view.ContractFound = c.Gen, c.Export, true
+			b, ok = c.Bundle, c.Bundle != nil && c.Bundle.Key == key
+		}
+	}
+	if ok && b != nil {
 		view.Found = true
 		view.Err = b.Err
 		view.At = b.At
 		view.PayloadJSON = b.RawRegimeJSON
 	}
 	return view
+}
+
+func (s *RegimeStore) manualBundle(key regimeBundleKey, strategyID string) (*RegimeBundle, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if b, ok := s.entries[key]; ok && b != nil {
+		return b, true
+	}
+	if _, due := s.exports[strategyID]; due {
+		return nil, false
+	}
+	if c, ok := s.carried[strategyID]; ok && c.Bundle != nil && c.Bundle.Key == key {
+		return c.Bundle, true
+	}
+	return nil, false
 }
 
 func (s *RegimeStore) Snapshot() ([]*RegimeBundle, time.Time) {

@@ -713,12 +713,16 @@ func newManualRegimeRemote(cfg *Config, store *StateStore) *manualRegimeRemote {
 	return &manualRegimeRemote{cfg: cfg, store: store, now: time.Now}
 }
 
-func manualRegimeMaxAge(cfg *Config) time.Duration {
-	interval := 0
+func manualRegimeCadenceSeconds(cfg *Config, sc StrategyConfig) int {
+	global := 0
 	if cfg != nil {
-		interval = cfg.IntervalSeconds
+		global = cfg.IntervalSeconds
 	}
-	return time.Duration(max(1, interval)) * time.Second
+	return max(1, configuredStrategyIntervalSeconds(sc, global))
+}
+
+func manualRegimeMaxAge(cfg *Config, sc StrategyConfig) time.Duration {
+	return time.Duration(manualRegimeCadenceSeconds(cfg, sc)) * time.Second
 }
 
 func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
@@ -783,14 +787,18 @@ func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
 	if !manualRegimeMACEqual(resp.Header.Get(manualRegimeProofHeader), manualRegimeReplyMAC(owner.Secret, challenge, resp.StatusCode, body)) {
 		return RegimePayload{}, manualRegimeRefused("the reply from %s carries no valid owner proof; the listener is not the scheduler that owns the configured state files", ep.origin)
 	}
+	var env manualRegimeEnvelope
+	envErr := decodeManualRegimeStrict(body, &env)
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusServiceUnavailable:
 	default:
+		if envErr == nil && env.ProtocolVersion == manualRegimeProtocolVersion && env.Result != "" && manualRegimeStatusFor(env.Result) == resp.StatusCode {
+			return RegimePayload{}, manualRegimeRefused("the scheduler refused with HTTP %d (%s): %s", resp.StatusCode, env.Result, manualRegimeMessages[env.Result])
+		}
 		return RegimePayload{}, manualRegimeRefused("unexpected HTTP %d from %s", resp.StatusCode, ep.origin)
 	}
-	var env manualRegimeEnvelope
-	if err := decodeManualRegimeStrict(body, &env); err != nil {
-		return RegimePayload{}, manualRegimeRefused("malformed reply: %v", err)
+	if envErr != nil {
+		return RegimePayload{}, manualRegimeRefused("malformed reply: %v", envErr)
 	}
 	if env.ProtocolVersion != manualRegimeProtocolVersion {
 		return RegimePayload{}, manualRegimeRefused("unsupported protocol version %d", env.ProtocolVersion)
@@ -831,9 +839,9 @@ func (m *manualRegimeRemote) resolve(sc StrategyConfig) (RegimePayload, error) {
 	if env.Generation == 0 || env.BundleAt == nil || env.BundleAt.IsZero() || len(env.Payload) == 0 {
 		return RegimePayload{}, manualRegimeRefused("bundle reply is missing generation, timestamp or payload")
 	}
-	maxAge := manualRegimeMaxAge(m.cfg)
-	if env.IntervalSeconds != m.cfg.IntervalSeconds {
-		return RegimePayload{}, manualRegimeRefused("bundle interval %ds differs from the configured %ds", env.IntervalSeconds, m.cfg.IntervalSeconds)
+	maxAge := manualRegimeMaxAge(m.cfg, sc)
+	if cadence := manualRegimeCadenceSeconds(m.cfg, sc); env.IntervalSeconds != cadence {
+		return RegimePayload{}, manualRegimeRefused("bundle interval %ds differs from the strategy's configured %ds", env.IntervalSeconds, cadence)
 	}
 	if err := checkManualRegimeAge(*env.BundleAt, m.now(), maxAge); err != nil {
 		return RegimePayload{}, err

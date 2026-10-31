@@ -106,12 +106,8 @@ func (ss *StatusServer) handleAPIRegimeManual(w http.ResponseWriter, r *http.Req
 		w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	if r.URL.Path != manualRegimeRoute {
-		http.NotFound(w, r)
+	if r.Method != http.MethodGet || r.URL.Path != manualRegimeRoute {
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInvalid}, sign)
 		return
 	}
 	id := strings.TrimSpace(q.Get("strategy"))
@@ -119,8 +115,14 @@ func (ss *StatusServer) handleAPIRegimeManual(w http.ResponseWriter, r *http.Req
 		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInvalid}, sign)
 		return
 	}
-	filter, ok := ss.uiPartitionParam(w, r)
-	if !ok {
+	filter, status, _ := ss.resolveUIPartition(r)
+	switch status {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultUnknown}, sign)
+		return
+	default:
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInvalid}, sign)
 		return
 	}
 	if filter.All {
@@ -153,7 +155,9 @@ func (ss *StatusServer) handleAPIRegimeManual(w http.ResponseWriter, r *http.Req
 		if found {
 			binding, bindErr = manualRegimeBindingFor(cfg, ss.stateDB.ident, sc)
 		}
-		intervalS = cfg.IntervalSeconds
+		if found {
+			intervalS = manualRegimeCadenceSeconds(cfg, sc)
+		}
 	}
 	ss.mu.RUnlock()
 

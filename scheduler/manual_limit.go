@@ -515,6 +515,15 @@ func limitOrderFullyFilled(cumFilled, orderSize float64) bool {
 }
 
 func resolveLimitFillEntryATR(sc StrategyConfig, cfg *Config, rowATR, avgPx float64, notifier *MultiNotifier) float64 {
+	if rowATR > 0 && avgPx > 0 && rowATR > 0.5*avgPx {
+		if sealedManualCommandFeed(cfg) {
+			return recoverSuppliedManualATR("limit-fill", sc.ID, sc.Symbol, rowATR, avgPx, sc.Leverage, notifier)
+		}
+		warnNotifier(notifier, fmt.Sprintf(
+			"[limit-fill] %s %s: supplied ATR %.6f exceeds 50%% of fill price %.4f — discarding it",
+			sc.ID, sc.Symbol, rowATR, avgPx))
+		rowATR = 0
+	}
 	entryATR := rowATR
 	if entryATR == 0 && (effectiveManualSLATRMult(sc) > 0 || strategyUsesTieredTPATRClose(sc) || strategyRegimeStopDependent(sc)) {
 		fetched, fetchErr, ok := fetchManualEntryATR(sc, cfg)
@@ -535,9 +544,6 @@ func resolveLimitFillEntryATR(sc StrategyConfig, cfg *Config, rowATR, avgPx floa
 					sc.ID, sc.Symbol, fetchErr))
 			}
 		}
-	}
-	if rowATR > 0 && entryATR == rowATR && avgPx > 0 && entryATR > 0.5*avgPx {
-		return recoverSuppliedManualATR("limit-fill", sc.ID, sc.Symbol, rowATR, avgPx, sc.Leverage, notifier)
 	}
 	if entryATR > 0 && avgPx > 0 && entryATR > 0.5*avgPx {
 		warnNotifier(notifier, fmt.Sprintf(
