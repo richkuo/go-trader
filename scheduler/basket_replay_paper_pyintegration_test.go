@@ -1662,8 +1662,8 @@ func TestBasketReplayPairPaperResearchOracleTiming(t *testing.T) {
 				t.Fatalf("the reader starts at preparation and requests at the hour: start %d request %d", o.starts[0].Event.Start.RawStartMs, o.admitted[0].RequestMs)
 			}
 		}},
-		"receipt with completion inside the deadline": {opts: short(map[string]interface{}{"oracle_response_delay_ms": 4960}), admitted: true, resultEnd: true, check: func(t *testing.T, target int64, o pairPaperOracleOutcome) {
-			if c := o.ends[0].Event.End.RawCompletionMs; o.admitted[0].ReceiptMs != target+4960 || c > target+5000 {
+		"receipt with completion inside the deadline": {opts: short(map[string]interface{}{"oracle_response_delay_ms": 4000}), admitted: true, resultEnd: true, check: func(t *testing.T, target int64, o pairPaperOracleOutcome) {
+			if c := o.ends[0].Event.End.RawCompletionMs; o.admitted[0].ReceiptMs != target+4000 || c > target+5000 {
 				t.Fatalf("receipt %d and completion %d stay inside the deadline", o.admitted[0].ReceiptMs, c)
 			}
 		}},

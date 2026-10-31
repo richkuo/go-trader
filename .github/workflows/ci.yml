@@ -173,13 +173,8 @@ jobs:
             exit 1
           fi
 
-  go-python-integration-paper-books:
-    name: go-python-integration-paper-books (${{ matrix.shard }}/4)
+  go-python-integration-paper-oracle:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
@@ -193,15 +188,82 @@ jobs:
       - name: Install dependencies
         run: uv sync --compile-bytecode
 
-      - name: Paper book stream and retained recording families
+      - name: Paper research oracle timing and open order
         run: |
           set -o pipefail
-          names=$(go -C scheduler test -count=1 -tags pyintegration -list '^TestBasketReplayPairPaper[A-Za-z]*$' ./... | grep '^Test' | sort | awk -v shard='${{ matrix.shard }}' 'NR % 4 == shard' | paste -sd'|' -)
-          if [ -z "$names" ]; then
-            echo "::error::shard ${{ matrix.shard }} selected no paper tests"
+          go -C scheduler test -v -count=1 -timeout 40m -tags pyintegration -run '^(TestBasketReplayPairPaperResearchOracleTiming|TestBasketReplayPairPaperResearchOracleOpenOrder)$' ./... 2>&1 | tee "$RUNNER_TEMP/paper-oracle.log"
+          if grep -n -- '--- SKIP' "$RUNNER_TEMP/paper-oracle.log"; then
+            echo "::error::a paper integration check was skipped"
             exit 1
           fi
-          go -C scheduler test -v -count=1 -timeout 40m -tags pyintegration -run "^($names)\$" ./... 2>&1 | tee "$RUNNER_TEMP/paper-books.log"
+
+  go-python-integration-paper-crash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --compile-bytecode
+
+      - name: Paper crash resume and oracle resume
+        run: |
+          set -o pipefail
+          go -C scheduler test -v -count=1 -timeout 40m -tags pyintegration -run '^(TestBasketReplayPairPaperCrashesResumeWithoutRepeatingCommittedCalls|TestBasketReplayPairPaperResearchOracleResume|TestBasketReplayPairPaperResearchOracleStandaloneFunding)$' ./... 2>&1 | tee "$RUNNER_TEMP/paper-crash.log"
+          if grep -n -- '--- SKIP' "$RUNNER_TEMP/paper-crash.log"; then
+            echo "::error::a paper integration check was skipped"
+            exit 1
+          fi
+
+  go-python-integration-paper-barrier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --compile-bytecode
+
+      - name: Paper barrier and funding resume
+        run: |
+          set -o pipefail
+          go -C scheduler test -v -count=1 -timeout 40m -tags pyintegration -run '^(TestBasketReplayPairPaperResearchOracleReproducesOffline|TestBasketReplayPairPaperResumesAnAppliedOKXFundingEventFromItsRecordedEvidence|TestBasketReplayPairPaperResearchOracleBarrierOutsidePreparationAddsNoOracleRow|TestBasketReplayPairPaperResearchOracleBarrierDecidesFromTheSameWake|TestBasketReplayPairPaperResearchReceiptBeforeExitMatchesPlayback)$' ./... 2>&1 | tee "$RUNNER_TEMP/paper-barrier.log"
+          if grep -n -- '--- SKIP' "$RUNNER_TEMP/paper-barrier.log"; then
+            echo "::error::a paper integration check was skipped"
+            exit 1
+          fi
+
+  go-python-integration-paper-books:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: scheduler/go.sum
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --compile-bytecode
+
+      - name: Paper book stream and remaining recording families
+        run: |
+          set -o pipefail
+          go -C scheduler test -v -count=1 -timeout 40m -tags pyintegration -run '^TestBasketReplayPairPaper[A-Za-z]*$' -skip '^(TestBasketReplayPairPaperResearchOracleTiming|TestBasketReplayPairPaperResearchOracleOpenOrder|TestBasketReplayPairPaperCrashesResumeWithoutRepeatingCommittedCalls|TestBasketReplayPairPaperResearchOracleResume|TestBasketReplayPairPaperResearchOracleStandaloneFunding|TestBasketReplayPairPaperResearchOracleReproducesOffline|TestBasketReplayPairPaperResumesAnAppliedOKXFundingEventFromItsRecordedEvidence|TestBasketReplayPairPaperResearchOracleBarrierOutsidePreparationAddsNoOracleRow|TestBasketReplayPairPaperResearchOracleBarrierDecidesFromTheSameWake|TestBasketReplayPairPaperResearchReceiptBeforeExitMatchesPlayback)$' ./... 2>&1 | tee "$RUNNER_TEMP/paper-books.log"
           if grep -n -- '--- SKIP' "$RUNNER_TEMP/paper-books.log"; then
             echo "::error::a paper integration check was skipped"
             exit 1
