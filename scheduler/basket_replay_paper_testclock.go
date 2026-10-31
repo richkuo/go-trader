@@ -27,6 +27,10 @@ type pairPaperTestWall struct {
 }
 
 func init() {
+	if endpoint := os.Getenv("GO_TRADER_PAPER_TEST_BOOK_ENDPOINT"); endpoint != "" {
+		pairPaperBookEndpoint = func() string { return endpoint }
+		pairPaperBookReceiptGate = func() { pairPaperWall.Sleep(time.Millisecond) }
+	}
 	path := os.Getenv(pairPaperTestClockEnv)
 	if path == "" {
 		return

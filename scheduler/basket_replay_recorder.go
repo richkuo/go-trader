@@ -81,6 +81,7 @@ type pairRecHandle struct {
 	rec      *pairRecorder
 	parentID string
 	children int
+	start    pairRecStart
 }
 
 var errPairRecDiverged = errors.New("the recorded call sequence diverged")
@@ -131,19 +132,23 @@ type pairRecorder struct {
 	oracleLog      *pairRecLog
 	attempts       map[string]pairPaperOracleAttempt
 	lastWakeRecord *pairRecWake
+	lastWakePrefix string
 
-	backward   atomic.Bool
-	refusals   []string
-	diverged   string
-	faults     pairRecFaults
-	counts     map[string]int
-	now        func() time.Time
-	tick       func()
-	lastWake   int64
-	skipped    int
-	faultSaid  bool
-	schema     int
-	beforeExit func()
+	backward     atomic.Bool
+	refusals     []string
+	diverged     string
+	faults       pairRecFaults
+	counts       map[string]int
+	now          func() time.Time
+	tick         func()
+	lastWake     int64
+	skipped      int
+	faultSaid    bool
+	schema       int
+	beforeExit   func()
+	books        *pairPaperBooks
+	encodedBytes int64
+	limitStopped atomic.Bool
 }
 
 func newPairRecorder(mode pairRecMode, runID, partition, contractFP string, file *StateDB, clock *simulatedClock, faults pairRecFaults) *pairRecorder {
@@ -213,14 +218,22 @@ func (rec *pairRecorder) noteRaw(raw int64) bool {
 }
 
 func (rec *pairRecorder) appendLocked(events ...pairRecEvent) error {
+	return rec.appendLockedContext(context.Background(), events...)
+}
+
+func (rec *pairRecorder) appendLockedContext(ctx context.Context, events ...pairRecEvent) error {
 	if rec.mode == pairRecPlayback {
 		return fmt.Errorf("a playback never appends to the recording")
 	}
 	if rec.file == nil {
 		return fmt.Errorf("the recorder has no partition file")
 	}
+	added, err := rec.bookAppendBudget(events)
+	if err != nil {
+		return err
+	}
 	fail := false
-	next, err := rec.file.appendPairRecEvents(rec.runID, rec.partition, rec.contractFP, rec.head, rec.schemaVersion(), events, func(int) error {
+	next, err := rec.file.appendPairRecEventsContext(ctx, rec.runID, rec.partition, rec.contractFP, rec.head, rec.schemaVersion(), events, func(int) error {
 		if rec.failNextAppend() {
 			fail = true
 			return fmt.Errorf("injected fault fail-record-append:%d", rec.faults.n)
@@ -238,6 +251,7 @@ func (rec *pairRecorder) appendLocked(events ...pairRecEvent) error {
 		return err
 	}
 	rec.head = next
+	rec.encodedBytes += added
 	for _, ev := range events {
 		if pairRecConsumableEvent(ev) {
 			rec.cursor++
@@ -260,13 +274,17 @@ func pairRecConsumableEvent(ev pairRecEvent) bool {
 }
 
 func (rec *pairRecorder) schemaVersion() int {
-	if rec != nil && rec.schema == pairRecSchemaAsync {
-		return pairRecSchemaAsync
+	if rec != nil && pairRecAsyncSchema(rec.schema) {
+		return rec.schema
 	}
 	return pairRecSchemaVersion
 }
 
 func (rec *pairRecorder) enqueueLocked(ev pairRecEvent) {
+	if rec.schemaVersion() == pairRecSchemaBooks && len(rec.queue) >= 64 {
+		rec.limitStopped.Store(true)
+		return
+	}
 	rec.queue = append(rec.queue, ev)
 }
 
@@ -374,6 +392,14 @@ func (rec *pairRecorder) call(ctx context.Context, c pairRecCall, live func(ctx 
 	rawStart := rec.now().UnixMilli()
 	start := pairRecStart{Kind: c.Kind, Phase: c.Phase, MemberID: c.MemberID, SlotMs: c.SlotMs, ActionID: c.ActionID, StepID: rec.stepID, Ordinal: ordinal,
 		Request: c.Request, RequestHash: reqHash, RawStartMs: rawStart, LogicalBeforeMs: rec.logical}
+	if pairPaperBookCall(c.Kind) {
+		head := rec.head
+		start.BookPrefix = &head
+		if rec.books != nil {
+			intake := rec.books.intakeNow()
+			start.BookIntake = &intake
+		}
+	}
 	if err := rec.appendLocked(pairRecEvent{Kind: pairRecEventStart, CallID: callID, Start: &start}); err != nil {
 		rec.block(err.Error())
 		rec.enqueueLocked(pairRecEvent{Kind: pairRecEventFailure, CallID: callID, Failure: &pairRecFailure{CallKind: c.Kind, MemberID: c.MemberID, RequestHash: reqHash,
@@ -381,7 +407,7 @@ func (rec *pairRecorder) call(ctx context.Context, c pairRecCall, live func(ctx 
 		return pairRecResult{}, nil, pairRecNotMadeError{fmt.Errorf("the %s call start could not be recorded, so no outside read was made: %w", c.Kind, err)}
 	}
 	rec.fault("exit-after-call-start")
-	h := &pairRecHandle{rec: rec, parentID: callID}
+	h := &pairRecHandle{rec: rec, parentID: callID, start: start}
 	rec.mu.Unlock()
 	res := live(ctx, h)
 	rec.mu.Lock()
@@ -596,6 +622,7 @@ func (rec *pairRecorder) wake(stepID string, ordinal int) (int64, error) {
 		}
 		rec.lastWake = item.Seq
 		rec.lastWakeRecord = w
+		rec.lastWakePrefix = item.Prefix
 		rec.setLogical(w.LogicalMs)
 		return w.LogicalMs, nil
 	}
@@ -605,6 +632,7 @@ func (rec *pairRecorder) wake(stepID string, ordinal int) (int64, error) {
 	ev := pairRecEvent{Kind: pairRecEventWake, Wake: &pairRecWake{StepID: stepID, Ordinal: ordinal, WallMs: wall, LogicalMs: logical, ClockBackward: back, Epoch: rec.epoch}}
 	rec.lastWake = 0
 	rec.lastWakeRecord = ev.Wake
+	rec.lastWakePrefix = ""
 	if rec.blocked.Load() {
 		rec.enqueueLocked(ev)
 	} else if err := rec.appendLocked(ev); err != nil {
@@ -612,6 +640,7 @@ func (rec *pairRecorder) wake(stepID string, ordinal int) (int64, error) {
 		rec.enqueueLocked(ev)
 	} else {
 		rec.lastWake = rec.head.Seq
+		rec.lastWakePrefix = rec.head.Prefix
 	}
 	if back {
 		rec.backward.Store(true)
@@ -741,7 +770,7 @@ func (rec *pairRecorder) restorePosition(cursor, ordinal int, logical int64, ste
 		for i := cursor - 1; i >= 0; i-- {
 			row := rec.log.rows[rec.log.stream[i]]
 			if row.Kind == pairRecEventWake {
-				rec.lastWake, rec.lastWakeRecord = row.Seq, row.Event.Wake
+				rec.lastWake, rec.lastWakeRecord, rec.lastWakePrefix = row.Seq, row.Event.Wake, row.Prefix
 				break
 			}
 		}
@@ -754,6 +783,9 @@ func (rec *pairRecorder) restorePosition(cursor, ordinal int, logical int64, ste
 func (rec *pairRecorder) adoptLog(l *pairRecLog, prevCursor int) {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
+	if l.schema == pairRecSchemaBooks {
+		rec.encodedBytes = pairPaperEncodedLogBytes(l)
+	}
 	rec.log = l
 	if rec.mode != pairRecLive {
 		rec.cursor = prevCursor
@@ -773,6 +805,9 @@ func (rec *pairRecorder) prefixAt(seq int64) string {
 		if p, ok := rec.log.prefixAt(seq); ok && seq <= int64(len(rec.log.rows)) {
 			return p
 		}
+	}
+	if seq > 0 && seq == rec.lastWake {
+		return rec.lastWakePrefix
 	}
 	if seq == rec.head.Seq {
 		return rec.head.Prefix

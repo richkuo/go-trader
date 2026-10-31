@@ -122,6 +122,14 @@ type pairReplayRuntime struct {
 
 func (r *pairReplayRuntime) Close() {
 	r.killOracleChild()
+	if r.paper != nil && r.paper.books != nil {
+		if err := r.paper.books.stop("cleanup"); err != nil {
+			fmt.Fprintf(os.Stderr, "[paper] book cleanup: %v\n", err)
+			if !r.paper.books.joined() {
+				return
+			}
+		}
+	}
 	for i := len(r.cleanups) - 1; i >= 0; i-- {
 		r.cleanups[i]()
 	}
@@ -715,6 +723,9 @@ func (r *pairReplayRuntime) resumeState() error {
 		r.nextAt, r.nextManageMs, r.sameTime = last.NextWakeMs, last.Host.NextManageMs, last.SameTime
 	} else {
 		r.nextAt, r.nextManageMs = r.lt.StartMs, r.lt.StartMs
+		if r.paper != nil && r.paper.books != nil {
+			r.initPaperGrids()
+		}
 	}
 	nowMs := r.nextAt
 	if pending != nil {
@@ -1168,6 +1179,9 @@ func (r *pairReplayRuntime) Run() error {
 }
 
 func (r *pairReplayRuntime) cycleInputs(at time.Time) basketCycleInputs {
+	if r.paper != nil && r.paper.books != nil {
+		return basketCycleInputs{Now: at, Once: true, PairSnapshotFor: r.paper.books.seal, PairGeneration: func() uint64 { return 1 }}
+	}
 	if r.quotes == nil {
 		return basketCycleInputs{Now: at, Once: true}
 	}

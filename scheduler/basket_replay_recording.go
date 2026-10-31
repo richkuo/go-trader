@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 const (
 	pairRecSchemaVersion   = 1
 	pairRecSchemaAsync     = 2
+	pairRecSchemaBooks     = 3
 	pairRecMaxPayloadBytes = 16 << 20
 	pairRecMaxStdoutBytes  = 4 << 20
 	pairRecMaxStderrBytes  = 64 << 10
@@ -57,6 +59,7 @@ var pairRecCallKinds = map[string]bool{
 	pairRecKindCollect: true, pairRecKindReference: true, pairRecKindCapability: true, pairRecKindAccount: true, pairRecKindConversions: true,
 	pairRecKindPosition: true, pairRecKindCandles: true, pairRecKindMarks: true, pairRecKindFunding: true, pairRecKindFundingOracle: true, pairRecKindMatchPoll: true,
 	pairRecKindPolicy: true, pairRecKindNativeCheck: true, pairRecKindMemberRead: true,
+	pairRecKindBookSeal: true, pairRecKindBookWindow: true, pairRecKindBookMark: true,
 }
 
 var pairRecProcessKinds = map[string]bool{pairRecKindPolicy: true, pairRecKindNativeCheck: true}
@@ -64,7 +67,7 @@ var pairRecProcessKinds = map[string]bool{pairRecKindPolicy: true, pairRecKindNa
 var pairRecEventKinds = map[string]bool{
 	pairRecEventBind: true, pairRecEventEpoch: true, pairRecEventStart: true, pairRecEventEnd: true, pairRecEventRecovery: true,
 	pairRecEventWake: true, pairRecEventBudget: true, pairRecEventFailure: true, pairRecEventClear: true, pairRecEventSeal: true,
-	pairRecEventConsume: true,
+	pairRecEventConsume: true, pairRecEventBookInput: true,
 }
 
 var pairRecClasses = map[string]bool{pairRecClassResult: true, pairRecClassInfra: true, pairRecClassCancelled: true}
@@ -149,20 +152,21 @@ func (sdb *StateDB) ensurePairRecordingSchema() error {
 }
 
 type pairRecEvent struct {
-	V        int              `json:"v"`
-	Kind     string           `json:"kind"`
-	CallID   string           `json:"call_id,omitempty"`
-	Bind     *pairRecBind     `json:"bind,omitempty"`
-	Epoch    *pairRecEpoch    `json:"epoch,omitempty"`
-	Start    *pairRecStart    `json:"start,omitempty"`
-	End      *pairRecEnd      `json:"end,omitempty"`
-	Recovery *pairRecRecovery `json:"recovery,omitempty"`
-	Wake     *pairRecWake     `json:"wake,omitempty"`
-	Budget   *pairRecBudget   `json:"budget,omitempty"`
-	Failure  *pairRecFailure  `json:"failure,omitempty"`
-	Clear    *pairRecClear    `json:"clear,omitempty"`
-	Seal     *pairRecSeal     `json:"seal,omitempty"`
-	Consume  *pairRecConsume  `json:"consume,omitempty"`
+	V         int                 `json:"v"`
+	Kind      string              `json:"kind"`
+	CallID    string              `json:"call_id,omitempty"`
+	Bind      *pairRecBind        `json:"bind,omitempty"`
+	Epoch     *pairRecEpoch       `json:"epoch,omitempty"`
+	Start     *pairRecStart       `json:"start,omitempty"`
+	End       *pairRecEnd         `json:"end,omitempty"`
+	Recovery  *pairRecRecovery    `json:"recovery,omitempty"`
+	Wake      *pairRecWake        `json:"wake,omitempty"`
+	Budget    *pairRecBudget      `json:"budget,omitempty"`
+	Failure   *pairRecFailure     `json:"failure,omitempty"`
+	Clear     *pairRecClear       `json:"clear,omitempty"`
+	Seal      *pairRecSeal        `json:"seal,omitempty"`
+	Consume   *pairRecConsume     `json:"consume,omitempty"`
+	BookInput *pairPaperBookInput `json:"book_input,omitempty"`
 }
 
 type pairRecBind struct {
@@ -184,19 +188,21 @@ type pairRecEpoch struct {
 }
 
 type pairRecStart struct {
-	ParentID        string `json:"parent_id,omitempty"`
-	Kind            string `json:"kind"`
-	Phase           string `json:"phase"`
-	MemberID        string `json:"member_id,omitempty"`
-	SlotMs          int64  `json:"slot_ms,omitempty"`
-	ActionID        string `json:"action_id,omitempty"`
-	StepID          string `json:"step_id,omitempty"`
-	Ordinal         int    `json:"ordinal"`
-	Request         []byte `json:"request"`
-	RequestHash     string `json:"request_hash"`
-	RawStartMs      int64  `json:"raw_start_ms"`
-	LogicalBeforeMs int64  `json:"logical_before_ms"`
-	Async           bool   `json:"async,omitempty"`
+	ParentID        string               `json:"parent_id,omitempty"`
+	Kind            string               `json:"kind"`
+	Phase           string               `json:"phase"`
+	MemberID        string               `json:"member_id,omitempty"`
+	SlotMs          int64                `json:"slot_ms,omitempty"`
+	ActionID        string               `json:"action_id,omitempty"`
+	StepID          string               `json:"step_id,omitempty"`
+	Ordinal         int                  `json:"ordinal"`
+	Request         []byte               `json:"request"`
+	RequestHash     string               `json:"request_hash"`
+	RawStartMs      int64                `json:"raw_start_ms"`
+	LogicalBeforeMs int64                `json:"logical_before_ms"`
+	Async           bool                 `json:"async,omitempty"`
+	BookPrefix      *pairRecHead         `json:"book_prefix,omitempty"`
+	BookIntake      *pairPaperBookIntake `json:"book_intake,omitempty"`
 }
 
 type pairRecConsume struct {
@@ -304,8 +310,8 @@ func pairRecEncode(ev pairRecEvent) ([]byte, error) {
 }
 
 func pairRecEncodeSchema(schema int, ev pairRecEvent) ([]byte, error) {
-	if schema != pairRecSchemaVersion && schema != pairRecSchemaAsync {
-		return nil, fmt.Errorf("recording schema %d is not 1 or 2", schema)
+	if schema != pairRecSchemaVersion && !pairRecAsyncSchema(schema) {
+		return nil, fmt.Errorf("recording schema %d is not 1, 2 or 3", schema)
 	}
 	ev.V = schema
 	b, err := json.Marshal(ev)
@@ -330,18 +336,18 @@ func pairRecDecode(b []byte) (pairRecEvent, error) {
 	if !bytes.Equal(again, b) {
 		return ev, fmt.Errorf("the recording event bytes are not their canonical encoding")
 	}
-	if (ev.V != pairRecSchemaVersion && ev.V != pairRecSchemaAsync) || !pairRecEventKinds[ev.Kind] {
+	if (ev.V != pairRecSchemaVersion && !pairRecAsyncSchema(ev.V)) || !pairRecEventKinds[ev.Kind] {
 		return ev, fmt.Errorf("the recording event is version %d kind %q", ev.V, ev.Kind)
 	}
 	return ev, nil
 }
 
 type pairRecHead struct {
-	Seq    int64
-	Prefix string
+	Seq    int64  `json:"seq"`
+	Prefix string `json:"prefix_hash"`
 }
 
-func pairRecInsertTx(tx *sql.Tx, runID, partition, contractFP string, head pairRecHead, schema int, ev pairRecEvent) (pairRecHead, error) {
+func pairRecInsertTx(ctx context.Context, tx *sql.Tx, runID, partition, contractFP string, head pairRecHead, schema int, ev pairRecEvent) (pairRecHead, error) {
 	if schema == 0 {
 		schema = pairRecSchemaVersion
 	}
@@ -352,21 +358,21 @@ func pairRecInsertTx(tx *sql.Tx, runID, partition, contractFP string, head pairR
 	seq := head.Seq + 1
 	ph := sha256Hex(payload)
 	prefix := pairRecPrefixHash(schema, runID, seq, partition, contractFP, ev.Kind, ev.CallID, head.Prefix, ph)
-	if _, err := tx.Exec(`INSERT INTO basket_replay_inputs (run_id, seq, schema_version, partition, contract_fingerprint, event_kind, call_id, prev_prefix_hash, prefix_hash, payload_hash, payload)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO basket_replay_inputs (run_id, seq, schema_version, partition, contract_fingerprint, event_kind, call_id, prev_prefix_hash, prefix_hash, payload_hash, payload)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, runID, seq, schema, partition, contractFP, ev.Kind, ev.CallID, head.Prefix, prefix, ph, payload); err != nil {
 		return head, fmt.Errorf("append recording input %d: %w", seq, err)
 	}
-	if err := pairRecProjectTx(tx, runID, seq, ev); err != nil {
+	if err := pairRecProjectTx(ctx, tx, runID, seq, ev); err != nil {
 		return head, err
 	}
 	return pairRecHead{Seq: seq, Prefix: prefix}, nil
 }
 
-func pairRecProjectTx(tx *sql.Tx, runID string, seq int64, ev pairRecEvent) error {
+func pairRecProjectTx(ctx context.Context, tx *sql.Tx, runID string, seq int64, ev pairRecEvent) error {
 	switch ev.Kind {
 	case pairRecEventStart:
 		s := ev.Start
-		if _, err := tx.Exec(`INSERT INTO basket_replay_calls (run_id, call_id, parent_id, kind, phase, member_id, slot_ms, action_id, step_id, request_hash, start_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		if _, err := tx.ExecContext(ctx, `INSERT INTO basket_replay_calls (run_id, call_id, parent_id, kind, phase, member_id, slot_ms, action_id, step_id, request_hash, start_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			runID, ev.CallID, s.ParentID, s.Kind, s.Phase, s.MemberID, s.SlotMs, s.ActionID, s.StepID, s.RequestHash, seq); err != nil {
 			return fmt.Errorf("index call %s: %w", ev.CallID, err)
 		}
@@ -375,7 +381,7 @@ func pairRecProjectTx(tx *sql.Tx, runID string, seq int64, ev pairRecEvent) erro
 		if ev.End != nil {
 			class, hash = ev.End.Class, ev.End.ResultHash
 		}
-		res, err := tx.Exec(`UPDATE basket_replay_calls SET end_seq = ?, end_event = ?, outcome_class = ?, result_hash = ? WHERE run_id = ? AND call_id = ? AND end_seq = 0`, seq, ev.Kind, class, hash, runID, ev.CallID)
+		res, err := tx.ExecContext(ctx, `UPDATE basket_replay_calls SET end_seq = ?, end_event = ?, outcome_class = ?, result_hash = ? WHERE run_id = ? AND call_id = ? AND end_seq = 0`, seq, ev.Kind, class, hash, runID, ev.CallID)
 		if err != nil {
 			return fmt.Errorf("close call %s: %w", ev.CallID, err)
 		}
@@ -387,14 +393,18 @@ func pairRecProjectTx(tx *sql.Tx, runID string, seq int64, ev pairRecEvent) erro
 }
 
 func (sdb *StateDB) appendPairRecEvents(runID, partition, contractFP string, head pairRecHead, schema int, events []pairRecEvent, before func(n int) error) (pairRecHead, error) {
-	tx, err := sdb.db.Begin()
+	return sdb.appendPairRecEventsContext(context.Background(), runID, partition, contractFP, head, schema, events, before)
+}
+
+func (sdb *StateDB) appendPairRecEventsContext(ctx context.Context, runID, partition, contractFP string, head pairRecHead, schema int, events []pairRecEvent, before func(n int) error) (pairRecHead, error) {
+	tx, err := sdb.db.BeginTx(ctx, nil)
 	if err != nil {
 		return head, err
 	}
 	defer tx.Rollback()
 	var lastSeq int64
 	var lastPrefix string
-	err = tx.QueryRow(`SELECT seq, prefix_hash FROM basket_replay_inputs WHERE run_id = ? ORDER BY seq DESC LIMIT 1`, runID).Scan(&lastSeq, &lastPrefix)
+	err = tx.QueryRowContext(ctx, `SELECT seq, prefix_hash FROM basket_replay_inputs WHERE run_id = ? ORDER BY seq DESC LIMIT 1`, runID).Scan(&lastSeq, &lastPrefix)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		lastSeq, lastPrefix = 0, ""
@@ -411,7 +421,7 @@ func (sdb *StateDB) appendPairRecEvents(runID, partition, contractFP string, hea
 				return head, err
 			}
 		}
-		if next, err = pairRecInsertTx(tx, runID, partition, contractFP, next, schema, ev); err != nil {
+		if next, err = pairRecInsertTx(ctx, tx, runID, partition, contractFP, next, schema, ev); err != nil {
 			return head, err
 		}
 	}
@@ -419,6 +429,15 @@ func (sdb *StateDB) appendPairRecEvents(runID, partition, contractFP string, hea
 		return head, err
 	}
 	return next, nil
+}
+
+type pairRecContextQuery struct {
+	ctx context.Context
+	tx  *sql.Tx
+}
+
+func (q pairRecContextQuery) Query(query string, args ...interface{}) (*sql.Rows, error) {
+	return q.tx.QueryContext(q.ctx, query, args...)
 }
 
 func readPairRecRows(q interface {
@@ -523,6 +542,9 @@ type pairRecLog struct {
 	bind            *pairRecBind
 	epochs          int
 	sealed          *pairRecSeal
+	bookTicket      int64
+	bookEpoch       int
+	bookAck         int64
 }
 
 func (l *pairRecLog) head() pairRecHead {
@@ -552,8 +574,8 @@ func verifyPairRecLog(rows []pairRecRow, runID, partition, contractFP string) (*
 		if r.Seq != int64(i+1) {
 			return nil, fmt.Errorf("%s is at position %d; the append-only log has a gap or a reordered row", where, i+1)
 		}
-		if r.Schema != pairRecSchemaVersion && r.Schema != pairRecSchemaAsync {
-			return nil, fmt.Errorf("%s schema %d is not 1 or 2", where, r.Schema)
+		if r.Schema != pairRecSchemaVersion && !pairRecAsyncSchema(r.Schema) {
+			return nil, fmt.Errorf("%s schema %d is not 1, 2 or 3", where, r.Schema)
 		}
 		if l.schema == 0 {
 			l.schema = r.Schema
@@ -586,6 +608,9 @@ func verifyPairRecLog(rows []pairRecRow, runID, partition, contractFP string) (*
 		prev = r.Prefix
 	}
 	l.rows = rows
+	if l.schema == pairRecSchemaBooks && pairPaperEncodedLogBytes(l) > pairPaperBookLogLimit {
+		return nil, fmt.Errorf("family-4 recording exceeds its encoded byte limit")
+	}
 	if len(rows) > 0 && l.bind == nil {
 		return nil, fmt.Errorf("the recording has no binding event")
 	}
@@ -606,7 +631,7 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 	}
 	one := func(set bool) error {
 		count := 0
-		for _, p := range []bool{ev.Bind != nil, ev.Epoch != nil, ev.Start != nil, ev.End != nil, ev.Recovery != nil, ev.Wake != nil, ev.Budget != nil, ev.Failure != nil, ev.Clear != nil, ev.Seal != nil, ev.Consume != nil} {
+		for _, p := range []bool{ev.Bind != nil, ev.Epoch != nil, ev.Start != nil, ev.End != nil, ev.Recovery != nil, ev.Wake != nil, ev.Budget != nil, ev.Failure != nil, ev.Clear != nil, ev.Seal != nil, ev.Consume != nil, ev.BookInput != nil} {
 			if p {
 				count++
 			}
@@ -617,6 +642,11 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 		return nil
 	}
 	switch ev.Kind {
+	case pairRecEventBookInput:
+		if err := one(ev.BookInput != nil); err != nil {
+			return err
+		}
+		return l.admitBookInput(r)
 	case pairRecEventBind:
 		if err := one(ev.Bind != nil); err != nil {
 			return err
@@ -627,7 +657,7 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 		if ev.Bind.RunID != l.runID || ev.Bind.ContractFP != l.contractFP || ev.Bind.Partition != l.partition {
 			return fmt.Errorf("the binding names run %s, contract %s and partition %s", ev.Bind.RunID, shortFingerprint(ev.Bind.ContractFP), ev.Bind.Partition)
 		}
-		if (l.schema == pairRecSchemaAsync) != (ev.Bind.Family == pairPaperManifestAsyncVer) {
+		if !pairPaperFamilySchema(ev.Bind.Family, l.schema) {
 			return fmt.Errorf("schema %d binding names family %d", l.schema, ev.Bind.Family)
 		}
 		b := *ev.Bind
@@ -655,7 +685,7 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 			return fmt.Errorf("call %s request does not match its request hash", ev.CallID)
 		}
 		oracle := s.Kind == "funding_oracle" && s.ParentID == ""
-		if s.Async != (l.schema == pairRecSchemaAsync && oracle) {
+		if s.Async != (pairRecAsyncSchema(l.schema) && oracle) {
 			return fmt.Errorf("call %s async flag does not match schema %d", ev.CallID, l.schema)
 		}
 		if s.ParentID != "" {
@@ -668,6 +698,9 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 			}
 			_ = pi
 			l.children[s.ParentID] = append(l.children[s.ParentID], ev.CallID)
+		}
+		if err := l.admitBookStart(r); err != nil {
+			return err
 		}
 		l.starts[ev.CallID] = i
 	case pairRecEventEnd, pairRecEventRecovery:
@@ -690,12 +723,15 @@ func (l *pairRecLog) admit(i int, r pairRecRow) error {
 		if _, dup := l.ends[ev.CallID]; dup {
 			return fmt.Errorf("call %s has a second terminal event", ev.CallID)
 		}
+		if err := l.admitBookEnd(r); err != nil {
+			return err
+		}
 		l.ends[ev.CallID] = i
 	case pairRecEventConsume:
 		if err := one(ev.Consume != nil); err != nil {
 			return err
 		}
-		if l.schema != pairRecSchemaAsync {
+		if !pairRecAsyncSchema(l.schema) {
 			return fmt.Errorf("call consumption belongs to schema 2")
 		}
 		c := ev.Consume
