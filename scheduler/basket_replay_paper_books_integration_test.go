@@ -922,3 +922,231 @@ func TestBasketReplayPairPaperBooksCachedReadsMatchFullReplay(t *testing.T) {
 	compare(at + 1)
 	t.Logf("CACHE_PARITY checks=%d cache_seq=%d head_seq=%d", checks, e.b.cache.seq, e.rec.headNow().Seq)
 }
+
+func pairBookTestCoinFrame(coin string, at int64, bid string) []byte {
+	var raw map[string]any
+	_ = json.Unmarshal(pairBookTestFrame(at, bid), &raw)
+	raw["data"].(map[string]any)["coin"] = coin
+	return pairPaperJSON(raw)
+}
+
+func (e *pairBookTestEnv) bulkBooks(ids []string, n int, from, step int64) int64 {
+	e.t.Helper()
+	reducers := map[string]*pairPaperBookReducer{}
+	for _, id := range ids {
+		reducers[id] = newPairPaperBookReducer(e.b.members[id], e.b.need, false)
+	}
+	var batch []pairRecEvent
+	flush := func() {
+		if len(batch) > 0 {
+			if err := e.rec.appendDirect(batch...); err != nil {
+				e.t.Fatal(err)
+			}
+			batch = batch[:0]
+		}
+	}
+	at := from
+	add := func(id, kind string, raw []byte) {
+		at++
+		e.wall.Store(at)
+		e.b.mu.Lock()
+		e.b.intake.Captured++
+		in := pairPaperBookInput{Binding: e.b.bindings[id], Epoch: 1, Kind: kind, Raw: raw, Ticket: e.b.intake.Captured, ReceiptMs: at}
+		e.b.intake.Committed = in.Ticket
+		e.b.intake.HighMs = at
+		e.b.mu.Unlock()
+		in.Outcome, in.Reason = reducers[id].apply(in)
+		if in.Outcome == "" || kind == "frame" && in.Outcome != feedBookOutcomeAccepted {
+			e.t.Fatalf("bulk %s for %s at %d was not accepted: %s %s", kind, id, at, in.Outcome, in.Reason)
+		}
+		batch = append(batch, pairRecEvent{Kind: pairRecEventBookInput, BookInput: &in})
+		if len(batch) == 256 {
+			flush()
+		}
+	}
+	for _, id := range ids {
+		add(id, "epoch", nil)
+		add(id, "subscribed", pairPaperJSON(map[string]any{"channel": "subscriptionResponse", "data": map[string]any{"method": "subscribe", "subscription": map[string]any{"type": "l2Book", "coin": e.b.members[id].Instrument, "fast": false}}}))
+	}
+	for i := 0; i < n; i++ {
+		at += step - int64(len(ids))
+		for _, id := range ids {
+			add(id, "frame", pairBookTestCoinFrame(e.b.members[id].Instrument, at+1, strconv.Itoa(60000+i%7)))
+		}
+	}
+	flush()
+	return at
+}
+
+func (e *pairBookTestEnv) memberKey(id string) pairMemberKey {
+	e.t.Helper()
+	part, err := parseRiskPartition(e.b.src.partition)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	m := e.b.members[id]
+	return pairMemberKey{Partition: part, Provider: m.Provider, AccountKey: m.AccountKey, Instrument: m.Instrument, MemberID: m.MemberID}
+}
+
+func (e *pairBookTestEnv) fullWindow(v pairPaperBookBoundary, id string, after, through int64) string {
+	e.t.Helper()
+	lock := e.b.cacheLock
+	e.b.cacheLock = nil
+	defer func() { e.b.cacheLock = lock }()
+	w, err := e.b.windowAt(context.Background(), v, e.memberKey(id), after, through)
+	if err != nil {
+		e.t.Fatalf("full replay window (%d, %d] for %s: %v", after, through, id, err)
+	}
+	return string(pairPaperJSON(w))
+}
+
+func TestBasketReplayPairPaperBooksLongRunWindowStaysBounded(t *testing.T) {
+	e := newPairBookTestEnv(t)
+	conns := pairBookTestFeed(t)
+	t.Cleanup(func() { e.b.cancelIntake(); _ = e.b.stop("test") })
+	ctx := context.Background()
+	e.bulkBooks([]string{pairTestHL}, 20000, e.wall.Load(), 500)
+	if _, err := e.b.reduce(ctx, pairPaperBookBoundary{Prefix: e.rec.headNow()}, pairTestHL, e.wall.Load(), false); err != nil {
+		t.Fatal(err)
+	}
+	accepted := e.countInputs(func(in pairPaperBookInput) bool { return in.Outcome == feedBookOutcomeAccepted })
+	if accepted != 20000 {
+		t.Fatalf("the long run must hold 20000 accepted frames before the live tail, got %d", accepted)
+	}
+	committed := func() int64 {
+		e.b.mu.Lock()
+		defer e.b.mu.Unlock()
+		return e.b.intake.Committed
+	}
+	ticket := committed()
+	e.b.epoch = 1
+	if err := e.b.start(); err != nil {
+		t.Fatal(err)
+	}
+	feed := pairBookTestNextFeed(t, conns)
+	waitLong(t, "restarted subscription", func() bool { return committed() == ticket+2 })
+	for i := 1; i <= 65; i++ {
+		e.wall.Add(1000)
+		feed <- pairBookTestFrame(e.wall.Load(), "60000")
+		waitLong(t, "live frames", func() bool { return committed() == ticket+2+int64(i) })
+	}
+	e.wall.Add(2)
+	through := e.wall.Load() - 1
+	after := through - 2000
+	v, err := e.b.read(ctx, pairRecKindBookWindow, pairPaperBookRequest{Members: []string{pairTestHL}, FromMs: after, ThroughMs: through})
+	if err != nil {
+		t.Fatalf("the window read for the last 2 s after 20000 accepted frames must be available: %v", err)
+	}
+	live, err := e.b.windowAt(ctx, v, e.memberKey(pairTestHL), after, through)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live.Events) == 0 {
+		t.Fatal("the live window must hold the frames in its interval")
+	}
+	e.b.mu.Lock()
+	terminal := e.b.terminal
+	e.b.mu.Unlock()
+	if terminal || e.b.memoryStopped() {
+		t.Fatal("a bounded window read must not end sealed intake")
+	}
+	c := e.b.cache.reducers[pairTestHL]
+	if c == nil || c.recordBase == 0 || len(c.records) > 1000 {
+		t.Fatalf("the shared reducer must retain only its horizon, got %d records after %d pruned", len(c.records), c.recordBase)
+	}
+	t.Logf("LONG_RUN accepted=%d cache_records=%d pruned=%d cache_bytes=%d window_events=%d", accepted+65, len(c.records), c.recordBase, e.b.cache.bytes.Load(), len(live.Events))
+	e.wall.Add(2)
+	if _, err := e.b.read(ctx, pairRecKindBookSeal, pairPaperBookRequest{Members: []string{pairTestHL}, ThroughMs: e.wall.Load() - 1}); err != nil {
+		t.Fatalf("a later book seal must stay available: %v", err)
+	}
+	if _, err := e.b.observation(ctx, pairTestHL, e.wall.Load()-1, pairRecKindBookMark); err != nil {
+		t.Fatalf("a later management mark must stay available: %v", err)
+	}
+	cached := string(pairPaperJSON(live))
+	if err := e.b.stop("test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.countInputs(func(in pairPaperBookInput) bool { return in.Kind == "subscribed" && in.Epoch == 2 }); got != 1 {
+		t.Fatalf("the restarted receiver must subscribe once in epoch 2, got %d", got)
+	}
+	if got := e.countInputs(func(in pairPaperBookInput) bool { return in.Outcome == feedBookOutcomeAccepted }); got != accepted+65 {
+		t.Fatalf("each of the 65 live frames must commit as accepted: want %d accepted, got %d", accepted+65, got)
+	}
+	if full := e.fullWindow(v, pairTestHL, after, through); full != cached {
+		t.Fatalf("the cached live window differs from the full replay window:\ncached %s\nfull   %s", cached, full)
+	}
+	blob, err := e.b.exportBook(e.log(), pairTestHL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc pairReplayBookDoc
+	if err = json.Unmarshal(blob, &doc); err != nil {
+		t.Fatal(err)
+	}
+	offline := &pairReplaySealedStream{member: e.b.members[pairTestHL], key: l2BookKeyFor("BTC"), doc: doc}
+	for i, r := range doc.Records {
+		offline.obs = append(offline.obs, feedBookObservation{Seq: uint64(i + 1), EventMs: r.EventMs, RecvMs: r.RecvMs, Session: 1, Identity: bookIdentity(offline.key, r.EventMs, r.Bids, r.Asks), BidDepth: len(r.Bids), AskDepth: len(r.Asks), Bids: r.Bids, Asks: r.Asks})
+	}
+	for i, m := range doc.Markers {
+		offline.marks = append(offline.marks, feedBookMarker{Seq: uint64(i + 1), AtMs: m.AtMs, Reason: m.Reason, Detail: m.Detail, Session: 1})
+	}
+	src := &pairReplayQuoteSource{runID: e.rec.runID, bound: e.rec.contractFP, partition: e.b.src.partition, need: e.b.need, members: e.b.members, sealed: map[string]*pairReplaySealedStream{pairTestHL: offline}}
+	w, err := (&pairReplayMarket{src: src, clock: func() time.Time { return time.UnixMilli(through) }}).Events(ctx, e.memberKey(pairTestHL), after, through)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(pairPaperJSON(w)); got != cached {
+		t.Fatalf("the standalone export playback window differs from the live window:\nlive    %s\noffline %s", cached, got)
+	}
+	t.Logf("LONG_RUN_PARITY export_records=%d window_bytes=%d", len(doc.Records), len(cached))
+}
+
+func TestBasketReplayPairPaperBooksCacheMemoryIsSummedOverMembers(t *testing.T) {
+	e := newPairBookTestEnv(t)
+	second := e.b.members[pairTestHL]
+	second.MemberID, second.Instrument = "pair-hl-eth", "ETH"
+	e.b.members[second.MemberID] = second
+	bind := e.b.bindings[pairTestHL]
+	bind.MemberID, bind.Instrument = second.MemberID, second.Instrument
+	e.b.bindings[second.MemberID] = bind
+	e.b.retainMs = 1 << 50
+	ids := []string{pairTestHL, second.MemberID}
+	start := e.wall.Load()
+	end := e.bulkBooks(ids, 10000, start, 500)
+	v := pairPaperBookBoundary{Prefix: e.rec.headNow()}
+	free := int64(feedBookMemoryBudget - e.b.workingReserve())
+	for _, id := range ids {
+		through := end - 1
+		recent := e.fullWindow(v, id, through-2000, through)
+		w, err := e.b.windowAt(context.Background(), v, e.memberKey(id), through-2000, through)
+		if err != nil {
+			t.Fatalf("recent window for %s: %v", id, err)
+		}
+		if got := string(pairPaperJSON(w)); got != recent {
+			t.Fatalf("the cached recent window for %s differs from the full replay", id)
+		}
+		early := start + 200000
+		old := e.fullWindow(v, id, early-2000, early)
+		w, err = e.b.windowAt(context.Background(), v, e.memberKey(id), early-2000, early)
+		if err != nil {
+			t.Fatalf("early window for %s: %v", id, err)
+		}
+		if got := string(pairPaperJSON(w)); got != old || len(w.Events) == 0 {
+			t.Fatalf("the early window for %s must equal the full replay and hold events", id)
+		}
+	}
+	var sum int64
+	for id, d := range e.b.cache.reducers {
+		if d.recordBase == 0 {
+			t.Fatalf("the memory cap must prune member %s", id)
+		}
+		sum += int64(pairPaperBookBytes(d))
+	}
+	if sum != e.b.cache.bytes.Load() || sum > free/2+int64(len(ids)) {
+		t.Fatalf("the cache estimate summed over members is %d (stored %d), above half the free book budget %d", sum, e.b.cache.bytes.Load(), free/2)
+	}
+	if int64(e.b.workingReserve())+sum > feedBookMemoryBudget {
+		t.Fatalf("the working reserve plus the summed cache %d exceeds the book budget", sum)
+	}
+	t.Logf("CACHE_SUM members=%d frames_each=10000 cache_bytes=%d free=%d budget=%d", len(ids), sum, free, feedBookMemoryBudget)
+}

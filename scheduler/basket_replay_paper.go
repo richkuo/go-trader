@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -1503,15 +1504,25 @@ func (r *pairReplayRuntime) runPaper() error {
 			if r.rec.limitStopped.Load() {
 				reason = "recording_limit"
 			}
+			memory := r.paper.books.memoryStopped()
+			if memory {
+				reason = "book_memory_limit"
+			}
 			if err := r.paper.books.stop(reason); err != nil {
 				r.finished = false
-				r.stopReason = "book receiver stop failed: " + err.Error()
+				if !memory || !errors.Is(err, errPairPaperBookMemory) {
+					r.stopReason = "book receiver stop failed: " + err.Error()
+				}
 			}
 		}()
 	}
 	for {
 		if r.rec.limitStopped.Load() {
 			r.stopReason = "the recording capacity limit stopped host scheduling"
+			return nil
+		}
+		if r.paper.books != nil && r.paper.books.memoryStopped() {
+			r.stopReason = "the book memory limit stopped host scheduling"
 			return nil
 		}
 		if r.paper.books != nil && !r.paper.playback && !r.rec.consumingNow() {

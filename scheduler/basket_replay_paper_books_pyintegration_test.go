@@ -19,6 +19,23 @@ import (
 
 func pairPaperBookServer(t *testing.T, f *pairPaperFixture) (string, *atomic.Int64) {
 	t.Helper()
+	return pairPaperBookServerWith(t, f, pairBookTestFrame)
+}
+
+func pairBookTestTightFrame(at int64, bid string) []byte {
+	var raw map[string]any
+	_ = json.Unmarshal(pairBookTestFrame(at, bid), &raw)
+	levels := raw["data"].(map[string]any)["levels"].([]any)
+	asks := levels[1].([]any)
+	v, _ := strconv.ParseFloat(bid, 64)
+	for i := range asks {
+		asks[i].(map[string]any)["px"] = strconv.FormatFloat(v+20+float64(i), 'f', -1, 64)
+	}
+	return pairPaperJSON(raw)
+}
+
+func pairPaperBookServerWith(t *testing.T, f *pairPaperFixture, frame func(int64, string) []byte) (string, *atomic.Int64) {
+	t.Helper()
 	connections := &atomic.Int64{}
 	up := websocket.Upgrader{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +67,7 @@ func pairPaperBookServer(t *testing.T, f *pairPaperFixture) (string, *atomic.Int
 				if at >= f.fromMs+8000 {
 					bid = "59998"
 				}
-				if err = conn.WriteMessage(websocket.TextMessage, pairBookTestFrame(at, bid)); err != nil {
+				if err = conn.WriteMessage(websocket.TextMessage, frame(at, bid)); err != nil {
 					return
 				}
 				last = at
@@ -249,4 +266,80 @@ func TestBasketReplayPairPaperBooksProcessFailedAuxiliaryReadReproduces(t *testi
 	if plain.Code != basketReplayExitRefused || plain.Out.Refusal == nil {
 		t.Fatalf("standalone replay must retain empty-candle refusal: %d", plain.Code)
 	}
+}
+
+func pairPaperOpenSealedChecks(t *testing.T, rows []pairRecRow) []pairRecRow {
+	t.Helper()
+	var out []pairRecRow
+	for _, row := range rows {
+		st := row.Event.Start
+		if st == nil || st.Kind != pairRecKindNativeCheck || st.MemberID != pairTestHL {
+			continue
+		}
+		var req struct {
+			Args []string `json:"args"`
+		}
+		if err := json.Unmarshal(st.Request, &req); err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range req.Args {
+			if strings.HasPrefix(a, "--position-qty=") {
+				out = append(out, row)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func TestBasketReplayPairPaperBooksProcessManagesOpenSealedPositionAfterAppendFault(t *testing.T) {
+	fixture := func(runID string) (*pairPaperFixture, []string) {
+		f := newPairPaperFixture(t, pairPaperOptions2{runID: runID, collectS: 40, drainS: 8, convergeS: 30, interval: 4, mutate: func(root map[string]interface{}) {
+			pairTestMemberEntry(root, 0)["source"] = pairSourceSealedFeed
+			pairTestPair(root)["book_need"].(map[string]interface{})["window_ms"] = 1000
+		}})
+		f.scenario.PaperFundingPollMs = 1000
+		endpoint, _ := pairPaperBookServerWith(t, f, pairBookTestTightFrame)
+		return f, []string{"GO_TRADER_PAPER_TEST_BOOK_ENDPOINT=" + endpoint}
+	}
+	bf, benv := fixture("paper-books-open")
+	base := runPairPaperAdapter(t, bf, bf.spec(basketReplayModeNew, filepath.Join(bf.parent, "baseline")), append(bf.env(false), benv...), "--seal")
+	open := pairPaperOpenSealedChecks(t, pairPaperLogRows(t, filepath.Join(bf.parent, "baseline"), bf.runID))
+	if base.Code == basketReplayExitRefused || base.Code == basketReplayExitUsage || len(open) < 3 {
+		t.Fatalf("the baseline must manage an open sealed position on at least 3 cycles: exit %d checks %d refusal %+v stderr %s", base.Code, len(open), base.Out.Refusal, tail(base.Stderr, 3000))
+	}
+	f, fenv := fixture("paper-books-fault")
+	from := f.fromMs + open[0].Event.Start.RawStartMs - bf.fromMs + 1
+	to := from + 40
+	dir := filepath.Join(f.parent, "fault")
+	env := append(pairPaperAppendFaultEnv(f, from, to), fenv...)
+	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), env)
+	rows := pairPaperLogRows(t, dir, f.runID)
+	var clearSeq, lostSeq, restartEpoch int64
+	for _, row := range rows {
+		if row.Kind == pairRecEventClear && clearSeq == 0 {
+			clearSeq = row.Seq
+		}
+		if in := row.Event.BookInput; in != nil {
+			if in.LostTicketFrom > 0 && lostSeq == 0 {
+				lostSeq = row.Seq
+			}
+			if in.Kind == "epoch" && lostSeq > 0 && row.Seq > lostSeq && restartEpoch == 0 {
+				restartEpoch = int64(in.Epoch)
+			}
+		}
+	}
+	if clearSeq == 0 {
+		t.Fatalf("the append fault inside [%d, %d) must set and clear the recording barrier: exit %d stderr %s", from, to, p.Code, tail(p.Stderr, 4000))
+	}
+	var after []pairRecRow
+	for _, row := range pairPaperOpenSealedChecks(t, rows) {
+		if row.Seq > clearSeq {
+			after = append(after, row)
+		}
+	}
+	if len(after) == 0 {
+		t.Fatalf("native management of the open sealed position must run after the barrier clears at seq %d: stderr %s", clearSeq, tail(p.Stderr, 4000))
+	}
+	t.Logf("OPEN_SEALED_FAULT window=[%d,%d) clear_seq=%d lost_stop_seq=%d restart_epoch=%d first_open_check_after_clear_seq=%d open_checks_after_clear=%d exit=%d", from, to, clearSeq, lostSeq, restartEpoch, after[0].Seq, len(after), p.Code)
 }

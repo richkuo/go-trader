@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -119,6 +120,11 @@ type pairPaperBookReducer struct {
 	records     []pairReplayBookRecord
 	allMarkers  []pairReplayBookMarkerIn
 	onMarker    func(pairReplayBookMarkerIn)
+	keepFrom    int64
+	recordBase  int
+	markerBase  int
+	firstRecv   int64
+	shared      bool
 }
 
 func newPairPaperBookReducer(m pairContractMember, need pairBookNeed, all bool) *pairPaperBookReducer {
@@ -138,6 +144,7 @@ func (d *pairPaperBookReducer) marker(at int64, reason, detail string) {
 	}
 	if d.all {
 		d.allMarkers = append(d.allMarkers, pairReplayBookMarkerIn{AtMs: at, Reason: reason, Detail: m.Detail})
+		d.prune()
 	}
 	if len(d.state.Markers) > feedBookMaxMarkers {
 		cut := d.state.Markers[0].AtMs + 1
@@ -228,7 +235,11 @@ func (d *pairPaperBookReducer) apply(in pairPaperBookInput) (string, string) {
 			d.lastReceipt = in.ReceiptMs
 			st.Obs[len(st.Obs)-1].Seq = uint64(d.accepted)
 			if d.all {
+				if d.firstRecv == 0 {
+					d.firstRecv = in.ReceiptMs
+				}
 				d.records = append(d.records, pairReplayBookRecord{EventMs: p.EventMs, RecvMs: in.ReceiptMs, Bids: truncateLevels(p.Bids, d.need.Depth), Asks: truncateLevels(p.Asks, d.need.Depth)})
+				d.prune()
 			}
 		}
 		for i := range st.Markers {
@@ -245,8 +256,58 @@ func (d *pairPaperBookReducer) apply(in pairPaperBookInput) (string, string) {
 	return in.Kind, ""
 }
 
+func (d *pairPaperBookReducer) prune() {
+	if d.keepFrom <= 0 {
+		return
+	}
+	if k := sort.Search(len(d.records), func(i int) bool { return d.records[i].RecvMs >= d.keepFrom }) - 1; k > 0 && (k >= 64 || 2*k >= len(d.records)) {
+		d.recordBase += k
+		d.records = append([]pairReplayBookRecord(nil), d.records[k:]...)
+	}
+	if k := sort.Search(len(d.allMarkers), func(i int) bool { return d.allMarkers[i].AtMs >= d.keepFrom }) - 1; k > 0 && (k >= 64 || 2*k >= len(d.allMarkers)) {
+		d.markerBase += k
+		d.allMarkers = append([]pairReplayBookMarkerIn(nil), d.allMarkers[k:]...)
+	}
+}
+
+func (d *pairPaperBookReducer) retain(from int64) {
+	if from > d.keepFrom {
+		d.keepFrom = from
+		d.prune()
+	}
+}
+
+func (d *pairPaperBookReducer) capTo(limit int) {
+	for pairPaperBookBytes(d) > limit {
+		var next int64
+		if n := len(d.records); n > 2 {
+			next = d.records[n/2].RecvMs
+		}
+		if n := len(d.allMarkers); n > 2 && d.allMarkers[n/2].AtMs > next {
+			next = d.allMarkers[n/2].AtMs
+		}
+		if next <= d.keepFrom {
+			return
+		}
+		d.keepFrom = next
+		if k := sort.Search(len(d.records), func(i int) bool { return d.records[i].RecvMs >= next }) - 1; k > 0 {
+			d.recordBase += k
+			d.records = append([]pairReplayBookRecord(nil), d.records[k:]...)
+		}
+		if k := sort.Search(len(d.allMarkers), func(i int) bool { return d.allMarkers[i].AtMs >= next }) - 1; k > 0 {
+			d.markerBase += k
+			d.allMarkers = append([]pairReplayBookMarkerIn(nil), d.allMarkers[k:]...)
+		}
+	}
+}
+
+func pairPaperBookBytes(d *pairPaperBookReducer) int {
+	return len(d.records)*(feedBookMemRecordBase+2*feedBookMaxLevels*feedBookMemLevelBytes) + len(d.allMarkers)*feedEstimateBookMarkerBytes
+}
+
 func (d *pairPaperBookReducer) clone(all bool) *pairPaperBookReducer {
-	c := &pairPaperBookReducer{member: d.member, need: d.need, state: d.state, accepted: d.accepted, markers: d.markers, lastReceipt: d.lastReceipt, epoch: d.epoch, incomplete: d.incomplete, all: all}
+	c := &pairPaperBookReducer{member: d.member, need: d.need, state: d.state, accepted: d.accepted, markers: d.markers, lastReceipt: d.lastReceipt, epoch: d.epoch, incomplete: d.incomplete, all: all,
+		keepFrom: d.keepFrom, recordBase: d.recordBase, markerBase: d.markerBase, firstRecv: d.firstRecv, shared: all}
 	c.owner.connected, c.owner.obsSession, c.owner.bookSeq = d.owner.connected, d.owner.obsSession, d.owner.bookSeq
 	c.state.Obs = append([]feedBookObservation(nil), d.state.Obs...)
 	c.state.Markers = append([]feedBookMarker(nil), d.state.Markers...)
@@ -298,6 +359,8 @@ type pairPaperBooks struct {
 	tail      *pairRecLog
 	cacheLock chan struct{}
 	cache     pairPaperBookCache
+	retainMs  int64
+	memStop   bool
 }
 
 type pairPaperBookCache struct {
@@ -305,7 +368,7 @@ type pairPaperBookCache struct {
 	prefix   string
 	size     int64
 	high     int64
-	overflow bool
+	bytes    atomic.Int64
 	reducers map[string]*pairPaperBookReducer
 }
 
@@ -317,6 +380,7 @@ func newPairPaperBooks(rec *pairRecorder, src *recordingQuoteSource) *pairPaperB
 
 func (b *pairPaperBooks) bind(c basketContract) error {
 	b.need = c.Pair.BookNeed
+	b.retainMs = c.Pair.Limits.AcceptanceDeadlineMs + entryRecoveryGrace.Milliseconds() + c.Pair.BookNeed.WindowMs
 	for _, m := range c.pairMembersSorted() {
 		if m.Source != pairSourceSealedFeed {
 			continue
@@ -905,11 +969,21 @@ func (b *pairPaperBooks) committedReducers(ctx context.Context, head pairRecHead
 	return reducers, err
 }
 
-func (b *pairPaperBooks) recordsOver(d *pairPaperBookReducer) bool {
-	return b.workingReserve()+len(d.records)*(feedBookMemRecordBase+2*feedBookMaxLevels*feedBookMemLevelBytes)+len(d.allMarkers)*feedEstimateBookMarkerBytes > feedBookMemoryBudget
+func (b *pairPaperBooks) cacheShare() int {
+	free := feedBookMemoryBudget - b.workingReserve()
+	if free <= 0 || len(b.members) == 0 {
+		return 0
+	}
+	return free / 2 / len(b.members)
 }
 
-func (b *pairPaperBooks) cachedReduce(ctx context.Context, head pairRecHead, id string, at int64, all bool) (*pairPaperBookReducer, bool, error) {
+func (b *pairPaperBooks) memoryStopped() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.memStop
+}
+
+func (b *pairPaperBooks) cachedReduce(ctx context.Context, head pairRecHead, id string, at int64, all bool, floor int64) (*pairPaperBookReducer, bool, error) {
 	if head.Seq <= 0 || !pairReplaySHAPattern.MatchString(head.Prefix) || b.rec.file == nil || b.cacheLock == nil {
 		return nil, false, nil
 	}
@@ -938,6 +1012,7 @@ func (b *pairPaperBooks) cachedReduce(ctx context.Context, head pairRecHead, id 
 			c.reducers[mid] = newPairPaperBookReducer(m, b.need, true)
 		}
 	}
+	share := b.cacheShare()
 	frontier := true
 	var tail []pairPaperBookInput
 	end, err := b.scanCommitted(ctx, pairRecHead{Seq: c.seq, Prefix: c.prefix}, c.size, head, func(row pairRecRow, in *pairPaperBookInput, size int64) error {
@@ -951,12 +1026,8 @@ func (b *pairPaperBooks) cachedReduce(ctx context.Context, head pairRecHead, id 
 					if in.ReceiptMs > c.high {
 						c.high = in.ReceiptMs
 					}
-					if d.all && b.recordsOver(d) {
-						c.overflow = true
-						for _, r := range c.reducers {
-							r.all, r.records, r.allMarkers = false, nil, nil
-						}
-					}
+					d.retain(in.ReceiptMs - b.retainMs)
+					d.capTo(share)
 				} else {
 					frontier = false
 					tail = append(tail, *in)
@@ -968,6 +1039,11 @@ func (b *pairPaperBooks) cachedReduce(ctx context.Context, head pairRecHead, id 
 		}
 		return nil
 	})
+	var total int64
+	for _, r := range c.reducers {
+		total += int64(pairPaperBookBytes(r))
+	}
+	c.bytes.Store(total)
 	if err != nil {
 		return nil, true, err
 	}
@@ -978,8 +1054,8 @@ func (b *pairPaperBooks) cachedReduce(ctx context.Context, head pairRecHead, id 
 	if !ok {
 		return nil, true, errors.New("unknown sealed book member")
 	}
-	if all && c.overflow {
-		return nil, true, errPairPaperBookMemory
+	if all && floor < base.keepFrom {
+		return nil, false, nil
 	}
 	d := base.clone(all)
 	for _, in := range tail {
@@ -987,9 +1063,6 @@ func (b *pairPaperBooks) cachedReduce(ctx context.Context, head pairRecHead, id 
 			continue
 		}
 		d.apply(in)
-	}
-	if all && b.recordsOver(d) {
-		return nil, true, errPairPaperBookMemory
 	}
 	return d, true, nil
 }
@@ -1031,6 +1104,7 @@ func (b *pairPaperBooks) read(ctx context.Context, kind string, req pairPaperBoo
 					b.stopErr = err
 					b.intake.Failed = true
 					b.terminal = true
+					b.memStop = true
 					b.mu.Unlock()
 					b.cancelIntake()
 				}
@@ -1059,14 +1133,21 @@ func (b *pairPaperBooks) read(ctx context.Context, kind string, req pairPaperBoo
 }
 
 func (b *pairPaperBooks) reduce(ctx context.Context, boundary pairPaperBookBoundary, id string, at int64, all bool) (*pairPaperBookReducer, error) {
+	return b.reduceFrom(ctx, boundary, id, at, all, 0)
+}
+
+func (b *pairPaperBooks) reduceFrom(ctx context.Context, boundary pairPaperBookBoundary, id string, at int64, all bool, floor int64) (*pairPaperBookReducer, error) {
 	m, ok := b.members[id]
 	if !ok {
 		return nil, errors.New("unknown sealed book member")
 	}
-	if d, ok, err := b.cachedReduce(ctx, boundary.Prefix, id, at, all); ok {
+	if d, ok, err := b.cachedReduce(ctx, boundary.Prefix, id, at, all, floor); ok {
 		return d, err
 	}
 	d := newPairPaperBookReducer(m, b.need, all)
+	if all {
+		d.keepFrom = floor
+	}
 	err := b.forPrefix(ctx, boundary.Prefix, func(in pairPaperBookInput) error {
 		if in.Binding.MemberID != id {
 			return nil
@@ -1078,7 +1159,7 @@ func (b *pairPaperBooks) reduce(ctx context.Context, boundary pairPaperBookBound
 			return nil
 		}
 		d.apply(in)
-		if all && b.workingReserve()+len(d.records)*(feedBookMemRecordBase+2*feedBookMaxLevels*feedBookMemLevelBytes)+len(d.allMarkers)*feedEstimateBookMarkerBytes > feedBookMemoryBudget {
+		if all && b.workingReserve()+int(b.cache.bytes.Load())+pairPaperBookBytes(d) > feedBookMemoryBudget {
 			return errPairPaperBookMemory
 		}
 		return nil
@@ -1141,7 +1222,7 @@ func (b *pairPaperBooks) windowAt(ctx context.Context, v pairPaperBookBoundary, 
 	if b.recordedPrefix(v.Prefix) {
 		ctx = context.WithoutCancel(ctx)
 	}
-	d, err := b.reduce(ctx, v, key.MemberID, through, true)
+	d, err := b.reduceFrom(ctx, v, key.MemberID, through, true, after-b.need.WindowMs)
 	if err != nil {
 		return pairVirtualMarketWindow{}, err
 	}
@@ -1156,20 +1237,24 @@ func (b *pairPaperBooks) windowAt(ctx context.Context, v pairPaperBookBoundary, 
 	}
 	m := b.members[key.MemberID]
 	spec, _ := pairSourceSpecFor(m.Provider, m.Source)
-	if b.workingReserve()+len(d.records)*(feedBookMemRecordBase+2*feedBookMaxLevels*feedBookMemLevelBytes)+len(d.allMarkers)*feedEstimateBookMarkerBytes+events*(pairPayloadMaxBytes(spec, m, b.need)+pairObservationFixed) > feedBookMemoryBudget {
+	held := 0
+	if !d.shared {
+		held = pairPaperBookBytes(d)
+	}
+	if b.workingReserve()+int(b.cache.bytes.Load())+held+events*(pairPayloadMaxBytes(spec, m, b.need)+pairObservationFixed) > feedBookMemoryBudget {
 		return pairVirtualMarketWindow{}, errPairPaperBookMemory
 	}
 	st := d.stream(b.rec.runID, through)
 	st.obs = nil
 	for i, r := range d.records {
-		st.obs = append(st.obs, feedBookObservation{Seq: uint64(i + 1), EventMs: r.EventMs, RecvMs: r.RecvMs, Session: 1, Identity: bookIdentity(st.key, r.EventMs, r.Bids, r.Asks), BidDepth: len(r.Bids), AskDepth: len(r.Asks), Bids: r.Bids, Asks: r.Asks})
+		st.obs = append(st.obs, feedBookObservation{Seq: uint64(d.recordBase + i + 1), EventMs: r.EventMs, RecvMs: r.RecvMs, Session: 1, Identity: bookIdentity(st.key, r.EventMs, r.Bids, r.Asks), BidDepth: len(r.Bids), AskDepth: len(r.Asks), Bids: r.Bids, Asks: r.Asks})
 	}
 	st.marks = nil
 	for i, m := range d.allMarkers {
-		st.marks = append(st.marks, feedBookMarker{Seq: uint64(i + 1), AtMs: m.AtMs, Session: 1, Reason: m.Reason, Detail: m.Detail})
+		st.marks = append(st.marks, feedBookMarker{Seq: uint64(d.markerBase + i + 1), AtMs: m.AtMs, Session: 1, Reason: m.Reason, Detail: m.Detail})
 	}
-	if len(d.records) > 0 {
-		st.doc.CoverageFromMs = d.records[0].RecvMs
+	if d.firstRecv > 0 {
+		st.doc.CoverageFromMs = d.firstRecv
 		if d.state.StartedMs < st.doc.CoverageFromMs {
 			st.doc.CoverageFromMs = d.state.StartedMs
 		}

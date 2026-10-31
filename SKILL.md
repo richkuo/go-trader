@@ -3147,7 +3147,9 @@ A later window becomes ready after a complete required window with valid input a
 Working state retains at most 4096 observations and 64 markers per book inside the 64 MiB book budget; discarded history advances the known coverage floor.
 Historical virtual windows read the owning recording file only through their saved prefix and a bounded operation.
 Live sealed reads share one verified reducer per member: a read verifies the hash chain only for committed rows after the last verified prefix and applies them while their receipts are at or before its read time, so its cost follows new input instead of the recording length; an older prefix, an earlier read time or a recorded prefix uses the full scan, and the result equals the full replay.
-The shared reducer keeps window records only inside the book budget; past it, every window read returns the memory refusal that a full replay returns.
+A window read for `(after, through]` holds only the records and markers received at or after `after` minus the book window, plus the last of each before that point, with their original sequence numbers, so its memory follows the requested interval and the result equals the full replay and the standalone export playback.
+The shared reducer retains records for the acceptance deadline plus the absence grace plus the book window, and the estimate summed over all sealed members stays inside half of the book budget left after the working reserve; a window read that needs older records replays the committed prefix with its own bound.
+If a window read still exceeds the book budget, sealed intake ends and host scheduling stops, as at the recording capacity limit.
 Seal, resume and barrier release still verify the whole log.
 A source error returns before the virtual venue can commit a new query digest.
 
