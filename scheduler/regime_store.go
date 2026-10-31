@@ -71,17 +71,41 @@ var regimeStorePhaseBudget = scriptTimeout + 15*time.Second
 type RegimeStore struct {
 	mu      sync.RWMutex
 	entries map[regimeBundleKey]*RegimeBundle
+	exports map[string]manualRegimeExport
 	builtAt time.Time
 	sealed  bool
 	gen     uint64
 }
 
+type manualRegimeExport struct {
+	Fingerprint string
+	Key         regimeBundleKey
+}
+
+type manualRegimeExportView struct {
+	Gen           uint64
+	ContractFound bool
+	Contract      manualRegimeExport
+	Found         bool
+	Err           string
+	At            time.Time
+	PayloadJSON   string
+}
+
 var globalRegimeStore = &RegimeStore{}
 
 func (s *RegimeStore) resetForCycle(now time.Time) uint64 {
+	return s.resetForCycleWithExports(now, nil)
+}
+
+func (s *RegimeStore) resetForCycleWithExports(now time.Time, exports map[string]manualRegimeExport) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = make(map[regimeBundleKey]*RegimeBundle)
+	s.exports = make(map[string]manualRegimeExport, len(exports))
+	for id, export := range exports {
+		s.exports[id] = export
+	}
 	s.builtAt = now
 	s.sealed = false
 	s.gen++
@@ -121,6 +145,20 @@ func (s *RegimeStore) get(key regimeBundleKey) (*RegimeBundle, bool) {
 	defer s.mu.RUnlock()
 	b, ok := s.entries[key]
 	return b, ok
+}
+
+func (s *RegimeStore) manualExport(key regimeBundleKey, strategyID string) manualRegimeExportView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	view := manualRegimeExportView{Gen: s.gen}
+	view.Contract, view.ContractFound = s.exports[strategyID]
+	if b, ok := s.entries[key]; ok && b != nil {
+		view.Found = true
+		view.Err = b.Err
+		view.At = b.At
+		view.PayloadJSON = b.RawRegimeJSON
+	}
+	return view
 }
 
 func (s *RegimeStore) Snapshot() ([]*RegimeBundle, time.Time) {
@@ -307,17 +345,9 @@ func parseRegimeBundleOutput(key regimeBundleKey, data []byte, now time.Time) (*
 	if err := json.Unmarshal([]byte(key.SpecJSON), &specs); err != nil {
 		return nil, fmt.Errorf("regime bundle: invalid configured spec: %w", err)
 	}
-	malformed := false
-	normalized := RegimePayload{MultiMode: true, Windows: make(map[string]RegimeSnapshot, len(specs))}
+	normalized, malformed := normalizedRegimeWindows(specs, payload)
 	views := make(map[string]RegimeBundleViews, len(specs))
 	for name, spec := range specs {
-		snap := payload.WindowSnapshot(name, &RegimeConfig{Windows: specs, Enabled: true})
-		if !payload.MultiMode && len(specs) > 1 {
-			snap = RegimeSnapshot{}
-		}
-		snap = snap.validated(spec)
-		normalized.Windows[name] = snap
-		malformed = malformed || !snap.Available
 		view := out.Views[name]
 		adxSpec, compositeSpec := spec, spec
 		adxSpec.Classifier, compositeSpec.Classifier = "adx", "composite"
@@ -339,6 +369,21 @@ func parseRegimeBundleOutput(key regimeBundleKey, data []byte, now time.Time) (*
 		BarTime:       out.BarTime,
 		At:            now,
 	}, nil
+}
+
+func normalizedRegimeWindows(specs RegimeWindowsMap, payload RegimePayload) (RegimePayload, bool) {
+	malformed := false
+	normalized := RegimePayload{MultiMode: true, Windows: make(map[string]RegimeSnapshot, len(specs))}
+	for name, spec := range specs {
+		snap := payload.WindowSnapshot(name, &RegimeConfig{Windows: specs, Enabled: true})
+		if !payload.MultiMode && len(specs) > 1 {
+			snap = RegimeSnapshot{}
+		}
+		snap = snap.validated(spec)
+		normalized.Windows[name] = snap
+		malformed = malformed || !snap.Available
+	}
+	return normalized, malformed
 }
 
 var runRegimeBundleCheckFn = runRegimeBundleCheck
@@ -413,13 +458,17 @@ func regimeGateOutagePolicyNote(key regimeBundleKey, due []StrategyConfig, rc *R
 }
 
 func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *RegimeConfig, notifier *MultiNotifier, feed *marketFeedContext) func() {
-	gen := store.resetForCycle(time.Now().UTC())
+	return startRegimeStorePopulationWithExports(store, due, rc, notifier, feed, nil)
+}
+
+func startRegimeStorePopulationWithExports(store *RegimeStore, due []StrategyConfig, rc *RegimeConfig, notifier *MultiNotifier, feed *marketFeedContext, exports map[string]manualRegimeExport) func() {
+	gen := store.resetForCycleWithExports(time.Now().UTC(), exports)
 	reqs := collectRegimeBundleRequests(due, rc)
 	if len(reqs) == 0 {
 		return func() {}
 	}
 	for _, req := range reqs {
-		store.set(&RegimeBundle{Key: req.Key, Err: "regime bundle unavailable", At: time.Now().UTC()}, gen)
+		store.set(&RegimeBundle{Key: req.Key, Err: regimeBundlePendingErr, At: time.Now().UTC()}, gen)
 	}
 	popCtx, popCancel := context.WithCancel(shutdownReadOnlyCtx)
 	done := make(chan struct{})

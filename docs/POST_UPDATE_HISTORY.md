@@ -2,6 +2,18 @@
 
 > **Companion to `SKILL.md` § Post-Update Agent Protocol.** Full narrative for runtime-default, opt-in, and internal entries that were trimmed from `SKILL.md` to save agent context. The live `SKILL.md` keeps the workflow (trigger/steps/prompt) plus a short recent-entry window; look here for migration archaeology and older PR detail.
 
+### Issue 1945: command-line regime admission under a sealed feed
+
+Runtime behavior changes for `manual-open` and `manual-add` run from the command line when `market_feed` is `shared` or `websocket`.
+They now read the running scheduler's current regime bundle through `GET /api/regime/manual` instead of refusing.
+The command reaches `http://localhost:<status_port or 8099>` by default; set `GO_TRADER_MANUAL_SCHEDULER_URL` (a bare loopback `http` origin with a port) for a `--status-port` override, a fallback listener port or a container port mapping.
+Set `STATUS_AUTH_TOKEN` in the command's environment when the scheduler uses one.
+A token, identity, key, configuration, reply-format, timestamp or draining failure refuses the order with no ratchet fallback; only an absent, unreachable, timed-out or genuinely failed scheduler result keeps the existing market-order ratchet fallback, and limit placement always refuses.
+A new command-line open whose protection needs ATR must pass a finite, positive `--atr`; the command never fetches candles privately, and an adverse fill switches to the arithmetic fallback ATR with a warning.
+Each daemon writes an identity-only `<state db>.manual-regime-owner.json` beside every state file while it owns them and removes it on shutdown; stop the daemon before deleting one by hand.
+The status UI open and add, REST mode and record-only adoption are unchanged.
+Deploy Go and Python together with `bash scripts/update.sh --restart`.
+
 ### Issue 1939: regime readiness
 
 Runtime behavior changes when a strategy has insufficient regime history.
@@ -14,7 +26,7 @@ Missing metadata is unavailable, and a genuine store failure keeps its configure
 The retained manual market-order ratchet fallback applies only to genuine classification failure.
 Manual limit placement requires ready stop inputs and retains them for later fill adoption.
 A position with no stop label in its entry evidence takes the ready current stop window once, so its regime stop arms.
-Under a shared or websocket feed, command-line regime-stop opens and adds need an explicit stop or the status UI.
+Under a shared or websocket feed, command-line regime-stop opens and adds needed an explicit stop or the status UI until issue 1945.
 Positions, queued manual actions, and pending manual limit orders gain optional captured snapshot JSON through additive migrations.
 Backtests carry the same typed readiness and report stop warm-up skips; older results can differ.
 Deploy Go and Python together with `bash scripts/update.sh --restart`.

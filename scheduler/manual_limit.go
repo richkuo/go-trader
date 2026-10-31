@@ -180,11 +180,33 @@ type manualLimitOpenInputs struct {
 }
 
 func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in manualLimitOpenInputs) int {
+	sealed := sealedManualCommandFeed(cfg)
+	if sealed && manualLimitRequiresATR(sc) {
+		if !validExplicitATR(in.atr) {
+			fmt.Fprintf(os.Stderr, "error: market_feed %q forbids a private candle fetch; this strategy's protection needs a finite, positive --atr for a new limit open\n", cfg.marketFeedMode())
+			return 2
+		}
+		if in.limitPrice > 0 && in.atr > 0.5*in.limitPrice {
+			fmt.Fprintf(os.Stderr, "error: --atr %.4f exceeds 50%% of the limit price %.4f (plausibility guard)\n", in.atr, in.limitPrice)
+			return 1
+		}
+	}
+	resolve := func(sc StrategyConfig) (RegimePayload, error) { return resolveManualRegimePayload(sc, cfg) }
+	confirm := func() error { return nil }
+	if sealed {
+		remote := newManualRegimeRemote(cfg, stateDB)
+		resolve, confirm = remote.resolve, remote.confirm
+	}
 	var entrySnapshots map[string]RegimeSnapshot
+	regimeAdmitted := false
 	if strategyRegimeStopDependent(sc) {
-		payload, err := resolveManualRegimePayload(sc, cfg)
+		payload, err := resolve(sc)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "manual limit-open held: regime stop window unavailable: %v\n", err)
+			if manualRegimeHardRefusal(err) {
+				fmt.Fprintf(os.Stderr, "manual limit-open held: regime stop window refused: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "manual limit-open held: regime stop window unavailable: %v\n", err)
+			}
 			return 1
 		}
 		if why := regimeDependencyHold(sc, payload, payload, cfg.Regime, true); why != "" {
@@ -192,6 +214,17 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 			return 1
 		}
 		entrySnapshots = entryRegimeSnapshots(payload, cfg.Regime)
+		regimeAdmitted = true
+	}
+	confirmAdmission := func() bool {
+		if !regimeAdmitted {
+			return true
+		}
+		if err := confirm(); err != nil {
+			fmt.Fprintf(os.Stderr, "manual limit-open held: regime stop window refused: %v\n", err)
+			return false
+		}
+		return true
 	}
 	size := resolveManualSize(in.size, in.notional, in.margin, in.limitPrice, sc.Leverage)
 	if size <= 0 {
@@ -201,6 +234,9 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 	}
 
 	if in.dryRun {
+		if !confirmAdmission() {
+			return 1
+		}
 		exp := "none"
 		if in.expireAfter > 0 {
 			exp = in.expireAfter.String()
@@ -247,6 +283,9 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in 
 	}
 	if err := refuseIfRestingLimitOrderQueued(stateDB, "manual-open --limit-price", in.strategyID, sc.Symbol); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	if !confirmAdmission() {
 		return 1
 	}
 
@@ -496,6 +535,9 @@ func resolveLimitFillEntryATR(sc StrategyConfig, cfg *Config, rowATR, avgPx floa
 					sc.ID, sc.Symbol, fetchErr))
 			}
 		}
+	}
+	if rowATR > 0 && entryATR == rowATR && avgPx > 0 && entryATR > 0.5*avgPx {
+		return recoverSuppliedManualATR("limit-fill", sc.ID, sc.Symbol, rowATR, avgPx, sc.Leverage, notifier)
 	}
 	if entryATR > 0 && avgPx > 0 && entryATR > 0.5*avgPx {
 		warnNotifier(notifier, fmt.Sprintf(

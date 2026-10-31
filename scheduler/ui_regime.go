@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -83,4 +84,113 @@ func (ss *StatusServer) handleAPIRegime(w http.ResponseWriter, r *http.Request) 
 		"built_at": builtAt,
 		"regimes":  entries,
 	})
+}
+
+func (ss *StatusServer) handleAPIRegimeManual(w http.ResponseWriter, r *http.Request) {
+	if isDraining() {
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultDraining})
+		return
+	}
+	if !ss.requireAPIAuth(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Path != manualRegimeRoute {
+		http.NotFound(w, r)
+		return
+	}
+	q := r.URL.Query()
+	id := strings.TrimSpace(q.Get("strategy"))
+	if id == "" || strings.TrimSpace(q.Get(uiPartitionQueryKey)) == "" {
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInvalid})
+		return
+	}
+	filter, ok := ss.uiPartitionParam(w, r)
+	if !ok {
+		return
+	}
+	if filter.All {
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInvalid})
+		return
+	}
+	nonce, active := globalManualRegimeOwner.identity()
+	if !active || ss.stateDB == nil || ss.mu == nil {
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInternal})
+		return
+	}
+
+	var (
+		sc        StrategyConfig
+		found     bool
+		binding   manualRegimeBinding
+		bindErr   error
+		intervalS int
+	)
+	ss.mu.RLock()
+	ss.strategiesMu.RLock()
+	cfg := ss.uiCfg
+	ss.strategiesMu.RUnlock()
+	if cfg != nil {
+		for _, candidate := range cfg.Strategies {
+			if candidate.ID == id {
+				sc, found = candidate, true
+				break
+			}
+		}
+		if found {
+			binding, bindErr = manualRegimeBindingFor(cfg, ss.stateDB.ident, sc)
+		}
+		intervalS = cfg.IntervalSeconds
+	}
+	ss.mu.RUnlock()
+
+	if cfg == nil {
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInternal})
+		return
+	}
+	if !found || sc.Type != "manual" || partitionFor(sc) != filter.Partition {
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultUnknown})
+		return
+	}
+	if bindErr != nil {
+		writeManualRegimeEnvelope(w, manualRegimeEnvelope{Result: manualRegimeResultInternal})
+		return
+	}
+	key := manualRegimeKeyFor(binding.Request.Key)
+	env := manualRegimeEnvelope{
+		OwnerNonce:          nonce,
+		StrategyID:          binding.Contract.StrategyID,
+		Partition:           binding.Contract.Partition,
+		StorageRole:         binding.Contract.StorageRole,
+		StorageID:           binding.Contract.StorageID,
+		ContractFingerprint: binding.Fingerprint,
+		Key:                 &key,
+	}
+	view := globalRegimeStore.manualExport(binding.Request.Key, id)
+	switch {
+	case !view.ContractFound:
+		env.Result = manualRegimeResultUnavailable
+	case view.Contract.Fingerprint != binding.Fingerprint || view.Contract.Key != binding.Request.Key:
+		env = manualRegimeEnvelope{Result: manualRegimeResultMismatch}
+	case !view.Found || view.Err == regimeBundlePendingErr:
+		env.Result = manualRegimeResultUnavailable
+	case view.Err != "":
+		env.Result = manualRegimeResultClassification
+	case view.PayloadJSON == "" || view.At.IsZero():
+		env = manualRegimeEnvelope{Result: manualRegimeResultInternal}
+	default:
+		at := view.At
+		env.Result = manualRegimeResultBundle
+		env.Generation = view.Gen
+		env.IntervalSeconds = intervalS
+		env.BundleAt = &at
+		env.Payload = json.RawMessage(view.PayloadJSON)
+	}
+	if _, stillActive := globalManualRegimeOwner.identity(); !stillActive {
+		env = manualRegimeEnvelope{Result: manualRegimeResultInternal}
+	}
+	writeManualRegimeEnvelope(w, env)
 }

@@ -12,7 +12,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -355,6 +354,7 @@ func TestRegimeReadinessContractIntegration(t *testing.T) {
 	regimeReadinessAdmissionIntegration(t, bundles, rc)
 	regimeReadinessStopBackfillIntegration(t, bundles, rc)
 	regimeReadinessClassifierCaseIntegration(t, root)
+	regimeReadinessProcessIntegration(t)
 	state := &StrategyState{Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100}}, Regime: "stale"}
 	syncStrategyRegimeState(state, bundles[3].Payload, rc)
 	syncStrategyRegimeState(state, bundles[0].Payload, rc)
@@ -747,9 +747,18 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 	t.Helper()
 	sc := StrategyConfig{ID: "readiness-recovery", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=paper"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2}, "trending_down": {ATR: 2}, "ranging": {ATR: 2}}}}
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60, Strategies: []StrategyConfig{sc}}
-	db := openTestDB(t)
-	store := openTestStore(t, db)
+	adopted := sc
+	adopted.ID += "-adopted"
+	captured := sc
+	captured.ID += "-captured"
+	cfg.Strategies = append(cfg.Strategies, adopted, captured)
+	resetInitialCapitalGuardDedup(t)
 	state := NewAppState()
+	previousStore := globalRegimeStore
+	globalRegimeStore = &RegimeStore{}
+	t.Cleanup(func() { globalRegimeStore = previousStore })
+	route := newMRPLocalRoute(t, cfg, state)
+	db, store := route.db, route.store
 	state.Strategies[sc.ID] = NewStrategyState(sc)
 	state.Strategies[sc.ID].Positions["BTC"] = &Position{Symbol: "BTC", Side: "long", Quantity: 1, AvgCost: 100, StopLossOID: 77, TPOIDs: []int64{88}}
 	for _, err := range store.SaveAll(state) {
@@ -757,21 +766,17 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 			t.Fatal(err)
 		}
 	}
-	previousStore := globalRegimeStore
-	globalRegimeStore = &RegimeStore{}
-	t.Cleanup(func() { globalRegimeStore = previousStore })
 	req, ok := strategyRegimeBundleRequest(sc, rc)
 	if !ok {
 		t.Fatal("manual production bundle request missing")
 	}
 	fresh := *bundles[2]
 	fresh.Key, fresh.At = req.Key, time.Now()
-	gen := globalRegimeStore.resetForCycle(fresh.At)
-	globalRegimeStore.set(&fresh, gen)
-	server := &StatusServer{state: state, stateDB: store, mu: &sync.RWMutex{}}
+	route.publish(&fresh)
+	server := route.server
 	for _, deps := range []manualCoreDeps{newCLIManualCoreDeps(cfg, store, nil), server.daemonManualCoreDeps(cfg)} {
 		for _, dry := range []bool{false, true} {
-			if _, err := manualOpenCore(deps, sc, manualOpenInputs{StrategyID: sc.ID, Side: "long", Size: 1, DryRun: dry}); err == nil || !strings.Contains(err.Error(), "warming") {
+			if _, err := manualOpenCore(deps, sc, manualOpenInputs{StrategyID: sc.ID, Side: "long", Size: 1, ATR: 1, DryRun: dry}); err == nil || !strings.Contains(err.Error(), "warming") {
 				t.Fatalf("production manual open: %v", err)
 			}
 			if _, err := manualAddCore(deps, sc, manualAddInputs{StrategyID: sc.ID, Size: 1, DryRun: dry}); err == nil || !strings.Contains(err.Error(), "warming") {
@@ -793,11 +798,6 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 	if _, why := manualRegimeAdmission(deps, fallback, &manualCoreResult{}); !strings.Contains(why, "unavailable") {
 		t.Fatal("malformed metadata used the failure fallback")
 	}
-	adopted := sc
-	adopted.ID += "-adopted"
-	captured := sc
-	captured.ID += "-captured"
-	cfg.Strategies = append(cfg.Strategies, adopted, captured)
 	state.Strategies[adopted.ID] = NewStrategyState(adopted)
 	state.Strategies[captured.ID] = NewStrategyState(captured)
 	if _, err := manualOpenCore(newCLIManualCoreDeps(cfg, store, nil), adopted, manualOpenInputs{StrategyID: adopted.ID, Side: "long", Size: 1, FillPrice: 100, RecordOnly: true}); err != nil {
@@ -861,7 +861,7 @@ func regimeReadinessRecoveryIntegration(t *testing.T, bundles []*RegimeBundle, r
 	rec := &okxGoldenRecNotifier{}
 	notifier := NewMultiNotifier(notifierBackend{notifier: rec, ownerID: "offline-owner"})
 	coldStore := &RegimeStore{}
-	gen = coldStore.resetForCycle(time.Now())
+	gen := coldStore.resetForCycle(time.Now())
 	coldStore.set(bundles[0], gen)
 	processRegimeTransitionAlerts(db, coldStore, rc, notifier, time.Now())
 	if len(rec.drain()) != 0 {
@@ -1050,9 +1050,9 @@ func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 	t.Helper()
 	sc := StrategyConfig{ID: "readiness-limit-live", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "1h", "--mode=live"}, Direction: DirectionBoth, Capital: 1000, Leverage: 1, RegimeATRWindow: "long", StopLossATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending_up": {ATR: 2}, "trending_down": {ATR: 2}, "ranging": {ATR: 2}}}}
 	cfg := &Config{Regime: rc, MarketFeed: "shared", IntervalSeconds: 60, Strategies: []StrategyConfig{sc}}
-	db := openTestDB(t)
-	store := openTestStore(t, db)
 	state := NewAppState()
+	route := newMRPLocalRoute(t, cfg, state)
+	db, store := route.db, route.store
 	state.Strategies[sc.ID] = NewStrategyState(sc)
 	for _, err := range store.SaveAll(state) {
 		if err != nil {
@@ -1077,8 +1077,7 @@ func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 	setBundle := func(original *RegimeBundle) {
 		fresh := *original
 		fresh.Key, fresh.At = req.Key, time.Now()
-		gen := globalRegimeStore.resetForCycle(fresh.At)
-		globalRegimeStore.set(&fresh, gen)
+		route.publish(&fresh)
 	}
 	calls := 0
 	withStubbedLimitOpen(t, func(string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
@@ -1086,7 +1085,7 @@ func regimeReadinessLimitIntegration(t *testing.T, bundles []*RegimeBundle, rc *
 		return &HyperliquidLimitOpenResult{Status: "resting", OrderOID: 999}, "", nil
 	})
 	setBundle(bundles[2])
-	input := manualLimitOpenInputs{strategyID: sc.ID, side: "long", openSide: "buy", size: 1, limitPrice: 100, tif: "Alo"}
+	input := manualLimitOpenInputs{strategyID: sc.ID, side: "long", openSide: "buy", size: 1, limitPrice: 100, tif: "Alo", atr: 1}
 	for _, dry := range []bool{false, true} {
 		for _, side := range []string{"long", "short"} {
 			cold := input

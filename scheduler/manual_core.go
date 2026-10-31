@@ -194,10 +194,12 @@ func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *Stat
 }
 
 type manualCoreDeps struct {
-	resolveRegime func(StrategyConfig) (RegimePayload, error)
-	cfg           *Config
-	stateDB       *StateStore
-	notifier      *MultiNotifier
+	resolveRegime          func(StrategyConfig) (RegimePayload, error)
+	confirmRegimeAdmission func() error
+	requireExplicitATR     bool
+	cfg                    *Config
+	stateDB                *StateStore
+	notifier               *MultiNotifier
 
 	loadState func(strategyID, symbol string) (manualStateView, error)
 
@@ -234,7 +236,23 @@ func newCLIManualCoreDeps(cfg *Config, store *StateStore, notifier *MultiNotifie
 		}
 		return manualStateViewFromStateWithStore(cfg, state, store, strategyID, symbol), nil
 	}
+	if sealedManualCommandFeed(cfg) {
+		remote := newManualRegimeRemote(cfg, store)
+		d.resolveRegime = remote.resolve
+		d.confirmRegimeAdmission = remote.confirm
+		d.requireExplicitATR = true
+	}
 	return d
+}
+
+func manualConfirmRegimeAdmission(d manualCoreDeps, action string) error {
+	if d.confirmRegimeAdmission == nil {
+		return nil
+	}
+	if err := d.confirmRegimeAdmission(); err != nil {
+		return manualFailf("%s held: regime stop window refused: %v", action, err)
+	}
+	return nil
 }
 
 func newManualCoreDeps(cfg *Config, stateDB *StateStore, notifier *MultiNotifier) manualCoreDeps {
@@ -552,6 +570,11 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		}
 	}
 
+	requireATR := d.requireExplicitATR && !in.RecordOnly && manualOpenRequiresATR(sc, in)
+	if requireATR && !validExplicitATR(in.ATR) {
+		return res, manualUsagef("error: market_feed %q forbids a private candle fetch; this strategy's protection needs a finite, positive --atr for a new open", cfg.marketFeedMode())
+	}
+
 	if !in.DryRun {
 		view, loadErr := d.loadState(strategyID, sc.Symbol)
 		if loadErr != nil {
@@ -593,12 +616,14 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 	}
 
 	entryRegime := RegimePayload{Snapshot: &RegimeSnapshot{}}
+	regimeAdmitted := false
 	if !in.RecordOnly && strategyRegimeStopDependent(sc) && in.SLPct <= 0 && in.SLATRMult <= 0 {
 		var why string
 		entryRegime, why = manualRegimeAdmission(d, sc, res)
 		if why != "" {
 			return res, manualFailf("manual-open held: %s", why)
 		}
+		regimeAdmitted = true
 	}
 
 	entryATR := in.ATR
@@ -627,6 +652,15 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		}
 		resolvedOrderSize = qty
 		sizingMark = mark
+	}
+
+	if requireATR && sizingMark > 0 && in.ATR > 0.5*sizingMark {
+		return res, manualFailf("error: --atr %.4f exceeds 50%% of the sizing mark %.4f (plausibility guard)", in.ATR, sizingMark)
+	}
+	if regimeAdmitted {
+		if err := manualConfirmRegimeAdmission(d, "manual-open"); err != nil {
+			return res, err
+		}
 	}
 
 	var resolvedFillPrice, fillQty, fillFee float64
@@ -675,8 +709,12 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
 		}
 		if entryATR > 0 && resolvedFillPrice > 0 && entryATR > 0.5*resolvedFillPrice {
-			res.errf("warning: --atr %.4f exceeds 50%% of fill price %.4f — EntryATR will not be stamped", entryATR, resolvedFillPrice)
-			entryATR = 0
+			if d.requireExplicitATR {
+				entryATR = recoverSuppliedManualATR("manual-open", strategyID, sc.Symbol, entryATR, resolvedFillPrice, sc.Leverage, d.notifier)
+			} else {
+				res.errf("warning: --atr %.4f exceeds 50%% of fill price %.4f — EntryATR will not be stamped", entryATR, resolvedFillPrice)
+				entryATR = 0
+			}
 		}
 	}
 
@@ -703,7 +741,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		}
 	}
 
-	if !in.RecordOnly && entryATR == 0 {
+	if !in.RecordOnly && entryATR == 0 && !d.requireExplicitATR {
 		needsATRProtection := effectiveATRMult > 0 || strategyUsesTieredTPATRClose(sc)
 		if needsATRProtection {
 			fetched, fetchErr, fetchedOK := fetchManualEntryATR(sc, cfg)
@@ -893,31 +931,13 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		res.errf("%s", exposureCapPVBasisMissWarning)
 	}
 
+	regimeAdmitted := false
 	if !in.RecordOnly && strategyRegimeStopDependent(sc) {
 		_, why := manualRegimeAdmission(d, sc, res)
 		if why != "" {
 			return res, manualFailf("manual-add held: %s", why)
 		}
-	}
-
-	if !in.RecordOnly && !in.DryRun {
-		unlock, lockErr := d.acquireManualActionLock(strategyID)
-		if lockErr != nil {
-			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
-		}
-		defer unlock()
-		if _, _, _, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol); err != nil {
-			return res, err
-		}
-		if err := refuseIfPositionActionQueued(d, "manual-add", strategyID, sc.Symbol); err != nil {
-			return res, err
-		}
-	}
-
-	side := pos.Side
-	addSide := "buy"
-	if side == "short" {
-		addSide = "sell"
+		regimeAdmitted = true
 	}
 
 	var resolvedOrderSize, sizingMark float64
@@ -932,6 +952,37 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		}
 		resolvedOrderSize = qty
 		sizingMark = mark
+	}
+
+	if !in.RecordOnly && !in.DryRun {
+		unlock, lockErr := d.acquireManualActionLock(strategyID)
+		if lockErr != nil {
+			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+		}
+		defer unlock()
+		if regimeAdmitted {
+			if err := manualConfirmRegimeAdmission(d, "manual-add"); err != nil {
+				return res, err
+			}
+		}
+		if _, _, _, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol); err != nil {
+			return res, err
+		}
+		if err := refuseIfPositionActionQueued(d, "manual-add", strategyID, sc.Symbol); err != nil {
+			return res, err
+		}
+	}
+
+	side := pos.Side
+	addSide := "buy"
+	if side == "short" {
+		addSide = "sell"
+	}
+
+	if in.DryRun && regimeAdmitted {
+		if err := manualConfirmRegimeAdmission(d, "manual-add"); err != nil {
+			return res, err
+		}
 	}
 
 	if in.DryRun {
@@ -2022,6 +2073,9 @@ func manualRegimeAdmission(d manualCoreDeps, sc StrategyConfig, res *manualCoreR
 	}
 	payload, err := resolve(sc)
 	if err != nil {
+		if manualRegimeHardRefusal(err) {
+			return payload, fmt.Sprintf("regime stop window refused: %v", err)
+		}
 		if !strategyUsesTrailingTPRatchetClose(sc) || !sc.TrailingStopATRMultRegime.IsConfigured() {
 			return payload, fmt.Sprintf("regime stop window unavailable: %v", err)
 		}
