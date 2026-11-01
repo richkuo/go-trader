@@ -264,7 +264,9 @@ def test_kernel_builds_are_private_complete_and_ignore_the_old_shared_path(tmp_p
 
 def test_checkpoint_requires_matching_snapshot_and_kernel(tmp_path):
     from types import SimpleNamespace
-    args = SimpleNamespace(checkpoint_dir=tmp_path, protocol_sha="p", snapshot_sha="a", kernel_sha="k")
+    args = SimpleNamespace(
+        checkpoint_dir=tmp_path, protocol_sha="p", snapshot_sha="a", kernel_sha="k",
+        code_sha={"study.py": "s", "regime.py": "r"})
     study._save_checkpoint(args, "cell", [], {"status": "available"})
     assert study._load_checkpoint(args, "cell") is not None
     args.snapshot_sha = "b"
@@ -272,6 +274,11 @@ def test_checkpoint_requires_matching_snapshot_and_kernel(tmp_path):
     args.snapshot_sha = "a"
     args.kernel_sha = "edited"
     assert study._load_checkpoint(args, "cell") is None
+    args.kernel_sha = "k"
+    args.code_sha = {"study.py": "s", "regime.py": "edited"}
+    assert study._load_checkpoint(args, "cell") is None
+    args.code_sha = {"study.py": "s", "regime.py": "r"}
+    assert study._load_checkpoint(args, "cell") is not None
 
 
 def test_resumed_cells_restore_support_for_confirmation(monkeypatch):
