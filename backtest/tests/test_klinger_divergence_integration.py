@@ -189,6 +189,7 @@ def test_walk_forward_warmup_covers_the_largest_support_of_the_grid():
         assert strategy_warmup_bars(other, generate_param_grid(DEFAULT_PARAM_RANGES[other]),
                                     DEFAULT_PARAM_RANGES[other]) == 199
 
+
 def test_hand_calculated_rising_falling_equal_and_trend_change_recurrences():
     p = dict(TINY)
     a2, a3 = 2.0 / 3.0, 0.5
@@ -263,8 +264,13 @@ def test_zero_range_zero_volume_and_zero_cm_rules():
     assert (quiet.loc[valid, "klinger_reason"] == "no_divergence").any()
 
 
-@pytest.mark.parametrize("params", [DEFAULTS, FAST] + DOMAIN_ENDPOINTS)
-def test_values_and_decisions_match_an_independent_reference(params):
+def test_values_and_decisions_match_an_independent_reference(subtests):
+    for params in [DEFAULTS, FAST] + DOMAIN_ENDPOINTS:
+        with subtests.test(params=params):
+            _values_and_decisions_match_an_independent_reference(params)
+
+
+def _values_and_decisions_match_an_independent_reference(params):
     df = _walk(560, 7, tick=0.05)
     out = _apply(df, params)
     h, l, c, v = (df[k].to_numpy() for k in ("high", "low", "close", "volume"))
@@ -409,8 +415,7 @@ def test_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame():
             _holds_at_end(mutate(_walk(400, 3)), DEFAULTS, reason)
 
 
-@pytest.mark.parametrize("params", [DEFAULTS, FAST])
-def test_reads_stay_inside_the_support_span(params):
+def _reads_stay_inside_the_support_span(params):
     df = _walk(900, 5)
     full = _apply(df, params)
     S = _support(params)
@@ -427,7 +432,7 @@ def test_reads_stay_inside_the_support_span(params):
         assert held["klinger_reason"] == "nonfinite_input" and int(held["signal"]) == 0
 
 
-def test_received_out_of_order_rows_hold_only_inside_their_span():
+def _received_out_of_order_rows_hold_only_inside_their_span():
     df = _walk(800, 5)
     clean = _apply(df, DEFAULTS)
     S = _support(DEFAULTS)
@@ -439,6 +444,14 @@ def test_received_out_of_order_rows_hold_only_inside_their_span():
     assert (out["signal"].iloc[bad:bad + S] == 0).all()
     pd.testing.assert_frame_equal(out.iloc[:bad], clean.iloc[:bad])
     pd.testing.assert_frame_equal(out.iloc[bad + S:], clean.iloc[bad + S:])
+
+
+def test_reads_and_defects_stay_inside_the_support_span(subtests):
+    for params in (DEFAULTS, FAST):
+        with subtests.test(case="reads_stay_inside_the_support_span", params=params):
+            _reads_stay_inside_the_support_span(params)
+    with subtests.test(case="received_out_of_order_rows_hold_only_inside_their_span"):
+        _received_out_of_order_rows_hold_only_inside_their_span()
 
 
 INVALID_PARAMS = [
@@ -463,8 +476,13 @@ def test_support_bound_and_integral_floats_are_accepted():
     pd.testing.assert_frame_equal(_apply(df, floats), _apply(df, DEFAULTS))
 
 
-@pytest.mark.parametrize("params", DOMAIN_ENDPOINTS + [DEFAULTS])
-def test_support_rows_are_required_and_sufficient_at_every_supported_bound(params):
+def test_support_rows_are_required_and_sufficient_at_every_supported_bound(subtests):
+    for params in DOMAIN_ENDPOINTS + [DEFAULTS]:
+        with subtests.test(params=params):
+            _support_rows_are_required_and_sufficient_at_every_supported_bound(params)
+
+
+def _support_rows_are_required_and_sufficient_at_every_supported_bound(params):
     df = _walk(450, 9)
     S = _support(params)
     full = _apply(df, params)

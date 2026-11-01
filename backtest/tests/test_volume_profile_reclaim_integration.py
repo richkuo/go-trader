@@ -128,7 +128,7 @@ def test_mirrored_reclaims_overshoot_boundary_and_ablation_are_deterministic():
     assert list(abl["signal"]) != list(out["signal"])
 
 
-def test_sessions_gaps_availability_and_invalidation_are_dated():
+def _check_sessions_gaps_availability_and_invalidation_are_dated():
     prof = _replay_session(D0, HAND)
     series = _series([prof])
     df = _frame([101, 103, 101, 103])
@@ -170,7 +170,7 @@ def test_future_trades_and_later_evidence_cannot_change_past_decisions():
         assert bool(live["vpr_carried"].iloc[k + 1]) and live["signal"].iloc[k + 1] == full["signal"].iloc[k]
 
 
-def test_missing_or_malformed_profiles_hold_entries_and_the_composer_keeps_the_close_owner():
+def _check_missing_or_malformed_profiles_hold_entries_and_the_composer_keeps_the_close_owner():
     series = _series([_replay_session(D0, HAND)])
     df = _frame([104, 101, 103])
     reg = _reg()
@@ -284,3 +284,12 @@ def test_committed_recording_replays_to_the_pinned_profile_series():
         assert [s["reason_code"] for s in series["sessions"]] == ["minute_invalid"]
     flow = _Flow("BTC", 60_000)
     assert flow.profile is None
+
+
+def test_dated_profile_defects_hold_entries_and_the_composer_keeps_the_close_owner(subtests):
+    for check in (
+            _check_sessions_gaps_availability_and_invalidation_are_dated,
+            _check_missing_or_malformed_profiles_hold_entries_and_the_composer_keeps_the_close_owner,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()

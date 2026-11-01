@@ -128,10 +128,18 @@ def ref_decision(cur, prev, lower, upper):
     return 0
 
 
-@pytest.mark.parametrize("params", [DEFAULTS, dict(DEFAULTS, fast_period=12, slow_period=26, cycle_length=8,
-                                                   lower_threshold=20.0, upper_threshold=80.0)] + DOMAIN_ENDPOINTS)
-def test_values_and_decisions_match_an_independent_reference(params):
+REFERENCE_PARAMS = [DEFAULTS, dict(DEFAULTS, fast_period=12, slow_period=26, cycle_length=8,
+                                   lower_threshold=20.0, upper_threshold=80.0)] + DOMAIN_ENDPOINTS
+
+
+def test_values_and_decisions_match_an_independent_reference(subtests):
     df = _walk(520, 7)
+    for i, params in enumerate(REFERENCE_PARAMS):
+        with subtests.test(case=f"params{i}"):
+            _values_and_decisions_match_an_independent_reference(df, params)
+
+
+def _values_and_decisions_match_an_independent_reference(df, params):
     out = _apply(df, params)
     close = df["close"].to_numpy()
     p = (params["fast_period"], params["slow_period"], params["cycle_length"], params["smoothing"])
@@ -167,12 +175,14 @@ def _first(out, side, reason=None):
     return int(rows[0])
 
 
-def test_threshold_equality_rules_and_strict_crossings():
+def test_crossings_are_strict_need_the_macd_slope_and_never_repeat(subtests):
     df = _walk(900, 11)
     out = _apply(df, DEFAULTS)
     for side in (1, -1):
-        with _case(f"side={side}"):
+        with subtests.test(case=f"threshold_equality_side={side}"):
             _threshold_equality_rules_and_strict_crossings(df, out, side)
+    with subtests.test(case="wrong_macd_slope_and_sustained_conditions"):
+        _a_crossing_with_the_wrong_macd_slope_holds_and_sustained_conditions_do_not_repeat()
 
 
 def _threshold_equality_rules_and_strict_crossings(df, out, side):
@@ -188,7 +198,7 @@ def _threshold_equality_rules_and_strict_crossings(df, out, side):
     assert int(past["signal"].iloc[i]) == 0 and past["stc_reason"].iloc[i] == "no_cross"
 
 
-def test_a_crossing_with_the_wrong_macd_slope_holds_and_sustained_conditions_do_not_repeat():
+def _a_crossing_with_the_wrong_macd_slope_holds_and_sustained_conditions_do_not_repeat():
     df = _walk(3000, 1)
     out = _apply(df, DEFAULTS)
     i = _first(out, 0, "slope_disagrees")
@@ -257,13 +267,15 @@ INVALID_ENTRY_DATA = [
 ]
 
 
-def test_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame():
+def test_invalid_entry_data_and_constant_prices_are_reasoned_holds_that_preserve_the_frame(subtests):
     for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
-        with _case(f"{i}-{reason}"):
+        with subtests.test(case=f"{i}-{reason}"):
             _holds_at_end(mutate(_walk(400, 3)), DEFAULTS, reason)
+    with subtests.test(case="constant_prices_zero_range_and_zero_volume_valid"):
+        _constant_prices_hold_on_zero_range_and_zero_volume_is_valid()
 
 
-def test_constant_prices_hold_on_zero_range_and_zero_volume_is_valid():
+def _constant_prices_hold_on_zero_range_and_zero_volume_is_valid():
     df = _walk(400, 3).assign(open=100.0, high=101.0, low=99.0, close=100.0)
     _holds_at_end(df, DEFAULTS, "zero_range")
     base = _walk(400, 3)
@@ -273,7 +285,7 @@ def test_constant_prices_hold_on_zero_range_and_zero_volume_is_valid():
     assert (b["stc_reason"] == a["stc_reason"]).all()
 
 
-def test_received_out_of_order_rows_hold_only_inside_their_span():
+def _received_out_of_order_rows_hold_only_inside_their_span():
     df = _walk(700, 5)
     clean = _apply(df, DEFAULTS)
     marked = df.copy()
@@ -286,7 +298,14 @@ def test_received_out_of_order_rows_hold_only_inside_their_span():
     pd.testing.assert_frame_equal(out.iloc[bad + NEED:], clean.iloc[bad + NEED:])
 
 
-def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
+def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame(subtests):
+    with subtests.test(case="nonfinite_volume_and_cadence_gap"):
+        _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame()
+    with subtests.test(case="received_out_of_order"):
+        _received_out_of_order_rows_hold_only_inside_their_span()
+
+
+def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     df = _walk(700, 5)
     bad = 300
     corrupt = df.copy()
@@ -320,9 +339,14 @@ def test_integral_float_periods_are_accepted():
     pd.testing.assert_frame_equal(_apply(df, floats), _apply(df, DEFAULTS))
 
 
-@pytest.mark.parametrize("params", DOMAIN_ENDPOINTS + [DEFAULTS])
-def test_193_bars_are_required_and_sufficient_at_every_supported_bound(params):
+def test_193_bars_are_required_and_sufficient_at_every_supported_bound(subtests):
     df = _walk(400, 9)
+    for i, params in enumerate(DOMAIN_ENDPOINTS + [DEFAULTS]):
+        with subtests.test(case=f"params{i}"):
+            _193_bars_are_required_and_sufficient(df, params)
+
+
+def _193_bars_are_required_and_sufficient(df, params):
     full = _apply(df, params)
     for end in range(NEED, 400, 37):
         exact = _apply(df.iloc[end - NEED:end], params)

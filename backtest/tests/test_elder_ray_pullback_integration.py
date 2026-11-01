@@ -3,7 +3,6 @@ import gzip
 import importlib.util
 import json
 import os
-import subprocess
 import sys
 
 import numpy as np
@@ -132,20 +131,6 @@ def _ref_decisions(df, params):
     return out
 
 
-@pytest.mark.parametrize("platform", ["spot", "futures"])
-def test_discovery_captures_are_byte_identical_and_live_output_hides_the_strategy(platform):
-    proc = subprocess.run([sys.executable, os.path.join(_REPO, "shared_strategies", "open", platform, "strategies.py"),
-                           "--list-json"], capture_output=True, cwd=_REPO, timeout=120)
-    assert proc.returncode == 0, proc.stderr
-    with open(os.path.join(STUDY_DIR, f"discovery_before_{platform}.json"), "rb") as fh:
-        before = fh.read()
-    with open(os.path.join(STUDY_DIR, f"discovery_after_{platform}.json"), "rb") as fh:
-        after = fh.read()
-    assert before == after
-    assert NAME.encode() not in after
-    assert NAME.encode() not in proc.stdout
-
-
 def test_values_and_signals_match_an_independent_reference():
     df = _walk(420, 7)
     sides = set()
@@ -188,11 +173,19 @@ def _trend_frame(n, pullbacks, *, rising=True, deep=10.0, shallow=1.0):
     return _frame(close, low, high)
 
 
-def test_age_equal_to_the_window_enters_and_one_more_bar_expires():
+def test_setup_rule_age_window_zero_power_single_use_clearing_and_constant_input(subtests):
     for window in (1, 4, 8, 16):
         for rising in (True, False):
-            with _case(f"{window}-{rising}"):
+            with subtests.test(case=f"age_window={window}-rising={rising}"):
                 _age_equal_to_the_window_enters_and_one_more_bar_expires(rising, window)
+    for label, case in (("zero_bear_power", _zero_bear_power_recovers_and_the_next_float_below_zero_does_not),
+                        ("zero_bull_power", _zero_bull_power_recovers_a_short),
+                        ("one_setup_one_entry", _one_setup_gives_one_entry_and_a_new_pullback_is_needed_for_another),
+                        ("exact_zero_slope_clears", _an_exact_zero_slope_clears_a_live_setup),
+                        ("opposite_slope_clears", _an_opposite_slope_clears_a_live_long_setup),
+                        ("constant_input", _constant_input_never_arms)):
+        with subtests.test(case=label):
+            case()
 
 
 def _age_equal_to_the_window_enters_and_one_more_bar_expires(rising, window):
@@ -215,7 +208,7 @@ def _age_equal_to_the_window_enters_and_one_more_bar_expires(rising, window):
     assert (out["signal"].to_numpy() != 0).sum() == 1
 
 
-def test_zero_bear_power_recovers_and_the_next_float_below_zero_does_not():
+def _zero_bear_power_recovers_and_the_next_float_below_zero_does_not():
     df = _trend_frame(220, [(150, 3)])
     out = _apply(df, DEFAULTS)
     assert int(out["signal"].iloc[153]) == 1
@@ -233,7 +226,7 @@ def test_zero_bear_power_recovers_and_the_next_float_below_zero_does_not():
     assert int(below_out["signal"].iloc[153]) == 0 and below_out["erp_reason"].iloc[153] == "pullback_long"
 
 
-def test_zero_bull_power_recovers_a_short():
+def _zero_bull_power_recovers_a_short():
     df = _trend_frame(220, [(150, 3)], rising=False)
     out = _apply(df, DEFAULTS)
     assert int(out["signal"].iloc[153]) == -1
@@ -245,7 +238,7 @@ def test_zero_bull_power_recovers_a_short():
     assert int(zero_out["signal"].iloc[153]) == -1
 
 
-def test_one_setup_gives_one_entry_and_a_new_pullback_is_needed_for_another():
+def _one_setup_gives_one_entry_and_a_new_pullback_is_needed_for_another():
     df = _trend_frame(240, [(150, 3), (160, 2)])
     out = _apply(df, DEFAULTS)
     entries = np.flatnonzero(out["signal"].to_numpy() == 1)
@@ -253,7 +246,7 @@ def test_one_setup_gives_one_entry_and_a_new_pullback_is_needed_for_another():
     assert (out["erp_reason"].iloc[154:160] == "no_setup").all()
 
 
-def test_an_exact_zero_slope_clears_a_live_setup():
+def _an_exact_zero_slope_clears_a_live_setup():
     close = [100.0] * 100 + [200.0] * 140
     df = _frame(close, [c - 1e-9 for c in close], [c + 1.0 for c in close])
     out = _apply(df, {"ema_period": 2, "slope_span": 1, "pullback_window": 16})
@@ -266,7 +259,7 @@ def test_an_exact_zero_slope_clears_a_live_setup():
     assert (out["signal"] == 0).all()
 
 
-def test_an_opposite_slope_clears_a_live_long_setup():
+def _an_opposite_slope_clears_a_live_long_setup():
     close = np.array([100.0 + i for i in range(200)])
     close[155:] = close[154] - 30.0 * np.arange(1, 46)
     close = np.maximum(close, 1.0)
@@ -280,7 +273,7 @@ def test_an_opposite_slope_clears_a_live_long_setup():
     assert (out["signal"].iloc[150:170] != 1).all()
 
 
-def test_constant_input_never_arms():
+def _constant_input_never_arms():
     df = _frame([150.0] * 200, [149.0] * 200, [151.0] * 200)
     out = _apply(df, DEFAULTS)
     valid = out["erp_valid"] == 1.0
@@ -336,10 +329,12 @@ INVALID_ENTRY_DATA = [
 ]
 
 
-def test_invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame():
+def test_invalid_entry_data_is_a_reasoned_numeric_hold_inside_its_span_that_preserves_the_frame(subtests):
     for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
-        with _case(f"{i}-{reason}"):
+        with subtests.test(case=f"{i}-{reason}"):
             _invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame(mutate, reason)
+    with subtests.test(case="defect_span_and_recovery"):
+        _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame()
 
 
 def _invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame(mutate, reason):
@@ -379,7 +374,7 @@ def test_timestamp_column_is_accepted_without_a_datetime_index():
         np.testing.assert_array_equal(a[col].to_numpy(), b[col].to_numpy())
 
 
-def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
+def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     df = _walk(400, 5)
     bad = 200
     need = _need(P)
@@ -466,7 +461,15 @@ def _rewrite_gz_csv(src, dst, keep):
             fh.write(("\n".join(kept) + "\n").encode("utf-8"))
 
 
-def test_missing_funding_refuses_the_coverage_gate_and_gives_an_inconclusive_verdict(tmp_path):
+def test_frozen_manifest_gate_is_complete_and_missing_funding_refuses_it_with_an_inconclusive_verdict(
+        tmp_path, subtests):
+    with subtests.test(case="frozen_manifest_complete"):
+        _frozen_manifest_gate_is_complete_and_hashes_verify()
+    with subtests.test(case="missing_funding"):
+        _missing_funding_refuses_the_coverage_gate_and_gives_an_inconclusive_verdict(tmp_path)
+
+
+def _missing_funding_refuses_the_coverage_gate_and_gives_an_inconclusive_verdict(tmp_path):
     study = _load_study()
     with open(MANIFEST) as fh:
         raw = json.load(fh)
@@ -501,7 +504,7 @@ def test_missing_funding_refuses_the_coverage_gate_and_gives_an_inconclusive_ver
     assert "arms" not in result
 
 
-def test_frozen_manifest_gate_is_complete_and_hashes_verify():
+def _frozen_manifest_gate_is_complete_and_hashes_verify():
     study = _load_study()
     manifest = om.load_manifest(MANIFEST)
     gate = study.preflight(manifest)

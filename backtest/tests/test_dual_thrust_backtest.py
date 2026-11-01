@@ -139,14 +139,22 @@ def _same(a, b):
         assert x == y, (col, x, y)
 
 
-@pytest.mark.parametrize("freq,interval,n,kl,ks,hour,days", [
+REFERENCE_CASES = [
     ("1h", H, 3, 0.3, 0.4, 0, 20),
     ("1h", H, 2, 0.25, 0.25, 7, 20),
     ("1h", H, 7, 0.5, 0.25, 23, 40),
     ("4h", 4 * H, 4, 0.5, 0.5, 0, 50),
     ("4h", 4 * H, 2, 0.2, 0.3, 8, 50),
-])
-def test_registry_matches_an_independent_daily_session_calculation(freq, interval, n, kl, ks, hour, days):
+]
+
+
+def test_registry_matches_an_independent_daily_session_calculation(subtests):
+    for case in REFERENCE_CASES:
+        with subtests.test(case=case):
+            _registry_matches_an_independent_daily_session_calculation(*case)
+
+
+def _registry_matches_an_independent_daily_session_calculation(freq, interval, n, kl, ks, hour, days):
     per = DAY // interval
     df = _walk(days * per, freq=freq, seed=hour + n)
     params = dict(lookback_sessions=n, k_long=kl, k_short=ks, session_start_hour=hour, expected_interval_ms=interval)
@@ -166,7 +174,7 @@ def test_registry_matches_an_independent_daily_session_calculation(freq, interva
     assert not valid[:first_session + n * per].any() and valid[first_session + n * per]
 
 
-def test_rising_session_fires_one_long_and_records_its_evaluated_inputs():
+def _rising_session_fires_one_long_and_records_its_evaluated_inputs():
     df = _frame(_base() + _session([101.0, 102.0, 103.5, 104.0, 102.0, 104.5]))
     out = _apply(df)
     assert list(np.flatnonzero(out["signal"].to_numpy() == 1)) == [50]
@@ -185,7 +193,7 @@ def test_rising_session_fires_one_long_and_records_its_evaluated_inputs():
     assert out["dt_valid"].iloc[48:].all()
 
 
-def test_falling_session_fires_one_short():
+def _falling_session_fires_one_short():
     df = _frame(_base() + _session([99.0, 98.0, 96.5, 96.0, 98.0, 95.0]))
     out = _apply(df)
     assert list(np.flatnonzero(out["signal"].to_numpy() == -1)) == [50]
@@ -194,7 +202,7 @@ def test_falling_session_fires_one_short():
     assert list(out["dt_reason"].iloc[53:55]) == ["short_consumed", "inside_range"]
 
 
-def test_both_sides_fire_once_in_one_session_and_rearm_at_the_next_session():
+def _both_sides_fire_once_in_one_session_and_rearm_at_the_next_session():
     today = _session([103.5, 100.0, 96.5, 104.0, 96.0, 103.9, 96.9])
     tomorrow = _session([110.0, 80.0, 112.0])
     df = _frame(_base() + today + tomorrow)
@@ -212,31 +220,45 @@ def test_both_sides_fire_once_in_one_session_and_rearm_at_the_next_session():
     assert np.array_equal(sig, ref)
 
 
-def test_threshold_equality_never_fires_and_a_strict_cross_does():
+def _threshold_equality_never_fires_and_a_strict_cross_does():
     out = _apply(_frame(_base() + _session([103.0, 97.0, 103.0, 103.01, 96.99])))
     assert list(out["dt_reason"].iloc[48:51]) == ["threshold_equal"] * 3
     assert (out["signal"].iloc[48:51] == 0).all()
     assert out["signal"].iloc[51] == 1 and out["signal"].iloc[52] == -1
 
 
-def test_the_opening_candle_itself_can_fire():
+def _the_opening_candle_itself_can_fire():
     out = _apply(_frame(_base() + _session([103.5])))
     assert out["signal"].iloc[48] == 1 and out["dt_bar_in_session"].iloc[48] == 0.0
 
 
-def test_constant_prices_hold_with_zero_range():
-    out = _apply(_frame([(50.0, 50.0, 50.0, 50.0)] * 96))
-    assert (out["dt_reason"].iloc[48:] == "zero_range").all()
-    assert not out["dt_valid"].any() and (out["signal"] == 0).all()
-    assert (out["dt_range"].iloc[48:] == 0.0).all()
+SESSION_ENTRY_RULES = [
+    ("rising_session_fires_one_long", _rising_session_fires_one_long_and_records_its_evaluated_inputs),
+    ("falling_session_fires_one_short", _falling_session_fires_one_short),
+    ("both_sides_fire_once_and_rearm", _both_sides_fire_once_in_one_session_and_rearm_at_the_next_session),
+    ("threshold_equality_never_fires", _threshold_equality_never_fires_and_a_strict_cross_does),
+    ("opening_candle_can_fire", _the_opening_candle_itself_can_fire),
+]
 
 
-def test_overflowing_thresholds_hold_as_nonfinite():
-    bars = _base()
-    bars[3] = (1e308, 1.7e308, 1e308, 1e308)
-    out = _apply(_frame(bars + _session([101.0, 102.0]), freq="1h"), k_long=2.0)
-    assert (out["dt_reason"].iloc[48:72] == "nonfinite_derived").all()
-    assert (out["signal"] == 0).all()
+def test_session_entry_rules_fire_once_per_side_on_a_strict_cross(subtests):
+    for label, run in SESSION_ENTRY_RULES:
+        with subtests.test(case=label):
+            run()
+
+
+def test_unusable_derived_ranges_hold_with_their_reason(subtests):
+    with subtests.test(case="constant_prices_zero_range"):
+        out = _apply(_frame([(50.0, 50.0, 50.0, 50.0)] * 96))
+        assert (out["dt_reason"].iloc[48:] == "zero_range").all()
+        assert not out["dt_valid"].any() and (out["signal"] == 0).all()
+        assert (out["dt_range"].iloc[48:] == 0.0).all()
+    with subtests.test(case="overflowing_thresholds_nonfinite"):
+        bars = _base()
+        bars[3] = (1e308, 1.7e308, 1e308, 1e308)
+        out = _apply(_frame(bars + _session([101.0, 102.0]), freq="1h"), k_long=2.0)
+        assert (out["dt_reason"].iloc[48:72] == "nonfinite_derived").all()
+        assert (out["signal"] == 0).all()
 
 
 def _days(n_days, per=24):
@@ -464,13 +486,21 @@ def _defective(n_days=10, per=24, freq="1h"):
     return df.drop(df.index[8 * per + 5])
 
 
-@pytest.mark.parametrize("freq,params", [
+PREFIX_CASES = [
     ("1h", {}),
     ("1h", {"lookback_sessions": 3, "session_start_hour": 5, "k_long": 0.25, "k_short": 0.25}),
     ("4h", {"expected_interval_ms": 4 * H, "lookback_sessions": 4, "session_start_hour": 4, "k_long": 0.25,
             "k_short": 0.25}),
-])
-def test_full_series_every_prefix_and_trailing_window_agree(freq, params):
+]
+
+
+def test_full_series_every_prefix_and_trailing_window_agree(subtests):
+    for freq, params in PREFIX_CASES:
+        with subtests.test(freq=freq, params=params):
+            _full_series_every_prefix_and_trailing_window_agree(freq, params)
+
+
+def _full_series_every_prefix_and_trailing_window_agree(freq, params):
     per = 24 if freq == "1h" else 6
     df = _defective(n_days=20 if freq == "1h" else 40, per=per, freq=freq)
     full = _apply(df, **params)
@@ -513,7 +543,7 @@ def _run_bt(df, params=None, **kw):
     return sig, _bt(**kw).run(with_regime_readiness(sig), strategy_name=NAME, symbol="BTC/USDT", timeframe="1h", save=False)
 
 
-def test_long_entry_fills_at_the_next_bar_open_and_the_explicit_close_owns_the_exit():
+def _long_entry_fills_at_the_next_bar_open_and_the_explicit_close_owns_the_exit():
     df = _frame(_base() + _session([101.0, 102.0, 103.5, 104.2, 105.0, 106.0, 107.5]))
     sig, res = _run_bt(df)
     assert int(np.flatnonzero(sig["signal"].to_numpy() == 1)[0]) == 50
@@ -523,7 +553,7 @@ def test_long_entry_fills_at_the_next_bar_open_and_the_explicit_close_owns_the_e
     assert "tp" in t["exit_reason"]
 
 
-def test_short_entry_fills_at_the_next_bar_open():
+def _short_entry_fills_at_the_next_bar_open():
     df = _frame(_base() + _session([99.0, 98.0, 96.5, 95.5, 94.5, 93.5, 92.0]))
     sig, res = _run_bt(df)
     t = res["trades"][0]
@@ -531,7 +561,7 @@ def test_short_entry_fills_at_the_next_bar_open():
     assert t["entry_price"] == pytest.approx(df["open"].iloc[51] * (1 - _ENGINE_SLIPPAGE_PCT))
 
 
-def test_opposite_and_later_signals_never_reverse_or_add_while_open():
+def _opposite_and_later_signals_never_reverse_or_add_while_open():
     tomorrow = _session([110.0, 80.0])
     df = _frame(_base() + _session([103.5, 100.0, 96.5, 101.0]) + tomorrow)
     sig, res = _run_bt(df, stop_loss_atr_mult=None, stop_loss_pct=60.0,
@@ -542,6 +572,19 @@ def test_opposite_and_later_signals_never_reverse_or_add_while_open():
     trades = res["trades"]
     assert len(trades) == 1 and trades[0]["side"] == "long"
     assert trades[0]["entry_date"] == str(df.index[49])
+
+
+SIMULATOR_FILLS = [
+    ("long_fills_next_open_close_owns_exit", _long_entry_fills_at_the_next_bar_open_and_the_explicit_close_owns_the_exit),
+    ("short_fills_next_open", _short_entry_fills_at_the_next_bar_open),
+    ("no_reversal_or_add_while_open", _opposite_and_later_signals_never_reverse_or_add_while_open),
+]
+
+
+def test_simulator_fills_each_side_at_the_next_open_without_reversal_or_add(subtests):
+    for label, run in SIMULATOR_FILLS:
+        with subtests.test(case=label):
+            run()
 
 
 def test_a_consumed_event_never_re_enters_after_an_exit_in_the_same_session():
@@ -671,7 +714,7 @@ def _hl_check(bars, *, closed, extra=(), mid=None, cutoff=None):
     return _payload(proc)
 
 
-def test_closed_bar_decisions_drop_the_forming_bar_and_report_full_precision_inputs():
+def _closed_bar_decisions_drop_the_forming_bar_and_report_full_precision_inputs():
     bars = _crossing_bars()
     enabled = _hl_check(bars, closed=True)
     disabled = _hl_check(bars, closed=False)
@@ -691,7 +734,7 @@ def test_closed_bar_decisions_drop_the_forming_bar_and_report_full_precision_inp
     assert calm["indicators"] == ind
 
 
-def test_closed_bar_decisions_emit_the_session_long_from_the_closed_bar_after_a_forming_miss():
+def _closed_bar_decisions_emit_the_session_long_from_the_closed_bar_after_a_forming_miss():
     bars = _crossing_bars()
     crossing = bars[-1]
     forming_inside = dict(crossing, h=crossing["o"] + 0.1, l=crossing["o"] - 0.1, c=crossing["o"])
@@ -708,6 +751,13 @@ def test_closed_bar_decisions_emit_the_session_long_from_the_closed_bar_after_a_
     assert late_closed["indicators"]["dt_eval_ts_ms"] == float(crossing["t"])
     late_default = _hl_check(late, closed=False)
     assert late_default["signal"] == 0 and late_default["indicator_labels"]["dt_reason"] == "long_consumed"
+
+
+def test_closed_bar_decisions_select_the_last_closed_bar_and_report_its_inputs(subtests):
+    with subtests.test(case="drop_forming_bar_and_report_inputs"):
+        _closed_bar_decisions_drop_the_forming_bar_and_report_full_precision_inputs()
+    with subtests.test(case="session_long_from_closed_bar_after_forming_miss"):
+        _closed_bar_decisions_emit_the_session_long_from_the_closed_bar_after_a_forming_miss()
 
 
 def test_batch_slots_match_individual_checks():
@@ -737,8 +787,13 @@ def test_batch_slots_match_individual_checks():
     assert results["off"]["signal"] == 1 and results["on"]["signal"] == 0
 
 
-@pytest.mark.parametrize("closed", [True, False])
-def test_invalid_entry_data_in_the_check_holds_the_entry_and_keeps_close_management(closed):
+def test_invalid_entry_data_in_the_check_holds_the_entry_and_keeps_close_management(subtests):
+    for closed in (True, False):
+        with subtests.test(closed=closed):
+            _invalid_entry_data_in_the_check_holds_the_entry_and_keeps_close_management(closed)
+
+
+def _invalid_entry_data_in_the_check_holds_the_entry_and_keeps_close_management(closed):
     bars = _crossing_bars()
     gapped = bars[:-3] + [dict(b, t=b["t"] + H, T=b["T"] + H) for b in bars[-3:]]
     flat = _hl_check(gapped, closed=closed)
@@ -756,7 +811,7 @@ def _admission_market():
     return _market(_crossing_bars()[-200:], timing=False)
 
 
-def test_open_reference_without_mode_is_refused():
+def _open_reference_without_mode_is_refused():
     proc = _run([NAME, "BTC", "1h"])
     assert proc.returncode == 1, proc.stderr[-2000:]
     payload = _payload(proc)
@@ -765,7 +820,7 @@ def test_open_reference_without_mode_is_refused():
     assert "missing mode" in payload["error"]
 
 
-def test_close_fallback_reference_without_mode_is_refused():
+def _close_fallback_reference_without_mode_is_refused():
     refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})
     proc = _run(["breakout", "BTC", "1h", "--strategy-refs", refs])
     assert proc.returncode == 1, proc.stderr[-2000:]
@@ -773,9 +828,7 @@ def test_close_fallback_reference_without_mode_is_refused():
     assert f"close strategy '{NAME}' is edge_status=no_edge" in error and "missing mode" in error
 
 
-@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"],
-                                   ["--allow-no-edge"]])
-def test_paper_or_acknowledged_evaluation_runs_offline_and_reports_inputs(extra):
+def _paper_or_acknowledged_evaluation_runs_offline_and_reports_inputs(extra):
     proc = _run([NAME, "BTC", "1h", "--market-stdin"] + extra, {"v": 2, "market": _admission_market()})
     assert proc.returncode == 0, proc.stderr[-2000:]
     out = _payload(proc)
@@ -786,14 +839,30 @@ def test_paper_or_acknowledged_evaluation_runs_offline_and_reports_inputs(extra)
         assert key in out["indicators"], key
 
 
-@pytest.mark.parametrize("extra", [["--mode=paper"], ["--mode=live", "--allow-no-edge"]])
-def test_close_fallback_admitted_in_paper_or_acknowledged(extra):
+def _close_fallback_admitted_in_paper_or_acknowledged(extra):
     refs = json.dumps({"open": {"name": "breakout"}, "closes": [{"name": NAME}]})
     proc = _run(["breakout", "BTC", "1h", "--strategy-refs", refs, "--market-stdin"] + extra,
                 {"v": 2, "market": _admission_market()})
     assert proc.returncode == 0, proc.stderr[-2000:]
     out = _payload(proc)
     assert not out.get("error") and out["close_strategies"] == [NAME]
+
+
+ADMITTED_OPEN_EXTRAS = [["--mode=paper"], ["--mode", "paper"], ["--mode=live", "--allow-no-edge"], ["--allow-no-edge"]]
+ADMITTED_CLOSE_EXTRAS = [["--mode=paper"], ["--mode=live", "--allow-no-edge"]]
+
+
+def test_solo_check_admits_open_and_close_fallback_references_only_with_paper_or_acknowledgement(subtests):
+    with subtests.test(case="open_without_mode_refused"):
+        _open_reference_without_mode_is_refused()
+    with subtests.test(case="close_fallback_without_mode_refused"):
+        _close_fallback_reference_without_mode_is_refused()
+    for extra in ADMITTED_OPEN_EXTRAS:
+        with subtests.test(case="open_admitted", extra=extra):
+            _paper_or_acknowledged_evaluation_runs_offline_and_reports_inputs(extra)
+    for extra in ADMITTED_CLOSE_EXTRAS:
+        with subtests.test(case="close_fallback_admitted", extra=extra):
+            _close_fallback_admitted_in_paper_or_acknowledged(extra)
 
 
 def test_batch_slots_apply_the_admission_matrix_and_match_solo():
@@ -830,8 +899,16 @@ def test_batch_slots_apply_the_admission_matrix_and_match_solo():
     assert solo["signal"] == 1
 
 
-@pytest.mark.parametrize("bad", [{"allow_no_edge": "true"}, {"allow_no_edge": 1}, {"mode_args": "--mode=paper"}])
-def test_malformed_batch_admission_evidence_rejects_the_payload(bad):
+MALFORMED_ADMISSION = [{"allow_no_edge": "true"}, {"allow_no_edge": 1}, {"mode_args": "--mode=paper"}]
+
+
+def test_malformed_batch_admission_evidence_rejects_the_payload(subtests):
+    for bad in MALFORMED_ADMISSION:
+        with subtests.test(bad=bad):
+            _malformed_batch_admission_evidence_rejects_the_payload(bad)
+
+
+def _malformed_batch_admission_evidence_rejects_the_payload(bad):
     proc = _run(["--batch-check", "--symbol=BTC", "--timeframe=1h", "--market-stdin"],
                 {"v": 2, "slots": [dict({"id": "slot", "strategy": NAME, "mode": "paper"}, **bad)],
                  "market": _admission_market()})

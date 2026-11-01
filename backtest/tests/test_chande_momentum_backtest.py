@@ -98,7 +98,7 @@ def test_registry_values_match_an_independent_calculation_and_the_sma_rsi_identi
     assert not np.allclose(wilder["rsi"].iloc[30:], (out["cmo"].iloc[30:] + 100.0) / 2.0)
 
 
-def test_warmup_rising_falling_and_mirrored_crossings():
+def _check_warmup_rising_falling_and_mirrored_crossings():
     closes = [100.0] * 10 + [100.0 + k for k in range(1, 9)] + [108.0 - k for k in range(1, 15)]
     out = _apply(_frame(closes))
     assert (out["cmo_reason"].iloc[:6] == "insufficient_history").all()
@@ -115,7 +115,7 @@ def test_warmup_rising_falling_and_mirrored_crossings():
     assert out["cmo_reason"].iloc[s] == "entry_short"
 
 
-def test_constant_prices_read_zero_and_never_fire():
+def _check_constant_prices_read_zero_and_never_fire():
     out = _apply(_frame([50.0] * 40))
     valid = out["cmo_valid"].to_numpy()
     assert valid[6:].all()
@@ -124,16 +124,27 @@ def test_constant_prices_read_zero_and_never_fire():
     assert (out["signal"] == 0).all()
 
 
-def test_flat_window_then_rise_fires_from_the_neutral_value():
+def _check_flat_window_then_rise_fires_from_the_neutral_value():
     out = _apply(_frame([50.0] * 12 + [51.0, 52.0]))
     assert out["cmo"].iloc[11] == 0.0 and out["cmo_reason"].iloc[11] == "flat_price"
     assert out["signal"].iloc[12] == 1 and out["cmo"].iloc[12] == 100.0
 
 
-def test_threshold_equality_never_fires_and_a_cross_from_exactly_the_threshold_does():
+def _check_threshold_equality_never_fires_and_a_cross_from_exactly_the_threshold_does():
     for sign in (1, -1):
         with _case(sign):
             _threshold_equality_never_fires_and_a_cross_from_exactly_the_threshold_does(sign)
+
+
+def test_entry_rule_cases_fire_and_hold_with_their_reasons(subtests):
+    for label, check in (
+        ("warmup_rising_falling_and_mirrored_crossings", _check_warmup_rising_falling_and_mirrored_crossings),
+        ("constant_prices_read_zero_and_never_fire", _check_constant_prices_read_zero_and_never_fire),
+        ("flat_window_then_rise_fires_from_the_neutral_value", _check_flat_window_then_rise_fires_from_the_neutral_value),
+        ("threshold_equality_never_fires_and_a_cross_from_exactly_the_threshold_does", _check_threshold_equality_never_fires_and_a_cross_from_exactly_the_threshold_does),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def _threshold_equality_never_fires_and_a_cross_from_exactly_the_threshold_does(sign):
@@ -190,7 +201,7 @@ DEFECTS = {
 }
 
 
-def test_each_defect_holds_with_a_reason_and_resumes_once_both_windows_clear():
+def _check_each_defect_holds_with_a_reason_and_resumes_once_both_windows_clear():
     for kind in sorted(DEFECTS):
         with _case(kind):
             _defect_holds_with_a_reason_and_resumes_once_both_windows_clear(kind)
@@ -221,7 +232,7 @@ def _defect_holds_with_a_reason_and_resumes_once_both_windows_clear(kind):
             assert out["signal"].iloc[i] == ref["signal"].iloc[i]
 
 
-def test_cadence_comes_from_the_fixed_interval_and_never_from_the_frame():
+def _check_cadence_comes_from_the_fixed_interval_and_never_from_the_frame():
     four_hour = _frame(_walk(60), freq="4h")
     held = _apply(four_hour)
     assert not held["cmo_valid"].any() and (held["signal"] == 0).all()
@@ -246,7 +257,7 @@ def test_timestamp_column_and_timezone_inputs_match_the_naive_index():
                                   and base[c].dtype.kind == "f")
 
 
-def test_missing_inputs_hold_without_raising():
+def _check_missing_inputs_hold_without_raising():
     no_close = _frame(_walk(30)).drop(columns=["close"])
     out = _apply(no_close)
     assert (out["signal"] == 0).all() and (out["cmo_reason"] == "missing_columns:close").all()
@@ -259,6 +270,16 @@ def test_missing_inputs_hold_without_raising():
     junk["timestamp"] = "not-a-time"
     out = _apply(junk)
     assert (out["signal"] == 0).all() and (out["cmo_reason"] == "missing_timestamp").all()
+
+
+def test_input_defects_hold_with_a_reason_without_raising(subtests):
+    for label, check in (
+        ("each_defect_holds_with_a_reason_and_resumes_once_both_windows_clear", _check_each_defect_holds_with_a_reason_and_resumes_once_both_windows_clear),
+        ("cadence_comes_from_the_fixed_interval_and_never_from_the_frame", _check_cadence_comes_from_the_fixed_interval_and_never_from_the_frame),
+        ("missing_inputs_hold_without_raising", _check_missing_inputs_hold_without_raising),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 INVALID_PARAMS = [
@@ -296,8 +317,7 @@ def _defective_walk():
     return df
 
 
-@pytest.mark.parametrize("period", [1, 5, 9])
-def test_every_decision_equals_its_prefix_and_its_required_suffix(period):
+def _check_every_decision_equals_its_prefix_and_its_required_suffix(period):
     df = _defective_walk()
     params = dict(PARAMS, period=period)
     full = _apply(df, params)
@@ -308,7 +328,7 @@ def test_every_decision_equals_its_prefix_and_its_required_suffix(period):
         _same(full.iloc[i], suffix)
 
 
-def test_data_outside_the_required_history_never_changes_a_decision():
+def _check_data_outside_the_required_history_never_changes_a_decision():
     df = _frame(_walk(120, seed=5))
     params = dict(PARAMS, period=6)
     base = _apply(df, params)
@@ -327,6 +347,21 @@ def test_data_outside_the_required_history_never_changes_a_decision():
         _same(base.iloc[i], _apply(poisoned, params).iloc[i])
 
 
+def test_decisions_depend_only_on_their_required_history(subtests):
+    for label, check in (
+        ("every_decision_equals_its_prefix_and_its_required_suffix[1]",
+         lambda: _check_every_decision_equals_its_prefix_and_its_required_suffix(1)),
+        ("every_decision_equals_its_prefix_and_its_required_suffix[5]",
+         lambda: _check_every_decision_equals_its_prefix_and_its_required_suffix(5)),
+        ("every_decision_equals_its_prefix_and_its_required_suffix[9]",
+         lambda: _check_every_decision_equals_its_prefix_and_its_required_suffix(9)),
+        ("data_outside_the_required_history_never_changes_a_decision",
+         _check_data_outside_the_required_history_never_changes_a_decision),
+    ):
+        with subtests.test(case=label):
+            check()
+
+
 def _bt(**kw):
     base = dict(initial_capital=1000.0, platform="hyperliquid",
                 open_strategy={"name": NAME, "params": PARAMS},
@@ -341,7 +376,7 @@ def _run_bt(df, **kw):
     return before, _bt(**kw).run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="1h", save=False)
 
 
-def test_long_entry_fills_at_the_next_bar_open_and_the_explicit_close_owns_the_exit():
+def _check_long_entry_fills_at_the_next_bar_open_and_the_explicit_close_owns_the_exit():
     closes = [100.0] * 30 + [100.5, 101.0, 101.4, 101.8, 102.6, 103.4, 104.6, 105.5, 106.0]
     df = _frame(closes)
     sig, res = _run_bt(df)
@@ -353,7 +388,7 @@ def test_long_entry_fills_at_the_next_bar_open_and_the_explicit_close_owns_the_e
     assert t["exit_reason"].startswith("tiered_tp_pct") or "tp" in t["exit_reason"]
 
 
-def test_short_entry_fills_at_the_next_bar_open():
+def _check_short_entry_fills_at_the_next_bar_open():
     closes = [100.0] * 30 + [99.5, 99.0, 98.6, 98.2, 97.4, 96.6, 95.4, 94.5, 94.0]
     df = _frame(closes)
     sig, res = _run_bt(df)
@@ -364,7 +399,7 @@ def test_short_entry_fills_at_the_next_bar_open():
     assert t["entry_price"] == pytest.approx(df["open"].iloc[31] * (1 - _ENGINE_SLIPPAGE_PCT))
 
 
-def test_opposite_and_repeated_signals_never_reverse_or_add_while_open():
+def _check_opposite_and_repeated_signals_never_reverse_or_add_while_open():
     closes = ([100.0] * 30 + [100.4, 100.8, 101.0, 101.1, 101.2] + [100.9, 100.6, 100.3, 100.0, 99.8]
               + [100.2, 100.6, 101.0, 101.2] + [101.0] * 30)
     df = _frame(closes)
@@ -377,6 +412,16 @@ def test_opposite_and_repeated_signals_never_reverse_or_add_while_open():
     assert len(trades) == 1
     assert trades[0]["side"] == "long"
     assert trades[0]["shares"] == pytest.approx(trades[0].get("initial_shares", trades[0]["shares"]))
+
+
+def test_simulator_fills_next_open_and_never_reverses_or_adds(subtests):
+    for label, check in (
+        ("long_entry_fills_at_the_next_bar_open_and_the_explicit_close_owns_the_exit", _check_long_entry_fills_at_the_next_bar_open_and_the_explicit_close_owns_the_exit),
+        ("short_entry_fills_at_the_next_bar_open", _check_short_entry_fills_at_the_next_bar_open),
+        ("opposite_and_repeated_signals_never_reverse_or_add_while_open", _check_opposite_and_repeated_signals_never_reverse_or_add_while_open),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def test_composer_suppresses_entries_while_open_and_keeps_close_on_invalid_entry_data():
@@ -466,7 +511,7 @@ def _printed_params(stdout):
     return line.split("Params:", 1)[1].strip()
 
 
-def test_run_backtest_binds_the_interval_from_a_non_hourly_timeframe(cached_candles):
+def _check_run_backtest_binds_the_interval_from_a_non_hourly_timeframe(cached_candles):
     proc = _run_backtest_cli(cached_candles, NAME, "4h")
     assert proc.returncode == 0, proc.stderr + proc.stdout
     assert "'expected_interval_ms': 14400000" in _printed_params(proc.stdout)
@@ -474,7 +519,7 @@ def test_run_backtest_binds_the_interval_from_a_non_hourly_timeframe(cached_cand
     assert trades and int(trades[0].split(":")[1]) > 0
 
 
-def test_run_backtest_refuses_an_explicit_interval_that_disagrees_with_the_timeframe(cached_candles):
+def _check_run_backtest_refuses_an_explicit_interval_that_disagrees_with_the_timeframe(cached_candles):
     snippet = (
         "import sys; sys.path[:0] = ['backtest', 'shared_tools']\n"
         "from run_backtest import run_single_backtest\n"
@@ -488,12 +533,22 @@ def test_run_backtest_refuses_an_explicit_interval_that_disagrees_with_the_timef
     assert "chande_momentum: expected_interval_ms=3600000 does not match timeframe '4h' (14400000 ms)" in proc.stderr
 
 
-def test_strategies_without_the_interval_parameter_run_unchanged_on_any_timeframe(cached_candles):
+def _check_strategies_without_the_interval_parameter_run_unchanged_on_any_timeframe(cached_candles):
     proc = _run_backtest_cli(cached_candles, "sma_crossover", "1w")
     assert proc.returncode == 0, proc.stderr + proc.stdout
     defaults = load_registry("futures").STRATEGY_REGISTRY["sma_crossover"]["default_params"]
     assert _printed_params(proc.stdout) == str(defaults)
     assert "expected_interval_ms" not in proc.stdout
+
+
+def test_run_backtest_binds_or_refuses_the_interval_from_the_timeframe(subtests, cached_candles):
+    for label, check in (
+        ("run_backtest_binds_the_interval_from_a_non_hourly_timeframe", lambda: _check_run_backtest_binds_the_interval_from_a_non_hourly_timeframe(cached_candles)),
+        ("run_backtest_refuses_an_explicit_interval_that_disagrees_with_the_timeframe", lambda: _check_run_backtest_refuses_an_explicit_interval_that_disagrees_with_the_timeframe(cached_candles)),
+        ("strategies_without_the_interval_parameter_run_unchanged_on_any_timeframe", lambda: _check_strategies_without_the_interval_parameter_run_unchanged_on_any_timeframe(cached_candles)),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def _walk_forward(df, grid, timeframe, capsys):

@@ -147,8 +147,13 @@ def _reference(df, interval):
     return out
 
 
-@pytest.mark.parametrize("tf", list(SUPPORTED))
-def test_levels_and_entries_match_an_independent_daily_calculation(tf):
+def test_levels_and_entries_match_an_independent_daily_calculation(subtests):
+    for tf in SUPPORTED:
+        with subtests.test(tf=tf):
+            _levels_and_entries_match_an_independent_daily_calculation(tf)
+
+
+def _levels_and_entries_match_an_independent_daily_calculation(tf):
     interval = SUPPORTED[tf]
     per = DAY // interval
     df = _walk(per * 9, tf, seed=interval // 60_000, sigma=0.02 / per ** 0.5)
@@ -195,7 +200,7 @@ LEVEL_PATHS = [
 ]
 
 
-def test_level_equality_and_opposite_boundary_jumps():
+def _level_equality_and_opposite_boundary_jumps():
     for path, reason, signal in LEVEL_PATHS:
         with _case(path):
             out = _apply(_day_frame("1h", path))
@@ -210,7 +215,7 @@ OUTER_SUPPORT_CASES = [
 ]
 
 
-def test_outer_support_contact_invalidates_a_long():
+def _outer_support_contact_invalidates_a_long():
     for prev_low, low, reason in OUTER_SUPPORT_CASES:
         with _case((prev_low, low, reason)):
             df = _day_frame("1h", [100.0, 94.0, 95.0])
@@ -226,13 +231,22 @@ OUTER_RESISTANCE_CASES = [
 ]
 
 
-def test_outer_resistance_contact_invalidates_a_short():
+def _outer_resistance_contact_invalidates_a_short():
     for prev_high, high, reason in OUTER_RESISTANCE_CASES:
         with _case((prev_high, high, reason)):
             df = _day_frame("1h", [100.0, 106.0, 105.0])
             df.iloc[25, df.columns.get_loc("high")] = prev_high
             df.iloc[26, df.columns.get_loc("high")] = high
             assert _apply(df)["cpr_reason"].iloc[26] == reason
+
+
+def test_entry_levels_decide_by_strict_crossings_and_outer_contacts(subtests):
+    with subtests.test(case="level_equality_and_opposite_boundary_jumps"):
+        _level_equality_and_opposite_boundary_jumps()
+    with subtests.test(case="outer_support_contact_invalidates_a_long"):
+        _outer_support_contact_invalidates_a_long()
+    with subtests.test(case="outer_resistance_contact_invalidates_a_short"):
+        _outer_resistance_contact_invalidates_a_short()
 
 
 def test_the_first_bar_of_a_day_never_pairs_with_the_previous_day():
@@ -310,7 +324,7 @@ PRIOR_DAY_DEFECTS = [
 ]
 
 
-def test_prior_day_defects_hold_every_decision_of_the_next_day():
+def _prior_day_defects_hold_every_decision_of_the_next_day():
     for i, (mutate, reason) in enumerate(PRIOR_DAY_DEFECTS):
         with _case(f"{i}-{reason}"):
             clean = _day_frame("1h", [100.0, 94.0, 95.0])
@@ -347,14 +361,14 @@ def test_a_gap_inside_the_current_day_resets_the_pair_and_entries_resume_after_i
     assert straddle["cpr_reason"].iloc[24 + 2] == "cadence_gap" and int(straddle["signal"].abs().sum()) == 0
 
 
-def test_both_crossing_candles_are_validated():
+def _both_crossing_candles_are_validated():
     for pos, reason in ((25, "nonfinite_price"), (26, "nonfinite_price")):
         with _case(pos):
             out = _apply(_set(_day_frame("1h", [100.0, 94.0, 95.0]), pos, "close", np.nan))
             assert out["cpr_reason"].iloc[26] == reason and int(out["signal"].abs().sum()) == 0
 
 
-def test_levels_never_carry_over_a_missing_day():
+def _levels_never_carry_over_a_missing_day():
     per = 24
     bars = _prior_day(per) + _session([100.0] * per) + _session([100.0, 94.0, 95.0] + [100.0] * (per - 3))
     df = _frame(bars)
@@ -442,7 +456,7 @@ TIMING_ATTRS = [
 ]
 
 
-def test_missing_or_contradictory_timing_holds_every_row():
+def _missing_or_contradictory_timing_cases():
     for attrs, reason in TIMING_ATTRS:
         with _case(attrs):
             _missing_or_contradictory_timing_holds_every_row(attrs, reason)
@@ -458,6 +472,17 @@ def _missing_or_contradictory_timing_holds_every_row(attrs, reason):
     assert set(out["cpr_reason"]) == {"missing_timestamps"}
 
 
+def test_input_defects_hold_the_decisions_they_feed_with_their_reason(subtests):
+    with subtests.test(case="prior_day_defects_hold_every_decision_of_the_next_day"):
+        _prior_day_defects_hold_every_decision_of_the_next_day()
+    with subtests.test(case="both_crossing_candles_are_validated"):
+        _both_crossing_candles_are_validated()
+    with subtests.test(case="levels_never_carry_over_a_missing_day"):
+        _levels_never_carry_over_a_missing_day()
+    with subtests.test(case="missing_or_contradictory_timing_holds_every_row"):
+        _missing_or_contradictory_timing_cases()
+
+
 def _runtime(df, cutoff, boundary):
     out = df.copy()
     out.attrs = dict(df.attrs)
@@ -465,7 +490,7 @@ def _runtime(df, cutoff, boundary):
     return out
 
 
-def test_every_supported_interval_validates():
+def _every_supported_interval_validates():
     for value in list(SUPPORTED.values()) + [3_600_000.0]:
         with _case(value):
             _reg()._registry.validate_params(NAME, {"expected_interval_ms": value})
@@ -475,13 +500,20 @@ UNSUPPORTED_INTERVALS = [60_000, 300_000, 21_600_000, 86_400_000, 0, -H, True, 3
                          float("inf"), "3600000", None]
 
 
-def test_unsupported_or_malformed_intervals_are_refused():
+def _unsupported_or_malformed_intervals_are_refused():
     for value in UNSUPPORTED_INTERVALS:
         with _case(repr(value)):
             with pytest.raises(ValueError, match="expected_interval_ms"):
                 _reg()._registry.validate_params(NAME, {"expected_interval_ms": value})
             with pytest.raises(ValueError):
                 _apply(_day_frame("1h", [100.0]), value)
+
+
+def test_interval_parameter_accepts_supported_cadences_and_refuses_the_rest(subtests):
+    with subtests.test(case="every_supported_interval_validates"):
+        _every_supported_interval_validates()
+    with subtests.test(case="unsupported_or_malformed_intervals_are_refused"):
+        _unsupported_or_malformed_intervals_are_refused()
 
 
 def test_research_binding_refuses_a_cadence_or_timeframe_mismatch_before_loading_candles(monkeypatch):

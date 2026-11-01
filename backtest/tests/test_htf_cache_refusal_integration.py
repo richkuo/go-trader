@@ -4,8 +4,6 @@ import sqlite3
 import subprocess
 import sys
 
-import pytest
-
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 _OFFLINE = os.path.join(_ROOT, "shared_scripts", "testdata", "htf_offline")
@@ -129,11 +127,19 @@ def _simulate(env, htf_filter, candles=None, timeframe="1d"):
     return proc, json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-@pytest.mark.parametrize("htf_rows,want", [
+SHORT_CACHES = [
     (0, "no cached 1w candles for BTC/USDT (need at least 50)"),
     (49, "49 cached 1w candles for BTC/USDT (need at least 50)"),
-])
-def test_backtest_refuses_an_empty_or_short_higher_timeframe_cache(tmp_path, htf_rows, want):
+]
+
+
+def _case_dir(tmp_path, name):
+    path = tmp_path / name
+    path.mkdir()
+    return path
+
+
+def _check_backtest_refuses_an_empty_or_short_higher_timeframe_cache(tmp_path, htf_rows, want):
     env = _seed(tmp_path, htf_rows)
     proc = _backtest(tmp_path, env)
     assert proc.returncode == 1, proc.stdout + proc.stderr
@@ -151,11 +157,7 @@ def test_backtest_with_a_valid_higher_timeframe_cache_saves_its_result(tmp_path)
     assert _saved_results(tmp_path) == 1
 
 
-@pytest.mark.parametrize("htf_rows,want", [
-    (0, "no cached 1w candles for BTC/USDT (need at least 50)"),
-    (49, "49 cached 1w candles for BTC/USDT (need at least 50)"),
-])
-def test_simulator_refuses_an_empty_or_short_higher_timeframe_cache(tmp_path, htf_rows, want):
+def _check_simulator_refuses_an_empty_or_short_higher_timeframe_cache(tmp_path, htf_rows, want):
     env = _seed(tmp_path, htf_rows)
     proc, out = _simulate(env, True)
     assert proc.returncode == 1
@@ -174,7 +176,7 @@ def test_simulator_neutral_higher_timeframe_trend_keeps_every_marker(tmp_path):
     assert on["markers"] == off["markers"]
 
 
-def test_backtest_refuses_a_higher_timeframe_cache_that_starts_after_the_requested_range(tmp_path):
+def _check_backtest_refuses_a_higher_timeframe_cache_that_starts_after_the_requested_range(tmp_path):
     htf_start = 1_748_736_000_000
     ltf_rows = (htf_start - _START_MS) // _HOUR_MS + 240
     env = _seed_series(tmp_path, [
@@ -192,7 +194,7 @@ def test_backtest_refuses_a_higher_timeframe_cache_that_starts_after_the_request
     assert _saved_results(tmp_path) == 0
 
 
-def test_simulator_refuses_a_higher_timeframe_cache_that_ends_before_the_candles(tmp_path):
+def _check_simulator_refuses_a_higher_timeframe_cache_that_ends_before_the_candles(tmp_path):
     first_ms = _START_MS + 1000 * _DAY_MS
     htf_last = first_ms + 30 * _DAY_MS - 90 * _DAY_MS
     env = _seed_series(tmp_path, [
@@ -211,6 +213,32 @@ def test_simulator_refuses_a_higher_timeframe_cache_that_ends_before_the_candles
     assert "so rerun when the exchange serves BTC/USDT 4h candles" in out["error"]
     assert out["markers"] == {}
     assert len(proc.stdout.strip().splitlines()) == 1
+
+
+def test_backtest_refuses_a_higher_timeframe_cache_that_is_short_or_misses_the_range(subtests, tmp_path):
+    cases = [(f"empty_or_short[{rows}]",
+              lambda rows=rows, want=want: _check_backtest_refuses_an_empty_or_short_higher_timeframe_cache(
+                  _case_dir(tmp_path, f"short{rows}"), rows, want))
+             for rows, want in SHORT_CACHES]
+    cases.append(("starts_after_the_requested_range",
+                  lambda: _check_backtest_refuses_a_higher_timeframe_cache_that_starts_after_the_requested_range(
+                      _case_dir(tmp_path, "late"))))
+    for label, check in cases:
+        with subtests.test(case=label):
+            check()
+
+
+def test_simulator_refuses_a_higher_timeframe_cache_that_is_short_or_misses_the_candles(subtests, tmp_path):
+    cases = [(f"empty_or_short[{rows}]",
+              lambda rows=rows, want=want: _check_simulator_refuses_an_empty_or_short_higher_timeframe_cache(
+                  _case_dir(tmp_path, f"short{rows}"), rows, want))
+             for rows, want in SHORT_CACHES]
+    cases.append(("ends_before_the_candles",
+                  lambda: _check_simulator_refuses_a_higher_timeframe_cache_that_ends_before_the_candles(
+                      _case_dir(tmp_path, "early"))))
+    for label, check in cases:
+        with subtests.test(case=label):
+            check()
 
 
 def test_simulator_tops_up_a_stale_higher_timeframe_cache_and_runs_filtered(tmp_path):

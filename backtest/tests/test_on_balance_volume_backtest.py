@@ -106,7 +106,7 @@ def _bt(**kw):
     return Backtester(**base)
 
 
-def test_every_optimizer_grid_combination_validates_through_the_registry():
+def _check_every_optimizer_grid_combination_validates_through_the_registry():
     reg = _reg()
     ranges = DEFAULT_PARAM_RANGES[NAME]
     keys = list(ranges)
@@ -140,13 +140,22 @@ INVALID_PARAMS = [
 ]
 
 
-def test_largest_declared_support_stays_inside_the_scheduler_candle_limit():
+def _check_largest_declared_support_stays_inside_the_scheduler_candle_limit():
     out = _run(_frame(_long_closes()), left_span=10, right_span=10, max_separation=100, setup_expiry=50)
     assert int(out["obvd_support_bars"].iloc[0]) == 171 <= 200
     assert (out["obvd_reason"] == "insufficient_history").all()
 
 
-def test_bullish_divergence_arms_after_confirmation_and_enters_once_on_the_strict_reclaim():
+def test_every_grid_combination_validates_and_the_largest_support_fits_the_candle_limit(subtests):
+    for label, check in (
+        ("every_optimizer_grid_combination_validates_through_the_registry", _check_every_optimizer_grid_combination_validates_through_the_registry),
+        ("largest_declared_support_stays_inside_the_scheduler_candle_limit", _check_largest_declared_support_stays_inside_the_scheduler_candle_limit),
+    ):
+        with subtests.test(case=label):
+            check()
+
+
+def _check_bullish_divergence_arms_after_confirmation_and_enters_once_on_the_strict_reclaim():
     df = _frame(_long_closes())
     out = _run(df)
     assert _entries(out) == {ENTRY_ROW: 1}
@@ -165,7 +174,7 @@ def test_bullish_divergence_arms_after_confirmation_and_enters_once_on_the_stric
     assert out["obvd_reason"].iloc[CONFIRM_ROW - 1] == "no_setup"
 
 
-def test_bearish_mirror_enters_short():
+def _check_bearish_mirror_enters_short():
     out = _run(_mirror(_frame(_long_closes())))
     assert _entries(out) == {ENTRY_ROW: -1}
     row = out.iloc[ENTRY_ROW]
@@ -174,7 +183,16 @@ def test_bearish_mirror_enters_short():
     assert row["obvd_short_reclaim"] == 101.0
 
 
-def test_constant_rising_and_falling_input_never_enters():
+def test_mirrored_divergences_enter_once_on_the_strict_reclaim_with_their_evidence(subtests):
+    for label, check in (
+        ("bullish_divergence_arms_after_confirmation_and_enters_once_on_the_strict_reclaim", _check_bullish_divergence_arms_after_confirmation_and_enters_once_on_the_strict_reclaim),
+        ("bearish_mirror_enters_short", _check_bearish_mirror_enters_short),
+    ):
+        with subtests.test(case=label):
+            check()
+
+
+def _check_constant_rising_and_falling_input_never_enters():
     for label, closes, vols in (("constant", [100.0] * 80, None),
                                 ("rising", list(np.linspace(100.0, 180.0, 80)), None),
                                 ("falling", list(np.linspace(180.0, 100.0, 80)), None)):
@@ -184,7 +202,7 @@ def test_constant_rising_and_falling_input_never_enters():
             assert set(out["obvd_reason"].iloc[SUPPORT - 1:]) <= {"no_setup", "no_pivot_pair"}
 
 
-def test_equal_pivot_prices_hold():
+def _check_equal_pivot_prices_hold():
     body = list(BODY)
     body[Q_ROW - 31] = 97.0
     body[Q_ROW - 30] = 96.0
@@ -193,7 +211,7 @@ def test_equal_pivot_prices_hold():
     assert out["obvd_reason"].iloc[CONFIRM_ROW] == "no_price_divergence"
 
 
-def test_equal_indicator_values_hold_and_the_ablation_ignores_them():
+def _check_equal_indicator_values_hold_and_the_ablation_ignores_them():
     closes = _long_closes()
     vols = _volumes(closes)
     for i in range(33, 36):
@@ -209,7 +227,7 @@ def test_equal_indicator_values_hold_and_the_ablation_ignores_them():
     assert _entries(ablation) == {ENTRY_ROW: 1}
 
 
-def test_falling_indicator_blocks_the_long_and_the_ablation_keeps_it():
+def _check_falling_indicator_blocks_the_long_and_the_ablation_keeps_it():
     df = _frame(_long_closes(), _volumes(_long_closes(), up=1.0, down=10.0))
     out = _run(df)
     assert out["obvd_long_divergence"].iloc[CONFIRM_ROW] < 0
@@ -217,7 +235,7 @@ def test_falling_indicator_blocks_the_long_and_the_ablation_keeps_it():
     assert _entries(_run(df, volume_test=False)) == {ENTRY_ROW: 1}
 
 
-def test_threshold_is_strict():
+def _check_threshold_is_strict():
     for threshold, expected in ((0.5, {}), (0.49, {ENTRY_ROW: 1})):
         with _case(threshold):
             _threshold_is_strict(threshold, expected)
@@ -235,7 +253,7 @@ def _threshold_is_strict(threshold, expected):
     assert _entries(out) == expected
 
 
-def test_zero_volume_span_holds_even_for_the_ablation():
+def _check_zero_volume_span_holds_even_for_the_ablation():
     closes = _long_closes()
     vols = _volumes(closes)
     for i in range(33, 40):
@@ -247,7 +265,7 @@ def test_zero_volume_span_holds_even_for_the_ablation():
         assert _entries(out) == {}
 
 
-def test_nearest_pivot_is_selected_within_inclusive_separation_bounds():
+def _check_nearest_pivot_is_selected_within_inclusive_separation_bounds():
     df = _frame(_long_closes())
     assert _entries(_run(df)) == {ENTRY_ROW: 1}
     assert _entries(_run(df, min_separation=7)) == {ENTRY_ROW: 1}
@@ -261,13 +279,13 @@ def test_nearest_pivot_is_selected_within_inclusive_separation_bounds():
     assert _entries(too_close) == {}
 
 
-def test_setup_expiry_is_inclusive():
+def _check_setup_expiry_is_inclusive():
     for expiry, expected in ((1, {}), (2, {ENTRY_ROW: 1})):
         with _case(expiry):
             assert _entries(_run(_frame(_long_closes()), setup_expiry=expiry)) == expected
 
 
-def test_a_newer_pivot_replaces_the_setup():
+def _check_a_newer_pivot_replaces_the_setup():
     tail = [98.0, 96.0, 97.0, 98.0, 100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
     body = BODY[:-2]
     out = _run(_frame(_long_closes(body, tail)))
@@ -279,13 +297,30 @@ def test_a_newer_pivot_replaces_the_setup():
     assert _entries(unreplaced) == {CONFIRM_ROW + 5: 1}
 
 
-def test_confirmation_uses_only_closed_right_side_bars():
+def _check_confirmation_uses_only_closed_right_side_bars():
     df = _frame(_long_closes())
     for cut in range(Q_ROW, CONFIRM_ROW):
         out = _run(df.iloc[:cut + 1])
         assert out["obvd_long_state"].iloc[-1] not in (2, 3)
         assert out["obvd_long_pivot2_price"].iloc[-1] != 94.0
     assert _run(df.iloc[:CONFIRM_ROW + 1])["obvd_long_state"].iloc[-1] == 2
+
+
+def test_entry_rule_boundaries_hold_or_enter_with_their_reasons(subtests):
+    for label, check in (
+        ("constant_rising_and_falling_input_never_enters", _check_constant_rising_and_falling_input_never_enters),
+        ("equal_pivot_prices_hold", _check_equal_pivot_prices_hold),
+        ("equal_indicator_values_hold_and_the_ablation_ignores_them", _check_equal_indicator_values_hold_and_the_ablation_ignores_them),
+        ("falling_indicator_blocks_the_long_and_the_ablation_keeps_it", _check_falling_indicator_blocks_the_long_and_the_ablation_keeps_it),
+        ("threshold_is_strict", _check_threshold_is_strict),
+        ("zero_volume_span_holds_even_for_the_ablation", _check_zero_volume_span_holds_even_for_the_ablation),
+        ("nearest_pivot_is_selected_within_inclusive_separation_bounds", _check_nearest_pivot_is_selected_within_inclusive_separation_bounds),
+        ("setup_expiry_is_inclusive", _check_setup_expiry_is_inclusive),
+        ("a_newer_pivot_replaces_the_setup", _check_a_newer_pivot_replaces_the_setup),
+        ("confirmation_uses_only_closed_right_side_bars", _check_confirmation_uses_only_closed_right_side_bars),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 INVALID_ROWS = [
@@ -298,7 +333,7 @@ INVALID_ROWS = [
 ]
 
 
-def test_invalid_row_inside_the_support_holds_and_decisions_recover():
+def _check_invalid_row_inside_the_support_holds_and_decisions_recover():
     for i, (corrupt, reason) in enumerate(INVALID_ROWS):
         with _case(f"{i}-{reason}"):
             _invalid_row_inside_the_support_holds_and_decisions_recover(corrupt, reason)
@@ -318,7 +353,7 @@ def _invalid_row_inside_the_support_holds_and_decisions_recover(corrupt, reason)
     assert (out["obvd_reason"].iloc[after].to_numpy() == ref["obvd_reason"].iloc[after].to_numpy()).all()
 
 
-def test_timestamp_defects_hold_until_they_leave_the_support():
+def _check_timestamp_defects_hold_until_they_leave_the_support():
     for edit, reason in (("duplicate", "timestamp_order"), ("reverse", "timestamp_order"), ("gap", "cadence_gap")):
         with _case(edit):
             _timestamp_defects_hold_until_they_leave_the_support(edit, reason)
@@ -340,7 +375,7 @@ def _timestamp_defects_hold_until_they_leave_the_support(edit, reason):
     assert (out["obvd_reason"].iloc[36 + SUPPORT:] == "no_setup").all()
 
 
-def test_missing_columns_or_timestamps_hold_without_throwing():
+def _check_missing_columns_or_timestamps_hold_without_throwing():
     df = _frame(_long_closes())
     no_volume = _run(df.drop(columns=["volume"]))
     assert (no_volume["obvd_reason"] == "missing_columns").all() and _entries(no_volume) == {}
@@ -349,7 +384,17 @@ def test_missing_columns_or_timestamps_hold_without_throwing():
     assert list(no_ts.index) == list(range(len(df)))
 
 
-def test_shifted_accumulator_origin_and_future_bars_leave_decisions_unchanged():
+def test_input_defects_hold_with_a_reason_and_recover(subtests):
+    for label, check in (
+        ("invalid_row_inside_the_support_holds_and_decisions_recover", _check_invalid_row_inside_the_support_holds_and_decisions_recover),
+        ("timestamp_defects_hold_until_they_leave_the_support", _check_timestamp_defects_hold_until_they_leave_the_support),
+        ("missing_columns_or_timestamps_hold_without_throwing", _check_missing_columns_or_timestamps_hold_without_throwing),
+    ):
+        with subtests.test(case=label):
+            check()
+
+
+def _check_shifted_accumulator_origin_and_future_bars_leave_decisions_unchanged():
     df = _market()
     base = _run(df, **{"left_span": 3, "right_span": 3, "min_separation": 5, "max_separation": 40,
                        "setup_expiry": 12})
@@ -372,7 +417,7 @@ def test_shifted_accumulator_origin_and_future_bars_leave_decisions_unchanged():
     pd.testing.assert_frame_equal(base[cols].iloc[:600], changed[cols].iloc[:600])
 
 
-def test_full_series_every_prefix_and_200_row_tail_agree():
+def _check_full_series_every_prefix_and_200_row_tail_agree():
     df = _market(520)
     full = _run(df)
     support = int(full["obvd_support_bars"].iloc[0])
@@ -388,7 +433,16 @@ def test_full_series_every_prefix_and_200_row_tail_agree():
     assert set(full["signal"]) == {-1, 0, 1}
 
 
-def test_long_entry_fills_next_bar_open_and_the_take_profit_fills_the_bar_after_its_close():
+def test_decisions_ignore_the_accumulator_origin_future_bars_and_rows_before_the_window(subtests):
+    for label, check in (
+        ("shifted_accumulator_origin_and_future_bars_leave_decisions_unchanged", _check_shifted_accumulator_origin_and_future_bars_leave_decisions_unchanged),
+        ("full_series_every_prefix_and_200_row_tail_agree", _check_full_series_every_prefix_and_200_row_tail_agree),
+    ):
+        with subtests.test(case=label):
+            check()
+
+
+def _check_long_entry_fills_next_bar_open_and_the_take_profit_fills_the_bar_after_its_close():
     df = _frame(_long_closes())
     sig = ensure_atr_indicator(_run(df))
     res = _bt().run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
@@ -404,13 +458,22 @@ def test_long_entry_fills_next_bar_open_and_the_take_profit_fills_the_bar_after_
     assert t["exit_date"] == str(df.index[hit + 1])
 
 
-def test_short_entry_and_no_reversal_while_open():
+def _check_short_entry_and_no_reversal_while_open():
     df = _mirror(_frame(_long_closes()))
     sig = ensure_atr_indicator(_run(df))
     res = _bt().run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
     assert [t["side"] for t in res["trades"]] == ["short"]
     assert res["trades"][0]["entry_date"] == str(df.index[ENTRY_ROW + 1])
     assert res["trades"][0]["exit_reason"] == "tiered_tp_pct:0.02"
+
+
+def test_simulator_fills_next_open_exits_on_take_profit_and_never_reverses(subtests):
+    for label, check in (
+        ("long_entry_fills_next_bar_open_and_the_take_profit_fills_the_bar_after_its_close", _check_long_entry_fills_next_bar_open_and_the_take_profit_fills_the_bar_after_its_close),
+        ("short_entry_and_no_reversal_while_open", _check_short_entry_and_no_reversal_while_open),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def test_manifest_leg_books_funding_and_execution_spec():

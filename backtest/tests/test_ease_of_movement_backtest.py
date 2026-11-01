@@ -55,7 +55,16 @@ def _last(df, params=None):
     return _apply(df, params).iloc[-1]
 
 
-def test_rising_and_falling_breakouts_enter_on_the_transition_with_matching_sign():
+def test_breakout_entry_rule_sign_equality_zero_indicator_and_no_delayed_confirmation(subtests):
+    with subtests.test(case="rising_and_falling_breakouts"):
+        _rising_and_falling_breakouts_enter_on_the_transition_with_matching_sign()
+    with subtests.test(case="equality_zero_indicator_disagreement"):
+        _equality_zero_indicator_disagreement_and_no_delayed_confirmation()
+    with subtests.test(case="positive_volume_zero_range"):
+        _positive_volume_zero_range_contributes_zero()
+
+
+def _rising_and_falling_breakouts_enter_on_the_transition_with_matching_sign():
     up = _flat(10) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
     out = _apply(_frame(up))
     row = out.iloc[-1]
@@ -73,7 +82,7 @@ def test_rising_and_falling_breakouts_enter_on_the_transition_with_matching_sign
     assert row["signal"] == -1 and row["eom_reason"] == "entry_short" and row["eom_prior_low"] == 99.0
 
 
-def test_equality_zero_indicator_disagreement_and_no_delayed_confirmation():
+def _equality_zero_indicator_disagreement_and_no_delayed_confirmation():
     equal = _flat(10) + [(100.0, 101.0, 99.5, 101.0, 1000.0)]
     assert _last(_frame(equal))["eom_reason"] == "no_breakout"
 
@@ -122,7 +131,7 @@ def test_integral_float_parameters_and_bounds_are_accepted():
     _apply(_frame(_flat(120)), {"eom_period": 100, "breakout_window": 2})
 
 
-def test_positive_volume_zero_range_contributes_zero():
+def _positive_volume_zero_range_contributes_zero():
     rows = _flat(10) + [(100.0, 100.0, 100.0, 100.0, 500.0)] + _flat(2)
     out = _apply(_frame(rows))
     assert out["eom_raw"].iloc[10] == 0.0
@@ -145,10 +154,19 @@ BAD_ROWS = [
 ]
 
 
-def test_bad_rows_hold_with_a_reason_and_recover_when_the_window_is_valid():
+def test_input_defects_hold_with_a_reason_and_recover(subtests):
     for i, (bad, reason) in enumerate(BAD_ROWS):
-        with _case(f"bad{i}-{reason}"):
+        with subtests.test(case=f"bad{i}-{reason}"):
             _bad_rows_hold_with_a_reason_and_recover_when_the_window_is_valid(bad, reason)
+    with subtests.test(case="invalid_volume_keeps_breakout_state_unset"):
+        _invalid_volume_never_invalidates_the_breakout_state()
+    with subtests.test(case="missing_columns_and_missing_cadence"):
+        _missing_columns_and_missing_cadence_hold_every_row()
+    for edit, reason in TIMESTAMP_DEFECTS:
+        with subtests.test(case=f"timestamp-{edit}-{reason}"):
+            _timestamp_defects_hold_inside_the_window_only(edit, reason)
+    with subtests.test(case="wrong_declared_cadence"):
+        _wrong_declared_cadence_holds_every_decision()
 
 
 def _bad_rows_hold_with_a_reason_and_recover_when_the_window_is_valid(bad, reason):
@@ -170,14 +188,14 @@ def _bad_rows_hold_with_a_reason_and_recover_when_the_window_is_valid(bad, reaso
     assert recovered["signal"].iloc[-1] == 1
 
 
-def test_invalid_volume_never_invalidates_the_breakout_state():
+def _invalid_volume_never_invalidates_the_breakout_state():
     rows = _flat(10) + [(100.0, 101.0, 99.0, 100.0, 0.0)] + _flat(2)
     out = _apply(_frame(rows))
     assert (out["eom_setup"].iloc[10:] == 0.0).all()
     assert not out["eom_valid"].iloc[12]
 
 
-def test_missing_columns_and_missing_cadence_hold_every_row():
+def _missing_columns_and_missing_cadence_hold_every_row():
     df = _frame(_flat(12)).drop(columns=["volume"])
     out = _apply(df)
     assert (out["eom_reason"] == "missing_columns:volume").all() and (out["eom_reason_code"] == 19).all()
@@ -193,12 +211,6 @@ TIMESTAMP_DEFECTS = [
     ("missing", "missing_timestamps"),
     ("gap", "cadence_gap"),
 ]
-
-
-def test_timestamp_defects_hold_inside_the_window_only():
-    for edit, reason in TIMESTAMP_DEFECTS:
-        with _case(f"{edit}-{reason}"):
-            _timestamp_defects_hold_inside_the_window_only(edit, reason)
 
 
 def _timestamp_defects_hold_inside_the_window_only(edit, reason):
@@ -220,7 +232,7 @@ def _timestamp_defects_hold_inside_the_window_only(edit, reason):
     assert out["signal"].iloc[-1] == 1
 
 
-def test_wrong_declared_cadence_holds_every_decision():
+def _wrong_declared_cadence_holds_every_decision():
     rows = _flat(10) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
     df = _frame(rows)
     df.attrs[FRAME_INTERVAL_ATTR] = 14_400_000
@@ -260,10 +272,17 @@ def _same(a, b):
             and bool(a["eom_valid"]) == bool(b["eom_valid"]))
 
 
-@pytest.mark.parametrize("params", [{"eom_period": 14, "breakout_window": 20},
-                                    {"eom_period": 28, "breakout_window": 60},
-                                    {"eom_period": 2, "breakout_window": 2}])
-def test_full_series_every_prefix_and_bounded_windows_agree(params):
+PREFIX_PARAMS = [{"eom_period": 14, "breakout_window": 20}, {"eom_period": 28, "breakout_window": 60},
+                 {"eom_period": 2, "breakout_window": 2}]
+
+
+def test_full_series_every_prefix_and_bounded_windows_agree(subtests):
+    for i, params in enumerate(PREFIX_PARAMS):
+        with subtests.test(case=f"params{i}"):
+            _full_series_every_prefix_and_bounded_windows_agree(params)
+
+
+def _full_series_every_prefix_and_bounded_windows_agree(params):
     df = _walk()
     vol = df["volume"].to_numpy().copy()
     vol[90] = 0.0
@@ -299,7 +318,14 @@ def _bt(**kw):
     return Backtester(**base)
 
 
-def test_entry_fills_next_bar_open_and_one_close_owner_exits():
+def test_entry_fills_next_bar_open_one_close_owner_exits_and_an_open_position_never_reverses_or_adds(subtests):
+    with subtests.test(case="entry_fill_and_close_owner"):
+        _entry_fills_next_bar_open_and_one_close_owner_exits()
+    with subtests.test(case="opposite_entry_while_open"):
+        _opposite_entry_while_open_never_reverses_or_adds()
+
+
+def _entry_fills_next_bar_open_and_one_close_owner_exits():
     rows = _flat(20) + [(100.0, 104.0, 100.0, 103.5, 1000.0)]
     rows += [(104.0, 112.0, 103.8, 111.0, 1000.0)] * 6
     df = _frame(rows)
@@ -316,7 +342,7 @@ def test_entry_fills_next_bar_open_and_one_close_owner_exits():
     assert res["close_validation"]["mode"] == "strict"
 
 
-def test_opposite_entry_while_open_never_reverses_or_adds():
+def _opposite_entry_while_open_never_reverses_or_adds():
     rows = _flat(20) + [(100.0, 100.0, 96.0, 96.5, 1000.0)]
     rows += [(96.4, 96.8, 96.0, 96.4, 1000.0)] * 5
     rows += [(96.4, 99.0, 96.2, 98.9, 1000.0)]

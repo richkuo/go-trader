@@ -54,8 +54,7 @@ def data_calls(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize("registry", ["spot", "futures"])
-def test_single_backtest_refuses_before_the_manifest_or_cached_data_load(data_calls, tmp_path, registry):
+def _check_single_backtest_refuses_before_the_manifest_or_cached_data_load(data_calls, tmp_path, registry):
     manifest = tmp_path / "manifest.json"
     manifest.write_text("{}")
     with pytest.raises(ValueError, match=REFUSAL):
@@ -69,7 +68,7 @@ def test_single_backtest_refuses_before_the_manifest_or_cached_data_load(data_ca
     assert data_calls == []
 
 
-def test_walk_forward_wrapper_and_direct_optimizer_refuse_before_reading_data(data_calls):
+def _check_walk_forward_wrapper_and_direct_optimizer_refuse_before_reading_data(data_calls):
     with pytest.raises(ValueError, match=REFUSAL):
         run_backtest.run_walk_forward(strategy_name=NAME, symbol="BTC", timeframe="1m", registry="futures",
                                       platform="hyperliquid")
@@ -83,7 +82,7 @@ def test_walk_forward_wrapper_and_direct_optimizer_refuse_before_reading_data(da
     assert touched == [] and data_calls == []
 
 
-def test_parity_frame_and_fill_report_refuse_before_evaluating_the_frame(data_calls):
+def _check_parity_frame_and_fill_report_refuse_before_evaluating_the_frame(data_calls):
     touched = []
     with pytest.raises(ValueError, match=REFUSAL):
         parity_diff.compute_parity_frame(_UnreadableFrame(touched), strategy_name=NAME, registry="futures")
@@ -94,7 +93,7 @@ def test_parity_frame_and_fill_report_refuse_before_evaluating_the_frame(data_ca
     assert touched == [] and data_calls == []
 
 
-def test_parity_cli_refuses_before_the_cached_data_load_in_both_argument_forms(data_calls, tmp_path, capsys):
+def _check_parity_cli_refuses_before_the_cached_data_load_in_both_argument_forms(data_calls, tmp_path, capsys):
     assert parity_diff.main(["--strategy", NAME, "--registry", "futures", "--symbol", "BTC", "--timeframe", "1m"]) == 2
     direct = capsys.readouterr().err
     config = tmp_path / "config.json"
@@ -108,8 +107,7 @@ def test_parity_cli_refuses_before_the_cached_data_load_in_both_argument_forms(d
     assert data_calls == []
 
 
-@pytest.mark.parametrize("script", ["check_strategy.py", "check_robinhood.py", "check_topstep.py"])
-def test_spot_registry_check_scripts_refuse_the_pair_before_any_fetch(script):
+def _check_spot_registry_check_scripts_refuse_the_pair_before_any_fetch(script):
     env = {k: v for k, v in os.environ.items()
            if not k.upper().startswith(("HYPERLIQUID", "OKX", "ROBINHOOD", "TOPSTEP", "PROJECTX"))}
     proc = subprocess.run([sys.executable, os.path.join(_ROOT, "shared_scripts", script), NAME, "BTC", "1h", "--mode=paper"],
@@ -118,3 +116,23 @@ def test_spot_registry_check_scripts_refuse_the_pair_before_any_fetch(script):
     assert (proc.returncode, payload["signal"]) == (1, 0), proc.stderr[-2000:]
     assert payload["error"].startswith(f"open strategy '{NAME}' is production_refused"), payload["error"]
     assert "Fetching" not in proc.stderr
+
+
+def test_every_research_entrypoint_refuses_before_reading_data(subtests, data_calls, tmp_path, capsys):
+    for registry in ("spot", "futures"):
+        with subtests.test(case=f"single_backtest_refuses_before_the_manifest_or_cached_data_load-{registry}"):
+            _check_single_backtest_refuses_before_the_manifest_or_cached_data_load(data_calls, tmp_path, registry)
+    for check in (
+            _check_walk_forward_wrapper_and_direct_optimizer_refuse_before_reading_data,
+            _check_parity_frame_and_fill_report_refuse_before_evaluating_the_frame,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check(data_calls)
+    with subtests.test(case="parity_cli_refuses_before_the_cached_data_load_in_both_argument_forms"):
+        _check_parity_cli_refuses_before_the_cached_data_load_in_both_argument_forms(data_calls, tmp_path, capsys)
+
+
+def test_spot_registry_check_scripts_refuse_the_pair_before_any_fetch(subtests):
+    for script in ("check_strategy.py", "check_robinhood.py", "check_topstep.py"):
+        with subtests.test(case=script):
+            _check_spot_registry_check_scripts_refuse_the_pair_before_any_fetch(script)

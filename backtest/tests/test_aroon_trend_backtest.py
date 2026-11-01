@@ -81,7 +81,15 @@ def _market(n=420, seed=1643):
     return df
 
 
-def test_grid_fits_the_live_window():
+def test_grid_and_boundary_periods_need_exactly_period_plus_two_rows(subtests):
+    with subtests.test(case="grid_fits_the_live_window"):
+        _grid_fits_the_live_window()
+    for period in (2, 198):
+        with subtests.test(case=f"period={period}"):
+            _boundary_periods_need_exactly_period_plus_two_rows(period)
+
+
+def _grid_fits_the_live_window():
     grid = DEFAULT_PARAM_RANGES[NAME]
     df = _market(260)
     for period in grid["period"]:
@@ -108,7 +116,18 @@ INVALID_PARAMS = [
 ]
 
 
-def test_rising_and_falling_series_hold_without_a_crossing():
+def test_crossing_entry_rule_strength_and_extrema(subtests):
+    with subtests.test(case="rising_and_falling_without_a_crossing"):
+        _rising_and_falling_series_hold_without_a_crossing()
+    with subtests.test(case="crossings_fire_once"):
+        _crossings_fire_once_on_the_crossing_bar_both_sides()
+    with subtests.test(case="strength_is_strict"):
+        _strength_is_strict_and_never_delays_an_event()
+    with subtests.test(case="equal_extrema"):
+        _equal_extrema_pick_the_most_recent_bar()
+
+
+def _rising_and_falling_series_hold_without_a_crossing():
     for step, up, down in ((0.5, 100.0, 0.0), (-0.5, 0.0, 100.0)):
         out = _apply(_frame(_trend(40, step=step)), {"period": 10, "strength": 70.0})
         valid = out[out["aroon_valid"]]
@@ -119,7 +138,7 @@ def test_rising_and_falling_series_hold_without_a_crossing():
         assert set(out["aroon_reason"].iloc[:11]) == {"insufficient_history"}
 
 
-def test_crossings_fire_once_on_the_crossing_bar_both_sides():
+def _crossings_fire_once_on_the_crossing_bar_both_sides():
     up = _apply(_frame(_spike_up(_trend(30))), {"period": 10, "strength": 70.0})
     row = up.iloc[-1]
     assert row["signal"] == 1 and row["aroon_reason"] == "entry_long" and row["aroon_reason_code"] == 1
@@ -140,7 +159,7 @@ def test_crossings_fire_once_on_the_crossing_bar_both_sides():
     assert int((tail["signal"] != 0).sum()) == 1
 
 
-def test_strength_is_strict_and_never_delays_an_event():
+def _strength_is_strict_and_never_delays_an_event():
     df = _frame(_spike_up(_trend(30)))
     at = _apply(df, {"period": 10, "strength": 100.0})
     assert at["signal"].iloc[-1] == 0 and at["aroon_reason"].iloc[-1] == "strength_not_met"
@@ -154,7 +173,7 @@ def test_strength_is_strict_and_never_delays_an_event():
     assert (held["signal"] == 0).all()
 
 
-def test_equal_extrema_pick_the_most_recent_bar():
+def _equal_extrema_pick_the_most_recent_bar():
     rows = _trend(30, step=0.0)
     rows = [(r[0], 100.4, 99.6, 100.0, 1.0) for r in rows]
     rows[24] = (100.0, 105.0, 99.6, 100.0, 1.0)
@@ -167,7 +186,19 @@ def test_equal_extrema_pick_the_most_recent_bar():
     assert last["aroon_up"] == 80.0 and last["aroon_down"] == 70.0
 
 
-def test_constant_prices_hold_as_a_flat_range():
+def test_flat_range_and_input_defects_hold_with_reasons_then_recover(subtests):
+    with subtests.test(case="flat_range"):
+        _constant_prices_hold_as_a_flat_range()
+    with subtests.test(case="missing_columns"):
+        _missing_columns_hold_every_row()
+    for bad, reason, code in BAD_ROWS:
+        with subtests.test(case=f"bad_row {bad}"):
+            _a_bad_row_holds_its_whole_support_then_recovers(bad, reason, code)
+    with subtests.test(case="timestamp_order"):
+        _timestamp_defects_hold()
+
+
+def _constant_prices_hold_as_a_flat_range():
     out = _apply(_frame([(100.0, 100.0, 100.0, 100.0, 1.0)] * 30), {"period": 10, "strength": 70.0})
     assert (out["signal"] == 0).all()
     assert set(out["aroon_reason"].iloc[10:]) == {"flat_range"}
@@ -175,7 +206,7 @@ def test_constant_prices_hold_as_a_flat_range():
     assert out["aroon_up"].isna().all()
 
 
-def test_missing_columns_hold_every_row():
+def _missing_columns_hold_every_row():
     df = _frame(_trend(30)).drop(columns=["low"])
     out = _apply(df, {"period": 10, "strength": 70.0})
     assert (out["signal"] == 0).all()
@@ -189,12 +220,6 @@ BAD_ROWS = [
     ({"high": 50.0}, "inconsistent_hlc", 12),
     ({"close": 200.0}, "inconsistent_hlc", 12),
 ]
-
-
-def test_a_bad_row_holds_its_whole_support_then_recovers():
-    for bad, reason, code in BAD_ROWS:
-        with _case(bad):
-            _a_bad_row_holds_its_whole_support_then_recovers(bad, reason, code)
 
 
 def _a_bad_row_holds_its_whole_support_then_recovers(bad, reason, code):
@@ -211,7 +236,7 @@ def _a_bad_row_holds_its_whole_support_then_recovers(bad, reason, code):
     assert bool(out["aroon_valid"].iloc[bad_row + p + 2])
 
 
-def test_timestamp_defects_hold():
+def _timestamp_defects_hold():
     df = _frame(_trend(40))
     idx = list(df.index)
     idx[25] = idx[24]
@@ -219,12 +244,6 @@ def test_timestamp_defects_hold():
     out = _apply(df, {"period": 10, "strength": 70.0})
     assert (out["aroon_reason"].iloc[25:37] == "timestamp_order").all()
     assert bool(out["aroon_valid"].iloc[37])
-
-
-def test_boundary_periods_need_exactly_period_plus_two_rows():
-    for period in (2, 198):
-        with _case(period):
-            _boundary_periods_need_exactly_period_plus_two_rows(period)
 
 
 def _boundary_periods_need_exactly_period_plus_two_rows(period):
@@ -236,9 +255,17 @@ def _boundary_periods_need_exactly_period_plus_two_rows(period):
     assert exact["aroon_valid"].tolist() == [False] * (need - 1) + [True]
 
 
-@pytest.mark.parametrize("params", [{"period": 25, "strength": 70.0}, {"period": 2, "strength": 0.0},
-                                    {"period": 198, "strength": 100.0}, {"period": 14, "strength": 50.0}])
-def test_every_prefix_and_bounded_tail_repeat_the_full_series_decision(params):
+PREFIX_PARAMS = [{"period": 25, "strength": 70.0}, {"period": 2, "strength": 0.0},
+                 {"period": 198, "strength": 100.0}, {"period": 14, "strength": 50.0}]
+
+
+def test_every_prefix_and_bounded_tail_repeat_the_full_series_decision(subtests):
+    for i, params in enumerate(PREFIX_PARAMS):
+        with subtests.test(case=f"params{i}"):
+            _every_prefix_and_bounded_tail_repeat_the_full_series_decision(params)
+
+
+def _every_prefix_and_bounded_tail_repeat_the_full_series_decision(params):
     df = _market(420)
     full = _apply(df, params)
     need = params["period"] + 2

@@ -118,7 +118,7 @@ def test_values_match_an_independent_reference_and_the_truth_table():
         assert seen == {-1, 0, 1}
 
 
-def test_equal_previous_comparison_qualifies_and_equal_current_does_not():
+def _check_equal_previous_comparison_qualifies_and_equal_current_does_not():
     falling = list(np.linspace(300.0, 100.0, 150))
     df = _from_mids(falling + [falling[-1] + 30.0])
     out = _apply(df, {"lookback": 9, "extreme": 0.5})
@@ -136,7 +136,7 @@ def test_equal_previous_comparison_qualifies_and_equal_current_does_not():
     assert int(last["signal"]) == -1 and last["fisher_reason"] == "entry_short"
 
 
-def test_trigger_exactly_at_the_extreme_is_not_an_entry():
+def _check_trigger_exactly_at_the_extreme_is_not_an_entry():
     df = _walk(600, 11)
     out = _apply(df, {"lookback": 9, "extreme": 0.5})
     for side in (1, -1):
@@ -200,7 +200,7 @@ INVALID_ENTRY_DATA = [
 ]
 
 
-def test_invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame():
+def _check_invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame():
     for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
         with _case(f"{i}-{reason}"):
             _holds_at_end(mutate(_walk(160, 3)), P, reason)
@@ -216,7 +216,7 @@ def test_timestamp_column_is_accepted_without_a_datetime_index():
     np.testing.assert_array_equal(a["signal"].to_numpy(), b["signal"].to_numpy())
 
 
-def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
+def _check_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     df = _walk(400, 5)
     bad = 200
     need = P["lookback"] + HORIZON + 1
@@ -290,3 +290,21 @@ def _cfg(params, **kw):
                 symbol="BTC", timeframe="4h")
     base.update(kw)
     return ParityConfig(**base)
+
+
+def test_entry_rule_boundaries_at_equal_triggers_and_the_extreme(subtests):
+    for check in (
+            _check_equal_previous_comparison_qualifies_and_equal_current_does_not,
+            _check_trigger_exactly_at_the_extreme_is_not_an_entry,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()
+
+
+def test_input_defects_hold_with_a_reason_inside_their_span(subtests):
+    for check in (
+            _check_invalid_entry_data_is_a_reasoned_numeric_hold_that_preserves_the_frame,
+            _check_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()

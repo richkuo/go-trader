@@ -84,6 +84,7 @@ REPLACED_PER_STRATEGY_TESTS = (
     "test_composer_emits_both_directions_and_holds_entries_while_a_position_is_open",
     "test_decision_parity_covers_both_entries_with_the_close_and_stop_owner",
     "test_decision_parity_with_the_close_and_stop_owner",
+    "test_discovery_captures_are_byte_identical_and_live_output_hides_the_strategy",
     "test_entry_data_hold_keeps_the_close_owner_executable",
     "test_entry_holds_keep_the_close_owner_executable",
     "test_entry_parity_on_frozen_candles",
@@ -1099,7 +1100,7 @@ CASES = {
     "elder_ray_pullback": Case(
         registration=Registration(study="elder_ray_pullback_1648", validator=True,
                                   defaults=(lambda: _seed_json(erp.SEED)["params"], lambda: erp.DEFAULTS),
-                                  grid=lambda: _seed_json(erp.SEED)["optimizer_grid"]),
+                                  grid=lambda: _seed_json(erp.SEED)["optimizer_grid"], discovery=erp.STUDY_DIR),
         parity=(
             Parity("entry", lambda: erp._frozen("BTC 4h", 320),
                    _cfgs(erp._cfg, [erp.DOMAIN_ENDPOINTS[0], erp.DOMAIN_ENDPOINTS[-1], erp.DEFAULTS]), WINDOWS,
