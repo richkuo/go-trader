@@ -54,46 +54,50 @@ def test_tiered_tp_atr_regime_frozen_multiplier_ignores_mid_trade_regime_shift()
     assert result["trades"][0]["exit_date"] == str(idx[4])
 
 
-@pytest.mark.parametrize("platform,want_exit_idx,want_exit_price", [
+_TIERED_TP_ATR_LIVE_REGIME_RE_RESOLVES_MULTIPLIER_MID_TRADE_CASES = [
     ("binanceus", -1, 100.26),
     ("hyperliquid", 3, 100.25),
-])
-def test_tiered_tp_atr_live_regime_re_resolves_multiplier_mid_trade(platform, want_exit_idx, want_exit_price):
-    idx = pd.date_range("2024-01-01", periods=6, freq="D")
-    df = pd.DataFrame(
-        {
-            "open": [100.0, 100.0, 100.0, 100.26, 100.26, 100.26],
-            "close": [100.0, 100.0, 100.0, 100.26, 100.26, 100.26],
-            "atr": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-            "regime": [
-                "ranging",
-                "ranging",
-                "ranging",
-                "trending_up",
-                "trending_up",
-                "trending_up",
-            ],
-            "open_action": ["none", "long", "none", "none", "none", "none"],
-        },
-        index=idx,
-    )
+]
 
-    close_ref = {
-        "name": "tiered_tp_atr_live_regime",
-        "params": {"tp_tiers": _tier_spec_widely_separated()},
-    }
-    bt = Backtester(
-        initial_capital=10_000.0,
-        commission_pct=0.0,
-        slippage_pct=0.0,
-        platform=platform,
-        close_strategies=[close_ref],
-    )
-    result = bt.run(df, save=False)
 
-    assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_date"] == str(idx[want_exit_idx])
-    assert result["trades"][0]["exit_price"] == pytest.approx(want_exit_price)
+def test_tiered_tp_atr_live_regime_re_resolves_multiplier_mid_trade(subtests):
+    for i, (platform, want_exit_idx, want_exit_price) in enumerate(_TIERED_TP_ATR_LIVE_REGIME_RE_RESOLVES_MULTIPLIER_MID_TRADE_CASES):
+        with subtests.test(case=i, platform=platform, want_exit_idx=want_exit_idx, want_exit_price=want_exit_price):
+            idx = pd.date_range("2024-01-01", periods=6, freq="D")
+            df = pd.DataFrame(
+                {
+                    "open": [100.0, 100.0, 100.0, 100.26, 100.26, 100.26],
+                    "close": [100.0, 100.0, 100.0, 100.26, 100.26, 100.26],
+                    "atr": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                    "regime": [
+                        "ranging",
+                        "ranging",
+                        "ranging",
+                        "trending_up",
+                        "trending_up",
+                        "trending_up",
+                    ],
+                    "open_action": ["none", "long", "none", "none", "none", "none"],
+                },
+                index=idx,
+            )
+
+            close_ref = {
+                "name": "tiered_tp_atr_live_regime",
+                "params": {"tp_tiers": _tier_spec_widely_separated()},
+            }
+            bt = Backtester(
+                initial_capital=10_000.0,
+                commission_pct=0.0,
+                slippage_pct=0.0,
+                platform=platform,
+                close_strategies=[close_ref],
+            )
+            result = bt.run(df, save=False)
+
+            assert result["total_trades"] == 1
+            assert result["trades"][0]["exit_date"] == str(idx[want_exit_idx])
+            assert result["trades"][0]["exit_price"] == pytest.approx(want_exit_price)
 
 
 def test_stop_loss_atr_mult_regime_use_defaults_matches_baseline_table():
@@ -104,6 +108,16 @@ def test_stop_loss_atr_mult_regime_use_defaults_matches_baseline_table():
         "ranging",
     )
     assert mult == regime_atr.REGIME_ATR_DEFAULTS_STOP_LOSS["ranging"].atr
+
+    case = "test_trailing_stop_atr_mult_regime_use_defaults_parses"
+    blk, errs = regime_atr.parse_regime_atr_block(
+        {"use_defaults": True},
+        "trailing_stop_atr_mult_regime",
+        regime_atr.SURFACE_TRAILING,
+    )
+    assert not errs, case
+    mult = regime_atr.resolve_regime_atr(blk, "trending_up")
+    assert mult == regime_atr.REGIME_ATR_DEFAULTS_TRAILING["trending_up"].atr, case
 
 
 def test_stop_loss_atr_mult_regime_seeds_initial_sl_trigger_from_open_stamp():
@@ -139,17 +153,6 @@ def test_stop_loss_atr_mult_regime_seeds_initial_sl_trigger_from_open_stamp():
     tr = result["trades"][0]
     assert tr["entry_price"] == 100.0
     assert tr["exit_price"] == 96.0
-
-
-def test_trailing_stop_atr_mult_regime_use_defaults_parses():
-    blk, errs = regime_atr.parse_regime_atr_block(
-        {"use_defaults": True},
-        "trailing_stop_atr_mult_regime",
-        regime_atr.SURFACE_TRAILING,
-    )
-    assert not errs
-    mult = regime_atr.resolve_regime_atr(blk, "trending_up")
-    assert mult == regime_atr.REGIME_ATR_DEFAULTS_TRAILING["trending_up"].atr
 
 
 def test_backtester_rejects_mutex_stop_loss_and_trailing_scalars_with_regime_blocks():

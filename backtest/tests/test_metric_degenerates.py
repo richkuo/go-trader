@@ -33,53 +33,44 @@ def _ann_factor(timeframe="1d"):
     return np.sqrt(365)
 
 
-def test_sortino_zero_losing_bars_is_none_not_zero():
-    m = _metrics([1000, 1100, 1200, 1300, 1400])
-    assert m["liquidated"] is False
-    assert m["sortino_ratio"] is None
-    assert m["sharpe_ratio"] > 0
+def test_sortino_degenerate_cases(subtests):
+    with subtests.test(case="test_sortino_zero_losing_bars_is_none_not_zero"):
+        m = _metrics([1000, 1100, 1200, 1300, 1400])
+        assert m["liquidated"] is False
+        assert m["sortino_ratio"] is None
+        assert m["sharpe_ratio"] > 0
 
+    with subtests.test(case="test_sortino_one_losing_bar_is_finite_canonical_value"):
+        equities = [1000, 1100, 1050, 1200, 1300]
+        m = _metrics(equities)
+        rets = pd.Series(equities, dtype=float).pct_change().dropna()
+        downside_dev = float(np.sqrt((rets.clip(upper=0.0) ** 2).mean()))
+        expected = (rets.mean() / downside_dev) * _ann_factor()
+        assert m["sortino_ratio"] is not None
+        assert m["sortino_ratio"] == pytest.approx(round(expected, 3))
+        assert m["sortino_ratio"] != 0.0
 
-def test_sortino_one_losing_bar_is_finite_canonical_value():
-    equities = [1000, 1100, 1050, 1200, 1300]
-    m = _metrics(equities)
-    rets = pd.Series(equities, dtype=float).pct_change().dropna()
-    downside_dev = float(np.sqrt((rets.clip(upper=0.0) ** 2).mean()))
-    expected = (rets.mean() / downside_dev) * _ann_factor()
-    assert m["sortino_ratio"] is not None
-    assert m["sortino_ratio"] == pytest.approx(round(expected, 3))
-    assert m["sortino_ratio"] != 0.0
+    with subtests.test(case="test_sortino_all_loss_is_finite_negative"):
+        equities = [1000, 950, 900, 850, 800]
+        m = _metrics(equities)
+        rets = pd.Series(equities, dtype=float).pct_change().dropna()
+        downside_dev = float(np.sqrt((rets.clip(upper=0.0) ** 2).mean()))
+        expected = (rets.mean() / downside_dev) * _ann_factor()
+        assert m["liquidated"] is False
+        assert m["sortino_ratio"] is not None
+        assert m["sortino_ratio"] < 0
+        assert m["sortino_ratio"] == pytest.approx(round(expected, 3))
 
+    with subtests.test(case="test_sortino_liquidated_forces_floor_not_none"):
+        m = _metrics([1000, -500, 800, 900])
+        assert m["liquidated"] is True
+        assert m["sortino_ratio"] is not None
+        assert m["sortino_ratio"] < 0
 
-def test_sortino_all_loss_is_finite_negative():
-    equities = [1000, 950, 900, 850, 800]
-    m = _metrics(equities)
-    rets = pd.Series(equities, dtype=float).pct_change().dropna()
-    downside_dev = float(np.sqrt((rets.clip(upper=0.0) ** 2).mean()))
-    expected = (rets.mean() / downside_dev) * _ann_factor()
-    assert m["liquidated"] is False
-    assert m["sortino_ratio"] is not None
-    assert m["sortino_ratio"] < 0
-    assert m["sortino_ratio"] == pytest.approx(round(expected, 3))
-
-
-def test_sortino_liquidated_forces_floor_not_none():
-    m = _metrics([1000, -500, 800, 900])
-    assert m["liquidated"] is True
-    assert m["sortino_ratio"] is not None
-    assert m["sortino_ratio"] < 0
-
-
-def test_sortino_uptrend_with_no_trades_still_none():
-    m = _metrics([1000, 1010, 1020], trades=[])
-    assert m["sortino_ratio"] is None
-    assert m["profit_factor"] == 0
-
-
-def test_profit_factor_all_win_is_none():
-    trades = [_trade(50.0, 0.05), _trade(30.0, 0.03)]
-    m = _metrics([1000, 1050, 1080], trades=trades)
-    assert m["profit_factor"] is None
+    with subtests.test(case="test_sortino_uptrend_with_no_trades_still_none"):
+        m = _metrics([1000, 1010, 1020], trades=[])
+        assert m["sortino_ratio"] is None
+        assert m["profit_factor"] == 0
 
 
 def test_profit_factor_mixed_is_finite():
@@ -91,6 +82,7 @@ def test_profit_factor_mixed_is_finite():
 def test_profit_factor_none_never_serializes_as_infinity():
     trades = [_trade(50.0, 0.05), _trade(30.0, 0.03)]
     m = _metrics([1000, 1050, 1080], trades=trades)
+    assert m["profit_factor"] is None
     dumped = json.dumps(m)
     assert "Infinity" not in dumped
     assert "-Infinity" not in dumped

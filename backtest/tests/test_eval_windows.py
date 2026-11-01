@@ -12,14 +12,18 @@ def _leg(sharpe, ddadj=0.0, trades=5, return_pct=-1.0, max_dd_pct=-10.0):
             "bh_return_pct": -30.0}
 
 
-@pytest.mark.parametrize("return_pct,max_dd_pct,expected", [
+_DD_ADJUSTED_RETURN_CASES = [
     (-10.0, -50.0, -0.2),
     (5.0, -2.5, 2.0),
     (0.0, 0.0, 0.0),
     (12.0, 0.0, 0.0),
-])
-def test_dd_adjusted_return(return_pct, max_dd_pct, expected):
-    assert ew.dd_adjusted_return(return_pct, max_dd_pct) == pytest.approx(expected)
+]
+
+
+def test_dd_adjusted_return(subtests):
+    for i, (return_pct, max_dd_pct, expected) in enumerate(_DD_ADJUSTED_RETURN_CASES):
+        with subtests.test(case=i, return_pct=return_pct, max_dd_pct=max_dd_pct, expected=expected):
+            assert ew.dd_adjusted_return(return_pct, max_dd_pct) == pytest.approx(expected)
 
 
 def test_leg_from_results_collapses_backtester_dict():
@@ -34,107 +38,103 @@ def test_leg_from_results_collapses_backtester_dict():
     assert leg["bh_return_pct"] == -44.3
 
 
-def test_incumbent_bars_per_dataset_median():
-    legs = {
-        "BTC/USDT 1h": {
-            "a": _leg(-1.0, ddadj=-0.5),
-            "b": _leg(-2.0, ddadj=-1.0),
-            "c": _leg(-3.0, ddadj=-1.5),
-        },
-    }
-    bars = ew.incumbent_bars(legs)
-    assert bars["BTC/USDT 1h"]["sharpe"] == pytest.approx(-2.0)
-    assert bars["BTC/USDT 1h"]["ddadj"] == pytest.approx(-1.0)
-    assert bars["BTC/USDT 1h"]["n"] == 3
+def test_incumbent_bars_per_dataset_median(subtests):
+    with subtests.test(case="test_incumbent_bars_per_dataset_median"):
+        legs = {
+            "BTC/USDT 1h": {
+                "a": _leg(-1.0, ddadj=-0.5),
+                "b": _leg(-2.0, ddadj=-1.0),
+                "c": _leg(-3.0, ddadj=-1.5),
+            },
+        }
+        bars = ew.incumbent_bars(legs)
+        assert bars["BTC/USDT 1h"]["sharpe"] == pytest.approx(-2.0)
+        assert bars["BTC/USDT 1h"]["ddadj"] == pytest.approx(-1.0)
+        assert bars["BTC/USDT 1h"]["n"] == 3
 
-
-def test_incumbent_bars_skips_missing_legs_and_empty_datasets():
-    legs = {
-        "BTC/USDT 1h": {"a": _leg(-1.0), "b": None, "c": _leg(-3.0)},
-        "SOL/USDT 4h": {"a": None, "b": None},
-    }
-    bars = ew.incumbent_bars(legs)
-    assert bars["BTC/USDT 1h"]["sharpe"] == pytest.approx(-2.0)
-    assert bars["BTC/USDT 1h"]["n"] == 2
-    assert bars["SOL/USDT 4h"] is None
+    with subtests.test(case="test_incumbent_bars_skips_missing_legs_and_empty_datasets"):
+        legs = {
+            "BTC/USDT 1h": {"a": _leg(-1.0), "b": None, "c": _leg(-3.0)},
+            "SOL/USDT 4h": {"a": None, "b": None},
+        }
+        bars = ew.incumbent_bars(legs)
+        assert bars["BTC/USDT 1h"]["sharpe"] == pytest.approx(-2.0)
+        assert bars["BTC/USDT 1h"]["n"] == 2
+        assert bars["SOL/USDT 4h"] is None
 
 
 def _bars(sharpe=-1.0, ddadj=-0.5, datasets=("d1", "d2", "d3", "d4")):
     return {ds: {"sharpe": sharpe, "ddadj": ddadj, "n": 8} for ds in datasets}
 
 
-def test_score_pass_when_means_beat_bar_on_both_metrics():
-    legs = {ds: _leg(-0.3, ddadj=-0.2) for ds in ("d1", "d2", "d3", "d4")}
-    score = ew.score_candidate(legs, _bars())
-    assert score["verdict"] == "pass"
-    assert score["mean_sharpe"] == pytest.approx(-0.3)
-    assert score["mean_bar_sharpe"] == pytest.approx(-1.0)
-    assert score["beats_sharpe_count"] == 4
-    assert score["beats_ddadj_count"] == 4
-    assert not score["degenerate"]
+def test_score_pass_when_means_beat_bar_on_both_metrics(subtests):
+    with subtests.test(case="test_score_pass_when_means_beat_bar_on_both_metrics"):
+        legs = {ds: _leg(-0.3, ddadj=-0.2) for ds in ("d1", "d2", "d3", "d4")}
+        score = ew.score_candidate(legs, _bars())
+        assert score["verdict"] == "pass"
+        assert score["mean_sharpe"] == pytest.approx(-0.3)
+        assert score["mean_bar_sharpe"] == pytest.approx(-1.0)
+        assert score["beats_sharpe_count"] == 4
+        assert score["beats_ddadj_count"] == 4
+        assert not score["degenerate"]
+
+    with subtests.test(case="test_score_fail_when_only_one_metric_beats_bar"):
+        legs = {ds: _leg(-0.3, ddadj=-0.9) for ds in ("d1", "d2", "d3", "d4")}
+        score = ew.score_candidate(legs, _bars(ddadj=-0.5))
+        assert score["verdict"] == "fail"
+
+    with subtests.test(case="test_score_degenerate_zero_trade_majority_rejected"):
+        legs = {
+            "d1": _leg(-0.3, ddadj=-0.2, trades=4),
+            "d2": _leg(0.0, ddadj=0.0, trades=0),
+            "d3": _leg(0.0, ddadj=0.0, trades=0),
+            "d4": _leg(0.0, ddadj=0.0, trades=0),
+        }
+        score = ew.score_candidate(legs, _bars())
+        assert score["degenerate"]
+        assert score["verdict"] == "degenerate"
+
+    with subtests.test(case="test_score_trading_exactly_half_is_not_degenerate"):
+        legs = {
+            "d1": _leg(-0.3, ddadj=-0.2, trades=4),
+            "d2": _leg(-0.3, ddadj=-0.2, trades=1),
+            "d3": _leg(0.0, ddadj=0.0, trades=0),
+            "d4": _leg(0.0, ddadj=0.0, trades=0),
+        }
+        score = ew.score_candidate(legs, _bars())
+        assert not score["degenerate"]
+        assert score["verdict"] == "pass"
+
+    with subtests.test(case="test_score_unscored_datasets_excluded_from_means"):
+        legs = {
+            "d1": _leg(-0.3, ddadj=-0.2),
+            "d2": None,
+            "d3": _leg(-0.5, ddadj=-0.3),
+        }
+        bars = _bars(datasets=("d1", "d3"))
+        bars["d2"] = None
+        score = ew.score_candidate(legs, bars)
+        assert score["scored_datasets"] == 2
+        assert score["mean_sharpe"] == pytest.approx(-0.4)
+
+    with subtests.test(case="test_score_no_data_verdict"):
+        score = ew.score_candidate({"d1": None}, {"d1": None})
+        assert score["verdict"] == "no data"
 
 
-def test_score_fail_when_only_one_metric_beats_bar():
-    legs = {ds: _leg(-0.3, ddadj=-0.9) for ds in ("d1", "d2", "d3", "d4")}
-    score = ew.score_candidate(legs, _bars(ddadj=-0.5))
-    assert score["verdict"] == "fail"
+def test_parse_sweep_arg_coerces_numbers(subtests):
+    with subtests.test(case="test_parse_sweep_arg_coerces_numbers"):
+        assert ew.parse_sweep_arg("period=10,14,20") == ("period", [10, 14, 20])
+        assert ew.parse_sweep_arg("z=1.75,2.0") == ("z", [1.75, 2.0])
+        assert ew.parse_sweep_arg("mode=fade,breakout") == ("mode", ["fade", "breakout"])
 
-
-def test_score_degenerate_zero_trade_majority_rejected():
-    legs = {
-        "d1": _leg(-0.3, ddadj=-0.2, trades=4),
-        "d2": _leg(0.0, ddadj=0.0, trades=0),
-        "d3": _leg(0.0, ddadj=0.0, trades=0),
-        "d4": _leg(0.0, ddadj=0.0, trades=0),
-    }
-    score = ew.score_candidate(legs, _bars())
-    assert score["degenerate"]
-    assert score["verdict"] == "degenerate"
-
-
-def test_score_trading_exactly_half_is_not_degenerate():
-    legs = {
-        "d1": _leg(-0.3, ddadj=-0.2, trades=4),
-        "d2": _leg(-0.3, ddadj=-0.2, trades=1),
-        "d3": _leg(0.0, ddadj=0.0, trades=0),
-        "d4": _leg(0.0, ddadj=0.0, trades=0),
-    }
-    score = ew.score_candidate(legs, _bars())
-    assert not score["degenerate"]
-    assert score["verdict"] == "pass"
-
-
-def test_score_unscored_datasets_excluded_from_means():
-    legs = {
-        "d1": _leg(-0.3, ddadj=-0.2),
-        "d2": None,
-        "d3": _leg(-0.5, ddadj=-0.3),
-    }
-    bars = _bars(datasets=("d1", "d3"))
-    bars["d2"] = None
-    score = ew.score_candidate(legs, bars)
-    assert score["scored_datasets"] == 2
-    assert score["mean_sharpe"] == pytest.approx(-0.4)
-
-
-def test_score_no_data_verdict():
-    score = ew.score_candidate({"d1": None}, {"d1": None})
-    assert score["verdict"] == "no data"
-
-
-def test_parse_sweep_arg_coerces_numbers():
-    assert ew.parse_sweep_arg("period=10,14,20") == ("period", [10, 14, 20])
-    assert ew.parse_sweep_arg("z=1.75,2.0") == ("z", [1.75, 2.0])
-    assert ew.parse_sweep_arg("mode=fade,breakout") == ("mode", ["fade", "breakout"])
-
-
-def test_parse_sweep_arg_rejects_malformed():
-    with pytest.raises(ValueError):
-        ew.parse_sweep_arg("period")
-    with pytest.raises(ValueError):
-        ew.parse_sweep_arg("=1,2")
-    with pytest.raises(ValueError):
-        ew.parse_sweep_arg("period=")
+    with subtests.test(case="test_parse_sweep_arg_rejects_malformed"):
+        with pytest.raises(ValueError):
+            ew.parse_sweep_arg("period")
+        with pytest.raises(ValueError):
+            ew.parse_sweep_arg("=1,2")
+        with pytest.raises(ValueError):
+            ew.parse_sweep_arg("period=")
 
 
 def test_expand_sweep_cartesian_preserves_base_params():
@@ -244,7 +244,7 @@ def test_run_leg_threads_allowed_regimes_and_blocks_entries(monkeypatch):
         "was never in the allowed set")
 
 
-@pytest.mark.parametrize("candidate", [
+_VALIDATE_CANDIDATE_ACCEPTS_CASES = [
     {"name": "x", "direction": "short"},
     {"name": "x", "direction": "short",
      "close_strategies": [{"name": "tp_at_pct", "params": {}}]},
@@ -258,12 +258,16 @@ def test_run_leg_threads_allowed_regimes_and_blocks_entries(monkeypatch):
     {"name": "x", "invert_signal": True, "type": "manual"},
     {"name": "x", "stop_loss_atr_mult": 2.0},
     {"name": "x", "trailing_stop_atr_mult": 2.5},
-])
-def test_validate_candidate_accepts(candidate):
-    assert ew.validate_candidate(candidate) is candidate
+]
 
 
-@pytest.mark.parametrize("candidate,match", [
+def test_validate_candidate_accepts(subtests):
+    for i, candidate in enumerate(_VALIDATE_CANDIDATE_ACCEPTS_CASES):
+        with subtests.test(case=i, candidate=candidate):
+            assert ew.validate_candidate(candidate) is candidate
+
+
+_VALIDATE_CANDIDATE_REJECTS_CASES = [
     ({"name": "x", "direction": "both"}, "silently dropped"),
     ({"name": "x", "direction": "sideways"}, "direction"),
     ({}, "name"),
@@ -304,21 +308,29 @@ def test_validate_candidate_accepts(candidate):
       "regime_adx_threshold": -5}, "regime_adx_threshold"),
     ({"name": "x", "allowed_regimes": ["trending_up"],
       "regime_adx_threshold": "20"}, "regime_adx_threshold"),
-])
-def test_validate_candidate_rejects(candidate, match):
-    with pytest.raises(ValueError, match=match):
-        ew.validate_candidate(candidate)
+]
 
 
-@pytest.mark.parametrize("candidate,key", [
+def test_validate_candidate_rejects(subtests):
+    for i, (candidate, match) in enumerate(_VALIDATE_CANDIDATE_REJECTS_CASES):
+        with subtests.test(case=i, candidate=candidate, match=match):
+            with pytest.raises(ValueError, match=match):
+                ew.validate_candidate(candidate)
+
+
+_VALIDATE_CANDIDATE_STRIPS_EMPTY_OPTIONAL_BLOCK_CASES = [
     ({"name": "x", "allowed_regimes": []}, "allowed_regimes"),
     ({"name": "x", "regime_windows_spec": {}}, "regime_windows_spec"),
     ({"name": "x", "regime_directional_policy": {}},
      "regime_directional_policy"),
-])
-def test_validate_candidate_strips_empty_optional_block(candidate, key):
-    assert ew.validate_candidate(candidate) is candidate
-    assert key not in candidate
+]
+
+
+def test_validate_candidate_strips_empty_optional_block(subtests):
+    for i, (candidate, key) in enumerate(_VALIDATE_CANDIDATE_STRIPS_EMPTY_OPTIONAL_BLOCK_CASES):
+        with subtests.test(case=i, candidate=candidate, key=key):
+            assert ew.validate_candidate(candidate) is candidate
+            assert key not in candidate
 
 
 def test_run_candidate_leg_threads_regime_lookback(monkeypatch):
@@ -361,36 +373,36 @@ def test_run_leg_threads_regime_windows_spec_composite_gate(monkeypatch):
         "classified with the legacy ADX vocabulary and let entries through")
 
 
-def test_validate_candidate_normalizes_regime_windows_spec():
-    c = {"name": "x", "regime_windows_spec": {"medium": 14}}
-    assert ew.validate_candidate(c) is c
-    assert c["regime_windows_spec"]["medium"]["classifier"] == "adx"
-    assert c["regime_windows_spec"]["medium"]["period"] == 14
+def test_validate_candidate_normalizes_regime_windows_spec(subtests):
+    with subtests.test(case="test_validate_candidate_normalizes_regime_windows_spec"):
+        c = {"name": "x", "regime_windows_spec": {"medium": 14}}
+        assert ew.validate_candidate(c) is c
+        assert c["regime_windows_spec"]["medium"]["classifier"] == "adx"
+        assert c["regime_windows_spec"]["medium"]["period"] == 14
 
-    c2 = {"name": "x",
-          "regime_windows_spec": {"medium": {"classifier": "composite",
-                                             "period": 14}},
-          "allowed_regimes": ["trending_up_clean"]}
-    assert ew.validate_candidate(c2) is c2
-    assert c2["regime_windows_spec"]["medium"]["classifier"] == "composite"
+        c2 = {"name": "x",
+              "regime_windows_spec": {"medium": {"classifier": "composite",
+                                                 "period": 14}},
+              "allowed_regimes": ["trending_up_clean"]}
+        assert ew.validate_candidate(c2) is c2
+        assert c2["regime_windows_spec"]["medium"]["classifier"] == "composite"
+
+    with subtests.test(case="test_validate_candidate_accepts_regime_directional_policy"):
+        c = {"name": "x", "direction": "both",
+             "close_strategies": [{"name": "atr_stop",
+                                   "params": {"atr_mult": 2.0}}],
+             "regime_directional_policy": {"trend_regime": {
+                 "trending_up": {"direction": "long"},
+                 "trending_down": {"direction": "both"}}}}
+        assert ew.validate_candidate(c) is c
+        assert c["regime_directional_policy"]["trend_regime"]["trending_up"] == {
+            "direction": "long", "invert_signal": False}
 
 
 def test_evaluate_window_validates_before_any_work():
     with pytest.raises(ValueError, match="silently dropped"):
         ew.evaluate_window(None, {"name": "x", "direction": "both"},
                            [("BTC/USDT", "1h")], "oos", 1000.0, {})
-
-
-def test_validate_candidate_accepts_regime_directional_policy():
-    c = {"name": "x", "direction": "both",
-         "close_strategies": [{"name": "atr_stop",
-                               "params": {"atr_mult": 2.0}}],
-         "regime_directional_policy": {"trend_regime": {
-             "trending_up": {"direction": "long"},
-             "trending_down": {"direction": "both"}}}}
-    assert ew.validate_candidate(c) is c
-    assert c["regime_directional_policy"]["trend_regime"]["trending_up"] == {
-        "direction": "long", "invert_signal": False}
 
 
 def test_run_leg_omits_policy_kwargs_without_policy(monkeypatch):

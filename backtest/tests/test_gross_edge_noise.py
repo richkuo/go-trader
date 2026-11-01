@@ -133,89 +133,85 @@ def test_entry_in_range():
             f"test_entry_in_range[{entry_date}-{window_range}]")
 
 
-def test_pool_exact_duplicate_still_dropped():
-    legs = [
-        {"dataset": "BTC/USDT 1h", "window": "is",
-         "trade_samples": [{"entry_date": "2025-08-15 04:00:00", "pnl_pct": 1.0}]},
-        {"dataset": "BTC/USDT 1h", "window": "is",
-         "trade_samples": [{"entry_date": "2025-08-15 04:00:00", "pnl_pct": 1.0}]},
-        {"dataset": "ETH/USDT 1h", "window": "is", "trade_samples": []},
-    ]
-    samples, n_exact, n_overlap = gen.pool_trade_samples(legs)
-    assert n_exact == 1 and n_overlap == 0
-    assert len(samples) == 1
-    assert samples[0]["window"] == "is"
+def test_pool_trade_samples_drops_exact_and_overlapping_entries(subtests):
+    with subtests.test(case="test_pool_exact_duplicate_still_dropped"):
+        legs = [
+            {"dataset": "BTC/USDT 1h", "window": "is",
+             "trade_samples": [{"entry_date": "2025-08-15 04:00:00", "pnl_pct": 1.0}]},
+            {"dataset": "BTC/USDT 1h", "window": "is",
+             "trade_samples": [{"entry_date": "2025-08-15 04:00:00", "pnl_pct": 1.0}]},
+            {"dataset": "ETH/USDT 1h", "window": "is", "trade_samples": []},
+        ]
+        samples, n_exact, n_overlap = gen.pool_trade_samples(legs)
+        assert n_exact == 1 and n_overlap == 0
+        assert len(samples) == 1
+        assert samples[0]["window"] == "is"
 
+    with subtests.test(case="test_pool_overlap_nonidentical_entries_dropped"):
+        legs = [
+            {"dataset": "BTC/USDT 1h", "window": "is",
+             "trade_samples": [{"entry_date": "2025-06-17 19:00:00", "pnl_pct": 1.37}]},
+            {"dataset": "BTC/USDT 1h", "window": "2025H1",
+             "trade_samples": [{"entry_date": "2025-06-18 21:00:00", "pnl_pct": 0.22},
+                               {"entry_date": "2025-03-01 00:00:00", "pnl_pct": -0.5}]},
+        ]
+        samples, n_exact, n_overlap = gen.pool_trade_samples(legs)
+        assert n_exact == 0 and n_overlap == 1
+        assert [s["entry_date"] for s in samples] == [
+            "2025-06-17 19:00:00", "2025-03-01 00:00:00"]
 
-def test_pool_overlap_nonidentical_entries_dropped():
-    legs = [
-        {"dataset": "BTC/USDT 1h", "window": "is",
-         "trade_samples": [{"entry_date": "2025-06-17 19:00:00", "pnl_pct": 1.37}]},
-        {"dataset": "BTC/USDT 1h", "window": "2025H1",
-         "trade_samples": [{"entry_date": "2025-06-18 21:00:00", "pnl_pct": 0.22},
-                           {"entry_date": "2025-03-01 00:00:00", "pnl_pct": -0.5}]},
-    ]
-    samples, n_exact, n_overlap = gen.pool_trade_samples(legs)
-    assert n_exact == 0 and n_overlap == 1
-    assert [s["entry_date"] for s in samples] == [
-        "2025-06-17 19:00:00", "2025-03-01 00:00:00"]
+    with subtests.test(case="test_pool_shared_start_windows_keep_distinct_entries"):
+        windows = {"a": ("2023-01-01", "2024-01-01"),
+                   "b": ("2023-01-01", "2025-01-01")}
+        legs = [
+            {"dataset": "BTC/USDT 1h", "window": "a",
+             "trade_samples": [{"entry_date": "2023-05-01 00:00:00", "pnl_pct": 1.0}]},
+            {"dataset": "BTC/USDT 1h", "window": "b",
+             "trade_samples": [{"entry_date": "2023-06-01 00:00:00", "pnl_pct": 2.0},
+                               {"entry_date": "2024-06-01 00:00:00", "pnl_pct": 3.0}]},
+        ]
+        samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
+        assert n_exact == 0 and n_overlap == 1
+        assert [s["pnl_pct"] for s in samples] == [1.0, 3.0]
 
+    with subtests.test(case="test_pool_zero_trade_leg_still_claims_coverage"):
+        windows = {"a": ("2023-01-01", "2024-01-01"),
+                   "b": ("2023-06-01", "2024-06-01")}
+        legs = [
+            {"dataset": "BTC/USDT 1h", "window": "a", "trade_samples": []},
+            {"dataset": "BTC/USDT 1h", "window": "b",
+             "trade_samples": [{"entry_date": "2023-08-01 00:00:00", "pnl_pct": 1.0},
+                               {"entry_date": "2024-03-01 00:00:00", "pnl_pct": 2.0}]},
+        ]
+        samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
+        assert n_overlap == 1
+        assert [s["pnl_pct"] for s in samples] == [2.0]
 
-def test_pool_shared_start_windows_keep_distinct_entries():
-    windows = {"a": ("2023-01-01", "2024-01-01"),
-               "b": ("2023-01-01", "2025-01-01")}
-    legs = [
-        {"dataset": "BTC/USDT 1h", "window": "a",
-         "trade_samples": [{"entry_date": "2023-05-01 00:00:00", "pnl_pct": 1.0}]},
-        {"dataset": "BTC/USDT 1h", "window": "b",
-         "trade_samples": [{"entry_date": "2023-06-01 00:00:00", "pnl_pct": 2.0},
-                           {"entry_date": "2024-06-01 00:00:00", "pnl_pct": 3.0}]},
-    ]
-    samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
-    assert n_exact == 0 and n_overlap == 1
-    assert [s["pnl_pct"] for s in samples] == [1.0, 3.0]
+    with subtests.test(case="test_pool_coverage_is_per_dataset"):
+        windows = {"a": ("2023-01-01", "2024-01-01"),
+                   "b": ("2023-01-01", "2024-01-01")}
+        legs = [
+            {"dataset": "BTC/USDT 1h", "window": "a",
+             "trade_samples": [{"entry_date": "2023-05-01 00:00:00", "pnl_pct": 1.0}]},
+            {"dataset": "ETH/USDT 1h", "window": "b",
+             "trade_samples": [{"entry_date": "2023-05-01 00:00:00", "pnl_pct": 2.0}]},
+        ]
+        samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
+        assert n_exact == 0 and n_overlap == 0
+        assert len(samples) == 2
 
-
-def test_pool_zero_trade_leg_still_claims_coverage():
-    windows = {"a": ("2023-01-01", "2024-01-01"),
-               "b": ("2023-06-01", "2024-06-01")}
-    legs = [
-        {"dataset": "BTC/USDT 1h", "window": "a", "trade_samples": []},
-        {"dataset": "BTC/USDT 1h", "window": "b",
-         "trade_samples": [{"entry_date": "2023-08-01 00:00:00", "pnl_pct": 1.0},
-                           {"entry_date": "2024-03-01 00:00:00", "pnl_pct": 2.0}]},
-    ]
-    samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
-    assert n_overlap == 1
-    assert [s["pnl_pct"] for s in samples] == [2.0]
-
-
-def test_pool_coverage_is_per_dataset():
-    windows = {"a": ("2023-01-01", "2024-01-01"),
-               "b": ("2023-01-01", "2024-01-01")}
-    legs = [
-        {"dataset": "BTC/USDT 1h", "window": "a",
-         "trade_samples": [{"entry_date": "2023-05-01 00:00:00", "pnl_pct": 1.0}]},
-        {"dataset": "ETH/USDT 1h", "window": "b",
-         "trade_samples": [{"entry_date": "2023-05-01 00:00:00", "pnl_pct": 2.0}]},
-    ]
-    samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
-    assert n_exact == 0 and n_overlap == 0
-    assert len(samples) == 2
-
-
-def test_pool_open_ended_window_claims_to_infinity():
-    windows = {"oos": ("2026-01-01", None),
-               "late": ("2026-06-01", "2027-01-01")}
-    legs = [
-        {"dataset": "BTC/USDT 1h", "window": "oos",
-         "trade_samples": [{"entry_date": "2026-02-01 00:00:00", "pnl_pct": 1.0}]},
-        {"dataset": "BTC/USDT 1h", "window": "late",
-         "trade_samples": [{"entry_date": "2026-08-01 00:00:00", "pnl_pct": 2.0}]},
-    ]
-    samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
-    assert n_overlap == 1
-    assert [s["pnl_pct"] for s in samples] == [1.0]
+    with subtests.test(case="test_pool_open_ended_window_claims_to_infinity"):
+        windows = {"oos": ("2026-01-01", None),
+                   "late": ("2026-06-01", "2027-01-01")}
+        legs = [
+            {"dataset": "BTC/USDT 1h", "window": "oos",
+             "trade_samples": [{"entry_date": "2026-02-01 00:00:00", "pnl_pct": 1.0}]},
+            {"dataset": "BTC/USDT 1h", "window": "late",
+             "trade_samples": [{"entry_date": "2026-08-01 00:00:00", "pnl_pct": 2.0}]},
+        ]
+        samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
+        assert n_overlap == 1
+        assert [s["pnl_pct"] for s in samples] == [1.0]
 
 
 def test_window_overlaps_reports_is_2025h1_and_nothing_for_disjoint_windows():
@@ -289,16 +285,10 @@ def test_run_leg_keep_trades_attaches_samples(monkeypatch):
         assert isinstance(s["entry_date"], str) and s["entry_date"]
         assert isinstance(s["pnl_pct"], float)
 
-
-def test_run_leg_default_omits_trade_samples(monkeypatch):
-    df = _synthetic_df()
-    import data_fetcher
-    monkeypatch.setattr(data_fetcher, "load_cached_data",
-                        lambda *a, **k: df, raising=True)
     leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
                      ("2026-01-01", None))
-    assert leg is not None
-    assert "trade_samples" not in leg
+    assert leg is not None, "test_run_leg_default_omits_trade_samples"
+    assert "trade_samples" not in leg, "test_run_leg_default_omits_trade_samples"
 
 
 def test_collect_gross_legs_zeroes_friction(monkeypatch):

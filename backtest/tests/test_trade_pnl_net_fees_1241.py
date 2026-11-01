@@ -50,6 +50,12 @@ def test_plain_close_gross_winner_flips_to_net_loss():
     assert result["win_rate"] == 0.0
     assert result["profit_factor"] == 0.0
 
+    case = "test_avg_loss_uses_net_convention_not_gross_pnl_pct"
+    assert result["trades"][0]["pnl"] < 0.0, case
+    assert result["trades"][0]["pnl_pct"] > 0.0, case
+    assert result["avg_loss_pct"] < 0.0, case
+    assert result["avg_win_pct"] == 0.0, case
+
 
 def test_partial_close_prorated_entry_fees_sum_and_net():
     df = _df_open_then_hold(
@@ -122,24 +128,6 @@ def test_partial_then_end_of_data_entry_fees_sum_to_whole():
         gross = shares * (exit_px - entry_px)
         expected_net = gross - leg["entry_fee"] - leg["exit_fee"]
         assert leg["pnl"] == pytest.approx(expected_net, abs=0.01)
-
-
-def test_avg_loss_uses_net_convention_not_gross_pnl_pct():
-    df = _df_signals(
-        opens=[100.0, 100.0, 100.0, 100.0, 100.15, 100.15],
-        signals=[0, 1, 0, -1, 0, 0],
-    )
-    bt = Backtester(
-        initial_capital=INITIAL_CAPITAL,
-        commission_pct=COMMISSION,
-        slippage_pct=0.0,
-    )
-    result = bt.run(df, save=False)
-
-    assert result["trades"][0]["pnl"] < 0.0
-    assert result["trades"][0]["pnl_pct"] > 0.0
-    assert result["avg_loss_pct"] < 0.0
-    assert result["avg_win_pct"] == 0.0
 
 
 def test_short_partial_then_end_of_data_entry_fees_sum_to_whole():

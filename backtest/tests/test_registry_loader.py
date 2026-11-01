@@ -17,19 +17,12 @@ def test_load_registry_membership():
         for name in absent:
             assert name not in mod.STRATEGY_REGISTRY, f"test_load_registry_membership[{platform}] absent {name}"
 
-
-def test_both_registries_coexist():
     spot = load_registry("spot")
     fut = load_registry("futures")
-    assert spot is not fut
-    assert spot.STRATEGY_REGISTRY is not fut.STRATEGY_REGISTRY
+    assert spot is not fut, "test_both_registries_coexist"
+    assert spot.STRATEGY_REGISTRY is not fut.STRATEGY_REGISTRY, "test_both_registries_coexist"
     assert "pairs_spread" in spot.STRATEGY_REGISTRY
     assert "breakout" in fut.STRATEGY_REGISTRY
-
-
-def test_unknown_platform_rejected():
-    with pytest.raises(ValueError, match="Unknown platform"):
-        load_registry("options")
 
 
 def test_registry_for_strategy_type():
@@ -60,6 +53,9 @@ def test_empty_registry_raises():
     import importlib
 
     import registry_loader
+
+    with pytest.raises(ValueError, match="Unknown platform"):
+        load_registry("options")
 
     with tempfile.TemporaryDirectory() as tmp:
         empty_dir = os.path.join(tmp, "empty")

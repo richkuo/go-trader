@@ -231,48 +231,51 @@ def test_the_committed_run_never_oversells_a_degenerate_limit():
 # --- report-only: no study may write a live path ----------------------------
 
 
-@pytest.mark.parametrize("name", STUDY_NAMES)
-def test_only_the_owner_defaults_to_the_live_evidence_contract_path(name):
-    study = _study(name)
-    is_owner = name == CONTRACT_OWNER
-    assert (
-        os.path.abspath(study._DEFAULT_REPORT_OUT) == os.path.abspath(CONTRACT)
-    ) is is_owner
-    assert os.path.basename(study._DEFAULT_JSON_OUT) == f"{name}.json"
+def test_only_the_owner_defaults_to_the_live_evidence_contract_path(subtests):
+    for i, name in enumerate(STUDY_NAMES):
+        with subtests.test(case=i, name=name):
+            study = _study(name)
+            is_owner = name == CONTRACT_OWNER
+            assert (
+                os.path.abspath(study._DEFAULT_REPORT_OUT) == os.path.abspath(CONTRACT)
+            ) is is_owner
+            assert os.path.basename(study._DEFAULT_JSON_OUT) == f"{name}.json"
 
 
-@pytest.mark.parametrize(
-    "name,needs_json_out",
-    [
+_A_DEFERRING_STUDY_REFUSES_THE_CONTRACT_PATH_EVEN_WHEN_ASKED_CASES = [
         ("hurst_1422_gate_power", True),
         ("hurst_1426_two_sided_sort", False),
         ("hurst_1427_change_sort", False),
         ("hurst_1428_sizing_exit", False),
         ("hurst_1474_rs_estimator", False),
-    ],
-)
-def test_a_deferring_study_refuses_the_contract_path_even_when_asked(
-    name, needs_json_out, tmp_path
-):
-    study = _study(name)
-    before = os.path.exists(CONTRACT) and open(CONTRACT).read()
-    argv = ["--report-out", CONTRACT]
-    if needs_json_out:
-        argv += ["--json-out", str(tmp_path / "scoped.json")]
-    with pytest.raises(SystemExit) as exc:
-        study.main(argv)
-    message = str(exc.value)
-    assert f"[{name.split('_')[1]}]" in message, message
-    assert CONTRACT_BASENAME in message, message
-    assert f"{CONTRACT_OWNER}.py" in message, message
-    assert (os.path.exists(CONTRACT) and open(CONTRACT).read()) == before
+    ]
 
 
-@pytest.mark.parametrize("name", STUDY_NAMES)
-def test_no_study_names_a_live_state_or_config_artifact(name):
-    code = _code_lines(_study(name))
-    for banned in LIVE_ARTIFACTS:
-        assert banned not in code, banned
+def test_a_deferring_study_refuses_the_contract_path_even_when_asked(tmp_path, subtests):
+    for i, (name, needs_json_out) in enumerate(_A_DEFERRING_STUDY_REFUSES_THE_CONTRACT_PATH_EVEN_WHEN_ASKED_CASES):
+        with subtests.test(case=i, name=name, needs_json_out=needs_json_out):
+            case_dir = tmp_path / f"case{i}"
+            case_dir.mkdir()
+            study = _study(name)
+            before = os.path.exists(CONTRACT) and open(CONTRACT).read()
+            argv = ["--report-out", CONTRACT]
+            if needs_json_out:
+                argv += ["--json-out", str(case_dir / "scoped.json")]
+            with pytest.raises(SystemExit) as exc:
+                study.main(argv)
+            message = str(exc.value)
+            assert f"[{name.split('_')[1]}]" in message, message
+            assert CONTRACT_BASENAME in message, message
+            assert f"{CONTRACT_OWNER}.py" in message, message
+            assert (os.path.exists(CONTRACT) and open(CONTRACT).read()) == before
+
+
+def test_no_study_names_a_live_state_or_config_artifact(subtests):
+    for i, name in enumerate(STUDY_NAMES):
+        with subtests.test(case=i, name=name):
+            code = _code_lines(_study(name))
+            for banned in LIVE_ARTIFACTS:
+                assert banned not in code, banned
 
 
 def test_the_estimator_study_reaches_no_live_regime_module():
@@ -288,10 +291,11 @@ def test_the_estimator_study_reaches_no_live_regime_module():
         assert needle in study.NON_GOALS
 
 
-@pytest.mark.parametrize("name", STUDY_NAMES)
-def test_no_study_writes_outside_its_own_two_artifacts(name):
-    code = _code_lines(_study(name))
-    writes = [ln for ln in code.split("\n") if "open(" in ln and '"w"' in ln]
-    assert writes, "the study must write its own report and JSON"
-    for line in writes:
-        assert "args.json_out" in line or "args.report_out" in line, line
+def test_no_study_writes_outside_its_own_two_artifacts(subtests):
+    for i, name in enumerate(STUDY_NAMES):
+        with subtests.test(case=i, name=name):
+            code = _code_lines(_study(name))
+            writes = [ln for ln in code.split("\n") if "open(" in ln and '"w"' in ln]
+            assert writes, "the study must write its own report and JSON"
+            for line in writes:
+                assert "args.json_out" in line or "args.report_out" in line, line

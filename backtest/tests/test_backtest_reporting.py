@@ -25,32 +25,26 @@ def _df_with_signals(signals):
     )
 
 
-def test_signal_out_of_domain_raises():
-    df = _df_with_signals([0, 1, 2, 0, -1, 0])
-    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
-    with pytest.raises(ValueError, match=r"signal column must be in"):
-        bt.run(df, save=False)
+def test_signal_out_of_domain_raises(subtests):
+    for case_id, signals, match in [
+        ("out_of_domain", [0, 1, 2, 0, -1, 0], r"signal column must be in"),
+        ("non_integral_float", [0.0, 1.5, 0.0, -1.0, 0.0], r"non-integral values"),
+    ]:
+        with subtests.test(case=case_id):
+            df = _df_with_signals(signals)
+            bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
+            with pytest.raises(ValueError, match=match):
+                bt.run(df, save=False)
 
-
-def test_float_signals_from_position_diff_still_accepted():
-    df = _df_with_signals([0.0, 1.0, 0.0, -1.0, 0.0])
-    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-
-
-def test_nan_signal_is_treated_as_hold():
-    df = _df_with_signals([float("nan"), 1, 0, -1, 0])
-    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
-    result = bt.run(df, save=False)
-    assert result["total_trades"] == 1
-
-
-def test_non_integral_float_signal_raises():
-    df = _df_with_signals([0.0, 1.5, 0.0, -1.0, 0.0])
-    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
-    with pytest.raises(ValueError, match=r"non-integral values"):
-        bt.run(df, save=False)
+    for case_id, signals in [
+        ("float_signals_from_position_diff", [0.0, 1.0, 0.0, -1.0, 0.0]),
+        ("nan_signal_is_hold", [float("nan"), 1, 0, -1, 0]),
+    ]:
+        with subtests.test(case=case_id):
+            df = _df_with_signals(signals)
+            bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
+            result = bt.run(df, save=False)
+            assert result["total_trades"] == 1
 
 
 def _synthetic_returns_df(n=400, seed=7):
@@ -79,6 +73,7 @@ def test_sharpe_scales_with_timeframe():
     bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
     res_1d = bt.run(df, timeframe="1d", save=False)
     res_4h = bt.run(df, timeframe="4h", save=False)
+    res_1h = bt.run(df, timeframe="1h", save=False)
 
     if res_1d["sharpe_ratio"] == 0:
         pytest.skip("synthetic series produced no variance — can't check ratio")
@@ -88,17 +83,11 @@ def test_sharpe_scales_with_timeframe():
         f"4h Sharpe / 1d Sharpe should be sqrt(6) ≈ 2.449; got {ratio:.4f}"
     )
 
-
-def test_volatility_scales_with_timeframe():
-    df = _synthetic_returns_df()
-    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
-    res_1d = bt.run(df, timeframe="1d", save=False)
-    res_1h = bt.run(df, timeframe="1h", save=False)
     if res_1d["volatility_pct"] == 0:
         pytest.skip("zero volatility — synthetic series degenerate")
     ratio = res_1h["volatility_pct"] / res_1d["volatility_pct"]
     assert ratio == pytest.approx(math.sqrt(24), rel=0.02), (
-        f"1h vol / 1d vol should be sqrt(24); got {ratio:.4f}"
+        f"test_volatility_scales_with_timeframe: 1h vol / 1d vol should be sqrt(24); got {ratio:.4f}"
     )
 
 
@@ -124,8 +113,6 @@ def test_annualized_return_uses_calendar_days_not_curve_length():
         f"got {report['annualized_return_pct']}"
     )
 
-
-def test_elapsed_days_returns_calendar_difference():
     bt = OptionsBacktester(initial_capital=1000.0, max_positions=2,
                            check_interval=7)
     bt.equity_curve = [
@@ -133,7 +120,7 @@ def test_elapsed_days_returns_calendar_difference():
         ("2023-04-01", 1050.0),
         ("2023-12-31", 1100.0),
     ]
-    assert bt._elapsed_days() == 364
+    assert bt._elapsed_days() == 364, "test_elapsed_days_returns_calendar_difference"
 
 
 def _synthetic_candles(n_days=200, start_price=20000.0, vol=0.02, seed=11):
