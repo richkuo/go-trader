@@ -3,8 +3,6 @@ import os
 import subprocess
 import sys
 
-import pytest
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STUB_DIR = os.path.join(ROOT, "shared_scripts", "testdata", "quote_precision")
 CHECK_OPTIONS = os.path.join(ROOT, "shared_scripts", "check_options.py")
@@ -63,26 +61,22 @@ PAPER_ARGVS = {
 }
 
 
-@pytest.mark.parametrize("shape", sorted(PAPER_ARGVS))
-def test_paper_and_omitted_mode_read_the_stdin_positions(shape, tmp_path):
-    proc, records = _run(PAPER_ARGVS[shape], tmp_path, FOUR_POSITIONS)
-    assert proc.returncode == 0, proc.stderr
-    out = _single_document(proc)
-    assert out["skip_reason"] == CAP_REASON
-    assert out["strategy"] == "covered_calls"
-    assert out["underlying"] == "SPY"
-    assert out["platform"] == "deribit"
-    assert records == []
-
-
-def test_inline_positions_argument_with_two_token_mode_reaches_the_cap(tmp_path):
-    argv = ["covered_calls", "SPY", FOUR_POSITIONS, "--platform=deribit", "--mode", "paper"]
-    proc, records = _run(argv, tmp_path, "")
-    assert proc.returncode == 0, proc.stderr
-    out = _single_document(proc)
-    assert out["skip_reason"] == CAP_REASON
-    assert out["underlying"] == "SPY"
-    assert records == []
+def test_paper_and_omitted_mode_read_the_stdin_positions(tmp_path, subtests):
+    shapes = [(shape, PAPER_ARGVS[shape], FOUR_POSITIONS) for shape in sorted(PAPER_ARGVS)]
+    shapes.append(("inline_positions_argument_with_two_token_form",
+                   ["covered_calls", "SPY", FOUR_POSITIONS, "--platform=deribit", "--mode", "paper"], ""))
+    for shape, argv, stdin in shapes:
+        with subtests.test(shape=shape):
+            run_dir = tmp_path / shape
+            run_dir.mkdir()
+            proc, records = _run(argv, run_dir, stdin)
+            assert proc.returncode == 0, proc.stderr
+            out = _single_document(proc)
+            assert out["skip_reason"] == CAP_REASON
+            assert out["strategy"] == "covered_calls"
+            assert out["underlying"] == "SPY"
+            assert out["platform"] == "deribit"
+            assert records == []
 
 
 def test_paper_control_builds_the_adapter_and_fetches(tmp_path):
@@ -98,16 +92,19 @@ LIVE_TAILS = {
 }
 
 
-@pytest.mark.parametrize("platform", ["deribit", "robinhood"])
-@pytest.mark.parametrize("tail", sorted(LIVE_TAILS))
-def test_live_mode_refuses_before_the_cap_and_the_adapter(platform, tail, tmp_path):
-    argv = ["covered_calls", "SPY", f"--platform={platform}"] + LIVE_TAILS[tail]
-    proc, records = _run(argv, tmp_path, FOUR_POSITIONS)
-    assert proc.returncode == 1
-    out = _single_document(proc)
-    assert out["error"] == _expected_error(platform)
-    assert out["signal"] == 0
-    assert out["actions"] == []
-    assert out["platform"] == platform
-    assert out.get("skip_reason") is None
-    assert records == []
+def test_live_mode_refuses_before_the_cap_and_the_adapter(tmp_path, subtests):
+    for tail in sorted(LIVE_TAILS):
+        for platform in ["deribit", "robinhood"]:
+            with subtests.test(tail=tail, platform=platform):
+                run_dir = tmp_path / f"{tail}-{platform}"
+                run_dir.mkdir()
+                argv = ["covered_calls", "SPY", f"--platform={platform}"] + LIVE_TAILS[tail]
+                proc, records = _run(argv, run_dir, FOUR_POSITIONS)
+                assert proc.returncode == 1
+                out = _single_document(proc)
+                assert out["error"] == _expected_error(platform)
+                assert out["signal"] == 0
+                assert out["actions"] == []
+                assert out["platform"] == platform
+                assert out.get("skip_reason") is None
+                assert records == []

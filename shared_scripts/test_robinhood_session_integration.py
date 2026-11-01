@@ -166,17 +166,21 @@ def _home_pickles(home):
     return [p for p in home.rglob("robinhood*.pickle")]
 
 
-@pytest.mark.parametrize("argv,stdin_text", SIX_SCRIPTS)
-def test_every_script_stores_the_session_only_in_the_configured_folder(tmp_path, argv, stdin_text):
-    box = Box(tmp_path)
-    box.set_routes({"GET " + HOLDINGS: [EMPTY_PAGE]})
-    proc = _run(box, argv, stdin_text=stdin_text)
-    detail = _detail(proc, box)
-    assert box.file("pickle").is_file(), detail
-    assert not box.home.exists(), detail
-    assert _home_pickles(box.home) == [], detail
-    assert len(_token_posts(box.requests())) <= 1, detail
-    assert _no_secrets(proc) == [], detail
+def test_every_script_stores_the_session_only_in_the_configured_folder(tmp_path, subtests):
+    for param in SIX_SCRIPTS:
+        argv, stdin_text = param.values
+        with subtests.test(script=param.id):
+            run_dir = tmp_path / param.id
+            run_dir.mkdir()
+            box = Box(run_dir)
+            box.set_routes({"GET " + HOLDINGS: [EMPTY_PAGE]})
+            proc = _run(box, argv, stdin_text=stdin_text)
+            detail = _detail(proc, box)
+            assert box.file("pickle").is_file(), detail
+            assert not box.home.exists(), detail
+            assert _home_pickles(box.home) == [], detail
+            assert len(_token_posts(box.requests())) <= 1, detail
+            assert _no_secrets(proc) == [], detail
 
 
 def test_nonexistent_home_is_never_created(tmp_path):
@@ -357,26 +361,29 @@ REFUSALS = [
 ROOT_BYPASSES = ("read_only_parent", "read_only_folder")
 
 
-@pytest.mark.parametrize("case", REFUSALS)
-def test_bad_folder_or_session_refuses_before_any_request(tmp_path, case):
-    if case in ROOT_BYPASSES and os.geteuid() == 0:
-        pytest.skip("root ignores folder permissions")
-    box = Box(tmp_path)
-    box.set_routes({"GET " + HOLDINGS: [EMPTY_PAGE], "GET " + POSITIONS_CHECK: [EMPTY_PAGE]})
-    stored = box.file("pickle").read_bytes() if box.file("pickle").exists() else None
-    kwargs = _refusal_case(box, case)
-    before = box.file("pickle").read_bytes() if box.file("pickle").is_file() and not box.file("pickle").is_symlink() else stored
-    proc = _run(box, FETCH, **kwargs)
-    detail = _detail(proc, box)
-    assert proc.returncode == 1, detail
-    doc = _doc(proc)
-    assert doc["error"].startswith(LOGIN_FAILED), detail
-    assert box.requests() == [], detail
-    assert not box.home.exists(), detail
-    assert not (box.root / "marker").exists(), detail
-    if before is not None and box.file("pickle").is_file():
-        assert box.file("pickle").read_bytes() == before, detail
-    assert _no_secrets(proc) == [], detail
+def test_bad_folder_or_session_refuses_before_any_request(tmp_path, subtests):
+    for case in REFUSALS:
+        with subtests.test(case=case):
+            if case in ROOT_BYPASSES and os.geteuid() == 0:
+                pytest.skip("root ignores folder permissions")
+            run_dir = tmp_path / case
+            run_dir.mkdir()
+            box = Box(run_dir)
+            box.set_routes({"GET " + HOLDINGS: [EMPTY_PAGE], "GET " + POSITIONS_CHECK: [EMPTY_PAGE]})
+            stored = box.file("pickle").read_bytes() if box.file("pickle").exists() else None
+            kwargs = _refusal_case(box, case)
+            before = box.file("pickle").read_bytes() if box.file("pickle").is_file() and not box.file("pickle").is_symlink() else stored
+            proc = _run(box, FETCH, **kwargs)
+            detail = _detail(proc, box)
+            assert proc.returncode == 1, detail
+            doc = _doc(proc)
+            assert doc["error"].startswith(LOGIN_FAILED), detail
+            assert box.requests() == [], detail
+            assert not box.home.exists(), detail
+            assert not (box.root / "marker").exists(), detail
+            if before is not None and box.file("pickle").is_file():
+                assert box.file("pickle").read_bytes() == before, detail
+            assert _no_secrets(proc) == [], detail
 
 
 def test_parallel_logins_send_one_password_login(tmp_path):
@@ -531,12 +538,19 @@ def _write_latch(box, identity, mode=0o600):
     os.chmod(box.file("verification"), mode)
 
 
-@pytest.mark.parametrize("latch_mode,check,token,want_exit", [
-    pytest.param(0o600, EMPTY_PAGE, None, 0, id="matching_latch_session_accepted"),
-    pytest.param(0o644, EMPTY_PAGE, None, 0, id="unreadable_latch_session_accepted"),
-    pytest.param(0o600, {"status": 401, "json": {"detail": "expired"}}, TOKEN_REFUSED, 1, id="matching_latch_login_refused"),
-])
-def test_bootstrap_with_a_stored_session_clears_the_latch_only_on_success(tmp_path, latch_mode, check, token, want_exit):
+def test_bootstrap_with_a_stored_session_clears_the_latch_only_on_success(tmp_path, subtests):
+    for name, latch_mode, check, token, want_exit in [
+        ("matching_latch_session_accepted", 0o600, EMPTY_PAGE, None, 0),
+        ("unreadable_latch_session_accepted", 0o644, EMPTY_PAGE, None, 0),
+        ("matching_latch_login_refused", 0o600, {"status": 401, "json": {"detail": "expired"}}, TOKEN_REFUSED, 1),
+    ]:
+        with subtests.test(case=name):
+            run_dir = tmp_path / name
+            run_dir.mkdir()
+            _assert_bootstrap_with_a_stored_session(run_dir, latch_mode, check, token, want_exit)
+
+
+def _assert_bootstrap_with_a_stored_session(tmp_path, latch_mode, check, token, want_exit):
     box = Box(tmp_path)
     stored = box.seed_session()
     _write_latch(box, hashlib.sha256(stored).hexdigest(), latch_mode)

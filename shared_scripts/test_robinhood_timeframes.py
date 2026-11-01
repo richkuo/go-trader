@@ -80,22 +80,28 @@ def _candles(tmp_path, symbol, timeframe, yahoo, limit=200):
     return proc, out, _requests(log)
 
 
-@pytest.mark.parametrize("timeframe", sorted(EXPECTED_YAHOO_REQUEST))
-def test_every_supported_timeframe_requests_its_mapped_yahoo_interval_and_standard_period(tmp_path, timeframe):
-    proc, out, requests = _candles(tmp_path, "BTC", timeframe, {})
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    interval, period = EXPECTED_YAHOO_REQUEST[timeframe]
-    assert requests == [["BTC-USD", interval, period]]
-    assert out["candles"] == []
+def test_every_supported_timeframe_requests_its_mapped_yahoo_interval_and_standard_period(tmp_path, subtests):
+    for i, timeframe in enumerate(sorted(EXPECTED_YAHOO_REQUEST)):
+        with subtests.test(timeframe=timeframe):
+            run_dir = tmp_path / f"tf-{i}"
+            run_dir.mkdir()
+            proc, out, requests = _candles(run_dir, "BTC", timeframe, {})
+            assert proc.returncode == 0, proc.stdout + proc.stderr
+            interval, period = EXPECTED_YAHOO_REQUEST[timeframe]
+            assert requests == [["BTC-USD", interval, period]]
+            assert out["candles"] == []
 
 
-@pytest.mark.parametrize("timeframe", ["3m", "4h ", " 1h", "1wk", "3d", "1H", "5d", "3mo"])
-def test_an_unsupported_timeframe_errors_before_any_yahoo_request(tmp_path, timeframe):
-    proc, out, requests = _candles(tmp_path, "BTC", timeframe, {})
-    assert proc.returncode == 1
-    assert f"unsupported Robinhood timeframe {timeframe!r}" in out["error"]
-    assert "Yahoo candles serve only 12h, 15m, 1M, 1d, 1h, 1m, 1mo, 1w, 2h, 2m, 30m, 4h, 5m, 60m, 6h, 8h, 90m" in out["error"]
-    assert requests == []
+def test_an_unsupported_timeframe_errors_before_any_yahoo_request(tmp_path, subtests):
+    for i, timeframe in enumerate(["3m", "4h ", " 1h", "1wk", "3d", "1H", "5d", "3mo"]):
+        with subtests.test(timeframe=timeframe):
+            run_dir = tmp_path / f"tf-{i}"
+            run_dir.mkdir()
+            proc, out, requests = _candles(run_dir, "BTC", timeframe, {})
+            assert proc.returncode == 1
+            assert f"unsupported Robinhood timeframe {timeframe!r}" in out["error"]
+            assert "Yahoo candles serve only 12h, 15m, 1M, 1d, 1h, 1m, 1mo, 1w, 2h, 2m, 30m, 4h, 5m, 60m, 6h, 8h, 90m" in out["error"]
+            assert requests == []
 
 
 def test_an_unsupported_primary_timeframe_is_a_check_error(tmp_path):
@@ -228,28 +234,21 @@ def test_paper_closed_bar_decision_holds_until_yahoo_starts_the_next_bar(tmp_pat
     assert out["signal"] == 0
 
 
-@pytest.mark.parametrize("symbol", ["AAPL", "XRP"])
-def test_paper_closed_bar_decisions_are_refused_for_a_symbol_that_is_not_a_yahoo_crypto_pair(tmp_path, symbol):
-    fixture, log = _write_fixture(tmp_path, {})
-    proc, out = _run("check_robinhood.py", ["atr_breakout", symbol, "1h", "--mode=paper", "--closed-bar-decisions"], fixture)
-    assert proc.returncode == 1
-    assert f'closed_bar_decisions is not supported on robinhood: symbol "{symbol}" resolves to Yahoo "{symbol}", which is not a Yahoo crypto pair' in out["error"]
-    assert _requests(log) == []
-
-
-def test_one_minute_closed_bar_decisions_are_refused_with_the_measured_reason(tmp_path):
-    fixture, log = _write_fixture(tmp_path, {})
-    proc, out = _run("check_robinhood.py", ["atr_breakout", "BTC", "1m", "--mode=paper", "--closed-bar-decisions"], fixture)
-    assert proc.returncode == 1
-    assert "closed_bar_decisions does not support 1m on robinhood" in out["error"]
-    assert "zero-volume placeholder" in out["error"]
-    assert _requests(log) == []
-
-
-def test_live_closed_bar_decisions_are_refused(tmp_path):
-    fixture, log = _write_fixture(tmp_path, {})
-    proc, out = _run("check_robinhood.py", ["atr_breakout", "BTC", "1h", "--mode=live", "--closed-bar-decisions"], fixture)
-    assert proc.returncode == 1
-    assert "closed_bar_decisions is not supported on live robinhood" in out["error"]
-    assert "no Robinhood provider" in out["error"]
-    assert _requests(log) == []
+def test_closed_bar_decisions_are_refused_before_any_yahoo_request(tmp_path, subtests):
+    for name, symbol, timeframe, mode, wants in [
+        ("paper_symbol_AAPL_is_not_a_yahoo_crypto_pair", "AAPL", "1h", "paper",
+         ('closed_bar_decisions is not supported on robinhood: symbol "AAPL" resolves to Yahoo "AAPL", which is not a Yahoo crypto pair',)),
+        ("paper_symbol_XRP_is_not_a_yahoo_crypto_pair", "XRP", "1h", "paper",
+         ('closed_bar_decisions is not supported on robinhood: symbol "XRP" resolves to Yahoo "XRP", which is not a Yahoo crypto pair',)),
+        ("one_minute_with_the_measured_reason", "BTC", "1m", "paper",
+         ("closed_bar_decisions does not support 1m on robinhood", "zero-volume placeholder")),
+        ("live", "BTC", "1h", "live",
+         ("closed_bar_decisions is not supported on live robinhood", "no Robinhood provider")),
+    ]:
+        with subtests.test(case=name):
+            fixture, log = _write_fixture(tmp_path, {}, name=name)
+            proc, out = _run("check_robinhood.py", ["atr_breakout", symbol, timeframe, f"--mode={mode}", "--closed-bar-decisions"], fixture)
+            assert proc.returncode == 1
+            for want in wants:
+                assert want in out["error"]
+            assert _requests(log) == []

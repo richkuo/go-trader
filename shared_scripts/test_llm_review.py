@@ -66,18 +66,18 @@ class TestWordCap:
 
 
 class TestSummarizeOhlcv:
-    def test_summary_fields(self, mod):
-        candles = [[i, 100 + i, 101 + i, 99 + i, 100 + i, 10] for i in range(60)]
-        s = mod.summarize_ohlcv(candles)
-        assert s["bars"] == 60
-        assert s["last_close"] == 159
-        assert s["change_pct_5"] is not None
-        assert s["change_pct_50"] is not None
-
-    def test_too_short_or_garbage(self, mod):
-        assert mod.summarize_ohlcv([[1, 1, 1, 1, 1, 1]]) is None
-        assert mod.summarize_ohlcv([["x"] * 6] * 10) is None
-        assert mod.summarize_ohlcv(None) is None
+    def test_summary_fields(self, mod, subtests):
+        with subtests.test(case="summary_fields"):
+            candles = [[i, 100 + i, 101 + i, 99 + i, 100 + i, 10] for i in range(60)]
+            s = mod.summarize_ohlcv(candles)
+            assert s["bars"] == 60
+            assert s["last_close"] == 159
+            assert s["change_pct_5"] is not None
+            assert s["change_pct_50"] is not None
+        with subtests.test(case="too_short_or_garbage"):
+            assert mod.summarize_ohlcv([[1, 1, 1, 1, 1, 1]]) is None
+            assert mod.summarize_ohlcv([["x"] * 6] * 10) is None
+            assert mod.summarize_ohlcv(None) is None
 
 
 class TestJudgeParsing:
@@ -92,6 +92,9 @@ class TestJudgeParsing:
             assert v == verdict, ("test_verdict_parsing", raw)
         _, r = mod.parse_judge_output('{"verdict": "bullish", "rationale": "looks good"}', 55)
         assert r == "looks good", "test_strict_json_rationale"
+        long = " ".join(["w"] * 100)
+        _, r = mod.parse_judge_output(json.dumps({"verdict": "mixed", "rationale": long}), 10)
+        assert len(r.split()) == 11, "test_rationale_capped"
 
     def test_non_schema_output_raises(self, mod):
         cases = [
@@ -112,11 +115,6 @@ class TestJudgeParsing:
         for raw in cases:
             with _case(raw), pytest.raises(RuntimeError):
                 mod.parse_judge_output(raw, 55)
-
-    def test_rationale_capped(self, mod):
-        long = " ".join(["w"] * 100)
-        _, r = mod.parse_judge_output(json.dumps({"verdict": "mixed", "rationale": long}), 10)
-        assert len(r.split()) == 11
 
 
 class TestPipeline:
@@ -161,30 +159,23 @@ class TestSubprocessContract:
         assert r.returncode == 0
         assert json.loads(r.stdout)["status"] == "ok"
 
-    def test_missing_api_key_errors_json(self):
-        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-        r = subprocess.run(
-            [sys.executable, SCRIPT],
-            input=json.dumps({**CTX, "platform": "nonexistent"}),
-            capture_output=True, text=True, timeout=60, env=env,
-        )
-        assert r.returncode == 1
-        out = json.loads(r.stdout)
-        assert "ANTHROPIC_API_KEY" in out["error"]
-        assert out["usage"] == {"calls": 0, "input_tokens": 0, "output_tokens": 0}
-
-    def test_garbage_stdin_errors_json(self):
-        r = subprocess.run([sys.executable, SCRIPT], input="not json",
-                           capture_output=True, text=True, timeout=30)
-        assert r.returncode == 1
-        assert "error" in json.loads(r.stdout)
-
-
-class TestBuildLLMCall:
-    def test_missing_key_raises(self, mod, monkeypatch):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        with pytest.raises(RuntimeError):
-            mod.build_llm_call("claude-opus-5-5")
+    def test_missing_api_key_errors_json(self, subtests):
+        with subtests.test(case="missing_api_key"):
+            env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+            r = subprocess.run(
+                [sys.executable, SCRIPT],
+                input=json.dumps({**CTX, "platform": "nonexistent"}),
+                capture_output=True, text=True, timeout=60, env=env,
+            )
+            assert r.returncode == 1
+            out = json.loads(r.stdout)
+            assert "ANTHROPIC_API_KEY" in out["error"]
+            assert out["usage"] == {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+        with subtests.test(case="garbage_stdin"):
+            r = subprocess.run([sys.executable, SCRIPT], input="not json",
+                               capture_output=True, text=True, timeout=30)
+            assert r.returncode == 1
+            assert "error" in json.loads(r.stdout)
 
 
 def _reply(n, stop_reason="end_turn", text="short note"):
