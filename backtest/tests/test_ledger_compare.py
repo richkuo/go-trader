@@ -358,13 +358,20 @@ def test_manual_owner_is_refused_and_not_comparable(tmp_path):
         assert rep["simulation"]["status"] == "not_run"
 
 
-@pytest.mark.parametrize("case,reason", [
-    ("edge_gap", "market_candle_grid_incomplete"),
-    ("warmup_join_gap", "market_candle_grid_incomplete"),
-    ("missing_funding", "market_funding_incomplete"),
-    ("short_warmup", "market_indicator_history_insufficient"),
-])
-def test_hash_valid_incomplete_market_inputs_refuse_strict(tmp_path, case, reason):
+def test_hash_valid_incomplete_market_inputs_refuse_strict(tmp_path, subtests):
+    for case, reason in [
+        ("edge_gap", "market_candle_grid_incomplete"),
+        ("warmup_join_gap", "market_candle_grid_incomplete"),
+        ("missing_funding", "market_funding_incomplete"),
+        ("short_warmup", "market_indicator_history_insufficient"),
+    ]:
+        with subtests.test(case=case):
+            case_dir = tmp_path / str(case)
+            case_dir.mkdir()
+            _assert_hash_valid_incomplete_market_inputs_refuse_strict(case_dir, case, reason)
+
+
+def _assert_hash_valid_incomplete_market_inputs_refuse_strict(tmp_path, case, reason):
     fx = _copy(tmp_path)
     market = fx / "market"
     warmup = None
@@ -560,24 +567,6 @@ def test_attested_inventory_is_checked_against_the_booked_replay(tmp_path):
     assert rc == 0 and rep["outcome"] == "strict_success"
 
 
-@pytest.mark.parametrize("field,value", [
-    ("open_strategy", "sma_crossover"),
-    ("params", ["fast", 10]),
-    ("args", "sma_crossover BTC 1h"),
-])
-def test_malformed_strategy_shapes_exit_without_a_report(tmp_path, field, value):
-    fx = _copy(tmp_path)
-    cin = _load(fx / "comparison_input.json")
-    strategy = cin["historical_configuration"]["timeline"][0]["strategy"]
-    if field == "params":
-        strategy["open_strategy"]["params"] = value
-    else:
-        strategy[field] = value
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path)
-    assert rc == lc.EXIT_INPUT_ERROR and rep is None
-
-
 def test_unexpected_errors_exit_without_a_report(tmp_path, monkeypatch):
     def broken(*a, **k):
         raise RuntimeError("disposable internal failure")
@@ -767,8 +756,15 @@ EQUIVALENCE_CASES = [
 ]
 
 
-@pytest.mark.parametrize("case_id", EQUIVALENCE_CASES)
-def test_raw_and_loader_resolved_segments_resolve_identically(tmp_path, case_id):
+def test_raw_and_loader_resolved_segments_resolve_identically(tmp_path, subtests):
+    for case_id in EQUIVALENCE_CASES:
+        with subtests.test(case=case_id):
+            case_dir = tmp_path / str(case_id)
+            case_dir.mkdir()
+            _assert_raw_and_loader_resolved_segments_resolve_identically(case_dir, case_id)
+
+
+def _assert_raw_and_loader_resolved_segments_resolve_identically(tmp_path, case_id):
     cfg, strategy, side, regime = _parity_case(case_id)
     raw = lc.resolve_historical_stops(_raw_segment(cfg, strategy), 2, "strict")
     loader = lc.resolve_historical_stops(_loader_segment(tmp_path, cfg, strategy), 2, "strict")
@@ -829,8 +825,15 @@ def test_drawdown_fallback_geometry_matches_the_platform_oracle_case():
         ("stop_inputs_unverified", "platform_max_drawdown_pct")]
 
 
-@pytest.mark.parametrize("basis", ["raw_config", "loader_resolved"])
-def test_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(tmp_path, basis):
+def test_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(tmp_path, subtests):
+    for basis in ["raw_config", "loader_resolved"]:
+        with subtests.test(case=basis):
+            case_dir = tmp_path / str(basis)
+            case_dir.mkdir()
+            _assert_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(case_dir, basis)
+
+
+def _assert_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(tmp_path, basis):
     def build(case_id, extra_cfg=None, extra_strategy=None):
         cfg, strategy, _, _ = _parity_case(case_id)
         cfg.update(extra_cfg or {})
@@ -854,8 +857,15 @@ def test_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(tm
     assert ("stop_capability_refused", "MISSING_STOP_INPUT") in codes(named)
 
 
-@pytest.mark.parametrize("basis", ["raw_config", "loader_resolved"])
-def test_contradictory_stop_evidence_refuses_before_simulation(tmp_path, basis):
+def test_contradictory_stop_evidence_refuses_before_simulation(tmp_path, subtests):
+    for basis in ["raw_config", "loader_resolved"]:
+        with subtests.test(case=basis):
+            case_dir = tmp_path / str(basis)
+            case_dir.mkdir()
+            _assert_contradictory_stop_evidence_refuses_before_simulation(case_dir, basis)
+
+
+def _assert_contradictory_stop_evidence_refuses_before_simulation(tmp_path, basis):
     cfg, strategy, _, _ = _parity_case("pct_long")
     seg = _raw_segment(cfg, strategy) if basis == "raw_config" else _loader_segment(tmp_path, cfg, strategy)
     seg["stop_evidence"]["raw_fields"]["stop_loss_pct"] = _prov(3)
@@ -868,13 +878,18 @@ def test_contradictory_stop_evidence_refuses_before_simulation(tmp_path, basis):
     assert [(r["reason"], r["field"]) for r in verdict["refusals"]] == [("stop_inputs_unverified", "trailing_stop_pct")]
 
 
-@pytest.mark.parametrize("case_id,owner,fields", [
-    ("pct_long", "fixed_pct", {"basis", "stop_loss_pct"}),
-    ("default_scalar_atr", "fixed_atr", {"basis", "stop_loss_atr_mult"}),
-    ("unified_regime_close", "unified_regime", {"basis", "close_strategy", "regime_atr_window"}),
-    ("explicit_zero_atr_drawdown_fallback", "drawdown_fallback", {"basis", "max_drawdown_pct"}),
-])
-def test_version_one_segments_cannot_rule_out_a_protective_owner(case_id, owner, fields):
+def test_version_one_segments_cannot_rule_out_a_protective_owner(subtests):
+    for case_id, owner, fields in [
+        ("pct_long", "fixed_pct", {"basis", "stop_loss_pct"}),
+        ("default_scalar_atr", "fixed_atr", {"basis", "stop_loss_atr_mult"}),
+        ("unified_regime_close", "unified_regime", {"basis", "close_strategy", "regime_atr_window"}),
+        ("explicit_zero_atr_drawdown_fallback", "drawdown_fallback", {"basis", "max_drawdown_pct"}),
+    ]:
+        with subtests.test(case=case_id):
+            _assert_version_one_segments_cannot_rule_out_a_protective_owner(case_id, owner, fields)
+
+
+def _assert_version_one_segments_cannot_rule_out_a_protective_owner(case_id, owner, fields):
     cfg, strategy, _, _ = _parity_case(case_id)
     seg = _raw_segment(cfg, strategy)
     for key in ("basis", "stop_defaults", "stop_evidence"):
@@ -983,8 +998,15 @@ def test_drawdown_provenance_is_required_only_where_precedence_reaches_it(tmp_pa
         (r["reason"], r["field"]) for r in verdict["refusals"]}
 
 
-@pytest.mark.parametrize("basis", ["raw_config", "loader_resolved"])
-def test_unverified_leverage_refuses_a_margin_stop_on_both_bases(tmp_path, basis):
+def test_unverified_leverage_refuses_a_margin_stop_on_both_bases(tmp_path, subtests):
+    for basis in ["raw_config", "loader_resolved"]:
+        with subtests.test(case=basis):
+            case_dir = tmp_path / str(basis)
+            case_dir.mkdir()
+            _assert_unverified_leverage_refuses_a_margin_stop_on_both_bases(case_dir, basis)
+
+
+def _assert_unverified_leverage_refuses_a_margin_stop_on_both_bases(tmp_path, basis):
     strategy = {"stop_loss_margin_pct": 10, "leverage": 1}
     if basis == "raw_config":
         seg = _raw_segment({}, strategy)
@@ -1146,8 +1168,15 @@ def test_an_invalid_atr_method_is_refused_unverified_or_unread(tmp_path):
         (r["reason"], r.get("field")) for r in rep["eligibility"]["refusals"]}
 
 
-@pytest.mark.parametrize("variant", ["unified_close", "trailing_regime"])
-def test_regime_owned_stops_simulate_with_labels_and_no_gating(tmp_path, variant):
+def test_regime_owned_stops_simulate_with_labels_and_no_gating(tmp_path, subtests):
+    for variant in ["unified_close", "trailing_regime"]:
+        with subtests.test(case=variant):
+            case_dir = tmp_path / str(variant)
+            case_dir.mkdir()
+            _assert_regime_owned_stops_simulate_with_labels_and_no_gating(case_dir, variant)
+
+
+def _assert_regime_owned_stops_simulate_with_labels_and_no_gating(tmp_path, variant):
     from regime import valid_labels_for_classifier
     fx = _copy(tmp_path)
     _rehash_market(fx, warmup=72)
@@ -1262,8 +1291,13 @@ def test_verified_initial_geometry_agrees_and_an_altered_trigger_mismatches(tmp_
     assert all(m["within_tolerance"] is False for m in rep["matching"]["matched"])
 
 
-@pytest.mark.parametrize("variant", ["no_attestation", "later_stamp", "ambiguous_arms"])
-def test_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, variant):
+def test_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, subtests):
+    for variant in ["no_attestation", "later_stamp", "ambiguous_arms"]:
+        with subtests.test(case=variant):
+            _assert_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, variant)
+
+
+def _assert_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, variant):
     fx = _geometry_fixture(tmp_path, attest=variant != "no_attestation", stamp_close=variant == "later_stamp",
                            name=variant)
     if variant == "ambiguous_arms":
@@ -1286,21 +1320,41 @@ def test_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch
         assert all(r["later_stamps"] for r in geo["positions"])
 
 
-@pytest.mark.parametrize("mutate", [
-    lambda seg: seg.pop("basis"),
-    lambda seg: seg["stop_defaults"].pop("user_close_defaults"),
-    lambda seg: seg["stop_evidence"]["raw_fields"].update(bogus=seg["stop_evidence"]["raw_fields"]["leverage"]),
-    lambda seg: seg["stop_evidence"]["raw_fields"]["leverage"].update(status="verified", source=""),
-    lambda seg: seg["stop_evidence"]["raw_fields"]["trailing_stop_pct"].update(value=1),
-    lambda seg: seg["stop_evidence"].pop("resolved_fields"),
-])
-def test_malformed_stop_evidence_exits_without_a_report(tmp_path, mutate):
+def _malformed_strategy_shape(field, value):
+    def mutate(seg):
+        if field == "params":
+            seg["strategy"]["open_strategy"]["params"] = value
+        else:
+            seg["strategy"][field] = value
+    return mutate
+
+
+_MALFORMED_SEGMENT_MUTATIONS = [
+    ("open_strategy-sma_crossover", _malformed_strategy_shape("open_strategy", "sma_crossover")),
+    ("params-list", _malformed_strategy_shape("params", ["fast", 10])),
+    ("args-string", _malformed_strategy_shape("args", "sma_crossover BTC 1h")),
+    ("basis-missing", lambda seg: seg.pop("basis")),
+    ("user_close_defaults-missing", lambda seg: seg["stop_defaults"].pop("user_close_defaults")),
+    ("raw_fields-unknown_key",
+     lambda seg: seg["stop_evidence"]["raw_fields"].update(bogus=seg["stop_evidence"]["raw_fields"]["leverage"])),
+    ("leverage-verified_without_source",
+     lambda seg: seg["stop_evidence"]["raw_fields"]["leverage"].update(status="verified", source="")),
+    ("trailing_stop_pct-value_without_presence",
+     lambda seg: seg["stop_evidence"]["raw_fields"]["trailing_stop_pct"].update(value=1)),
+    ("resolved_fields-missing", lambda seg: seg["stop_evidence"].pop("resolved_fields")),
+]
+
+
+def test_malformed_strategy_shapes_and_stop_evidence_exit_without_a_report(tmp_path, subtests):
     fx = _copy(tmp_path)
-    cin = _load(fx / "comparison_input.json")
-    mutate(cin["historical_configuration"]["timeline"][0])
-    _dump(fx / "comparison_input.json", cin)
-    rc, rep = _run(fx, tmp_path)
-    assert rc == lc.EXIT_INPUT_ERROR and rep is None
+    base = _load(fx / "comparison_input.json")
+    for case, mutate in _MALFORMED_SEGMENT_MUTATIONS:
+        with subtests.test(case=case):
+            cin = copy.deepcopy(base)
+            mutate(cin["historical_configuration"]["timeline"][0])
+            _dump(fx / "comparison_input.json", cin)
+            rc, rep = _run(fx, tmp_path, name=f"{case}.json")
+            assert rc == lc.EXIT_INPUT_ERROR and rep is None
 
 
 REGIME_WINDOWS = {
@@ -2605,12 +2659,19 @@ def test_resting_rule_off_suppressed_and_reclassified_variants(tmp_path):
     assert [b["classification"] for b in synced["resting_fill"]["booked_tier_closes"]] == ["tier"]
 
 
-@pytest.mark.parametrize("case,code", [
-    ("conflict", "resting_rule_conflict"),
-    ("k_ticks", "resting_rule_k_unsupported"),
-    ("null_flag", "resting_rule_flag_invalid"),
-])
-def test_resting_rule_refusals_are_never_simulated(tmp_path, case, code):
+def test_resting_rule_refusals_are_never_simulated(tmp_path, subtests):
+    for case, code in [
+        ("conflict", "resting_rule_conflict"),
+        ("k_ticks", "resting_rule_k_unsupported"),
+        ("null_flag", "resting_rule_flag_invalid"),
+    ]:
+        with subtests.test(case=case):
+            case_dir = tmp_path / str(case)
+            case_dir.mkdir()
+            _assert_resting_rule_refusals_are_never_simulated(case_dir, case, code)
+
+
+def _assert_resting_rule_refusals_are_never_simulated(tmp_path, case, code):
     inp = INPUTS[RESTING_EXPORT]
     fx = _copy(tmp_path)
     if case == "conflict":

@@ -131,13 +131,20 @@ _INIT_REJECT_CASES = [
 ]
 
 
-def test_init_rejects_invalid_scale_in():
+def test_init_and_run_reject_invalid_scale_in(subtests):
+    with subtests.test(case="init_rejects_invalid_scale_in"):
+        _assert_init_rejects_invalid_scale_in()
+    with subtests.test(case="run_rejects_entry_fraction_column"):
+        _assert_run_rejects_entry_fraction_column()
+
+
+def _assert_init_rejects_invalid_scale_in():
     for i, (kwargs, match) in enumerate(_INIT_REJECT_CASES):
         with _raises_for(f"test_init_rejects_invalid_scale_in[{i}] {kwargs}", match=match):
             Backtester(**kwargs)
 
 
-def test_run_rejects_entry_fraction_column():
+def _assert_run_rejects_entry_fraction_column():
     df = _df([100, 100, 100], [1, 0, 0])
     df["entry_fraction"] = 0.5
     with pytest.raises(ValueError, match="entry_fraction"):
@@ -153,7 +160,16 @@ def test_default_off_same_direction_signal_still_skipped():
     assert "scale_in_adds" not in repeat
 
 
-def test_add_blends_avg_cost_and_pnl_uses_blend():
+def test_add_blends_avg_cost_and_pnl_uses_blend(subtests):
+    with subtests.test(case="add_blends_avg_cost_and_pnl_uses_blend"):
+        _assert_add_blends_avg_cost_and_pnl_uses_blend()
+    with subtests.test(case="two_adds_accumulate_applyscalein_math"):
+        _assert_two_adds_accumulate_applyscalein_math()
+    with subtests.test(case="short_add_mirrors_long_math"):
+        _assert_short_add_mirrors_long_math()
+
+
+def _assert_add_blends_avg_cost_and_pnl_uses_blend():
     closes = [100, 100, 110, 110, 110, 120, 120]
     df = _df(closes, [1, 0, 1, 0, -1, 0, 0])
     res = _run(df, allow_scale_in=True)
@@ -168,7 +184,7 @@ def test_add_blends_avg_cost_and_pnl_uses_blend():
     assert res["final_capital"] == pytest.approx(10000.0 + trade["pnl"], abs=0.01)
 
 
-def test_two_adds_accumulate_applyscalein_math():
+def _assert_two_adds_accumulate_applyscalein_math():
     closes = [100, 100, 105, 105, 110, 110, 110, 130, 130]
     df = _df(closes, [1, 0, 1, 0, 1, 0, -1, 0, 0])
     res = _run(df, allow_scale_in=True,
@@ -186,7 +202,14 @@ def test_two_adds_accumulate_applyscalein_math():
         q1 * 105.0 + q2 * 110.0)
 
 
-def test_fixed_sl_trigger_frozen_across_add():
+def test_frozen_sl_trigger_across_add(subtests):
+    with subtests.test(case="fixed_sl_trigger_frozen_across_add"):
+        _assert_fixed_sl_trigger_frozen_across_add()
+    with subtests.test(case="frozen_sl_exits_full_grown_quantity"):
+        _assert_frozen_sl_exits_full_grown_quantity()
+
+
+def _assert_fixed_sl_trigger_frozen_across_add():
     closes = [100.0, 100.0, 104.0, 104.0, 99.5, 106.0, 106.0, 106.0]
     lows = [99.6, 99.6, 103.6, 103.6, 99.0, 105.6, 105.6, 105.6]
     highs = [c + 0.4 for c in closes]
@@ -201,7 +224,7 @@ def test_fixed_sl_trigger_frozen_across_add():
     assert trade["shares"] == pytest.approx(100.0 + 10000.0 / 104.0)
 
 
-def test_frozen_sl_exits_full_grown_quantity():
+def _assert_frozen_sl_exits_full_grown_quantity():
     closes = [100.0, 100.0, 104.0, 104.0, 99.5, 99.5]
     lows = [99.6, 99.6, 103.6, 103.6, 97.9, 99.0]
     highs = [c + 0.4 for c in closes]
@@ -216,15 +239,17 @@ def test_frozen_sl_exits_full_grown_quantity():
     assert trade["shares"] == pytest.approx(100.0 + 10000.0 / 104.0)
 
 
-def test_add_leaves_cash_negative_but_equity_exact():
+def test_add_leaves_cash_negative_but_equity_exact_and_creates_no_trade_rows():
     closes = [100, 100, 100, 100, 100, 100]
     df = _df(closes, [1, 0, 1, 0, -1, 0])
     res = _run(df, allow_scale_in=True)
     assert res["scale_in_adds"] == 1
     assert res["final_capital"] == pytest.approx(10000.0)
+    assert len(res["trades"]) == 1
+    assert res["total_trades"] == 1
 
 
-def test_short_add_mirrors_long_math():
+def _assert_short_add_mirrors_long_math():
     closes = [100, 100, 95, 95, 90, 90]
     df = _df(closes, [-1, 0, -1, 0, 1, 0])
     res = _run(df, allow_scale_in=True, direction="short")
@@ -240,7 +265,14 @@ def test_short_add_mirrors_long_math():
     assert res["final_capital"] == pytest.approx(10000.0 + expected_pnl, abs=0.01)
 
 
-def test_tiered_tp_threshold_reads_anchor_not_blend():
+def test_tiered_tp_reads_anchor_and_pro_rates_grown_quantity(subtests):
+    with subtests.test(case="tiered_tp_threshold_reads_anchor_not_blend"):
+        _assert_tiered_tp_threshold_reads_anchor_not_blend()
+    with subtests.test(case="partial_close_pro_rates_against_grown_initial_quantity"):
+        _assert_partial_close_pro_rates_against_grown_initial_quantity()
+
+
+def _assert_tiered_tp_threshold_reads_anchor_not_blend():
     closes = [100, 100, 96, 96, 100.5, 100.5, 102.5, 102.5, 102.5]
     df = _df(closes, [1, 0, 1, 0, 0, 0, 0, 0, 0], atr=[2.0] * 9)
     tiers = [
@@ -263,7 +295,7 @@ def test_tiered_tp_threshold_reads_anchor_not_blend():
     assert first["entry_price"] == pytest.approx(blend)
 
 
-def test_partial_close_pro_rates_against_grown_initial_quantity():
+def _assert_partial_close_pro_rates_against_grown_initial_quantity():
     closes = [100, 100, 96, 96, 102.5, 102.5, 102.5]
     df = _df(closes, [1, 0, 1, 0, 0, 0, 0], atr=[2.0] * 7)
     tiers = [
@@ -282,7 +314,16 @@ def test_partial_close_pro_rates_against_grown_initial_quantity():
     assert first["shares"] == pytest.approx(total * 0.5)
 
 
-def test_add_pays_commission_and_joins_entry_fee_pool():
+def test_entry_fee_pool_conserves_across_adds_and_partials(subtests):
+    with subtests.test(case="add_pays_commission_and_joins_entry_fee_pool"):
+        _assert_add_pays_commission_and_joins_entry_fee_pool()
+    with subtests.test(case="entry_fee_conserves_partial_close_then_add"):
+        _assert_entry_fee_conserves_partial_close_then_add()
+    with subtests.test(case="entry_fee_conserves_partial_add_partial_full"):
+        _assert_entry_fee_conserves_partial_add_partial_full()
+
+
+def _assert_add_pays_commission_and_joins_entry_fee_pool():
     fee = 0.001
     closes = [100, 100, 100, 100, 100, 100]
     df = _df(closes, [1, 0, 1, 0, -1, 0])
@@ -297,7 +338,7 @@ def test_add_pays_commission_and_joins_entry_fee_pool():
     assert trade["entry_fee"] == pytest.approx(open_comm + add_comm, rel=1e-6)
 
 
-def test_entry_fee_conserves_partial_close_then_add():
+def _assert_entry_fee_conserves_partial_close_then_add():
     fee = 0.001
     closes = [100.0, 100.0, 102.5, 102.5, 104.0, 104.0]
     df = _df(closes, [1, 0, 0, 1, 0, 0], atr=[2.0] * 6)
@@ -322,7 +363,7 @@ def test_entry_fee_conserves_partial_close_then_add():
         open_comm + add_comm, abs=1e-4)
 
 
-def test_entry_fee_conserves_partial_add_partial_full():
+def _assert_entry_fee_conserves_partial_add_partial_full():
     fee = 0.001
     closes = [100.0, 100.0, 102.5, 102.5, 104.5, 104.5, 104.5]
     df = _df(closes, [1, 0, 0, 1, 0, 0, 0], atr=[2.0] * 7)
@@ -366,15 +407,6 @@ def test_two_adds_straddling_partial_close_pnl_reconciles():
         res["final_capital"] - 10000.0, abs=0.05)
 
 
-def test_adds_create_no_trade_rows():
-    closes = [100, 100, 100, 100, 100, 100]
-    df = _df(closes, [1, 0, 1, 0, -1, 0])
-    res = _run(df, allow_scale_in=True)
-    assert res["scale_in_adds"] == 1
-    assert len(res["trades"]) == 1
-    assert res["total_trades"] == 1
-
-
 def test_second_position_starts_with_clean_scale_state():
     closes = [100, 100, 100, 100, 100, 100, 200, 200, 200, 200, 200, 200]
     sig = [1, 0, 1, 0, -1, 0, 1, 0, 1, 0, -1, 0]
@@ -405,7 +437,18 @@ def _hl_strategy(**over):
     return sc
 
 
-def test_loader_threads_scale_in_fields(tmp_path):
+def test_loader_scale_in_fields_defaults_and_refusals(tmp_path, subtests):
+    with subtests.test(case="loader_threads_scale_in_fields"):
+        _assert_loader_threads_scale_in_fields(tmp_path)
+    with subtests.test(case="loader_defaults_off"):
+        _assert_loader_defaults_off(tmp_path)
+    with subtests.test(case="loader_rejects_invalid_scale_in_config"):
+        _assert_loader_rejects_invalid_scale_in_config(tmp_path)
+    with subtests.test(case="loader_accepts_live_trailing_sl"):
+        _assert_loader_accepts_live_trailing_sl(tmp_path)
+
+
+def _assert_loader_threads_scale_in_fields(tmp_path):
     path = _config(tmp_path, _hl_strategy(
         allow_scale_in=True,
         scale_in={"max_adds": 3, "add_spacing_atr": -0.5},
@@ -415,7 +458,7 @@ def test_loader_threads_scale_in_fields(tmp_path):
     assert kwargs["scale_in"] == {"max_adds": 3, "add_spacing_atr": -0.5}
 
 
-def test_loader_defaults_off(tmp_path):
+def _assert_loader_defaults_off(tmp_path):
     path = _config(tmp_path, _hl_strategy())
     kwargs = run_backtest.load_strategy_config(path, "hl-test")
     assert kwargs["allow_scale_in"] is False
@@ -433,14 +476,14 @@ _LOADER_REJECT_CASES = [
 ]
 
 
-def test_loader_rejects_invalid_scale_in_config(tmp_path):
+def _assert_loader_rejects_invalid_scale_in_config(tmp_path):
     for i, (overrides, match) in enumerate(_LOADER_REJECT_CASES):
         path = _config(tmp_path, _hl_strategy(**overrides))
         with _raises_for(f"test_loader_rejects_invalid_scale_in_config[{i}] {overrides}", match=match):
             run_backtest.load_strategy_config(path, "hl-test")
 
 
-def test_loader_accepts_live_trailing_sl(tmp_path):
+def _assert_loader_accepts_live_trailing_sl(tmp_path):
     path = _config(tmp_path, _hl_strategy(
         allow_scale_in=True,
         args=["tema_cross", "BTC", "4h", "--mode", "live"],

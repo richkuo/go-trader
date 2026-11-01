@@ -124,10 +124,17 @@ def ref_decision(cur, prev, params):
     return 0
 
 
-@pytest.mark.parametrize("params", [DEFAULTS, dict(DEFAULTS, range_period=14, smoothing_period=4, signal_period=2,
-                                                   recursion_length=80, oversold=-30.0, overbought=50.0)]
-                         + DOMAIN_ENDPOINTS)
-def test_values_and_decisions_match_an_independent_scalar_replay(params):
+REFERENCE_PARAMS = [DEFAULTS, dict(DEFAULTS, range_period=14, smoothing_period=4, signal_period=2,
+                                   recursion_length=80, oversold=-30.0, overbought=50.0)] + DOMAIN_ENDPOINTS
+
+
+def test_values_and_decisions_match_an_independent_scalar_replay(subtests):
+    for params in REFERENCE_PARAMS:
+        with subtests.test(params=params):
+            _values_and_decisions_match_an_independent_scalar_replay(params)
+
+
+def _values_and_decisions_match_an_independent_scalar_replay(params):
     df = _walk(420, 7)
     out = _apply(df, params)
     high, low, close = (df[c].to_numpy() for c in ("high", "low", "close"))
@@ -313,7 +320,7 @@ MISSING_AND_MALFORMED_INPUTS = [
 ]
 
 
-def test_missing_and_malformed_inputs_are_reasoned_holds_that_preserve_the_frame():
+def _missing_and_malformed_inputs_are_reasoned_holds_that_preserve_the_frame():
     for i, (mutate, reason) in enumerate(MISSING_AND_MALFORMED_INPUTS):
         with _case(f"{i}-{reason}"):
             _holds_at_end(mutate(_walk(300, 3)), DEFAULTS, reason)
@@ -328,13 +335,20 @@ def test_volume_is_not_an_input():
         assert (a["smi_reason"] == b["smi_reason"]).all()
 
 
-def test_constant_prices_hold_on_zero_range_and_flat_ranges_give_no_cross():
+def _constant_prices_hold_on_zero_range_and_flat_ranges_give_no_cross():
     flat = _walk(300, 3).assign(open=100.0, high=100.0, low=100.0, close=100.0)
     out = _holds_at_end(flat, DEFAULTS, "zero_range")
     assert (out["smi_value_valid"] == 0.0).all() and (out["signal"] == 0).all()
     banded = _walk(300, 3).assign(open=100.0, high=101.0, low=99.0, close=100.0)
     out = _apply(banded, DEFAULTS)
     assert out["smi_reason"].iloc[-1] == "no_cross" and out["smi_value"].iloc[-1] == 0.0
+
+
+def test_missing_malformed_and_zero_range_inputs_are_reasoned_holds(subtests):
+    with subtests.test(case="missing_and_malformed_inputs_are_reasoned_holds_that_preserve_the_frame"):
+        _missing_and_malformed_inputs_are_reasoned_holds_that_preserve_the_frame()
+    with subtests.test(case="constant_prices_hold_on_zero_range_and_flat_ranges_give_no_cross"):
+        _constant_prices_hold_on_zero_range_and_flat_ranges_give_no_cross()
 
 
 def test_a_zero_range_seed_bar_holds_only_the_decisions_it_seeds():
@@ -357,7 +371,7 @@ def test_a_zero_range_seed_bar_holds_only_the_decisions_it_seeds():
     assert out["smi_seed_range"].iloc[later] > 0
 
 
-def test_received_out_of_order_rows_hold_only_inside_their_span():
+def _received_out_of_order_rows_hold_only_inside_their_span():
     df = _walk(500, 5)
     clean = _apply(df, DEFAULTS)
     marked = df.copy()
@@ -370,7 +384,7 @@ def test_received_out_of_order_rows_hold_only_inside_their_span():
     pd.testing.assert_frame_equal(out.iloc[bad + NEED:], clean.iloc[bad + NEED:])
 
 
-def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
+def _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame():
     df = _walk(500, 5)
     bad = 250
     corrupt = df.copy()
@@ -385,6 +399,13 @@ def test_a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame(
     out = _apply(gapped, DEFAULTS)
     assert (out["smi_reason"].iloc[bad:bad + NEED - 1] == "cadence_gap").all()
     assert out["smi_reason"].iloc[bad + NEED - 1] != "cadence_gap"
+
+
+def test_defects_hold_only_inside_their_span_and_recovery_matches_a_clean_frame(subtests):
+    with subtests.test(case="received_out_of_order_rows_hold_only_inside_their_span"):
+        _received_out_of_order_rows_hold_only_inside_their_span()
+    with subtests.test(case="a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame"):
+        _a_defect_holds_only_inside_its_span_and_recovery_matches_a_clean_frame()
 
 
 INVALID_PARAMS = [
@@ -407,7 +428,7 @@ BOUNDARY_PARAMS = [
 ]
 
 
-def test_boundary_parameters_are_accepted():
+def _boundary_parameters_are_accepted():
     for params in BOUNDARY_PARAMS:
         with _case(params):
             _reg()._registry.validate_params(NAME, params)
@@ -415,14 +436,19 @@ def test_boundary_parameters_are_accepted():
             assert out["smi_required_history"].iloc[-1] == float(_need(params))
 
 
-def test_integral_float_periods_match_integers():
+def _integral_float_periods_match_integers():
     df = _walk(300, 1)
     floats = dict(DEFAULTS, range_period=10.0, smoothing_period=3.0, signal_period=3.0, recursion_length=60.0)
     pd.testing.assert_frame_equal(_apply(df, floats), _apply(df, DEFAULTS))
 
 
-@pytest.mark.parametrize("params", DOMAIN_ENDPOINTS + [DEFAULTS])
-def test_dependency_span_is_required_and_sufficient(params):
+def test_dependency_span_is_required_and_sufficient(subtests):
+    for params in DOMAIN_ENDPOINTS + [DEFAULTS]:
+        with subtests.test(params=params):
+            _dependency_span_is_required_and_sufficient(params)
+
+
+def _dependency_span_is_required_and_sufficient(params):
     df = _walk(420, 9)
     full = _apply(df, params)
     need = _need(params)
@@ -432,6 +458,13 @@ def test_dependency_span_is_required_and_sufficient(params):
         assert exact["smi_reason"].iloc[-1] == full["smi_reason"].iloc[end - 1]
         short = _apply(df.iloc[end - need + 1:end], params)
         assert short["smi_reason"].iloc[-1] == "insufficient_history"
+
+
+def test_boundary_and_integral_float_parameters_are_accepted(subtests):
+    with subtests.test(case="boundary_parameters_are_accepted"):
+        _boundary_parameters_are_accepted()
+    with subtests.test(case="integral_float_periods_match_integers"):
+        _integral_float_periods_match_integers()
 
 
 def _frozen(key, bars):

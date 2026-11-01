@@ -21,95 +21,91 @@ def _flat_df():
     )
 
 
-def test_backtester_accepts_open_strategy_ref():
-    bt = Backtester(
-        initial_capital=1000,
-        open_strategy={"name": "tema_cross_bd", "params": {"short_period": 5}},
-    )
-    df = _flat_df()
-    result = bt.run(df, save=False)
-    assert result["open_strategy"]["name"] == "tema_cross_bd"
-    assert result["open_strategy"]["params"]["short_period"] == 5
+def test_backtester_accepts_and_records_open_and_close_refs(subtests):
+    with subtests.test(case="open_strategy_ref"):
+        bt = Backtester(
+            initial_capital=1000,
+            open_strategy={"name": "tema_cross_bd", "params": {"short_period": 5}},
+        )
+        df = _flat_df()
+        result = bt.run(df, save=False)
+        assert result["open_strategy"]["name"] == "tema_cross_bd"
+        assert result["open_strategy"]["params"]["short_period"] == 5
+    with subtests.test(case="close_strategy_ref_with_params"):
+        bt = Backtester(
+            initial_capital=1000,
+            close_strategies=[
+                {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+                    {"atr_multiple": 2.0, "close_fraction": 1.0},
+                ]}},
+            ],
+        )
+        assert bt.close_strategies == ["tiered_tp_atr"]
+        assert bt.close_params["tiered_tp_atr"]["tp_tiers"] == [
+            {"atr_multiple": 2.0, "close_fraction": 1.0}
+        ]
+    with subtests.test(case="close_refs_recorded_on_result"):
+        bt = Backtester(
+            initial_capital=1000,
+            close_strategies=[
+                {"name": "tp_at_pct", "params": {"pct": 0.05}},
+                {"name": "tiered_tp_pct"},
+            ],
+        )
+        result = bt.run(_flat_df(), save=False)
+        refs = result["close_strategies"]
+        assert [r["name"] for r in refs] == ["tiered_tp_pct", "tiered_tp_pct"]
+        assert refs[0]["params"] == {
+            "tp_tiers": [{"profit_pct": 0.05, "close_fraction": 1.0}],
+        }
+        assert refs[1]["params"] == {}
+    for close_strategies, match in [
+        ([{"params": {"pct": 0.03}}], "missing 'name'"),
+        (["bare_string_no_longer_supported"], "must be dicts"),
+    ]:
+        with subtests.test(case=f"rejects-{match}"):
+            with pytest.raises(ValueError, match=match):
+                Backtester(close_strategies=close_strategies)
 
 
-def test_backtester_accepts_close_strategy_ref_with_params():
-    bt = Backtester(
-        initial_capital=1000,
-        close_strategies=[
-            {"name": "tiered_tp_atr", "params": {"tp_tiers": [
-                {"atr_multiple": 2.0, "close_fraction": 1.0},
-            ]}},
-        ],
-    )
-    assert bt.close_strategies == ["tiered_tp_atr"]
-    assert bt.close_params["tiered_tp_atr"]["tp_tiers"] == [
-        {"atr_multiple": 2.0, "close_fraction": 1.0}
-    ]
+def test_parse_close_strategy_arg_accepts_and_rejects(subtests):
+    for raw, expected in [
+        ("tp_at_pct", {"name": "tp_at_pct", "params": {}}),
+        ('{"name": "tiered_tp_pct"}', {"name": "tiered_tp_pct", "params": {}}),
+        (
+            '{"name": "tiered_tp_atr", "params": {"tp_tiers": [{"atr_multiple": 2.0}]}}',
+            {"name": "tiered_tp_atr",
+             "params": {"tp_tiers": [{"atr_multiple": 2.0}]}},
+        ),
+    ]:
+        with subtests.test(raw=raw):
+            assert run_backtest._parse_close_strategy_arg(raw) == expected
+    for raw, match in [
+        ('{"params": {"pct": 0.03}}', "missing 'name'"),
+        ('{"name": "tiered_tp_pct"', "not valid JSON"),
+        ('["tp_at_pct"]', "must be an object"),
+    ]:
+        with subtests.test(raw=raw):
+            with pytest.raises(SystemExit, match=match):
+                run_backtest._parse_close_strategy_arg(raw)
 
 
-def test_backtester_close_strategies_records_refs_on_result():
-    bt = Backtester(
-        initial_capital=1000,
-        close_strategies=[
-            {"name": "tp_at_pct", "params": {"pct": 0.05}},
-            {"name": "tiered_tp_pct"},
-        ],
-    )
-    result = bt.run(_flat_df(), save=False)
-    refs = result["close_strategies"]
-    assert [r["name"] for r in refs] == ["tiered_tp_pct", "tiered_tp_pct"]
-    assert refs[0]["params"] == {
-        "tp_tiers": [{"profit_pct": 0.05, "close_fraction": 1.0}],
-    }
-    assert refs[1]["params"] == {}
-
-
-@pytest.mark.parametrize("close_strategies,match", [
-    ([{"params": {"pct": 0.03}}], "missing 'name'"),
-    (["bare_string_no_longer_supported"], "must be dicts"),
-])
-def test_backtester_rejects_malformed_close_strategy_ref(close_strategies, match):
-    with pytest.raises(ValueError, match=match):
-        Backtester(close_strategies=close_strategies)
-
-
-@pytest.mark.parametrize("raw,expected", [
-    ("tp_at_pct", {"name": "tp_at_pct", "params": {}}),
-    ('{"name": "tiered_tp_pct"}', {"name": "tiered_tp_pct", "params": {}}),
-    (
-        '{"name": "tiered_tp_atr", "params": {"tp_tiers": [{"atr_multiple": 2.0}]}}',
-        {"name": "tiered_tp_atr",
-         "params": {"tp_tiers": [{"atr_multiple": 2.0}]}},
-    ),
-])
-def test_parse_close_strategy_arg_accepts(raw, expected):
-    assert run_backtest._parse_close_strategy_arg(raw) == expected
-
-
-@pytest.mark.parametrize("raw,match", [
-    ('{"params": {"pct": 0.03}}', "missing 'name'"),
-    ('{"name": "tiered_tp_pct"', "not valid JSON"),
-    ('["tp_at_pct"]', "must be an object"),
-])
-def test_parse_close_strategy_arg_rejects(raw, match):
-    with pytest.raises(SystemExit, match=match):
-        run_backtest._parse_close_strategy_arg(raw)
-
-
-@pytest.mark.parametrize("argv,expected_mode,warn_contains", [
-    (["--config", "scheduler/config.json", "--strategy", "hl-r",
-      "--mode", "single"], "user", None),
-    (["--strategy", "tema_cross_bd", "--mode", "single"], "system", None),
-    (["--config", "scheduler/config.json", "--strategy", "hl-r",
-      "--mode", "single", "--defaults", "system"], "system", None),
-    (["--strategy", "tema_cross_bd", "--mode", "single",
-      "--defaults", "user"], "system", "requires --config"),
-])
-def test_resolve_defaults_mode(capsys, argv, expected_mode, warn_contains):
-    args = run_backtest._build_parser().parse_args(argv)
-    assert run_backtest._resolve_defaults_mode(args) == expected_mode
-    if warn_contains is not None:
-        assert warn_contains in capsys.readouterr().out
+def test_resolve_defaults_mode(capsys, subtests):
+    for argv, expected_mode, warn_contains in [
+        (["--config", "scheduler/config.json", "--strategy", "hl-r",
+          "--mode", "single"], "user", None),
+        (["--strategy", "tema_cross_bd", "--mode", "single"], "system", None),
+        (["--config", "scheduler/config.json", "--strategy", "hl-r",
+          "--mode", "single", "--defaults", "system"], "system", None),
+        (["--strategy", "tema_cross_bd", "--mode", "single",
+          "--defaults", "user"], "system", "requires --config"),
+    ]:
+        with subtests.test(argv=" ".join(argv)):
+            capsys.readouterr()
+            args = run_backtest._build_parser().parse_args(argv)
+            assert run_backtest._resolve_defaults_mode(args) == expected_mode
+            if warn_contains is not None:
+                assert warn_contains in capsys.readouterr().out
 
 
 def _write_config(tmp_path, version, strategies):
@@ -284,11 +280,6 @@ _REF_CASES = {
 }
 
 
-@pytest.mark.parametrize("name", list(_REF_CASES))
-def test_load_strategy_config_threads_refs(tmp_path, name):
-    _assert_config_kwargs(tmp_path, _REF_CASES[name])
-
-
 _DIRECTION_REGIME_CASES = {
     "returns_direction_and_invert": dict(
         cfg=_cfg(15, [_perps_strategy(direction="short", invert_signal=True)]),
@@ -398,11 +389,6 @@ _DIRECTION_REGIME_CASES = {
         ],
     ),
 }
-
-
-@pytest.mark.parametrize("name", list(_DIRECTION_REGIME_CASES))
-def test_load_strategy_config_threads_direction_and_regime(tmp_path, name):
-    _assert_config_kwargs(tmp_path, _DIRECTION_REGIME_CASES[name])
 
 
 _USER_RATCHET = {
@@ -535,9 +521,12 @@ _USER_DEFAULTS_CASES = {
 }
 
 
-@pytest.mark.parametrize("name", list(_USER_DEFAULTS_CASES))
-def test_load_strategy_config_user_close_defaults(tmp_path, name):
-    _assert_config_kwargs(tmp_path, _USER_DEFAULTS_CASES[name])
+def test_load_strategy_config_threads_refs_direction_regime_and_user_close_defaults(tmp_path, subtests):
+    for group, cases in (("refs", _REF_CASES), ("direction_regime", _DIRECTION_REGIME_CASES),
+                         ("user_close_defaults", _USER_DEFAULTS_CASES)):
+        for name, spec in cases.items():
+            with subtests.test(group=group, case=name):
+                _assert_config_kwargs(tmp_path, spec)
 
 
 _REJECT_CASES = {
@@ -675,13 +664,13 @@ _REJECT_CASES = {
 }
 
 
-@pytest.mark.parametrize("name", list(_REJECT_CASES))
-def test_load_strategy_config_rejects(tmp_path, name):
-    spec = _REJECT_CASES[name]
-    path = _write_full_config(tmp_path, spec["cfg"])
-    with pytest.raises(ValueError, match=spec["match"]):
-        run_backtest.load_strategy_config(
-            path, spec["sid"], inject_user_defaults=spec.get("inject", False))
+def test_load_strategy_config_rejects(tmp_path, subtests):
+    for name, spec in _REJECT_CASES.items():
+        with subtests.test(case=name):
+            path = _write_full_config(tmp_path, spec["cfg"])
+            with pytest.raises(ValueError, match=spec["match"]):
+                run_backtest.load_strategy_config(
+                    path, spec["sid"], inject_user_defaults=spec.get("inject", False))
 
 
 def test_load_strategy_config_then_backtester_parity(tmp_path):
@@ -706,7 +695,14 @@ def test_load_strategy_config_then_backtester_parity(tmp_path):
     assert bt_from_config.close_params == bt_inline.close_params
 
 
-def test_config_flag_threads_live_open_params_to_result(tmp_path, monkeypatch):
+def test_config_flag_threads_live_open_params_and_allowed_regimes_to_run_single(tmp_path, monkeypatch, subtests):
+    with subtests.test(case="live_open_params"):
+        _assert_config_flag_threads_live_open_params(tmp_path, monkeypatch)
+    with subtests.test(case="allowed_regimes"):
+        _assert_config_flag_threads_allowed_regimes(tmp_path, monkeypatch)
+
+
+def _assert_config_flag_threads_live_open_params(tmp_path, monkeypatch):
     config_path = _write_config(tmp_path, version=15, strategies=[
         {
             "id": "hl-triple-btc",
@@ -758,32 +754,33 @@ def test_config_flag_rejects_non_single_modes(tmp_path):
             _sys.argv = old_argv
 
 
-@pytest.mark.parametrize("cfg,sid,extra_argv", [
-    (
-        _cfg(15, [{"id": "x", "open_strategy": {"name": "triple_ema"},
-                   "close_strategies": []}]),
-        "x",
-        ["--direction", "short"],
-    ),
-    (
-        _cfg(15, [_perps_strategy(allowed_regimes=["trending_up"])],
-             regime=_REGIME_ON),
-        "hl-d-btc",
-        ["--allowed-regimes", "ranging"],
-    ),
-])
-def test_flag_rejected_alongside_config(tmp_path, monkeypatch, cfg, sid, extra_argv):
-    config_path = _write_full_config(tmp_path, cfg)
-    called = {}
-    monkeypatch.setattr(run_backtest, "run_single_backtest",
-                        lambda *a, **kw: called.setdefault("hit", True))
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "single",
-        "--config", config_path, "--strategy", sid, *extra_argv,
-    ])
-    with pytest.raises(SystemExit):
-        run_backtest.main()
-    assert "hit" not in called
+def test_flag_rejected_alongside_config(tmp_path, monkeypatch, subtests):
+    for cfg, sid, extra_argv in [
+        (
+            _cfg(15, [{"id": "x", "open_strategy": {"name": "triple_ema"},
+                       "close_strategies": []}]),
+            "x",
+            ["--direction", "short"],
+        ),
+        (
+            _cfg(15, [_perps_strategy(allowed_regimes=["trending_up"])],
+                 regime=_REGIME_ON),
+            "hl-d-btc",
+            ["--allowed-regimes", "ranging"],
+        ),
+    ]:
+        with subtests.test(flag=extra_argv[0]):
+            config_path = _write_full_config(tmp_path, cfg)
+            called = {}
+            monkeypatch.setattr(run_backtest, "run_single_backtest",
+                                lambda *a, **kw: called.setdefault("hit", True))
+            monkeypatch.setattr("sys.argv", [
+                "run_backtest.py", "--mode", "single",
+                "--config", config_path, "--strategy", sid, *extra_argv,
+            ])
+            with pytest.raises(SystemExit):
+                run_backtest.main()
+            assert "hit" not in called
 
 
 def _flat_ohlc(signal):
@@ -819,26 +816,17 @@ def _run_config(path, strategy_id, signal):
     return bt.run(_flat_ohlc(signal), save=False)
 
 
-@pytest.mark.parametrize("strategy_type", ["spot", "futures"])
-def test_config_non_perps_masks_short_open_end_to_end(tmp_path, strategy_type):
-    path = _spot_close_cfg(tmp_path, strategy_type=strategy_type)
-    assert _run_config(path, "sc-x", [-1, 0, 0, 0])["trades"] == []
+def test_config_non_perps_opens_long_only_end_to_end(tmp_path, subtests):
+    for name, kwargs in [("spot", {"strategy_type": "spot"}), ("futures", {"strategy_type": "futures"}),
+                         ("spot_stray_direction_short", {"direction": "short"})]:
+        with subtests.test(case=name):
+            path = _spot_close_cfg(tmp_path, **kwargs)
+            assert _run_config(path, "sc-x", [-1, 0, 0, 0])["trades"] == []
+            result = _run_config(path, "sc-x", [1, 0, 0, 0])
+            assert [t["side"] for t in result["trades"]] == ["long"]
 
 
-@pytest.mark.parametrize("strategy_type", ["spot", "futures"])
-def test_config_non_perps_allows_long_open_end_to_end(tmp_path, strategy_type):
-    path = _spot_close_cfg(tmp_path, strategy_type=strategy_type)
-    result = _run_config(path, "sc-x", [1, 0, 0, 0])
-    assert [t["side"] for t in result["trades"]] == ["long"]
-
-
-def test_config_spot_stray_direction_short_is_ignored(tmp_path):
-    path = _spot_close_cfg(tmp_path, direction="short")
-    assert [t["side"] for t in _run_config(path, "sc-x", [1, 0, 0, 0])["trades"]] == ["long"]
-    assert _run_config(path, "sc-x", [-1, 0, 0, 0])["trades"] == []
-
-
-def test_config_flag_threads_allowed_regimes_to_run_single(tmp_path, monkeypatch):
+def _assert_config_flag_threads_allowed_regimes(tmp_path, monkeypatch):
     config_path = _write_full_config(tmp_path, _cfg(
         15, [_perps_strategy(allowed_regimes=["trending_up", "ranging"])],
         regime=_REGIME_ON))

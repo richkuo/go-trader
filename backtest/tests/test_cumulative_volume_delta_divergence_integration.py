@@ -132,7 +132,19 @@ def test_long_divergence_arms_at_confirmation_and_enters_once_on_a_strict_reclai
     assert row["cvd_setup_id"] == f"long:{T0 + CONFIRM * BAR}" and len(row["cvd_flow_sha256"]) == 64
 
 
-def test_short_mirror_with_a_falling_delta():
+def test_setup_rule_mirror_baseline_threshold_extrema_separation_expiry_and_consumption(subtests):
+    for label, case in (("short_mirror", _short_mirror_with_a_falling_delta),
+                        ("price_only_baseline", _price_only_baseline_enters_where_delta_disagrees),
+                        ("threshold_is_strict", _threshold_is_strict),
+                        ("equal_extrema", _equal_extrema_never_qualify),
+                        ("separation_and_session", _separation_bounds_and_session_crossing),
+                        ("expiry", _expiry_is_inclusive_and_clears_one_bar_later),
+                        ("confirmation_and_consumption", _confirmation_bar_cannot_enter_and_a_setup_is_consumed_once)):
+        with subtests.test(case=label):
+            case()
+
+
+def _short_mirror_with_a_falling_delta():
     df, series = _build(_scenario(side="short", buy_frac="0.4"))
     out = _run(df, series)
     assert out["cvd_reason"].iloc[CONFIRM] == "armed_short"
@@ -140,7 +152,7 @@ def test_short_mirror_with_a_falling_delta():
     assert out["signal"].iloc[CONFIRM + 2] == -1 and out["cvd_ratio"].iloc[CONFIRM + 2] == pytest.approx(-0.2)
 
 
-def test_price_only_baseline_enters_where_delta_disagrees():
+def _price_only_baseline_enters_where_delta_disagrees():
     df, series = _build(_scenario(buy_frac="0.4"))
     held = _run(df, series)
     assert held["cvd_reason"].iloc[CONFIRM] == "delta_not_confirmed" and not held["signal"].any()
@@ -148,7 +160,7 @@ def test_price_only_baseline_enters_where_delta_disagrees():
     assert base["cvd_reason"].iloc[CONFIRM] == "armed_long" and base["signal"].iloc[CONFIRM + 2] == 1
 
 
-def test_threshold_is_strict():
+def _threshold_is_strict():
     for threshold, armed in ((0.2, False), (0.19, True)):
         with _case(f"{threshold}-{armed}"):
             df, series = _build(_scenario())
@@ -156,7 +168,7 @@ def test_threshold_is_strict():
             assert (out["cvd_reason"].iloc[CONFIRM] == "armed_long") is armed
 
 
-def test_equal_extrema_never_qualify():
+def _equal_extrema_never_qualify():
     sc = _scenario()
     sc["low"][P2] = sc["low"][P1]
     df, series = _build(sc)
@@ -167,7 +179,7 @@ def test_equal_extrema_never_qualify():
     assert not _run(df, series)["signal"].any()
 
 
-def test_separation_bounds_and_session_crossing():
+def _separation_bounds_and_session_crossing():
     df, series = _build(_scenario())
     assert not _run(df, series, min_separation=7)["signal"].any()
     assert not _run(df, series, max_separation=5, min_separation=2)["signal"].any()
@@ -177,7 +189,7 @@ def test_separation_bounds_and_session_crossing():
     assert not out["signal"].any() and out["cvd_reason"].iloc[CONFIRM] == "no_setup"
 
 
-def test_expiry_is_inclusive_and_clears_one_bar_later():
+def _expiry_is_inclusive_and_clears_one_bar_later():
     expiry = SEED["setup_expiry"]
     df, series = _build(_scenario(entry_at=CONFIRM + expiry))
     assert _run(df, series)["signal"].iloc[CONFIRM + expiry] == 1
@@ -186,7 +198,7 @@ def test_expiry_is_inclusive_and_clears_one_bar_later():
     assert not out["signal"].any() and out["cvd_reason"].iloc[CONFIRM + expiry + 1] == "setup_expired"
 
 
-def test_confirmation_bar_cannot_enter_and_a_setup_is_consumed_once():
+def _confirmation_bar_cannot_enter_and_a_setup_is_consumed_once():
     sc = _scenario(entry_at=None)
     sc["high"][CONFIRM], sc["close"][CONFIRM] = 101.0, 100.9
     for i in (CONFIRM + 1, CONFIRM + 2):
@@ -197,7 +209,17 @@ def test_confirmation_bar_cannot_enter_and_a_setup_is_consumed_once():
     assert np.flatnonzero(out["signal"].to_numpy()).tolist() == [CONFIRM + 1]
 
 
-def test_zero_volume_and_missing_or_mismatched_flow_hold_without_inventing_volume():
+def test_flow_side_contract_and_session_defects_hold_without_inventing_volume(subtests):
+    for label, case in (("zero_missing_or_mismatched_flow",
+                         _zero_volume_and_missing_or_mismatched_flow_hold_without_inventing_volume),
+                        ("revocation", _revocation_is_dated_and_clears_an_armed_setup),
+                        ("side_and_contract", _unverified_side_and_contract_changes_hold_every_entry),
+                        ("session_and_candle_gaps", _mid_session_start_and_candle_gaps_hold_the_session)):
+        with subtests.test(case=label):
+            case()
+
+
+def _zero_volume_and_missing_or_mismatched_flow_hold_without_inventing_volume():
     def zero(intervals, volumes):
         for iv in intervals:
             bar = (iv["start_ms"] - T0) // BAR
@@ -220,7 +242,7 @@ def test_zero_volume_and_missing_or_mismatched_flow_hold_without_inventing_volum
     assert _run(df, series)["cvd_reason"].iloc[CONFIRM] == "flow_unavailable"
 
 
-def test_revocation_is_dated_and_clears_an_armed_setup():
+def _revocation_is_dated_and_clears_an_armed_setup():
     target = T0 + 6 * BAR
 
     def revoke(at):
@@ -242,7 +264,7 @@ def test_revocation_is_dated_and_clears_an_armed_setup():
     assert out["cvd_reason"].iloc[CONFIRM + 1] == "setup_cleared_flow" and not out["signal"].any()
 
 
-def test_unverified_side_and_contract_changes_hold_every_entry():
+def _unverified_side_and_contract_changes_hold_every_entry():
     df, series = _build(_scenario())
     for key, value, reason in (("side_evidence", "unverified", "side_unverified"),
                                ("reorder_grace_ms", 1_000, "unsupported_trade_flow"),
@@ -254,7 +276,7 @@ def test_unverified_side_and_contract_changes_hold_every_entry():
     assert set(out["cvd_reason"]) == {"trade_flow_unavailable"}
 
 
-def test_mid_session_start_and_candle_gaps_hold_the_session():
+def _mid_session_start_and_candle_gaps_hold_the_session():
     df, series = _build(_scenario())
     assert not _run(df.iloc[1:], series)["signal"].any()
     gapped = df.drop(df.index[20])

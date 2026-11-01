@@ -144,7 +144,7 @@ def test_comparisons_are_strict_at_the_frozen_boundaries():
     assert set(_run(df, series)["ppr_reason"].iloc[10:]) == {"variance_floor"}
 
 
-def test_invalid_or_incomplete_inputs_hold_with_a_reason():
+def _check_invalid_or_incomplete_inputs_hold_with_a_reason():
     cases = {
         "sample_missing": lambda s: s.pop(15),
         "sample_not_sampled": lambda s: s[15].update(status="invalid", reason="malformed"),
@@ -173,7 +173,7 @@ def test_invalid_or_incomplete_inputs_hold_with_a_reason():
         assert _row(_run(df, series), 21)[0] == -1, reason
 
 
-def test_a_later_revocation_applies_only_from_its_detection_time():
+def _check_a_later_revocation_applies_only_from_its_detection_time():
     def revoke_after(s):
         s[15]["invalid_ms"] = T0 + 23 * BAR
         s[15]["invalid_reason"] = "conflicting_duplicate"
@@ -189,7 +189,7 @@ def test_a_later_revocation_applies_only_from_its_detection_time():
     assert _row(_run(df, series), 21) == (0, "sample_invalidated")
 
 
-def test_contract_and_availability_failures_hold_every_entry():
+def _check_contract_and_availability_failures_hold_every_entry():
     df, series = _build(_premiums(30, extreme=20))
     for key, value in (("contract", "other"), ("oracle_time_basis", "receipt"), ("sample_ms", 30_000), ("kind", "open_interest")):
         payload = {**payload_from_series(series, BAR), key: value}
@@ -292,3 +292,13 @@ def test_production_admission_refuses_the_candidate_and_keeps_existing_candidate
     refs = admit_configured_strategies("mass_index_reversal", None, None, GateMode(GATE_MODE_PAPER),
                                        Acknowledgement(False), reg.get_strategy, get_close)
     assert [r.name for r in refs] == ["mass_index_reversal"]
+
+
+def test_input_defects_revocations_and_contract_failures_hold_with_a_reason(subtests):
+    for check in (
+            _check_invalid_or_incomplete_inputs_hold_with_a_reason,
+            _check_a_later_revocation_applies_only_from_its_detection_time,
+            _check_contract_and_availability_failures_hold_every_entry,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()

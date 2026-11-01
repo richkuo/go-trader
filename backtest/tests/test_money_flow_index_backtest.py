@@ -164,14 +164,14 @@ INVALID_ENTRY_DATA = [
 ]
 
 
-def test_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame():
+def _check_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame():
     for i, (mutate, reason) in enumerate(INVALID_ENTRY_DATA):
         with _case(f"{i}-{reason}"):
             df = mutate(_flat_frame([(10, 1), (11, 1), (12, 1), (11, 1), (10, 1), (11, 1)]))
             _holds(df, P2, reason)
 
 
-def test_window_total_overflow_holds_while_each_flow_is_finite():
+def _check_window_total_overflow_holds_while_each_flow_is_finite():
     df = _flat_frame([(10, 1), (11, 1e307), (12, 1e307), (13, 1e307)])
     out = _apply(df, P2)
     assert np.isfinite(out["mfi_raw_flow"].iloc[1:]).all()
@@ -179,7 +179,7 @@ def test_window_total_overflow_holds_while_each_flow_is_finite():
     assert (out["signal"] == 0).all()
 
 
-def test_a_bad_bar_invalidates_its_dependent_windows_and_recovery_needs_full_history():
+def _check_a_bad_bar_invalidates_its_dependent_windows_and_recovery_needs_full_history():
     df = _walk(40, 3)
     bad = 20
     df.iloc[bad, df.columns.get_loc("volume")] = np.nan
@@ -202,7 +202,7 @@ INVALID_PARAMS = [
 ]
 
 
-def test_supported_bounds_decide_inside_the_200_bar_check_window():
+def _check_supported_bounds_decide_inside_the_200_bar_check_window():
     df = _walk(260, 11)
     for params in ({"lookback": 2, "oversold": 0.0, "overbought": 100.0},
                    {"lookback": 198, "oversold": 20.0, "overbought": 80.0}):
@@ -309,7 +309,7 @@ def _frozen(key, bars):
     return candles[INPUT_COLUMNS].iloc[-bars:]
 
 
-def test_full_series_prefix_and_bounded_values_are_bit_identical_across_the_grid():
+def _check_full_series_prefix_and_bounded_values_are_bit_identical_across_the_grid():
     df = _frozen("ETH 4h", 460)
     specs = [(k, list(v)) for k, v in DEFAULT_PARAM_RANGES[NAME].items()]
     for _, params in expand_sweep({"lookback": 14, "oversold": 20.0, "overbought": 80.0}, specs):
@@ -346,3 +346,22 @@ def test_candidate_parity_entry_point_runs_offline():
         capture_output=True, text=True, cwd=_REPO, timeout=600)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert proc.stdout.strip().endswith("clean")
+
+
+def test_input_defects_hold_with_a_reason_inside_their_dependent_windows(subtests):
+    for check in (
+            _check_invalid_entry_data_is_a_reasoned_hold_that_preserves_the_frame,
+            _check_window_total_overflow_holds_while_each_flow_is_finite,
+            _check_a_bad_bar_invalidates_its_dependent_windows_and_recovery_needs_full_history,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()
+
+
+def test_decisions_depend_only_on_the_bounded_window_across_the_grid(subtests):
+    for check in (
+            _check_supported_bounds_decide_inside_the_200_bar_check_window,
+            _check_full_series_prefix_and_bounded_values_are_bit_identical_across_the_grid,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()

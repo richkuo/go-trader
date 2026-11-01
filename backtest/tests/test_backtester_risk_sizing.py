@@ -44,7 +44,20 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-def test_equal_dollar_risk_across_differing_atr_stops():
+def test_risk_sizing_sizes_constant_dollar_risk(subtests):
+    with subtests.test(case="equal_dollar_risk_across_differing_atr_stops"):
+        _assert_equal_dollar_risk_across_differing_atr_stops()
+    with subtests.test(case="stop_out_realizes_the_risked_dollars"):
+        _assert_stop_out_realizes_the_risked_dollars()
+    with subtests.test(case="short_side_sizes_constant_dollar_risk"):
+        _assert_short_side_sizes_constant_dollar_risk()
+    with subtests.test(case="pct_stop_owner_sizes_from_price_fraction"):
+        _assert_pct_stop_owner_sizes_from_price_fraction()
+    with subtests.test(case="risk_fraction_capped_at_full_cash"):
+        _assert_risk_fraction_capped_at_full_cash()
+
+
+def _assert_equal_dollar_risk_across_differing_atr_stops():
     closes = [100, 100, 100, 100, 100]
     signals = [1, 0, 0, -1, 0]
     atr = [2.0] * 5
@@ -59,7 +72,7 @@ def test_equal_dollar_risk_across_differing_atr_stops():
     assert st * 2.0 == pytest.approx(sw * 4.0) == pytest.approx(100.0)
 
 
-def test_stop_out_realizes_the_risked_dollars():
+def _assert_stop_out_realizes_the_risked_dollars():
     closes = [100, 100, 98, 98, 98]
     signals = [1, 0, 0, 0, 0]
     res = _run(_df(closes, signals, atr=[2.0] * 5),
@@ -69,7 +82,7 @@ def test_stop_out_realizes_the_risked_dollars():
     assert res["final_capital"] == pytest.approx(10000.0 - 100.0)
 
 
-def test_short_side_sizes_constant_dollar_risk():
+def _assert_short_side_sizes_constant_dollar_risk():
     closes = [100, 100, 100, 100, 100]
     signals = [-1, 0, 0, 1, 0]
     res = _run(_df(closes, signals, atr=[2.0] * 5),
@@ -80,7 +93,7 @@ def test_short_side_sizes_constant_dollar_risk():
     assert res["trades"][0]["shares"] == pytest.approx(50.0)
 
 
-def test_pct_stop_owner_sizes_from_price_fraction():
+def _assert_pct_stop_owner_sizes_from_price_fraction():
     closes = [100, 100, 100, 100, 100]
     signals = [1, 0, 0, -1, 0]
     res = _run(_df(closes, signals),
@@ -88,7 +101,7 @@ def test_pct_stop_owner_sizes_from_price_fraction():
     assert res["trades"][0]["shares"] == pytest.approx(50.0)
 
 
-def test_risk_fraction_capped_at_full_cash():
+def _assert_risk_fraction_capped_at_full_cash():
     closes = [100, 100, 100, 100, 100]
     signals = [1, 0, 0, -1, 0]
     res = _run(_df(closes, signals, atr=[0.5] * 5),
@@ -97,7 +110,16 @@ def test_risk_fraction_capped_at_full_cash():
     assert res["risk_per_trade_pct"] == pytest.approx(10.0)
 
 
-def test_no_usable_atr_skips_entry_fail_closed():
+def test_unresolvable_atr_skips_entries_fail_closed_never_closes(subtests):
+    with subtests.test(case="no_usable_atr_skips_entry_fail_closed"):
+        _assert_no_usable_atr_skips_entry_fail_closed()
+    with subtests.test(case="entry_taken_once_atr_becomes_available"):
+        _assert_entry_taken_once_atr_becomes_available()
+    with subtests.test(case="close_never_blocked_by_unresolvable_atr"):
+        _assert_close_never_blocked_by_unresolvable_atr()
+
+
+def _assert_no_usable_atr_skips_entry_fail_closed():
     closes = [100, 100, 100, 100, 100]
     signals = [1, 0, 1, 0, 0]
     res = _run(_df(closes, signals, atr=[np.nan] * 5),
@@ -106,7 +128,7 @@ def test_no_usable_atr_skips_entry_fail_closed():
     assert res["risk_sizing_skipped_entries"] == 2
 
 
-def test_entry_taken_once_atr_becomes_available():
+def _assert_entry_taken_once_atr_becomes_available():
     closes = [100, 100, 100, 100, 100, 100]
     signals = [1, 0, 1, 0, -1, 0]
     atr = [np.nan, np.nan, 2.0, 2.0, 2.0, 2.0]
@@ -117,7 +139,7 @@ def test_entry_taken_once_atr_becomes_available():
     assert res["risk_sizing_skipped_entries"] == 1
 
 
-def test_close_never_blocked_by_unresolvable_atr():
+def _assert_close_never_blocked_by_unresolvable_atr():
     closes = [100, 100, 100, 110, 110, 110]
     signals = [1, 0, 0, -1, 0, 0]
     atr = [2.0, 2.0, np.nan, np.nan, np.nan, np.nan]
@@ -136,7 +158,14 @@ def test_unset_field_keeps_full_notional_sizing():
     assert "risk_sizing_skipped_entries" not in res
 
 
-def test_rejects_entry_fraction_column_combo():
+def test_rejects_invalid_risk_sizing(subtests):
+    with subtests.test(case="rejects_entry_fraction_column_combo"):
+        _assert_rejects_entry_fraction_column_combo()
+    with subtests.test(case="init_rejects_invalid_risk_sizing"):
+        _assert_init_rejects_invalid_risk_sizing()
+
+
+def _assert_rejects_entry_fraction_column_combo():
     closes = [100, 100, 100]
     with pytest.raises(ValueError, match="entry_fraction"):
         _run(_df(closes, [1, 0, 0], atr=[2.0] * 3, entry_fraction=[0.5] * 3),
@@ -163,7 +192,7 @@ _INIT_REJECT_CASES = [
 ]
 
 
-def test_init_rejects_invalid_risk_sizing():
+def _assert_init_rejects_invalid_risk_sizing():
     for i, (kwargs, match) in enumerate(_INIT_REJECT_CASES):
         with _raises_for(f"test_init_rejects_invalid_risk_sizing[{i}] {kwargs}", match=match):
             Backtester(**kwargs)
@@ -190,14 +219,27 @@ def _risk_strategy(**overrides):
     return sc
 
 
-def test_config_threads_risk_per_trade_pct(tmp_path):
+def test_config_risk_sizing_owner_resolution(tmp_path, subtests):
+    with subtests.test(case="config_threads_risk_per_trade_pct"):
+        _assert_config_threads_risk_per_trade_pct(tmp_path)
+    with subtests.test(case="config_rejects_invalid_risk_sizing_combo"):
+        _assert_config_rejects_invalid_risk_sizing_combo(tmp_path)
+    with subtests.test(case="config_percent_risk_owner_converts_once"):
+        _assert_config_percent_risk_owner_converts_once(tmp_path)
+    with subtests.test(case="config_explicit_zero_stop_owner_rejects"):
+        _assert_config_explicit_zero_stop_owner_rejects(tmp_path)
+    with subtests.test(case="config_materializes_default_stop_owner"):
+        _assert_config_materializes_default_stop_owner(tmp_path)
+
+
+def _assert_config_threads_risk_per_trade_pct(tmp_path):
     path = _write_config(tmp_path, _risk_strategy())
     kwargs = run_backtest.load_strategy_config(path, "hl-r-btc")
     assert kwargs["risk_per_trade_pct"] == 1.0
     assert kwargs["stop_loss_atr_mult"] == 1.5
 
 
-def test_config_rejects_invalid_risk_sizing_combo(tmp_path):
+def _assert_config_rejects_invalid_risk_sizing_combo(tmp_path):
     for overrides, drop_atr_mult, match in [
         ({"sizing_leverage": 2.0}, False, "sizing_leverage"),
         ({"margin_per_trade_usd": 50.0}, False, "margin_per_trade_usd"),
@@ -211,7 +253,7 @@ def test_config_rejects_invalid_risk_sizing_combo(tmp_path):
             run_backtest.load_strategy_config(path, "hl-r-btc")
 
 
-def test_config_percent_risk_owner_converts_once(tmp_path):
+def _assert_config_percent_risk_owner_converts_once(tmp_path):
     sc = _risk_strategy(stop_loss_pct=2.0)
     del sc["stop_loss_atr_mult"]
     path = _write_config(tmp_path, sc)
@@ -220,7 +262,7 @@ def test_config_percent_risk_owner_converts_once(tmp_path):
     assert kwargs["stop_loss_atr_mult"] is None
 
 
-def test_config_explicit_zero_stop_owner_rejects(tmp_path):
+def _assert_config_explicit_zero_stop_owner_rejects(tmp_path):
     for owner in ("stop_loss_pct", "trailing_stop_pct", "stop_loss_margin_pct",
                   "stop_loss_atr_mult", "trailing_stop_atr_mult"):
         sc = _risk_strategy(**{owner: 0})
@@ -232,7 +274,7 @@ def test_config_explicit_zero_stop_owner_rejects(tmp_path):
         assert exc.value.reason_code == "UNSUPPORTED_STOP_OWNER", owner
 
 
-def test_config_materializes_default_stop_owner(tmp_path):
+def _assert_config_materializes_default_stop_owner(tmp_path):
     sc = _risk_strategy()
     del sc["stop_loss_atr_mult"]
     path = _write_config(tmp_path, sc)

@@ -62,8 +62,13 @@ def _dump(res):
     return json.dumps(res, sort_keys=True, default=str)
 
 
-@pytest.mark.parametrize("name", sorted(CASES))
-def test_events_are_additive_and_reconcile_cash_quantity_fees_and_trade_rows(name):
+def test_events_are_additive_and_reconcile_cash_quantity_fees_and_trade_rows(subtests):
+    for name in sorted(CASES):
+        with subtests.test(case=name):
+            _assert_events_are_additive_and_reconcile_cash_quantity_fees_and_trade_rows(name)
+
+
+def _assert_events_are_additive_and_reconcile_cash_quantity_fees_and_trade_rows(name):
     additive = f"test_event_output_changes_no_existing_result_field[{name}]"
     msg = f"test_events_reconcile_cash_quantity_fees_and_trade_rows[{name}]"
     off = _run(name, record=False)
@@ -134,8 +139,13 @@ HANDOFF_CASES = sorted(n for n, (kw, run_kw, _, _) in CASES.items()
                        if "execution_spec" not in kw and not run_kw)
 
 
-@pytest.mark.parametrize("name", HANDOFF_CASES)
-def test_warmup_handoff_inventory_matches_the_prefix_interval_end(name):
+def test_warmup_handoff_inventory_matches_the_prefix_interval_end(subtests):
+    for name in HANDOFF_CASES:
+        with subtests.test(case=name):
+            _assert_warmup_handoff_inventory_matches_the_prefix_interval_end(name)
+
+
+def _assert_warmup_handoff_inventory_matches_the_prefix_interval_end(name):
     kwargs, _, strat, params = CASES[name]
     df = ensure_atr_indicator(load_registry("futures").apply_strategy(strat, _frame(), params))
     held = 0

@@ -4,8 +4,6 @@ import re
 import subprocess
 import tempfile
 
-import pytest
-
 HERE = os.path.dirname(__file__)
 CLAUDE_YML = os.path.abspath(os.path.join(HERE, "..", "workflows", "claude.yml"))
 
@@ -147,20 +145,17 @@ CLASSIFY_CASES = [
 ]
 
 
-@pytest.mark.parametrize(
-    "event_name,stripped,pr_url,pr_author_assoc,pr_author_login,flow,expected",
-    [c[1:] for c in CLASSIFY_CASES],
-    ids=[c[0] for c in CLASSIFY_CASES],
-)
-def test_classify_mode_routes(event_name, stripped, pr_url, pr_author_assoc, pr_author_login, flow, expected):
-    assert run_classify_mode(
-        event_name,
-        stripped,
-        pr_url=pr_url,
-        pr_author_assoc=pr_author_assoc,
-        pr_author_login=pr_author_login,
-        flow=flow,
-    ) == expected
+def test_classify_mode_routes(subtests):
+    for case_id, event_name, stripped, pr_url, pr_author_assoc, pr_author_login, flow, expected in CLASSIFY_CASES:
+        with subtests.test(case=case_id):
+            assert run_classify_mode(
+                event_name,
+                stripped,
+                pr_url=pr_url,
+                pr_author_assoc=pr_author_assoc,
+                pr_author_login=pr_author_login,
+                flow=flow,
+            ) == expected
 
 
 VERIFY_CASES = [
@@ -178,10 +173,7 @@ VERIFY_CASES = [
 ]
 
 
-@pytest.mark.parametrize(
-    "event_name,body,trigger_actor,expected",
-    [c[1:] for c in VERIFY_CASES],
-    ids=[c[0] for c in VERIFY_CASES],
-)
-def test_verify_invocation_fires(event_name, body, trigger_actor, expected):
-    assert run_verify_invocation(event_name, body, trigger_actor) == expected
+def test_verify_invocation_fires(subtests):
+    for case_id, event_name, body, trigger_actor, expected in VERIFY_CASES:
+        with subtests.test(case=case_id):
+            assert run_verify_invocation(event_name, body, trigger_actor) == expected

@@ -165,7 +165,7 @@ def test_importer_is_deterministic_and_artifact_identity_is_pinned(tmp_path):
         mi.local_to_utc_ms("2026-03-08T02:30:00", "America/New_York")
 
 
-def test_mirrored_entries_record_their_evidence_and_respect_the_range_boundary():
+def _check_mirrored_entries_record_their_evidence_and_respect_the_range_boundary():
     quotes = _quotes()
     long_out = _run(_frame(breakout=UP), quotes=quotes)
     i = int(np.flatnonzero(long_out["signal"].to_numpy() == 1)[0])
@@ -186,7 +186,7 @@ def test_mirrored_entries_record_their_evidence_and_respect_the_range_boundary()
     assert pre["signal"].abs().sum() == 0
 
 
-def test_confirmation_expiry_and_cooldown():
+def _check_confirmation_expiry_and_cooldown():
     quotes = _quotes()
     two = _run(_frame(breakout=UP), quotes=quotes, params={"confirm_bars": 2})
     assert _reason(two, EVENT_BAR) == "awaiting_confirmation"
@@ -202,7 +202,7 @@ def test_confirmation_expiry_and_cooldown():
     assert free["signal"].abs().sum() == 2
 
 
-def test_schedule_provenance_holds_unknown_late_revised_postponed_conflicting_and_uncovered_events():
+def _check_schedule_provenance_holds_unknown_late_revised_postponed_conflicting_and_uncovered_events():
     quotes = _quotes()
     df = _frame(breakout=UP)
     unknown, _ = _calendar([_event(known=None)])
@@ -229,7 +229,7 @@ def test_schedule_provenance_holds_unknown_late_revised_postponed_conflicting_an
                    EVENT_BAR) == "calendar_not_covered"
 
 
-def test_spread_gate_holds_missing_stale_late_conflicting_and_wide_quotes():
+def _check_spread_gate_holds_missing_stale_late_conflicting_and_wide_quotes():
     df = _frame(breakout=UP)
     assert _reason(_run(df), EVENT_BAR) == "quotes_unavailable"
     for quotes, why in ((_quotes(skip={EVENT_BAR + 1}), "quote_missing"),
@@ -430,3 +430,21 @@ def test_manifest_v4_contract_refuses_old_schemas_and_mismatched_pins(research_i
         json.dump(quotes_only, fh)
     with pytest.raises(om.ManifestError, match="macro_quotes needs a macro_calendar"):
         om.load_manifest(path)
+
+
+def test_entry_rule_range_boundary_confirmation_expiry_and_cooldown(subtests):
+    for check in (
+            _check_mirrored_entries_record_their_evidence_and_respect_the_range_boundary,
+            _check_confirmation_expiry_and_cooldown,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()
+
+
+def test_schedule_and_quote_defects_hold_the_entry_with_a_reason(subtests):
+    for check in (
+            _check_schedule_provenance_holds_unknown_late_revised_postponed_conflicting_and_uncovered_events,
+            _check_spread_gate_holds_missing_stale_late_conflicting_and_wide_quotes,
+    ):
+        with subtests.test(case=check.__name__.removeprefix("_check_")):
+            check()

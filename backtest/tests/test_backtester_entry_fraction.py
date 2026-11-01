@@ -40,7 +40,20 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-def test_long_fractional_entry_commits_fraction_and_keeps_reserve():
+def test_plain_path_fractional_entry_commits_fraction_and_keeps_reserve(subtests):
+    with subtests.test(case="long_fractional_entry_commits_fraction_and_keeps_reserve"):
+        _assert_long_fractional_entry_commits_fraction_and_keeps_reserve()
+    with subtests.test(case="short_fractional_entry_commits_fraction_and_keeps_reserve"):
+        _assert_short_fractional_entry_commits_fraction_and_keeps_reserve()
+    with subtests.test(case="compounding_reuses_reserve_plus_proceeds"):
+        _assert_compounding_reuses_reserve_plus_proceeds()
+    with subtests.test(case="signal_close_preserves_reserve"):
+        _assert_signal_close_preserves_reserve()
+    with subtests.test(case="standalone_stop_fill_preserves_reserve"):
+        _assert_standalone_stop_fill_preserves_reserve()
+
+
+def _assert_long_fractional_entry_commits_fraction_and_keeps_reserve():
     closes = [100, 100, 120, 120, 120]
     signals = [1, 0, -1, 0, 0]
     res = _run(_df(closes, signals, entry_fraction=[0.5] * 5))
@@ -49,7 +62,7 @@ def test_long_fractional_entry_commits_fraction_and_keeps_reserve():
     assert res["final_capital"] == pytest.approx(11000.0)
 
 
-def test_short_fractional_entry_commits_fraction_and_keeps_reserve():
+def _assert_short_fractional_entry_commits_fraction_and_keeps_reserve():
     closes = [100, 100, 80, 80, 80]
     signals = [-1, 0, 1, 0, 0]
     res = _run(_df(closes, signals, entry_fraction=[0.5] * 5),
@@ -68,7 +81,14 @@ def test_entry_fraction_uses_signal_bar_value_not_fill_bar():
     assert res["trades"][0]["shares"] == pytest.approx(25.0)
 
 
-def test_fraction_one_column_matches_no_column_exactly():
+def test_full_or_missing_entry_fraction_matches_full_notional(subtests):
+    with subtests.test(case="fraction_one_column_matches_no_column_exactly"):
+        _assert_fraction_one_column_matches_no_column_exactly()
+    with subtests.test(case="nan_entry_fraction_means_full_notional"):
+        _assert_nan_entry_fraction_means_full_notional()
+
+
+def _assert_fraction_one_column_matches_no_column_exactly():
     closes = [100, 105, 98, 110, 104, 120, 115, 108]
     signals = [1, 0, -1, 1, 0, 0, -1, 0]
     base = _run(_df(closes, signals),
@@ -79,7 +99,7 @@ def test_fraction_one_column_matches_no_column_exactly():
     assert scaled["total_trades"] == base["total_trades"]
 
 
-def test_nan_entry_fraction_means_full_notional():
+def _assert_nan_entry_fraction_means_full_notional():
     closes = [100, 100, 120, 120]
     signals = [1, 0, -1, 0]
     base = _run(_df(closes, signals))
@@ -89,7 +109,7 @@ def test_nan_entry_fraction_means_full_notional():
         base["trades"][0]["shares"])
 
 
-def test_compounding_reuses_reserve_plus_proceeds():
+def _assert_compounding_reuses_reserve_plus_proceeds():
     closes = [100, 100, 100, 100, 100, 100, 100]
     signals = [1, 0, -1, 1, 0, -1, 0]
     res = _run(_df(closes, signals, entry_fraction=[0.5] * 7))
@@ -98,14 +118,14 @@ def test_compounding_reuses_reserve_plus_proceeds():
     assert res["final_capital"] == pytest.approx(10000.0)
 
 
-def test_signal_close_preserves_reserve():
+def _assert_signal_close_preserves_reserve():
     closes = [100, 100, 90, 90, 90]
     signals = [1, 0, -1, 0, 0]
     res = _run(_df(closes, signals, entry_fraction=[0.5] * 5))
     assert res["final_capital"] == pytest.approx(9500.0)
 
 
-def test_standalone_stop_fill_preserves_reserve():
+def _assert_standalone_stop_fill_preserves_reserve():
     closes = [100, 100, 95, 85, 85, 85]
     signals = [1, 0, 0, 0, 0, 0]
     res = _run(_df(closes, signals, entry_fraction=[0.5] * 6),
@@ -114,7 +134,14 @@ def test_standalone_stop_fill_preserves_reserve():
     assert res["final_capital"] == pytest.approx(9250.0)
 
 
-def test_engine_path_long_fractional_entry():
+def test_engine_path_fractional_entry(subtests):
+    with subtests.test(case="engine_path_long_fractional_entry"):
+        _assert_engine_path_long_fractional_entry()
+    with subtests.test(case="engine_path_short_fractional_entry"):
+        _assert_engine_path_short_fractional_entry()
+
+
+def _assert_engine_path_long_fractional_entry():
     idx = pd.date_range("2024-01-01", periods=5, freq="D")
     df = pd.DataFrame({
         "open": [100.0] * 5,
@@ -133,7 +160,7 @@ def test_engine_path_long_fractional_entry():
     assert res["final_capital"] == pytest.approx(1000.0)
 
 
-def test_engine_path_short_fractional_entry():
+def _assert_engine_path_short_fractional_entry():
     idx = pd.date_range("2024-01-01", periods=5, freq="D")
     df = pd.DataFrame({
         "open": [100.0, 100.0, 100.0, 80.0, 80.0],
@@ -153,8 +180,13 @@ def test_engine_path_short_fractional_entry():
     assert res["final_capital"] == pytest.approx(1100.0)
 
 
-@pytest.mark.parametrize("fractions", [[0.0, 1.0, 1.0], [1.5, 1.0, 1.0]])
-def test_invalid_entry_fraction_rejected(fractions):
+def test_invalid_entry_fraction_rejected(subtests):
+    for fractions in [[0.0, 1.0, 1.0], [1.5, 1.0, 1.0]]:
+        with subtests.test(case=repr(fractions)):
+            _assert_invalid_entry_fraction_rejected(fractions)
+
+
+def _assert_invalid_entry_fraction_rejected(fractions):
     closes = [100, 100, 100]
     signals = [1, 0, 0]
     with pytest.raises(ValueError, match=r"entry_fraction .* \(0, 1\]"):

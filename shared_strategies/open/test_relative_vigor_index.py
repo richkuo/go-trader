@@ -117,24 +117,25 @@ def test_registered_no_edge_futures_and_hidden():
     assert NAME not in _SPOT.STRATEGY_REGISTRY
 
 
-@pytest.mark.parametrize("period", [2, 3, 10, 30])
-def test_real_registry_matches_independent_fixture(period):
-    df = market()
-    out = run(df, {"period": period})
-    rvi, sig, events, edge = reference(df, period)
-    assert sum(1 for e in events if e) > 0
-    for t in range(len(df)):
-        if rvi[t] is None:
-            assert math.isnan(out["rvi"].iloc[t])
-        else:
-            assert abs(out["rvi"].iloc[t] - float(rvi[t])) <= TOLERANCE
-        if sig[t] is None:
-            assert math.isnan(out["rvi_signal"].iloc[t])
-        else:
-            assert abs(out["rvi_signal"].iloc[t] - float(sig[t])) <= TOLERANCE
-    compared = [t for t in range(len(df)) if not edge[t]]
-    assert len(compared) >= len(df) - 2
-    assert [int(out["signal"].iloc[t]) for t in compared] == [events[t] for t in compared]
+def test_real_registry_matches_independent_fixture(subtests):
+    for period in [2, 3, 10, 30]:
+        with subtests.test(period=period):
+            df = market()
+            out = run(df, {"period": period})
+            rvi, sig, events, edge = reference(df, period)
+            assert sum(1 for e in events if e) > 0
+            for t in range(len(df)):
+                if rvi[t] is None:
+                    assert math.isnan(out["rvi"].iloc[t])
+                else:
+                    assert abs(out["rvi"].iloc[t] - float(rvi[t])) <= TOLERANCE
+                if sig[t] is None:
+                    assert math.isnan(out["rvi_signal"].iloc[t])
+                else:
+                    assert abs(out["rvi_signal"].iloc[t] - float(sig[t])) <= TOLERANCE
+            compared = [t for t in range(len(df)) if not edge[t]]
+            assert len(compared) >= len(df) - 2
+            assert [int(out["signal"].iloc[t]) for t in compared] == [events[t] for t in compared]
 
 
 def test_initialization_bar_counts():
@@ -356,26 +357,27 @@ def _same(a, b):
             assert x == y, (col, x, y)
 
 
-@pytest.mark.parametrize("params", [None, {"period": 100, "zero_line_filter": False}])
-def test_full_series_prefix_and_bounded_tail_agree(params):
-    df = market(420)
-    df.iloc[150, df.columns.get_loc("high")] = np.nan
-    df = df.drop(df.index[260])
-    full = run(df, params)
-    p = {**_FUTURES.STRATEGY_REGISTRY[NAME]["default_params"], **(params or {})}
-    need = p["period"] + 7
-    assert (full["signal"] != 0).sum() > 0
-    for i in range(len(df)):
-        prefix = run(df.iloc[: i + 1], params).iloc[-1]
-        _same(full.iloc[i], prefix)
-        if i + 1 >= need:
-            tail = run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1]
-            _same(full.iloc[i], tail)
-    exact = run(df.iloc[len(df) - need:], params).iloc[-1]
-    _same(full.iloc[-1], exact)
-    too_short = run(df.iloc[len(df) - need + 1:], params).iloc[-1]
-    assert too_short["rvi_reason"] == "insufficient_history"
-    assert int(too_short["signal"]) == 0
+def test_full_series_prefix_and_bounded_tail_agree(subtests):
+    for params in [None, {"period": 100, "zero_line_filter": False}]:
+        with subtests.test(params=params):
+            df = market(420)
+            df.iloc[150, df.columns.get_loc("high")] = np.nan
+            df = df.drop(df.index[260])
+            full = run(df, params)
+            p = {**_FUTURES.STRATEGY_REGISTRY[NAME]["default_params"], **(params or {})}
+            need = p["period"] + 7
+            assert (full["signal"] != 0).sum() > 0
+            for i in range(len(df)):
+                prefix = run(df.iloc[: i + 1], params).iloc[-1]
+                _same(full.iloc[i], prefix)
+                if i + 1 >= need:
+                    tail = run(df.iloc[max(0, i - 199): i + 1], params).iloc[-1]
+                    _same(full.iloc[i], tail)
+            exact = run(df.iloc[len(df) - need:], params).iloc[-1]
+            _same(full.iloc[-1], exact)
+            too_short = run(df.iloc[len(df) - need + 1:], params).iloc[-1]
+            assert too_short["rvi_reason"] == "insufficient_history"
+            assert int(too_short["signal"]) == 0
 
 
 def test_every_entry_is_reproducible_from_recorded_columns():

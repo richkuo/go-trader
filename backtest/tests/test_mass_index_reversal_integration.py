@@ -176,7 +176,7 @@ def _same(a, b):
     return (math.isnan(a) and math.isnan(b)) or a == b
 
 
-def test_evaluator_reports_the_required_history():
+def _check_evaluator_reports_the_required_history():
     out = _apply(_frame(*_burst()))
     assert out["mir_required_history"].iloc[0] == NEED
 
@@ -221,7 +221,7 @@ def test_both_smoothing_passes_ratio_orientation_and_rolling_sum():
     assert out["mir_ratio"].iloc[DOWN_AT] < 1.0
 
 
-def test_upper_crossing_arms_and_the_first_lower_crossing_completes_once():
+def _check_upper_crossing_arms_and_the_first_lower_crossing_completes_once():
     out = _apply(_frame(*_burst()))
     assert list(np.flatnonzero(out["mir_upper_cross"] == 1.0)) == [UP_AT]
     assert list(np.flatnonzero(out["mir_lower_cross"] == 1.0)) == [DOWN_AT]
@@ -241,7 +241,7 @@ def _short_entry_mid(slope=0.05):
     return rng, mid
 
 
-def test_rising_and_falling_slopes_give_mirrored_entries_on_the_completion_bar():
+def _check_rising_and_falling_slopes_give_mirrored_entries_on_the_completion_bar():
     short = _apply(_frame(*_short_entry_mid(0.05)))
     assert int(short["signal"].iloc[DOWN_AT]) == -1 and short["mir_reason"].iloc[DOWN_AT] == "entry_short"
     assert short["mir_bulge_direction"].iloc[DOWN_AT] == -1.0 and short["mir_bulge_slope"].iloc[DOWN_AT] > 0
@@ -252,7 +252,7 @@ def test_rising_and_falling_slopes_give_mirrored_entries_on_the_completion_bar()
     assert int(long_["signal"].abs().sum()) == 1
 
 
-def test_direction_is_frozen_at_the_upper_crossing():
+def _check_direction_is_frozen_at_the_upper_crossing():
     rng, mid = _burst(slope=0.05)
     mid = mid.copy()
     mid[UP_AT + 1:] = mid[UP_AT] - 2.0 * np.arange(1, len(mid) - UP_AT)
@@ -261,7 +261,7 @@ def test_direction_is_frozen_at_the_upper_crossing():
     assert int(out["signal"].iloc[DOWN_AT]) == -1
 
 
-def test_price_confirmation_is_strict_against_the_previous_highs_and_lows():
+def _check_price_confirmation_is_strict_against_the_previous_highs_and_lows():
     rng, mid = _burst(slope=0.05)
     df = _frame(rng, mid)
     lows = df["low"].iloc[DOWN_AT - 5:DOWN_AT].min()
@@ -280,7 +280,7 @@ def test_price_confirmation_is_strict_against_the_previous_highs_and_lows():
     assert int(_apply(below)["signal"].iloc[DOWN_AT]) == -1
 
 
-def test_threshold_equality_boundaries():
+def _check_threshold_equality_boundaries():
     df = _frame(*_short_entry_mid())
     base = _apply(df)
     prev_up, cur_up = base["mir_prev_mass_index"].iloc[UP_AT], base["mir_mass_index"].iloc[UP_AT]
@@ -293,7 +293,7 @@ def test_threshold_equality_boundaries():
     assert equal_dn["mir_lower_cross"].iloc[DOWN_AT] == 0.0 and int(equal_dn["signal"].iloc[DOWN_AT]) == 0
 
 
-def test_age_limit_is_eligible_at_the_limit_and_expires_one_bar_later():
+def _check_age_limit_is_eligible_at_the_limit_and_expires_one_bar_later():
     df = _frame(*_short_entry_mid())
     age = DOWN_AT - UP_AT
     at_limit = _apply(df, max_bulge_age=age)
@@ -304,7 +304,7 @@ def test_age_limit_is_eligible_at_the_limit_and_expires_one_bar_later():
     assert expired["mir_reason"].iloc[DOWN_AT - 1] == "armed"
 
 
-def test_a_newer_crossing_replaces_the_older_bulge_and_a_zero_slope_replacement_leaves_none():
+def _check_a_newer_crossing_replaces_the_older_bulge_and_a_zero_slope_replacement_leaves_none():
     rng, mid = _burst(extra=((262, 8, 3.0),))
     over = {"lower_threshold": 20.0, "max_bulge_age": 100}
     out = _apply(_frame(rng, mid), **over)
@@ -324,7 +324,7 @@ def test_a_newer_crossing_replaces_the_older_bulge_and_a_zero_slope_replacement_
     assert int(zero["signal"].abs().sum()) == 0
 
 
-def test_range_expansion_alone_never_opens_a_position():
+def _check_range_expansion_alone_never_opens_a_position():
     rng = np.ones(320)
     rng[200:] = 3.0
     df = _frame(rng, 100.0 - 0.05 * np.arange(320))
@@ -340,7 +340,7 @@ def test_range_expansion_alone_never_opens_a_position():
     assert early["mir_reason"].iloc[-1] == "armed" and int(early["signal"].abs().sum()) == 0
 
 
-def test_filter_off_tests_every_bar_with_the_current_slope():
+def _check_filter_off_tests_every_bar_with_the_current_slope():
     df = _walk(480, seed=9)
     off = _apply(df, bulge_filter=0)
     on = _apply(df)
@@ -350,6 +350,22 @@ def test_filter_off_tests_every_bar_with_the_current_slope():
     assert ((slope < 0) == (side == 1)).all() and ((slope > 0) == (side == -1)).all()
     assert (off["signal"] != 0).sum() > (on["signal"] != 0).sum()
     assert set(off["mir_reason"][valid]) <= {"entry_long", "entry_short", "confirmation_failed", "zero_slope"}
+
+
+def test_entry_rule_cases_arm_complete_and_hold_with_their_reasons(subtests):
+    for label, check in (
+        ("upper_crossing_arms_and_the_first_lower_crossing_completes_once", _check_upper_crossing_arms_and_the_first_lower_crossing_completes_once),
+        ("rising_and_falling_slopes_give_mirrored_entries_on_the_completion_bar", _check_rising_and_falling_slopes_give_mirrored_entries_on_the_completion_bar),
+        ("direction_is_frozen_at_the_upper_crossing", _check_direction_is_frozen_at_the_upper_crossing),
+        ("price_confirmation_is_strict_against_the_previous_highs_and_lows", _check_price_confirmation_is_strict_against_the_previous_highs_and_lows),
+        ("threshold_equality_boundaries", _check_threshold_equality_boundaries),
+        ("age_limit_is_eligible_at_the_limit_and_expires_one_bar_later", _check_age_limit_is_eligible_at_the_limit_and_expires_one_bar_later),
+        ("a_newer_crossing_replaces_the_older_bulge_and_a_zero_slope_replacement_leaves_none", _check_a_newer_crossing_replaces_the_older_bulge_and_a_zero_slope_replacement_leaves_none),
+        ("range_expansion_alone_never_opens_a_position", _check_range_expansion_alone_never_opens_a_position),
+        ("filter_off_tests_every_bar_with_the_current_slope", _check_filter_off_tests_every_bar_with_the_current_slope),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 INVALID_PARAMS = [
@@ -376,10 +392,19 @@ INVALID_PARAMS = [
 ]
 
 
-def test_the_largest_allowed_history_is_199_rows():
+def _check_the_largest_allowed_history_is_199_rows():
     _reg()._registry.validate_params(NAME, {"max_bulge_age": 101})
     out = _apply(_frame(*_burst()), max_bulge_age=101)
     assert out["mir_required_history"].iloc[0] == 199.0
+
+
+def test_required_history_is_reported_and_bounded_at_199_rows(subtests):
+    for label, check in (
+        ("evaluator_reports_the_required_history", _check_evaluator_reports_the_required_history),
+        ("the_largest_allowed_history_is_199_rows", _check_the_largest_allowed_history_is_199_rows),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def _with_index(df, idx):
@@ -421,7 +446,7 @@ IN_WINDOW_DEFECTS = [
 ]
 
 
-def test_defects_inside_the_required_window_hold_and_recover_after_a_clean_window():
+def _check_defects_inside_the_required_window_hold_and_recover_after_a_clean_window():
     for i, (mutate, reason, at) in enumerate(IN_WINDOW_DEFECTS):
         with _case(f"{i}-{reason}-{at}"):
             _defects_inside_the_required_window_hold_and_recover_after_a_clean_window(mutate, reason, at)
@@ -439,7 +464,7 @@ def _defects_inside_the_required_window_hold_and_recover_after_a_clean_window(mu
     assert out["mir_valid"].iloc[DEFECT_AT + NEED + 2] == 1.0
 
 
-def test_received_order_defects_hold_like_a_sort_repair():
+def _check_received_order_defects_hold_like_a_sort_repair():
     clean = _frame(*_short_entry_mid())
     flagged = clean.copy()
     flagged.attrs = dict(clean.attrs)
@@ -448,7 +473,7 @@ def test_received_order_defects_hold_like_a_sort_repair():
     assert out["mir_reason"].iloc[DOWN_AT] == "timestamp_order" and int(out["signal"].abs().sum()) == 0
 
 
-def test_defects_outside_the_required_window_never_change_the_decision():
+def _check_defects_outside_the_required_window_never_change_the_decision():
     clean = _frame(*_short_entry_mid())
     base = _apply(clean)
     first = DOWN_AT - NEED + 1
@@ -463,7 +488,7 @@ def test_defects_outside_the_required_window_never_change_the_decision():
     assert _apply(edge)["mir_reason"].iloc[DOWN_AT] == "cadence_gap"
 
 
-def test_insufficient_history_and_frame_level_holds():
+def _check_insufficient_history_and_frame_level_holds():
     df = _frame(*_short_entry_mid())
     tail = df.iloc[DOWN_AT - NEED + 1:DOWN_AT + 1].copy()
     tail.attrs = dict(df.attrs)
@@ -482,12 +507,23 @@ def test_insufficient_history_and_frame_level_holds():
     assert set(_apply(df.reset_index(drop=True))["mir_reason"]) == {"missing_timestamps"}
 
 
-def test_a_flat_range_window_holds_on_a_nonpositive_second_average():
+def _check_a_flat_range_window_holds_on_a_nonpositive_second_average():
     rng, mid = _burst()
     rng = rng.copy()
     rng[100:260] = 0.0
     out = _apply(_frame(rng, mid))
     assert out["mir_reason"].iloc[250] == "nonpositive_average" and int(out["signal"].abs().sum()) == 0
+
+
+def test_input_defects_hold_with_a_reason_and_recover(subtests):
+    for label, check in (
+        ("defects_inside_the_required_window_hold_and_recover_after_a_clean_window", _check_defects_inside_the_required_window_hold_and_recover_after_a_clean_window),
+        ("received_order_defects_hold_like_a_sort_repair", _check_received_order_defects_hold_like_a_sort_repair),
+        ("insufficient_history_and_frame_level_holds", _check_insufficient_history_and_frame_level_holds),
+        ("a_flat_range_window_holds_on_a_nonpositive_second_average", _check_a_flat_range_window_holds_on_a_nonpositive_second_average),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def test_native_close_and_timezone_inputs_decide_the_same():
@@ -506,7 +542,7 @@ def test_native_close_and_timezone_inputs_decide_the_same():
             assert all(_same(a, b) for a, b in zip(got[col], base[col])), col
 
 
-def test_full_series_every_prefix_and_bounded_tails_agree():
+def _check_full_series_every_prefix_and_bounded_tails_agree():
     df = _walk(560, seed=11)
     for flag in (1, 0):
         full = _apply(df, bulge_filter=flag)
@@ -524,7 +560,16 @@ def test_full_series_every_prefix_and_bounded_tails_agree():
                     assert _same(got[col], full[col].iloc[i]), (flag, i, len(frame), col)
 
 
-def test_check_preflight_refuses_invalid_open_and_close_fallback_parameters():
+def test_decisions_depend_only_on_the_required_window(subtests):
+    for label, check in (
+        ("defects_outside_the_required_window_never_change_the_decision", _check_defects_outside_the_required_window_never_change_the_decision),
+        ("full_series_every_prefix_and_bounded_tails_agree", _check_full_series_every_prefix_and_bounded_tails_agree),
+    ):
+        with subtests.test(case=label):
+            check()
+
+
+def _check_check_preflight_refuses_invalid_open_and_close_fallback_parameters():
     reg = _reg()
     refs = [StrategyReference("open", "breakout"), StrategyReference("close", NAME)]
     preflight_reference_params(refs, {}, {NAME: {}}, reg.get_strategy, reg.validate_params, timeframe="1h")
@@ -537,7 +582,7 @@ def test_check_preflight_refuses_invalid_open_and_close_fallback_parameters():
         preflight_reference_params(open_refs, {"bulge_filter": True}, {}, reg.get_strategy, reg.validate_params)
 
 
-def test_research_legs_refuse_invalid_parameters_before_loading_candles(monkeypatch):
+def _check_research_legs_refuse_invalid_parameters_before_loading_candles(monkeypatch):
     import data_fetcher
 
     def refuse(*_a, **_k):
@@ -546,6 +591,15 @@ def test_research_legs_refuse_invalid_parameters_before_loading_candles(monkeypa
     monkeypatch.setattr(data_fetcher, "load_cached_data", refuse)
     with pytest.raises(ValueError, match="recursion_length"):
         eval_windows.run_leg(_reg(), NAME, {"recursion_length": 40}, "BTC/USDT", "1h", ("2026-01-01", "2026-02-01"))
+
+
+def test_invalid_parameters_are_refused_before_evaluation_or_candle_load(subtests, monkeypatch):
+    for label, check in (
+        ("check_preflight_refuses_invalid_open_and_close_fallback_parameters", _check_check_preflight_refuses_invalid_open_and_close_fallback_parameters),
+        ("research_legs_refuse_invalid_parameters_before_loading_candles", lambda: _check_research_legs_refuse_invalid_parameters_before_loading_candles(monkeypatch)),
+    ):
+        with subtests.test(case=label):
+            check()
 
 
 def _cfg(**kw):

@@ -30,7 +30,16 @@ def _hl_strategy(**over):
     return sc
 
 
-def test_rejects_enabled_hedge_block(tmp_path):
+def test_loader_rejects_only_hedge_enabled_strategies(tmp_path, subtests):
+    with subtests.test(case="rejects_enabled_hedge_block"):
+        _assert_rejects_enabled_hedge_block(tmp_path)
+    with subtests.test(case="allows_config_without_enabled_hedge"):
+        _assert_allows_config_without_enabled_hedge(tmp_path)
+    with subtests.test(case="only_the_hedge_enabled_strategy_is_rejected"):
+        _assert_only_the_hedge_enabled_strategy_is_rejected(tmp_path)
+
+
+def _assert_rejects_enabled_hedge_block(tmp_path):
     path = _config(tmp_path, _hl_strategy(
         hedge={"enabled": True, "symbol": "BTC", "ratio": 1.0},
     ))
@@ -38,7 +47,7 @@ def test_rejects_enabled_hedge_block(tmp_path):
         run_backtest.load_strategy_config(path, "hl-test")
 
 
-def test_allows_config_without_enabled_hedge(tmp_path):
+def _assert_allows_config_without_enabled_hedge(tmp_path):
     for hedge in [
         {"enabled": False, "symbol": "BTC", "ratio": 1.0},
         None,
@@ -50,7 +59,7 @@ def test_allows_config_without_enabled_hedge(tmp_path):
             f"test_allows_config_without_enabled_hedge[{hedge}]")
 
 
-def test_only_the_hedge_enabled_strategy_is_rejected(tmp_path):
+def _assert_only_the_hedge_enabled_strategy_is_rejected(tmp_path):
     cfg = {
         "config_version": 16,
         "strategies": [

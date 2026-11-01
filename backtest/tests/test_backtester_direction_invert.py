@@ -64,36 +64,40 @@ def _run(signal, **kw):
     return bt.run(_ohlc(signal), save=False)
 
 
-@pytest.mark.parametrize(
-    "signal,kwargs,expected_sides",
-    [
-        ([1, 0, 0, 0], {"invert_signal": False}, ["long"]),
-        ([1, 0, 0, 0], {"invert_signal": True}, ["short"]),
-        ([-1, 0, 0, 0], {"direction": "long"}, []),
-        ([-1, 0, 0, 0], {"direction": "both"}, ["short"]),
-        ([1, 0, 0, 0], {"direction": "short"}, []),
-        ([1, 0, 0, 0], {"direction": "both"}, ["long"]),
-        ([-1, 0, 0, 0], {"direction": "long", "invert_signal": True}, ["long"]),
-        ([1, 0, 0, 0], {"direction": "long", "invert_signal": True}, []),
-    ],
-)
-def test_direction_and_invert_realized_sides(signal, kwargs, expected_sides):
+def test_direction_and_invert_realized_sides(subtests):
+    for signal, kwargs, expected_sides in [
+            ([1, 0, 0, 0], {"invert_signal": False}, ["long"]),
+            ([1, 0, 0, 0], {"invert_signal": True}, ["short"]),
+            ([-1, 0, 0, 0], {"direction": "long"}, []),
+            ([-1, 0, 0, 0], {"direction": "both"}, ["short"]),
+            ([1, 0, 0, 0], {"direction": "short"}, []),
+            ([1, 0, 0, 0], {"direction": "both"}, ["long"]),
+            ([-1, 0, 0, 0], {"direction": "long", "invert_signal": True}, ["long"]),
+            ([1, 0, 0, 0], {"direction": "long", "invert_signal": True}, []),
+        ]:
+        with subtests.test(case=f"{signal}-{kwargs}"):
+            _assert_direction_and_invert_realized_sides(signal, kwargs, expected_sides)
+
+
+def _assert_direction_and_invert_realized_sides(signal, kwargs, expected_sides):
     res = _run(signal, **kwargs)
     assert [t["side"] for t in res["trades"]] == expected_sides
 
 
-@pytest.mark.parametrize(
-    "cert_kwargs,expected_sides",
-    [
-        ({"regime_directional_certified": True}, ["short"]),
-        ({"regime_directional_certified": False}, ["long"]),
-        ({"regime_directional_certified_states": {"trending_down": "short"}},
-         ["short"]),
-        ({"regime_directional_certified_states": {"trending_down": "long"}},
-         ["long"]),
-    ],
-)
-def test_regime_directional_policy_certification(cert_kwargs, expected_sides):
+def test_regime_directional_policy_certification(subtests):
+    for cert_kwargs, expected_sides in [
+            ({"regime_directional_certified": True}, ["short"]),
+            ({"regime_directional_certified": False}, ["long"]),
+            ({"regime_directional_certified_states": {"trending_down": "short"}},
+             ["short"]),
+            ({"regime_directional_certified_states": {"trending_down": "long"}},
+             ["long"]),
+        ]:
+        with subtests.test(case=repr(cert_kwargs)):
+            _assert_regime_directional_policy_certification(cert_kwargs, expected_sides)
+
+
+def _assert_regime_directional_policy_certification(cert_kwargs, expected_sides):
     df = _ohlc([1, 0, 0, 0])
     df["regime"] = "trending_down"
     bt = Backtester(
@@ -153,34 +157,35 @@ def _run_oc_flip(open_action, close_fraction, regime):
     return bt.run(with_regime_readiness(_oc_flip_df(open_action, close_fraction, regime)), save=False)
 
 
-@pytest.mark.parametrize(
-    "close_fraction,regime,expected_sides,expected_last_exit_reason",
-    [
-        (
-            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-            ["trending_up", "trending_up", "trending_down",
-             "trending_down", "trending_down", "trending_down"],
-            ["long", "short"],
-            None,
-        ),
-        (
-            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-            ["trending_down", "trending_down", "trending_up",
-             "trending_up", "trending_up", "trending_up"],
-            ["short", "long"],
-            None,
-        ),
-        (
-            [0.0, 0.0, 0.5, 0.0, 0.0, 0.0],
-            ["trending_up", "trending_up", "trending_down",
-             "trending_down", "trending_down", "trending_down"],
-            ["long", "long"],
-            "end_of_data",
-        ),
-    ],
-)
-def test_open_close_same_bar_flip(close_fraction, regime, expected_sides,
-                                  expected_last_exit_reason):
+def test_open_close_same_bar_flip(subtests):
+    for close_fraction, regime, expected_sides, expected_last_exit_reason in [
+            (
+                [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                ["trending_up", "trending_up", "trending_down",
+                 "trending_down", "trending_down", "trending_down"],
+                ["long", "short"],
+                None,
+            ),
+            (
+                [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                ["trending_down", "trending_down", "trending_up",
+                 "trending_up", "trending_up", "trending_up"],
+                ["short", "long"],
+                None,
+            ),
+            (
+                [0.0, 0.0, 0.5, 0.0, 0.0, 0.0],
+                ["trending_up", "trending_up", "trending_down",
+                 "trending_down", "trending_down", "trending_down"],
+                ["long", "long"],
+                "end_of_data",
+            ),
+        ]:
+        with subtests.test(case=f"{close_fraction}-{regime[0]}"):
+            _assert_open_close_same_bar_flip(close_fraction, regime, expected_sides, expected_last_exit_reason)
+
+
+def _assert_open_close_same_bar_flip(close_fraction, regime, expected_sides, expected_last_exit_reason):
     res = _run_oc_flip(
         open_action=["long", "none", "long", "none", "none", "none"],
         close_fraction=close_fraction,

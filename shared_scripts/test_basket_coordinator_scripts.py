@@ -92,7 +92,7 @@ def _mutated_market(edit):
     return _request(market=market)
 
 
-@pytest.mark.parametrize("name, req, reason", [
+HOLD_CASES = [
     ("missing frame", lambda: _mutated_market(lambda m: m["frames"].pop("SOL|1h")), "no frame for SOL|1h"),
     ("stale frame", lambda: _mutated_market(lambda m: m["frames"]["SOL|1h"].update({"stale": True, "stale_reason": "gap"})), "stale"),
     ("not ready", lambda: _mutated_market(lambda m: m["frames"]["SOL|1h"].update({"ready": False})), "not ready"),
@@ -109,13 +109,17 @@ def _mutated_market(edit):
     ("listing not yet known", lambda: _request(listings={**_request()["listings"], "ETH": {"listed_at_ms": 1, "known_at_ms": DEADLINE + 1}}), "not known at the deadline"),
     ("small population", lambda: _request(min_eligible=5), "below the minimum 5"),
     ("empty short side", lambda: _request(params={"weights": {"BTC": 0.5, "ETH": 0.5}}), "short side is empty"),
-])
-def test_ranker_holds_the_whole_target_set(name, req, reason):
-    code, out = _rank(req())
-    assert code == 0, out
-    assert out["status"] == "hold", out
-    assert reason in out["hold_reason"], out["hold_reason"]
-    assert out["weights"] == {}
+]
+
+
+def test_ranker_holds_the_whole_target_set(subtests):
+    for name, req, reason in HOLD_CASES:
+        with subtests.test(case=name):
+            code, out = _rank(req())
+            assert code == 0, out
+            assert out["status"] == "hold", out
+            assert reason in out["hold_reason"], out["hold_reason"]
+            assert out["weights"] == {}
 
 
 def test_ranker_records_known_ineligibility_as_an_exclusion():
@@ -133,37 +137,38 @@ def test_ranker_records_known_ineligibility_as_an_exclusion():
     assert set(out["weights"]) == {"BTC", "ETH"}
 
 
-@pytest.mark.parametrize("listing, reason", [
-    ({"listed_at_ms": 1, "known_at_ms": 1, "delisted_at_ms": DEADLINE - H}, "delisted at or before the deadline"),
-    ({"listed_at_ms": DEADLINE + H, "known_at_ms": DEADLINE - H}, "not listed at the deadline"),
-    ({"listed_at_ms": DEADLINE - 5 * H, "known_at_ms": DEADLINE - 5 * H}, "listed 5 bars before the deadline, needs 24"),
-])
-def test_listing_excluded_member_needs_no_frame_or_mark(listing, reason):
-    listings = {**_request()["listings"], "SOL": listing}
-    market = _market(coins=("AVAX", "BTC", "ETH"))
-    weights = {"BTC": 0.25, "ETH": -0.15, "AVAX": -0.1}
-    code, out = _rank(_request(listings=listings, market=market, params={"weights": weights}))
-    assert code == 0, out
-    assert out["status"] == "targets", out
-    assert out["eligibility"]["SOL"]["status"] == "excluded"
-    assert out["eligibility"]["SOL"]["reason"] == reason
-    assert "closed_bars" not in out["eligibility"]["SOL"]
-    assert set(out["weights"]) == {"AVAX", "BTC", "ETH"}
-    for sym in ("AVAX", "BTC", "ETH"):
-        assert out["eligibility"][sym]["status"] == "eligible"
-
-
-def test_listing_excluded_member_ignores_a_malformed_frame():
-    listings = {**_request()["listings"], "SOL": {"listed_at_ms": 1, "known_at_ms": 1, "delisted_at_ms": DEADLINE - H}}
+def _stale_sol_market():
     market = _market()
     market["frames"]["SOL|1h"]["stale"] = True
-    code, out = _rank(_request(listings=listings, market=market, params={"weights": {"BTC": 0.25, "ETH": -0.15, "AVAX": -0.1}}))
-    assert code == 0, out
-    assert out["status"] == "targets", out
-    assert out["eligibility"]["SOL"]["status"] == "excluded"
+    return market
 
 
-@pytest.mark.parametrize("raw, reason", [
+def test_listing_excluded_member_needs_no_frame_or_mark(subtests):
+    for name, listing, market, reason in [
+        ("delisted", {"listed_at_ms": 1, "known_at_ms": 1, "delisted_at_ms": DEADLINE - H},
+         lambda: _market(coins=("AVAX", "BTC", "ETH")), "delisted at or before the deadline"),
+        ("not_yet_listed", {"listed_at_ms": DEADLINE + H, "known_at_ms": DEADLINE - H},
+         lambda: _market(coins=("AVAX", "BTC", "ETH")), "not listed at the deadline"),
+        ("listed_too_recently", {"listed_at_ms": DEADLINE - 5 * H, "known_at_ms": DEADLINE - 5 * H},
+         lambda: _market(coins=("AVAX", "BTC", "ETH")), "listed 5 bars before the deadline, needs 24"),
+        ("delisted_with_a_malformed_frame", {"listed_at_ms": 1, "known_at_ms": 1, "delisted_at_ms": DEADLINE - H},
+         _stale_sol_market, "delisted at or before the deadline"),
+    ]:
+        with subtests.test(case=name):
+            listings = {**_request()["listings"], "SOL": listing}
+            weights = {"BTC": 0.25, "ETH": -0.15, "AVAX": -0.1}
+            code, out = _rank(_request(listings=listings, market=market(), params={"weights": weights}))
+            assert code == 0, out
+            assert out["status"] == "targets", out
+            assert out["eligibility"]["SOL"]["status"] == "excluded"
+            assert out["eligibility"]["SOL"]["reason"] == reason
+            assert "closed_bars" not in out["eligibility"]["SOL"]
+            assert set(out["weights"]) == {"AVAX", "BTC", "ETH"}
+            for sym in ("AVAX", "BTC", "ETH"):
+                assert out["eligibility"][sym]["status"] == "eligible"
+
+
+INVALID_OUTPUTS = [
     ({"scores": {"BTC": 1}, "weights": {"BTC": 0.5}}, "covers"),
     ({"scores": {s: 1 for s in MARKS}, "weights": {**WEIGHTS, "DOGE": 0.1}}, "covers"),
     ({"scores": {**{s: 1 for s in MARKS}, "BTC": float("inf")}, "weights": WEIGHTS}, "not a finite number"),
@@ -172,12 +177,16 @@ def test_listing_excluded_member_ignores_a_malformed_frame():
     ({"scores": {s: 1 for s in MARKS}, "weights": WEIGHTS, "exclusions": {"BTC": "x"}}, "assigned it weight"),
     ({"scores": {s: 1 for s in MARKS}, "weights": WEIGHTS, "extra": 1}, "unknown keys"),
     (["not", "an", "object"], "must be an object"),
-])
-def test_ranker_refuses_invalid_output(raw, reason):
-    code, out = _rank(_request(params={"raw": raw}))
-    assert code == 1
-    assert out["status"] == "invalid"
-    assert reason in out["error"], out["error"]
+]
+
+
+def test_ranker_refuses_invalid_output(subtests):
+    for i, (raw, reason) in enumerate(INVALID_OUTPUTS):
+        with subtests.test(case=i, reason=reason):
+            code, out = _rank(_request(params={"raw": raw}))
+            assert code == 1
+            assert out["status"] == "invalid"
+            assert reason in out["error"], out["error"]
 
 
 def test_ranker_refuses_unknown_params_and_live_mode():
@@ -218,7 +227,7 @@ def _context(**edits):
     return _request(allocation_context=ctx)
 
 
-@pytest.mark.parametrize("name, req, reason", [
+MALFORMED_V2_REQUESTS = [
     ("version 1", lambda: _request(v=1), "request version 1 is not 2"),
     ("old top-level lookback", lambda: _request(lookback_bars=48), "moved into allocation_context"),
     ("old top-level minimum history", lambda: _request(min_history_bars=24), "moved into allocation_context"),
@@ -234,15 +243,19 @@ def _context(**edits):
     ("lookback above the bound", lambda: _context(lookback_bars=5001), "lookback_bars must be an integer in [2, 5000]"),
     ("fractional minimum history", lambda: _context(min_history_bars=2.5), "min_history_bars must be an integer in [1, lookback_bars]"),
     ("minimum history above lookback", lambda: _context(min_history_bars=49), "min_history_bars must be an integer in [1, lookback_bars]"),
-])
-def test_ranker_refuses_malformed_version_2_requests_before_evaluation(name, req, reason):
-    payload = req()
-    payload["params"] = {"hold": "the evaluator ran"}
-    code, out = _rank(payload)
-    assert code == 1, out
-    assert out["status"] == "invalid", out
-    assert reason in out["error"], out["error"]
-    assert "the evaluator ran" not in json.dumps(out)
+]
+
+
+def test_ranker_refuses_malformed_version_2_requests_before_evaluation(subtests):
+    for name, req, reason in MALFORMED_V2_REQUESTS:
+        with subtests.test(case=name):
+            payload = req()
+            payload["params"] = {"hold": "the evaluator ran"}
+            code, out = _rank(payload)
+            assert code == 1, out
+            assert out["status"] == "invalid", out
+            assert reason in out["error"], out["error"]
+            assert "the evaluator ran" not in json.dumps(out)
 
 
 def test_ranker_freezes_validated_targets_holds_on_a_ranker_hold_and_fingerprints_the_whole_context():
@@ -308,20 +321,21 @@ runner.main()
 """
 
 
-@pytest.mark.parametrize("field", ["gross_budget_usd", "lookback_bars"])
-def test_ranker_passes_a_read_only_context_apart_from_params(tmp_path, field):
-    script = tmp_path / "instrumented_ranker.py"
-    script.write_text(_INSTRUMENTED_RUNNER.format(root=_REPO_ROOT, mutate=field))
-    proc = _run(str(script), [], _request(params={"weights": dict(WEIGHTS)}))
-    out = json.loads(proc.stdout)
-    assert proc.returncode == 0 and out["status"] == "hold", proc.stdout + proc.stderr
-    seen = json.loads(out["hold_reason"].split("the ranker held: ", 1)[1])
-    assert seen["refused"] == "TypeError"
-    assert seen["context"] == CONTEXT
-    assert seen["params"] == ["hold", "raw", "scores", "sleep_seconds", "weights"]
-    assert set(seen["params"]).isdisjoint(CONTEXT)
-    code, refused = _rank(_request(params={"weights": dict(WEIGHTS), field: 1}))
-    assert code == 1 and refused["status"] == "invalid" and f"unknown ranker params ['{field}']" in refused["error"]
+def test_ranker_passes_a_read_only_context_apart_from_params(tmp_path, subtests):
+    for field in ["gross_budget_usd", "lookback_bars"]:
+        with subtests.test(field=field):
+            script = tmp_path / f"instrumented_ranker_{field}.py"
+            script.write_text(_INSTRUMENTED_RUNNER.format(root=_REPO_ROOT, mutate=field))
+            proc = _run(str(script), [], _request(params={"weights": dict(WEIGHTS)}))
+            out = json.loads(proc.stdout)
+            assert proc.returncode == 0 and out["status"] == "hold", proc.stdout + proc.stderr
+            seen = json.loads(out["hold_reason"].split("the ranker held: ", 1)[1])
+            assert seen["refused"] == "TypeError"
+            assert seen["context"] == CONTEXT
+            assert seen["params"] == ["hold", "raw", "scores", "sleep_seconds", "weights"]
+            assert set(seen["params"]).isdisjoint(CONTEXT)
+            code, refused = _rank(_request(params={"weights": dict(WEIGHTS), field: 1}))
+            assert code == 1 and refused["status"] == "invalid" and f"unknown ranker params ['{field}']" in refused["error"]
 
 
 def test_ranker_probe_exits_cleanly_without_input():
@@ -362,7 +376,7 @@ def test_member_check_closes_from_its_native_close_strategy():
     assert out["signal"] == -1
 
 
-@pytest.mark.parametrize("argv, reason", [
+MEMBER_REFUSALS = [
     (["basket_member", "BTC", "1h", "--mode=paper", "--market-stdin", "--closed-bar-decisions",
       "--strategy-refs", json.dumps({"open": {"name": "basket_member"}, "closes": [{"name": "rsi"}]}), "--basket-member"],
      "not a native close strategy"),
@@ -381,13 +395,17 @@ def test_member_check_closes_from_its_native_close_strategy():
     (["basket_scripted_fixture", "BTC", "1h", "--mode=paper", "--market-stdin"], "Unknown strategy"),
     (["cross_sectional_momentum", "BTC", "1h", "--mode=paper", "--market-stdin"], "Unknown strategy"),
     (["cross_sectional_reversal", "BTC", "1h", "--mode=paper", "--market-stdin"], "Unknown strategy"),
-])
-def test_member_and_single_symbol_paths_refuse_before_evaluation(argv, reason):
-    proc = _run(CHECK_HL, argv, _member_payload())
-    assert proc.returncode == 1, proc.stdout
-    out = json.loads(proc.stdout)
-    assert reason in out["error"], out["error"]
-    assert out["signal"] == 0
+]
+
+
+def test_member_and_single_symbol_paths_refuse_before_evaluation(subtests):
+    for i, (argv, reason) in enumerate(MEMBER_REFUSALS):
+        with subtests.test(case=i, strategy=argv[0], reason=reason):
+            proc = _run(CHECK_HL, argv, _member_payload())
+            assert proc.returncode == 1, proc.stdout
+            out = json.loads(proc.stdout)
+            assert reason in out["error"], out["error"]
+            assert out["signal"] == 0
 
 
 def test_batch_member_slot_runs_management_only():
