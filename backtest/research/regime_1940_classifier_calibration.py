@@ -832,11 +832,15 @@ def _load_checkpoint(args, cell_id: str):
     path = _checkpoint_path(args.checkpoint_dir, cell_id)
     if not path.exists():
         return None
-    doc = json.loads(path.read_text())
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
     expected = {
         "protocol_sha256": getattr(args, "protocol_sha", None),
         "snapshot_sha256": getattr(args, "snapshot_sha", None),
         "kernel_sha256": getattr(args, "kernel_sha", None),
+        "code_sha256": getattr(args, "code_sha", None),
     }
     if any(doc.get(key) != value for key, value in expected.items()):
         return None
@@ -848,13 +852,18 @@ def _save_checkpoint(args, cell_id: str, cell_scores, population) -> None:
         return
     path = _checkpoint_path(args.checkpoint_dir, cell_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_plain({
+    payload = json.dumps(_plain({
         "protocol_sha256": args.protocol_sha,
         "snapshot_sha256": args.snapshot_sha,
         "kernel_sha256": args.kernel_sha,
+        "code_sha256": args.code_sha,
         "scores": cell_scores,
         "population": population,
-    }), separators=(",", ":"), allow_nan=False))
+    }), separators=(",", ":"), allow_nan=False)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=path.name + ".", delete=False) as tmp:
+        tmp.write(payload)
+        tmp_path = Path(tmp.name)
+    os.replace(tmp_path, path)
 
 
 def _power_sim(task: dict) -> int:
@@ -1219,6 +1228,8 @@ def _execute_compiled_study(begun: dict, args, kernel_path: Path) -> int:
     args.protocol_sha = begun["sha256"]
     args.snapshot_sha = snapshot_sha
     args.kernel_sha = file_sha256(_THIS.with_name("regime_1940_block_perm.c"))
+    code_paths = [_THIS, _ROOT / "shared_tools" / "regime.py", _BACKTEST / "regime_diagnostics.py", _BACKTEST / "regime_stats.py"]
+    args.code_sha = {str(path.relative_to(_ROOT)): file_sha256(path) for path in code_paths}
     scores, populations = _score_all(loaded, protocol, expanded, args, kernel_path)
     apply_bh(scores, expanded["family_size"], float(protocol["alpha"]))
     winners = select_winners(scores, expanded["incumbent_ids"], [row["dataset_id"] for row in expanded["datasets"]])
@@ -1446,6 +1457,7 @@ def _refine_confirmation(pool, loaded, scores, winners, protocol, expanded, supp
                     "n_perm": int(protocol["n_perm"]), "full_stop": 40, "allow_full": True, "items": items,
                 }
                 for (row, stats), perm in zip(targets, pool.map(_perm_task, [task])[0]):
+                    _validate_kernel_h(perm, stats, row["setting_id"], row["cell_id"])
                     row["kruskal_h"] = stats["kruskal_h"]
                     row["p_value"] = float(perm["p_value"])
                     row["p_kind"] = perm["kind"]
