@@ -119,37 +119,39 @@ RESAMPLED_REASONS = {"nan": "no 4h candle frame was returned for {sym}"}
 
 
 @pytest.mark.parametrize("name", sorted(SCRIPTS))
-@pytest.mark.parametrize("htf_mode", sorted(UNAVAILABLE_REASONS))
-def test_unusable_higher_timeframe_input_reports_unavailable_and_keeps_the_open_signal(tmp_path, name, htf_mode):
+def test_unusable_higher_timeframe_input_reports_unavailable_and_keeps_the_open_signal(tmp_path, name, subtests):
     symbol = SCRIPTS[name][2]
-    proc, out = _check(tmp_path, name, htf_mode)
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    direct, swallowed = UNAVAILABLE_REASONS[htf_mode]
-    reason = (swallowed if name in SWALLOWING_ADAPTERS else direct)
-    if name == "robinhood":
-        reason = RESAMPLED_REASONS.get(htf_mode, reason)
-    reason = reason.format(sym=symbol)
-    block = out["htf_filter"]
-    assert block["status"] == "unavailable"
-    assert block["timeframe"] == "4h"
-    assert block["trend"] == 0
-    assert reason in block["reason"]
-    assert out["signal"] == 1
-    assert not any(k.startswith("htf_") for k in out["indicators"])
-    assert proc.stderr.count(f"HTF filter unavailable for {symbol} 4h: ") == 1
+    for htf_mode in sorted(UNAVAILABLE_REASONS):
+        with subtests.test(htf_mode=htf_mode):
+            proc, out = _check(tmp_path, name, htf_mode)
+            assert proc.returncode == 0, proc.stderr + proc.stdout
+            direct, swallowed = UNAVAILABLE_REASONS[htf_mode]
+            reason = (swallowed if name in SWALLOWING_ADAPTERS else direct)
+            if name == "robinhood":
+                reason = RESAMPLED_REASONS.get(htf_mode, reason)
+            reason = reason.format(sym=symbol)
+            block = out["htf_filter"]
+            assert block["status"] == "unavailable"
+            assert block["timeframe"] == "4h"
+            assert block["trend"] == 0
+            assert reason in block["reason"]
+            assert out["signal"] == 1
+            assert not any(k.startswith("htf_") for k in out["indicators"])
+            assert proc.stderr.count(f"HTF filter unavailable for {symbol} 4h: ") == 1
 
 
-@pytest.mark.parametrize("name", sorted(SCRIPTS))
-def test_a_successful_neutral_trend_reports_ok_and_keeps_the_signal(tmp_path, name):
-    proc, out = _check(tmp_path, name, "neutral")
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    off_proc, off = _check(tmp_path, name, "neutral", htf=False)
-    assert off_proc.returncode == 0, off_proc.stderr
-    assert out["htf_filter"] == {"status": "ok", "timeframe": "4h", "trend": 0, "reason": ""}
-    assert out["signal"] == off["signal"] == 1
-    assert out["indicators"]["htf_trend"] == 0
-    assert "htf_filter" not in off
-    assert "HTF filter unavailable" not in proc.stderr
+def test_a_successful_neutral_trend_reports_ok_and_keeps_the_signal(tmp_path, subtests):
+    for name in sorted(SCRIPTS):
+        with subtests.test(name=name):
+            proc, out = _check(tmp_path, name, "neutral")
+            assert proc.returncode == 0, proc.stderr + proc.stdout
+            off_proc, off = _check(tmp_path, name, "neutral", htf=False)
+            assert off_proc.returncode == 0, off_proc.stderr
+            assert out["htf_filter"] == {"status": "ok", "timeframe": "4h", "trend": 0, "reason": ""}
+            assert out["signal"] == off["signal"] == 1
+            assert out["indicators"]["htf_trend"] == 0
+            assert "htf_filter" not in off
+            assert "HTF filter unavailable" not in proc.stderr
 
 
 def test_an_excluded_open_strategy_reports_skipped(tmp_path):
@@ -174,36 +176,36 @@ def test_topstep_closed_market_return_reports_not_evaluated(tmp_path):
     assert "htf_filter" not in off
 
 
-@pytest.mark.parametrize("name", sorted(SCRIPTS))
-def test_error_payloads_keep_their_failure_handling(tmp_path, name):
-    proc, out = _check(tmp_path, name, "short", primary=False)
-    assert out["error"], proc.stderr + proc.stdout
-    assert "htf_filter" not in out
+def test_error_payloads_keep_their_failure_handling(tmp_path, subtests):
+    for name in sorted(SCRIPTS):
+        with subtests.test(name=name):
+            proc, out = _check(tmp_path, name, "short", primary=False)
+            assert out["error"], proc.stderr + proc.stdout
+            assert "htf_filter" not in out
 
 
-def test_closed_bar_higher_timeframe_failure_holds_and_reports_unavailable(tmp_path):
-    held_tp = ["--strategy-refs", json.dumps({"open": {"name": "atr_breakout", "params": {}},
-                                              "closes": [{"name": "tiered_tp_pct", "params": {}}]}),
-               "--position-side", "long", "--position-avg-cost=50", "--position-qty=1", "--position-initial-qty=1"]
-    proc, out = _check(tmp_path, "binanceus", "error", extra=["--closed-bar-decisions", *held_tp])
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    assert out["closed_bar_decision"]["held"] is True
-    assert out["htf_filter"]["status"] == "unavailable"
-    assert "BTC/USDT 4h candles failed" in out["htf_filter"]["reason"]
-    assert out["close_fraction"] == 1.0
-    assert proc.stderr.count("HTF filter unavailable for BTC/USDT 4h: ") == 1
+def test_closed_bar_higher_timeframe_status(tmp_path, subtests):
+    with subtests.test(case="failure_holds_and_reports_unavailable"):
+        held_tp = ["--strategy-refs", json.dumps({"open": {"name": "atr_breakout", "params": {}},
+                                                  "closes": [{"name": "tiered_tp_pct", "params": {}}]}),
+                   "--position-side", "long", "--position-avg-cost=50", "--position-qty=1", "--position-initial-qty=1"]
+        proc, out = _check(tmp_path, "binanceus", "error", extra=["--closed-bar-decisions", *held_tp])
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        assert out["closed_bar_decision"]["held"] is True
+        assert out["htf_filter"]["status"] == "unavailable"
+        assert "BTC/USDT 4h candles failed" in out["htf_filter"]["reason"]
+        assert out["close_fraction"] == 1.0
+        assert proc.stderr.count("HTF filter unavailable for BTC/USDT 4h: ") == 1
 
+    with subtests.test(case="short_frame_holds_and_reports_unavailable"):
+        proc, out = _check(tmp_path, "okx-swap", "short", extra=["--closed-bar-decisions"])
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        assert out["closed_bar_decision"]["held"] is True
+        assert out["htf_filter"]["status"] == "unavailable"
+        assert "insufficient closed history" in out["htf_filter"]["reason"]
 
-def test_closed_bar_short_higher_timeframe_frame_holds_and_reports_unavailable(tmp_path):
-    proc, out = _check(tmp_path, "okx-swap", "short", extra=["--closed-bar-decisions"])
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    assert out["closed_bar_decision"]["held"] is True
-    assert out["htf_filter"]["status"] == "unavailable"
-    assert "insufficient closed history" in out["htf_filter"]["reason"]
-
-
-def test_closed_bar_valid_higher_timeframe_reports_ok(tmp_path):
-    proc, out = _check(tmp_path, "binanceus", "neutral", extra=["--closed-bar-decisions"])
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    assert out["closed_bar_decision"]["held"] is False
-    assert out["htf_filter"]["status"] == "ok"
+    with subtests.test(case="valid_frame_reports_ok"):
+        proc, out = _check(tmp_path, "binanceus", "neutral", extra=["--closed-bar-decisions"])
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        assert out["closed_bar_decision"]["held"] is False
+        assert out["htf_filter"]["status"] == "ok"

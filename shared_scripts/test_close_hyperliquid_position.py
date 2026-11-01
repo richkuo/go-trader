@@ -77,75 +77,60 @@ class TestPaperModeRejected:
         assert "--mode=live required" in out["error"]
         assert out["close"] is None
 
-    def test_default_mode_is_live(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {"avgPx": "3000", "totalSz": "0.5"}}
-            ]}},
-        }
-        out, code = _run_script(sdk_response, ["--symbol=ETH"])
-        assert code == 0, out
-        assert "error" not in out
-
 
 class TestSuccessFill:
 
-    def test_filled_with_all_fields(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {"avgPx": "3000.5", "totalSz": "0.517",
-                            "oid": 9999999, "fee": "1.25"}}
-            ]}},
-        }
-        out, code = _run_script(sdk_response, ["--symbol=ETH", "--mode=live"])
-        assert code == 0
-        assert out["close"]["symbol"] == "ETH"
-        fill = out["close"]["fill"]
-        assert fill["avg_px"] == 3000.5
-        assert fill["total_sz"] == 0.517
-        assert fill["oid"] == 9999999
-        assert fill["fee"] == 1.25
+    def test_filled_close_reports_the_fill(self, subtests):
+        with subtests.test(case="default_mode_is_live"):
+            sdk_response = {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [
+                    {"filled": {"avgPx": "3000", "totalSz": "0.5"}}
+                ]}},
+            }
+            out, code = _run_script(sdk_response, ["--symbol=ETH"])
+            assert code == 0, out
+            assert "error" not in out
 
-    def test_filled_missing_optional_fields(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {"avgPx": "50000", "totalSz": "0.01"}}
-            ]}},
-        }
-        out, code = _run_script(sdk_response, ["--symbol=BTC", "--mode=live"])
-        assert code == 0
-        fill = out["close"]["fill"]
-        assert fill["avg_px"] == 50000
-        assert fill["total_sz"] == 0.01
-        assert "oid" not in fill
-        assert "fee" not in fill
+        with subtests.test(case="filled_with_all_fields"):
+            sdk_response = {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [
+                    {"filled": {"avgPx": "3000.5", "totalSz": "0.517",
+                                "oid": 9999999, "fee": "1.25"}}
+                ]}},
+            }
+            out, code = _run_script(sdk_response, ["--symbol=ETH", "--mode=live"])
+            assert code == 0
+            assert out["close"]["symbol"] == "ETH"
+            fill = out["close"]["fill"]
+            assert fill["avg_px"] == 3000.5
+            assert fill["total_sz"] == 0.517
+            assert fill["oid"] == 9999999
+            assert fill["fee"] == 1.25
 
-    def test_success_reports_exact_cancelled_oids(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {"avgPx": "3000", "totalSz": "0.5"}}
-            ]}},
-        }
-        out, code = _run_script(
-            sdk_response,
-            ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=123", "--cancel-stop-loss-oid=456"],
-        )
-        assert code == 0
-        assert out["cancel_stop_loss_succeeded"] is True
-        assert out["cancel_stop_loss_succeeded_oids"] == [123, 456]
+        with subtests.test(case="filled_missing_optional_fields"):
+            sdk_response = {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [
+                    {"filled": {"avgPx": "50000", "totalSz": "0.01"}}
+                ]}},
+            }
+            out, code = _run_script(sdk_response, ["--symbol=BTC", "--mode=live"])
+            assert code == 0
+            fill = out["close"]["fill"]
+            assert fill["avg_px"] == 50000
+            assert fill["total_sz"] == 0.01
+            assert "oid" not in fill
+            assert "fee" not in fill
 
-    def test_filled_lookup_result_handling(self):
         cases = [
             ("fee_and_pnl", {"fee": "0.91", "closed_pnl": "7.5"}, {"fee": 0.91, "closed_pnl": 7.5}),
             ("mock_result", MagicMock(), {}),
             ("mock_fields", {"fee": MagicMock(), "closed_pnl": MagicMock()}, {}),
         ]
         for label, lookup_result, expected in cases:
-            with _case(label):
+            with subtests.test(case="filled_lookup_result", lookup=label):
                 sdk_response = {
                     "status": "ok",
                     "response": {"type": "order", "data": {"statuses": [
@@ -169,66 +154,54 @@ class TestSuccessFill:
 
 class TestAlreadyFlat:
 
-    def test_empty_statuses_is_success(self):
-        sdk_response = {"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}
-        out, code = _run_script(sdk_response, ["--symbol=ETH", "--mode=live"])
-        assert code == 0, out
-        assert out["close"]["symbol"] == "ETH"
-        assert out["close"]["fill"] == {}
-        assert "error" not in out
-        assert out["close"]["already_flat"] is True
+    def test_flat_replies_are_success(self, subtests):
+        with subtests.test(case="empty_statuses"):
+            sdk_response = {"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}
+            out, code = _run_script(sdk_response, ["--symbol=ETH", "--mode=live"])
+            assert code == 0, out
+            assert out["close"]["symbol"] == "ETH"
+            assert out["close"]["fill"] == {}
+            assert "error" not in out
+            assert out["close"]["already_flat"] is True
 
-    def test_no_response_field(self):
-        sdk_response = {"status": "ok"}
-        out, code = _run_script(sdk_response, ["--symbol=ETH", "--mode=live"])
-        assert code == 0
-        assert out["close"]["already_flat"] is True
+        with subtests.test(case="no_response_field"):
+            sdk_response = {"status": "ok"}
+            out, code = _run_script(sdk_response, ["--symbol=ETH", "--mode=live"])
+            assert code == 0
+            assert out["close"]["already_flat"] is True
 
 
 class TestFailurePaths:
 
-    def test_outer_status_not_ok(self):
-        sdk_response = {"status": "err", "response": {"msg": "nonce too low"}}
-        out, code = _run_script(sdk_response, ["--symbol=ETH", "--mode=live"])
-        assert code == 1
-        assert "sdk status='err'" in out["error"]
-
-    def test_per_status_error(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"error": "Order reduce-only would not reduce position"}
-            ]}},
-        }
-        out, code = _run_script(sdk_response, ["--symbol=ETH", "--mode=live"])
-        assert code == 1
-        assert "per-status error" in out["error"]
-        assert "reduce-only would not reduce" in out["error"]
-
-    def test_per_status_resting(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"resting": {"oid": 12345}}
-            ]}},
-        }
-        out, code = _run_script(sdk_response, ["--symbol=ETH", "--mode=live"])
-        assert code == 1
-        assert "close not filled" in out["error"]
-        assert "resting" in out["error"]
-
-    def test_adapter_raises(self):
-        out, code = _run_script(RuntimeError("HYPERLIQUID_SECRET_KEY not set"),
-                                ["--symbol=ETH", "--mode=live"])
-        assert code == 1
-        assert "HYPERLIQUID_SECRET_KEY" in out["error"]
-        assert out["close"]["fill"] == {}
-
-    def test_non_dict_response(self):
-        out, code = _run_script("unexpected string response",
-                                ["--symbol=ETH", "--mode=live"])
-        assert code == 1
-        assert "unexpected SDK response type" in out["error"]
+    def test_failed_closes_exit_one_with_the_reason(self, subtests):
+        cases = [
+            ("outer_status_not_ok", {"status": "err", "response": {"msg": "nonce too low"}},
+             ["sdk status='err'"], False),
+            ("per_status_error", {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [
+                    {"error": "Order reduce-only would not reduce position"}
+                ]}},
+            }, ["per-status error", "reduce-only would not reduce"], False),
+            ("per_status_resting", {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [
+                    {"resting": {"oid": 12345}}
+                ]}},
+            }, ["close not filled", "resting"], False),
+            ("adapter_raises", RuntimeError("HYPERLIQUID_SECRET_KEY not set"),
+             ["HYPERLIQUID_SECRET_KEY"], True),
+            ("non_dict_response", "unexpected string response",
+             ["unexpected SDK response type"], False),
+        ]
+        for label, sdk_response, fragments, empty_fill in cases:
+            with subtests.test(case=label):
+                out, code = _run_script(sdk_response, ["--symbol=ETH", "--mode=live"])
+                assert code == 1
+                for fragment in fragments:
+                    assert fragment in out["error"]
+                if empty_fill:
+                    assert out["close"]["fill"] == {}
 
 
 def _run_script_with_cancel(sdk_response, cancel_response, argv):
@@ -290,119 +263,128 @@ class TestCancelStopLossOID:
             ]}},
         }
 
-    def test_no_cancel_when_oid_zero(self):
-        out, code, adapter = _run_script_with_cancel(
-            self._filled_response(), {"status": "ok"},
-            ["--symbol=ETH", "--mode=live"])
-        assert code == 0
-        adapter.cancel_trigger_order.assert_not_called()
-        assert "cancel_stop_loss_succeeded" not in out
-        assert "cancel_stop_loss_error" not in out
+    _NO_POSITION = {
+        "status": "ok",
+        "response": {"type": "order", "data": {"statuses": [
+            {"error": "no position to close"}
+        ]}},
+    }
 
-    def test_cancel_succeeded_surfaces_in_envelope(self):
-        out, code, adapter = _run_script_with_cancel(
-            self._filled_response(), {"status": "ok"},
-            ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=12345"])
-        assert code == 0
-        adapter.cancel_trigger_order.assert_called_once_with("ETH", 12345)
-        assert out.get("cancel_stop_loss_succeeded") is True
+    def test_pre_close_stop_cancel_outcomes(self, subtests):
+        with subtests.test(case="success_reports_exact_cancelled_oids"):
+            sdk_response = {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [
+                    {"filled": {"avgPx": "3000", "totalSz": "0.5"}}
+                ]}},
+            }
+            out, code = _run_script(
+                sdk_response,
+                ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=123", "--cancel-stop-loss-oid=456"],
+            )
+            assert code == 0
+            assert out["cancel_stop_loss_succeeded"] is True
+            assert out["cancel_stop_loss_succeeded_oids"] == [123, 456]
 
-    def test_multiple_cancel_oids_are_all_attempted(self):
-        out, code, adapter = _run_script_with_cancel(
-            self._filled_response(), {"status": "ok"},
-            ["--symbol=ETH", "--mode=live",
-             "--cancel-stop-loss-oid=12345", "--cancel-stop-loss-oid=67890"])
-        assert code == 0
-        adapter.cancel_trigger_order.assert_any_call("ETH", 12345)
-        adapter.cancel_trigger_order.assert_any_call("ETH", 67890)
-        assert adapter.cancel_trigger_order.call_count == 2
-        assert out.get("cancel_stop_loss_succeeded") is True
+        with subtests.test(case="no_cancel_when_oid_zero"):
+            out, code, adapter = _run_script_with_cancel(
+                self._filled_response(), {"status": "ok"},
+                ["--symbol=ETH", "--mode=live"])
+            assert code == 0
+            adapter.cancel_trigger_order.assert_not_called()
+            assert "cancel_stop_loss_succeeded" not in out
+            assert "cancel_stop_loss_error" not in out
 
-    def test_cancel_failure_is_non_fatal(self):
-        out, code, adapter = _run_script_with_cancel(
-            self._filled_response(), RuntimeError("order not found"),
-            ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=999"])
-        assert code == 0
-        assert "order not found" in out.get("cancel_stop_loss_error", "")
-        assert "cancel_stop_loss_succeeded" not in out
+        with subtests.test(case="cancel_succeeded_surfaces_in_envelope"):
+            out, code, adapter = _run_script_with_cancel(
+                self._filled_response(), {"status": "ok"},
+                ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=12345"])
+            assert code == 0
+            adapter.cancel_trigger_order.assert_called_once_with("ETH", 12345)
+            assert out.get("cancel_stop_loss_succeeded") is True
 
-    def test_cancel_state_propagates_through_close_failure(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"error": "no position to close"}
-            ]}},
-        }
-        out, code, adapter = _run_script_with_cancel(
-            sdk_response, {"status": "ok"},
-            ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=12345"])
-        assert code == 1
-        assert "per-status error" in out["error"]
-        assert out.get("cancel_stop_loss_succeeded") is True
+        with subtests.test(case="multiple_cancel_oids_are_all_attempted"):
+            out, code, adapter = _run_script_with_cancel(
+                self._filled_response(), {"status": "ok"},
+                ["--symbol=ETH", "--mode=live",
+                 "--cancel-stop-loss-oid=12345", "--cancel-stop-loss-oid=67890"])
+            assert code == 0
+            adapter.cancel_trigger_order.assert_any_call("ETH", 12345)
+            adapter.cancel_trigger_order.assert_any_call("ETH", 67890)
+            assert adapter.cancel_trigger_order.call_count == 2
+            assert out.get("cancel_stop_loss_succeeded") is True
 
-    def test_post_cancel_waits_until_close_fill(self):
-        out, code, adapter = _run_script_with_cancel(
-            self._filled_response(), {"status": "ok"},
-            ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
-        assert code == 0
-        assert adapter.method_calls[:2] == [
-            call.market_close("ETH", None),
-            call.cancel_trigger_order("ETH", 12345),
-        ]
-        assert out.get("cancel_stop_loss_succeeded") is True
-        assert out.get("cancel_stop_loss_succeeded_oids") == [12345]
+        with subtests.test(case="cancel_failure_is_non_fatal"):
+            out, code, adapter = _run_script_with_cancel(
+                self._filled_response(), RuntimeError("order not found"),
+                ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=999"])
+            assert code == 0
+            assert "order not found" in out.get("cancel_stop_loss_error", "")
+            assert "cancel_stop_loss_succeeded" not in out
 
-    def test_post_cancel_skips_cancel_when_close_errors(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"error": "no position to close"}
-            ]}},
-        }
-        out, code, adapter = _run_script_with_cancel(
-            sdk_response, {"status": "ok"},
-            ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
-        assert code == 1
-        assert "per-status error" in out["error"]
-        adapter.cancel_trigger_order.assert_not_called()
-        assert "cancel_stop_loss_succeeded" not in out
+        with subtests.test(case="cancel_state_propagates_through_close_failure"):
+            out, code, adapter = _run_script_with_cancel(
+                self._NO_POSITION, {"status": "ok"},
+                ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=12345"])
+            assert code == 1
+            assert "per-status error" in out["error"]
+            assert out.get("cancel_stop_loss_succeeded") is True
 
-    def test_post_cancel_skips_cancel_when_adapter_raises(self):
-        out, code, adapter = _run_script_with_cancel(
-            RuntimeError("network down"), {"status": "ok"},
-            ["--symbol=ETH", "--mode=live", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
-        assert code == 1
-        assert "network down" in out["error"]
-        adapter.cancel_trigger_order.assert_not_called()
+    def test_post_close_cancel_waits_for_a_full_fill(self, subtests):
+        after_close = ["--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"]
 
-    def test_post_cancel_skips_cancel_when_sized_close_underfills(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {"avgPx": "3000", "totalSz": "0.5", "oid": 999}}
-            ]}},
-        }
-        out, code, adapter = _run_script_with_cancel(
-            sdk_response, {"status": "ok"},
-            ["--symbol=ETH", "--mode=live", "--sz=1.0", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
-        assert code == 0
-        assert out["close"]["fill"]["total_sz"] == 0.5
-        adapter.cancel_trigger_order.assert_not_called()
-        assert "cancel_stop_loss_succeeded" not in out
+        with subtests.test(case="post_cancel_waits_until_close_fill"):
+            out, code, adapter = _run_script_with_cancel(
+                self._filled_response(), {"status": "ok"},
+                ["--symbol=ETH", "--mode=live"] + after_close)
+            assert code == 0
+            assert adapter.method_calls[:2] == [
+                call.market_close("ETH", None),
+                call.cancel_trigger_order("ETH", 12345),
+            ]
+            assert out.get("cancel_stop_loss_succeeded") is True
+            assert out.get("cancel_stop_loss_succeeded_oids") == [12345]
 
-    def test_post_cancel_cancels_when_sized_close_fills_request(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {"avgPx": "3000", "totalSz": "1.0", "oid": 999}}
-            ]}},
-        }
-        out, code, adapter = _run_script_with_cancel(
-            sdk_response, {"status": "ok"},
-            ["--symbol=ETH", "--mode=live", "--sz=1.0", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
-        assert code == 0
-        adapter.cancel_trigger_order.assert_called_once_with("ETH", 12345)
-        assert out.get("cancel_stop_loss_succeeded_oids") == [12345]
+        with subtests.test(case="post_cancel_skips_cancel_when_close_errors"):
+            out, code, adapter = _run_script_with_cancel(
+                self._NO_POSITION, {"status": "ok"},
+                ["--symbol=ETH", "--mode=live"] + after_close)
+            assert code == 1
+            assert "per-status error" in out["error"]
+            adapter.cancel_trigger_order.assert_not_called()
+            assert "cancel_stop_loss_succeeded" not in out
+
+        with subtests.test(case="post_cancel_skips_cancel_when_adapter_raises"):
+            out, code, adapter = _run_script_with_cancel(
+                RuntimeError("network down"), {"status": "ok"},
+                ["--symbol=ETH", "--mode=live"] + after_close)
+            assert code == 1
+            assert "network down" in out["error"]
+            adapter.cancel_trigger_order.assert_not_called()
+
+        sized = ["--symbol=ETH", "--mode=live", "--sz=1.0"] + after_close
+        for label, total_sz in (("sized_close_underfills", "0.5"), ("legacy_99_percent_fill", "0.995")):
+            with subtests.test(case=f"post_cancel_skips_cancel_when_{label}"):
+                sdk_response = {"status": "ok", "response": {"type": "order", "data": {"statuses": [
+                    {"filled": {"avgPx": "3000", "totalSz": total_sz, "oid": 999}}]}}}
+                out, code, adapter = _run_script_with_cancel(sdk_response, {"status": "ok"}, sized)
+                assert code == 0
+                adapter.cancel_trigger_order.assert_not_called()
+                if label == "sized_close_underfills":
+                    assert out["close"]["fill"]["total_sz"] == 0.5
+                    assert "cancel_stop_loss_succeeded" not in out
+
+        with subtests.test(case="post_cancel_cancels_when_sized_close_fills_request"):
+            sdk_response = {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [
+                    {"filled": {"avgPx": "3000", "totalSz": "1.0", "oid": 999}}
+                ]}},
+            }
+            out, code, adapter = _run_script_with_cancel(sdk_response, {"status": "ok"}, sized)
+            assert code == 0
+            adapter.cancel_trigger_order.assert_called_once_with("ETH", 12345)
+            assert out.get("cancel_stop_loss_succeeded_oids") == [12345]
 
 
 def _run_sized(order_response, argv, floored=0.5, px=2970.0, cancel_response=None):
@@ -465,25 +447,26 @@ def _filled(sz):
 
 class TestSizedClose:
 
-    def test_sends_the_strategy_side_and_mode_at_the_floored_size(self):
-        out, code, adapter = _run_sized(_filled(0.5), _SIZED[:-2] + ["--side=buy", "--close-mode=cross"], floored=0.5)
-        assert code == 0, out
-        adapter.market_close.assert_not_called()
-        adapter.floor_size.assert_called_once_with("ETH", 0.5)
-        adapter.market_close_sized.assert_called_once_with("ETH", True, 0.5, 2970.0, reduce_only=False)
-        assert out["order_outcome"] == "filled"
-        assert out["close"]["submitted_sz"] == 0.5
-        assert out["close"]["fill"]["total_sz"] == 0.5
+    def test_sends_the_strategy_side_and_mode_at_the_lot_floor(self, subtests):
+        with subtests.test(case="strategy_side_and_mode_at_the_floored_size"):
+            out, code, adapter = _run_sized(_filled(0.5), _SIZED[:-2] + ["--side=buy", "--close-mode=cross"], floored=0.5)
+            assert code == 0, out
+            adapter.market_close.assert_not_called()
+            adapter.floor_size.assert_called_once_with("ETH", 0.5)
+            adapter.market_close_sized.assert_called_once_with("ETH", True, 0.5, 2970.0, reduce_only=False)
+            assert out["order_outcome"] == "filled"
+            assert out["close"]["submitted_sz"] == 0.5
+            assert out["close"]["fill"]["total_sz"] == 0.5
 
-    def test_submits_the_lot_floor_never_a_rounded_up_size(self):
-        out, code, adapter = _run_sized(_filled(0.4), _SIZED, floored=0.4)
-        assert code == 0, out
-        assert adapter.market_close_sized.call_args[0][2] == 0.4
-        assert out["close"]["submitted_sz"] == 0.4
+        with subtests.test(case="submits_the_lot_floor_never_a_rounded_up_size"):
+            out, code, adapter = _run_sized(_filled(0.4), _SIZED, floored=0.4)
+            assert code == 0, out
+            assert adapter.market_close_sized.call_args[0][2] == 0.4
+            assert out["close"]["submitted_sz"] == 0.4
 
-    def test_cancels_protection_only_after_the_fill_reaches_the_threshold(self):
+    def test_cancels_protection_only_after_the_fill_reaches_the_threshold(self, subtests):
         for fill_sz, want_cancel in ((0.5, True), (0.4999, True), (0.45, False)):
-            with _case(fill_sz, want_cancel):
+            with subtests.test(fill_sz=fill_sz, want_cancel=want_cancel):
                 out, code, adapter = _run_sized(_filled(fill_sz), _SIZED_CANCEL)
                 assert code == 0, out
                 order_index = [c[0] for c in adapter.method_calls].index("market_close_sized")
@@ -495,14 +478,14 @@ class TestSizedClose:
                     assert not cancel_calls
                     assert "cancel_stop_loss_succeeded_oids" not in out
 
-    def test_a_rejected_cancel_is_reported_failed(self):
-        out, code, adapter = _run_sized(_filled(0.5), _SIZED_CANCEL,
-                                        cancel_response={"status": "ok", "response": {"data": {"statuses": [{"error": "Order was never placed"}]}}})
-        assert code == 0, out
-        assert out["cancel_stop_loss_failed_oids"] == [111, 222]
-        assert "cancel_stop_loss_succeeded_oids" not in out
+        with subtests.test(case="a_rejected_cancel_is_reported_failed"):
+            out, code, adapter = _run_sized(_filled(0.5), _SIZED_CANCEL,
+                                            cancel_response={"status": "ok", "response": {"data": {"statuses": [{"error": "Order was never placed"}]}}})
+            assert code == 0, out
+            assert out["cancel_stop_loss_failed_oids"] == [111, 222]
+            assert "cancel_stop_loss_succeeded_oids" not in out
 
-    def test_invalid_or_unplaceable_requests_send_nothing(self):
+    def test_invalid_or_unplaceable_requests_send_nothing(self, subtests):
         cases = [
             (["--sz=0.5", "--side=sell"], 0.0, 2970.0, "floors to zero"),
             (["--sz=0.5", "--side=sell"], 0.5, ValueError("no usable mid price for ETH"), "preflight failed"),
@@ -522,10 +505,10 @@ class TestSizedClose:
                 adapter.market_close_sized.assert_not_called()
                 adapter.cancel_trigger_order.assert_not_called()
 
-    def test_invalid_close_mode_sends_nothing(self):
-        out, code, adapter = _run_sized(_filled(0.5), _SIZED[:-1] + ["--close-mode=whole"])
-        assert code == 1 and out["order_outcome"] == "not_sent"
-        adapter.market_close_sized.assert_not_called()
+        with subtests.test(case="invalid_close_mode_sends_nothing"):
+            out, code, adapter = _run_sized(_filled(0.5), _SIZED[:-1] + ["--close-mode=whole"])
+            assert code == 1 and out["order_outcome"] == "not_sent"
+            adapter.market_close_sized.assert_not_called()
 
     def test_non_fills_never_cancel_and_report_their_outcome(self):
         cases = [
@@ -544,18 +527,6 @@ class TestSizedClose:
                 assert out["close"]["fill"] == {}
                 adapter.cancel_trigger_order.assert_not_called()
                 adapter.market_close.assert_not_called()
-
-
-class TestLegacyCancelCoverage:
-
-    def test_legacy_sized_close_no_longer_accepts_99_percent(self):
-        sdk_response = {"status": "ok", "response": {"type": "order", "data": {"statuses": [
-            {"filled": {"avgPx": "3000", "totalSz": "0.995", "oid": 999}}]}}}
-        out, code, adapter = _run_script_with_cancel(
-            sdk_response, {"status": "ok"},
-            ["--symbol=ETH", "--mode=live", "--sz=1.0", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
-        assert code == 0
-        adapter.cancel_trigger_order.assert_not_called()
 
 
 def test_probe_only_accepts_the_sized_close_argv():

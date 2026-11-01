@@ -70,25 +70,24 @@ BILLS = [
 ]
 
 
-def test_relays_bills_and_capped_flag():
+def test_relays_bills_and_capped_flag_from_since_ms(subtests):
     cases = [
         (BILLS, False),
         ([{"bill_id": "b", "ts_ms": 1, "bal_chg": 1.0}], True),
         ([], False),
     ]
     for bills, capped in cases:
-        with _case(bills, capped):
+        with subtests.test(bills=bills, capped=capped):
             out, code, _ = _run_script(bills, capped=capped)
             assert code == 0
             assert out["bills"] == bills
             assert out["capped"] is capped
             assert "error" not in out
 
-
-def test_passes_since_ms_to_adapter():
-    out, code, adapter = _run_script([], argv=["fetch_okx_bills.py", "--since-ms=987654321"])
-    assert code == 0
-    adapter.get_account_bills.assert_called_once_with(since_ms=987654321)
+    with subtests.test(case="passes_since_ms_to_adapter"):
+        out, code, adapter = _run_script([], argv=["fetch_okx_bills.py", "--since-ms=987654321"])
+        assert code == 0
+        adapter.get_account_bills.assert_called_once_with(since_ms=987654321)
 
 
 def test_failure_paths_emit_error_envelope():

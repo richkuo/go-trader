@@ -147,18 +147,6 @@ def test_forming_tail_decision_uses_the_last_closed_bar_and_matches_the_backtest
     assert trade["entry_atr"] == pytest.approx(enabled["indicators"]["atr"], abs=1e-6)
 
 
-def test_forming_spike_changes_the_disabled_signal_but_not_the_closed_decision():
-    bars = _bars(120, forming_spike=15.0)
-    cutoff = bars[-1]["t"] + H // 3
-    disabled = _hl_check("breakout", bars, cutoff, closed=False)
-    enabled = _hl_check("breakout", bars, cutoff, closed=True)
-    calm = _hl_check("breakout", bars[:-1], cutoff, closed=True)
-    assert disabled["signal"] == 1
-    assert enabled["signal"] == 0
-    assert enabled["indicators"] == calm["indicators"]
-    assert enabled["closed_bar_decision"]["input_sha256"] == calm["closed_bar_decision"]["input_sha256"]
-
-
 def test_final_row_already_closed_is_kept():
     bars = _bars(120, spike_at=119)
     cutoff = bars[-1]["t"] + H + 5_000
@@ -171,28 +159,30 @@ def test_final_row_already_closed_is_kept():
     assert enabled["indicators"] == disabled["indicators"]
 
 
-@pytest.mark.parametrize("offset,dropped", [(-1, 1), (0, 0), (1, 0)])
-def test_cutoff_at_the_bar_boundary(offset, dropped):
-    bars = _bars(120)
-    boundary = bars[-1]["t"] + H
-    enabled = _hl_check("breakout", bars, boundary + offset, closed=True)
-    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == dropped
-    expected = boundary if dropped == 0 else bars[-1]["t"]
-    assert enabled["closed_bar_decision"]["decision_boundary_ms"] == expected
+def test_cutoff_at_the_bar_boundary(subtests):
+    for offset, dropped in [(-1, 1), (0, 0), (1, 0)]:
+        with subtests.test(offset=offset, dropped=dropped):
+            bars = _bars(120)
+            boundary = bars[-1]["t"] + H
+            enabled = _hl_check("breakout", bars, boundary + offset, closed=True)
+            assert enabled["closed_bar_decision"]["forming_rows_dropped"] == dropped
+            expected = boundary if dropped == 0 else bars[-1]["t"]
+            assert enabled["closed_bar_decision"]["decision_boundary_ms"] == expected
 
 
-@pytest.mark.parametrize("method", ["simple", "wilder"])
-def test_exported_atr_follows_the_atr_method_on_the_closed_frame(method):
-    sys.path.insert(0, os.path.join(_REPO_ROOT, "backtest"))
-    import backtester
-    bars = _bars(120, forming_spike=20.0)
-    cutoff = bars[-1]["t"] + H // 2
-    enabled = _hl_check("momentum_pro", bars, cutoff, closed=True, extra=[f"--atr-method={method}"])
-    disabled = _hl_check("momentum_pro", bars, cutoff, closed=False, extra=[f"--atr-method={method}"])
-    closed = _frame_from_rows(_hl_rows(bars[:-1]))
-    expected = round(float(backtester.standard_atr(closed, method=method).iloc[-1]), 6)
-    assert enabled["indicators"]["atr"] == expected
-    assert disabled["indicators"]["atr"] != expected
+def test_exported_atr_follows_the_atr_method_on_the_closed_frame(subtests):
+    for method in ["simple", "wilder"]:
+        with subtests.test(method=method):
+            sys.path.insert(0, os.path.join(_REPO_ROOT, "backtest"))
+            import backtester
+            bars = _bars(120, forming_spike=20.0)
+            cutoff = bars[-1]["t"] + H // 2
+            enabled = _hl_check("momentum_pro", bars, cutoff, closed=True, extra=[f"--atr-method={method}"])
+            disabled = _hl_check("momentum_pro", bars, cutoff, closed=False, extra=[f"--atr-method={method}"])
+            closed = _frame_from_rows(_hl_rows(bars[:-1]))
+            expected = round(float(backtester.standard_atr(closed, method=method).iloc[-1]), 6)
+            assert enabled["indicators"]["atr"] == expected
+            assert disabled["indicators"]["atr"] != expected
 
 
 def test_composed_strategy_decides_on_the_closed_bar_and_protection_reads_the_current_mark():
@@ -213,68 +203,24 @@ def test_composed_strategy_decides_on_the_closed_bar_and_protection_reads_the_cu
     assert on["price"] == off["price"] == bars[-1]["c"]
 
 
-def test_missing_timing_holds_the_decision_and_keeps_protection():
-    bars = _bars(120, spike_at=118)
-    cutoff = bars[-1]["t"] + H // 2
-    refs = json.dumps({"open": {"name": "breakout", "params": {}}, "closes": [{"name": "tiered_tp_pct", "params": {}}]})
-    held_long = ["--strategy-refs", refs, "--position-side", "long", "--position-avg-cost=50",
-                 "--position-qty=1", "--position-initial-qty=1"]
-    out = _hl_check("breakout", bars, cutoff, closed=True, extra=held_long, timing=False)
-    meta = out["closed_bar_decision"]
-    assert meta["held"] is True
-    assert "timing" in meta["hold_reason"]
-    assert out["indicators"] == {}
-    assert out["open_action"] == "none"
-    assert out["close_fraction"] == 1.0
-    assert out["signal"] == -1
-
-    flat = _hl_check("breakout", bars, cutoff, closed=True, timing=False)
-    assert flat["signal"] == 0
-    assert flat["closed_bar_decision"]["held"] is True
-
-
-@pytest.mark.parametrize("case", ["no_cutoff", "contradictory", "duplicate", "short_history"])
-def test_unverifiable_or_short_history_holds(case):
-    bars = _bars(120, spike_at=118)
-    cutoff = bars[-1]["t"] + H // 2
-    frames = None
-    if case == "no_cutoff":
-        cutoff = None
-    elif case == "contradictory":
-        bars[-3] = dict(bars[-3], T=bars[-3]["T"] + 60_000)
-    elif case == "duplicate":
-        bars[-3] = dict(bars[-4])
-    elif case == "short_history":
-        bars = bars[-30:]
-    out = _hl_check("breakout", bars, cutoff, closed=True, frames=frames)
-    assert out["signal"] == 0
-    assert out["closed_bar_decision"]["held"] is True
-    assert out["indicators"] == {}
-
-
-def test_mixed_batch_matches_individual_checks():
-    bars = _bars(240, spike_at=238)
-    cutoff = bars[-1]["t"] + H // 2
-    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
-    slots = [
-        {"id": "on", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"], "closed_bar_decisions": True},
-        {"id": "off", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"]},
-    ]
-    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200",
-                           "--atr-method=simple", "--market-stdin"], {"v": 2, "slots": slots, "market": market})
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
-
-    for slot_id, closed in (("on", True), ("off", False)):
-        argv = ["breakout", "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200"]
-        if closed:
-            argv.append("--closed-bar-decisions")
-        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
-        assert single.returncode == 0, single.stderr
-        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
-    assert results["on"]["signal"] == 1
-    assert results["off"]["signal"] == 0
-    assert "closed_bar_decision" not in results["off"]
+def test_unverifiable_or_short_history_holds(subtests):
+    for case in ["no_cutoff", "contradictory", "duplicate", "short_history"]:
+        with subtests.test(case=case):
+            bars = _bars(120, spike_at=118)
+            cutoff = bars[-1]["t"] + H // 2
+            frames = None
+            if case == "no_cutoff":
+                cutoff = None
+            elif case == "contradictory":
+                bars[-3] = dict(bars[-3], T=bars[-3]["T"] + 60_000)
+            elif case == "duplicate":
+                bars[-3] = dict(bars[-4])
+            elif case == "short_history":
+                bars = bars[-30:]
+            out = _hl_check("breakout", bars, cutoff, closed=True, frames=frames)
+            assert out["signal"] == 0
+            assert out["closed_bar_decision"]["held"] is True
+            assert out["indicators"] == {}
 
 
 def test_batch_rejects_a_non_boolean_flag():
@@ -462,17 +408,20 @@ def test_okx_decision_regime_fetch_failure_holds_and_keeps_protection(tmp_path):
     assert out["close_strategy"] == "tiered_tp_pct"
 
 
-@pytest.mark.parametrize("script,argv,key", [
-    (CHECK_SPOT, ["atr_breakout", "BTC/USDT", "1h", "--mode=paper", "--closed-bar-decisions", "--htf-filter"], "BTC/USDT|1h"),
-    (CHECK_OKX, ["breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions"], "BTC/USDT:USDT|1h"),
-])
-def test_primary_fetch_failure_stays_a_check_error(tmp_path, script, argv, key):
-    fakes = _fake_ccxt_dir(tmp_path, {key: "network_error"})
-    proc = _run(script, argv, env_extra=_clock_env(tmp_path, fakes))
-    assert proc.returncode == 1, proc.stderr + proc.stdout
-    out = json.loads(proc.stdout)
-    assert "unreachable" in out["error"]
-    assert "closed_bar_decision" not in out
+def test_primary_fetch_failure_stays_a_check_error(subtests, tmp_path):
+    for index, (script, argv, key) in enumerate([
+            (CHECK_SPOT, ["atr_breakout", "BTC/USDT", "1h", "--mode=paper", "--closed-bar-decisions", "--htf-filter"], "BTC/USDT|1h"),
+            (CHECK_OKX, ["breakout", "BTC", "1h", "--mode=paper", "--inst-type=swap", "--closed-bar-decisions"], "BTC/USDT:USDT|1h"),
+        ]):
+        with subtests.test(script=script, argv=argv, key=key):
+            case_path = tmp_path / f"case{index}"
+            case_path.mkdir()
+            fakes = _fake_ccxt_dir(case_path, {key: "network_error"})
+            proc = _run(script, argv, env_extra=_clock_env(case_path, fakes))
+            assert proc.returncode == 1, proc.stderr + proc.stdout
+            out = json.loads(proc.stdout)
+            assert "unreachable" in out["error"]
+            assert "closed_bar_decision" not in out
 
 
 def _fake_hl_sdk_dir(tmp_path, bars):
@@ -515,11 +464,12 @@ def test_hyperliquid_direct_acquisition_uses_native_close_times(tmp_path):
     assert out["signal"] == 1
 
 
-@pytest.mark.parametrize("script,extra", [(CHECK_RH, ["--mode=live"]), (CHECK_TS, [])])
-def test_session_venues_refuse_closed_bar_decisions(script, extra):
-    proc = _run(script, ["breakout", "BTC", "1h", "--closed-bar-decisions", *extra])
-    assert proc.returncode == 1
-    assert "closed_bar_decisions is not supported" in json.loads(proc.stdout)["error"]
+def test_session_venues_refuse_closed_bar_decisions(subtests):
+    for script, extra in [(CHECK_RH, ["--mode=live"]), (CHECK_TS, [])]:
+        with subtests.test(script=script, extra=extra):
+            proc = _run(script, ["breakout", "BTC", "1h", "--closed-bar-decisions", *extra])
+            assert proc.returncode == 1
+            assert "closed_bar_decisions is not supported" in json.loads(proc.stdout)["error"]
 
 
 def test_flag_off_single_check_carries_no_closed_bar_fields():
@@ -707,13 +657,14 @@ def test_resting_rule_stop_reached_in_the_crossing_bar_books_no_paper_tier_and_t
     assert [(t["exit_date"], t["exit_price"], t["exit_reason"]) for t in trades] == [(str(df.index[-2]), 98.5, "sl")]
 
 
-@pytest.mark.parametrize("batch", [False, True])
-def test_resting_rule_refuses_live_mode(batch):
-    proc = _resting_paper(_resting_bars(crossing_low=99.9), stop_trigger_px=90.0, mode="live", batch=batch)
-    assert proc.returncode == 1
-    out = json.loads(proc.stdout)
-    error = out["results"][0]["error"] if batch else out["error"]
-    assert "paper-only" in error
+def test_resting_rule_refuses_live_mode(subtests):
+    for batch in [False, True]:
+        with subtests.test(batch=batch):
+            proc = _resting_paper(_resting_bars(crossing_low=99.9), stop_trigger_px=90.0, mode="live", batch=batch)
+            assert proc.returncode == 1
+            out = json.loads(proc.stdout)
+            error = out["results"][0]["error"] if batch else out["error"]
+            assert "paper-only" in error
 
 
 def _moving_stop_bars(tail):
@@ -775,20 +726,21 @@ def test_resting_rule_breakeven_stop_after_tier_one_does_not_block_tier_two_and_
     assert [(t["exit_date"], t["exit_price"]) for t in trades] == [(str(df.index[61]), 102.0), (str(df.index[62]), 104.0)]
 
 
-@pytest.mark.parametrize("crossing_low,want_fraction", [(104.0, 1.0), (102.9, 0.0)])
-def test_resting_rule_trailing_stop_tests_each_bar_against_the_stop_armed_when_it_traded(crossing_low, want_fraction):
-    tiers = [{"atr_multiple": 1.0, "close_fraction": 0.5}, {"atr_multiple": 3.0, "close_fraction": 1.0}]
-    bars = _moving_stop_bars([(100.0, 100.3, 99.8, 100.1), (100.1, 102.5, 101.0, 102.2),
-                              (104.5, 106.01, crossing_low, 105.5), (105.5, 105.8, 105.2, 105.6)])
-    first, second = _two_cycle(bars, tiers, second_stop=103.0)
+def test_resting_rule_trailing_stop_tests_each_bar_against_the_stop_armed_when_it_traded(subtests):
+    for crossing_low, want_fraction in [(104.0, 1.0), (102.9, 0.0)]:
+        with subtests.test(crossing_low=crossing_low, want_fraction=want_fraction):
+            tiers = [{"atr_multiple": 1.0, "close_fraction": 0.5}, {"atr_multiple": 3.0, "close_fraction": 1.0}]
+            bars = _moving_stop_bars([(100.0, 100.3, 99.8, 100.1), (100.1, 102.5, 101.0, 102.2),
+                                      (104.5, 106.01, crossing_low, 105.5), (105.5, 105.8, 105.2, 105.6)])
+            first, second = _two_cycle(bars, tiers, second_stop=103.0)
 
-    assert (first["close_fraction"], first["close_tier_fill_price"]) == (0.5, 102.0)
-    assert second["close_fraction"] == want_fraction
-    if want_fraction:
-        assert second["close_tier_fill_price"] == 106.0
-    else:
-        assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[62]["t"]
-        assert second["resting_tp_rule"]["next_scanned_through_ms"] == bars[62]["t"]
+            assert (first["close_fraction"], first["close_tier_fill_price"]) == (0.5, 102.0)
+            assert second["close_fraction"] == want_fraction
+            if want_fraction:
+                assert second["close_tier_fill_price"] == 106.0
+            else:
+                assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[62]["t"]
+                assert second["resting_tp_rule"]["next_scanned_through_ms"] == bars[62]["t"]
 
 
 _STOP_BAR_TIERS = [{"atr_multiple": 1.0, "close_fraction": 0.5}, {"atr_multiple": 3.0, "close_fraction": 1.0}]
@@ -851,37 +803,38 @@ def test_resting_rule_stop_bar_the_paper_stop_did_not_book_drops_only_that_bar_a
     assert third["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[62]["t"], case
 
 
-@pytest.mark.parametrize("bar_low,sent_stop,want", [(99.5, 99.0, "tier"), (98.9, 99.0, "sl")])
-def test_resting_rule_trailing_stop_ratcheted_inside_a_bar_tests_the_bar_against_the_stop_at_its_open(bar_low, sent_stop, want):
-    tiers = [{"atr_multiple": 1.5, "close_fraction": 0.5}, {"atr_multiple": 3.0, "close_fraction": 1.0}]
-    bars = _moving_stop_bars([(100.0, 100.2, 99.8, 100.0), (100.0, 103.5, bar_low, 103.0), (103.0, 103.2, 102.8, 103.0)])
-    first = _moving_stop_cycle(bars, tiers, entry=60, closed_through=60, qty=1, stop=99.0)
-    assert first["close_fraction"] == 0.0
-    echo = first["resting_tp_rule"]
-    second = _moving_stop_cycle(bars, tiers, entry=60, closed_through=61, qty=1, stop=sent_stop,
-                                scanned_through=echo["next_scanned_through_ms"], prior=echo["next_reach_px"])
+def test_resting_rule_trailing_stop_ratcheted_inside_a_bar_tests_the_bar_against_the_stop_at_its_open(subtests):
+    for bar_low, sent_stop, want in [(99.5, 99.0, "tier"), (98.9, 99.0, "sl")]:
+        with subtests.test(bar_low=bar_low, sent_stop=sent_stop, want=want):
+            tiers = [{"atr_multiple": 1.5, "close_fraction": 0.5}, {"atr_multiple": 3.0, "close_fraction": 1.0}]
+            bars = _moving_stop_bars([(100.0, 100.2, 99.8, 100.0), (100.0, 103.5, bar_low, 103.0), (103.0, 103.2, 102.8, 103.0)])
+            first = _moving_stop_cycle(bars, tiers, entry=60, closed_through=60, qty=1, stop=99.0)
+            assert first["close_fraction"] == 0.0
+            echo = first["resting_tp_rule"]
+            second = _moving_stop_cycle(bars, tiers, entry=60, closed_through=61, qty=1, stop=sent_stop,
+                                        scanned_through=echo["next_scanned_through_ms"], prior=echo["next_reach_px"])
 
-    sys.path.insert(0, os.path.join(_REPO_ROOT, "backtest"))
-    from backtester import Backtester
-    closed = bars[:62]
-    df = _frame_from_rows(_hl_rows(closed))
-    df["open_action"] = ["long" if i == 59 else "none" for i in range(len(closed))]
-    df["atr"] = 2.0
-    bt = Backtester(initial_capital=1000.0, platform="hyperliquid", strategy_type="perps",
-                    execution_spec=dict(_RESTING_SPEC), trailing_stop_pct=0.01,
-                    close_strategies=[{"name": "tiered_tp_atr", "params": {"tp_tiers": tiers}}],
-                    resting_tp_trade_through=True)
-    trades = bt.run(df, strategy_name="breakout", symbol="BTC", timeframe="1h", save=False)["trades"]
-    booked = [(t["exit_date"], t["exit_price"], t["exit_reason"].split(":")[0]) for t in trades if t["exit_reason"] != "end_of_data"]
-    if want == "tier":
-        assert (second["close_fraction"], second["close_tier_fill_price"]) == (0.5, 103.0)
-        assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == 0
-        assert booked[0][:2] == (str(df.index[61]), 103.0)
-        assert booked[0][2].startswith("tiered_tp_atr")
-    else:
-        assert second["close_fraction"] == 0.0
-        assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[61]["t"]
-        assert booked == [(str(df.index[61]), 99.0, "sl")]
+            sys.path.insert(0, os.path.join(_REPO_ROOT, "backtest"))
+            from backtester import Backtester
+            closed = bars[:62]
+            df = _frame_from_rows(_hl_rows(closed))
+            df["open_action"] = ["long" if i == 59 else "none" for i in range(len(closed))]
+            df["atr"] = 2.0
+            bt = Backtester(initial_capital=1000.0, platform="hyperliquid", strategy_type="perps",
+                            execution_spec=dict(_RESTING_SPEC), trailing_stop_pct=0.01,
+                            close_strategies=[{"name": "tiered_tp_atr", "params": {"tp_tiers": tiers}}],
+                            resting_tp_trade_through=True)
+            trades = bt.run(df, strategy_name="breakout", symbol="BTC", timeframe="1h", save=False)["trades"]
+            booked = [(t["exit_date"], t["exit_price"], t["exit_reason"].split(":")[0]) for t in trades if t["exit_reason"] != "end_of_data"]
+            if want == "tier":
+                assert (second["close_fraction"], second["close_tier_fill_price"]) == (0.5, 103.0)
+                assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == 0
+                assert booked[0][:2] == (str(df.index[61]), 103.0)
+                assert booked[0][2].startswith("tiered_tp_atr")
+            else:
+                assert second["close_fraction"] == 0.0
+                assert second["resting_tp_rule"]["stop_reached_bar_open_ms"] == bars[61]["t"]
+                assert booked == [(str(df.index[61]), 99.0, "sl")]
 
 
 _OBV = "on_balance_volume_divergence"
@@ -891,8 +844,6 @@ _OBV_CLOSES = ([100.0] * 103 + [100.0, 97.0, 91.0, 97.0, 100.0, 100.0, 100.0]
                + [99.0, 98.0, 96.0, 98.0, 100.0, 101.0, 100.0, 98.0, 96.0, 95.0, 97.0, 98.0, 98.5, 100.0]
                + [100.5, 101.0, 101.5, 102.0])
 _OBV_CONFIRM = 121
-_OBV_ENTRY = 123
-_OBV_TP = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}]
 
 
 def _obv_bars(last, *, bad_volume_at=None):
@@ -914,35 +865,6 @@ def _obv_refs(closes=None):
     return ["--strategy-refs", json.dumps(refs)]
 
 
-def test_obv_forming_reclaim_bar_is_excluded_and_the_closed_bar_enters():
-    bars = _obv_bars(_OBV_ENTRY)
-    forming = bars[-1]["t"] + H // 2
-    disabled = _hl_check(_OBV, bars, forming, closed=False, extra=_obv_refs())
-    enabled = _hl_check(_OBV, bars, forming, closed=True, extra=_obv_refs())
-    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
-    assert enabled["signal"] == 0 and enabled["open_action"] == "none"
-    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
-    assert enabled["indicators"]["obvd_reason_code"] == 3
-
-    closed = _hl_check(_OBV, bars, bars[-1]["t"] + H + 5_000, closed=True, extra=_obv_refs())
-    assert closed["closed_bar_decision"]["forming_rows_dropped"] == 0
-    assert closed["signal"] == 1 and closed["open_action"] == "long"
-    assert closed["indicators"]["obvd_long_reclaim"] == 99.0
-    assert closed["indicators"]["obvd_long_divergence"] == disabled["indicators"]["obvd_long_divergence"]
-
-    direct = _strategies().apply_strategy(_OBV, _frame_from_rows(_hl_rows(bars)), _OBV_PARAMS)
-    assert int(direct["signal"].iloc[-1]) == 1
-    assert closed["indicators"]["obvd_support_start_ts_ms"] == float(direct["obvd_support_start_ts_ms"].iloc[-1])
-
-
-@pytest.mark.parametrize("offset,dropped,signal", [(-1, 1, 0), (0, 0, 1), (1, 0, 1)])
-def test_obv_reclaim_bar_closure_boundary(offset, dropped, signal):
-    bars = _obv_bars(_OBV_ENTRY)
-    out = _hl_check(_OBV, bars, bars[-1]["t"] + H + offset, closed=True, extra=_obv_refs())
-    assert out["closed_bar_decision"]["forming_rows_dropped"] == dropped
-    assert out["signal"] == signal
-
-
 def test_obv_forming_confirmation_bar_does_not_arm_a_setup():
     bars = _obv_bars(_OBV_CONFIRM)
     forming = bars[-1]["t"] + H // 2
@@ -952,53 +874,6 @@ def test_obv_forming_confirmation_bar_does_not_arm_a_setup():
     assert disabled["indicators"]["obvd_long_pivot2_price"] == 94.0
     assert enabled["indicators"].get("obvd_long_pivot2_price") != 94.0
     assert enabled["indicators"]["obvd_long_state"] != 2
-
-
-@pytest.mark.parametrize("closed", [True, False])
-def test_obv_invalid_entry_volume_holds_while_the_current_mark_close_still_runs(closed):
-    bars = _obv_bars(_OBV_ENTRY + 1, bad_volume_at=_OBV_ENTRY)
-    cutoff = bars[-1]["t"] + H // 2
-    held_long = _obv_refs(_OBV_TP) + ["--position-side", "long", "--position-avg-cost=90",
-                                      "--position-qty=1", "--position-initial-qty=1"]
-    out = _hl_check(_OBV, bars, cutoff, closed=closed, extra=held_long, mid=bars[-1]["c"])
-    if closed:
-        assert out["closed_bar_decision"]["held"] is True
-        assert "volume" in out["closed_bar_decision"]["hold_reason"]
-        assert out["indicators"] == {}
-    else:
-        assert out["indicators"]["obvd_reason_code"] == 16
-    assert out["open_action"] == "none"
-    assert out["close_fraction"] == 1.0
-    assert out["close_strategy"] == "tiered_tp_pct"
-    assert out["price"] == bars[-1]["c"]
-
-    flat = _hl_check(_OBV, bars, cutoff, closed=closed, extra=_obv_refs(_OBV_TP))
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
-
-
-def test_obv_mixed_batch_matches_individual_checks():
-    bars = _obv_bars(_OBV_ENTRY)
-    cutoff = bars[-1]["t"] + H // 2
-    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
-    refs = {"open": {"name": _OBV, "params": _OBV_PARAMS}}
-    slots = [
-        {"id": "on", "strategy": _OBV, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs,
-         "closed_bar_decisions": True},
-        {"id": "off", "strategy": _OBV, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
-    ]
-    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--atr-method=simple",
-                           "--market-stdin"], {"v": 2, "slots": slots, "market": market})
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
-    for slot_id, closed in (("on", True), ("off", False)):
-        argv = [_OBV, "BTC", "1h", "--mode=paper", "--market-stdin", *_obv_refs()]
-        if closed:
-            argv.append("--closed-bar-decisions")
-        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
-        assert single.returncode == 0, single.stderr
-        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
-    assert results["on"]["signal"] == 0
-    assert results["off"]["signal"] == 1
 
 
 CMO = "chande_momentum"
@@ -1040,152 +915,8 @@ def test_chande_closed_bar_decision_reads_the_closed_frame_and_ignores_the_formi
     assert calm["closed_bar_decision"]["input_sha256"] == enabled["closed_bar_decision"]["input_sha256"]
 
 
-def test_chande_closed_bar_batch_slots_match_individual_checks():
-    bars = _cmo_bars([100.0] * 220 + [101.0, 96.0])
-    cutoff = bars[-1]["t"] + H // 2
-    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
-    slots = [
-        {"id": "on", "strategy": CMO, "mode": "paper", "mode_args": ["--mode=paper"], "closed_bar_decisions": True},
-        {"id": "off", "strategy": CMO, "mode": "paper", "mode_args": ["--mode=paper"]},
-    ]
-    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200",
-                           "--atr-method=simple", "--market-stdin"], {"v": 2, "slots": slots, "market": market})
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
-    for slot_id, closed in (("on", True), ("off", False)):
-        argv = [CMO, "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200"]
-        if closed:
-            argv.append("--closed-bar-decisions")
-        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
-        assert single.returncode == 0, single.stderr
-        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
-    assert results["on"]["signal"] == 1
-    assert results["off"]["signal"] == -1
-
-
-@pytest.mark.parametrize("closed", [True, False])
-def test_chande_invalid_entry_data_holds_the_entry_and_keeps_close_management(closed):
-    bars = _cmo_bars([100.0] * 60 + [101.0, 102.0, 103.0])
-    gapped = bars[:-3] + [dict(b, t=b["t"] + H, T=b["T"] + H) for b in bars[-3:]]
-    cutoff = gapped[-1]["t"] + H // 2
-    refs = json.dumps({"open": {"name": CMO, "params": {}},
-                       "closes": [{"name": "tiered_tp_pct",
-                                   "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}]})
-    flat = _hl_check(CMO, gapped, cutoff, closed=closed, extra=["--strategy-refs", refs])
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
-    held_long = ["--strategy-refs", refs, "--position-side", "long", "--position-avg-cost=100",
-                 "--position-qty=1", "--position-initial-qty=1"]
-    out = _hl_check(CMO, gapped, cutoff, closed=closed, extra=held_long, mid=104.0)
-    assert out["open_action"] == "none"
-    assert out["close_fraction"] == 1.0 and out["close_strategy"] == "tiered_tp_pct"
-    assert out["signal"] == -1
-    assert out["indicators"]["cmo_valid"] == 0.0
-    assert out["indicators"]["cmo_reason_code"] == 16.0
-    if closed:
-        assert out["closed_bar_decision"]["held"] is False
-
-
-MFI = "money_flow_index_reversal"
-MFI_PARAMS = {"lookback": 2, "oversold": 30.0, "overbought": 70.0}
-
-
-def _set_bar(bar, price, volume):
-    return dict(bar, o=price + 0.1, h=price + 0.5, l=price - 0.5, c=price, v=volume)
-
-
-def _mfi_reversal_bars(n=240, forming_price_jump=5.0, forming_volume=50_000.0):
-    bars = _bars(n)
-    base = bars[-5]["c"]
-    bars[-4] = _set_bar(bars[-4], base - 2.0, 1000.0)
-    bars[-3] = _set_bar(bars[-3], base - 4.0, 1000.0)
-    bars[-2] = _set_bar(bars[-2], base - 6.0, 1000.0)
-    bars[-1] = _set_bar(bars[-1], base - 6.0 + forming_price_jump, forming_volume)
-    return bars
-
-
-def _mfi_refs(closes=None):
-    refs = {"open": {"name": MFI, "params": dict(MFI_PARAMS)}}
-    if closes:
-        refs["closes"] = closes
-    return json.dumps(refs)
-
-
-def test_money_flow_index_forming_bar_cannot_create_a_closed_bar_entry():
-    bars = _mfi_reversal_bars()
-    cutoff = bars[-1]["t"] + H // 2
-    extra = ["--strategy-refs", _mfi_refs()]
-    disabled = _hl_check(MFI, bars, cutoff, closed=False, extra=extra)
-    enabled = _hl_check(MFI, bars, cutoff, closed=True, extra=extra)
-    calm_bars = [dict(b) for b in bars]
-    calm_bars[-1] = _set_bar(calm_bars[-1], bars[-2]["c"], 1.0)
-    calm = _hl_check(MFI, calm_bars, cutoff, closed=True, extra=extra)
-    assert disabled["signal"] == 1 and disabled["open_action"] == "long"
-    assert enabled["signal"] == 0 and enabled["open_action"] == "none"
-    assert enabled["indicators"] == calm["indicators"]
-    assert enabled["closed_bar_decision"]["input_sha256"] == calm["closed_bar_decision"]["input_sha256"]
-    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
-    closed_df = _strategies().apply_strategy(MFI, _frame_from_rows(_hl_rows(bars[:-1])), MFI_PARAMS)
-    last = closed_df.iloc[-1]
-    assert enabled["indicators"]["mfi_value"] == float(last["mfi_value"])
-    assert enabled["indicators"]["mfi_prev_value"] == float(last["mfi_prev_value"])
-    assert enabled["indicators"]["mfi_positive_total"] == float(last["mfi_positive_total"])
-    assert enabled["indicators"]["mfi_reason_code"] == 0
-    assert enabled["indicators"]["mfi_volume"] == bars[-2]["v"]
-    assert enabled["indicators"]["mfi_eval_ts_ms"] == float(bars[-2]["T"])
-    assert disabled["indicators"]["mfi_volume"] == bars[-1]["v"]
-
-
-def test_money_flow_index_closed_bar_batch_matches_individual_checks():
-    bars = _mfi_reversal_bars()
-    cutoff = bars[-1]["t"] + H // 2
-    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
-    refs = json.loads(_mfi_refs())
-    slots = [
-        {"id": "on", "strategy": MFI, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs,
-         "closed_bar_decisions": True},
-        {"id": "off", "strategy": MFI, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
-    ]
-    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200",
-                           "--atr-method=simple", "--market-stdin"], {"v": 2, "slots": slots, "market": market})
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
-    for slot_id, closed in (("on", True), ("off", False)):
-        argv = [MFI, "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200",
-                "--strategy-refs", _mfi_refs()]
-        if closed:
-            argv.append("--closed-bar-decisions")
-        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
-        assert single.returncode == 0, single.stderr
-        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
-    assert results["on"]["signal"] == 0
-    assert results["off"]["signal"] == 1
-
-
-@pytest.mark.parametrize("closed", [True, False])
-def test_money_flow_index_invalid_volume_holds_the_entry_and_keeps_protection(closed):
-    bars = [dict(b, v=-1.0) for b in _mfi_reversal_bars()]
-    cutoff = bars[-1]["t"] + H // 2
-    refs = _mfi_refs([{"name": "tiered_tp_pct", "params": {}}])
-    held_long = ["--strategy-refs", refs, "--position-side", "long", "--position-avg-cost=50",
-                 "--position-qty=1", "--position-initial-qty=1"]
-    out = _hl_check(MFI, bars, cutoff, closed=closed, extra=held_long, mid=bars[-1]["c"])
-    if closed:
-        assert out["closed_bar_decision"]["held"] is True
-        assert "negative volume" in out["closed_bar_decision"]["hold_reason"]
-        assert out["indicators"] == {}
-    else:
-        assert out["indicators"]["mfi_reason_code"] == 15
-        assert out["indicators"]["mfi_valid"] == 0.0
-    assert out["open_action"] == "none"
-    assert out["close_strategy"] == "tiered_tp_pct" and out["close_fraction"] == 1.0
-    assert out["signal"] == -1
-    flat = _hl_check(MFI, bars, cutoff, closed=closed, extra=["--strategy-refs", refs])
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
-
-
 _EOM = "ease_of_movement_breakout"
 _EOM_PARAMS = {"eom_period": 3, "breakout_window": 4}
-_EOM_TP = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.02, "close_fraction": 1.0}]}}]
 
 
 def _eom_bars(n_flat=60, last=(100.0, 104.0, 100.0, 103.5, 1000.0), *, zero_volume_at=None, drop=None):
@@ -1207,54 +938,6 @@ def _eom_refs(closes=None):
     return ["--strategy-refs", json.dumps(refs)]
 
 
-def test_eom_forming_breakout_bar_is_excluded_the_closed_bar_enters_and_forming_values_never_change_it():
-    case = "forming_breakout_bar_is_excluded"
-    bars = _eom_bars()
-    forming = bars[-1]["t"] + H // 2
-    disabled = _hl_check(_EOM, bars, forming, closed=False, extra=_eom_refs())
-    enabled = _hl_check(_EOM, bars, forming, closed=True, extra=_eom_refs())
-    assert disabled["signal"] == 1 and disabled["open_action"] == "long", case
-    assert "eom_eval_ts_ms" not in disabled["indicators"], case
-    assert enabled["signal"] == 0 and enabled["open_action"] == "none", case
-    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1, case
-    assert enabled["indicator_labels"]["eom_reason"] == "no_breakout", case
-    assert enabled["indicators"]["eom_eval_ts_ms"] == bars[-2]["t"], case
-
-    closed = _hl_check(_EOM, bars, bars[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs())
-    assert closed["closed_bar_decision"]["forming_rows_dropped"] == 0, case
-    assert closed["signal"] == 1 and closed["open_action"] == "long", case
-    assert closed["indicators"]["eom_eval_ts_ms"] == bars[-1]["t"], case
-    assert closed["indicator_labels"]["eom_reason"] == "entry_long", case
-
-    frame = _frame_from_rows(_hl_rows(bars))
-    frame.attrs["bar_interval_ms"] = H
-    direct = _strategies().apply_strategy(_EOM, frame, _EOM_PARAMS)
-    assert int(direct["signal"].iloc[-1]) == 1, case
-    assert closed["indicators"]["eom_smoothed"] == float(direct["eom_smoothed"].iloc[-1]), case
-    assert closed["indicators"]["eom_raw"] == float(direct["eom_raw"].iloc[-1]), case
-
-    reference = closed
-    for values in ((103.5, 140.0, 103.0, 139.0, 50.0), (103.5, 104.0, 60.0, 61.0, 0.0),
-                   (103.5, 103.6, 103.4, 103.5, 9_000.0)):
-        case = f"forming_bar_values_never_change_the_closed_bar_decision[{values}]"
-        extended = bars + [{"t": bars[-1]["t"] + H, "T": bars[-1]["T"] + H, "o": values[0], "h": values[1],
-                            "l": values[2], "c": values[3], "v": values[4]}]
-        cutoff = extended[-1]["t"] + H // 3
-        out = _hl_check(_EOM, extended, cutoff, closed=True, extra=_eom_refs())
-        assert out["closed_bar_decision"]["forming_rows_dropped"] == 1, case
-        assert out["signal"] == reference["signal"] == 1, case
-        assert out["indicators"] == reference["indicators"], case
-        assert out["indicator_labels"] == reference["indicator_labels"], case
-
-
-def test_eom_missing_bar_timing_holds_the_entry_with_a_reason():
-    bars = _eom_bars()
-    out = _hl_check(_EOM, bars, bars[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs(), timing=False)
-    assert out["closed_bar_decision"]["held"] is True
-    assert "timing" in out["closed_bar_decision"]["hold_reason"]
-    assert out["signal"] == 0 and out["indicators"] == {}
-
-
 def test_eom_cadence_gap_in_the_closed_window_holds_then_recovers():
     bars = _eom_bars(drop=58)
     out = _hl_check(_EOM, bars, bars[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs())
@@ -1266,48 +949,6 @@ def test_eom_cadence_gap_in_the_closed_window_holds_then_recovers():
     far = _eom_bars(drop=40)
     recovered = _hl_check(_EOM, far, far[-1]["t"] + H + 5_000, closed=True, extra=_eom_refs())
     assert recovered["signal"] == 1
-
-
-@pytest.mark.parametrize("closed", [True, False])
-def test_eom_invalid_entry_volume_holds_while_the_mark_close_still_runs(closed):
-    bars = _eom_bars(zero_volume_at=60)
-    cutoff = bars[-1]["t"] + H + 5_000
-    held_long = _eom_refs(_EOM_TP) + ["--position-side", "long", "--position-avg-cost=90",
-                                      "--position-qty=1", "--position-initial-qty=1"]
-    out = _hl_check(_EOM, bars, cutoff, closed=closed, extra=held_long, mid=bars[-1]["c"])
-    assert out["indicator_labels"]["eom_reason"] == "invalid_volume"
-    assert out["open_action"] == "none"
-    assert out["close_fraction"] == 1.0
-    assert out["close_strategy"] == "tiered_tp_pct"
-    assert out["price"] == bars[-1]["c"]
-
-    flat = _hl_check(_EOM, bars, cutoff, closed=closed, extra=_eom_refs(_EOM_TP))
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
-
-
-def test_eom_mixed_batch_matches_individual_checks():
-    bars = _eom_bars()
-    cutoff = bars[-1]["t"] + H // 2
-    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
-    refs = {"open": {"name": _EOM, "params": _EOM_PARAMS}}
-    slots = [
-        {"id": "on", "strategy": _EOM, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs,
-         "closed_bar_decisions": True},
-        {"id": "off", "strategy": _EOM, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
-    ]
-    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--atr-method=simple",
-                           "--market-stdin"], {"v": 2, "slots": slots, "market": market})
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
-    for slot_id, closed in (("on", True), ("off", False)):
-        argv = [_EOM, "BTC", "1h", "--mode=paper", "--market-stdin", *_eom_refs()]
-        if closed:
-            argv.append("--closed-bar-decisions")
-        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
-        assert single.returncode == 0, single.stderr
-        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
-    assert results["on"]["signal"] == 0
-    assert results["off"]["signal"] == 1
 
 
 def _eom_rows_at(start_ms, rows, *, gap_after=None):
@@ -1395,19 +1036,21 @@ def _fake_topstep_dir(tmp_path, bars):
     return str(root)
 
 
-@pytest.mark.parametrize("bars_after_break,signal,reason", [(2, 0, "cadence_gap"), (10, 1, "entry_long")])
-def test_eom_topstep_check_holds_only_when_the_window_spans_a_session_break(tmp_path, bars_after_break,
-                                                                           signal, reason):
-    rows = [_EOM_FLAT] * 40 + [_EOM_FLAT] * bars_after_break + [_EOM_BREAKOUT]
-    bars = _eom_rows_at(T0, rows, gap_after=39)
-    fakes = _fake_topstep_dir(tmp_path, bars)
-    proc = _run(CHECK_TS, [_EOM, "ES", "1h", "--mode=paper", *_eom_refs()], env_extra={"PYTHONPATH": fakes})
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    out = json.loads(proc.stdout)
-    assert out["market_open"] is True
-    assert out["indicators"]["eom_interval_ms"] == H
-    assert out["indicator_labels"]["eom_reason"] == reason
-    assert out["signal"] == signal
+def test_eom_topstep_check_holds_only_when_the_window_spans_a_session_break(subtests, tmp_path):
+    for index, (bars_after_break, signal, reason) in enumerate([(2, 0, "cadence_gap"), (10, 1, "entry_long")]):
+        with subtests.test(bars_after_break=bars_after_break, signal=signal, reason=reason):
+            case_path = tmp_path / f"case{index}"
+            case_path.mkdir()
+            rows = [_EOM_FLAT] * 40 + [_EOM_FLAT] * bars_after_break + [_EOM_BREAKOUT]
+            bars = _eom_rows_at(T0, rows, gap_after=39)
+            fakes = _fake_topstep_dir(case_path, bars)
+            proc = _run(CHECK_TS, [_EOM, "ES", "1h", "--mode=paper", *_eom_refs()], env_extra={"PYTHONPATH": fakes})
+            assert proc.returncode == 0, proc.stderr + proc.stdout
+            out = json.loads(proc.stdout)
+            assert out["market_open"] is True
+            assert out["indicators"]["eom_interval_ms"] == H
+            assert out["indicator_labels"]["eom_reason"] == reason
+            assert out["signal"] == signal
 
 
 _AROON = "aroon_trend"
@@ -1436,62 +1079,22 @@ def _aroon_refs(params=None):
     return ["--strategy-refs", json.dumps(refs)]
 
 
-def test_aroon_forming_bar_crossing_is_excluded_from_the_closed_decision():
-    bars = _aroon_bars(60, spike_at=59)
-    cutoff = bars[-1]["t"] + H // 2
-    disabled = _hl_check(_AROON, bars, cutoff, closed=False, extra=_aroon_refs())
-    enabled = _hl_check(_AROON, bars, cutoff, closed=True, extra=_aroon_refs())
-    assert disabled["signal"] == 1 and disabled["indicators"]["aroon_reason_code"] == 1
-    assert enabled["closed_bar_decision"]["forming_rows_dropped"] == 1
-    assert enabled["signal"] == 0
-    assert enabled["indicators"]["aroon_reason_code"] == 0
-    assert enabled["indicators"]["aroon_down"] == 100.0
-
-
-@pytest.mark.parametrize("closed_rows,signal,code", [(200, 1, 1), (199, 0, 10)])
-def test_aroon_maximum_period_needs_two_hundred_closed_rows_plus_the_forming_row(closed_rows, signal, code):
-    bars = _aroon_bars(closed_rows + 1, spike_at=closed_rows - 1)
-    cutoff = bars[-1]["t"] + H // 2
-    out = _hl_check(_AROON, bars, cutoff, closed=True, extra=_aroon_refs({"period": 198, "strength": 70.0}))
-    meta = out["closed_bar_decision"]
-    assert meta["held"] is False and meta["forming_rows_dropped"] == 1
-    assert out["signal"] == signal
-    assert out["indicators"]["aroon_reason_code"] == code
-    assert out["indicators"]["aroon_period"] == 198
-    if signal:
-        assert out["indicators"]["aroon_up"] == 100.0
-        assert out["indicators"]["aroon_high_age"] == 0
-        assert out["indicators"]["aroon_low_age"] == 1
-        assert out["indicators"]["aroon_prev_up"] <= out["indicators"]["aroon_prev_down"]
-
-
-@pytest.mark.parametrize("closed", [True, False])
-@pytest.mark.parametrize("hold", ["flat", "bad"])
-def test_aroon_data_hold_keeps_the_explicit_close_running(closed, hold):
-    n = 61
-    bars = _aroon_bars(n, flat=True) if hold == "flat" else _aroon_bars(n, bad_at=n - 2)
-    mark = bars[-1]["c"]
-    cutoff = bars[-1]["t"] + H // 2
-    for side in ("long", "short"):
-        case = f"side={side}"
-        avg_cost = mark * (0.9 if side == "long" else 1.1)
-        held = _aroon_refs() + ["--position-side", side, f"--position-avg-cost={avg_cost}",
-                                "--position-qty=1", "--position-initial-qty=1"]
-        out = _hl_check(_AROON, bars, cutoff, closed=closed, extra=held, mid=mark)
-        if closed and hold == "bad":
-            assert out["closed_bar_decision"]["held"] is True, case
-            assert out["indicators"] == {}, case
-        else:
-            assert out["indicators"]["aroon_reason_code"] == (14 if hold == "flat" else 12), case
-            assert out["indicators"]["aroon_valid"] == 0.0, case
-        assert out["open_action"] == "none", case
-        assert out["close_fraction"] == 1.0, case
-        assert out["close_strategy"] == "tiered_tp_pct", case
-        assert out["signal"] == (-1 if side == "long" else 1), case
-        assert out["price"] == mark, case
-
-    flat = _hl_check(_AROON, bars, cutoff, closed=closed, extra=_aroon_refs(), mid=mark)
-    assert flat["signal"] == 0 and flat["open_action"] == "none", "flat run shared by side=long and side=short"
+def test_aroon_maximum_period_needs_two_hundred_closed_rows_plus_the_forming_row(subtests):
+    for closed_rows, signal, code in [(200, 1, 1), (199, 0, 10)]:
+        with subtests.test(closed_rows=closed_rows, signal=signal, code=code):
+            bars = _aroon_bars(closed_rows + 1, spike_at=closed_rows - 1)
+            cutoff = bars[-1]["t"] + H // 2
+            out = _hl_check(_AROON, bars, cutoff, closed=True, extra=_aroon_refs({"period": 198, "strength": 70.0}))
+            meta = out["closed_bar_decision"]
+            assert meta["held"] is False and meta["forming_rows_dropped"] == 1
+            assert out["signal"] == signal
+            assert out["indicators"]["aroon_reason_code"] == code
+            assert out["indicators"]["aroon_period"] == 198
+            if signal:
+                assert out["indicators"]["aroon_up"] == 100.0
+                assert out["indicators"]["aroon_high_age"] == 0
+                assert out["indicators"]["aroon_low_age"] == 1
+                assert out["indicators"]["aroon_prev_up"] <= out["indicators"]["aroon_prev_down"]
 
 
 def test_aroon_unavailable_protection_inputs_invent_no_close_price():
@@ -1504,43 +1107,19 @@ def test_aroon_unavailable_protection_inputs_invent_no_close_price():
     assert out["signal"] == 0 and out["open_action"] == "none"
 
 
-@pytest.mark.parametrize("side", ["long", "short"])
-def test_aroon_open_position_blocks_a_new_entry_reversal_or_add(side):
-    bars = _aroon_bars(61, spike_at=59)
-    cutoff = bars[-1]["t"] + H // 2
-    mark = bars[-1]["c"]
-    held = _aroon_refs() + ["--position-side", side, f"--position-avg-cost={mark}",
-                            "--position-qty=1", "--position-initial-qty=1"]
-    out = _hl_check(_AROON, bars, cutoff, closed=True, extra=held, mid=mark)
-    assert out["indicators"]["aroon_reason_code"] == 1
-    assert out["open_action"] == "long"
-    assert out["close_fraction"] == 0.0
-    assert out["signal"] == 0
-
-
-def test_aroon_mixed_batch_matches_individual_checks():
-    bars = _aroon_bars(61, spike_at=59)
-    cutoff = bars[-1]["t"] + H // 2
-    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
-    refs = {"open": {"name": _AROON, "params": {"period": 25, "strength": 70.0}}, "closes": [_AROON_TP]}
-    slots = [
-        {"id": "on", "strategy": _AROON, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs,
-         "closed_bar_decisions": True},
-        {"id": "off", "strategy": _AROON, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
-        {"id": "peer", "strategy": "breakout", "mode": "paper"},
-    ]
-    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--atr-method=simple",
-                           "--market-stdin"], {"v": 2, "slots": slots, "market": market})
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
-    for slot_id, closed in (("on", True), ("off", False)):
-        argv = [_AROON, "BTC", "1h", "--mode=paper", "--market-stdin", *_aroon_refs()]
-        if closed:
-            argv.append("--closed-bar-decisions")
-        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
-        assert single.returncode == 0, single.stderr
-        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
-    assert results["on"]["signal"] == 1
+def test_aroon_open_position_blocks_a_new_entry_reversal_or_add(subtests):
+    for side in ["long", "short"]:
+        with subtests.test(side=side):
+            bars = _aroon_bars(61, spike_at=59)
+            cutoff = bars[-1]["t"] + H // 2
+            mark = bars[-1]["c"]
+            held = _aroon_refs() + ["--position-side", side, f"--position-avg-cost={mark}",
+                                    "--position-qty=1", "--position-initial-qty=1"]
+            out = _hl_check(_AROON, bars, cutoff, closed=True, extra=held, mid=mark)
+            assert out["indicators"]["aroon_reason_code"] == 1
+            assert out["open_action"] == "long"
+            assert out["close_fraction"] == 0.0
+            assert out["signal"] == 0
 
 
 _RCR = "regression_channel_reversion"
@@ -1605,102 +1184,49 @@ def test_rcr_closed_decision_ignores_the_forming_candle_and_reports_full_precisi
         assert again["price"] == 100.25
 
 
-def test_rcr_legacy_path_scores_the_forming_candle():
-    n = 40
-    bars = _rcr_bars(n, closes={n - 2: 97.5, n - 1: 100.0})
-    cutoff = bars[-1]["t"] + H // 2
-    disabled = _hl_check(_RCR, bars, cutoff, closed=False, extra=_rcr_refs())
-    enabled = _hl_check(_RCR, bars, cutoff, closed=True, extra=_rcr_refs())
-    assert "closed_bar_decision" not in disabled
-    assert disabled["signal"] == 1 and disabled["indicator_labels"]["rcr_reason"] == "entry_long"
-    assert disabled["indicators"]["rcr_row_ts_ms"] == bars[-1]["T"]
-    assert "rcr_eval_ts_ms" not in disabled["indicators"]
-    assert enabled["signal"] == 0 and enabled["indicator_labels"]["rcr_reason"] == "no_reentry"
-    assert enabled["indicators"]["rcr_eval_ts_ms"] == bars[-2]["t"]
+def test_rcr_maximum_fit_window_needs_one_hundred_ninety_nine_closed_rows(subtests):
+    for closed_rows, valid in [(199, True), (198, False)]:
+        with subtests.test(closed_rows=closed_rows, valid=valid):
+            params = dict(_RCR_PARAMS, fit_window=197)
+            bars = _rcr_bars(closed_rows + 1, closes=_rcr_reentry(closed_rows + 1, closed_rows - 1))
+            cutoff = bars[-1]["t"] + H // 2
+            out = _hl_check(_RCR, bars, cutoff, closed=True, extra=_rcr_refs(params))
+            meta = out["closed_bar_decision"]
+            assert meta["held"] is False and meta["forming_rows_dropped"] == 1 and meta["rows"] == closed_rows
+            assert out["indicators"]["rcr_fit_window"] == 197
+            assert bool(out["indicators"]["rcr_valid"]) is valid
+            if valid:
+                direct = _rcr_direct(bars[:-1], params)
+                assert out["signal"] == int(direct["signal"])
+                assert out["indicators"]["rcr_lower"] == float(direct["rcr_lower"])
+                assert out["indicator_labels"]["rcr_reason"] == direct["rcr_reason"]
+            else:
+                assert out["signal"] == 0
+                assert out["indicators"]["rcr_reason_code"] == 10
 
 
-@pytest.mark.parametrize("offset,dropped", [(0, 0), (-1, 1)])
-def test_rcr_cutoff_at_the_closing_boundary_includes_the_bar(offset, dropped):
-    n = 40
-    bars = _rcr_bars(n, closes=_rcr_reentry(n, n - 1))
-    cutoff = bars[-1]["t"] + H + offset
-    out = _hl_check(_RCR, bars, cutoff, closed=True, extra=_rcr_refs())
-    assert out["closed_bar_decision"]["forming_rows_dropped"] == dropped
-    assert out["signal"] == (1 if dropped == 0 else 0)
-
-
-@pytest.mark.parametrize("closed_rows,valid", [(199, True), (198, False)])
-def test_rcr_maximum_fit_window_needs_one_hundred_ninety_nine_closed_rows(closed_rows, valid):
-    params = dict(_RCR_PARAMS, fit_window=197)
-    bars = _rcr_bars(closed_rows + 1, closes=_rcr_reentry(closed_rows + 1, closed_rows - 1))
-    cutoff = bars[-1]["t"] + H // 2
-    out = _hl_check(_RCR, bars, cutoff, closed=True, extra=_rcr_refs(params))
-    meta = out["closed_bar_decision"]
-    assert meta["held"] is False and meta["forming_rows_dropped"] == 1 and meta["rows"] == closed_rows
-    assert out["indicators"]["rcr_fit_window"] == 197
-    assert bool(out["indicators"]["rcr_valid"]) is valid
-    if valid:
-        direct = _rcr_direct(bars[:-1], params)
-        assert out["signal"] == int(direct["signal"])
-        assert out["indicators"]["rcr_lower"] == float(direct["rcr_lower"])
-        assert out["indicator_labels"]["rcr_reason"] == direct["rcr_reason"]
-    else:
-        assert out["signal"] == 0
-        assert out["indicators"]["rcr_reason_code"] == 10
-
-
-@pytest.mark.parametrize("case", ["no_timing", "short_history", "no_cutoff"])
-def test_rcr_unverifiable_closure_holds_and_keeps_close_management(case):
-    n = 40
-    bars = _rcr_bars(n, closes=_rcr_reentry(n, n - 2))
-    cutoff = bars[-1]["t"] + H // 2
-    timing = case != "no_timing"
-    if case == "short_history":
-        bars = bars[-30:]
-    if case == "no_cutoff":
-        cutoff = None
-    mark = bars[-1]["c"]
-    held = _rcr_refs() + ["--position-side", "long", f"--position-avg-cost={mark * 0.9}",
-                          "--position-qty=1", "--position-initial-qty=1"]
-    out = _hl_check(_RCR, bars, cutoff, closed=True, extra=held, timing=timing, mid=mark)
-    assert out["closed_bar_decision"]["held"] is True
-    assert out["indicators"] == {}
-    assert out["open_action"] == "none"
-    assert out["close_fraction"] == 1.0 and out["close_strategy"] == "tiered_tp_pct"
-    assert out["signal"] == -1
-    flat = _hl_check(_RCR, bars, cutoff, closed=True, extra=_rcr_refs(), timing=timing, mid=mark)
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
-
-
-@pytest.mark.parametrize("closed", [True, False])
-@pytest.mark.parametrize("hold", ["flat", "bad"])
-def test_rcr_data_hold_keeps_the_explicit_close_running(closed, hold):
-    n = 41
-    bars = _rcr_bars(n, flat=True) if hold == "flat" else _rcr_bars(n, bad_at=n - 3)
-    mark = bars[-1]["c"]
-    cutoff = bars[-1]["t"] + H // 2
-    for side in ("long", "short"):
-        case = f"side={side}"
-        avg_cost = mark * (0.9 if side == "long" else 1.1)
-        held = _rcr_refs() + ["--position-side", side, f"--position-avg-cost={avg_cost}",
-                              "--position-qty=1", "--position-initial-qty=1"]
-        out = _hl_check(_RCR, bars, cutoff, closed=closed, extra=held, mid=mark)
-        if closed and hold == "bad":
-            assert out["closed_bar_decision"]["held"] is True, case
-            assert out["indicators"] == {}, case
-        else:
-            assert out["indicators"]["rcr_reason_code"] == (17 if hold == "flat" else 16), case
-            assert out["indicator_labels"]["rcr_reason"] == ("degenerate_fit" if hold == "flat"
-                                                             else "nonpositive_price"), case
-            assert out["indicators"]["rcr_valid"] == 0.0, case
-        assert out["open_action"] == "none", case
-        assert out["close_fraction"] == 1.0, case
-        assert out["close_strategy"] == "tiered_tp_pct", case
-        assert out["signal"] == (-1 if side == "long" else 1), case
-        assert out["price"] == mark, case
-
-    flat = _hl_check(_RCR, bars, cutoff, closed=closed, extra=_rcr_refs(), mid=mark)
-    assert flat["signal"] == 0 and flat["open_action"] == "none", "flat run shared by side=long and side=short"
+def test_rcr_unverifiable_closure_holds_and_keeps_close_management(subtests):
+    for case in ["no_timing", "short_history", "no_cutoff"]:
+        with subtests.test(case=case):
+            n = 40
+            bars = _rcr_bars(n, closes=_rcr_reentry(n, n - 2))
+            cutoff = bars[-1]["t"] + H // 2
+            timing = case != "no_timing"
+            if case == "short_history":
+                bars = bars[-30:]
+            if case == "no_cutoff":
+                cutoff = None
+            mark = bars[-1]["c"]
+            held = _rcr_refs() + ["--position-side", "long", f"--position-avg-cost={mark * 0.9}",
+                                  "--position-qty=1", "--position-initial-qty=1"]
+            out = _hl_check(_RCR, bars, cutoff, closed=True, extra=held, timing=timing, mid=mark)
+            assert out["closed_bar_decision"]["held"] is True
+            assert out["indicators"] == {}
+            assert out["open_action"] == "none"
+            assert out["close_fraction"] == 1.0 and out["close_strategy"] == "tiered_tp_pct"
+            assert out["signal"] == -1
+            flat = _hl_check(_RCR, bars, cutoff, closed=True, extra=_rcr_refs(), timing=timing, mid=mark)
+            assert flat["signal"] == 0 and flat["open_action"] == "none"
 
 
 def test_rcr_unavailable_protection_inputs_invent_no_close_price():
@@ -1713,50 +1239,20 @@ def test_rcr_unavailable_protection_inputs_invent_no_close_price():
     assert out["signal"] == 0 and out["open_action"] == "none"
 
 
-@pytest.mark.parametrize("side", ["long", "short"])
-def test_rcr_open_position_blocks_a_new_entry_reversal_or_add(side):
-    n = 40
-    bars = _rcr_bars(n, closes=_rcr_reentry(n, n - 2))
-    cutoff = bars[-1]["t"] + H // 2
-    mark = bars[-1]["c"]
-    held = _rcr_refs() + ["--position-side", side, f"--position-avg-cost={mark}",
-                          "--position-qty=1", "--position-initial-qty=1"]
-    out = _hl_check(_RCR, bars, cutoff, closed=True, extra=held, mid=mark)
-    assert out["indicators"]["rcr_reason_code"] == 1
-    assert out["open_action"] == "long"
-    assert out["close_fraction"] == 0.0
-    assert out["signal"] == 0
-
-
-def test_rcr_mixed_batch_matches_individual_checks():
-    n = 40
-    bars = _rcr_bars(n, closes=_rcr_reentry(n, n - 2))
-    cutoff = bars[-1]["t"] + H // 2
-    market = _market({"BTC|1h": _hl_frame(bars)}, cutoff_ms=cutoff, mid=bars[-1]["c"])
-    refs = {"open": {"name": _RCR, "params": _RCR_PARAMS}, "closes": [_RCR_TP]}
-    slots = [
-        {"id": "on", "strategy": _RCR, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs,
-         "closed_bar_decisions": True},
-        {"id": "off", "strategy": _RCR, "mode": "paper", "mode_args": ["--mode=paper"], "strategy_refs": refs},
-        {"id": "bad", "strategy": _RCR, "mode": "paper", "mode_args": ["--mode=paper"],
-         "strategy_refs": {"open": {"name": _RCR, "params": {"fit_window": 1}}, "closes": [_RCR_TP]}},
-        {"id": "peer", "strategy": "breakout", "mode": "paper"},
-    ]
-    proc = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--atr-method=simple",
-                           "--market-stdin"], {"v": 2, "slots": slots, "market": market})
-    results = {r["id"]: r for r in json.loads(proc.stdout)["results"]}
-    assert "fit_window" in results["bad"]["error"]
-    assert not results["peer"].get("error")
-    for slot_id, closed in (("on", True), ("off", False)):
-        argv = [_RCR, "BTC", "1h", "--mode=paper", "--market-stdin", *_rcr_refs()]
-        if closed:
-            argv.append("--closed-bar-decisions")
-        single = _run(CHECK_HL, argv, {"v": 2, "market": market})
-        assert single.returncode == 0, single.stderr
-        assert _strip(results[slot_id]) == _strip(json.loads(single.stdout))
-    assert results["on"]["signal"] == 1
-    assert results["off"]["signal"] == 0
-    assert results["off"]["indicator_labels"]["rcr_reason"] == "no_reentry"
+def test_rcr_open_position_blocks_a_new_entry_reversal_or_add(subtests):
+    for side in ["long", "short"]:
+        with subtests.test(side=side):
+            n = 40
+            bars = _rcr_bars(n, closes=_rcr_reentry(n, n - 2))
+            cutoff = bars[-1]["t"] + H // 2
+            mark = bars[-1]["c"]
+            held = _rcr_refs() + ["--position-side", side, f"--position-avg-cost={mark}",
+                                  "--position-qty=1", "--position-initial-qty=1"]
+            out = _hl_check(_RCR, bars, cutoff, closed=True, extra=held, mid=mark)
+            assert out["indicators"]["rcr_reason_code"] == 1
+            assert out["open_action"] == "long"
+            assert out["close_fraction"] == 0.0
+            assert out["signal"] == 0
 
 
 def _htf_status_frames(mode, bars):
@@ -1778,31 +1274,32 @@ def _htf_status_frames(mode, bars):
     return frames
 
 
-@pytest.mark.parametrize("mode,reason", [
-    ("missing", "fetching BTC 4h candles failed: MarketPayloadError"),
-    ("short", "49 4h candles available for BTC (need 50)"),
-    ("nan", "60 of 60 4h close values for BTC are not finite"),
-])
-def test_hyperliquid_unusable_higher_timeframe_frame_reports_unavailable_in_single_and_batch(mode, reason):
-    bars = _bars(240, forming_spike=12.0)
-    market = _market(_htf_status_frames(mode, bars), mid=bars[-1]["c"])
-    single = _run(CHECK_HL, ["breakout", "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200", "--htf-filter"],
-                  {"v": 2, "market": market})
-    assert single.returncode == 0, single.stderr + single.stdout
-    out = json.loads(single.stdout)
-    assert out["htf_filter"]["status"] == "unavailable"
-    assert reason in out["htf_filter"]["reason"]
-    assert out["signal"] == 1
-    assert single.stderr.count("HTF filter unavailable for BTC 4h: ") == 1
+def test_hyperliquid_unusable_higher_timeframe_frame_reports_unavailable_in_single_and_batch(subtests):
+    for mode, reason in [
+            ("missing", "fetching BTC 4h candles failed: MarketPayloadError"),
+            ("short", "49 4h candles available for BTC (need 50)"),
+            ("nan", "60 of 60 4h close values for BTC are not finite"),
+        ]:
+        with subtests.test(mode=mode, reason=reason):
+            bars = _bars(240, forming_spike=12.0)
+            market = _market(_htf_status_frames(mode, bars), mid=bars[-1]["c"])
+            single = _run(CHECK_HL, ["breakout", "BTC", "1h", "--mode=paper", "--market-stdin", "--ohlcv-limit", "200", "--htf-filter"],
+                          {"v": 2, "market": market})
+            assert single.returncode == 0, single.stderr + single.stdout
+            out = json.loads(single.stdout)
+            assert out["htf_filter"]["status"] == "unavailable"
+            assert reason in out["htf_filter"]["reason"]
+            assert out["signal"] == 1
+            assert single.stderr.count("HTF filter unavailable for BTC 4h: ") == 1
 
-    slots = [{"id": "a", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"], "htf_filter": True},
-             {"id": "b", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"], "htf_filter": True}]
-    batch = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200",
-                            "--atr-method=simple", "--market-stdin"], {"v": 2, "slots": slots, "market": market})
-    assert batch.returncode == 0, batch.stderr + batch.stdout
-    for slot in json.loads(batch.stdout)["results"]:
-        assert slot["htf_filter"] == out["htf_filter"]
-        assert _strip(slot) == _strip(out)
+            slots = [{"id": "a", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"], "htf_filter": True},
+                     {"id": "b", "strategy": "breakout", "mode": "paper", "mode_args": ["--mode=paper"], "htf_filter": True}]
+            batch = _run(CHECK_HL, ["--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit", "200",
+                                    "--atr-method=simple", "--market-stdin"], {"v": 2, "slots": slots, "market": market})
+            assert batch.returncode == 0, batch.stderr + batch.stdout
+            for slot in json.loads(batch.stdout)["results"]:
+                assert slot["htf_filter"] == out["htf_filter"]
+                assert _strip(slot) == _strip(out)
 
 
 def test_hyperliquid_neutral_higher_timeframe_trend_reports_ok_and_keeps_the_signal():
