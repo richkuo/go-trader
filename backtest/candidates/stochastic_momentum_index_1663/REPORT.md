@@ -1759,7 +1759,7 @@ Every grid variant of both candidate arms, held-out at base cost (descriptive; n
 - composer_and_batched_paper: 16 compute_parity_frame runs (composer and explicit-paper solo/batch slots, 200-row window and full history, both directions with the frozen close owner, plus an entry-only domain endpoint): 7776 bars compared, 0 mismatches, 38 long and 30 short opens, clean True
 - every_prefix: defaults, selected and domain-endpoint parameters on every prefix of the last 700 bars of each venue dataset: 42885 full-series vs prefix, 200-row and exact-span comparisons, 0 mismatches, 75 entry endpoints
 - grid_sampled: all 729 grid combinations at ends [450, 600, 700] of the ETH 4h tail: 6561 comparisons, 0 mismatches
-- Admission and timed closure are proved by the subprocess scenarios in `shared_scripts/test_stochastic_momentum_index_checks.py`; a parity run alone does not prove forming-row isolation.
+- Admission and timed closure are proved by the subprocess scenarios in the `stochastic_momentum_index` cases of `shared_scripts/test_strategy_check_contract.py`; a parity run alone does not prove forming-row isolation.
 
 ## Full-precision evidence and entry audit
 

@@ -66,7 +66,11 @@ CANONICAL_IDS = [
 SECTION = "SKILL.md section Add Or Change Strategies"
 WORDING_SOURCE = ["def test_message():", '    assert "x" in message()']
 CONTRACT_SOURCES = {
-    "backtest/tests/test_strategy_backtest_contract.py": ["def test_backtest_contract(case):", "    assert case"],
+    "backtest/tests/test_strategy_backtest_contract.py": [
+        "REPLACED_PER_STRATEGY_TESTS = ()",
+        "def test_backtest_contract(case):",
+        "    assert case",
+    ],
     "shared_scripts/test_strategy_check_contract.py": [
         'REPLACED_PER_STRATEGY_TESTS = ("test_retired_check",)',
         "def test_check_contract(case):",
@@ -461,6 +465,16 @@ def test_cli_rejects_a_new_test_that_reuses_a_replaced_per_strategy_name(tmp_pat
     proc = _cli(_tree(tmp_path, {rel: ["def test_retired_check():", "    assert True"]}))
     assert proc.returncode == 1
     assert f"  new: {rel}::test_retired_check" in proc.stderr.splitlines()
+
+
+@pytest.mark.parametrize("rel,first", [
+    ("shared_scripts/test_strategy_check_contract.py", "import pytest"),
+    ("backtest/tests/test_strategy_backtest_contract.py", 'REPLACED_TESTS = ("test_retired_backtest",)'),
+], ids=["check-suite-list-deleted", "backtest-suite-list-renamed"])
+def test_cli_fails_when_a_contract_suite_drops_its_replaced_name_list(tmp_path, rel, first):
+    proc = _cli(_tree(tmp_path, {rel: [first, "def test_contract(case):", "    assert case"]}))
+    assert proc.returncode == 1
+    assert f"{rel}: REPLACED_PER_STRATEGY_TESTS missing" in proc.stderr
 
 
 @pytest.mark.parametrize("value", ['"test_retired_check"', "(1,)", '("helper",)'])

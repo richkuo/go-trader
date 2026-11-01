@@ -255,10 +255,7 @@ def _test_functions(tree):
 
 
 def _replaced_names(module):
-    bound = module.assignments.get(REPLACED_NAMES)
-    if not bound:
-        return set()
-    value = bound[-1][1]
+    value = module.assignments[REPLACED_NAMES][-1][1]
     if not isinstance(value, (ast.Tuple, ast.List)):
         return None
     names = set()
@@ -311,6 +308,9 @@ def scan():
         hits[REFUSAL_GRID_RULE].extend(scanner.scan(modules[path]))
     contract_names = {func.name for path in contract_paths for _, func in _test_functions(modules[path].tree)}
     for path in contract_paths:
+        if REPLACED_NAMES not in modules[path].assignments:
+            raise BudgetError(f"{path.relative_to(ROOT)}: {REPLACED_NAMES} missing; bind it to a tuple of "
+                              "retired test names, empty when none")
         replaced = _replaced_names(modules[path])
         if replaced is None:
             raise BudgetError(f"{path.relative_to(ROOT)}: {REPLACED_NAMES} must be a tuple or list of test names")

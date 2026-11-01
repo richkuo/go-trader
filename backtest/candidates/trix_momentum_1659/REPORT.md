@@ -304,7 +304,7 @@ All 18 training variants of the 4h candidate_both arm (unsuccessful variants inc
 
 ## Integration parity
 
-Close capability on Hyperliquid perps: yes. `parity_diff` on the explicit-paper configurations (`paper_parity_1h.json`, `paper_parity_4h.json`; frozen BTC candles): clean = yes. The generic paper-batch slot does not enable closed-bar decisions; the timestamped closed-bar check coverage is in `shared_scripts/test_trix_momentum_checks.py`.
+Close capability on Hyperliquid perps: yes. `parity_diff` on the explicit-paper configurations (`paper_parity_1h.json`, `paper_parity_4h.json`; frozen BTC candles): clean = yes. The generic paper-batch slot does not enable closed-bar decisions; the timestamped closed-bar check coverage is in the `trix_momentum` cases of `shared_scripts/test_strategy_check_contract.py`, and the closed-history bounds are in `shared_scripts/test_trix_momentum_checks.py`.
 
 | config | params | batched | window | bars | mismatches | batch mismatches | long / short entries | long / short closes | clean |
 |---|---|---|---|---|---|---|---|---|---|
