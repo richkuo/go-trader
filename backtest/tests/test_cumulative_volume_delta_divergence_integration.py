@@ -17,7 +17,6 @@ from atr import ensure_atr_indicator
 from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from closed_bar import TIMESTAMP_KIND_NATIVE_CLOSE, declare_frame_cadence
-from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid
 from registry_loader import load_registry
 from strategy_composition import (
     GATE_MODE_LIVE,
@@ -114,26 +113,6 @@ def _build(sc, unit="0.2", mutate=None):
 def _run(df, series, **over):
     payload = payload_from_series(series, BAR)
     return _reg().apply_strategy(NAME, df, {**SEED, **over, "trade_flow_observations": payload})
-
-
-def test_registration_is_futures_only_bidirectional_hidden_production_refused_with_a_valid_grid():
-    reg = _reg()
-    entry = reg.STRATEGY_REGISTRY[NAME]
-    assert entry["production_refused"] is True and entry["edge_status"] == "no_edge"
-    assert entry["edge_ref"] == "backtest/candidates/cumulative_volume_delta_divergence_1638/REPORT.md"
-    assert NAME not in reg.list_strategies()
-    spot = load_registry("spot")
-    assert NAME not in spot.STRATEGY_REGISTRY
-    registry = reg._registry
-    assert registry.STRATEGIES[NAME]["short_entries"] is True
-    assert registry.production_refused_strategies() == frozenset({NAME, "bitcoin_lead_lag", "macro_event_breakout",
-                                                                  "volume_profile_reclaim", "perpetual_premium_reversion",
-                                                                  "order_book_imbalance", "inventory_market_making",
-                                                                  "cross_exchange_perp_arbitrage"})
-    grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
-    assert len(grid) == 216
-    for params in grid:
-        registry.validate_params(NAME, {**params, "expected_interval_ms": BAR})
 
 
 def test_long_divergence_arms_at_confirmation_and_enters_once_on_a_strict_reclaim():

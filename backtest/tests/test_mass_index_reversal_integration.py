@@ -16,9 +16,6 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 import eval_windows
-from atr import ensure_atr_indicator
-from backtester import Backtester, validate_close_capabilities
-from close_registry_loader import evaluate as close_evaluate
 from closed_bar import (
     FRAME_INTERVAL_ATTR,
     FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
@@ -27,18 +24,14 @@ from closed_bar import (
     TIMESTAMP_KIND_OPEN,
     declare_frame_cadence,
 )
-from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid
-from parity_diff import ParityConfig, compute_parity_frame, summarize
+from parity_diff import ParityConfig
 from registry_loader import load_registry
 from strategy_composition import (
     StrategyReference,
-    evaluate_open_close,
-    finalize_decision,
     preflight_reference_params,
 )
 
 NAME = "mass_index_reversal"
-REF = "backtest/candidates/mass_index_reversal_1670/REPORT.md"
 STUDY = os.path.join(_REPO, "backtest", "candidates", "mass_index_reversal_1670", "run_study.py")
 H = 3_600_000
 SEED = {"ema_period": 9, "sum_period": 25, "upper_threshold": 27.0, "lower_threshold": 26.5, "trend_period": 50,
@@ -183,27 +176,7 @@ def _same(a, b):
     return (math.isnan(a) and math.isnan(b)) or a == b
 
 
-def test_registration_is_futures_only_bidirectional_hidden_no_edge_with_a_valid_grid():
-    fut = _reg()
-    entry = fut.STRATEGY_REGISTRY[NAME]
-    raw = fut._registry.STRATEGIES[NAME]
-    assert entry["default_params"] == SEED
-    assert entry["edge_status"] == "no_edge" and entry["edge_ref"] == REF
-    assert entry["edge_source"] in ("unvalidated", "study_fail", "study_inconclusive")
-    assert raw["short_entries"] is True and raw["platforms"] == ("futures",)
-    assert raw["param_validator"] is not None
-    assert NAME in fut._registry.short_entry_strategies()
-    assert NAME in fut._registry.DISCOVERY_HIDDEN_STRATEGIES and NAME not in fut.list_strategies()
-    assert NAME in fut._registry.PLATFORM_ORDER["futures"] and NAME not in fut._registry.PLATFORM_ORDER["spot"]
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    grid = DEFAULT_PARAM_RANGES[NAME]
-    assert grid["bulge_filter"] == [1]
-    for key, value in SEED.items():
-        assert value in grid[key], key
-    combos = generate_param_grid(grid)
-    assert len(combos) == 324
-    for combo in combos:
-        fut._registry.validate_params(NAME, combo)
+def test_evaluator_reports_the_required_history():
     out = _apply(_frame(*_burst()))
     assert out["mir_required_history"].iloc[0] == NEED
 
@@ -403,16 +376,6 @@ INVALID_PARAMS = [
 ]
 
 
-def test_invalid_parameters_are_refused_by_the_registry_and_the_evaluator():
-    for override, needle in INVALID_PARAMS:
-        with _case(override):
-            with pytest.raises(ValueError, match=needle):
-                _reg()._registry.validate_params(NAME, override)
-            if "unknown_knob" not in override:
-                with pytest.raises(ValueError):
-                    _apply(_frame(*_burst()), **override)
-
-
 def test_the_largest_allowed_history_is_199_rows():
     _reg()._registry.validate_params(NAME, {"max_bulge_age": 101})
     out = _apply(_frame(*_burst()), max_bulge_age=101)
@@ -585,121 +548,12 @@ def test_research_legs_refuse_invalid_parameters_before_loading_candles(monkeypa
         eval_windows.run_leg(_reg(), NAME, {"recursion_length": 40}, "BTC/USDT", "1h", ("2026-01-01", "2026-02-01"))
 
 
-def _composer(df, side="", position_ctx=None, protection_df=None, params=None):
-    reg = _reg()
-    evaluation = evaluate_open_close(
-        reg.apply_strategy, reg.get_strategy, df, NAME, NAME, ["tiered_tp_pct"], side,
-        params=dict(params or SEED), position_ctx=position_ctx, close_evaluate=close_evaluate,
-        close_params_by_name={"tiered_tp_pct": CLOSE[0]["params"]}, protection_df=protection_df)
-    return evaluation, finalize_decision(evaluation, side)
-
-
-def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_open():
-    short_df = _frame(*_short_entry_mid(0.05)).iloc[:DOWN_AT + 1].copy()
-    long_df = _frame(*_short_entry_mid(-0.05)).iloc[:DOWN_AT + 1].copy()
-    _, s = _composer(short_df)
-    _, lg = _composer(long_df)
-    assert (s["open_action"], s["signal"]) == ("short", -1)
-    assert (lg["open_action"], lg["signal"]) == ("long", 1)
-    for frame in (short_df, long_df):
-        mark = float(frame["close"].iloc[-1])
-        for side in ("long", "short"):
-            ctx = {"side": side, "avg_cost": mark, "entry_atr": 1.0, "current_quantity": 1.0,
-                   "initial_quantity": 1.0}
-            _, held = _composer(frame, side, ctx)
-            assert held["signal"] == 0 and held["close_fraction"] == 0.0
-
-
-def test_entry_holds_keep_the_close_owner_executable():
-    for mutation in ("gap", "nan_close", "undeclared", "short_history", "unavailable"):
-        with _case(mutation):
-            _entry_holds_keep_the_close_owner_executable(mutation)
-
-
-def _entry_holds_keep_the_close_owner_executable(mutation):
-    df = _frame(*_short_entry_mid(0.05)).iloc[:DOWN_AT + 1].copy()
-    protection = None
-    if mutation == "gap":
-        df = _with_index(df, list(df.index[:-3]) + list(df.index[-3:] + pd.Timedelta(hours=1)))
-    elif mutation == "nan_close":
-        df = _set(df, len(df) - 4, "close", np.nan)
-    elif mutation == "undeclared":
-        df.attrs = {}
-    elif mutation == "short_history":
-        tail = df.iloc[-NEED + 1:].copy()
-        tail.attrs = dict(df.attrs)
-        df = tail
-    else:
-        protection, df = df, None
-    frame = df if df is not None else protection
-    mark = float(frame["close"].dropna().iloc[-1])
-    ctx = {"side": "long", "avg_cost": mark / 1.05, "entry_atr": 1.0, "current_quantity": 1.0,
-           "initial_quantity": 1.0}
-    evaluation, decision = _composer(df, "long", ctx, protection_df=protection)
-    if df is not None:
-        assert evaluation.open_result_df["mir_valid"].iloc[-1] == 0.0
-        assert int(evaluation.open_result_df["signal"].iloc[-1]) == 0
-    assert decision["open_action"] == "none"
-    assert decision["close_strategy"] == "tiered_tp_pct" and decision["close_fraction"] == 1.0
-    assert decision["signal"] == -1
-    _, flat = _composer(df, "", None, protection_df=protection)
-    assert flat["signal"] == 0 and flat["open_action"] == "none"
-
-
-def test_close_and_stop_owners_pass_strict_capability_validation():
-    report = validate_close_capabilities(close_refs=CLOSE, comparison_mode=None, platform="hyperliquid",
-                                         strategy_type="perps", phase="preflight").to_dict()
-    assert report["close_eligibility"] == "eligible" and not report["approximations"] and not report["refusals"]
-    assert report["incomplete_parity"] is False
-
-
-def _bt(**kw):
-    base = dict(initial_capital=1000.0, platform="hyperliquid", open_strategy={"name": NAME, "params": dict(SEED)},
-                close_strategies=CLOSE, stop_loss_atr_mult=1.0, direction="both")
-    base.update(kw)
-    return Backtester(**base)
-
-
-def test_simulator_fills_next_open_with_one_close_and_one_stop_and_no_reversal_or_scale_in():
-    df = _walk(2400, seed=31)
-    sig = ensure_atr_indicator(_apply(df))
-    assert (sig["signal"] == 1).sum() >= 3 and (sig["signal"] == -1).sum() >= 3
-    res = _bt().run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="1h", save=False)
-    trades = res["trades"]
-    assert {t["side"] for t in trades} == {"long", "short"}
-    reasons = {t["exit_reason"].split(":")[0] for t in trades}
-    assert reasons <= {"sl", "tiered_tp_pct", "end_of_data"}
-    spans = []
-    for t in trades:
-        entry = pd.Timestamp(t["entry_date"])
-        pos = sig.index.get_loc(entry)
-        assert int(sig["signal"].iloc[pos - 1]) == (1 if t["side"] == "long" else -1)
-        assert t["entry_price"] == pytest.approx(df["open"].iloc[pos], rel=0.01)
-        spans.append((entry, pd.Timestamp(t["exit_date"])))
-    spans.sort()
-    for (_, prev_exit), (next_entry, _) in zip(spans, spans[1:]):
-        assert next_entry >= prev_exit
-
-
 def _cfg(**kw):
     base = dict(strategy_name=NAME, params=dict(SEED), registry="futures", platform="hyperliquid", symbol="BTC",
                 timeframe="1h", close_refs=json.loads(json.dumps(CLOSE)), direction="both",
                 stop_kwargs={"stop_loss_atr_mult": 1.0}, comparison_mode="strict")
     base.update(kw)
     return ParityConfig(**base)
-
-
-@pytest.mark.parametrize("window", [200, 0])
-@pytest.mark.parametrize("batched", [False, True])
-def test_decision_parity_with_the_close_and_stop_owner(window, batched):
-    df = _walk(720, seed=41)
-    frame = compute_parity_frame(df, cfg=_cfg(batched=batched), window=window or None)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0 and result["mismatches"] == 0, frame[~frame["match"]].head()
-    assert result["clean"] and result["close_validation"]["close_eligibility"] == "eligible"
-    if batched:
-        assert result["batch_mismatches"] == 0
-    assert (frame["live_open_action"] == "long").any() and (frame["live_open_action"] == "short").any()
 
 
 def _study():

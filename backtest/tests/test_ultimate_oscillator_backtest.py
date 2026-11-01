@@ -2,12 +2,10 @@ import itertools
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from backtester import Backtester
 from atr import ensure_atr_indicator
 from optimizer import DEFAULT_PARAM_RANGES
-from parity_diff import ParityConfig, compute_parity_frame, summarize
 from registry_loader import load_registry
 
 NAME = "ultimate_oscillator"
@@ -69,19 +67,3 @@ def test_simulator_keeps_exits_and_stop_running_through_invalid_entry_spans():
     assert {t["side"] for t in trades} == {"long", "short"}
     assert exits_on_invalid > 0
     assert "tiered_tp_pct" in reasons and len(reasons) >= 2
-
-
-@pytest.mark.parametrize("window,batched", [(None, False), (200, False), (200, True)])
-def test_strict_decision_parity_for_the_frozen_close_and_stop(window, batched):
-    df = _market(420, 7)
-    cfg = ParityConfig(strategy_name=NAME, registry="futures", platform="hyperliquid",
-                       close_refs=CLOSE, direction="both", batched=batched,
-                       stop_kwargs={"stop_loss_atr_mult": 1.0})
-    frame = compute_parity_frame(df, cfg=cfg, window=window)
-    s = summarize(frame)
-    assert s["bars_compared"] > 0
-    assert s["mismatches"] == 0
-    assert s["clean"] is True
-    if batched:
-        assert s["batch_mismatches"] == 0
-    assert (frame["live_open_action"] != "none").sum() > 0

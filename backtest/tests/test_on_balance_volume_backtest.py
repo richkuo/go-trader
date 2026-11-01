@@ -12,7 +12,6 @@ from atr import ensure_atr_indicator
 from backtester import Backtester
 from eval_windows import run_leg
 from optimizer import DEFAULT_PARAM_RANGES
-from parity_diff import ParityConfig, compute_parity_frame, summarize
 from registry_loader import load_registry
 
 NAME = "on_balance_volume_divergence"
@@ -139,13 +138,6 @@ INVALID_PARAMS = [
     ({"volume_test": 1}, "volume_test must be a boolean"),
     ({"volume_test": "true"}, "volume_test must be a boolean"),
 ]
-
-
-def test_invalid_parameters_are_rejected():
-    for override, match in INVALID_PARAMS:
-        with _case(override):
-            with pytest.raises(ValueError, match=match):
-                _run(_frame(_long_closes()), **override)
 
 
 def test_largest_declared_support_stays_inside_the_scheduler_candle_limit():
@@ -419,59 +411,6 @@ def test_short_entry_and_no_reversal_while_open():
     assert [t["side"] for t in res["trades"]] == ["short"]
     assert res["trades"][0]["entry_date"] == str(df.index[ENTRY_ROW + 1])
     assert res["trades"][0]["exit_reason"] == "tiered_tp_pct:0.02"
-
-
-def test_invalid_entry_data_keeps_close_and_stop_processing():
-    df = _frame(_long_closes())
-    blank = df.copy()
-    blank.iloc[ENTRY_ROW + 1:, blank.columns.get_loc("volume")] = np.nan
-    sig = ensure_atr_indicator(_run(blank))
-    assert (sig["obvd_reason"].iloc[ENTRY_ROW + 1:] == "invalid_volume").all()
-    assert (sig["signal"].iloc[ENTRY_ROW + 1:] == 0).all()
-    res = _bt().run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    assert len(res["trades"]) == 1
-    assert res["trades"][0]["exit_reason"] == "tiered_tp_pct:0.02"
-
-    crash = _long_closes(tail=[100.5, 90.0, 80.0, 79.0, 78.0])
-    cdf = _frame(crash)
-    cdf.iloc[ENTRY_ROW + 2:, cdf.columns.get_loc("volume")] = -1.0
-    sig2 = ensure_atr_indicator(_run(cdf))
-    assert (sig2["obvd_reason"].iloc[ENTRY_ROW + 2:] == "invalid_volume").all()
-    res2 = _bt().run(sig2, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    assert res2["trades"][0]["exit_reason"] == "sl"
-
-
-@pytest.mark.parametrize("window", [None, 200])
-def test_non_batched_parity_matches_full_series(window):
-    cfg = ParityConfig(strategy_name=NAME, params={}, registry="futures", close_refs=TP_CLOSE,
-                       direction="both", comparison_mode="strict")
-    frame = compute_parity_frame(_market(520), cfg=cfg, window=window)
-    assert len(frame) > 0
-    assert bool(frame["match"].all())
-    assert set(frame.loc[frame["live_open_action"] != "none", "live_open_action"]) == {"long", "short"}
-
-
-def test_batched_parity_admits_explicit_paper_and_matches_solo():
-    cfg = ParityConfig(strategy_name=NAME, params={}, registry="futures", batched=True,
-                       symbol="BTC", timeframe="4h")
-    frame = compute_parity_frame(_market(240), cfg=cfg, window=200)
-    assert len(frame) > 0
-    assert bool(frame["match"].all())
-    assert (frame["batch_signal"] != 0).sum() > 0
-
-
-def test_frozen_manifest_frame_full_series_prefix_and_bounded_window_agree():
-    manifest = om.load_manifest(STUDY_MANIFEST)
-    dataset = om.dataset_by_key(manifest, "BTC 4h")
-    frame, _, coverage = om.window_frame(manifest, dataset, "test")
-    assert coverage["complete"]
-    sub = frame.iloc[:420]
-    cfg = ParityConfig(strategy_name=NAME, params={}, registry="futures", close_refs=TP_CLOSE,
-                       direction="both", comparison_mode="strict")
-    for window in (None, 200):
-        parity = compute_parity_frame(sub, cfg=cfg, window=window)
-        assert bool(parity["match"].all())
-        assert summarize(parity)["clean"]
 
 
 def test_manifest_leg_books_funding_and_execution_spec():

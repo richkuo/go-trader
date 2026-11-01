@@ -18,7 +18,7 @@ from atr import ensure_atr_indicator
 from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from closed_bar import declare_frame_cadence
-from parity_diff import _ENGINE_SLIPPAGE_PCT, ParityConfig, compute_parity_frame, summarize
+from parity_diff import _ENGINE_SLIPPAGE_PCT, ParityConfig
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
 
@@ -410,16 +410,6 @@ INVALID_PARAMS = [
 ]
 
 
-def test_invalid_parameters_are_configuration_errors():
-    for bad in INVALID_PARAMS:
-        with _case(bad):
-            df = _walk(24 * 3)
-            with pytest.raises(ValueError):
-                _apply(df, **bad)
-            with pytest.raises(ValueError):
-                _reg().validate_params(NAME, dict(P, **bad))
-
-
 BOUNDARY_PARAMS = [
     {"lookback_sessions": 7}, {"expected_interval_ms": 4 * H, "lookback_sessions": 32},
     {"expected_interval_ms": 4 * H, "session_start_hour": 8}, {"expected_interval_ms": 1_800_000,
@@ -581,26 +571,6 @@ def test_an_event_blocked_by_the_regime_gate_never_reappears_later_in_its_sessio
     assert [t["entry_date"] for t in open_gate["trades"]] == [str(df.index[49])]
 
 
-def test_invalid_entry_data_keeps_close_and_stop_management():
-    for path, want in (("up", "tp"), ("down", "sl")):
-        with _case(f"{path}-{want}"):
-            _invalid_entry_data_keeps_close_and_stop_management(path, want)
-
-
-def _invalid_entry_data_keeps_close_and_stop_management(path, want):
-    head = _base() + _session([101.0, 102.0, 103.5], per=3)
-    tail = ([104.0, 105.5, 106.5, 107.5, 108.5, 109.0] if path == "up" else [102.0, 99.0, 97.0, 95.0, 93.0, 92.0])
-    rows = head + _session(tail, per=len(tail), anchor=103.5)
-    df = _frame(rows)
-    df = df.drop(df.index[len(head)])
-    sig, res = _run_bt(df)
-    after = sig.iloc[len(head):]
-    assert (after["signal"] == 0).all() and (after["dt_reason"] == "cadence_gap").all()
-    t = res["trades"][0]
-    assert t["side"] == "long" and pd.Timestamp(t["exit_date"]) > df.index[len(head) - 1]
-    assert ("tp" in t["exit_reason"]) if want == "tp" else (t["exit_reason"] == "sl")
-
-
 def test_composer_suppresses_entries_while_open_consumes_the_event_and_keeps_closes_on_invalid_data():
     fut = _reg()
     df = _frame(_base() + _session([101.0, 103.5, 104.0, 104.5]))
@@ -637,26 +607,6 @@ def _parity_cfg(freq, **kw):
                 close_refs=[TP], direction="both")
     base.update(kw)
     return ParityConfig(**base)
-
-
-@pytest.mark.parametrize("freq,bars", [("1h", 24 * 14), ("4h", 6 * 50)])
-@pytest.mark.parametrize("window", [None, 200])
-def test_non_batched_decision_parity_is_clean(freq, bars, window):
-    df = _walk(bars, freq=freq, seed=31, step=2.0)
-    frame = compute_parity_frame(df, cfg=_parity_cfg(freq), window=window)
-    s = summarize(frame)
-    assert s["bars_compared"] > 0 and s["mismatches"] == 0 and s["clean"] is True
-    assert (frame["live_signal"] == 1).any() and (frame["live_signal"] == -1).any()
-
-
-@pytest.mark.parametrize("freq,bars", [("1h", 24 * 11), ("4h", 6 * 45)])
-@pytest.mark.parametrize("window", [None, 200])
-def test_batched_explicit_paper_slots_match_solo(freq, bars, window):
-    df = _walk(bars, freq=freq, seed=37, step=2.0)
-    frame = compute_parity_frame(df, cfg=_parity_cfg(freq, batched=True), window=window)
-    s = summarize(frame)
-    assert s["bars_compared"] > 0 and s["mismatches"] == 0 and s.get("batch_mismatches", 0) == 0
-    assert s["clean"] is True
 
 
 def _env():

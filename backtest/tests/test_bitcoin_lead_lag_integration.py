@@ -19,7 +19,7 @@ from close_registry_loader import evaluate as close_evaluate
 from closed_bar import FRAME_DECISION_TIME_ATTR, declare_frame_cadence, timings_timestamp_kind
 from lead_lag_history import LeaderDataUnavailable, cached_leader_params, refuse_leader_input_strategy
 from lead_lag_inputs import prepare_historical_inputs, prepare_sealed_inputs, support_bars
-from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid, walk_forward_optimize
+from optimizer import walk_forward_optimize
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
 
@@ -61,24 +61,6 @@ def _ctx(follower, leader, symbol="ETH/USDT"):
 
 def _run(follower, ctx, **over):
     return _reg().apply_strategy(NAME, follower, {**SEED, **over, "leader_context": ctx})
-
-
-def test_registration_grid_and_validator():
-    reg = _reg()
-    entry = reg.STRATEGY_REGISTRY[NAME]
-    registry = reg._registry
-    assert entry["production_refused"] is True and entry["edge_status"] == "no_edge"
-    assert NAME not in reg.list_strategies() and NAME not in load_registry("spot").STRATEGY_REGISTRY
-    assert NAME in registry.short_entry_strategies() and NAME in registry.DISCOVERY_HIDDEN_STRATEGIES
-    grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
-    assert len(grid) == 144
-    for params in grid:
-        registry.validate_params(NAME, {**params, "expected_interval_ms": HOUR})
-    for bad in ({"lag_bars": 0}, {"lag_bars": 1.5}, {"lag_bars": True}, {"horizon_bars": 13},
-                {"training_bars": 47}, {"training_bars": 241}, {"impulse_z": float("nan")}, {"min_r2": 1.0},
-                {"expected_interval_ms": 300_000}, {"signal_mode": "other"}, {"unknown": 1}):
-        with pytest.raises(ValueError):
-            registry.validate_params(NAME, {**SEED, **bad})
 
 
 def test_impulse_enters_once_in_its_direction_with_past_only_training_and_mirrors_short():

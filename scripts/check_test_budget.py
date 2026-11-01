@@ -14,12 +14,19 @@ PY_ROOTS = ["shared_tools", "shared_strategies", "platforms", "backtest", "share
 
 WORDING_RULE = "wording_only_tests"
 REFUSAL_GRID_RULE = "refusal_grid_tests"
-RULES = (WORDING_RULE, REFUSAL_GRID_RULE)
+CONTRACT_RULE = "contract_copy_tests"
+RULES = (WORDING_RULE, REFUSAL_GRID_RULE, CONTRACT_RULE)
+CONTRACT_MODULES = (
+    "backtest/tests/test_strategy_backtest_contract.py",
+    "shared_scripts/test_strategy_check_contract.py",
+)
 
 REFUSAL_CLASSES = ("explicit live mode", "missing mode", "invalid mode input", "invalid acknowledgement")
 REFUSAL_GRID_MIN_CASES = 3
 REFERENCE_TOKENS = ("--strategy-refs", "--open-strategy", "--close-strateg")
 STRATEGY_SECTION = "SKILL.md section Add Or Change Strategies (no-edge registration step)"
+CONTRACT_SECTION = "SKILL.md section Add Or Change Strategies (strategy contract suites)"
+REPLACED_NAMES = "REPLACED_PER_STRATEGY_TESTS"
 NAME_DEPTH = 8
 
 GO_FUNC = re.compile(r"^func (Test\w+)\(", re.M)
@@ -247,6 +254,21 @@ def _test_functions(tree):
                     yield [node.name], item
 
 
+def _replaced_names(module):
+    bound = module.assignments.get(REPLACED_NAMES)
+    if not bound:
+        return set()
+    value = bound[-1][1]
+    if not isinstance(value, (ast.Tuple, ast.List)):
+        return None
+    names = set()
+    for elt in value.elts:
+        if not (isinstance(elt, ast.Constant) and isinstance(elt.value, str) and elt.value.startswith("test")):
+            return None
+        names.add(elt.value)
+    return names
+
+
 def _read(path, errors):
     try:
         return path.read_text()
@@ -278,11 +300,27 @@ def scan():
                 modules[path] = SourceModule(path, text)
             except (SyntaxError, ValueError) as exc:
                 errors.append(f"{path.relative_to(ROOT)}: invalid test source ({exc})")
+    contract_paths = [ROOT / rel for rel in CONTRACT_MODULES]
+    for path in contract_paths:
+        if not path.is_file():
+            errors.append(f"{path.relative_to(ROOT)}: strategy contract suite missing")
     if errors:
         raise BudgetError("test budget scan failed:\n" + "\n".join(f"  {e}" for e in errors))
     scanner = RefusalGridScanner(modules, load_composition())
     for path in sorted(modules):
         hits[REFUSAL_GRID_RULE].extend(scanner.scan(modules[path]))
+    contract_names = {func.name for path in contract_paths for _, func in _test_functions(modules[path].tree)}
+    for path in contract_paths:
+        replaced = _replaced_names(modules[path])
+        if replaced is None:
+            raise BudgetError(f"{path.relative_to(ROOT)}: {REPLACED_NAMES} must be a tuple or list of test names")
+        contract_names.update(replaced)
+    for path in sorted(modules):
+        if path in contract_paths:
+            continue
+        for owner, func in _test_functions(modules[path].tree):
+            if func.name in contract_names:
+                hits[CONTRACT_RULE].append("::".join([str(path.relative_to(ROOT))] + owner + [func.name]))
     return {rule: sorted(set(ids)) for rule, ids in hits.items()}
 
 
@@ -332,6 +370,20 @@ def report(rule, new, stale):
                 print(f"  stale: {ident}", file=sys.stderr)
             rc = 1
         return rc
+    if rule == CONTRACT_RULE:
+        if new:
+            print(f"test budget exceeded ({rule}): new tests repeat a strategy contract test", file=sys.stderr)
+            for ident in new:
+                print(f"  new: {ident}", file=sys.stderr)
+            print(f"add the strategy as a case of the contract suite ({', '.join(CONTRACT_MODULES)}) instead; see {CONTRACT_SECTION}", file=sys.stderr)
+            rc = 1
+        if stale:
+            print(f"baseline lists contract-copy tests that no longer exist ({rule})", file=sys.stderr)
+            for ident in stale:
+                print(f"  stale: {ident}", file=sys.stderr)
+            print("run scripts/check_test_budget.py --write-baseline to tighten it", file=sys.stderr)
+            rc = 1
+        return rc
     if new:
         print(f"test budget exceeded ({rule}): new tests repeat the no-edge refusal matrix", file=sys.stderr)
         for ident in new:
@@ -361,14 +413,16 @@ def main():
         if args.write_baseline:
             BASELINE.write_text(json.dumps({rule: hits[rule] for rule in RULES}, indent=2) + "\n")
             print(f"baseline written: {len(hits[WORDING_RULE])} wording-only tests, "
-                  f"{len(hits[REFUSAL_GRID_RULE])} refusal-grid tests")
+                  f"{len(hits[REFUSAL_GRID_RULE])} refusal-grid tests, "
+                  f"{len(hits[CONTRACT_RULE])} contract-copy tests")
             return 0
         baseline = load_baseline()
     except BudgetError as exc:
         print(str(exc), file=sys.stderr)
         return 1
     rc = 0
-    labels = {WORDING_RULE: "wording-only tests", REFUSAL_GRID_RULE: "refusal-grid tests"}
+    labels = {WORDING_RULE: "wording-only tests", REFUSAL_GRID_RULE: "refusal-grid tests",
+              CONTRACT_RULE: "contract-copy tests"}
     for rule in RULES:
         print(f"{labels[rule]}: {len(hits[rule])} (baseline {len(baseline[rule])})")
     for rule in RULES:

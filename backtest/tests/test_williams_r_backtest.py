@@ -9,7 +9,6 @@ import offline_manifest as om
 from atr import ensure_atr_indicator
 from backtester import Backtester
 from eval_windows import run_leg
-from parity_diff import ParityConfig, compute_parity_frame, summarize
 from registry_loader import load_registry
 from regime_label_columns import (attach_regime_label_columns, feature_label_kwargs,
                                   resolve_feature_windows)
@@ -162,43 +161,6 @@ def test_range_gate_blocks_entries_only_and_reads_the_prior_bar_label():
     assert len(gated["trades"]) < len(open_ungated["trades"])
     exits = [labeled.index.get_loc(pd.Timestamp(t["exit_date"])) for t in gated["trades"]]
     assert any(labels.iloc[i] != "ranging" for i in exits)
-
-
-@pytest.mark.parametrize("window", [None, 200])
-def test_non_batched_parity_matches_full_series(window):
-    df = _market(420)
-    cfg = ParityConfig(strategy_name=NAME, params={"lookback": 14, "oversold": -80.0, "overbought": -20.0},
-                       registry="futures", platform="hyperliquid", timeframe="4h", close_refs=TP,
-                       direction="both", comparison_mode="strict")
-    frame = compute_parity_frame(df, cfg=cfg, window=window)
-    assert len(frame) > 0
-    assert bool(frame["match"].all())
-    assert (frame["live_signal"] != 0).sum() > 0
-    assert summarize(frame)["close_parity"] != "incomplete"
-
-
-@pytest.mark.parametrize("lookback", [2, 14, 100])
-def test_batched_parity_admits_explicit_paper_and_matches_solo(lookback):
-    cfg = ParityConfig(strategy_name=NAME, params={"lookback": lookback, "oversold": -80.0, "overbought": -20.0},
-                       registry="futures", platform="hyperliquid", batched=True, symbol="BTC", timeframe="4h")
-    frame = compute_parity_frame(_market(240), cfg=cfg, window=200)
-    assert len(frame) > 0
-    assert bool(frame["match"].all())
-    assert summarize(frame)["batch_mismatches"] == 0
-
-
-def test_frozen_manifest_frame_full_series_prefix_and_bounded_window_agree():
-    manifest = om.load_manifest(STUDY_MANIFEST)
-    dataset = om.dataset_by_key(manifest, "BTC 4h")
-    frame, _, coverage = om.window_frame(manifest, dataset, "test")
-    assert coverage["complete"]
-    sub = frame.iloc[:420]
-    cfg = ParityConfig(strategy_name=NAME, params={"lookback": 14, "oversold": -80.0, "overbought": -20.0},
-                       registry="futures", platform="hyperliquid", timeframe="4h", close_refs=TP,
-                       direction="both", comparison_mode="strict")
-    for window in (None, 200):
-        parity = compute_parity_frame(sub, cfg=cfg, window=window)
-        assert bool(parity["match"].all())
 
 
 def test_manifest_leg_books_funding_execution_spec_and_both_sides():

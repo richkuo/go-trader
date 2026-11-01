@@ -116,13 +116,6 @@ INVALID_PARAMS = [
 ]
 
 
-def test_invalid_parameters_raise_through_the_registry():
-    for params in INVALID_PARAMS:
-        with _case(params):
-            with pytest.raises(ValueError):
-                _apply(_frame(_flat(30)), {**PARAMS, **params})
-
-
 def test_integral_float_parameters_and_bounds_are_accepted():
     _apply(_frame(_flat(30)), {"eom_period": 14.0, "breakout_window": 20.0})
     _apply(_frame(_flat(120)), {"eom_period": 2, "breakout_window": 100})

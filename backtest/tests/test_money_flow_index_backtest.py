@@ -1,5 +1,4 @@
 import contextlib
-import json
 import math
 import os
 import subprocess
@@ -21,7 +20,7 @@ from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from eval_windows import expand_sweep
 from optimizer import DEFAULT_PARAM_RANGES
-from parity_diff import ParityConfig, compute_parity_frame, summarize
+from parity_diff import ParityConfig
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
 
@@ -83,21 +82,6 @@ def _walk(n, seed, start=100.0):
     df = pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": volume})
     df.index = pd.date_range("2026-01-01", periods=n, freq="4h")
     return df
-
-
-def test_registration_is_futures_only_bidirectional_no_edge_and_hidden():
-    fut = _reg()
-    entry = fut.STRATEGY_REGISTRY[NAME]
-    assert entry["default_params"] == {"lookback": 14, "oversold": 20.0, "overbought": 80.0}
-    assert entry["edge_status"] == "no_edge"
-    assert entry["edge_source"] in ("unvalidated", "study_fail", "study_inconclusive")
-    assert os.path.isfile(os.path.join(_REPO, entry["edge_ref"]))
-    assert fut._registry.STRATEGIES[NAME]["short_entries"] is True
-    assert fut._registry.STRATEGIES[NAME]["platforms"] == ("futures",)
-    assert NAME in fut._registry.short_entry_strategies()
-    assert NAME not in fut.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    assert set(DEFAULT_PARAM_RANGES[NAME]) == {"lookback", "oversold", "overbought"}
 
 
 HAND_DERIVED_CASES = [
@@ -216,13 +200,6 @@ INVALID_PARAMS = [
     {"oversold": -1.0}, {"overbought": 101.0}, {"oversold": 80.0, "overbought": 80.0},
     {"oversold": float("inf")}, {"overbought": True}, {"oversold": "20"},
 ]
-
-
-def test_invalid_parameters_are_explicit_errors():
-    for params in INVALID_PARAMS:
-        with _case(params):
-            with pytest.raises(ValueError):
-                _apply(_walk(30, 1), {**{"lookback": 14, "oversold": 20.0, "overbought": 80.0}, **params})
 
 
 def test_supported_bounds_decide_inside_the_200_bar_check_window():
@@ -359,37 +336,6 @@ PARITY_PARAMS = [
     {"lookback": 2, "oversold": 0.0, "overbought": 100.0},
     {"lookback": 198, "oversold": 20.0, "overbought": 80.0},
 ]
-
-
-@pytest.mark.parametrize("window", [200, None])
-@pytest.mark.parametrize("params", PARITY_PARAMS)
-def test_entry_parity_on_frozen_candles(window, params):
-    frame = compute_parity_frame(_frozen("BTC 4h", 320), cfg=_cfg(params), window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["clean"], frame[~frame["match"]].head()
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_composed_parity_covers_both_sides_with_the_close_owner(window):
-    params = {"lookback": 7, "oversold": 30.0, "overbought": 70.0}
-    cfg = _cfg(params, close_refs=json.loads(json.dumps(CLOSE)), direction="both")
-    frame = compute_parity_frame(_frozen("SOL 4h", 420), cfg=cfg, window=window)
-    result = summarize(frame)
-    assert result["mismatches"] == 0 and result["clean"], frame[~frame["match"]].head()
-    assert (frame["live_open_action"] == "long").any() and (frame["live_open_action"] == "short").any()
-    closing = frame[frame["live_close_fraction"] > 0]
-    assert (closing["live_signal"] == -1).any() and (closing["live_signal"] == 1).any()
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_batched_explicit_paper_parity_matches_solo(window):
-    params = {"lookback": 7, "oversold": 30.0, "overbought": 70.0}
-    cfg = _cfg(params, close_refs=json.loads(json.dumps(CLOSE)), direction="both", batched=True)
-    frame = compute_parity_frame(_frozen("BTC 4h", 260), cfg=cfg, window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["clean"] and result["batch_clean"], frame[~frame["match"]].head()
 
 
 def test_candidate_parity_entry_point_runs_offline():

@@ -22,7 +22,6 @@ from atr import ensure_atr_indicator
 from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from close_registry_loader import get_strategy as get_close
-from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid
 from registry_loader import load_registry
 from strategy_composition import (
     GATE_MODE_LIVE,
@@ -122,29 +121,6 @@ def _reason(out, i):
 
 UP = {EVENT_BAR: 101.2, EVENT_BAR + 1: 101.5, EVENT_BAR + 2: 101.7}
 DOWN = {EVENT_BAR: 98.8, EVENT_BAR + 1: 98.5}
-
-
-def test_registration_is_futures_only_bidirectional_hidden_production_refused_with_a_valid_grid():
-    reg = _reg()
-    entry = reg.STRATEGY_REGISTRY[NAME]
-    assert entry["production_refused"] is True and entry["edge_status"] == "no_edge"
-    assert entry["edge_ref"] == "backtest/candidates/macro_event_breakout_1654/REPORT.md"
-    assert NAME not in reg.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    registry = reg._registry
-    assert registry.STRATEGIES[NAME]["short_entries"] is True
-    assert NAME in registry.production_refused_strategies()
-    grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
-    assert len(grid) == 12
-    for params in grid:
-        registry.validate_params(NAME, params)
-    for bad in ({"confirm_bars": 7}, {"range_bars": 0}, {"max_spread_frac": 0.0}, {"confirm_bars": 3,
-                                                                                   "post_window_bars": 2},
-                {"spread_gate": "yes"}, {"event_type": "cpi"}, {"calendar_path": "x.json"},
-                {"calendar_sha256": "ABC"}, {"max_quote_age_ms": H + 1}, {"expected_interval_ms": 300_000},
-                {"unknown_key": 1}):
-        with pytest.raises(ValueError):
-            registry.validate_params(NAME, bad)
 
 
 def test_importer_is_deterministic_and_artifact_identity_is_pinned(tmp_path):

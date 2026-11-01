@@ -5,13 +5,12 @@ import sys
 
 import numpy as np
 import pandas as pd
-import pytest
 
 import offline_manifest as om
 from atr import ensure_atr_indicator
 from backtester import Backtester
 from eval_windows import run_leg
-from parity_diff import ParityConfig, compute_parity_frame, summarize
+from parity_diff import ParityConfig
 from registry_loader import load_registry
 
 NAME = "awesome_oscillator"
@@ -45,63 +44,12 @@ def _bt(**kw):
     return Backtester(**base)
 
 
-def test_long_entry_fills_next_bar_open_and_time_stop_owns_exit():
-    mids = [100.0] * 20 + [99.0, 101.0] + [101.5] * 8
-    df = _frame(mids)
-    sig = _signals(df)
-    assert sig["signal"].iloc[21] == 1
-    assert (sig["signal"].drop(sig.index[21]) == 0).all()
-    res = _bt().run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    trades = res["trades"]
-    assert len(trades) == 1
-    t = trades[0]
-    assert t["side"] == "long"
-    assert t["entry_date"] == str(df.index[22])
-    assert t["entry_price"] == pytest.approx(df["open"].iloc[22] * 1.0005)
-    assert t["exit_reason"].startswith("time_stop:")
-
-
-def test_short_mirror_and_no_reversal_while_open():
-    mids = [100.0] * 20 + [101.0, 99.0, 98.0, 97.0, 99.0] + [99.5] * 8
-    df = _frame(mids)
-    sig = _signals(df)
-    assert sig["signal"].iloc[21] == -1
-    assert sig["signal"].iloc[24] == 1
-    res = _bt(stop_loss_atr_mult=None, stop_loss_pct=0.5,
-              close_strategies=[{"name": "time_stop", "params": {"max_bars": 6}}]).run(
-        sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    assert len(res["trades"]) == 1
-    t = res["trades"][0]
-    assert t["side"] == "short"
-    assert t["entry_date"] == str(df.index[22])
-    assert t["exit_reason"].startswith("time_stop:")
-    assert t["exit_date"] == str(df.index[28])
-
-
 def _swap_high_low(df, start):
     hi, lo = df.columns.get_loc("high"), df.columns.get_loc("low")
     high = df.iloc[start:, hi].copy()
     df.iloc[start:, hi] = df.iloc[start:, lo].to_numpy()
     df.iloc[start:, lo] = high.to_numpy()
     return df
-
-
-def test_invalid_entry_data_keeps_close_and_stop_processing():
-    df = _swap_high_low(_frame([100.0] * 20 + [99.0, 101.0] + [101.5] * 6), 22)
-    sig = _signals(df)
-    assert sig["signal"].iloc[21] == 1
-    assert (sig["ao_reason"].iloc[22:] == "inconsistent_hl").all()
-    assert (sig["signal"].iloc[22:] == 0).all()
-    res = _bt().run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    assert len(res["trades"]) == 1
-    assert res["trades"][0]["exit_reason"].startswith("time_stop:")
-
-    crash = _swap_high_low(_frame([100.0] * 20 + [99.0, 101.0, 101.5] + [80.0] * 4), 22)
-    sig2 = _signals(crash)
-    assert (sig2["signal"].iloc[22:] == 0).all()
-    res2 = _bt(close_strategies=[{"name": "time_stop", "params": {"max_bars": 50}}]).run(
-        sig2, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    assert res2["trades"][0]["exit_reason"] == "sl"
 
 
 def _frozen_frame(rows=520):
@@ -114,28 +62,6 @@ def _frozen_frame(rows=520):
 def _parity_cfg(**kw):
     return ParityConfig(strategy_name=NAME, registry="futures", platform="hyperliquid",
                         close_refs=[TIME_STOP], comparison_mode="approximate", **kw)
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_non_batched_parity_on_frozen_hyperliquid_frame_is_clean(window):
-    df = _frozen_frame()
-    full = load_registry("futures").apply_strategy(NAME, df, None)
-    assert (full["signal"] != 0).sum() >= 10
-    frame = compute_parity_frame(df, cfg=_parity_cfg(), window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] >= 300
-    assert result["mismatches"] == 0
-    assert result["close_parity"] == "incomplete" and not result["clean"]
-    assert (frame["live_signal"] != 0).sum() > 0
-
-
-def test_batched_parity_admits_explicit_paper_and_matches_solo():
-    df = _frozen_frame(260)
-    frame = compute_parity_frame(df, cfg=_parity_cfg(batched=True), window=200)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["mismatches"] == 0
-    assert result["close_parity"] == "incomplete" and not result["clean"]
 
 
 def test_production_solo_check_subprocess_refuses_unacknowledged_live_before_any_exchange_call():
