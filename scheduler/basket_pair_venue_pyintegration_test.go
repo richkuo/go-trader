@@ -551,7 +551,7 @@ func TestBasketPairVenueRealRefusesBeforeAnyOrder(t *testing.T) {
 		}},
 		"hyperliquid request names another account": {provider: "hyperliquid", mutate: func(r *pairVenueRig, a *basketAction) {
 			r.f.write("hyperliquid", map[string]any{"now_ms": r.now})
-			t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0x00000000000000000000000000000000000000b2")
+			r.f.t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0x00000000000000000000000000000000000000b2")
 		}},
 		"hyperliquid native-booked purpose": {provider: "hyperliquid", mutate: func(r *pairVenueRig, a *basketAction) {
 			r.f.write("hyperliquid", map[string]any{"now_ms": r.now})
