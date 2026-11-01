@@ -1352,3 +1352,14 @@ func (h *pairTestHost) savedIncomplete() bool {
 	}
 	return p.obligation(pairObligationPolicyTimeout, "", "") != nil
 }
+
+func pairSlotAt(t0 time.Time, i int) time.Time {
+	return t0.Add(time.Duration(i) * time.Minute)
+}
+
+func (e *pairTestEnv) slotStep(i int) time.Time {
+	at := pairSlotAt(pairTestStart(), i)
+	e.slot(at, fmt.Sprintf("in-%d", i))
+	e.step(at.Add(time.Second))
+	return at
+}

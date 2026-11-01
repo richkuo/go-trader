@@ -21,26 +21,6 @@ func pairEnterExitRunner(e *pairTestEnv, hlQty float64) {
 	}
 }
 
-func pairEnterHoldRunner(e *pairTestEnv, hlQty float64) {
-	e.runner.respond = func(req pairPolicyRequest) (pairPolicyResult, error) {
-		if req.Lifecycle == pairLifecycleMatched {
-			return pairHoldResult(req, "keep the spread"), nil
-		}
-		return pairEnterResult(req, hlQty), nil
-	}
-}
-
-func pairSlotAt(t0 time.Time, i int) time.Time {
-	return t0.Add(time.Duration(i) * time.Minute)
-}
-
-func (e *pairTestEnv) slotStep(i int) time.Time {
-	at := pairSlotAt(pairTestStart(), i)
-	e.slot(at, fmt.Sprintf("in-%d", i))
-	e.step(at.Add(time.Second))
-	return at
-}
-
 func (e *pairTestEnv) assertBooks(label string, hl, okx float64) {
 	e.t.Helper()
 	if got := e.signed(pairTestHL); !basketQtyEqual(got, hl) {
