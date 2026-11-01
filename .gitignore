@@ -32,6 +32,9 @@ architecture.md
 # consolidation research generated output (regenerable)
 backtest/consolidation_out/
 
+# #1940 score file is larger than GitHub allows; the report and protocol are committed
+docs/research/1940-artifacts/results.json
+
 # #1051: auto-generated agent capability doc (contains a live-state snapshot; regenerable via `go-trader agent-info --bootstrap-md`)
 AGENTS.generated.md
 

@@ -219,22 +219,149 @@ def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, see
     return out
 
 
+_OMITTED = object()
+
+
+def _finite_number(name, value) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite number, got {value!r}") from exc
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ValueError(f"{name} must be a finite number, got {value!r}")
+    return number
+
+
+def _parse_adx_period_cap(value):
+    if value is _OMITTED:
+        return _OMITTED
+    if value is None or (isinstance(value, str) and value.strip().lower() == "none"):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or not text.lstrip("-").isdigit():
+            raise ValueError(f"adx_period_cap must be a positive int or 'none', got {value!r}")
+        value = int(text)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"adx_period_cap must be a positive int or 'none', got {value!r}")
+    return value
+
+
+def _composite_threshold_overrides(return_eff, range_eff, efficiency, composite_adx_threshold):
+    raw = {}
+    if return_eff is not None:
+        raw["return_eff"] = _finite_number("return_eff", return_eff)
+    if range_eff is not None:
+        raw["range_eff"] = _finite_number("range_eff", range_eff)
+    if efficiency is not None:
+        raw["efficiency"] = _finite_number("efficiency", efficiency)
+    if composite_adx_threshold is not None:
+        raw["adx"] = _finite_number("composite_adx_threshold", composite_adx_threshold)
+    return raw
+
+
+def _classifier_inputs_explicit(classifier, period, adx_threshold, return_eff, range_eff,
+                                efficiency, composite_adx_threshold, adx_period_cap) -> bool:
+    return not (
+        classifier is None and period is None and adx_threshold is None
+        and return_eff is None and range_eff is None and efficiency is None
+        and composite_adx_threshold is None and adx_period_cap is _OMITTED
+    )
+
+
+def _resolve_exchange(exchange):
+    from eval_windows import PLATFORM
+    if exchange is None:
+        return PLATFORM
+    text = str(exchange).strip()
+    if not text:
+        raise ValueError("exchange must be a non-empty string")
+    return text
+
+
+def _validate_period(period):
+    if period is None:
+        return None
+    if isinstance(period, bool) or not isinstance(period, int) or period < 2:
+        raise ValueError(f"period must be an int >= 2, got {period!r}")
+    return period
+
+
 def run_window(symbol, timeframe, window, *, model=None, horizons=(1, 4, 12), seed=0,
-               target="returns", n_perm=200) -> dict:
-    from regime import compute_regime_composite, composite_feature_matrix, _DEFAULT_COMPOSITE_THRESHOLDS
+               target="returns", n_perm=200, classifier=None, period=None,
+               adx_threshold=None, return_eff=None, range_eff=None, efficiency=None,
+               composite_adx_threshold=None, adx_period_cap=_OMITTED, exchange=None) -> dict:
+    from regime import (compute_regime, compute_regime_composite, composite_feature_matrix,
+                        _DEFAULT_COMPOSITE_THRESHOLDS, COMPOSITE_ADX_PERIOD_CAP,
+                        normalize_composite_thresholds)
     from data_fetcher import load_cached_data
-    from eval_windows import WINDOWS, PLATFORM
+    from eval_windows import PLATFORM, WINDOWS
+    period = _validate_period(period)
+    if adx_threshold is not None:
+        adx_threshold = _finite_number("adx_threshold", adx_threshold)
+    cap = _parse_adx_period_cap(adx_period_cap)
+    threshold_overrides = _composite_threshold_overrides(
+        return_eff, range_eff, efficiency, composite_adx_threshold)
+    explicit = _classifier_inputs_explicit(
+        classifier, period, adx_threshold, return_eff, range_eff, efficiency,
+        composite_adx_threshold, adx_period_cap)
+    if classifier is not None and classifier not in ("adx", "composite"):
+        raise ValueError(f"classifier must be 'adx' or 'composite', got {classifier!r}")
+    if model is not None and explicit:
+        raise ValueError("conflicting model and classifier overrides")
+    if classifier == "adx" and threshold_overrides:
+        raise ValueError("composite thresholds conflict with classifier 'adx'")
+    if classifier == "adx" and cap is not _OMITTED:
+        raise ValueError("adx_period_cap conflicts with classifier 'adx'")
+    if (classifier == "composite" and adx_threshold is not None
+            and composite_adx_threshold is not None
+            and float(adx_threshold) != float(composite_adx_threshold)):
+        raise ValueError("conflicting ADX thresholds")
     start, end = WINDOWS[window]
-    df = load_cached_data(symbol, timeframe, exchange_id=PLATFORM, start_date=start, end_date=end)
-    period = int(model["period"]) if model and "period" in model else DEFAULT_PERIOD
-    th = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
-    feats_df = composite_feature_matrix(df, period, th)
-    features = feats_df.to_numpy()
-    if model is None:
-        labels = compute_regime_composite(df, period=period, thresholds=th)["regime"].to_numpy()
+    if exchange is None:
+        df = load_cached_data(symbol, timeframe, exchange_id=PLATFORM, start_date=start, end_date=end)
     else:
-        from regime_hmm import forward_filter_labels
-        labels, _conf = forward_filter_labels(features, model)
+        df = load_cached_data(symbol, timeframe, exchange_id=_resolve_exchange(exchange),
+                              start_date=start, end_date=end)
+    if not explicit:
+        period_used = int(model["period"]) if model and "period" in model else DEFAULT_PERIOD
+        th = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
+        feats_df = composite_feature_matrix(df, period_used, th)
+        features = feats_df.to_numpy()
+        if model is None:
+            labels = compute_regime_composite(df, period=period_used, thresholds=th)["regime"].to_numpy()
+        else:
+            from regime_hmm import forward_filter_labels
+            labels, _conf = forward_filter_labels(features, model)
+        return score_labels(df["close"].to_numpy(), labels, features, horizons=horizons,
+                            seed=seed, target=target, n_perm=n_perm)
+
+    hand_classifier = classifier or "composite"
+    if hand_classifier == "adx":
+        period_used = 14 if period is None else period
+        threshold_used = 20.0 if adx_threshold is None else float(adx_threshold)
+        reg = compute_regime(df, period=period_used, adx_threshold=threshold_used)
+        labels = reg["regime"].to_numpy()
+        features = np.column_stack([
+            reg["adx"].to_numpy(dtype=float),
+            reg["plus_di"].to_numpy(dtype=float),
+            reg["minus_di"].to_numpy(dtype=float),
+        ])
+        ready = reg["regime_ready"].to_numpy(dtype=bool)
+        features[~ready] = np.nan
+    else:
+        period_used = DEFAULT_PERIOD if period is None else period
+        th = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
+        if adx_threshold is not None and "adx" not in threshold_overrides:
+            threshold_overrides = dict(threshold_overrides)
+            threshold_overrides["adx"] = float(adx_threshold)
+        if threshold_overrides:
+            th.update(normalize_composite_thresholds(threshold_overrides, with_defaults=False))
+        cap_used = COMPOSITE_ADX_PERIOD_CAP if cap is _OMITTED else cap
+        feats_df = composite_feature_matrix(df, period_used, th, adx_period_cap=cap_used)
+        features = feats_df.to_numpy()
+        labels = compute_regime_composite(
+            df, period=period_used, thresholds=th, adx_period_cap=cap_used)["regime"].to_numpy()
     return score_labels(df["close"].to_numpy(), labels, features, horizons=horizons,
                         seed=seed, target=target, n_perm=n_perm)
 
@@ -252,11 +379,39 @@ def build_parser() -> "argparse.ArgumentParser":
                    help="forward variable the separation is scored on (default: returns)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--json", default=None, help="write report JSON to this path")
+    p.add_argument("--classifier", default=None, choices=("adx", "composite"),
+                   help="hand-rule classifier; omitted keeps the composite hand-rule")
+    p.add_argument("--period", type=int, default=None,
+                   help="classifier period; omitted keeps the composite or fitted-model period rule")
+    p.add_argument("--adx-threshold", type=float, default=None,
+                   help="ADX label threshold, or the composite ADX threshold when classifier=composite")
+    p.add_argument("--return-eff", type=float, default=None)
+    p.add_argument("--range-eff", type=float, default=None)
+    p.add_argument("--efficiency", type=float, default=None)
+    p.add_argument("--composite-adx-threshold", type=float, default=None)
+    p.add_argument("--adx-period-cap", default=None,
+                   help="composite ADX cap, or 'none' for uncapped; omitted keeps the shipped cap")
+    p.add_argument("--exchange", default=None, help="candle exchange id; omitted keeps binanceus")
     return p
 
 
+def _cli_inputs(args) -> dict:
+    cap = None if args.adx_period_cap is None else args.adx_period_cap
+    return {
+        "classifier": args.classifier,
+        "period": args.period,
+        "adx_threshold": args.adx_threshold,
+        "return_eff": args.return_eff,
+        "range_eff": args.range_eff,
+        "efficiency": args.efficiency,
+        "composite_adx_threshold": args.composite_adx_threshold,
+        "adx_period_cap": cap,
+        "exchange": args.exchange,
+    }
+
+
 def main(argv=None) -> int:
-    import argparse, json
+    import json
     args = build_parser().parse_args(argv)
     from eval_windows import WINDOWS
     model = None
@@ -265,14 +420,25 @@ def main(argv=None) -> int:
             loaded = json.load(fh)
         model = loaded.get("model", loaded) if isinstance(loaded, dict) else loaded
     horizons = tuple(int(x) for x in args.horizons.split(","))
+    cap = _OMITTED if args.adx_period_cap is None else args.adx_period_cap
     report = {}
     for w in args.windows.split(","):
         if w not in WINDOWS:
             raise SystemExit(f"unknown window {w}; known: {list(WINDOWS)}")
-        report[w] = run_window(args.symbol, args.timeframe, w, model=model,
-                               horizons=horizons, seed=args.seed, target=args.target)
+        report[w] = run_window(
+            args.symbol, args.timeframe, w, model=model, horizons=horizons, seed=args.seed,
+            target=args.target, classifier=args.classifier, period=args.period,
+            adx_threshold=args.adx_threshold, return_eff=args.return_eff,
+            range_eff=args.range_eff, efficiency=args.efficiency,
+            composite_adx_threshold=args.composite_adx_threshold, adx_period_cap=cap,
+            exchange=args.exchange)
+    explicit = _classifier_inputs_explicit(
+        args.classifier, args.period, args.adx_threshold, args.return_eff, args.range_eff,
+        args.efficiency, args.composite_adx_threshold, cap) or args.exchange is not None
     payload = {"symbol": args.symbol, "timeframe": args.timeframe, "target": args.target,
                "source": "model" if model else "hand_rule", "windows": report}
+    if explicit:
+        payload["inputs"] = _cli_inputs(args)
     text = json.dumps(payload, indent=2, default=float)
     if args.json:
         with open(args.json, "w") as fh:
