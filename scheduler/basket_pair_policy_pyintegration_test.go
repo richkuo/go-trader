@@ -1,4 +1,4 @@
-//go:build pyintegration
+//go:build pyintegration && parkedresearch
 
 package main
 

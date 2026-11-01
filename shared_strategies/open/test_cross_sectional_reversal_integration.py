@@ -6,6 +6,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.skipif(os.environ.get("GO_TRADER_PARKED_RESEARCH") != "1", reason="parked research: set GO_TRADER_PARKED_RESEARCH=1 to run")
+
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 RANKER = os.path.join(_REPO_ROOT, "shared_scripts", "run_basket_ranker.py")
 
