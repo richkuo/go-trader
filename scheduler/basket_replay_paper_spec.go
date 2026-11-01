@@ -15,6 +15,7 @@ const (
 	pairPaperManifestVer         = 1
 	pairPaperManifestResearchVer = 2
 	pairPaperManifestAsyncVer    = 3
+	pairPaperManifestBooksVer    = 4
 	pairPaperRecordsPerStep      = 3
 	pairPaperRecordOverhead      = 96
 	pairPaperMinFundingMs        = 1000
@@ -128,8 +129,8 @@ func validatePairPaperSpec(spec *pairPaperSpec) (pairReplayLifetime, error) {
 			}
 			if json.Unmarshal(spec.ResearchConfig, &shape) == nil && len(shape.Pairs) == 1 {
 				for _, m := range shape.Pairs[0].Members {
-					if m.Source != pairSourcePublicSnapshot {
-						add("member %s source %q: isolated paper records match polls, collections and references only through the public_snapshot readers, so a %q member would need a live sealed or archive producer this recorder does not have (it never relabels a public snapshot as sealed or archive coverage)", m.StrategyID, m.Source, m.Source)
+					if m.Source != pairSourcePublicSnapshot && m.Source != pairSourceSealedFeed {
+						add("member %s source %q has no admitted live paper producer; supported sources are public_snapshot and Hyperliquid sealed_feed", m.StrategyID, m.Source)
 					}
 				}
 			}

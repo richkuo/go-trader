@@ -211,6 +211,7 @@ func pairPaperDecodeRead(blob []byte) (pairPaperReadResult, error) {
 }
 
 type recordingQuoteSource struct {
+	books     *pairPaperBooks
 	mu        sync.Mutex
 	rec       *pairRecorder
 	sources   map[string]string
@@ -260,8 +261,11 @@ func (s *recordingQuoteSource) bindContract(c basketContract) error {
 	var errs []string
 	for _, m := range c.pairMembersSorted() {
 		s.members[m.MemberID] = m
+		if m.Source == pairSourceSealedFeed && m.Provider == entryProviderHyperliquid && s.books != nil {
+			continue
+		}
 		if m.Source != pairSourcePublicSnapshot {
-			errs = append(errs, fmt.Sprintf("member %s source %q has no live paper producer; isolated paper records public_snapshot members only", m.MemberID, m.Source))
+			errs = append(errs, fmt.Sprintf("member %s source %q has no supported live paper producer for provider %s", m.MemberID, m.Source, m.Provider))
 			continue
 		}
 		spec, ok := pairSourceSpecFor(m.Provider, m.Source)
@@ -281,6 +285,9 @@ func (s *recordingQuoteSource) bindContract(c basketContract) error {
 		sort.Strings(errs)
 		s.bindErr = fmt.Errorf("paper quote input refused: %s", strings.Join(errs, "; "))
 	}
+	if s.bindErr == nil && s.books != nil {
+		s.bindErr = s.books.bind(c)
+	}
 	return s.bindErr
 }
 
@@ -295,9 +302,13 @@ func (s *recordingQuoteSource) derive(m pairContractMember, r pairPaperReadResul
 	s.mu.Lock()
 	partition, need := s.partition, s.need
 	s.mu.Unlock()
-	o, err := pairObservationFromPayloadSide(m, partition, need, r.Payload, r.ReceiptMs, 0, side)
+	generation := uint64(0)
+	if m.Source == pairSourceSealedFeed {
+		generation = 1
+	}
+	o, err := pairObservationFromPayloadSide(m, partition, need, r.Payload, r.ReceiptMs, generation, side)
 	if err != nil {
-		return pairObservation{}, fmt.Errorf("member %s recorded public read does not derive: %w", m.MemberID, err)
+		return pairObservation{}, fmt.Errorf("member %s recorded read does not derive: %w", m.MemberID, err)
 	}
 	return o, nil
 }
@@ -366,7 +377,11 @@ func (s *recordingQuoteSource) Collect(ctx context.Context, req pairCollectReque
 				mr, _ := json.Marshal(pairPaperMemberRequest{MemberID: m.MemberID, Provider: m.Provider, Instrument: m.Instrument, Depth: req.BookNeed.Depth, StartMs: req.StartMs, DeadlineMs: req.DeadlineMs})
 				var out pairRecResult
 				child, callID, cerr := h.child(cctx, pairRecCall{Kind: pairRecKindMemberRead, MemberID: m.MemberID, SlotMs: req.SlotMs, Request: mr}, func(ctx context.Context) pairRecResult {
-					out = pairPaperPublicRead(ctx, egress, m, req.BookNeed.Depth, limit)
+					if m.Source == pairSourceSealedFeed {
+						out = pairPaperCapturedBook(ctx, pairMemberRead{Partition: req.Partition, Member: m, BookNeed: req.BookNeed, SourceContract: req.SourceContracts[m.MemberID], StartMs: req.StartMs, Snapshot: req.Snapshot, SnapshotID: req.SnapshotID, Generation: req.Generation})
+					} else {
+						out = pairPaperPublicRead(ctx, egress, m, req.BookNeed.Depth, limit)
+					}
 					return out
 				})
 				switch {
@@ -472,6 +487,9 @@ func (s *recordingQuoteSource) Reference(ctx context.Context, req pairReferenceR
 	limit, egress := s.limit, s.egress
 	s.mu.Unlock()
 	res, _, err := s.rec.call(ctx, pairRecCall{Kind: pairRecKindReference, MemberID: m.MemberID, Request: reqBytes}, func(ctx context.Context, h *pairRecHandle) pairRecResult {
+		if m.Source == pairSourceSealedFeed {
+			return pairPaperCapturedBook(ctx, pairMemberRead{Partition: req.Partition, Member: m, BookNeed: req.BookNeed, SourceContract: req.SourceContract, StartMs: req.StartMs, Snapshot: req.Snapshot, SnapshotID: req.SnapshotID, Generation: req.Generation, Side: req.Side})
+		}
 		return pairPaperPublicRead(ctx, egress, m, req.BookNeed.Depth, limit)
 	})
 	if err != nil {
@@ -495,6 +513,9 @@ func (s *recordingQuoteSource) poll(ctx context.Context, memberID string) error 
 	m, ok := s.member(memberID)
 	if !ok {
 		return fmt.Errorf("the paper quote source has no bound member %s", memberID)
+	}
+	if m.Source == pairSourceSealedFeed {
+		return nil
 	}
 	s.mu.Lock()
 	limit, egress, depth, timeout := s.limit, s.egress, s.need.Depth, s.timeout
@@ -572,6 +593,9 @@ func (m *recordingVirtualMarket) Events(ctx context.Context, key pairMemberKey, 
 	if want := (pairMemberKey{Partition: key.Partition, Provider: member.Provider, AccountKey: member.AccountKey, Instrument: member.Instrument, MemberID: member.MemberID}); key != want {
 		return pairVirtualMarketWindow{}, fmt.Errorf("the recorded paper market member key %s is not the admitted key %s", key, want)
 	}
+	if member.Source == pairSourceSealedFeed && s.books != nil {
+		return s.books.events(ctx, key, afterMs, throughMs)
+	}
 	spec, _ := pairSourceSpecFor(member.Provider, member.Source)
 	cov := pairCoverage{SourceContract: spec.Contract, TimeSemantics: spec.TimeSemantics, IdentitySemantics: spec.IdentitySemantics,
 		FromMs: afterMs, ThroughMs: throughMs, Status: pairCoverageIncomplete, Gaps: []pairCoverageGap{}}
@@ -599,6 +623,20 @@ func (m *recordingVirtualMarket) Events(ctx context.Context, key pairMemberKey, 
 }
 
 func (s *recordingQuoteSource) mark(ctx context.Context, memberID string, atMs int64) (float64, error) {
+	if m, ok := s.member(memberID); ok && m.Source == pairSourceSealedFeed && s.books != nil {
+		o, err := s.books.observation(ctx, memberID, atMs, pairRecKindBookMark)
+		if err != nil {
+			return 0, err
+		}
+		if len(o.NativeBids) == 0 || len(o.NativeAsks) == 0 {
+			return 0, errors.New("the sealed management mark has no book")
+		}
+		mid, ok := pairReplayMid(o.NativeBids[0].Px, o.NativeAsks[0].Px)
+		if !ok {
+			return 0, errors.New("the sealed management mark is invalid")
+		}
+		return mid, nil
+	}
 	req, _ := json.Marshal(struct {
 		MemberID string `json:"member_id"`
 		AtMs     int64  `json:"at_ms"`

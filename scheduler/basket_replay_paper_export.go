@@ -18,9 +18,11 @@ const (
 	pairRecordingManifestVersion     = 1
 	pairRecordingManifestResearchVer = 2
 	pairRecordingManifestAsyncVer    = 3
+	pairRecordingManifestBooksVer    = 4
 	pairRecordingRefVersion          = 1
 	pairRecordingRefResearchVersion  = 2
 	pairRecordingRefAsyncVersion     = 3
+	pairRecordingRefBooksVersion     = 4
 	pairRecordingManifestName        = "recording-manifest.json"
 	pairRecordingLogName             = "recording-log.jsonl"
 	pairRecordingSeedName            = "seed-evidence.json"
@@ -149,6 +151,12 @@ func (r *pairReplayRuntime) sealRefusals(l *pairRecLog) []string {
 func (r *pairReplayRuntime) sealPaper() {
 	res := &pairPaperSealResult{}
 	r.paper.sealResult = res
+	if r.paper.books != nil && !r.paper.playback {
+		if err := r.paper.books.stop("seal"); err != nil {
+			res.Refused = []string{err.Error()}
+			return
+		}
+	}
 	l, err := readVerifiedPairRecLog(r.file, r.spec.Run.RunID, r.partition.String(), r.adm.contract)
 	if err != nil {
 		res.Refused = []string{err.Error()}
@@ -327,6 +335,10 @@ func (r *pairReplayRuntime) buildExport(l *pairRecLog) (map[string][]byte, pairR
 			}
 			switch s.Kind {
 			case pairRecKindReference, pairRecKindMatchPoll:
+				member, _ := r.rt.Contract.pairMember(s.MemberID)
+				if member.Source != pairSourcePublicSnapshot {
+					continue
+				}
 				if rd, err := pairPaperDecodeRead(end.Result); err == nil {
 					quotes[s.MemberID] = append(quotes[s.MemberID], pairReplayQuoteRecord{ReceiptMs: rd.ReceiptMs, Payload: rd.Payload})
 				}
@@ -334,6 +346,10 @@ func (r *pairReplayRuntime) buildExport(l *pairRecLog) (map[string][]byte, pairR
 				var cr pairPaperCollectResult
 				if pairReplayStrictDecode(end.Result, &cr) == nil {
 					for _, mr := range cr.Members {
+						member, _ := r.rt.Contract.pairMember(mr.MemberID)
+						if member.Source != pairSourcePublicSnapshot {
+							continue
+						}
 						quotes[mr.MemberID] = append(quotes[mr.MemberID], pairReplayQuoteRecord{ReceiptMs: mr.Read.ReceiptMs, Payload: mr.Read.Payload})
 					}
 				}
@@ -351,15 +367,30 @@ func (r *pairReplayRuntime) buildExport(l *pairRecLog) (map[string][]byte, pairR
 		}
 	}
 	for _, sc := range r.members {
+		m, _ := r.rt.Contract.pairMember(sc.ID)
+		if m.Source == pairSourceSealedFeed {
+			if r.paper.books == nil {
+				return nil, pairRecordingManifest{}, fmt.Errorf("sealed member %s has no committed book producer", sc.ID)
+			}
+			book, err := r.paper.books.exportBook(l, sc.ID)
+			if err != nil {
+				return nil, pairRecordingManifest{}, err
+			}
+			name := "books-" + sc.ID + ".json"
+			files[name] = book
+			objects = append(objects, pairExportRef(pairReplayKindBooks, sc.ID, name, book))
+		}
 		recs := quotes[sc.ID]
 		sort.SliceStable(recs, func(i, j int) bool { return recs[i].ReceiptMs < recs[j].ReceiptMs })
-		if len(recs) == 0 {
+		if m.Source == pairSourcePublicSnapshot && len(recs) == 0 {
 			notes = append(notes, fmt.Sprintf("member %s has no recorded public quote, so its standalone quotes object is empty and a plain version-2 replay refuses it", sc.ID))
 		}
 		qb, _ := json.Marshal(pairReplayQuoteDoc{V: pairReplayObjectVersion, MemberID: sc.ID, Records: recs})
 		name := "quotes-" + sc.ID + ".json"
-		files[name] = qb
-		objects = append(objects, pairExportRef(pairReplayKindQuotes, sc.ID, name, qb))
+		if m.Source == pairSourcePublicSnapshot {
+			files[name] = qb
+			objects = append(objects, pairExportRef(pairReplayKindQuotes, sc.ID, name, qb))
+		}
 		tf := r.paper.timeframes[sc.ID]
 		ivl, _ := hlCandleIntervalMs(tf)
 		var opens []int64
@@ -380,6 +411,9 @@ func (r *pairReplayRuntime) buildExport(l *pairRecLog) (map[string][]byte, pairR
 		for _, t := range opens[start:] {
 			b := candles[sc.ID][t]
 			rows = append(rows, []float64{b[0], b[1], b[2], b[3], b[4], b[5]})
+		}
+		if r.paper.manifest.Version == pairPaperManifestBooksVer && len(rows) == 0 {
+			notes = append(notes, fmt.Sprintf("member %s has no recorded management candles; standalone replay refuses its empty candle object, while recording playback uses saved read outcomes", sc.ID))
 		}
 		cb, _ := json.Marshal(pairReplayCandleDoc{V: pairReplayObjectVersion, MemberID: sc.ID, Timeframe: tf, Rows: rows})
 		cname := "candles-" + sc.ID + ".json"
@@ -409,6 +443,8 @@ func (r *pairReplayRuntime) buildExport(l *pairRecLog) (map[string][]byte, pairR
 	sort.Slice(objects, func(i, j int) bool { return objects[i].Path < objects[j].Path })
 	manifestVersion, refVersion := pairRecordingManifestVersion, pairRecordingRefVersion
 	switch r.paper.manifest.Version {
+	case pairPaperManifestBooksVer:
+		manifestVersion, refVersion = pairRecordingManifestBooksVer, pairRecordingRefBooksVersion
 	case pairPaperManifestAsyncVer:
 		manifestVersion, refVersion = pairRecordingManifestAsyncVer, pairRecordingRefAsyncVersion
 	case pairPaperManifestResearchVer:
@@ -454,8 +490,8 @@ type pairPlaybackInput struct {
 
 func pairValidateRecordingRef(ref *pairReplayRecordingRef) []string {
 	var errs []string
-	if ref.Version != pairRecordingRefVersion && ref.Version != pairRecordingRefResearchVersion && ref.Version != pairRecordingRefAsyncVersion {
-		errs = append(errs, fmt.Sprintf("recording.version %d must be %d, %d or %d", ref.Version, pairRecordingRefVersion, pairRecordingRefResearchVersion, pairRecordingRefAsyncVersion))
+	if ref.Version != pairRecordingRefVersion && ref.Version != pairRecordingRefResearchVersion && ref.Version != pairRecordingRefAsyncVersion && ref.Version != pairRecordingRefBooksVersion {
+		errs = append(errs, fmt.Sprintf("recording.version %d must be %d, %d, %d or %d", ref.Version, pairRecordingRefVersion, pairRecordingRefResearchVersion, pairRecordingRefAsyncVersion, pairRecordingRefBooksVersion))
 	}
 	if !pairReplayObjectPathPattern.MatchString(ref.Path) || strings.Contains(ref.Path, "..") {
 		errs = append(errs, fmt.Sprintf("recording.path %q must be a clean relative path inside the input root", ref.Path))
@@ -482,11 +518,15 @@ func loadPairPlaybackInput(spec *pairReplaySpec, lt pairReplayLifetime) (*pairPl
 	}
 	var errs []string
 	add := func(format string, a ...interface{}) { errs = append(errs, fmt.Sprintf(format, a...)) }
-	if man.Kind != pairRecordingManifestKind || (man.V != pairRecordingManifestVersion && man.V != pairRecordingManifestResearchVer && man.V != pairRecordingManifestAsyncVer) {
-		add("the recording manifest is %q version %d; supported versions are %d, %d and %d", man.Kind, man.V, pairRecordingManifestVersion, pairRecordingManifestResearchVer, pairRecordingManifestAsyncVer)
+	if man.Kind != pairRecordingManifestKind || (man.V != pairRecordingManifestVersion && man.V != pairRecordingManifestResearchVer && man.V != pairRecordingManifestAsyncVer && man.V != pairRecordingManifestBooksVer) {
+		add("the recording manifest is %q version %d; supported versions are %d, %d, %d and %d", man.Kind, man.V, pairRecordingManifestVersion, pairRecordingManifestResearchVer, pairRecordingManifestAsyncVer, pairRecordingManifestBooksVer)
+	}
+	shape, shapeErr := pairPaperShape(spec.ResearchConfig)
+	if shapeErr != nil || pairPaperHasBooks(shape) != (man.V == pairRecordingManifestBooksVer) {
+		add("recording family differs from admitted book sources")
 	}
 	policy := man.Scenario.FundingPolicy != nil
-	familyOK := man.V == pairRecordingManifestVersion && !policy || (man.V == pairRecordingManifestResearchVer || man.V == pairRecordingManifestAsyncVer) && policy
+	familyOK := man.V == pairRecordingManifestBooksVer || man.V == pairRecordingManifestVersion && !policy || (man.V == pairRecordingManifestResearchVer || man.V == pairRecordingManifestAsyncVer) && policy
 	if ref.Version != man.V || !familyOK {
 		add("recording reference, manifest version and funding policy families do not match")
 	}
@@ -521,6 +561,9 @@ func loadPairPlaybackInput(spec *pairReplaySpec, lt pairReplayLifetime) (*pairPl
 	if err != nil {
 		return nil, refuseReplay("input_refused", "recording seed: "+err.Error())
 	}
+	if man.V == pairRecordingManifestBooksVer && man.Log.SizeBytes > pairPaperBookLogLimit {
+		return nil, refuseReplay("input_refused", "book recording exceeds the byte limit")
+	}
 	logBlob, err := pairReplayReadObject(root, pairReplayObjectRef{Path: man.Log.Path, SHA256: man.Log.SHA256, SizeBytes: man.Log.SizeBytes})
 	if err != nil {
 		return nil, refuseReplay("input_refused", "recording log: "+err.Error())
@@ -550,7 +593,10 @@ func loadPairPlaybackInput(spec *pairReplaySpec, lt pairReplayLifetime) (*pairPl
 	if man.V == pairRecordingManifestAsyncVer {
 		wantSchema = pairRecSchemaAsync
 	}
-	if l.schema != wantSchema || (l.bind != nil && (l.bind.Family == pairPaperManifestAsyncVer) != (wantSchema == pairRecSchemaAsync)) {
+	if man.V == pairRecordingManifestBooksVer {
+		wantSchema = pairRecSchemaBooks
+	}
+	if l.schema != wantSchema || l.bind == nil || !pairPaperFamilySchema(l.bind.Family, wantSchema) {
 		return nil, refuseReplay("input_refused", fmt.Sprintf("recording manifest version %d does not match log schema %d", man.V, l.schema))
 	}
 	if l.bind == nil || l.bind.PaperIdentity != man.PaperIdentity || l.bind.SeedSHA256 != man.Seed.SHA256 {
@@ -775,7 +821,7 @@ func (r *pairReplayRuntime) playbackFundingBeforeAdmission(stateDir string, man 
 		return refuseReplay("state_foreign", err.Error())
 	}
 	l := r.rec.log
-	if l.schema == pairRecSchemaAsync {
+	if pairRecAsyncSchema(l.schema) {
 		db, err := openPairFundingSnapshot(filepath.Join(stateDir, basketReplayDBName))
 		if err != nil {
 			return refuseReplay("state_foreign", err.Error())
@@ -873,6 +919,10 @@ func (r *pairReplayRuntime) recordingChecks() (*pairPaperOutputInfo, []string, [
 				if pairRecProcessKinds[row.Event.Start.Kind] {
 					info.ProcessCalls++
 				}
+			}
+		case pairRecEventBookInput:
+			if in := row.Event.BookInput; in != nil && (in.IncompleteReason != "" || in.LostTicketFrom > 0) {
+				incomplete = append(incomplete, fmt.Sprintf("book input %d has incomplete evidence: %s", row.Seq, in.IncompleteReason))
 			}
 		case pairRecEventRecovery:
 			info.Interrupted++

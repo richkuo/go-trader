@@ -62,7 +62,7 @@ type pairAsyncOracle struct {
 }
 
 func (r *pairReplayRuntime) paperAsync() bool {
-	return r != nil && r.paper != nil && r.paper.manifest.Version == pairPaperManifestAsyncVer
+	return r != nil && r.paper != nil && (r.paper.manifest.Version == pairPaperManifestAsyncVer || r.paper.manifest.Version == pairPaperManifestBooksVer && r.paper.scenario.FundingPolicy != nil)
 }
 
 func (r *pairReplayRuntime) killOracleChild() {

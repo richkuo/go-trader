@@ -436,8 +436,13 @@ func loadPairReplayInputs(spec *pairReplaySpec) (*pairReplayInputs, error) {
 		return objs[i].MemberID < objs[j].MemberID
 	})
 	in.objects = objs
+	recordedBooks := spec.Recording != nil && spec.Recording.Version == pairRecordingRefBooksVersion
 	for _, o := range objs {
 		label := fmt.Sprintf("%s object %s", o.Kind, o.Path)
+		if spec.Recording != nil && spec.Recording.Version == pairRecordingRefBooksVersion && o.Kind == pairReplayKindBooks && o.SizeBytes > pairPaperBookObjectLimit {
+			errs = append(errs, label+": family-4 book object exceeds its byte limit")
+			continue
+		}
 		blob, err := pairReplayReadObject(spec.InputManifest.Root, o)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", label, err))
@@ -468,7 +473,7 @@ func loadPairReplayInputs(spec *pairReplaySpec) (*pairReplayInputs, error) {
 				errs = append(errs, fmt.Sprintf("%s: %v", label, err))
 				continue
 			}
-			if why := d.structural(o.MemberID); why != "" {
+			if why := d.structural(o.MemberID); why != "" && !(recordedBooks && len(d.Records) == 0 && d.V == pairReplayObjectVersion && d.MemberID == o.MemberID) {
 				errs = append(errs, fmt.Sprintf("%s: %s", label, why))
 				continue
 			}
@@ -495,6 +500,12 @@ func loadPairReplayInputs(spec *pairReplaySpec) (*pairReplayInputs, error) {
 			ivl, ok := hlCandleIntervalMs(d.Timeframe)
 			if d.V != pairReplayObjectVersion || d.MemberID != o.MemberID || !ok {
 				errs = append(errs, fmt.Sprintf("%s: version must be %d, member_id must be %s and timeframe must be a candle interval", label, pairReplayObjectVersion, o.MemberID))
+				continue
+			}
+			if recordedBooks && len(d.Rows) == 0 {
+				in.candles[o.MemberID] = []feedBar{}
+				in.timeframes[o.MemberID] = d.Timeframe
+				in.recordTotal[key] = 0
 				continue
 			}
 			bars, why := parseBasketReplayCandles(d.Rows, ivl)
