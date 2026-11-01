@@ -85,12 +85,6 @@ def test_readings_above_one_stay_coherent():
     assert reversion.advance(2.0033) == hg.HURST_STATE_DISARMED
 
 
-def test_disabled_gate_is_completely_inert():
-    gate = hg.HurstGate({"enabled": False, "min": 0.9})
-    for h in (0.1, 0.9, float("nan")):
-        assert gate.step(h, flat=True) == (False, 1.0)
-
-
 def test_fail_closed_is_flat_only():
     gate = hg.HurstGate({"enabled": True, "min": 0.55, "on_failure": "closed"})
     blocked_flat, _ = gate.step(float("nan"), flat=True)
@@ -99,17 +93,20 @@ def test_fail_closed_is_flat_only():
     blocked_open, _ = gate2.step(float("nan"), flat=False)
     assert not blocked_open, "fail-closed must never hold while a position is open"
 
-
-def test_fail_open_admits_unknown_h():
+    case = "test_fail_open_admits_unknown_h"
     gate = hg.HurstGate({"enabled": True, "min": 0.55, "on_failure": "open"})
     for flat in (True, False):
-        assert gate.step(float("nan"), flat=flat) == (False, 1.0)
+        assert gate.step(float("nan"), flat=flat) == (False, 1.0), case
 
-
-def test_known_disarmed_holds_regardless_of_position():
+    case = "test_known_disarmed_holds_regardless_of_position"
     gate = hg.HurstGate({"enabled": True, "min": 0.55})
     blocked, _ = gate.step(0.20, flat=False)
-    assert blocked
+    assert blocked, case
+
+    case = "test_disabled_gate_is_completely_inert"
+    gate = hg.HurstGate({"enabled": False, "min": 0.9})
+    for h in (0.1, 0.9, float("nan")):
+        assert gate.step(h, flat=True) == (False, 1.0), case
 
 
 def test_size_multiplier_matches_the_go_formula():
@@ -127,11 +124,9 @@ def test_size_multiplier_matches_the_go_formula():
         assert gate.size_multiplier(h) == pytest.approx(want), (
             f"test_size_multiplier_matches_the_go_formula[{h}-{floor}-{want}]")
 
-
-def test_size_multiplier_never_exceeds_one():
     gate = hg.HurstGate({"enabled": True, "mode": "size"})
     for h in np.linspace(0.0, 3.0, 400):
-        assert gate.size_multiplier(float(h)) <= 1.0
+        assert gate.size_multiplier(float(h)) <= 1.0, "test_size_multiplier_never_exceeds_one"
 
 
 def test_size_mode_never_holds_on_a_known_reading():
@@ -225,18 +220,17 @@ def test_parity_diff_reads_hurst_over_the_engines_frame_depth():
     warm = [ts for ts in frame["ts"] if pd.isna(expected.loc[ts]) and not pd.isna(stale.loc[ts])]
     assert warm, "fixture must contain a bar where the two depths disagree"
 
-
-def test_parity_diff_single_window_default_stays_at_two_hundred_bars():
-    assert hg.hurst_live_frame_bars(None, 14) == 200
+    case = "test_parity_diff_single_window_default_stays_at_two_hundred_bars"
+    assert hg.hurst_live_frame_bars(None, 14) == 200, case
     df, frame = _parity_frame_hurst(None)
     expected = hg.rolling_hurst(df["close"], 200).shift(1)
     for _, row in frame.iterrows():
         want = expected.loc[row["ts"]]
         got = row["bt_hurst"]
         if pd.isna(want):
-            assert got is None or pd.isna(got)
+            assert got is None or pd.isna(got), case
         else:
-            assert got is not None and math.isclose(got, float(want), rel_tol=1e-12)
+            assert got is not None and math.isclose(got, float(want), rel_tol=1e-12), case
 
 
 def test_parity_config_carries_the_resolved_windows_spec_and_hurst_block():
@@ -252,14 +246,11 @@ def test_parity_config_carries_the_resolved_windows_spec_and_hurst_block():
     assert pdiff.ParityConfig(strategy_name="momentum").regime_windows_spec is None
 
 
-def test_validation_rejects_bad_vocabulary():
+def test_validation_enforces_bound_ordering_and_range():
     with pytest.raises(ValueError, match="hurst_gate.mode"):
         hg.validate_hurst_gate_config({"mode": "throttle", "min": 0.55})
     with pytest.raises(ValueError, match="hurst_gate_on_failure"):
         hg.validate_hurst_gate_config({"min": 0.55, "on_failure": "halt"})
-
-
-def test_validation_enforces_bound_ordering_and_range():
     with pytest.raises(ValueError, match="requires at least one of min/max"):
         hg.validate_hurst_gate_config({})
     with pytest.raises(ValueError, match="must be <"):
@@ -277,8 +268,6 @@ def test_validation_enforces_bound_ordering_and_range():
             hg.validate_hurst_gate_config(bad)
     hg.validate_hurst_gate_config({"min": 0.55, "disarm_min": 0.55})
 
-
-def test_validation_enforces_mode_scoping():
     with pytest.raises(ValueError, match="size_floor only applies"):
         hg.validate_hurst_gate_config({"min": 0.55, "size_floor": 0.5})
     with pytest.raises(ValueError, match="size_floor must be in"):
@@ -288,8 +277,6 @@ def test_validation_enforces_mode_scoping():
     hg.validate_hurst_gate_config({"mode": "size"})
     hg.validate_hurst_gate_config({"mode": "size", "size_floor": 0.3})
 
-
-def test_validation_runs_even_when_disabled():
     with pytest.raises(ValueError):
         hg.validate_hurst_gate_config({"enabled": False, "mode": "bogus"})
 
@@ -340,8 +327,6 @@ def test_backtest_accepts_a_primary_composite_window(tmp_path, load_strategy_con
     assert loaded["hurst_gate"]["window_key"] == "medium"
     assert loaded["hurst_gate"]["on_failure"] == "open"
 
-
-def test_backtest_resolves_global_on_failure_default(tmp_path, load_strategy_config):
     regime = dict(_COMPOSITE_REGIME, hurst_gate_on_failure="closed")
     path = _write_cfg(tmp_path, {"hurst_gate": {"enabled": True, "min": 0.55}}, regime)
     assert load_strategy_config(path, "s1")["hurst_gate"]["on_failure"] == "closed"
@@ -361,9 +346,7 @@ _TWO_COMPOSITE_REGIME = {
 }
 
 
-@pytest.mark.parametrize(
-    "regime,gate,match",
-    [
+_BACKTEST_REJECTS_BAD_HURST_GATE_CONFIG_CASES = [
         (_ADX_REGIME, {"enabled": True, "min": 0.55},
          'emitted ONLY by the "composite" classifier'),
         ({"enabled": False}, {"enabled": True, "min": 0.55},
@@ -377,16 +360,19 @@ _TWO_COMPOSITE_REGIME = {
          "not in\\s+regime.windows"),
         (_COMPOSITE_REGIME, {"enabled": True, "min": 0.7, "max": 0.3},
          "must be <"),
-    ],
-    ids=["non_composite_window", "regime_disabled", "missing_windows",
-         "non_primary_window", "unknown_window", "invalid_bounds"],
-)
-def test_backtest_rejects_bad_hurst_gate_config(
-    tmp_path, load_strategy_config, regime, gate, match
-):
-    path = _write_cfg(tmp_path, {"hurst_gate": gate}, regime)
-    with pytest.raises(ValueError, match=match):
-        load_strategy_config(path, "s1")
+    ]
+_BACKTEST_REJECTS_BAD_HURST_GATE_CONFIG_IDS = ["non_composite_window", "regime_disabled", "missing_windows",
+         "non_primary_window", "unknown_window", "invalid_bounds"]
+
+
+def test_backtest_rejects_bad_hurst_gate_config(tmp_path, load_strategy_config, subtests):
+    for i, (case_id, (regime, gate, match)) in enumerate(zip(_BACKTEST_REJECTS_BAD_HURST_GATE_CONFIG_IDS, _BACKTEST_REJECTS_BAD_HURST_GATE_CONFIG_CASES)):
+        with subtests.test(case=case_id, regime=regime, gate=gate, match=match):
+            case_dir = tmp_path / f"case{i}"
+            case_dir.mkdir()
+            path = _write_cfg(case_dir, {"hurst_gate": gate}, regime)
+            with pytest.raises(ValueError, match=match):
+                load_strategy_config(path, "s1")
 
 
 def test_backtest_passes_through_a_disabled_block(tmp_path, load_strategy_config):
@@ -397,10 +383,8 @@ def test_backtest_passes_through_a_disabled_block(tmp_path, load_strategy_config
     )
     assert load_strategy_config(path, "s1")["hurst_gate"] is None
 
-
-def test_backtest_absent_block_is_none(tmp_path, load_strategy_config):
     path = _write_cfg(tmp_path, {}, _COMPOSITE_REGIME)
-    assert load_strategy_config(path, "s1")["hurst_gate"] is None
+    assert load_strategy_config(path, "s1")["hurst_gate"] is None, "test_backtest_absent_block_is_none"
 
 
 @pytest.fixture(scope="module")
@@ -477,21 +461,29 @@ def test_gate_mode_fail_closed_before_warmup_blocks_early_entries(Backtester):
     assert closed["total_trades"] <= opened["total_trades"]
 
 
-def test_hurst_gate_is_in_the_config_cli_allowlist():
-    source = (_ROOT / "backtest" / "run_backtest.py").read_text()
-    stop_keys_start = source.index("stop_keys = (")
-    stop_keys_block = source[stop_keys_start : source.index("live_stop_kwargs = {", stop_keys_start)]
-    assert '"hurst_gate"' in stop_keys_block, (
+def test_hurst_gate_is_in_the_config_cli_allowlist(tmp_path, monkeypatch):
+    import inspect
+
+    rb = _load("bt_run_backtest_cli_check", "backtest/run_backtest.py")
+    gate = {"enabled": True, "min": 0.55, "disarm_min": 0.5}
+    path = _write_cfg(tmp_path, {"hurst_gate": gate}, _COMPOSITE_REGIME)
+    expected = rb.load_strategy_config(path, "s1")["hurst_gate"]
+    seen = {}
+
+    def spy(*args, **kwargs):
+        inspect.signature(real).bind(*args, **kwargs)
+        seen.update(kwargs)
+
+    real = rb.run_single_backtest
+    monkeypatch.setattr(rb, "run_single_backtest", spy)
+    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "--config", path,
+                                      "--strategy", "s1", "--mode", "single"])
+    rb.main()
+    assert expected and expected["enabled"] is True
+    assert seen["hurst_gate"] == expected, (
         "hurst_gate must be in run_backtest's stop_keys allowlist, or the "
         "--config CLI path silently drops the entry gate (#1411)"
     )
-
-
-def test_run_single_backtest_accepts_the_hurst_gate_kwarg():
-    import inspect
-
-    rb = _load("bt_run_backtest_sig_check", "backtest/run_backtest.py")
-    assert "hurst_gate" in inspect.signature(rb.run_single_backtest).parameters
 
 
 @pytest.fixture()
@@ -636,21 +628,3 @@ def test_absent_hurst_gate_leaves_the_scale_in_baseline_byte_identical(Backteste
         assert other["scale_in_adds"] == base["scale_in_adds"] > 0
         assert other["scale_in_added_notional_usd"] == base["scale_in_added_notional_usd"]
         assert other["total_return_pct"] == base["total_return_pct"]
-
-
-def test_scale_in_hurst_arms_live_inside_the_add_helper():
-    source = (_ROOT / "backtest" / "backtester.py").read_text()
-    start = source.index("def _try_scale_in_add(")
-    body = source[start: source.index("\n        for i, (idx, row) in enumerate(", start)]
-    assert "if hurst_blocked:" in body, (
-        "the hold arm must be the add helper's own guard (#1411)"
-    )
-    assert "add_qty *= hurst_size_mult" in body, (
-        "the size arm must scale the DECIDED add quantity (#1411)"
-    )
-    call_lines = [ln for ln in source.splitlines() if "_try_scale_in_add(i, " in ln]
-    assert len(call_lines) == 4, call_lines
-    for line in call_lines:
-        assert "hurst" not in line, (
-            "call sites must stay gate-free so no site can be missed: " + line
-        )

@@ -244,6 +244,18 @@ def test_validate_frames_end_to_end_small():
     assert isinstance(rep["go_no_go"]["promote"], bool)
     assert rep["adx_drift"]["mean_abs"] >= 0.0
 
+    case = "test_validate_frames_in_sample_blocks_end_to_end"
+    rep = validate_frames(df_window, df_ext, eval_start, model, period=PERIOD,
+                          lookback=120, target="volatility", seed=0, horizons=(4,),
+                          in_sample=True)
+    assert rep["go_no_go"]["promote"] is False, case
+    assert any("in-sample re-score" in r for r in rep["go_no_go"]["blocking_reasons"]), case
+
+    import pytest
+    with pytest.raises(ValueError, match=r"h4"):
+        validate_frames(df_window, df_ext, eval_start, model, period=PERIOD,
+                        lookback=90, horizons=(1, 12))
+
 
 def test_validate_frames_handrule_only_without_model():
     df_ext = _ohlcv(220, seed=12)
@@ -254,32 +266,18 @@ def test_validate_frames_handrule_only_without_model():
     assert "model" not in rep and "go_no_go" not in rep
     assert "handrule" in rep and rep["adx_drift"]["n"] > 0
 
+    df_ext = _ohlcv(220, seed=32)
+    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
+    rep = validate_frames(df_window, df_ext, eval_start, None, period=PERIOD,
+                          lookback=90, horizons=(1, 12))
+    assert "go_no_go" not in rep and rep["adx_drift"]["n"] > 0
+
 
 def test_gate_primary_horizon_tracks_gate_default():
     from regime_calibrate import gate_verdict
     import inspect
     expected = int(str(inspect.signature(gate_verdict).parameters["primary"].default).lstrip("h"))
     assert _gate_primary_horizon() == expected == 4
-
-
-def test_validate_frames_rejects_horizons_missing_gate_primary():
-    import pytest
-    df_ext = _ohlcv(220, seed=31)
-    eval_start = 140
-    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
-    model = _fit_model(df_ext, filter_window=24)
-    with pytest.raises(ValueError, match=r"h4"):
-        validate_frames(df_window, df_ext, eval_start, model, period=PERIOD,
-                        lookback=90, horizons=(1, 12))
-
-
-def test_validate_frames_handrule_only_allows_horizons_without_gate_primary():
-    df_ext = _ohlcv(220, seed=32)
-    eval_start = 140
-    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
-    rep = validate_frames(df_window, df_ext, eval_start, None, period=PERIOD,
-                          lookback=90, horizons=(1, 12))
-    assert "go_no_go" not in rep and rep["adx_drift"]["n"] > 0
 
 
 def test_provenance_status_name_match_date_overlap_and_unresolvable_fit_window():
@@ -329,18 +327,6 @@ def test_windows_overlap_half_open_boundary_is_disjoint():
     assert _windows_overlap(("2025-06-10", "2026-01-01"), ("2024-01-01", "2025-01-01")) is False
     assert _windows_overlap(("2025-06-10", "2026-01-01"), ("2023-01-01", "2024-01-01")) is False
     assert _windows_overlap(("2026-01-01", None), ("2025-06-10", "2026-06-01")) is True
-
-
-def test_validate_frames_in_sample_blocks_end_to_end():
-    df_ext = _ohlcv(260, seed=33)
-    eval_start = 180
-    df_window = df_ext.iloc[eval_start:].reset_index(drop=True)
-    model = _fit_model(df_ext, filter_window=24)
-    rep = validate_frames(df_window, df_ext, eval_start, model, period=PERIOD,
-                          lookback=120, target="volatility", seed=0, horizons=(4,),
-                          in_sample=True)
-    assert rep["go_no_go"]["promote"] is False
-    assert any("in-sample re-score" in r for r in rep["go_no_go"]["blocking_reasons"])
 
 
 def test_validate_frames_scores_incumbent_at_its_own_period():
@@ -417,34 +403,24 @@ def test_main_and_validate_block_in_sample_and_promote_disjoint_oos(monkeypatch,
     assert rep["go_no_go"]["provenance_verified"] is True, case
     assert rep["go_no_go"]["promote"] is True, case
 
-
-def test_main_require_provenance_blocks_unstamped(monkeypatch, tmp_path, capsys):
-    df_ext, _ = _wire_loader(monkeypatch)
-    _stub_gate_ship(monkeypatch)
-    mj = _write_model(tmp_path, df_ext, fitted_on=None)
-    assert rbwv.main(_argv(mj, "oos")) == 0
-    capsys.readouterr()
-    assert rbwv.main(_argv(mj, "oos", extra=["--require-provenance"])) == 1
-
-
-def test_main_rejects_horizons_missing_gate_primary(monkeypatch, tmp_path):
-    import pytest
-    _wire_loader(monkeypatch)
-    df = _ohlcv(200, seed=41)
-    mj = _write_model(tmp_path, df, fitted_on={"symbol": "BTC/USDT", "timeframe": "1h",
-                                               "window": "is"})
-    argv = ["--window", "oos", "--model-json", mj, "--horizons", "1,12"]
-    with pytest.raises(SystemExit):
-        rbwv.main(argv)
-
-
-def test_main_sweep_worst_case_exit_on_in_sample(monkeypatch, tmp_path):
-    _wire_loader(monkeypatch)
-    _stub_gate_ship(monkeypatch)
-    df_ext = _ohlcv(200, seed=42)
-    mj = _write_model(tmp_path, df_ext, fitted_on={"symbol": "BTC/USDT", "timeframe": "1h",
-                                                   "window": "is"})
+    case = "test_main_sweep_worst_case_exit_on_in_sample"
     argv = ["--symbol", "BTC/USDT", "--timeframe", "1h", "--window", "is", "--model-json", mj,
             "--lookback-sweep", "120,250", "--horizons", "4",
             "--agreement-threshold", "0", "--min-agreement-bars", "1"]
-    assert rbwv.main(argv) == 1
+    assert rbwv.main(argv) == 1, case
+    capsys.readouterr()
+
+    import pytest
+    argv = ["--window", "oos", "--model-json", mj, "--horizons", "1,12"]
+    with pytest.raises(SystemExit):
+        rbwv.main(argv)
+    capsys.readouterr()
+
+    case = "test_main_require_provenance_blocks_unstamped"
+    unstamped = json.loads(open(mj).read())
+    unstamped["model"].pop("fitted_on")
+    mj_unstamped = tmp_path / "model_unstamped.json"
+    mj_unstamped.write_text(json.dumps(unstamped))
+    assert rbwv.main(_argv(str(mj_unstamped), "oos")) == 0, case
+    capsys.readouterr()
+    assert rbwv.main(_argv(str(mj_unstamped), "oos", extra=["--require-provenance"])) == 1, case

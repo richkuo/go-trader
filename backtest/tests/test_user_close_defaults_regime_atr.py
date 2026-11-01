@@ -191,20 +191,25 @@ def _legacy_trail_config() -> dict:
     }
 
 
-@pytest.mark.parametrize("duplicate_canonical", [False, True])
-def test_load_strategy_config_accepts_legacy_trail_key(
-        tmp_path, duplicate_canonical):
-    cfg = _legacy_trail_config()
-    if duplicate_canonical:
-        sc = cfg["strategies"][0]
-        sc["trailing_stop_atr_mult_regime"] = json.loads(
-            json.dumps(sc["trail_stop_atr_regime"]))
-    path = tmp_path / "config.json"
-    path.write_text(json.dumps(cfg))
-    kwargs = load_strategy_config(str(path), "hl-test")
-    assert "trail_stop_atr_regime" not in kwargs
-    block = kwargs["trailing_stop_atr_mult_regime"]
-    assert block["trend_regime"]["ranging"]["atr_multiple"] == 2.0
+_LOAD_STRATEGY_CONFIG_ACCEPTS_LEGACY_TRAIL_KEY_CASES = [False, True]
+
+
+def test_load_strategy_config_accepts_legacy_trail_key(tmp_path, subtests):
+    for i, duplicate_canonical in enumerate(_LOAD_STRATEGY_CONFIG_ACCEPTS_LEGACY_TRAIL_KEY_CASES):
+        with subtests.test(case=i, duplicate_canonical=duplicate_canonical):
+            case_dir = tmp_path / f"case{i}"
+            case_dir.mkdir()
+            cfg = _legacy_trail_config()
+            if duplicate_canonical:
+                sc = cfg["strategies"][0]
+                sc["trailing_stop_atr_mult_regime"] = json.loads(
+                    json.dumps(sc["trail_stop_atr_regime"]))
+            path = case_dir / "config.json"
+            path.write_text(json.dumps(cfg))
+            kwargs = load_strategy_config(str(path), "hl-test")
+            assert "trail_stop_atr_regime" not in kwargs
+            block = kwargs["trailing_stop_atr_mult_regime"]
+            assert block["trend_regime"]["ranging"]["atr_multiple"] == 2.0
 
 
 def test_load_strategy_config_legacy_and_canonical_trail_keys_agree(tmp_path):
@@ -222,21 +227,26 @@ def test_load_strategy_config_legacy_and_canonical_trail_keys_agree(tmp_path):
     )
 
 
-@pytest.mark.parametrize("conflicting_key", [
+_LOAD_STRATEGY_CONFIG_REJECTS_CONFLICTING_TRAIL_KEYS_CASES = [
     "trailing_stop_atr_mult_regime",
     "trailing_stop_atr_regime",
-])
-def test_load_strategy_config_rejects_conflicting_trail_keys(
-        tmp_path, conflicting_key):
-    cfg = _legacy_trail_config()
-    cfg["strategies"][0][conflicting_key] = {
-        "trend_regime": {
-            "trending_up": {"atr_multiple": 1.1},
-            "trending_down": {"atr_multiple": 1.1},
-            "ranging": {"atr_multiple": 1.1},
-        }
-    }
-    path = tmp_path / "config.json"
-    path.write_text(json.dumps(cfg))
-    with pytest.raises(ValueError):
-        load_strategy_config(str(path), "hl-test")
+]
+
+
+def test_load_strategy_config_rejects_conflicting_trail_keys(tmp_path, subtests):
+    for i, conflicting_key in enumerate(_LOAD_STRATEGY_CONFIG_REJECTS_CONFLICTING_TRAIL_KEYS_CASES):
+        with subtests.test(case=i, conflicting_key=conflicting_key):
+            case_dir = tmp_path / f"case{i}"
+            case_dir.mkdir()
+            cfg = _legacy_trail_config()
+            cfg["strategies"][0][conflicting_key] = {
+                "trend_regime": {
+                    "trending_up": {"atr_multiple": 1.1},
+                    "trending_down": {"atr_multiple": 1.1},
+                    "ranging": {"atr_multiple": 1.1},
+                }
+            }
+            path = case_dir / "config.json"
+            path.write_text(json.dumps(cfg))
+            with pytest.raises(ValueError):
+                load_strategy_config(str(path), "hl-test")

@@ -316,14 +316,6 @@ def test_stops_from_kwargs_collects_present_drops_none_and_empty_without_stops()
         "test_stops_from_kwargs_empty_when_no_stops"
 
 
-def test_candidate_stops_inherit_copies_and_drop_clears():
-    incumbent = {"stop_loss_atr_mult": 1.5}
-    inh = m._candidate_stops("inherit", incumbent)
-    assert inh == incumbent and inh is not incumbent
-    assert m._candidate_stops("drop", incumbent) == {}
-    assert m._candidate_stops("inherit", None) == {}
-
-
 def test_backtester_kwargs_threads_present_stops_only_none_and_regime_trailing():
     case = "test_backtester_kwargs_threads_present_stops_only"
     kw = m._backtester_kwargs(
@@ -348,6 +340,12 @@ def test_backtester_kwargs_threads_present_stops_only_none_and_regime_trailing()
 
 
 def test_control_keeps_stop_regardless_of_candidate_mode():
+    incumbent = {"stop_loss_atr_mult": 1.5}
+    inh = m._candidate_stops("inherit", incumbent)
+    assert inh == incumbent and inh is not incumbent, "test_candidate_stops_inherit_copies_and_drop_clears"
+    assert m._candidate_stops("drop", incumbent) == {}, "test_candidate_stops_inherit_copies_and_drop_clears"
+    assert m._candidate_stops("inherit", None) == {}, "test_candidate_stops_inherit_copies_and_drop_clears"
+
     incumbent_stops = {"stop_loss_atr_mult": 1.5}
     control_kw = m._backtester_kwargs(
         "sqz", {}, [{"name": "tiered_tp_atr", "params": {}}], "long", 10000.0,
@@ -396,33 +394,37 @@ def test_resolve_spec_explicit_path_has_no_stops_and_accepts_valid_gate_windows(
         "test_gate_window_on_single_window_spec_naming_that_window_ok"
 
 
-@pytest.mark.parametrize(
-    "windows_json,gate_window",
-    [
+_GATE_WINDOW_REJECTED_CASES = [
         (_MULTI_WINDOW, "slow"),
         (_MULTI_WINDOW, "fast"),
         (_SINGLE_WINDOW, "nope"),
-    ],
-    ids=["multi_window_slow", "multi_window_fast", "absent_window"],
-)
-def test_gate_window_rejected(windows_json, gate_window):
-    with pytest.raises(SystemExit):
-        m._resolve_spec(_spec_args(["--regime-windows-json", windows_json,
-                                    "--gate-window", gate_window]))
+    ]
+_GATE_WINDOW_REJECTED_IDS = ["multi_window_slow", "multi_window_fast", "absent_window"]
 
 
-@pytest.mark.parametrize(
-    "incumbent",
-    [
-        {"invert_signal": True},
-        {"regime_directional_policy": {"trending_up": "long"}},
-        {"profile_allocation": {"window": "long", "param_sets": {}}},
-    ],
-    ids=["invert_signal", "regime_directional_policy", "profile_allocation"],
-)
-def test_reject_unreplayable_entry_shapers(incumbent):
-    with pytest.raises(SystemExit):
-        m._reject_unreplayable_entry_shapers(incumbent)
+def test_gate_window_rejected(subtests):
+    for i, (case_id, (windows_json, gate_window)) in enumerate(zip(_GATE_WINDOW_REJECTED_IDS, _GATE_WINDOW_REJECTED_CASES)):
+        with subtests.test(case=case_id, windows_json=windows_json, gate_window=gate_window):
+            with pytest.raises(SystemExit):
+                m._resolve_spec(_spec_args(["--regime-windows-json", windows_json,
+                                            "--gate-window", gate_window]))
+
+
+def test_reject_unreplayable_entry_shapers(subtests):
+    for case_id, incumbent in [
+        ("invert_signal", {"invert_signal": True}),
+        ("regime_directional_policy", {"regime_directional_policy": {"trending_up": "long"}}),
+        ("profile_allocation", {"profile_allocation": {"window": "long", "param_sets": {}}}),
+    ]:
+        with subtests.test(case=case_id):
+            with pytest.raises(SystemExit):
+                m._reject_unreplayable_entry_shapers(incumbent)
+
+    with subtests.test(case="test_no_reject_when_entry_shapers_absent_or_falsy"):
+        m._reject_unreplayable_entry_shapers({"open_strategy": {"name": "x"}})
+        m._reject_unreplayable_entry_shapers(
+            {"invert_signal": False, "regime_directional_policy": None,
+             "profile_allocation": {}})
 
 
 def test_reject_names_all_offenders():
@@ -434,13 +436,6 @@ def test_reject_names_all_offenders():
     msg = str(ei.value)
     assert "invert_signal" in msg and "regime_directional_policy" in msg \
         and "profile_allocation" in msg
-
-
-def test_no_reject_when_entry_shapers_absent_or_falsy():
-    m._reject_unreplayable_entry_shapers({"open_strategy": {"name": "x"}})
-    m._reject_unreplayable_entry_shapers(
-        {"invert_signal": False, "regime_directional_policy": None,
-         "profile_allocation": {}})
 
 
 def test_candidate_stacks_on_inherited_stop_only_for_stop_candidates_with_an_inherited_stop():
@@ -517,9 +512,13 @@ def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):
     assert res is not None and res["paired_diag"]["paired"] == 1
 
 
-def test_backtester_kwargs_carry_intrabar_resolution():
+def test_backtester_kwargs_carry_intrabar_resolution(monkeypatch):
     kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
     assert kw["intrabar_resolution"] == m.INTRABAR_RESOLUTION == "ohlc_walk"
+
+    monkeypatch.setattr(m, "INTRABAR_RESOLUTION", "bar_close")
+    kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
+    assert kw["intrabar_resolution"] == "bar_close", "test_module_mode_reaches_backtester_kwargs"
 
 
 def test_parser_accepts_and_rejects_intrabar_modes():
@@ -530,9 +529,3 @@ def test_parser_accepts_and_rejects_intrabar_modes():
                         ).intrabar_resolution == "bar_close"
     with pytest.raises(SystemExit):
         p.parse_args(base + ["--intrabar-resolution", "nonsense"])
-
-
-def test_module_mode_reaches_backtester_kwargs(monkeypatch):
-    monkeypatch.setattr(m, "INTRABAR_RESOLUTION", "bar_close")
-    kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
-    assert kw["intrabar_resolution"] == "bar_close"

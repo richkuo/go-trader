@@ -146,7 +146,7 @@ def test_rank_rows_orders_by_drag_no_trades_last_and_tiebreaks_by_name():
     assert ordered == ["alpha", "zeta"], case
 
 
-def test_render_markdown_has_table_and_sections():
+def test_render_markdown_unscreened_short_section_and_dagger():
     ranked = [
         fa.aggregate_strategy("churner", "spot",
                               [_leg(1500, 365.0, -40.0, 6.0)]),
@@ -166,8 +166,6 @@ def test_render_markdown_has_table_and_sections():
     assert "churner" in md
     assert "raise selectivity" in md
 
-
-def test_render_markdown_unscreened_short_section_and_dagger():
     ranked = fa.rank_rows([
         fa.aggregate_strategy("shorty", "futures",
                               [_leg(80, 365.0, -10.0, -2.0)],

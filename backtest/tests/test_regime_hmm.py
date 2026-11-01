@@ -61,6 +61,15 @@ def test_forward_filter_look_ahead_safe():
     lab_b, _ = forward_filter_labels(perturbed, m)
     assert list(lab_a[:71]) == list(lab_b[:71])
 
+    case = "test_decode_min_dwell_is_look_ahead_safe"
+    feats, labels = _noisy_fixture()
+    m = {**fit_label_anchored_hmm(feats, labels, STATES, filter_window=8), "decode_min_dwell": 3}
+    lab_a, _ = forward_filter_labels(feats, m)
+    perturbed = feats.copy()
+    perturbed[71:] += 100.0
+    lab_b, _ = forward_filter_labels(perturbed, m)
+    assert list(lab_a[:71]) == list(lab_b[:71]), case
+
 
 def test_forward_filter_recovers_regime():
     from regime_hmm import forward_filter_labels
@@ -164,17 +173,6 @@ def test_decode_min_dwell_holds_label_until_run_persists():
         prev = rate
     held, _ = forward_filter_labels(feats, {**m, "decode_min_dwell": 3})
     assert (held[80:115] == "s1").mean() > 0.8
-
-
-def test_decode_min_dwell_is_look_ahead_safe():
-    from regime_hmm import forward_filter_labels
-    feats, labels = _noisy_fixture()
-    m = {**fit_label_anchored_hmm(feats, labels, STATES, filter_window=8), "decode_min_dwell": 3}
-    lab_a, _ = forward_filter_labels(feats, m)
-    perturbed = feats.copy()
-    perturbed[71:] += 100.0
-    lab_b, _ = forward_filter_labels(perturbed, m)
-    assert list(lab_a[:71]) == list(lab_b[:71])
 
 
 def test_decode_stickiness_reduces_churn_without_mutating_the_model():

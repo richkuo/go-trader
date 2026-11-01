@@ -24,15 +24,19 @@ def test_build_parser_accepts():
             assert getattr(args, field) == want, f"test_build_parser_accepts[argv{i}-expected{i}] {field}"
 
 
-@pytest.mark.parametrize("argv", [
+_BUILD_PARSER_REJECTS_UNKNOWN_CHOICE_CASES = [
     ["--platform", "mystery-exchange"],
     ["--registry", "options"],
     ["--optimize-metric", "alpha_decay"],
-])
-def test_build_parser_rejects_unknown_choice(argv):
-    parser = run_backtest._build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(argv)
+]
+
+
+def test_build_parser_rejects_unknown_choice(subtests):
+    for i, argv in enumerate(_BUILD_PARSER_REJECTS_UNKNOWN_CHOICE_CASES):
+        with subtests.test(case=i, argv=argv):
+            parser = run_backtest._build_parser()
+            with pytest.raises(SystemExit):
+                parser.parse_args(argv)
 
 
 def test_run_single_backtest_threads_platform_to_backtester(monkeypatch):
@@ -127,30 +131,24 @@ def _spy_single(monkeypatch):
     return seen
 
 
-@pytest.mark.parametrize("extra_argv", [
+_MODE_THREADS_DIRECTION_CASES = [
     ["--mode", "single"],
     ["--mode", "compare"],
     ["--mode", "multi", "--symbols", "BTC/USDT"],
-])
-def test_mode_threads_direction(monkeypatch, extra_argv):
-    seen = _spy_single(monkeypatch)
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", *extra_argv,
-        "--strategy", "sma_crossover", "--direction", "short",
-    ])
-    run_backtest.main()
-    assert seen["calls"][0]["direction"] == "short"
+]
 
 
-def test_direction_both_without_close_rejected_before_running(monkeypatch):
-    seen = _spy_single(monkeypatch)
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "single",
-        "--strategy", "sma_crossover", "--direction", "both",
-    ])
-    with pytest.raises(SystemExit):
-        run_backtest.main()
-    assert "calls" not in seen
+def test_mode_threads_direction(monkeypatch, subtests):
+    for i, extra_argv in enumerate(_MODE_THREADS_DIRECTION_CASES):
+        with subtests.test(case=i, extra_argv=extra_argv):
+            with monkeypatch.context() as mp:
+                seen = _spy_single(mp)
+                mp.setattr("sys.argv", [
+                    "run_backtest.py", *extra_argv,
+                    "--strategy", "sma_crossover", "--direction", "short",
+                ])
+                run_backtest.main()
+                assert seen["calls"][0]["direction"] == "short"
 
 
 def test_direction_both_with_close_strategy_threads_through(monkeypatch):
@@ -180,11 +178,6 @@ def test_direction_short_rejected_in_optimize_mode(monkeypatch):
             run_backtest.main()
     assert "hit" not in seen
 
-
-def test_direction_both_with_default_sweep_grid_rejected(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(run_backtest, "run_walk_forward",
-                        lambda *a, **kw: seen.setdefault("hit", True))
     monkeypatch.setattr("sys.argv", [
         "run_backtest.py", "--mode", "optimize",
         "--strategy", "sma_crossover", "--sweep-close",
@@ -192,7 +185,16 @@ def test_direction_both_with_default_sweep_grid_rejected(monkeypatch):
     ])
     with pytest.raises(SystemExit):
         run_backtest.main()
-    assert "hit" not in seen
+    assert "hit" not in seen, "test_direction_both_with_default_sweep_grid_rejected"
+
+    single = _spy_single(monkeypatch)
+    monkeypatch.setattr("sys.argv", [
+        "run_backtest.py", "--mode", "single",
+        "--strategy", "sma_crossover", "--direction", "both",
+    ])
+    with pytest.raises(SystemExit):
+        run_backtest.main()
+    assert "calls" not in single, "test_direction_both_without_close_rejected_before_running"
 
 
 def test_direction_both_with_close_only_stacks_json_reaches_walk_forward(

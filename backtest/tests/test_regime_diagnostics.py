@@ -111,9 +111,6 @@ def test_score_labels_target_volatility_stamped_and_distinct():
     assert vol["h4"]["separation"]["kruskal_h"] != ret["h4"]["separation"]["kruskal_h"]
     assert vol["h4"]["separation"]["kruskal_h"] > 5.0
 
-
-def test_score_labels_rejects_unknown_target():
-    from regime_diagnostics import score_labels
     import pytest
     close = 100 * np.cumprod(1 + np.zeros(50))
     labels = np.array(["a"] * 50, dtype=object)

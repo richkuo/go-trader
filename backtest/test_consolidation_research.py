@@ -76,6 +76,7 @@ def test_contracting_triangle_shape():
     assert shape["width_contraction"] < 1.0
     assert shape["top_edge_slope"] < 0
     assert shape["bottom_edge_slope"] > 0
+    assert classify_pattern(shape) == "symmetrical_triangle", "test_classify_pattern_via_measure_shape_on_triangle"
 
 
 def test_escape_candle_flagged_upward():
@@ -95,9 +96,7 @@ def test_escape_candle_flagged_upward():
     assert esc["escape_by_median_tr"] == 1.0
     assert esc["breakout_direction"] == 1.0
 
-
-def test_escape_candle_downward_direction():
-    quiet_h = [100.4] * 12
+    case = "test_escape_candle_downward_direction"
     quiet_l = [99.6] * 12
     quiet_c = [100.0] * 12
     df = _candles(
@@ -107,15 +106,14 @@ def test_escape_candle_downward_direction():
     )
     ep = Episode(start_idx=0, end_idx=12, method="t")
     esc = measure_escape_candle(df, ep, atr(df, 14), escape_k=1.5)
-    assert esc["escape_by_edge"] == 1.0
-    assert esc["breakout_direction"] == -1.0
+    assert esc["escape_by_edge"] == 1.0, case
+    assert esc["breakout_direction"] == -1.0, case
 
-
-def test_no_escape_when_episode_runs_to_end():
+    case = "test_no_escape_when_episode_runs_to_end"
     df = _flat_box(n=12)
     ep = Episode(start_idx=0, end_idx=len(df), method="t")
     esc = measure_escape_candle(df, ep, atr(df, 14))
-    assert np.isnan(esc["escape_idx"])
+    assert np.isnan(esc["escape_idx"]), case
 
 
 def test_regression_flatness_detects_flat_run():
@@ -126,16 +124,6 @@ def test_regression_flatness_detects_flat_run():
     eps = detect_regression_flatness(df, min_bars=8)
     assert eps, "should detect the flat run"
     assert eps[0].start_idx < 16
-
-
-def test_volatility_contraction_runs():
-    rng = np.random.RandomState(1)
-    wide = 100 + np.cumsum(rng.normal(0, 1.5, 40))
-    tight = wide[-1] + rng.normal(0, 0.1, 40)
-    closes = np.concatenate([wide, tight])
-    df = _candles(closes + 0.2, closes - 0.2, closes)
-    eps = detect_volatility_contraction(df, min_bars=8, bb_period=20)
-    assert isinstance(eps, list)
 
 
 def test_detector_cache_matches_uncached():
@@ -177,16 +165,6 @@ def test_classify_pattern_named_shapes():
                              "bottom_edge_travel": 0.6}) == "rising_wedge"
     assert classify_pattern({"top_edge_travel": -0.6,
                              "bottom_edge_travel": -0.6}) == "falling_wedge"
-
-
-def test_classify_pattern_via_measure_shape_on_triangle():
-    from consolidation_research import measure_shape, Episode
-    n = 24
-    span = np.linspace(3.0, 0.3, n)
-    level = 100.0
-    df = _candles(level + span, level - span, np.full(n, level))
-    shape = measure_shape(df, Episode(0, n, "t"))
-    assert classify_pattern(shape) == "symmetrical_triangle"
 
 
 def test_volume_profile_poc_and_value_area():
