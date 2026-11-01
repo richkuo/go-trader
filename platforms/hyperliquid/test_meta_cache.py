@@ -64,11 +64,6 @@ def adapter_mod():
     return _load_adapter_module()
 
 
-@pytest.fixture
-def cache_path(tmp_path):
-    return str(tmp_path / "hl_meta.json")
-
-
 def _sample_meta():
     return (
         {"universe": [{"index": 0, "name": "USDC/USDC", "tokens": [0, 0]}],
@@ -77,24 +72,26 @@ def _sample_meta():
     )
 
 
-@pytest.mark.parametrize("case", ["fresh", "expired", "coin_missing", "file_missing", "malformed_value"])
-def test_sz_decimals_from_meta_cache_reads_lot_size_offline(adapter_mod, cache_path, case):
-    spot_meta, meta = _sample_meta()
-    if case == "malformed_value":
-        meta = {"universe": [{"name": "ETH", "szDecimals": "four"}]}
-    if case != "file_missing":
-        adapter_mod._save_meta_cache(spot_meta, meta, path=cache_path)
-    if case == "expired":
-        with open(cache_path) as f:
-            payload = json.load(f)
-        payload["ts"] = time.time() - 10 * adapter_mod.META_CACHE_TTL_S
-        with open(cache_path, "w") as f:
-            json.dump(payload, f)
-    symbol = "DOGE" if case == "coin_missing" else "ETH"
+def test_sz_decimals_from_meta_cache_reads_lot_size_offline(adapter_mod, tmp_path, subtests):
+    for case in ["fresh", "expired", "coin_missing", "file_missing", "malformed_value"]:
+        with subtests.test(case=case):
+            cache_path = str(tmp_path / f"{case}_hl_meta.json")
+            spot_meta, meta = _sample_meta()
+            if case == "malformed_value":
+                meta = {"universe": [{"name": "ETH", "szDecimals": "four"}]}
+            if case != "file_missing":
+                adapter_mod._save_meta_cache(spot_meta, meta, path=cache_path)
+            if case == "expired":
+                with open(cache_path) as f:
+                    payload = json.load(f)
+                payload["ts"] = time.time() - 10 * adapter_mod.META_CACHE_TTL_S
+                with open(cache_path, "w") as f:
+                    json.dump(payload, f)
+            symbol = "DOGE" if case == "coin_missing" else "ETH"
 
-    got = adapter_mod.sz_decimals_from_meta_cache(symbol, path=cache_path)
+            got = adapter_mod.sz_decimals_from_meta_cache(symbol, path=cache_path)
 
-    if case in ("fresh", "expired"):
-        assert got == 4
-    else:
-        assert got is None
+            if case in ("fresh", "expired"):
+                assert got == 4
+            else:
+                assert got is None

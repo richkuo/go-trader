@@ -524,6 +524,8 @@ def _prefix_violations(fn, params, df, cache_key):
 def _sweep_cases():
     cases = []
     for name, entry in _REGISTRY.STRATEGIES.items():
+        if name in SKIP_STRATEGIES:
+            continue
         seen = {}
         for platform in entry["platforms"]:
             merged = {
@@ -541,8 +543,6 @@ def _sweep_cases():
 
 @pytest.mark.parametrize("name,params", _sweep_cases())
 def test_registry_strategy_is_truncation_invariant(name, params):
-    if name in SKIP_STRATEGIES:
-        pytest.skip(f"{name}: {SKIP_STRATEGIES[name]}")
     fn = _REGISTRY.STRATEGIES[name]["fn"]
     if name in STRATEGY_INPUTS:
         fn = STRATEGY_INPUTS[name](fn)
