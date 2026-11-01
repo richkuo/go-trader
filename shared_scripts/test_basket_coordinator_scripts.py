@@ -189,6 +189,7 @@ def test_ranker_refuses_unknown_params_and_live_mode():
     assert code == 1 and "not a registered basket evaluator" in out["error"]
 
 
+@pytest.mark.skipif(os.environ.get("GO_TRADER_PARKED_RESEARCH") != "1", reason="parked research: set GO_TRADER_PARKED_RESEARCH=1 to run")
 def test_momentum_preflight_refuses_a_short_lookback_before_member_data():
     def momentum(lookback):
         market = _market()

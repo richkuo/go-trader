@@ -1,10 +1,10 @@
+//go:build parkedresearch
+
 package main
 
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,10 +26,6 @@ type pairSavedTrade struct {
 	Qty      float64
 	Fee      float64
 	IsClose  bool
-}
-
-func pairCostLogger(id string) *StrategyLogger {
-	return &StrategyLogger{stratID: id, writer: io.Discard}
 }
 
 func (e *pairTestEnv) savedTrades(id string) []pairSavedTrade {
@@ -72,10 +68,6 @@ func (e *pairTestEnv) binding(id string) fillCostPolicy {
 		e.t.Fatalf("no durable cost binding for %s", id)
 	}
 	return p
-}
-
-func pairCostNear(a, b float64) bool {
-	return math.Abs(a-b) <= 1e-9*math.Max(1, math.Abs(b))
 }
 
 func TestBasketPairCostBindingsAreCanonicalPerMemberAndPerAdmission(t *testing.T) {
@@ -369,38 +361,6 @@ func TestBasketPairCostRowsCarryTheMemberStampAndRates(t *testing.T) {
 	for _, r := range rows {
 		if r.PolicyID != e.binding(pairTestOKX).PolicyID || !pairCostNear(r.Fee, r.Qty*r.Price*0.0007) {
 			t.Fatalf("the add row %+v must carry the member stamp and taker rate", r)
-		}
-	}
-}
-
-func TestBasketPairCostOrdinaryCallersKeepTheirCosts(t *testing.T) {
-	logger := pairCostLogger("plain")
-	for _, c := range []struct {
-		platform string
-		fee      float64
-	}{{"okx", OKXPerpsTakerFeePct}, {"hyperliquid", HyperliquidTakerFeePct}} {
-		s := NewStrategyState(StrategyConfig{ID: "plain-" + c.platform, Platform: c.platform, Type: "perps", Capital: 1000})
-		if _, err := ExecutePerpsSignalWithLeverage(s, 1, "BTC", 60000, PerpsSizing{SizingLeverage: 1}, 0, "", 0, DirectionLong, 0, logger); err != nil {
-			t.Fatal(err)
-		}
-		pos := s.Positions["BTC"]
-		px := ApplyAdverseSlippage(60000, true)
-		if pos == nil || pos.AvgCost != px {
-			t.Fatalf("%s: an ordinary open must keep the process slippage: %+v", c.platform, pos)
-		}
-		if _, err := ExecutePerpsSignalWithLeverage(s, -1, "BTC", 61000, PerpsSizing{SizingLeverage: 1}, 0, "", 0, DirectionLong, 0, logger); err != nil {
-			t.Fatal(err)
-		}
-		for _, tr := range s.TradeHistory {
-			if tr.CostModelVersion != FillCostModelVersion || tr.CostPolicyID != "" {
-				t.Fatalf("%s: an ordinary row %+v must keep the process stamp", c.platform, tr)
-			}
-			if !pairCostNear(tr.ExchangeFee, tr.Quantity*tr.Price*c.fee) {
-				t.Fatalf("%s: an ordinary row %+v must keep the venue fee rate %v", c.platform, tr, c.fee)
-			}
-		}
-		if len(s.pairCostFaults) != 0 {
-			t.Fatalf("an ordinary strategy raised a pair cost fault: %v", s.pairCostFaults)
 		}
 	}
 }

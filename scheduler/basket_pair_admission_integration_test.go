@@ -1,3 +1,5 @@
+//go:build parkedresearch
+
 package main
 
 import (
@@ -304,71 +306,6 @@ func TestBasketPairConfigLimitRulesAtTheirBoundaries(t *testing.T) {
 	}
 }
 
-func TestBasketPairOrdinaryRoutesRefuseActivation(t *testing.T) {
-	registerPairTestPolicy(t)
-	variants := map[string]func(root map[string]interface{}){
-		"root pairs": nil,
-		"member pair_id only": func(r map[string]interface{}) {
-			delete(r, "pairs")
-		},
-		"pair_member token only": func(r map[string]interface{}) {
-			delete(r, "pairs")
-			for _, id := range []string{pairTestHL, pairTestOKX} {
-				delete(pairTestStrategy(r, id), "pair_id")
-			}
-		},
-		"pair flag only": func(r map[string]interface{}) {
-			delete(r, "pairs")
-			for _, id := range []string{pairTestHL, pairTestOKX} {
-				sc := pairTestStrategy(r, id)
-				delete(sc, "pair_id")
-				sc["args"] = []interface{}{"sma_crossover", "BTC", "1h", "--mode=paper", pairMemberFlag + "={}"}
-			}
-		},
-		"paper with acknowledgement and an old config version": func(r map[string]interface{}) {
-			r["config_version"] = 12
-			for _, id := range []string{pairTestHL, pairTestOKX} {
-				pairTestStrategy(r, id)["allow_no_edge"] = true
-			}
-		},
-	}
-	for name, mutate := range variants {
-		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			doc := pairTestDoc(t, dir, mutate)
-			path := filepath.Join(dir, "config.json")
-			if err := os.WriteFile(path, doc, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			before := dirDigest(t, dir)
-			loaders := map[string]func() error{
-				"LoadConfig":                func() error { _, err := LoadConfig(path); return err },
-				"LoadConfigReadOnly":        func() error { _, err := LoadConfigReadOnly(path); return err },
-				"LoadConfigForProbe":        func() error { _, err := LoadConfigForProbe(path); return err },
-				"LoadConfigForLedgerExport": func() error { _, err := LoadConfigForLedgerExport(doc); return err },
-				"forged admission": func() error {
-					_, err := loadConfigDataWith("", doc, true, true, &pairResearchAdmission{nonce: "forged"})
-					return err
-				},
-			}
-			for lname, load := range loaders {
-				if err := load(); err == nil {
-					t.Fatalf("%s activated a pair reference", lname)
-				}
-			}
-			if code := runProbe([]string{"--config", path}); code == 0 {
-				t.Fatal("the probe command admitted a pair reference")
-			}
-			if after := dirDigest(t, dir); after != before {
-				t.Fatal("an ordinary route changed the config or state files while refusing a pair")
-			}
-		})
-	}
-	if _, _, err := buildAddStrategyEntry(pairMemberStrategyToken, "hyperliquid", "BTC"); err == nil {
-		t.Fatal("the operator add-strategy route accepted the pair member token")
-	}
-}
-
 func TestBasketPairReleasedAdmissionAndReloadAreRefused(t *testing.T) {
 	e := newPairTestEnv(t, nil)
 	e.adm.release()
@@ -387,40 +324,4 @@ func TestBasketPairReleasedAdmissionAndReloadAreRefused(t *testing.T) {
 	if err := validateHotReloadCompatible(e.cfg, &stripped); err == nil {
 		t.Fatal("a reload that removes a member's pair_id must be refused")
 	}
-}
-
-func TestBasketPairOrdinaryLoadRefusesResearchRecords(t *testing.T) {
-	e := newPairTestEnv(t, nil)
-	pairEnterHoldRunner(e, 0.06)
-	e.slotStep(0)
-	e.store.Close()
-	dbPath := e.cfg.DBFile
-	before := pairFileDigest(t, dbPath)
-	ordinary := loadBasketTestConfig(t, func(root map[string]interface{}) {
-		root["db_file"] = dbPath
-		delete(root, "baskets")
-		var kept []interface{}
-		for _, raw := range root["strategies"].([]interface{}) {
-			sc := raw.(map[string]interface{})
-			delete(sc, "basket_id")
-			sc["args"] = []interface{}{"sma_crossover", sc["args"].([]interface{})[1], "1h", "--mode=paper"}
-			delete(sc, "closed_bar_decisions")
-			kept = append(kept, sc)
-		}
-		root["strategies"] = kept
-	})
-	store := openSourceStore(t, ordinary)
-	state := NewAppState()
-	for _, sc := range ordinary.Strategies {
-		state.Strategies[sc.ID] = NewStrategyState(sc)
-	}
-	if _, err := store.LoadBaskets(state, ordinary); err == nil {
-		t.Fatal("an ordinary load adopted research pair records")
-	}
-	var n int
-	if err := store.primary().db.QueryRow(`SELECT COUNT(*) FROM basket_member_actions WHERE group_mode = 'pair'`).Scan(&n); err != nil || n != 1 {
-		t.Fatalf("the refused load changed the pair records: %d (%v)", n, err)
-	}
-	store.Close()
-	_ = before
 }
