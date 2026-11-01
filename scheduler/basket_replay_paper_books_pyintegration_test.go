@@ -310,9 +310,9 @@ func TestBasketReplayPairPaperBooksProcessManagesOpenSealedPositionAfterAppendFa
 	}
 	f, fenv := fixture("paper-books-fault")
 	from := f.fromMs + open[0].Event.Start.RawStartMs - bf.fromMs + 1
-	to := from + 600
+	to := from + 40
 	dir := filepath.Join(f.parent, "fault")
-	env := append(pairPaperAppendFaultEnv(f, from, to), fenv...)
+	env := append(append(pairPaperAppendFaultEnv(f, from, to), fenv...), pairPaperTestBookStallEnv+"="+strconv.FormatInt(from, 10))
 	p := runPairPaperAdapter(t, f, f.spec(basketReplayModeNew, dir), env)
 	rows := pairPaperLogRows(t, dir, f.runID)
 	var clearSeq, lostSeq, restartEpoch, restartSeq int64
@@ -334,16 +334,22 @@ func TestBasketReplayPairPaperBooksProcessManagesOpenSealedPositionAfterAppendFa
 		t.Fatalf("the append fault inside [%d, %d) must set and clear the recording barrier: exit %d stderr %s", from, to, p.Code, tail(p.Stderr, 4000))
 	}
 	if lostSeq == 0 || restartEpoch == 0 {
-		t.Fatalf("the append fault inside [%d, %d) must lose a book input, stop the receiver and restart it in a new epoch: lost_stop_seq=%d restart_epoch=%d stderr %s", from, to, lostSeq, restartEpoch, tail(p.Stderr, 4000))
+		t.Fatalf("the append fault inside [%d, %d) and the book receipt stall from %d must lose a book input, stop the receiver and restart it in a new epoch: lost_stop_seq=%d restart_epoch=%d stderr %s", from, to, from, lostSeq, restartEpoch, tail(p.Stderr, 4000))
 	}
-	var after []pairRecRow
+	var before, after []pairRecRow
 	for _, row := range pairPaperOpenSealedChecks(t, rows) {
+		if row.Seq < lostSeq {
+			before = append(before, row)
+		}
 		if row.Seq > clearSeq && row.Seq > restartSeq {
 			after = append(after, row)
 		}
 	}
+	if len(before) == 0 {
+		t.Fatalf("the fault run must manage the open sealed position before the lost-ticket stop at seq %d: stderr %s", lostSeq, tail(p.Stderr, 4000))
+	}
 	if len(after) == 0 {
 		t.Fatalf("native management of the open sealed position must run after the barrier clears at seq %d and the receiver restarts at seq %d: stderr %s", clearSeq, restartSeq, tail(p.Stderr, 4000))
 	}
-	t.Logf("OPEN_SEALED_FAULT window=[%d,%d) clear_seq=%d lost_stop_seq=%d restart_epoch=%d restart_seq=%d first_open_check_after_restart_seq=%d open_checks_after_restart=%d exit=%d incomplete=%v", from, to, clearSeq, lostSeq, restartEpoch, restartSeq, after[0].Seq, len(after), p.Code, p.Out.IncompleteReasons)
+	t.Logf("OPEN_SEALED_FAULT window=[%d,%d) clear_seq=%d lost_stop_seq=%d restart_epoch=%d restart_seq=%d open_checks_before_lost=%d last_open_check_before_lost_seq=%d first_open_check_after_restart_seq=%d open_checks_after_restart=%d exit=%d incomplete=%v", from, to, clearSeq, lostSeq, restartEpoch, restartSeq, len(before), before[len(before)-1].Seq, after[0].Seq, len(after), p.Code, p.Out.IncompleteReasons)
 }

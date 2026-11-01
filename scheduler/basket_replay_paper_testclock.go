@@ -15,6 +15,7 @@ import (
 const (
 	pairPaperTestClockEnv       = "GO_TRADER_PAPER_TEST_CLOCK"
 	pairPaperTestAppendFaultEnv = "GO_TRADER_PAPER_TEST_APPEND_FAULT"
+	pairPaperTestBookStallEnv   = "GO_TRADER_PAPER_TEST_BOOK_STALL_FROM_MS"
 	pairPaperTestClockTick      = 20 * time.Millisecond
 )
 
@@ -55,6 +56,23 @@ func init() {
 		wall.oracleCompletionMs = completion
 	}
 	pairPaperWall = wall
+	if raw := os.Getenv(pairPaperTestBookStallEnv); raw != "" {
+		stallFrom, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || stallFrom <= 0 {
+			fmt.Fprintf(os.Stderr, "the paper test book stall %q is not a positive millisecond time\n", raw)
+			os.Exit(basketReplayExitError)
+		}
+		var stalled atomic.Bool
+		gate := pairPaperBookReceiptGate
+		pairPaperBookReceiptGate = func() {
+			if wall.Now().UnixMilli() >= stallFrom && stalled.CompareAndSwap(false, true) {
+				time.Sleep(pairPaperBookJoin + time.Second)
+			}
+			if gate != nil {
+				gate()
+			}
+		}
+	}
 	window := os.Getenv(pairPaperTestAppendFaultEnv)
 	if window == "" {
 		return
@@ -105,6 +123,10 @@ func (w *pairPaperTestWall) current() int64 {
 func (w *pairPaperTestWall) writeMs(ms int64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.writeLocked(ms)
+}
+
+func (w *pairPaperTestWall) writeLocked(ms int64) {
 	w.ms = ms
 	tmp := w.path + ".next"
 	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(w.ms, 10)), 0o600); err != nil {
@@ -114,6 +136,15 @@ func (w *pairPaperTestWall) writeMs(ms int64) {
 	if err := os.Rename(tmp, w.path); err != nil {
 		fmt.Fprintf(os.Stderr, "the paper test clock could not advance: %v\n", err)
 		os.Exit(basketReplayExitError)
+	}
+}
+
+func (w *pairPaperTestWall) raiseMs(ms int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.reloadLocked()
+	if ms > w.ms {
+		w.writeLocked(ms)
 	}
 }
 
@@ -143,22 +174,16 @@ func (w *pairPaperTestWall) advance(d time.Duration) {
 				continue
 			}
 			if req.TargetMs <= end {
-				if req.TargetMs > now {
-					w.writeMs(req.TargetMs)
-				}
+				w.raiseMs(req.TargetMs)
 				pairPaperGateWaitAck(deadline, req)
 				deadline = time.Now().Add(pairPaperGateWatchdog)
 				continue
 			}
-			if now < end {
-				w.writeMs(end)
-			}
+			w.raiseMs(end)
 			return
 		}
 		if now >= end || !pairPaperGateChildActive() || tick {
-			if now < end {
-				w.writeMs(end)
-			}
+			w.raiseMs(end)
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
