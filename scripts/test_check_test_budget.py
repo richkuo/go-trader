@@ -65,6 +65,18 @@ CANONICAL_IDS = [
 ]
 SECTION = "SKILL.md section Add Or Change Strategies"
 WORDING_SOURCE = ["def test_message():", '    assert "x" in message()']
+CONTRACT_SOURCES = {
+    "backtest/tests/test_strategy_backtest_contract.py": [
+        "REPLACED_PER_STRATEGY_TESTS = ()",
+        "def test_backtest_contract(case):",
+        "    assert case",
+    ],
+    "shared_scripts/test_strategy_check_contract.py": [
+        'REPLACED_PER_STRATEGY_TESTS = ("test_retired_check",)',
+        "def test_check_contract(case):",
+        "    assert case",
+    ],
+}
 
 GRID_CASES = [
     '    (["--mode=live"], "explicit live mode"),',
@@ -254,10 +266,12 @@ def _tree(tmp_path, files=None, baseline=None):
     _write(tmp_path, "scripts/check_test_budget.py", SCRIPT.read_text())
     _write(tmp_path, "shared_tools/strategy_composition.py", COMPOSITION.read_text())
     _write(tmp_path, CANONICAL, CANONICAL_SOURCE)
+    for rel, content in CONTRACT_SOURCES.items():
+        _write(tmp_path, rel, content)
     for rel, content in (files or {}).items():
         _write(tmp_path, rel, content)
     if baseline is None:
-        baseline = {"wording_only_tests": [], "refusal_grid_tests": list(CANONICAL_IDS)}
+        baseline = {"wording_only_tests": [], "refusal_grid_tests": list(CANONICAL_IDS), "contract_copy_tests": []}
     if baseline is not False:
         _write(tmp_path, "scripts/test_budget_baseline.json",
                baseline if isinstance(baseline, str) else json.dumps(baseline))
@@ -283,7 +297,8 @@ def test_cli_passes_with_only_the_canonical_and_wiring_matrices(tmp_path):
 @pytest.mark.parametrize("dropped", CANONICAL_IDS)
 def test_cli_reports_a_detected_reviewed_matrix_missing_from_the_baseline_as_new(tmp_path, dropped):
     kept = [ident for ident in CANONICAL_IDS if ident != dropped]
-    proc = _cli(_tree(tmp_path, baseline={"wording_only_tests": [], "refusal_grid_tests": kept}))
+    proc = _cli(_tree(tmp_path, baseline={"wording_only_tests": [], "refusal_grid_tests": kept,
+                                          "contract_copy_tests": []}))
     assert proc.returncode == 1
     assert f"  new: {dropped}" in proc.stderr.splitlines()
     assert "refusal_grid_tests" in proc.stderr and SECTION in proc.stderr
@@ -292,7 +307,8 @@ def test_cli_reports_a_detected_reviewed_matrix_missing_from_the_baseline_as_new
 def test_cli_reports_a_nonexistent_baseline_identifier_as_stale(tmp_path):
     ghost = "shared_scripts/test_gone.py::test_gone_is_refused"
     proc = _cli(_tree(tmp_path, baseline={"wording_only_tests": [],
-                                          "refusal_grid_tests": CANONICAL_IDS + [ghost]}))
+                                          "refusal_grid_tests": CANONICAL_IDS + [ghost],
+                                          "contract_copy_tests": []}))
     assert proc.returncode == 1
     assert f"  stale: {ghost}" in proc.stderr.splitlines()
     assert "refusal_grid_tests" in proc.stderr and SECTION in proc.stderr
@@ -347,10 +363,14 @@ def test_cli_fails_on_an_unreadable_test_source(tmp_path):
     "{not json",
     json.dumps(CANONICAL_IDS),
     json.dumps({"wording_only_tests": []}),
-    json.dumps({"wording_only_tests": [], "refusal_grid_tests": "all"}),
-    json.dumps({"wording_only_tests": [], "refusal_grid_tests": [1]}),
-    json.dumps({"wording_only_tests": [], "refusal_grid_tests": CANONICAL_IDS + CANONICAL_IDS[:1]}),
-    json.dumps({"wording_only_tests": [], "refusal_grid_tests": CANONICAL_IDS, "extra": []}),
+    json.dumps({"wording_only_tests": [], "refusal_grid_tests": CANONICAL_IDS}),
+    json.dumps({"wording_only_tests": [], "refusal_grid_tests": "all", "contract_copy_tests": []}),
+    json.dumps({"wording_only_tests": [], "refusal_grid_tests": [1], "contract_copy_tests": []}),
+    json.dumps({"wording_only_tests": [], "refusal_grid_tests": CANONICAL_IDS + CANONICAL_IDS[:1],
+                "contract_copy_tests": []}),
+    json.dumps({"wording_only_tests": [], "refusal_grid_tests": CANONICAL_IDS, "contract_copy_tests": "all"}),
+    json.dumps({"wording_only_tests": [], "refusal_grid_tests": CANONICAL_IDS, "contract_copy_tests": [],
+                "extra": []}),
 ])
 def test_cli_fails_on_invalid_baseline_data(tmp_path, baseline):
     proc = _cli(_tree(tmp_path, baseline=baseline))
@@ -358,40 +378,109 @@ def test_cli_fails_on_invalid_baseline_data(tmp_path, baseline):
     assert "invalid baseline scripts/test_budget_baseline.json" in proc.stderr
 
 
-def test_list_prints_both_rules_in_order_and_still_validates(tmp_path):
+def test_list_prints_every_rule_in_order_and_still_validates(tmp_path):
     files = {
         "shared_tools/test_wording.py": WORDING_SOURCE,
-        "shared_scripts/test_new_strategy_checks.py": PLANTED["literal"],
+        "shared_scripts/test_new_strategy_checks.py": PLANTED["literal"] + ["", "def test_check_contract():", "    pass"],
     }
     proc = _cli(_tree(tmp_path, files), "--list")
     assert proc.returncode == 1
-    rules = ("wording_only_tests ", "refusal_grid_tests ")
+    rules = ("wording_only_tests ", "refusal_grid_tests ", "contract_copy_tests ")
     assert [line for line in proc.stdout.splitlines() if line.startswith(rules)] == [
         "wording_only_tests shared_tools/test_wording.py::test_message",
         "refusal_grid_tests shared_scripts/test_new_strategy_checks.py::test_new_strategy_is_refused",
         "refusal_grid_tests " + CANONICAL_IDS[0],
         "refusal_grid_tests " + CANONICAL_IDS[1],
+        "contract_copy_tests shared_scripts/test_new_strategy_checks.py::test_check_contract",
     ]
     assert "  new: shared_tools/test_wording.py::test_message" in proc.stderr.splitlines()
 
 
-def test_write_baseline_keeps_both_keys_sorted_and_the_next_run_passes(tmp_path):
+def test_write_baseline_keeps_every_key_sorted_and_the_next_run_passes(tmp_path):
     root = _tree(tmp_path, {"shared_tools/test_wording.py": WORDING_SOURCE}, baseline=False)
     proc = _cli(root, "--write-baseline")
     assert proc.returncode == 0, proc.stderr
     data = json.loads((root / "scripts" / "test_budget_baseline.json").read_text())
     assert data == {"wording_only_tests": ["shared_tools/test_wording.py::test_message"],
-                    "refusal_grid_tests": CANONICAL_IDS}
+                    "refusal_grid_tests": CANONICAL_IDS, "contract_copy_tests": []}
     assert _cli(root).returncode == 0
 
 
 def test_wording_only_rule_still_reports_new_and_stale_entries(tmp_path):
     stale = "shared_tools/test_wording.py::test_removed"
     root = _tree(tmp_path, {"shared_tools/test_wording.py": WORDING_SOURCE},
-                 baseline={"wording_only_tests": [stale], "refusal_grid_tests": CANONICAL_IDS})
+                 baseline={"wording_only_tests": [stale], "refusal_grid_tests": CANONICAL_IDS,
+                           "contract_copy_tests": []})
     proc = _cli(root)
     assert proc.returncode == 1
     lines = proc.stderr.splitlines()
     assert "test budget exceeded: new tests assert only message wording" in lines
     assert "  new: shared_tools/test_wording.py::test_message" in lines
     assert f"  stale: {stale}" in lines
+
+
+@pytest.mark.parametrize("rel,owner", [
+    ("shared_scripts/test_new_strategy_checks.py", ""),
+    ("backtest/tests/test_new_strategy_integration.py", "TestNewStrategy::"),
+])
+def test_cli_rejects_a_per_strategy_copy_of_a_contract_test_and_passes_once_it_is_removed(tmp_path, rel, owner):
+    if owner:
+        source = ["class TestNewStrategy:", "    def test_backtest_contract(self):", "        assert True"]
+        name = "test_backtest_contract"
+    else:
+        source = ["def test_check_contract():", "    assert True"]
+        name = "test_check_contract"
+    root = _tree(tmp_path, {rel: source})
+    proc = _cli(root)
+    assert proc.returncode == 1
+    lines = proc.stderr.splitlines()
+    assert "test budget exceeded (contract_copy_tests): new tests repeat a strategy contract test" in lines
+    assert f"  new: {rel}::{owner}{name}" in lines
+    assert SECTION in proc.stderr
+    (root / rel).unlink()
+    clean = _cli(root)
+    assert clean.returncode == 0, clean.stderr
+    assert "contract-copy tests: 0 (baseline 0)" in clean.stdout.splitlines()
+
+
+def test_cli_reports_a_removed_contract_copy_left_in_the_baseline_as_stale(tmp_path):
+    ghost = "shared_scripts/test_gone_checks.py::test_check_contract"
+    proc = _cli(_tree(tmp_path, baseline={"wording_only_tests": [], "refusal_grid_tests": CANONICAL_IDS,
+                                          "contract_copy_tests": [ghost]}))
+    assert proc.returncode == 1
+    assert f"  stale: {ghost}" in proc.stderr.splitlines()
+
+
+@pytest.mark.parametrize("missing", sorted(CONTRACT_SOURCES))
+def test_cli_fails_when_a_contract_suite_is_missing(tmp_path, missing):
+    root = _tree(tmp_path)
+    (root / missing).unlink()
+    proc = _cli(root)
+    assert proc.returncode == 1
+    assert f"{missing}: strategy contract suite missing" in proc.stderr
+
+
+def test_cli_rejects_a_new_test_that_reuses_a_replaced_per_strategy_name(tmp_path):
+    rel = "shared_scripts/test_new_strategy_checks.py"
+    proc = _cli(_tree(tmp_path, {rel: ["def test_retired_check():", "    assert True"]}))
+    assert proc.returncode == 1
+    assert f"  new: {rel}::test_retired_check" in proc.stderr.splitlines()
+
+
+@pytest.mark.parametrize("rel,first", [
+    ("shared_scripts/test_strategy_check_contract.py", "import pytest"),
+    ("backtest/tests/test_strategy_backtest_contract.py", 'REPLACED_TESTS = ("test_retired_backtest",)'),
+], ids=["check-suite-list-deleted", "backtest-suite-list-renamed"])
+def test_cli_fails_when_a_contract_suite_drops_its_replaced_name_list(tmp_path, rel, first):
+    proc = _cli(_tree(tmp_path, {rel: [first, "def test_contract(case):", "    assert case"]}))
+    assert proc.returncode == 1
+    assert f"{rel}: REPLACED_PER_STRATEGY_TESTS missing" in proc.stderr
+
+
+@pytest.mark.parametrize("value", ['"test_retired_check"', "(1,)", '("helper",)'])
+def test_cli_fails_on_a_malformed_replaced_name_list(tmp_path, value):
+    rel = "shared_scripts/test_strategy_check_contract.py"
+    proc = _cli(_tree(tmp_path, {rel: [f"REPLACED_PER_STRATEGY_TESTS = {value}", "def test_check_contract(case):",
+                                       "    assert case"]}))
+    assert proc.returncode == 1
+    assert f"{rel}: REPLACED_PER_STRATEGY_TESTS must be a tuple or list of test names" in proc.stderr

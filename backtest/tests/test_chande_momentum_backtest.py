@@ -271,13 +271,6 @@ INVALID_PARAMS = [
 ]
 
 
-def test_invalid_parameters_are_configuration_errors():
-    for bad in INVALID_PARAMS:
-        with _case(bad):
-            with pytest.raises(ValueError):
-                _apply(_frame(_walk(40)), dict(PARAMS, **bad))
-
-
 def test_period_endpoints_and_the_200_bar_check_window():
     closes = _walk(220, seed=3)
     one = _apply(_frame(closes), dict(PARAMS, period=1))
@@ -386,29 +379,6 @@ def test_opposite_and_repeated_signals_never_reverse_or_add_while_open():
     assert trades[0]["shares"] == pytest.approx(trades[0].get("initial_shares", trades[0]["shares"]))
 
 
-def test_invalid_entry_data_keeps_close_and_stop_management():
-    for path, want in (("up", "tp"), ("down", "sl")):
-        with _case(path):
-            _invalid_entry_data_keeps_close_and_stop_management(path, want)
-
-
-def _invalid_entry_data_keeps_close_and_stop_management(path, want):
-    rise = [100.0] * 30 + [100.5, 101.0, 101.4, 101.8]
-    tail = [102.0, 103.5, 104.5, 105.5, 106.0] if path == "up" else [101.0, 99.0, 97.0, 95.0, 93.0]
-    df = _frame(rise + tail)
-    df = df.drop(df.index[len(rise)])
-    sig, res = _run_bt(df)
-    after = sig.iloc[len(rise):]
-    assert (after["signal"] == 0).all()
-    assert (after["cmo_reason"] == "cadence_gap").all()
-    t = res["trades"][0]
-    assert pd.Timestamp(t["exit_date"]) > df.index[len(rise) - 1]
-    if want == "tp":
-        assert "tp" in t["exit_reason"]
-    else:
-        assert t["exit_reason"] == "sl"
-
-
 def test_composer_suppresses_entries_while_open_and_keeps_close_on_invalid_entry_data():
     fut = _reg()
     closes = [100.0] * 10 + [100.5, 101.0]
@@ -455,23 +425,6 @@ def _parity_cfg(**kw):
                 close_refs=[TP], direction="both")
     base.update(kw)
     return ParityConfig(**base)
-
-
-@pytest.mark.parametrize("window", [None, 200])
-def test_non_batched_parity_is_clean(window):
-    frame = compute_parity_frame(_market(), cfg=_parity_cfg(), window=window)
-    s = summarize(frame)
-    assert s["bars_compared"] > 0 and s["mismatches"] == 0
-    assert s["clean"] is True and s["close_parity"] == "unverified"
-    assert (frame["live_signal"] == 1).any() and (frame["live_signal"] == -1).any()
-
-
-@pytest.mark.parametrize("window", [None, 200])
-def test_batched_explicit_paper_parity_is_clean(window):
-    frame = compute_parity_frame(_market(300), cfg=_parity_cfg(batched=True), window=window)
-    s = summarize(frame)
-    assert s["bars_compared"] > 0 and s["mismatches"] == 0 and s.get("batch_mismatches", 0) == 0
-    assert s["clean"] is True
 
 
 def test_period_198_parity_at_the_window_boundary():

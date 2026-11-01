@@ -231,7 +231,7 @@ def render(proto: dict, results_path: str, manifest_path: str, parity_path: str,
                  "the live check decision on a trailing 200-row frame (window 200) or the whole prefix (window 0), "
                  "solo and batched, in the flat, long and short position contexts the simulation produces. These "
                  "runs prove supplied-frame parity; the closed-bar cutoff is proved separately by the subprocess "
-                 "checks in `shared_scripts/test_adaptive_moving_average_checks.py`.")
+                 "checks in the `adaptive_moving_average` cases of `shared_scripts/test_strategy_check_contract.py`.")
         L.append("")
         L.append("| config | params | batched | window | bars | mismatches | batch mismatches | long entries | "
                  "short entries | long closes | short closes | clean |")

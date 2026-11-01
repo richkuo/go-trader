@@ -18,7 +18,7 @@ if _TOOLS not in sys.path:
 from atr import ensure_atr_indicator
 from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
-from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid, walk_forward_optimize
+from optimizer import walk_forward_optimize
 from registry_loader import load_registry
 from strategy_composition import evaluate_open_close, finalize_decision
 from trade_flow_replay import _Flow, _Interval
@@ -87,25 +87,6 @@ def _frame(closes, start=D0 + SESSION_MS):
 def _run(df, series, cutoff=None, **over):
     payload = payload_from_profile_series(series, BAR, cutoff)
     return _reg().apply_strategy(NAME, df, {**SEED, **over, "volume_profile_observations": payload})
-
-
-def test_registration_grid_validator_and_hiding():
-    reg = _reg()
-    entry = reg.STRATEGY_REGISTRY[NAME]
-    assert entry["production_refused"] is True and entry["edge_status"] == "no_edge"
-    assert entry["edge_ref"] == "backtest/candidates/volume_profile_reclaim_1665/REPORT.md"
-    assert NAME not in reg.list_strategies() and NAME not in load_registry("spot").STRATEGY_REGISTRY
-    assert reg._registry.STRATEGIES[NAME]["short_entries"] is True
-    grid = generate_param_grid(DEFAULT_PARAM_RANGES[NAME])
-    assert len(grid) == 9
-    for params in grid:
-        reg._registry.validate_params(NAME, {**params, "expected_interval_ms": BAR})
-    for bad in ({"profile_bins": 1}, {"profile_bins": 513}, {"profile_bins": 2.5}, {"profile_bins": True},
-                {"value_area_fraction": 0.0}, {"value_area_fraction": 1.0}, {"value_area_fraction": float("nan")},
-                {"session_bounds": 1}, {"expected_interval_ms": 60_000}, {"expected_interval_ms": 14_400_000},
-                {"bins": 64}):
-        with pytest.raises(ValueError):
-            reg._registry.validate_params(NAME, {**SEED, **bad})
 
 
 def test_hand_profile_bins_ties_value_area_and_boundaries_through_the_replay():

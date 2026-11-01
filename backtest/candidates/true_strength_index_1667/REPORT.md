@@ -585,7 +585,7 @@ All 54 training variants of the 4h signal_line_only arm (unsuccessful variants i
 
 ## Integration parity
 
-Close capability on Hyperliquid perps: yes. `parity_diff` on the explicit-paper configurations (`paper_parity_1h.json`, `paper_parity_4h.json`; frozen BTC candles): clean = yes. Window `support` is exactly W + 1 bars. The generic paper-batch slot does not enable closed-bar decisions; the timed closed-bar check coverage is in `shared_scripts/test_true_strength_index_checks.py`.
+Close capability on Hyperliquid perps: yes. `parity_diff` on the explicit-paper configurations (`paper_parity_1h.json`, `paper_parity_4h.json`; frozen BTC candles): clean = yes. Window `support` is exactly W + 1 bars. The generic paper-batch slot does not enable closed-bar decisions; the timed closed-bar check coverage is in the `true_strength_index` cases of `shared_scripts/test_strategy_check_contract.py`, and the closed-history bounds and received-order defects are in `shared_scripts/test_true_strength_index_checks.py`.
 
 | config | params | batched | window | bars | mismatches | batch mismatches | long / short entries | long / short closes | clean |
 |---|---|---|---|---|---|---|---|---|---|

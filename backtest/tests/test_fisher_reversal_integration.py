@@ -1,5 +1,4 @@
 import contextlib
-import json
 import math
 import os
 import sys
@@ -15,14 +14,10 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 import offline_manifest as om
-from atr import ensure_atr_indicator
-from backtester import Backtester
-from close_registry_loader import evaluate as close_evaluate
 from eval_windows import expand_sweep
 from optimizer import DEFAULT_PARAM_RANGES
-from parity_diff import ParityConfig, compute_parity_frame, summarize
+from parity_diff import ParityConfig
 from registry_loader import load_registry
-from strategy_composition import evaluate_open_close, finalize_decision
 
 NAME = "fisher_reversal"
 MANIFEST = os.path.join(_REPO, "backtest", "candidates", "fisher_reversal_1646_manifest.json")
@@ -98,25 +93,6 @@ def _ref_signal(a, b, c, extreme):
     if a < b and b >= c and b > extreme:
         return -1
     return 0
-
-
-def test_registration_is_futures_only_bidirectional_no_edge_hidden_and_seeded():
-    fut = _reg()
-    entry = fut.STRATEGY_REGISTRY[NAME]
-    raw = fut._registry.STRATEGIES[NAME]
-    with open(SEED) as fh:
-        seed = json.load(fh)
-    assert entry["default_params"] == seed["params"] == {"lookback": 9, "extreme": 1.5}
-    assert entry["edge_status"] == "no_edge"
-    assert entry["edge_source"] in ("unvalidated", "study_fail", "study_inconclusive")
-    assert entry["edge_ref"] == "backtest/candidates/fisher_reversal_1646/REPORT.md"
-    assert os.path.isfile(os.path.join(_REPO, entry["edge_ref"]))
-    assert raw["short_entries"] is True and raw["platforms"] == ("futures",)
-    assert NAME in fut._registry.short_entry_strategies()
-    assert NAME in fut._registry.DISCOVERY_HIDDEN_STRATEGIES
-    assert NAME not in fut.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    assert DEFAULT_PARAM_RANGES[NAME] == seed["optimizer_grid"]
 
 
 def test_values_match_an_independent_reference_and_the_truth_table():
@@ -266,13 +242,6 @@ INVALID_PARAMS = [
 ]
 
 
-def test_invalid_parameters_are_explicit_errors():
-    for params in INVALID_PARAMS:
-        with _case(params):
-            with pytest.raises(ValueError):
-                _apply(_walk(120, 1), {**{"lookback": 9, "extreme": 1.5}, **params})
-
-
 def test_integral_float_lookback_is_accepted():
     df = _walk(120, 1)
     pd.testing.assert_frame_equal(_apply(df, {"lookback": 9.0, "extreme": 1.5}), _apply(df, {"lookback": 9, "extreme": 1.5}))
@@ -310,115 +279,10 @@ def test_full_series_prefix_exact_span_and_200_row_tail_agree_for_every_permitte
             assert short["fisher_reason"].iloc[-1] == "insufficient_history"
 
 
-def _composer(df, params, side="", position_ctx=None):
-    reg = _reg()
-    evaluation = evaluate_open_close(
-        reg.apply_strategy, reg.get_strategy, df, NAME, NAME, ["tiered_tp_pct"], side, params=params,
-        position_ctx=position_ctx, close_evaluate=close_evaluate, close_params_by_name={"tiered_tp_pct": {}})
-    return evaluation, finalize_decision(evaluation, side)
-
-
 def _entry_frame(side):
     falling = list(np.linspace(300.0, 100.0, 150))
     rising = list(np.linspace(100.0, 300.0, 150))
     return _from_mids(falling + [falling[-1] + 30.0]) if side == "long" else _from_mids(rising + [rising[-1] - 30.0])
-
-
-def test_composer_emits_both_directions_and_holds_entries_while_a_position_is_open():
-    p = {"lookback": 9, "extreme": 0.5}
-    _, flat_long = _composer(_entry_frame("long"), p)
-    _, flat_short = _composer(_entry_frame("short"), p)
-    assert (flat_long["open_action"], flat_long["signal"]) == ("long", 1)
-    assert (flat_short["open_action"], flat_short["signal"]) == ("short", -1)
-    df = _entry_frame("short")
-    mark = float(df["close"].iloc[-1])
-    ctx = {"side": "long", "avg_cost": mark, "entry_atr": 50.0, "current_quantity": 1.0, "initial_quantity": 1.0}
-    _, held = _composer(df, p, "long", ctx)
-    assert held["close_fraction"] == 0.0 and held["signal"] == 0
-    df = _entry_frame("long")
-    mark = float(df["close"].iloc[-1])
-    _, held = _composer(df, p, "long", dict(ctx, avg_cost=mark))
-    assert held["signal"] == 0 and held["close_fraction"] == 0.0
-
-
-def test_invalid_entry_frame_keeps_the_close_owner_executable():
-    for mutation in ("volume", "geometry", "cadence"):
-        with _case(mutation):
-            _invalid_entry_frame_keeps_the_close_owner_executable(mutation)
-
-
-def _invalid_entry_frame_keeps_the_close_owner_executable(mutation):
-    df = _walk(200, 9)
-    if mutation == "volume":
-        df = df.assign(volume=np.r_[df["volume"].to_numpy()[:-1], -5.0])
-    elif mutation == "geometry":
-        df = df.assign(open=np.r_[df["open"].to_numpy()[:-1], df["high"].iloc[-1] * 2])
-    else:
-        df = _shift_index(df, len(df) - 1, pd.Timedelta(hours=2))
-    mark = float(df["close"].iloc[-1])
-    ctx = {"side": "long", "avg_cost": mark / 1.05, "entry_atr": 1.0, "current_quantity": 1.0,
-           "initial_quantity": 1.0}
-    evaluation, decision = _composer(df, P, "long", ctx)
-    assert evaluation.open_result_df["fisher_valid"].iloc[-1] == 0.0
-    assert decision["open_action"] == "none"
-    assert decision["close_strategy"] == "tiered_tp_pct" and decision["close_fraction"] == 1.0
-    assert decision["signal"] == -1
-    short_ctx = dict(ctx, side="short", avg_cost=mark * 1.05)
-    _, decision = _composer(df, P, "short", short_ctx)
-    assert decision["open_action"] == "none" and decision["close_fraction"] == 1.0 and decision["signal"] == 1
-    partial = dict(ctx, avg_cost=mark / 1.015)
-    _, decision = _composer(df, P, "long", partial)
-    assert decision["close_fraction"] == 0.25
-
-
-def _bt(params, **kw):
-    base = dict(initial_capital=1000.0, platform="hyperliquid", open_strategy={"name": NAME, "params": params},
-                close_strategies=CLOSE, stop_loss_atr_mult=1.0, direction="both")
-    base.update(kw)
-    return Backtester(**base)
-
-
-def test_simulator_fills_next_open_with_explicit_exits_partials_and_no_reversal_or_scale_in():
-    params = {"lookback": 9, "extreme": 0.75}
-    df = _walk(900, 5)
-    sig = ensure_atr_indicator(_apply(df, params))
-    res = _bt(params).run(sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    trades = res["trades"]
-    assert {t["side"] for t in trades} == {"long", "short"}
-    reasons = {t["exit_reason"].split(":")[0] for t in trades}
-    assert reasons <= {"sl", "tiered_tp_pct", "end_of_data"} and "tiered_tp_pct" in reasons and "sl" in reasons
-    by_entry = {}
-    for t in trades:
-        by_entry.setdefault((t["entry_date"], t["side"]), []).append(t)
-    spans = []
-    for (entry_date, side), legs in by_entry.items():
-        entry = pd.Timestamp(entry_date)
-        pos = sig.index.get_loc(entry)
-        assert int(sig["signal"].iloc[pos - 1]) == (1 if side == "long" else -1)
-        assert legs[0]["entry_price"] == pytest.approx(df["open"].iloc[pos], rel=0.01)
-        spans.append((entry, max(pd.Timestamp(l["exit_date"]) for l in legs)))
-    spans.sort()
-    for (_, prev_exit), (next_entry, _) in zip(spans, spans[1:]):
-        assert next_entry >= prev_exit
-    assert any(len(legs) > 1 for legs in by_entry.values())
-
-
-def test_simulator_keeps_closing_and_stopping_after_entry_inputs_fail():
-    params = {"lookback": 9, "extreme": 0.75}
-    df = _walk(600, 5)
-    sig = ensure_atr_indicator(_apply(df, params))
-    first = next(int(i) for i in np.flatnonzero(sig["signal"].to_numpy() != 0)
-                 if i > 100 and np.isfinite(sig["atr"].iloc[i]))
-    corrupt = df.copy()
-    corrupt.iloc[first + 1:, corrupt.columns.get_loc("volume")] = np.nan
-    bad = ensure_atr_indicator(_apply(corrupt, params))
-    assert (bad["signal"].iloc[:first + 1] == sig["signal"].iloc[:first + 1]).all()
-    assert (bad["signal"].iloc[first + 1:] == 0).all()
-    res = _bt(params).run(bad, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    last_entry = max(pd.Timestamp(t["entry_date"]) for t in res["trades"])
-    assert last_entry == bad.index[first + 1]
-    final = [t for t in res["trades"] if pd.Timestamp(t["entry_date"]) == last_entry]
-    assert {t["exit_reason"].split(":")[0] for t in final} <= {"sl", "tiered_tp_pct"}
 
 
 def _cfg(params, **kw):
@@ -426,34 +290,3 @@ def _cfg(params, **kw):
                 symbol="BTC", timeframe="4h")
     base.update(kw)
     return ParityConfig(**base)
-
-
-@pytest.mark.parametrize("window", [200, None])
-@pytest.mark.parametrize("params", DOMAIN_ENDPOINTS + [{"lookback": 9, "extreme": 1.5}])
-def test_entry_parity_on_frozen_candles(window, params):
-    frame = compute_parity_frame(_frozen("BTC 4h", 320), cfg=_cfg(params), window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["clean"], frame[~frame["match"]].head()
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_composed_parity_covers_both_sides_with_the_close_owner(window):
-    params = {"lookback": 5, "extreme": 0.75}
-    cfg = _cfg(params, close_refs=json.loads(json.dumps(CLOSE)), direction="both")
-    frame = compute_parity_frame(_frozen("SOL 4h", 520), cfg=cfg, window=window)
-    result = summarize(frame)
-    assert result["mismatches"] == 0 and result["clean"], frame[~frame["match"]].head()
-    assert (frame["live_open_action"] == "long").any() and (frame["live_open_action"] == "short").any()
-    closing = frame[frame["live_close_fraction"] > 0]
-    assert (closing["live_signal"] == -1).any() and (closing["live_signal"] == 1).any()
-
-
-@pytest.mark.parametrize("window", [200, None])
-def test_batched_explicit_paper_parity_matches_solo(window):
-    params = {"lookback": 5, "extreme": 0.75}
-    cfg = _cfg(params, close_refs=json.loads(json.dumps(CLOSE)), direction="both", batched=True)
-    frame = compute_parity_frame(_frozen("BTC 4h", 300), cfg=cfg, window=window)
-    result = summarize(frame)
-    assert result["bars_compared"] > 0
-    assert result["clean"] and result["batch_clean"], frame[~frame["match"]].head()

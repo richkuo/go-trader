@@ -10,7 +10,6 @@ from registry_loader import load_registry
 from atr import ensure_atr_indicator
 from eval_windows import compute_incumbent_legs, evaluate_window, incumbent_contract_kwargs, INCUMBENTS
 from optimizer import DEFAULT_PARAM_RANGES
-from parity_diff import compute_parity_frame, summarize
 
 NAME = "aroon_trend"
 TP = [{"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.03, "close_fraction": 1.0}]}}]
@@ -82,14 +81,7 @@ def _market(n=420, seed=1643):
     return df
 
 
-def test_registered_futures_only_hidden_and_grid_fits_the_live_window():
-    fut = load_registry("futures")
-    assert NAME in fut.STRATEGY_REGISTRY
-    assert NAME not in fut.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    entry = fut.STRATEGY_REGISTRY[NAME]
-    assert entry["edge_status"] == "no_edge"
-    assert entry["edge_ref"] == "backtest/candidates/aroon_trend_1643/REPORT.md"
+def test_grid_fits_the_live_window():
     grid = DEFAULT_PARAM_RANGES[NAME]
     df = _market(260)
     for period in grid["period"]:
@@ -114,19 +106,6 @@ INVALID_PARAMS = [
     ({"strength": float("inf")}, "strength"),
     ({"strength": "70"}, "strength must be a number"),
 ]
-
-
-def test_invalid_parameters_are_refused_by_every_registry_entry_point():
-    fut = load_registry("futures")
-    for params, needle in INVALID_PARAMS:
-        with _case(params):
-            with pytest.raises(ValueError, match=needle):
-                fut.apply_strategy(NAME, _market(40), params)
-            with pytest.raises(ValueError, match=needle):
-                fut.validate_params(NAME, params)
-            (key, value), = params.items()
-            with pytest.raises(ValueError, match=needle):
-                fut.validate_param_value(NAME, key, value)
 
 
 def test_rising_and_falling_series_hold_without_a_crossing():
@@ -291,48 +270,6 @@ def test_backtest_entries_fill_at_the_next_open_and_never_reverse_or_add():
     assert sig.loc[entries[1], "signal"] == -1 and entries[1] < pd.Timestamp(first["exit_date"])
     assert len(res["trades"]) == 1
     assert first["exit_reason"] == "end_of_data"
-
-
-def test_invalid_entry_data_keeps_close_and_stop_processing():
-    rows = _spike_up(_trend(30))
-    entry_px = rows[-1][3]
-    rows += [(entry_px, entry_px + 0.5, entry_px - 0.5, float("nan"), 1.0)]
-    rows += [(entry_px + 1, entry_px * 1.05, entry_px, entry_px * 1.04, 1.0)] * 3
-    df = _frame(rows)
-    sig = ensure_atr_indicator(_apply(df, {"period": 10, "strength": 70.0}))
-    assert (sig["signal"].iloc[31:] == 0).all()
-    assert (sig["aroon_reason"].iloc[31:] == "nonfinite_input").all()
-    res = _bt(stop_loss_atr_mult=None, stop_loss_pct=50.0).run(
-        sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    assert len(res["trades"]) == 1
-    assert res["trades"][0]["exit_reason"].startswith("tiered_tp_pct")
-
-    crash = _spike_up(_trend(30))
-    px = crash[-1][3]
-    crash += [(px, px + 0.2, px - 0.2, px, 1.0)]
-    crash += [(px - 1, px - 0.5, px * 0.5, px * 0.55, 1.0)]
-    crash += [(px * 0.55, px * 0.56, px * 0.5, float("nan"), 1.0)] * 3
-    sig2 = ensure_atr_indicator(_apply(_frame(crash), {"period": 10, "strength": 70.0}))
-    res2 = _bt().run(sig2, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    assert res2["trades"][0]["exit_reason"] == "sl"
-
-
-@pytest.mark.parametrize("batched", [False, True])
-def test_parity_frame_matches_on_every_compared_bar(batched):
-    df = _market(420)
-    params = {"period": 14, "strength": 50.0}
-    if batched:
-        from parity_diff import ParityConfig
-        cfg = ParityConfig(strategy_name=NAME, params=params, registry="futures", batched=True,
-                           symbol="BTC", timeframe="4h")
-        frame = compute_parity_frame(df, cfg=cfg, window=200)
-        assert summarize(frame)["batch_mismatches"] == 0
-    else:
-        frame = compute_parity_frame(df, NAME, params=params, registry="futures", close_refs=TP,
-                                     comparison_mode="strict", window=None)
-        assert summarize(frame)["close_parity"] == "unverified"
-    assert bool(frame["match"].all())
-    assert set(frame["live_open_action"]) >= {"long", "short"}
 
 
 def test_incumbent_contract_reaches_every_incumbent_and_default_callers_are_unchanged():

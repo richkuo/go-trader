@@ -19,7 +19,6 @@ from atr import ensure_atr_indicator
 from backtester import Backtester
 from close_registry_loader import evaluate as close_evaluate
 from closed_bar import (
-    FRAME_DECISION_TIME_ATTR,
     FRAME_INTERVAL_ATTR,
     FRAME_RECEIVED_ORDER_DEFECTS_ATTR,
     FRAME_TIMESTAMP_KIND_ATTR,
@@ -29,7 +28,7 @@ from closed_bar import (
 )
 from optimizer import DEFAULT_PARAM_RANGES, strategy_warmup_bars
 from registry_loader import load_registry
-from strategy_composition import StrategyReference, evaluate_open_close, finalize_decision, preflight_reference_params
+from strategy_composition import evaluate_open_close, finalize_decision
 
 NAME = "calendar_conditioned_entry"
 REF = "backtest/candidates/calendar_conditioned_entry_1653/REPORT.md"
@@ -409,29 +408,6 @@ def test_missing_history_columns_and_timing_hold_with_reasons():
     assert set(out["cce_reason"]) == {"missing_timestamps"} and len(out) == len(df)
 
 
-def test_check_time_frames_hold_unless_the_last_bar_is_the_latest_closed_bar():
-    df = _calendar()
-    full = _apply(df)
-    i = int(np.flatnonzero(full["signal"].to_numpy() == 1)[-1])
-    frame = df.iloc[:i + 1].copy()
-    frame.attrs = dict(df.attrs)
-    boundary = int(_ms(frame)[-1]) + H1
-    for cutoff, declared, signal, reason in [
-        (boundary, boundary, 1, "entry_long"),
-        (boundary + H1, boundary, 0, "decision_bar_stale"),
-        (boundary - 1, boundary, 0, "decision_bar_future"),
-        (boundary, boundary - H1, 0, "decision_boundary_mismatch"),
-        (None, None, 0, "decision_time_missing"),
-    ]:
-        runtime = frame.copy()
-        runtime.attrs = dict(frame.attrs)
-        runtime.attrs[FRAME_DECISION_TIME_ATTR] = {} if cutoff is None else {"cutoff_ms": cutoff,
-                                                                             "boundary_ms": declared}
-        out = _apply(runtime)
-        assert int(out["signal"].iloc[-1]) == signal and out["cce_reason"].iloc[-1] == reason
-        assert out["cce_gross_mean"].iloc[-1] == full["cce_gross_mean"].iloc[i]
-
-
 INVALID_PARAMS = [
     {"training_bars": True}, {"training_bars": "4368"}, {"training_bars": None}, {"training_bars": 4368.5},
     {"training_bars": float("nan")}, {"holding_bars": 0}, {"holding_bars": 4368}, {"refit_bars": 0},
@@ -439,19 +415,6 @@ INVALID_PARAMS = [
     {"confidence": float("inf")}, {"confidence": True}, {"cost_hurdle": -0.001}, {"cost_hurdle": float("nan")},
     {"expected_interval_ms": 7_000_000}, {"expected_interval_ms": 3_600_000.5},
 ]
-
-
-def test_invalid_parameters_are_refused_before_evaluation():
-    reg = _reg()
-    for bad in INVALID_PARAMS:
-        with _case(bad):
-            with pytest.raises(ValueError):
-                reg.validate_params(NAME, bad)
-            refs = [StrategyReference("open", NAME)]
-            with pytest.raises(ValueError, match=f"open strategy '{NAME}' has invalid parameters"):
-                preflight_reference_params(refs, bad, None, reg.get_strategy, reg.validate_params)
-            with pytest.raises((ValueError, TypeError)):
-                reg.apply_strategy(NAME, _calendar(n=50), {**P, **bad})
 
 
 def _backtest(df, p=P, stop=3.0, direction="both", mode="approximate"):

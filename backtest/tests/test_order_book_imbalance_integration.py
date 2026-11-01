@@ -71,15 +71,9 @@ def decide(books, marks, deadline, p=P):
     return obi.evaluate_section(section(books, marks, deadline, p["depth_levels"]), "BTC", p, deadline)
 
 
-def test_registration_metadata_grid_and_mirrored_validator():
-    reg = load_registry("futures")
-    registry = reg._registry
+def test_grid_matches_the_spec_and_the_mirrored_validator():
+    registry = load_registry("futures")._registry
     entry = registry.STRATEGIES[NAME]
-    assert entry["platforms"] == ("futures",) and entry["short_entries"] is True
-    assert entry["production_refused"] is True and entry["edge_status"] == "no_edge"
-    assert entry["edge_ref"] == "backtest/candidates/order_book_imbalance_1635/REPORT.md"
-    assert NAME in registry.DISCOVERY_HIDDEN_STRATEGIES and NAME not in reg.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
     from optimizer import DEFAULT_PARAM_RANGES
     with open(SPEC) as fh:
         spec = json.load(fh)

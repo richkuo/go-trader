@@ -8,7 +8,6 @@ from backtester import Backtester
 from atr import ensure_atr_indicator
 from closed_bar import declare_frame_cadence
 from optimizer import DEFAULT_PARAM_RANGES
-from parity_diff import ParityConfig, compute_parity_frame, summarize
 from registry_loader import load_registry
 
 NAME = "regression_channel_reversion"
@@ -77,25 +76,14 @@ def _symmetric(n_blocks, d=0.5, base=100.0):
     return [base + d, base - d, base - d, base + d] * n_blocks
 
 
-def test_registered_futures_only_hidden_and_grid_fits_the_closed_window():
-    assert NAME in REG.STRATEGY_REGISTRY
-    assert NAME not in REG.list_strategies()
-    assert NAME not in load_registry("spot").STRATEGY_REGISTRY
-    entry = REG.STRATEGY_REGISTRY[NAME]
-    assert entry["edge_status"] == "no_edge"
-    assert entry["edge_ref"] == "backtest/candidates/regression_channel_reversion_1644/REPORT.md"
-    assert entry["default_params"] == SEED
+def test_grid_fits_the_closed_window():
     grid = DEFAULT_PARAM_RANGES[NAME]
-    assert sorted(grid) == sorted(SEED)
     df = _market(260)
     for w in grid["fit_window"]:
         assert w + 2 <= 199
         out = _apply(df, dict(SEED, fit_window=w, slope_ceiling=1.0))
         assert out["rcr_valid"].iloc[: w + 1].sum() == 0
         assert bool(out["rcr_valid"].iloc[w + 1])
-    for key, values in grid.items():
-        for value in values:
-            REG.validate_param_value(NAME, key, value)
 
 
 INVALID_PARAMS = [
@@ -116,18 +104,6 @@ INVALID_PARAMS = [
     ({"min_residual_std": float("inf")}, "min_residual_std"),
     ({"min_residual_std": None}, "min_residual_std must be a number"),
 ]
-
-
-def test_invalid_parameters_are_refused_by_every_registry_entry_point():
-    for params, needle in INVALID_PARAMS:
-        with _case((params, needle)):
-            with pytest.raises(ValueError, match=needle):
-                REG.apply_strategy(NAME, _market(60), params)
-            with pytest.raises(ValueError, match=needle):
-                REG.validate_params(NAME, params)
-            (key, value), = params.items()
-            with pytest.raises(ValueError, match=needle):
-                REG.validate_param_value(NAME, key, value)
 
 
 @pytest.mark.parametrize("params", [SEED, dict(SEED, fit_window=20, band_multiplier=1.5, slope_ceiling=1.0),
@@ -419,51 +395,3 @@ def test_backtest_entries_fill_at_the_next_open_and_never_reverse_or_add():
     for trade in res["trades"]:
         assert trade["entry_date"] in fills
     assert sum(1 for t in res["trades"] if pd.Timestamp(t["entry_date"]) < exit_at) == 1
-
-
-def test_invalid_entry_data_keeps_close_and_stop_processing():
-    rows = _dip(_symmetric(4), 3.0) + [100.0]
-    rows += [float("nan")]
-    rows += [104.0, 104.5, 105.0]
-    df = _frame(rows)
-    df["high"] = df["high"].fillna(100.6)
-    df["low"] = df["low"].fillna(99.6)
-    df["open"] = df["open"].fillna(100.1)
-    df.iloc[len(rows) - 3:, df.columns.get_loc("high")] = 106.0
-    sig = ensure_atr_indicator(_apply(df, SMALL))
-    assert (sig["signal"].iloc[len(rows) - 4:] == 0).all()
-    assert (sig["rcr_reason"].iloc[len(rows) - 4:] == "nonfinite_input").all()
-    res = _bt(stop_loss_atr_mult=None, stop_loss_pct=50.0).run(
-        sig, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    assert len(res["trades"]) == 1
-    assert res["trades"][0]["exit_reason"].startswith("tiered_tp_pct")
-
-    crash = _dip(_symmetric(4), 3.0) + [100.0, 100.0, 60.0, float("nan"), float("nan")]
-    cdf = _frame(crash)
-    cdf.iloc[-3:, cdf.columns.get_loc("low")] = 55.0
-    cdf.iloc[-3:, cdf.columns.get_loc("high")] = 101.0
-    cdf.iloc[-3:, cdf.columns.get_loc("open")] = 99.0
-    sig2 = ensure_atr_indicator(_apply(cdf, SMALL))
-    res2 = _bt().run(sig2, strategy_name=NAME, symbol="BTC/USDT", timeframe="4h", save=False)
-    assert res2["trades"][0]["exit_reason"] == "sl"
-
-
-@pytest.mark.parametrize("batched,window", [
-    pytest.param(False, None, id="None-False"),
-    pytest.param(False, 200, id="200-False"),
-    pytest.param(True, 200, id="200-True"),
-])
-def test_parity_frame_matches_on_every_compared_bar(batched, window):
-    df = _market(420)
-    params = dict(SEED, fit_window=20, slope_ceiling=1.0)
-    if batched:
-        cfg = ParityConfig(strategy_name=NAME, params=params, registry="futures", batched=True,
-                           symbol="BTC", timeframe="4h")
-        frame = compute_parity_frame(df, cfg=cfg, window=window or 200)
-        assert summarize(frame)["batch_mismatches"] == 0
-    else:
-        frame = compute_parity_frame(df, NAME, params=params, registry="futures", close_refs=TP,
-                                     comparison_mode="strict", window=window)
-    assert len(frame) > 100
-    assert bool(frame["match"].all())
-    assert set(frame["live_open_action"]) >= {"long", "short"}
