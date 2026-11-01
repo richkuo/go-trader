@@ -21,14 +21,27 @@ def _alloc(confirm_bars=2):
     }
 
 
-def test_switcher_flat_switch_after_confirm():
+def test_profile_switcher_confirms_flat_switches_and_rejects_bad_config(subtests):
+    with subtests.test(case="switcher_flat_switch_after_confirm"):
+        _assert_switcher_flat_switch_after_confirm()
+    with subtests.test(case="switcher_open_freezes_then_commits_on_first_flat"):
+        _assert_switcher_open_freezes_then_commits_on_first_flat()
+    with subtests.test(case="switcher_empty_label_resets_confirmation"):
+        _assert_switcher_empty_label_resets_confirmation()
+    with subtests.test(case="switcher_desired_equals_active_resets_pending"):
+        _assert_switcher_desired_equals_active_resets_pending()
+    with subtests.test(case="parse_rejects_wrong_profile_count"):
+        _assert_parse_rejects_wrong_profile_count()
+
+
+def _assert_switcher_flat_switch_after_confirm():
     sw = _ProfileSwitcher(_parse_profile_allocation(_alloc(confirm_bars=2)))
     assert sw.step("up", flat=True) == "fade"
     assert sw.step("up", flat=True) == "trend"
     assert sw.active == "trend"
 
 
-def test_switcher_open_freezes_then_commits_on_first_flat():
+def _assert_switcher_open_freezes_then_commits_on_first_flat():
     sw = _ProfileSwitcher(_parse_profile_allocation(_alloc(confirm_bars=2)))
     for _ in range(4):
         assert sw.step("up", flat=False) == "fade"
@@ -36,7 +49,7 @@ def test_switcher_open_freezes_then_commits_on_first_flat():
     assert sw.step("up", flat=True) == "trend"
 
 
-def test_switcher_empty_label_resets_confirmation():
+def _assert_switcher_empty_label_resets_confirmation():
     sw = _ProfileSwitcher(_parse_profile_allocation(_alloc(confirm_bars=2)))
     sw.step("up", flat=True)
     sw.step("", flat=True)
@@ -45,7 +58,7 @@ def test_switcher_empty_label_resets_confirmation():
     assert sw.step("up", flat=True) == "trend"
 
 
-def test_switcher_desired_equals_active_resets_pending():
+def _assert_switcher_desired_equals_active_resets_pending():
     sw = _ProfileSwitcher(_parse_profile_allocation(_alloc(confirm_bars=3)))
     sw.step("up", flat=True)
     sw.step("down", flat=True)
@@ -54,7 +67,7 @@ def test_switcher_desired_equals_active_resets_pending():
     assert sw.step("up", flat=True) == "trend"
 
 
-def test_parse_rejects_wrong_profile_count():
+def _assert_parse_rejects_wrong_profile_count():
     bad = _alloc()
     bad["param_sets"] = {"a": {}, "b": {}, "c": {}}
     with pytest.raises(ValueError):
@@ -71,7 +84,16 @@ def _flat_df(n=40):
     )
 
 
-def test_engine_selects_active_profile_signal():
+def test_engine_selects_active_profile_signal(subtests):
+    with subtests.test(case="engine_selects_active_profile_signal"):
+        _assert_engine_selects_active_profile_signal()
+    with subtests.test(case="engine_no_switch_when_label_stays_fade"):
+        _assert_engine_no_switch_when_label_stays_fade()
+    with subtests.test(case="engine_requires_profile_columns"):
+        _assert_engine_requires_profile_columns()
+
+
+def _assert_engine_selects_active_profile_signal():
     df = _flat_df(40)
     sig_trend = pd.Series(0, index=df.index)
     sig_trend.iloc[5] = 1
@@ -86,7 +108,7 @@ def test_engine_selects_active_profile_signal():
     assert result["total_trades"] >= 1, "trend profile buy should have opened a trade"
 
 
-def test_engine_no_switch_when_label_stays_fade():
+def _assert_engine_no_switch_when_label_stays_fade():
     df = _flat_df(40)
     sig_trend = pd.Series(0, index=df.index)
     sig_trend.iloc[5] = 1
@@ -100,7 +122,7 @@ def test_engine_no_switch_when_label_stays_fade():
     assert result["total_trades"] == 0, "fade profile should never fire the trend buy"
 
 
-def test_engine_requires_profile_columns():
+def _assert_engine_requires_profile_columns():
     df = _flat_df(10)
     df["_profile_label"] = "up"
     bt = Backtester(initial_capital=1000.0, profile_allocation=_alloc())

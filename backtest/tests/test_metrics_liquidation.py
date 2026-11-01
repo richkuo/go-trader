@@ -23,7 +23,30 @@ def _metrics(equities, initial_capital=1000.0, timeframe="1d"):
     return bt._calculate_metrics(equity_df, [], df, timeframe=timeframe)
 
 
-def test_deepening_blowup_reads_negative_not_positive():
+def test_liquidation_floor_metrics(subtests):
+    with subtests.test(case="deepening_blowup_reads_negative_not_positive"):
+        _assert_deepening_blowup_reads_negative_not_positive()
+    with subtests.test(case="deeper_blowup_never_ranks_above_shallower"):
+        _assert_deeper_blowup_never_ranks_above_shallower()
+    with subtests.test(case="floor_is_sticky_no_resurrection"):
+        _assert_floor_is_sticky_no_resurrection()
+    with subtests.test(case="recovery_before_zero_is_not_liquidation"):
+        _assert_recovery_before_zero_is_not_liquidation()
+    with subtests.test(case="healthy_curve_metrics_unchanged"):
+        _assert_healthy_curve_metrics_unchanged()
+    with subtests.test(case="zero_equity_bar_counts_as_bust"):
+        _assert_zero_equity_bar_counts_as_bust()
+    with subtests.test(case="early_bust_one_sample_reads_negative_not_neutral"):
+        _assert_early_bust_one_sample_reads_negative_not_neutral()
+    with subtests.test(case="first_bar_bust_zero_samples_reads_negative"):
+        _assert_first_bar_bust_zero_samples_reads_negative()
+    with subtests.test(case="liquidation_floor_is_timeframe_independent"):
+        _assert_liquidation_floor_is_timeframe_independent()
+    with subtests.test(case="faster_bust_never_outranks_slower_on_sharpe"):
+        _assert_faster_bust_never_outranks_slower_on_sharpe()
+
+
+def _assert_deepening_blowup_reads_negative_not_positive():
     m = _metrics([1000, 500, -500, -1500, -2500])
     assert m["liquidated"] is True
     assert m["sharpe_ratio"] < 0
@@ -31,7 +54,7 @@ def test_deepening_blowup_reads_negative_not_positive():
     assert m["max_drawdown_pct"] == pytest.approx(-100.0)
 
 
-def test_deeper_blowup_never_ranks_above_shallower():
+def _assert_deeper_blowup_never_ranks_above_shallower():
     deep = _metrics([1000, 500, -500, -2500])
     shallow = _metrics([1000, 500, -500, -600])
     for key in ("sharpe_ratio", "total_return_pct", "max_drawdown_pct",
@@ -40,19 +63,19 @@ def test_deeper_blowup_never_ranks_above_shallower():
     assert deep["liquidated"] and shallow["liquidated"]
 
 
-def test_floor_is_sticky_no_resurrection():
+def _assert_floor_is_sticky_no_resurrection():
     m = _metrics([1000, -200, 800, 900])
     assert m["liquidated"] is True
     assert m["total_return_pct"] == pytest.approx(-100.0)
 
 
-def test_recovery_before_zero_is_not_liquidation():
+def _assert_recovery_before_zero_is_not_liquidation():
     m = _metrics([1000, 50, 400, 600])
     assert m["liquidated"] is False
     assert m["total_return_pct"] == pytest.approx(-40.0)
 
 
-def test_healthy_curve_metrics_unchanged():
+def _assert_healthy_curve_metrics_unchanged():
     equities = [1000.0, 1100.0, 1050.0, 1200.0]
     m = _metrics(equities)
     assert m["liquidated"] is False
@@ -62,13 +85,13 @@ def test_healthy_curve_metrics_unchanged():
     assert m["sharpe_ratio"] == pytest.approx(round(expected_sharpe, 3))
 
 
-def test_zero_equity_bar_counts_as_bust():
+def _assert_zero_equity_bar_counts_as_bust():
     m = _metrics([1000, 0, 500])
     assert m["liquidated"] is True
     assert m["total_return_pct"] == pytest.approx(-100.0)
 
 
-def test_early_bust_one_sample_reads_negative_not_neutral():
+def _assert_early_bust_one_sample_reads_negative_not_neutral():
     m = _metrics([1000, -500, 800, 900])
     assert m["liquidated"] is True
     assert m["sharpe_ratio"] < 0
@@ -76,7 +99,7 @@ def test_early_bust_one_sample_reads_negative_not_neutral():
     assert m["volatility_pct"] != 0
 
 
-def test_first_bar_bust_zero_samples_reads_negative():
+def _assert_first_bar_bust_zero_samples_reads_negative():
     m = _metrics([-100, 50, 75])
     assert m["liquidated"] is True
     assert m["total_return_pct"] == pytest.approx(-100.0)
@@ -84,7 +107,7 @@ def test_first_bar_bust_zero_samples_reads_negative():
     assert m["sortino_ratio"] < 0
 
 
-def test_liquidation_floor_is_timeframe_independent():
+def _assert_liquidation_floor_is_timeframe_independent():
     bust = [1000, 500, -500, -1500]
     m_1h = _metrics(bust, timeframe="1h")
     m_4h = _metrics(bust, timeframe="4h")
@@ -96,7 +119,7 @@ def test_liquidation_floor_is_timeframe_independent():
     assert m_1h["volatility_pct"] != 0
 
 
-def test_faster_bust_never_outranks_slower_on_sharpe():
+def _assert_faster_bust_never_outranks_slower_on_sharpe():
     fast = _metrics([1000, -500, 0, 0])
     slow = _metrics([1000, 900, 800, -200])
     assert fast["liquidated"] and slow["liquidated"]
@@ -134,7 +157,18 @@ def _results(ret=-100.0, dd=-100.0, sharpe=-2.0, trades=3, liquidated=True):
             "liquidated": liquidated}
 
 
-def test_leg_from_results_propagates_liquidated():
+def test_leg_from_results_liquidated_flag_and_ddadj_floor(subtests):
+    with subtests.test(case="leg_from_results_propagates_liquidated"):
+        _assert_leg_from_results_propagates_liquidated()
+    with subtests.test(case="liquidated_ddadj_floor_constant_mirrors_backtester"):
+        _assert_liquidated_ddadj_floor_constant_mirrors_backtester()
+    with subtests.test(case="leg_from_results_floors_ddadj_when_liquidated"):
+        _assert_leg_from_results_floors_ddadj_when_liquidated()
+    with subtests.test(case="leg_from_results_ddadj_unfloored_when_not_liquidated"):
+        _assert_leg_from_results_ddadj_unfloored_when_not_liquidated()
+
+
+def _assert_leg_from_results_propagates_liquidated():
     assert ew.leg_from_results(_results())["liquidated"] is True
     assert ew.leg_from_results(_results(liquidated=False))["liquidated"] is False
     legacy = _results()
@@ -142,7 +176,14 @@ def test_leg_from_results_propagates_liquidated():
     assert ew.leg_from_results(legacy)["liquidated"] is False
 
 
-def test_score_candidate_counts_liquidated_legs_without_verdict_change():
+def test_score_candidate_counts_liquidated_legs(subtests):
+    with subtests.test(case="score_candidate_counts_liquidated_legs_without_verdict_change"):
+        _assert_score_candidate_counts_liquidated_legs_without_verdict_change()
+    with subtests.test(case="liquidated_legs_counts_every_blowup_including_unscored"):
+        _assert_liquidated_legs_counts_every_blowup_including_unscored()
+
+
+def _assert_score_candidate_counts_liquidated_legs_without_verdict_change():
     blown = ew.leg_from_results(_results())
     healthy = ew.leg_from_results(_results(ret=20.0, dd=-10.0, sharpe=1.5,
                                            liquidated=False))
@@ -156,7 +197,7 @@ def test_score_candidate_counts_liquidated_legs_without_verdict_change():
     assert score2["liquidated_legs"] == 0
 
 
-def test_liquidated_legs_counts_every_blowup_including_unscored():
+def _assert_liquidated_legs_counts_every_blowup_including_unscored():
     blown_no_bar = ew.leg_from_results(_results())
     healthy = ew.leg_from_results(_results(ret=20.0, dd=-10.0, sharpe=1.5,
                                            liquidated=False))
@@ -208,16 +249,10 @@ def _screen_leg_with(monkeypatch, net_liquidated, gross_liquidated):
     return leg
 
 
-def test_screen_leg_liquidated_when_net_run_busts(monkeypatch):
-    assert _screen_leg_with(monkeypatch, True, False)["liquidated"] is True
-
-
-def test_screen_leg_liquidated_when_only_gross_run_busts(monkeypatch):
-    assert _screen_leg_with(monkeypatch, False, True)["liquidated"] is True
-
-
-def test_screen_leg_not_liquidated_when_neither_run_busts(monkeypatch):
-    assert _screen_leg_with(monkeypatch, False, False)["liquidated"] is False
+def test_screen_leg_liquidated_when_either_run_busts(monkeypatch, subtests):
+    for net, gross, want in [(True, False, True), (False, True, True), (False, False, False)]:
+        with subtests.test(net_liquidated=net, gross_liquidated=gross):
+            assert _screen_leg_with(monkeypatch, net, gross)["liquidated"] is want
 
 
 def _fa_leg(liquidated=False):
@@ -237,6 +272,25 @@ def test_aggregate_counts_liquidated_legs():
     assert row2["n_liquidated"] == 0
 
 
+def _assert_liquidated_ddadj_floor_constant_mirrors_backtester():
+    from backtester import LIQUIDATED_METRIC_FLOOR
+    assert ew.LIQUIDATED_DDADJ_FLOOR == -LIQUIDATED_METRIC_FLOOR
+
+
+def _assert_leg_from_results_floors_ddadj_when_liquidated():
+    blown = ew.leg_from_results(_results())
+    assert blown["ddadj"] == ew.LIQUIDATED_DDADJ_FLOOR
+    survivor = ew.leg_from_results(
+        _results(ret=-50.0, dd=-25.0, sharpe=-1.0, liquidated=False))
+    assert survivor["ddadj"] == pytest.approx(-2.0)
+    assert survivor["ddadj"] > blown["ddadj"]
+
+
+def _assert_leg_from_results_ddadj_unfloored_when_not_liquidated():
+    leg = ew.leg_from_results(_results(ret=30.0, dd=-15.0, liquidated=False))
+    assert leg["ddadj"] == pytest.approx(2.0)
+
+
 def test_render_markdown_liquidated_section_only_when_present():
     meta = {"command": "uv run ...", "registry": "futures",
             "windows_desc": "2023", "datasets_desc": "SOL/USDT 4h",
@@ -249,22 +303,3 @@ def test_render_markdown_liquidated_section_only_when_present():
     clean = fa.aggregate_strategy("ok", "spot", [_fa_leg(False)])
     md_clean = fa.render_markdown(fa.rank_rows([clean]), meta)
     assert "## Liquidated legs" not in md_clean
-
-
-def test_liquidated_ddadj_floor_constant_mirrors_backtester():
-    from backtester import LIQUIDATED_METRIC_FLOOR
-    assert ew.LIQUIDATED_DDADJ_FLOOR == -LIQUIDATED_METRIC_FLOOR
-
-
-def test_leg_from_results_floors_ddadj_when_liquidated():
-    blown = ew.leg_from_results(_results())
-    assert blown["ddadj"] == ew.LIQUIDATED_DDADJ_FLOOR
-    survivor = ew.leg_from_results(
-        _results(ret=-50.0, dd=-25.0, sharpe=-1.0, liquidated=False))
-    assert survivor["ddadj"] == pytest.approx(-2.0)
-    assert survivor["ddadj"] > blown["ddadj"]
-
-
-def test_leg_from_results_ddadj_unfloored_when_not_liquidated():
-    leg = ew.leg_from_results(_results(ret=30.0, dd=-15.0, liquidated=False))
-    assert leg["ddadj"] == pytest.approx(2.0)

@@ -35,7 +35,18 @@ def _run(df, **kw):
     return bt.run(df.copy(), strategy_name="x", symbol="BTC/USDT", timeframe="1d", save=False)
 
 
-def test_fixed_atr_stop_exits_on_drawdown():
+def test_signal_path_atr_stops(subtests):
+    with subtests.test(case="fixed_atr_stop_exits_on_drawdown"):
+        _assert_fixed_atr_stop_exits_on_drawdown()
+    with subtests.test(case="stop_fills_next_bar_open_not_same_bar"):
+        _assert_stop_fills_next_bar_open_not_same_bar()
+    with subtests.test(case="trailing_atr_stop_ratchets_and_caps_drawdown"):
+        _assert_trailing_atr_stop_ratchets_and_caps_drawdown()
+    with subtests.test(case="no_stop_when_mult_unset_is_unchanged"):
+        _assert_no_stop_when_mult_unset_is_unchanged()
+
+
+def _assert_fixed_atr_stop_exits_on_drawdown():
     closes = [100, 100, 99, 96, 90, 85, 80, 80]
     signals = [1, 0, 0, 0, 0, 0, 0, 0]
     df = _df_with_signal(closes, signals, atr=2.0)
@@ -47,7 +58,7 @@ def test_fixed_atr_stop_exits_on_drawdown():
     assert stopped["total_trades"] == 1
 
 
-def test_stop_fills_next_bar_open_not_same_bar():
+def _assert_stop_fills_next_bar_open_not_same_bar():
     closes = [100, 100, 97, 200, 200]
     opens = [100, 100, 97, 95, 200]
     n = len(closes)
@@ -69,7 +80,7 @@ def test_stop_fills_next_bar_open_not_same_bar():
     assert res["final_capital"] < 10000.0
 
 
-def test_trailing_atr_stop_ratchets_and_caps_drawdown():
+def _assert_trailing_atr_stop_ratchets_and_caps_drawdown():
     closes = [100, 100, 110, 120, 130, 120, 100, 80, 80]
     signals = [1, 0, 0, 0, 0, 0, 0, 0, 0]
     df = _df_with_signal(closes, signals, atr=2.0)
@@ -80,7 +91,7 @@ def test_trailing_atr_stop_ratchets_and_caps_drawdown():
     assert trailed["max_drawdown_pct"] >= no_stop["max_drawdown_pct"]
 
 
-def test_no_stop_when_mult_unset_is_unchanged():
+def _assert_no_stop_when_mult_unset_is_unchanged():
     closes = [100, 100, 90, 80, 80]
     signals = [1, 0, 0, 0, -1]
     df = _df_with_signal(closes, signals, atr=2.0)

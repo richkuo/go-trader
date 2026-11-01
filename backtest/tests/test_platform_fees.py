@@ -46,13 +46,6 @@ def _scrape_fees_go_constants() -> dict:
     return {m.group(1): float(m.group(2)) for m in const_pattern.finditer(text)}
 
 
-def test_platform_fee_table_matches_expected():
-    assert PLATFORM_FEE_PCT == EXPECTED_RATES, (
-        "PLATFORM_FEE_PCT drifted from the inline expectation — update both "
-        "the table and this test together, and keep them in sync with fees.go"
-    )
-
-
 def test_platform_fee_table_matches_fees_go():
     go_rates = _scrape_fees_go_constants()
     assert go_rates["BinanceSpotFeePct"] == PLATFORM_FEE_PCT["binanceus"]
@@ -71,10 +64,6 @@ def test_platform_fee_table_matches_fees_go():
     for version, frozen in FROZEN_PAPER_FILL_COST_MODELS.items():
         assert PAPER_FILL_COST_MODELS[version] == frozen, (
             f"PAPER_FILL_COST_MODELS[{version}] changed after release; history entries are frozen literals")
-
-
-def test_hyperliquid_maker_rate_matches_fees_go():
-    go_rates = _scrape_fees_go_constants()
     assert go_rates["HyperliquidMakerFeePct"] == HYPERLIQUID_MAKER_FEE_PCT
     assert HYPERLIQUID_MAKER_FEE_PCT < PLATFORM_FEE_PCT["hyperliquid"]
     params = inspect.signature(PairsBacktester).parameters
@@ -105,21 +94,6 @@ def test_audit_fee_axis_decoupled_from_data_axis():
         assert "exchange_id=FEE_PLATFORM" not in text, harness
 
 
-def test_unknown_platform_falls_back_to_binanceus():
-    assert fee_pct_for_platform("mystery-exchange") == PLATFORM_FEE_PCT["binanceus"]
-
-
-def test_backtester_uses_platform_fee_by_default():
-    bt = Backtester(platform="hyperliquid")
-    assert bt.commission_pct == pytest.approx(0.00045)
-
-    bt = Backtester(platform="robinhood")
-    assert bt.commission_pct == 0.0
-
-    bt = Backtester(platform="luno")
-    assert bt.commission_pct == pytest.approx(0.01)
-
-
 def test_explicit_commission_overrides_platform():
     bt = Backtester(platform="hyperliquid", commission_pct=0.002)
     assert bt.commission_pct == pytest.approx(0.002)
@@ -139,35 +113,39 @@ def _one_trade_df():
     )
 
 
-@pytest.mark.parametrize(
-    "platform,expected_rate",
-    [
+def test_fee_actually_deducted_end_to_end(subtests):
+    assert PLATFORM_FEE_PCT == EXPECTED_RATES, (
+        "PLATFORM_FEE_PCT drifted from the inline expectation — update both "
+        "the table and this test together, and keep them in sync with fees.go"
+    )
+    assert fee_pct_for_platform("mystery-exchange") == PLATFORM_FEE_PCT["binanceus"]
+    for platform, expected_rate in [
         ("binanceus",   0.001),
         ("hyperliquid", 0.00045),
         ("robinhood",   0.0),
         ("luno",        0.01),
         ("okx",         0.001),
         ("okx-perps",   0.0005),
-    ],
-)
-def test_fee_actually_deducted_end_to_end(platform, expected_rate):
-    df = _one_trade_df()
-    capital = 1000.0
-    slippage = 0.0005
+    ]:
+        with subtests.test(platform=platform):
+            assert Backtester(platform=platform).commission_pct == pytest.approx(expected_rate)
+            df = _one_trade_df()
+            capital = 1000.0
+            slippage = 0.0005
 
-    bt = Backtester(
-        initial_capital=capital, slippage_pct=slippage, platform=platform
-    )
-    results = bt.run(df, strategy_name="fee-probe", save=False)
+            bt = Backtester(
+                initial_capital=capital, slippage_pct=slippage, platform=platform
+            )
+            results = bt.run(df, strategy_name="fee-probe", save=False)
 
-    buy_fill = 100.0 * (1 + slippage)
-    sell_fill = 100.0 * (1 - slippage)
-    cash_after_buy_fee = capital * (1 - expected_rate)
-    shares = cash_after_buy_fee / buy_fill
-    proceeds = shares * sell_fill
-    expected_final = proceeds * (1 - expected_rate)
+            buy_fill = 100.0 * (1 + slippage)
+            sell_fill = 100.0 * (1 - slippage)
+            cash_after_buy_fee = capital * (1 - expected_rate)
+            shares = cash_after_buy_fee / buy_fill
+            proceeds = shares * sell_fill
+            expected_final = proceeds * (1 - expected_rate)
 
-    assert results["final_capital"] == pytest.approx(expected_final, abs=0.01), (
-        f"Fee for platform '{platform}' did not match — expected rate "
-        f"{expected_rate:.5f} producing final_capital {expected_final:.2f}"
-    )
+            assert results["final_capital"] == pytest.approx(expected_final, abs=0.01), (
+                f"Fee for platform '{platform}' did not match — expected rate "
+                f"{expected_rate:.5f} producing final_capital {expected_final:.2f}"
+            )
